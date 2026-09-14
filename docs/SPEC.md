@@ -1,8 +1,8 @@
 # save-all-by-keyword — Project Specification
 
-> Phiên bản: 0.1 (draft) · Ngày: 2026-09-14 · Trạng thái: chờ review
+> Phiên bản: 0.3 · Ngày: 2026-09-14 · Trạng thái: domain model đã đổi (Item / Tag / typed Entry); các quyết định sản phẩm trước đó vẫn giữ (xem §13 cho phần còn mở)
 >
-> Tài liệu này là spec tổng thể cho sản phẩm **save-all-by-keyword**: lưu mọi thông tin dưới dạng **keyword → nhiều entry**, tìm kiếm cực nhanh (lexical + semantic), nội dung entry được **mã hoá đầu-cuối (E2E)** bằng key chỉ client nắm giữ.
+> Tài liệu này là spec tổng thể cho sản phẩm **save-all-by-keyword**: lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
 
 ## Mục lục
 
@@ -27,92 +27,179 @@
 
 ### 1.1 Tổng quan
 
-**save-all-by-keyword** là web app cho phép người dùng lưu nhanh các mẩu thông tin (text) dưới một hoặc nhiều **keyword**, sau đó tìm lại bằng cách gõ vài ký tự. Điểm khác biệt:
+**save-all-by-keyword** là web app (online-only) cho phép người dùng lưu nhanh các mẩu thông tin dưới một **mục (Item)**: một tên mô tả (`name`), kèm **nhiều tag**, và **nhiều entry** — mỗi entry có **kiểu lưu** (`text` hoặc `json` ở MVP). Tìm lại bằng cách gõ vài ký tự vào một ô omnibox.
 
-- **Search-first**: một ô omnibox duy nhất vừa để tìm, vừa để thêm (`keyword: nội dung`).
-- **Gợi ý thông minh**: autocomplete theo prefix, fuzzy (gõ sai chính tả vẫn ra), và **semantic** (gõ "mật khẩu wifi" vẫn ra keyword `wifi-password`) nhờ pgvector.
-- **E2E encryption cho nội dung**: server chỉ nhìn thấy keyword; nội dung entry là ciphertext, key nằm ở browser người dùng.
-- **Server-first, multi-device**: đăng nhập trên máy khác, nhập passphrase là có toàn bộ dữ liệu.
+Điểm khác biệt:
+
+- **Search-first**: một ô omnibox vừa tìm **tên mục** và **tag**, vừa thêm nhanh (`name: nội dung`). Gõ `#tag` để lọc / gán tag.
+- **Gợi ý thông minh** trên **hai corpus** (item name và tag): prefix, fuzzy, và **semantic** (gõ "mật khẩu wifi" ra mục `wifi-password` hoặc tag `mạng-nhà`) nhờ pgvector. Cùng một model, cùng một semantic toggle.
+- **E2E chỉ cho thân entry**: server thấy `name`, tag, kiểu entry, timestamps; **không** thấy text hay JSON. Key chỉ nằm ở browser.
+- **Entry có kiểu**: `text` (văn bản tự do) và `json` (tài liệu JSON, UI render **bảng lồng nhau**). Schema sẵn cho `link` / `file` / `image` (không làm ở MVP).
+- **Server-first, multi-user, multi-device**: đăng nhập máy khác, nhập encryption passphrase là có dữ liệu.
+- **Miễn phí, embedding self-host**: không gói trả phí; vector chạy TEI trong hạ tầng sản phẩm (`BAAI/bge-m3`). Name và tag **không** gửi ra nhà cung cấp AI bên thứ ba.
+
+Tên repo/sản phẩm vẫn là `save-all-by-keyword` (lịch sử). Thực thể chính **không** còn là "keyword". Xem §2 và §14.
 
 ### 1.2 Mục tiêu (Goals)
 
 | # | Mục tiêu | Đo lường |
 |---|----------|----------|
-| G1 | Thêm một entry mới trong ≤ 3 giây từ lúc focus omnibox | UX test |
-| G2 | Gợi ý keyword hiển thị trong < 150 ms end-to-end khi gõ | p95, 100k keyword/user |
-| G3 | Nội dung entry không bao giờ rời browser ở dạng plaintext | Code review + threat model §5.8 |
+| G1 | Thêm một text entry mới trong ≤ 3 giây từ lúc focus omnibox | UX test |
+| G2 | Gợi ý name/tag hiển thị trong < 150 ms end-to-end khi gõ | p95, 100k item + 20k tag / user |
+| G3 | Thân entry (text hoặc JSON) không bao giờ rời browser ở dạng plaintext | Code review + threat model §5.8 |
 | G4 | Hỗ trợ đầy đủ tiếng Việt và tiếng Anh (UI + search) | i18n en/vi, embedding multilingual |
-| G5 | Mô hình key không chặn tính năng chia sẻ (sharing) ở phase sau | Thiết kế §5.3 |
+| G5 | Mô hình key không chặn chia sẻ Item ở phase sau | Thiết kế §5.3 |
+| G6 | Import JSON và xem/sửa như bảng lồng nhau mà **không mất** JSON gốc | UX test + round-trip JSON |
 
 ### 1.3 Non-goals (MVP)
 
 - **Không** offline / PWA / local-first sync. App yêu cầu online.
-- **Không** tìm kiếm full-text trong nội dung entry ở phía server (không thể — nội dung đã mã hoá).
+- **Không** tìm kiếm full-text trong thân entry ở phía server (không thể — body đã mã hoá). Client-side content search là Phase 2.
 - **Không** chia sẻ dữ liệu giữa user (Phase 3).
-- **Không** lưu file/link/ảnh (chỉ text; schema chừa chỗ).
+- **Không** kiểu `link` / `file` / `image` (schema chừa chỗ; Phase 2).
 - **Không** native mobile app, browser extension (Phase 3).
 - **Không** collaborative editing, comment, version history chi tiết.
+- **Không** recovery key / BIP39 / khôi phục passphrase: quên encryption passphrase = mất vĩnh viễn nội dung entry (quyết định có chủ đích, xem §5).
+- **Không** pricing / gói / tier: sản phẩm miễn phí; marketing chỉ landing + docs.
+- **Không** embedding API bên thứ ba: không OpenAI, không Gemini, không Cohere. Provider duy nhất: `tei` \| `noop`.
+- **Không** "private name" / blind index: `name` và tag luôn plaintext — không có roadmap mã hoá tên.
+- **Không** quan hệ entry ↔ nhiều item: một entry thuộc **đúng một** Item.
 
 ### 1.4 Personas
 
 | Persona | Mô tả | Nhu cầu chính |
 |---------|-------|---------------|
-| **Minh — Developer** | Lưu snippet lệnh, config, ghi chú kỹ thuật rải rác | Gõ `docker: lệnh xoá volume` là xong; tìm lại bằng `dock`, `xoá vol` |
-| **Lan — Knowledge worker** | Lưu note họp, link đọc sau, ý tưởng | Semantic search: gõ "họp marketing tuần này" ra keyword `meeting-mkt` |
-| **An — Privacy-conscious** | Lưu thông tin nhạy cảm (số hợp đồng, ghi chú cá nhân) | Đảm bảo server không đọc được nội dung; recovery key rõ ràng |
+| **Minh — Developer** | Lưu snippet, config, JSON API sample | Gõ `docker: lệnh xoá volume`; import `compose.json` thành bảng; tag `ops`, `home-lab` |
+| **Lan — Knowledge worker** | Note họp, ý tưởng, danh sách có cấu trúc | Semantic: "họp marketing tuần này" ra mục `meeting-mkt`; lọc `#okrs` |
+| **An — Privacy-conscious** | Số hợp đồng, ghi chú nhạy cảm | Server không đọc body; hiểu `name`/tag là plaintext; chịu trách nhiệm giữ passphrase |
 
 ---
 
 ## 2. Domain model
 
-### 2.1 Các thực thể
+### 2.1 Vì sao gọi là **Item** (mục), không phải Keyword / Key
+
+"Keyword" / "key" gợi một **khoá tra cứu unique** — sai với sản phẩm: người dùng mô tả một **mục thông tin** (`name` = tiêu đề / mô tả chính), gắn **nhiều nhãn**, rồi nhét **nhiều mẩu nội dung có kiểu** vào đó. `name` **được phép trùng**.
+
+| Ứng viên | Vì sao không chọn làm mặc định |
+|----------|--------------------------------|
+| **Keyword / Key** | Sai nghĩa: không phải chìa khoá, không unique, không phải kênh search duy nhất |
+| **Note** | Nghèo: một Note thường là một body; ở đây một mục có nhiều entry typed (kể cả bảng JSON) |
+| **Record** | Nghe như một hàng DB / form cố định, không khớp "bó thông tin + tag" |
+
+**Chọn trong spec: `Item` (EN) / mục (VI).** URL `/items/:id`, bảng `item`, API `/items`. Đây là khuyến nghị có chủ đích, chưa khoá brand-language cuối — xem Q1 §13.
+
+Thuật ngữ **keyword** chỉ còn trong glossary: *cũ, đã thay bằng `Item.name` + `Tag`*.
+
+### 2.2 Các thực thể
 
 | Entity | Plaintext trên server? | Mô tả |
 |--------|------------------------|-------|
-| **User** | ✔ | Tài khoản; email, locale, auth providers |
-| **AuthIdentity** | ✔ | Liên kết OAuth (google/github) hoặc password hash |
+| **User** | ✔ | Tài khoản; email, locale, theme, `auto_lock_minutes`, `settings` |
+| **AuthIdentity** | ✔ | OAuth (google/github) hoặc password hash |
 | **Session** | ✔ | Refresh token hash, device info, thời hạn |
-| **Vault** | ✔ (chỉ metadata + wrapped keys) | Bộ key của user: `vault_key` được wrap bởi KEK (từ passphrase) và bởi Recovery Key; keypair X25519/Ed25519 (public plaintext, private wrapped) |
-| **Keyword** | ✔ | Từ khoá per-user, unique theo `normalized`; có `display` giữ nguyên cách viết của user |
-| **KeywordEmbedding** | ✔ | Vector của keyword (+ hint), kèm `model`, `model_version`, `dims` |
-| **Entry** | ✘ body (ciphertext) · ✔ metadata (id, timestamps, type, size) | Nội dung người dùng lưu |
-| **EntryKeyword** | ✔ | Bảng nối N–N Entry ↔ Keyword |
-| **EmbeddingJob** | ✔ | Hàng đợi embed/re-embed |
-| **AuditLog** | ✔ | Sự kiện bảo mật (login, đổi passphrase, export...) |
+| **Vault** | ✔ (metadata + wrapped keys) | `vault_key` wrap bởi KEK (passphrase); keypair X25519/Ed25519 (pub plaintext, priv wrapped). **Một** bản wrap VK trên server. Mất passphrase = mất khả năng đọc entry |
+| **Item** | ✔ `name`, `hint?`, timestamps, counts | Mục per-user. `name` = mô tả chính / title. **Trùng `name` được phép.** Disambiguate ở UI bằng tag + `created_at` |
+| **Tag** | ✔ `display`, `normalized` | Nhãn first-class, tái sử dụng giữa các item. Unique per-user theo `normalized` (khác `item.name`) |
+| **ItemTag** | ✔ | N–N Item ↔ Tag |
+| **Entry** | ✘ body (ciphertext) · ✔ `type`, `position`, envelope meta, size, timestamps | Một mẩu thuộc **đúng một** item. MVP `type`: `text` \| `json` |
+| **ItemEmbedding** | ✔ | Vector của `item.name` (+ hint), `model`, `model_version`, `dims` = 1024 |
+| **TagEmbedding** | ✔ | Vector của `tag.display` / `normalized` (cùng model) |
+| **EmbeddingJob** | ✔ | Hàng đợi embed/re-embed (River); target = item hoặc tag |
+| **AuditLog** | ✔ | Sự kiện bảo mật (login, đổi passphrase, export, reset vault…) |
+| **DeviceKey** (client-only) | — không có trên server | `DevKey` WebCrypto non-extractable + `seal(VK, DevKey)` trong IndexedDB khi bật "Nhớ thiết bị này" (§5.6) |
 
-### 2.2 Quyết định thiết kế
+**Settings** (cột `app_user.settings` jsonb + cột riêng): `semantic_suggest` (default `true`), `auto_lock_minutes` (default `15`; `0` = never).
 
-**Keyword: `normalized` + `display`.**
-`normalized` = NFC → lowercase → trim → collapse whitespace → bỏ dấu câu đầu/cuối. **Giữ dấu tiếng Việt** (không strip diacritics) vì `mã` ≠ `ma`; fuzzy/unaccent phục vụ ở tầng search (§6), không ở tầng identity. `display` là cách người dùng gõ lần đầu (có thể rename). Unique constraint: `(user_id, normalized)`.
+### 2.3 Quan hệ
 
-**Entry ↔ Keyword là N–N (một entry có thể có nhiều keyword).** Lý do:
+```
+User  1 ─── N  Item
+User  1 ─── N  Tag
+Item  N ─── N  Tag     (item_tag)
+Item  1 ─── N  Entry   // entry thuộc đúng một item; không còn N–N entry↔keyword
+```
 
-- Một mẩu thông tin thường thuộc nhiều ngữ cảnh (`wifi` + `nhà-bố-mẹ`). Nếu 1–N, user phải duplicate entry → dữ liệu lệch khi sửa.
-- Rename/merge keyword không đụng vào ciphertext.
-- Chi phí: một bảng nối; query "entries của keyword X" vẫn là join đơn giản, có index.
-- Ràng buộc UX: mỗi entry phải có **≥ 1 keyword** (enforce ở API; nếu gỡ keyword cuối → hỏi xoá entry).
+- Xoá Item → soft-delete entries của item đó; gỡ `item_tag`.
+- Xoá Tag → gỡ khỏi mọi item; **không** xoá item.
+- Reset vault → xoá **entries** (+ vault cũ) → tạo vault mới; **giữ Item + Tag** (plaintext, không phụ thuộc VK).
 
-**Keyword có `hint` tùy chọn (plaintext, ≤ 120 ký tự).** Người dùng có thể mô tả ngắn keyword để embedding tốt hơn (ví dụ keyword `k8s` với hint "kubernetes commands"). Hint là **opt-in** và có cảnh báo rõ là server đọc được.
+### 2.4 Quyết định thiết kế
 
-### 2.3 ER diagram
+**`Item.name` — plaintext, trùng được.**
+User muốn nhiều mục cùng tên (hai "wifi": nhà vs công ty). Server **không** unique `name`. UI phân biệt bằng chip tag + ngày tạo. Trade-off giống keyword cũ: plaintext để search/suggest chạy được.
+
+Chuẩn hoá để search, **không** để identity:
+
+`name_normalized` = NFC → lowercase → trim → collapse whitespace → bỏ dấu câu đầu/cuối. **Giữ dấu tiếng Việt** (`mã` ≠ `ma`). Fuzzy/unaccent ở tầng search (§6).
+
+Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
+
+**`Tag` — first-class, unique theo `normalized`.**
+Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` mà `normalized` trùng tag khác → `409 TAG_CONFLICT` (merge tag = Phase 2).
+
+**Giới hạn (ý kiến, dùng xuyên spec):**
+
+| Giới hạn | Giá trị | Lý do |
+|----------|---------|-------|
+| Tag / item | **20** | Chip UI; quá nhiều tag làm filter mất nghĩa |
+| Entry / item | **200** | Mục là một bó, không phải dump vô hạn; vẫn dư cho journal + nhiều bảng |
+| Plaintext / entry | **256 KiB** | Text hoặc JSON (sau `JSON.stringify` của document đã parse) |
+| Tag `display` | 1–50 ký tự | Nhãn, không phải đoạn văn |
+| Catalog tag / user | không cứng; alert vận hành ~ 20k | |
+| Item / user | không cứng; alert ~ 50k | |
+
+Xác nhận 20 / 200: Q3 §13.
+
+**Entry typed, body luôn ciphertext.**
+`type` là plaintext: UI biết cần renderer text hay bảng **trước khi** decrypt. **Cấu trúc JSON chỉ có sau khi client decrypt** — server chỉ lưu `type='json'` + blob. Không gửi JSON plaintext lên server, kể cả lúc import.
+
+**JSON (group / table)** — luôn giữ document gốc:
+
+- Lưu đúng UTF-8 JSON user import/sửa (không "bình thường hoá" mất key order / số / `null` một cách thầm).
+- Object → một bảng field/value.
+- Array → hàng; array-of-object → cột = hợp các key.
+- Object-trong-ô / array-trong-ô → bảng lồng, expandable.
+- Import nhanh: dán hoặc file `.json`; nhận object, array, array lồng, cả JSON primitive; validate parse + size; rồi encrypt như text.
+
+**Không** validate JSON Schema ở MVP (freeform). Schema per-item = mở, xem Q2.
+
+**Search surfaces:**
+
+| Hành động | Kết quả |
+|-----------|---------|
+| Gõ trong omnibox | Hybrid trên **item names** và **tags** |
+| Chọn một tag | Lọc danh sách item có tag đó |
+| Chọn một item | Mở chi tiết: chip tag + danh sách entry |
+| `#tag` | Chỉ corpus tag (lọc hoặc gán, tuỳ context) |
+| `name: text` | Quick-add text entry (quy tắc trùng tên §3.4) |
+
+**Embedding:** chỉ `item.name` (+ hint) và `tag.display`/`normalized`. Không embed body đã mã hoá. Re-embed khi đổi name/hint hoặc đổi tag display.
+
+### 2.5 ER diagram
 
 ```mermaid
 erDiagram
     USER ||--o{ AUTH_IDENTITY : has
     USER ||--o{ SESSION : has
     USER ||--|| VAULT : owns
-    USER ||--o{ KEYWORD : owns
-    USER ||--o{ ENTRY : owns
+    USER ||--o{ ITEM : owns
+    USER ||--o{ TAG : owns
     USER ||--o{ AUDIT_LOG : generates
-    KEYWORD ||--o| KEYWORD_EMBEDDING : has
-    KEYWORD ||--o{ ENTRY_KEYWORD : tagged
-    ENTRY ||--o{ ENTRY_KEYWORD : tagged
-    KEYWORD ||--o{ EMBEDDING_JOB : queued
+    ITEM ||--o{ ITEM_TAG : tagged
+    TAG ||--o{ ITEM_TAG : labels
+    ITEM ||--o{ ENTRY : contains
+    ITEM ||--o| ITEM_EMBEDDING : has
+    TAG ||--o| TAG_EMBEDDING : has
+    ITEM ||--o{ EMBEDDING_JOB : queued
+    TAG ||--o{ EMBEDDING_JOB : queued
 
     USER {
         uuid id PK
         text email UK
         text locale
+        int auto_lock_minutes "0 = never"
+        jsonb settings "semantic_suggest"
         timestamptz created_at
     }
     AUTH_IDENTITY {
@@ -120,7 +207,7 @@ erDiagram
         uuid user_id FK
         text provider "password|google|github"
         text provider_uid
-        text password_hash "argon2id, chỉ khi provider=password"
+        text password_hash "argon2id, chỉ provider=password"
     }
     SESSION {
         uuid id PK
@@ -132,43 +219,58 @@ erDiagram
     VAULT {
         uuid user_id PK_FK
         int version
-        jsonb kdf_params "argon2id m,t,p + salt"
+        jsonb kdf "argon2id m=64MiB,t=3,p=1 + salt"
+        text vault_key_id
         bytea vault_key_wrapped_by_kek
-        bytea vault_key_wrapped_by_recovery
         bytea x25519_public
         bytea ed25519_public
         bytea private_keys_wrapped
     }
-    KEYWORD {
+    ITEM {
         uuid id PK
         uuid user_id FK
-        text normalized
-        text display
+        text name
+        text name_normalized
         text hint
         int entry_count
         timestamptz last_used_at
+        timestamptz created_at
     }
-    KEYWORD_EMBEDDING {
-        uuid keyword_id PK_FK
-        vector embedding
-        text model
-        text model_version
-        text input_hash
+    TAG {
+        uuid id PK
+        uuid user_id FK
+        text display
+        text normalized
+        int item_count
+        timestamptz last_used_at
+    }
+    ITEM_TAG {
+        uuid item_id FK
+        uuid tag_id FK
     }
     ENTRY {
         uuid id PK
         uuid user_id FK
-        text content_type "text/plain"
-        jsonb envelope "v, alg, key_id, nonce"
+        uuid item_id FK
+        text type "text|json|link|file|image"
+        int position
+        jsonb envelope
         bytea ciphertext
         int plaintext_len_bucket
-        timestamptz created_at
-        timestamptz updated_at
     }
-    ENTRY_KEYWORD {
-        uuid entry_id FK
-        uuid keyword_id FK
-        int position
+    ITEM_EMBEDDING {
+        uuid item_id PK_FK
+        vector embedding "1024"
+        text model
+        text model_version
+        text input_hash
+    }
+    TAG_EMBEDDING {
+        uuid tag_id PK_FK
+        vector embedding "1024"
+        text model
+        text model_version
+        text input_hash
     }
 ```
 
@@ -178,17 +280,22 @@ erDiagram
 
 ### 3.1 User stories (ưu tiên MVP)
 
-- **US1** Là user mới, tôi đăng ký bằng email/password hoặc Google/GitHub, sau đó đặt **encryption passphrase** và nhận **recovery key**.
-- **US2** Là user, tôi gõ `wifi: Abc123` vào omnibox và Enter → entry được tạo dưới keyword `wifi`.
-- **US3** Là user, khi gõ `wi` tôi thấy gợi ý `wifi`, `wifi-office`, và cả `mạng nhà` (semantic) nếu có hint.
-- **US4** Là user, tôi mở keyword để xem danh sách entry, sửa, xoá, gắn thêm keyword khác.
-- **US5** Là user, đăng nhập trên máy mới, tôi nhập passphrase để **unlock vault**; dữ liệu hiện ra.
-- **US6** Là user, tôi đổi passphrase mà không cần re-encrypt toàn bộ dữ liệu.
-- **US7** Là user quên passphrase, tôi dùng recovery key để đặt passphrase mới.
-- **US8** Là user, tôi export dữ liệu (encrypted backup, hoặc decrypted JSON có cảnh báo).
-- **US9** Là user, tôi chọn ngôn ngữ giao diện en/vi.
+- **US1** Là user mới, tôi đăng ký email/password hoặc Google/GitHub, đặt **encryption passphrase**, tick checkbox hiểu **không có cách khôi phục** nếu quên.
+- **US2** Là user, tôi gõ `wifi: Abc123` vào omnibox → text entry được thêm vào mục `wifi` (tạo mới nếu chưa có; nếu trùng tên xem §3.4).
+- **US3** Là user, khi gõ `wi` tôi thấy mục `wifi`, `wifi-office` **và** tag `wifi-khách`; có thể thấy `mạng nhà` (semantic) nếu bật ≈.
+- **US4** Là user, tôi mở một mục, thấy chip tag + danh sách entry theo `position`, sửa/xoá entry, thêm/gỡ tag.
+- **US5** Là user, tôi import một file/đoạn JSON vào mục → một entry `type=json`, UI hiện bảng lồng nhau, vẫn xem được JSON gốc.
+- **US6** Là user, tôi sửa một ô trong bảng lồng nhau (kể cả hàng trong array lồng) → document JSON được cập nhật, encrypt lại, JSON gốc không mất field không nhìn thấy trên bảng.
+- **US7** Là user, tên mục trùng: omnibox và trang mục luôn hiện tag + ngày tạo; quick-add khi có nhiều khớp hỏi tôi chọn mục hoặc tạo mới.
+- **US8** Là user, gõ `#nhà` để lọc các mục có tag đó; trên trang mục tôi gán/gỡ tag từ catalog (suggest giống name).
+- **US9** Là user, máy mới: đăng nhập → nhập passphrase → **unlock vault**.
+- **US10** Là user, đổi passphrase mà không re-encrypt entries.
+- **US11** Là user, bật "Nhớ thiết bị này" (opt-in, mặc định tắt); "Quên thiết bị này" bất cứ lúc nào.
+- **US12** Là user, chọn locale en/vi và auto-lock 5 / **15** / 60 / never.
+- **US13** Là user quên passphrase: được nói thẳng là không khôi phục được body; **Reset vault** xoá entries, **giữ items + tags**.
+- **US14** Là user, export encrypted backup hoặc decrypted JSON (cảnh báo).
 
-### 3.2 Flow: Sign up → passphrase → recovery key
+### 3.2 Flow: Sign up → passphrase → xác nhận "không thể khôi phục"
 
 ```mermaid
 sequenceDiagram
@@ -198,65 +305,112 @@ sequenceDiagram
     B->>A: POST /auth/signup (email+pw) hoặc OAuth callback
     A->>DB: tạo user, auth_identity, session
     A-->>B: session cookie (HttpOnly)
-    Note over B: Onboarding: nhập passphrase (≥ 12 ký tự, zxcvbn ≥ 3)
-    B->>B: salt = random(16); KEK = Argon2id(passphrase, salt)
-    B->>B: VK = random(32); RK = random(32)
+    Note over B: Bước 1: passphrase (≥ 12 ký tự, zxcvbn ≥ 3) ×2
+    Note over B: Bước 2: cảnh báo quên = mất nội dung; checkbox bắt buộc
+    B->>B: salt = random(16); KEK = Argon2id(passphrase, salt, m=64MiB,t=3,p=1)  [Web Worker]
+    B->>B: VK = random(32)
     B->>B: kp = X25519+Ed25519 keygen
-    B->>B: wrapK = seal(VK, KEK); wrapR = seal(VK, RK); wrapP = seal(priv, VK)
-    B->>A: POST /vault {kdf_params, wrapK, wrapR, pubkeys, wrapP}
+    B->>B: wrapK = seal(VK, KEK); wrapP = seal(priv, VK)
+    B->>A: POST /vault {kdf_params, wrapK, pubkeys, wrapP}
     A->>DB: insert vault
-    Note over B: Hiển thị RK (base32 + BIP39 tùy chọn), bắt user xác nhận đã lưu
-    B->>B: VK giữ trong memory (non-extractable), xoá passphrase
+    B->>B: VK trong Worker memory; xoá passphrase và KEK
+    opt user tick "Nhớ thiết bị này"
+        B->>B: DevKey = WebCrypto AES-GCM non-extractable; IndexedDB ← {DevKey, seal(VK, DevKey)}
+    end
 ```
+
+Nếu `AUTH_REQUIRE_EMAIL_VERIFICATION=true` (mặc định **false**), user email/password phải verify email trước khi tạo vault; OAuth coi verified nếu provider trả `email_verified`.
+
+**Không** sinh recovery key, không BIP39, không màn "ghi lại 24 từ".
 
 ### 3.3 Flow: Unlock trên thiết bị mới
 
-1. Đăng nhập (email hoặc OAuth) → session.
-2. `GET /vault` → nhận `kdf_params`, `wrapK`.
-3. Browser: `KEK = Argon2id(passphrase, salt)`; `VK = open(wrapK, KEK)`. Sai passphrase → AEAD fail → báo "Passphrase không đúng" (không phân biệt được với data hỏng, chấp nhận).
-4. VK giữ trong memory tab (không lưu localStorage). Tùy chọn "Nhớ trên thiết bị này" → wrap VK bằng key WebCrypto non-extractable lưu trong IndexedDB (§5.6).
+1. Đăng nhập → session.
+2. `GET /vault` → `kdf_params`, `wrapK`.
+3. Worker: `KEK = Argon2id(passphrase, salt)` (đúng params trên vault, **không** hạ 64 MiB); `VK = open(wrapK, KEK)`. Sai passphrase → AEAD fail → "Passphrase không đúng".
+4. VK ở Worker memory. Nếu tick **"Nhớ thiết bị này"** → `DevKey` + `seal(VK, DevKey)` trong IndexedDB (§5.6). Lần sau trên thiết bị này: unlock **im lặng** bằng DevKey.
 
-### 3.4 Flow: Add entry via omnibox
+### 3.4 Flow: Quick-add `name: text`
 
-Cú pháp nhanh: `keyword: nội dung` hoặc `kw1, kw2: nội dung`.
+Cú pháp: `name: nội dung` (một `name`). Mở rộng: `name #tag1 #tag2: nội dung` — gán tag khi tạo/append.
 
-1. Parse client-side: tách tại dấu `:` đầu tiên **không nằm trong URL** (`http://` được bảo vệ bằng regex `^\s*([^:]+?)\s*:\s*(?!//)(.+)$`).
-2. Với mỗi keyword: `POST /keywords` (idempotent theo `normalized`) hoặc lấy id từ suggestion cache.
-3. Encrypt: `envelope = {v:1, alg:"xchacha20poly1305", key_id, nonce}`; `ciphertext = seal(utf8(text), VK, nonce, aad=canonical(envelope))`.
-4. `POST /entries {envelope, ciphertext, keyword_ids}` với header `Idempotency-Key`.
-5. Server enqueue embedding job nếu keyword mới/rename.
-6. UI: optimistic insert, toast "Đã lưu vào **wifi**" với action Undo (5 s).
+1. Parse client: tách tại `:` đầu tiên **không nằm trong URL** (`^\s*([^:]+?)\s*:\s*(?!//)(.+)$`). Phần trái: token `name` + các `#tag`.
+2. Không có `:` → **search** (§3.5).
+3. Khớp item theo `name_normalized` **chính xác**:
+   - **0** → `POST /items` tạo mục mới, gán tag nếu có.
+   - **1** → append entry vào mục đó.
+   - **nhiều** → dialog: liệt kê từng item (name + tag chips + `created_at`) + hành động **Tạo mục mới cùng tên**. Không đoán.
+4. Tag trong cú pháp: `POST /tags` upsert theo `normalized`, rồi `PUT` item tags (hợp với tag đã có, trần 20).
+5. Encrypt text: `envelope = {v:1, alg:"xchacha20poly1305", key_id, nonce}`; `ciphertext = seal(utf8(text), VK, nonce, aad=canonical(envelope)+entry_id)`.
+6. `POST /items/{id}/entries` `{type:"text", envelope, ciphertext, …}` + `Idempotency-Key`.
+7. Server tăng `entry_count`, `last_used_at`; enqueue embed nếu item mới / name mới.
+8. UI optimistic + toast "Đã lưu vào **wifi**" + Undo 5 s.
 
-Không có dấu `:` → coi là **search**.
+Quick-add **chỉ** tạo `type=text`. JSON đi qua modal import (§3.6) hoặc type picker trên trang mục. Nếu clipboard/paste trong ô add là JSON hợp lệ, hiện banner "Phát hiện JSON — [Lưu như bảng]" — không tự đổi type.
+
+`Ctrl+Enter` khi không có `:` → tạo **item mới** với `name` = text đang gõ (kể cả khi đã có item trùng tên).
 
 ### 3.5 Flow: Search & suggest
 
-Gõ → debounce 120 ms → `GET /suggest?q=` → dropdown. Enter trên suggestion → mở keyword page. `Ctrl+Enter` → tạo keyword mới với chính text đang gõ. Chi tiết §6, §7.
+Gõ → debounce 120 ms → `GET /suggest?q=` → dropdown hỗn hợp item + tag.
 
-### 3.6 Flow: View / edit / delete
+- Enter trên **item** → mở `/items/:id`.
+- Enter trên **tag** → `/items?tag_id=`.
+- Gõ bắt đầu bằng `#` (hoặc token `#…`) → `scope=tag`.
+- `Tab` trên item → điền `name: ` (add mode).
+- `Tab` trên tag → điền `#display ` (tiếp tục lọc/gán).
 
-- Keyword page liệt kê entries (mới nhất trước), decrypt lazy khi render.
-- Edit inline: encrypt lại với **nonce mới**, `PUT /entries/:id` (optimistic concurrency bằng `If-Match: <updated_at>`).
-- Delete: soft delete 30 ngày (`deleted_at`), có Undo; purge job.
+Chi tiết ranking §6, UI §7.
 
-### 3.7 Flow: Đổi passphrase (rewrap only)
+### 3.6 Flow: Import JSON thành entry bảng
 
-1. Yêu cầu passphrase cũ (verify bằng cách unwrap VK — hoặc dùng VK đang có trong memory + re-auth).
-2. `salt' = random`; `KEK' = Argon2id(new, salt')`; `wrapK' = seal(VK, KEK')`.
-3. `PUT /vault/kek {kdf_params', wrapK'}`; server tăng `vault.version`, revoke các session khác (tùy chọn), ghi audit.
-4. **Không** đụng entries. **Không** đổi recovery key (VK không đổi). Cho phép "Tạo recovery key mới" riêng.
+1. Từ trang mục (hoặc command "Import JSON"): modal dán **hoặc** chọn file `.json`.
+2. Client `JSON.parse`; từ chối nếu không phải JSON, hoặc UTF-8 size > 256 KiB, hoặc (sau serialize lại để đo) > 256 KiB.
+3. Preview: renderer bảng lồng (§7.4) + tab "JSON gốc".
+4. User xác nhận item đích (mặc định mục đang mở) + tag tuỳ chọn.
+5. Plaintext = **chuỗi JSON gốc** (paste/file), không phải bản pretty-print trừ khi user bật "Format trước khi lưu".
+6. Encrypt giống text; `POST /items/{id}/entries` `{type:"json", envelope, ciphertext, plaintext_len_bucket}`.
+7. Server **không** parse JSON; chỉ check `type`, envelope, size.
 
-### 3.8 Flow: Recovery
+Một lần import = **một** entry chứa cả document (kể cả array 500 object). Không tách phần tử thành nhiều entry.
 
-1. Đăng nhập bình thường (auth độc lập với vault).
-2. Nhập recovery key → `VK = open(wrapR, RK)`.
-3. Đặt passphrase mới → rewrap như §3.7. Đề nghị **tạo recovery key mới** (RK cũ đã gõ vào máy này).
-4. Nếu mất cả passphrase và RK: **dữ liệu entry mất vĩnh viễn**; keywords vẫn còn. Cho phép "Reset vault" (xoá entries, tạo vault mới). Phải nêu rõ trong onboarding.
+### 3.7 Flow: Sửa bảng JSON lồng nhau
 
-### 3.9 Flow: Export
+1. Client đã decrypt → giữ AST JSON trong Worker/memory của card.
+2. Sửa ô / thêm hàng / thêm field / xoá hàng → mutate theo JSON Pointer.
+3. Serialize lại (table-edit: indent 2 spaces; raw-edit: giữ text user).
+4. Validate size; encrypt nonce mới; `PUT /entries/:id` + `If-Match: updated_at`.
+5. Field không hiện trên bảng (ví dụ key lạ, `null`) **vẫn nằm trong document** trừ khi user xoá explicit.
 
-- **Encrypted backup** (`.sabk.json`): toàn bộ keywords + entries ciphertext + vault wraps. Import lại được với passphrase/RK. Không cần VK để tạo (server tạo được).
-- **Decrypted JSON**: client decrypt toàn bộ rồi tải xuống. Modal cảnh báo + re-auth. Ghi audit "export.decrypted".
+### 3.8 Flow: View / edit / delete
+
+- Trang item: entries theo `position` tăng (user kéo thả để reorder → `PATCH /items/{id}/entries/reorder`).
+- Decrypt lazy khi render.
+- Text: edit inline. JSON: bảng hoặc raw.
+- Xoá: soft delete 30 ngày, Undo; purge job.
+- Gán tag: mini-omnibox trên chip `+`, cùng engine suggest tag; trần 20 → tooltip, không thêm chip 21.
+
+### 3.9 Flow: Đổi passphrase (rewrap only)
+
+1. **Bắt buộc passphrase hiện tại** (kể cả vault đang unlock / thiết bị đã nhớ): derive KEK, unwrap `wrapK` thành công.
+2. `salt' = random`; `KEK' = Argon2id(new, salt', 64MiB, t=3, p=1)`; `wrapK' = seal(VK, KEK')`.
+3. `PUT /vault/kek {kdf, wrapK'}` + `If-Match: version`; `vault.version++`; audit `vault.rewrap`.
+4. **Không** đụng entries. DevKey wrap vẫn valid (bọc VK). UI đề nghị "Đăng xuất phiên khác"; IndexedDB máy khác tự xoá khi gặp session revoke.
+
+### 3.10 Flow: Quên passphrase (không có recovery)
+
+**Không có recovery key, không email khôi phục, không câu hỏi bí mật.**
+
+1. Link "Tôi quên passphrase" → giải thích: **không ai** đọc/khôi phục body, kể cả vận hành.
+2. Còn thiết bị đang "nhớ" → mở app đó (unlock bằng DevKey) → Export decrypted JSON để cứu body → Reset vault → nhập lại (Import decrypted = Phase 2; MVP: giữ file, nhập tay / import JSON từng mục).
+3. Không còn thiết bị → **Reset vault**: re-auth → xoá entries + vault → onboard passphrase mới. **Items + tags giữ nguyên.** Audit `vault.reset`.
+
+Thiết bị "nhớ" **không** đặt passphrase mới (vẫn cần passphrase cũ, §3.9).
+
+### 3.11 Flow: Export
+
+- **Encrypted backup** (`.sabk.json`): items, tags, item_tag, entries ciphertext, vault (`kdf`, `wrapK`, pubkeys, `wrapP`). Import lại **chỉ** với passphrase đúng. Server tạo được (không cần VK).
+- **Decrypted JSON**: client decrypt mọi entry rồi tải. Modal cảnh báo + re-auth. Audit `export.decrypted`.
 
 ---
 
@@ -265,24 +419,24 @@ Gõ → debounce 120 ms → `GET /suggest?q=` → dropdown. Enter trên suggesti
 ```mermaid
 flowchart LR
     subgraph Client["Browser (Next.js app, client components)"]
-        UI[UI / Omnibox]
+        UI[UI / Omnibox / JSON tables]
         CR[Crypto module<br/>libsodium-wrappers<br/>Argon2id · XChaCha20-Poly1305 · X25519/Ed25519]
         UI --> CR
     end
 
     subgraph Edge["Next.js server (SSR)"]
-        MK[Marketing / Docs / Pricing<br/>SSR + SEO + locale routing]
+        MK[Landing / Docs<br/>SSR + SEO + locale routing]
         SH[App shell<br/>SSR khung, không SSR dữ liệu]
     end
 
     subgraph API["Go API (chi)"]
         AU[Auth · Sessions]
-        KW[Keywords · Suggest · Search]
-        EN[Entries (ciphertext blobs)]
+        IT[Items · Tags · Suggest · Search]
+        EN[Entries ciphertext + type]
         VA[Vault keys]
         EX[Export]
         WK[Worker: embedding jobs]
-        EP[Embedding Provider<br/>interface]
+        EP[Embedding Provider<br/>tei | noop]
     end
 
     subgraph Data
@@ -290,194 +444,200 @@ flowchart LR
         RD[(Redis — optional<br/>rate limit / cache)]
     end
 
-    subgraph Ext["Embedding providers (swappable)"]
-        OA[OpenAI text-embedding-3-small]
-        GE[Gemini embedding]
-        CO[Cohere embed-multilingual-v3]
-        SH2[Self-hosted bge-m3 / e5<br/>ONNX hoặc sidecar]
+    subgraph Emb["Self-hosted embedding (compose profile semantic / cùng VPC)"]
+        TEI[TEI container CPU<br/>BAAI/bge-m3 · 1024 dims<br/>HTTP :8081]
     end
 
-    UI -- HTTPS JSON --> API
+    NG[nginx reverse proxy<br/>key.zone17th.click · TLS] --> Edge
+    NG --> API
+    UI -- HTTPS JSON --> NG
     MK -.-> UI
-    AU & KW & EN & VA & EX --> PG
+    AU & IT & EN & VA & EX --> PG
     WK --> PG
     WK --> EP
-    EP --> OA & GE & CO & SH2
-    KW -. cache .-> RD
+    IT -- query embedding --> EP
+    EP -- HTTP nội bộ --> TEI
+    IT -. cache .-> RD
 ```
+
+Toàn bộ chạy trong hạ tầng sản phẩm. **Không** có network call ra dịch vụ AI bên thứ ba. Chỉ `item.name` / `tag.display` đi Postgres → Go → TEI nội bộ.
 
 ### 4.1 Cái gì chạy ở đâu
 
 | Thành phần | Chạy ở | Ghi chú |
 |-----------|--------|---------|
-| Marketing/landing/docs/pricing | Next.js SSR/SSG | SEO, `hreflang` en/vi, sitemap |
-| App shell (`/app/*`) | Next.js, `noindex`, client components | Không SSR dữ liệu user (không có VK ở server) |
-| **Toàn bộ crypto** | Browser (Web Worker) | Server không bao giờ nhận passphrase, KEK, VK, plaintext |
+| Landing + docs (không có trang pricing) | Next.js SSR/SSG | SEO, `hreflang` en/vi, sitemap |
+| App shell (`/app/*`) | Next.js, `noindex`, client components | Không SSR dữ liệu user (không có VK) |
+| **Toàn bộ crypto** | Browser (Web Worker) | Server không nhận passphrase, KEK, VK, plaintext body |
+| JSON parse / bảng lồng / import file | Browser | Server không thấy JSON |
 | Auth, sessions | Go API | Cookie HttpOnly, SameSite=Lax, refresh rotation |
-| Keyword CRUD, suggest, search | Go API + Postgres | Lexical (pg_trgm, tsvector) + vector (pgvector) |
-| Entry CRUD | Go API + Postgres | Server lưu blob opaque, validate kích thước & envelope schema |
-| Embedding | Go worker → provider | Async qua job table (`SELECT … FOR UPDATE SKIP LOCKED`) hoặc River |
+| Item / Tag CRUD, suggest, search | Go API + Postgres | Lexical (pg_trgm, prefix) + vector (pgvector) trên **hai** bảng |
+| Entry CRUD | Go API + Postgres | Blob opaque + `type` + `position`; validate size & envelope |
+| Embedding (index) | Go worker (River) → TEI | Async; CPU image; compose profile `semantic`; không public |
+| Embedding (query) | Go API → TEI | Sync khi suggest; LRU + circuit breaker (§6.6) |
 | Rate limit / cache suggest | Go in-memory (MVP) → Redis khi scale ngang | |
+| Reverse proxy / TLS | nginx trước Next.js + Go API | Domain tạm `key.zone17th.click`; cấu hình khi deploy (§11.5) |
 
-### 4.2 Backend stack (Go) — khuyến nghị
+### 4.2 Backend stack (Go)
 
 | Lớp | Chọn | Lý do ngắn |
 |-----|------|-----------|
-| HTTP router | **chi** (`go-chi/chi/v5`) | Chuẩn `net/http`, middleware composable, nhẹ, không magic; Gin/Echo nhanh hơn không đáng kể cho workload I/O-bound này |
-| DB driver | **pgx v5** (pool) | Native Postgres, hỗ trợ `vector` qua `pgvector-go`, COPY, batch |
-| Query layer | **sqlc** | SQL thật, type-safe compile-time, hợp với query pgvector/pg_trgm phức tạp mà ORM khó biểu đạt |
-| Migration | **golang-migrate** (SQL files) | Đơn giản, chạy trong CI/CD và `make migrate` |
-| Job queue | **River** (`riverqueue/river`) — Postgres-backed | Không thêm hạ tầng; transactional enqueue cùng insert keyword; retry/backoff sẵn |
+| HTTP router | **chi** (`go-chi/chi/v5`) | `net/http`, middleware composable, nhẹ |
+| DB driver | **pgx v5** (pool) | Native Postgres, `pgvector-go`, COPY, batch |
+| Query layer | **sqlc** | SQL thật, type-safe; hợp pgvector/pg_trgm |
+| Migration | **golang-migrate** (SQL files) | CI + `make migrate` |
+| Job queue | **River** (`riverqueue/river`) | Không thêm infra; enqueue cùng insert item/tag |
 | Validation | `go-playground/validator` | |
 | Auth | `golang.org/x/oauth2` + `coreos/go-oidc`; password `alexedwards/argon2id` | |
 | Config/log/metrics | `envconfig`, `log/slog`, OpenTelemetry + Prometheus | |
-| Test | `testcontainers-go` (Postgres+pgvector image) | |
+| Test | `testcontainers-go` (Postgres+pgvector) | |
 
 ### 4.3 Frontend stack
 
-Next.js 15 App Router, TypeScript, Tailwind + shadcn/ui (Radix), TanStack Query (cache + optimistic), `next-intl` (i18n), `libsodium-wrappers-sumo` chạy trong Web Worker, `cmdk` cho command-palette omnibox, Zod cho schema.
+Next.js **15** App Router, TypeScript, Tailwind + shadcn/ui (Radix), TanStack Query, `next-intl`, `libsodium-wrappers-sumo` trong Web Worker, `cmdk` cho omnibox, Zod. JSON table: renderer riêng (không phụ thuộc grid nặng ở MVP); virtualize khi nhiều hàng.
 
 ### 4.4 Embedding provider abstraction
 
 ```go
 // apps/api/internal/embedding/provider.go
 type Provider interface {
-    // Name trả về định danh ổn định, ví dụ "openai/text-embedding-3-small@2024-01".
-    Name() string
+    Name() string // ví dụ "tei/BAAI/bge-m3@<model-revision>"
     Dims() int
     MaxBatch() int
     Embed(ctx context.Context, inputs []string) ([][]float32, error)
 }
 ```
 
-Implement: `openai`, `gemini`, `cohere`, `local` (HTTP tới sidecar `text-embeddings-inference` hoặc Ollama), `noop` (test). Chọn qua env `EMBEDDING_PROVIDER`. Mỗi vector lưu `model` + `model_version`; đổi provider → re-embed job toàn bộ (§6.6).
+MVP: **`tei`** (`POST /embed`, đọc `/info` lúc boot: `model_id`, `model_sha`, dims → `model_version`) và **`noop`** (vector 0, dev/test không TEI). Env: `EMBEDDING_PROVIDER=tei|noop`, `TEI_URL`.
+
+Đổi model (fallback host: `intfloat/multilingual-e5-base`, 768 dims, cần prefix `query:`/`passage:` qua `TEI_INPUT_PREFIX_*`) = đổi env + `ReembedAll`. **Không** implement provider gọi API bên thứ ba.
 
 ---
 
 ## 5. Mô hình mã hoá E2E
 
-### 5.1 Phạm vi (scope) — tuyên bố rõ
+### 5.1 Phạm vi — tuyên bố rõ
 
-| Dữ liệu | Trạng thái trên server | Lý do |
-|---------|------------------------|-------|
-| Entry body (text) | **Ciphertext** | Đây là thứ cần bảo vệ |
-| Keyword `normalized`, `display`, `hint` | **Plaintext** | Server cần để lexical search, autocomplete, embedding, vector search |
-| Entry id, timestamps, content_type, số keyword, `plaintext_len_bucket` | Plaintext | Vận hành, sắp xếp, phân trang |
-| Email, locale, session | Plaintext | Auth |
+| Dữ liệu | Trên server | Lý do |
+|---------|-------------|-------|
+| Entry body (`text` hoặc JSON UTF-8) | **Ciphertext** | Thứ cần bảo vệ |
+| `item.name`, `name_normalized`, `hint` | **Plaintext** | Search, suggest, embedding |
+| `tag.display`, `tag.normalized` | **Plaintext** | Search, filter, embedding, catalog |
+| `entry.type`, `position`, id, timestamps, `plaintext_len_bucket`, số entry/tag | Plaintext | Renderer, sort, vận hành |
+| Email, locale, session, settings | Plaintext | Auth / UX |
 
-**Trade-off được chấp nhận:** server (và attacker chiếm được DB) **biết user có những keyword gì và bao nhiêu entry mỗi keyword**, nhưng **không biết nội dung**. Keyword thường là nhãn ngắn ("wifi", "bank", "ý tưởng") — rủi ro rò rỉ ngữ nghĩa là có thật và phải được nêu trong Privacy statement (§10.4).
+**Trade-off chấp nhận:** attacker có DB biết user có **những tên mục và tag nào**, cấu trúc (bao nhiêu entry, type gì, khi nào) — **không** biết chữ trong entry hay JSON.
 
-**Mitigations (không over-engineer ở MVP):**
+**Không có "private name".** Search/suggest đòi server đọc name và tag. Bí mật để trong **body**.
 
-- Onboarding tip: "Keyword hiển thị với server; đừng đặt keyword là bí mật. Ví dụ dùng `bank` thay vì `bank-vietcombank-0123`."
-- `hint` là opt-in, có nhãn "server có thể đọc".
-- **Future (Phase 2, câu hỏi mở):** flag `is_private` cho keyword → `display` được mã hoá, server chỉ lưu `blind_index = HMAC(VK_idx, normalized)` cho exact-match; keyword private **không** có autocomplete/semantic. Không làm ở MVP.
-- Không log query string ở tầng access log (chỉ log độ dài, latency).
+**Mitigations:**
+
+- Onboarding: "Tên mục và tag server đọc được. Đừng đặt bí mật vào đó — dùng `bank`, không dùng `bank-vietcombank-0123`."
+- `hint` opt-in, nhãn "server có thể đọc".
+- Embedding **chỉ** TEI self-host: name/tag không rời hạ tầng.
+- Không log `q` (chỉ độ dài + latency).
 
 ### 5.2 Nguyên lý
 
-1. Passphrase, KEK, Vault Key, plaintext **không bao giờ** rời browser.
-2. Một **Vault Key (VK)** đối xứng duy nhất mã hoá mọi entry → đổi passphrase chỉ **rewrap**, O(1).
-3. Mọi ciphertext có **envelope phiên bản** để migrate thuật toán.
-4. Khoá bất đối xứng được sinh **ngay từ đầu** (dù chưa dùng) để sharing sau không cần migrate.
+1. Passphrase, KEK, VK, plaintext body **không** rời browser.
+2. Một **VK** mã hoá mọi entry (text và JSON như nhau) → đổi passphrase = **rewrap O(1)**.
+3. Envelope **versioned**.
+4. Keypair bất đối xứng sinh **lúc tạo vault** (sharing Phase 3 không migrate).
+5. **Không recovery path.** Bản wrap VK trên server duy nhất: `wrapK`. Quên passphrase = mất body.
 
 ### 5.3 Key hierarchy
 
 ```mermaid
 flowchart TD
-    P[Passphrase] -->|Argon2id salt| KEK[KEK 32B]
-    RK[Recovery Key 32B random<br/>hiển thị 1 lần] 
-    KEK -->|seal| WK[VK wrapped by KEK<br/>lưu server]
-    RK -->|seal| WR[VK wrapped by RK<br/>lưu server]
+    P[Passphrase] -->|Argon2id m=64MiB t=3 p=1, salt 16B| KEK[KEK 32B]
+    KEK -->|seal| WK[VK wrapped by KEK<br/>server — bản wrap DUY NHẤT]
     WK -->|open| VK[Vault Key 32B random]
-    WR -->|open| VK
-    VK -->|seal per-entry, nonce 24B| E1[Entry ciphertext]
-    VK -->|seal| WP[X25519 + Ed25519 private keys wrapped<br/>lưu server]
-    PUB[X25519 pub · Ed25519 pub<br/>plaintext server] 
+    VK -->|seal per-entry, nonce 24B| E1[Entry ciphertext text hoặc JSON]
+    VK -->|seal| WP[X25519 + Ed25519 private wrapped]
+    PUB[X25519 pub · Ed25519 pub<br/>plaintext server]
+    DK[DevKey — WebCrypto AES-GCM non-extractable<br/>IndexedDB, opt-in] -->|wrap| WD[VK wrapped by DevKey<br/>chỉ IndexedDB]
+    WD -->|unwrap| VK
 ```
 
 | Key | Sinh ở | Lưu ở | Dùng để |
 |-----|--------|-------|---------|
 | Passphrase | user | không lưu | Derive KEK |
-| KEK | browser, `crypto_pwhash` Argon2id | memory tạm | Wrap/unwrap VK |
-| **VK** | browser, `randombytes(32)` | server dạng wrapped; browser memory | Encrypt entries, wrap private keys |
-| RK | browser, `randombytes(32)` | user giữ (in/tải); server dạng wrapped-VK | Recovery |
-| X25519 keypair | browser | pub: server plaintext; priv: wrapped by VK | **Future**: nhận key chia sẻ (sealed box) |
-| Ed25519 keypair | browser | như trên | **Future**: ký chia sẻ, device enrollment |
+| KEK | Worker, `crypto_pwhash` Argon2id | memory tạm | Wrap/unwrap VK |
+| **VK** | `randombytes(32)` | server wrapped bởi KEK; Worker memory | Encrypt mọi entry body; wrap private keys |
+| DevKey (opt-in) | WebCrypto `generateKey(AES-GCM, extractable=false)` | IndexedDB `sabk.device`; **không** lên server | Unlock im lặng |
+| X25519 / Ed25519 | browser | pub: server; priv: wrapped by VK | **Phase 3**: share Item |
 
-**Sharing (Phase 3) không bị chặn:** để chia sẻ keyword K cho user B, A sinh `ShareKey_K`, re-encrypt (hoặc encrypt mới) các entry của K bằng `ShareKey_K`, rồi `crypto_box_seal(ShareKey_K, B.x25519_pub)`. Không đụng VK của ai. Cần schema cho `entry.key_id` khác VK → envelope đã có `key_id` (§5.5).
+**Sharing (Phase 3) không bị chặn:** A sinh `ShareKey_I` cho Item I, re-encrypt entries của I bằng `ShareKey_I`, `crypto_box_seal(ShareKey_I, B.x25519_pub)`. Không đụng VK. Envelope đã có `key_id` (`vk:…` / sau này `sk:…`).
 
 ### 5.4 Thuật toán & tham số
 
 | Mục | Chọn | Ghi chú |
 |-----|------|---------|
-| Thư viện | **libsodium** (`libsodium-wrappers-sumo`) trong Web Worker | Xem §5.7 |
-| KDF | **Argon2id** (`crypto_pwhash_ALG_ARGON2ID13`), `opslimit=3`, `memlimit=64 MiB`, salt 16 B | ~0.5–1 s trên laptop; điều chỉnh được, tham số lưu trong `kdf_params` per-user để nâng cấp về sau. Fallback `memlimit=32 MiB` cho mobile yếu (đo lúc onboarding) |
-| AEAD | **XChaCha20-Poly1305** (`crypto_aead_xchacha20poly1305_ietf`), key 32 B, nonce 24 B random | Nonce 24 B random → không lo va chạm, không cần counter đồng bộ đa thiết bị (lý do chọn thay AES-GCM nonce 12 B) |
-| Wrap key | Cùng AEAD với AAD = `"vault-key-v1"` / `"priv-keys-v1"` | |
-| Keypair | X25519 (`crypto_box`), Ed25519 (`crypto_sign`) | Sinh từ 2 seed riêng, cùng wrap một blob |
-| Random | `randombytes_buf` | |
-| Password login (server) | Argon2id (server-side, tham số riêng) | **Độc lập** với KDF vault |
+| Thư viện | **libsodium** (`libsodium-wrappers-sumo`) trong Web Worker | §5.7 |
+| KDF | **Argon2id** cố định: `memlimit = 64 MiB`, `opslimit = 3`, `parallelism = 1`, salt 16 B | Mọi thiết bị giống nhau. **Không** fallback thấp hơn. Params lưu trên `vault.kdf`; chỉ được **nâng** sau này (unlock params cũ → rewrap params mới) |
+| AEAD | **XChaCha20-Poly1305** IETF, key 32 B, nonce 24 B random | Text và JSON cùng alg |
+| Wrap | Cùng AEAD, AAD `"vault-key-v1"` / `"priv-keys-v1"` | |
+| Keypair | X25519, Ed25519 | Hai seed, một blob wrap |
+| Password login | Argon2id server-side, params riêng | Độc lập KDF vault |
+
+JSON plaintext = UTF-8 của document. **Không nén** ở MVP (`ct_enc` dành sau).
 
 ### 5.5 Envelope format (versioned)
 
-Lưu ở cột `entry.envelope` (jsonb) + `entry.ciphertext` (bytea):
+`entry.envelope` (jsonb) + `entry.ciphertext` (bytea):
 
 ```json
 {
   "v": 1,
   "alg": "xchacha20poly1305-ietf",
-  "key_id": "vk:7f3a…",          // id của VK (hash 8 byte của VK), tương lai: "sk:<share_key_id>"
+  "key_id": "vk:7f3a…",
   "nonce": "base64url(24 bytes)",
-  "ct_enc": "utf8+deflate?"       // tùy chọn: nén trước khi mã hoá (xem lưu ý)
+  "ct_enc": "utf8"
 }
 ```
 
-- **AAD** = chuỗi canonical JSON của envelope (không có ciphertext) + `entry_id`. Ràng buộc ciphertext vào entry, chống swap blob giữa entry.
-- Plaintext = UTF-8 của body. **Không nén ở MVP** (nén trước mã hoá lộ thêm thông tin về nội dung qua kích thước; nếu bật sau, phải bật bằng cờ `ct_enc`).
-- `plaintext_len_bucket` (plaintext) làm tròn lên bậc 256 B để giảm rò rỉ kích thước, dùng để hiển thị "~1 KB".
-- Tăng `v` khi đổi alg/AAD scheme; client hỗ trợ đọc mọi `v` cũ, ghi luôn bằng `v` mới nhất (lazy migration khi edit).
+- **AAD** = canonical JSON envelope (không ciphertext) + `entry_id`.
+- `plaintext_len_bucket` = `ceil(len/256)*256` — hiển thị "~1 KB", giảm rò rỉ size.
+- Trần plaintext 256 KiB; server: `plaintext_len_bucket ≤ 262144` và `octet_length(ciphertext) ≤ 263168` (slack AEAD).
+- Client đọc mọi `v` cũ, ghi `v` mới nhất khi edit.
+
+`type` **không** nằm trong envelope — cột riêng, plaintext.
 
 ### 5.6 Key lifecycle
 
 | Sự kiện | Hành động |
 |--------|-----------|
-| Tạo vault | §3.2 |
-| Unlock | Derive KEK → unwrap VK → giữ trong Worker memory. Auto-lock sau 15 phút không hoạt động (cấu hình) hoặc khi tab đóng |
-| "Nhớ thiết bị này" (tùy chọn, mặc định off) | Sinh `DevKey` WebCrypto AES-GCM **non-extractable**, lưu `CryptoKey` object trong IndexedDB; lưu `seal(VK, DevKey)`. Lần sau unlock không cần passphrase. Bảo vệ khỏi đọc file thô của profile, **không** bảo vệ khỏi JS chạy trong origin. Revoke = xoá IndexedDB |
-| Đổi passphrase | Rewrap only (§3.7). `vault.version++` |
-| Đổi/renew recovery key | Sinh RK mới, `wrapR' = seal(VK, RK')`, `PUT /vault/recovery` |
-| Recovery | §3.8 |
-| Rotate VK (hiếm; nghi ngờ lộ VK) | Client tải toàn bộ entries, decrypt bằng VK cũ, encrypt bằng VK mới, upload theo batch với `key_id` mới; server giữ cả 2 wrap đến khi hoàn tất. Phase 2 |
-| Xoá tài khoản | Xoá vault + entries + keywords; audit giữ 90 ngày (không chứa nội dung) |
+| Tạo vault | §3.2 — checkbox bắt buộc "quên passphrase = mất nội dung" |
+| Unlock | Derive KEK → unwrap VK → Worker memory. Mất khi đóng tab |
+| **Auto-lock** | Mặc định **15 phút** idle; user chọn **5 / 15 / 60 / Never** (`auto_lock_minutes`, 0 = never). Phím `L` / nút 🔒 / "Lock now". Lock = `sodium_memzero` VK + xoá cache plaintext entries. **Name, tag, type, list item vẫn hiện**; body hiện `🔒 ••••••`. Không tạo/sửa entry khi locked |
+| **"Nhớ thiết bị này"** (MVP, opt-in, **mặc định off**) | Lúc unlock, nếu tick: DevKey non-extractable + wrap VK trong IndexedDB cùng `vault.version`. Lần sau unwrap, không hỏi passphrase. Vault reset / `key_id` khác → xoá IDB. "Quên thiết bị này" = xoá IDB. Logout **không** tự xoá; session revoke → client xoá khi `401 reason=revoked` |
+| **Auto-lock × nhớ thiết bị** | Auto-lock **vẫn** chạy (che màn hình, xoá VK memory). Tương tác kế tiếp: **re-unlock im lặng** bằng DevKey, không màn passphrase. Trên máy đã nhớ, auto-lock chỉ là "che nội dung"; bảo vệ thật = khoá màn hình OS. UI nói rõ khi bật nhớ thiết bị |
+| Đổi passphrase | Rewrap (§3.9), cần passphrase hiện tại |
+| Quên passphrase | Không recovery. Reset vault (§3.10) — giữ items + tags |
+| Rotate VK | Phase 2: decrypt/encrypt lại batch; DevKey cũ vô hiệu |
+| Xoá tài khoản | Xoá vault + entries + items + tags; audit 90 ngày |
+
+Rủi ro "Nhớ thiết bị": XSS / người ngồi máy / malware trong origin unwrap được VK không cần passphrase. `extractable=false` chặn copy bytes DevKey, không chặn **dùng** key. Chỉ bật trên máy cá nhân có lock màn hình.
 
 ### 5.7 libsodium vs WebCrypto
 
-| Tiêu chí | libsodium-wrappers | WebCrypto |
-|----------|-------------------|-----------|
-| Argon2id | ✔ | ✘ (chỉ PBKDF2; phải thêm lib khác) |
-| XChaCha20-Poly1305 | ✔ | ✘ (AES-GCM / không có ChaCha) |
-| X25519 / Ed25519 | ✔ | X25519 mới có ở một số browser; Ed25519 chưa phổ biến |
-| Non-extractable keys | ✘ (key là `Uint8Array`) | ✔ |
-| Constant-time, audited | ✔ (WASM build của libsodium) | ✔ (native) |
-| Kích thước | ~300 KB WASM (sumo) | 0 |
-
-**Khuyến nghị:** **libsodium** cho toàn bộ primitives (một API nhất quán, đầy đủ Argon2id + XChaCha + keypair). **WebCrypto chỉ dùng** cho `DevKey` non-extractable trong tính năng "Nhớ thiết bị" (§5.6). Chạy libsodium trong **Web Worker** để: không block UI khi Argon2id, cô lập VK khỏi main thread (giảm bề mặt cho XSS đọc trực tiếp, dù không loại trừ).
+Dùng **libsodium** cho Argon2id, XChaCha20-Poly1305, X25519/Ed25519 (một API, WASM audited). **WebCrypto chỉ** cho DevKey non-extractable. Worker: khỏi block UI, cô lập VK khỏi main thread (giảm bề mặt XSS đọc trực tiếp — không loại trừ XSS).
 
 ### 5.8 Threat model
 
 **Bảo vệ được:**
 
-- Server/DB bị compromise, backup bị lộ, insider đọc DB → chỉ thấy keyword + metadata + ciphertext. Không có VK.
-- Server bị ép cung cấp dữ liệu → như trên.
-- Session token bị đánh cắp (không có VK) → attacker đọc/sửa/xoá keyword, xoá entry, **không đọc nội dung**; có thể thay wrapped keys → client phát hiện qua `vault.version` mismatch và AEAD fail.
+- DB/backup/insider: thấy name, tag, type, metadata, ciphertext — không VK, không body.
+- Session bị cắp (không VK): đọc/sửa/xoá item & tag, xoá entry, không đọc body; thay wrap → client thấy `vault.version` / AEAD fail.
 
-**Không bảo vệ được (nêu rõ với user):**
+**Không bảo vệ được:**
 
-- Browser/máy user bị malware, extension độc, XSS trong app → VK/plaintext lộ.
-- Passphrase yếu + DB lộ → brute-force offline (Argon2id làm chậm, không ngăn tuyệt đối). Enforce zxcvbn ≥ 3.
-- **Server phục vụ JS độc hại** (hoặc CDN/supply-chain bị tấn công): mô hình web E2E có giới hạn nội tại — user phải tin code tải về. Giảm rủi ro bằng CSP nghiêm, SRI, build reproducible, công khai hash bundle, tương lai: browser extension làm "trusted verifier". Không hứa hẹn hơn điều này.
-- Rò rỉ metadata: tên keyword, số entry, thời điểm, kích thước bucket, tần suất truy cập.
+- Malware, extension độc, XSS → lộ VK/plaintext. Máy đã nhớ → JS trong origin unlock không cần passphrase.
+- Passphrase yếu + DB lộ → brute-force offline (Argon2id 64 MiB/3/1 làm chậm). zxcvbn ≥ 3.
+- Quên passphrase → body mất vĩnh viễn.
+- **Name và tag không được bảo vệ** — theo thiết kế.
+- Server phát JS độc (supply-chain): giới hạn nội tại của web E2E. CSP, SRI, hash bundle; tương lai extension verifier.
+- Metadata: tên, tag, số entry, `type`, thời điểm, size bucket.
 
 ---
 
@@ -485,88 +645,108 @@ Lưu ở cột `entry.envelope` (jsonb) + `entry.ciphertext` (bytea):
 
 ### 6.1 Phạm vi
 
-- **MVP: search chỉ trên keyword** (`normalized`, `display`, `hint`). Nội dung entry là ciphertext → server không thể index.
-- **Phase 2:** client-side content search trên entries **đã tải & decrypt** trong session (in-memory index bằng MiniSearch/FlexSearch trong Worker; không persist plaintext index). Giới hạn: chỉ tìm được trong entries đã fetch (fetch-all theo lô khi user bật tính năng, có cảnh báo về bộ nhớ).
+- **MVP: hai corpus plaintext** — `item.name` (+ hint) và `tag.display`/`normalized`. Body ciphertext → server không index.
+- **Phase 2:** client-side search trên entry đã decrypt trong session (MiniSearch/FlexSearch trong Worker, không persist index).
 
-### 6.2 Ba kênh truy hồi (retrieval channels)
+Chọn tag → **filter** item (`GET /items?tag_id=`), không "mở tag như một trang nội dung". Chọn item → mở entries.
 
-| Kênh | Kỹ thuật | Bắt được |
-|------|----------|----------|
-| **Prefix** | `normalized LIKE q || '%'` với `text_pattern_ops` btree, hoặc trigram | `wi` → `wifi` |
-| **Fuzzy / substring** | `pg_trgm` `similarity()` / `%` / `word_similarity()`, GIN trgm index; kết hợp `unaccent()` để `ma` khớp `mã` | `wfii` → `wifi`; `pass` → `wifi-password` |
-| **Semantic** | pgvector `<=>` (cosine), HNSW index | `mật khẩu mạng` → `wifi-password` (hint "wifi password nhà") |
-| **Recency/frequency (boost)** | `last_used_at`, `entry_count` | Ưu tiên keyword hay dùng |
+### 6.2 Ba kênh × hai corpus
+
+| Kênh | Kỹ thuật | Ví dụ |
+|------|----------|--------|
+| **Prefix** | `normalized LIKE q \|\| '%'` + `text_pattern_ops` | `wi` → item `wifi`, tag `wifi-khách` |
+| **Fuzzy / substring** | `pg_trgm` `similarity` / `%` / `word_similarity` + `unaccent` | `wfii` → `wifi`; `ma` → `mã` |
+| **Semantic** | pgvector `<=>` cosine, HNSW 1024 dims | `mật khẩu mạng` → item `wifi-password` hoặc tag `mạng-nhà` |
+| **Boost** | `last_used_at`, `entry_count` / `item_count` | Mục/tag hay dùng |
+
+Cùng model `bge-m3`, cùng ngưỡng, cùng toggle semantic. Query embed **một lần**, so với **cả** `item_embedding` và `tag_embedding`.
+
+Khi `q` có leading `#` (sau trim): **chỉ** corpus tag; UI ở chế độ filter/assign.
 
 ### 6.3 SQL sketches
 
-Lexical (một query, dùng CTE để tính điểm từng kênh):
+Lexical items:
 
 ```sql
--- $1 = user_id, $2 = normalized query, $3 = limit
-WITH q AS (SELECT $2::text AS q, unaccent($2::text) AS qa)
-SELECT k.id, k.display, k.entry_count, k.last_used_at,
-       (k.normalized LIKE q.q || '%')::int                       AS prefix_hit,
-       GREATEST(similarity(k.normalized, q.q),
-                word_similarity(q.qa, k.normalized_unaccent))    AS trgm_score
-FROM keyword k, q
-WHERE k.user_id = $1
-  AND k.deleted_at IS NULL
-  AND (k.normalized LIKE q.q || '%'
-       OR k.normalized_unaccent % q.qa
-       OR q.qa <% k.normalized_unaccent)
-ORDER BY prefix_hit DESC, trgm_score DESC, k.last_used_at DESC
+-- $1 user_id, $2 normalized q, $3 limit
+WITH q AS (SELECT $2::text AS q, immutable_unaccent($2::text) AS qa)
+SELECT i.id, i.name, i.entry_count, i.last_used_at, i.created_at,
+       (i.name_normalized LIKE q.q || '%')::int AS prefix_hit,
+       GREATEST(similarity(i.name_normalized, q.q),
+                word_similarity(q.qa, i.name_unaccent)) AS trgm_score
+FROM item i, q
+WHERE i.user_id = $1 AND i.deleted_at IS NULL
+  AND (i.name_normalized LIKE q.q || '%'
+       OR i.name_unaccent % q.qa
+       OR q.qa <% i.name_unaccent)
+ORDER BY prefix_hit DESC, trgm_score DESC, i.last_used_at DESC
 LIMIT $3;
 ```
 
-Semantic (query vector `$2` do API tính từ provider, có cache):
+Lexical tags: cùng hình trên `tag.normalized` / `tag_unaccent`.
+
+Semantic (items; tags tương tự):
 
 ```sql
-SELECT k.id, k.display, 1 - (e.embedding <=> $2::vector) AS cos_sim
-FROM keyword_embedding e
-JOIN keyword k ON k.id = e.keyword_id
-WHERE k.user_id = $1 AND k.deleted_at IS NULL
-  AND e.model = $3               -- chỉ so vector cùng model
+SELECT i.id, i.name, 1 - (e.embedding <=> $2::vector) AS cos_sim
+FROM item_embedding e
+JOIN item i ON i.id = e.item_id
+WHERE i.user_id = $1 AND i.deleted_at IS NULL
+  AND e.model = $3
 ORDER BY e.embedding <=> $2::vector
 LIMIT 20;
 ```
 
-> Lưu ý: filter `user_id` trước HNSW có thể làm index kém hiệu quả với pgvector < 0.8. Với pgvector ≥ 0.8 dùng **iterative index scan** (`SET hnsw.iterative_scan = relaxed_order`). Với user rất lớn (100k keyword), HNSW per-table vẫn ổn; nếu cần, partition theo `user_id` hash.
+Filter `user_id` trước HNSW: pgvector ≥ 0.8 dùng `SET hnsw.iterative_scan = relaxed_order`.
+
+Gắn tag chips cho mỗi item hit: `SELECT tag_id, display FROM item_tag JOIN tag … WHERE item_id IN (…) LIMIT 20` — cần để disambiguate tên trùng trong dropdown.
 
 ### 6.4 Hybrid ranking
 
-Chạy lexical và semantic **song song** (2 goroutine, mỗi cái timeout riêng: lexical 50 ms, semantic 80 ms). Gộp bằng **Reciprocal Rank Fusion** kèm hard-tier để đảm bảo thứ tự ưu tiên UX:
+Chạy lexical item, lexical tag, semantic item, semantic tag **song song** (timeout: lexical 50 ms / nhánh, semantic 80 ms / nhánh; một lần gọi TEI cho query vector). Gộp **RRF** + hard-tier:
 
 \[
-\text{score}(k) = \text{tier}(k) \cdot 1000 + \sum_{c \in \{lex, sem\}} \frac{w_c}{60 + \text{rank}_c(k)} + w_r \cdot \text{recency}(k) + w_f \cdot \log(1+\text{entry\_count})
+\text{score}(x) = \text{tier}(x)\cdot 1000 + \sum_{c\in\{\mathrm{lex},\mathrm{sem}\}}\frac{w_c}{60+\mathrm{rank}_c(x)} + w_r\cdot\mathrm{recency}(x) + w_f\cdot\log(1+\mathrm{count})
 \]
 
-- `tier`: 3 = prefix match, 2 = fuzzy (`trgm_score ≥ 0.35`), 1 = semantic only (`cos_sim ≥ 0.55`), 0 = chỉ recency (khi `q` rỗng).
-- Mặc định `w_lex = 1.0`, `w_sem = 0.8`, `w_r = 0.05` (recency = `exp(-days_since_last_use/30)`), `w_f = 0.02`.
-- Thứ tự UX cuối: **prefix > fuzzy > semantic > recent/frequent**; trong cùng tier xếp theo RRF.
-- `q` rỗng (focus vào omnibox) → trả 8 keyword gần dùng nhất (không gọi embedding).
-- `len(q) < 2` → chỉ prefix, không semantic (tiết kiệm embedding call, semantic vô nghĩa với 1 ký tự).
-- Semantic chỉ chạy khi `len(q) ≥ 3` **và** debounce phía server (xem cache).
+- `tier`: 3 prefix, 2 fuzzy (`trgm ≥ 0.35`), 1 semantic only (`cos ≥ 0.55`), 0 recency (`q` rỗng).
+- `w_lex = 1.0`, `w_sem = 0.8`, `w_r = 0.05`, `w_f = 0.02`. `count` = `entry_count` (item) hoặc `item_count` (tag).
+- Trong dropdown: **không** trộn mù — nhóm ngắn **Tags** rồi **Items** (hoặc xen kẽ nhưng mỗi row có `kind`). Thứ tự trong nhóm: prefix > fuzzy > semantic > recent. Cùng tier: RRF.
+- `q` rỗng: 8 item `last_used_at` + 4 tag `last_used_at`. Không gọi TEI.
+- `len(q) < 2`: chỉ prefix, cả hai corpus.
+- Semantic khi `len(q) ≥ 3` và `semantic_effective`.
+
+```
+semantic_effective = SEARCH_SEMANTIC_ENABLED   -- env, default true
+                  && user.settings.semantic_suggest  -- default true
+                  && circuit_breaker.closed
+                  && len(q) >= 3
+```
+
+Tắt semantic → lexical-only trên **cả hai** corpus; không gọi TEI; không đọc bảng embedding. Prefix/fuzzy **không đảo thứ tự** khi bật/tắt ≈ — chỉ thêm/bớt hàng tier 1.
+
+`GET /suggest?q=#nhà` hoặc `q=nhà&scope=tag`: chỉ tag.
 
 ### 6.5 Indexing strategy
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS unaccent;
-CREATE EXTENSION IF NOT EXISTS vector;
+CREATE UNIQUE INDEX tag_user_norm_uq ON tag (user_id, normalized) WHERE deleted_at IS NULL;
+CREATE INDEX tag_user_norm_prefix ON tag (user_id, normalized text_pattern_ops) WHERE deleted_at IS NULL;
+CREATE INDEX tag_norm_trgm ON tag USING gin (tag_unaccent gin_trgm_ops);
+CREATE INDEX tag_user_recent ON tag (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
 
--- identity + prefix
-CREATE UNIQUE INDEX keyword_user_norm_uq ON keyword (user_id, normalized);
-CREATE INDEX keyword_user_norm_prefix ON keyword (user_id, normalized text_pattern_ops);
--- fuzzy
-CREATE INDEX keyword_norm_trgm ON keyword USING gin (normalized_unaccent gin_trgm_ops);
--- recency
-CREATE INDEX keyword_user_recent ON keyword (user_id, last_used_at DESC);
--- semantic
-CREATE INDEX keyword_emb_hnsw ON keyword_embedding
+CREATE INDEX item_user_name_prefix ON item (user_id, name_normalized text_pattern_ops) WHERE deleted_at IS NULL;
+CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops);
+CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+-- không UNIQUE trên name_normalized — trùng tên là hợp lệ
+
+CREATE INDEX item_emb_hnsw ON item_embedding
+  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
+CREATE INDEX tag_emb_hnsw ON tag_embedding
   USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
 ```
 
-`normalized_unaccent` là generated column: `GENERATED ALWAYS AS (unaccent(normalized)) STORED` (cần wrapper function `IMMUTABLE`). `SET hnsw.ef_search = 64` theo session cho query suggest.
+Generated `unaccent` columns: `IMMUTABLE` wrapper. `hnsw.ef_search = 64` lúc suggest.
 
 ### 6.6 Embedding pipeline
 
@@ -574,53 +754,77 @@ CREATE INDEX keyword_emb_hnsw ON keyword_embedding
 sequenceDiagram
     participant A as API
     participant DB as Postgres
-    participant W as Worker (River)
-    participant P as Provider
-    A->>DB: INSERT keyword (tx)
-    A->>DB: INSERT embedding_job {keyword_id, input_hash} (cùng tx)
-    W->>DB: claim jobs (batch ≤ 64, SKIP LOCKED)
-    W->>P: Embed([display + " — " + hint ...])
-    P-->>W: vectors
-    W->>DB: UPSERT keyword_embedding {embedding, model, model_version, input_hash}
+    participant W as Worker River
+    participant T as TEI bge-m3
+    A->>DB: INSERT/UPDATE item hoặc tag
+    A->>DB: INSERT embedding_job {target_kind, target_id, input_hash}
+    Note over A: chỉ khi SEARCH_SEMANTIC_ENABLED
+    W->>DB: claim batch ≤ 64 SKIP LOCKED
+    W->>T: POST /embed {inputs, normalize: true}
+    T-->>W: vectors 1024 dims
+    W->>DB: UPSERT item_embedding hoặc tag_embedding
 ```
 
-- **Input text** = `display` (+ `" — " + hint` nếu có). `input_hash = sha256(model || input)`; job skip nếu hash không đổi (rename chỉ đổi hoa/thường → không embed lại).
-- Trigger: create, rename, đổi hint. Delete → xoá embedding (cascade).
-- **Đổi model/provider:** `ReembedAll` job duyệt theo `user_id`, batch 64, rate-limit theo provider; cột `model` cho phép query chỉ so vector cùng model; khi ≥ 95 % đã re-embed → flip `active_model` config; xoá vector model cũ. Nếu **dims** thay đổi → tạo bảng `keyword_embedding_v2` với `vector(N)` mới, swap bằng view/rename (pgvector cần dims cố định để dùng HNSW).
-- **Query embedding cache:** LRU in-process (→ Redis khi nhiều instance) key = `model || normalized(q)`, TTL 24 h. Đa số query ngắn lặp lại nhiều → hit rate cao.
-- **Degraded mode:** provider timeout/5xx → circuit breaker (mở 60 s), suggest trả **lexical-only** kèm header `X-Suggest-Mode: lexical`; UI ẩn nhãn "gần nghĩa". Job embedding retry backoff 1 m → 1 h, tối đa 24 h, sau đó dead-letter + alert.
+| Target | Input text |
+|--------|------------|
+| Item | `name` + (`" — "` + `hint` nếu có) |
+| Tag | `display` (nếu `display` khác `normalized` rõ rệt, vẫn chỉ `display` — đó là thứ user nhận) |
 
-### 6.7 Embedding provider — so sánh & khuyến nghị
+`input_hash = sha256(model || input)`; skip nếu hash không đổi.
 
-| Provider | Dims | Đa ngữ (vi/en) | Giá (ước, /1M tokens) | Latency (batch nhỏ) | Ghi chú |
-|----------|------|----------------|------------------------|---------------------|---------|
-| **OpenAI `text-embedding-3-small`** | 1536 (có thể cắt xuống 512/256 nhờ Matryoshka) | Tốt | ~$0.02 | 100–300 ms | Ổn định, rẻ, tài liệu tốt, hỗ trợ giảm dims |
-| Google Gemini `gemini-embedding-001` | 3072 (MRL → 768/1536) | Rất tốt (MTEB multilingual top) | Free tier + trả phí thấp | 150–400 ms | Dims lớn nếu không cắt; quota free hữu ích cho dev |
-| Cohere `embed-multilingual-v3.0` | 1024 | Rất tốt, hỗ trợ `input_type` | ~$0.10 | 100–300 ms | Đắt hơn 5×; chất lượng multilingual tốt |
-| Self-hosted **bge-m3** (ONNX / TEI) | 1024 | Rất tốt cho vi | Chi phí máy (CPU 2 vCPU đủ cho <10 rps) | 20–80 ms local | Không gửi keyword ra ngoài (**privacy plus**); ops thêm một service; model 2.2 GB |
-| Self-hosted `multilingual-e5-small/base` | 384/768 | Tốt | Rất rẻ | 10–40 ms | Nhẹ, chất lượng thấp hơn bge-m3 một chút |
+Trigger: tạo/đổi `item.name`/`hint`; tạo/đổi `tag.display`. Gán/gỡ `item_tag` **không** re-embed (văn bản không đổi). Delete → cascade embedding.
 
-**Khuyến nghị mặc định MVP: OpenAI `text-embedding-3-small`, `dimensions=512`.**
-Lý do: rẻ nhất trong nhóm API, chất lượng en/vi đủ tốt cho input ngắn (keyword + hint), 512 dims giảm 3× bộ nhớ index so 1536 mà mất chất lượng rất ít; không cần ops thêm. Keyword vốn đã plaintext trên server nên gửi keyword cho provider không mở rộng đáng kể threat model — **nhưng phải ghi rõ trong Privacy statement** và cho self-host option.
+`SEARCH_SEMANTIC_ENABLED=false`: không enqueue. Bật lại → `ReembedAll` cho item/tag thiếu vector.
 
-**Lộ trình:** Phase 2 đánh giá **bge-m3 self-hosted** (qua `text-embeddings-inference` container) làm mặc định cho deployment coi trọng privacy (không keyword nào rời hạ tầng). Abstraction §4.4 + cột `model` khiến việc đổi chỉ là re-embed job.
+Đổi model: batch 64, concurrency TEI mặc định 2; cột `model` để so cùng model; ≥ 95% xong → flip `active_model`; đổi **dims** → bảng `*_embedding_v2 vector(N)` rồi swap.
+
+Query cache: LRU key `model || normalized(q)`, TTL 24 h.
+
+Degraded: TEI > 300 ms / 5xx / refused → circuit 60 s → lexical-only, `semantic: false, semantic_reason: "degraded"`. Job retry 1 m → 1 h, dead-letter sau 24 h.
+
+### 6.7 Model — self-host
+
+**Quyết định:** TEI (CPU) trong Docker Compose, Go HTTP nội bộ. API bên thứ ba **loại**.
+
+| Tiêu chí | **BAAI/bge-m3** (mặc định) | multilingual-e5-base (fallback host) |
+|----------|---------------------------|--------------------------------------|
+| Dims | **1024** | 768 |
+| vi/en ngắn | Tốt nhất trong nhóm so sánh | Tốt, kém hơn trên từ đơn / code-switch |
+| Prefix query/passage | Không | Có — dễ quên |
+| RAM CPU fp32 | ~2.3 GB + runtime | ~1.1 GB + runtime |
+| Latency 1 input ngắn, 2 vCPU | ~40–90 ms | ~20–40 ms |
+
+Chọn **bge-m3**, `normalize: true`, cosine. Host nhỏ: đổi e5-base + re-embed, hoặc `SEARCH_SEMANTIC_ENABLED=false`. `model` = `"tei/BAAI/bge-m3"`, `model_version` = `model_sha` từ `GET /info`.
 
 ### 6.8 Client behaviour
 
-- Debounce **120 ms**, cancel request cũ (AbortController), giữ kết quả cũ hiển thị đến khi có kết quả mới (không nhấp nháy).
-- Cache client theo `q` (TanStack Query, staleTime 30 s). Prefix của query đã có kết quả → lọc local ngay lập tức trong lúc chờ server.
-- Keyboard: `↑/↓` chọn, `Enter` mở, `Tab` điền keyword vào ô + `: `, `Ctrl+Enter` tạo mới, `Esc` đóng.
-- Highlight phần khớp; nhãn nhỏ "≈ gần nghĩa" cho kết quả tier semantic.
+- Debounce 120 ms, AbortController, giữ kết quả cũ (không flicker).
+- TanStack cache theo `q`+`scope`, staleTime 30 s; prefix đã có → lọc local ngay.
+- Keyboard: `↑↓` · `Enter` mở (item) hoặc lọc (tag) · `Tab` điền · `Ctrl+Enter` tạo item mới · `Esc`.
+- Highlight khớp; badge `≈` chỉ khi `semantic: true`.
+- Row item: name + tối đa 3 chip tag + `created_at` nếu trùng name trong payload · `entry_count`.
+- Row tag: `#display` · `item_count`.
+- Đọc `features.semantic_available` + `settings.semantic_suggest` để hiện toggle `≈`.
 
 ### 6.9 Performance targets
 
 | Chỉ số | Mục tiêu |
 |--------|----------|
-| Suggest lexical-only, 100k keyword/user, 10M keyword toàn hệ | **p95 < 40 ms** server |
-| Suggest hybrid (kể cả embedding query cache hit) | **p95 < 100 ms** server |
-| Suggest hybrid, cache miss (gọi provider) | p95 < 350 ms; UI đã hiện lexical trước, semantic **merge vào** khi tới (streaming 2 pha, hoặc đơn giản: 2 request) |
-| Embedding job lag (keyword mới có semantic) | p95 < 10 s |
-| Entry create round-trip | p95 < 150 ms server |
+| Suggest lexical-only, 100k item + 20k tag / user | **p95 < 40 ms** server |
+| Hybrid, query-embed cache hit | **p95 < 100 ms** server |
+| Hybrid, cache miss (TEI CPU) | p95 < 350 ms; UI hiện lexical trước, merge semantic sau (có thể 2 request: `semantic=0` rồi full) |
+| Embedding job lag (item/tag mới) | p95 < 10 s |
+| Entry create | p95 < 150 ms server |
+
+### 6.10 Semantic — hai tầng + toggle omnibox
+
+| Tầng | Cơ chế | Khi tắt |
+|------|--------|---------|
+| **Deployment** | `SEARCH_SEMANTIC_ENABLED` default `true` | Không cần TEI (compose profile `semantic`); không enqueue; suggest/search lexical; `features.semantic_available: false`; `PATCH semantic_suggest` → `409 SEMANTIC_UNAVAILABLE`; bật lại → `ReembedAll` |
+| **User** | `settings.semantic_suggest` default `true`; Settings + toggle **`≈`** trên omnibox | Không gọi TEI cho query user đó; **vẫn** chạy embed job (bật lại là có vector). `semantic_reason: "disabled_user"` |
+| **Degraded** | Circuit TEI | Như tắt user, 60 s; `semantic_reason: "degraded"` |
+
+Thứ tự: server → user → breaker → `len(q) ≥ 3`. Tắt user **không** xoá vector.
 
 ---
 
@@ -628,186 +832,204 @@ Lý do: rẻ nhất trong nhóm API, chất lượng en/vi đủ tốt cho input
 
 ### 7.1 Nguyên tắc
 
-- **Một màn hình chính, một ô nhập.** Omnibox kiểu command-palette luôn ở trên cùng, focus bằng `/` hoặc `Ctrl+K`.
-- Không có "form thêm entry" riêng ở luồng chính; `keyword: text` là cách thêm.
-- Trạng thái vault (locked/unlocked) luôn nhìn thấy (icon khoá ở header).
-- Mọi thao tác phá huỷ đều có Undo thay vì confirm dialog (trừ export decrypted, reset vault, xoá tài khoản).
+- Một màn chính, một ô. Omnibox command-palette, focus `/` hoặc `Ctrl+K`.
+- Quick-add `name: text` là đường chính cho text; JSON có modal + type picker — không bắt user nhớ syntax JSON.
+- Vault locked/unlocked luôn thấy trên header.
+- Phá huỷ: Undo, không confirm — trừ export decrypted, reset vault, xoá tài khoản.
+- Tên trùng: **luôn** kèm tag + ngày, không bắt user nhớ id.
 
-### 7.2 Wireframe — Omnibox với suggestions
+### 7.2 Omnibox
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  ⌂ save-all-by-keyword                        🔓 Vault   EN ▾   ☾   👤 │
 ├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
 │   ┌──────────────────────────────────────────────────────────────┐   │
-│   │ 🔍  wi▏                                                  ⌘K  │   │
+│   │ 🔍  wi▏                                            [≈ on] ⌘K  │   │
 │   └──────────────────────────────────────────────────────────────┘   │
 │   ┌──────────────────────────────────────────────────────────────┐   │
-│   │ ▸ **wi**fi                               12 entries · 2h ago │   │  ← prefix (tier 3)
-│   │   **wi**fi-office                          3 entries · 5d    │   │
-│   │   w-i-fi guest                        ~ fuzzy · 1 entry      │   │  ← tier 2
-│   │   mạng nhà               ≈ gần nghĩa · hint: "wifi password" │   │  ← tier 1
+│   │ Tags                                                         │   │
+│   │   #**wi**fi-khách                         4 mục · ~ fuzzy    │   │
+│   │ Items                                                        │   │
+│   │ ▸ **wi**fi     [nhà] [office]    12 entries · 12/03/2026     │   │
+│   │   **wi**fi     [công-ty]          3 entries · 01/06/2026     │   │
+│   │   **wi**fi-office                 3 entries · 5d             │   │
+│   │   mạng nhà     [home]        ≈ gần nghĩa                      │   │
 │   │ ─────────────────────────────────────────────────────────────│   │
-│   │   ＋ Tạo keyword "wi"                              Ctrl+Enter │   │
-│   │   Gõ  wi: nội dung  để thêm entry nhanh                       │   │
+│   │   ＋ Tạo mục "wi"                                  Ctrl+Enter │   │
+│   │   Gõ  name: nội dung  ·  #tag để lọc                         │   │
 │   └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-│   Gần đây:  [docker] [meeting-mkt] [ý tưởng] [bank] [k8s]            │
-│                                                                      │
+│   Gần đây:  [docker] [meeting-mkt]   Tags: [#ops] [#okrs]            │
 └──────────────────────────────────────────────────────────────────────┘
-   ↑↓ chọn · Enter mở · Tab điền · Esc đóng
 ```
 
-Anatomy một suggestion row: icon tier (▸ prefix / ~ fuzzy / ≈ semantic) · `display` với phần khớp **bold** · meta phải (entry_count, relative time) · badge hint nếu match qua hint.
+Hai hàng cùng chữ `wifi` **cố ý** — phân biệt bằng tag + ngày.
 
-Khi text có dấu `:`, ô đổi trạng thái **Add mode**: viền màu accent, dropdown đổi thành preview:
+Toggle `[≈ on]/[≈ off]` = `semantic_suggest`; **ẩn** khi `semantic_available = false`.
+
+`#` leading:
 
 ```
-   ┌──────────────────────────────────────────────────────────────┐
-   │ ＋  wifi: Abc123@home▏                                        │
-   └──────────────────────────────────────────────────────────────┘
-   ┌──────────────────────────────────────────────────────────────┐
-   │  Sẽ lưu vào   [wifi ✓ đã có]                                  │
-   │  Nội dung     "Abc123@home"                     🔒 mã hoá E2E │
-   │  Enter để lưu · Shift+Enter xuống dòng                        │
-   └──────────────────────────────────────────────────────────────┘
+   │ 🔍  #nh▏                                                      │
+   │   #**nh**à                                8 mục               │
+   │   #**nh**à-bố-mẹ                          2 mục               │
+   │   Enter = lọc mục có tag này                                  │
 ```
 
-### 7.3 Wireframe — Keyword detail
+Add mode khi có `:`:
+
+```
+   │ ＋  wifi #nhà: Abc123@home▏                                    │
+   │  Sẽ lưu vào   [wifi ✓ một mục]  tags [nhà]                     │
+   │  hoặc: 3 mục tên "wifi" — chọn bên dưới trước khi Enter        │
+   │  Nội dung     "Abc123@home"                     🔒 E2E · text  │
+```
+
+Khi nhiều khớp tên: Enter không lưu ngay — list chọn + "Tạo mục mới".
+
+### 7.3 Item detail
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  ← Back        🔍 [ tìm hoặc thêm…                            ⌘K ]   │
+│  ← Back        🔍 [ tìm tên, tag, hoặc name: text             ⌘K ]   │
 ├──────────────────────────────────────────────────────────────────────┤
-│  # wifi                                    ✎ Rename  ⓘ Hint  ⋯      │
+│  wifi                         ✎ Đổi tên  ⓘ Hint  ⋯                   │
+│  [nhà ×] [office ×] [+ Tag]                                          │
 │  12 entries · tạo 12/03/2026 · hint: "wifi password nhà & office"    │
 │  ─────────────────────────────────────────────────────────────────── │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ + Thêm entry vào wifi…                                          │  │
-│  └────────────────────────────────────────────────────────────────┘  │
+│  [ + Văn bản ]  [ + JSON / bảng ]  [ Import JSON… ]                  │
 │                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ Abc123@home                                           📋  ✎  🗑 │  │
-│  │ hôm nay 09:12 · cũng trong: [nhà]                                │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ Office5G / pass: Corp!2026                            📋  ✎  🗑 │  │
-│  │ 5 ngày trước · cũng trong: [wifi-office] [công-ty]               │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ ░░░░░░░░░░░░░░░░░░░░  (đang giải mã…)                            │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                     [ Tải thêm ]  12/12              │
+│  ☰  ┌ text ──────────────────────────────────────────────────────┐  │
+│     │ Abc123@home                                      📋  ✎  🗑  │  │
+│     │ hôm nay 09:12                                                │  │
+│     └──────────────────────────────────────────────────────────────┘  │
+│  ☰  ┌ json · bảng ───────────────────────────────────────────────┐  │
+│     │ guests                          [Bảng] [JSON]     📋  ✎  🗑  │  │
+│     │  name        │ device    │ pass                              │  │
+│     │  Phòng khách │ AP-1      │ ••••                              │  │
+│     │  ▸ vlan      │ {…}       │     ← expandable                  │  │
+│     └──────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- Entry card: nội dung (markdown-lite: link tự động, code inline), meta, actions hover/focus. Copy 📋 copy plaintext, toast "Đã copy".
-- Edit inline (textarea autosize), `Ctrl+S`/`Ctrl+Enter` lưu, `Esc` huỷ.
-- Chip "cũng trong:" click → chuyển keyword; `+` chip để gắn thêm keyword (mở mini-omnibox).
-- Skeleton "đang giải mã" khi decrypt trong Worker (thường < 5 ms/entry, chỉ thấy khi batch lớn).
+- Chip tag: click → filter toàn app theo tag; `×` gỡ; `+` mini-suggest (prefix/fuzzy/semantic như omnibox, `scope=tag`).
+- Kéo ☰ đổi `position`.
+- Text card: markdown-lite (autolink, inline code).
+- JSON card: §7.4.
+- Vault locked: cards `🔒 ••••••`; name + tag vẫn đọc được; nhớ thiết bị → tương tác sau tự mở.
 
-### 7.4 Wireframe — Unlock / passphrase
+### 7.4 JSON table renderer (nested / expandable)
 
-```
-┌──────────────────────────────────────────────┐
-│                🔒                             │
-│        Vault đang khoá                        │
-│  Nhập encryption passphrase để mở dữ liệu.    │
-│  Passphrase không bao giờ được gửi lên server.│
-│                                              │
-│  ┌────────────────────────────────────┐ 👁    │
-│  │ ••••••••••••••                     │      │
-│  └────────────────────────────────────┘      │
-│  [ ] Nhớ trên thiết bị này (30 ngày)          │
-│                                              │
-│  [        Mở khoá        ]                    │
-│                                              │
-│  Quên passphrase? → Dùng recovery key         │
-│  Đăng nhập với: minh@example.com · Đăng xuất  │
-└──────────────────────────────────────────────┘
-```
+Luôn giữ document gốc trong memory sau decrypt. Hai tab: **Bảng** | **JSON**.
 
-Trạng thái: đang derive (progress bar "Đang tạo khoá… ~1s"), sai passphrase (shake + text đỏ, không lockout client vì brute-force offline không phụ thuộc UI), vault chưa tạo (điều hướng onboarding).
+| JSON | UI |
+|------|----|
+| Object | Bảng 2 cột **Trường** \| **Giá trị**; value object/array → ô có chevron, số con |
+| Array of object | Cột = hợp key (ổn định: key lần xuất hiện đầu, rồi key mới append); mỗi element một hàng; thiếu key = ô trống |
+| Array of primitive | Một cột `#` + `Giá trị` |
+| Array of array | Mỗi hàng là ô expandable "Array (n)" |
+| Primitive gốc (`42`, `"ok"`, `null`) | Bảng 1 ô; vẫn là JSON hợp lệ |
+| Lồng sâu | Chevron; không giới hạn độ sâu; > 50 hàng / array → trang 50 + virtualize |
 
-Khi vault locked mà user đang ở app: keyword list vẫn hiển thị (plaintext), entry card hiển thị `🔒 ••••••` + nút "Mở khoá để xem". Vẫn có thể search keyword khi locked. **Không** cho thêm entry khi locked (cần VK).
+- Sửa ô primitive: commit blur / `Enter`; `Esc` huỷ.
+- Thêm hàng / thêm field / xoá hàng: menu cạnh bảng. Xoá = mutate JSON, không "giấu".
+- Pretty-print chỉ khi user chọn. Import mặc định giữ byte-string gốc nếu parse được (file/paste).
+- Copy 📋: copy plaintext text hoặc JSON gốc (không copy "bảng").
 
-### 7.5 Wireframe — Onboarding recovery key
+**Không** gửi cấu trúc bảng lên server. `type=json` chỉ để chọn renderer sau decrypt.
+
+### 7.5 Import JSON modal
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Bước 2/2 — Lưu Recovery Key                                │
-│                                                            │
-│  Đây là cách DUY NHẤT để lấy lại dữ liệu nếu bạn quên      │
-│  passphrase. Chúng tôi không thể khôi phục giúp bạn.       │
-│                                                            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  SABK-1-7Q3M-K9PA-2ZLC-8WXV-HN4R-TD6B-J5FG-YE2S-…    │  │
-│  └──────────────────────────────────────────────────────┘  │
-│  [ 📋 Copy ]  [ ⬇ Tải .txt ]  [ 🖨 In ]  [ Xem dạng 24 từ ] │
-│                                                            │
-│  Xác nhận: nhập nhóm ký tự thứ 3 và thứ 7                  │
-│  [ ____ ]   [ ____ ]                                       │
-│                                                            │
-│  [x] Tôi hiểu rằng mất passphrase VÀ recovery key = mất    │
-│      toàn bộ nội dung đã lưu.                              │
-│                                                            │
-│                            [ Bỏ qua (không khuyến nghị) ]  │
-│                            [       Hoàn tất        ]       │
+│  Import JSON                                                │
+│  [ Dán ]  [ Chọn file .json ]                               │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │ { "vlans": [ { "id": 10, "name": "iot" } ] }           │ │
+│  └────────────────────────────────────────────────────────┘ │
+│  Preview: bảng lồng · 1 object · ~120 B                     │
+│  Lưu vào mục: [ wifi ▾ ]   (hoặc tạo mục)                   │
+│  [x] Giữ nguyên định dạng gốc                               │
+│           [ Huỷ ]  [ Mã hoá và lưu ]                        │
 └────────────────────────────────────────────────────────────┘
 ```
 
-Recovery key: 32 B → base32 Crockford, nhóm 4, prefix `SABK-1-` (version), checksum 2 ký tự cuối. Tùy chọn hiển thị **BIP39 24 từ** (cùng entropy 256 bit) cho người thích chép tay; import chấp nhận cả 2 dạng. "Bỏ qua" → banner đỏ persistent trong app đến khi hoàn tất.
+Lỗi: JSON invalid (pointer dòng), quá 256 KiB, item đã đủ 200 entry.
 
-### 7.6 Empty / error states
+### 7.6 Unlock / onboarding / Settings
+
+Unlock: như đã chốt — passphrase không lên server; checkbox nhớ thiết bị (mặc định off) kèm cảnh báo máy chung; derive 64 MiB trong Worker; thiết bị đã nhớ **không** hiện màn này.
+
+Onboarding 2 bước: (1) passphrase ≥ 12, zxcvbn ≥ 3, nhập lại; (2) cảnh báo **không khôi phục**, checkbox bắt buộc, optional nhớ thiết bị. Nút "Tạo vault" disabled đến khi tick. Không màn recovery/BIP39.
+
+Copy bước 2 (rút gọn): Settings › Bảo mật và màn "Quên passphrase". Reset vault: **entries mất, mục và tag còn**.
+
+| Nhóm Settings | Mục |
+|---------------|-----|
+| Tài khoản | Email, locale en/vi, theme, link Google/GitHub, đổi password đăng nhập |
+| Bảo mật | Đổi passphrase (cần passphrase hiện tại) · Auto-lock 5/**15**/60/Never · Thiết bị này đã nhớ? · Quên thiết bị · Phiên · Audit · Reset vault |
+| Tìm kiếm | Gợi ý gần nghĩa on/off — "mô hình trên máy chủ của chúng tôi (TEI), không gửi name/tag ra bên thứ ba". Ẩn nếu server tắt |
+| Dữ liệu | Export encrypted · Export decrypted (cảnh báo + re-auth) · Xoá tài khoản |
+
+### 7.7 Empty / error states
 
 | Trạng thái | Hiển thị |
 |-----------|----------|
-| Chưa có keyword | Hero nhỏ trong omnibox area: "Gõ `ý tưởng: câu đầu tiên` để bắt đầu" + 3 ví dụ click-to-fill |
-| Search không kết quả | "Không có keyword nào khớp `xyz`" + CTA tạo mới + gợi ý semantic nếu có |
-| Keyword không có entry | "Chưa có entry. Thêm bằng ô trên." |
-| Embedding degraded | Không báo lỗi; ẩn nhãn ≈; tooltip icon nhỏ "Gợi ý gần nghĩa tạm tắt" |
-| Offline / API lỗi | Banner vàng "Mất kết nối — thay đổi chưa được lưu", retry tự động; **không** queue ghi offline ở MVP |
-| Decrypt fail (AEAD) | Card đỏ "Không giải mã được entry này (dữ liệu hỏng hoặc key khác)" + link trợ giúp |
-| Session hết hạn | Modal re-login; giữ VK trong Worker nếu tab còn sống |
+| Chưa có item | "Gõ `ý tưởng: câu đầu tiên` hoặc import JSON" + 3 ví dụ |
+| Suggest trống | "Không khớp `xyz`" + tạo mục + (nếu semantic) không có hàng ≈ thì vẫn CTA |
+| Item không entry | "Thêm văn bản hoặc import JSON" |
+| Nhiều mục trùng tên (quick-add) | Picker bắt buộc |
+| Quá 20 tag / item | Chip `+` disabled, tooltip |
+| Quá 200 entry / item | Nút thêm disabled |
+| Entry > 256 KiB | Chặn client; server 413 |
+| Semantic off / degraded | Như §6.10 — không error toast |
+| Vault locked | Overlay entry; name/tag/search sống; nhớ thiết bị → tự mở lại |
+| Offline | Banner vàng; **không** queue offline |
+| Decrypt fail | Card đỏ + trợ giúp |
+| JSON invalid lúc edit raw | Không lưu, underline parse error |
 
-### 7.7 Theme, responsive, a11y, shortcuts
+### 7.8 Theme, responsive, a11y, shortcuts
 
-- **Dark/light**: theo `prefers-color-scheme`, override lưu per-user. Token màu qua CSS variables (shadcn).
-- **Responsive**: ≥ 1024 px hai cột (recent keywords bên trái, nội dung phải); < 768 px một cột, omnibox sticky top, dropdown full-width, bottom-sheet cho actions.
-- **a11y**: omnibox theo pattern WAI-ARIA `combobox` + `listbox` (`aria-activedescendant`), focus ring rõ, contrast ≥ 4.5:1, `prefers-reduced-motion`, mọi action có label, toast dùng `aria-live=polite`. Test bằng axe trong CI.
-- **Shortcuts**: `/` hoặc `Ctrl/⌘+K` focus omnibox · `Esc` blur/đóng · `↑↓ Enter Tab` trong dropdown · `Ctrl+Enter` tạo keyword mới · `Ctrl+S` lưu edit · `L` (khi không focus input) lock vault · `?` bảng shortcut.
-- **i18n**: `next-intl`; marketing routes `/(marketing)/[locale]/…` với `en` mặc định (`/` = en, `/vi/...`), `hreflang`, sitemap per-locale. App routes `/app/*` **không** có locale trong URL; locale lấy từ `user.locale` (fallback `Accept-Language`, fallback `en`). Ngày giờ/số qua `Intl`. Chuỗi UI trong `messages/en.json`, `messages/vi.json`; CI fail nếu thiếu key.
+- Dark/light: `prefers-color-scheme` + override per-user; token shadcn.
+- ≥ 1024 px: cột trái recent items/tags, phải nội dung. < 768 px: một cột, omnibox sticky, dropdown full-width.
+- a11y: `combobox`+`listbox`, contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`.
+- Shortcuts: `/` hoặc `Ctrl/⌘+K` · `Esc` · `↑↓ Enter Tab` · `Ctrl+Enter` tạo item · `Ctrl+S` lưu · `L` lock · `?`.
+- i18n: `next-intl`; marketing `/(marketing)/[locale]/…`, `en` mặc định (`/` = en, `/vi/...`); app `/app/*` không gắn locale trên URL — `user.locale` ← `Accept-Language` ← `en`. Messages `en.json` / `vi.json`; CI fail thiếu key.
 
 ---
 
 ## 8. Data model / Postgres schema
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE FUNCTION immutable_unaccent(text) RETURNS text
-  LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT public.unaccent('public.unaccent', $1) $$;
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT public.unaccent('public.unaccent', $1)
+  $$;
 
 CREATE TABLE app_user (
-  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  email         citext UNIQUE NOT NULL,
-  email_verified_at timestamptz,
-  locale        text NOT NULL DEFAULT 'en' CHECK (locale IN ('en','vi')),
-  theme         text NOT NULL DEFAULT 'system',
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  deleted_at    timestamptz
+  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email              citext UNIQUE NOT NULL,
+  email_verified_at  timestamptz,
+  locale             text NOT NULL DEFAULT 'en' CHECK (locale IN ('en','vi')),
+  theme              text NOT NULL DEFAULT 'system',
+  auto_lock_minutes  int  NOT NULL DEFAULT 15 CHECK (auto_lock_minutes IN (0, 5, 15, 60)),
+  settings           jsonb NOT NULL DEFAULT '{"semantic_suggest": true}'::jsonb,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  deleted_at         timestamptz
 );
 
 CREATE TABLE auth_identity (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id       uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
   provider      text NOT NULL CHECK (provider IN ('password','google','github')),
-  provider_uid  text,                         -- sub / id từ OAuth
-  password_hash text,                         -- argon2id PHC string, chỉ provider=password
+  provider_uid  text,
+  password_hash text,
   created_at    timestamptz NOT NULL DEFAULT now(),
   UNIQUE (provider, provider_uid),
   UNIQUE (user_id, provider)
@@ -816,7 +1038,7 @@ CREATE TABLE auth_identity (
 CREATE TABLE session (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id            uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
-  refresh_token_hash bytea NOT NULL UNIQUE,    -- sha256(token)
+  refresh_token_hash bytea NOT NULL UNIQUE,
   device_label       text,
   ip_hash            bytea,
   user_agent         text,
@@ -828,204 +1050,284 @@ CREATE TABLE session (
 CREATE INDEX session_user_idx ON session (user_id) WHERE revoked_at IS NULL;
 
 CREATE TABLE vault (
-  user_id                      uuid PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
-  version                      int  NOT NULL DEFAULT 1,       -- tăng mỗi lần rewrap
-  kdf                          jsonb NOT NULL,                -- {"alg":"argon2id13","ops":3,"mem":67108864,"salt":"b64"}
-  vault_key_id                 text  NOT NULL,                -- "vk:<8-byte hex>"
-  vault_key_wrapped_by_kek     bytea NOT NULL,                -- nonce||ct
-  vault_key_wrapped_by_recovery bytea,                        -- NULL nếu user bỏ qua RK
-  recovery_key_version         int  NOT NULL DEFAULT 1,
-  x25519_public                bytea NOT NULL,
-  ed25519_public               bytea NOT NULL,
-  private_keys_wrapped         bytea NOT NULL,                -- seal(x25519_priv||ed25519_seed, VK)
-  created_at                   timestamptz NOT NULL DEFAULT now(),
-  updated_at                   timestamptz NOT NULL DEFAULT now()
+  user_id                  uuid PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
+  version                  int  NOT NULL DEFAULT 1,
+  kdf                      jsonb NOT NULL,
+  -- {"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"b64"}
+  vault_key_id             text  NOT NULL,
+  vault_key_wrapped_by_kek bytea NOT NULL,
+  x25519_public            bytea NOT NULL,
+  ed25519_public           bytea NOT NULL,
+  private_keys_wrapped     bytea NOT NULL,
+  created_at               timestamptz NOT NULL DEFAULT now(),
+  updated_at               timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE keyword (
-  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id             uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
-  normalized          text NOT NULL CHECK (length(normalized) BETWEEN 1 AND 100),
-  display             text NOT NULL CHECK (length(display) BETWEEN 1 AND 100),
-  normalized_unaccent text GENERATED ALWAYS AS (immutable_unaccent(normalized)) STORED,
-  hint                text CHECK (length(hint) <= 120),
-  entry_count         int  NOT NULL DEFAULT 0,
-  last_used_at        timestamptz NOT NULL DEFAULT now(),
-  created_at          timestamptz NOT NULL DEFAULT now(),
-  updated_at          timestamptz NOT NULL DEFAULT now(),
-  deleted_at          timestamptz
+CREATE TABLE item (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  name             text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
+  name_normalized  text NOT NULL CHECK (char_length(name_normalized) BETWEEN 1 AND 200),
+  name_unaccent    text GENERATED ALWAYS AS (immutable_unaccent(name_normalized)) STORED,
+  hint             text CHECK (hint IS NULL OR char_length(hint) <= 120),
+  entry_count      int  NOT NULL DEFAULT 0,
+  last_used_at     timestamptz NOT NULL DEFAULT now(),
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  deleted_at       timestamptz
 );
-CREATE UNIQUE INDEX keyword_user_norm_uq   ON keyword (user_id, normalized) WHERE deleted_at IS NULL;
-CREATE INDEX keyword_user_norm_prefix      ON keyword (user_id, normalized text_pattern_ops) WHERE deleted_at IS NULL;
-CREATE INDEX keyword_norm_trgm             ON keyword USING gin (normalized_unaccent gin_trgm_ops);
-CREATE INDEX keyword_user_recent           ON keyword (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX item_user_name_prefix ON item (user_id, name_normalized text_pattern_ops)
+  WHERE deleted_at IS NULL;
+CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops);
+CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX item_user_created ON item (user_id, created_at DESC) WHERE deleted_at IS NULL;
 
-CREATE TABLE keyword_embedding (
-  keyword_id     uuid PRIMARY KEY REFERENCES keyword(id) ON DELETE CASCADE,
-  embedding      vector(512) NOT NULL,
-  model          text NOT NULL,             -- "openai/text-embedding-3-small"
-  model_version  text NOT NULL,             -- "2024-01-25" hoặc hash config
-  input_hash     bytea NOT NULL,            -- sha256(model||input)
-  embedded_at    timestamptz NOT NULL DEFAULT now()
+CREATE TABLE tag (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  display       text NOT NULL CHECK (char_length(display) BETWEEN 1 AND 50),
+  normalized    text NOT NULL CHECK (char_length(normalized) BETWEEN 1 AND 50),
+  tag_unaccent  text GENERATED ALWAYS AS (immutable_unaccent(normalized)) STORED,
+  item_count    int  NOT NULL DEFAULT 0,
+  last_used_at  timestamptz NOT NULL DEFAULT now(),
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  deleted_at    timestamptz
 );
-CREATE INDEX keyword_emb_hnsw ON keyword_embedding
-  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-CREATE INDEX keyword_emb_model_idx ON keyword_embedding (model);
+CREATE UNIQUE INDEX tag_user_norm_uq ON tag (user_id, normalized) WHERE deleted_at IS NULL;
+CREATE INDEX tag_user_norm_prefix ON tag (user_id, normalized text_pattern_ops)
+  WHERE deleted_at IS NULL;
+CREATE INDEX tag_norm_trgm ON tag USING gin (tag_unaccent gin_trgm_ops);
+CREATE INDEX tag_user_recent ON tag (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+
+CREATE TABLE item_tag (
+  item_id    uuid NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  tag_id     uuid NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (item_id, tag_id)
+);
+CREATE INDEX item_tag_tag_idx ON item_tag (tag_id, item_id);
 
 CREATE TABLE entry (
   id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id              uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
-  content_type         text NOT NULL DEFAULT 'text/plain',   -- chừa chỗ: text/markdown, application/x-url, file ref
-  envelope             jsonb NOT NULL,                        -- {v, alg, key_id, nonce}
-  ciphertext           bytea NOT NULL CHECK (octet_length(ciphertext) <= 262144), -- 256 KiB MVP
-  plaintext_len_bucket int  NOT NULL,                         -- ceil(len/256)*256
+  item_id              uuid NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  type                 text NOT NULL CHECK (type IN ('text','json','link','file','image')),
+  position             int  NOT NULL DEFAULT 0,
+  envelope             jsonb NOT NULL,
+  ciphertext           bytea NOT NULL CHECK (octet_length(ciphertext) <= 263168),
+  plaintext_len_bucket int  NOT NULL CHECK (plaintext_len_bucket <= 262144),
   created_at           timestamptz NOT NULL DEFAULT now(),
   updated_at           timestamptz NOT NULL DEFAULT now(),
   deleted_at           timestamptz
 );
+CREATE INDEX entry_item_pos_idx ON entry (item_id, position) WHERE deleted_at IS NULL;
 CREATE INDEX entry_user_updated_idx ON entry (user_id, updated_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX entry_purge_idx        ON entry (deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX entry_purge_idx ON entry (deleted_at) WHERE deleted_at IS NOT NULL;
 
-CREATE TABLE entry_keyword (
-  entry_id    uuid NOT NULL REFERENCES entry(id) ON DELETE CASCADE,
-  keyword_id  uuid NOT NULL REFERENCES keyword(id) ON DELETE CASCADE,
-  position    smallint NOT NULL DEFAULT 0,
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (entry_id, keyword_id)
+CREATE TABLE item_embedding (
+  item_id       uuid PRIMARY KEY REFERENCES item(id) ON DELETE CASCADE,
+  embedding     vector(1024) NOT NULL,
+  model         text NOT NULL,
+  model_version text NOT NULL,
+  input_hash    bytea NOT NULL,
+  embedded_at   timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX entry_keyword_kw_idx ON entry_keyword (keyword_id, created_at DESC);
+CREATE INDEX item_emb_hnsw ON item_embedding
+  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
+CREATE INDEX item_emb_model_idx ON item_embedding (model);
 
--- embedding_job: dùng bảng của River (river_job) nếu chọn River; sketch nếu tự viết:
+CREATE TABLE tag_embedding (
+  tag_id        uuid PRIMARY KEY REFERENCES tag(id) ON DELETE CASCADE,
+  embedding     vector(1024) NOT NULL,
+  model         text NOT NULL,
+  model_version text NOT NULL,
+  input_hash    bytea NOT NULL,
+  embedded_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX tag_emb_hnsw ON tag_embedding
+  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
+CREATE INDEX tag_emb_model_idx ON tag_embedding (model);
+
+-- Sketch nếu không dùng bảng River; production ưu tiên river_job
 CREATE TABLE embedding_job (
   id          bigserial PRIMARY KEY,
-  keyword_id  uuid NOT NULL REFERENCES keyword(id) ON DELETE CASCADE,
+  target_kind text NOT NULL CHECK (target_kind IN ('item','tag')),
+  target_id   uuid NOT NULL,
   input_hash  bytea NOT NULL,
   attempts    int NOT NULL DEFAULT 0,
   run_after   timestamptz NOT NULL DEFAULT now(),
   last_error  text,
   created_at  timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (keyword_id)                     -- coalesce: rename nhiều lần → 1 job
+  UNIQUE (target_kind, target_id)
 );
 CREATE INDEX embedding_job_due_idx ON embedding_job (run_after);
 
 CREATE TABLE audit_log (
-  id          bigserial PRIMARY KEY,
-  user_id     uuid REFERENCES app_user(id) ON DELETE SET NULL,
-  event       text NOT NULL,     -- auth.login, auth.failed, vault.create, vault.rewrap, vault.recovery_used, export.decrypted, ...
-  ip_hash     bytea,
-  user_agent  text,
-  meta        jsonb,
-  created_at  timestamptz NOT NULL DEFAULT now()
+  id         bigserial PRIMARY KEY,
+  user_id    uuid REFERENCES app_user(id) ON DELETE SET NULL,
+  event      text NOT NULL,
+  ip_hash    bytea,
+  user_agent text,
+  meta       jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX audit_user_time_idx ON audit_log (user_id, created_at DESC);
 
 CREATE TABLE idempotency_key (
-  user_id     uuid NOT NULL,
-  key         text NOT NULL,
-  response    jsonb NOT NULL,
-  created_at  timestamptz NOT NULL DEFAULT now(),
+  user_id    uuid NOT NULL,
+  key        text NOT NULL,
+  response   jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, key)
 );
 ```
 
 Ghi chú:
 
-- `entry_count` cập nhật bằng trigger trên `entry_keyword` (hoặc trong tx của API); `last_used_at` cập nhật khi tạo entry/mở keyword (throttle 1 lần/5 phút để tránh write storm).
-- Row Level Security **không** dùng ở MVP (API luôn filter `user_id`); cân nhắc bật RLS + `SET LOCAL app.user_id` ở Phase 2 làm defense-in-depth.
-- Purge job: `DELETE FROM entry WHERE deleted_at < now() - interval '30 days'`.
+- `entry_count` / `item_count`: trigger hoặc cập nhật trong cùng tx API. Trần 200 entry / 20 tag enforce ở API (`409 ITEM_ENTRY_LIMIT` / `ITEM_TAG_LIMIT`).
+- `last_used_at`: khi tạo entry, mở item, gán tag; throttle 5 phút.
+- `entry.user_id` phải khớp `item.user_id` (check trong API hoặc constraint trigger).
+- MVP API chỉ chấp `type` ∈ {`text`,`json`}; `link`/`file`/`image` giữ CHECK cho migration sau.
+- Không RLS ở MVP; Phase 2 cân nhắc `SET LOCAL app.user_id`.
+- Purge: `DELETE FROM entry WHERE deleted_at < now() - interval '30 days'`.
+- **Không** cột recovery, **không** `is_private`, **không** `vector(512)`.
 
 ---
 
 ## 9. API design
 
-REST + JSON qua HTTPS, base `/api/v1`. (Alternative: **ConnectRPC** cho type-safe client sinh tự động — cân nhắc Phase 2 nếu thêm extension/mobile; MVP dùng REST + OpenAPI 3.1 generate TS client bằng `openapi-typescript`.)
+REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC cân nhắc Phase 2 (extension/mobile).
 
 ### 9.1 Conventions
 
-- Auth: cookie `sabk_session` (HttpOnly, Secure, SameSite=Lax, path `/api`), access token JWT ngắn hạn (10 phút) trong cookie riêng + refresh rotation. CSRF: double-submit header `X-CSRF-Token` cho mọi method không an toàn.
-- Lỗi: RFC 9457 `application/problem+json`: `{type, title, status, detail, code, errors[]}`.
-- Pagination: **cursor** (`?cursor=&limit=` ≤ 100), response `{items, next_cursor}`.
-- Idempotency: header `Idempotency-Key` (UUID) cho `POST /entries`, `POST /keywords`, `POST /vault*`; lưu 24 h.
-- Rate limit (per user / per IP với anonymous): `suggest` 20 rps burst 40; write 10 rps; auth 5/phút/IP; export 3/giờ. Header `RateLimit-*` (IETF draft) + 429.
-- Versioning: path `/v1`; envelope `v` độc lập.
-- Binary: `ciphertext` truyền base64url trong JSON (MVP). Nếu entry lớn → Phase 2 `application/octet-stream` endpoint riêng.
+- Auth: cookie `sabk_session` (HttpOnly, Secure, SameSite=Lax, path `/api`), JWT access ~10 phút + refresh rotation. CSRF: `X-CSRF-Token` cho method không an toàn.
+- Lỗi: RFC 9457 `application/problem+json`.
+- Pagination: cursor `?cursor=&limit=` ≤ 100; `{items, next_cursor}`.
+- Idempotency: `Idempotency-Key` cho `POST /items`, `POST /tags`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`, `POST /vault`; giữ 24 h.
+- Rate limit: suggest 20 rps burst 40; write 10 rps; auth 5/phút/IP; export 3/giờ.
+- `ciphertext` base64url trong JSON (MVP).
 
 ### 9.2 Endpoints
 
 | Nhóm | Method & path | Mô tả |
 |------|---------------|-------|
-| Auth | `POST /auth/signup` | email+password → user + session |
-| | `POST /auth/login` | email+password |
-| | `GET /auth/oauth/{google\|github}/start` → redirect | PKCE + state |
-| | `GET /auth/oauth/{provider}/callback` | tạo/link user |
-| | `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/me` | |
-| | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | quản lý thiết bị |
-| Vault | `GET /vault` | kdf, wraps, public keys, version |
-| | `POST /vault` | tạo lần đầu (409 nếu đã có) |
-| | `PUT /vault/kek` | rewrap sau đổi passphrase (`If-Match: version`) |
-| | `PUT /vault/recovery` | RK mới |
-| | `DELETE /vault` | reset vault (xoá entries), re-auth required |
-| Keywords | `GET /keywords?cursor&limit&sort=recent\|alpha` | |
-| | `POST /keywords` `{display, hint?}` | trả 200 nếu `normalized` đã tồn tại (upsert-like) |
-| | `GET /keywords/{id}` · `PATCH /keywords/{id}` `{display?, hint?}` · `DELETE /keywords/{id}` | delete: 409 nếu còn entry chỉ thuộc keyword này, trừ `?cascade=true` |
-| | `POST /keywords/{id}/merge` `{into_keyword_id}` | gộp keyword |
-| | `GET /suggest?q=&limit=8` | hybrid suggest |
-| | `GET /search?q=&cursor&limit` | search keyword đầy đủ (nhiều kết quả hơn suggest, cùng ranking) |
-| Entries | `GET /entries?keyword_id=&cursor&limit` | ciphertext blobs, mới nhất trước |
-| | `POST /entries` `{envelope, ciphertext, plaintext_len_bucket, keyword_ids[]}` | |
-| | `GET /entries/{id}` · `PUT /entries/{id}` (`If-Match`) · `DELETE /entries/{id}` · `POST /entries/{id}/restore` | |
-| | `PUT /entries/{id}/keywords` `{keyword_ids[]}` | gắn/gỡ keyword (≥ 1) |
-| | `GET /entries/changes?since=<cursor>` | delta sync cho multi-device (Phase 2 polish; MVP trả tất cả thay đổi sau timestamp) |
-| Export | `POST /exports` `{kind:"encrypted"}` → 202 + job id · `GET /exports/{id}` → file | decrypted export là client-side, chỉ log `POST /audit/export-decrypted` |
-| Meta | `GET /healthz` · `GET /readyz` · `GET /metrics` (internal) | |
+| Auth | `POST /auth/signup` · `POST /auth/login` | email+password |
+| | `GET /auth/oauth/{google\|github}/start` · `/callback` | PKCE + state |
+| | `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/me` | `me` gồm `settings`, `features.semantic_available` |
+| | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | |
+| Me | `PATCH /me/settings` | `{semantic_suggest?, auto_lock_minutes?, locale?, theme?}` |
+| Vault | `GET /vault` | kdf, wrapK, pubkeys, version — **không** recovery field |
+| | `POST /vault` | tạo lần đầu (409 nếu có) |
+| | `PUT /vault/kek` | rewrap passphrase (`If-Match: version`) |
+| | `DELETE /vault` | reset: xoá entries, giữ items+tags; re-auth |
+| Items | `GET /items?tag_id&q&cursor&limit&sort=recent\|alpha\|created` | `tag_id` = filter; `q` lexical nhẹ (trang list) |
+| | `POST /items` `{name, hint?, tag_ids?}` | **không** upsert theo name — luôn tạo trừ khi client gửi id. Trùng name = 201 mới |
+| | `GET /items/{id}` · `PATCH /items/{id}` `{name?, hint?}` · `DELETE /items/{id}` | đổi name → re-embed job |
+| | `PUT /items/{id}/tags` `{tag_ids[]}` | thay bộ tag; max 20 |
+| | `POST /items/{id}/tags` `{tag_id}` · `DELETE /items/{id}/tags/{tag_id}` | |
+| | `PATCH /items/{id}/entries/reorder` `{entry_ids[]}` | permutation đủ entries chưa xoá |
+| Tags | `GET /tags?cursor&limit&sort=recent\|alpha` | catalog |
+| | `POST /tags` `{display}` | 200 nếu `normalized` đã có (upsert) |
+| | `GET /tags/{id}` · `PATCH /tags/{id}` `{display}` · `DELETE /tags/{id}` | 409 `TAG_CONFLICT` nếu normalize trùng tag khác |
+| Suggest | `GET /suggest?q=&limit=8&scope=all\|item\|tag` | hybrid hai corpus; `#` → client gửi `scope=tag` |
+| | `GET /search?q=&cursor&limit&scope=` | cùng rank, nhiều kết quả hơn |
+| Entries | `GET /items/{id}/entries?cursor&limit` | ciphertext + `type` + `position`; theo position |
+| | `POST /items/{id}/entries` | `{type, envelope, ciphertext, plaintext_len_bucket}` — `text`\|`json` |
+| | `POST /items/{id}/entries/import-json` | **cùng body mã hoá** như POST entries, `type` buộc `json`; field thêm `source: paste\|file`, `filename?` (plaintext meta). Không nhận raw JSON |
+| | `GET /entries/{id}` · `PUT /entries/{id}` (`If-Match`) · `DELETE` · `POST …/restore` | không đổi `item_id` ở MVP (không move) |
+| | `GET /entries/changes?since=` | delta multi-device; MVP = mọi đổi sau timestamp |
+| Export | `POST /exports` `{kind:"encrypted"}` → 202 · `GET /exports/{id}` | decrypted: client-side + `POST /audit/export-decrypted` |
+| Meta | `GET /healthz` · `GET /readyz` · `GET /metrics` | |
+
+**Không có:** `PUT /vault/recovery`, `/keywords`, `PUT /entries/{id}/keywords`, merge-keyword.
 
 ### 9.3 Ví dụ
 
-**`GET /api/v1/suggest?q=wi&limit=5`**
+**`GET /api/v1/suggest?q=wi&limit=6`**
 
 ```json
 {
   "query": "wi",
   "mode": "hybrid",
+  "semantic": true,
   "items": [
-    {"id":"6d1…","display":"wifi","tier":"prefix","score":3021.4,"entry_count":12,"last_used_at":"2026-09-14T02:12:00Z","match":{"field":"display","ranges":[[0,2]]}},
-    {"id":"a90…","display":"wifi-office","tier":"prefix","score":3015.9,"entry_count":3,"last_used_at":"2026-09-09T08:00:00Z","match":{"field":"display","ranges":[[0,2]]}},
-    {"id":"c31…","display":"w-i-fi guest","tier":"fuzzy","score":2010.2,"entry_count":1,"last_used_at":"2026-08-01T00:00:00Z","match":null},
-    {"id":"f77…","display":"mạng nhà","tier":"semantic","score":1009.1,"entry_count":2,"last_used_at":"2026-07-20T00:00:00Z","match":{"field":"hint","ranges":[]}}
+    {
+      "kind": "tag",
+      "id": "t01…",
+      "display": "wifi-khách",
+      "tier": "prefix",
+      "score": 3018.0,
+      "item_count": 4,
+      "last_used_at": "2026-09-10T00:00:00Z",
+      "match": {"field": "display", "ranges": [[0, 2]]}
+    },
+    {
+      "kind": "item",
+      "id": "i6d…",
+      "name": "wifi",
+      "tags": [{"id": "t11…", "display": "nhà"}, {"id": "t12…", "display": "office"}],
+      "tier": "prefix",
+      "score": 3021.4,
+      "entry_count": 12,
+      "created_at": "2026-03-12T00:00:00Z",
+      "last_used_at": "2026-09-14T02:12:00Z",
+      "match": {"field": "name", "ranges": [[0, 2]]}
+    },
+    {
+      "kind": "item",
+      "id": "i7e…",
+      "name": "wifi",
+      "tags": [{"id": "t20…", "display": "công-ty"}],
+      "tier": "prefix",
+      "score": 3019.0,
+      "entry_count": 3,
+      "created_at": "2026-06-01T00:00:00Z",
+      "last_used_at": "2026-09-01T00:00:00Z",
+      "match": {"field": "name", "ranges": [[0, 2]]}
+    }
   ]
 }
 ```
 
-**`POST /api/v1/entries`** (header `Idempotency-Key: 5c0…`)
+**`POST /api/v1/items/{id}/entries`** (`Idempotency-Key`)
 
 ```json
 {
-  "keyword_ids": ["6d1…"],
-  "content_type": "text/plain",
-  "envelope": {"v":1,"alg":"xchacha20poly1305-ietf","key_id":"vk:7f3a1c9e02b4d6f8","nonce":"Qm9vbV9ub25jZV8yNF9ieXRlc19oZXJl"},
+  "type": "json",
+  "envelope": {
+    "v": 1,
+    "alg": "xchacha20poly1305-ietf",
+    "key_id": "vk:7f3a1c9e02b4d6f8",
+    "nonce": "Qm9vbV9ub25jZV8yNF9ieXRlc19oZXJl"
+  },
   "ciphertext": "base64url…",
-  "plaintext_len_bucket": 256
+  "plaintext_len_bucket": 512
 }
 ```
 
-Response `201`:
+`201`: `{id, type, position, created_at, updated_at, item_id}` — không có plaintext.
+
+**`POST /api/v1/items/{id}/entries/import-json`** — cùng `envelope`/`ciphertext`, thêm `{"source":"file","filename":"vlans.json"}`. Server ghi audit meta, vẫn không parse body.
+
+**`PUT /api/v1/vault/kek`** (`If-Match: "3"`)
 
 ```json
-{"id":"e12…","created_at":"2026-09-14T09:12:31Z","updated_at":"2026-09-14T09:12:31Z","keywords":[{"id":"6d1…","display":"wifi"}]}
+{"kdf":{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"…"},"vault_key_wrapped_by_kek":"base64url…"}
 ```
 
-**`PUT /api/v1/vault/kek`** (header `If-Match: "3"`)
-
-```json
-{"kdf":{"alg":"argon2id13","ops":3,"mem":67108864,"salt":"…"},"vault_key_wrapped_by_kek":"base64url…"}
-```
-
-→ `200 {"version":4}`; `412` nếu version lệch (thiết bị khác vừa đổi).
+→ `200 {"version":4}`; `412` nếu lệch.
 
 **Lỗi**
 
 ```json
-{"type":"https://sabk.app/errors/validation","title":"Validation failed","status":422,"code":"VALIDATION","errors":[{"field":"keyword_ids","message":"at least one keyword required"}]}
+{
+  "type": "https://sabk.app/errors/conflict",
+  "title": "Too many entries on this item",
+  "status": 409,
+  "code": "ITEM_ENTRY_LIMIT",
+  "detail": "Maximum 200 entries per item"
+}
 ```
 
 ---
@@ -1034,41 +1336,42 @@ Response `201`:
 
 ### 10.1 Performance
 
-Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; libsodium WASM tải lazy sau login (~300 KB gzip ~120 KB); Argon2id derive ≤ 1.5 s trên thiết bị mục tiêu (đo và hạ `mem` nếu > 3 s).
+Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; libsodium WASM lazy sau login (~300 KB, gzip ~120 KB). Argon2id 64 MiB trên laptop mục tiêu ~0.5–1.5 s, mobile tầm trung ~2–4 s — **không** hạ mem; máy quá yếu: cảnh báo "thiết bị chậm", params vẫn 64 MiB. Host app (Postgres + Go + Next + TEI bge-m3) tính ~8 GB RAM khi bật semantic; host nhỏ hơn thì `SEARCH_SEMANTIC_ENABLED=false` hoặc e5-base.
 
 ### 10.2 Security checklist
 
-- [ ] **CSP** nghiêm: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'`; không inline script (dùng nonce cho Next.js).
-- [ ] **SRI** cho mọi asset không được Next hash sẵn; công khai hash bundle mỗi release (`/.well-known/build-manifest`).
-- [ ] Cookies `HttpOnly; Secure; SameSite=Lax`; CSRF token; refresh token rotation + reuse detection (revoke cả chuỗi).
-- [ ] Password login: Argon2id server-side (`m=64MiB,t=3,p=1`), breached-password check (k-anonymity HIBP) tùy chọn, email verification.
-- [ ] Vault KDF: Argon2id client `ops=3, mem=64MiB` (tối thiểu `mem=32MiB`), salt 16 B random; tham số lưu per-user; policy nâng dần.
-- [ ] Passphrase policy: ≥ 12 ký tự, zxcvbn ≥ 3, không gửi lên server (kể cả để kiểm tra).
-- [ ] Rate limit theo §9.1; lockout tăng dần cho login sai; CAPTCHA (Turnstile) sau 5 lần.
-- [ ] OAuth: PKCE, `state`, `nonce`, chỉ chấp nhận email verified từ provider; link account chỉ khi đã đăng nhập.
-- [ ] Server **validate** envelope schema, kích thước ciphertext ≤ 256 KiB, `key_id` khớp `vault.vault_key_id` (hoặc share key hợp lệ ở Phase 3).
-- [ ] Audit log các sự kiện §8; hiển thị "Hoạt động bảo mật" cho user.
-- [ ] Headers: HSTS preload, `X-Content-Type-Options`, `Referrer-Policy: same-origin`, `Permissions-Policy` tối thiểu, COOP/COEP để dùng SharedArrayBuffer nếu cần cho Argon2 nhanh hơn.
-- [ ] Dependency scanning (Dependabot/Renovate), `govulncheck`, `npm audit` trong CI; SBOM.
-- [ ] Secrets qua env/secret manager; không có secret trong repo; `.env.example`.
-- [ ] Không log query `q`, không log body entries; access log chỉ path pattern + status + latency.
-- [ ] Pentest / third-party review mô hình crypto trước GA.
+- [ ] **CSP** nghiêm: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'`; không inline script (nonce cho Next.js).
+- [ ] **SRI** / hash bundle mỗi release (`/.well-known/build-manifest`).
+- [ ] Cookies `HttpOnly; Secure; SameSite=Lax`; CSRF token; refresh rotation + reuse detection.
+- [ ] Password login: Argon2id server-side (`m=64MiB,t=3,p=1`), HIBP k-anonymity tùy chọn; email verification theo `AUTH_REQUIRE_EMAIL_VERIFICATION` (default **false**).
+- [ ] Vault KDF: Argon2id client **cố định** `ops=3, mem=64MiB, p=1`, salt 16 B; lưu trên vault; chỉ được nâng, không fallback thấp hơn.
+- [ ] Passphrase ≥ 12, zxcvbn ≥ 3; **không** gửi lên server.
+- [ ] Rate limit §9.1; lockout tăng dần; CAPTCHA (Turnstile) sau 5 lần login sai.
+- [ ] OAuth: PKCE, `state`, `nonce`; chỉ email verified từ provider; link account khi đã đăng nhập.
+- [ ] Server validate envelope, `type` ∈ {`text`,`json`} (MVP), ciphertext ≤ 263168 B, `plaintext_len_bucket` ≤ 256 KiB, `key_id` khớp `vault.vault_key_id`.
+- [ ] Trần 20 tag / 200 entry per item ở API.
+- [ ] Audit §8; UI "Hoạt động bảo mật".
+- [ ] Headers: HSTS preload, `X-Content-Type-Options`, `Referrer-Policy: same-origin`, `Permissions-Policy` tối thiểu, COOP/COEP nếu cần SharedArrayBuffer.
+- [ ] Dependabot/Renovate, `govulncheck`, `npm audit`, SBOM.
+- [ ] Secrets qua env; `.env.example`; không secret trong repo.
+- [ ] Không log `q`, không log body; access log = path pattern + status + latency.
+- [ ] Pentest / review crypto trước GA.
 
 ### 10.3 Observability
 
-- OpenTelemetry traces (API → DB → provider), Prometheus metrics: `suggest_latency_seconds{mode}`, `embedding_job_lag_seconds`, `embedding_provider_errors_total`, `vault_unlock_failures_total` (không có user id), `entries_created_total`.
-- Structured logs `slog` JSON, request id; Sentry cho FE (scrub mọi field có thể chứa plaintext: chỉ gửi error type + stack).
-- Alerts: p95 suggest > 200 ms 5 phút; provider circuit open > 10 phút; job dead-letter > 0; 5xx > 1 %.
+- OpenTelemetry (API → DB → TEI), Prometheus: `suggest_latency_seconds{mode,scope}`, `embedding_job_lag_seconds`, `embedding_provider_errors_total`, `vault_unlock_failures_total` (không user id), `entries_created_total{type}`.
+- `slog` JSON + request id; Sentry FE (scrub mọi field có thể là plaintext: chỉ error type + stack).
+- Alert: p95 suggest > 200 ms trong 5 phút; TEI circuit open > 10 phút; dead-letter > 0; 5xx > 1 %.
 
-### 10.4 Privacy statement (tóm tắt cho user, để trong docs/marketing)
+### 10.4 Privacy statement (docs / marketing)
 
-> Chúng tôi **không thể đọc nội dung** bạn lưu: nội dung được mã hoá trên thiết bị của bạn bằng khoá chỉ bạn có. Chúng tôi **có thể thấy** tên keyword, mô tả hint (nếu bạn nhập), thời gian tạo/sửa, số lượng và kích thước xấp xỉ entry, email và thông tin đăng nhập. Tên keyword và hint được gửi cho nhà cung cấp embedding (mặc định OpenAI, không dùng để train theo điều khoản API) để tạo gợi ý "gần nghĩa"; bạn có thể tắt semantic suggest trong Settings. Nếu bạn mất cả passphrase và recovery key, chúng tôi không thể khôi phục nội dung.
+> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước xấp xỉ. Tên mục và tag được gửi **chỉ** tới mô hình embedding **tự chạy trên máy chủ của chúng tôi** (TEI, không phải nhà cung cấp AI bên thứ ba) khi gợi ý "gần nghĩa" đang bật. Bạn tắt semantic trong Settings hoặc bằng nút `≈`. **Không có recovery key.** Quên encryption passphrase thì nội dung entry mất vĩnh viễn; reset vault xoá entry, giữ lại mục và tag.
 
 ### 10.5 Backup & DR
 
-- Postgres: WAL archiving + base backup hàng ngày (pgBackRest hoặc managed), PITR 7 ngày, restore test hàng tháng. Backup chứa ciphertext → an toàn hơn, nhưng vẫn mã hoá at-rest.
+- Postgres: WAL + base backup hàng ngày (pgBackRest hoặc managed), PITR 7 ngày, restore test hàng tháng. Backup chứa ciphertext + name/tag plaintext; mã hoá at-rest.
 - RPO 15 phút, RTO 2 giờ (MVP).
-- Vector có thể **tái tạo** từ keyword → không cần ưu tiên backup `keyword_embedding` (nhưng re-embed 10M keyword tốn tiền/thời gian → vẫn backup).
+- Vector **tái tạo** được từ name/tag → ưu tiên thấp hơn ciphertext, nhưng re-embed 10M vector tốn CPU/thời gian → vẫn backup `item_embedding` / `tag_embedding`.
 
 ---
 
@@ -1081,32 +1384,33 @@ save-all-by-keyword/
 ├─ apps/
 │  ├─ web/                      # Next.js 15 (App Router)
 │  │  ├─ app/
-│  │  │  ├─ (marketing)/[locale]/{page,pricing,docs}/…   # SSR/SSG, SEO
-│  │  │  └─ app/…                                        # authed app, noindex
-│  │  ├─ features/{omnibox,keyword,entry,vault,auth}/
-│  │  ├─ lib/crypto/            # libsodium worker + envelope codec (unit-tested, no React)
-│  │  ├─ lib/api/               # generated client từ OpenAPI
+│  │  │  ├─ (marketing)/[locale]/{page,docs}/…   # SSR/SSG, SEO — không /pricing
+│  │  │  └─ app/…                                # authed app, noindex
+│  │  ├─ features/{omnibox,item,tag,entry,json-table,vault,auth}/
+│  │  ├─ lib/crypto/            # libsodium worker + envelope (unit-tested, no React)
+│  │  ├─ lib/api/               # OpenAPI client
 │  │  ├─ messages/{en,vi}.json
 │  │  └─ e2e/                   # Playwright
 │  └─ api/                      # Go module
 │     ├─ cmd/{api,worker,migrate}/
 │     ├─ internal/
-│     │  ├─ http/               # chi router, handlers, middleware
-│     │  ├─ auth/  vault/  keyword/  entry/  suggest/  export/
-│     │  ├─ embedding/{provider.go,openai,gemini,cohere,local,noop}
-│     │  ├─ jobs/               # River workers
+│     │  ├─ http/
+│     │  ├─ auth/  vault/  item/  tag/  entry/  suggest/  export/
+│     │  ├─ embedding/{provider.go,tei,noop}
+│     │  ├─ jobs/
 │     │  └─ db/{migrations/*.sql, queries/*.sql, sqlc generated}
 │     ├─ api/openapi.yaml
 │     └─ sqlc.yaml
 ├─ packages/
-│  └─ shared-types/             # (tùy chọn) JSON schema envelope, error codes
+│  └─ shared-types/             # envelope schema, error codes
 ├─ docs/
-│  ├─ SPEC.md                   # tài liệu này
-│  ├─ adr/                      # Architecture Decision Records (0001-go-chi.md, 0002-libsodium.md, …)
+│  ├─ SPEC.md
+│  ├─ adr/
 │  └─ threat-model.md
 ├─ infra/
-│  ├─ docker-compose.yml        # postgres (pgvector/pgvector:pg16), api, worker, web, (tei optional)
-│  └─ k8s/ hoặc fly.toml        # tuỳ chọn deploy
+│  ├─ docker-compose.yml        # postgres pg16+pgvector, api, worker, web
+│  │                           # tei: profile "semantic"
+│  └─ nginx/                    # key.zone17th.click — cấu hình khi deploy
 ├─ .github/workflows/{web.yml,api.yml,e2e.yml}
 ├─ Makefile  ·  Taskfile.yml
 ├─ pnpm-workspace.yaml  ·  turbo.json
@@ -1137,30 +1441,39 @@ services:
     build: ./apps/web
     environment: { NEXT_PUBLIC_API_URL: http://localhost:8080 }
     ports: ["3000:3000"]
-  # tei:  # tuỳ chọn self-hosted embedding
-  #   image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-  #   command: ["--model-id", "BAAI/bge-m3"]
-volumes: { dbdata: {} }
+  tei:
+    profiles: ["semantic"]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    command: ["--model-id", "BAAI/bge-m3"]
+    ports: ["8081:80"]
+    volumes: [tei-data:/data]
+volumes: { dbdata: {}, tei-data: {} }
 ```
 
-`EMBEDDING_PROVIDER=noop` mặc định trong dev để không cần API key; `make dev` chạy compose + `pnpm dev`.
+Dev mặc định `EMBEDDING_PROVIDER=noop` — không cần TEI. `make dev` = compose (không profile semantic) + `pnpm dev`. Semantic local: `docker compose --profile semantic up` + `EMBEDDING_PROVIDER=tei` + `TEI_URL=http://tei:80` (hoặc `http://localhost:8081`).
+
+`AUTH_REQUIRE_EMAIL_VERIFICATION=false` trong `.env.example`.
 
 ### 11.3 CI outline
 
 | Workflow | Bước |
 |----------|------|
-| `api.yml` | `go vet`, `staticcheck`, `govulncheck`, `sqlc diff`, unit tests, integration tests với testcontainers (pgvector), build image |
-| `web.yml` | `pnpm lint`, `tsc --noEmit`, unit (Vitest) cho `lib/crypto` (**test vectors cố định**), i18n key parity check, build, Lighthouse CI cho marketing |
-| `e2e.yml` | Compose up → Playwright: signup → passphrase → add entry → unlock trên context mới → search; axe a11y |
-| release | Tag `v*` trên `main` → build & push images, sinh SBOM, publish bundle hashes |
+| `api.yml` | `go vet`, `staticcheck`, `govulncheck`, `sqlc diff`, unit, testcontainers pgvector, build |
+| `web.yml` | `pnpm lint`, `tsc --noEmit`, Vitest `lib/crypto` (test vector cố định) + json-table fixtures, i18n key parity, build, Lighthouse marketing |
+| `e2e.yml` | Compose → Playwright: signup → passphrase + checkbox → item + text entry → import JSON → unlock context mới → suggest name/tag → `#tag` filter; axe |
+| release | Tag `v*` trên `main` → images, SBOM, bundle hashes |
 
 ### 11.4 Conventions
 
-- Branching: `develop` (integration) → `main` (release). Feature branch `feat/<scope>-<short>`, PR vào `develop`, squash merge. Hotfix từ `main`, merge ngược về `develop`.
-- Commit: Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
-- Go: `gofumpt`, `golangci-lint`; package theo domain, không `utils`. TS: ESLint + Prettier, strict mode.
-- Mọi thay đổi crypto/envelope phải có ADR + test vector + review 2 người.
-- Migration: forward-only, tên `NNNN_description.up.sql/.down.sql`.
+- Branch: `develop` → `main`. Feature `feat/<scope>-<short>`, PR vào `develop`, squash. Hotfix từ `main`, merge ngược `develop`.
+- Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
+- Go: `gofumpt`, `golangci-lint`; package theo domain. TS: ESLint + Prettier, strict.
+- Đổi crypto/envelope: ADR + test vector + review 2 người.
+- Migration forward-only: `NNNN_description.up.sql` / `.down.sql`.
+
+### 11.5 Domain & proxy
+
+Domain tạm: **`key.zone17th.click`**. nginx (TLS) terminate rồi proxy `/` → Next.js, `/api` → Go. Chi tiết vhost làm sau khi có deploy; không chặn MVP local (`localhost:3000` / `:8080`).
 
 ---
 
@@ -1170,45 +1483,44 @@ volumes: { dbdata: {} }
 
 | Milestone | Nội dung | Done when |
 |-----------|----------|-----------|
-| M1 Skeleton (tuần 1–2) | Monorepo, compose, CI, Go API health, Next shell, next-intl en/vi, landing SSG | `make dev` chạy, landing en/vi deploy preview |
-| M2 Auth (tuần 2–3) | Email/password, Google, GitHub, sessions, CSRF, rate limit, audit | E2E login/logout pass |
-| M3 Vault (tuần 3–5) | libsodium worker, onboarding passphrase + RK, unlock, đổi passphrase, recovery, auto-lock | Test vectors pass; unlock trên browser context mới |
-| M4 Keywords & Entries (tuần 5–6) | CRUD, omnibox `kw: text`, keyword page, edit/delete/undo, N–N keyword | US2, US4 pass |
-| M5 Suggest (tuần 6–8) | Lexical (trgm/prefix), embedding pipeline + OpenAI provider, hybrid RRF, degraded mode, cache | p95 targets §6.9 trên dataset 100k synthetic |
-| M6 Polish & launch (tuần 8–10) | Empty/error states, a11y audit, dark mode, encrypted export, privacy page, pentest nội bộ | Beta mở cho 50 user |
+| M1 Skeleton (tuần 1–2) | Monorepo, compose (kèm profile `semantic`), CI, Go health, Next shell, next-intl en/vi, landing SSG **không pricing** | `make dev` chạy; preview en/vi |
+| M2 Auth (tuần 2–3) | Email/password, Google, GitHub, sessions, CSRF, rate limit, audit; `AUTH_REQUIRE_EMAIL_VERIFICATION` default false | E2E login/logout |
+| M3 Vault (tuần 3–5) | libsodium worker, onboarding passphrase + checkbox "không khôi phục", unlock, đổi passphrase, auto-lock, **Nhớ thiết bị** (opt-in, mặc định off) | Test vector; unlock context mới; DevKey silent unlock |
+| M4 Items, tags, typed entries (tuần 5–7) | CRUD item (trùng name), tag catalog, `item_tag` (max 20), entry `text` + `json` (max 200), omnibox `name: text` + `#tag`, picker trùng tên, JSON table lồng + import modal | US2–US8 |
+| M5 Suggest (tuần 7–9) | Lexical name+tag, TEI `bge-m3` 1024, hybrid RRF, hai tầng semantic + `≈`, degraded | p95 §6.9 trên dataset synthetic |
+| M6 Polish (tuần 9–10) | Empty/error, a11y, dark, encrypted export, privacy page, pentest nội bộ | Beta |
 
-### Phase 2 — Mở rộng (sau MVP, ~8 tuần)
+MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag. **Không** gồm: recovery, pricing, provider OpenAI/Gemini/Cohere, private name, kiểu link/file/image.
 
-- Client-side content search (in-memory index trong Worker) trên entries đã tải.
-- Multi-device polish: delta sync `/entries/changes`, realtime (SSE) thông báo thay đổi, quản lý thiết bị, "Nhớ thiết bị".
-- Import (encrypted backup + JSON), decrypted export UI.
-- Keyword `is_private` (blind index) — nếu user cần (câu hỏi mở Q3).
-- Self-hosted embedding (bge-m3 qua TEI) làm provider thứ hai; benchmark chất lượng vi/en.
-- Keyword merge/rename UX, bulk actions, RLS defense-in-depth, ConnectRPC evaluation.
+### Phase 2 — Mở rộng (~8 tuần)
 
-### Phase 3 — Sharing & mở rộng nội dung
+- Client-side content search trên entry đã decrypt (Worker).
+- Kiểu thêm: `link` (unfurl **client-side**), `file` / `image` (blob mã hoá, object storage).
+- Import decrypted JSON / encrypted backup UI; merge tag khi rename trùng; move entry giữa item (tuỳ).
+- Multi-device: `/entries/changes`, SSE, quản lý phiên (Nhớ thiết bị **đã có từ MVP**).
+- JSON Schema **tuỳ chọn** per item — chỉ nếu Q2 chốt làm.
+- RLS defense-in-depth; ConnectRPC evaluation.
 
-- Chia sẻ keyword read-only giữa user qua X25519 sealed box + ShareKey; accept/revoke; UI "shared with me".
-- Content types: link (unfurl **client-side** để không lộ URL), markdown, file nhỏ (encrypted blob storage S3-compatible).
-- Browser extension: quick-save + trusted verifier cho bundle hash.
-- Public API tokens (scoped) cho automation.
+### Phase 3 — Sharing & client khác
+
+- Chia sẻ **Item** (read-only) qua X25519 sealed box + ShareKey; accept/revoke; "shared with me".
+- Browser extension: quick-save + trusted verifier.
+- Public API token scoped.
+- Native mobile: ngoài scope cho đến khi web ổn.
 
 ---
 
 ## 13. Câu hỏi mở còn lại
 
-| # | Câu hỏi | Gợi ý mặc định nếu không phản hồi |
-|---|---------|-----------------------------------|
-| Q1 | Cho phép user **bỏ qua** recovery key khi onboarding, hay bắt buộc? | Cho phép, nhưng banner đỏ persistent |
-| Q2 | Có cần **email verification** trước khi tạo vault không (chống spam + đảm bảo recovery liên lạc)? | Có, nhưng cho dùng app ngay, chặn export cho đến khi verify |
-| Q3 | Có làm **keyword private** (blind index, mất autocomplete) ở Phase 2 không? | Chờ feedback beta |
-| Q4 | Mặc định **gửi keyword cho OpenAI** có chấp nhận được với đối tượng user mục tiêu, hay self-host bge-m3 từ đầu? | OpenAI mặc định + toggle tắt semantic; self-host Phase 2 |
-| Q5 | Giới hạn kích thước một entry (đề xuất 256 KiB ciphertext) và số keyword/entry (đề xuất 10)? | Như đề xuất |
-| Q6 | Free/paid tiers cho trang pricing: giới hạn gì (số entry? semantic suggest chỉ paid?) | Free 1.000 entry, semantic bật cho tất cả |
-| Q7 | Tên miền & brand, tên hiển thị sản phẩm (giữ `save-all-by-keyword` hay tên ngắn)? | — |
-| Q8 | "Nhớ thiết bị này" có trong MVP hay Phase 2? | Phase 2 (giảm bề mặt ở MVP) |
-| Q9 | Auto-lock mặc định 15 phút — quá ngắn/quá dài? | 15 phút, cấu hình 5–120 |
-| Q10 | Có cho user tự chọn KDF mem thấp hơn trên mobile yếu không, hay tự động đo? | Tự động đo, tối thiểu 32 MiB |
+Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; không recovery; `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `key.zone17th.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never) và silent re-unlock nếu nhớ thiết bị; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
+
+| # | Câu hỏi | Khuyến nghị trong spec này |
+|---|---------|----------------------------|
+| Q1 | Tên tiếng Anh của thực thể chính: **Item** vs Record vs Note? | **Item** (VI: mục) — trung tính, URL `/items`, không gợi "một note / một hàng DB". Chưa khoá brand copy cuối |
+| Q2 | Entry `json`: **freeform** hay bắt JSON Schema? | **Freeform** ở MVP (mọi JSON hợp lệ ≤ 256 KiB). Schema per-item = Phase 2 nếu có nhu cầu form cố định |
+| Q3 | Trần **20 tag / item** và **200 entry / item**? | Giữ như đề xuất — đủ rộng, chặn dump; dễ nâng bằng migration + hằng số |
+
+Không còn câu hỏi về recovery, OpenAI, pricing, private keyword, nhớ thiết bị "có vào MVP không", hay KDF mem thấp hơn.
 
 ---
 
@@ -1216,29 +1528,34 @@ volumes: { dbdata: {} }
 
 | Thuật ngữ | Nghĩa |
 |-----------|-------|
-| **Keyword** | Nhãn plaintext do user đặt, unique per-user theo dạng `normalized`; có `display` và `hint` |
-| **Entry** | Một mẩu nội dung (text ở MVP) được mã hoá E2E, gắn với ≥ 1 keyword |
-| **Hint** | Mô tả ngắn plaintext, opt-in, giúp embedding/semantic suggest |
-| **Omnibox** | Ô nhập duy nhất vừa search vừa add (`keyword: text`) |
-| **E2E (end-to-end encryption)** | Mã hoá/giải mã chỉ diễn ra trên thiết bị user; server chỉ giữ ciphertext |
-| **Passphrase** | Cụm mật khẩu riêng (khác password đăng nhập) dùng derive KEK |
-| **KEK (Key Encryption Key)** | Khoá derive từ passphrase bằng Argon2id, chỉ dùng để wrap/unwrap VK |
-| **VK (Vault Key)** | Khoá đối xứng 256-bit random mã hoá mọi entry |
-| **Recovery Key (RK)** | Khoá 256-bit random hiển thị một lần, cũng wrap VK; dùng khi quên passphrase |
-| **Wrap / seal** | Mã hoá một khoá bằng khoá khác (AEAD) |
-| **Envelope** | Metadata phiên bản đi kèm ciphertext: `v, alg, key_id, nonce` |
-| **AEAD** | Authenticated Encryption with Associated Data — XChaCha20-Poly1305 ở đây |
-| **Argon2id** | Hàm derive khoá từ mật khẩu, chống GPU/ASIC brute-force |
-| **pgvector** | Extension Postgres lưu vector và tìm kiếm ANN (HNSW) |
-| **pg_trgm** | Extension Postgres tìm kiếm fuzzy bằng trigram |
-| **HNSW** | Chỉ mục ANN (Hierarchical Navigable Small World) cho vector |
-| **RRF (Reciprocal Rank Fusion)** | Cách gộp nhiều bảng xếp hạng: \(\sum 1/(k+\text{rank})\) |
-| **Tier** | Mức ưu tiên UX của suggestion: prefix > fuzzy > semantic > recent |
-| **Embedding** | Vector số biểu diễn nghĩa của text, dùng cho semantic search |
-| **Re-embed** | Tính lại toàn bộ vector khi đổi model/provider |
-| **Degraded mode** | Suggest chỉ lexical khi provider embedding lỗi |
-| **Blind index** | HMAC của giá trị để exact-match trên dữ liệu mã hoá (ý tưởng keyword private) |
-| **Sealed box** | `crypto_box_seal` libsodium: mã hoá cho public key X25519 người nhận (dùng cho sharing tương lai) |
-| **SSR / SSG** | Server-Side Rendering / Static Site Generation trong Next.js |
-| **River** | Job queue Postgres-backed cho Go |
-| **sqlc** | Sinh code Go type-safe từ SQL |
+| **Item** (mục) | Thực thể chính: có `name` (title/mô tả, **trùng được**, plaintext), tag, và nhiều entry. Khuyến nghị EN trong spec |
+| **name** | Trường title/mô tả chính của Item; server plaintext để search |
+| **Tag** | Nhãn first-class, catalog per-user, unique theo `normalized`; plaintext |
+| **ItemTag** | Bảng nối N–N Item ↔ Tag |
+| **Entry** | Một mẩu thuộc **một** item; `type` plaintext; body ciphertext |
+| **type** | `text` \| `json` (MVP); schema sẵn `link` \| `file` \| `image` |
+| **json (group/table)** | Entry lưu JSON document; UI bảng lồng nhau; luôn giữ JSON gốc |
+| **Keyword** | *Cũ, đã thay bằng `Item.name` + `Tag`.* Không còn entity keyword, không N–N entry↔keyword |
+| **Hint** | Mô tả ngắn plaintext opt-in trên Item, hỗ trợ embedding |
+| **Omnibox** | Ô vừa search name/tag vừa quick-add `name: text`; `#tag` lọc/gán |
+| **E2E** | Mã hoá/giải mã body chỉ trên thiết bị; server giữ ciphertext |
+| **Passphrase** | Cụm riêng, khác password đăng nhập; derive KEK |
+| **KEK** | Key derive Argon2id từ passphrase; wrap/unwrap VK |
+| **VK (Vault Key)** | Khoá đối xứng 32 B; mã hoá mọi entry body |
+| **DevKey** | WebCrypto non-extractable trên thiết bị đã "nhớ"; không có trên server |
+| **Wrap / seal** | AEAD một key bằng key khác |
+| **Envelope** | `{v, alg, key_id, nonce}` đi kèm ciphertext |
+| **AEAD** | XChaCha20-Poly1305 IETF |
+| **Argon2id** | KDF chống brute-force GPU/ASIC; vault cố định 64 MiB / t=3 / p=1 |
+| **pgvector** | Vector + ANN (HNSW) trong Postgres |
+| **pg_trgm** | Fuzzy trigram |
+| **HNSW** | Chỉ mục ANN; ở đây `vector(1024)` |
+| **RRF** | Gộp hạng: \(\sum 1/(k+\mathrm{rank})\) |
+| **Tier** (ranking) | Ưu tiên UX prefix > fuzzy > semantic > recent — **không** phải gói giá |
+| **TEI** | Hugging Face Text Embeddings Inference, self-host |
+| **bge-m3** | Model embedding mặc định, 1024 dims, multilingual |
+| **Re-embed** | Tính lại vector khi đổi name/tag hoặc đổi model |
+| **Degraded mode** | Suggest lexical-only khi TEI lỗi |
+| **Sealed box** | `crypto_box_seal` — sharing Item (Phase 3) |
+| **River** | Job queue Postgres-backed (Go) |
+| **sqlc** | Sinh Go type-safe từ SQL |
