@@ -1,8 +1,8 @@
-# save-all-by-keyword — Project Specification
+# engram — Project Specification
 
-> Phiên bản: 0.5 · Ngày: 2026-09-14 · Trạng thái: đã chốt quyền rewrap từ VK, JSON edit theo source span, envelope JCS, giới hạn thu hồi wrap và search ổn định (xem §3, §5, §6)
+> Phiên bản: 0.6 · Ngày: 2026-09-15 · Trạng thái: chốt tên sản phẩm **engram**; `mockups/` là **tiêu chuẩn thiết kế** ràng buộc cho §7 (xem §1.1, §7.0, §13 Q1)
 >
-> Tài liệu này là spec tổng thể cho sản phẩm **save-all-by-keyword**: lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
+> Tài liệu này là spec tổng thể cho sản phẩm **engram** (repo `save-all-by-keyword`): lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
 
 ## Mục lục
 
@@ -27,7 +27,7 @@
 
 ### 1.1 Tổng quan
 
-**save-all-by-keyword** là web app (online-only) cho phép người dùng lưu nhanh các mẩu thông tin dưới một **mục (Item)**: một tên mô tả (`name`), kèm **nhiều tag**, và **nhiều entry** — mỗi entry có **kiểu lưu** (`text` hoặc `json` ở MVP). Tìm lại bằng cách gõ vài ký tự vào một ô omnibox.
+**engram** là web app (online-only) cho phép người dùng lưu nhanh các mẩu thông tin dưới một **mục (Item)**: một tên mô tả (`name`), kèm **nhiều tag**, và **nhiều entry** — mỗi entry có **kiểu lưu** (`text` hoặc `json` ở MVP). Tìm lại bằng cách gõ vài ký tự vào một ô omnibox.
 
 Điểm khác biệt:
 
@@ -38,7 +38,9 @@
 - **Server-first, multi-user, multi-device**: đăng nhập máy khác, **unlock vault** bằng passphrase, **passkey (PRF)**, hoặc **một recovery key** (rồi đặt passphrase mới).
 - **Miễn phí, embedding self-host**: không gói trả phí; vector chạy TEI trong hạ tầng sản phẩm (`BAAI/bge-m3`). Name và tag **không** gửi ra nhà cung cấp AI bên thứ ba.
 
-Tên repo/sản phẩm vẫn là `save-all-by-keyword` (lịch sử). Thực thể chính **không** còn là "keyword". Xem §2 và §14.
+**Tên sản phẩm: `engram`** — dấu vết vật lý mà một ký ức để lại. Viết thường trong mọi ngữ cảnh (`engram`, không `Engram`). Chốt ở v0.6, thay cho tên tạm cũ; lý do chọn và các tên đã loại nằm trong [README](../README.md#tên). **Tên repo giữ `save-all-by-keyword`** vì lịch sử, và thư mục gốc trong §11.1 giữ nguyên. Chưa tra domain và nhãn hiệu — phải kiểm trước khi đăng ký gì.
+
+Thực thể chính **không** còn là "keyword". Xem §2 và §14.
 
 ### 1.2 Mục tiêu (Goals)
 
@@ -998,6 +1000,42 @@ Thứ tự: server → user → breaker → `len(q) ≥ 3`. Tắt user **không*
 
 ## 7. UI/UX spec
 
+### 7.0 Tiêu chuẩn thiết kế — `mockups/`
+
+Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế ràng buộc** cho mục §7 này. Plan và implementation bám theo bộ đó, không dựng lại giao diện từ mô tả chữ.
+
+| Màn | File | Mục spec |
+|---|---|---|
+| Landing | `mockups/landing.html` | §11.1 (marketing route) |
+| Tìm kiếm / vỏ app | `mockups/index.html` | §7.2 |
+| Chi tiết mục | `mockups/item.html` | §7.3, §7.4, §7.5 |
+| Cài đặt | `mockups/settings.html` | §7.6 |
+
+**Phân vai khi mockup và spec lệch nhau:**
+
+- **Mockup thắng** về thị giác: bố cục, khoảng cách, type scale, màu, bo góc, trạng thái hover/focus, cách xuống hàng ở mobile.
+- **Spec thắng** về hành vi và dữ liệu: thứ tự ranking, điều kiện hiển thị, luồng crypto, tên field, mã lỗi.
+- Lệch ngoài hai nhóm trên → sửa một trong hai rồi ghi lại, **không** để hai bản mô tả cùng tồn tại.
+
+**Nguồn sự thật thị giác** là `mockups/tokens.css`. Token tách hai tầng:
+
+- **Tầng chức năng** (neutral, surface, border, success/warning/error, type scale, radius) lấy nguyên từ [`clickup.design.md`](../clickup.design.md) — không đổi khi làm brand.
+- **Tầng thương hiệu** engram, đúng các token sau: `--accent` `#B4128F` (6.13:1 trên trắng, dark `#FF7AD9` 7.79:1 trên canvas), `--pale-accent`, `--logo-ink` `#202020`, `--logo-magenta` `#FA12E3`, `--logo-cyan` `#12D0FA`.
+
+Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên này để diff giữa mockup và app còn đọc được.
+
+**Mockup có chủ đích thể hiện các quyết định trong spec**, không phải minh hoạ suông — đây là những chỗ implementation dễ làm sai:
+
+- Nhóm **"Gần nghĩa" nằm riêng, dưới các nhóm lexical**; bật/tắt semantic không xáo trộn thứ tự lexical (§6.4).
+- **Trùng tên mục là hợp lệ** — quick-add hỏi chọn mục nào, kèm lựa chọn tạo mục mới cùng tên (§3.4).
+- **Bảng JSON không mất mát**: cột theo thứ tự khoá trong nguồn; hàng có khoá trùng rơi về bảng field/value; số lớn hiện nguyên văn (§7.4).
+- **Khoá vault chỉ che nội dung entry** — tên mục, tag, số entry vẫn đọc được (§5.1).
+- **Đổi passphrase không cần passphrase cũ**; "Đặt lại vault" nằm sau danh sách đường mở khoá phải thử trước (§3.9, §3.10).
+
+**Ngoài phạm vi bộ mockup hiện tại** — phải thiết kế thêm trước khi implement: onboarding đăng ký + hiển thị 10 recovery key (§3.2), màn unlock vault trên thiết bị mới (§3.3, §3.14), empty/error states (§7.7). Mockup mới bổ sung vào đúng thư mục này và cập nhật bảng trên.
+
+Mockup dùng dữ liệu giả và **không có mã hoá thật** — mọi thứ "khoá/mở khoá" trong đó chỉ là trạng thái UI.
+
 ### 7.1 Nguyên tắc
 
 - Một màn chính, một ô. Omnibox command-palette, focus `/` hoặc `Ctrl+K`.
@@ -1010,7 +1048,7 @@ Thứ tự: server → user → breaker → `len(q) ≥ 3`. Tắt user **không*
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  ⌂ save-all-by-keyword                        🔓 Vault   EN ▾   ☾   👤 │
+│  ⌂ engram                                     🔓 Vault   EN ▾   ☾   👤 │
 ├──────────────────────────────────────────────────────────────────────┤
 │   ┌──────────────────────────────────────────────────────────────┐   │
 │   │ 🔍  wif▏                                           [≈ on] ⌘K  │   │
@@ -1196,7 +1234,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 
 - Dark/light: `prefers-color-scheme` + override per-user; token shadcn.
 - ≥ 1024 px: cột trái recent items/tags, phải nội dung. < 768 px: một cột, omnibox sticky, dropdown full-width.
-- a11y: `combobox`+`listbox`, contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`.
+- a11y: `combobox`+`listbox`, contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`. Accent thương hiệu đã đo đạt ngưỡng ở cả hai theme (§7.0) — đổi accent phải đo lại, không ước lượng.
 - Shortcuts: `/` hoặc `Ctrl/⌘+K` · `Esc` · `↑↓ Enter Tab` · `Ctrl+Enter` tạo item · `Ctrl+S` lưu · `L` lock · `?`.
 - i18n: `next-intl`; marketing `/(marketing)/[locale]/…`, `en` mặc định (`/` = en, `/vi/...`); app `/app/*` không gắn locale trên URL — `user.locale` ← `Accept-Language` ← `en`. Messages `en.json` / `vi.json`; CI fail thiếu key.
 
@@ -1721,6 +1759,9 @@ save-all-by-keyword/
 │  ├─ SPEC.md
 │  ├─ adr/
 │  └─ threat-model.md
+├─ mockups/                     # tiêu chuẩn thiết kế §7.0 — HTML tĩnh, không build
+│  └─ tokens.css                # nguồn sự thật thị giác; port sang token app khi code
+├─ clickup.design.md            # nguồn tầng chức năng của tokens.css
 ├─ infra/
 │  ├─ docker-compose.yml        # postgres pg16+pgvector, api, worker, web
 │  │                           # tei: profile "semantic"
@@ -1837,11 +1878,13 @@ MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag, **
 
 Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = Phase 2** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `key.zone17th.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
 
+**Chốt v0.6:** tên sản phẩm là `engram`, viết thường, repo giữ `save-all-by-keyword`; domain và nhãn hiệu **chưa tra**. `mockups/` là tiêu chuẩn thiết kế ràng buộc cho §7 — mockup thắng về thị giác, spec thắng về hành vi và dữ liệu (§7.0). Tầng token chức năng giữ nguyên ClickUp, chỉ tầng thương hiệu là của engram.
+
 **Chốt v0.5:** giữ VK đủ quyền rewrap KEK, kèm re-auth tài khoản + audit/notice (không đòi passphrase cũ); RK single-use/passkey revoke chỉ trên live server, backup không bị thu hồi; rotate VK Phase 2. Body JSON dùng raw text + source-span splice; envelope dùng JCS/UUID client/`ct_enc` bắt buộc. Lexical order cố định, semantic append, recency chỉ tie-break; không RRF trong MVP. Exact dưới ngưỡng benchmark, hash-partition + HNSW cho corpus lớn; mọi model generation dùng shadow tables + cutover; deployment re-enable sửa vector thiếu hoặc stale. User toggle không tắt indexing, không thêm setting riêng để opt-out indexing ở MVP.
 
 | # | Câu hỏi | Khuyến nghị trong spec này |
 |---|---------|----------------------------|
-| Q1 | Tên tiếng Anh của thực thể chính: **Item** vs Record vs Note? | **Item** (VI: mục) — trung tính, URL `/items`, không gợi "một note / một hàng DB". Chưa khoá brand copy cuối |
+| Q1 | Tên tiếng Anh của thực thể chính: **Item** vs Record vs Note? | **Item** (VI: mục) — trung tính, URL `/items`, không gợi "một note / một hàng DB". Tên *sản phẩm* đã chốt là `engram` (§1.1), độc lập với tên thực thể |
 | Q2 | Entry `json`: **freeform** hay bắt JSON Schema? | **Freeform** ở MVP (mọi JSON hợp lệ ≤ 256 KiB). Schema per-item = Phase 2 nếu có nhu cầu form cố định |
 | Q3 | Trần **20 tag / item** và **200 entry / item**? | Giữ như đề xuất — đủ rộng, chặn dump; dễ nâng bằng migration + hằng số |
 | Q4 | Passkey dùng để **login** ngay trong MVP? | **Không.** MVP = unlock vault (`get` + PRF) sau cookie OAuth/password. Login-with-passkey = Phase 2, cùng credential nếu resident |
@@ -1855,6 +1898,9 @@ Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyw
 
 | Thuật ngữ | Nghĩa |
 |-----------|-------|
+| **engram** | Tên sản phẩm. Trong thần kinh học: dấu vết vật lý một ký ức để lại. Luôn viết thường. Repo vẫn tên `save-all-by-keyword` |
+| **Mockup** | Bộ HTML tĩnh trong `mockups/`; **tiêu chuẩn thiết kế** cho §7, không phải bản demo dùng một lần (§7.0) |
+| **Tầng chức năng / tầng thương hiệu** | Hai nhóm token trong `mockups/tokens.css`: nhóm đầu lấy từ ClickUp và không đổi khi làm brand, nhóm sau là accent + logo của engram |
 | **Item** (mục) | Thực thể chính: có `name` (title/mô tả, **trùng được**, plaintext), tag, và nhiều entry. Khuyến nghị EN trong spec |
 | **name** | Trường title/mô tả chính của Item; server plaintext để search |
 | **Tag** | Nhãn first-class, catalog per-user, unique theo `normalized`; plaintext |

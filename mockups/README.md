@@ -3,6 +3,10 @@
 Bộ mockup tĩnh cho **engram** (`key.zone17th.click`). HTML thuần + Tailwind Play CDN, không build, không backend.
 Dữ liệu là giả và **không có mã hoá thật** — mọi thứ "khoá/mở khoá" ở đây chỉ là trạng thái UI.
 
+Đây là **tiêu chuẩn thiết kế ràng buộc** cho §7 của [spec](../docs/SPEC.md#70-tiêu-chuẩn-thiết-kế--mockups), không phải bản demo
+dùng một lần. Khi lệch nhau: **mockup thắng** về thị giác (bố cục, khoảng cách, màu, type, trạng thái),
+**spec thắng** về hành vi và dữ liệu (ranking, điều kiện hiển thị, luồng crypto, tên field).
+
 ## Chạy
 
 ```bash
@@ -21,7 +25,9 @@ Rồi mở <http://localhost:5178/landing.html>. Trong Claude Code có sẵn lau
 | `item.html` | §7.3, §7.4, §7.5 | Chi tiết mục: tên + tag + entry; entry `json` xem dạng bảng; modal nhập JSON. |
 | `settings.html` | §7.6 | Tài khoản, Bảo mật (passphrase / recovery key / passkey / phiên), Tìm kiếm, Dữ liệu. |
 
-Ngoài phạm vi bản này: onboarding và màn mở khoá vault (§7.1) — mới chỉ có trạng thái khoá/mở ngay trong app.
+Ngoài phạm vi bản này, phải thiết kế thêm trước khi implement: onboarding đăng ký + hiển thị 10 recovery key (§3.2),
+màn unlock vault trên thiết bị mới (§3.3, §3.14), empty/error states (§7.7). Hiện mới có trạng thái khoá/mở ngay trong app.
+Thêm màn mới thì bổ sung vào thư mục này **và** cập nhật bảng ở §7.0 của spec.
 
 ## File dùng chung
 
