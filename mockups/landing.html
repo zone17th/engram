@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engram — một phần trí nhớ của bạn</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<!-- ================= nav ================= -->
+<div class="max-w-container mx-auto px-5 pt-5">
+  <nav class="flex items-center gap-4 rounded-pill px-5 py-3" style="background:var(--canvas);border:1px solid var(--border)">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+    </a>
+    <div class="hidden md:flex items-center gap-1 ml-4">
+      <a href="#cachdung" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Cách dùng</a>
+      <a href="#riengtu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Riêng tư</a>
+      <a href="#khoiphuc" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Khôi phục</a>
+    </div>
+    <div class="ml-auto flex items-center gap-2">
+      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+      <a href="index.html" class="btn btn-tertiary no-underline !text-body hidden sm:inline-flex">Đăng nhập</a>
+      <a href="index.html" class="btn btn-primary no-underline">Tạo tài khoản</a>
+    </div>
+  </nav>
+</div>
+
+<!-- ================= hero: ô tìm kiếm thật, gõ thử được ================= -->
+<header class="max-w-container mx-auto px-5 pt-16 pb-6 md:pt-24">
+  <div class="max-w-[1000px]">
+    <h1 class="t-hero mb-5">Gõ một từ bạn còn nhớ.<br>Thấy lại thứ bạn đã quên.</h1>
+    <p class="t-body-lg max-w-[62ch]" style="color:var(--muted)">
+      Mật khẩu wifi, cấu hình router, số hợp đồng, mã bảo hành. Lưu bằng từ khoá bạn sẽ nghĩ tới,
+      không phải thư mục bạn sẽ không mở lại.
+    </p>
+  </div>
+</header>
+
+<section class="max-w-container mx-auto px-5 pb-16">
+  <div class="panel p-6 md:p-10">
+    <div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_260px] items-start">
+      <div class="min-w-0">
+        <div class="relative" data-omnibox id="omni">
+          <label class="omnibox-shell !py-[18px] !rounded-[var(--r-xl)]">
+            <svg width="22" height="22" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="flex:none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
+              <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+            <input class="omnibox-input !text-[22px]" placeholder="Thử gõ: wifi" autocomplete="off" spellcheck="false" aria-label="Thử ô tìm kiếm">
+          </label>
+          <!-- Ở hero, gợi ý nằm trong luồng (không absolute) để panel cao theo kết quả,
+               đọc như một ảnh sản phẩm mà gõ được. -->
+          <div data-pop hidden class="popover mt-2.5" role="listbox" aria-label="Gợi ý"></div>
+        </div>
+        <p class="t-caption mt-3" style="color:var(--muted)">
+          Dữ liệu mẫu, gõ thoải mái. Thử <button class="mono underline decoration-dotted" data-fill="mật khẩu" style="color:var(--link);background:none;border:0;cursor:pointer;padding:0;font-size:13px">mật khẩu</button>
+          — không có mục nào tên vậy, nhưng bạn vẫn tìm ra.
+        </p>
+      </div>
+
+      <div class="flex flex-col gap-4 lg:pt-1">
+        <div>
+          <p class="t-label mb-1.5" style="color:var(--muted)">Khớp chữ</p>
+          <p class="t-body m-0">Gõ đúng đầu từ thì lên trước. Sai dấu, thiếu dấu, gõ tắt vẫn ra.</p>
+        </div>
+        <hr class="rule">
+        <div>
+          <p class="t-label mb-1.5" style="color:var(--muted)">Gần nghĩa</p>
+          <p class="t-body m-0">Nhóm riêng phía dưới. Bật hay tắt cũng không xáo trộn thứ tự bạn đã quen.</p>
+        </div>
+        <hr class="rule">
+        <div>
+          <p class="t-label mb-1.5" style="color:var(--muted)">Lưu ngay tại đây</p>
+          <p class="t-body m-0">Gõ <span class="mono text-[14px]">wifi #nhà: nội dung</span> rồi Enter. Không cần mở màn khác.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= tường từ khoá ================= -->
+<section class="max-w-container mx-auto px-5 pb-20">
+  <h2 class="t-title-md mb-1">Người ta lưu gì ở đây</h2>
+  <p class="t-body-lg mb-7" style="color:var(--muted)">Toàn thứ nhỏ, hay cần, và luôn nằm ở chỗ không nhớ nổi.</p>
+  <div class="flex flex-wrap gap-2">
+    <span class="chip chip-lg">wifi</span>
+    <span class="chip chip-lg">mã số thuế</span>
+    <span class="chip chip-lg">docker compose</span>
+    <span class="chip chip-lg">api key</span>
+    <span class="chip chip-lg">hợp đồng thuê nhà</span>
+    <span class="chip chip-lg">số tài khoản</span>
+    <span class="chip chip-lg">vlan</span>
+    <span class="chip chip-lg">biển số xe</span>
+    <span class="chip chip-lg">mã bảo hành</span>
+    <span class="chip chip-lg">dns nội bộ</span>
+    <span class="chip chip-lg">thẻ bảo hiểm</span>
+    <span class="chip chip-lg">ssh key</span>
+    <span class="chip chip-lg">lịch tiêm của bé</span>
+    <span class="chip chip-lg">wifi khách</span>
+    <span class="chip chip-lg">mã pin thẻ</span>
+    <span class="chip chip-lg">cấu hình k8s</span>
+    <span class="chip chip-lg">seri điều hoà</span>
+    <span class="chip chip-lg">mật khẩu wifi bố mẹ</span>
+  </div>
+</section>
+
+<!-- ================= JSON như bảng ================= -->
+<section id="cachdung" class="max-w-container mx-auto px-5 pb-20">
+  <div class="grid gap-6 lg:grid-cols-2 items-start">
+    <div class="lg:pt-6">
+      <h2 class="t-title-md mb-3">Dán JSON vào, đọc như bảng</h2>
+      <p class="t-body-lg mb-4" style="color:var(--muted)">
+        Cấu hình router, response API, file export — dán nguyên si. Mục lồng nhau mở ra từng tầng,
+        mảng thành bảng có cột.
+      </p>
+      <p class="t-body" style="color:var(--muted)">
+        Sửa một ô thì chỉ ô đó đổi. Số dài như <span class="mono text-[14px]">9007199254740993</span>
+        giữ nguyên từng chữ số, không bị làm tròn sau lưng bạn.
+      </p>
+    </div>
+
+    <div class="card overflow-hidden" data-seg-scope>
+      <div class="flex flex-wrap items-center gap-3 px-4 py-3" style="background:var(--surface);border-bottom:1px solid var(--border)">
+        <span class="badge-type badge-json">json</span>
+        <span class="text-[15px] font-semibold">Cấu hình router</span>
+        <div class="seg ml-auto" data-seg>
+          <button data-target="tbl" aria-pressed="true">Bảng</button>
+          <button data-target="raw" aria-pressed="false">JSON thô</button>
+        </div>
+      </div>
+      <div data-view="tbl" id="demoTable" class="overflow-x-auto"></div>
+      <pre data-view="raw" hidden class="json-raw" id="demoRaw"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ================= riêng tư ================= -->
+<section id="riengtu" class="max-w-container mx-auto px-5 pb-20">
+  <div class="rounded-section p-8 md:p-12" style="background:var(--deep-panel);color:#fff">
+    <div class="grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
+      <div>
+        <h2 class="t-title-md mb-4" style="color:#fff">Nói thẳng chỗ nào mã hoá, chỗ nào không</h2>
+        <p class="t-body-lg mb-4" style="color:rgba(255,255,255,.72)">
+          Nội dung entry được khoá ngay trên trình duyệt bằng khoá chỉ máy bạn giữ. Chúng tôi không có bản sao,
+          và không có cách nào đọc.
+        </p>
+        <p class="t-body-lg m-0" style="color:rgba(255,255,255,.72)">
+          Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Nếu bạn bật tìm gần nghĩa,
+          hai thứ đó được gửi tới máy chủ nhúng do chúng tôi tự vận hành. Nội dung entry thì không, kể cả khi bật.
+        </p>
+      </div>
+      <div class="flex flex-col gap-3">
+        <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
+          <p class="t-label mb-1" style="color:var(--ai-cyan)">Được mã hoá</p>
+          <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Nội dung mọi entry text và json.</p>
+        </div>
+        <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
+          <p class="t-label mb-1" style="color:var(--warning)">Không mã hoá</p>
+          <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Tên mục, tên tag, thời điểm sửa, số lượng entry.</p>
+        </div>
+        <p class="mono text-[12px] m-0 pt-1" style="color:rgba(255,255,255,.45)">
+          XChaCha20-Poly1305 · Argon2id · khoá không rời trình duyệt
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= khôi phục ================= -->
+<section id="khoiphuc" class="max-w-container mx-auto px-5 pb-20">
+  <div class="panel-agent p-8 md:p-12">
+    <div class="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center">
+      <div>
+        <h2 class="t-title-md mb-3">Quên passphrase không phải là mất hết</h2>
+        <p class="t-body-lg m-0" style="color:var(--body)">
+          Vì chúng tôi không giữ khoá của bạn, nên bạn cần đường về của riêng mình. Có ba đường, dựng sẵn từ lúc đăng ký.
+        </p>
+      </div>
+      <div class="flex flex-col gap-2.5">
+        <div class="rounded-xl p-4" style="background:var(--canvas)">
+          <p class="text-[15px] font-semibold m-0 mb-1">10 recovery key</p>
+          <p class="t-body m-0" style="color:var(--muted)">In ra, cất đi. Mỗi key mở được vault một mình, dùng xong thì thôi.</p>
+        </div>
+        <div class="rounded-xl p-4" style="background:var(--canvas)">
+          <p class="text-[15px] font-semibold m-0 mb-1">Passkey</p>
+          <p class="t-body m-0" style="color:var(--muted)">Vân tay hoặc khoá bảo mật. Mở vault không cần gõ gì.</p>
+        </div>
+        <div class="rounded-xl p-4" style="background:var(--canvas)">
+          <p class="text-[15px] font-semibold m-0 mb-1">Thiết bị đã nhớ</p>
+          <p class="t-body m-0" style="color:var(--muted)">Máy quen của bạn mở thẳng, máy lạ thì không.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= CTA ================= -->
+<section class="max-w-container mx-auto px-5 pb-20">
+  <div class="text-center py-12">
+    <h2 class="t-headline-md mb-4">Bắt đầu bằng một từ khoá</h2>
+    <p class="t-body-lg mb-8 max-w-[52ch] mx-auto" style="color:var(--muted)">
+      Miễn phí, không giới hạn số mục. Cần email và một passphrase bạn không dùng ở đâu khác.
+    </p>
+    <a href="index.html" class="btn btn-primary no-underline !px-7 !py-4 !text-[16px]">Tạo tài khoản</a>
+  </div>
+</section>
+
+<!-- ================= footer ================= -->
+<footer class="max-w-container mx-auto px-5 pb-8">
+  <div class="rounded-section p-8 md:p-10" style="background:var(--dark-footer);color:#fff">
+    <div class="flex flex-wrap gap-8 justify-between items-start">
+      <div class="max-w-[280px]">
+        <div class="flex items-center gap-2.5 mb-3">
+          <svg width="26" height="26" viewBox="0 0 28 28" aria-hidden="true">
+            <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+            <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+          </svg>
+          <span class="font-display font-extrabold text-[18px] tracking-[-.04em]" style="color:#fff">engram</span>
+        </div>
+        <p class="t-caption m-0" style="color:rgba(255,255,255,.55)">key.zone17th.click</p>
+      </div>
+
+      <div class="flex gap-12 flex-wrap">
+        <div>
+          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Sản phẩm</p>
+          <div class="flex flex-col gap-2 text-[15px]">
+            <a href="#cachdung" class="no-underline" style="color:rgba(255,255,255,.85)">Cách dùng</a>
+            <a href="#riengtu" class="no-underline" style="color:rgba(255,255,255,.85)">Riêng tư</a>
+            <a href="#khoiphuc" class="no-underline" style="color:rgba(255,255,255,.85)">Khôi phục</a>
+          </div>
+        </div>
+        <div>
+          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Xem thử</p>
+          <div class="flex flex-col gap-2 text-[15px]">
+            <a href="index.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn tìm kiếm</a>
+            <a href="item.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn chi tiết</a>
+            <a href="settings.html" class="no-underline" style="color:rgba(255,255,255,.85)">Cài đặt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <hr style="border:0;height:1px;background:rgba(255,255,255,.12);margin:32px 0 20px">
+    <p class="t-legal m-0" style="color:rgba(255,255,255,.45)">Mockup tĩnh — dữ liệu là giả, không có mã hoá thật ở bản này.</p>
+  </div>
+</footer>
+
+<script src="mock.js"></script>
+<script>
+SAK.initChrome();
+const omni = document.getElementById('omni');
+const box = SAK.initOmnibox(omni, { demo: true, pinned: true });
+
+document.querySelectorAll('[data-fill]').forEach(b => b.addEventListener('click', () => {
+  box.input.value = b.dataset.fill;
+  box.input.focus();
+  box.paint();
+}));
+
+const RAW = (s) => ({ __raw: s });
+const cfg = {
+  ssid: 'Zone17th-5G', band: '5GHz', channel: 36, wpa: 3,
+  guest: { ssid: 'Zone17th-Guest', isolate: true, expires: null },
+  vlans: [
+    { id: 10, name: 'trusted', cidr: '10.0.10.0/24', dhcp: true },
+    { id: 20, name: 'iot',     cidr: '10.0.20.0/24', dhcp: true },
+    { id: 30, name: 'guest',   cidr: '10.0.30.0/24', dhcp: false }
+  ],
+  note_id: RAW('9007199254740993')
+};
+SAK.renderJsonTable(document.getElementById('demoTable'), cfg);
+document.getElementById('demoRaw').textContent = `{
+  "ssid": "Zone17th-5G",
+  "band": "5GHz",
+  "channel": 36,
+  "wpa": 3,
+  "guest": { "ssid": "Zone17th-Guest", "isolate": true, "expires": null },
+  "vlans": [
+    { "id": 10, "name": "trusted", "cidr": "10.0.10.0/24", "dhcp": true },
+    { "id": 20, "name": "iot",     "cidr": "10.0.20.0/24", "dhcp": true },
+    { "id": 30, "name": "guest",   "cidr": "10.0.30.0/24", "dhcp": false }
+  ],
+  "note_id": 9007199254740993
+}`;
+
+/* Một khoảnh khắc chuyển động duy nhất của trang: ô tìm kiếm tự gõ "wif"
+   rồi mở gợi ý, cho thấy sản phẩm làm gì mà không cần ảnh chụp màn hình. */
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const seed = 'wif';
+if (reduce) {
+  box.input.value = seed;
+  box.paint();
+} else {
+  let i = 0;
+  const started = setInterval(() => {
+    box.input.value = seed.slice(0, ++i);
+    box.paint();
+    if (i >= seed.length) clearInterval(started);
+  }, 170);
+}
+</script>
+</body>
+</html>

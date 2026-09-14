@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wifi — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="index.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+    </a>
+
+    <div class="relative flex-1 max-w-[420px] hidden md:block" data-omnibox id="omni">
+      <label class="omnibox-shell !py-2.5 !px-3.5">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="flex:none">
+          <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
+          <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <input class="omnibox-input !text-[15px]" placeholder="Tìm hoặc lưu…" autocomplete="off" spellcheck="false" aria-label="Tìm hoặc lưu">
+        <span class="kbd">/</span>
+      </label>
+      <div data-pop hidden class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto" role="listbox" aria-label="Gợi ý"></div>
+    </div>
+
+    <div class="ml-auto flex items-center gap-2">
+      <button class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body hidden sm:inline-flex">Cài đặt</a>
+      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+    </div>
+  </div>
+</header>
+
+<div data-locked-banner hidden style="background:rgba(229,72,77,.10);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 py-3 flex items-center gap-3 flex-wrap">
+    <span class="t-body" style="color:var(--error)">Vault đã khoá. Nội dung entry không giải mã được cho tới khi mở khoá.</span>
+    <button class="btn btn-primary btn-sm ml-auto" data-unlock>Mở khoá</button>
+  </div>
+</div>
+
+<main class="max-w-container mx-auto px-5 pt-8 pb-28">
+
+  <!-- ===== đầu mục ===== -->
+  <nav class="text-[13px] mb-5" style="color:var(--muted)">
+    <a href="index.html" class="no-underline">Tất cả mục</a>
+    <span class="mx-1.5">/</span><span>wifi</span>
+  </nav>
+
+  <div class="flex flex-wrap items-start gap-x-8 gap-y-4 mb-3">
+    <div class="min-w-0">
+      <div class="flex items-center gap-3 flex-wrap">
+        <h1 class="t-title-lg" contenteditable="true" spellcheck="false"
+            style="outline:none;border-bottom:2px dashed transparent"
+            onfocus="this.style.borderBottomColor='var(--accent)'"
+            onblur="this.style.borderBottomColor='transparent';SAK.toast('Đã đổi tên mục')">wifi</h1>
+        <span class="t-caption px-2 py-1 rounded-sm" style="background:var(--surface);color:var(--muted)">Có 2 mục cùng tên</span>
+      </div>
+      <p class="t-body mt-1" style="color:var(--muted)">Gợi nhớ: nhà + văn phòng, không phải wifi công ty</p>
+    </div>
+
+    <div class="flex items-center gap-2 ml-auto">
+      <button class="btn btn-tertiary" data-open-dialog="importDlg">Nhập JSON</button>
+      <button class="btn btn-tertiary" onclick="SAK.toast('Đã tải wifi.json')">Xuất</button>
+      <button class="btn btn-primary" onclick="document.getElementById('newEntry').scrollIntoView({behavior:'smooth'});document.getElementById('newEntryBody').focus()">Thêm entry</button>
+    </div>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-2 mb-2">
+    <span class="chip">#nhà <span class="chip-x" role="button" aria-label="Bỏ tag nhà">×</span></span>
+    <span class="chip">#office <span class="chip-x" role="button" aria-label="Bỏ tag office">×</span></span>
+    <button class="chip" style="border-style:dashed;color:var(--muted)" onclick="SAK.toast('Gõ tên tag rồi Enter')">+ Tag</button>
+  </div>
+
+  <p class="mono text-[13px] mb-8" style="color:var(--muted)">12 entries · tạo 04/01/2026 · sửa 12/03/2026</p>
+
+  <div class="grid gap-10 lg:grid-cols-[minmax(0,1fr)_248px] items-start">
+
+    <!-- ===== danh sách entry ===== -->
+    <div class="flex flex-col gap-3">
+
+      <!-- entry: text -->
+      <article class="card overflow-hidden">
+        <div class="flex flex-wrap items-center gap-3 px-4 py-3" style="background:var(--surface);border-bottom:1px solid var(--border)">
+          <span class="mono cursor-grab select-none" style="color:var(--border-strong)" aria-hidden="true">⠿</span>
+          <span class="badge-type badge-text">text</span>
+          <span class="text-[15px] font-semibold">Mật khẩu chính</span>
+          <div class="ml-auto flex items-center gap-1">
+            <button class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép vào clipboard · tự xoá sau 30 giây')">Chép</button>
+            <button class="btn btn-tertiary btn-sm">Sửa</button>
+            <button class="btn btn-tertiary btn-sm" aria-label="Thêm thao tác">⋯</button>
+          </div>
+        </div>
+        <div class="p-4" data-secret>
+          <p class="mono text-[15px] leading-relaxed m-0">SSID: Zone17th-5G<br>Pass: tr4m-Ngh1n-C4y-S0<br>Đổi lần cuối: 03/2026 · router Unifi U6</p>
+        </div>
+        <div class="px-4 py-2 text-[12px]" style="color:var(--muted);border-top:1px solid var(--border)">Sửa 12/03/2026 · 09:41</div>
+      </article>
+
+      <!-- entry: json có nested + số lớn -->
+      <article class="card overflow-hidden" data-seg-scope>
+        <div class="flex flex-wrap items-center gap-3 px-4 py-3" style="background:var(--surface);border-bottom:1px solid var(--border)">
+          <span class="mono cursor-grab select-none" style="color:var(--border-strong)" aria-hidden="true">⠿</span>
+          <span class="badge-type badge-json">json</span>
+          <span class="text-[15px] font-semibold">Cấu hình router</span>
+          <div class="ml-auto flex items-center gap-2">
+            <div class="seg" data-seg>
+              <button data-target="tbl" aria-pressed="true">Bảng</button>
+              <button data-target="raw" aria-pressed="false">JSON thô</button>
+            </div>
+            <button class="btn btn-tertiary btn-sm">Sửa</button>
+          </div>
+        </div>
+        <div data-secret>
+          <div data-view="tbl" id="cfgTable" class="overflow-x-auto"></div>
+          <pre data-view="raw" hidden class="json-raw" id="cfgRaw"></pre>
+        </div>
+        <div class="px-4 py-2 text-[12px] flex items-center gap-2" style="color:var(--muted);border-top:1px solid var(--border)">
+          <span>Sửa 02/09/2026 · 22:10</span>
+          <span class="ml-auto mono">note_id giữ nguyên 9007199254740993</span>
+        </div>
+      </article>
+
+      <!-- entry: json mảng, có khoá trùng -->
+      <article class="card overflow-hidden" data-seg-scope>
+        <div class="flex flex-wrap items-center gap-3 px-4 py-3" style="background:var(--surface);border-bottom:1px solid var(--border)">
+          <span class="mono cursor-grab select-none" style="color:var(--border-strong)" aria-hidden="true">⠿</span>
+          <span class="badge-type badge-json">json</span>
+          <span class="text-[15px] font-semibold">Thiết bị khách</span>
+          <div class="ml-auto flex items-center gap-2">
+            <div class="seg" data-seg>
+              <button data-target="gtbl" aria-pressed="true">Bảng</button>
+              <button data-target="graw" aria-pressed="false">JSON thô</button>
+            </div>
+            <button class="btn btn-tertiary btn-sm">Sửa</button>
+          </div>
+        </div>
+        <div data-secret>
+          <div data-view="gtbl" id="guestTable" class="overflow-x-auto"></div>
+          <pre data-view="graw" hidden class="json-raw" id="guestRaw"></pre>
+        </div>
+        <div class="px-4 py-2 text-[12px]" style="color:var(--muted);border-top:1px solid var(--border)">3 phần tử · sửa 28/08/2026</div>
+      </article>
+
+      <!-- entry: text ghi chú -->
+      <article class="card overflow-hidden">
+        <div class="flex flex-wrap items-center gap-3 px-4 py-3" style="background:var(--surface);border-bottom:1px solid var(--border)">
+          <span class="mono cursor-grab select-none" style="color:var(--border-strong)" aria-hidden="true">⠿</span>
+          <span class="badge-type badge-text">text</span>
+          <span class="text-[15px] font-semibold">Ghi chú lắp đặt</span>
+          <div class="ml-auto flex items-center gap-1">
+            <button class="btn btn-tertiary btn-sm">Sửa</button>
+            <button class="btn btn-tertiary btn-sm" aria-label="Thêm thao tác">⋯</button>
+          </div>
+        </div>
+        <div class="p-4" data-secret>
+          <p class="text-[15px] leading-relaxed m-0">Modem nhà mạng để bridge, router tự quản DHCP. Nếu mất mạng: rút nguồn modem 30 giây trước, đừng reset router.</p>
+        </div>
+        <div class="px-4 py-2 text-[12px]" style="color:var(--muted);border-top:1px solid var(--border)">Sửa 11/02/2026</div>
+      </article>
+
+      <!-- soạn entry mới -->
+      <div id="newEntry" class="card p-4">
+        <div class="flex items-center gap-2 mb-3">
+          <div class="seg" data-seg>
+            <button aria-pressed="true">text</button>
+            <button aria-pressed="false">json</button>
+          </div>
+          <input class="flex-1 min-w-0 bg-transparent border-0 outline-0 text-[15px] font-semibold"
+                 placeholder="Tiêu đề entry (tuỳ chọn)" aria-label="Tiêu đề entry">
+        </div>
+        <textarea id="newEntryBody" rows="3" class="w-full bg-transparent outline-0 text-[15px] leading-relaxed resize-y"
+                  style="border:1px solid var(--border);border-radius:var(--r-md);padding:12px"
+                  placeholder="Nội dung… được mã hoá trên máy bạn trước khi gửi đi."></textarea>
+        <div class="flex items-center gap-3 mt-3">
+          <span class="text-[12px]" style="color:var(--muted)">Chỉ nội dung entry được mã hoá. Tên mục và tag thì không — để tìm được.</span>
+          <button class="btn btn-primary btn-sm ml-auto" onclick="SAK.toast('Đã lưu entry','Hoàn tác')">Lưu entry</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== cột phụ ===== -->
+    <aside class="flex flex-col gap-4">
+      <div class="rounded-xl p-4" style="background:var(--surface)">
+        <p class="t-label mb-3" style="color:var(--muted)">Mục cùng tên</p>
+        <a href="item.html" class="no-underline !text-body block rounded-md p-2.5 -m-0.5 hover:bg-canvas">
+          <div class="text-[15px]">wifi <span class="mono text-[12px]" style="color:var(--muted)">#công-ty</span></div>
+          <div class="text-[12px]" style="color:var(--muted)">3 entries · 01/06/2026</div>
+        </a>
+      </div>
+
+      <div class="rounded-xl p-4" style="background:var(--surface)">
+        <p class="t-label mb-3" style="color:var(--muted)">Liên quan</p>
+        <div class="flex flex-col gap-1">
+          <a href="item.html" class="no-underline !text-body text-[15px] rounded-md p-2 -m-0.5 hover:bg-canvas flex">
+            mạng nhà <span class="ml-auto mono text-[12px]" style="color:var(--muted)">≈ 0.81</span></a>
+          <a href="item.html" class="no-underline !text-body text-[15px] rounded-md p-2 -m-0.5 hover:bg-canvas flex">
+            wifi-office <span class="ml-auto mono text-[12px]" style="color:var(--muted)">#office</span></a>
+        </div>
+      </div>
+
+      <div class="rounded-xl p-4" style="background:var(--pale-accent)">
+        <p class="t-label mb-2" style="color:var(--accent)">Mã hoá</p>
+        <p class="text-[13px] leading-relaxed m-0" style="color:var(--body)">
+          4 entry text · 8 entry json, tất cả khoá bằng XChaCha20-Poly1305 trên trình duyệt này.
+        </p>
+        <p class="mono text-[12px] mt-2 mb-0" style="color:var(--muted)">key_id 7f3a·c210</p>
+      </div>
+
+      <button class="btn btn-danger w-full" onclick="SAK.toast('Đã xoá mục “wifi”','Hoàn tác')">Xoá mục</button>
+    </aside>
+  </div>
+</main>
+
+<!-- ================= modal nhập JSON (SPEC §7.5) ================= -->
+<dialog id="importDlg" aria-labelledby="importTitle">
+  <div class="panel" style="width:min(720px,94vw);max-height:88vh;overflow:auto">
+    <div class="p-7 pb-0">
+      <h2 id="importTitle" class="t-title-sm mb-1">Nhập JSON vào “wifi”</h2>
+      <p class="t-body mb-6" style="color:var(--muted)">Dán, kéo thả file, hoặc chọn từ máy. Bản gốc được giữ nguyên từng ký tự.</p>
+    </div>
+
+    <div class="px-7">
+      <textarea id="importSrc" rows="7" spellcheck="false"
+        class="w-full mono text-[13px] leading-relaxed resize-y"
+        style="border:1px solid var(--border);border-radius:var(--r-md);padding:14px;background:var(--surface);outline:none"></textarea>
+
+      <div class="flex items-center gap-3 mt-3 flex-wrap">
+        <button class="btn btn-tertiary btn-sm" onclick="SAK.toast('Mở hộp chọn file…')">Chọn file…</button>
+        <span id="importStatus" class="text-[13px] mono" style="color:var(--success)">JSON hợp lệ · 6 khoá · 1 mảng lồng</span>
+      </div>
+
+      <p class="t-label mt-6 mb-2" style="color:var(--muted)">Xem trước</p>
+      <div class="card overflow-hidden mb-6">
+        <div id="importPreview" class="overflow-x-auto max-h-[240px] overflow-y-auto"></div>
+      </div>
+
+      <fieldset class="border-0 p-0 m-0 mb-6">
+        <legend class="t-label mb-2 p-0" style="color:var(--muted)">Lưu thành</legend>
+        <label class="flex gap-3 items-start p-3 rounded-md cursor-pointer" style="border:1px solid var(--border)">
+          <input type="radio" name="mode" checked class="mt-1">
+          <span><span class="text-[15px] font-semibold">Một entry json</span>
+            <span class="block text-[13px]" style="color:var(--muted)">Giữ nguyên cả tài liệu, xem dạng bảng.</span></span>
+        </label>
+        <label class="flex gap-3 items-start p-3 rounded-md cursor-pointer mt-2" style="border:1px solid var(--border)">
+          <input type="radio" name="mode" class="mt-1">
+          <span><span class="text-[15px] font-semibold">Tách mảng thành 3 entry</span>
+            <span class="block text-[13px]" style="color:var(--muted)">Mỗi phần tử của <span class="mono">vlans</span> thành một entry riêng.</span></span>
+        </label>
+      </fieldset>
+    </div>
+
+    <div class="flex items-center gap-3 px-7 py-5 flex-wrap" style="border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--r-section) var(--r-section)">
+      <span class="text-[12px]" style="color:var(--muted)">Mã hoá trước khi rời máy bạn.</span>
+      <div class="ml-auto flex gap-2">
+        <button class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+        <button class="btn btn-primary" data-toast="Đã nhập 1 entry json vào “wifi”" data-toast-action="Hoàn tác">Nhập</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<script src="mock.js"></script>
+<script>
+SAK.initChrome();
+SAK.initOmnibox(document.getElementById('omni'));
+
+/* Số nguyên vượt Number.MAX_SAFE_INTEGER: mock giữ text nguồn qua __raw,
+   đúng yêu cầu "chỉnh sửa không đụng tới phần chưa sửa". */
+const RAW = (s) => ({ __raw: s });
+
+const routerCfg = {
+  ssid: 'Zone17th-5G',
+  band: '5GHz',
+  channel: 36,
+  wpa: 3,
+  guest: { ssid: 'Zone17th-Guest', isolate: true, expires: null },
+  vlans: [
+    { id: 10, name: 'trusted', cidr: '10.0.10.0/24', dhcp: true },
+    { id: 20, name: 'iot',     cidr: '10.0.20.0/24', dhcp: true },
+    { id: 30, name: 'guest',   cidr: '10.0.30.0/24', dhcp: false }
+  ],
+  note_id: RAW('9007199254740993')
+};
+
+const routerRaw = `{
+  "ssid": "Zone17th-5G",
+  "band": "5GHz",
+  "channel": 36,
+  "wpa": 3,
+  "guest": { "ssid": "Zone17th-Guest", "isolate": true, "expires": null },
+  "vlans": [
+    { "id": 10, "name": "trusted", "cidr": "10.0.10.0/24", "dhcp": true },
+    { "id": 20, "name": "iot",     "cidr": "10.0.20.0/24", "dhcp": true },
+    { "id": 30, "name": "guest",   "cidr": "10.0.30.0/24", "dhcp": false }
+  ],
+  "note_id": 9007199254740993
+}`;
+
+/* Phần tử thứ 2 có khoá "name" hai lần → hiện dạng field/value. */
+const guests = [
+  { __pairs: [['name', 'An'],  ['mac', 'a4:83:e7:1c:90:22'], ['lease', '24h']] },
+  { __pairs: [['name', 'Bảo'], ['mac', 'f0:18:98:44:0b:71'], ['name', 'Bảo — iPad'], ['lease', '7d']] },
+  { __pairs: [['name', 'Chi'], ['mac', '8c:85:90:2e:ff:10'], ['lease', null]] }
+];
+
+const guestsRaw = `[
+  { "name": "An",  "mac": "a4:83:e7:1c:90:22", "lease": "24h" },
+  { "name": "Bảo", "mac": "f0:18:98:44:0b:71", "name": "Bảo — iPad", "lease": "7d" },
+  { "name": "Chi", "mac": "8c:85:90:2e:ff:10", "lease": null }
+]`;
+
+SAK.renderJsonTable(document.getElementById('cfgTable'), routerCfg);
+document.getElementById('cfgRaw').textContent = routerRaw;
+SAK.renderJsonTable(document.getElementById('guestTable'), guests);
+document.getElementById('guestRaw').textContent = guestsRaw;
+
+/* modal nhập: gõ lại nguồn thì cập nhật xem trước + trạng thái */
+const src = document.getElementById('importSrc');
+const status = document.getElementById('importStatus');
+const preview = document.getElementById('importPreview');
+src.value = routerRaw;
+SAK.renderJsonTable(preview, routerCfg);
+
+src.addEventListener('input', () => {
+  try {
+    const parsed = JSON.parse(src.value);
+    const n = Array.isArray(parsed) ? parsed.length : Object.keys(parsed).length;
+    status.style.color = 'var(--success)';
+    status.textContent = `JSON hợp lệ · ${n} ${Array.isArray(parsed) ? 'phần tử' : 'khoá'}`;
+    SAK.renderJsonTable(preview, parsed);
+  } catch (err) {
+    status.style.color = 'var(--error)';
+    const m = /position (\d+)/.exec(err.message);
+    status.textContent = m
+      ? `Thiếu hoặc thừa ký tự ở vị trí ${m[1]}. Sửa rồi thử lại.`
+      : 'Chưa phải JSON hợp lệ. Kiểm tra dấu ngoặc và dấu phẩy.';
+    preview.innerHTML = '<p class="t-body" style="padding:20px;margin:0;color:var(--muted)">Xem trước hiện lại khi JSON hợp lệ.</p>';
+  }
+});
+</script>
+</body>
+</html>

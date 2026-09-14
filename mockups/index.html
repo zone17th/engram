@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engram — tìm &amp; lưu</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<!-- ================= header ================= -->
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+    </a>
+
+    <div class="ml-auto flex items-center gap-2">
+      <button class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
+      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+      <span class="ml-1 w-9 h-9 rounded-pill hidden sm:grid place-items-center font-mono text-[13px]"
+            style="background:var(--pale-accent);color:var(--accent)" title="minh@zone17th.click">mh</span>
+    </div>
+  </div>
+</header>
+
+<div data-locked-banner hidden style="background:rgba(229,72,77,.10);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 py-3 flex items-center gap-3 flex-wrap">
+    <span class="t-body" style="color:var(--error)">Vault đã khoá. Tên mục và tag vẫn tìm được; nội dung entry cần mở khoá.</span>
+    <button class="btn btn-primary btn-sm ml-auto" data-unlock>Mở khoá</button>
+  </div>
+</div>
+
+<!-- ================= main ================= -->
+<main class="max-w-container mx-auto px-5 pt-10 pb-24 grid gap-10 lg:grid-cols-[236px_minmax(0,1fr)]">
+
+  <!-- rail -->
+  <aside class="hidden lg:block">
+    <p class="t-label mb-3" style="color:var(--muted)">Tag</p>
+    <div class="flex flex-wrap gap-1.5 mb-8">
+      <span class="chip">#nhà <span style="color:var(--muted)">24</span></span>
+      <span class="chip">#ops <span style="color:var(--muted)">15</span></span>
+      <span class="chip">#office <span style="color:var(--muted)">11</span></span>
+      <span class="chip">#công-ty <span style="color:var(--muted)">8</span></span>
+      <span class="chip">#home-lab <span style="color:var(--muted)">6</span></span>
+      <span class="chip">#okrs <span style="color:var(--muted)">4</span></span>
+      <span class="chip">#wifi-khách <span style="color:var(--muted)">2</span></span>
+    </div>
+
+    <p class="t-label mb-3" style="color:var(--muted)">Gần đây</p>
+    <nav class="flex flex-col gap-0.5 mb-8">
+      <a href="item.html" class="no-underline !text-body px-2 py-2 rounded-md hover:bg-surface flex items-baseline gap-2">
+        <span class="text-[15px]">docker</span><span class="ml-auto text-[12px]" style="color:var(--muted)">9</span></a>
+      <a href="item.html" class="no-underline !text-body px-2 py-2 rounded-md hover:bg-surface flex items-baseline gap-2">
+        <span class="text-[15px]">meeting-mkt</span><span class="ml-auto text-[12px]" style="color:var(--muted)">4</span></a>
+      <a href="item.html" class="no-underline !text-body px-2 py-2 rounded-md hover:bg-surface flex items-baseline gap-2">
+        <span class="text-[15px]">wifi</span><span class="ml-auto text-[12px]" style="color:var(--muted)">12</span></a>
+      <a href="item.html" class="no-underline !text-body px-2 py-2 rounded-md hover:bg-surface flex items-baseline gap-2">
+        <span class="text-[15px]">mạng nhà</span><span class="ml-auto text-[12px]" style="color:var(--muted)">7</span></a>
+      <a href="item.html" class="no-underline !text-body px-2 py-2 rounded-md hover:bg-surface flex items-baseline gap-2">
+        <span class="text-[15px]">k8s</span><span class="ml-auto text-[12px]" style="color:var(--muted)">5</span></a>
+    </nav>
+
+    <div class="rounded-xl p-4" style="background:var(--surface)">
+      <p class="t-label mb-2" style="color:var(--muted)">Gần nghĩa</p>
+      <div class="flex items-center gap-3">
+        <button class="switch" role="switch" aria-checked="true" data-sem-toggle aria-label="Bật tìm gần nghĩa"></button>
+        <span class="text-[13px]" style="color:var(--muted)">Nhúng chạy trên máy chủ của bạn</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- cột chính -->
+  <section class="min-w-0">
+    <h1 class="t-title-lg mb-1">Gõ để tìm. Gõ tiếp để lưu.</h1>
+    <p class="t-body-lg mb-7" style="color:var(--muted)">Một ô duy nhất cho cả hai việc.</p>
+
+    <div class="relative" data-omnibox id="omni">
+      <label class="omnibox-shell">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="flex:none">
+          <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
+          <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <input class="omnibox-input" placeholder="wifi, docker, hợp đồng… hoặc “tên #tag: nội dung”"
+               autocomplete="off" spellcheck="false" aria-label="Tìm hoặc lưu">
+        <span class="kbd">Ctrl K</span>
+      </label>
+      <div data-pop hidden class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"
+           role="listbox" aria-label="Gợi ý"></div>
+    </div>
+
+    <p class="t-caption mt-3" style="color:var(--muted)">
+      Thử: <button class="mono underline decoration-dotted" data-fill="wif" style="color:var(--link);background:none;border:0;cursor:pointer;padding:0;font-size:13px">wif</button> ·
+      <button class="mono underline decoration-dotted" data-fill="mật khẩu" style="color:var(--link);background:none;border:0;cursor:pointer;padding:0;font-size:13px">mật khẩu</button> ·
+      <button class="mono underline decoration-dotted" data-fill="wifi #nhà: SSID Zone17th / mk 8chars" style="color:var(--link);background:none;border:0;cursor:pointer;padding:0;font-size:13px">wifi #nhà: …</button>
+    </p>
+
+    <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-12 mb-4">
+      <h2 class="t-title-sm">Mục gần đây</h2>
+      <span class="mono text-[13px]" style="color:var(--muted)">64 mục · 231 entries</span>
+      <a href="#" class="ml-auto text-[14px] font-semibold no-underline">Xem tất cả</a>
+    </div>
+
+    <div class="grid gap-3 sm:grid-cols-2">
+
+      <a href="item.html" class="card p-5 no-underline !text-body">
+        <div class="flex items-baseline gap-2 mb-2">
+          <span class="font-display font-bold text-[19px] tracking-[-.03em] text-ink">wifi</span>
+          <span class="mono text-[12px]" style="color:var(--muted)">#nhà #office</span>
+        </div>
+        <div data-secret class="text-[14px] mb-3" style="color:var(--muted)">SSID Zone17th-5G · mật khẩu 16 ký tự · đổi 03/2026</div>
+        <div class="flex items-center gap-2">
+          <span class="badge-type badge-text">text</span><span class="badge-type badge-json">json</span>
+          <span class="ml-auto text-[12px]" style="color:var(--muted)">12 entries · 12/03/2026</span>
+        </div>
+      </a>
+
+      <a href="item.html" class="card p-5 no-underline !text-body">
+        <div class="flex items-baseline gap-2 mb-2">
+          <span class="font-display font-bold text-[19px] tracking-[-.03em] text-ink">wifi</span>
+          <span class="mono text-[12px]" style="color:var(--muted)">#công-ty</span>
+        </div>
+        <div data-secret class="text-[14px] mb-3" style="color:var(--muted)">Tầng 4 — SSID nội bộ, cổng captive portal</div>
+        <div class="flex items-center gap-2">
+          <span class="badge-type badge-text">text</span>
+          <span class="ml-auto text-[12px]" style="color:var(--muted)">3 entries · 01/06/2026</span>
+        </div>
+      </a>
+
+      <a href="item.html" class="card p-5 no-underline !text-body">
+        <div class="flex items-baseline gap-2 mb-2">
+          <span class="font-display font-bold text-[19px] tracking-[-.03em] text-ink">docker</span>
+          <span class="mono text-[12px]" style="color:var(--muted)">#ops #home-lab</span>
+        </div>
+        <div data-secret class="text-[14px] mb-3" style="color:var(--muted)">compose stack, registry token, lệnh prune</div>
+        <div class="flex items-center gap-2">
+          <span class="badge-type badge-text">text</span><span class="badge-type badge-json">json</span>
+          <span class="ml-auto text-[12px]" style="color:var(--muted)">9 entries · 10/09/2026</span>
+        </div>
+      </a>
+
+      <a href="item.html" class="card p-5 no-underline !text-body">
+        <div class="flex items-baseline gap-2 mb-2">
+          <span class="font-display font-bold text-[19px] tracking-[-.03em] text-ink">mạng nhà</span>
+          <span class="mono text-[12px]" style="color:var(--muted)">#nhà #home-lab</span>
+        </div>
+        <div data-secret class="text-[14px] mb-3" style="color:var(--muted)">VLAN 10/20/30, DNS nội bộ, port forward</div>
+        <div class="flex items-center gap-2">
+          <span class="badge-type badge-json">json</span>
+          <span class="ml-auto text-[12px]" style="color:var(--muted)">7 entries · 02/09/2026</span>
+        </div>
+      </a>
+
+    </div>
+  </section>
+</main>
+
+<script src="mock.js"></script>
+<script>
+  SAK.initChrome();
+  const omni = document.getElementById('omni');
+  const box = SAK.initOmnibox(omni);
+  document.querySelectorAll('[data-fill]').forEach(b => b.addEventListener('click', () => {
+    box.input.value = b.dataset.fill;
+    box.input.focus();
+    box.paint();
+  }));
+</script>
+</body>
+</html>

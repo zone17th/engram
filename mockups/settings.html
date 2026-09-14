@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cài đặt — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="index.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+    </a>
+    <div class="ml-auto flex items-center gap-2">
+      <button class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <a href="index.html" class="btn btn-tertiary no-underline !text-body">Xong</a>
+      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-container mx-auto px-5 pt-10 pb-28 grid gap-12 lg:grid-cols-[200px_minmax(0,1fr)] items-start">
+
+  <nav class="hidden lg:flex flex-col gap-0.5 sticky top-[92px]">
+    <a href="#taikhoan" class="no-underline !text-body px-3 py-2 rounded-md text-[15px] hover:bg-surface">Tài khoản</a>
+    <a href="#baomat"  class="no-underline !text-body px-3 py-2 rounded-md text-[15px]" style="background:var(--surface-alt);font-weight:600">Bảo mật</a>
+    <a href="#timkiem" class="no-underline !text-body px-3 py-2 rounded-md text-[15px] hover:bg-surface">Tìm kiếm</a>
+    <a href="#dulieu"  class="no-underline !text-body px-3 py-2 rounded-md text-[15px] hover:bg-surface">Dữ liệu</a>
+  </nav>
+
+  <div class="max-w-[720px] flex flex-col gap-12">
+
+    <!-- ===== tài khoản ===== -->
+    <section id="taikhoan">
+      <h2 class="t-title-md mb-6">Tài khoản</h2>
+      <div class="card">
+        <div class="flex flex-wrap items-center gap-4 p-5">
+          <span class="w-11 h-11 rounded-pill grid place-items-center mono text-[15px]" style="background:var(--pale-accent);color:var(--accent)">mh</span>
+          <div class="min-w-0">
+            <div class="text-[15px] font-semibold">minh@zone17th.click</div>
+            <div class="text-[13px]" style="color:var(--muted)">Đã xác minh · tham gia 04/01/2026</div>
+          </div>
+          <button class="btn btn-tertiary ml-auto">Đổi email</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-4 p-5" style="border-top:1px solid var(--border)">
+          <div class="min-w-0">
+            <div class="text-[15px] font-semibold">Ngôn ngữ</div>
+            <div class="text-[13px]" style="color:var(--muted)">Áp dụng cho giao diện, không đụng tới nội dung.</div>
+          </div>
+          <div class="seg ml-auto" data-seg>
+            <button aria-pressed="true">Tiếng Việt</button>
+            <button aria-pressed="false">English</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== bảo mật ===== -->
+    <section id="baomat">
+      <h2 class="t-title-md mb-1">Bảo mật</h2>
+      <p class="t-body mb-6" style="color:var(--muted)">Vault giữ khoá giải mã nội dung entry. Tên mục và tag nằm ngoài vault.</p>
+
+      <!-- passphrase -->
+      <div class="card p-5 mb-3">
+        <div class="flex items-start gap-4 flex-wrap">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Passphrase</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              Đổi passphrase cần đăng nhập lại và một đường mở vault đang dùng được — phiên này, passkey, hay thiết bị đã nhớ.
+              Không cần nhập passphrase cũ. Recovery key và passkey vẫn mở được sau khi đổi.
+            </p>
+          </div>
+          <button class="btn btn-tertiary" data-open-dialog="passDlg">Đổi passphrase</button>
+        </div>
+      </div>
+
+      <!-- recovery keys -->
+      <div class="card p-5 mb-3">
+        <div class="flex items-start gap-4 flex-wrap mb-4">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Recovery key</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              Mỗi key mở được vault một mình. Dùng xong thì key đó ngừng hoạt động — bản in cũ chụp trước lần đổi passphrase gần nhất cũng vậy.
+            </p>
+          </div>
+          <button class="btn btn-tertiary" data-open-dialog="rkDlg">Tạo key mới</button>
+        </div>
+        <div class="flex flex-wrap gap-1.5 mb-3">
+          <span class="chip !font-mono" style="text-decoration:line-through;color:var(--muted)">RK-01</span>
+          <span class="chip !font-mono" style="text-decoration:line-through;color:var(--muted)">RK-02</span>
+          <span class="chip !font-mono">RK-03</span>
+          <span class="chip !font-mono">RK-04</span>
+          <span class="chip !font-mono">RK-05</span>
+          <span class="chip !font-mono" style="border-style:dashed;color:var(--muted)">trống ×5</span>
+        </div>
+        <div class="text-[13px] flex items-center gap-2" style="color:var(--muted)">
+          <span>3 key còn dùng được trên 10 chỗ · 2 key đã dùng</span>
+          <button class="btn btn-danger btn-sm ml-auto" onclick="SAK.toast('Đã thu hồi mọi recovery key')">Thu hồi tất cả</button>
+        </div>
+      </div>
+
+      <!-- passkey -->
+      <div class="card p-5 mb-3">
+        <div class="flex items-start gap-4 flex-wrap mb-4">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Passkey</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Mở vault bằng vân tay hoặc khuôn mặt. Cần khoá bảo mật có PRF; chúng tôi kiểm tra ngay khi đăng ký.</p>
+          </div>
+          <button class="btn btn-tertiary" onclick="SAK.toast('Chạm vào khoá bảo mật để đăng ký…')">Thêm passkey</button>
+        </div>
+        <div class="flex flex-col gap-2">
+          <div class="flex items-center gap-3 p-3 rounded-md" style="background:var(--surface)">
+            <span aria-hidden="true">🔑</span>
+            <div class="min-w-0">
+              <div class="text-[14px] font-semibold">MacBook Pro · Touch ID</div>
+              <div class="text-[12px] mono" style="color:var(--muted)">thêm 12/02/2026 · dùng gần nhất hôm nay</div>
+            </div>
+            <span class="badge-type badge-text ml-auto">prf</span>
+            <button class="btn btn-tertiary btn-sm">Gỡ</button>
+          </div>
+          <div class="flex items-center gap-3 p-3 rounded-md" style="background:var(--surface)">
+            <span aria-hidden="true">🔑</span>
+            <div class="min-w-0">
+              <div class="text-[14px] font-semibold">YubiKey 5C</div>
+              <div class="text-[12px] mono" style="color:var(--muted)">thêm 20/05/2026 · dùng gần nhất 02/09/2026</div>
+            </div>
+            <span class="badge-type badge-text ml-auto">prf</span>
+            <button class="btn btn-tertiary btn-sm">Gỡ</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- auto-lock + thiết bị -->
+      <div class="card p-5 mb-3">
+        <div class="text-[15px] font-semibold mb-1">Tự khoá</div>
+        <p class="text-[13px] mb-4" style="color:var(--muted)">Vault khoá lại sau khi bạn ngừng thao tác.</p>
+        <div class="seg" data-seg>
+          <button aria-pressed="false">5 phút</button>
+          <button aria-pressed="true">15 phút</button>
+          <button aria-pressed="false">1 giờ</button>
+          <button aria-pressed="false">Khi đóng tab</button>
+        </div>
+        <hr class="rule my-5">
+        <div class="flex items-center gap-4 flex-wrap">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Nhớ thiết bị này</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Giữ một khoá riêng trong trình duyệt để mở vault không cần gõ lại. Chỉ bật trên máy của bạn.</p>
+          </div>
+          <button class="switch" role="switch" aria-checked="true" aria-label="Nhớ thiết bị này"
+                  onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked')==='true'?'false':'true')"></button>
+        </div>
+      </div>
+
+      <!-- phiên + nhật ký -->
+      <div class="card p-5 mb-3">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="text-[15px] font-semibold">Phiên đăng nhập</div>
+          <button class="btn btn-tertiary btn-sm ml-auto" onclick="SAK.toast('Đã đăng xuất 2 phiên khác')">Đăng xuất nơi khác</button>
+        </div>
+        <div class="flex flex-col gap-2 text-[13px]">
+          <div class="flex items-center gap-3"><span class="mono" style="color:var(--success)">●</span>
+            <span>Chrome · Windows · Hà Nội</span><span class="ml-auto" style="color:var(--muted)">phiên này</span></div>
+          <div class="flex items-center gap-3"><span class="mono" style="color:var(--muted)">●</span>
+            <span>Safari · iPhone</span><span class="ml-auto" style="color:var(--muted)">2 giờ trước</span></div>
+          <div class="flex items-center gap-3"><span class="mono" style="color:var(--muted)">●</span>
+            <span>Firefox · Ubuntu</span><span class="ml-auto" style="color:var(--muted)">14/09/2026</span></div>
+        </div>
+        <hr class="rule my-5">
+        <div class="flex items-center gap-4">
+          <div class="min-w-0">
+            <div class="text-[15px] font-semibold mb-1">Nhật ký bảo mật</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Mở vault, đổi passphrase, tạo và dùng recovery key.</p>
+          </div>
+          <button class="btn btn-tertiary ml-auto">Xem</button>
+        </div>
+      </div>
+
+      <!-- reset -->
+      <div class="card p-5" style="border-color:var(--error)">
+        <div class="text-[15px] font-semibold mb-1" style="color:var(--error)">Đặt lại vault</div>
+        <p class="text-[13px] mb-4" style="color:var(--muted)">
+          Xoá vĩnh viễn nội dung mọi entry và tạo vault trống. Tên mục và tag giữ lại.
+          Chỉ làm khi passphrase, cả 3 recovery key, 2 passkey và thiết bị đã nhớ đều không mở được.
+        </p>
+        <button class="btn btn-danger" data-open-dialog="resetDlg">Đặt lại vault</button>
+      </div>
+    </section>
+
+    <!-- ===== tìm kiếm ===== -->
+    <section id="timkiem">
+      <h2 class="t-title-md mb-6">Tìm kiếm</h2>
+
+      <div class="card p-5 mb-3">
+        <div class="flex items-start gap-4 flex-wrap mb-4">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Tìm gần nghĩa</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              Gõ “mật khẩu” cũng ra mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng, dưới kết quả khớp chữ,
+              nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.
+            </p>
+          </div>
+          <button class="switch" role="switch" aria-checked="true" data-sem-toggle aria-label="Bật tìm gần nghĩa"></button>
+        </div>
+        <div class="rounded-md p-4" style="background:var(--surface)">
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            Để làm việc này, tên mục và tên tag được gửi tới máy chủ nhúng của chúng tôi để tính vector.
+            Nội dung entry thì không — nó đã mã hoá trước khi rời máy bạn và máy chủ không đọc được.
+          </p>
+          <p class="mono text-[12px] m-0" style="color:var(--muted)">bge-m3 · 1024 chiều · tự vận hành, không gọi API bên thứ ba</p>
+        </div>
+      </div>
+
+      <div class="card p-5">
+        <div class="flex items-center gap-4 flex-wrap">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Chỉ mục nhúng</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">64 mục · 7 tag đã có vector. Tắt rồi bật lại sẽ nhúng lại phần đã đổi.</p>
+          </div>
+          <button class="btn btn-tertiary" onclick="SAK.toast('Đang nhúng lại 71 mục…')">Nhúng lại tất cả</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== dữ liệu ===== -->
+    <section id="dulieu">
+      <h2 class="t-title-md mb-6">Dữ liệu</h2>
+      <div class="card">
+        <div class="flex items-center gap-4 p-5 flex-wrap">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Xuất toàn bộ</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Một file JSON đã giải mã, gồm mọi mục, tag và entry. Cần vault đang mở.</p>
+          </div>
+          <button class="btn btn-tertiary" onclick="SAK.toast('Đang chuẩn bị engram-export.json…')">Xuất</button>
+        </div>
+        <hr class="rule">
+        <div class="flex items-center gap-4 p-5 flex-wrap">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1" style="color:var(--error)">Xoá tài khoản</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Xoá mọi mục, entry và khoá. Không khôi phục được.</p>
+          </div>
+          <button class="btn btn-danger">Xoá tài khoản</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<!-- ===== modal: đổi passphrase ===== -->
+<dialog id="passDlg">
+  <div class="panel" style="width:min(520px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Đổi passphrase</h2>
+    <p class="t-body mb-6" style="color:var(--muted)">Vault đang mở trong phiên này, nên không cần passphrase cũ.</p>
+
+    <label class="block mb-4">
+      <span class="text-[14px] font-semibold block mb-1.5">Mật khẩu tài khoản</span>
+      <input type="password" value="••••••••••" class="w-full text-[15px]"
+             style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+    </label>
+    <label class="block mb-2">
+      <span class="text-[14px] font-semibold block mb-1.5">Passphrase mới</span>
+      <input type="password" class="w-full text-[15px]"
+             style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+    </label>
+    <div class="flex items-center gap-2 mb-5">
+      <div style="height:4px;flex:1;border-radius:var(--r-pill);background:var(--border)">
+        <div style="height:4px;width:62%;border-radius:var(--r-pill);background:var(--success)"></div>
+      </div>
+      <span class="text-[12px]" style="color:var(--muted)">đủ mạnh</span>
+    </div>
+
+    <div class="rounded-md p-3.5 mb-6" style="background:var(--surface)">
+      <p class="text-[13px] m-0" style="color:var(--body)">Sau khi đổi: 3 recovery key và 2 passkey vẫn mở được vault. Bản in recovery key cũ hơn thì không.</p>
+    </div>
+
+    <div class="flex justify-end gap-2">
+      <button class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button class="btn btn-primary" data-toast="Đã đổi passphrase">Đổi passphrase</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== modal: recovery key mới ===== -->
+<dialog id="rkDlg">
+  <div class="panel" style="width:min(520px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Recovery key mới</h2>
+    <p class="t-body mb-5" style="color:var(--muted)">Chỉ hiện một lần. In ra hoặc cất vào trình quản lý mật khẩu.</p>
+
+    <div class="rounded-md p-5 mb-4 mono text-[15px] leading-loose text-center"
+         style="background:var(--surface);border:1px dashed var(--border-strong);word-spacing:.4em">
+      7QK4 · M2XD · 9FRA<br>T1VB · 60HN · ZE83
+    </div>
+
+    <label class="flex gap-3 items-start mb-6 cursor-pointer">
+      <input type="checkbox" class="mt-1">
+      <span class="text-[14px]">Tôi đã cất key này ở nơi an toàn, ngoài máy đang dùng.</span>
+    </label>
+
+    <div class="flex justify-end gap-2">
+      <button class="btn btn-tertiary" onclick="SAK.toast('Đã chép recovery key · tự xoá sau 30 giây')">Chép</button>
+      <button class="btn btn-primary" data-toast="Đã lưu recovery key thứ 4">Xong</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== modal: đặt lại vault ===== -->
+<dialog id="resetDlg">
+  <div class="panel" style="width:min(560px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1" style="color:var(--error)">Đặt lại vault</h2>
+    <p class="t-body mb-5" style="color:var(--muted)">Thao tác này xoá vĩnh viễn nội dung 231 entry. Hãy thử hết các cách mở trước.</p>
+
+    <div class="flex flex-col gap-2 mb-6">
+      <div class="flex items-center gap-3 p-3 rounded-md" style="background:var(--surface)">
+        <span class="mono" style="color:var(--muted)">1</span><span class="text-[14px]">Passkey — MacBook Pro, YubiKey 5C</span>
+        <button class="btn btn-tertiary btn-sm ml-auto">Thử</button></div>
+      <div class="flex items-center gap-3 p-3 rounded-md" style="background:var(--surface)">
+        <span class="mono" style="color:var(--muted)">2</span><span class="text-[14px]">Recovery key — còn 3 key dùng được</span>
+        <button class="btn btn-tertiary btn-sm ml-auto">Thử</button></div>
+      <div class="flex items-center gap-3 p-3 rounded-md" style="background:var(--surface)">
+        <span class="mono" style="color:var(--muted)">3</span><span class="text-[14px]">Thiết bị đã nhớ — trình duyệt này</span>
+        <button class="btn btn-tertiary btn-sm ml-auto">Thử</button></div>
+    </div>
+
+    <label class="block mb-6">
+      <span class="text-[14px] font-semibold block mb-1.5">Gõ <span class="mono">ĐẶT LẠI</span> để xác nhận</span>
+      <input class="w-full mono text-[15px]"
+             style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+    </label>
+
+    <div class="flex justify-end gap-2">
+      <button class="btn btn-tertiary" data-close-dialog>Để sau</button>
+      <button class="btn btn-danger" data-toast="Vault đã được đặt lại">Đặt lại vault</button>
+    </div>
+  </div>
+</dialog>
+
+<script src="mock.js"></script>
+<script>SAK.initChrome();</script>
+</body>
+</html>

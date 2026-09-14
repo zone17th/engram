@@ -1,0 +1,3 @@
+# Worktree của Claude Code — nằm trong repo nhưng là checkout riêng.
+.claude/worktrees/
+.claude/settings.local.json
