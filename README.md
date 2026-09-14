@@ -10,8 +10,8 @@ Tên repo giữ `save-all-by-keyword` (lịch sử). Thực thể chính không 
 
 - **Web, online-only, multi-user**: Next.js 15 + Go (chi, pgx, sqlc, River) + Postgres 16 (pgvector, pg_trgm). Domain tạm `key.zone17th.click`.
 - **Item + Tag + typed Entry**: `name` được trùng; tag unique theo dạng chuẩn hoá; entry thuộc đúng một mục. MVP: `text` và `json` (bảng lồng nhau + import JSON).
-- **E2E chỉ body**: passphrase → Argon2id → KEK bọc Vault Key; **10 recovery key** (mỗi key bọc VK, dùng một lần) và **passkey (WebAuthn PRF)** cũng mở vault. Quên passphrase **và** mất cả 10 recovery key chưa dùng = mất nội dung. Reset vault xoá entry, giữ item và tag. Không BIP39, không KMS ngoài.
-- **Search lai**: lexical + semantic trên name và tag; tắt semantic bằng env, setting user, hoặc nút `≈` trên omnibox.
+- **E2E chỉ body**: passphrase → Argon2id → KEK bọc Vault Key; **10 recovery key** và **passkey (WebAuthn PRF)** cũng mở vault. Còn VK qua passkey/thiết bị đã nhớ/phiên đang mở thì có thể đặt passphrase mới sau re-auth tài khoản. RK dùng một lần trên live server; xoá RK/passkey wrap không vô hiệu hoá bản copy trong backup. Reset vault xoá entry, giữ item và tag. Không BIP39, không KMS ngoài.
+- **Search lai**: lexical + semantic trên name và tag; semantic đến sau giữ nguyên vị trí kết quả lexical. Setting user hoặc nút `≈` tắt semantic khi tìm kiếm, còn indexing vẫn chạy; env deployment có thể tắt cả hai.
 - **Miễn phí**, không gói trả phí. Embedding không gửi ra OpenAI/Gemini/Cohere.
 - **i18n**: English (mặc định) và Tiếng Việt.
 
