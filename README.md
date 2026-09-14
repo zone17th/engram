@@ -10,14 +10,14 @@ Tên repo giữ `save-all-by-keyword` (lịch sử). Thực thể chính không 
 
 - **Web, online-only, multi-user**: Next.js 15 + Go (chi, pgx, sqlc, River) + Postgres 16 (pgvector, pg_trgm). Domain tạm `key.zone17th.click`.
 - **Item + Tag + typed Entry**: `name` được trùng; tag unique theo dạng chuẩn hoá; entry thuộc đúng một mục. MVP: `text` và `json` (bảng lồng nhau + import JSON).
-- **E2E chỉ body**: quên encryption passphrase = mất nội dung; không recovery key. Reset vault xoá entry, giữ item và tag.
+- **E2E chỉ body**: passphrase → Argon2id → KEK bọc Vault Key; **10 recovery key** (mỗi key bọc VK, dùng một lần) và **passkey (WebAuthn PRF)** cũng mở vault. Quên passphrase **và** mất cả 10 recovery key chưa dùng = mất nội dung. Reset vault xoá entry, giữ item và tag. Không BIP39, không KMS ngoài.
 - **Search lai**: lexical + semantic trên name và tag; tắt semantic bằng env, setting user, hoặc nút `≈` trên omnibox.
 - **Miễn phí**, không gói trả phí. Embedding không gửi ra OpenAI/Gemini/Cohere.
 - **i18n**: English (mặc định) và Tiếng Việt.
 
 ## Tài liệu
 
-- [`docs/SPEC.md`](docs/SPEC.md) — spec đầy đủ: domain model, kiến trúc, E2E, search, UI (omnibox + JSON table), schema, API, roadmap, câu hỏi mở.
+- [`docs/SPEC.md`](docs/SPEC.md) — spec đầy đủ: domain model, kiến trúc, E2E (passphrase, 10 recovery key, passkey PRF), search, UI, schema, API, roadmap.
 
 ## Trạng thái
 
