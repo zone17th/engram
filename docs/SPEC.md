@@ -1034,6 +1034,8 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 
 **Ngoài phạm vi bộ mockup hiện tại** — phải thiết kế thêm trước khi implement: onboarding đăng ký + hiển thị 10 recovery key (§3.2), màn unlock vault trên thiết bị mới (§3.3, §3.14), empty/error states (§7.7). Mockup mới bổ sung vào đúng thư mục này và cập nhật bảng trên.
 
+Bảng chia task UI theo màn, mỗi task gắn một mockup và một mục spec, nằm ở [§12 Phase 1](#phase-1--mvp-810-tuần) — dùng bảng đó làm đầu vào khi viết plan.
+
 Mockup dùng dữ liệu giả và **không có mã hoá thật** — mọi thứ "khoá/mở khoá" trong đó chỉ là trạng thái UI.
 
 ### 7.1 Nguyên tắc
@@ -1853,6 +1855,31 @@ Domain tạm: **`key.zone17th.click`**. nginx (TLS) terminate rồi proxy `/` �
 | M6 Polish (tuần 9–10) | Empty/error, a11y, dark, encrypted export, privacy page, pentest nội bộ | Beta |
 
 MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag, **10 recovery key**, **passkey unlock (PRF)**. **Không** gồm: BIP39, login-with-passkey (Phase 2), pricing, provider OpenAI/Gemini/Cohere, private name, kiểu link/file/image, largeBlob.
+
+#### Task UI Phase 1 ↔ mockup
+
+Chia theo **màn**, mỗi task gắn đúng một mockup làm chuẩn thị giác và mục spec làm chuẩn hành vi (quy tắc §7.0). Task nào ghi **cần thiết kế** thì phải dựng mockup trước khi implement — không code chay từ mô tả chữ.
+
+| # | Màn / cụm | Mockup (chuẩn thị giác) | Spec (chuẩn hành vi) | Milestone |
+|---|---|---|---|---|
+| U1 | Landing | `landing.html` | §11.1, §10.4 | M1 |
+| U2 | Vỏ app: header, rail tag, vault pill | `index.html` | §7.2, §7.8 | M1 |
+| U3 | Onboarding: passphrase + hiện 10 RK | **cần thiết kế** | §3.2, §5.9 | M3 |
+| U4 | Unlock vault trên thiết bị mới | **cần thiết kế** | §3.3, §3.14 | M3 |
+| U5 | Trạng thái vault khoá trong app | `index.html`, `item.html` | §5.1, §7.6 | M3 |
+| U6 | Settings · Tài khoản | `settings.html` | §7.6 | M2 |
+| U7 | Settings · Bảo mật: passphrase, RK, passkey, phiên | `settings.html` | §7.6, §3.9, §3.10, §3.12, §3.15 | M3 |
+| U8 | Omnibox: quick-add `name: text` + `#tag` | `index.html` | §3.4, §7.2 | M4 |
+| U9 | Picker khi trùng tên mục | `index.html` (dialog) | §3.4 | M4 |
+| U10 | Lưới mục gần đây | `index.html` | §7.2 | M4 |
+| U11 | Item detail: name, hint, tag, danh sách entry | `item.html` | §7.3 | M4 |
+| U12 | Entry `text`: xem / sửa / chép | `item.html` | §7.3, §3.8 | M4 |
+| U13 | Entry `json`: bảng lồng nhau, edit source-span | `item.html` | §7.4, §3.7 | M4 |
+| U14 | Import JSON modal | `item.html` | §7.5, §3.6 | M4 |
+| U15 | Omnibox: tìm — nhóm lexical + nhóm Gần nghĩa | `index.html` | §7.2, §6.4, §6.10 | M5 |
+| U16 | Settings · Tìm kiếm: toggle semantic | `settings.html` | §6.10, §7.6 | M5 |
+| U17 | Settings · Dữ liệu: export | `settings.html` | §7.6, §3.11 | M6 |
+| U18 | Empty / error / degraded states | **cần thiết kế** | §7.7, §6.8 | M6 |
 
 ### Phase 2 — Mở rộng (~8 tuần)
 
