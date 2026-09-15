@@ -2,6 +2,7 @@
 
 > Kế hoạch · MVP 2/6 · Phụ thuộc: [P01](P01-foundation.md).
 > Nguồn: [SPEC](../SPEC.md) §3.1, §4.2, §7.6, §8, §9.1–§9.2, §10.2.
+> Kế hoạch triển khai: [P02 — 24 task và ma trận nghiệm thu](../plans/2026-09-15-P02-auth.md). Các contract bổ sung trong plan được cập nhật vào SPEC/OpenAPI ở Task 1 trước khi viết handler.
 
 ## Mục tiêu và đầu ra
 
@@ -32,7 +33,7 @@ Ngoài phạm vi: encryption passphrase, RK/passkey vault, passkey login, email 
 | Signup/login, OAuth start/callback, refresh/logout/me | Endpoint hiện có §9.2; hoàn thiện OpenAPI/response cookie. `GET /auth/me` trả cả `features.semantic_available` để client biết có được bật semantic hay không ([P05](P05-search.md) là bên tiêu thụ) |
 | `/auth/reauth` | Password re-entry hoặc OAuth re-auth; grant không nằm trong URL/log |
 | `/auth/sessions` + revoke một session | Chỉ list/revoke session user hiện tại; revoke current session về signed-out |
-| `/me/settings` | Field whitelist, enum/locale validation; partial update không xoá field khác. `PATCH` bật `semantic_enabled` khi provider không sẵn sàng trả `409 SEMANTIC_UNAVAILABLE`, không lưu im lặng |
+| `/me/settings` | Field whitelist, enum/locale validation; partial update không xoá field khác. `PATCH` bật `semantic_suggest` khi provider không sẵn sàng trả `409 SEMANTIC_UNAVAILABLE`, không lưu im lặng |
 | Verify email, change email/password, link identity, audit feed | Bổ sung contract cụ thể vào OpenAPI và §9 trước handler; không để nút account chỉ toast |
 
 Bảng sở hữu: `app_user`, `auth_identity`, `session`, `audit_log`; lưu token verify/re-auth hoặc hash/grant metadata theo ADR. Email gửi trong local dùng sink/mock transport; production provider config được xác minh P06. Audit có TTL/retention theo spec, payload whitelist.

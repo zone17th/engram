@@ -1,51 +1,76 @@
 # engram
 
-Một phần trí nhớ của bạn, đặt ở ngoài đầu bạn — và không ai đọc được ngoài bạn.
+> Một phần trí nhớ của bạn, được lưu bên ngoài đầu — với phần nội dung riêng tư chỉ bạn mới đọc được.
 
-Lưu mọi thông tin theo **mục (Item)**: một tên (`name`), nhiều **tag**, nhiều **entry có kiểu** — rồi tìm lại trong tích tắc.
+**engram** là một web app giúp bạn lưu lại những mẩu thông tin nhỏ và tìm chúng thật nhanh khi cần. Mỗi thông tin nằm trong một **mục (Item)**, có tên, tag và các entry theo kiểu dữ liệu phù hợp.
 
-Một ô nhập: gõ `wifi: Abc123` để lưu văn bản, gõ `wi` để tìm **tên mục và tag**, gõ `#nhà` để lọc theo tag. Gợi ý theo prefix, fuzzy, và **semantic** (TEI self-host, `BAAI/bge-m3`). Chỉ **thân entry** (text hoặc JSON) được **mã hoá đầu-cuối** — `name` và tag là plaintext để search chạy được.
+Bạn chỉ cần một ô nhập duy nhất:
 
-## Tên
+- `wifi: Abc123` để lưu nhanh một đoạn văn bản;
+- `wi` để tìm theo tên mục hoặc tag;
+- `#nhà` để lọc theo tag.
 
-**engram** — trong thần kinh học là **dấu vết vật lý mà một ký ức để lại**: thứ được ghi xuống để lần sau tìm về được.
+Gợi ý tìm kiếm kết hợp prefix, fuzzy và semantic search. Embedding được tự host bằng TEI với model `BAAI/bge-m3`, nên dữ liệu không phải đi qua OpenAI, Gemini hay Cohere.
 
-Viết thường trong mọi ngữ cảnh: `engram`. Không `Engram`, không `ENGRAM`.
+## engram làm gì?
 
-Chọn từ này vì ba lý do:
+### Lưu được những thứ nhỏ nhưng quan trọng
 
-- **Đúng thứ sản phẩm bán.** Chỗ chứa thì Notes, Keep, Notion đều có; lưu được không phải điểm khác biệt. Thứ khác biệt là **tìm lại được từ mảnh vụn bạn còn giữ** — nhớ một từ, sai dấu cũng được, là đủ. Đó đúng là cách trí nhớ người hoạt động, và là lý do có cả prefix, fuzzy lẫn gần nghĩa.
-- **Đúng kiến trúc đã chọn.** Một entry chính là một dấu vết: thân mã hoá, còn `name` và tag để trần làm đường dẫn tìm về. Và mã hoá là thứ *cho phép* nói câu "một phần trí nhớ" — không ai đổ hết mọi thứ vào một cái app mà người khác đọc được.
-- **Đọc được ở cả hai ngôn ngữ.** "en-gram" — không cụm phụ âm lạ, kết thúc bằng `m` là âm tiếng Việt có sẵn, nghe xong viết lại đúng chính tả.
+Một Item có thể có nhiều tag và nhiều entry. Ở MVP, entry hỗ trợ hai kiểu:
 
-Đã cân nhắc và loại:
+- `text` cho ghi chú hoặc nội dung tự do;
+- `json` cho dữ liệu có cấu trúc, được hiển thị dưới dạng bảng lồng nhau.
 
-- `keyword` — chỉ tả cơ chế, quá phổ thông để sở hữu hay làm SEO.
-- `khoá` — mạnh trong tiếng Việt (*từ khoá* + *khoá* mã hoá, đúng hai nửa sản phẩm trong một âm tiết) nhưng người ngoài không đọc và không gõ được dấu.
+Tên mục có thể trùng nhau; tag được chuẩn hoá và duy trì tính duy nhất. Cách tổ chức này phù hợp với những thứ thường được lưu rải rác như thông tin Wi-Fi, cấu hình, ghi chú công việc hoặc các mẩu dữ liệu cần tìm lại sau này.
 
-Cần biết khi dùng tên:
+### Tìm lại từ những gì bạn còn nhớ
 
-- Tên repo giữ `save-all-by-keyword` vì lịch sử. Domain tạm `key.zone17th.click`.
-- Ở Mỹ, "engram" cũng là thuật ngữ trung tâm của Scientology. Không phải rủi ro pháp lý, nhưng là nhiễu cần lường khi viết nội dung tiếng Anh.
-- **Chưa tra domain và nhãn hiệu** — phải kiểm trước khi in hay đăng ký gì.
-- Thực thể chính trong code không còn là "keyword": xem [glossary trong spec](docs/SPEC.md#14-glossary).
+Search của engram chạy trên tên mục và tag, kết hợp ba lớp:
 
-## Điểm chính
+1. **Prefix** — tìm ngay khi bạn mới gõ vài ký tự.
+2. **Fuzzy** — vẫn tìm được khi gõ thiếu hoặc sai một chút.
+3. **Semantic** — hiểu những cụm từ gần nghĩa, chẳng hạn tìm “mật khẩu wifi” có thể gợi ra mục `wifi-password` hoặc tag `mạng-nhà`.
 
-- **Web, online-only, multi-user**: Next.js 15 + Go (chi, pgx, sqlc, River) + Postgres 16 (pgvector, pg_trgm). Domain tạm `key.zone17th.click`.
-- **Item + Tag + typed Entry**: `name` được trùng; tag unique theo dạng chuẩn hoá; entry thuộc đúng một mục. MVP: `text` và `json` (bảng lồng nhau + import JSON).
-- **E2E chỉ body**: passphrase → Argon2id → KEK bọc Vault Key; **10 recovery key** và **passkey (WebAuthn PRF)** cũng mở vault. Còn VK qua passkey/thiết bị đã nhớ/phiên đang mở thì có thể đặt passphrase mới sau re-auth tài khoản. RK dùng một lần trên live server; xoá RK/passkey wrap không vô hiệu hoá bản copy trong backup. Reset vault xoá entry, giữ item và tag. Không BIP39, không KMS ngoài.
-- **Search lai**: lexical + semantic trên name và tag; semantic đến sau giữ nguyên vị trí kết quả lexical. Setting user hoặc nút `≈` tắt semantic khi tìm kiếm, còn indexing vẫn chạy; env deployment có thể tắt cả hai.
-- **Miễn phí**, không gói trả phí. Embedding không gửi ra OpenAI/Gemini/Cohere.
-- **i18n**: English (mặc định) và Tiếng Việt.
+Kết quả semantic được bổ sung sau kết quả lexical để những gì khớp trực tiếp vẫn xuất hiện trước. Bạn có thể tắt semantic cho từng lần tìm bằng nút `≈` hoặc trong phần cài đặt; việc lập chỉ mục vẫn tiếp tục chạy. Ở cấp deployment, có thể tắt hoàn toàn cả hai phần semantic và indexing.
 
-## Tài liệu
+## Riêng tư và mã hoá
 
-- [`docs/SPEC.md`](docs/SPEC.md) — spec đầy đủ: domain model, kiến trúc, E2E (passphrase, 10 recovery key, passkey PRF), search, UI, schema, API, roadmap.
-- [`docs/phases/`](docs/phases/README.md) — spec triển khai P01–P08: phạm vi, phụ thuộc, mockup ownership, contract và acceptance. MVP là P01–P06.
-- [`mockups/`](mockups/README.md) — mockup UI tĩnh (landing, tìm kiếm, chi tiết mục, cài đặt, đăng nhập, onboarding, mở khoá, khôi phục, trạng thái lỗi, tài liệu). Chạy bằng `python -m http.server 5178 --directory mockups`. **Đây là tiêu chuẩn thiết kế**: plan và implementation bám theo bộ này.
-- [`clickup.design.md`](clickup.design.md) — nguồn token thị giác mà mockup lấy tầng chức năng từ đó.
+engram mã hoá đầu-cuối **thân của entry** — phần text hoặc JSON mà bạn lưu. `name`, tag và kiểu entry vẫn ở dạng plaintext để server có thể thực hiện tìm kiếm.
 
-## Trạng thái
+Vault được mở từ passphrase thông qua Argon2id và KEK bọc Vault Key. Người dùng cũng có thể mở vault bằng một trong 10 recovery key hoặc passkey (WebAuthn PRF). Recovery key chỉ dùng một lần trên live server; việc xoá bản wrap của recovery key hoặc passkey không xoá các bản sao đã có trong backup.
 
-Đang ở giai đoạn spec (Phase 0). Branch `develop` là nhánh tích hợp, `main` là release.
+Khi cần, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản bằng Vault Key từ passkey, thiết bị đã nhớ hoặc phiên đang mở. Reset vault sẽ xoá các entry nhưng giữ lại item và tag.
+
+engram không dùng BIP39 và không phụ thuộc KMS bên ngoài.
+
+## Tài liệu và mockup
+
+- [`docs/SPEC.md`](docs/SPEC.md) — đặc tả sản phẩm: domain model, kiến trúc, E2E, search, UI, schema, API và roadmap.
+- [`docs/phases/`](docs/phases/README.md) — kế hoạch triển khai P01–P08, trong đó MVP là P01–P06.
+- [`mockups/`](mockups/README.md) — bộ mockup UI tĩnh cho landing, tìm kiếm, chi tiết item, cài đặt, đăng nhập, onboarding, mở khoá, khôi phục và các trạng thái lỗi.
+- [`clickup.design.md`](clickup.design.md) — nguồn token thị giác được dùng cho mockup.
+
+Để xem mockup cục bộ:
+
+```bash
+python -m http.server 5178 --directory mockups
+```
+
+Sau đó mở <http://localhost:5178/landing.html>. Mockup là chuẩn tham chiếu cho bố cục và thị giác; spec là nguồn chính cho hành vi và dữ liệu.
+
+## Trạng thái phát triển
+
+engram hiện đang ở **Phase 0 — giai đoạn đặc tả**.
+
+- `develop` là nhánh tích hợp.
+- `main` là nhánh release.
+- Sản phẩm dự kiến là web app online-only, multi-user, xây dựng với Next.js 15, Go (chi, pgx, sqlc, River) và PostgreSQL 16 (pgvector, pg_trgm).
+- Giao diện hỗ trợ English (mặc định) và Tiếng Việt.
+
+## Về tên gọi
+
+Trong thần kinh học, **engram** là dấu vết vật lý mà một ký ức để lại. Cái tên này gợi đúng điều sản phẩm muốn làm: ghi lại một dấu vết nhỏ để lần sau có thể tìm về, ngay cả khi bạn chỉ còn nhớ một phần.
+
+Tên được viết thường trong mọi ngữ cảnh: `engram`, không phải `Engram` hay `ENGRAM`.
+
+Tên repo hiện vẫn là `save-all-by-keyword` vì lý do lịch sử; domain đang dùng tạm là `key.zone17th.click`. Trước khi in ấn hoặc đăng ký chính thức, cần kiểm tra thêm domain và nhãn hiệu.
