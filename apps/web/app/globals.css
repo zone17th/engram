@@ -1,0 +1,10 @@
+/* @import PHẢI đứng trước mọi at-rule khác (CSS spec) — postcss-import cảnh báo
+   và có bundler sẽ bỏ qua nếu đặt sau `@tailwind`. Đặt ở dòng 1 là bản đúng. */
+@import '../styles/tokens.css';
+
+/* Thứ tự đặc hiệu vẫn đúng: token là `:root { --… }` (specificity 0,1,0 trên
+   phần tử gốc) nên không đua với preflight của `@tailwind base`, còn utility
+   của `@tailwind utilities` đứng sau nên vẫn thắng như thường. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

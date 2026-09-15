@@ -1,0 +1,86 @@
+openapi: 3.1.0
+info:
+  title: engram API
+  version: 0.1.0
+  description: |
+    API của engram. Ở P01 chỉ có ba endpoint vận hành.
+    Mọi lỗi dùng RFC 9457 (application/problem+json).
+servers:
+  # Dev và production dùng chung một origin; browser luôn gọi đường tương đối.
+  - url: /api/v1
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Tiến trình còn sống
+      responses:
+        '200':
+          description: Tiến trình đang chạy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Phụ thuộc bắt buộc đã sẵn sàng
+      responses:
+        '200':
+          description: Sẵn sàng nhận traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks, semantic_available]
+                properties:
+                  status:
+                    type: string
+                    const: ready
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  semantic_available:
+                    type: boolean
+                    description: false khi EMBEDDING_PROVIDER=noop hoặc thiếu TEI_URL.
+        '503':
+          description: Phụ thuộc bắt buộc chưa sẵn sàng
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Số liệu Prometheus (chỉ dành cho vận hành)
+      responses:
+        '200':
+          description: Dạng text phơi bày của Prometheus
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          examples: ['https://key.zone17th.click/problems/dependency_unavailable']
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance:
+          type: string
+          description: Request ID, không phải URL.
+        code:
+          type: string
+          enum: [invalid_request, dependency_unavailable, internal_error, not_found]

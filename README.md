@@ -58,9 +58,83 @@ python -m http.server 5178 --directory mockups
 
 Sau đó mở <http://localhost:5178/landing.html>. Mockup là chuẩn tham chiếu cho bố cục và thị giác; spec là nguồn chính cho hành vi và dữ liệu.
 
+## Chạy tại máy
+
+Yêu cầu: Node ≥ 20.19, pnpm 10.34.5, Go 1.27 (hoặc `GOTOOLCHAIN=auto` với `go` 1.25+ theo `apps/api/go.mod`), Docker + plugin Compose (`docker compose`).
+
+```bash
+git clone https://github.com/zone17th/engram.git
+cd engram
+cp .env.example .env
+pnpm install
+```
+
+### Cách 1 — toàn bộ trong Docker
+
+```bash
+pnpm stack:up     # db + migrate + api + worker + web
+pnpm smoke        # kiểm tra nhanh
+```
+
+Mở http://localhost:3000. Dừng bằng `pnpm stack:down`.
+
+### Cách 2 — chỉ DB trong Docker, phần còn lại chạy trên máy
+
+```bash
+make dev
+```
+
+Trên Windows (không có `make`), chạy từng lệnh trong ba terminal:
+
+```bash
+docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up -d db
+```
+
+```bash
+cd apps/api && go run ./cmd/migrate up && go run ./cmd/api
+```
+
+```bash
+pnpm --filter @engram/web dev
+```
+
+**Không cần TEI hay OAuth thật để xem landing.** `EMBEDDING_PROVIDER=noop` là mặc định;
+tìm kiếm ngữ nghĩa sẽ hiển thị là chưa khả dụng, đúng như thực tế.
+
+Muốn thử TEI (tải model ~2 GB):
+
+```bash
+docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml --profile semantic up -d tei
+EMBEDDING_PROVIDER=tei TEI_URL=http://localhost:8081 pnpm stack:up
+```
+
+### Kiểm thử
+
+```bash
+cd apps/api && go test ./... -short     # không cần Docker
+```
+
+```bash
+cd apps/api && go test ./...            # cần Docker (testcontainers)
+```
+
+```bash
+pnpm -r test
+```
+
+```bash
+pnpm --filter @engram/web exec playwright test   # Task 17 / e2e — chưa có trên nhánh P01 này
+```
+
+### Một origin duy nhất
+
+Trình duyệt chỉ nói chuyện với `http://localhost:3000`. Next chuyển tiếp `/api/*`
+sang Go (`API_UPSTREAM`, mặc định `http://127.0.0.1:8080`). Đừng gọi thẳng cổng 8080
+từ trình duyệt — cookie phiên có path `/api` và CSP chỉ cho `connect-src 'self'`.
+
 ## Trạng thái phát triển
 
-engram hiện đang ở **Phase 0 — giai đoạn đặc tả**.
+Implementation P01 (nền tảng và UI shell) đã được tích hợp vào `develop`. Bằng chứng và các mục nghiệm thu còn mở nằm trong [evidence P01](docs/phases/evidence/P01.md).
 
 - `develop` là nhánh tích hợp.
 - `main` là nhánh release.
@@ -73,4 +147,4 @@ Trong thần kinh học, **engram** là dấu vết vật lý mà một ký ức
 
 Tên được viết thường trong mọi ngữ cảnh: `engram`, không phải `Engram` hay `ENGRAM`.
 
-Tên repo hiện vẫn là `save-all-by-keyword` vì lý do lịch sử; domain đang dùng tạm là `key.zone17th.click`. Trước khi in ấn hoặc đăng ký chính thức, cần kiểm tra thêm domain và nhãn hiệu.
+Repo GitHub là [zone17th/engram](https://github.com/zone17th/engram); module Go/pnpm còn giữ đường dẫn lịch sử `save-all-by-keyword`. Domain đang dùng tạm là `key.zone17th.click`. Trước khi in ấn hoặc đăng ký chính thức, cần kiểm tra thêm domain và nhãn hiệu.

@@ -1,0 +1,17 @@
+{
+  "name": "engram",
+  "private": true,
+  "packageManager": "pnpm@10.34.5",
+  "engines": { "node": ">=20.19" },
+  "scripts": {
+    "dev": "pnpm --filter @engram/web dev",
+    "dev:stack": "make dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "stack:up": "docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up -d --build",
+    "stack:down": "docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down",
+    "smoke": "bash scripts/smoke.sh"
+  }
+}

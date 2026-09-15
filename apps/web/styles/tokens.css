@@ -1,0 +1,409 @@
+/* Port 1:1 từ mockups/tokens.css — nguồn sự thật thị giác (SPEC §7.0).
+   Đổi giá trị ở đây mà không đổi bên mockup sẽ làm tests/tokens.parity.test.ts đỏ.
+   Khác biệt duy nhất được phép: ba biến --font-* lấy từ next/font thay vì CDN. */
+
+/* ------------------------------------------------------------------
+   engram — design tokens
+   Nguồn: clickup.design.md (alpha). Không phát minh màu/size mới.
+   Ánh xạ sang app shell search-first của SPEC.md §7.
+------------------------------------------------------------------ */
+
+:root {
+  --font-display: var(--font-plus-jakarta), 'Plus Jakarta Sans', sans-serif;
+  --font-sans: var(--font-inter), Inter, sans-serif;
+  --font-mono: var(--font-sometype), 'Sometype Mono', ui-monospace, monospace;
+
+  /* Primary & action */
+  --primary: #202020;
+  --accent: #B4128F;          /* magenta đậm — 6.1:1 trên nền trắng */
+  --accent-hover: #9A0F7A;
+  --accent-pressed: #7D0C63;
+  --link: #0091FF;
+
+  /* Neutrals & text */
+  --ink: #090C1D;
+  --body: #202020;
+  --muted: #646464;
+
+  /* Surfaces */
+  --canvas: #FFFFFF;
+  --surface: #F8F9FA;
+  --surface-alt: #F1F1F9;
+  --border: #CFCFCF;
+  --border-strong: #B4B4B4;
+  --deep-panel: #1E1E1E;
+  --dark-footer: #111111;
+
+  /* Semantic */
+  --success: #30A46C;
+  --warning: #FFC53D;
+  --error: #E5484D;
+
+  /* Brand signatures — engram.
+     Magenta + cyan: quy ước đánh dấu huỳnh quang, tế bào mang dấu vết
+     sáng lên trên nền tối. Đây là tầng duy nhất đổi khỏi ClickUp;
+     tầng chức năng (neutral, success/warning/error) giữ nguyên.
+     Gradient chỉ nằm trên nét, không tô kín ô: tô kín thì đoạn giữa
+     magenta→cyan hoá tím-xanh, đúng kiểu icon SaaS ai cũng có. */
+  --logo-ink: #202020;
+  --logo-magenta: #FA12E3;
+  --logo-cyan: #12D0FA;
+  --ai-pink: #FA12E3;
+  --ai-cyan: #12D0FA;
+  --product-teal: #12A594;
+  --product-yellow: #FFC800;
+  --app-navy: #101F52;
+
+  /* Pale fields */
+  --pale-accent: #FCEDF7;
+  --pale-pink: #FFF1FE;
+  --pale-blue: #E9E9F6;
+  --pale-orange: #FFECE5;
+
+  --on-primary: #FFFFFF;
+  --on-dark: #FFFFFF;
+
+  /* Radius */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 14px;
+  --r-xxl: 20px;
+  --r-section: 32px;
+  --r-pill: 9999px;
+
+  /* Shadow */
+  --sh-hero: 0 4px 10px rgba(13, 21, 48, .05);
+  --sh-card: 0 1px 3px rgba(0, 0, 0, .10);
+  --sh-agent: 0 10px 25px rgba(18, 43, 165, .10);
+  --sh-pop: 0 0 1px rgba(0, 0, 0, .27), 0 12px 32px rgba(13, 21, 48, .12);
+
+  --container: 1160px;
+}
+
+/* Dark mode — SPEC §7.8. ClickUp không phải brand dark-first:
+   chỉ đảo surface, giữ nguyên hệ accent. */
+[data-theme='dark'] {
+  --canvas: #161616;
+  --surface: #1E1E1E;
+  --surface-alt: #242430;
+  --border: #383838;
+  --border-strong: #4A4A4A;
+  --body: #F1F1F1;
+  --ink: #FFFFFF;
+  --muted: #A0A0A0;
+  --primary: #F1F1F1;
+  --on-primary: #161616;
+  --pale-accent: #2E1129;
+  --pale-blue: #1B2036;
+  --pale-pink: #33122E;
+  --pale-orange: #33201A;
+  --accent: #FF7AD9;
+}
+
+/* ---------- base ---------- */
+
+* { box-sizing: border-box; }
+
+/* `hidden` phải thắng mọi utility display (flex, grid…) của Tailwind:
+   các view chuyển bằng `data-seg` được ẩn/hiện bằng thuộc tính này. */
+[hidden] { display: none !important; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--body);
+  font-family: 'Inter', 'Plus Jakarta Sans', sans-serif;
+  font-size: 16px;
+  line-height: 1.375;
+  letter-spacing: -.02em;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- type scale (clickup.design.md) ---------- */
+
+.t-display, .t-hero, .t-headline-lg, .t-headline-md,
+.t-title-lg, .t-title-md, .t-title-sm {
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  margin: 0;
+  color: var(--ink);
+}
+
+.t-display    { font-size: 92px; font-weight: 700; line-height: 1.05; letter-spacing: -.04em; }
+.t-hero       { font-size: 76px; font-weight: 700; line-height: 1.05; letter-spacing: -.04em; }
+.t-headline-lg{ font-size: 60px; font-weight: 650; line-height: 1.10; letter-spacing: -.035em; }
+.t-headline-md{ font-size: 48px; font-weight: 650; line-height: 1.15; letter-spacing: -.035em; }
+.t-title-lg   { font-size: 40px; font-weight: 650; line-height: 1.20; letter-spacing: -.04em; }
+.t-title-md   { font-size: 34px; font-weight: 650; line-height: 1.20; letter-spacing: -.035em; }
+.t-title-sm   { font-size: 26px; font-weight: 650; line-height: 1.25; letter-spacing: -.035em; }
+
+.t-body-lg { font-size: 18px; line-height: 1.333; letter-spacing: -.02em; }
+.t-body    { font-size: 16px; line-height: 1.375; letter-spacing: -.02em; }
+.t-caption { font-size: 12px; line-height: 1.5; letter-spacing: 0; }
+.t-legal   { font-size: 11px; line-height: 1.6; letter-spacing: 0; }
+
+/* Mono = product taxonomy. Ở đây: entry type, key_id, recovery key,
+   phím tắt, JSON thô — đúng vai "nhãn phân loại sản phẩm". */
+.t-label {
+  font-family: 'Sometype Mono', ui-monospace, monospace;
+  font-size: 16px; font-weight: 500; line-height: 1.25; letter-spacing: 0;
+}
+.mono { font-family: 'Sometype Mono', ui-monospace, monospace; letter-spacing: 0; }
+
+@media (max-width: 900px) {
+  .t-display    { font-size: 52px; }
+  .t-hero       { font-size: 42px; }
+  .t-headline-lg{ font-size: 36px; }
+  .t-headline-md{ font-size: 30px; }
+  .t-title-lg   { font-size: 28px; }
+  .t-title-md   { font-size: 24px; }
+  .t-title-sm   { font-size: 21px; }
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  font-family: 'Inter', sans-serif;
+  font-size: 15px; font-weight: 800; line-height: 1.2; letter-spacing: -.01em;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+  text-decoration: none; min-height: 44px; padding: 12px 18px;
+  border-radius: var(--r-xl);
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.btn-primary   { background: var(--primary); color: var(--on-primary); }
+.btn-primary:hover:not(:disabled) { background: var(--deep-panel); }
+[data-theme='dark'] .btn-primary:hover:not(:disabled) { background: #FFFFFF; }
+
+.btn-secondary { background: var(--surface-alt); color: var(--accent); }
+.btn-secondary:hover:not(:disabled) { background: var(--pale-blue); }
+
+.btn-tertiary  {
+  background: var(--canvas); color: var(--body);
+  border-color: var(--border); border-radius: var(--r-md);
+  padding: 8px 12px; min-height: 38px;
+}
+.btn-tertiary:hover:not(:disabled) { background: var(--surface); border-color: var(--border-strong); }
+
+.btn-ai { background: var(--pale-pink); color: var(--ai-pink); }
+.btn-ai:hover:not(:disabled) { background: #FFE3FC; }
+
+.btn-danger { background: var(--canvas); color: var(--error); border-color: var(--error); border-radius: var(--r-md); padding: 8px 12px; min-height: 38px; }
+.btn-danger:hover:not(:disabled) { background: #FEF1F1; }
+[data-theme='dark'] .btn-danger:hover:not(:disabled) { background: #331B1C; }
+
+.btn-sm { min-height: 32px; padding: 6px 10px; font-size: 13px; border-radius: var(--r-sm); }
+
+/* ---------- surfaces ---------- */
+
+.card {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-card);
+}
+.panel {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-section);
+  box-shadow: var(--sh-hero);
+}
+.panel-agent {
+  background: var(--pale-accent);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xxl);
+  box-shadow: var(--sh-agent);
+}
+
+/* ---------- chips ---------- */
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface); color: var(--body);
+  font-family: 'Sometype Mono', monospace; font-size: 14px; font-weight: 500;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  padding: 6px 12px; text-decoration: none; cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.chip:hover { background: var(--surface-alt); border-color: var(--border-strong); }
+.chip-accent { background: var(--pale-accent); color: var(--accent); border-color: transparent; }
+.chip-lg { font-size: 16px; padding: 8px 14px; }
+.chip-x { color: var(--muted); font-size: 15px; line-height: 1; }
+.chip-x:hover { color: var(--error); }
+
+/* Badge kiểu entry — taxonomy, nên dùng mono */
+.badge-type {
+  font-family: 'Sometype Mono', monospace; font-size: 12px; font-weight: 500;
+  border-radius: var(--r-sm); padding: 3px 8px; letter-spacing: 0;
+}
+.badge-text { background: var(--pale-blue); color: var(--app-navy); }
+.badge-json { background: var(--pale-orange); color: #8A3A10; }
+[data-theme='dark'] .badge-text { color: #C7D0F5; }
+[data-theme='dark'] .badge-json { color: #F7A57A; }
+
+/* ---------- omnibox ---------- */
+
+.omnibox-shell {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  display: flex; align-items: center; gap: 12px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.omnibox-shell:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--pale-accent);
+}
+.omnibox-shell.is-add { border-color: var(--primary); box-shadow: 0 0 0 3px var(--surface-alt); }
+
+.omnibox-input {
+  flex: 1; border: 0; outline: 0; background: transparent;
+  font-family: 'Inter', sans-serif; font-size: 18px; letter-spacing: -.02em;
+  color: var(--body); min-width: 0;
+}
+.omnibox-input::placeholder { color: var(--muted); }
+
+.popover {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  overflow: hidden;
+}
+
+/* Nhóm kết quả: Tags → Items → Gần nghĩa.
+   Tách nhóm để bật/tắt ≈ không xáo trộn thứ tự lexical (SPEC §6.4). */
+.sugg-group {
+  font-family: 'Sometype Mono', monospace;
+  font-size: 12px; font-weight: 500; color: var(--muted);
+  padding: 10px 16px 6px; background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.sugg-group:first-child { border-top: 0; }
+
+.sugg-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; cursor: pointer; border: 0; width: 100%;
+  background: transparent; text-align: left; color: var(--body);
+  font-family: 'Inter', sans-serif; font-size: 15px;
+}
+.sugg-row:hover { background: var(--surface); }
+.sugg-row[aria-selected='true'] {
+  background: var(--pale-accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+[data-theme='dark'] .sugg-row[aria-selected='true'] { background: var(--surface-alt); }
+.sugg-row mark { background: transparent; color: inherit; font-weight: 700; }
+.sugg-meta { margin-left: auto; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* Nhãn gợi ý là con thứ 2 ở cả 4 kiểu hàng — cắt bằng ellipsis để popover hẹp không tràn. */
+.sugg-row > span:nth-child(2) {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.kbd {
+  font-family: 'Sometype Mono', monospace; font-size: 11px; color: var(--muted);
+  border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: var(--r-sm); padding: 2px 6px; background: var(--canvas);
+  white-space: nowrap;
+}
+
+/* ---------- JSON table (SPEC §7.4) ---------- */
+
+.json-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.json-table th {
+  text-align: left; font-family: 'Sometype Mono', monospace;
+  font-size: 12px; font-weight: 500; color: var(--muted);
+  padding: 8px 12px; background: var(--surface);
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.json-table td {
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  vertical-align: top; color: var(--body);
+}
+.json-table tr:last-child td { border-bottom: 0; }
+.json-table .k { font-family: 'Sometype Mono', monospace; color: var(--muted); white-space: nowrap; }
+.json-table .v-num { font-family: 'Sometype Mono', monospace; color: var(--accent); }
+.json-table .v-bool { font-family: 'Sometype Mono', monospace; color: var(--product-teal); }
+.json-table .v-null { font-family: 'Sometype Mono', monospace; color: var(--muted); font-style: italic; }
+.json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
+.json-toggle {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  background: transparent; border: 0; padding: 0; color: var(--body);
+  font-family: 'Sometype Mono', monospace; font-size: 13px;
+}
+.json-toggle .caret { transition: transform .15s ease; display: inline-block; color: var(--muted); }
+.json-toggle[aria-expanded='true'] .caret { transform: rotate(90deg); }
+.json-raw {
+  font-family: 'Sometype Mono', monospace; font-size: 13px; line-height: 1.6;
+  white-space: pre; overflow-x: auto; padding: 16px;
+  background: var(--surface); color: var(--body); margin: 0;
+}
+
+/* ---------- misc ---------- */
+
+.rule { height: 1px; background: var(--border); border: 0; margin: 0; }
+
+.lock-veil {
+  font-family: 'Sometype Mono', monospace; color: var(--muted);
+  background: var(--surface-alt); border-radius: var(--r-md);
+  padding: 12px 14px; letter-spacing: .12em;
+}
+
+.seg { display: inline-flex; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
+.seg button {
+  border: 0; background: transparent; cursor: pointer; border-radius: var(--r-sm);
+  padding: 5px 12px; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+  color: var(--muted);
+}
+.seg button[aria-pressed='true'] { background: var(--canvas); color: var(--body); box-shadow: var(--sh-card); }
+
+.switch {
+  width: 42px; height: 24px; border-radius: var(--r-pill); border: 0; cursor: pointer;
+  background: var(--border-strong); position: relative; transition: background-color .15s ease;
+  flex: none;
+}
+.switch::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+  border-radius: 50%; background: #fff; transition: transform .15s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.switch[aria-checked='true'] { background: var(--accent); }
+.switch[aria-checked='true']::after { transform: translateX(18px); }
+
+.vault-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  border-radius: var(--r-pill); padding: 6px 12px; cursor: pointer;
+  border: 1px solid transparent; font-size: 13px; font-weight: 600;
+  font-family: 'Inter', sans-serif; white-space: nowrap;
+}
+.vault-open { background: rgba(48,164,108,.12); color: var(--success); }
+.vault-shut { background: rgba(229,72,77,.10); color: var(--error); }
+
+.toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  background: var(--deep-panel); color: #fff; border-radius: var(--r-xl);
+  padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+  box-shadow: var(--sh-pop); font-size: 14px; z-index: 80;
+}
+.toast button { background: transparent; border: 0; color: var(--ai-cyan); font-weight: 700; cursor: pointer; font-size: 14px; }
+
+dialog::backdrop { background: rgba(9,12,29,.45); }
+dialog { border: 0; padding: 0; background: transparent; }
+
+a { color: var(--link); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
