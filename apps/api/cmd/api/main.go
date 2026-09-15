@@ -83,6 +83,11 @@ func run() error {
 	}
 	defer pool.Close()
 
+	if err := db.Preflight(ctx, pool); err != nil {
+		return fmt.Errorf("preflight database thất bại: %w", err)
+	}
+	logger.Info("preflight database ok")
+
 	reg, metrics := obs.NewRegistry()
 
 	srv := &http.Server{
