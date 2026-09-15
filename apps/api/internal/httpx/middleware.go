@@ -4,10 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
 )
 
 type ctxKey int
@@ -64,6 +67,27 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 				slog.String("request_id", RequestIDFrom(r.Context())),
 			)
+		})
+	}
+}
+
+// Observe ghi latency vào histogram bằng route pattern — cùng lý do như AccessLog:
+// raw path có thể chứa tham số riêng tư và làm nổ cardinality.
+func Observe(m *obs.Metrics) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+			next.ServeHTTP(rec, r)
+
+			route := chi.RouteContext(r.Context()).RoutePattern()
+			if route == "" {
+				route = "unmatched"
+			}
+			m.RequestDuration.
+				WithLabelValues(route, r.Method, strconv.Itoa(rec.status)).
+				Observe(time.Since(start).Seconds())
 		})
 	}
 }
