@@ -4,14 +4,18 @@
   "packageManager": "pnpm@10.34.5",
   "engines": { "node": ">=20.19" },
   "scripts": {
-    "dev": "pnpm --filter @engram/web dev",
-    "dev:stack": "make dev",
+    "dev": "node scripts/dev.mjs web",
+    "dev:stack": "node scripts/dev.mjs",
+    "dev:api": "node scripts/dev.mjs api",
+    "dev:worker": "node scripts/dev.mjs worker",
+    "dev:web": "node scripts/dev.mjs web",
+    "migrate": "node scripts/dev.mjs migrate",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "build": "pnpm -r build",
-    "stack:up": "docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up -d --build",
-    "stack:down": "docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down",
-    "smoke": "bash scripts/smoke.sh"
+    "stack:up": "node scripts/dev.mjs compose-up",
+    "stack:down": "node scripts/dev.mjs compose-down",
+    "smoke": "node scripts/smoke.mjs"
   }
 }

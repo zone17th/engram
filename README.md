@@ -69,6 +69,10 @@ cp .env.example .env
 pnpm install
 ```
 
+PowerShell tương đương với lệnh sao chép đầu tiên là `Copy-Item .env.example .env`.
+Các lệnh host dev đọc `.env` làm giá trị mặc định; biến đã có trong shell vẫn được giữ
+nguyên để dễ override cục bộ.
+
 ### Cách 1 — toàn bộ trong Docker
 
 ```bash
@@ -77,6 +81,8 @@ pnpm smoke        # kiểm tra nhanh
 ```
 
 Mở http://localhost:3000. Dừng bằng `pnpm stack:down`.
+`pnpm smoke` dùng Node, tự chờ có giới hạn để stack detached kịp sẵn sàng và không cần
+Bash trên Windows.
 
 ### Cách 2 — chỉ DB trong Docker, phần còn lại chạy trên máy
 
@@ -84,19 +90,39 @@ Mở http://localhost:3000. Dừng bằng `pnpm stack:down`.
 make dev
 ```
 
-Trên Windows (không có `make`), chạy từng lệnh trong ba terminal:
+`make dev` và `pnpm dev:stack` đều khởi động DB, chạy migration, API, worker và Next
+dev bằng cùng một env loader. Trên Windows (không có `make`), dùng:
 
-```bash
+```powershell
+pnpm dev:stack
+```
+
+Nếu cần chạy từng tiến trình để debug, nạp env vào từng terminal PowerShell bằng cách
+dot-source helper trước lệnh Go hoặc pnpm:
+
+```powershell
 docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up -d db
 ```
 
-```bash
-cd apps/api && go run ./cmd/migrate up && go run ./cmd/api
+```powershell
+. .\scripts\load-env.ps1
+Set-Location apps/api
+go run ./cmd/migrate up
+go run ./cmd/api
 ```
 
-```bash
+```powershell
+. .\scripts\load-env.ps1
+Set-Location apps/api
+go run ./cmd/worker
+```
+
+```powershell
+. .\scripts\load-env.ps1
 pnpm --filter @engram/web dev
 ```
+
+Chạy riêng migration bằng `make migrate` hoặc `pnpm migrate` sau khi DB đã sẵn sàng.
 
 **Không cần TEI hay OAuth thật để xem landing.** `EMBEDDING_PROVIDER=noop` là mặc định;
 tìm kiếm ngữ nghĩa sẽ hiển thị là chưa khả dụng, đúng như thực tế.
@@ -105,8 +131,20 @@ Muốn thử TEI (tải model ~2 GB):
 
 ```bash
 docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml --profile semantic up -d tei
-EMBEDDING_PROVIDER=tei TEI_URL=http://localhost:8081 pnpm stack:up
+EMBEDDING_PROVIDER=tei TEI_URL=http://tei:80 pnpm stack:up
 ```
+
+Trong PowerShell, đặt override trước khi chạy stack:
+
+```powershell
+$env:EMBEDDING_PROVIDER = 'tei'
+$env:TEI_URL = 'http://tei:80'
+pnpm stack:up
+```
+
+Các lệnh trên dành cho full Compose, nên API/worker dùng DNS nội bộ `tei:80`. Nếu
+chạy API và worker trên máy với `pnpm dev:stack`, dùng `TEI_URL=http://localhost:8081`
+và giữ cổng `8081:80` của service `tei`.
 
 ### Kiểm thử
 
@@ -123,14 +161,18 @@ pnpm -r test
 ```
 
 ```bash
-pnpm --filter @engram/web exec playwright test   # Task 17 / e2e — chưa có trên nhánh P01 này
+pnpm --filter @engram/web exec playwright install chromium
+pnpm --filter @engram/web e2e
 ```
 
 ### Một origin duy nhất
 
 Trình duyệt chỉ nói chuyện với `http://localhost:3000`. Next chuyển tiếp `/api/*`
-sang Go (`API_UPSTREAM`, mặc định `http://127.0.0.1:8080`). Đừng gọi thẳng cổng 8080
+sang Go (`API_UPSTREAM`, mặc định host dev là `http://127.0.0.1:8080`; Compose build
+được truyền `http://api:8080`). Đừng gọi thẳng cổng 8080
 từ trình duyệt — cookie phiên có path `/api` và CSP chỉ cho `connect-src 'self'`.
+Full Compose chỉ cần `COMPOSE_API_UPSTREAM` khi cố ý đổi DNS mặc định; không dùng
+`API_UPSTREAM` của host dev cho container.
 
 ## Trạng thái phát triển
 

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { withRequestOrigin } from '../i18n/internal-rewrite';
+import { routing } from '../i18n/routing';
 
 const WEB = resolve(__dirname, '..');
 
@@ -14,6 +16,21 @@ describe('cấu trúc route (P01-A3)', () => {
   it('middleware i18n không chạm /api và /app', () => {
     const mw = readFileSync(resolve(WEB, 'middleware.ts'), 'utf8');
     expect(mw).toContain('?!api|app');
+  });
+
+  it('giữ origin của rewrite và redirect khi Next chuẩn hoá loopback', () => {
+    expect(withRequestOrigin('http://localhost:3100/en?q=test', 'http://127.0.0.1:3100/', 'http://localhost:3100'))
+      .toBe('http://127.0.0.1:3100/en?q=test');
+    expect(withRequestOrigin('http://localhost:3100/', 'http://127.0.0.1:3100/en', 'http://localhost:3100'))
+      .toBe('http://127.0.0.1:3100/');
+    expect(withRequestOrigin('https://example.com/vi', 'https://example.com/', 'https://example.com'))
+      .toBe('https://example.com/vi');
+    expect(withRequestOrigin('https://other.example/vi', 'https://example.com/', 'https://example.com'))
+      .toBe('https://other.example/vi');
+  });
+
+  it('không tự động đổi locale theo cookie hoặc Accept-Language', () => {
+    expect(routing.localeDetection).toBe(false);
   });
 
   it('next.config proxy /api sang upstream Go', () => {

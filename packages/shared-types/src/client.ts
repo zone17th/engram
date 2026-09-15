@@ -27,6 +27,21 @@ export class ProblemError extends Error {
   }
 }
 
+function mergeHeaders(headersInit: HeadersInit | undefined): Headers {
+  const headers = new Headers(headersInit);
+  if (!headers.has('accept')) headers.set('accept', 'application/json');
+  return headers;
+}
+
+function mediaType(contentType: string): string {
+  return contentType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+function isJsonContentType(contentType: string): boolean {
+  const type = mediaType(contentType);
+  return type === 'application/json' || type.endsWith('+json');
+}
+
 /**
  * apiFetch là cổng duy nhất ra API.
  * `credentials: 'same-origin'` là chủ ý: cookie `sabk_session` có path `/api`
@@ -36,17 +51,22 @@ export class ProblemError extends Error {
  * đứng SAU. Nếu ngược lại, một caller truyền `{ credentials: 'include' }` sẽ
  * âm thầm mở gateway policy ra cross-origin. Caller được đổi method/body/signal,
  * không được đổi credentials.
+ * Response thành công không có body (204, 205 hoặc HEAD) resolve `undefined`; gọi
+ * với `T = void` cho các operation không trả body.
  */
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   assertRelativePath(path);
   const res = await fetch(`${API_PREFIX}${path}`, {
     ...init,
-    headers: { accept: 'application/json', ...init?.headers },
+    headers: mergeHeaders(init?.headers),
     credentials: 'same-origin',
   });
 
   const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('application/problem+json')) {
+  const method = init?.method?.toUpperCase();
+  const hasNoBody = res.body === null || res.status === 204 || res.status === 205 || method === 'HEAD';
+
+  if (mediaType(contentType) === 'application/problem+json' && !hasNoBody) {
     const body: unknown = await res.json();
     if (isProblemDetails(body)) throw new ProblemError(body);
     throw new Error(`Lỗi không rõ định dạng (HTTP ${res.status}).`);
@@ -54,5 +74,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (!res.ok) {
     throw new Error(`Yêu cầu thất bại (HTTP ${res.status}).`);
   }
-  return (await res.json()) as T;
+  if (hasNoBody) return undefined as T;
+  if (isJsonContentType(contentType) || contentType === '') return (await res.json()) as T;
+  return (await res.text()) as T;
 }

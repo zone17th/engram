@@ -361,7 +361,7 @@ body {
   padding: 5px 12px; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
   color: var(--muted);
 }
-.seg button[aria-pressed='true'] { background: var(--canvas); color: var(--body); box-shadow: var(--sh-card); }
+.seg button[aria-selected='true'] { background: var(--canvas); color: var(--body); box-shadow: var(--sh-card); }
 
 .switch {
   width: 42px; height: 24px; border-radius: var(--r-pill); border: 0; cursor: pointer;
@@ -382,8 +382,21 @@ body {
   border: 1px solid transparent; font-size: 13px; font-weight: 600;
   font-family: 'Inter', sans-serif; white-space: nowrap;
 }
-.vault-open { background: rgba(48,164,108,.12); color: var(--success); }
-.vault-shut { background: rgba(229,72,77,.10); color: var(--error); }
+.vault-open { background: rgba(48,164,108,.12); color: #117A4B; }
+.vault-shut { background: rgba(229,72,77,.10); color: #B4232A; }
+
+/* Keep the status text readable in both themes without changing the shared
+   brand/error token used by buttons and mockup parity checks. */
+[data-theme='dark'] .vault-open { color: #6FD9A5; }
+[data-theme='dark'] .vault-shut { color: #FF8589; }
+
+/* The app preview link sits on a white/dark card and needs a dedicated AA-safe
+   shade; the global link token remains the visual brand reference. */
+.card .text-link { color: #005A9F; }
+[data-theme='dark'] .card .text-link { color: #63B3FF; }
+
+/* Opacity utilities are attractive on the dark panel but fail AA at 12px. */
+.bg-deepPanel .mono { color: #A3A3A3; }
 
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);

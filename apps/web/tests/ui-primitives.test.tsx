@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { BadgeType } from '../components/ui/badge-type';
 import { Button } from '../components/ui/button';
@@ -117,6 +118,44 @@ describe('Segmented', () => {
     expect(screen.getByRole('tab', { name: 'Bảng' })).toHaveAttribute('aria-selected', 'true');
     await userEvent.click(screen.getByRole('tab', { name: 'Thô' }));
     expect(onChange).toHaveBeenCalledWith('raw');
+    expect(screen.getByRole('tab', { name: 'Bảng' })).not.toHaveAttribute('aria-pressed');
+    expect(screen.getByRole('tab', { name: 'Thô' })).not.toHaveAttribute('aria-pressed');
+  });
+
+  it('di chuyển focus và lựa chọn bằng phím mũi tên, Home và End', async () => {
+    function Fixture() {
+      const [value, setValue] = useState('tbl');
+      return (
+        <Segmented
+          value={value}
+          onChange={setValue}
+          options={[
+            { value: 'tbl', label: 'Bảng' },
+            { value: 'raw', label: 'Thô' },
+            { value: 'csv', label: 'CSV' },
+          ]}
+        />
+      );
+    }
+
+    render(<Fixture />);
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs[0]).toHaveAttribute('tabindex', '0');
+    expect(tabs[1]).toHaveAttribute('tabindex', '-1');
+
+    tabs[0].focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(tabs[1]).toHaveFocus();
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[0]).toHaveAttribute('tabindex', '-1');
+
+    await userEvent.keyboard('{End}');
+    expect(tabs[2]).toHaveFocus();
+    expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
+
+    await userEvent.keyboard('{Home}');
+    expect(tabs[0]).toHaveFocus();
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
   });
 });
 

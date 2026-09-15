@@ -1,3 +1,20 @@
 # Worktree của Claude Code — nằm trong repo nhưng là checkout riêng.
 .claude/worktrees/
 .claude/settings.local.json
+
+# Local environment overrides. Keep checked-in templates visible.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Workspace dependencies and generated build/test output.
+**/node_modules/
+**/.next/
+**/.turbo/
+**/dist/
+**/out/
+**/coverage/
+playwright-report/
+test-results/
+.playwright-browsers/

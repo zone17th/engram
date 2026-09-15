@@ -55,7 +55,7 @@ func TestMigrateUpInstallsExtensions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	t.Cleanup(func() { closeConn(t, ctx, conn) })
 
 	for _, ext := range []string{"vector", "pg_trgm", "unaccent", "citext", "pgcrypto"} {
 		var n int
@@ -78,7 +78,7 @@ func TestPgvectorMeetsVersionFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	t.Cleanup(func() { closeConn(t, ctx, conn) })
 
 	var version string
 	if err := conn.QueryRow(ctx, `SELECT extversion FROM pg_extension WHERE extname = 'vector'`).Scan(&version); err != nil {
@@ -120,7 +120,7 @@ func TestImmutableUnaccentIsImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	t.Cleanup(func() { closeConn(t, ctx, conn) })
 
 	var volatile string
 	if err := conn.QueryRow(ctx,
@@ -137,5 +137,12 @@ func TestImmutableUnaccentIsImmutable(t *testing.T) {
 	}
 	if got != "Tieng Viet" {
 		t.Errorf("immutable_unaccent('Tiếng Việt') = %q, muốn \"Tieng Viet\"", got)
+	}
+}
+
+func closeConn(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	if err := conn.Close(ctx); err != nil {
+		t.Errorf("đóng kết nối: %v", err)
 	}
 }

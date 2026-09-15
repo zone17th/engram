@@ -5,6 +5,8 @@ const withNextIntl = createNextIntlPlugin('./i18n/request.ts');
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Keep the raw origin available when NextURL normalizes loopback addresses.
+  skipMiddlewareUrlNormalize: true,
   async rewrites() {
     // Dev đi qua MỘT origin: browser gọi /api/... trên localhost:3000,
     // Next chuyển tiếp sang Go. Nhờ vậy cookie path /api, credentials và CSP

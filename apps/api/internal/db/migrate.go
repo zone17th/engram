@@ -25,12 +25,16 @@ func newMigrator(dsn string) (*migrate.Migrate, error) {
 }
 
 // MigrateUp chạy toàn bộ migration còn thiếu. Không lỗi khi đã ở bản mới nhất.
-func MigrateUp(dsn string) error {
+func MigrateUp(dsn string) (err error) {
 	m, err := newMigrator(dsn)
 	if err != nil {
 		return err
 	}
-	defer m.Close()
+	defer func() {
+		if closeErr := closeMigrator(m); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate up: %w", err)
 	}
@@ -38,12 +42,16 @@ func MigrateUp(dsn string) error {
 }
 
 // MigrateDown lùi đúng một bước. Dùng cho dev, không phải quy trình phục hồi.
-func MigrateDown(dsn string) error {
+func MigrateDown(dsn string) (err error) {
 	m, err := newMigrator(dsn)
 	if err != nil {
 		return err
 	}
-	defer m.Close()
+	defer func() {
+		if closeErr := closeMigrator(m); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	if err := m.Steps(-1); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate down: %w", err)
 	}
@@ -51,15 +59,34 @@ func MigrateDown(dsn string) error {
 }
 
 // Version trả version hiện tại và cờ dirty.
-func Version(dsn string) (uint, bool, error) {
+func Version(dsn string) (v uint, dirty bool, err error) {
 	m, err := newMigrator(dsn)
 	if err != nil {
 		return 0, false, err
 	}
-	defer m.Close()
-	v, dirty, err := m.Version()
+	defer func() {
+		if closeErr := closeMigrator(m); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	v, dirty, err = m.Version()
 	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
 		return 0, false, fmt.Errorf("đọc version: %w", err)
 	}
 	return v, dirty, nil
+}
+
+func closeMigrator(m *migrate.Migrate) error {
+	sourceErr, databaseErr := m.Close()
+	return errors.Join(
+		wrapCloseError("đóng migration source", sourceErr),
+		wrapCloseError("đóng migration database", databaseErr),
+	)
+}
+
+func wrapCloseError(label string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", label, err)
 }

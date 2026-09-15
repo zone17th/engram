@@ -1,7 +1,21 @@
+import type { NextRequest } from 'next/server';
 import createMiddleware from 'next-intl/middleware';
+import { withRequestOrigin } from './i18n/internal-rewrite';
 import { routing } from './i18n/routing';
 
-export default createMiddleware(routing);
+const intlMiddleware = createMiddleware(routing);
+
+export default function middleware(request: NextRequest) {
+  const response = intlMiddleware(request);
+  // An origin change makes Next proxy back through middleware, looping /en -> /.
+  for (const header of ['x-middleware-rewrite', 'location']) {
+    const target = response.headers.get(header);
+    if (target) {
+      response.headers.set(header, withRequestOrigin(target, request.url, request.nextUrl.origin));
+    }
+  }
+  return response;
+}
 
 export const config = {
   // Loại trừ /api (proxy sang Go), /app (segment tĩnh, không prefix locale),

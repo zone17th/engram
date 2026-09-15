@@ -12,6 +12,13 @@ function flatten(obj: Record<string, unknown>, prefix = ''): string[] {
   });
 }
 
+function valueAtPath(root: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((current, part) => {
+    if (typeof current !== 'object' || current === null) return undefined;
+    return (current as Record<string, unknown>)[part];
+  }, root);
+}
+
 const enKeys = flatten(en).sort();
 const viKeys = flatten(vi).sort();
 
@@ -24,7 +31,7 @@ describe('i18n', () => {
   it('không có chuỗi rỗng', () => {
     for (const [locale, messages] of [['en', en], ['vi', vi]] as const) {
       const empties = flatten(messages).filter((path) => {
-        const value = path.split('.').reduce<any>((acc, part) => acc?.[part], messages);
+        const value = valueAtPath(messages, path);
         return typeof value === 'string' && value.trim() === '';
       });
       expect(`${locale}: ${empties.join(', ')}`).toBe(`${locale}: `);

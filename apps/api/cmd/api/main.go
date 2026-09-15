@@ -44,7 +44,7 @@ func main() {
 
 // probeHealth gọi healthz trên chính container này. Dùng HTTP_ADDR để lấy port,
 // nhưng luôn nối tới 127.0.0.1 — 0.0.0.0 là địa chỉ nghe, không phải địa chỉ gọi.
-func probeHealth() error {
+func probeHealth() (err error) {
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = "0.0.0.0:8080"
@@ -59,7 +59,11 @@ func probeHealth() error {
 	if err != nil {
 		return fmt.Errorf("healthz không gọi được: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("đóng response body healthz: %w", closeErr))
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("healthz trả %d", resp.StatusCode)
 	}

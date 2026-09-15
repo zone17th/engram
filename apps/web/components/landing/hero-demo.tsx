@@ -1,6 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
+import { useTranslations } from 'next-intl';
 import { BadgeType } from '@/components/ui/badge-type';
 import { Kbd } from '@/components/ui/kbd';
 import { markPrefix, searchDemo } from '@/lib/demo-search';
@@ -18,7 +27,9 @@ export interface HeroDemoProps {
 }
 
 export function HeroDemo({ autoType = true }: HeroDemoProps = {}) {
+  const t = useTranslations('landing');
   const listboxId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -27,6 +38,20 @@ export function HeroDemo({ autoType = true }: HeroDemoProps = {}) {
 
   const result = useMemo(() => searchDemo(query), [query]);
   const options = result.items;
+  const listboxVisible = open && options.length > 0;
+
+  useEffect(() => {
+    const focusInput = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      touched.current = true;
+      inputRef.current?.focus();
+      setOpen(true);
+    };
+
+    window.addEventListener('keydown', focusInput);
+    return () => window.removeEventListener('keydown', focusInput);
+  }, []);
 
   // Tự gõ chỉ chạy khi KHÔNG bật reduced motion (P01-A6) và người dùng chưa chạm vào.
   useEffect(() => {
@@ -54,18 +79,22 @@ export function HeroDemo({ autoType = true }: HeroDemoProps = {}) {
       if (!item) return;
       setPicked(item.title);
       setOpen(false);
+      setActive(-1);
     },
     [options],
   );
 
-  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+  function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     touched.current = true;
     if (event.key === 'ArrowDown') {
+      if (options.length === 0) return;
       event.preventDefault();
       setOpen(true);
       setActive((i) => Math.min(i + 1, options.length - 1));
     } else if (event.key === 'ArrowUp') {
+      if (options.length === 0) return;
       event.preventDefault();
+      setOpen(true);
       setActive((i) => Math.max(i - 1, 0));
     } else if (event.key === 'Enter') {
       event.preventDefault();
@@ -86,16 +115,26 @@ export function HeroDemo({ autoType = true }: HeroDemoProps = {}) {
       */}
       <div className="omnibox-shell" data-visual-volatile>
         <input
+          ref={inputRef}
           className="omnibox-input"
           role="combobox"
-          aria-expanded={open}
+          aria-label={t('demoInputLabel')}
+          aria-expanded={listboxVisible}
           aria-controls={listboxId}
           aria-autocomplete="list"
           aria-activedescendant={
-            active >= 0 && options[active] ? `${listboxId}-${options[active].id}` : undefined
+            listboxVisible && active >= 0 && options[active]
+              ? `${listboxId}-${options[active].id}`
+              : undefined
           }
-          placeholder="Gõ từ khoá…"
+          placeholder={t('demoPlaceholder')}
           value={query}
+          onFocus={() => {
+            touched.current = true;
+          }}
+          onPointerDown={() => {
+            touched.current = true;
+          }}
           onChange={(event) => {
             touched.current = true;
             setQuery(event.target.value);
@@ -107,12 +146,12 @@ export function HeroDemo({ autoType = true }: HeroDemoProps = {}) {
         <Kbd>Ctrl K</Kbd>
       </div>
 
-      {open && options.length > 0 && (
+      {listboxVisible && (
         <ul
           className="popover mt-2.5"
           role="listbox"
           id={listboxId}
-          aria-label="Kết quả mẫu"
+          aria-label={t('demoResultsLabel')}
           data-visual-volatile
         >
           {options.map((item, index) => {
@@ -150,11 +189,11 @@ export function HeroDemo({ autoType = true }: HeroDemoProps = {}) {
       )}
 
       <p className="t-legal mt-3 text-muted" role="note">
-        Dữ liệu mẫu, gõ thoải mái — không có gì được gửi đi đâu cả.
+        {t('demoCaption')}
       </p>
 
       <p className="sr-only" role="status" aria-live="polite">
-        {picked ? `Đã chọn ${picked}` : ''}
+        {picked ? t('demoSelected', { item: picked }) : ''}
       </p>
     </div>
   );
