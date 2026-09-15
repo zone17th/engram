@@ -1,0 +1,13 @@
+{
+  "name": "engram",
+  "private": true,
+  "packageManager": "pnpm@10.34.5",
+  "engines": { "node": ">=20.19" },
+  "scripts": {
+    "dev": "pnpm --filter @engram/web dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build"
+  }
+}
