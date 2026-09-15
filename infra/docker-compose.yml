@@ -1,0 +1,95 @@
+# Đọc digest từ image-pins.env: docker compose --env-file infra/image-pins.env ...
+name: engram
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE}
+    environment:
+      POSTGRES_USER: engram
+      POSTGRES_PASSWORD: engram
+      POSTGRES_DB: engram
+    ports: ['5432:5432']
+    volumes: ['engram-db:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U engram -d engram']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        GO_BUILD_IMAGE: ${GO_BUILD_IMAGE}
+        DISTROLESS_IMAGE: ${DISTROLESS_IMAGE}
+    command: ['/app/migrate', 'up']
+    environment:
+      DATABASE_URL: postgres://engram:engram@db:5432/engram?sslmode=disable
+    depends_on:
+      db: { condition: service_healthy }
+    restart: 'no'
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        GO_BUILD_IMAGE: ${GO_BUILD_IMAGE}
+        DISTROLESS_IMAGE: ${DISTROLESS_IMAGE}
+    command: ['/app/api']
+    environment:
+      DATABASE_URL: postgres://engram:engram@db:5432/engram?sslmode=disable
+      HTTP_ADDR: 0.0.0.0:8080
+      APP_ORIGIN: http://localhost:3000
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-noop}
+      TEI_URL: ${TEI_URL:-}
+    ports: ['8080:8080']
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ['CMD', '/app/api', '-healthcheck']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        GO_BUILD_IMAGE: ${GO_BUILD_IMAGE}
+        DISTROLESS_IMAGE: ${DISTROLESS_IMAGE}
+    command: ['/app/worker']
+    environment:
+      DATABASE_URL: postgres://engram:engram@db:5432/engram?sslmode=disable
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-noop}
+      TEI_URL: ${TEI_URL:-}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE}
+    environment:
+      # Browser vẫn chỉ nói chuyện với web trên một origin; Next proxy tiếp sang api.
+      API_UPSTREAM: http://api:8080
+    ports: ['3000:3000']
+    depends_on: [api]
+
+  # TEI là OPTIONAL. Không bật profile này thì EMBEDDING_PROVIDER=noop và
+  # semantic không khả dụng — readyz vẫn pass (P01 §Contract).
+  tei:
+    image: ${TEI_IMAGE}
+    profiles: ['semantic']
+    command: ['--model-id', 'BAAI/bge-m3']
+    ports: ['8081:80']
+    volumes: ['engram-tei:/data']
+
+volumes:
+  engram-db:
+  engram-tei:
