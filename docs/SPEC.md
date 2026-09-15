@@ -1,6 +1,6 @@
 # engram — Project Specification
 
-> Phiên bản: 0.6 · Ngày: 2026-09-15 · Trạng thái: chốt tên sản phẩm **engram**; `mockups/` là **tiêu chuẩn thiết kế** ràng buộc cho §7 (xem §1.1, §7.0, §13 Q1)
+> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06
 >
 > Tài liệu này là spec tổng thể cho sản phẩm **engram** (repo `save-all-by-keyword`): lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
 
@@ -56,14 +56,14 @@ Thực thể chính **không** còn là "keyword". Xem §2 và §14.
 ### 1.3 Non-goals (MVP)
 
 - **Không** offline / PWA / local-first sync. App yêu cầu online.
-- **Không** tìm kiếm full-text trong thân entry ở phía server (không thể — body đã mã hoá). Client-side content search là Phase 2.
-- **Không** chia sẻ dữ liệu giữa user (Phase 3).
-- **Không** kiểu `link` / `file` / `image` (schema chừa chỗ; Phase 2).
-- **Không** native mobile app, browser extension (Phase 3).
+- **Không** tìm kiếm full-text trong thân entry ở phía server (không thể — body đã mã hoá). Client-side content search là P07.
+- **Không** chia sẻ dữ liệu giữa user (P08).
+- **Không** kiểu `link` / `file` / `image` (schema chừa chỗ; P07).
+- **Không** native mobile app, browser extension (P08).
 - **Không** collaborative editing, comment, version history chi tiết.
 - **Không** BIP39 / mnemonic 12–24 từ (đã loại — dễ nhầm, UX tệ; dùng 10 recovery key entropy cao, §5.9).
 - **Không** email khôi phục, không câu hỏi bí mật, không KMS ngoài: chỉ khi không còn passphrase, RK dùng được, passkey, DevKey hoặc VK trong phiên đang mở mới không còn đường unlock trực tiếp. Kiểm tra backup trước khi reset; reset vault xoá entry, giữ item/tag. Email thông báo bảo mật không phải phương thức khôi phục.
-- **Không** login-with-passkey ở MVP (Phase 2). **Không** WebAuthn largeBlob; **không** đăng ký passkey khi thiếu PRF.
+- **Không** login-with-passkey ở MVP (P07). **Không** WebAuthn largeBlob; **không** đăng ký passkey khi thiếu PRF.
 - **Không** pricing / gói / tier: sản phẩm miễn phí; marketing chỉ landing + docs.
 - **Không** embedding API bên thứ ba: không OpenAI, không Gemini, không Cohere. Provider duy nhất: `tei` \| `noop`.
 - **Không** "private name" / blind index: `name` và tag luôn plaintext — không có roadmap mã hoá tên.
@@ -145,7 +145,7 @@ Chuẩn hoá để search, **không** để identity:
 Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
 
 **`Tag` — first-class, unique theo `normalized`.**
-Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` mà `normalized` trùng tag khác → `409 TAG_CONFLICT` (merge tag = Phase 2).
+Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` mà `normalized` trùng tag khác → `409 TAG_CONFLICT` (merge tag = P07).
 
 **Giới hạn (ý kiến, dùng xuyên spec):**
 
@@ -250,7 +250,7 @@ erDiagram
         uuid id PK
         uuid user_id FK
         bytea cred_id UK
-        bytea pubkey "Phase 2 login"
+        bytea pubkey "P07 login"
         bytea prf_salt
         bytea vk_wrap
         bytea aaguid
@@ -475,7 +475,7 @@ Còn passkey / thiết bị đang "nhớ" / phiên đang unlock (không có RK):
 - **Encrypted backup** (`.sabk.json`): items, tags, item_tag, entries ciphertext (giữ nguyên ID/envelope), vault (`vault_key_id`, `version`, `kdf`, `wrapK`, pubkeys, `wrapP`), **các hàng RK** (`lookup_hash` + wrap, không plaintext), **các passkey wrap** (`cred_id`, `prf_salt`, `vk_wrap`, `pubkey`). Server tạo được (không cần VK). Đây là snapshot: passphrase/RK/PRF tương ứng với wrap trong backup vẫn mở snapshot dù sau đó live server đã đổi hoặc xoá wrap. Passkey còn phải thực hiện được PRF với credential, salt và RP tương ứng.
 - **Decrypted JSON**: client decrypt mọi entry rồi tải. Modal cảnh báo + re-auth. Audit `export.decrypted`.
 
-Import backup UI ở Phase 2: không chép lại các RK/passkey wrap từ snapshot vào live vault. Client unlock backup, decrypt rồi encrypt lại vào vault đích với ID/envelope hợp lệ, giữ bộ unlock đang dùng của vault đích; vault mới onboard bộ wrap mới. Không lấy `version` trong backup làm bằng chứng thu hồi toàn cục; giới hạn rollback của backup/PITR xem §5.9 và §10.5.
+Import backup UI ở P07: không chép lại các RK/passkey wrap từ snapshot vào live vault. Client unlock backup, decrypt rồi encrypt lại vào vault đích với ID/envelope hợp lệ, giữ bộ unlock đang dùng của vault đích; vault mới onboard bộ wrap mới. Không lấy `version` trong backup làm bằng chứng thu hồi toàn cục; giới hạn rollback của backup/PITR xem §5.9 và §10.5.
 
 ### 3.12 Flow: Regenerate / xoay recovery key
 
@@ -486,7 +486,7 @@ Import backup UI ở Phase 2: không chép lại các RK/passkey wrap từ snaps
 ### 3.13 Flow: Đăng ký passkey (sau khi vault unlock)
 
 1. Onboarding bước 3 hoặc Settings › Passkeys › "Add a passkey". Nhiều credential: laptop Hello, điện thoại, YubiKey.
-2. `POST /vault/passkeys/register/options` → `PublicKeyCredentialCreationOptions`: `rp.id` = `key.zone17th.click` (dev: `localhost`); extension **`prf`** với `eval.first = prf_salt` ngẫu nhiên 32 B; `userVerification: required`; `residentKey: preferred` (Phase 2 chỉ dùng lại credential nếu thực sự discoverable).
+2. `POST /vault/passkeys/register/options` → `PublicKeyCredentialCreationOptions`: `rp.id` = `key.zone17th.click` (dev: `localhost`); extension **`prf`** với `eval.first = prf_salt` ngẫu nhiên 32 B; `userVerification: required`; `residentKey: preferred` (P07 chỉ dùng lại credential nếu thực sự discoverable).
 3. `navigator.credentials.create()`. Đọc `getClientExtensionResults().prf`: `enabled !== true` → lỗi unsupported; `enabled=true` nhưng chưa có `results.first` **không** có nghĩa là thiếu PRF. Khi đó gọi `navigator.credentials.get()` với credential vừa tạo, challenge mới, `userVerification: required`, `prf.eval.first` cùng salt. Server chỉ lưu credential sau khi có output và tạo wrap thành công. Cancel/thiếu output ở bước `get` → lỗi đăng ký, có thể thử lại; không fallback largeBlob/server-held secret.
 4. `PWK = results.first` (32 B); `vk_wrap = seal(VK, PWK, AAD="vault-key-passkey-v1")`. Kiểm tra unwrap được đúng VK trước khi lưu; PWK không persist hay gửi server.
 5. `POST /vault/passkeys` `{cred_id, pubkey, prf_salt, vk_wrap, aaguid, name}` + re-auth grant. Audit `passkey.register`.
@@ -500,7 +500,7 @@ Import backup UI ở Phase 2: không chép lại các RK/passkey wrap từ snaps
 
 ### 3.15 Flow: Thu hồi passkey
 
-Settings: danh sách name / aaguid / ngày. `DELETE /vault/passkeys/{id}` cần re-auth tài khoản, xoá `cred_id` + wrap trên live server. Audit `passkey.revoke`. Các passkey khác và RK không đổi. Thao tác này không xoá credential khỏi authenticator và không vô hiệu hoá bản `vk_wrap` đã copy: credential còn thực hiện được PRF vẫn có thể mở bản wrap đó để lấy VK. Giới hạn giống consume/rotate RK (§5.9); rotate VK là Phase 2.
+Settings: danh sách name / aaguid / ngày. `DELETE /vault/passkeys/{id}` cần re-auth tài khoản, xoá `cred_id` + wrap trên live server. Audit `passkey.revoke`. Các passkey khác và RK không đổi. Thao tác này không xoá credential khỏi authenticator và không vô hiệu hoá bản `vk_wrap` đã copy: credential còn thực hiện được PRF vẫn có thể mở bản wrap đó để lấy VK. Giới hạn giống consume/rotate RK (§5.9); rotate VK là P07.
 
 ---
 
@@ -635,7 +635,7 @@ MVP: **`tei`** (`POST /embed`, đọc `/info` lúc boot: `model_id`, `model_sha`
 1. Passphrase, KEK, VK, plaintext recovery key, PWK (PRF), plaintext body **không** rời browser.
 2. Một **VK** mã hoá mọi entry (text và JSON như nhau) → đổi passphrase = **rewrap O(1)** chỉ `wrapK`.
 3. Envelope **versioned**.
-4. Keypair bất đối xứng sinh **lúc tạo vault** (sharing Phase 3 không migrate).
+4. Keypair bất đối xứng sinh **lúc tạo vault** (sharing P08 không migrate).
 5. VK có **nhiều bản wrap độc lập** trên server: `wrapK` (KEK), tối đa 10 wrap RK, N wrap passkey. Mỗi RK / mỗi passkey bọc **VK trực tiếp** (không bọc qua KEK). Người giữ VK có quyền tạo wrap KEK/RK/passkey mới; mutation nhạy cảm cần re-auth tài khoản (§9.1), không bắt passphrase cũ.
 
 ### 5.3 Key hierarchy
@@ -664,9 +664,9 @@ flowchart TD
 | Recovery key (×10) | `randombytes(16)` → Crockford + prefix `rkN_` | **không** trên server; chỉ `lookup_hash` + wrap | Unwrap VK khi quên passphrase; single-use |
 | PWK | WebAuthn PRF (32 B) | không lưu; `prf_salt` + `vk_wrap` trên server | Unlock vault không gõ passphrase |
 | DevKey (opt-in) | WebCrypto `generateKey(AES-GCM, extractable=false)` | IndexedDB `sabk.device`; **không** lên server | Unlock im lặng |
-| X25519 / Ed25519 | browser | pub: server; priv: wrapped by VK | **Phase 3**: share Item |
+| X25519 / Ed25519 | browser | pub: server; priv: wrapped by VK | **P08**: share Item |
 
-**Sharing (Phase 3) không bị chặn:** A sinh `ShareKey_I` cho Item I, re-encrypt entries của I bằng `ShareKey_I`, `crypto_box_seal(ShareKey_I, B.x25519_pub)`. Không đụng VK. Envelope đã có `key_id` (`vk:…` / sau này `sk:…`).
+**Sharing (P08) không bị chặn:** A sinh `ShareKey_I` cho Item I, re-encrypt entries của I bằng `ShareKey_I`, `crypto_box_seal(ShareKey_I, B.x25519_pub)`. Không đụng VK. Envelope đã có `key_id` (`vk:…` / sau này `sk:…`).
 
 ### 5.4 Thuật toán & tham số
 
@@ -721,7 +721,7 @@ JSON plaintext = UTF-8 của document. **Không nén** ở MVP; envelope v1 luô
 | Regenerate / rotate RK | Unlock + re-auth tài khoản, không cần passphrase cũ. Không hiện lại key cũ; xoá wrap chỉ có hiệu lực trên live server |
 | Đăng ký / thu hồi passkey | Unlock; PRF bắt buộc; revoke xoá wrap + cred_id |
 | Recover bằng RK rồi passphrase mới | Passkey **vẫn** mở được (VK không đổi) |
-| Rotate VK | Phase 2: cần key registry/trạng thái migration, sinh VK/key_id mới, decrypt/encrypt lại batch, tạo lại DevKey / RK / passkey wrap. Trong lúc migrate phải giữ khả năng đọc key cũ và chặn writer cũ ghi lại sau cutover; chỉ hoàn tất khi dữ liệu hiện tại dùng VK mới. Wrap cũ không mở được ciphertext dùng VK mới, nhưng vẫn mở được ciphertext/backup cũ dùng VK cũ; không thu hồi được plaintext/VK đã bị lấy |
+| Rotate VK | P07: cần key registry/trạng thái migration, sinh VK/key_id mới, decrypt/encrypt lại batch, tạo lại DevKey / RK / passkey wrap. Trong lúc migrate phải giữ khả năng đọc key cũ và chặn writer cũ ghi lại sau cutover; chỉ hoàn tất khi dữ liệu hiện tại dùng VK mới. Wrap cũ không mở được ciphertext dùng VK mới, nhưng vẫn mở được ciphertext/backup cũ dùng VK cũ; không thu hồi được plaintext/VK đã bị lấy |
 | Xoá tài khoản | Xoá vault + RK + passkey + entries + items + tags; audit 90 ngày |
 
 Rủi ro "Nhớ thiết bị": XSS / người ngồi máy / malware trong origin unwrap được VK không cần passphrase. `extractable=false` chặn copy bytes DevKey, không chặn **dùng** key. Chỉ bật trên máy cá nhân có lock màn hình.
@@ -769,7 +769,7 @@ Dùng **libsodium** cho Argon2id, XChaCha20-Poly1305, X25519/Ed25519, BLAKE2b (m
 
 Không còn RK unused vẫn có thể dùng passkey, DevKey hoặc phiên còn VK để đặt passphrase mới sau re-auth. Chỉ reset sau khi kiểm tra các đường đó và backup (§3.10).
 
-**Backup / thu hồi:** backup là snapshot độc lập; RK đã consume có thể mở wrap cũ trong snapshot và dữ liệu mã hoá bằng VK đó. Backup không chứa các entry phát sinh sau snapshot; đọc các entry này còn cần ciphertext của chúng. Passkey revoke cũng chỉ xoá wrap trên live server, không làm bản copy mất tác dụng khi credential còn PRF. Muốn loại VK cũ khỏi dữ liệu đang dùng phải **rotate VK** (Phase 2); dữ liệu/backup cũ vẫn không thể thu hồi bằng mật mã. Import không hồi sinh wrap cũ (§3.11); restore DB bằng PITR có thể rollback trạng thái consume/revoke (§10.5).
+**Backup / thu hồi:** backup là snapshot độc lập; RK đã consume có thể mở wrap cũ trong snapshot và dữ liệu mã hoá bằng VK đó. Backup không chứa các entry phát sinh sau snapshot; đọc các entry này còn cần ciphertext của chúng. Passkey revoke cũng chỉ xoá wrap trên live server, không làm bản copy mất tác dụng khi credential còn PRF. Muốn loại VK cũ khỏi dữ liệu đang dùng phải **rotate VK** (P07); dữ liệu/backup cũ vẫn không thể thu hồi bằng mật mã. Import không hồi sinh wrap cũ (§3.11); restore DB bằng PITR có thể rollback trạng thái consume/revoke (§10.5).
 
 Copy lỗi recover (en/vi): `recovery.invalid` — "That recovery key is not valid." / "Recovery key không đúng hoặc đã dùng."; `recovery.need_new_passphrase` — "Set a new passphrase to finish recovery." / "Đặt passphrase mới để hoàn tất khôi phục."
 
@@ -779,8 +779,8 @@ Passkey là **phương thức mở vault** ở MVP, ngang hàng passphrase — *
 
 | Mục | Quyết định |
 |-----|------------|
-| Phase 1 (MVP) | **Vault unlock** qua `get()` + **PRF**. Login vẫn email/password hoặc OAuth |
-| Phase 2 | Login-with-passkey (discoverable credential). `pubkey` **đã lưu từ MVP** để khỏi migrate. Dùng lại credential nếu authenticator thực sự tạo discoverable credential; `residentKey: preferred` không đảm bảo điều đó |
+| MVP (P01–P06) | **Vault unlock** qua `get()` + **PRF**. Login vẫn email/password hoặc OAuth |
+| P07 | Login-with-passkey (discoverable credential). `pubkey` **đã lưu từ MVP** để khỏi migrate. Dùng lại credential nếu authenticator thực sự tạo discoverable credential; `residentKey: preferred` không đảm bảo điều đó |
 | PRF | Bắt buộc (`prf` / CTAP2 `hmac-secret`). `create()` có thể chỉ trả `enabled=true`; gọi `get()` tiếp để lấy output khi cần. 32 B → PWK → wrap VK (AAD `"vault-key-passkey-v1"`). Salt ngẫu nhiên 32 B / credential lưu `prf_salt`; nhiều credential dùng `evalByCredential` |
 | Không PRF | **Từ chối** đăng ký. Không fallback server-held secret, không largeBlob (non-goal) |
 | Nhiều máy | N credential / user (Hello, điện thoại, YubiKey) |
@@ -809,7 +809,7 @@ Passkey là **phương thức mở vault** ở MVP, ngang hàng passphrase — *
 ### 6.1 Phạm vi
 
 - **MVP: hai corpus plaintext** — `item.name` (+ hint) và `tag.display`/`normalized`. Body ciphertext → server không index.
-- **Phase 2:** client-side search trên entry đã decrypt trong session (MiniSearch/FlexSearch trong Worker, không persist index).
+- **P07:** client-side search trên entry đã decrypt trong session (MiniSearch/FlexSearch trong Worker, không persist index).
 
 Chọn tag → **filter** item (`GET /items?tag_id=`), không "mở tag như một trang nội dung". Chọn item → mở entries.
 
@@ -1010,6 +1010,12 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Tìm kiếm / vỏ app | `mockups/index.html` | §7.2 |
 | Chi tiết mục | `mockups/item.html` | §7.3, §7.4, §7.5 |
 | Cài đặt | `mockups/settings.html` | §7.6 |
+| Đăng ký / đăng nhập / OAuth return / re-auth | `mockups/auth.html` | §3.1, §10.2 |
+| Onboarding vault (passphrase → 10 RK → passkey) | `mockups/onboarding.html` | §3.2, §5.2 |
+| Mở khoá vault | `mockups/unlock.html` | §3.3, §3.14 |
+| Quên passphrase / recovery key | `mockups/recovery.html` | §3.10 |
+| Empty / lỗi / offline / degraded | `mockups/states.html` | §7.7 |
+| Tài liệu và quyền riêng tư | `mockups/docs.html` | §11.1, §5.1 |
 
 **Phân vai khi mockup và spec lệch nhau:**
 
@@ -1032,9 +1038,9 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 - **Khoá vault chỉ che nội dung entry** — tên mục, tag, số entry vẫn đọc được (§5.1).
 - **Đổi passphrase không cần passphrase cũ**; "Đặt lại vault" nằm sau danh sách đường mở khoá phải thử trước (§3.9, §3.10).
 
-**Ngoài phạm vi bộ mockup hiện tại** — phải thiết kế thêm trước khi implement: onboarding đăng ký + hiển thị 10 recovery key (§3.2), màn unlock vault trên thiết bị mới (§3.3, §3.14), empty/error states (§7.7). Mockup mới bổ sung vào đúng thư mục này và cập nhật bảng trên.
+**Ngoài phạm vi bộ mockup hiện tại** — phải thiết kế thêm trước khi implement: share dialog/recipient status/shared-with-me (P08-A), extension popup/options/unlock (P08-B), màn quản lý API token (P08-C). Mockup mới bổ sung vào đúng thư mục này và cập nhật bảng trên.
 
-Bảng chia task UI theo màn, mỗi task gắn một mockup và một mục spec, nằm ở [§12 Phase 1](#phase-1--mvp-810-tuần) — dùng bảng đó làm đầu vào khi viết plan.
+Bảng chia task UI theo màn nằm ở [§12](#12-roadmap); [bộ spec P01–P08](phases/README.md) chỉ rõ phase, dependency và acceptance. Các chênh lệch hành vi trong source demo đã được ghi cùng owner tại [bảng đối chiếu mockup](phases/README.md#5-chênh-lệch-mockup-cần-giải-quyết-khi-port); không port hành vi đó trái spec khi lên app thật.
 
 Mockup dùng dữ liệu giả và **không có mã hoá thật** — mọi thứ "khoá/mở khoá" trong đó chỉ là trạng thái UI.
 
@@ -1484,17 +1490,17 @@ Ghi chú:
 - River job args/unique key chứa `generation_id` và tenant; hai job cho generation active/pending không được deduplicate thành một. Cấu hình generation, active pointer và tập generation nhận mutation được quản lý nhất quán theo §6.6; worker không suy generation từ env đã đổi giữa lúc claim và commit.
 - `vault.version` là revision concurrency của live vault; tăng khi rewrap/recover hoặc thay RK. Không dùng version một mình làm điều kiện xoá DevKey: rewrap không đổi VK, đối chiếu `vault_key_id` mới quyết định wrap thiết bị còn phù hợp.
 - MVP API chỉ chấp `type` ∈ {`text`,`json`}; `link`/`file`/`image` giữ CHECK cho migration sau.
-- Không RLS ở MVP; Phase 2 cân nhắc `SET LOCAL app.user_id`.
+- Không RLS ở MVP; P07 cân nhắc `SET LOCAL app.user_id`.
 - Purge: `DELETE FROM entry WHERE deleted_at < now() - interval '30 days'`.
 - `vault_recovery_key`: tối đa 10 hàng `used_at IS NULL` / vault (enforce API). Recover thành công → **DELETE** hàng (single-use). `lookup_hash` unique toàn cục.
-- `vault_passkey.pubkey` lưu từ MVP (Phase 2 login); unlock MVP chỉ cần `cred_id` + `prf_salt` + `vk_wrap`.
+- `vault_passkey.pubkey` lưu từ MVP (P07 login); unlock MVP chỉ cần `cred_id` + `prf_salt` + `vk_wrap`.
 - **Không** `is_private`, **không** `vector(512)`.
 
 ---
 
 ## 9. API design
 
-REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC cân nhắc Phase 2 (extension/mobile).
+REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC cân nhắc P07 (extension/mobile).
 
 ### 9.1 Conventions
 
@@ -1549,7 +1555,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 | Export | `POST /exports` `{kind:"encrypted"}` → 202 · `GET /exports/{id}` | decrypted: client-side + `POST /audit/export-decrypted` |
 | Meta | `GET /healthz` · `GET /readyz` · `GET /metrics` | |
 
-**Không có:** `/keywords`, `PUT /entries/{id}/keywords`, merge-keyword. **Không** endpoint nhận plaintext RK hoặc PWK. **Không** login-with-passkey ở MVP (`POST /auth/passkey/*` = Phase 2).
+**Không có:** `/keywords`, `PUT /entries/{id}/keywords`, merge-keyword. **Không** endpoint nhận plaintext RK hoặc PWK. **Không** login-with-passkey ở MVP (`POST /auth/passkey/*` = P07).
 
 ### 9.3 Ví dụ
 
@@ -1697,7 +1703,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 - [ ] Passphrase ≥ 12, zxcvbn ≥ 3; **không** gửi lên server.
 - [ ] Rate limit §9.1; lockout tăng dần; CAPTCHA (Turnstile) sau 5 lần login sai.
 - [ ] OAuth: PKCE, `state`, `nonce`; chỉ email verified từ provider; link account khi đã đăng nhập.
-- [ ] Server validate envelope JCS §5.5 (đủ `ct_enc`, reject duplicate key trước `jsonb`), UUID do client cấp đúng format và được giữ nguyên; `type` ∈ {`text`,`json`} (MVP), ciphertext ≤ 263168 B, `plaintext_len_bucket` ≤ 256 KiB, `key_id` khớp `vault.vault_key_id` ở MVP. Phase 2 rotate VK cần registry/policy key migration §5.6; server không xác minh được AEAD khi không có VK.
+- [ ] Server validate envelope JCS §5.5 (đủ `ct_enc`, reject duplicate key trước `jsonb`), UUID do client cấp đúng format và được giữ nguyên; `type` ∈ {`text`,`json`} (MVP), ciphertext ≤ 263168 B, `plaintext_len_bucket` ≤ 256 KiB, `key_id` khớp `vault.vault_key_id` ở MVP. P07 rotate VK cần registry/policy key migration §5.6; server không xác minh được AEAD khi không có VK.
 - [ ] Trần 20 tag / 200 entry per item ở API.
 - [ ] Audit §8; UI "Hoạt động bảo mật".
 - [ ] Headers: HSTS preload, `X-Content-Type-Options`, `Referrer-Policy: same-origin`, `Permissions-Policy` tối thiểu, COOP/COEP nếu cần SharedArrayBuffer.
@@ -1759,6 +1765,7 @@ save-all-by-keyword/
 │  └─ shared-types/             # envelope schema, error codes
 ├─ docs/
 │  ├─ SPEC.md
+│  ├─ phases/                   # README + P01–P08: phạm vi, mockup, contract, acceptance
 │  ├─ adr/
 │  └─ threat-model.md
 ├─ mockups/                     # tiêu chuẩn thiết kế §7.0 — HTML tĩnh, không build
@@ -1843,78 +1850,76 @@ Domain tạm: **`key.zone17th.click`**. nginx (TLS) terminate rồi proxy `/` �
 
 ## 12. Roadmap
 
-### Phase 1 — MVP (8–10 tuần)
+### 12.1 Phase triển khai P01–P08
 
-| Milestone | Nội dung | Done when |
-|-----------|----------|-----------|
-| M1 Skeleton (tuần 1–2) | Monorepo, compose (kèm profile `semantic`), CI, Go health, Next shell, next-intl en/vi, landing SSG **không pricing** | `make dev` chạy; preview en/vi |
-| M2 Auth (tuần 2–3) | Email/password, Google, GitHub, sessions, CSRF, rate limit, audit; `AUTH_REQUIRE_EMAIL_VERIFICATION` default false | E2E login/logout |
-| M3 Vault (tuần 3–5) | libsodium worker, JCS envelope + client UUID, onboarding passphrase + **10 RK bắt buộc**, passkey PRF, recovery/rewrap từ VK + re-auth, RK consume atomic, auto-lock, **Nhớ thiết bị** opt-in off | Test vector qua `jsonb`; passkey/DevKey đặt passphrase mới; PRF follow-up `get`; recovery concurrency §11.3 |
-| M4 Items, tags, typed entries (tuần 5–7) | CRUD item (trùng name), tag catalog, `item_tag` (max 20), entry `text` + `json` (max 200), omnibox `name: text` + `#tag`, picker trùng tên, JSON table source-span edits + import modal | US2–US8; lossless fixtures §11.3 |
-| M5 Suggest (tuần 7–9) | Lexical name+tag, TEI `bge-m3` 1024, stable tier merge, exact/partitioned HNSW, stale catch-up + shadow generation, semantic hai tầng + `≈`, degraded | p95/recall §6.9; lexical không nhảy, cutover/rollback §11.3 |
-| M6 Polish (tuần 9–10) | Empty/error, a11y, dark, encrypted export, privacy page, pentest nội bộ | Beta |
+Chi tiết tại [bộ spec theo phase](phases/README.md). Từ v0.7 dùng ID P01–P08 xuyên tài liệu: **MVP = P01–P06**, mở rộng cá nhân = P07, sharing/client khác = P08. Roadmap cũ "Phase 1/M1–M6" tương ứng sáu phase MVP; "Phase 2" cũ = P07, "Phase 3" cũ = P08. Đây là kế hoạch, chưa phải trạng thái đã implement.
 
-MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag, **10 recovery key**, **passkey unlock (PRF)**. **Không** gồm: BIP39, login-with-passkey (Phase 2), pricing, provider OpenAI/Gemini/Cohere, private name, kiểu link/file/image, largeBlob.
+| Phase | Phạm vi chính | Done when |
+|---|---|---|
+| [P01 — Nền tảng và UI shell](phases/P01-foundation.md) | Monorepo, compose, CI, health/ready, token engram, landing demo và app shell theo mockup, en/vi | Fresh checkout chạy được; build và visual checks đạt |
+| [P02 — Tài khoản](phases/P02-auth.md) | Password/Google/GitHub, sessions/CSRF, re-auth, account settings, audit/notification base; mockup auth mới | Auth/session thật, ownership và re-auth grant tests đạt |
+| [P03 — Vault và recovery](phases/P03-vault.md) | P03-A core/passphrase/10 RK; P03-B PRF passkey/DevKey/auto-lock/recovery, JCS/UUID; mockup onboarding/unlock mới | Crypto vectors/review, recovery concurrency, new-device và PRF checks đạt; P04 tích hợp entry thật |
+| [P04 — Nội dung](phases/P04-content.md) | Item/Tag/text/JSON CRUD, exact quick-add/picker, lossless source spans, import entry, reorder/Undo/conflict/delta cơ bản/reset | Lưu/sửa/mở lại/xoá/restore dữ liệu thật, không mất JSON; tenant/limit/reset tests đạt |
+| [P05 — Tìm kiếm](phases/P05-search.md) | Prefix/fuzzy, TEI semantic hai corpus, stable merge, exact/partitioned HNSW, stale backfill/shadow generation | Relevance/performance report, lexical không nhảy, degraded/cutover/rollback đạt |
+| [P06 — Beta MVP](phases/P06-beta.md) | Encrypted/decrypted export, account delete, docs/privacy, UI/NFR QA, security review, monitoring/DR/deploy | Toàn bộ gate P01–P06, full E2E và restore/release evidence; không blocker MVP |
+| [P07 — Mở rộng cá nhân](phases/P07-personal-expansion.md) | Durable sync, rotate VK, import backup, body search client, link/file/image, passkey login; phần conditional ghi trong phase | ADR/mockup/OpenAPI trước từng mốc; migration/crash/compatibility tests đạt |
+| [P08 — Sharing và client khác](phases/P08-sharing-clients.md) | Item read-only sharing, extension, scoped API token; verifier/mobile chỉ khi scope được chọn | Cross-user key/permission/revocation lifecycle, extension origin và token tests đạt |
 
-#### Task UI Phase 1 ↔ mockup
+Thứ tự bàn giao: P01 → P02 → P03 → P04 → P05 → P06 → P07 → P08. Thiết kế/khảo sát module độc lập có thể chuẩn bị sớm, nhưng không bỏ gate phụ thuộc. Thời gian 8–10 tuần MVP và ~8 tuần mở rộng của bản cũ là ước lượng chưa tính đủ các gate mới; lập lịch sau khi biết nhân lực, hardware và tốc độ thực tế P01/P02, không dùng làm cam kết.
 
-Chia theo **màn**, mỗi task gắn đúng một mockup làm chuẩn thị giác và mục spec làm chuẩn hành vi (quy tắc §7.0). Task nào ghi **cần thiết kế** thì phải dựng mockup trước khi implement — không code chay từ mô tả chữ.
+MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag, **10 recovery key**, **passkey unlock PRF**, nhớ thiết bị, export encrypted/decrypted. **Không** gồm: BIP39, login-with-passkey (P07), pricing, third-party embedding provider, private name, link/file/image, largeBlob, import backup UI hay sharing.
 
-| # | Màn / cụm | Mockup (chuẩn thị giác) | Spec (chuẩn hành vi) | Milestone |
+### 12.2 Task UI theo mockup và phase
+
+Mockup thắng về thị giác, spec thắng hành vi/dữ liệu (§7.0). Mọi màn MVP đã có file trong `mockups/`; lỗi/state của từng tính năng đi cùng phase, P06 rà tích hợp. Ô ghi **cần bổ sung** là phần còn thiếu *bên trong* một file đã có, không phải file mới.
+
+| # | Màn / cụm | Mockup | Spec | Phase |
 |---|---|---|---|---|
-| U1 | Landing | `landing.html` | §11.1, §10.4 | M1 |
-| U2 | Vỏ app: header, rail tag, vault pill | `index.html` | §7.2, §7.8 | M1 |
-| U3 | Onboarding: passphrase + hiện 10 RK | **cần thiết kế** | §3.2, §5.9 | M3 |
-| U4 | Unlock vault trên thiết bị mới | **cần thiết kế** | §3.3, §3.14 | M3 |
-| U5 | Trạng thái vault khoá trong app | `index.html`, `item.html` | §5.1, §7.6 | M3 |
-| U6 | Settings · Tài khoản | `settings.html` | §7.6 | M2 |
-| U7 | Settings · Bảo mật: passphrase, RK, passkey, phiên | `settings.html` | §7.6, §3.9, §3.10, §3.12, §3.15 | M3 |
-| U8 | Omnibox: quick-add `name: text` + `#tag` | `index.html` | §3.4, §7.2 | M4 |
-| U9 | Picker khi trùng tên mục | `index.html` (dialog) | §3.4 | M4 |
-| U10 | Lưới mục gần đây | `index.html` | §7.2 | M4 |
-| U11 | Item detail: name, hint, tag, danh sách entry | `item.html` | §7.3 | M4 |
-| U12 | Entry `text`: xem / sửa / chép | `item.html` | §7.3, §3.8 | M4 |
-| U13 | Entry `json`: bảng lồng nhau, edit source-span | `item.html` | §7.4, §3.7 | M4 |
-| U14 | Import JSON modal | `item.html` | §7.5, §3.6 | M4 |
-| U15 | Omnibox: tìm — nhóm lexical + nhóm Gần nghĩa | `index.html` | §7.2, §6.4, §6.10 | M5 |
-| U16 | Settings · Tìm kiếm: toggle semantic | `settings.html` | §6.10, §7.6 | M5 |
-| U17 | Settings · Dữ liệu: export | `settings.html` | §7.6, §3.11 | M6 |
-| U18 | Empty / error / degraded states | **cần thiết kế** | §7.7, §6.8 | M6 |
+| U1 | Landing | `landing.html` | §11.1, §10.4 | P01; release copy P06 |
+| U2 | Header, rail tag, vault pill | `index.html` | §7.2, §7.8 | P01; data wiring P02–P05 |
+| U3 | Onboarding passphrase + 10 RK + optional passkey | `onboarding.html` | §3.2, §5.9 | P03 |
+| U4 | Unlock thiết bị mới và recovery | `unlock.html`, `recovery.html` | §3.3, §3.10, §3.14 | P03 |
+| U5 | Vault locked trong app | `index.html`, `item.html` | §5.1, §7.6 | P03; entry thật P04 |
+| U6 | Settings · Tài khoản | `settings.html` + dialog cần bổ sung | §7.6 | P02 |
+| U7 | Settings · Bảo mật/phiên/audit/reset | `settings.html` | §3.9–§3.15, §7.6 | P02 session; P03 vault; P04 reset data |
+| U8 | Quick-add + token tag | `index.html` | §3.4, §7.2 | P04 |
+| U9 | Picker tên trùng | `index.html` + dialog `mock.js` | §3.4 | P04 |
+| U10 | Mục gần đây | `index.html` | §7.2 | P04 |
+| U11 | Item detail/name/hint/tag/entries | `item.html` | §7.3 | P04 |
+| U12 | Text view/edit/copy | `item.html` | §7.3, §3.8 | P04 |
+| U13 | JSON table/raw/source-span editor | `item.html` | §7.4, §3.7 | P04 |
+| U14 | Import JSON thành một entry | `item.html` | §7.5, §3.6 | P04 |
+| U15 | Lexical + vùng Gần nghĩa | `index.html` | §7.2, §6.4 | P05 |
+| U16 | Settings · Tìm kiếm | `settings.html` | §6.10, §7.6 | P05 |
+| U17 | Export và xoá tài khoản | `settings.html` + encrypted/progress/confirm cần bổ sung | §3.11, §7.6 | P06 |
+| U18 | Empty/error/offline/degraded/conflict | `states.html` | §7.7, §6.8 | P02–P05 theo tính năng; P06 rà đủ |
+| U19 | Signup/login/OAuth return/re-auth | `auth.html` | §3.2, §9.1 | P02 |
+| U20 | Docs/privacy/help | `docs.html` | §10.4, §11.1 | P06 |
 
-### Phase 2 — Mở rộng (~8 tuần)
+P07/P08 thiết kế màn mới ở đầu từng mốc; không lấy mockup MVP làm bằng chứng UI sharing/media/extension đã được chốt.
 
-- Client-side content search trên entry đã decrypt (Worker).
-- Kiểu thêm: `link` (unfurl **client-side**), `file` / `image` (blob mã hoá, object storage).
-- Import decrypted JSON / encrypted backup UI; merge tag khi rename trùng; move entry giữa item (tuỳ).
-- Rotate VK: re-encrypt body + tạo lại mọi wrap, không còn dùng VK cũ cho dữ liệu hiện tại; backup/ciphertext cũ vẫn mở bằng VK cũ (§5.9). Import backup không hồi sinh RK/passkey wrapper của snapshot (§3.11).
-- Multi-device: `/entries/changes`, SSE, quản lý phiên (Nhớ thiết bị **đã có từ MVP**).
-- **Login bằng passkey** (WebAuthn discoverable; dùng `pubkey` đã lưu từ MVP, cùng credential nếu resident).
-- JSON Schema **tuỳ chọn** per item — chỉ nếu Q2 chốt làm.
-- RLS defense-in-depth; ConnectRPC evaluation.
+### 12.3 Gate và bằng chứng
 
-### Phase 3 — Sharing & client khác
-
-- Chia sẻ **Item** (read-only) qua X25519 sealed box + ShareKey; accept/revoke; "shared with me".
-- Browser extension: quick-save + trusted verifier.
-- Public API token scoped.
-- Native mobile: ngoài scope cho đến khi web ổn.
+Mỗi file phase có phạm vi trong/ngoài, dependencies, API/schema cần đóng, file dự kiến, thứ tự triển khai, acceptance ID và cách bàn giao/khôi phục. [Ma trận yêu cầu](phases/README.md#6-bao-phủ-yêu-cầu-và-quyết-định-còn-thiếu) gắn US1–US17 với owner, bao gồm các gap hiện tại của §9 và demo. Evidence khi triển khai lưu `docs/phases/evidence/Pxx.md`; chưa chạy test thì không đánh dấu pass. Không có runtime/app code trong deliverable đặc tả v0.7.
 
 ---
 
 ## 13. Câu hỏi mở còn lại
 
-Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = Phase 2** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `key.zone17th.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
+Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = P07** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `key.zone17th.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
 
 **Chốt v0.6:** tên sản phẩm là `engram`, viết thường, repo giữ `save-all-by-keyword`; domain và nhãn hiệu **chưa tra**. `mockups/` là tiêu chuẩn thiết kế ràng buộc cho §7 — mockup thắng về thị giác, spec thắng về hành vi và dữ liệu (§7.0). Tầng token chức năng giữ nguyên ClickUp, chỉ tầng thương hiệu là của engram.
 
-**Chốt v0.5:** giữ VK đủ quyền rewrap KEK, kèm re-auth tài khoản + audit/notice (không đòi passphrase cũ); RK single-use/passkey revoke chỉ trên live server, backup không bị thu hồi; rotate VK Phase 2. Body JSON dùng raw text + source-span splice; envelope dùng JCS/UUID client/`ct_enc` bắt buộc. Lexical order cố định, semantic append, recency chỉ tie-break; không RRF trong MVP. Exact dưới ngưỡng benchmark, hash-partition + HNSW cho corpus lớn; mọi model generation dùng shadow tables + cutover; deployment re-enable sửa vector thiếu hoặc stale. User toggle không tắt indexing, không thêm setting riêng để opt-out indexing ở MVP.
+**Chốt v0.7:** roadmap triển khai dùng P01–P08, MVP là P01–P06; [spec từng phase](phases/README.md) phân công dependency, UI/missing mockup, contract cần bổ sung và acceptance. P07/P08 kế thừa phạm vi hậu MVP, các quyết định chưa có API/ADR/mockup được ghi rõ trước khi triển khai; không coi thời gian ước lượng cũ là cam kết lịch giao.
+
+**Chốt v0.5:** giữ VK đủ quyền rewrap KEK, kèm re-auth tài khoản + audit/notice (không đòi passphrase cũ); RK single-use/passkey revoke chỉ trên live server, backup không bị thu hồi; rotate VK P07. Body JSON dùng raw text + source-span splice; envelope dùng JCS/UUID client/`ct_enc` bắt buộc. Lexical order cố định, semantic append, recency chỉ tie-break; không RRF trong MVP. Exact dưới ngưỡng benchmark, hash-partition + HNSW cho corpus lớn; mọi model generation dùng shadow tables + cutover; deployment re-enable sửa vector thiếu hoặc stale. User toggle không tắt indexing, không thêm setting riêng để opt-out indexing ở MVP.
 
 | # | Câu hỏi | Khuyến nghị trong spec này |
 |---|---------|----------------------------|
 | Q1 | Tên tiếng Anh của thực thể chính: **Item** vs Record vs Note? | **Item** (VI: mục) — trung tính, URL `/items`, không gợi "một note / một hàng DB". Tên *sản phẩm* đã chốt là `engram` (§1.1), độc lập với tên thực thể |
-| Q2 | Entry `json`: **freeform** hay bắt JSON Schema? | **Freeform** ở MVP (mọi JSON hợp lệ ≤ 256 KiB). Schema per-item = Phase 2 nếu có nhu cầu form cố định |
+| Q2 | Entry `json`: **freeform** hay bắt JSON Schema? | **Freeform** ở MVP (mọi JSON hợp lệ ≤ 256 KiB). Schema per-item = P07 nếu có nhu cầu form cố định |
 | Q3 | Trần **20 tag / item** và **200 entry / item**? | Giữ như đề xuất — đủ rộng, chặn dump; dễ nâng bằng migration + hằng số |
-| Q4 | Passkey dùng để **login** ngay trong MVP? | **Không.** MVP = unlock vault (`get` + PRF) sau cookie OAuth/password. Login-with-passkey = Phase 2, cùng credential nếu resident |
+| Q4 | Passkey dùng để **login** ngay trong MVP? | **Không.** MVP = unlock vault (`get` + PRF) sau cookie OAuth/password. Login-with-passkey = P07, cùng credential nếu resident |
 | Q5 | Authenticator không PRF: cho đăng ký "passkey login-only" (không unlock)? | **Không** ở MVP — tránh hai loại passkey. User giữ passphrase + RK |
 
 Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyword, nhớ thiết bị "có vào MVP không", hay KDF mem thấp hơn.
@@ -1967,6 +1972,6 @@ Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyw
 | **bge-m3** | Model embedding mặc định, 1024 dims, multilingual |
 | **Re-embed** | Tính lại vector khi đổi name/tag hoặc đổi model |
 | **Degraded mode** | Suggest lexical-only khi TEI lỗi |
-| **Sealed box** | `crypto_box_seal` — sharing Item (Phase 3) |
+| **Sealed box** | `crypto_box_seal` — sharing Item (P08) |
 | **River** | Job queue Postgres-backed (Go) |
 | **sqlc** | Sinh Go type-safe từ SQL |

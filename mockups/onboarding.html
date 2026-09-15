@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tạo vault — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<!-- ================= header mỏng: chưa có vault nên không có vault pill ================= -->
+<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
+  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+        <stop offset="0%" stop-color="var(--logo-magenta)"/>
+        <stop offset="100%" stop-color="var(--logo-cyan)"/>
+      </linearGradient></defs>
+      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+            stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="0.1 5.2 0.1 4 20"/>
+    </svg>
+    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+  </a>
+  <span class="mono text-[12px] hidden sm:inline" style="color:var(--muted)">minh@zone17th.click</span>
+  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+</header>
+
+<main class="max-w-[640px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
+
+  <!-- ===== stepper: cũng là nút xem từng bước khi review mockup ===== -->
+  <div class="flex items-center gap-3 mb-8">
+    <div class="seg" data-seg>
+      <button data-target="pp"   aria-pressed="true">1 · Passphrase</button>
+      <button data-target="rk"   aria-pressed="false">2 · Recovery key</button>
+      <button data-target="pk"   aria-pressed="false">3 · Passkey</button>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- BƯỚC 1 — passphrase                                            -->
+  <!-- ============================================================= -->
+  <section data-view="pp">
+    <h1 class="t-title-lg mb-2">Đặt passphrase cho vault</h1>
+    <p class="t-body-lg mb-7" style="color:var(--muted)">
+      Đây là bí mật khoá nội dung entry, khác với mật khẩu đăng nhập. Chúng tôi không giữ bản sao —
+      gõ sai thì không ai mở hộ được.
+    </p>
+
+    <div class="card p-6 mb-4">
+      <label class="block mb-4">
+        <span class="text-[14px] font-semibold block mb-1.5">Passphrase</span>
+        <input type="password" value="••••••••••••••••" autocomplete="new-password" class="w-full text-[15px]"
+               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      </label>
+      <div class="flex items-center gap-2 mb-5">
+        <div style="height:4px;flex:1;border-radius:var(--r-pill);background:var(--border)">
+          <div style="height:4px;width:78%;border-radius:var(--r-pill);background:var(--success)"></div>
+        </div>
+        <span class="text-[12px]" style="color:var(--success)">mạnh</span>
+      </div>
+      <label class="block mb-5">
+        <span class="text-[14px] font-semibold block mb-1.5">Gõ lại passphrase</span>
+        <input type="password" value="••••••••••••••••" autocomplete="new-password" class="w-full text-[15px]"
+               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      </label>
+
+      <ul class="flex flex-col gap-1.5 text-[13px] m-0 p-0 list-none" style="color:var(--muted)">
+        <li><span style="color:var(--success)">✓</span> Từ 12 ký tự trở lên</li>
+        <li><span style="color:var(--success)">✓</span> Không dùng lại mật khẩu ở nơi khác</li>
+        <li><span style="color:var(--success)">✓</span> Đủ khó đoán (zxcvbn ≥ 3)</li>
+      </ul>
+    </div>
+
+    <div class="rounded-md p-4 mb-6" style="background:var(--pale-orange)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        Mất passphrase mà không còn recovery key, passkey hay thiết bị đã nhớ thì nội dung entry không lấy lại được.
+        Bước sau sẽ tạo sẵn 10 đường về cho bạn.
+      </p>
+    </div>
+
+    <div class="flex justify-end">
+      <button class="btn btn-primary"
+              onclick="document.querySelector('[data-seg] [data-target=rk]').click()">Tiếp tục</button>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- BƯỚC 2 — lưới 10 recovery key                                  -->
+  <!-- ============================================================= -->
+  <section data-view="rk" hidden>
+    <h1 class="t-title-lg mb-2">10 recovery key của bạn</h1>
+    <p class="t-body-lg mb-4" style="color:var(--muted)">
+      Mỗi key mở được vault một mình, không cần passphrase. Dùng xong thì key đó ngừng hoạt động trên máy chủ.
+    </p>
+
+    <div class="rounded-md p-4 mb-5" style="background:var(--pale-orange)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        <strong>Chỉ hiện đúng lần này.</strong> Ảnh chụp màn hình hoặc người đứng sau lưng đều lấy được key.
+        In ra hoặc tải file rồi cất offline — đừng để screenshot trên máy dùng chung.
+      </p>
+    </div>
+
+    <div class="card p-4 sm:p-5 mb-4">
+      <div class="grid gap-1.5 sm:grid-cols-2">
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk1_7QK4 M2XD 9FRA T1VB 60HN ZE83 XQ</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk2_H3ND 5YTP Q8ZB 2CVK 7MRA 6FJW 1S</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk3_ZC9X 4KDB 1HQT 8NVM 3GYE 5PRJ 7A</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk4_5VBN 2QZR 7MKD 4XTC 9HJF 6SAG 3E</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk5_D8TQ 3JGM 6BZX 1NKV 5YRP 2WHC 4F</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk6_9MRA 7CKW 4EZQ 2BVT 8XND 3FGH 5J</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk7_2XKV 6NBD 8QTR 5MZC 1HJA 9WGF 4P</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk8_6BZT 9QHM 3KXR 7VND 2CJG 5YPW 8A</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk9_4NCX 8VKQ 1ZBM 9TRD 6GHJ 3WFA 7P</code>
+        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk10_1JQD 5MZK 9XVB 3NRT 7CGH 2AWF 6P</code>
+      </div>
+      <p class="t-caption mt-3 mb-0" style="color:var(--muted)">
+        Dữ liệu giả trong mockup. Bản thật là 16 byte ngẫu nhiên mỗi key, mã Crockford Base32.
+      </p>
+    </div>
+
+    <div class="flex flex-wrap gap-2 mb-6">
+      <button class="btn btn-secondary" onclick="SAK.toast('Đã tải engram-recovery-keys.txt')">Tải file</button>
+      <button class="btn btn-secondary" onclick="SAK.toast('Đang mở hộp thoại in…')">In</button>
+      <button class="btn btn-tertiary" onclick="SAK.toast('Đã chép 10 key · clipboard tự xoá sau 30 giây')">Sao chép</button>
+    </div>
+
+    <label class="flex gap-3 items-start mb-6 cursor-pointer">
+      <input type="checkbox" class="mt-1" id="rkOk"
+             onchange="document.getElementById('createVault').disabled = !this.checked">
+      <span class="text-[14px]">Tôi đã lưu 10 recovery key ở nơi an toàn, ngoài trình duyệt này.</span>
+    </label>
+
+    <div class="flex items-center gap-2 flex-wrap">
+      <button class="btn btn-tertiary"
+              onclick="document.querySelector('[data-seg] [data-target=pp]').click()">Quay lại</button>
+      <button class="btn btn-primary ml-auto" id="createVault" disabled
+              onclick="SAK.toast('Đã tạo vault'); document.querySelector('[data-seg] [data-target=pk]').click()">Tạo vault</button>
+    </div>
+    <p class="t-caption mt-3 mb-0" style="color:var(--muted)">
+      Nút mở khoá sau khi tick. Trước lúc đó chưa có gì được gửi lên máy chủ.
+    </p>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- BƯỚC 3 — passkey tuỳ chọn + nhớ thiết bị                        -->
+  <!-- ============================================================= -->
+  <section data-view="pk" hidden>
+    <h1 class="t-title-lg mb-2">Thêm passkey (tuỳ chọn)</h1>
+    <p class="t-body-lg mb-7" style="color:var(--muted)">
+      Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật, không phải gõ passphrase mỗi lần.
+      Bỏ qua cũng được — passphrase và 10 recovery key đã đủ để dùng.
+    </p>
+
+    <div class="card p-6 mb-3">
+      <div class="flex items-start gap-4 flex-wrap">
+        <div class="min-w-0 flex-1 basis-[240px]">
+          <div class="text-[15px] font-semibold mb-1">Passkey trên thiết bị này</div>
+          <p class="text-[13px] m-0" style="color:var(--muted)">
+            Cần khoá bảo mật hỗ trợ PRF. Chúng tôi kiểm tra ngay lúc đăng ký; không hỗ trợ thì báo luôn, không lưu nửa vời.
+          </p>
+        </div>
+        <button class="btn btn-secondary" onclick="SAK.toast('Chạm vào khoá bảo mật để đăng ký…')">Thêm passkey</button>
+      </div>
+    </div>
+
+    <!-- trạng thái lỗi PRF: onboarding vẫn hoàn tất được -->
+    <div class="card p-4 mb-3" style="border-color:var(--warning)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        <span class="badge-type" style="background:var(--pale-orange);color:var(--body)">prf_unsupported</span>
+        Thiết bị này không tạo được khoá PRF nên chưa thêm passkey được. Vault vẫn tạo xong bằng passphrase và recovery key.
+      </p>
+    </div>
+
+    <div class="card p-5 mb-7">
+      <div class="flex items-center gap-4 flex-wrap">
+        <div class="min-w-0 flex-1 basis-[240px]">
+          <div class="text-[15px] font-semibold mb-1">Nhớ thiết bị này</div>
+          <p class="text-[13px] m-0" style="color:var(--muted)">
+            Giữ một khoá riêng trong trình duyệt để lần sau mở vault không cần gõ lại. Mặc định tắt; chỉ bật trên máy của bạn.
+          </p>
+        </div>
+        <button class="switch" role="switch" aria-checked="false" aria-label="Nhớ thiết bị này"
+                onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked')==='true'?'false':'true')"></button>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 flex-wrap">
+      <a href="index.html" class="btn btn-tertiary no-underline !text-body">Bỏ qua</a>
+      <a href="index.html" class="btn btn-primary no-underline ml-auto">Vào engram</a>
+    </div>
+  </section>
+
+</main>
+
+<script src="mock.js"></script>
+<script>SAK.initChrome();</script>
+</body>
+</html>

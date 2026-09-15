@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trạng thái rỗng và lỗi — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
+  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+        <stop offset="0%" stop-color="var(--logo-magenta)"/>
+        <stop offset="100%" stop-color="var(--logo-cyan)"/>
+      </linearGradient></defs>
+      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+            stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="0.1 5.2 0.1 4 20"/>
+    </svg>
+    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+  </a>
+  <span class="vault-pill vault-open" data-vault>🔓 Vault đang mở</span>
+  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+</header>
+
+<main class="max-w-[840px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
+
+  <h1 class="t-title-lg mb-2">Trạng thái rỗng, lỗi, ngoại tuyến, giảm chức năng</h1>
+  <p class="t-body-lg mb-7" style="color:var(--muted)">
+    Bộ trạng thái dùng chung cho mọi màn. Nguyên tắc: nói chuyện gì đã xảy ra, dữ liệu còn nguyên hay không,
+    và luôn để lại đúng một việc tiếp theo làm được.
+  </p>
+
+  <div class="seg mb-7 flex-wrap" data-seg>
+    <button data-target="empty"  aria-pressed="true">Rỗng</button>
+    <button data-target="load"   aria-pressed="false">Đang tải</button>
+    <button data-target="err"    aria-pressed="false">Lỗi</button>
+    <button data-target="off"    aria-pressed="false">Ngoại tuyến</button>
+    <button data-target="degr"   aria-pressed="false">Giảm chức năng</button>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- RỖNG                                                           -->
+  <!-- ============================================================= -->
+  <section data-view="empty" class="flex flex-col gap-4">
+
+    <div class="panel p-8 text-center">
+      <p class="t-label mb-3" style="color:var(--muted)">Vault trống · lần đầu</p>
+      <h2 class="t-title-md mb-2">Chưa có gì ở đây</h2>
+      <p class="t-body mb-5 max-w-[440px] mx-auto" style="color:var(--muted)">
+        Lưu thứ đầu tiên: một đoạn ghi chú, một khối JSON, hay bất cứ thứ gì bạn sợ quên.
+        Đặt tên theo từ khoá bạn sẽ nhớ lúc cần tìm.
+      </p>
+      <button class="btn btn-primary" onclick="SAK.toast('Mở ô thêm nhanh')">Thêm mục đầu tiên</button>
+      <p class="t-caption mt-4 mb-0" style="color:var(--muted)">Hoặc nhấn <span class="kbd">N</span> ở bất cứ đâu.</p>
+    </div>
+
+    <div class="card p-6 text-center">
+      <p class="t-label mb-2" style="color:var(--muted)">Tìm không ra</p>
+      <h2 class="t-title-sm mb-2">Không có mục nào khớp “thuế 2024”</h2>
+      <p class="t-body mb-4" style="color:var(--muted)">
+        Thử bớt từ, bỏ dấu, hoặc tìm theo tag. Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry.
+      </p>
+      <div class="flex gap-2 justify-center flex-wrap">
+        <button class="btn btn-secondary btn-sm">Tạo mục “thuế 2024”</button>
+        <button class="btn btn-tertiary btn-sm">Xoá bộ lọc</button>
+      </div>
+    </div>
+
+    <div class="card p-6 text-center">
+      <p class="t-label mb-2" style="color:var(--muted)">Mục chưa có entry</p>
+      <h2 class="t-title-sm mb-2">Mục này còn trống</h2>
+      <p class="t-body mb-4" style="color:var(--muted)">Thêm đoạn văn bản hoặc dán JSON vào đây.</p>
+      <div class="flex gap-2 justify-center flex-wrap">
+        <button class="btn btn-primary btn-sm">Thêm văn bản</button>
+        <button class="btn btn-secondary btn-sm">Dán JSON</button>
+      </div>
+    </div>
+
+    <div class="card p-6 text-center">
+      <p class="t-label mb-2" style="color:var(--muted)">Tag chưa dùng</p>
+      <h2 class="t-title-sm mb-2">Chưa mục nào gắn <span class="chip">#hoá-đơn</span></h2>
+      <p class="t-body mb-4" style="color:var(--muted)">Gắn tag này cho một mục, hoặc xoá tag nếu không cần nữa.</p>
+      <button class="btn btn-tertiary btn-sm">Xoá tag</button>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- ĐANG TẢI                                                       -->
+  <!-- ============================================================= -->
+  <section data-view="load" hidden class="flex flex-col gap-4">
+    <div class="card p-6">
+      <p class="t-label mb-4" style="color:var(--muted)">Danh sách đang tải · khung xám, không nhảy layout</p>
+      <div class="flex flex-col gap-3">
+        <div style="height:16px;width:42%;border-radius:var(--r-sm);background:var(--border)"></div>
+        <div style="height:12px;width:68%;border-radius:var(--r-sm);background:var(--surface)"></div>
+        <hr class="rule">
+        <div style="height:16px;width:36%;border-radius:var(--r-sm);background:var(--border)"></div>
+        <div style="height:12px;width:55%;border-radius:var(--r-sm);background:var(--surface)"></div>
+      </div>
+    </div>
+
+    <div class="card p-6">
+      <p class="t-label mb-3" style="color:var(--muted)">Giải mã entry</p>
+      <p class="text-[14px] m-0" style="color:var(--body)">Đang giải mã nội dung trong trình duyệt…</p>
+      <p class="text-[13px] m-0 mt-1" style="color:var(--muted)">Mục và tag hiện ngay, nội dung hiện sau khi giải mã xong.</p>
+    </div>
+
+    <div class="card p-6">
+      <p class="t-label mb-3" style="color:var(--muted)">Thao tác chậm</p>
+      <p class="text-[14px] m-0 mb-3" style="color:var(--body)">Việc này lâu hơn thường lệ…</p>
+      <button class="btn btn-tertiary btn-sm">Huỷ</button>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- LỖI                                                            -->
+  <!-- ============================================================= -->
+  <section data-view="err" hidden class="flex flex-col gap-3">
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <span class="badge-type mb-2 inline-block" style="background:var(--pale-orange);color:var(--error)">409</span>
+      <p class="text-[14px] font-semibold m-0 mb-1">Mục này vừa được sửa ở nơi khác</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
+        Bản bạn đang xem cũ hơn bản trên máy chủ. Tải lại để xem bản mới, phần bạn vừa gõ được giữ nguyên để chép sang.
+      </p>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn btn-secondary btn-sm">Tải bản mới</button>
+        <button class="btn btn-tertiary btn-sm">Giữ bản của tôi</button>
+      </div>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Nội dung quá lớn</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Một entry tối đa 256 KiB sau khi bỏ khoảng trắng thừa. Tách bớt hoặc lưu thành nhiều entry.
+      </p>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">JSON không hợp lệ</p>
+      <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">Dòng 14, cột 3: thiếu dấu phẩy giữa hai khoá.</p>
+      <div class="rounded-md p-3 mono text-[12px]" style="background:var(--surface);color:var(--muted)">
+        "amount": 1200<br>"currency": "VND"
+      </div>
+      <button class="btn btn-tertiary btn-sm mt-3">Lưu dạng văn bản</button>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Trùng tên mục</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Đã có mục tên “hoá đơn điện”. Thêm entry vào mục cũ hay tạo mục mới?</p>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn btn-primary btn-sm">Thêm vào mục cũ</button>
+        <button class="btn btn-tertiary btn-sm">Tạo mục mới</button>
+      </div>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Thao tác quá nhanh</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Chờ vài giây rồi thử lại. Lần lưu vừa rồi không bị nhân đôi, kể cả khi bạn bấm lại.
+      </p>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Không giải mã được entry này</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Dữ liệu có dấu hiệu sai lệch nên chúng tôi không hiển thị nội dung có thể sai.
+        Các entry khác vẫn mở bình thường. Thử bản backup nếu bạn có.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Lỗi máy chủ</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
+        Chúng tôi chưa xử lý được yêu cầu. Mã sự cố <span class="mono">req_7f2a91c4</span> — gửi mã này nếu bạn cần báo lỗi.
+      </p>
+      <button class="btn btn-tertiary btn-sm">Thử lại</button>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Không tìm thấy</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Mục này đã bị xoá, hoặc đường dẫn không thuộc tài khoản của bạn.</p>
+      <a href="index.html" class="btn btn-tertiary btn-sm no-underline">Về danh sách</a>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- NGOẠI TUYẾN                                                    -->
+  <!-- ============================================================= -->
+  <section data-view="off" hidden class="flex flex-col gap-3">
+
+    <div class="rounded-md p-4" style="background:var(--pale-orange)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        <strong>Mất kết nối.</strong> Bạn vẫn xem được những gì đã tải. Thao tác tạo và sửa tạm hoãn.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Không lưu được lúc này</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
+        Nội dung bạn gõ vẫn nằm trong ô soạn thảo, chưa mất. Có mạng lại thì bấm lưu.
+      </p>
+      <button class="btn btn-secondary btn-sm">Thử lưu lại</button>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Tìm kiếm cần mạng</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">Bản này chưa tìm ngoại tuyến được. Duyệt danh sách đã tải trong lúc chờ.</p>
+    </div>
+
+    <div class="rounded-md p-4" style="background:var(--surface)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        <strong>Đã kết nối lại.</strong> Danh sách vừa được làm mới.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- GIẢM CHỨC NĂNG                                                 -->
+  <!-- ============================================================= -->
+  <section data-view="degr" hidden class="flex flex-col gap-3">
+
+    <div class="rounded-md p-4" style="background:var(--surface)">
+      <p class="text-[13px] m-0 mb-1" style="color:var(--body)">
+        <strong>Tìm theo nghĩa đang tạm nghỉ.</strong> Tìm theo tên và tag vẫn chạy đủ.
+      </p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Mục mới sẽ được lập chỉ mục nghĩa khi dịch vụ quay lại. Không cần làm gì thêm.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Không bật được tìm theo nghĩa</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Dịch vụ nhúng chưa sẵn sàng nên thiết lập này tạm thời không đổi được. Thử lại sau.
+      </p>
+    </div>
+
+    <div class="rounded-md p-4" style="background:var(--pale-accent)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        <strong>Vault đang khoá.</strong> Bạn vẫn tìm và duyệt được tên mục, tag, gợi nhớ.
+        Nội dung entry hiện sau khi mở khoá.
+      </p>
+      <a href="unlock.html" class="btn btn-primary btn-sm mt-3 no-underline">Mở khoá</a>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Trình duyệt chưa đủ điều kiện</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        engram cần trình duyệt đời mới để mã hoá ngay trên máy bạn. Hãy cập nhật hoặc dùng Chrome, Edge, Firefox, Safari bản mới.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Đang bảo trì</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Hệ thống tạm ngừng ghi trong ít phút. Dữ liệu của bạn không bị ảnh hưởng; quay lại sau nhé.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<script src="mock.js"></script>
+<script>SAK.initChrome();</script>
+</body>
+</html>

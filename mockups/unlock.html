@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mở khoá vault — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
+  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+        <stop offset="0%" stop-color="var(--logo-magenta)"/>
+        <stop offset="100%" stop-color="var(--logo-cyan)"/>
+      </linearGradient></defs>
+      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+            stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="0.1 5.2 0.1 4 20"/>
+    </svg>
+    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+  </a>
+  <span class="vault-pill vault-shut">🔒 Vault đã khoá</span>
+  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+</header>
+
+<main class="max-w-[560px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
+
+  <!-- Đã đăng nhập rồi: đây là bước riêng, không phải màn login (§3.3). -->
+  <p class="t-label mb-2" style="color:var(--muted)">Đã đăng nhập · minh@zone17th.click</p>
+  <h1 class="t-title-lg mb-2">Mở khoá vault</h1>
+  <p class="t-body-lg mb-7" style="color:var(--muted)">
+    Tên mục và tag vẫn tìm được khi khoá. Nội dung entry thì cần khoá giải mã, và khoá đó chỉ máy bạn mở được.
+  </p>
+
+  <!-- các biến thể của cùng một màn, để review được từng trạng thái -->
+  <div class="seg mb-6 flex-wrap" data-seg>
+    <button data-target="new"   aria-pressed="true">Thiết bị mới</button>
+    <button data-target="pk"    aria-pressed="false">Có passkey</button>
+    <button data-target="known" aria-pressed="false">Đã nhớ máy</button>
+    <button data-target="err"   aria-pressed="false">Lỗi</button>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- A — thiết bị mới: passphrase là đường chính                     -->
+  <!-- ============================================================= -->
+  <section data-view="new">
+    <div class="card p-6 mb-4">
+      <label class="block mb-5">
+        <span class="text-[14px] font-semibold block mb-1.5">Passphrase của vault</span>
+        <input type="password" value="••••••••••••" autocomplete="current-password" class="w-full text-[15px]"
+               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+        <span class="text-[12px] block mt-1.5" style="color:var(--muted)">Không phải mật khẩu đăng nhập.</span>
+      </label>
+
+      <label class="flex gap-3 items-start mb-5 cursor-pointer">
+        <input type="checkbox" class="mt-1">
+        <span class="text-[14px]">
+          Nhớ thiết bị này
+          <span class="block text-[13px]" style="color:var(--muted)">Lần sau máy này tự mở, không cần gõ. Đừng bật trên máy dùng chung.</span>
+        </span>
+      </label>
+
+      <button class="btn btn-primary w-full !justify-center"
+              onclick="SAK.toast('Đang tính khoá… (Argon2id 64 MiB)')">Mở khoá</button>
+      <p class="t-caption text-center mt-3 mb-0" style="color:var(--muted)">
+        Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.
+      </p>
+    </div>
+
+    <div class="flex items-center justify-between gap-4 flex-wrap">
+      <a href="recovery.html" class="text-[14px]" style="color:var(--link)">Tôi quên passphrase</a>
+      <a href="landing.html" class="text-[14px]" style="color:var(--muted)">Đăng xuất</a>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- B — tài khoản có passkey: passkey lên trước, passphrase vẫn còn  -->
+  <!-- ============================================================= -->
+  <section data-view="pk" hidden>
+    <div class="card p-6 mb-4">
+      <button class="btn btn-primary w-full !justify-center mb-2"
+              onclick="SAK.toast('Chạm vào khoá bảo mật…')">🔑 Mở bằng passkey</button>
+      <p class="t-caption text-center mb-5" style="color:var(--muted)">MacBook Pro · Touch ID — hoặc YubiKey 5C</p>
+
+      <hr class="rule mb-5">
+
+      <label class="block mb-4">
+        <span class="text-[14px] font-semibold block mb-1.5">Hoặc gõ passphrase</span>
+        <input type="password" class="w-full text-[15px]"
+               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      </label>
+      <button class="btn btn-secondary w-full !justify-center">Mở khoá</button>
+    </div>
+    <a href="recovery.html" class="text-[14px]" style="color:var(--link)">Tôi quên passphrase</a>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- C — thiết bị đã nhớ: mở im lặng sau auto-lock                   -->
+  <!-- ============================================================= -->
+  <section data-view="known" hidden>
+    <div class="card p-6 mb-4 text-center">
+      <div class="w-12 h-12 rounded-pill grid place-items-center mx-auto mb-4 text-[20px]"
+           style="background:var(--pale-accent)">🔓</div>
+      <div class="text-[15px] font-semibold mb-1">Đang mở khoá bằng thiết bị đã nhớ…</div>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Khoá của máy này nằm trong trình duyệt và không rời khỏi đây. Không cần gõ gì.
+      </p>
+    </div>
+    <div class="rounded-md p-4 mb-4" style="background:var(--surface)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        Đăng xuất không xoá khoá thiết bị, nhưng lần sau vẫn phải đăng nhập tài khoản trước khi máy tự mở vault.
+      </p>
+    </div>
+    <button class="btn btn-tertiary" onclick="SAK.toast('Đã quên thiết bị này')">Quên thiết bị này</button>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- D — các lỗi của bước mở khoá                                    -->
+  <!-- ============================================================= -->
+  <section data-view="err" hidden class="flex flex-col gap-3">
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="badge-type" style="background:var(--pale-orange);color:var(--error)">passphrase sai</span>
+      </div>
+      <p class="text-[14px] font-semibold m-0 mb-1">Passphrase không đúng</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Không có gợi ý và không có số lần còn lại — máy chủ không biết passphrase đúng là gì.
+        Còn passkey, thiết bị đã nhớ hoặc recovery key thì dùng đường đó.
+      </p>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--warning)">
+      <p class="text-[14px] font-semibold m-0 mb-1">
+        <span class="mono text-[12px]" style="color:var(--muted)">passkey.prf_unsupported</span>
+      </p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Khoá bảo mật này không tạo được khoá giải mã. Dùng passphrase, hoặc thêm một passkey khác sau khi vault mở.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Bạn đã huỷ ở bước xác thực</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">Chưa có gì thay đổi. Thử lại hoặc gõ passphrase.</p>
+      <button class="btn btn-tertiary btn-sm mt-3">Thử lại passkey</button>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Không giải mã được khoá vault</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Bản wrap trên máy chủ không khớp với khoá vừa lấy được. Đừng đặt lại vault vội — thử passphrase,
+        recovery key hoặc một passkey khác trước, và báo cho chúng tôi nếu mọi đường đều hỏng.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Thử quá nhiều lần</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Đường mở khoá và recovery bị giới hạn 5 lần mỗi 15 phút cho mỗi tài khoản. Đợi rồi thử lại.
+      </p>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Phiên đăng nhập đã hết hạn</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Mở vault cần một phiên còn hiệu lực. Đăng nhập lại rồi quay về đúng màn này.
+      </p>
+      <a href="auth.html" class="btn btn-primary btn-sm mt-3 no-underline">Đăng nhập lại</a>
+    </div>
+
+  </section>
+
+</main>
+
+<script src="mock.js"></script>
+<script>SAK.initChrome();</script>
+</body>
+</html>

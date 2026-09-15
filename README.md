@@ -42,7 +42,8 @@ Cần biết khi dùng tên:
 ## Tài liệu
 
 - [`docs/SPEC.md`](docs/SPEC.md) — spec đầy đủ: domain model, kiến trúc, E2E (passphrase, 10 recovery key, passkey PRF), search, UI, schema, API, roadmap.
-- [`mockups/`](mockups/README.md) — mockup UI tĩnh (landing, tìm kiếm, chi tiết mục, cài đặt). Chạy bằng `python -m http.server 5178 --directory mockups`. **Đây là tiêu chuẩn thiết kế**: plan và implementation bám theo bộ này.
+- [`docs/phases/`](docs/phases/README.md) — spec triển khai P01–P08: phạm vi, phụ thuộc, mockup ownership, contract và acceptance. MVP là P01–P06.
+- [`mockups/`](mockups/README.md) — mockup UI tĩnh (landing, tìm kiếm, chi tiết mục, cài đặt, đăng nhập, onboarding, mở khoá, khôi phục, trạng thái lỗi, tài liệu). Chạy bằng `python -m http.server 5178 --directory mockups`. **Đây là tiêu chuẩn thiết kế**: plan và implementation bám theo bộ này.
 - [`clickup.design.md`](clickup.design.md) — nguồn token thị giác mà mockup lấy tầng chức năng từ đó.
 
 ## Trạng thái

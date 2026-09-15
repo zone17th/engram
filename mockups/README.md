@@ -7,6 +7,8 @@ Dữ liệu là giả và **không có mã hoá thật** — mọi thứ "khoá/
 dùng một lần. Khi lệch nhau: **mockup thắng** về thị giác (bố cục, khoảng cách, màu, type, trạng thái),
 **spec thắng** về hành vi và dữ liệu (ranking, điều kiện hiển thị, luồng crypto, tên field).
 
+Kế hoạch triển khai theo phase nằm ở [docs/phases/README.md](../docs/phases/README.md). Bảng đối chiếu mockup/source demo và các chỗ cần sửa trước khi port production nằm ở [§5 của bộ phase](../docs/phases/README.md#5-chênh-lệch-mockup-cần-giải-quyết-khi-port); đừng coi hành vi giả trong HTML/`mock.js` là contract API.
+
 ## Chạy
 
 ```bash
@@ -24,10 +26,19 @@ Rồi mở <http://localhost:5178/landing.html>. Trong Claude Code có sẵn lau
 | `index.html` | §7.2 | Vỏ ứng dụng: rail tag, omnibox tìm/lưu, lưới mục gần đây. |
 | `item.html` | §7.3, §7.4, §7.5 | Chi tiết mục: tên + tag + entry; entry `json` xem dạng bảng; modal nhập JSON. |
 | `settings.html` | §7.6 | Tài khoản, Bảo mật (passphrase / recovery key / passkey / phiên), Tìm kiếm, Dữ liệu. |
+| `auth.html` | §3.1, §10.2 | Đăng nhập, đăng ký, quay lại từ OAuth, xác thực lại, lỗi/khoá/CAPTCHA. |
+| `onboarding.html` | §3.2, §5.2 | Ba bước tạo vault: passphrase → lưới 10 recovery key → passkey tuỳ chọn. |
+| `unlock.html` | §3.3, §3.14 | Mở vault: thiết bị mới, có passkey, thiết bị đã nhớ, và các lỗi mở khoá. |
+| `recovery.html` | §3.10 | Quên passphrase: thử đường khác → nhập một RK → passphrase mới → bù key trống. |
+| `states.html` | §7.7, §6.8 | Bộ trạng thái dùng chung: rỗng, đang tải, lỗi, ngoại tuyến, giảm chức năng. |
+| `docs.html` | §11.1, §5.1 | Trang tài liệu/quyền riêng tư theo token landing. |
 
-Ngoài phạm vi bản này, phải thiết kế thêm trước khi implement: onboarding đăng ký + hiển thị 10 recovery key (§3.2),
-màn unlock vault trên thiết bị mới (§3.3, §3.14), empty/error states (§7.7). Hiện mới có trạng thái khoá/mở ngay trong app.
+Ngoài phạm vi bản này, phải thiết kế thêm trước khi implement: share dialog / recipient status / shared-with-me (P08-A),
+extension popup/options/unlock (P08-B), màn quản lý API token (P08-C), và các màn P07 (import backup, rotate VK, sync).
 Thêm màn mới thì bổ sung vào thư mục này **và** cập nhật bảng ở §7.0 của spec.
+
+Trong các file đã có vẫn còn ô cần bổ sung, thuộc phase sở hữu màn đó: P02 thêm dialog tài khoản trong `settings.html`;
+P06 thêm luồng export encrypted/progress/confirm. P07/P08 phải thêm mockup riêng trước khi implement.
 
 ## File dùng chung
 

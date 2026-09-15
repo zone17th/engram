@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tài liệu và quyền riêng tư — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<!-- ================= nav ================= -->
+<div class="max-w-container mx-auto px-5 pt-5">
+  <nav class="flex items-center gap-4 rounded-pill px-5 py-3" style="background:var(--canvas);border:1px solid var(--border)">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+    </a>
+    <div class="hidden md:flex items-center gap-1 ml-4">
+      <a href="#batdau" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Bắt đầu</a>
+      <a href="#rieng-tu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Riêng tư</a>
+      <a href="#khoi-phuc" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Khôi phục</a>
+      <a href="#du-lieu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Dữ liệu</a>
+    </div>
+    <div class="ml-auto flex items-center gap-2">
+      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+      <a href="index.html" class="btn btn-primary no-underline">Mở engram</a>
+    </div>
+  </nav>
+</div>
+
+<!-- ================= hero ================= -->
+<header class="max-w-container mx-auto px-5 pt-14 pb-8 md:pt-20">
+  <div class="max-w-[820px]">
+    <p class="t-label mb-3" style="color:var(--muted)">Tài liệu · cập nhật 15/09/2026</p>
+    <h1 class="t-headline-lg mb-5">Cách engram giữ đồ của bạn</h1>
+    <p class="t-body-lg max-w-[62ch]" style="color:var(--muted)">
+      Một trang, viết bằng tiếng người: chúng tôi lưu gì, không đọc được gì, và bạn còn đường nào về khi quên passphrase.
+    </p>
+  </div>
+</header>
+
+<main class="max-w-container mx-auto px-5">
+  <div class="grid gap-10 lg:grid-cols-[220px_minmax(0,1fr)] items-start pb-20">
+
+    <!-- mục lục dính mép -->
+    <nav aria-label="Mục lục" class="lg:sticky lg:top-6">
+      <p class="t-label mb-3" style="color:var(--muted)">Trên trang này</p>
+      <div class="flex flex-col gap-1 text-[15px]">
+        <a href="#batdau"    class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Bắt đầu</a>
+        <a href="#rieng-tu"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Chỗ nào mã hoá</a>
+        <a href="#khoi-phuc" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Khôi phục</a>
+        <a href="#tim-kiem"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Tìm kiếm</a>
+        <a href="#du-lieu"   class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Dữ liệu và xoá</a>
+        <a href="#gioi-han"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Giới hạn</a>
+        <a href="#lien-he"   class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Liên hệ</a>
+      </div>
+    </nav>
+
+    <div class="min-w-0 flex flex-col gap-8">
+
+      <!-- ===== bắt đầu ===== -->
+      <section id="batdau" class="panel p-6 md:p-10">
+        <h2 class="t-title-md mb-4">Bắt đầu trong ba phút</h2>
+        <div class="flex flex-col gap-4">
+          <div class="flex gap-4">
+            <span class="mono text-[13px] pt-0.5" style="color:var(--muted)">01</span>
+            <div class="min-w-0">
+              <p class="text-[15px] font-semibold m-0 mb-1">Tạo tài khoản và đặt passphrase</p>
+              <p class="t-body m-0" style="color:var(--muted)">
+                Mật khẩu đăng nhập và passphrase của vault là hai thứ khác nhau. Passphrase mở nội dung, và chỉ máy bạn biết nó.
+              </p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <span class="mono text-[13px] pt-0.5" style="color:var(--muted)">02</span>
+            <div class="min-w-0">
+              <p class="text-[15px] font-semibold m-0 mb-1">Cất 10 recovery key</p>
+              <p class="t-body m-0" style="color:var(--muted)">
+                Chúng chỉ hiện một lần duy nhất, ngay lúc tạo vault. In ra giấy hoặc bỏ vào trình quản lý mật khẩu.
+              </p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <span class="mono text-[13px] pt-0.5" style="color:var(--muted)">03</span>
+            <div class="min-w-0">
+              <p class="text-[15px] font-semibold m-0 mb-1">Lưu bằng từ khoá bạn sẽ nghĩ tới</p>
+              <p class="t-body m-0" style="color:var(--muted)">
+                Đặt tên mục theo cách bạn sẽ gọi nó lúc cần, không theo thư mục. Tag để gom nhóm, gợi nhớ để nhắc bạn đây là cái gì.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== riêng tư ===== -->
+      <section id="rieng-tu" class="rounded-section p-8 md:p-12" style="background:var(--deep-panel);color:#fff">
+        <div class="grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
+          <div>
+            <h2 class="t-title-md mb-4" style="color:#fff">Nói thẳng chỗ nào mã hoá, chỗ nào không</h2>
+            <p class="t-body-lg mb-4" style="color:rgba(255,255,255,.72)">
+              Nội dung entry được khoá ngay trên trình duyệt, bằng khoá sinh ra từ passphrase của bạn.
+              Máy chủ chỉ nhận về một khối đã khoá và không có cách nào mở.
+            </p>
+            <p class="t-body-lg m-0" style="color:rgba(255,255,255,.72)">
+              Tên mục và tag thì không mã hoá — chính chúng làm việc tìm kiếm chạy được.
+              Đây là đánh đổi có chủ ý, không phải thiếu sót.
+            </p>
+          </div>
+          <div class="flex flex-col gap-3">
+            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
+              <p class="t-label mb-1" style="color:var(--ai-cyan)">Được mã hoá</p>
+              <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Nội dung mọi entry text và json.</p>
+            </div>
+            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
+              <p class="t-label mb-1" style="color:var(--warning)">Không mã hoá</p>
+              <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Tên mục, tên tag, gợi nhớ, loại entry, thời điểm sửa, độ dài xấp xỉ.</p>
+            </div>
+            <p class="mono text-[12px] m-0 pt-1" style="color:rgba(255,255,255,.45)">
+              XChaCha20-Poly1305 · Argon2id · khoá không rời trình duyệt
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== khôi phục ===== -->
+      <section id="khoi-phuc" class="panel-agent p-8 md:p-12">
+        <h2 class="t-title-md mb-3">Quên passphrase không phải là mất hết</h2>
+        <p class="t-body-lg mb-6" style="color:var(--body)">
+          Vì chúng tôi không giữ khoá của bạn, bạn cần đường về của riêng mình. Thử theo thứ tự này.
+        </p>
+        <div class="flex flex-col gap-2.5 mb-6">
+          <div class="rounded-xl p-4" style="background:var(--canvas)">
+            <p class="text-[15px] font-semibold m-0 mb-1">Passkey</p>
+            <p class="t-body m-0" style="color:var(--muted)">Vân tay hoặc khoá bảo mật. Nhanh nhất, không phải gõ gì.</p>
+          </div>
+          <div class="rounded-xl p-4" style="background:var(--canvas)">
+            <p class="text-[15px] font-semibold m-0 mb-1">Thiết bị đã nhớ</p>
+            <p class="t-body m-0" style="color:var(--muted)">Máy quen mở thẳng. Đừng bật trên máy dùng chung.</p>
+          </div>
+          <div class="rounded-xl p-4" style="background:var(--canvas)">
+            <p class="text-[15px] font-semibold m-0 mb-1">10 recovery key</p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Mỗi key mở được vault một mình. Dùng xong, key đó ngừng hoạt động trên máy chủ và bạn được nhắc tạo key bù.
+              Bản in cũ vẫn mở được các backup cũ, nên đừng vứt bừa.
+            </p>
+          </div>
+        </div>
+        <div class="rounded-md p-4" style="background:var(--pale-orange)">
+          <p class="t-body m-0" style="color:var(--body)">
+            <strong>Hết mọi đường?</strong> Chỉ còn cách đặt lại vault: nội dung entry mất vĩnh viễn, tên mục và tag giữ lại.
+            Chúng tôi không mở giúp được — đó chính là lý do chúng tôi cũng không đọc được.
+          </p>
+        </div>
+      </section>
+
+      <!-- ===== tìm kiếm ===== -->
+      <section id="tim-kiem" class="panel p-6 md:p-10">
+        <h2 class="t-title-md mb-4">Tìm kiếm hoạt động thế nào</h2>
+        <p class="t-body-lg mb-5" style="color:var(--muted)">
+          Gõ vào ô tìm kiếm, kết quả xếp theo ba lớp, lớp trên luôn đứng trước lớp dưới.
+        </p>
+        <div class="flex flex-col gap-3 mb-6">
+          <div class="card p-4">
+            <p class="text-[15px] font-semibold m-0 mb-1">1 · Khớp từ đầu</p>
+            <p class="t-body m-0" style="color:var(--muted)">Gõ “wif” ra “wifi nhà”. Nhanh và chắc chắn nhất.</p>
+          </div>
+          <div class="card p-4">
+            <p class="text-[15px] font-semibold m-0 mb-1">2 · Gõ sai vẫn ra</p>
+            <p class="t-body m-0" style="color:var(--muted)">“hoa don” ra “hoá đơn”. Bỏ dấu, gõ thiếu chữ đều được.</p>
+          </div>
+          <div class="card p-4">
+            <p class="text-[15px] font-semibold m-0 mb-1">3 · Gần nghĩa <span class="badge-type ml-1" style="background:var(--pale-accent)">tuỳ chọn</span></p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              “mạng nhà” ra “wifi nhà” dù không trùng chữ nào. Bật thì tên mục và tag được gửi tới máy chủ nhúng
+              do chúng tôi tự vận hành; nội dung entry thì không, kể cả khi bật.
+            </p>
+          </div>
+        </div>
+        <p class="t-caption m-0" style="color:var(--muted)">
+          Tìm kiếm không soi nội dung entry — nội dung nằm sau lớp mã hoá. Hãy đặt tên mục cho đáng nhớ.
+        </p>
+      </section>
+
+      <!-- ===== dữ liệu ===== -->
+      <section id="du-lieu" class="panel p-6 md:p-10">
+        <h2 class="t-title-md mb-4">Dữ liệu chúng tôi giữ, và cách lấy lại</h2>
+
+        <div class="card p-0 overflow-hidden mb-6">
+          <table class="w-full text-[14px]" style="border-collapse:collapse">
+            <thead>
+              <tr style="background:var(--surface)">
+                <th class="t-label text-left p-3" style="color:var(--muted)">Thứ</th>
+                <th class="t-label text-left p-3" style="color:var(--muted)">Ở dạng</th>
+                <th class="t-label text-left p-3" style="color:var(--muted)">Giữ đến khi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3">Nội dung entry</td>
+                <td class="p-3" style="color:var(--muted)">Đã mã hoá, chúng tôi không đọc được</td>
+                <td class="p-3" style="color:var(--muted)">Bạn xoá</td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3">Tên mục, tag, gợi nhớ</td>
+                <td class="p-3" style="color:var(--muted)">Văn bản thường</td>
+                <td class="p-3" style="color:var(--muted)">Bạn xoá</td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3">Email, mật khẩu</td>
+                <td class="p-3" style="color:var(--muted)">Mật khẩu chỉ lưu dạng băm</td>
+                <td class="p-3" style="color:var(--muted)">Bạn xoá tài khoản</td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3">Nhật ký kỹ thuật</td>
+                <td class="p-3" style="color:var(--muted)">Không chứa nội dung, passphrase hay recovery key</td>
+                <td class="p-3" style="color:var(--muted)">Hết hạn lưu trữ</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid gap-3 md:grid-cols-2">
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1">Xuất dữ liệu</p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Một file bạn tải về được: bản mã hoá để làm backup, hoặc bản đã giải mã để đọc ngay.
+              Bản giải mã không còn lớp bảo vệ nào — cất cho kỹ.
+            </p>
+          </div>
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1">Xoá tài khoản</p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Xoá là xoá thật, không có thùng rác. Nên xuất backup trước khi bấm.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== giới hạn ===== -->
+      <section id="gioi-han" class="panel p-6 md:p-10">
+        <h2 class="t-title-md mb-4">Giới hạn cần biết trước</h2>
+        <ul class="flex flex-col gap-3 m-0 p-0" style="list-style:none">
+          <li class="t-body" style="color:var(--body)">
+            <strong>Một entry tối đa 256 KiB.</strong> Đây là chỗ cho ghi chú và cấu hình, không phải nơi chứa file.
+          </li>
+          <li class="t-body" style="color:var(--body)">
+            <strong>Chưa chia sẻ được.</strong> Vault là của riêng bạn; chia sẻ và tiện ích trình duyệt nằm ở kế hoạch sau.
+          </li>
+          <li class="t-body" style="color:var(--body)">
+            <strong>Cần trình duyệt đời mới.</strong> Mã hoá chạy ngay trên máy bạn nên trình duyệt quá cũ sẽ không mở được.
+          </li>
+          <li class="t-body" style="color:var(--body)">
+            <strong>Chưa dùng được khi mất mạng.</strong> Bản này cần kết nối để tìm và lưu.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ===== liên hệ ===== -->
+      <section id="lien-he" class="panel p-6 md:p-10">
+        <h2 class="t-title-md mb-3">Còn thắc mắc</h2>
+        <p class="t-body-lg mb-5" style="color:var(--muted)">
+          Hỏi thẳng, kể cả câu khó về mã hoá. Nếu gặp lỗi, gửi kèm mã sự cố hiện trên màn hình —
+          <strong>đừng gửi passphrase hay recovery key</strong>, chúng tôi không bao giờ hỏi xin.
+        </p>
+        <a href="mailto:hello@zone17th.click" class="btn btn-secondary no-underline">hello@zone17th.click</a>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<!-- ================= footer ================= -->
+<footer class="max-w-container mx-auto px-5 pb-8">
+  <div class="rounded-section p-8 md:p-10" style="background:var(--dark-footer);color:#fff">
+    <div class="flex flex-wrap gap-8 justify-between items-start">
+      <div class="max-w-[280px]">
+        <div class="flex items-center gap-2.5 mb-3">
+          <svg width="26" height="26" viewBox="0 0 28 28" aria-hidden="true">
+            <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+            <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+            <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+                  stroke-width="2.6" stroke-linecap="round"
+                  stroke-dasharray="0.1 5.2 0.1 4 20"/>
+          </svg>
+          <span class="font-display font-extrabold text-[18px] tracking-[-.04em]" style="color:#fff">engram</span>
+        </div>
+        <p class="t-caption m-0" style="color:rgba(255,255,255,.55)">key.zone17th.click</p>
+      </div>
+
+      <div class="flex gap-12 flex-wrap">
+        <div>
+          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Tài liệu</p>
+          <div class="flex flex-col gap-2 text-[15px]">
+            <a href="#rieng-tu" class="no-underline" style="color:rgba(255,255,255,.85)">Riêng tư</a>
+            <a href="#khoi-phuc" class="no-underline" style="color:rgba(255,255,255,.85)">Khôi phục</a>
+            <a href="#du-lieu" class="no-underline" style="color:rgba(255,255,255,.85)">Dữ liệu</a>
+          </div>
+        </div>
+        <div>
+          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Xem thử</p>
+          <div class="flex flex-col gap-2 text-[15px]">
+            <a href="index.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn tìm kiếm</a>
+            <a href="item.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn chi tiết</a>
+            <a href="settings.html" class="no-underline" style="color:rgba(255,255,255,.85)">Cài đặt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <hr style="border:0;height:1px;background:rgba(255,255,255,.12);margin:32px 0 20px">
+    <p class="t-legal m-0" style="color:rgba(255,255,255,.45)">Mockup tĩnh — dữ liệu là giả, không có mã hoá thật ở bản này.</p>
+  </div>
+</footer>
+
+<script src="mock.js"></script>
+<script>SAK.initChrome();</script>
+</body>
+</html>
