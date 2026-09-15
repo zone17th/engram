@@ -1,0 +1,26 @@
+{
+  "brand": { "name": "engram", "tagline": "Gõ một từ bạn còn nhớ." },
+  "nav": { "how": "Cách dùng", "privacy": "Riêng tư", "recovery": "Khôi phục", "openApp": "Mở engram" },
+  "landing": {
+    "heroTitle": "Gõ một từ bạn còn nhớ.",
+    "heroTitleSecond": "Thấy lại thứ bạn đã quên.",
+    "heroSub": "engram lưu mọi thứ theo từ khoá bạn tự đặt. Gõ một từ, thấy lại cả mẩu ghi chú.",
+    "demoCaption": "Dữ liệu mẫu, gõ thoải mái — không có gì được gửi đi đâu cả.",
+    "cta": "Bắt đầu bằng một từ khoá"
+  },
+  "app": {
+    "searchPlaceholder": "Gõ từ khoá…",
+    "recent": "Mục gần đây",
+    "semantic": "Gần nghĩa",
+    "vaultOpen": "Vault mở",
+    "vaultLocked": "Vault đang khoá"
+  },
+  "states": {
+    "emptyTitle": "Chưa có gì ở đây",
+    "emptyBody": "Lưu mục đầu tiên bằng cách gõ từ khoá rồi nhấn Enter.",
+    "errorTitle": "Không tải được",
+    "errorBody": "Thử lại sau giây lát.",
+    "retry": "Thử lại"
+  },
+  "footer": { "legal": "engram — lưu theo từ khoá." }
+}

@@ -1,0 +1,26 @@
+{
+  "brand": { "name": "engram", "tagline": "Type one word you still remember." },
+  "nav": { "how": "How it works", "privacy": "Privacy", "recovery": "Recovery", "openApp": "Open engram" },
+  "landing": {
+    "heroTitle": "Type one word you still remember.",
+    "heroTitleSecond": "See the thing you forgot.",
+    "heroSub": "engram stores everything under keywords you choose. Type one word, get the whole note back.",
+    "demoCaption": "Sample data — type freely, nothing is sent anywhere.",
+    "cta": "Start with one keyword"
+  },
+  "app": {
+    "searchPlaceholder": "Type a keyword…",
+    "recent": "Recent items",
+    "semantic": "Similar meaning",
+    "vaultOpen": "Vault open",
+    "vaultLocked": "Vault locked"
+  },
+  "states": {
+    "emptyTitle": "Nothing here yet",
+    "emptyBody": "Save your first item by typing a keyword and pressing Enter.",
+    "errorTitle": "Could not load",
+    "errorBody": "Try again in a moment.",
+    "retry": "Try again"
+  },
+  "footer": { "legal": "engram — saved by keyword." }
+}
