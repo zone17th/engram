@@ -2,16 +2,10 @@
 package httpx
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 )
-
-// RequestIDFrom là stub tạm để Task 2 build được một mình.
-// Task 3 XOÁ hàm này và thay bằng bản đọc từ context trong middleware.go.
-// Giữ nguyên chữ ký để Task 3 không phải sửa WriteProblem.
-func RequestIDFrom(ctx context.Context) string { return "" }
 
 // ProblemBase là namespace của các type URI theo RFC 9457.
 const ProblemBase = "https://key.zone17th.click/problems/"
