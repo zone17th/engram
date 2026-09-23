@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
@@ -51,6 +52,7 @@ type harness struct {
 	clk    *clock.Fixed
 	mail   *auth.SinkMailer
 	svc    *auth.Service
+	pool   *pgxpool.Pool
 }
 
 func newHarness(t *testing.T, providers []oauth.Provider) *harness {
@@ -95,7 +97,7 @@ func newHarness(t *testing.T, providers []oauth.Provider) *harness {
 	srv.Listener = ln
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, jar: jar{}, origin: origin, clk: clk, mail: mail, svc: svc}
+	return &harness{t: t, srv: srv, jar: jar{}, origin: origin, clk: clk, mail: mail, svc: svc, pool: pool}
 }
 
 func (h *harness) do(method, path, body string, withCSRF bool) *http.Response {
