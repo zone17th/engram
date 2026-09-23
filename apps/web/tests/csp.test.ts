@@ -1,13 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import nextConfig from '../next.config';
 
+async function headerRules() {
+  return await (nextConfig.headers?.() ?? Promise.resolve([]));
+}
+
+function matchesSource(source: string, path: string): boolean {
+  if (source === '/:path*') return true;
+  if (source === '/app/auth/:path*') return path.startsWith('/app/auth/');
+  return source === path;
+}
+
+async function effectiveHeadersFor(path: string): Promise<Map<string, string>> {
+  const effective = new Map<string, string>();
+  for (const rule of await headerRules()) {
+    if (!matchesSource(rule.source, path)) continue;
+    for (const header of rule.headers) effective.set(header.key, header.value);
+  }
+  return effective;
+}
+
 async function cspFor(path: string): Promise<string> {
-  const headers = await (nextConfig.headers?.() ?? Promise.resolve([]));
-  const entry = headers.find((h) => h.source === '/:path*');
-  expect(entry, 'next.config phải khai báo headers cho /:path*').toBeDefined();
-  const csp = entry!.headers.find((h) => h.key === 'Content-Security-Policy');
-  expect(csp, `thiếu CSP cho ${path}`).toBeDefined();
-  return csp!.value;
+  const csp = (await effectiveHeadersFor(path)).get('Content-Security-Policy');
+  expect(csp, `thiếu CSP hiệu lực cho ${path}`).toBeDefined();
+  return csp!;
 }
 
 describe('CSP (SPEC §10.2 + exception P01)', () => {
@@ -58,10 +74,22 @@ describe('CSP (SPEC §10.2 + exception P01)', () => {
 });
 
 describe('header bảo mật khác', () => {
-  it('đặt Referrer-Policy và X-Content-Type-Options', async () => {
-    const headers = await (nextConfig.headers?.() ?? Promise.resolve([]));
-    const values = headers.flatMap((h) => h.headers).map((h) => h.key);
-    expect(values).toContain('Referrer-Policy');
-    expect(values).toContain('X-Content-Type-Options');
+  it('auth dùng policy cụ thể sau khi áp dụng catch-all', async () => {
+    const headers = await headerRules();
+    const catchAllIndex = headers.findIndex((h) => h.source === '/:path*');
+    const authIndex = headers.findIndex((h) => h.source === '/app/auth/:path*');
+    expect(catchAllIndex).toBeGreaterThanOrEqual(0);
+    expect(authIndex).toBeGreaterThan(catchAllIndex);
+
+    const csp = await cspFor('/app/auth/login');
+    expect(csp).toContain('https://challenges.cloudflare.com');
+    expect((await effectiveHeadersFor('/app/auth/login')).get('Referrer-Policy')).toBe('no-referrer');
+    expect((await effectiveHeadersFor('/app/auth/login')).get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('đặt baseline Referrer-Policy cho các route khác', async () => {
+    const headers = await effectiveHeadersFor('/');
+    expect(headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+    expect(headers.get('X-Content-Type-Options')).toBe('nosniff');
   });
 });

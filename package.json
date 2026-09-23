@@ -16,6 +16,8 @@
     "build": "pnpm -r build",
     "stack:up": "node scripts/dev.mjs compose-up",
     "stack:down": "node scripts/dev.mjs compose-down",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "e2e:auth": "node scripts/e2e.mjs --verify=both"
   }
 }

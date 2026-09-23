@@ -5,7 +5,7 @@
 
 ## Mục tiêu và đầu ra
 
-Một checkout mới chạy được web/API/DB bằng quy trình được ghi trong README; CI build/test phần hiện có. Người xem nhận ra engram qua landing và shell đúng mockup, trên desktop/mobile và cả hai theme. Không có lời khẳng định auth hoặc crypto đã hoạt động ở phase này.
+Một checkout mới chạy được web/API/DB bằng quy trình được ghi trong README; build/test phần hiện có chạy local. Theo quyết định phạm vi 2026-09-16 tại [quy tắc phase](README.md), CI không là điều kiện nghiệm thu P01. Người xem nhận ra engram qua landing và shell đúng mockup, trên desktop/mobile và cả hai theme. Không có lời khẳng định auth hoặc crypto đã hoạt động ở phase này.
 
 ## Phạm vi
 
@@ -43,7 +43,7 @@ Dev đi qua một origin web: proxy `/api` đến Go để cookie path `/api`, c
 2. Thêm migrations/extensions, pool/sqlc và worker lifecycle; verify startup DB thiếu/chưa ready.
 3. Port token và component primitives từ mockup, giữ light/dark/font roles; self-host/font build tương thích CSP.
 4. Dựng landing demo và shell bằng fixture, tách demo adapter khỏi API adapter.
-5. Wire i18n/theme/responsive, CI và hướng dẫn fresh clone. Trạng thái lỗi/rỗng lấy theo [`mockups/states.html`](../../mockups/states.html); ca chưa có trong đó thì bổ sung vào file này trước khi làm UI tương ứng.
+5. Wire i18n/theme/responsive, kiểm tra local và hướng dẫn fresh clone. Trạng thái lỗi/rỗng lấy theo [`mockups/states.html`](../../mockups/states.html); ca chưa có trong đó thì bổ sung vào file này trước khi làm UI tương ứng.
 
 ## Acceptance
 
@@ -55,7 +55,7 @@ Dev đi qua một origin web: proxy `/api` đến Go để cookie path `/api`, c
 | P01-A4 | Visual | Landing/shell khớp mockup ở 390/768/1440px, light/dark; không tràn viewport |
 | P01-A5 | Demo boundary | Demo chỉ dùng dữ liệu mẫu; không lưu text nhập lên server hoặc claim đã encrypt |
 | P01-A6 | Keyboard/i18n | Demo dùng keyboard được, reduced motion đúng; en/vi key parity, logo luôn `engram` |
-| P01-A7 | CI | Lint/typecheck/build web, Go checks và migration smoke phù hợp phần đã viết đều pass |
+| P01-A7 | Kiểm tra local | Lint/typecheck/build web, Go checks và migration smoke phù hợp phần đã viết đều pass; không yêu cầu CI |
 
 ## Bàn giao và khôi phục
 

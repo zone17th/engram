@@ -1,5 +1,7 @@
 # P01 — Nền tảng và UI shell · Kế hoạch triển khai
 
+> Cập nhật phạm vi 2026-09-16: Người dùng yêu cầu không làm CI. Task 17 và yêu cầu run GitHub trong plan này nằm ngoài nghiệm thu; dùng bằng chứng local cho P01-A7. Các kiểm tra local, fresh checkout/Compose và visual baseline vẫn giữ nguyên. Xem [quyết định chung P01/P02](../phases/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Dựng monorepo engram chạy được từ checkout mới — Go API (chi/pgx/sqlc/River) với health/ready/metrics, Postgres 16 + extensions, và Next.js 15 shell/landing port đúng design token của `mockups/` — mà không khẳng định auth hay crypto đã hoạt động.
@@ -5942,6 +5944,8 @@ git commit -m "feat(infra): compose stack, pinned images, csp headers and smoke 
 
 ### Task 17: CI — `api.yml`, `web.yml`, `e2e.yml`
 
+**Ngoài phạm vi theo quyết định 2026-09-16.** Nội dung CI bên dưới được giữ làm tư liệu của plan gốc, không phải task cần triển khai/chạy để đóng P01. Các gate chất lượng tương ứng vẫn kiểm tra local.
+
 **Files:**
 - Create: `.github/workflows/api.yml`, `.github/workflows/web.yml`, `.github/workflows/e2e.yml`, `apps/api/.golangci.yml`, `apps/web/playwright.config.ts`, `apps/web/e2e/smoke.spec.ts`, `apps/web/e2e/__screenshots__/*.png` (18 ảnh baseline, commit)
 - Modify: `.gitignore`
@@ -6427,7 +6431,7 @@ Expected: `OK — smoke pass`. Bất kỳ bước nào phải làm thêm mà REA
 | P01-A4 | Visual | 18 ảnh baseline trong `apps/web/e2e/__screenshots__/` (3 viewport × 2 theme × 3 trang) đã đối chiếu tay với mockup ở Task 17 Step 7; `toHaveScreenshot` pass với `maxDiffPixelRatio` 0.005 + assert overflow ≤ 0 | |
 | P01-A5 | Demo boundary | Test Playwright `demo ở landing không gửi request nào ra ngoài` + Vitest `ranh giới demo (P01-A5)` | |
 | P01-A6 | Keyboard/i18n | Vitest `hero-demo` (ArrowDown/Enter/Escape, reduced motion) + `i18n.parity` + Playwright `logo luôn là chữ engram viết thường` | |
-| P01-A7 | CI | Link ba run xanh: `api`, `web`, `e2e` | |
+| P01-A7 | Kiểm tra local | Kết quả lint/typecheck/build, Go checks và migration smoke local; CI được miễn | |
 
 ## Nợ kỹ thuật chuyển sang phase sau
 

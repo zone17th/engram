@@ -41,9 +41,16 @@ services:
     environment:
       DATABASE_URL: postgres://engram:engram@db:5432/engram?sslmode=disable
       HTTP_ADDR: 0.0.0.0:8080
-      APP_ORIGIN: http://localhost:3000
+      APP_ENV: development
+      APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:3000}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-noop}
       TEI_URL: ${TEI_URL:-}
+      AUTH_REQUIRE_EMAIL_VERIFICATION: ${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
+      AUTH_FAKE_OAUTH: ${AUTH_FAKE_OAUTH:-true}
+      AUTH_MAIL_SINK_DIR: /tmp/engram-mail
+      AUTH_TRUSTED_PROXY_CIDRS: 172.16.0.0/12,10.0.0.0/8,127.0.0.1/32
+    volumes:
+      - ../.data/mail-sink:/tmp/engram-mail
     ports: ['8080:8080']
     depends_on:
       db: { condition: service_healthy }
@@ -64,8 +71,13 @@ services:
     command: ['/app/worker']
     environment:
       DATABASE_URL: postgres://engram:engram@db:5432/engram?sslmode=disable
+      APP_ENV: development
+      APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:3000}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-noop}
       TEI_URL: ${TEI_URL:-}
+      AUTH_MAIL_SINK_DIR: /tmp/engram-mail
+    volumes:
+      - ../.data/mail-sink:/tmp/engram-mail
     depends_on:
       migrate: { condition: service_completed_successfully }
 

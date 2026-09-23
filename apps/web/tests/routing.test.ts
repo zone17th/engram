@@ -59,8 +59,9 @@ describe('cấu trúc route (P01-A3)', () => {
 
   it('lang của /app khớp locale truyền cho NextIntlClientProvider', () => {
     const layout = readFileSync(resolve(WEB, 'app/app/layout.tsx'), 'utf8');
-    expect(layout).toContain('<html lang={APP_LOCALE}');
-    expect(layout).toContain('locale={APP_LOCALE}');
-    expect(layout).not.toContain('locale="vi"');
+    expect(layout).toContain('<html lang={locale}');
+    expect(layout).toContain('locale={locale}');
+    expect(layout).toContain('resolveAppLocale');
+    expect(layout).not.toContain('APP_LOCALE');
   });
 });

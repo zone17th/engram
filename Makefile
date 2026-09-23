@@ -1,6 +1,6 @@
 # Windows không có make sẵn; các target dưới đây được mirror sang scripts của package.json.
 
-.PHONY: api-test api-lint web-test migrate dev stack-up stack-down smoke
+.PHONY: api-test api-lint web-test migrate dev stack-up stack-down smoke e2e
 
 api-test:
 	cd apps/api && go test ./...
@@ -27,3 +27,6 @@ stack-down:
 
 smoke:
 	node scripts/smoke.mjs
+
+e2e:
+	node scripts/e2e.mjs

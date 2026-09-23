@@ -55,10 +55,499 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Cấu hình auth công khai
+         * @description Provider đang bật, cờ verification, site key CAPTCHA. Không lộ secret.
+         */
+        get: operations["authConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/csrf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Bootstrap cookie CSRF
+         * @description 204 + đặt/giữ cookie. Session còn hiệu lực ký theo session ID; chưa có session
+         *     dùng nonce anonymous. Không rotate nonce còn hạn. Không phải đăng nhập.
+         */
+        get: operations["authCsrf"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/signup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Đăng ký email/password */
+        post: operations["authSignup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Đăng nhập email/password */
+        post: operations["authLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Xoay refresh token
+         * @description Không cần access còn hạn. Cookie sabk_refresh + CSRF gắn session tìm được.
+         */
+        post: operations["authRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Đăng xuất
+         * @description Session hoặc refresh + CSRF. Session đã revoke vẫn có thể clear cookie và 204.
+         */
+        post: operations["authLogout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tài khoản hiện tại */
+        get: operations["authMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oauth/{provider}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Bắt đầu OAuth login
+         * @description Chỉ mode login. 302 tới provider. Không dùng query mode=link.
+         */
+        get: operations["authOauthStart"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oauth/{provider}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bắt đầu liên kết provider */
+        post: operations["authOauthLinkStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oauth/{provider}/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bắt đầu OAuth re-auth
+         * @description Chỉ provider hỗ trợ freshness (Google khi capability bật).
+         */
+        post: operations["authOauthReauthStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oauth/{provider}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Callback OAuth từ provider
+         * @description State + cookie binding + transaction một lần. 303 về web với status allowlist.
+         *     Không đặt cookie session. Không đưa token/grant/email lên query.
+         */
+        get: operations["authOauthCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oauth/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hoàn tất login OAuth trong Web Lock
+         * @description Binding cookie + CSRF + transaction ready. Consume một lần; mới đặt session cookie.
+         */
+        post: operations["authOauthComplete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cấp grant re-auth
+         * @description oneOf password hoặc provider+receipt. Không gửi cả hai. Grant chỉ trên body, không cookie/URL.
+         */
+        post: operations["authReauth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/verify-email/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Gửi email xác minh địa chỉ hiện tại */
+        post: operations["authVerifyEmailSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/verify-email/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Xác nhận token verification */
+        post: operations["authVerifyEmailConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/enroll/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gửi token đặt password lần đầu (OAuth-only)
+         * @description Chỉ khi chưa có password và email hiện tại đã verified. Không phải reset.
+         */
+        post: operations["authPasswordEnrollSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Danh sách phiên còn hiệu lực */
+        get: operations["authSessionsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Thu hồi một phiên */
+        delete: operations["authSessionRevoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sessions/revoke-others": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Thu hồi các phiên khác */
+        post: operations["authSessionsRevokeOthers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/identities/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Gỡ identity
+         * @description provider gồm password|google|github. Không gỡ phương thức cuối.
+         */
+        delete: operations["authIdentityUnlink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Nhật ký bảo mật của user hiện tại */
+        get: operations["authAuditList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Thông báo trong app */
+        get: operations["meNotificationsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Đánh dấu đã đọc */
+        patch: operations["meNotificationRead"];
+        trace?: never;
+    };
+    "/me/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Cập nhật settings từng phần
+         * @description Field vắng giữ nguyên. null/unknown = 400. Bật semantic khi probe down = 409, không lưu patch.
+         */
+        patch: operations["meSettingsPatch"];
+        trace?: never;
+    };
+    "/me/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Yêu cầu đổi email
+         * @description Chưa đổi email trên tài khoản. Gửi proof tới địa chỉ mới.
+         */
+        post: operations["meEmailChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Đổi hoặc đặt password đăng nhập
+         * @description Password đã có: proof là X-Reauth-Token (account.password_change), không nhập password cũ lần hai.
+         *     OAuth-only: grant freshness hoặc enrollment_token. Không gửi cả grant và enrollment_token.
+         */
+        post: operations["mePasswordChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable";
         Problem: {
             /**
              * Format: uri
@@ -70,14 +559,206 @@ export interface components {
             detail?: string;
             /** @description Request ID, không phải URL. */
             instance?: string;
+            code: components["schemas"]["ProblemCode"];
+            /** @description Giây; khớp header Retry-After. */
+            retry_after?: number;
+            /**
+             * @description Chỉ khi code=session_invalid. Token lạ dùng invalid.
+             * @enum {string}
+             */
+            reason?: "revoked" | "expired" | "invalid";
+            captcha_required?: boolean;
+        };
+        /** @enum {string} */
+        OauthProvider: "google" | "github";
+        /** @enum {string} */
+        IdentityProvider: "password" | "google" | "github";
+        /** @enum {string} */
+        Locale: "en" | "vi";
+        /** @enum {string} */
+        Theme: "system" | "light" | "dark";
+        /** @enum {integer} */
+        AutoLockMinutes: 0 | 5 | 15 | 60;
+        /** @enum {string} */
+        ReauthAction: "account.email_change" | "account.password_change" | "account.identity_link" | "account.identity_unlink" | "session.revoke_others" | "vault.rewrap" | "vault.recover" | "vault.recovery_keys_regenerate" | "vault.recovery_keys_rotate" | "vault.passkey_register" | "vault.passkey_revoke" | "vault.reset" | "export.decrypted" | "account.delete";
+        /** @enum {string} */
+        OauthCallbackStatus: "login_ready" | "linked" | "reauth_ready" | "cancelled" | "identity_conflict" | "invalid_flow" | "provider_error" | "reauth_unavailable";
+        AuthConfig: {
+            oauth_providers: components["schemas"]["OauthProvider"][];
+            email_verification_required: boolean;
+            captcha_site_key: string | null;
+        };
+        Me: {
+            user: {
+                /** Format: uuid */
+                id: string;
+                /** Format: email */
+                email: string;
+                email_verified: boolean;
+                /** Format: date-time */
+                created_at: string;
+            };
+            settings: {
+                locale: components["schemas"]["Locale"];
+                theme: components["schemas"]["Theme"];
+                auto_lock_minutes: components["schemas"]["AutoLockMinutes"];
+                semantic_suggest: boolean;
+            };
+            identities: {
+                provider: components["schemas"]["IdentityProvider"];
+                /** Format: date-time */
+                linked_at: string;
+            }[];
+            features: {
+                semantic_available: boolean;
+                email_verification_required: boolean;
+                oauth_providers: components["schemas"]["OauthProvider"][];
+                oauth_reauth_providers: "google"[];
+                password_enrollment_available: boolean;
+                captcha_site_key: string | null;
+            };
+            vault: {
+                /**
+                 * @description P02 luôn absent. locked/unlocked là trạng thái crypto client P03.
+                 * @enum {string}
+                 */
+                status: "absent" | "present";
+            };
+        };
+        SignupRequest: {
+            /** Format: email */
+            email: string;
+            /** @description Không trim/normalize. Tối thiểu 12 Unicode; tối đa 1024 byte UTF-8. */
+            password: string;
+            locale?: components["schemas"]["Locale"];
+        };
+        LoginRequest: {
+            /** Format: email */
+            email: string;
+            password: string;
+            captcha_token?: string;
+        };
+        TokenConfirmRequest: {
+            token: string;
+        };
+        OauthReauthStartRequest: {
+            action: components["schemas"]["ReauthAction"];
+        };
+        AuthorizationURL: {
+            /** Format: uri */
+            authorization_url: string;
+        };
+        ReauthRequest: {
+            action: components["schemas"]["ReauthAction"];
+            password: string;
+        } | {
+            action: components["schemas"]["ReauthAction"];
             /** @enum {string} */
-            code: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found";
+            provider: "google";
+        };
+        ReauthGrant: {
+            grant: string;
+            action: components["schemas"]["ReauthAction"];
+            /** Format: date-time */
+            expires_at: string;
+        };
+        SettingsPatch: {
+            locale?: components["schemas"]["Locale"];
+            theme?: components["schemas"]["Theme"];
+            auto_lock_minutes?: components["schemas"]["AutoLockMinutes"];
+            semantic_suggest?: boolean;
+        };
+        PasswordChangeRequest: {
+            new_password: string;
+        } | {
+            new_password: string;
+            enrollment_token: string;
+        };
+        SessionList: {
+            items: components["schemas"]["SessionItem"][];
+            next_cursor: string | null;
+        };
+        SessionItem: {
+            /** Format: uuid */
+            id: string;
+            current: boolean;
+            device_label: string | null;
+            user_agent: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        AuditList: {
+            items: components["schemas"]["AuditItem"][];
+            next_cursor: string | null;
+        };
+        AuditItem: {
+            /** @description bigserial decimal string */
+            id: string;
+            event: string;
+            /** @enum {string} */
+            result: "success" | "failure";
+            actor?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            meta?: {
+                [key: string]: unknown;
+            };
+        };
+        NotificationList: {
+            items: components["schemas"]["NotificationItem"][];
+            next_cursor: string | null;
+        };
+        NotificationItem: {
+            /** @description bigserial decimal string */
+            id: string;
+            kind: string;
+            meta?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            read_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
         };
     };
-    responses: never;
-    parameters: never;
+    responses: {
+        /** @description Lỗi RFC 9457 */
+        Problem: {
+            headers: {
+                "Cache-Control": components["headers"]["NoStore"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Quá quota; Retry-After khớp retry_after trong body */
+        RateLimited: {
+            headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
+                "Cache-Control": components["headers"]["NoStore"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+    };
+    parameters: {
+        OauthProvider: components["schemas"]["OauthProvider"];
+        Limit: number;
+        Cursor: string;
+    };
     requestBodies: never;
-    headers: never;
+    headers: {
+        NoStore: "no-store";
+        /** @description Giây nguyên dương tới cuối cửa sổ rate limit. */
+        RetryAfter: number;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -126,20 +807,12 @@ export interface operations {
                         checks: {
                             [key: string]: string;
                         };
-                        /** @description false khi EMBEDDING_PROVIDER=noop hoặc thiếu TEI_URL. */
+                        /** @description false khi EMBEDDING_PROVIDER=noop, thiếu TEI_URL, hoặc probe runtime fail. */
                         semantic_available: boolean;
                     };
                 };
             };
-            /** @description Phụ thuộc bắt buộc chưa sẵn sàng */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
+            503: components["responses"]["Problem"];
         };
     };
     getMetrics: {
@@ -160,6 +833,673 @@ export interface operations {
                     "text/plain": string;
                 };
             };
+        };
+    };
+    authConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cấu hình public */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthConfig"];
+                };
+            };
+        };
+    };
+    authCsrf: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cookie CSRF đã sẵn */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    /** @description sabk_csrf (và sabk_anon nếu chưa có session) */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Problem"];
+        };
+    };
+    authSignup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignupRequest"];
+            };
+        };
+        responses: {
+            /** @description Tài khoản + session mới; vault absent */
+            201: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Session mới chống fixation */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cookie access/refresh mới; CSRF session giữ nguyên */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cookie auth đã xoá; preference giữ */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Problem"];
+        };
+    };
+    authMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Me */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    authOauthStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: components["parameters"]["OauthProvider"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect tới authorization endpoint */
+            302: {
+                headers: {
+                    Location?: string;
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authOauthLinkStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: components["parameters"]["OauthProvider"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description URL để browser điều hướng */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizationURL"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authOauthReauthStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: components["parameters"]["OauthProvider"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OauthReauthStartRequest"];
+            };
+        };
+        responses: {
+            /** @description URL để browser điều hướng */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizationURL"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authOauthCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: components["parameters"]["OauthProvider"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect web /app/auth/callback/{provider}?status=... */
+            303: {
+                headers: {
+                    Location?: string;
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authOauthComplete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Me + cookie session */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authReauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReauthRequest"];
+            };
+        };
+        responses: {
+            /** @description Grant HMAC */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReauthGrant"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authVerifyEmailSend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã chấp nhận gửi (token hash đã persist) */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    authVerifyEmailConfirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Me sau khi verify/đổi email */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    authPasswordEnrollSend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã chấp nhận gửi */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    authSessionsList: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trang phiên */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionList"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    authSessionRevoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã thu hồi; nếu là current thì clear cookie */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    authSessionsRevokeOthers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Số phiên đã thu hồi */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        revoked: number;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    authIdentityUnlink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: components["schemas"]["IdentityProvider"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã gỡ */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    authAuditList: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trang audit */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditList"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    meNotificationsList: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trang thông báo */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationList"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    meNotificationRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @constant */
+                    read: true;
+                };
+            };
+        };
+        responses: {
+            /** @description Đã đánh dấu */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    meSettingsPatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description Me sau khi lưu */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    meEmailChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    new_email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Đã gửi proof */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    mePasswordChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Me + session/CSRF mới */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
         };
     };
 }

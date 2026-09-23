@@ -42,6 +42,9 @@ jobs:
     name: Browser smoke and accessibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      BASE_URL: http://127.0.0.1:3000
+      APP_ORIGIN: http://127.0.0.1:3000
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -61,10 +64,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate E2E harness configuration
+        run: node --test scripts/e2e-infra.test.mjs
+
+      - name: Prepare mail sink directory
+        run: mkdir -p .data/mail-sink
+
       - name: Validate Compose configuration
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml config --quiet
 
       - name: Build and start the stack
+        env:
+          AUTH_FAKE_OAUTH: 'true'
+          AUTH_REQUIRE_EMAIL_VERIFICATION: 'false'
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach
 
       - name: Wait for the web proxy
@@ -72,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://localhost:3000/api/v1/healthz >/dev/null; then
+            if curl --fail --silent "$BASE_URL/api/v1/healthz" >/dev/null; then
               exit 0
             fi
             sleep 3
@@ -86,28 +98,143 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:3000
           E2E_STACK: '1'
+          E2E_VERIFY: 'false'
+          MAIL_SINK_DIR: /work/.data/mail-sink
         shell: bash
         run: |
           set -euo pipefail
           set -a
           . infra/image-pins.env
           set +a
+          set +e
           docker run --rm --network host \
             --env BASE_URL \
+            --env APP_ORIGIN \
             --env E2E_STACK \
+            --env E2E_VERIFY \
+            --env MAIL_SINK_DIR \
+            --env CI \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$PLAYWRIGHT_IMAGE" \
             npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test
+          status=$?
+          set -e
+          echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
+          exit "$status"
 
-      - name: Upload browser reports and screenshots
+      - name: Stage sanitized browser artifacts
+        if: always()
+        run: node scripts/sanitize-e2e-artifacts.mjs
+
+      - name: Upload allowlisted a11y screenshots and metadata
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-results
-          path: |
-            apps/web/playwright-report
-            apps/web/test-results
+          path: .data/e2e-artifacts
+          if-no-files-found: ignore
+
+      - name: Show Compose logs on failure
+        if: failure()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml logs --no-color
+
+      - name: Tear down Compose resources
+        if: always()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  auth-verify-true:
+    name: Auth e2e (email verification required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      BASE_URL: http://127.0.0.1:3000
+      APP_ORIGIN: http://127.0.0.1:3000
+      AUTH_FAKE_OAUTH: 'true'
+      AUTH_REQUIRE_EMAIL_VERIFICATION: 'true'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Compose and E2E harness configuration
+        run: |
+          node --test scripts/e2e-infra.test.mjs
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml config --quiet
+
+      - name: Prepare mail sink directory
+        run: mkdir -p .data/mail-sink
+
+      - name: Build and start the stack
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach
+
+      - name: Wait for the web proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL/api/v1/healthz" >/dev/null; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml ps
+          exit 1
+
+      - name: Run auth Playwright (verification required)
+        env:
+          BASE_URL: http://127.0.0.1:3000
+          E2E_STACK: '1'
+          E2E_VERIFY: 'true'
+          MAIL_SINK_DIR: /work/.data/mail-sink
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . infra/image-pins.env
+          set +a
+          set +e
+          docker run --rm --network host \
+            --env BASE_URL \
+            --env APP_ORIGIN \
+            --env E2E_STACK \
+            --env E2E_VERIFY \
+            --env MAIL_SINK_DIR \
+            --env CI \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$PLAYWRIGHT_IMAGE" \
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test \
+              e2e/auth.spec.ts e2e/a11y.spec.ts --reporter=list
+          status=$?
+          set -e
+          echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Stage sanitized verification-required artifacts
+        if: always()
+        run: node scripts/sanitize-e2e-artifacts.mjs
+
+      - name: Upload allowlisted verification-required screenshots and metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-verify-true
+          path: .data/e2e-artifacts
           if-no-files-found: ignore
 
       - name: Show Compose logs on failure

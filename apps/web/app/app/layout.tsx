@@ -1,30 +1,45 @@
 import type { Metadata } from 'next';
 import { NextIntlClientProvider } from 'next-intl';
-import { getMessages } from 'next-intl/server';
+import { cookies } from 'next/headers';
 import type { ReactNode } from 'react';
 import { fontVariables } from '@/app/fonts';
 import { QueryProvider } from '@/components/query-provider';
 import { ThemeProvider } from '@/components/theme-provider';
-import { APP_LOCALE } from '@/i18n/app-locale';
+import { LocaleThemeSync } from '@/features/auth/locale-sync';
+import { RouteGuard } from '@/features/auth/route-guard';
+import { SessionProvider } from '@/features/auth/session-provider';
+import { resolveAppLocale } from '@/i18n/app-locale';
+import { THEME_COOKIE, resolveInitialTheme, themeToDataAttribute } from '@/lib/preferences/cookies';
 import '@/app/globals.css';
 
-// App riêng tư: không index, không SSR body người dùng (P01 §UI và route).
 export const metadata: Metadata = {
   title: 'engram',
   robots: { index: false, follow: false },
 };
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  // Một nguồn duy nhất cho locale của /app: `lang` và provider không được lệch.
-  // Middleware i18n cố ý không chạm /app nên không có locale từ URL ở đây;
-  // P02 đọc locale từ hồ sơ người dùng và thay APP_LOCALE.
-  const messages = await getMessages({ locale: APP_LOCALE });
+  const cookieStore = await cookies();
+  const locale = await resolveAppLocale();
+  const themePref = resolveInitialTheme({
+    cookieTheme: cookieStore.get(THEME_COOKIE)?.value ?? null,
+  });
+  const initialResolved = themePref === 'system' ? 'light' : themeToDataAttribute(themePref);
+  const messages =
+    locale === 'vi'
+      ? (await import('../../messages/vi.json')).default
+      : (await import('../../messages/en.json')).default;
+
   return (
-    <html lang={APP_LOCALE} data-theme="light" className={fontVariables}>
+    <html lang={locale} data-theme={initialResolved} className={fontVariables}>
       <body className="bg-canvas font-sans text-body antialiased">
-        <NextIntlClientProvider locale={APP_LOCALE} messages={messages}>
-          <ThemeProvider>
-            <QueryProvider>{children}</QueryProvider>
+        <NextIntlClientProvider locale={locale} messages={messages}>
+          <ThemeProvider initialTheme={themePref} initialLocale={locale}>
+            <QueryProvider>
+              <SessionProvider>
+                <LocaleThemeSync />
+                <RouteGuard>{children}</RouteGuard>
+              </SessionProvider>
+            </QueryProvider>
           </ThemeProvider>
         </NextIntlClientProvider>
       </body>

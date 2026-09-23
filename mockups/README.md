@@ -25,8 +25,8 @@ Rồi mở <http://localhost:5178/landing.html>. Trong Claude Code có sẵn lau
 | `landing.html` | §11.1 | Trang giới thiệu. Hero **là ô omnibox chạy được**, tự gõ `wif` khi tải trang. |
 | `index.html` | §7.2 | Vỏ ứng dụng: rail tag, omnibox tìm/lưu, lưới mục gần đây. |
 | `item.html` | §7.3, §7.4, §7.5 | Chi tiết mục: tên + tag + entry; entry `json` xem dạng bảng; modal nhập JSON. |
-| `settings.html` | §7.6 | Tài khoản, Bảo mật (passphrase / recovery key / passkey / phiên), Tìm kiếm, Dữ liệu. |
-| `auth.html` | §3.1, §10.2 | Đăng nhập, đăng ký, quay lại từ OAuth, xác thực lại, lỗi/khoá/CAPTCHA. |
+| `settings.html` | §7.6 | Tài khoản (email, mật khẩu, provider, locale, theme), phiên/audit/thông báo P02; vault/passphrase/RK/passkey P03; tìm kiếm P05. |
+| `auth.html` | §3.1, §10.2 | Đăng nhập/đăng ký, xác minh email, đặt mật khẩu OAuth-only, OAuth return, re-auth, lỗi auth (CAPTCHA, lockout, session). |
 | `onboarding.html` | §3.2, §5.2 | Ba bước tạo vault: passphrase → lưới 10 recovery key → passkey tuỳ chọn. |
 | `unlock.html` | §3.3, §3.14 | Mở vault: thiết bị mới, có passkey, thiết bị đã nhớ, và các lỗi mở khoá. |
 | `recovery.html` | §3.10 | Quên passphrase: thử đường khác → nhập một RK → passphrase mới → bù key trống. |
@@ -37,8 +37,35 @@ Ngoài phạm vi bản này, phải thiết kế thêm trước khi implement: s
 extension popup/options/unlock (P08-B), màn quản lý API token (P08-C), và các màn P07 (import backup, rotate VK, sync).
 Thêm màn mới thì bổ sung vào thư mục này **và** cập nhật bảng ở §7.0 của spec.
 
-Trong các file đã có vẫn còn ô cần bổ sung, thuộc phase sở hữu màn đó: P02 thêm dialog tài khoản trong `settings.html`;
-P06 thêm luồng export encrypted/progress/confirm. P07/P08 phải thêm mockup riêng trước khi implement.
+Trong các file đã có vẫn còn ô cần bổ sung, thuộc phase sở hữu màn đó: P06 thêm luồng export encrypted/progress/confirm.
+P07/P08 phải thêm mockup riêng trước khi implement.
+
+### Dialog ID (P02 account — `settings.html`)
+
+| ID | Mục đích |
+|---|---|
+| `emailChangeDlg` | Đổi email (chờ xác minh) |
+| `passwordChangeDlg` | Đổi mật khẩu đăng nhập |
+| `linkProviderDlg` | Bắt đầu liên kết OAuth |
+| `unlinkProviderDlg` | Xác nhận gỡ provider |
+| `reauthDlg` | Re-auth trước mutation nhạy cảm |
+| `revokeSessionsDlg` | Xác nhận thu hồi phiên khác |
+
+Vault dialogs (P03, giữ nguyên): `passDlg`, `rkDlg`, `resetDlg`.
+
+### Màn auth (`auth.html`) — view `data-target`
+
+| Target | Nội dung |
+|---|---|
+| `login` | Form + submitting + validation |
+| `signup` | Form + email trùng |
+| `verify` | Xác minh email + token lỗi |
+| `enroll` | Đặt mật khẩu lần đầu + sent/expired/reused/session/quota |
+| `oauth` | Callback loading, cancel, error, collision |
+| `reauth` | Password + Google; OAuth-only enrollment |
+| `err` | Credential, CAPTCHA, lockout, session, network |
+
+Screenshot revision (Task 24): chụp `auth.html` và `settings.html` ở 390/768/1440 px, light/dark — không có secret thật trong form.
 
 ## File dùng chung
 

@@ -146,6 +146,31 @@ Các lệnh trên dành cho full Compose, nên API/worker dùng DNS nội bộ `
 chạy API và worker trên máy với `pnpm dev:stack`, dùng `TEI_URL=http://localhost:8081`
 và giữ cổng `8081:80` của service `tei`.
 
+### Auth local (P02)
+
+Development tự sinh secret ephemeral nếu `AUTH_*` để trống (mất session khi restart).
+Tạo năm giá trị base64 khác nhau (mỗi cái ≥ 32 byte):
+
+```powershell
+node scripts/gen-dev-secrets.mjs
+```
+
+Mail verification local ghi file JSON vào `AUTH_MAIL_SINK_DIR` (mặc định `.data/mail-sink`). Không commit thư mục này. Production không dùng sink.
+
+`AUTH_FAKE_OAUTH=true` (development/e2e only) mounts an in-process Google/GitHub stand-in at `/api/v1/__fake/oauth/{provider}`. That is not Google or GitHub production. Production and staging reject the flag.
+
+Two email-verification configs for e2e:
+
+```powershell
+pnpm e2e                 # both AUTH_REQUIRE_EMAIL_VERIFICATION=false then true
+pnpm e2e -- --verify=false
+make e2e                 # Unix; Windows dùng pnpm e2e
+```
+
+The script starts DB via Compose, migrates, builds Next production, runs API/worker on the host, then Playwright. It does not set `APP_ENV=production` on the API.
+
+Next proxy `/api` sang Go; API chỉ tin `X-Forwarded-For` khi peer nằm trong `AUTH_TRUSTED_PROXY_CIDRS` (development mặc định tin loopback + dải private).
+
 ### Kiểm thử
 
 ```bash
@@ -162,7 +187,8 @@ pnpm -r test
 
 ```bash
 pnpm --filter @engram/web exec playwright install chromium
-pnpm --filter @engram/web e2e
+pnpm --filter @engram/web e2e          # P01 smoke if BASE_URL already up
+pnpm e2e                               # P02 auth matrix (Windows-friendly Node script)
 ```
 
 ### Một origin duy nhất

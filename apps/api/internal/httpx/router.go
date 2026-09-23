@@ -21,6 +21,11 @@ type Deps struct {
 	Ready            ReadyFunc
 	Metrics          http.Handler // handler của /api/v1/metrics
 	MetricsCollector *obs.Metrics // nơi ghi số liệu
+	Authenticator    Authenticator
+	CSRF             CSRFVerifier
+	Reauth           ReauthVerifier
+	// MountAPI đăng ký route dưới /api/v1. Không được mount route bảo vệ khi verifier nil.
+	MountAPI func(v1 chi.Router, d Deps)
 }
 
 // NewRouter mount toàn bộ API dưới /api/v1. Không có endpoint nào ở root.
@@ -43,6 +48,9 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/healthz", healthz)
 		v1.Get("/readyz", readyz(d))
 		v1.Handle("/metrics", d.Metrics)
+		if d.MountAPI != nil {
+			d.MountAPI(v1, d)
+		}
 	})
 
 	return r
