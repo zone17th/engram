@@ -68,7 +68,7 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
     await page.getByRole('link', { name: /Continue with Google|Tiếp tục với Google/ }).click();
     await completeFakeOAuth(page, { email, subject });
     await expectSignedIn(page);
-    await page.getByRole('button', { name: /Sign out|Đăng xuất/ }).click();
+    await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
     await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
     await waitForOAuthProviders(page);
 
@@ -95,7 +95,7 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
     await signupViaUi(page, firstEmail);
     await linkGoogleFromSettings(page, firstEmail, subject);
 
-    await page.getByRole('button', { name: /Sign out|Đăng xuất/ }).click();
+    await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
     await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
 
     const secondEmail = uniqueEmail('oauth-conflict');

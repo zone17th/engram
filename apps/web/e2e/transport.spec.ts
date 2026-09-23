@@ -186,7 +186,7 @@ test.describe('HTTPS auth transport', () => {
     const logoutResponsePromise = page.waitForResponse(
       (response) => response.url().endsWith('/api/v1/auth/logout') && response.request().method() === 'POST',
     );
-    await page.getByRole('button', { name: /Sign out|Đăng xuất/ }).click();
+    await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
     const logoutResponse = await logoutResponsePromise;
     expect(logoutResponse.status()).toBe(204);
     expectNoStore(await logoutResponse.headers());

@@ -3,6 +3,7 @@ import {
   completeFakeOAuth,
   expectSignedIn,
   fetchMeViaPage,
+  isolateRateLimit,
   loginViaUi,
   newContextWithRateLimit,
   patchSettingsViaPage,
@@ -49,6 +50,12 @@ test.describe('P02 account (real API)', () => {
   test.skip(!process.env.E2E_STACK, 'requires API + worker + mail sink');
   test.skip(verifyRequired(), 'uses a verified-optional account on the false flag run');
 
+  // Serial run still shares the loopback IP; give each test its own 5/min cred
+  // bucket instead of raising the product quota (plan Task 24).
+  test.beforeEach(async ({ page }) => {
+    await isolateRateLimit(page);
+  });
+
   test('locale and theme persist after reload', async ({ page }) => {
     const email = uniqueEmail('prefs');
     await signupViaUi(page, email);
@@ -84,7 +91,7 @@ test.describe('P02 account (real API)', () => {
     const me = (await fetchMeViaPage(page)).body as { identities?: Array<{ provider: string }> };
     expect(me.identities?.map((identity) => identity.provider)).toEqual(['password']);
 
-    await page.getByRole('button', { name: /Sign out|Đăng xuất/ }).click();
+    await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
     await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
     await loginViaUi(page, email, PASSWORD);
     await expectSignedIn(page);

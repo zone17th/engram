@@ -111,8 +111,10 @@ export function OAuthCallbackView({ provider }: { provider: string }) {
       <div className="card border-error p-5">
         <p className="mb-1 text-[14px] font-semibold text-error">{t('oauthCallback.conflictTitle')}</p>
         <p className="mb-3 text-[13px] text-muted">{t('oauthCallback.conflictBody')}</p>
+        {/* Retrying the same provider always conflicts again; the only way out is
+            signing in as the owning account. */}
         <Link href="/app/auth/login" className="btn btn-tertiary btn-sm no-underline">
-          {t('oauthCallback.retry')}
+          {t('oauthCallback.backToLogin')}
         </Link>
       </div>
     );

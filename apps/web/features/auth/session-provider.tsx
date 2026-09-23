@@ -194,7 +194,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return subscribeSessionBroadcast((message, origin) => {
       if (message.type === 'session_changed') {
         if (origin === 'remote') bumpSessionEpoch();
-        setSessionEpochState(getSessionEpoch());
+        const nextEpoch = getSessionEpoch();
+        // A local session_changed means this tab replaced its own session
+        // (password change, silent refresh): same user, new cookies. Carry the
+        // snapshot into the new epoch key and revalidate, otherwise the re-keyed
+        // query starts empty, RouteGuard swaps the page for the loading frame and
+        // transient state such as the account success notice is lost. A remote
+        // change may belong to another account, so that one starts empty.
+        const carried = origin === 'remote' ? null : queryClient.getQueryData(['auth', 'me', sessionEpoch]);
+        if (carried) {
+          queryClient.setQueryData(['auth', 'me', nextEpoch], carried);
+          void queryClient.invalidateQueries({ queryKey: ['auth', 'me', nextEpoch] });
+        }
+        setSessionEpochState(nextEpoch);
         void meQuery.refetch();
       }
       if (message.type === 'signed_out') {
@@ -205,7 +217,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         void queryClient.setQueryData(['auth', 'me', getSessionEpoch()], null);
       }
     });
-  }, [clearPrivateCache, meQuery, queryClient]);
+  }, [clearPrivateCache, meQuery, queryClient, sessionEpoch]);
 
   useEffect(() => {
     if (meQuery.isError) {

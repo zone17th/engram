@@ -55,17 +55,12 @@ export function RouteGuard({ children }: { children: ReactNode }) {
     }
   }, [status, me, pathname, router]);
 
-  if (status === 'loading' && !keepAuthFormMountedWhileLoading(pathname)) {
-    return (
-      <>
-        <AuthLoadingFrame label={t('loading')} />
-        {me && (
-          <span className="sr-only" data-testid="session-status">
-            {me.vault.status === 'present' ? 'authenticated_with_vault' : 'authenticated_without_vault'}
-          </span>
-        )}
-      </>
-    );
+  // `me` is still in hand when a session-epoch bump re-keys the query (password
+  // replacement, silent refresh). Swapping the tree for the loading frame there
+  // unmounts the page and drops transient state such as the account success
+  // notice, so only block while there is nothing to render yet.
+  if (status === 'loading' && !me && !keepAuthFormMountedWhileLoading(pathname)) {
+    return <AuthLoadingFrame label={t('loading')} />;
   }
 
   if (status === 'unavailable') {
@@ -88,7 +83,11 @@ export function RouteGuard({ children }: { children: ReactNode }) {
       {children}
       {status !== 'signed_out' && me && (
         <span className="sr-only" data-testid="session-status">
-          {status}
+          {status === 'loading'
+            ? me.vault.status === 'present'
+              ? 'authenticated_with_vault'
+              : 'authenticated_without_vault'
+            : status}
         </span>
       )}
     </>

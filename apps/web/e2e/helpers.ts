@@ -8,23 +8,44 @@ const E2E_API_URL = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 
 const isolatedContexts = new WeakSet<BrowserContext>();
 const contextClientIp = new WeakMap<BrowserContext, string>();
-let clientIpSeq = 0;
 
-/** TEST-NET-3 hop so each helper keeps its own 5/min cred bucket (plan: do not raise product quota). */
+// Playwright respawns the worker process after every failure, which resets module
+// state. A plain counter therefore hands the next test the same hops the previous
+// worker already spent, and the reused 5/min bucket surfaces as a bogus 429 one
+// test later. Seed from TEST_WORKER_INDEX (it increments on every respawn) so each
+// worker owns a disjoint block.
+const CLIENT_IP_BLOCK = 4096;
+let clientIpSeq = (Number(process.env.TEST_WORKER_INDEX ?? 0) % 32) * CLIENT_IP_BLOCK;
+
+/**
+ * Untrusted hop so each helper keeps its own 5/min cred bucket (plan Task 24: do
+ * not raise the product quota for tests). 198.18.0.0/15 is the RFC 2544
+ * benchmarking range — outside the dev AUTH_TRUSTED_PROXY_CIDRS default
+ * (loopback + RFC 1918), so httpx.ClientIP keys the limiter on it.
+ */
 export function uniqueClientIp(): string {
-  clientIpSeq += 1;
-  return `203.0.113.${1 + (clientIpSeq % 254)}`;
+  clientIpSeq = (clientIpSeq + 1) % (CLIENT_IP_BLOCK * 32);
+  const host = clientIpSeq & 0xff;
+  const third = (clientIpSeq >>> 8) & 0xff;
+  const second = 18 + ((clientIpSeq >>> 16) & 0x1);
+  return `198.${second}.${third}.${host}`;
 }
 
 function isCredLimitedPath(url: string): boolean {
   try {
     const path = new URL(url).pathname;
+    // Must cover every handler guarded by credLimit (5/min/IP) in
+    // apps/api/internal/auth/authhttp/handlers.go. A path missing here keeps the
+    // shared loopback bucket and starves later tests.
     return (
       path === '/api/v1/auth/signup' ||
       path === '/api/v1/auth/login' ||
+      path === '/api/v1/auth/refresh' ||
       path === '/api/v1/auth/reauth' ||
+      path === '/api/v1/auth/verify-email/confirm' ||
       /\/api\/v1\/auth\/oauth\/[^/]+\/link$/.test(path) ||
-      /\/api\/v1\/auth\/oauth\/[^/]+\/start$/.test(path)
+      /\/api\/v1\/auth\/oauth\/[^/]+\/start$/.test(path) ||
+      /\/api\/v1\/auth\/oauth\/[^/]+\/reauth$/.test(path)
     );
   } catch {
     return false;

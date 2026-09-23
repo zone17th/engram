@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
   cookieMap,
   expectSignedIn,
+  isolateRateLimit,
   loginViaUi,
   newContext,
   signupViaUi,
@@ -17,6 +18,12 @@ test.describe.configure({ mode: 'serial' });
 
 test.describe('P02 auth (real API)', () => {
   test.skip(!process.env.E2E_STACK, 'requires API + worker + mail sink');
+
+  // Serial run still shares the loopback IP; give each test its own 5/min cred
+  // bucket instead of raising the product quota (plan Task 24).
+  test.beforeEach(async ({ page }) => {
+    await isolateRateLimit(page);
+  });
 
   test('signup, reload, logout, login', async ({ page, context }) => {
     const email = uniqueEmail('signup');
@@ -50,7 +57,7 @@ test.describe('P02 auth (real API)', () => {
     await page.reload({ waitUntil: 'networkidle' });
     await expectSignedIn(page);
 
-    await page.getByRole('button', { name: /Sign out|Đăng xuất/ }).click();
+    await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
     await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
 
     await loginViaUi(page, email);
@@ -109,7 +116,7 @@ test.describe('P02 auth (real API)', () => {
       const unknownCopy = await submit(uniqueEmail('unknown'), PASSWORD);
       const known = uniqueEmail('known-wrong');
       await signupViaUi(page, known);
-      await page.getByRole('button', { name: /Sign out|Đăng xuất/ }).click();
+      await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
       await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
       const wrongCopy = await submit(known, 'wrong-password-99');
       expect(wrongCopy).toBe(unknownCopy);
