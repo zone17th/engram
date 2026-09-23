@@ -10,7 +10,7 @@ const MAIL_SINK = resolve(ROOT, '.data', 'mail-sink');
 const BASE_URL = 'http://127.0.0.1:3000';
 const API_HEALTH = 'http://127.0.0.1:8080/api/v1/healthz';
 
-function parseEnvFile(path) {
+export function parseEnvFile(path) {
   if (!existsSync(path)) return {};
   const values = {};
   for (const rawLine of readFileSync(path, 'utf8').split(/\r?\n/)) {
@@ -58,7 +58,7 @@ function pnpmInvocation(args) {
   return { command: 'cmd.exe', args: ['/d', '/s', '/c', ['pnpm', ...args].map(quote).join(' ')] };
 }
 
-function spawnCommand(command, args, options = {}) {
+export function spawnCommand(command, args, options = {}) {
   const invocation = command === 'pnpm' ? pnpmInvocation(args) : { command, args };
   const child = spawn(invocation.command, invocation.args, {
     cwd: options.cwd ?? ROOT,
@@ -106,7 +106,7 @@ function waitForExit(child, timeoutMs = 10_000) {
 }
 
 /** Terminate only a process this script spawned, including its own child tree. */
-async function terminate(child) {
+export async function terminate(child) {
   if (!child || child.pid == null || child.exitCode !== null) return;
   if (process.platform === 'win32') {
     // taskkill is scoped to this child PID; port preflight never kills an existing PID.
@@ -136,7 +136,7 @@ async function terminate(child) {
   await waitForExit(child, 5_000);
 }
 
-function runOnce(command, args, options = {}) {
+export function runOnce(command, args, options = {}) {
   return new Promise((resolveExit) => {
     let child;
     try {
@@ -154,7 +154,7 @@ function runOnce(command, args, options = {}) {
   });
 }
 
-async function waitFor(url, { retries = 60, delayMs = 1000, label = url, child } = {}) {
+export async function waitFor(url, { retries = 60, delayMs = 1000, label = url, child } = {}) {
   let last = 'not attempted';
   for (let i = 1; i <= retries; i += 1) {
     if (child?.spawnError) {

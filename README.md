@@ -169,6 +169,13 @@ make e2e                 # Unix; Windows dùng pnpm e2e
 
 The script starts DB via Compose, migrates, builds Next production, runs API/worker on the host, then Playwright. It does not set `APP_ENV=production` on the API.
 
+HTTPS transport suite (cookie `Secure`/path/HttpOnly, security headers, logout cleanup). It needs a throwaway certificate pair at `.data/certs/local-cert.pem` and `.data/certs/local-key.pem` — `.data/` is gitignored; never commit a private key:
+
+```powershell
+pnpm e2e:https            # web :13000, API :18081, TLS proxy :13443
+pnpm e2e:https -- --skip-build
+```
+
 Next proxy `/api` sang Go; API chỉ tin `X-Forwarded-For` khi peer nằm trong `AUTH_TRUSTED_PROXY_CIDRS` (development mặc định tin loopback + dải private).
 
 ### Kiểm thử

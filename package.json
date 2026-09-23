@@ -18,6 +18,7 @@
     "stack:down": "node scripts/dev.mjs compose-down",
     "smoke": "node scripts/smoke.mjs",
     "e2e": "node scripts/e2e.mjs",
-    "e2e:auth": "node scripts/e2e.mjs --verify=both"
+    "e2e:auth": "node scripts/e2e.mjs --verify=both",
+    "e2e:https": "node scripts/https-e2e.mjs"
   }
 }
