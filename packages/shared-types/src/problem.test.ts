@@ -1,5 +1,27 @@
-import { describe, expect, it } from 'vitest';
-import { ERROR_CODES, PROBLEM_BASE, isProblemDetails } from './problem';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { components } from './api';
+import { ERROR_CODES, type ErrorCode, PROBLEM_BASE, isProblemDetails } from './problem';
+
+type NodeFs = {
+  readFileSync(path: URL, encoding: 'utf8'): string;
+};
+
+declare const process: {
+  getBuiltinModule(id: 'node:fs'): NodeFs;
+};
+
+function readOpenApiProblemCodes(): string[] {
+  const raw = process
+    .getBuiltinModule('node:fs')
+    .readFileSync(new URL('../../../apps/api/api/openapi.yaml', import.meta.url), 'utf8');
+  const blockMatch = raw.match(
+    /^\s{4}ProblemCode:\r?\n\s{6}type:\s*string\r?\n\s{6}enum:\r?\n((?:\s{8}-\s*[a-z0-9_]+\r?\n)+)/m,
+  );
+  if (!blockMatch) {
+    throw new Error('Không tìm thấy block ProblemCode.enum trong apps/api/api/openapi.yaml');
+  }
+  return Array.from(blockMatch[1].matchAll(/^\s{8}-\s*([a-z0-9_]+)\s*$/gm), (m) => m[1]);
+}
 
 describe('problem', () => {
   it('giữ đúng namespace type URI của spec', () => {
@@ -81,5 +103,17 @@ describe('problem', () => {
       expect(ERROR_CODES).toContain(code);
     }
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
+  });
+
+  it('đồng bộ hai chiều giữa ERROR_CODES và danh sách ProblemCode trong openapi.yaml', () => {
+    const openApiCodes = readOpenApiProblemCodes();
+    for (const code of ERROR_CODES) {
+      expect(openApiCodes).toContain(code);
+    }
+    for (const code of openApiCodes) {
+      expect(ERROR_CODES).toContain(code);
+    }
+    expect(openApiCodes).toEqual([...ERROR_CODES]);
+    expectTypeOf<ErrorCode>().toEqualTypeOf<components['schemas']['ProblemCode']>();
   });
 });

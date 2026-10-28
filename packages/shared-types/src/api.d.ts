@@ -670,7 +670,7 @@ export interface paths {
         /**
          * Bù các recovery key mới vào các slot đang trống
          * @description Yêu cầu grant re-auth (vault.recovery_keys_regenerate), If-Match: "<vault_key_id>:<version>" và Idempotency-Key.
-         *     Nhận 1…(10−remaining) phần tử ứng với các slot đang trống; tăng vault.version.
+         *     Nhận 1…(10−remaining) phần tử {slot, lookup_hash, wrap} ứng với các slot đang trống trong empty_slots của GET /vault/recovery-keys; tăng vault.version.
          */
         post: operations["vaultRecoveryKeysRegenerate"];
         delete?: never;
@@ -811,7 +811,7 @@ export interface components {
             /** @description Request ID, không phải URL. */
             instance?: string;
             code: components["schemas"]["ProblemCode"];
-            /** @description Giây; khớp header Retry-After. */
+            /** @description Giây; khớp header Retry-After (trên 429 rate_limited hoặc 409 idempotency_in_progress với giá trị 1). */
             retry_after?: number;
             /**
              * @description Chỉ khi code=session_invalid. Token lạ dùng invalid.
@@ -872,7 +872,7 @@ export interface components {
             };
             vault: {
                 /**
-                 * @description P02 luôn absent. locked/unlocked là trạng thái crypto client P03.
+                 * @description absent | present trên server; locked/unlocked là trạng thái crypto phía client, không phải trạng thái server.
                  * @enum {string}
                  */
                 status: "absent" | "present";
@@ -1007,10 +1007,16 @@ export interface components {
             salt: string;
         };
         VaultPasskeyItem: {
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description UUID định danh bản ghi passkey trên server (dùng cho danh sách Settings, PATCH đổi tên và DELETE thu hồi; không phải WebAuthn cred_id).
+             */
             id: string;
             name: string;
-            /** @description AAGUID 16 byte (base64url không padding hoặc UUID) hoặc null. */
+            /**
+             * Format: uuid
+             * @description AAGUID 16 byte của authenticator định dạng chuỗi UUID chuẩn lowercase có gạch nối (ví dụ 00000000-0000-0000-0000-000000000000) hoặc null.
+             */
             aaguid: string | null;
             /** Format: date-time */
             created_at: string;
@@ -1029,7 +1035,9 @@ export interface components {
             recovery_keys_remaining: number;
             passkeys: components["schemas"]["VaultPasskeyItem"][];
         };
+        /** @description Phần tử tải lên cho một recovery key gồm {slot, lookup_hash, wrap}. Tạo mới/rotate gửi đủ slot 1…10; regenerate gửi các slot đang trống. */
         RecoveryKeyUploadItem: {
+            /** @description Vị trí slot của recovery key (1…10; khi regenerate phải nằm trong empty_slots của GET /vault/recovery-keys). */
             slot: number;
             lookup_hash: components["schemas"]["RecoveryKeyLookupHash"];
             wrap: components["schemas"]["WrappedVaultKey"];
@@ -1073,6 +1081,7 @@ export interface components {
             kdf: components["schemas"]["VaultKdf"];
             vault_key_wrapped_by_kek: components["schemas"]["WrappedVaultKey"];
         };
+        /** @description Danh sách 1…(10−remaining) recovery key mới dạng {slot, lookup_hash, wrap} bù vào các slot đang trống. */
         VaultRecoveryKeysRegenerateRequest: {
             recovery_keys: components["schemas"]["RecoveryKeyUploadItem"][];
         };
@@ -1087,6 +1096,11 @@ export interface components {
             /** @constant */
             remaining: 10;
             version: number;
+        };
+        /** @description Đầu vào đánh giá PRF (hmac-secret) dạng JSON; first (và second nếu có) là muối 32 byte mã hoá base64url không padding (client chuyển sang ArrayBuffer/Uint8Array hoặc dùng parseRequestOptionsFromJSON). */
+        PrfEvalValuesJSON: {
+            first: components["schemas"]["PrfSalt"];
+            second?: components["schemas"]["PrfSalt"];
         };
         /** @description WebAuthn PublicKeyCredentialCreationOptions JSON (challenge, user.id và excludeCredentials.id dùng base64url không padding). */
         PublicKeyCredentialCreationOptionsJSON: {
@@ -1114,6 +1128,7 @@ export interface components {
             timeout?: number;
             excludeCredentials?: ({
                 type: string;
+                /** @description WebAuthn credential ID (cred_id) mã hoá base64url không padding. */
                 id: string;
                 transports?: string[];
             } & {
@@ -1124,6 +1139,10 @@ export interface components {
             };
             attestation?: string;
             extensions?: {
+                prf?: {
+                    eval?: components["schemas"]["PrfEvalValuesJSON"];
+                };
+            } & {
                 [key: string]: unknown;
             };
         } & {
@@ -1141,6 +1160,10 @@ export interface components {
             /** @description attestationObject CBOR từ authenticator mã hoá base64url không padding. */
             attestation_object: string;
         };
+        /**
+         * @description Yêu cầu hoàn tất đăng ký passkey. Server chỉ lấy cred_id, pubkey và aaguid từ attestation.attestation_object đã xác minh;
+         *     nếu client gửi kèm các trường dẫn xuất cred_id, pubkey hoặc aaguid ở mức gốc, schema chấp nhận nhưng server luôn bỏ qua hoàn toàn (plan mục 2.5).
+         */
         VaultPasskeyCreateRequest: {
             /** Format: uuid */
             challenge_id: string;
@@ -1149,6 +1172,12 @@ export interface components {
             vk_wrap: components["schemas"]["WrappedVaultKey"];
             /** @description Tên passkey (trim, 1–64 rune, từ chối ký tự điều khiển và bidi override). */
             name: string;
+            /** @description Trường dẫn xuất tuỳ chọn bị server bỏ qua (server tự trích cred_id từ attestation_object đã xác minh, plan mục 2.5). */
+            cred_id?: string | null;
+            /** @description Trường dẫn xuất tuỳ chọn bị server bỏ qua (server tự trích pubkey từ attestation_object đã xác minh, plan mục 2.5). */
+            pubkey?: string | null;
+            /** @description Trường dẫn xuất tuỳ chọn bị server bỏ qua (server tự trích aaguid từ attestation_object đã xác minh, plan mục 2.5). */
+            aaguid?: string | null;
         };
         VaultPasskeyRenameRequest: {
             /** @description Tên passkey mới (trim, 1–64 rune, từ chối ký tự điều khiển và bidi override). */
@@ -1162,24 +1191,43 @@ export interface components {
             rpId?: string;
             allowCredentials: ({
                 type: string;
+                /** @description WebAuthn credential ID (cred_id) mã hoá base64url không padding (khớp credentials[].id và khoá của extensions.prf.evalByCredential). */
                 id: string;
                 transports?: string[];
             } & {
                 [key: string]: unknown;
             })[];
             userVerification?: string;
+            /**
+             * @description Phần mở rộng WebAuthn JSON; prf.evalByCredential ánh xạ mỗi cred_id (base64url không padding,
+             *     khớp allowCredentials[].id và credentials[].id) tới {first: prf_salt} (trùng giá trị chuẩn tại credentials[].prf_salt).
+             */
             extensions?: {
+                prf?: {
+                    eval?: components["schemas"]["PrfEvalValuesJSON"];
+                    /** @description Bản đồ từ WebAuthn cred_id (base64url không padding) sang {first: prf_salt} của từng credential. */
+                    evalByCredential?: {
+                        [key: string]: components["schemas"]["PrfEvalValuesJSON"];
+                    };
+                };
+            } & {
                 [key: string]: unknown;
             };
         } & {
             [key: string]: unknown;
         };
         PasskeyUnlockCredentialItem: {
-            /** @description Credential ID (cred_id) mã hoá base64url không padding. */
+            /** @description WebAuthn credential ID (cred_id) mã hoá base64url không padding (khớp public_key.allowCredentials[].id và khoá của public_key.extensions.prf.evalByCredential; khác với UUID bản ghi VaultPasskeyItem.id trên Settings — bước mở khoá không cần ánh xạ về UUID bản ghi). */
             id: string;
+            /** @description Muối PRF 32 byte chuẩn (authoritative) của credential này, bằng chính xác public_key.extensions.prf.evalByCredential[id].first. */
             prf_salt: components["schemas"]["PrfSalt"];
             vk_wrap: components["schemas"]["WrappedVaultKey"];
         };
+        /**
+         * @description Options mở khoá bằng passkey. Trường credentials[].id là WebAuthn cred_id (base64url không padding) khớp allowCredentials[].id
+         *     và khoá của extensions.prf.evalByCredential; credentials[].prf_salt là giá trị chuẩn khớp evalByCredential[id].first.
+         *     Bước mở khoá cục bộ không cần ánh xạ về UUID bản ghi VaultPasskeyItem.id.
+         */
         VaultPasskeyUnlockOptionsResponse: {
             public_key: components["schemas"]["PublicKeyCredentialRequestOptionsJSON"];
             credentials: components["schemas"]["PasskeyUnlockCredentialItem"][];
@@ -1190,6 +1238,18 @@ export interface components {
         Problem: {
             headers: {
                 "Cache-Control": components["headers"]["NoStore"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Xung đột trạng thái hoặc idempotency; khi code=idempotency_in_progress kèm header Retry-After: 1 */
+        IdempotencyConflict: {
+            headers: {
+                "Cache-Control": components["headers"]["NoStore"];
+                /** @description Giây nguyên dương chờ trước khi thử lại cùng Idempotency-Key khi code=idempotency_in_progress (giá trị 1). */
+                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -1223,14 +1283,16 @@ export interface components {
          *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
          */
         IdempotencyKey: string;
-        /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+        /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
         ReauthToken: string;
-        /** @description UUID của passkey trên vault của người dùng hiện tại. */
+        /** @description UUID bản ghi passkey trên vault của người dùng hiện tại (VaultPasskeyItem.id, không phải WebAuthn cred_id). */
         PasskeyId: string;
     };
     requestBodies: never;
     headers: {
         NoStore: "no-store";
+        /** @description Cấm lưu cache và cấm proxy/CDN biến đổi body của GET /vault. */
+        NoStoreNoTransform: "no-store, no-transform";
         /** @description Giây nguyên dương tới cuối cửa sổ rate limit. */
         RetryAfter: number;
     };
@@ -1989,7 +2051,7 @@ export interface operations {
             /** @description Trạng thái vault hiện tại */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["NoStore"];
+                    "Cache-Control": components["headers"]["NoStoreNoTransform"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2037,8 +2099,8 @@ export interface operations {
             401: components["responses"]["Problem"];
             /** @description Thiếu CSRF hoặc email chưa xác minh khi cờ bật (csrf_invalid, forbidden, email_not_verified) */
             403: components["responses"]["Problem"];
-            /** @description Vault đã tồn tại, trùng lookup_hash hoặc xung đột idempotency (vault_exists, recovery_key_conflict, idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Vault đã tồn tại, trùng lookup_hash hoặc xung đột idempotency (vault_exists, recovery_key_conflict, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             /** @description Công tắc dừng thay đổi khoá đang bật hoặc phụ thuộc chưa sẵn sàng (vault_mutations_disabled, dependency_unavailable) */
             503: components["responses"]["Problem"];
         };
@@ -2058,7 +2120,7 @@ export interface operations {
                  *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
                  */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path?: never;
@@ -2074,14 +2136,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth không hợp lệ (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Chưa khởi tạo vault (vault_absent) */
             404: components["responses"]["Problem"];
-            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             /** @description Lệch vault_key_id hoặc version (version_mismatch) */
             412: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
@@ -2106,7 +2168,7 @@ export interface operations {
                  *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
                  */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path?: never;
@@ -2130,14 +2192,14 @@ export interface operations {
             };
             /** @description KDF hoặc wrap không hợp lệ (invalid_request, vault_kdf_invalid, vault_wrap_invalid) */
             400: components["responses"]["Problem"];
-            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Chưa có vault (vault_absent) */
             404: components["responses"]["Problem"];
-            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             /** @description Lệch vault_key_id hoặc version (version_mismatch) */
             412: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
@@ -2221,7 +2283,7 @@ export interface operations {
                  *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
                  */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path?: never;
@@ -2245,14 +2307,14 @@ export interface operations {
             };
             /** @description KDF hoặc wrap không hợp lệ (invalid_request, vault_kdf_invalid, vault_wrap_invalid) */
             400: components["responses"]["Problem"];
-            /** @description Recovery key không hợp lệ/đã tiêu thụ hoặc chưa xác thực (recovery_key_invalid, unauthenticated, access_expired, session_invalid) */
+            /** @description Recovery key không hợp lệ/đã tiêu thụ, chưa xác thực hoặc thiếu/sai grant re-auth (recovery_key_invalid, unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Chưa có vault (vault_absent) */
             404: components["responses"]["Problem"];
-            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             /** @description Lệch vault_key_id hoặc version (version_mismatch) */
             412: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
@@ -2277,7 +2339,7 @@ export interface operations {
                  *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
                  */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path?: never;
@@ -2301,14 +2363,14 @@ export interface operations {
             };
             /** @description Số lượng RK hoặc wrap không hợp lệ (invalid_request, recovery_keys_count, vault_wrap_invalid) */
             400: components["responses"]["Problem"];
-            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Chưa có vault (vault_absent) */
             404: components["responses"]["Problem"];
-            /** @description Slot đã có key, trùng lookup_hash hoặc xung đột idempotency (recovery_key_slot_taken, recovery_key_conflict, idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Slot đã có key, trùng lookup_hash hoặc xung đột idempotency (recovery_key_slot_taken, recovery_key_conflict, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             /** @description Lệch vault_key_id hoặc version (version_mismatch) */
             412: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
@@ -2333,7 +2395,7 @@ export interface operations {
                  *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
                  */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path?: never;
@@ -2357,14 +2419,14 @@ export interface operations {
             };
             /** @description Số lượng RK khác 10 hoặc wrap không hợp lệ (invalid_request, recovery_keys_count, vault_wrap_invalid) */
             400: components["responses"]["Problem"];
-            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Chưa có vault (vault_absent) */
             404: components["responses"]["Problem"];
-            /** @description Sai slot, trùng lookup_hash hoặc xung đột idempotency (recovery_key_slot_taken, recovery_key_conflict, idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Sai slot, trùng lookup_hash hoặc xung đột idempotency (recovery_key_slot_taken, recovery_key_conflict, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             /** @description Lệch vault_key_id hoặc version (version_mismatch) */
             412: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
@@ -2436,7 +2498,7 @@ export interface operations {
                  *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
                  */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path?: never;
@@ -2460,14 +2522,14 @@ export interface operations {
             };
             /** @description Challenge, attestation, tên hoặc wrap không hợp lệ (invalid_request, passkey_challenge_invalid, passkey_attestation_invalid, passkey_name_invalid, vault_wrap_invalid) */
             400: components["responses"]["Problem"];
-            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Chưa có vault (vault_absent) */
             404: components["responses"]["Problem"];
-            /** @description Credential đã đăng ký hoặc xung đột idempotency (passkey_exists, idempotency_conflict, idempotency_in_progress) */
-            409: components["responses"]["Problem"];
+            /** @description Credential đã đăng ký hoặc xung đột idempotency (passkey_exists, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
             429: components["responses"]["RateLimited"];
             /** @description Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable) */
             503: components["responses"]["Problem"];
@@ -2477,11 +2539,11 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`. */
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
                 "X-Reauth-Token": components["parameters"]["ReauthToken"];
             };
             path: {
-                /** @description UUID của passkey trên vault của người dùng hiện tại. */
+                /** @description UUID bản ghi passkey trên vault của người dùng hiện tại (VaultPasskeyItem.id, không phải WebAuthn cred_id). */
                 id: components["parameters"]["PasskeyId"];
             };
             cookie?: never;
@@ -2496,9 +2558,9 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
             401: components["responses"]["Problem"];
-            /** @description Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid) */
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
             /** @description Không tìm thấy vault hoặc passkey (vault_absent, passkey_not_found) */
             404: components["responses"]["Problem"];
@@ -2510,7 +2572,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description UUID của passkey trên vault của người dùng hiện tại. */
+                /** @description UUID bản ghi passkey trên vault của người dùng hiện tại (VaultPasskeyItem.id, không phải WebAuthn cred_id). */
                 id: components["parameters"]["PasskeyId"];
             };
             cookie?: never;
