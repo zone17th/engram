@@ -77,13 +77,14 @@ WHERE expires_at < sqlc.arg('now');
 
 -- name: PruneExpiredIdempotencyKeysBatch :execrows
 DELETE FROM idempotency_key
-WHERE (user_id, key) IN (
-  SELECT expired.user_id, expired.key
-  FROM idempotency_key AS expired
-  WHERE expired.expires_at < sqlc.arg('now')
-  ORDER BY expired.expires_at ASC
-  LIMIT sqlc.arg('batch_limit')
-);
+WHERE idempotency_key.expires_at < sqlc.arg('now')
+  AND (user_id, key) IN (
+    SELECT expired.user_id, expired.key
+    FROM idempotency_key AS expired
+    WHERE expired.expires_at < sqlc.arg('now')
+    ORDER BY expired.expires_at ASC
+    LIMIT sqlc.arg('batch_limit')
+  );
 
 -- name: PruneExpiredIdempotencyKeysByUser :execrows
 DELETE FROM idempotency_key

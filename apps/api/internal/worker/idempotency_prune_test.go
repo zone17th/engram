@@ -1,16 +1,21 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/worker"
 )
 
@@ -215,5 +220,224 @@ func TestIdempotencyPruneJobRegisteredInRiverClient(t *testing.T) {
 		case <-time.After(15 * time.Second):
 			t.Fatal("job idempotency_prune không hoàn thành trong 15s")
 		}
+	}
+}
+
+// BE2-2 / BE2-3: Khi một bản ghi hết hạn đang được ClaimIdempotencyKey tái chiếm (renew expires_at = now + 24h)
+// nhưng transaction chưa commit, câu lệnh PruneExpiredIdempotencyKeysBatch chạy song song có thể nhìn thấy bản ghi cũ
+// qua snapshot của subquery rồi chờ khóa hàng. Sau khi transaction tái chiếm commit, DELETE ngoài cùng phải kiểm tra lại
+// expires_at < now để KHÔNG xóa mất bản ghi vừa được gia hạn.
+func TestIdempotencyPruneBatchConcurrentReclaimSurvives(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	// Mở một pool riêng giới hạn đúng 1 kết nối cho worker prune để xác định chính xác PID backend của lệnh prune.
+	pruneCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig prunePool: %v", err)
+	}
+	pruneCfg.MaxConns = 1
+	pruneCfg.MinConns = 1
+	prunePool, err := pgxpool.NewWithConfig(ctx, pruneCfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig prunePool: %v", err)
+	}
+	t.Cleanup(prunePool.Close)
+
+	var prunePID int32
+	if err := prunePool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&prunePID); err != nil {
+		t.Fatalf("query prunePID: %v", err)
+	}
+
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(now)
+
+	var userID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO app_user (email, locale) VALUES ('idem-prune-race@example.com', 'en') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		reclaimedKey    = "idem_reclaimed_during_prune_01"
+		otherExpiredKey = "idem_other_expired_during_prune_02"
+	)
+	oldOwner := uuid.New()
+	oldHash := []byte{0x01, 0x02, 0x03}
+
+	// Chèn 2 bản ghi đã hết hạn (< now):
+	// - reclaimedKey: sẽ được ClaimIdempotencyKey gia hạn trong một transaction đang mở trước khi prune chạy.
+	// - otherExpiredKey: không được gia hạn, phải bị xóa bởi cùng lô prune.
+	for i, k := range []string{reclaimedKey, otherExpiredKey} {
+		exp := now.Add(-time.Duration(10-i) * time.Second)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO idempotency_key (
+				user_id, key, method, path, request_hash, status, owner_token,
+				claimed_at, expires_at, status_code, response
+			) VALUES ($1, $2, 'POST', '/api/v1/vault', $3, 'done', $4, $5, $6, 201, '{"version":1}'::jsonb)
+		`, userID, k, oldHash, oldOwner, exp.Add(-24*time.Hour), exp); err != nil {
+			t.Fatalf("seed expired key %q: %v", k, err)
+		}
+	}
+
+	// Mở transaction trên kết nối thứ nhất để tái chiếm (renew) reclaimedKey nhưng chưa commit.
+	renewTx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("BeginTx renewTx: %v", err)
+	}
+	defer func() { _ = renewTx.Rollback(ctx) }()
+
+	var renewPID int32
+	if err := renewTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&renewPID); err != nil {
+		t.Fatalf("query renewPID: %v", err)
+	}
+
+	newOwner := uuid.New()
+	newHash := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+	newPath := "/api/v1/vault/kek"
+	nowTS := pgtype.Timestamptz{Time: now, Valid: true}
+	claimedOwner, err := gen.New(renewTx).ClaimIdempotencyKey(ctx, gen.ClaimIdempotencyKeyParams{
+		UserID:      userID,
+		Key:         reclaimedKey,
+		Method:      "PUT",
+		Path:        newPath,
+		RequestHash: newHash,
+		OwnerToken:  newOwner,
+		Now:         nowTS,
+	})
+	if err != nil {
+		t.Fatalf("ClaimIdempotencyKey reclaim: %v", err)
+	}
+	if claimedOwner != newOwner {
+		t.Fatalf("claimedOwner = %v, muốn %v", claimedOwner, newOwner)
+	}
+
+	// Khởi chạy worker prune trên kết nối thứ hai (prunePool, PID = prunePID).
+	pruner := worker.NewIdempotencyPruneWorker(prunePool, clk)
+	pruneJob := &river.Job[worker.IdempotencyPruneArgs]{
+		Args: worker.IdempotencyPruneArgs{BatchSize: 10, MaxBatches: 1},
+	}
+	pruneErrCh := make(chan error, 1)
+	go func() {
+		pruneErrCh <- pruner.Work(ctx, pruneJob)
+	}()
+
+	// Chờ có giới hạn (bounded polling, không sleep mù) tới khi pg_stat_activity / pg_locks chứng minh
+	// chính backend prunePID đang bị chặn bởi renewPID trên khóa của bảng idempotency_key.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var blocked bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity AS a
+				JOIN pg_locks AS w ON w.pid = a.pid AND NOT w.granted
+				WHERE a.datname = current_database()
+				  AND a.pid = $1
+				  AND $2 = ANY(pg_blocking_pids(a.pid))
+				  AND EXISTS (
+					SELECT 1
+					FROM pg_locks AS rel
+					WHERE rel.pid = a.pid
+					  AND rel.relation = 'idempotency_key'::regclass
+				  )
+			)
+		`, prunePID, renewPID).Scan(&blocked); err != nil {
+			t.Fatalf("poll pg_stat_activity / pg_locks: %v", err)
+		}
+		if blocked {
+			break
+		}
+		select {
+		case err := <-pruneErrCh:
+			t.Fatalf("prune kết thúc sớm trước khi thấy trạng thái chờ khóa hàng (err=%v)", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout chờ prunePID=%d bị chặn bởi renewPID=%d trên khóa hàng idempotency_key", prunePID, renewPID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Commit transaction gia hạn để giải phóng khóa hàng cho lệnh DELETE của prune.
+	if err := renewTx.Commit(ctx); err != nil {
+		t.Fatalf("Commit renewTx: %v", err)
+	}
+
+	select {
+	case err := <-pruneErrCh:
+		if err != nil {
+			t.Fatalf("pruner.Work trả lỗi: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout chờ pruner.Work hoàn tất sau khi commit renewTx")
+	}
+
+	// Bản ghi hết hạn không được gia hạn (otherExpiredKey) phải đã bị xóa.
+	var otherCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, userID, otherExpiredKey).Scan(&otherCount); err != nil {
+		t.Fatalf("count otherExpiredKey: %v", err)
+	}
+	if otherCount != 0 {
+		t.Fatalf("otherExpiredKey count = %d, muốn 0 (phải bị xóa bởi lô prune)", otherCount)
+	}
+
+	// Bản ghi vừa được gia hạn (reclaimedKey) PHẢI còn sống với đúng owner_token, request_hash, expires_at mới.
+	var (
+		gotMethod    string
+		gotPath      string
+		gotHash      []byte
+		gotStatus    string
+		gotOwner     uuid.UUID
+		gotClaimedAt time.Time
+		gotExpiresAt time.Time
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT method, path, request_hash, status, owner_token, claimed_at, expires_at
+		FROM idempotency_key
+		WHERE user_id = $1 AND key = $2
+	`, userID, reclaimedKey).Scan(
+		&gotMethod,
+		&gotPath,
+		&gotHash,
+		&gotStatus,
+		&gotOwner,
+		&gotClaimedAt,
+		&gotExpiresAt,
+	); err != nil {
+		t.Fatalf("bản ghi đã được gia hạn bị xóa mất bởi batch prune (hoặc lỗi truy vấn): %v", err)
+	}
+
+	wantExpiresAt := now.Add(24 * time.Hour)
+	if gotOwner != newOwner {
+		t.Fatalf("owner_token = %v, muốn %v", gotOwner, newOwner)
+	}
+	if !bytes.Equal(gotHash, newHash) {
+		t.Fatalf("request_hash = %x, muốn %x", gotHash, newHash)
+	}
+	if !gotClaimedAt.UTC().Equal(now) {
+		t.Fatalf("claimed_at = %v, muốn %v", gotClaimedAt.UTC(), now)
+	}
+	if !gotExpiresAt.UTC().Equal(wantExpiresAt) {
+		t.Fatalf("expires_at = %v, muốn %v", gotExpiresAt.UTC(), wantExpiresAt)
+	}
+	if gotMethod != "PUT" || gotPath != newPath || gotStatus != "in_progress" {
+		t.Fatalf("method=%q path=%q status=%q, muốn PUT %q in_progress", gotMethod, gotPath, gotStatus, newPath)
+	}
+
+	// Xác nhận FinishIdempotencyKey với owner_token mới vẫn cập nhật thành công 1 hàng sang 'done'.
+	updated, err := gen.New(pool).FinishIdempotencyKey(ctx, gen.FinishIdempotencyKeyParams{
+		StatusCode: 200,
+		Response:   []byte(`{"ok":true}`),
+		UserID:     userID,
+		Key:        reclaimedKey,
+		OwnerToken: newOwner,
+	})
+	if err != nil {
+		t.Fatalf("FinishIdempotencyKey sau khi prune: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("FinishIdempotencyKey updated = %d, muốn 1", updated)
 	}
 }

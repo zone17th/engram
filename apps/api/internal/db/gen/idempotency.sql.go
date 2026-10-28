@@ -163,13 +163,14 @@ func (q *Queries) PruneExpiredIdempotencyKeys(ctx context.Context, now pgtype.Ti
 
 const pruneExpiredIdempotencyKeysBatch = `-- name: PruneExpiredIdempotencyKeysBatch :execrows
 DELETE FROM idempotency_key
-WHERE (user_id, key) IN (
-  SELECT expired.user_id, expired.key
-  FROM idempotency_key AS expired
-  WHERE expired.expires_at < $1
-  ORDER BY expired.expires_at ASC
-  LIMIT $2
-)
+WHERE idempotency_key.expires_at < $1
+  AND (user_id, key) IN (
+    SELECT expired.user_id, expired.key
+    FROM idempotency_key AS expired
+    WHERE expired.expires_at < $1
+    ORDER BY expired.expires_at ASC
+    LIMIT $2
+  )
 `
 
 type PruneExpiredIdempotencyKeysBatchParams struct {
