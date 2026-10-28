@@ -165,7 +165,10 @@ func ConcreteRequestPath(r *http.Request) string {
 		if idx := strings.IndexByte(raw, '?'); idx >= 0 {
 			raw = raw[:idx]
 		}
-		if idx := strings.Index(raw, "://"); idx >= 0 {
+		if strings.HasPrefix(raw, "/") || raw == "*" {
+			return raw
+		}
+		if idx := strings.Index(raw, "://"); idx > 0 && hasValidSchemePrefix(raw[:idx]) {
 			rest := raw[idx+3:]
 			if slash := strings.IndexByte(rest, '/'); slash >= 0 {
 				raw = rest[slash:]
@@ -189,6 +192,27 @@ func ConcreteRequestPath(r *http.Request) string {
 		}
 	}
 	return ""
+}
+
+func hasValidSchemePrefix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		b := s[i]
+		isAlpha := (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+		if i == 0 {
+			if !isAlpha {
+				return false
+			}
+			continue
+		}
+		isDigit := b >= '0' && b <= '9'
+		if !isAlpha && !isDigit && b != '+' && b != '-' && b != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // ComputeIdempotencyFingerprint tính SHA-256(method || 0x00 || path || 0x00 || body).

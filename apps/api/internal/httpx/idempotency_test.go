@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -1304,8 +1305,7 @@ func TestIdempotencyRawReceivedPathFingerprintingAndWireRequests(t *testing.T) {
 	ctx := context.Background()
 
 	var runs atomic.Int32
-	mux := http.NewServeMux()
-	h := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
+	mux := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
 		AppOrigin:     testAppOrigin,
 		Authenticator: env.authn(),
 		CSRF:          strictCSRF{},
@@ -1325,7 +1325,6 @@ func TestIdempotencyRawReceivedPathFingerprintingAndWireRequests(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(resp)
 	}))
-	mux.Handle("/", h)
 
 	readWireReq := func(target, body, idemKey string) *http.Request {
 		t.Helper()
@@ -1458,6 +1457,125 @@ func TestIdempotencyRawReceivedPathFingerprintingAndWireRequests(t *testing.T) {
 	mux.ServeHTTP(recTildeRaw, readWireReq("/api/v1/items/~user/entries", body, keyTilde))
 	if recTildeRaw.Code != http.StatusConflict {
 		t.Fatalf("tilde unencoded with same key: status=%d, muốn 409", recTildeRaw.Code)
+	}
+
+	// 4. BE2-1 / BE2-4 / F6: Origin-form paths chứa `://` trong segment path:
+	// `/api/v1/items/http://one/entries` và `/api/v1/items/http://two/entries` phải giữ nguyên toàn bộ path gốc,
+	// dùng cùng key phải trả 409 idempotency_conflict; `/api/v1/items/http://one` phải giữ nguyên không bị cắt thành `/`.
+	keyOriginScheme := "idem_rawpath_scheme_01"
+	targetOriginOne := "/api/v1/items/http://one/entries"
+	targetOriginTwo := "/api/v1/items/http://two/entries"
+
+	recOriginOne := httptest.NewRecorder()
+	mux.ServeHTTP(recOriginOne, readWireReq(targetOriginOne, body, keyOriginScheme))
+	if recOriginOne.Code != http.StatusOK {
+		t.Fatalf("origin-form with :// one: status=%d body=%s", recOriginOne.Code, recOriginOne.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyOriginScheme).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != targetOriginOne {
+		t.Fatalf("origin-form one saved path = %q, muốn %q", savedPath, targetOriginOne)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, targetOriginOne, []byte(body))) {
+		t.Fatal("origin-form one saved hash không khớp")
+	}
+	// Cùng key nhưng gửi tới `/api/v1/items/http://two/entries` -> 409 idempotency_conflict.
+	recOriginTwoConflict := httptest.NewRecorder()
+	mux.ServeHTTP(recOriginTwoConflict, readWireReq(targetOriginTwo, body, keyOriginScheme))
+	if recOriginTwoConflict.Code != http.StatusConflict {
+		t.Fatalf("origin-form two with same key: status=%d, muốn 409", recOriginTwoConflict.Code)
+	}
+	// Với key riêng, `/api/v1/items/http://two/entries` lưu đúng path của nó.
+	keyOriginSchemeTwo := "idem_rawpath_scheme_02"
+	recOriginTwo := httptest.NewRecorder()
+	mux.ServeHTTP(recOriginTwo, readWireReq(targetOriginTwo, body, keyOriginSchemeTwo))
+	if recOriginTwo.Code != http.StatusOK {
+		t.Fatalf("origin-form two own key: status=%d body=%s", recOriginTwo.Code, recOriginTwo.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyOriginSchemeTwo).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != targetOriginTwo {
+		t.Fatalf("origin-form two saved path = %q, muốn %q", savedPath, targetOriginTwo)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, targetOriginTwo, []byte(body))) {
+		t.Fatal("origin-form two saved hash không khớp")
+	}
+	// `/api/v1/items/http://one` (không có `/` phía sau `http://one`) vẫn giữ nguyên `/api/v1/items/http://one`.
+	keyOriginNoTail := "idem_rawpath_scheme_03"
+	targetOriginNoTail := "/api/v1/items/http://one"
+	recOriginNoTail := httptest.NewRecorder()
+	mux.ServeHTTP(recOriginNoTail, readWireReq(targetOriginNoTail, body, keyOriginNoTail))
+	if recOriginNoTail.Code != http.StatusOK {
+		t.Fatalf("origin-form without trailing slash: status=%d body=%s", recOriginNoTail.Code, recOriginNoTail.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyOriginNoTail).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != targetOriginNoTail {
+		t.Fatalf("origin-form without trailing slash saved path = %q, muốn %q", savedPath, targetOriginNoTail)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, targetOriginNoTail, []byte(body))) {
+		t.Fatal("origin-form without trailing slash saved hash không khớp")
+	}
+
+	// 5. Real absolute-form request-target (có path và không có path), `*`, và fallback khi thiếu RequestURI:
+	keyAbsWithPath := "idem_rawpath_abs_path1"
+	recAbsWithPath := httptest.NewRecorder()
+	mux.ServeHTTP(recAbsWithPath, readWireReq("http://localhost:3000/api/v1/items/a%20b/entries?q=1", body, keyAbsWithPath))
+	if recAbsWithPath.Code != http.StatusOK {
+		t.Fatalf("absolute-form with path: status=%d body=%s", recAbsWithPath.Code, recAbsWithPath.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyAbsWithPath).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != wantSpacePath {
+		t.Fatalf("absolute-form with path saved path = %q, muốn %q", savedPath, wantSpacePath)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, wantSpacePath, []byte(body))) {
+		t.Fatal("absolute-form with path saved hash không khớp")
+	}
+
+	keyAbsNoPath := "idem_rawpath_abs_root1"
+	recAbsNoPath := httptest.NewRecorder()
+	mux.ServeHTTP(recAbsNoPath, readWireReq("http://localhost:3000?q=1", body, keyAbsNoPath))
+	if recAbsNoPath.Code != http.StatusOK {
+		t.Fatalf("absolute-form without path: status=%d body=%s", recAbsNoPath.Code, recAbsNoPath.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyAbsNoPath).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != "/" {
+		t.Fatalf("absolute-form without path saved path = %q, muốn \"/\"", savedPath)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, "/", []byte(body))) {
+		t.Fatal("absolute-form without path saved hash không khớp")
+	}
+
+	// Kiểm tra `*` qua http.ReadRequest và fallback khi thiếu RequestURI.
+	starReq, err := http.ReadRequest(bufio.NewReader(strings.NewReader("OPTIONS * HTTP/1.1\r\nHost: localhost:3000\r\n\r\n")))
+	if err != nil {
+		t.Fatalf("ReadRequest(*): %v", err)
+	}
+	if got := httpx.ConcreteRequestPath(starReq); got != "*" {
+		t.Fatalf("ConcreteRequestPath(*) = %q, muốn \"*\"", got)
+	}
+
+	for _, tc := range []struct {
+		path    string
+		rawPath string
+		want    string
+	}{
+		{path: "/api/v1/items/café/entries", rawPath: "", want: "/api/v1/items/caf%C3%A9/entries"},
+		{path: "/api/v1/items/~user", rawPath: "/api/v1/items/%7euser", want: "/api/v1/items/%7euser"},
+		{path: "/", rawPath: "", want: "/"},
+		{path: "", rawPath: "", want: ""},
+	} {
+		r := &http.Request{URL: &url.URL{Path: tc.path, RawPath: tc.rawPath}}
+		if got := httpx.ConcreteRequestPath(r); got != tc.want {
+			t.Fatalf("fallback ConcreteRequestPath(Path=%q, RawPath=%q) = %q, muốn %q", tc.path, tc.rawPath, got, tc.want)
+		}
 	}
 }
 
