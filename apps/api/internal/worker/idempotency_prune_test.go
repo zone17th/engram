@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -97,6 +98,83 @@ func TestIdempotencyPruneBoundaryAtExpiresAtAndIdempotent(t *testing.T) {
 	}
 	if count != 1 || remainingKey != "key_future_after_now" {
 		t.Fatalf("sau khi dịch 1s: count=%d key=%q, muốn 1 và key_future_after_now", count, remainingKey)
+	}
+
+	// Kiểm tra xóa theo lô giới hạn (batching):
+	// Chèn 7 hàng đã hết hạn (< now), 1 hàng đúng tại biên (== now), và 1 hàng ở tương lai (> now).
+	// Với BatchSize=3, MaxBatches=1: một lần chạy chỉ xóa đúng 3 hàng hết hạn, còn lại 4 hàng hết hạn + 2 hàng chưa hết hạn (tổng 6).
+	// Sau đó chạy tiếp với BatchSize=3, MaxBatches=5: vòng lặp xóa hết 4 hàng hết hạn còn lại (lô 3 + lô 1 < 3 rồi dừng),
+	// giữ nguyên hàng ở biên và hàng tương lai (tổng 2).
+	if _, err := pool.Exec(ctx, `DELETE FROM idempotency_key WHERE user_id = $1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	curNow := clk.Now().UTC()
+	for i := 1; i <= 7; i++ {
+		k := fmt.Sprintf("batch_expired_key_%02d", i)
+		exp := curNow.Add(-time.Duration(i) * time.Second)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO idempotency_key (
+				user_id, key, method, path, request_hash, status, owner_token,
+				claimed_at, expires_at, status_code, response
+			) VALUES ($1, $2, 'POST', '/api/v1/vault', '\x01', 'done', $3, $4, $5, 201, '{"version":1}'::jsonb)
+		`, userID, k, uuid.New(), curNow.Add(-24*time.Hour), exp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []struct {
+		key       string
+		expiresAt time.Time
+	}{
+		{key: "batch_boundary_at_now", expiresAt: curNow},
+		{key: "batch_future_after_now", expiresAt: curNow.Add(10 * time.Second)},
+	} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO idempotency_key (
+				user_id, key, method, path, request_hash, status, owner_token,
+				claimed_at, expires_at, status_code, response
+			) VALUES ($1, $2, 'POST', '/api/v1/vault', '\x01', 'done', $3, $4, $5, 201, '{"version":1}'::jsonb)
+		`, userID, row.key, uuid.New(), curNow.Add(-24*time.Hour), row.expiresAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Lần chạy giới hạn 1 lô (BatchSize=3, MaxBatches=1): chỉ xóa tối đa 3 hàng.
+	oneBatchJob := &river.Job[worker.IdempotencyPruneArgs]{
+		Args: worker.IdempotencyPruneArgs{BatchSize: 3, MaxBatches: 1},
+	}
+	if err := pruner.Work(ctx, oneBatchJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1`, userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 6 {
+		t.Fatalf("sau 1 lô BatchSize=3: còn %d hàng, muốn 6 (4 expired + 1 boundary + 1 future)", count)
+	}
+
+	// Lần chạy tiếp theo với BatchSize=3, MaxBatches=5: vét sạch 4 hàng hết hạn còn lại qua 2 lô (3 + 1),
+	// giữ nguyên 2 hàng ở biên và tương lai.
+	drainJob := &river.Job[worker.IdempotencyPruneArgs]{
+		Args: worker.IdempotencyPruneArgs{BatchSize: 3, MaxBatches: 5},
+	}
+	if err := pruner.Work(ctx, drainJob); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := pool.Query(ctx, `SELECT key FROM idempotency_key WHERE user_id = $1 ORDER BY key ASC`, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	var survivors []string
+	for r2.Next() {
+		var k string
+		if err := r2.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		survivors = append(survivors, k)
+	}
+	if len(survivors) != 2 || survivors[0] != "batch_boundary_at_now" || survivors[1] != "batch_future_after_now" {
+		t.Fatalf("sau khi drain các lô: còn %v, muốn [batch_boundary_at_now batch_future_after_now]", survivors)
 	}
 }
 

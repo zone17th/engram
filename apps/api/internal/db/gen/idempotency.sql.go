@@ -161,6 +161,30 @@ func (q *Queries) PruneExpiredIdempotencyKeys(ctx context.Context, now pgtype.Ti
 	return result.RowsAffected(), nil
 }
 
+const pruneExpiredIdempotencyKeysBatch = `-- name: PruneExpiredIdempotencyKeysBatch :execrows
+DELETE FROM idempotency_key
+WHERE (user_id, key) IN (
+  SELECT expired.user_id, expired.key
+  FROM idempotency_key AS expired
+  WHERE expired.expires_at < $1
+  ORDER BY expired.expires_at ASC
+  LIMIT $2
+)
+`
+
+type PruneExpiredIdempotencyKeysBatchParams struct {
+	Now        pgtype.Timestamptz
+	BatchLimit int32
+}
+
+func (q *Queries) PruneExpiredIdempotencyKeysBatch(ctx context.Context, arg PruneExpiredIdempotencyKeysBatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneExpiredIdempotencyKeysBatch, arg.Now, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const pruneExpiredIdempotencyKeysByUser = `-- name: PruneExpiredIdempotencyKeysByUser :execrows
 DELETE FROM idempotency_key
 WHERE user_id = $1
