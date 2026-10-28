@@ -42,6 +42,7 @@
     <button data-target="load"   aria-pressed="false">Đang tải</button>
     <button data-target="err"    aria-pressed="false">Lỗi</button>
     <button data-target="auth"   aria-pressed="false">Auth/P02</button>
+    <button data-target="vault"  aria-pressed="false">Vault/P03</button>
     <button data-target="off"    aria-pressed="false">Ngoại tuyến</button>
     <button data-target="degr"   aria-pressed="false">Giảm chức năng</button>
   </div>
@@ -230,6 +231,129 @@
       <div role="alert" class="auth-alert mb-0">
         <p class="text-[14px] font-semibold m-0 mb-1">Session unavailable</p>
         <p class="text-[13px] m-0">We could not refresh your session after a network error. Your cached private data stays hidden until you sign in again or connectivity returns.</p>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- VAULT / P03                                                    -->
+  <!-- ============================================================= -->
+  <section data-view="vault" hidden class="flex flex-col gap-3">
+
+    <!-- 1. 412 version_mismatch -->
+    <div class="card p-5" id="vault-version-mismatch" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Xung đột phiên bản · 412 version_mismatch</p>
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1">Vault vừa thay đổi ở tab hoặc thiết bị khác</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Chưa có gì được lưu trong thao tác này; các recovery key vừa sinh trong bước dở sẽ bị bỏ. Tải lại để lấy trạng thái vault mới nhất rồi thực hiện lại.
+        </p>
+      </div>
+      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
+        <strong>Vault changed in another tab or device.</strong> Nothing was saved, and any keys generated in this failed step are discarded. Reload to fetch the latest vault state.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đã tải lại trạng thái vault')">Tải lại · <span lang="en">Reload</span></button>
+    </div>
+
+    <!-- 2a. Re-auth expired mid-flow — password user -->
+    <div class="card p-5" id="vault-reauth-expired-password" style="border-color:var(--warning)">
+      <p class="t-label mb-2" style="color:var(--muted)">Hết hạn xác thực giữa luồng · Tài khoản có mật khẩu</p>
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1">Xác thực lại đã hết hạn trước khi lưu</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Grant xác thực còn dưới 60 giây hoặc đã hết hạn. Nhập lại mật khẩu đăng nhập ngay tại đây để tiếp tục — các khoá đang tính trong Worker vẫn được giữ nguyên, không cần bắt đầu lại.
+        </p>
+      </div>
+      <p class="text-[12px] m-0 mb-4" style="color:var(--muted)" lang="en">
+        <strong>Re-authentication expired before saving (password account).</strong> Confirm your login password in place to continue; secrets already prepared in the Worker are kept without restarting the flow.
+      </p>
+      <label class="field mb-3">
+        <span class="field-label" for="vault-reauth-pw">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password (not vault passphrase)</span></span>
+        <span class="field-password block">
+          <input id="vault-reauth-pw" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
+          <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+        </span>
+      </label>
+      <div class="flex gap-2 flex-wrap">
+        <button type="button" class="btn btn-primary btn-sm" onclick="SAK.toast('Đã xác nhận lại · tiếp tục lưu')">Xác nhận và tiếp tục · <span lang="en">Confirm &amp; continue</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Huỷ · <span lang="en">Cancel</span></button>
+      </div>
+    </div>
+
+    <!-- 2b. Re-auth expired mid-flow — OAuth-only user -->
+    <div class="card p-5" id="vault-reauth-expired-oauth" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Hết hạn xác thực giữa luồng · Tài khoản chỉ dùng OAuth</p>
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1">Đã hết thời gian xác thực cho thao tác này</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Xác thực lại qua Google chuyển trang sẽ làm mất trạng thái trong trình duyệt, nên các bí mật vừa nhập trong luồng này đã được xoá và chưa có gì được lưu. Hãy bắt đầu lại thao tác từ đầu.
+        </p>
+      </div>
+      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
+        <strong>Time ran out (OAuth-only account).</strong> Re-authenticating with your OAuth provider navigates away from this page, so entered secrets were dropped and nothing was saved. Restart the flow to get a fresh grant first.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Bắt đầu lại thao tác từ bước xác thực')">Bắt đầu lại · <span lang="en">Start over</span></button>
+    </div>
+
+    <!-- 3. 429 rate_limited for vault actions -->
+    <div class="card p-5" id="vault-rate-limited" style="border-color:var(--warning)">
+      <p class="t-label mb-2" style="color:var(--muted)">Giới hạn tần suất vault · 429 rate_limited</p>
+      <div role="alert" class="auth-alert mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Thử quá nhiều lần cho thao tác vault này</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Thử lại sau <span class="mono">Retry-After: 48s</span> (hiển thị tĩnh). Chúng tôi không hiển thị số lần thử còn lại hay số recovery key còn dùng được.
+        </p>
+      </div>
+      <p class="text-[12px] m-0 mb-2" style="color:var(--muted)">
+        Giới hạn theo tài khoản: khôi phục bằng recovery key 5 lần / 15 phút; lấy tuỳ chọn passkey 20 lần / phút; thao tác đổi khoá nhạy cảm 10 lần / phút. Mở khoá bằng passphrase chạy ngoại tuyến trong trình duyệt nên không có giới hạn từ máy chủ.
+      </p>
+      <p class="text-[12px] m-0" style="color:var(--muted)" lang="en">
+        <strong>Too many vault requests (429 rate_limited).</strong> Please wait <span class="mono">Retry-After: 48s</span> before trying again. Remaining attempts or remaining recovery keys are never shown. (Passphrase unlock runs offline in the browser and has no server rate limit.)
+      </p>
+    </div>
+
+    <!-- 4. 503 vault_mutations_disabled (kill switch) -->
+    <div class="card p-5" id="vault-mutations-disabled" style="border-color:var(--warning)">
+      <p class="t-label mb-2" style="color:var(--muted)">Tạm dừng thay đổi khoá · 503 vault_mutations_disabled</p>
+      <div role="alert" class="auth-alert mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Thao tác thay đổi khoá vault đang tạm dừng</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Hệ thống đang tạm ngưng tạo vault mới, đổi passphrase, khôi phục, tạo lại/xoay recovery key, thêm passkey và đặt lại vault để bảo trì an toàn. Mở khoá vault và đọc dữ liệu đã lưu vẫn hoạt động bình thường.
+        </p>
+      </div>
+      <p class="text-[12px] m-0" style="color:var(--muted)" lang="en">
+        <strong>Vault key changes are temporarily paused (503 vault_mutations_disabled).</strong> Creating a vault, changing your passphrase, completing recovery, regenerating or rotating recovery keys, adding passkeys, and resetting the vault are temporarily disabled. Unlocking your vault and reading existing entries still work normally.
+      </p>
+    </div>
+
+    <!-- 5. Vault locked by another tab / auto-lock (BroadcastChannel lock) -->
+    <div class="rounded-md p-4" id="vault-locked-broadcast" role="status" style="background:var(--pale-accent)">
+      <p class="t-label mb-1.5" style="color:var(--muted)">Đồng bộ đa tab / tự khoá · BroadcastChannel sabk.vault</p>
+      <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
+        <strong>Vault đã tự khoá hoặc vừa được khoá từ một tab khác.</strong> Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem hoặc sửa nội dung entry.
+      </p>
+      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
+        <strong>Vault locked by another tab or auto-lock.</strong> Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view or edit entry contents.
+      </p>
+      <a href="unlock.html" class="btn btn-primary btn-sm no-underline">Mở khoá lại · <span lang="en">Unlock vault</span></a>
+    </div>
+
+    <!-- 6. Insufficient memory to open the vault (Argon2id 64 MiB derive failure) -->
+    <div class="card p-5" id="vault-insufficient-memory" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Lỗi cấp phát bộ nhớ KDF · Argon2id 64 MiB</p>
+      <div role="alert" class="auth-alert mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Thiết bị không đủ bộ nhớ để mở vault</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ trong Web Worker để tính khoá từ passphrase. Đây không phải lỗi sai passphrase và chưa có dữ liệu nào bị thay đổi. Hãy đóng bớt tab/ứng dụng, dùng passkey hoặc thiết bị đã nhớ, hoặc mở trên một thiết bị khác.
+        </p>
+      </div>
+      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
+        <strong>Not enough memory to open the vault.</strong> Your browser could not allocate 64 MiB in the Web Worker to derive the key from your passphrase. This does not mean your passphrase is wrong. Close other tabs or apps, unlock with a passkey or remembered device, or try another device.
+      </p>
+      <div class="flex gap-2 flex-wrap">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang thử tính lại khoá…')">Thử lại · <span lang="en">Try again</span></button>
+        <a href="unlock.html" class="btn btn-tertiary btn-sm no-underline">Dùng passkey · <span lang="en">Use passkey</span></a>
       </div>
     </div>
 

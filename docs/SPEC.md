@@ -1018,12 +1018,12 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Landing | `mockups/landing.html` | §11.1 (marketing route) |
 | Tìm kiếm / vỏ app | `mockups/index.html` | §7.2 |
 | Chi tiết mục | `mockups/item.html` | §7.3, §7.4, §7.5 |
-| Cài đặt | `mockups/settings.html` | §7.6 |
+| Cài đặt (tài khoản P02; `#baomat` P03: `#passDlg`, `#rkDlg`, `#rotateDlg`, `#passkeyAddDlg`, `#resetDlg`; tìm kiếm P05) | `mockups/settings.html` | §7.6 |
 | Đăng ký / đăng nhập / OAuth return / re-auth / password-enroll | `mockups/auth.html` | §3.1, §10.2 |
-| Onboarding vault (passphrase → 10 RK → passkey) | `mockups/onboarding.html` | §3.2, §5.2 |
-| Mở khoá vault | `mockups/unlock.html` | §3.3, §3.14 |
-| Quên passphrase / recovery key | `mockups/recovery.html` | §3.10 |
-| Empty / lỗi / offline / degraded | `mockups/states.html` | §7.7 |
+| Onboarding vault (`pp`, `pp-oom` → 10 RK `rk`, `rk-exists` → passkey `pk`) | `mockups/onboarding.html` | §3.2, §5.2 |
+| Mở khoá vault (`new`, `pk`, `known`, `err`, `err-pk`) | `mockups/unlock.html` | §3.3, §3.14 |
+| Quên passphrase / recovery key (`s1`, `s2`, `s3`, `s3-err`, `s4`) | `mockups/recovery.html` | §3.10 |
+| Empty / lỗi / Auth P02 / Vault P03 / offline / degraded (`empty`, `load`, `err`, `auth`, `vault`, `off`, `degr`) | `mockups/states.html` | §7.7 |
 | Tài liệu và quyền riêng tư | `mockups/docs.html` | §11.1, §5.1 |
 
 **Phân vai khi mockup và spec lệch nhau:**
@@ -1046,6 +1046,7 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 - **Bảng JSON không mất mát**: cột theo thứ tự khoá trong nguồn; hàng có khoá trùng rơi về bảng field/value; số lớn hiện nguyên văn (§7.4).
 - **Khoá vault chỉ che nội dung entry** — tên mục, tag, số entry vẫn đọc được (§5.1).
 - **Đổi passphrase không cần passphrase cũ**; "Đặt lại vault" nằm sau danh sách đường mở khoá phải thử trước (§3.9, §3.10).
+- **Tạo lại (regenerate) recovery key chỉ hiện key mới cho các slot đang trống** (theo thứ tự slot nhỏ nhất trước); **"Xoay cả 10" (`#rotateDlg`) thay cho nút thu hồi cũ** để cấp bộ 10 key mới trên live server; **đổi passphrase chỉ bọc lại `wrapK` nên các recovery key, bản in cũ và passkey vẫn mở được vault** (§3.9, §3.12, §5.9).
 
 **Ngoài phạm vi bộ mockup hiện tại** — phải thiết kế thêm trước khi implement: share dialog/recipient status/shared-with-me (P08-A), extension popup/options/unlock (P08-B), màn quản lý API token (P08-C). Mockup mới bổ sung vào đúng thư mục này và cập nhật bảng trên.
 
