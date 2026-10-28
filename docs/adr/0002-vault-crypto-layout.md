@@ -1,0 +1,244 @@
+# ADR 0002 — Bố cục byte crypto vault, KDF, recovery key và ranh giới bộ nhớ Worker
+
+- Trạng thái: Đề xuất — chờ review độc lập và chữ ký chủ repo (plan mục 5)
+- Ngày: 2026-10-28
+- Phase: P03
+- Phụ thuộc: P02 HEAD `9022c0b` ([ADR 0001](0001-auth-session-va-reauth-assurance.md), `authctx.Principal`, `httpx.RequireSession/RequireCSRF/RequireReauth`, `auth.Grants`, `auth.ReauthActions`, `auth.VaultStatus`, `use-reauth.tsx`)
+- Không phải bằng chứng: ADR này chốt contract thiết kế trước khi viết code crypto; kết quả benchmark mobile thực tế (Task 5) và test vector chéo TS ↔ Go (Task 6–7) sẽ được bổ sung khi thực thi sau khi qua gate mục 5.
+
+## Bối cảnh
+
+SPEC v0.7 (§5, §8, §9) và tài liệu phase [P03](../phases/P03-vault.md) đã đặt ra mô hình mã hoá đầu-cuối (E2E) cho `engram` với tiền tố giao thức `sabk.`: một Vault Key (`VK`) 32 byte ngẫu nhiên được bọc độc lập bởi KEK (từ passphrase qua Argon2id), tối đa 10 recovery key (`RK`), N passkey WebAuthn PRF (`PWK`) và tuỳ chọn `DevKey` trong IndexedDB. Tuy nhiên, trước khi viết code `lib/crypto/**`, `internal/vault/**` và sinh bộ vector kiểm thử chéo (plan Task 5–7), dự án cần chốt chính xác tới từng byte và quy tắc kiểm tra cho:
+
+1. Bố cục nhị phân (byte layout) của các bản wrap, cấu trúc AAD có gắn byte `version` và toàn bộ nhãn miền `sabk.*` (thay thế các nhãn phác thảo cũ trong SPEC §5.4).
+2. Cách suy cặp khoá bất đối xứng X25519/Ed25519 từ seed và bọc private key.
+3. Quy ước biểu diễn dữ liệu nhị phân trên JSON/DB, định danh `vault_key_id` và chuẩn hoá JCS (RFC 8785) cho envelope.
+4. Tham số Argon2id cùng cận trên bảo vệ client/server, quy tắc salt mới khi rewrap/recover và chính sách không hạ cấp tham số.
+5. Phương pháp đo benchmark Argon2id 64 MiB trên thiết bị di động và cách phân tách lỗi cấp phát bộ nhớ với lỗi sai passphrase.
+6. Định dạng hiển thị, thuật toán chuẩn hoá một hàm duy nhất, tách miền băm và quản lý slot `1…10` của recovery key.
+7. Ngữ nghĩa tái sử dụng grant re-auth P02 trong TTL 5 phút và thứ tự lấy grant trước khi nạp bí mật vào Worker.
+8. Lý do kiến trúc khiến thao tác mở khoá bằng passphrase không thể bị giới hạn tốc độ (rate limit) thực sự bởi server.
+9. Giới hạn của việc xoá bộ nhớ (memory wiping) trong môi trường JavaScript và cơ chế `generation` chống race condition khi khoá vault.
+10. Đường đi bắt buộc của passphrase, RK và PWK qua main thread vào Web Worker bằng `ArrayBuffer` transferable.
+11. Danh sách thư viện phụ thuộc mới được ghim phiên bản chính xác cho P03.
+
+Nguyên tắc bất biến xuyên suốt: **Server không bao giờ nhận passphrase (ở bất kỳ dạng nào), KEK, VK, plaintext RK, PWK hay private key chưa wrap; các giá trị này cũng không bao giờ xuất hiện trong log, audit, telemetry hay thông báo lỗi.** Server chỉ lưu và xử lý các bản wrap opaque, `lookup_hash`, tham số KDF công khai, public key và metadata credential.
+
+## Quyết định
+
+### 1. Bố cục byte (byte layout), AAD và nhãn giao thức `sabk.*`
+
+Mọi bản wrap gửi lên server sử dụng thuật toán AEAD `crypto_aead_xchacha20poly1305_ietf` của libsodium (khoá 32 byte, nonce ngẫu nhiên 24 byte sinh mới cho mỗi lần seal, authentication tag 16 byte). Byte đầu tiên của mọi bản wrap trên server là `version(1) = 0x01`, và byte `version` này đồng thời được đưa vào cuối chuỗi AAD (sau byte phân cách `0x00`). Thiết kế này đảm bảo nếu byte `version` ở đầu blob bị sửa đổi hoặc đọc nhầm sang phiên bản layout khác mà không có key tương ứng, bước xác thực AEAD sẽ thất bại ngay lập tức (fail closed).
+
+Bảng bố cục byte và AAD chuẩn cho toàn bộ hệ thống (plan mục 2.1):
+
+| Loại blob | Bố cục byte (Byte layout) | Độ dài | AAD (Additional Authenticated Data) |
+|---|---|---|---|
+| Wrap VK bằng KEK (`vault_key_wrapped_by_kek`) | `version(1)=0x01` ‖ `nonce(24)` ‖ `ciphertext(32)` ‖ `tag(16)` | Đúng **73 B** (`1 + 24 + 32 + 16`) | `UTF8("sabk.vk.kek.v1")` ‖ `0x00` ‖ `0x01` |
+| Wrap VK bằng RK (`vault_recovery_key.wrap`) | `version(1)=0x01` ‖ `nonce(24)` ‖ `ciphertext(32)` ‖ `tag(16)` | Đúng **73 B** (`1 + 24 + 32 + 16`) | `UTF8("sabk.vk.rk.v1")` ‖ `0x00` ‖ `0x01` |
+| Wrap VK bằng PRF (`vault_passkey.vk_wrap`) | `version(1)=0x01` ‖ `nonce(24)` ‖ `ciphertext(32)` ‖ `tag(16)` | Đúng **73 B** (`1 + 24 + 32 + 16`) | `UTF8("sabk.vk.prf.v1")` ‖ `0x00` ‖ `0x01` |
+| Wrap cặp private key (`private_keys_wrapped`) | `version(1)=0x01` ‖ `nonce(24)` ‖ `ciphertext(64)` ‖ `tag(16)` (plaintext = `x25519_seed(32)` ‖ `ed25519_seed(32)`, bọc bằng `VK`) | Đúng **105 B** (`1 + 24 + 64 + 16`) | `UTF8("sabk.priv.v1")` ‖ `0x00` ‖ `0x01` |
+| Entry (`entry.envelope` JSON + `entry.ciphertext` bytea) | `ciphertext` là output AEAD thuần (`ciphertext_body` ‖ `tag(16)`), **không** gắn prefix `version` hay `nonce` vào bytea vì đã nằm trong `envelope` | `octet_length(ciphertext) ≤ 263168` (trần plaintext 256 KiB = `262144` B + slack AEAD) | `UTF8("sabk.entry.v1")` ‖ `0x00` ‖ `UTF8(JCS(envelope))` ‖ `0x00` ‖ `ASCII(entry_id)` |
+| DevKey wrap (chỉ lưu ở IndexedDB `sabk.device`, không gửi server) | WebCrypto `AES-GCM` 256-bit: `iv(12)` ‖ `ciphertext(32)` ‖ `tag(16)` | Đúng **60 B** (`12 + 32 + 16`) | `UTF8("sabk.devkey.v1")` ‖ `0x00` ‖ `UTF8(user_id)` ‖ `0x00` ‖ `UTF8(vault_key_id)` |
+
+Bảng tổng hợp toàn bộ nhãn miền và kênh giao thức có tiền tố `sabk.` được chốt trong P03:
+
+| Nhãn / Tên định danh | Ngữ cảnh sử dụng | Cấu trúc đầu vào đầy đủ |
+|---|---|---|
+| `sabk.vk.kek.v1` | AAD khi seal/open `VK` bằng `KEK` | `UTF8("sabk.vk.kek.v1") ‖ 0x00 ‖ version(1)` |
+| `sabk.vk.rk.v1` | AAD khi seal/open `VK` bằng `wrap_key` của RK | `UTF8("sabk.vk.rk.v1") ‖ 0x00 ‖ version(1)` |
+| `sabk.vk.prf.v1` | AAD khi seal/open `VK` bằng `PWK` (WebAuthn PRF) | `UTF8("sabk.vk.prf.v1") ‖ 0x00 ‖ version(1)` |
+| `sabk.priv.v1` | AAD khi seal/open `x25519_seed ‖ ed25519_seed` bằng `VK` | `UTF8("sabk.priv.v1") ‖ 0x00 ‖ version(1)` |
+| `sabk.entry.v1` | AAD khi seal/open thân entry bằng `VK` (SPEC §5.5) | `UTF8("sabk.entry.v1") ‖ 0x00 ‖ UTF8(JCS(envelope)) ‖ 0x00 ‖ ASCII(entry_id)` |
+| `sabk.devkey.v1` | AAD khi WebCrypto `AES-GCM` wrap/unwrap `VK` bằng `DevKey` | `UTF8("sabk.devkey.v1") ‖ 0x00 ‖ UTF8(user_id) ‖ 0x00 ‖ UTF8(vault_key_id)` |
+| `sabk.rk.lookup.v1` | Tiền tố tách miền khi tính `lookup_hash` của RK bằng BLAKE2b-256 | `UTF8("sabk.rk.lookup.v1") ‖ UTF8(rk_norm)` |
+| `sabk.rk.wrap.v1` | Tiền tố tách miền khi tính `wrap_key` 32 B của RK bằng BLAKE2b-256 | `UTF8("sabk.rk.wrap.v1") ‖ UTF8(rk_norm)` |
+| `sabk.device` | Tên database IndexedDB lưu `DevKey` và bản wrap thiết bị (SPEC §5.3, [ADR 0003](0003-webauthn-prf-va-devkey.md)) | Namespace bản ghi theo `(user_id, vault_key_id)` |
+| `sabk.vault` | Tên kênh `BroadcastChannel` đồng bộ trạng thái khoá/vault giữa các tab ([ADR 0003](0003-webauthn-prf-va-devkey.md)) | Tách biệt với kênh auth của `lib/auth/broadcast.ts` |
+
+Các nhãn `sabk.vk.kek.v1`, `sabk.vk.rk.v1`, `sabk.vk.prf.v1` và `sabk.priv.v1` thay thế dứt điểm các chuỗi không có tiền tố (`"vault-key-v1"`, `"vault-key-rk-v1"`, `"vault-key-passkey-v1"`, `"priv-keys-v1"`) từng viết tạm trong SPEC §5.4/§5.9/§5.10.
+
+### 2. Suy cặp khoá X25519/Ed25519 từ seed và kiểm chứng trước khi gửi
+
+Khi khởi tạo vault (onboarding hoặc tạo lại sau reset), Web Worker sinh hai seed độc lập từ CSPRNG: `x25519_seed` (32 byte) và `ed25519_seed` (32 byte).
+
+- Cặp khoá X25519 được suy ra tất định bằng hàm chuẩn của libsodium: `crypto_box_seed_keypair(x25519_seed)` → trả về `x25519_public` (32 byte) và secret key tương ứng.
+- Cặp khoá Ed25519 được suy ra tất định bằng hàm chuẩn của libsodium: `crypto_sign_seed_keypair(ed25519_seed)` → trả về `ed25519_public` (32 byte) và secret key tương ứng.
+- Ở phía Go (khi chạy test vector chéo tại `internal/vault/vectors_test.go`), quá trình suy khoá tương đương dùng `golang.org/x/crypto`: với Ed25519 dùng `ed25519.NewKeyFromSeed(ed25519_seed)`, và với X25519 thực hiện đúng quy tắc của `crypto_box_seed_keypair` trong libsodium (băm `SHA-512(x25519_seed)`, lấy 32 byte đầu tiên áp clamping Curve25519 rồi nhân vô hướng cơ sở `curve25519.X25519(scalar, curve25519.Basepoint)`).
+- Để tránh lưu trữ dư thừa và đảm bảo tính nguyên tử, Worker ghép nối trực tiếp hai seed theo thứ tự cố định `x25519_seed(32) ‖ ed25519_seed(32)` thành một mảng 64 byte duy nhất, rồi seal bằng `VK` với AAD `UTF8("sabk.priv.v1") ‖ 0x00 ‖ 0x01` tạo ra `private_keys_wrapped` dài đúng 105 byte.
+- **Quy tắc tự kiểm chứng (self-check invariant) trước khi POST:** Trong mọi lệnh tạo wrap mới (`createVault`, `rewrap`, `makeRecoveryKeys`, `wrapForPasskey`, `wrapForDevice`), Worker bắt buộc mở thử lại (open/unwrap) từng bản wrap vừa tạo để đối chiếu ra đúng `VK`. Riêng với `createVault`, Worker còn phải mở lại `private_keys_wrapped` bằng `VK`, suy lại hai public key từ hai seed vừa giải mã và kiểm tra khớp từng byte với `x25519_public` và `ed25519_public`. Nếu bất kỳ phép kiểm tra nào lệch, Worker trả lỗi nội bộ và client tuyệt đối không gọi `POST /vault` hay các endpoint mutation.
+
+### 3. Biểu diễn dữ liệu (encoding), định danh `vault_key_id` và chuẩn hoá JCS
+
+- **Base64url không padding:** Mọi trường nhị phân truyền qua JSON (các bản wrap, `salt` trong `vault.kdf`, `x25519_public`, `ed25519_public`, `lookup_hash`, `prf_salt`, `nonce`, `ciphertext`, `client_data_json`, `attestation_object`) đều được mã hoá bằng **base64url không có ký tự đệm `=`** (RFC 4648 §5, bảng chữ cái `A-Z`, `a-z`, `0-9`, `-`, `_`).
+- **Kiểm tra nghiêm ngặt ở Server và Client:** Phía Go dùng `base64.RawURLEncoding` ở chế độ strict: từ chối mọi chuỗi có dấu `=`, ký tự thuộc bảng base64 chuẩn (`+`, `/`), khoảng trắng, ký tự lạ, các bit dư khác 0 ở cuối chuỗi hoặc độ dài byte sau giải mã không khớp thông số của trường đó. Trong PostgreSQL, tất cả các trường nhị phân này lưu dưới kiểu cột `bytea`. Server kiểm tra độ dài byte và byte đầu `version == 0x01` của mọi bản wrap trên **tất cả** các route nhận wrap bằng một validator dùng chung (`internal/vault/wrap.go`), trả mã lỗi `400 vault_wrap_invalid` khi vi phạm.
+- **Định danh `vault_key_id`:** Do server sinh bằng CSPRNG khi xử lý `POST /vault` theo định dạng `"vk:" + base64url(16 B ngẫu nhiên)` (tổng cộng 25 ký tự ASCII, khớp chính xác biểu thức chính quy `^vk:[A-Za-z0-9_-]{22}$`). Giá trị này duy nhất toàn cục, giữ nguyên qua các lần rewrap/recover/rotate RK, chỉ thay đổi khi reset vault (`DELETE /vault` rồi tạo lại), và được client dùng làm trường `key_id` trong envelope của entry cũng như phần đầu của thẻ điều kiện `If-Match: "<vault_key_id>:<version>"`.
+- **Envelope entry và JCS (RFC 8785):** Theo SPEC §5.5 và plan mục 2.1, `entry.envelope` (lưu ở cột `jsonb`) ở phiên bản 1 là một JSON object gồm **đúng 5 trường bắt buộc**:
+  - `v`: số nguyên JSON `1`.
+  - `alg`: chuỗi `"xchacha20poly1305-ietf"`.
+  - `key_id`: chuỗi khớp `vault_key_id` hiện tại của vault.
+  - `nonce`: chuỗi base64url không padding của đúng 24 byte.
+  - `ct_enc`: chuỗi `"utf8"` (luôn được lưu và trả về, không tự động điền mặc định sau khi mã hoá).
+  - Cả TS (`apps/web/lib/crypto/envelope.ts`) và Go (`apps/api/internal/vault/envelope.go`) phải chạy bộ phân tích từ vựng (tokenizer) JSON đã giải mã chuỗi thoát (escape) để **từ chối mọi object có khoá trùng lặp (duplicate keys)** (ví dụ `"ct_enc"` xuất hiện hai lần dưới dạng thường và dạng `\u0063t_enc`), trường thừa, trường thiếu hoặc sai kiểu dữ liệu **trước khi** chuyển thành map hoặc đưa vào `jsonb`.
+  - Vì PostgreSQL `jsonb` không giữ thứ tự trường ban đầu, cả hai phía luôn chuẩn hoá object 5 trường đã qua kiểm tra bằng **RFC 8785 JSON Canonicalization Scheme (JCS)** trước khi ghép vào AAD: `UTF8("sabk.entry.v1") ‖ 0x00 ‖ UTF8(JCS(envelope)) ‖ 0x00 ‖ ASCII(entry_id)` (trong đó `entry_id` là UUID v4 chữ thường dạng `8-4-4-4-12` do client sinh trước khi seal và được server giữ nguyên). JCS chỉ áp dụng cho `entry.envelope`, tuyệt đối không áp dụng cho nội dung JSON bên trong `entry.ciphertext` (vốn giữ nguyên văn bản gốc và source span theo SPEC §3.7).
+
+### 4. Tham số KDF (Argon2id), cận trên và điểm lệch gate 4
+
+Trường `vault.kdf` lưu trên bảng `vault` (kiểu `jsonb`) và truyền qua API là một JSON object có **đúng 5 trường bắt buộc**:
+
+```json
+{
+  "alg": "argon2id13",
+  "ops": 3,
+  "mem": 67108864,
+  "parallelism": 1,
+  "salt": "<base64url không padding của 16 byte>"
+}
+```
+
+Các ràng buộc kiểm tra ở cả server (`internal/vault/kdf.go`) và client Worker (`lib/crypto/worker.ts`):
+
+- Không chấp nhận thiếu trường, thừa trường hoặc trùng khoá JSON; các trường số (`ops`, `mem`, `parallelism`) phải là số nguyên JSON (integer).
+- `alg`: bắt buộc bằng `"argon2id13"` (tương ứng `crypto_pwhash_ALG_ARGON2ID13` = Argon2id v1.3 trong libsodium, dẫn xuất khoá `KEK` dài 32 byte).
+- `ops` (`opslimit`): số nguyên trong khoảng **`3 ≤ ops ≤ 10`**.
+- `mem` (`memlimit`): số nguyên tính theo byte trong khoảng **`67108864 ≤ mem ≤ 268435456`** (tức từ **64 MiB** đến **256 MiB**).
+- `parallelism`: bắt buộc bằng **`1`**.
+- `salt`: chuỗi base64url không padding giải mã ra đúng **16 byte** (`crypto_pwhash_SALTBYTES`).
+- Trong phạm vi P03, client khi tạo vault mới, rewrap hoặc recover luôn khởi tạo ở mức cơ sở (`ops = 3`, `mem = 67108864` = 64 MiB, `parallelism = 1`) và UI chưa cung cấp tuỳ chọn nâng tham số; cận trên (`ops ≤ 10`, `mem ≤ 256 MiB`) đóng vai trò hàng rào bảo vệ chống giá trị bất thường hoặc tấn công làm cạn kiệt tài nguyên (DoS/OOM trên thiết bị mở khoá).
+- **Fail closed ở Client:** Client Worker kiểm tra nghiêm ngặt các cận trên và cận dưới này trước khi gọi `crypto_pwhash`. Ngay cả khi server bị xâm phạm hoặc trả về `vault.kdf` có tham số nằm ngoài khoảng (`ops` ngoài `3…10`, `mem` ngoài `64 MiB…256 MiB`, `parallelism ≠ 1`, `alg ≠ "argon2id13"`, salt khác 16 B), Worker lập tức từ chối thực thi KDF và báo lỗi, không bao giờ hạ tham số hay cấp phát vượt trần. Server từ chối request chứa KDF sai quy cách với mã `400 vault_kdf_invalid`.
+- **Điểm lệch gate 4 (KDF memory cap 256 MiB):** SPEC §5.4 chỉ ghi tham số cố định 64 MiB và cho phép nâng về sau nhưng chưa ấn định trần bộ nhớ tối đa; việc chốt cận trên cứng `mem ≤ 256 MiB` (và `ops ≤ 10`) là điểm lệch số 4 của crypto gate — **chờ chủ repo ký duyệt (plan mục 5)** (pending owner sign-off).
+
+### 5. Quy tắc salt mới và chống hạ cấp tham số KDF
+
+Khi thực hiện đổi passphrase (`PUT /vault/kek`) hoặc hoàn tất khôi phục bằng recovery key (`POST /vault/recover/complete`):
+
+1. **Bắt buộc sinh salt mới:** Client Worker phải sinh 16 byte `salt` mới từ CSPRNG. Server kiểm tra `new_kdf.salt != current_kdf.salt` (so sánh trên 16 byte đã giải mã trong transaction đang khoá hàng `vault`). Nếu salt mới trùng với salt hiện tại của vault, server từ chối với mã `400 vault_kdf_invalid`.
+2. **Không bao giờ hạ cấp tham số (no-downgrade):** Server đối chiếu `new_kdf` với `current_kdf` đang lưu trong bảng `vault` và bắt buộc `new_kdf.ops >= current_kdf.ops` **và** `new_kdf.mem >= current_kdf.mem` (đồng thời vẫn nằm trong cận trên `ops ≤ 10`, `mem ≤ 256 MiB`). Mọi nỗ lực gửi tham số thấp hơn mức hiện tại đều bị từ chối với mã `400 vault_kdf_invalid`.
+3. Ở phía client, trước khi rewrap hoặc recover, Worker cũng kiểm tra `kdf` hiện tại và đảm bảo tham số dùng để tạo wrap mới không thấp hơn tham số hiện hành của vault.
+
+### 6. Benchmark trên thiết bị di động và phân biệt lỗi cấp phát bộ nhớ
+
+SPEC §10.1 đặt mục tiêu thời gian chạy Argon2id 64 MiB (`ops=3, p=1`) trên laptop khoảng `0.5–1.5 s` và trên điện thoại tầm trung khoảng `2–4 s`, không bao giờ tự động hạ mức bộ nhớ xuống dưới 64 MiB trên thiết bị yếu.
+
+- **Những gì được đo và phân lớp thiết bị mục tiêu:** Đo thời gian thực thi (wall-clock latency theo mili-giây), mức tiêu thụ đỉnh bộ nhớ WASM và tỷ lệ thành công / lỗi hết bộ nhớ (Out-Of-Memory — `WebAssembly.Memory` allocation failure hoặc exception từ `crypto_pwhash`) khi chạy Argon2id (`mem = 64 MiB`, `ops = 3`, `parallelism = 1`) bên trong dedicated Web Worker trên hai nền tảng di động mục tiêu: **iOS Safari** và **Android Chrome** (thiết bị di động tầm trung).
+- **Cách chọn tham số:** Giữ cố định mức sàn an toàn 64 MiB / `ops=3` / `p=1` cho mọi thiết bị theo đúng SPEC §5.4 và §10.1; không đánh đổi độ an toàn chống brute-force lấy tốc độ trên máy yếu.
+- **Trạng thái số liệu hiện tại:** Kế hoạch P03 (mục 2.1 và Task 5) chưa ghi sẵn con số đo đạc cụ thể vì bước chạy benchmark thực tế trên Worker thuộc **Task 5** (sau khi qua crypto gate ở mục 5). Khi thực hiện Task 5, bảng số liệu thực nghiệm (tên thiết bị/chip, phiên bản OS/browser, trung vị/p95 thời gian chạy ms, kết quả thành công/OOM) sẽ được điền bổ sung vào mục này của ADR 0002.
+- **Phân tách lỗi trong Worker và UI:** Worker bắt buộc tách biệt lỗi cấp phát bộ nhớ WASM / lỗi thực thi `crypto_pwhash` (trả về mã lỗi nội bộ riêng, ví dụ `KDF_ALLOCATION_FAILED` / `KDF_DERIVE_FAILED`) với lỗi xác thực tag AEAD khi mở `wrapK` (`AEAD_DECRYPT_FAILED`). Khi derive thất bại do thiết bị không đủ RAM cho WASM 64 MiB, giao diện hiển thị đúng trạng thái chuyên biệt *"thiết bị không đủ bộ nhớ để mở vault"*, **tuyệt đối không** hiển thị thông báo *"sai passphrase"*.
+
+### 7. Định dạng, chuẩn hoá, tách miền băm và quản lý slot của Recovery Key
+
+Mỗi vault khi tạo mới hoặc xoay (rotate) phải có đúng **10 recovery key (RK)** độc lập ứng với các slot `n = 1…10` (plan mục 2.2):
+
+- **Sinh khoá và định dạng hiển thị:**
+  1. Với mỗi slot `n` (`1…10`), Worker lấy 16 byte ngẫu nhiên từ CSPRNG (`randombytes_buf(16)`), đọc theo thứ tự big-endian thành một số nguyên không dấu 128-bit.
+  2. Đệm thêm **2 bit `0` vào bên trái** (most-significant bits) để tạo thành chuỗi 130 bit (chia hết cho 5: `130 = 26 × 5`). Vì 2 bit cao nhất của nhóm 5 bit đầu tiên luôn là `00`, ký tự đầu tiên trong chuỗi 26 ký tự luôn có giá trị từ `0` đến `7` (`00000`₂ = `0` đến `00111`₂ = `7`).
+  3. Mã hoá 26 nhóm 5-bit bằng bảng chữ cái **Crockford Base32** viết hoa (`0123456789ABCDEFGHJKMNPQRSTVWXYZ` — không có `I`, `L`, `O`, `U`) thành 26 ký tự.
+  4. Định dạng hiển thị cho người dùng (6 nhóm 4 ký tự và 1 nhóm 2 ký tự ở cuối, nối bằng dấu gạch ngang `-`, kèm tiền tố `rk{n}_`):
+     `rk{n}_XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX` (ví dụ hợp lệ với ký tự đầu trong `0`–`7`: `rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4`).
+
+- **Thuật toán chuẩn hoá duy nhất (Single Canonical Normalization Function):**
+  Cả bước sinh RK lúc onboarding/regenerate/rotate, bước tính `lookup_hash`/`wrap_key` ở client khi khôi phục và bộ kiểm thử chéo ở Go (`recovery.ts` và `internal/vault/recovery.go`) **bắt buộc dùng chung đúng một thuật toán chuẩn hoá 5 bước** theo thứ tự nghiêm ngặt sau:
+  1. Chuẩn hoá Unicode theo dạng **NFKC**. Xoá toàn bộ ký tự khoảng trắng Unicode (thuộc tính `White_Space`, bao gồm cả NBSP `U+00A0`) và mọi ký tự định dạng (Unicode general category `Cf`, bao gồm soft hyphen `U+00AD`, zero-width space/joiner `U+200B`–`U+200D`, word joiner `U+2060`, BOM `U+FEFF`). Chuyển tất cả các dấu gạch Unicode `U+2010`–`U+2015` và dấu trừ `U+2212` thành dấu gạch ngang ASCII `-` (`U+002D`).
+  2. **Kiểm tra ASCII:** Từ chối ngay lập tức nếu chuỗi còn chứa bất kỳ ký tự nào ngoài phạm vi ASCII (`> 0x7F`, ví dụ `ı`, `ß` còn sót sau NFKC). Mọi thao tác đổi chữ hoa/thường ở các bước sau chỉ thực hiện trên ASCII.
+  3. **Tách và chuẩn hoá tiền tố:** Khớp biểu thức chính quy đầu chuỗi `^rk(10|[1-9])[_-]` (không phân biệt chữ hoa/thường cho `rk`). Số thứ tự slot `n` phải nằm trong `1…10`, không chấp nhận số `0` đứng đầu (từ chối `rk01_`, `rk0_`, `rk11_`), và bắt buộc có dấu phân cách `_` hoặc `-` ngay sau `n`. Chuẩn hoá tiền tố về dạng chữ thường kèm dấu gạch dưới: `rk{n}_`.
+  4. **Chuẩn hoá phần thân Crockford:** Trên phần chuỗi còn lại sau tiền tố, xoá mọi dấu `-`, đổi chữ cái ASCII thường thành chữ hoa, rồi ánh xạ các ký tự dễ nhầm theo Crockford: `O → 0`, `I → 1`, `L → 1`. Ký tự `U` (check symbol không dùng) và bất kỳ ký tự nào nằm ngoài bảng 32 ký tự Crockford chính thức bị **từ chối** (không âm thầm xoá).
+  5. **Kiểm tra độ dài và bit đệm:** Từ chối nếu phần thân sau bước 4 có độ dài khác **26 ký tự** hoặc nếu ký tự đầu tiên của phần thân nằm ngoài đoạn `'0'`–`'7'`.
+  - Kết quả chuẩn hoá (`rk_norm`) là chuỗi `rk{n}_` nối liền 26 ký tự Crockford viết hoa, không có dấu gạch ngang (ví dụ: `rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4`).
+
+- **Tách miền băm (Domain Separation) cho Lookup và Wrap:**
+  Không bao giờ dùng trực tiếp 16 byte ngẫu nhiên ban đầu làm khoá AEAD và không bao giờ gửi chuỗi `rk_norm` lên server. Từ `rk_norm`, Worker dẫn xuất hai giá trị 32 byte hoàn toàn độc lập bằng **BLAKE2b-256** (không dùng key):
+  - `lookup_hash = BLAKE2b-256(UTF8("sabk.rk.lookup.v1") ‖ UTF8(rk_norm))` (32 byte) — gửi lên server để tra cứu bản wrap hoặc lưu lúc tạo/xoay RK.
+  - `wrap_key = BLAKE2b-256(UTF8("sabk.rk.wrap.v1") ‖ UTF8(rk_norm))` (32 byte) — chỉ tồn tại trong Worker để seal/open `VK` với AAD `UTF8("sabk.vk.rk.v1") ‖ 0x00 ‖ 0x01`.
+
+- **Quản lý slot `1…10` và ngữ nghĩa tiêu thụ (Consume = DELETE):**
+  - Bảng `vault_recovery_key` lưu cột `slot` (`int`, `1…10`) kèm ràng buộc `UNIQUE (vault_id, slot)` và `lookup_hash bytea NOT NULL UNIQUE` toàn cục.
+  - Khi tạo vault (`POST /vault`) hoặc xoay toàn bộ (`POST /vault/recovery-keys/rotate`), client phải gửi đủ 10 phần tử ứng với đủ các slot `1…10` (sai số lượng trả `400 recovery_keys_count`; trùng `lookup_hash` trả `409 recovery_key_conflict`).
+  - Khi tiêu thụ một RK trong `POST /vault/recover/complete`, server **xoá hẳn hàng đó (`DELETE FROM vault_recovery_key`)** trong cùng transaction với việc cập nhật `wrapK` mới và tăng `vault.version`. Không tạo cột `used_at` trong migration `0005_vault`: mọi hàng đang tồn tại trong bảng đều là RK chưa dùng.
+  - `GET /vault/recovery-keys` trả về `{remaining, slots: 10, empty_slots: [...]}` (danh sách các slot từ `1…10` hiện không có hàng). Khi bù key (`POST /vault/recovery-keys/regenerate`), client chọn các slot trống theo thứ tự từ nhỏ đến lớn; server khoá hàng `vault` (`SELECT ... FOR UPDATE`), kiểm tra số lượng gửi lên nằm trong `1…(10 - remaining)` và mọi `slot` yêu cầu đều đang trống (nếu slot đã có key hoặc ngoài `1…10` thì trả `409 recovery_key_slot_taken`).
+  - Trong suốt quá trình recovery (sau khi `POST /vault/unlock/recovery` trả về `{recovery_key_id, wrap}` và Worker mở được `VK`), client đặt trạng thái `recovering`: `VK` trong trạng thái này **chỉ được phép dùng để rewrap sang KEK mới**, không được dùng để giải mã entry hay tạo `DevKey` cho đến khi `POST /vault/recover/complete` trả về 200. Nếu người dùng rời trang hoặc huỷ giữa chừng, Worker xoá ngay `VK` để ngăn việc lợi dụng endpoint lookup (vốn chưa xoá hàng RK) như một đường mở khoá vĩnh viễn không làm giảm số RK còn lại.
+
+### 8. Ngữ nghĩa grant re-auth P02, điểm lệch gate 1 và trình tự re-auth trong luồng giữ secret
+
+- **Tái sử dụng grant trong TTL 5 phút (Điểm lệch gate 1):**
+  Trong P02 ([ADR 0001](0001-auth-session-va-reauth-assurance.md), `apps/api/internal/auth/reauth.go`), grant re-auth (`X-Reauth-Token`) là token HMAC stateless có TTL cố định 5 phút, gắn chặt với `(user_id, session_id, action)` và **không có bảng lưu trạng thái đã tiêu thụ (non-burning)** trên server. P03 giữ nguyên thiết kế stateless này của P02:
+  - Với các mutation có bắt buộc `If-Match: "<vault_key_id>:<version>"` (`PUT /vault/kek`, `DELETE /vault`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`), việc tái sử dụng cùng một grant để lặp lại ngầm thao tác không thể ghi đè trạng thái vì `vault.version` (hoặc `vault_key_id` sau khi reset) đã thay đổi ngay sau lần commit đầu tiên; còn retry hợp lệ của cùng một thao tác đã có middleware `Idempotency-Key` trả về response gốc (mà không kiểm tra lại grant nếu bản ghi idempotency đã ở trạng thái `done`).
+  - Riêng hai thao tác đăng ký passkey (`POST /vault/passkeys`, action `vault.passkey_register`) và thu hồi passkey (`DELETE /vault/passkeys/{id}`, action `vault.passkey_revoke`) không dùng `If-Match` và không tăng `vault.version`. Do đó, trong cửa sổ TTL 5 phút của một grant, client (hoặc kẻ tấn công đã chiếm được phiên và grant đó) có thể thực hiện nhiều lần đăng ký hoặc thu hồi passkey cùng action trên cùng user và session.
+  - Kế hoạch P03 chấp nhận hành vi này và thay cụm từ *"grant đã tiêu thụ"* trong SPEC §9.1 / phase doc P03 bằng *"grant đã hết hạn"*. Đây là điểm lệch số 1 của crypto gate — **chờ chủ repo ký duyệt (plan mục 5)** (pending owner sign-off).
+
+- **Trình tự lấy grant trước khi giữ secret trong luồng client:**
+  Luồng re-auth bằng OAuth của P02 thực hiện điều hướng toàn trang (`window.location.assign`), làm trình duyệt huỷ toàn bộ ngữ cảnh trang hiện tại cùng dedicated Web Worker, dẫn đến mất trắng `VK` đang mở, `PWK` vừa lấy từ authenticator hoặc trạng thái `recovering`. Để khắc phục triệt để:
+  1. Trong mọi luồng cần re-auth (đổi passphrase, recovery bằng RK, regenerate RK, rotate RK, reset vault, đăng ký passkey, thu hồi passkey), client **bắt buộc yêu cầu và lấy grant re-auth ngay khi bắt đầu luồng** (ví dụ: vừa mở hộp thoại đổi passphrase, vừa vào bước recovery, hoặc vừa bấm nút "Thêm passkey"), **trước khi** người dùng nhập passphrase/RK vào Worker hoặc gọi `navigator.credentials`.
+  2. Ngay trước khi gửi request POST/PUT/DELETE cuối cùng lên server, client kiểm tra thời hạn còn lại của grant: phải còn **ít nhất 60 giây** (`exp - now >= 60s`).
+  3. Nếu thời hạn còn dưới 60 giây:
+     - Người dùng có phương thức đăng nhập bằng password (`identities` có `password`): mở modal xác thực lại bằng password ngay tại chỗ (in-place fetch, không chuyển trang), giữ nguyên Worker và `VK`/`PWK` trong bộ nhớ rồi tiếp tục gửi request.
+     - Người dùng chỉ có OAuth (OAuth-only): không thể chuyển trang mà không mất trạng thái Worker, nên UI thông báo phiên xác thực lại đã hết thời gian và yêu cầu người dùng bắt đầu lại luồng từ đầu (tránh làm mất lượt lookup hay để lại trạng thái dở dang).
+
+### 9. Lý do mở khoá bằng passphrase không thể rate limit ở server (Điểm lệch gate 2)
+
+Khác với mật khẩu đăng nhập tài khoản (được gửi lên `POST /auth/login` để server kiểm tra và áp đặt khoá tạm thời theo `auth_throttle`), trong mô hình mã hoá E2E của `engram`:
+
+1. Khi mở khoá bằng passphrase, client gọi `GET /vault` để tải về `kdf` và `vault_key_wrapped_by_kek` (`wrapK`), sau đó toàn bộ quá trình chạy Argon2id sinh `KEK` và mở `wrapK` diễn ra **cục bộ (offline) bên trong Web Worker**.
+2. Server không bao giờ nhận passphrase hay `KEK`, cũng không có endpoint "unlock bằng passphrase" để biết lần thử nào đúng hay sai. Do đó, server **không thể đo đếm số lần thử sai passphrase** (metric Prometheus `vault_unlock_failures_total` ở server chỉ ghi nhận được `method="recovery"` từ `POST /vault/unlock/recovery`, không đo được passphrase hay passkey).
+3. Nếu áp giới hạn tốc độ chặt `5 lần / 15 phút / user` lên `GET /vault`, người dùng bình thường chỉ cần tải lại trang (F5) hoặc mở vài tab là sẽ bị chính hệ thống khoá truy cập vào ứng dụng, trong khi kẻ tấn công đã có session chỉ cần gọi `GET /vault` **đúng 1 lần duy nhất** để lưu `wrapK` về máy và chạy brute-force offline không giới hạn tốc độ mạng.
+4. Vì vậy, `GET /vault` chỉ chịu giới hạn đọc (read limit) chung của hệ thống; việc chống brute-force passphrase dựa hoàn toàn vào độ khó tính toán của **Argon2id (64 MiB, `ops=3`, `p=1`)** kết hợp điều kiện độ mạnh **passphrase ≥ 12 ký tự và `zxcvbn ≥ 3`** lúc đặt passphrase.
+5. Theo đó, phạm vi kiểm thử rate limit của **P03-B8** chỉ áp dụng cho các đường đi qua server: tra cứu/hoàn tất recovery (`vault_recovery_lookup` và `vault_recovery_complete`: mỗi bucket 5 lần / 15 phút / user), lấy tuỳ chọn passkey (`vault_passkey_options`: 20 lần / phút / user dùng chung cho cả unlock options và register options), và các mutation nhạy cảm (`vault_sensitive`: 10 lần / phút / user). Cách hiểu P03-B8 chỉ gồm recovery + passkey options là điểm lệch số 2 của crypto gate — **chờ chủ repo ký duyệt (plan mục 5)** (pending owner sign-off).
+
+### 10. Giới hạn xoá bộ nhớ (memory wiping) trong JavaScript và cơ chế `generation`
+
+- **Những gì Worker có thể và bắt buộc xoá:**
+  Bên trong dedicated Web Worker (`apps/web/lib/crypto/worker.ts`), `VK`, `KEK`, `PWK`, `wrap_key` của RK và hai seed private key luôn được lưu trữ dưới dạng vùng nhớ nhị phân (`Uint8Array` trên heap WebAssembly/TypedArray). Khi nhận lệnh `lock`, khi hết hạn auto-lock, khi đăng xuất, khi đổi người dùng hoặc ngay sau khi dùng xong một khoá trung gian (`KEK`, `PWK`, `wrap_key`, seed), Worker gọi trực tiếp `sodium.memzero(buffer)` trên từng mảng `Uint8Array` đó trước khi bỏ tham chiếu. Đồng thời ở main thread, client xoá sạch TanStack Query cache chứa nội dung entry đã giải mã, gỡ bỏ plaintext khỏi state React/DOM (tuyệt đối không lưu plaintext trong thuộc tính DOM như `dataset.plain` của bản demo) và xoá trắng các ô nhập liệu chứa secret.
+- **Những gì môi trường JavaScript không thể cam kết:**
+  Trong các engine JavaScript (V8, JavaScriptCore, SpiderMonkey), kiểu dữ liệu chuỗi (`string` — như chuỗi passphrase người dùng gõ vào `<input>`, chuỗi RK vừa dán hoặc văn bản plaintext của entry sau khi chuyển từ `Uint8Array` sang `string` để hiển thị trên UI) là **bất biến (immutable)** và do bộ thu gom rác (Garbage Collector — GC) quản lý. Không có API chuẩn nào cho phép ghi đè toàn số `0` lên các bản sao chuỗi đã từng được cấp phát trên JS heap, trong bộ đệm nội bộ của DOM input hoặc trong quá trình engine thực hiện string interning / copy-on-write / JIT tối ưu hoá. Do đó, tài liệu kỹ thuật và privacy copy của `engram` chỉ cam kết **giảm thiểu thời gian sống (lifetime) và cắt đứt tham chiếu (reference)** để GC thu hồi sớm, cùng việc ghi đè `0` trên mọi `Uint8Array` giữ khoá trong Worker, chứ **không hứa hẹn xoá sạch bộ nhớ tuyệt đối (absolute memory zeroing)** đối với chuỗi JS trên heap.
+- **Cơ chế `generation` chống race condition khi khoá vault:**
+  Để ngăn kịch bản một tác vụ bất đồng bộ chậm (như đọc `DevKey` từ IndexedDB, chờ kết quả WebAuthn PRF hoặc đang chạy Argon2id / giải mã một danh sách entry) hoàn tất *sau khi* người dùng hoặc bộ đếm thời gian đã khoá vault và vô tình phục hồi lại `VK` hoặc đẩy plaintext cũ lên màn hình:
+  1. Cả client coordinator và Worker đều duy trì một bộ đếm đơn điệu `generation` (số nguyên tăng lên 1 mỗi khi xảy ra sự kiện `lock`, `logout`, đổi user hoặc `reset`).
+  2. Mọi lệnh gửi vào Worker đều đính kèm `generation` tại thời điểm phát lệnh.
+  3. Trong mọi đường mở khoá hoặc giải mã bất đồng bộ, **ngay trước khi** gán `VK` vào biến closure của Worker hoặc trả kết quả về, Worker kiểm tra `cmd.generation === currentGeneration`. Nếu đã lệch, Worker gọi ngay `sodium.memzero` trên buffer vừa mở được và huỷ bỏ kết quả.
+  4. Khi nhận message trả về từ Worker, `lib/crypto/client.ts` ở main thread kiểm tra lại `generation` một lần nữa trước khi cập nhật state hoặc đưa dữ liệu lên UI.
+
+### 11. Đường đi của passphrase, RK và PWK qua main thread vào Worker
+
+Theo kiến trúc trình duyệt, Web Worker không có quyền truy cập trực tiếp vào cây DOM (nơi người dùng gõ passphrase hoặc dán RK vào thẻ `<input>`) và cũng không đảm bảo gọi được trực tiếp giao diện phần cứng `navigator.credentials.create()` / `navigator.credentials.get()` (vốn gắn với cửa sổ `window` ở main thread). Vì vậy, ba giá trị nhạy cảm là **passphrase**, **plaintext RK** khi khôi phục và **PRF output (`PWK`)** bắt buộc phải xuất hiện thoáng qua ở main thread tại thời điểm thu thập, nhưng được kiểm soát nghiêm ngặt theo đường ống một chiều sau:
+
+| Giá trị | Nguồn tại Main Thread | Cách chuyển sang Worker (`lib/crypto/client.ts`) | Trạng thái ở Main Thread sau khi gửi | Trạng thái trong Worker (`lib/crypto/worker.ts`) |
+|---|---|---|---|---|
+| **Passphrase** | Người dùng nhập ở form Onboarding, Unlock, Rewrap hoặc Recovery | Mã hoá UTF-8 ngay tại chỗ bằng `new TextEncoder().encode(input)` thành `Uint8Array`, xoá ngay giá trị form state, rồi gọi `worker.postMessage(msg, [buf.buffer])` (transferable `ArrayBuffer`) | `buf.buffer.byteLength === 0` (bị **detach** hoàn toàn khỏi main thread), không giữ biến tham chiếu tới chuỗi hay buffer | Nhận `Uint8Array`, chạy Argon2id sinh `KEK`, thực hiện seal/open `VK`, sau đó gọi `sodium.memzero` trên cả buffer passphrase và `KEK` |
+| **Plaintext RK (khi nhập recovery)** | Người dùng dán/gõ vào ô nhập trên trang Recovery | Mã hoá UTF-8 thành `Uint8Array`, xoá state ô nhập, chuyển qua `postMessage` với transferable `[buf.buffer]` | Buffer bị **detach**; không lưu vào router state, URL, history hay TanStack Query cache | Chuẩn hoá thành `rk_norm`, băm BLAKE2b ra `lookup_hash` (trả về main thread dưới dạng base64url để gọi API lookup) và `wrap_key`, mở `VK`, rồi `sodium.memzero` các buffer RK/`wrap_key` |
+| **Plaintext RK (khi hiển thị 10 key)** | Sinh bên trong Worker lúc Onboarding, Regenerate hoặc Rotate | Worker sinh 10 RK + `lookup_hash` + `wrap`, trả danh sách chuỗi hiển thị về main thread chỉ để render lưới 10 key (và tạo blob tải `.txt` / in / copy khi người dùng bấm) | Chỉ nằm trong React state cục bộ của bước hiển thị lưới; bị xoá khỏi state và DOM ngay khi rời bước hoặc đóng dialog | Buffer nhị phân gốc trong Worker được `sodium.memzero` ngay sau khi đóng gói kết quả |
+| **PWK (PRF output 32 B)** | Kết quả `getClientExtensionResults().prf.results.first` từ `navigator.credentials.create()` / `.get()` | Sao chép ngay sang một `Uint8Array(32)` độc lập (nếu browser trả về view dùng chung), ghi đè `0` lên mảng nguồn nếu cho phép, rồi chuyển `ArrayBuffer` sang Worker qua danh sách `transfer` của `postMessage` | Buffer truyền đi bị **detach** (`byteLength === 0`); main thread không bao giờ giữ bản sao `PWK` | Nhận 32 byte `PWK`, seal hoặc open `vk_wrap`, kiểm tra lại kết quả rồi gọi ngay `sodium.memzero(pwk)` |
+| **VK, KEK, DevKey, Private Keys** | **Không bao giờ có mặt ở main thread** | Sinh và tồn tại độc quyền bên trong Worker (hoặc non-extractable `CryptoKey` trong IndexedDB đối với `DevKey`) | Không bao giờ xuất hiện trong bất kỳ payload `postMessage` nào từ Worker ra main thread (được kiểm chứng bằng unit test spy `postMessage` ở Task 5) | `VK` nằm trong biến closure của Worker khi `unlocked` (hoặc `recovering`) và bị `sodium.memzero` khi `lock` |
+
+### 12. Danh sách thư viện phụ thuộc mới được ghim phiên bản (Pinned Dependencies)
+
+Theo plan mục 1 và mục 4, P03 sử dụng các thư viện chuyên dụng dưới đây với phiên bản được ghim chính xác (exact pinned versions). **Lưu ý phạm vi Task 1:** Các thư viện này chỉ được khai báo và chốt trong ADR ở Task 1, **chưa cài đặt vào `package.json` hay `go.mod` trong task này** (việc cài đặt thực hiện ở các task triển khai code tương ứng sau khi qua gate mục 5, và tuyệt đối không nâng cấp phiên bản Go toolchain hay `pnpm`/Next.js đã ghim từ P01/P02):
+
+| Phía | Gói phụ thuộc | Phiên bản ghim chính xác | Mục đích sử dụng trong P03 |
+|---|---|---|---|
+| Web (`apps/web`) | `libsodium-wrappers-sumo` | `0.8.4` | Cung cấp WASM trong Web Worker cho Argon2id (`crypto_pwhash`), AEAD XChaCha20-Poly1305 IETF, BLAKE2b-256 (`crypto_generichash`), X25519 (`crypto_box_seed_keypair`), Ed25519 (`crypto_sign_seed_keypair`), CSPRNG và `sodium_memzero`. Không cài thêm thư viện crypto thứ hai cho cùng primitive trên web. |
+| Web (`apps/web`, dev) | `@types/libsodium-wrappers-sumo` | `0.8.2` | Định nghĩa kiểu TypeScript cho `libsodium-wrappers-sumo`. |
+| Web (`apps/web`) | `canonicalize` | `5.1.0` | Chuẩn hoá JSON theo RFC 8785 (JCS) cho `entry.envelope` trước khi tạo AAD ở phía TypeScript. |
+| Web (`apps/web`) | `@zxcvbn-ts/core` | `4.2.0` | Đánh giá độ mạnh passphrase mã hoá vault (bắt buộc điểm `score >= 3` và độ dài `>= 12` ký tự) hoàn toàn ở phía client. |
+| Web (`apps/web`) | `@zxcvbn-ts/language-common` | `4.1.3` | Từ điển mẫu phổ biến và bộ quy tắc tần suất dùng chung cho `@zxcvbn-ts/core`. |
+| Web (`apps/web`) | `@zxcvbn-ts/language-en` | `4.1.1` | Từ điển từ vựng và tên riêng cho `@zxcvbn-ts/core`. |
+| API (`apps/api`) | `github.com/gowebpki/jcs` | `v1.0.2` | Chuẩn hoá JSON theo RFC 8785 (JCS) cho `entry.envelope` ở phía Go (`internal/vault/envelope.go`). |
+| API (`apps/api`) | `github.com/go-webauthn/webauthn` | `v0.18.2` | Xác minh đăng ký WebAuthn (`ParsedCredentialCreationData.Verify`), kiểm tra `clientDataJSON`, `authenticatorData`, cờ UP+UV và trích xuất `cred_id`, `pubkey`, `aaguid` (chi tiết tại [ADR 0003](0003-webauthn-prf-va-devkey.md)). |
+| API (`apps/api`, đã có) | `golang.org/x/crypto` | `v0.56.0` (giữ nguyên từ P01/P02) | Dùng làm implementation độc lập trong `internal/vault/vectors_test.go` (`argon2.IDKey`, `chacha20poly1305.NewX`, `blake2b`, `curve25519`, `ed25519`) để kiểm chứng chéo toàn bộ vectors sinh từ `libsodium-wrappers-sumo`. |
+
+## Các phương án đã cân nhắc
+
+1. **Dùng nguyên nhãn AAD ngắn trong SPEC §5.4 (`"vault-key-v1"`, `"priv-keys-v1"`) và không đưa byte `version` vào AAD:**
+   - *Lý do loại:* Các nhãn ngắn thiếu tiền tố không gian tên `sabk.` dễ va chạm ngữ nghĩa với các thành phần khác; nếu byte `version` ở đầu blob không nằm trong AAD, việc thay đổi byte đầu của blob chỉ được phát hiện gián tiếp hoặc gây nhầm lẫn giữa lỗi định dạng với lỗi sai khoá. Ghép `UTF8("sabk.<loại>.v1") ‖ 0x00 ‖ version(1)` gắn chặt phiên bản định dạng vào xác thực mật mã.
+2. **Dùng BIP39 mnemonic (12/24 từ) hoặc một Recovery KEK trung gian thay cho 10 Recovery Key độc lập:**
+   - *Lý do loại:* Đã bị SPEC §5.9 bác bỏ. Một câu ghi nhớ BIP39 nếu lộ một lần sẽ mất toàn bộ khả năng xoay từng phần, còn 10 RK độc lập (~128 bit entropy mỗi key, bọc trực tiếp `VK`) cho phép tiêu thụ từng key một lần trên live server (`DELETE` hàng) và bù lại riêng các slot trống mà không ảnh hưởng các key còn lại.
+3. **Đốt (burn/consume) grant re-auth P02 sau mỗi lần gọi API hoặc tạo bảng lưu nonce grant trên DB:**
+   - *Lý do loại:* Đòi hỏi thay đổi kiến trúc `auth.Grants` stateless đã chốt ở P02 ([ADR 0001](0001-auth-session-va-reauth-assurance.md)) và làm phức tạp hoá luồng retry khi rớt mạng. Các thao tác thay đổi khoá/RK trong P03 đều đã bị ràng buộc bởi `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key`; việc một grant có thể dùng cho nhiều thao tác passkey trong TTL 5 phút trên cùng phiên được ghi nhận minh bạch tại [docs/threat-model.md](../threat-model.md) và trình chủ repo ký duyệt ở gate mục 5 (điểm lệch 1).
+4. **Áp rate limit 5 lần / 15 phút trên `GET /vault` để giới hạn thử passphrase:**
+   - *Lý do loại:* Không ngăn được kẻ tấn công tải `wrapK` một lần rồi dò passphrase offline, nhưng lại gây lỗi `429` giả tạo làm khoá người dùng hợp lệ khi tải lại trang hoặc mở nhiều tab (điểm lệch 2 — chờ chủ repo ký duyệt ở plan mục 5).
+5. **Tự động hạ tham số Argon2id xuống dưới 64 MiB trên trình duyệt di động yếu:**
+   - *Lý do loại:* Vi phạm SPEC §5.4 và §10.1, đồng thời mở ra hướng tấn công hạ cấp (downgrade attack) làm suy yếu `wrapK` lưu trên server. Hệ thống giữ mức sàn 64 MiB và hiển thị trạng thái lỗi bộ nhớ rõ ràng nếu thiết bị không cấp phát nổi WASM memory.
+
+## Hệ quả
+
+- **Ràng buộc lên bộ vector và code (Task 5–7):** Bộ vector tĩnh trong `packages/crypto-vectors/` phải bao phủ đầy đủ 4 loại wrap server (`sabk.vk.kek.v1`, `sabk.vk.rk.v1`, `sabk.vk.prf.v1`, `sabk.priv.v1`), wrap `DevKey` (`sabk.devkey.v1`), envelope JCS (`sabk.entry.v1`) kể cả trường hợp đảo thứ tự trường qua `jsonb` và từ chối key trùng lặp, cùng toàn bộ các ca biên chuẩn hoá RK (Unicode NFKC, khoảng trắng/Cf, dấu gạch Unicode, alias `O/I/L`, ký tự cấm `U`, sai số slot, ký tự đầu ngoài `0`–`7`).
+- **Ràng buộc lên tài liệu và API (Task 1–4, 8–12):** SPEC (§3.10, §5.8, §5.9, §8, §9.1, §9.2), `docs/phases/P03-vault.md`, `docs/threat-model.md` và `apps/api/api/openapi.yaml` được cập nhật đồng bộ theo đúng các quyết định trong ADR này và [ADR 0003](0003-webauthn-prf-va-devkey.md).
+- **Cổng kiểm duyệt bắt buộc (Crypto Gate — plan mục 5):** Không một dòng code crypto nào thuộc Task 5–7 được phép bắt đầu hoặc merge trước khi ADR 0002 và ADR 0003 hoàn tất review độc lập (bởi reviewer khác model với tác giả) **và** chủ repo ký duyệt 4 điểm lệch gate (1: tái sử dụng grant P02 trong TTL; 2: P03-B8 chỉ áp cho recovery và passkey options; 3: challenge ngẫu nhiên do client sinh cho bước `get()` PRF tiếp theo — chi tiết ở [ADR 0003](0003-webauthn-prf-va-devkey.md); 4: trần bộ nhớ KDF 256 MiB).
