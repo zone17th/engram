@@ -55,4 +55,31 @@ describe('problem', () => {
       expect(ERROR_CODES).toContain(code);
     }
   });
+
+  it('liệt kê đủ code P03 vault và không trùng lặp', () => {
+    for (const code of [
+      'vault_exists',
+      'vault_absent',
+      'vault_kdf_invalid',
+      'vault_wrap_invalid',
+      'vault_mutations_disabled',
+      'recovery_keys_count',
+      'recovery_key_slot_taken',
+      'recovery_key_invalid',
+      'recovery_key_conflict',
+      'precondition_required',
+      'version_mismatch',
+      'idempotency_conflict',
+      'idempotency_in_progress',
+      'passkey_challenge_invalid',
+      'passkey_attestation_invalid',
+      'passkey_name_invalid',
+      'passkey_exists',
+      'passkey_not_found',
+      'email_not_verified',
+    ] as const) {
+      expect(ERROR_CODES).toContain(code);
+    }
+    expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
+  });
 });

@@ -1,17 +1,20 @@
 openapi: 3.1.0
 info:
   title: engram API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     API của engram. P01: health/ready/metrics. P02: 26 operation tài khoản/session.
+    P03: 15 operation vault, recovery key và passkey WebAuthn PRF (server không bao giờ nhận
+    passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap).
     Mọi lỗi dùng RFC 9457 (application/problem+json). Auth dùng cookie host-only,
-    không dùng HTTP Bearer. Response auth: Cache-Control: no-store.
+    không dùng HTTP Bearer. Response auth và vault: Cache-Control: no-store.
 servers:
   - url: /api/v1
 tags:
   - name: ops
   - name: auth
   - name: account
+  - name: vault
 paths:
   /healthz:
     get:
@@ -793,6 +796,639 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
+  /vault:
+    get:
+      operationId: vaultGet
+      tags: [vault]
+      summary: Đọc trạng thái và bản bọc khoá của vault hiện tại
+      description: |
+        Trả về metadata KDF, các bản wrap AEAD opaque, public key, số RK còn lại và danh sách passkey.
+        Cache-Control: no-store, no-transform; không có header ETag (vì danh sách passkeys đổi mà không tăng version).
+        Server không bao giờ nhận hay trả về passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Trạng thái vault hiện tại
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultState'
+        '401':
+          description: Chưa đăng nhập hoặc phiên hết hạn (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Người dùng chưa khởi tạo vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: vaultCreate
+      tags: [vault]
+      summary: Khởi tạo vault mới kèm đúng 10 recovery key
+      description: |
+        Tạo vault và 10 RK (slot 1…10) trong một transaction. Server sinh vault_key_id mới.
+        Server không bao giờ nhận passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultCreateRequest'
+      responses:
+        '201':
+          description: Vault đã tạo thành công
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultCreatedResponse'
+        '400':
+          description: Dữ liệu không hợp lệ (invalid_request, vault_kdf_invalid, vault_wrap_invalid, recovery_keys_count)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc email chưa xác minh khi cờ bật (csrf_invalid, forbidden, email_not_verified)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Vault đã tồn tại, trùng lookup_hash hoặc xung đột idempotency (vault_exists, recovery_key_conflict, idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật hoặc phụ thuộc chưa sẵn sàng (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: vaultReset
+      tags: [vault]
+      summary: Xoá và đặt lại toàn bộ vault
+      description: |
+        Yêu cầu grant re-auth (vault.reset), If-Match: "<vault_key_id>:<version>" và Idempotency-Key.
+        Gọi reset hook (P04 xoá entries), xoá vault/RK/passkey và các bản ghi idempotency khác trên /api/v1/vault%, giữ nguyên items và tags.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      responses:
+        '204':
+          description: Đã xoá vault
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth không hợp lệ (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa khởi tạo vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Xung đột idempotency (idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Lệch vault_key_id hoặc version (version_mismatch)
+          $ref: '#/components/responses/Problem'
+        '428':
+          description: Thiếu hoặc sai định dạng If-Match (precondition_required)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+
+  /vault/kek:
+    put:
+      operationId: vaultRewrap
+      tags: [vault]
+      summary: Đổi passphrase mã hoá vault (rewrap VK bằng KEK mới)
+      description: |
+        Yêu cầu grant re-auth (vault.rewrap), If-Match: "<vault_key_id>:<version>" và Idempotency-Key.
+        Bắt buộc salt KDF mới và không hạ ops/mem. Tăng vault.version; không đổi vault_key_id, RK hay passkey.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultRewrapRequest'
+      responses:
+        '200':
+          description: Đã cập nhật KEK wrap và tăng version
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultVersionResponse'
+        '400':
+          description: KDF hoặc wrap không hợp lệ (invalid_request, vault_kdf_invalid, vault_wrap_invalid)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Xung đột idempotency (idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Lệch vault_key_id hoặc version (version_mismatch)
+          $ref: '#/components/responses/Problem'
+        '428':
+          description: Thiếu hoặc sai định dạng If-Match (precondition_required)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+
+  /vault/recovery-keys:
+    get:
+      operationId: vaultRecoveryKeysGet
+      tags: [vault]
+      summary: Trạng thái số lượng và các slot trống của recovery key
+      description: Chỉ trả về số lượng còn lại, tổng số slot (10) và danh sách empty_slots (1…10); không bao giờ trả lại RK hay wrap.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Trạng thái các slot recovery key
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultRecoveryKeysStatus'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+
+  /vault/unlock/recovery:
+    post:
+      operationId: vaultRecoveryLookup
+      tags: [vault]
+      summary: Tra cứu bản bọc VK theo lookup_hash của recovery key
+      description: |
+        Tìm bản ghi RK theo user hiện tại + lookup_hash. Không xoá (consume) RK ở bước này.
+        Rate limit 5 yêu cầu / 15 phút / user (vault_recovery_lookup, đếm cả lần trúng).
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultRecoveryLookupRequest'
+      responses:
+        '200':
+          description: Bản bọc VK tương ứng với recovery key
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultRecoveryLookupResponse'
+        '400':
+          description: Yêu cầu không hợp lệ (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Recovery key không tồn tại, đã dùng hoặc phiên không hợp lệ (recovery_key_invalid, unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /vault/recover/complete:
+    post:
+      operationId: vaultRecoverComplete
+      tags: [vault]
+      summary: Hoàn tất khôi phục bằng recovery key và đặt KEK mới
+      description: |
+        Yêu cầu grant re-auth (vault.recover), If-Match: "<vault_key_id>:<version>" và Idempotency-Key.
+        Trong một transaction: kiểm tra If-Match, cập nhật KDF (salt mới, không hạ ops/mem) + wrapK mới,
+        tăng vault.version và xoá hẳn (DELETE) hàng recovery key vừa dùng.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultRecoverCompleteRequest'
+      responses:
+        '200':
+          description: Đã khôi phục, tiêu thụ RK và tăng version
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultVersionResponse'
+        '400':
+          description: KDF hoặc wrap không hợp lệ (invalid_request, vault_kdf_invalid, vault_wrap_invalid)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Recovery key không hợp lệ/đã tiêu thụ hoặc chưa xác thực (recovery_key_invalid, unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Xung đột idempotency (idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Lệch vault_key_id hoặc version (version_mismatch)
+          $ref: '#/components/responses/Problem'
+        '428':
+          description: Thiếu hoặc sai định dạng If-Match (precondition_required)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+
+  /vault/recovery-keys/regenerate:
+    post:
+      operationId: vaultRecoveryKeysRegenerate
+      tags: [vault]
+      summary: Bù các recovery key mới vào các slot đang trống
+      description: |
+        Yêu cầu grant re-auth (vault.recovery_keys_regenerate), If-Match: "<vault_key_id>:<version>" và Idempotency-Key.
+        Nhận 1…(10−remaining) phần tử ứng với các slot đang trống; tăng vault.version.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultRecoveryKeysRegenerateRequest'
+      responses:
+        '200':
+          description: Đã bù recovery key và tăng version
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultRecoveryKeysMutationResponse'
+        '400':
+          description: Số lượng RK hoặc wrap không hợp lệ (invalid_request, recovery_keys_count, vault_wrap_invalid)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Slot đã có key, trùng lookup_hash hoặc xung đột idempotency (recovery_key_slot_taken, recovery_key_conflict, idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Lệch vault_key_id hoặc version (version_mismatch)
+          $ref: '#/components/responses/Problem'
+        '428':
+          description: Thiếu hoặc sai định dạng If-Match (precondition_required)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+
+  /vault/recovery-keys/rotate:
+    post:
+      operationId: vaultRecoveryKeysRotate
+      tags: [vault]
+      summary: Xoay (thay thế) toàn bộ 10 recovery key
+      description: |
+        Yêu cầu grant re-auth (vault.recovery_keys_rotate), If-Match: "<vault_key_id>:<version>" và Idempotency-Key.
+        Thay toàn bộ RK hiện có bằng đúng 10 RK mới (slot 1…10) và tăng vault.version trong một transaction.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultRecoveryKeysRotateRequest'
+      responses:
+        '200':
+          description: Đã thay toàn bộ 10 recovery key và tăng version
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultRecoveryKeysRotateResponse'
+        '400':
+          description: Số lượng RK khác 10 hoặc wrap không hợp lệ (invalid_request, recovery_keys_count, vault_wrap_invalid)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Sai slot, trùng lookup_hash hoặc xung đột idempotency (recovery_key_slot_taken, recovery_key_conflict, idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Lệch vault_key_id hoặc version (version_mismatch)
+          $ref: '#/components/responses/Problem'
+        '428':
+          description: Thiếu hoặc sai định dạng If-Match (precondition_required)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+
+  /vault/passkeys/register/options:
+    post:
+      operationId: vaultPasskeyRegisterOptions
+      tags: [vault]
+      summary: Xin WebAuthn creation options và prf_salt để đăng ký passkey
+      description: |
+        Yêu cầu vault đã tồn tại. Server sinh challenge 32 B (chỉ lưu SHA-256 hash vào webauthn_challenge, TTL 5 phút,
+        gắn user_id + session_id + vault_key_id) và prf_salt 32 B, trả kèm excludeCredentials.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: Creation options cùng challenge_id và prf_salt
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultPasskeyRegisterOptionsResponse'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /vault/passkeys:
+    get:
+      operationId: vaultPasskeysList
+      tags: [vault]
+      summary: Danh sách passkey đã đăng ký trên vault
+      description: Chỉ trả về metadata (id, name, aaguid, created_at); không trả vk_wrap hay PWK.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Danh sách passkey
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultPasskeyList'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: vaultPasskeyCreate
+      tags: [vault]
+      summary: Hoàn tất đăng ký passkey WebAuthn PRF
+      description: |
+        Yêu cầu grant re-auth (vault.passkey_register) và Idempotency-Key; không dùng If-Match và không tăng vault.version.
+        Server consume challenge theo challenge_hash, verify attestation (UP+UV, RP ID, origin) và tự trích xuất cred_id, pubkey, aaguid
+        (bỏ qua nếu client gửi kèm các trường này). Server không bao giờ nhận PWK.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultPasskeyCreateRequest'
+      responses:
+        '201':
+          description: Passkey đã đăng ký
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultPasskeyItem'
+        '400':
+          description: Challenge, attestation, tên hoặc wrap không hợp lệ (invalid_request, passkey_challenge_invalid, passkey_attestation_invalid, passkey_name_invalid, vault_wrap_invalid)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Credential đã đăng ký hoặc xung đột idempotency (passkey_exists, idempotency_conflict, idempotency_in_progress)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          $ref: '#/components/responses/Problem'
+
+  /vault/passkeys/{id}:
+    patch:
+      operationId: vaultPasskeyRename
+      tags: [vault]
+      summary: Đổi tên passkey
+      description: Chỉ chủ sở hữu; trim, 1–64 rune, từ chối ký tự điều khiển và bidi override; không tăng vault.version.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: '#/components/parameters/PasskeyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultPasskeyRenameRequest'
+      responses:
+        '200':
+          description: Passkey sau khi đổi tên
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultPasskeyItem'
+        '400':
+          description: Tên không hợp lệ (invalid_request, passkey_name_invalid)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Không tìm thấy vault hoặc passkey (vault_absent, passkey_not_found)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    delete:
+      operationId: vaultPasskeyRevoke
+      tags: [vault]
+      summary: Thu hồi passkey trên live server
+      description: Yêu cầu grant re-auth (vault.passkey_revoke); không tăng vault.version.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/PasskeyId'
+        - $ref: '#/components/parameters/ReauthToken'
+      responses:
+        '204':
+          description: Đã thu hồi passkey
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF hoặc grant re-auth (csrf_invalid, forbidden, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Không tìm thấy vault hoặc passkey (vault_absent, passkey_not_found)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /vault/unlock/passkey/options:
+    post:
+      operationId: vaultPasskeyUnlockOptions
+      tags: [vault]
+      summary: Xin WebAuthn request options và danh sách bản bọc PRF để mở khoá vault
+      description: |
+        Trả về allowCredentials, prf.evalByCredential (mỗi credential một salt riêng), vk_wrap theo credential
+        và một challenge ngẫu nhiên không lưu DB (assertion không gửi lại server ở P03).
+        Nếu user chưa có passkey trả 404 passkey_not_found.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: Request options và danh sách credential kèm prf_salt, vk_wrap
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultPasskeyUnlockOptionsResponse'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu CSRF (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa có vault hoặc chưa đăng ký passkey (vault_absent, passkey_not_found)
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
 components:
   securitySchemes:
     sessionCookie:
@@ -841,6 +1477,46 @@ components:
       in: query
       schema:
         type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: |
+        Strong tag điều kiện dạng `"<vault_key_id>:<version>"` (bao gồm dấu ngoặc kép).
+        Thiếu header, `*`, weak tag hoặc sai định dạng trả `428 precondition_required`;
+        lệch `vault_key_id` hoặc `version` trả `412 version_mismatch`.
+      schema:
+        type: string
+        pattern: '^"vk:[A-Za-z0-9_-]{22}:[1-9][0-9]*"$'
+        examples: ['"vk:7f3a1c9e02b4d6f89012ab:1"']
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+        Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: '^[A-Za-z0-9_-]{16,128}$'
+    ReauthToken:
+      name: X-Reauth-Token
+      in: header
+      required: true
+      description: Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action`.
+      schema:
+        type: string
+        minLength: 1
+    PasskeyId:
+      name: id
+      in: path
+      required: true
+      description: UUID của passkey trên vault của người dùng hiện tại.
+      schema:
+        type: string
+        format: uuid
   responses:
     Problem:
       description: Lỗi RFC 9457
@@ -891,6 +1567,24 @@ components:
         - password_weak
         - semantic_unavailable
         - mail_delivery_unavailable
+        - vault_exists
+        - vault_absent
+        - vault_kdf_invalid
+        - vault_wrap_invalid
+        - vault_mutations_disabled
+        - recovery_keys_count
+        - recovery_key_slot_taken
+        - recovery_key_invalid
+        - recovery_key_conflict
+        - precondition_required
+        - version_mismatch
+        - idempotency_conflict
+        - idempotency_in_progress
+        - passkey_challenge_invalid
+        - passkey_attestation_invalid
+        - passkey_name_invalid
+        - passkey_exists
+        - passkey_not_found
     Problem:
       type: object
       required: [type, title, status, code]
@@ -917,6 +1611,10 @@ components:
           description: Chỉ khi code=session_invalid. Token lạ dùng invalid.
         captcha_required:
           type: boolean
+        current_version:
+          type: integer
+          minimum: 1
+          description: Phiên bản hiện tại của vault khi code=version_mismatch (412).
     OauthProvider:
       type: string
       enum: [google, github]
@@ -1275,3 +1973,456 @@ components:
         created_at:
           type: string
           format: date-time
+    VaultKeyId:
+      type: string
+      pattern: '^vk:[A-Za-z0-9_-]{22}$'
+      description: Định danh khoá vault do server sinh ("vk:" + 16 byte ngẫu nhiên base64url không padding).
+    WrappedVaultKey:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{98}$'
+      description: |
+        Bản bọc AEAD XChaCha20-Poly1305 IETF của VK dài đúng 73 byte
+        (version 0x01 || nonce 24B || ciphertext 32B || tag 16B) mã hoá base64url không padding.
+    WrappedPrivateKeys:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{140}$'
+      description: |
+        Bản bọc AEAD XChaCha20-Poly1305 IETF của (x25519_seed 32B || ed25519_seed 32B) dài đúng 105 byte
+        (version 0x01 || nonce 24B || ciphertext 64B || tag 16B) mã hoá base64url không padding.
+    PublicKey32:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      description: Khoá công khai 32 byte mã hoá base64url không padding.
+    RecoveryKeyLookupHash:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      description: Giá trị băm 32 byte BLAKE2b-256("sabk.rk.lookup.v1" || rk_norm) mã hoá base64url không padding.
+    PrfSalt:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      description: Muối PRF 32 byte riêng cho từng credential WebAuthn, mã hoá base64url không padding.
+    VaultKdf:
+      type: object
+      additionalProperties: false
+      required: [alg, ops, mem, parallelism, salt]
+      properties:
+        alg:
+          type: string
+          const: argon2id13
+        ops:
+          type: integer
+          minimum: 3
+          maximum: 10
+        mem:
+          type: integer
+          minimum: 67108864
+          maximum: 268435456
+          description: Bộ nhớ Argon2id tính theo byte (64 MiB đến 256 MiB).
+        parallelism:
+          type: integer
+          const: 1
+        salt:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{22}$'
+          description: Muối KDF 16 byte mã hoá base64url không padding.
+    VaultPasskeyItem:
+      type: object
+      additionalProperties: false
+      required: [id, name, aaguid, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        aaguid:
+          type: [string, 'null']
+          description: AAGUID 16 byte (base64url không padding hoặc UUID) hoặc null.
+        created_at:
+          type: string
+          format: date-time
+    VaultPasskeyList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VaultPasskeyItem'
+    VaultState:
+      type: object
+      additionalProperties: false
+      required:
+        - vault_key_id
+        - version
+        - kdf
+        - vault_key_wrapped_by_kek
+        - x25519_public
+        - ed25519_public
+        - private_keys_wrapped
+        - recovery_keys_remaining
+        - passkeys
+      properties:
+        vault_key_id:
+          $ref: '#/components/schemas/VaultKeyId'
+        version:
+          type: integer
+          minimum: 1
+        kdf:
+          $ref: '#/components/schemas/VaultKdf'
+        vault_key_wrapped_by_kek:
+          $ref: '#/components/schemas/WrappedVaultKey'
+        x25519_public:
+          $ref: '#/components/schemas/PublicKey32'
+        ed25519_public:
+          $ref: '#/components/schemas/PublicKey32'
+        private_keys_wrapped:
+          $ref: '#/components/schemas/WrappedPrivateKeys'
+        recovery_keys_remaining:
+          type: integer
+          minimum: 0
+          maximum: 10
+        passkeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/VaultPasskeyItem'
+    RecoveryKeyUploadItem:
+      type: object
+      additionalProperties: false
+      required: [slot, lookup_hash, wrap]
+      properties:
+        slot:
+          type: integer
+          minimum: 1
+          maximum: 10
+        lookup_hash:
+          $ref: '#/components/schemas/RecoveryKeyLookupHash'
+        wrap:
+          $ref: '#/components/schemas/WrappedVaultKey'
+    VaultCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - kdf
+        - vault_key_wrapped_by_kek
+        - x25519_public
+        - ed25519_public
+        - private_keys_wrapped
+        - recovery_keys
+      properties:
+        kdf:
+          $ref: '#/components/schemas/VaultKdf'
+        vault_key_wrapped_by_kek:
+          $ref: '#/components/schemas/WrappedVaultKey'
+        x25519_public:
+          $ref: '#/components/schemas/PublicKey32'
+        ed25519_public:
+          $ref: '#/components/schemas/PublicKey32'
+        private_keys_wrapped:
+          $ref: '#/components/schemas/WrappedPrivateKeys'
+        recovery_keys:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/RecoveryKeyUploadItem'
+    VaultCreatedResponse:
+      type: object
+      additionalProperties: false
+      required: [vault_key_id, version]
+      properties:
+        vault_key_id:
+          $ref: '#/components/schemas/VaultKeyId'
+        version:
+          type: integer
+          minimum: 1
+    VaultRewrapRequest:
+      type: object
+      additionalProperties: false
+      required: [kdf, vault_key_wrapped_by_kek]
+      properties:
+        kdf:
+          $ref: '#/components/schemas/VaultKdf'
+        vault_key_wrapped_by_kek:
+          $ref: '#/components/schemas/WrappedVaultKey'
+    VaultVersionResponse:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+    VaultRecoveryKeysStatus:
+      type: object
+      additionalProperties: false
+      required: [remaining, slots, empty_slots]
+      properties:
+        remaining:
+          type: integer
+          minimum: 0
+          maximum: 10
+        slots:
+          type: integer
+          const: 10
+        empty_slots:
+          type: array
+          maxItems: 10
+          items:
+            type: integer
+            minimum: 1
+            maximum: 10
+    VaultRecoveryLookupRequest:
+      type: object
+      additionalProperties: false
+      required: [lookup_hash]
+      properties:
+        lookup_hash:
+          $ref: '#/components/schemas/RecoveryKeyLookupHash'
+    VaultRecoveryLookupResponse:
+      type: object
+      additionalProperties: false
+      required: [recovery_key_id, wrap]
+      properties:
+        recovery_key_id:
+          type: string
+          format: uuid
+        wrap:
+          $ref: '#/components/schemas/WrappedVaultKey'
+    VaultRecoverCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [recovery_key_id, kdf, vault_key_wrapped_by_kek]
+      properties:
+        recovery_key_id:
+          type: string
+          format: uuid
+        kdf:
+          $ref: '#/components/schemas/VaultKdf'
+        vault_key_wrapped_by_kek:
+          $ref: '#/components/schemas/WrappedVaultKey'
+    VaultRecoveryKeysRegenerateRequest:
+      type: object
+      additionalProperties: false
+      required: [recovery_keys]
+      properties:
+        recovery_keys:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/RecoveryKeyUploadItem'
+    VaultRecoveryKeysRotateRequest:
+      type: object
+      additionalProperties: false
+      required: [recovery_keys]
+      properties:
+        recovery_keys:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/RecoveryKeyUploadItem'
+    VaultRecoveryKeysMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [remaining, version]
+      properties:
+        remaining:
+          type: integer
+          minimum: 1
+          maximum: 10
+        version:
+          type: integer
+          minimum: 1
+    VaultRecoveryKeysRotateResponse:
+      type: object
+      additionalProperties: false
+      required: [remaining, version]
+      properties:
+        remaining:
+          type: integer
+          const: 10
+        version:
+          type: integer
+          minimum: 1
+    PublicKeyCredentialCreationOptionsJSON:
+      type: object
+      description: WebAuthn PublicKeyCredentialCreationOptions JSON (challenge, user.id và excludeCredentials.id dùng base64url không padding).
+      required: [rp, user, challenge, pubKeyCredParams]
+      additionalProperties: true
+      properties:
+        rp:
+          type: object
+          required: [name]
+          additionalProperties: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        user:
+          type: object
+          required: [id, name, displayName]
+          additionalProperties: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            displayName:
+              type: string
+        challenge:
+          type: string
+          description: Challenge 32 byte ngẫu nhiên mã hoá base64url không padding.
+        pubKeyCredParams:
+          type: array
+          items:
+            type: object
+            required: [type, alg]
+            additionalProperties: true
+            properties:
+              type:
+                type: string
+              alg:
+                type: integer
+        timeout:
+          type: integer
+        excludeCredentials:
+          type: array
+          items:
+            type: object
+            required: [type, id]
+            additionalProperties: true
+            properties:
+              type:
+                type: string
+              id:
+                type: string
+              transports:
+                type: array
+                items:
+                  type: string
+        authenticatorSelection:
+          type: object
+          additionalProperties: true
+        attestation:
+          type: string
+        extensions:
+          type: object
+          additionalProperties: true
+    VaultPasskeyRegisterOptionsResponse:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, public_key, prf_salt]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        public_key:
+          $ref: '#/components/schemas/PublicKeyCredentialCreationOptionsJSON'
+        prf_salt:
+          $ref: '#/components/schemas/PrfSalt'
+    PasskeyAttestationPayload:
+      type: object
+      additionalProperties: false
+      required: [client_data_json, attestation_object]
+      properties:
+        client_data_json:
+          type: string
+          minLength: 1
+          description: clientDataJSON từ authenticator mã hoá base64url không padding.
+        attestation_object:
+          type: string
+          minLength: 1
+          description: attestationObject CBOR từ authenticator mã hoá base64url không padding.
+    VaultPasskeyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, attestation, prf_salt, vk_wrap, name]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        attestation:
+          $ref: '#/components/schemas/PasskeyAttestationPayload'
+        prf_salt:
+          $ref: '#/components/schemas/PrfSalt'
+        vk_wrap:
+          $ref: '#/components/schemas/WrappedVaultKey'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Tên passkey (trim, 1–64 rune, từ chối ký tự điều khiển và bidi override).
+    VaultPasskeyRenameRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Tên passkey mới (trim, 1–64 rune, từ chối ký tự điều khiển và bidi override).
+    PublicKeyCredentialRequestOptionsJSON:
+      type: object
+      description: WebAuthn PublicKeyCredentialRequestOptions JSON (challenge và allowCredentials.id dùng base64url không padding).
+      required: [challenge, allowCredentials]
+      additionalProperties: true
+      properties:
+        challenge:
+          type: string
+          description: Challenge 32 byte ngẫu nhiên (không lưu DB ở P03) mã hoá base64url không padding.
+        timeout:
+          type: integer
+        rpId:
+          type: string
+        allowCredentials:
+          type: array
+          items:
+            type: object
+            required: [type, id]
+            additionalProperties: true
+            properties:
+              type:
+                type: string
+              id:
+                type: string
+              transports:
+                type: array
+                items:
+                  type: string
+        userVerification:
+          type: string
+        extensions:
+          type: object
+          additionalProperties: true
+    PasskeyUnlockCredentialItem:
+      type: object
+      additionalProperties: false
+      required: [id, prf_salt, vk_wrap]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Credential ID (cred_id) mã hoá base64url không padding.
+        prf_salt:
+          $ref: '#/components/schemas/PrfSalt'
+        vk_wrap:
+          $ref: '#/components/schemas/WrappedVaultKey'
+    VaultPasskeyUnlockOptionsResponse:
+      type: object
+      additionalProperties: false
+      required: [public_key, credentials]
+      properties:
+        public_key:
+          $ref: '#/components/schemas/PublicKeyCredentialRequestOptionsJSON'
+        credentials:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PasskeyUnlockCredentialItem'

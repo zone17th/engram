@@ -39,6 +39,24 @@ var p02OperationIDs = []string{
 	"mePasswordChange",
 }
 
+var p03OperationIDs = []string{
+	"vaultGet",
+	"vaultCreate",
+	"vaultRewrap",
+	"vaultReset",
+	"vaultRecoveryKeysGet",
+	"vaultRecoveryLookup",
+	"vaultRecoverComplete",
+	"vaultRecoveryKeysRegenerate",
+	"vaultRecoveryKeysRotate",
+	"vaultPasskeyRegisterOptions",
+	"vaultPasskeyCreate",
+	"vaultPasskeysList",
+	"vaultPasskeyRename",
+	"vaultPasskeyRevoke",
+	"vaultPasskeyUnlockOptions",
+}
+
 func readOpenAPI(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile("../../api/openapi.yaml")
@@ -86,6 +104,26 @@ func TestOpenAPIHasUniqueP02OperationIDs(t *testing.T) {
 	}
 	if len(p02OperationIDs) != 26 {
 		t.Fatalf("catalog test phải đủ 26 operation P02, có %d", len(p02OperationIDs))
+	}
+}
+
+func TestOpenAPIHasUniqueP03OperationIDs(t *testing.T) {
+	spec := readOpenAPI(t)
+	seen := map[string]int{}
+	re := regexp.MustCompile(`(?m)^[ \t]*operationId: ([A-Za-z][A-Za-z0-9]+)\s*$`)
+	for _, m := range re.FindAllStringSubmatch(spec, -1) {
+		seen[m[1]]++
+	}
+	for _, id := range p03OperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if len(p03OperationIDs) != 15 {
+		t.Fatalf("catalog test phải đủ 15 operation P03, có %d", len(p03OperationIDs))
 	}
 }
 
