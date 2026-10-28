@@ -510,6 +510,8 @@ body {
 
 dialog::backdrop { background: rgba(9,12,29,.45); }
 dialog { border: 0; padding: 0; background: transparent; color: var(--body); }
+.card .btn, dialog .btn, section[data-view] .btn { white-space: normal; text-align: center; }
+.card .t-label, dialog .t-label { overflow-wrap: anywhere; }
 
 a { color: var(--link); }
 
