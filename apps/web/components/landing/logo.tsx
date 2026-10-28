@@ -9,7 +9,13 @@ import { cn } from '@/lib/cn';
  * mockups/landing.html (và index.html): rect + path dấu vết magenta→cyan.
  * id gradient dùng useId() để không trùng khi render nhiều logo trên một trang.
  */
-export function Logo({ className }: { className?: string }) {
+export function Logo({
+  className,
+  wordmarkClassName,
+}: {
+  className?: string;
+  wordmarkClassName?: string;
+}) {
   const gradientId = useId();
   return (
     <span className={cn('inline-flex items-center gap-2.5 text-ink', className)}>
@@ -37,7 +43,9 @@ export function Logo({ className }: { className?: string }) {
           strokeDasharray="0.1 5.2 0.1 4 20"
         />
       </svg>
-      <span className="font-display text-[19px] font-extrabold tracking-[-.04em]">engram</span>
+      <span className={cn('font-display text-[19px] font-extrabold tracking-[-.04em]', wordmarkClassName)}>
+        engram
+      </span>
     </span>
   );
 }

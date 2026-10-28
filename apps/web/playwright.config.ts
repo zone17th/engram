@@ -1,34 +1,70 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const DEFAULT_BASE_URL = 'http://127.0.0.1:3000';
+const baseURL = process.env.BASE_URL ?? DEFAULT_BASE_URL;
+
+function originOf(value: string, name: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+}
+
+const baseOrigin = originOf(baseURL, 'BASE_URL');
+const appOrigin = process.env.APP_ORIGIN ?? baseOrigin;
+if (originOf(appOrigin, 'APP_ORIGIN') !== baseOrigin) {
+  throw new Error(`BASE_URL and APP_ORIGIN must use the same origin (got ${baseOrigin} and ${appOrigin})`);
+}
+
 const externalServer = Boolean(process.env.BASE_URL);
 
 export default defineConfig({
   testDir: './e2e',
   outputDir: 'test-results',
   timeout: 30_000,
-  fullyParallel: true,
+  fullyParallel: !process.env.E2E_STACK,
+  workers: process.env.E2E_STACK ? 1 : undefined,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: [
     ['list'],
-    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['html', { outputFolder: 'playwright-report', open: 'never', noSnippets: true, noCopyPrompt: true }],
   ],
   use: {
-    baseURL: process.env.BASE_URL ?? 'http://127.0.0.1:3000',
-    trace: 'retain-on-failure',
-    video: 'retain-on-failure',
+    baseURL,
+    // Browser diagnostics can capture credentials, cookies, and proof tokens.
+    trace: 'off',
+    video: 'off',
+    screenshot: 'off',
   },
   projects: [
     {
+      name: 'auth',
+      testMatch: /auth\.spec\.ts|account\.spec\.ts|oauth\.spec\.ts/,
+      fullyParallel: false,
+      timeout: 60_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 900 },
+        trace: 'off',
+        video: 'off',
+        screenshot: 'off',
+      },
+    },
+    {
       name: 'mobile-390',
+      testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } },
     },
     {
       name: 'tablet-768',
+      testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 } },
     },
     {
       name: 'desktop-1440',
+      testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
   ],
@@ -37,7 +73,7 @@ export default defineConfig({
     : {
         command: 'pnpm --filter @engram/web dev',
         url: 'http://127.0.0.1:3000',
-        reuseExistingServer: true,
+        reuseExistingServer: false,
         timeout: 120_000,
       },
 });

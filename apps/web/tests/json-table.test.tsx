@@ -20,7 +20,7 @@ describe('JsonTable', () => {
 
   it('chuyển sang JSON thô bằng segmented', async () => {
     render(<JsonTable data={data} />);
-    await userEvent.click(screen.getByRole('tab', { name: /thô/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /thô/i }));
     expect(screen.getByRole('code')).toHaveTextContent('"keyword": "ca-phe"');
   });
 

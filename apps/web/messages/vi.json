@@ -53,5 +53,246 @@
     "errorBody": "Thử lại sau giây lát.",
     "retry": "Thử lại"
   },
-  "footer": { "legal": "engram — lưu theo từ khoá." }
+  "footer": { "legal": "engram — lưu theo từ khoá." },
+  "onboarding": {
+    "title": "Tạo vault",
+    "body": "Đặt passphrase và nhận recovery key sẽ có ở P03. P02 vẫn cho quản lý tài khoản và phiên đăng nhập.",
+    "absent": "Tài khoản này chưa có vault mã hoá. Khi P03 sẵn sàng, bạn sẽ đặt passphrase và nhận recovery key tại đây.",
+    "present": "Vault đã tồn tại — khoá và mở khoá do P03 xử lý.",
+    "settings": "Cài đặt tài khoản"
+  },
+  "auth": {
+    "nav": { "login": "Đăng nhập", "signup": "Tạo tài khoản" },
+    "fields": {
+      "email": "Email",
+      "password": "Mật khẩu đăng nhập",
+      "newPassword": "Mật khẩu mới",
+      "confirmPassword": "Nhập lại mật khẩu"
+    },
+    "validation": {
+      "email": { "required": "Nhập email.", "invalid": "Nhập địa chỉ email hợp lệ." },
+      "password": { "short": "Mật khẩu phải có ít nhất 12 ký tự.", "hint": "Ít nhất 12 ký tự." }
+    },
+    "login": {
+      "title": "Đăng nhập",
+      "subtitle": "Bước này chỉ mở tài khoản. Vault mở ở bước riêng ngay sau đó.",
+      "or": "hoặc",
+      "submit": "Đăng nhập",
+      "submitting": "Đang kiểm tra thông tin đăng nhập…",
+      "submittingButton": "Đang đăng nhập…",
+      "passwordHint": "Mật khẩu tài khoản khác passphrase của vault. Đổi mật khẩu không làm mất dữ liệu đã mã hoá."
+    },
+    "signup": {
+      "title": "Tạo tài khoản",
+      "subtitle": "Xong bước này bạn sẽ đặt passphrase và nhận 10 recovery key.",
+      "terms": "Tôi đồng ý với điều khoản và cách dữ liệu được xử lý.",
+      "termsRequired": "Cần đồng ý điều khoản để tiếp tục.",
+      "submit": "Tạo tài khoản",
+      "submitting": "Đang tạo tài khoản…",
+      "privacyNote": "Chúng tôi không đọc được nội dung bạn lưu. Quên mọi đường mở khoá thì chúng tôi cũng không khôi phục giúp được."
+    },
+    "oauth": { "google": "Tiếp tục với Google", "github": "Tiếp tục với GitHub" },
+    "guard": {
+      "loading": "Đang tải…",
+      "unavailableTitle": "Không kiểm tra được phiên",
+      "unavailableBody": "Lỗi mạng hoặc máy chủ. Thử lại — đây không phải đăng xuất.",
+      "retry": "Thử lại"
+    },
+    "verify": {
+      "title": "Xác minh email",
+      "subtitle": "Mở link trong email rồi xác nhận trên thiết bị đang đăng nhập. Token chỉ nằm trong bộ nhớ trình duyệt.",
+      "sent": "Đã gửi email xác minh tới {email}",
+      "resendHint": "Chưa thấy? Kiểm tra thư rác hoặc gửi lại sau 60 giây.",
+      "resend": "Gửi lại",
+      "confirmPrompt": "Xác nhận xác minh trên thiết bị này.",
+      "confirm": "Xác minh email",
+      "confirming": "Đang xác minh…",
+      "invalidToken": "Link hết hạn, đã dùng, hoặc không khớp phiên đang mở.",
+      "signInRequired": "Đăng nhập đúng tài khoản rồi mở lại link."
+    },
+    "enroll": {
+      "title": "Đặt mật khẩu đăng nhập",
+      "subtitle": "Tài khoản OAuth-only cần thêm mật khẩu cho thao tác nhạy cảm. Đây không phải phục hồi vault.",
+      "sendHint": "Chúng tôi gửi link tới email đã verified. Mở trên cùng phiên đăng nhập.",
+      "sendEmail": "Gửi email đặt mật khẩu",
+      "sent": "Đã gửi email đặt mật khẩu tới {email}",
+      "submit": "Đặt mật khẩu",
+      "submitting": "Đang lưu…",
+      "mismatch": "Hai mật khẩu không khớp.",
+      "noToken": "Mở link từ email trên thiết bị này.",
+      "invalidToken": "Link đặt mật khẩu không còn hiệu lực.",
+      "signInRequired": "Đăng nhập trên thiết bị đã yêu cầu link."
+    },
+    "reauth": {
+      "title": "Xác nhận đây là bạn",
+      "subtitle": "Một số việc cần xác thực lại dù bạn đang đăng nhập.",
+      "pending": "Việc đang chờ",
+      "confirm": "Xác nhận",
+      "submitting": "Đang xác nhận…",
+      "google": "Xác nhận bằng Google",
+      "oauthOnlyHint": "GitHub không hỗ trợ xác thực lại tươi. Đặt mật khẩu qua email verified — không phải phục hồi vault.",
+      "enrollCta": "Gửi email đặt mật khẩu",
+      "grantHint": "Grant có hiệu lực ngắn, cho đúng việc này. Reload mất grant thì xác thực lại.",
+      "actions": {
+        "account_email_change": "Đổi email",
+        "account_password_change": "Đổi mật khẩu",
+        "account_identity_link": "Liên kết nhà cung cấp",
+        "account_identity_unlink": "Gỡ nhà cung cấp",
+        "session_revoke_others": "Đăng xuất nơi khác"
+      }
+    },
+    "oauthCallback": {
+      "completing": "Đang hoàn tất đăng nhập…",
+      "invalidFlow": "Link quay về không hợp lệ hoặc hết hạn. Bắt đầu lại từ trang đăng nhập.",
+      "cancelledTitle": "Bạn đã huỷ ở provider",
+      "cancelledBody": "Không có gì thay đổi. Thử lại hoặc dùng email/mật khẩu.",
+      "retry": "Thử lại",
+      "conflictTitle": "Identity conflict",
+      "conflictBody": "Tài khoản provider này đã liên kết user khác.",
+      "errorTitle": "Provider báo lỗi",
+      "errorBody": "Không hoàn tất OAuth được. Bắt đầu lại từ trang đăng nhập.",
+      "backToLogin": "Về đăng nhập",
+      "reauthLost": "Ngữ cảnh xác thực lại bị mất. Thử lại thao tác.",
+      "reauthResume": "Đã xác nhận. Lặp lại thao tác trên màn hình kế để hoàn tất."
+    },
+    "errors": {
+      "invalidCredentialsTitle": "Email hoặc mật khẩu không đúng",
+      "invalidCredentials": "Chúng tôi không nói email nào tồn tại. Kiểm tra cả hai ô.",
+      "captchaRequiredTitle": "Cần xác minh thêm",
+      "captchaRequired": "Hoàn thành bước xác minh.",
+      "captchaHint": "Sau vài lần thất bại, mỗi lần đăng nhập cần Turnstile.",
+      "lockoutTitle": "Đăng nhập tạm khoá",
+      "lockout": "Thử quá nhiều lần. Thử lại sau {clock} (hiển thị tĩnh, không đếm ngược).",
+      "lockoutHint": "Giới hạn 5 lần mỗi phút trên mỗi địa chỉ mạng.",
+      "sessionRevokedTitle": "Phiên đã bị thu hồi",
+      "sessionRevoked": "Đăng nhập lại để tiếp tục. Dữ liệu trên máy chủ không bị xoá.",
+      "sessionExpiredTitle": "Phiên đã hết hạn",
+      "sessionExpired": "Làm mới phiên không thành công. Đăng nhập lại.",
+      "networkTitle": "Không gọi được máy chủ",
+      "network": "Kiểm tra kết nối rồi thử lại. Không có gì được gửi đi.",
+      "genericTitle": "Có lỗi xảy ra",
+      "emailTakenTitle": "Email này đã được dùng",
+      "emailTaken": "Đăng nhập hoặc dùng email khác. Chúng tôi không nói email nào tồn tại khi đăng nhập thất bại.",
+      "webLocksDegraded": "Trình duyệt này không điều phối refresh giữa các tab. Đăng nhập lại khi phiên hết hạn.",
+      "rateLimited": "Thử quá nhiều lần. Thử lại sau {seconds} giây.",
+      "captchaWidget": "Ô xác minh Turnstile (hiện khi server yêu cầu)."
+    },
+    "common": { "cancel": "Huỷ", "logout": "Đăng xuất" }
+  },
+  "settings": {
+    "page": {
+      "title": "Cài đặt",
+      "subtitle": "Tài khoản, phiên và thông báo. Mã hoá vault có ở P03.",
+      "navLabel": "Mục cài đặt",
+      "nav": { "account": "Tài khoản", "security": "Bảo mật", "search": "Tìm kiếm", "data": "Dữ liệu" },
+      "searchHeading": "Tìm kiếm",
+      "searchTitle": "Tìm gần nghĩa",
+      "searchBody": "Tên mục và tag có thể được gửi tới máy chủ nhúng của chúng tôi. Nội dung entry thì không. Điều khiển này thuộc P05.",
+      "dataHeading": "Dữ liệu",
+      "dataTitle": "Xuất và xoá",
+      "dataBody": "Xuất đã giải mã cần vault đang mở. Các thao tác đó thuộc P03 và các phase sau."
+    },
+    "reauth": { "resume": "Đã xác nhận. Lặp lại thao tác bên dưới để hoàn tất." },
+    "common": { "cancel": "Huỷ", "continue": "Tiếp tục", "loading": "Đang tải…", "empty": "Chưa có mục nào.", "loadMore": "Tải thêm" },
+    "errors": { "generic": "Có lỗi xảy ra. Thử lại." },
+    "account": {
+      "heading": "Tài khoản",
+      "verified": "Đã xác minh",
+      "unverified": "Chưa xác minh",
+      "joined": "Tham gia {date}",
+      "changeEmail": "Đổi email",
+      "passwordTitle": "Mật khẩu đăng nhập",
+      "passwordBody": "Khác passphrase vault. Đổi mật khẩu đăng xuất các phiên khác.",
+      "changePassword": "Đổi mật khẩu",
+      "setPassword": "Đặt mật khẩu",
+      "identitiesTitle": "Cách đăng nhập",
+      "linked": "đã liên kết",
+      "notLinked": "chưa liên kết",
+      "linkGoogle": "Liên kết Google",
+      "linkGithub": "Liên kết GitHub",
+      "unlinkGoogle": "Gỡ Google",
+      "unlinkGithub": "Gỡ GitHub",
+      "emailPending": "Đã gửi xác minh tới {email}. Email hiện tại giữ nguyên đến khi bạn xác nhận.",
+      "passwordReplaced": "Đã đổi mật khẩu đăng nhập. Các phiên khác đã bị đăng xuất.",
+      "patchFailed": "Không lưu được lựa chọn này. Giữ nguyên giá trị cũ.",
+      "localeTitle": "Ngôn ngữ",
+      "localeBody": "Áp dụng cho giao diện, không đụng tới nội dung.",
+      "themeTitle": "Giao diện",
+      "themeBody": "Theo hệ thống, sáng, hoặc tối.",
+      "themeSystem": "Hệ thống",
+      "themeLight": "Sáng",
+      "themeDark": "Tối",
+      "passwordHint": "Ít nhất 12 ký tự.",
+      "passwordTooShort": "Mật khẩu phải có ít nhất 12 ký tự.",
+      "passwordMismatch": "Hai mật khẩu không khớp."
+    },
+    "security": {
+      "heading": "Bảo mật",
+      "subtitle": "Vault giữ khoá giải mã nội dung entry. Phiên và nhật ký tài khoản đã nối API.",
+      "sessionsTitle": "Phiên đăng nhập",
+      "sessionsEmpty": "Chỉ phiên này đang đăng nhập.",
+      "revokeOthers": "Đăng xuất nơi khác",
+      "currentSession": "phiên này",
+      "revoke": "Thu hồi",
+      "unknownDevice": "Thiết bị không rõ",
+      "auditTitle": "Nhật ký bảo mật",
+      "auditBody": "Đăng nhập, đổi email, liên kết provider, thu hồi phiên.",
+      "notificationsTitle": "Thông báo trong app",
+      "notificationsBody": "Cảnh báo bảo mật — không chứa secret.",
+      "vaultPlaceholder": "Thao tác vault",
+      "vaultPlaceholderBody": "Passphrase, recovery key và passkey sẽ nối ở P03."
+    },
+    "audit": {
+      "events": {
+        "auth_signup": "Tạo tài khoản",
+        "auth_login_success": "Đăng nhập",
+        "auth_login_failure": "Đăng nhập thất bại",
+        "auth_logout": "Đăng xuất",
+        "auth_refresh_reuse": "Dùng lại refresh token",
+        "auth_session_revoke": "Thu hồi phiên",
+        "auth_session_revoke_others": "Thu hồi các phiên khác",
+        "auth_password_change": "Đổi mật khẩu đăng nhập",
+        "auth_password_enroll": "Đặt mật khẩu đăng nhập",
+        "auth_email_change_request": "Yêu cầu đổi email",
+        "auth_email_change_confirm": "Xác nhận đổi email",
+        "auth_email_verify": "Xác minh email",
+        "auth_identity_link": "Liên kết cách đăng nhập",
+        "auth_identity_unlink": "Gỡ cách đăng nhập",
+        "auth_settings_change": "Đổi cài đặt tài khoản",
+        "auth_oauth_login": "Đăng nhập bằng nhà cung cấp",
+        "auth_reauth": "Xác thực lại",
+        "unknown": "Sự kiện bảo mật"
+      },
+      "results": { "success": "thành công", "failure": "thất bại" },
+      "providers": { "password": "mật khẩu", "google": "Google", "github": "GitHub" },
+      "reasons": {
+        "reuse": "dùng lại token",
+        "invalid": "không hợp lệ",
+        "expired": "hết hạn",
+        "revoked": "đã thu hồi",
+        "last_method": "phương thức cuối",
+        "collision": "xung đột",
+        "unverified": "chưa xác minh"
+      },
+      "fields": {
+        "locale": "ngôn ngữ",
+        "theme": "giao diện",
+        "auto_lock_minutes": "tự khoá",
+        "semantic_suggest": "tìm gần nghĩa"
+      }
+    },
+    "notifications": {
+      "empty": "Chưa có thông báo bảo mật.",
+      "markRead": "Đánh dấu đã đọc",
+      "kinds": { "security": "Cảnh báo bảo mật", "unknown": "Thông báo" }
+    },
+    "dialogs": {
+      "email": { "title": "Đổi email", "description": "Email hiện tại giữ nguyên đến khi bạn xác minh địa chỉ mới.", "label": "Email mới", "submit": "Gửi xác minh" },
+      "password": { "title": "Đổi mật khẩu đăng nhập", "description": "Không phải passphrase vault. Các phiên khác sẽ bị đăng xuất.", "new": "Mật khẩu mới", "confirm": "Nhập lại", "submit": "Đổi mật khẩu" },
+      "link": { "title": "Liên kết {provider}", "description": "Cần xác thực lại trước khi redirect." },
+      "unlink": { "title": "Gỡ {provider}?", "description": "Không thể gỡ phương thức đăng nhập cuối cùng.", "submit": "Gỡ liên kết" },
+      "reauth": { "title": "Xác nhận đây là bạn", "description": "Nhập mật khẩu đăng nhập hoặc dùng Google nếu có.", "password": "Mật khẩu đăng nhập", "google": "Xác nhận bằng Google", "submit": "Xác nhận", "submitting": "Đang xác nhận…" },
+      "revoke": { "title": "Đăng xuất nơi khác?", "description": "Giữ phiên trên thiết bị này. Cần xác thực lại để thu hồi.", "submit": "Đăng xuất nơi khác" }
+    }
+  }
 }

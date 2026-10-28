@@ -53,5 +53,246 @@
     "errorBody": "Try again in a moment.",
     "retry": "Try again"
   },
-  "footer": { "legal": "engram — saved by keyword." }
+  "footer": { "legal": "engram — saved by keyword." },
+  "onboarding": {
+    "title": "Create your vault",
+    "body": "Vault setup, passphrase, and recovery keys arrive in P03. In P02 you can still manage your account and sessions.",
+    "absent": "This account has no encrypted vault yet. When P03 is ready, you will set a passphrase and receive recovery keys here.",
+    "present": "A vault already exists — lock and unlock are handled in P03.",
+    "settings": "Account settings"
+  },
+  "auth": {
+    "nav": { "login": "Sign in", "signup": "Create account" },
+    "fields": {
+      "email": "Email",
+      "password": "Login password",
+      "newPassword": "New password",
+      "confirmPassword": "Confirm password"
+    },
+    "validation": {
+      "email": { "required": "Enter your email.", "invalid": "Enter a valid email address." },
+      "password": { "short": "Password must be at least 12 characters.", "hint": "At least 12 characters." }
+    },
+    "login": {
+      "title": "Sign in",
+      "subtitle": "This step only opens your account. Unlocking the vault is a separate step.",
+      "or": "or",
+      "submit": "Sign in",
+      "submitting": "Checking your credentials…",
+      "submittingButton": "Signing in…",
+      "passwordHint": "Your login password is not your vault passphrase. Changing it does not erase encrypted data."
+    },
+    "signup": {
+      "title": "Create account",
+      "subtitle": "After this you will set a passphrase and receive recovery keys.",
+      "terms": "I agree to the terms and how data is handled.",
+      "termsRequired": "Accept the terms to continue.",
+      "submit": "Create account",
+      "submitting": "Creating account…",
+      "privacyNote": "We cannot read what you store. If you lose every way to unlock, we cannot recover it for you."
+    },
+    "oauth": { "google": "Continue with Google", "github": "Continue with GitHub" },
+    "guard": {
+      "loading": "Loading…",
+      "unavailableTitle": "Could not verify the session",
+      "unavailableBody": "Network or server error. Try again — this is not a sign-out.",
+      "retry": "Try again"
+    },
+    "verify": {
+      "title": "Verify email",
+      "subtitle": "Open the link in your email, then confirm on this signed-in device. The token stays in memory only.",
+      "sent": "Verification email sent to {email}",
+      "resendHint": "Did not arrive? Check spam or resend after a minute.",
+      "resend": "Resend",
+      "confirmPrompt": "Confirm verification on this device.",
+      "confirm": "Confirm email",
+      "confirming": "Confirming…",
+      "invalidToken": "This link expired, was already used, or belongs to another session.",
+      "signInRequired": "Sign in with the correct account, then open the link again."
+    },
+    "enroll": {
+      "title": "Set login password",
+      "subtitle": "OAuth-only accounts need a login password for sensitive actions when the provider cannot re-authenticate. This is not vault recovery.",
+      "sendHint": "We email a link to your verified address. Open it on this signed-in session.",
+      "sendEmail": "Send setup email",
+      "sent": "Password setup email sent to {email}",
+      "submit": "Set password",
+      "submitting": "Saving…",
+      "mismatch": "Passwords do not match.",
+      "noToken": "Open the link from your email on this device.",
+      "invalidToken": "This setup link is invalid or expired.",
+      "signInRequired": "Sign in on the device that requested the link."
+    },
+    "reauth": {
+      "title": "Confirm it is you",
+      "subtitle": "Some actions need fresh proof even while signed in.",
+      "pending": "Pending action",
+      "confirm": "Confirm",
+      "submitting": "Confirming…",
+      "google": "Confirm with Google",
+      "oauthOnlyHint": "GitHub cannot prove fresh sign-in. Set a login password via verified email — not vault recovery.",
+      "enrollCta": "Send password setup email",
+      "grantHint": "The grant is short-lived and tied to this action. Reload clears it.",
+      "actions": {
+        "account_email_change": "Change email",
+        "account_password_change": "Change password",
+        "account_identity_link": "Link provider",
+        "account_identity_unlink": "Unlink provider",
+        "session_revoke_others": "Sign out elsewhere"
+      }
+    },
+    "oauthCallback": {
+      "completing": "Finishing sign-in…",
+      "invalidFlow": "This return link is invalid or expired. Start again from sign in.",
+      "cancelledTitle": "You cancelled at the provider",
+      "cancelledBody": "Nothing changed. Try again or use email and password.",
+      "retry": "Try again",
+      "conflictTitle": "Identity conflict",
+      "conflictBody": "This provider account is linked to another user.",
+      "errorTitle": "Provider error",
+      "errorBody": "Could not finish OAuth. Start again from sign in.",
+      "backToLogin": "Back to sign in",
+      "reauthLost": "Re-authentication context was lost. Try the action again.",
+      "reauthResume": "Confirmed. Repeat the action on the next screen to finish."
+    },
+    "errors": {
+      "invalidCredentialsTitle": "Email or password is incorrect",
+      "invalidCredentials": "We do not say which accounts exist. Check both fields.",
+      "captchaRequiredTitle": "Additional verification needed",
+      "captchaRequired": "Complete the verification challenge.",
+      "captchaHint": "After several failed attempts, each sign-in needs Turnstile.",
+      "lockoutTitle": "Sign-in temporarily locked",
+      "lockout": "Too many attempts. Try again after {clock} (static display, not a live countdown).",
+      "lockoutHint": "Limit is 5 attempts per minute per network address.",
+      "sessionRevokedTitle": "Session revoked",
+      "sessionRevoked": "Sign in again to continue. Server data was not deleted.",
+      "sessionExpiredTitle": "Session expired",
+      "sessionExpired": "Refresh did not succeed. Sign in again.",
+      "networkTitle": "Could not reach the server",
+      "network": "Check your connection, then try again. Nothing was sent.",
+      "genericTitle": "Something went wrong",
+      "emailTakenTitle": "This email is already in use",
+      "emailTaken": "Sign in or use another address. We do not say which emails exist on a failed sign-in.",
+      "webLocksDegraded": "This browser cannot coordinate refresh across tabs. Sign in again when the session expires.",
+      "rateLimited": "Too many attempts. Try again in {seconds} seconds.",
+      "captchaWidget": "Turnstile verification (shown when required by the server)."
+    },
+    "common": { "cancel": "Cancel", "logout": "Sign out" }
+  },
+  "settings": {
+    "page": {
+      "title": "Settings",
+      "subtitle": "Account, sessions, and notices. Vault crypto arrives in P03.",
+      "navLabel": "Settings sections",
+      "nav": { "account": "Account", "security": "Security", "search": "Search", "data": "Data" },
+      "searchHeading": "Search",
+      "searchTitle": "Similar-meaning search",
+      "searchBody": "Item names and tags can be embedded on our server. Entry content is not sent. This control ships in P05.",
+      "dataHeading": "Data",
+      "dataTitle": "Export and delete",
+      "dataBody": "Decrypted export needs an unlocked vault. Those actions ship with P03 and later phases."
+    },
+    "reauth": { "resume": "Confirmed. Repeat the action below to finish." },
+    "common": { "cancel": "Cancel", "continue": "Continue", "loading": "Loading…", "empty": "Nothing here yet.", "loadMore": "Load more" },
+    "errors": { "generic": "Something went wrong. Try again." },
+    "account": {
+      "heading": "Account",
+      "verified": "Verified",
+      "unverified": "Not verified",
+      "joined": "Joined {date}",
+      "changeEmail": "Change email",
+      "passwordTitle": "Login password",
+      "passwordBody": "Not your vault passphrase. Changing it signs out other sessions.",
+      "changePassword": "Change password",
+      "setPassword": "Set password",
+      "identitiesTitle": "Sign-in methods",
+      "linked": "linked",
+      "notLinked": "not linked",
+      "linkGoogle": "Link Google",
+      "linkGithub": "Link GitHub",
+      "unlinkGoogle": "Unlink Google",
+      "unlinkGithub": "Unlink GitHub",
+      "emailPending": "Verification sent to {email}. The current address stays until you confirm.",
+      "passwordReplaced": "Login password updated. Other sessions were signed out.",
+      "patchFailed": "Could not save that setting. Your previous choice is still in use.",
+      "localeTitle": "Language",
+      "localeBody": "Applies to the interface, not entry content.",
+      "themeTitle": "Theme",
+      "themeBody": "System, light, or dark.",
+      "themeSystem": "System",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "passwordHint": "At least 12 characters.",
+      "passwordTooShort": "Password must be at least 12 characters.",
+      "passwordMismatch": "Passwords do not match."
+    },
+    "security": {
+      "heading": "Security",
+      "subtitle": "Vault crypto controls arrive in P03. Account sessions and audit are live.",
+      "sessionsTitle": "Sign-in sessions",
+      "sessionsEmpty": "Only this session is signed in.",
+      "revokeOthers": "Sign out elsewhere",
+      "currentSession": "this session",
+      "revoke": "Revoke",
+      "unknownDevice": "Unknown device",
+      "auditTitle": "Security log",
+      "auditBody": "Sign-in, email changes, provider links, session revokes.",
+      "notificationsTitle": "In-app notices",
+      "notificationsBody": "Security alerts without secrets.",
+      "vaultPlaceholder": "Vault controls",
+      "vaultPlaceholderBody": "Passphrase, recovery keys, and passkeys wire in P03."
+    },
+    "audit": {
+      "events": {
+        "auth_signup": "Account created",
+        "auth_login_success": "Signed in",
+        "auth_login_failure": "Sign-in failed",
+        "auth_logout": "Signed out",
+        "auth_refresh_reuse": "Refresh token reused",
+        "auth_session_revoke": "Session revoked",
+        "auth_session_revoke_others": "Other sessions revoked",
+        "auth_password_change": "Login password changed",
+        "auth_password_enroll": "Login password set",
+        "auth_email_change_request": "Email change requested",
+        "auth_email_change_confirm": "Email change confirmed",
+        "auth_email_verify": "Email verified",
+        "auth_identity_link": "Sign-in method linked",
+        "auth_identity_unlink": "Sign-in method unlinked",
+        "auth_settings_change": "Account settings changed",
+        "auth_oauth_login": "Signed in with a provider",
+        "auth_reauth": "Re-authentication",
+        "unknown": "Security event"
+      },
+      "results": { "success": "succeeded", "failure": "failed" },
+      "providers": { "password": "password", "google": "Google", "github": "GitHub" },
+      "reasons": {
+        "reuse": "token reuse",
+        "invalid": "invalid",
+        "expired": "expired",
+        "revoked": "revoked",
+        "last_method": "last method",
+        "collision": "collision",
+        "unverified": "unverified"
+      },
+      "fields": {
+        "locale": "language",
+        "theme": "theme",
+        "auto_lock_minutes": "auto-lock",
+        "semantic_suggest": "similar-meaning search"
+      }
+    },
+    "notifications": {
+      "empty": "No security notices yet.",
+      "markRead": "Mark read",
+      "kinds": { "security": "Security notice", "unknown": "Notice" }
+    },
+    "dialogs": {
+      "email": { "title": "Change email", "description": "Your current email stays until the new one is verified.", "label": "New email", "submit": "Send verification" },
+      "password": { "title": "Change login password", "description": "Not your vault passphrase. Other sessions will be signed out.", "new": "New password", "confirm": "Confirm", "submit": "Change password" },
+      "link": { "title": "Link {provider}", "description": "Re-authenticate before redirecting to the provider." },
+      "unlink": { "title": "Unlink {provider}?", "description": "You cannot remove your last sign-in method.", "submit": "Unlink" },
+      "reauth": { "title": "Confirm it is you", "description": "Enter your login password or use Google if available.", "password": "Login password", "google": "Confirm with Google", "submit": "Confirm", "submitting": "Confirming…" },
+      "revoke": { "title": "Sign out elsewhere?", "description": "Keep this device. Other sessions require re-authentication to revoke.", "submit": "Sign out elsewhere" }
+    }
+  }
 }

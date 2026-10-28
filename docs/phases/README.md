@@ -5,6 +5,8 @@
 
 ## 1. Cách dùng
 
+**Quyết định phạm vi ngày 2026-09-16:** Theo yêu cầu người dùng, không triển khai hoặc chạy thêm CI cho P01/P02; CI không là điều kiện nghiệm thu hai phase này. Các gate lint, typecheck, build, test, migration, generated parity và browser vẫn chạy local theo phạm vi từng phase. Yêu cầu CI trong các plan cũ được miễn theo quyết định này; workflow có sẵn không bị xóa.
+
 Đọc file này, rồi file của phase sắp thực hiện. Spec tổng thể quyết định hành vi/dữ liệu; mockup quyết định thị giác theo §7.0; bộ phase quyết định thứ tự, phạm vi bàn giao và bằng chứng nghiệm thu. Mọi thay đổi contract trong lúc triển khai phải cập nhật spec tổng thể/OpenAPI tương ứng, không để một phase tự tạo luật trái spec.
 
 `P01`–`P08` là **phase triển khai**, thay cách đánh số cũ để tránh nhầm "Phase 1" với toàn bộ MVP:
@@ -21,7 +23,7 @@ P01–P06 đủ chi tiết để chia task triển khai. P07–P08 có mục ti�
 
 | Phase / spec | Đầu ra dùng được | Phụ thuộc | Cổng nghiệm thu |
 |---|---|---|---|
-| [P01 — Nền tảng và UI shell](P01-foundation.md) | Local stack, CI, token app, landing demo, shell responsive | Repo/spec/mockup hiện tại | Build + health + đối chiếu thị giác |
+| [P01 — Nền tảng và UI shell](P01-foundation.md) | Local stack, kiểm tra local, token app, landing demo, shell responsive | Repo/spec/mockup hiện tại | Build + health + đối chiếu thị giác |
 | [P02 — Tài khoản và session](P02-auth.md) | Signup/login OAuth/password, settings tài khoản, re-auth, audit/session | P01 | Auth thật, chặn truy cập sai user, re-auth đúng action |
 | [P03 — Vault và recovery](P03-vault.md) | Passphrase + 10 RK + PRF passkey + DevKey, auto-lock, rewrap/recovery | P02 | Crypto vector + recovery/concurrency + thiết bị mới |
 | [P04 — Item, tag và entry](P04-content.md) | Lưu/sửa text và JSON lossless, quick-add, duplicate picker, dữ liệu bền vững | P03; shell P01 | Một vòng tạo → sửa → mở lại → xoá/restore bằng dữ liệu thật |

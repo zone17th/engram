@@ -1,6 +1,6 @@
 # Windows không có make sẵn; các target dưới đây được mirror sang scripts của package.json.
 
-.PHONY: api-test api-lint web-test migrate dev stack-up stack-down smoke
+.PHONY: api-test api-lint web-test migrate dev stack-up stack-down smoke e2e e2e-https
 
 api-test:
 	cd apps/api && go test ./...
@@ -27,3 +27,10 @@ stack-down:
 
 smoke:
 	node scripts/smoke.mjs
+
+e2e:
+	node scripts/e2e.mjs
+
+# Cần cặp chứng chỉ local ở .data/certs (gitignored); không commit private key.
+e2e-https:
+	node scripts/https-e2e.mjs

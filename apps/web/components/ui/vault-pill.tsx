@@ -1,19 +1,28 @@
 import { cn } from '@/lib/cn';
 
+export type VaultPillState = 'open' | 'locked' | 'absent';
+
 /**
- * Chỉ hiển thị trạng thái được truyền vào. P01 KHÔNG có vault thật — P03 mới nối
- * vào state thật; ở đây pill nhận prop từ fixture của shell.
- * Locked dùng .vault-shut (tokens.css) — không có .vault-locked.
+ * P02: absent = chưa tạo kho (Me.vault.status). locked/open là P03 crypto state.
  */
 export function VaultPill({
   state,
   minutesLeft,
   className,
 }: {
-  state: 'open' | 'locked';
+  state: VaultPillState;
   minutesLeft?: number;
   className?: string;
 }) {
+  if (state === 'absent') {
+    return (
+      <span className={cn('vault-pill vault-shut', className)} aria-disabled="true">
+        <span aria-hidden="true">🔒</span>
+        <span>Chưa tạo kho</span>
+      </span>
+    );
+  }
+
   const open = state === 'open';
   return (
     <span className={cn('vault-pill', open ? 'vault-open' : 'vault-shut', className)}>

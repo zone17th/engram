@@ -6,24 +6,27 @@ import { type ReadyResponse, apiFetch } from '@engram/shared-types';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { EmptyState } from '@/components/app-shell/empty-state';
 import { Omnibox } from '@/components/app-shell/omnibox';
-import { PreviewNotice } from '@/components/app-shell/preview-notice';
 import { Rail } from '@/components/app-shell/rail';
 import { BadgeType } from '@/components/ui/badge-type';
+import { useSession } from '@/features/auth/session-provider';
 import { DEMO_ITEMS, DEMO_TAGS } from '@/lib/demo-fixtures';
 
 export default function AppPage() {
+  const { me, status } = useSession();
   // Nguồn duy nhất cho cờ semantic: readyz của API, không phải biến build của web.
   const ready = useQuery({
     queryKey: ['readyz'],
     queryFn: () => apiFetch<ReadyResponse>('/readyz'),
   });
 
-  const semanticAvailable = ready.data?.semantic_available ?? false;
+  const semanticAvailable = me?.features.semantic_available ?? ready.data?.semantic_available ?? false;
+  const vaultState = me?.vault.status === 'present' ? 'locked' : 'absent';
+
+  if (status === 'loading') return null;
 
   return (
     <>
-      {/* Chưa có vault thật — pill nhận dữ liệu mẫu của shell. */}
-      <AppHeader vault={{ state: 'locked' }} />
+      <AppHeader vault={{ state: vaultState }} showLogout />
 
       <main className="mx-auto grid max-w-container gap-8 px-5 py-8 lg:grid-cols-[236px_minmax(0,1fr)]">
         <Rail
@@ -36,7 +39,6 @@ export default function AppPage() {
         />
 
         <section aria-labelledby="recent-heading" className="flex flex-col gap-4">
-          <PreviewNotice />
           <div>
             <h1 className="t-title-lg text-ink">Gõ để tìm. Gõ tiếp để lưu.</h1>
             <p className="t-body-lg mt-1 text-muted">Thử tìm trong các mục mẫu. Nội dung bạn gõ không được lưu.</p>

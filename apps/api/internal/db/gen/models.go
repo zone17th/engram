@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -57,6 +58,95 @@ func (ns NullRiverJobState) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.RiverJobState), nil
+}
+
+type AppUser struct {
+	ID              uuid.UUID
+	Email           string
+	EmailVerifiedAt pgtype.Timestamptz
+	Locale          string
+	Theme           string
+	AutoLockMinutes int32
+	Settings        []byte
+	CreatedAt       pgtype.Timestamptz
+	DeletedAt       pgtype.Timestamptz
+}
+
+type AuditLog struct {
+	ID        int64
+	UserID    *uuid.UUID
+	SessionID *uuid.UUID
+	Event     string
+	Result    string
+	Actor     *string
+	IpHash    []byte
+	UserAgent *string
+	Meta      []byte
+	CreatedAt pgtype.Timestamptz
+}
+
+type AuthIdentity struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	Provider     string
+	ProviderUid  *string
+	PasswordHash *string
+	CreatedAt    pgtype.Timestamptz
+}
+
+type AuthThrottle struct {
+	SubjectHash  []byte
+	FailedCount  int32
+	LockedUntil  pgtype.Timestamptz
+	LastFailedAt pgtype.Timestamptz
+}
+
+type EmailVerification struct {
+	ID                   uuid.UUID
+	UserID               uuid.UUID
+	SessionID            *uuid.UUID
+	Purpose              string
+	TargetEmail          string
+	ExpectedCurrentEmail *string
+	TokenHash            []byte
+	ExpiresAt            pgtype.Timestamptz
+	ConsumedAt           pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+}
+
+type OauthReauthReceipt struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	SessionID  uuid.UUID
+	Provider   string
+	Action     string
+	TokenHash  []byte
+	ExpiresAt  pgtype.Timestamptz
+	ConsumedAt pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+}
+
+type OauthTransaction struct {
+	ID                    uuid.UUID
+	Provider              string
+	Mode                  string
+	Status                string
+	StateHash             []byte
+	CookieBindingHash     []byte
+	PkceVerifier          *string
+	Nonce                 *string
+	ExpectedUserID        *uuid.UUID
+	ExpectedSessionID     *uuid.UUID
+	Action                *string
+	IdentityProvider      *string
+	IdentityProviderUid   *string
+	IdentityEmail         *string
+	IdentityEmailVerified *bool
+	CompletionDeadline    pgtype.Timestamptz
+	StartedAt             pgtype.Timestamptz
+	ExpiresAt             pgtype.Timestamptz
+	ClaimedAt             pgtype.Timestamptz
+	ConsumedAt            pgtype.Timestamptz
 }
 
 type PgExtension struct {
@@ -127,4 +217,33 @@ type RiverQueue struct {
 	Metadata  []byte
 	PausedAt  pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
+}
+
+type Session struct {
+	ID               uuid.UUID
+	UserID           uuid.UUID
+	RefreshTokenHash []byte
+	DeviceLabel      *string
+	IpHash           []byte
+	UserAgent        *string
+	CreatedAt        pgtype.Timestamptz
+	LastSeenAt       pgtype.Timestamptz
+	ExpiresAt        pgtype.Timestamptz
+	RevokedAt        pgtype.Timestamptz
+}
+
+type SessionRefreshUsed struct {
+	TokenHash []byte
+	SessionID uuid.UUID
+	UsedAt    pgtype.Timestamptz
+}
+
+type UserNotification struct {
+	ID           int64
+	UserID       uuid.UUID
+	Kind         string
+	Meta         []byte
+	EmailTargets []string
+	ReadAt       pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
 }
