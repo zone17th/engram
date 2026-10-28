@@ -1,9 +1,11 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -53,8 +55,8 @@ func ParseStrongETag(raw string) (string, bool) {
 	for i := range len(inner) {
 		b := inner[i]
 		// etagc theo RFC 9110: %x21 / %x23-7E / obs-text (%x80-FF)
-		// Từ chối DQUOTE (0x22), khoảng trắng/control (<= 0x20 trừ khi cần, nhưng ETag của vault/entry không chứa control hay DQUOTE) và DEL (0x7F).
-		if b == '"' || b < 0x20 || b == 0x7f {
+		// Từ chối DQUOTE (0x22), khoảng trắng ASCII (0x20), control (< 0x20) và DEL (0x7F).
+		if b == '"' || b <= 0x20 || b == 0x7f {
 			return "", false
 		}
 	}
@@ -92,7 +94,7 @@ type VaultIfMatch struct {
 // tiền tố `vk:`. Phần trước phải khớp `^vk:[A-Za-z0-9_-]{22}$`, phần sau là
 // số nguyên dương thập phân không có số 0 đứng đầu (`^[1-9][0-9]*$`, vừa int32).
 func ParseVaultIfMatch(tag string) (VaultIfMatch, bool) {
-	s := strings.TrimSpace(tag)
+	s := tag
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		var ok bool
 		s, ok = ParseStrongETag(s)
@@ -217,10 +219,33 @@ func LockAndVerifyVaultIfMatch(ctx context.Context, w http.ResponseWriter, r *ht
 // gắn trực tiếp `RequireJSONContent` mà dùng middleware này hoặc tách nhóm route.
 func RequireJSONContentExceptEmptyDelete(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete && (r.ContentLength == 0 || r.Body == nil || r.Body == http.NoBody) && strings.TrimSpace(r.Header.Get("Content-Type")) == "" {
-			next.ServeHTTP(w, r)
-			return
+		if r.Method == http.MethodDelete && strings.TrimSpace(r.Header.Get("Content-Type")) == "" {
+			if r.ContentLength == 0 || r.Body == nil || r.Body == http.NoBody {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if r.ContentLength < 0 {
+				var probe [1]byte
+				n, err := r.Body.Read(probe[:])
+				if n == 0 && errors.Is(err, io.EOF) {
+					_ = r.Body.Close()
+					r.Body = http.NoBody
+					next.ServeHTTP(w, r)
+					return
+				}
+				if n > 0 {
+					r.Body = &prefixedReadCloser{
+						Reader: io.MultiReader(bytes.NewReader(probe[:n]), r.Body),
+						Closer: r.Body,
+					}
+				}
+			}
 		}
 		RequireJSONContent(next).ServeHTTP(w, r)
 	})
+}
+
+type prefixedReadCloser struct {
+	io.Reader
+	io.Closer
 }
