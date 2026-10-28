@@ -1,71 +1,108 @@
 'use client';
 
-import { type ReactNode, createContext, useCallback, useContext, useEffect, useState } from 'react';
+import {
+  type ReactNode,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
+import type { Theme } from '@/lib/api/auth';
+import { parseThemeCookie, setPreferenceCookies, themeToDataAttribute } from '@/lib/preferences/cookies';
 
-type Theme = 'light' | 'dark';
+type ResolvedTheme = 'light' | 'dark';
 
-const STORAGE_KEY = 'engram.theme';
+type ThemeContextValue = {
+  theme: Theme;
+  resolved: ResolvedTheme;
+  setTheme: (next: Theme) => void;
+  toggle: () => void;
+};
 
-const ThemeContext = createContext<{ theme: Theme; toggle: () => void } | null>(null);
+const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function initialTheme(): Theme {
-  // SSR và lần render đầu phía client phải cùng giá trị; preference đọc sau hydration.
-  return 'light';
-}
-
-function readStoredTheme(): Theme | null {
-  if (typeof window === 'undefined') return null;
-
+function resolveTheme(theme: Theme): ResolvedTheme {
+  if (theme === 'light' || theme === 'dark') return theme;
+  if (typeof window === 'undefined') return 'light';
   try {
-    const saved = window.localStorage?.getItem?.(STORAGE_KEY);
-    return saved === 'light' || saved === 'dark' ? saved : null;
-  } catch {
-    // Storage có thể không dùng được ở chế độ riêng tư hoặc khi origin bị chặn.
-    return null;
-  }
-}
-
-function resolveClientTheme(): Theme {
-  const saved = readStoredTheme();
-  if (saved) return saved;
-
-  try {
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   } catch {
     return 'light';
   }
 }
 
-function persistTheme(theme: Theme) {
-  if (typeof window === 'undefined') return;
-
+function readThemeCookie(): Theme | null {
+  if (typeof document === 'undefined') return null;
+  const raw = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('sabk_theme='))
+    ?.slice('sabk_theme='.length);
+  if (!raw) return null;
   try {
-    window.localStorage?.setItem?.(STORAGE_KEY, theme);
+    return parseThemeCookie(decodeURIComponent(raw));
   } catch {
-    // Vẫn đổi giao diện được khi trình duyệt từ chối lưu bền vững.
+    return null;
   }
 }
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(initialTheme);
+export function ThemeProvider({
+  children,
+  initialTheme,
+  initialLocale = 'en',
+}: {
+  children: ReactNode;
+  initialTheme?: Theme;
+  initialLocale?: 'en' | 'vi';
+}) {
+  const hasServerTheme = initialTheme !== undefined;
+  const startingTheme = initialTheme ?? 'system';
+  const [theme, setThemeState] = useState<Theme>(startingTheme);
+  const [resolved, setResolved] = useState<ResolvedTheme>(() =>
+    startingTheme === 'system' ? 'light' : (startingTheme as ResolvedTheme),
+  );
+  const [locale] = useState(initialLocale);
 
   useEffect(() => {
-    setTheme(resolveClientTheme());
-  }, []);
+    const cookieTheme = readThemeCookie();
+    if (!hasServerTheme && theme === 'system' && cookieTheme && cookieTheme !== 'system') {
+      setThemeState(cookieTheme);
+      setResolved(cookieTheme);
+      return;
+    }
+    setResolved(resolveTheme(theme));
+  }, [hasServerTheme, theme]);
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.lang = locale;
+  }, [resolved, locale]);
+
+  useEffect(() => {
+    if (theme !== 'system') return undefined;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => setResolved(mq.matches ? 'dark' : 'light');
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
   }, [theme]);
 
-  const toggle = useCallback(() => {
-    setTheme((current) => {
-      const next: Theme = current === 'light' ? 'dark' : 'light';
-      persistTheme(next);
-      return next;
-    });
-  }, []);
+  const setTheme = useCallback(
+    (next: Theme) => {
+      setThemeState(next);
+      setPreferenceCookies(locale, next);
+      setResolved(themeToDataAttribute(next));
+    },
+    [locale],
+  );
 
-  return <ThemeContext.Provider value={{ theme, toggle }}>{children}</ThemeContext.Provider>;
+  const toggle = useCallback(() => {
+    setTheme(resolved === 'dark' ? 'light' : 'dark');
+  }, [resolved, setTheme]);
+
+  return (
+    <ThemeContext.Provider value={{ theme, resolved, setTheme, toggle }}>{children}</ThemeContext.Provider>
+  );
 }
 
 export function useTheme() {

@@ -18,7 +18,6 @@
         <stop offset="100%" stop-color="var(--logo-cyan)"/>
       </linearGradient></defs>
       <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
-      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
       <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
             stroke-width="2.6" stroke-linecap="round"
             stroke-dasharray="0.1 5.2 0.1 4 20"/>
@@ -33,9 +32,11 @@
   <div class="seg mb-7 flex-wrap" data-seg>
     <button data-target="login"  aria-pressed="true">Đăng nhập</button>
     <button data-target="signup" aria-pressed="false">Đăng ký</button>
-    <button data-target="oauth"  aria-pressed="false">Quay lại từ Google</button>
+    <button data-target="verify" aria-pressed="false">Xác minh email</button>
+    <button data-target="enroll" aria-pressed="false">Đặt mật khẩu</button>
+    <button data-target="oauth"  aria-pressed="false">OAuth</button>
     <button data-target="reauth" aria-pressed="false">Xác thực lại</button>
-    <button data-target="err"    aria-pressed="false">Lỗi</button>
+    <button data-target="err"    aria-pressed="false">Lỗi auth</button>
   </div>
 
   <!-- ============================================================= -->
@@ -48,23 +49,46 @@
     </p>
 
     <div class="card p-6 mb-4">
-      <button class="btn btn-secondary w-full !justify-center mb-4">Tiếp tục với Google</button>
+      <button type="button" class="btn btn-secondary w-full !justify-center mb-4">Tiếp tục với Google</button>
+      <button type="button" class="btn btn-secondary w-full !justify-center mb-4">Tiếp tục với GitHub</button>
       <div class="flex items-center gap-3 mb-4">
         <hr class="rule flex-1 m-0"><span class="t-caption" style="color:var(--muted)">hoặc</span><hr class="rule flex-1 m-0">
       </div>
 
-      <label class="block mb-4">
-        <span class="text-[14px] font-semibold block mb-1.5">Email</span>
-        <input type="email" value="minh@zone17th.click" autocomplete="email" class="w-full text-[15px]"
-               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      <label class="field mb-4">
+        <span class="field-label" for="login-email">Email</span>
+        <input id="login-email" type="email" value="minh@zone17th.click" autocomplete="email" class="field-input">
       </label>
-      <label class="block mb-5">
-        <span class="text-[14px] font-semibold block mb-1.5">Mật khẩu</span>
-        <input type="password" value="••••••••••" autocomplete="current-password" class="w-full text-[15px]"
-               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      <label class="field field-password mb-5">
+        <span class="field-label" for="login-password">Mật khẩu</span>
+        <input id="login-password" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
+        <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
       </label>
 
-      <a href="unlock.html" class="btn btn-primary w-full !justify-center no-underline">Đăng nhập</a>
+      <a href="onboarding.html" class="btn btn-primary w-full !justify-center no-underline">Đăng nhập</a>
+    </div>
+
+    <!-- submitting -->
+    <div class="card p-6 mb-4">
+      <p class="t-label mb-3" style="color:var(--muted)">Đang gửi · submitting</p>
+      <div role="status" class="auth-status">Đang kiểm tra thông tin đăng nhập…</div>
+      <button type="button" class="btn btn-primary w-full !justify-center" disabled aria-busy="true">Đang đăng nhập…</button>
+    </div>
+
+    <!-- validation -->
+    <div class="card p-6 mb-4">
+      <p class="t-label mb-3" style="color:var(--muted)">Validation client</p>
+      <label class="field mb-4">
+        <span class="field-label" for="login-email-invalid">Email</span>
+        <input id="login-email-invalid" type="email" value="not-an-email" autocomplete="email" class="field-input" aria-invalid="true" aria-describedby="login-email-err">
+        <span id="login-email-err" class="field-error">Nhập địa chỉ email hợp lệ.</span>
+      </label>
+      <label class="field field-password mb-0">
+        <span class="field-label" for="login-password-short">Mật khẩu</span>
+        <input id="login-password-short" type="password" autocomplete="current-password" class="field-input" aria-invalid="true" aria-describedby="login-password-err">
+        <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+        <span id="login-password-err" class="field-error">Mật khẩu phải có ít nhất 12 ký tự.</span>
+      </label>
     </div>
 
     <p class="t-caption m-0" style="color:var(--muted)">
@@ -82,21 +106,20 @@
     </p>
 
     <div class="card p-6 mb-4">
-      <button class="btn btn-secondary w-full !justify-center mb-4">Tiếp tục với Google</button>
+      <button type="button" class="btn btn-secondary w-full !justify-center mb-4">Tiếp tục với Google</button>
       <div class="flex items-center gap-3 mb-4">
         <hr class="rule flex-1 m-0"><span class="t-caption" style="color:var(--muted)">hoặc</span><hr class="rule flex-1 m-0">
       </div>
 
-      <label class="block mb-4">
-        <span class="text-[14px] font-semibold block mb-1.5">Email</span>
-        <input type="email" autocomplete="email" class="w-full text-[15px]"
-               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      <label class="field mb-4">
+        <span class="field-label" for="signup-email">Email</span>
+        <input id="signup-email" type="email" autocomplete="email" class="field-input">
       </label>
-      <label class="block mb-4">
-        <span class="text-[14px] font-semibold block mb-1.5">Mật khẩu</span>
-        <input type="password" autocomplete="new-password" class="w-full text-[15px]"
-               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
-        <span class="text-[12px] block mt-1.5" style="color:var(--muted)">Ít nhất 12 ký tự.</span>
+      <label class="field field-password mb-4">
+        <span class="field-label" for="signup-password">Mật khẩu</span>
+        <input id="signup-password" type="password" autocomplete="new-password" class="field-input" aria-describedby="signup-password-hint">
+        <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+        <span id="signup-password-hint" class="field-hint">Ít nhất 12 ký tự.</span>
       </label>
 
       <label class="flex gap-3 items-start mb-5 cursor-pointer">
@@ -110,84 +133,237 @@
       <a href="onboarding.html" class="btn btn-primary w-full !justify-center no-underline">Tạo tài khoản</a>
     </div>
 
+    <div class="card p-5 mb-4" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Email trùng · 409 email_taken</p>
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Email này đã được dùng</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">Đăng nhập hoặc dùng email khác. Chúng tôi không nói email nào tồn tại khi đăng nhập sai.</p>
+      </div>
+    </div>
+
     <div class="rounded-md p-4" style="background:var(--surface)">
       <p class="text-[13px] m-0" style="color:var(--body)">
-        Chúng tôi không đọc được nội dung bạn lưu. Đổi lại, quên hết mọi đường mở khoá thì chúng tôi cũng không khôi phục giúp được.
+        Chúng tôi không đọc được nội dung bạn lưu. Quên mọi đường mở khoá thì chúng tôi cũng không khôi phục giúp được.
       </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- XÁC MINH EMAIL                                                 -->
+  <!-- ============================================================= -->
+  <section data-view="verify" hidden>
+    <h1 class="t-title-lg mb-2">Xác minh email</h1>
+    <p class="t-body-lg mb-7" style="color:var(--muted)">
+      Mở link trong email rồi xác nhận trên thiết bị đang đăng nhập. Token chỉ nằm trong bộ nhớ trình duyệt, không lưu URL.
+    </p>
+
+    <div class="card p-6 mb-4">
+      <div role="status" class="auth-status">Đã gửi email xác minh tới minh@zone17th.click</div>
+      <p class="text-[13px] m-0 mb-4" style="color:var(--muted)">Chưa thấy? Kiểm tra thư rác hoặc gửi lại sau 60 giây.</p>
+      <button type="button" class="btn btn-secondary btn-sm">Gửi lại</button>
+    </div>
+
+    <div class="card p-5 mb-3" style="border-color:var(--error)">
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Link không còn hiệu lực</p>
+        <p class="text-[13px] m-0">Token hết hạn, đã dùng, hoặc không khớp phiên đang mở. Yêu cầu email mới.</p>
+      </div>
+    </div>
+
+    <div class="card p-5" lang="en">
+      <p class="t-label mb-2" style="color:var(--muted)">Long error · English</p>
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Verification link invalid</p>
+        <p class="text-[13px] m-0">The link expired, was already used, or belongs to another signed-in session. Sign in with the correct account and open the link again, or request a new verification email from account settings.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- ĐẶT MẬT KHẨU LẦN ĐẦU (OAuth-only)                              -->
+  <!-- ============================================================= -->
+  <section data-view="enroll" hidden data-seg-scope>
+    <h1 class="t-title-lg mb-2">Đặt mật khẩu đăng nhập</h1>
+    <p class="t-body-lg mb-4" style="color:var(--muted)">
+      Tài khoản OAuth-only cần thêm mật khẩu để thao tác nhạy cảm khi provider không hỗ trợ xác thực lại.
+      Đây <strong>không</strong> phải phục hồi vault hay mở dữ liệu đã mã hoá.
+    </p>
+
+    <div class="seg mb-6 flex-wrap" data-seg>
+      <button data-target="enroll-form" aria-pressed="true">Nhập mật khẩu</button>
+      <button data-target="enroll-sent" aria-pressed="false">Đã gửi mail</button>
+      <button data-target="enroll-expired" aria-pressed="false">Hết hạn</button>
+      <button data-target="enroll-reused" aria-pressed="false">Đã dùng</button>
+      <button data-target="enroll-session" aria-pressed="false">Sai phiên</button>
+      <button data-target="enroll-quota" aria-pressed="false">Quota gửi lại</button>
+    </div>
+
+    <div data-view="enroll-form">
+      <div class="card p-6 mb-4">
+        <p class="text-[13px] mb-4" style="color:var(--muted)">
+          Chúng tôi gửi link xác nhận tới email đã verified của tài khoản. Mở link trên thiết bị đang đăng nhập.
+        </p>
+        <label class="field field-password mb-4">
+          <span class="field-label" for="enroll-password">Mật khẩu mới</span>
+          <input id="enroll-password" type="password" autocomplete="new-password" class="field-input" aria-describedby="enroll-password-hint">
+          <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+          <span id="enroll-password-hint" class="field-hint">Ít nhất 12 ký tự. Khác passphrase vault.</span>
+        </label>
+        <label class="field field-password mb-5">
+          <span class="field-label" for="enroll-confirm">Nhập lại mật khẩu</span>
+          <input id="enroll-confirm" type="password" autocomplete="new-password" class="field-input">
+          <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+        </label>
+        <button type="button" class="btn btn-primary w-full !justify-center">Đặt mật khẩu</button>
+      </div>
+    </div>
+
+    <div data-view="enroll-sent" hidden>
+      <div class="card p-6">
+        <div role="status" class="auth-status">Đã gửi email đặt mật khẩu tới minh@zone17th.click</div>
+        <p class="text-[13px] m-0" style="color:var(--muted)">Mở link trong vòng 10 phút, trên cùng phiên đăng nhập.</p>
+      </div>
+    </div>
+
+    <div data-view="enroll-expired" hidden>
+      <div class="card p-5" style="border-color:var(--error)">
+        <div role="alert" class="auth-alert mb-3">
+          <p class="text-[14px] font-semibold m-0 mb-1">Link đặt mật khẩu đã hết hạn</p>
+          <p class="text-[13px] m-0">Yêu cầu email mới từ cài đặt tài khoản.</p>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm">Gửi lại email</button>
+      </div>
+    </div>
+
+    <div data-view="enroll-reused" hidden>
+      <div class="card p-5" style="border-color:var(--error)">
+        <div role="alert" class="auth-alert mb-0">
+          <p class="text-[14px] font-semibold m-0 mb-1">Link đã được dùng</p>
+          <p class="text-[13px] m-0">Mỗi link chỉ dùng một lần. Nếu chưa xong, gửi link mới.</p>
+        </div>
+      </div>
+    </div>
+
+    <div data-view="enroll-session" hidden>
+      <div class="card p-5" style="border-color:var(--error)">
+        <div role="alert" class="auth-alert mb-3">
+          <p class="text-[14px] font-semibold m-0 mb-1">Phiên không khớp</p>
+          <p class="text-[13px] m-0">Link này gắn phiên khác. Đăng nhập đúng tài khoản rồi mở lại link.</p>
+        </div>
+        <a href="#" class="btn btn-tertiary btn-sm no-underline">Đăng nhập</a>
+      </div>
+    </div>
+
+    <div data-view="enroll-quota" hidden>
+      <div class="card p-5" style="border-color:var(--warning)">
+        <div role="alert" class="auth-alert mb-0">
+          <p class="text-[14px] font-semibold m-0 mb-1">Gửi lại quá nhanh</p>
+          <p class="text-[13px] m-0">Thử lại sau <span class="mono">42</span> giây. (Countdown hiển thị tĩnh — app không đọc to mỗi giây.)</p>
+        </div>
+      </div>
     </div>
   </section>
 
   <!-- ============================================================= -->
   <!-- OAUTH RETURN                                                   -->
   <!-- ============================================================= -->
-  <section data-view="oauth" hidden>
-    <div class="card p-6 mb-4 text-center">
+  <section data-view="oauth" hidden class="flex flex-col gap-3">
+    <h1 class="t-title-lg mb-2">Quay lại từ provider</h1>
+
+    <div class="card p-6 text-center">
       <div class="w-12 h-12 rounded-pill grid place-items-center mx-auto mb-4 text-[20px]"
            style="background:var(--pale-accent)">↩</div>
-      <div class="text-[15px] font-semibold mb-1">Đang hoàn tất đăng nhập…</div>
-      <p class="text-[13px] m-0" style="color:var(--muted)">Xác minh phản hồi từ Google rồi đưa bạn về đúng chỗ đang dở.</p>
+      <div role="status" class="auth-status text-left mb-0">Đang hoàn tất đăng nhập…</div>
+      <p class="text-[13px] m-0 mt-3" style="color:var(--muted)">Xác minh phản hồi từ Google rồi đưa bạn về đúng chỗ đang dở.</p>
     </div>
 
-    <div class="card p-5 mb-3">
+    <div class="card p-5">
       <p class="text-[14px] font-semibold m-0 mb-1">Email này đã có tài khoản mật khẩu</p>
       <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Đăng nhập bằng mật khẩu một lần để xác nhận đây là bạn, sau đó hai cách đăng nhập sẽ dùng chung tài khoản.
+        Đăng nhập bằng mật khẩu một lần để xác nhận, sau đó hai cách đăng nhập dùng chung tài khoản.
       </p>
-      <button class="btn btn-secondary btn-sm">Đăng nhập bằng mật khẩu</button>
+      <button type="button" class="btn btn-secondary btn-sm">Đăng nhập bằng mật khẩu</button>
+    </div>
+
+    <div class="card p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1">Bạn đã huỷ ở Google</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Không có gì thay đổi. Thử lại hoặc dùng email/mật khẩu.</p>
+      <button type="button" class="btn btn-tertiary btn-sm">Thử lại</button>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Provider báo lỗi</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Google tạm không phản hồi. Bắt đầu lại từ trang đăng nhập.</p>
+      <button type="button" class="btn btn-tertiary btn-sm">Về đăng nhập</button>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Identity conflict</p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Tài khoản Google/GitHub này đã liên kết user khác. Đăng nhập bằng provider đó hoặc liên kết từ tài khoản đang mở.
+      </p>
     </div>
 
     <div class="card p-5" style="border-color:var(--error)">
       <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Yêu cầu không hợp lệ</p>
       <p class="text-[13px] m-0" style="color:var(--muted)">
-        Liên kết quay về đã hết hạn hoặc không khớp phiên đang mở. Bắt đầu lại từ trang đăng nhập.
+        Liên kết quay về hết hạn hoặc không khớp phiên. Bắt đầu lại từ trang đăng nhập.
       </p>
     </div>
   </section>
 
   <!-- ============================================================= -->
-  <!-- RE-AUTH — hành động nhạy cảm                                   -->
+  <!-- RE-AUTH                                                        -->
   <!-- ============================================================= -->
   <section data-view="reauth" hidden>
     <h1 class="t-title-lg mb-2">Xác nhận đây là bạn</h1>
     <p class="t-body-lg mb-7" style="color:var(--muted)">
-      Một số việc cần xác thực lại dù bạn đang đăng nhập: tạo lại recovery key, đổi passphrase, đặt lại vault, xuất dữ liệu, xoá tài khoản.
+      Một số việc cần xác thực lại dù bạn đang đăng nhập: đổi email, liên kết provider, thu hồi phiên khác, tạo lại recovery key…
     </p>
 
     <div class="card p-6 mb-4">
-      <p class="t-label mb-3" style="color:var(--muted)">Việc đang chờ · Tạo lại 10 recovery key</p>
-      <label class="block mb-5">
-        <span class="text-[14px] font-semibold block mb-1.5">Mật khẩu đăng nhập</span>
-        <input type="password" autocomplete="current-password" class="w-full text-[15px]"
-               style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
+      <p class="t-label mb-3" style="color:var(--muted)">Việc đang chờ · Đổi email</p>
+      <label class="field field-password mb-4">
+        <span class="field-label" for="reauth-password">Mật khẩu đăng nhập</span>
+        <input id="reauth-password" type="password" autocomplete="current-password" class="field-input">
+        <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
       </label>
+      <button type="button" class="btn btn-secondary w-full !justify-center mb-4">Xác nhận bằng Google</button>
       <div class="flex gap-2 justify-end">
-        <a href="settings.html" class="btn btn-tertiary no-underline">Huỷ</a>
-        <button class="btn btn-primary" onclick="SAK.toast('Đã xác thực · quay lại việc đang làm')">Xác nhận</button>
+        <button type="button" class="btn btn-tertiary">Huỷ</button>
+        <button type="button" class="btn btn-primary">Xác nhận</button>
       </div>
     </div>
 
+    <div class="card p-6 mb-4">
+      <p class="t-label mb-3" style="color:var(--muted)">OAuth-only · chưa có mật khẩu</p>
+      <p class="text-[13px] mb-4" style="color:var(--body)">
+        GitHub không hỗ trợ xác thực lại tươi. Đặt mật khẩu đăng nhập lần đầu qua email đã verified — không phải phục hồi vault.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm">Gửi email đặt mật khẩu</button>
+      <p class="text-[12px] mt-3 mb-0" style="color:var(--muted)">Không có nút “nhập lại mật khẩu GitHub”.</p>
+    </div>
+
     <p class="t-caption m-0" style="color:var(--muted)">
-      Xác thực lại có hiệu lực trong thời gian ngắn, cho đúng việc này. Xong việc, bạn quay về màn đang dở, không mất thao tác đã nhập.
+      Grant có hiệu lực ngắn, cho đúng việc này. Reload mất grant thì xác thực lại.
     </p>
   </section>
 
   <!-- ============================================================= -->
-  <!-- LỖI                                                            -->
+  <!-- LỖI AUTH                                                       -->
   <!-- ============================================================= -->
   <section data-view="err" hidden class="flex flex-col gap-3">
 
     <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Email hoặc mật khẩu không đúng</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Chúng tôi không nói email nào tồn tại. Kiểm tra lại cả hai ô.
-      </p>
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Email hoặc mật khẩu không đúng</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">Chúng tôi không nói email nào tồn tại. Kiểm tra lại cả hai ô.</p>
+      </div>
     </div>
 
     <div class="card p-5" style="border-color:var(--warning)">
       <p class="text-[14px] font-semibold m-0 mb-1">Cần xác minh thêm</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Sau 5 lần sai, mỗi lần đăng nhập cần qua một bước kiểm tra nhanh.
-      </p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Sau 5 lần sai, mỗi lần đăng nhập cần qua Turnstile.</p>
       <div class="rounded-md p-4 text-[13px]" style="background:var(--surface);border:1px dashed var(--border-strong);color:var(--muted)">
         Ô xác minh (Turnstile)
       </div>
@@ -195,16 +371,38 @@
 
     <div class="card p-5">
       <p class="text-[14px] font-semibold m-0 mb-1">Tạm khoá đăng nhập</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Sai quá nhiều lần liên tiếp nên phải chờ một lát rồi thử lại; càng sai thì chờ càng lâu.
-        Giới hạn chung là 5 lần mỗi phút cho mỗi địa chỉ mạng.
+      <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">
+        Sai quá nhiều lần. Thử lại sau <span class="mono">4:32</span> (hiển thị tĩnh, không live region mỗi giây).
       </p>
+      <p class="text-[12px] m-0" style="color:var(--muted)">Giới hạn 5 lần/phút cho mỗi địa chỉ mạng.</p>
+    </div>
+
+    <div class="card p-5" style="border-color:var(--error)">
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Phiên đã bị thu hồi</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">Đăng nhập lại để tiếp tục. Dữ liệu trên máy chủ không bị xoá.</p>
+      </div>
+    </div>
+
+    <div class="card p-5">
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Phiên hết hạn</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">Refresh không thành công. Đăng nhập lại.</p>
+      </div>
     </div>
 
     <div class="card p-5">
       <p class="text-[14px] font-semibold m-0 mb-1">Không gọi được máy chủ</p>
       <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Kiểm tra mạng rồi thử lại. Chưa có gì được gửi đi.</p>
-      <button class="btn btn-tertiary btn-sm">Thử lại</button>
+      <button type="button" class="btn btn-tertiary btn-sm">Thử lại</button>
+    </div>
+
+    <div class="card p-5" lang="en">
+      <p class="t-label mb-2" style="color:var(--muted)">Long error · English</p>
+      <div role="alert" class="auth-alert mb-0">
+        <p class="text-[14px] font-semibold m-0 mb-1">Too many sign-in attempts</p>
+        <p class="text-[13px] m-0">Please wait before trying again. We use the same response whether or not an account exists for that email address, and additional verification may be required after repeated failures.</p>
+      </div>
     </div>
 
   </section>

@@ -1,0 +1,30 @@
+package auth_test
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
+)
+
+func TestSinkMailerEntriesFor(t *testing.T) {
+	dir := t.TempDir()
+	m, err := auth.NewSinkMailer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Send(context.Background(), "a@example.com", "signup", "https://x/#token=abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Send(context.Background(), "b@example.com", "signup", "https://x/#token=def"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.EntriesFor("a@example.com", "signup")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("entries=%d err=%v", len(got), err)
+	}
+	if got[0].Link == "" || filepath.IsAbs(got[0].Link) && false {
+		t.Fatal("link trống")
+	}
+}

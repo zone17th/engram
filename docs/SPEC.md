@@ -1,6 +1,6 @@
 # engram — Project Specification
 
-> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06
+> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06. P02 bổ sung contract session/CSRF/enrollment vào §3.1, §8, §9, §10.2 — xem [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md).
 >
 > Tài liệu này là spec tổng thể cho sản phẩm **engram** (repo `save-all-by-keyword`): lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
 
@@ -110,7 +110,10 @@ Thuật ngữ **keyword** chỉ còn trong glossary: *cũ, đã thay bằng `Ite
 | **ItemEmbedding** | ✔ | Vector của `item.name` (+ hint), `model`, `model_version`, `dims` = 1024 |
 | **TagEmbedding** | ✔ | Vector của `tag.display` / `normalized` (cùng model) |
 | **EmbeddingJob** | ✔ | Hàng đợi embed/re-embed (River); target = item hoặc tag |
-| **AuditLog** | ✔ | Sự kiện bảo mật (login, đổi passphrase, recover RK, regenerate/rotate RK, passkey register/revoke, export, reset vault…) |
+| **AuditLog** | ✔ | Sự kiện bảo mật (login, đổi passphrase, recover RK, regenerate/rotate RK, passkey register/revoke, export, reset vault…). ID `bigserial` → JSON decimal string. Retention mặc định 90 ngày. |
+| **UserNotification** | ✔ in-app · ✘ `email_targets` khỏi DTO | Notice bảo mật; snapshot email verified lúc event để gửi cảnh báo địa chỉ cũ. Retention cùng audit. |
+| **EmailVerification** | ✔ hash · ✘ plaintext token | Purpose `signup` / `email_change` / `password_enroll`. |
+| **OAuthTransaction / ReauthReceipt** | ✔ hash binding/state/receipt | Login tách callback `ready` và `POST /auth/oauth/complete`. |
 | **VaultRecoveryKey** | ✔ `lookup_hash`, wrap · ✘ plaintext RK | 10 slot; mỗi RK bọc **trực tiếp** một bản VK. Single-use. Không lưu bí mật RK |
 | **VaultPasskey** | ✔ `cred_id`, `prf_salt`, `vk_wrap`, `pubkey?`, meta | WebAuthn; PRF → wrap VK. Nhiều passkey / user. Không fallback secret phía server |
 | **DeviceKey** (client-only) | — không có trên server | `DevKey` WebCrypto non-extractable + `seal(VK, DevKey)` trong IndexedDB khi bật "Nhớ thiết bị này" (§5.6) |
@@ -198,6 +201,9 @@ erDiagram
     USER ||--o{ ITEM : owns
     USER ||--o{ TAG : owns
     USER ||--o{ AUDIT_LOG : generates
+    USER ||--o{ USER_NOTIFICATION : receives
+    USER ||--o{ EMAIL_VERIFICATION : proves
+    SESSION ||--o{ SESSION_REFRESH_USED : rotated
     ITEM ||--o{ ITEM_TAG : tagged
     TAG ||--o{ ITEM_TAG : labels
     ITEM ||--o{ ENTRY : contains
@@ -314,6 +320,7 @@ erDiagram
 ### 3.1 User stories (ưu tiên MVP)
 
 - **US1** Là user mới, tôi đăng ký email/password hoặc Google/GitHub, đặt **encryption passphrase**, **lưu 10 recovery key** (bắt buộc — tải/in/copy + checkbox), optionally **thêm passkey**.
+- **US1b** Là user OAuth-only (chưa có password đăng nhập), tôi đặt password lần đầu bằng email **đã verified của chính tài khoản** (enrollment) hoặc bằng Google re-auth nếu provider chứng minh freshness. Email proof không phải recovery vault và không phải reset password đã có.
 - **US2** Là user, tôi gõ `wifi: Abc123` vào omnibox → text entry được thêm vào mục `wifi` (tạo mới nếu chưa có; nếu trùng tên xem §3.4).
 - **US3** Là user, khi gõ `wi` tôi thấy mục `wifi`, `wifi-office` **và** tag `wifi-khách`; từ 3 ký tự trở lên có thể thêm `mạng nhà` ở vùng Gần nghĩa nếu bật ≈.
 - **US4** Là user, tôi mở một mục, thấy chip tag + danh sách entry theo `position`, sửa/xoá entry, thêm/gỡ tag.
@@ -369,7 +376,9 @@ sequenceDiagram
 
 Nút "Tạo vault" / Continue **disabled** đến khi checkbox "Tôi đã lưu 10 recovery key ở nơi an toàn". `POST /vault` chỉ sau khi tick — wrap RK chưa lên server trước lúc user thấy lưới.
 
-Nếu `AUTH_REQUIRE_EMAIL_VERIFICATION=true` (mặc định **false**), user email/password phải verify email trước khi tạo vault; OAuth coi verified nếu provider trả `email_verified`.
+Nếu `AUTH_REQUIRE_EMAIL_VERIFICATION=true` (mặc định **false**), user email/password phải verify email trước khi tạo vault; OAuth coi verified nếu provider trả `email_verified`. Cờ này **không** chặn đăng nhập, xem tài khoản, gửi verification, hay recovery vault. Enrollment password lần đầu độc lập với cờ này: chỉ cần email hiện tại đã verified và chưa có password.
+
+Signup/login password dùng Argon2id **server** (`m=64MiB,t=3,p=1`, salt 16 B, key 32 B). Tối thiểu 12 ký tự Unicode, tối đa 1024 byte UTF-8; **không** trim/normalize password. Server **không** nhận encryption passphrase, RK, VK hay PWK.
 
 Cảnh báo (một lần, bước 2): chụp màn hình / người nhìn trộm có thể lấy RK. In hoặc tải file, cất offline — đừng để screenshot trên máy chung.
 
@@ -1010,7 +1019,7 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Tìm kiếm / vỏ app | `mockups/index.html` | §7.2 |
 | Chi tiết mục | `mockups/item.html` | §7.3, §7.4, §7.5 |
 | Cài đặt | `mockups/settings.html` | §7.6 |
-| Đăng ký / đăng nhập / OAuth return / re-auth | `mockups/auth.html` | §3.1, §10.2 |
+| Đăng ký / đăng nhập / OAuth return / re-auth / password-enroll | `mockups/auth.html` | §3.1, §10.2 |
 | Onboarding vault (passphrase → 10 RK → passkey) | `mockups/onboarding.html` | §3.2, §5.2 |
 | Mở khoá vault | `mockups/unlock.html` | §3.3, §3.14 |
 | Quên passphrase / recovery key | `mockups/recovery.html` | §3.10 |
@@ -1214,7 +1223,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 
 | Nhóm Settings | Mục |
 |---------------|-----|
-| Tài khoản | Email, locale en/vi, theme, link Google/GitHub, đổi password đăng nhập |
+| Tài khoản | Email, locale en/vi, theme, link Google/GitHub, đổi password đăng nhập. OAuth-only đặt password lần đầu qua enrollment (email đã verified) hoặc Google re-auth nếu freshness bật — không gọi đó là phục hồi dữ liệu. Notification in-app + audit trên U7. |
 | Bảo mật | Đổi passphrase (VK + re-auth tài khoản; không cần passphrase cũ; RK/passkey vẫn mở) · **Recovery keys: còn N/10** (không hiện bí mật) · Regenerate slot thiếu · Xoay cả 10 · **Passkeys** (thêm / đổi tên / thu hồi) · Auto-lock 5/**15**/60/Never · Thiết bị này đã nhớ? · Quên thiết bị · Phiên · Audit · Reset vault |
 | Tìm kiếm | Gợi ý gần nghĩa on/off — "mô hình trên máy chủ của chúng tôi (TEI), không gửi name/tag ra bên thứ ba". Ẩn nếu server tắt |
 | Dữ liệu | Export encrypted · Export decrypted (cảnh báo + re-auth) · Xoá tài khoản |
@@ -1244,7 +1253,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 - ≥ 1024 px: cột trái recent items/tags, phải nội dung. < 768 px: một cột, omnibox sticky, dropdown full-width.
 - a11y: `combobox`+`listbox`, contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`. Accent thương hiệu đã đo đạt ngưỡng ở cả hai theme (§7.0) — đổi accent phải đo lại, không ước lượng.
 - Shortcuts: `/` hoặc `Ctrl/⌘+K` · `Esc` · `↑↓ Enter Tab` · `Ctrl+Enter` tạo item · `Ctrl+S` lưu · `L` lock · `?`.
-- i18n: `next-intl`; marketing `/(marketing)/[locale]/…`, `en` mặc định (`/` = en, `/vi/...`); app `/app/*` không gắn locale trên URL — `user.locale` ← `Accept-Language` ← `en`. Messages `en.json` / `vi.json`; CI fail thiếu key.
+- i18n: `next-intl`; marketing `/(marketing)/[locale]/…`, `en` mặc định (`/` = en, `/vi/...`); app `/app/*` không gắn locale trên URL — `user.locale` ← cookie `sabk_locale` đã validate ← `Accept-Language` ← `en`. Cookie `sabk_locale` / `sabk_theme` path `/`, HttpOnly=false, không secret; chỉ cache render, không là nguồn quyền. Messages `en.json` / `vi.json`; CI fail thiếu key.
 
 ---
 
@@ -1267,7 +1276,7 @@ CREATE TABLE app_user (
   email              citext UNIQUE NOT NULL,
   email_verified_at  timestamptz,
   locale             text NOT NULL DEFAULT 'en' CHECK (locale IN ('en','vi')),
-  theme              text NOT NULL DEFAULT 'system',
+  theme              text NOT NULL DEFAULT 'system' CHECK (theme IN ('system','light','dark')),
   auto_lock_minutes  int  NOT NULL DEFAULT 15 CHECK (auto_lock_minutes IN (0, 5, 15, 60)),
   settings           jsonb NOT NULL DEFAULT '{"semantic_suggest": true}'::jsonb,
   created_at         timestamptz NOT NULL DEFAULT now(),
@@ -1281,9 +1290,15 @@ CREATE TABLE auth_identity (
   provider_uid  text,
   password_hash text,
   created_at    timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (provider, provider_uid),
-  UNIQUE (user_id, provider)
+  UNIQUE (user_id, provider),
+  CHECK (
+    (provider = 'password' AND password_hash IS NOT NULL AND provider_uid IS NULL)
+    OR
+    (provider IN ('google','github') AND provider_uid IS NOT NULL AND password_hash IS NULL)
+  )
 );
+CREATE UNIQUE INDEX auth_identity_provider_uid_uq
+  ON auth_identity (provider, provider_uid) WHERE provider_uid IS NOT NULL;
 
 CREATE TABLE session (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1298,6 +1313,80 @@ CREATE TABLE session (
   revoked_at         timestamptz
 );
 CREATE INDEX session_user_idx ON session (user_id) WHERE revoked_at IS NULL;
+
+-- P02: lịch sử refresh để phát hiện reuse (không grace window).
+CREATE TABLE session_refresh_used (
+  token_hash bytea PRIMARY KEY,
+  session_id uuid NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  used_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE auth_throttle (
+  subject_hash   bytea PRIMARY KEY, -- HMAC(email chuẩn hoá, pepper riêng)
+  failed_count   int NOT NULL DEFAULT 0,
+  locked_until   timestamptz,
+  last_failed_at timestamptz
+);
+
+CREATE TABLE email_verification (
+  id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  session_id             uuid REFERENCES session(id) ON DELETE SET NULL,
+  purpose                text NOT NULL CHECK (purpose IN ('signup','email_change','password_enroll')),
+  target_email           citext NOT NULL,
+  expected_current_email citext,
+  token_hash             bytea NOT NULL UNIQUE,
+  expires_at             timestamptz NOT NULL,
+  consumed_at            timestamptz,
+  created_at             timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE oauth_transaction (
+  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider              text NOT NULL CHECK (provider IN ('google','github')),
+  mode                  text NOT NULL CHECK (mode IN ('login','link','reauth')),
+  status                text NOT NULL CHECK (status IN ('pending','claimed','ready','completed')),
+  state_hash            bytea NOT NULL UNIQUE,
+  cookie_binding_hash   bytea NOT NULL,
+  pkce_verifier         text,
+  nonce                 text,
+  expected_user_id      uuid REFERENCES app_user(id) ON DELETE CASCADE,
+  expected_session_id   uuid REFERENCES session(id) ON DELETE CASCADE,
+  action                text,
+  identity_provider     text,
+  identity_provider_uid text,
+  identity_email        citext,
+  identity_email_verified boolean,
+  completion_deadline   timestamptz,
+  started_at            timestamptz NOT NULL DEFAULT now(),
+  expires_at            timestamptz NOT NULL,
+  claimed_at            timestamptz,
+  consumed_at           timestamptz
+);
+
+CREATE TABLE oauth_reauth_receipt (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  session_id  uuid NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  provider    text NOT NULL CHECK (provider IN ('google')),
+  action      text NOT NULL,
+  token_hash  bytea NOT NULL UNIQUE,
+  expires_at  timestamptz NOT NULL,
+  consumed_at timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_notification (
+  id            bigserial PRIMARY KEY,
+  user_id       uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  kind          text NOT NULL,
+  meta          jsonb,
+  email_targets citext[], -- nội bộ; không nằm trong DTO/feed
+  read_at       timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX user_notification_user_time_idx
+  ON user_notification (user_id, created_at DESC, id DESC);
 
 CREATE TABLE vault (
   user_id                  uuid PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
@@ -1462,13 +1551,17 @@ CREATE INDEX embedding_job_due_idx ON embedding_job (run_after);
 CREATE TABLE audit_log (
   id         bigserial PRIMARY KEY,
   user_id    uuid REFERENCES app_user(id) ON DELETE SET NULL,
+  session_id uuid,
   event      text NOT NULL,
+  result     text NOT NULL CHECK (result IN ('success','failure')),
+  actor      text,
   ip_hash    bytea,
   user_agent text,
   meta       jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX audit_user_time_idx ON audit_log (user_id, created_at DESC);
+CREATE INDEX audit_user_time_idx ON audit_log (user_id, created_at DESC, id DESC);
+CREATE INDEX audit_created_idx ON audit_log (created_at);
 
 CREATE TABLE idempotency_key (
   user_id    uuid NOT NULL,
@@ -1495,6 +1588,7 @@ Ghi chú:
 - `vault_recovery_key`: tối đa 10 hàng `used_at IS NULL` / vault (enforce API). Recover thành công → **DELETE** hàng (single-use). `lookup_hash` unique toàn cục.
 - `vault_passkey.pubkey` lưu từ MVP (P07 login); unlock MVP chỉ cần `cred_id` + `prf_salt` + `vk_wrap`.
 - **Không** `is_private`, **không** `vector(512)`.
+- P02 tạo các bảng auth phụ (`session_refresh_used`, `auth_throttle`, `email_verification`, `oauth_transaction`, `oauth_reauth_receipt`, `user_notification`) trong migration `0004_auth`. **Không** tạo bảng vault ở P02. `user_notification.email_targets` chỉ phục vụ worker mail; không trả trên feed. ID audit/notification là `bigserial` trên DB, decimal string trên JSON. Tên field preference là `semantic_suggest` (cột JSONB), đồng nhất phase P02 / §8 / §9.
 
 ---
 
@@ -1504,24 +1598,47 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 
 ### 9.1 Conventions
 
-- Auth: cookie `sabk_session` (HttpOnly, Secure, SameSite=Lax, path `/api`), JWT access ~10 phút + refresh rotation. CSRF: `X-CSRF-Token` cho method không an toàn.
+- Auth cookies (host-only, `Secure`, `SameSite=Lax`; không `Domain`): `sabk_session` (JWT HS256, HttpOnly, path `/api`, `min(10m, session.expires_at)`), `sabk_refresh` (opaque 32 B base64url, HttpOnly, path `/api/v1/auth`, không vượt hạn tuyệt đối 30 ngày), `sabk_csrf` (JS đọc, path `/`), `sabk_anon` / `sabk_oauth` / `sabk_reauth` (HttpOnly, path `/api/v1/auth`). Preference `sabk_locale` / `sabk_theme` path `/`, không xoá khi logout. Chi tiết [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md).
+- `GET /auth/csrf` bootstrap 204: ký CSRF theo session nếu còn hiệu lực, hoặc nonce anonymous. Không rotate nonce còn hạn. Unsafe request: `Origin == APP_ORIGIN` + JSON + `X-CSRF-Token`. OAuth callback dùng state + cookie binding, không CSRF header.
+- Refresh: không cần access còn hạn; **không grace window**; reuse sau CSRF hợp lệ **commit revoke**. `401 access_expired` chỉ JWT hết hạn trên route protected; thiếu JWT = `unauthenticated`; revoked/refresh invalid = `session_invalid` (`reason`: revoked\|expired\|invalid — token lạ = invalid). Login sai = `invalid_credentials` (cùng shape cho email không tồn tại / OAuth-only).
+- Client xử lý access cookie bị browser xoá bằng phục hồi có điều kiện: route cần session nhận `unauthenticated` và có CSRF cookie loại session mới được thử refresh trong Web Lock, sau khi đọc lại Me. Cookie CSRF chỉ là dấu hiệu điều phối phía client; API refresh vẫn kiểm proof/session đầy đủ. Lỗi mạng/5xx không được coi là logout hoặc tự retry refresh.
 - Re-auth tài khoản: `POST /auth/reauth` bằng password đăng nhập hoặc OAuth flow kiểm tra lại danh tính; server phát grant TTL 5 phút, gắn user + session + action, gửi trong `X-Reauth-Token`. Không dùng encryption passphrase hoặc chỉ trạng thái "vault unlocked" làm re-auth. Server kiểm tra grant + session chưa revoke + CSRF cho rewrap/recover, regenerate/rotate RK, register/revoke passkey, export decrypted, reset và xoá tài khoản. Audit mutation; rewrap/recover/rotate tạo thông báo trong app và email nếu có địa chỉ verified, không đưa bí mật vào thông báo. `AUTH_REQUIRE_EMAIL_VERIFICATION=false` không bị biến thành điều kiện phải verify để recovery; không có email verified thì vẫn có in-app notice/audit.
-- Lỗi: RFC 9457 `application/problem+json`.
-- Pagination: cursor `?cursor=&limit=` ≤ 100; `{items, next_cursor}`.
+- OAuth-only đặt password lần đầu: `POST /auth/password/enroll/send` + `POST /me/password` với `enrollment_token`, **hoặc** grant `account.password_change`. Hai proof loại trừ. Password đã có luôn cần grant. Enrollment không phải reset và không mở vault.
+- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key. `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available`, `vault.status` — P02 luôn `absent`).
+- Lỗi: RFC 9457 `application/problem+json`. Code snake_case; catalog Go + TS + OpenAPI cùng thay đổi. `429` có header `Retry-After` và body `retry_after`. CAPTCHA: extension `captcha_required`.
+- Pagination: cursor `?cursor=&limit=` 1..100 (mặc định 50); `{items, next_cursor}`; keyset `(created_at, id)`. ID audit/notification là decimal string.
 - Idempotency: `Idempotency-Key` cho `POST /items`, `POST /tags`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`, `POST /vault`, `POST /vault/passkeys`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`; giữ 24 h. Lưu request fingerprint (method + path + body), response và mutation trong cùng tx; dùng lại key với payload khác trả 409. Retry mutation đã commit yêu cầu session/CSRF hợp lệ nhưng không bắt grant cũ còn hạn; không thực thi lại mutation.
-- Rate limit: suggest 20 rps burst 40; write 10 rps; auth 5/phút/IP; export 3/giờ; **unlock/recovery** 5/15 phút/user; passkey options 20/phút.
+- Rate limit:
+  - Auth credential 5 yêu cầu/phút/IP: signup, login, refresh, OAuth start/link/reauth start, re-auth, confirm token. GET me/config/csrf/lists và logout **không** tiêu quota này.
+  - OAuth callback + complete: 20/phút/IP.
+  - Gửi verification/enrollment: 3/giờ/user và 1/phút/user.
+  - Cửa sổ cố định 60 giây; `Retry-After` tới cuối cửa sổ. MVP một replica, map in-memory có TTL/cap.
+  - Phase khác: suggest 20 rps burst 40; write 10 rps; export 3/giờ; **unlock/recovery** 5/15 phút/user; passkey options 20/phút.
 - `ciphertext` base64url trong JSON (MVP).
+- Response auth `Cache-Control: no-store`. Access log chỉ method, route pattern, status, latency, request ID.
 
 ### 9.2 Endpoints
 
 | Nhóm | Method & path | Mô tả |
 |------|---------------|-------|
-| Auth | `POST /auth/signup` · `POST /auth/login` | email+password |
-| | `GET /auth/oauth/{google\|github}/start` · `/callback` | PKCE + state |
-| | `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/me` | `me` gồm `settings`, `features.semantic_available` |
-| | `POST /auth/reauth` | password đăng nhập hoặc hoàn tất OAuth re-auth; grant theo §9.1 |
-| | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` | |
-| Me | `PATCH /me/settings` | `{semantic_suggest?, auto_lock_minutes?, locale?, theme?}` |
+| Auth | `GET /auth/config` | public providers / verification / CAPTCHA site key |
+| | `GET /auth/csrf` | 204 + cookie bootstrap |
+| | `POST /auth/signup` · `POST /auth/login` | email+password; 201/200 `Me` + cookie |
+| | `GET /auth/oauth/{google\|github}/start` | login-only, 302 |
+| | `POST /auth/oauth/{google\|github}/link` · `/reauth` | POST + CSRF (+ grant khi link) |
+| | `GET /auth/oauth/{google\|github}/callback` | 303 status allowlist; không set session cookie |
+| | `POST /auth/oauth/complete` | binding + CSRF; 200 `Me` + cookie |
+| | `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/me` | `me` gồm `settings`, `features`, `vault.status` |
+| | `POST /auth/reauth` | password hoặc receipt Google; grant theo §9.1 |
+| | `POST /auth/verify-email/send` · `/confirm` | |
+| | `POST /auth/password/enroll/send` | OAuth-only + email verified |
+| | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` · `POST /auth/sessions/revoke-others` | revoke-others cần grant |
+| | `DELETE /auth/identities/{provider}` | kể cả password; không gỡ phương thức cuối |
+| | `GET /auth/audit` | `{items,next_cursor}` |
+| Me | `PATCH /me/settings` | `{semantic_suggest?, auto_lock_minutes?, locale?, theme?}` — `409 semantic_unavailable` khi bật lúc provider down, không lưu patch |
+| | `GET /me/notifications` · `PATCH /me/notifications/{id}` | `{read:true}` |
+| | `POST /me/email` | grant `account.email_change`; 202, chưa đổi email |
+| | `POST /me/password` | grant hoặc `enrollment_token` loại trừ |
 | Vault | `GET /vault` | `vault_key_id`, kdf, wrapK, pubkeys, version, `recovery_keys_remaining`, passkey summaries (id, name, aaguid, created_at) — **không** plaintext RK |
 | | `POST /vault` | tạo lần đầu; body **bắt buộc** `recovery_keys` đúng 10 `{lookup_hash, wrap}` (400 nếu thiếu/thừa). Server sinh `vault_key_id` duy nhất cho vault mới, trả `{vault_key_id, version}` trước khi client tạo entry; retry idempotent giữ nguyên. 409 nếu đã có vault |
 | | `PUT /vault/kek` | VK đã unlock + re-auth tài khoản, không cần passphrase cũ; `If-Match: version`, tăng version + audit/notice; không đụng RK/passkey |
@@ -1697,12 +1814,12 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 
 - [ ] **CSP** nghiêm: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'`; không inline script (nonce cho Next.js).
 - [ ] **SRI** / hash bundle mỗi release (`/.well-known/build-manifest`).
-- [ ] Cookies `HttpOnly; Secure; SameSite=Lax`; CSRF token; refresh rotation + reuse detection.
+- [ ] Cookies host-only `Secure; SameSite=Lax` theo tên/path ADR 0001; CSRF token (kể cả anonymous); refresh rotation + reuse detection **không grace window**; reuse commit revoke.
 - [ ] Password login: Argon2id server-side (`m=64MiB,t=3,p=1`), HIBP k-anonymity tùy chọn; email verification theo `AUTH_REQUIRE_EMAIL_VERIFICATION` (default **false**).
 - [ ] Vault KDF: Argon2id client **cố định** `ops=3, mem=64MiB, p=1`, salt 16 B; lưu trên vault; chỉ được nâng, không fallback thấp hơn.
 - [ ] Passphrase ≥ 12, zxcvbn ≥ 3; **không** gửi lên server.
 - [ ] Rate limit §9.1; lockout tăng dần; CAPTCHA (Turnstile) sau 5 lần login sai.
-- [ ] OAuth: PKCE, `state`, `nonce`; chỉ email verified từ provider; link account khi đã đăng nhập.
+- [ ] OAuth: PKCE, `state`, `nonce`; chỉ email verified từ provider; không auto-link bằng email; login callback `ready` rồi `POST /auth/oauth/complete` trong Web Lock. GitHub không cấp re-auth grant. Enrollment password lần đầu không phải reset.
 - [ ] Server validate envelope JCS §5.5 (đủ `ct_enc`, reject duplicate key trước `jsonb`), UUID do client cấp đúng format và được giữ nguyên; `type` ∈ {`text`,`json`} (MVP), ciphertext ≤ 263168 B, `plaintext_len_bucket` ≤ 256 KiB, `key_id` khớp `vault.vault_key_id` ở MVP. P07 rotate VK cần registry/policy key migration §5.6; server không xác minh được AEAD khi không có VK.
 - [ ] Trần 20 tag / 200 entry per item ở API.
 - [ ] Audit §8; UI "Hoạt động bảo mật".

@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest';
+import '../styles/tokens.css';
 
 // Node 25 có Web Storage native dạng placeholder nhưng thiếu method khi không
 // cấu hình --localstorage-file. Dùng storage mô phỏng có cùng contract trong test.
@@ -47,6 +48,19 @@ if (typeof window !== 'undefined') {
       configurable: true,
       value: storage,
       writable: true,
+    });
+  }
+
+  if (typeof window.matchMedia !== 'function') {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
     });
   }
 }

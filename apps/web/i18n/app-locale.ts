@@ -1,9 +1,23 @@
-/**
- * Locale của `/app` ở P01. Hằng số chứ không hardcode rải rác: `<html lang>` và
- * `NextIntlClientProvider` phải luôn khớp nhau, lệch một cái là screen reader
- * đọc sai giọng.
- *
- * P02 thay hằng này bằng locale đọc từ hồ sơ người dùng (sau khi có session).
- * Ghi vào nợ kỹ thuật ở Task 18.
- */
-export const APP_LOCALE = 'vi' as const;
+import { cookies, headers } from 'next/headers';
+import type { components } from '@engram/shared-types';
+import {
+  LOCALE_COOKIE,
+  parseLocaleCookie,
+  parseAcceptLanguage,
+  resolveInitialLocale,
+} from '@/lib/preferences/cookies';
+
+export type AppLocale = components['schemas']['Locale'];
+
+/** Locale render lần đầu của /app: cookie preference → Accept-Language → en. */
+export async function resolveAppLocale(meLocale?: AppLocale | null): Promise<AppLocale> {
+  const cookieStore = await cookies();
+  const headerStore = await headers();
+  return resolveInitialLocale({
+    meLocale: meLocale ?? null,
+    cookieLocale: cookieStore.get(LOCALE_COOKIE)?.value ?? null,
+    acceptLanguage: headerStore.get('accept-language'),
+  });
+}
+
+export { parseLocaleCookie, parseAcceptLanguage, LOCALE_COOKIE };

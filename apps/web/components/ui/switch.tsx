@@ -1,5 +1,6 @@
 'use client';
 
+import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { useId } from 'react';
 import { cn } from '@/lib/cn';
 
@@ -14,26 +15,20 @@ export interface SwitchProps {
 }
 
 /**
- * Visual on/off do .switch[aria-checked='true'] trong tokens.css —
- * không dùng .switch-on / .switch-disabled (không tồn tại).
+ * Radix Switch + class `.switch` từ tokens.css (data-state=checked).
  */
 export function Switch({ checked, onCheckedChange, label, disabled = false, hint, className }: SwitchProps) {
   const hintId = useId();
   return (
     <span className={cn('inline-flex items-center gap-2', className)}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-disabled={disabled || undefined}
+      <SwitchPrimitive.Root
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        disabled={disabled}
+        aria-label={label}
         aria-describedby={hint ? hintId : undefined}
-        onClick={() => {
-          if (!disabled) onCheckedChange(!checked);
-        }}
         className={cn('switch', disabled && 'opacity-40 cursor-not-allowed')}
-      >
-        <span className="sr-only">{label}</span>
-      </button>
+      />
       <span aria-hidden="true">{label}</span>
       {hint && (
         <span id={hintId} className="t-legal text-muted">

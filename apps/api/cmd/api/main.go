@@ -15,7 +15,11 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
@@ -94,6 +98,17 @@ func run() error {
 
 	reg, metrics := obs.NewRegistry()
 
+	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		return fmt.Errorf("river insert client: %w", err)
+	}
+
+	svc, _, api, err := compose.NewAuth(cfg, pool, riverInsert, nil, nil, nil)
+	if err != nil {
+		return fmt.Errorf("compose auth: %w", err)
+	}
+	authn, csrfv, reauth := compose.Adapters(svc)
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: httpx.NewRouter(httpx.Deps{
@@ -102,6 +117,10 @@ func run() error {
 			Ready:            db.ReadyCheck(pool),
 			Metrics:          promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}),
 			MetricsCollector: metrics,
+			Authenticator:    authn,
+			CSRF:             csrfv,
+			Reauth:           reauth,
+			MountAPI:         authhttp.Mount(api),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

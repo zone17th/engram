@@ -1,17 +1,22 @@
 openapi: 3.1.0
 info:
   title: engram API
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    API của engram. Ở P01 chỉ có ba endpoint vận hành.
-    Mọi lỗi dùng RFC 9457 (application/problem+json).
+    API của engram. P01: health/ready/metrics. P02: 26 operation tài khoản/session.
+    Mọi lỗi dùng RFC 9457 (application/problem+json). Auth dùng cookie host-only,
+    không dùng HTTP Bearer. Response auth: Cache-Control: no-store.
 servers:
-  # Dev và production dùng chung một origin; browser luôn gọi đường tương đối.
   - url: /api/v1
+tags:
+  - name: ops
+  - name: auth
+  - name: account
 paths:
   /healthz:
     get:
       operationId: getHealthz
+      tags: [ops]
       summary: Tiến trình còn sống
       responses:
         '200':
@@ -20,6 +25,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required: [status]
                 properties:
                   status:
@@ -28,6 +34,7 @@ paths:
   /readyz:
     get:
       operationId: getReadyz
+      tags: [ops]
       summary: Phụ thuộc bắt buộc đã sẵn sàng
       responses:
         '200':
@@ -36,6 +43,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required: [status, checks, semantic_available]
                 properties:
                   status:
@@ -47,16 +55,13 @@ paths:
                       type: string
                   semantic_available:
                     type: boolean
-                    description: false khi EMBEDDING_PROVIDER=noop hoặc thiếu TEI_URL.
+                    description: false khi EMBEDDING_PROVIDER=noop, thiếu TEI_URL, hoặc probe runtime fail.
         '503':
-          description: Phụ thuộc bắt buộc chưa sẵn sàng
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
+          $ref: '#/components/responses/Problem'
   /metrics:
     get:
       operationId: getMetrics
+      tags: [ops]
       summary: Số liệu Prometheus (chỉ dành cho vận hành)
       responses:
         '200':
@@ -65,8 +70,827 @@ paths:
             text/plain:
               schema:
                 type: string
+
+  /auth/config:
+    get:
+      operationId: authConfig
+      tags: [auth]
+      summary: Cấu hình auth công khai
+      description: Provider đang bật, cờ verification, site key CAPTCHA. Không lộ secret.
+      security: []
+      responses:
+        '200':
+          description: Cấu hình public
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthConfig'
+
+  /auth/csrf:
+    get:
+      operationId: authCsrf
+      tags: [auth]
+      summary: Bootstrap cookie CSRF
+      description: |
+        204 + đặt/giữ cookie. Session còn hiệu lực ký theo session ID; chưa có session
+        dùng nonce anonymous. Không rotate nonce còn hạn. Không phải đăng nhập.
+      security: []
+      responses:
+        '204':
+          description: Cookie CSRF đã sẵn
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              description: sabk_csrf (và sabk_anon nếu chưa có session)
+              schema: { type: string }
+        '403':
+          $ref: '#/components/responses/Problem'
+
+  /auth/signup:
+    post:
+      operationId: authSignup
+      tags: [auth]
+      summary: Đăng ký email/password
+      security:
+        - csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '201':
+          description: Tài khoản + session mới; vault absent
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/login:
+    post:
+      operationId: authLogin
+      tags: [auth]
+      summary: Đăng nhập email/password
+      security:
+        - csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session mới chống fixation
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/refresh:
+    post:
+      operationId: authRefresh
+      tags: [auth]
+      summary: Xoay refresh token
+      description: Không cần access còn hạn. Cookie sabk_refresh + CSRF gắn session tìm được.
+      security:
+        - refreshCookie: []
+          csrfHeader: []
+      responses:
+        '204':
+          description: Cookie access/refresh mới; CSRF session giữ nguyên
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/logout:
+    post:
+      operationId: authLogout
+      tags: [auth]
+      summary: Đăng xuất
+      description: Session hoặc refresh + CSRF. Session đã revoke vẫn có thể clear cookie và 204.
+      security:
+        - csrfHeader: []
+      responses:
+        '204':
+          description: Cookie auth đã xoá; preference giữ
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '403':
+          $ref: '#/components/responses/Problem'
+
+  /auth/me:
+    get:
+      operationId: authMe
+      tags: [auth]
+      summary: Tài khoản hiện tại
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Me
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Problem'
+
+  /auth/oauth/{provider}/start:
+    get:
+      operationId: authOauthStart
+      tags: [auth]
+      summary: Bắt đầu OAuth login
+      description: Chỉ mode login. 302 tới provider. Không dùng query mode=link.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OauthProvider'
+      responses:
+        '302':
+          description: Redirect tới authorization endpoint
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/oauth/{provider}/link:
+    post:
+      operationId: authOauthLinkStart
+      tags: [auth]
+      summary: Bắt đầu liên kết provider
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/OauthProvider'
+      responses:
+        '200':
+          description: URL để browser điều hướng
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationURL'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/oauth/{provider}/reauth:
+    post:
+      operationId: authOauthReauthStart
+      tags: [auth]
+      summary: Bắt đầu OAuth re-auth
+      description: Chỉ provider hỗ trợ freshness (Google khi capability bật).
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: '#/components/parameters/OauthProvider'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OauthReauthStartRequest'
+      responses:
+        '200':
+          description: URL để browser điều hướng
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationURL'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/oauth/{provider}/callback:
+    get:
+      operationId: authOauthCallback
+      tags: [auth]
+      summary: Callback OAuth từ provider
+      description: |
+        State + cookie binding + transaction một lần. 303 về web với status allowlist.
+        Không đặt cookie session. Không đưa token/grant/email lên query.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OauthProvider'
+      responses:
+        '303':
+          description: Redirect web /app/auth/callback/{provider}?status=...
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/oauth/complete:
+    post:
+      operationId: authOauthComplete
+      tags: [auth]
+      summary: Hoàn tất login OAuth trong Web Lock
+      description: Binding cookie + CSRF + transaction ready. Consume một lần; mới đặt session cookie.
+      security:
+        - csrfHeader: []
+      responses:
+        '200':
+          description: Me + cookie session
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/reauth:
+    post:
+      operationId: authReauth
+      tags: [auth]
+      summary: Cấp grant re-auth
+      description: |
+        oneOf password hoặc provider+receipt. Không gửi cả hai. Grant chỉ trên body, không cookie/URL.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReauthRequest'
+      responses:
+        '200':
+          description: Grant HMAC
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReauthGrant'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/verify-email/send:
+    post:
+      operationId: authVerifyEmailSend
+      tags: [auth]
+      summary: Gửi email xác minh địa chỉ hiện tại
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        '202':
+          description: Đã chấp nhận gửi (token hash đã persist)
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /auth/verify-email/confirm:
+    post:
+      operationId: authVerifyEmailConfirm
+      tags: [auth]
+      summary: Xác nhận token verification
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenConfirmRequest'
+      responses:
+        '200':
+          description: Me sau khi verify/đổi email
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/password/enroll/send:
+    post:
+      operationId: authPasswordEnrollSend
+      tags: [auth]
+      summary: Gửi token đặt password lần đầu (OAuth-only)
+      description: Chỉ khi chưa có password và email hiện tại đã verified. Không phải reset.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        '202':
+          description: Đã chấp nhận gửi
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /auth/sessions:
+    get:
+      operationId: authSessionsList
+      tags: [auth]
+      summary: Danh sách phiên còn hiệu lực
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Trang phiên
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        '401':
+          $ref: '#/components/responses/Problem'
+
+  /auth/sessions/{id}:
+    delete:
+      operationId: authSessionRevoke
+      tags: [auth]
+      summary: Thu hồi một phiên
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Đã thu hồi; nếu là current thì clear cookie
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /auth/sessions/revoke-others:
+    post:
+      operationId: authSessionsRevokeOthers
+      tags: [auth]
+      summary: Thu hồi các phiên khác
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      responses:
+        '200':
+          description: Số phiên đã thu hồi
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: integer
+                    minimum: 0
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+
+  /auth/identities/{provider}:
+    delete:
+      operationId: authIdentityUnlink
+      tags: [auth]
+      summary: Gỡ identity
+      description: provider gồm password|google|github. Không gỡ phương thức cuối.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/IdentityProvider'
+      responses:
+        '204':
+          description: Đã gỡ
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /auth/audit:
+    get:
+      operationId: authAuditList
+      tags: [auth]
+      summary: Nhật ký bảo mật của user hiện tại
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Trang audit
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditList'
+        '401':
+          $ref: '#/components/responses/Problem'
+
+  /me/notifications:
+    get:
+      operationId: meNotificationsList
+      tags: [account]
+      summary: Thông báo trong app
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Trang thông báo
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationList'
+        '401':
+          $ref: '#/components/responses/Problem'
+
+  /me/notifications/{id}:
+    patch:
+      operationId: meNotificationRead
+      tags: [account]
+      summary: Đánh dấu đã đọc
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            description: bigserial dưới dạng decimal string
+            pattern: '^[0-9]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [read]
+              properties:
+                read:
+                  type: boolean
+                  const: true
+      responses:
+        '204':
+          description: Đã đánh dấu
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /me/settings:
+    patch:
+      operationId: meSettingsPatch
+      tags: [account]
+      summary: Cập nhật settings từng phần
+      description: Field vắng giữ nguyên. null/unknown = 400. Bật semantic khi probe down = 409, không lưu patch.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsPatch'
+      responses:
+        '200':
+          description: Me sau khi lưu
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /me/email:
+    post:
+      operationId: meEmailChange
+      tags: [account]
+      summary: Yêu cầu đổi email
+      description: Chưa đổi email trên tài khoản. Gửi proof tới địa chỉ mới.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [new_email]
+              properties:
+                new_email:
+                  type: string
+                  format: email
+      responses:
+        '202':
+          description: Đã gửi proof
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /me/password:
+    post:
+      operationId: mePasswordChange
+      tags: [account]
+      summary: Đổi hoặc đặt password đăng nhập
+      description: |
+        Password đã có: proof là X-Reauth-Token (account.password_change), không nhập password cũ lần hai.
+        OAuth-only: grant freshness hoặc enrollment_token. Không gửi cả grant và enrollment_token.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+      responses:
+        '200':
+          description: Me + session/CSRF mới
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
 components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sabk_session
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: sabk_refresh
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+    reauthHeader:
+      type: apiKey
+      in: header
+      name: X-Reauth-Token
+  headers:
+    NoStore:
+      schema:
+        type: string
+        const: no-store
+    RetryAfter:
+      description: Giây nguyên dương tới cuối cửa sổ rate limit.
+      schema:
+        type: integer
+        minimum: 1
+  parameters:
+    OauthProvider:
+      name: provider
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/OauthProvider'
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+  responses:
+    Problem:
+      description: Lỗi RFC 9457
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    RateLimited:
+      description: Quá quota; Retry-After khớp retry_after trong body
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
   schemas:
+    ProblemCode:
+      type: string
+      enum:
+        - invalid_request
+        - dependency_unavailable
+        - internal_error
+        - not_found
+        - unauthenticated
+        - access_expired
+        - session_invalid
+        - invalid_credentials
+        - csrf_invalid
+        - forbidden
+        - reauth_required
+        - reauth_invalid
+        - reauth_unsupported_provider
+        - rate_limited
+        - captcha_required
+        - email_not_verified
+        - email_taken
+        - identity_conflict
+        - identity_last_method
+        - oauth_state_invalid
+        - oauth_provider_error
+        - verification_invalid
+        - password_weak
+        - semantic_unavailable
+        - mail_delivery_unavailable
     Problem:
       type: object
       required: [type, title, status, code]
@@ -82,5 +906,372 @@ components:
           type: string
           description: Request ID, không phải URL.
         code:
+          $ref: '#/components/schemas/ProblemCode'
+        retry_after:
+          type: integer
+          minimum: 1
+          description: Giây; khớp header Retry-After.
+        reason:
           type: string
-          enum: [invalid_request, dependency_unavailable, internal_error, not_found]
+          enum: [revoked, expired, invalid]
+          description: Chỉ khi code=session_invalid. Token lạ dùng invalid.
+        captcha_required:
+          type: boolean
+    OauthProvider:
+      type: string
+      enum: [google, github]
+    IdentityProvider:
+      type: string
+      enum: [password, google, github]
+    Locale:
+      type: string
+      enum: [en, vi]
+    Theme:
+      type: string
+      enum: [system, light, dark]
+    AutoLockMinutes:
+      type: integer
+      enum: [0, 5, 15, 60]
+    ReauthAction:
+      type: string
+      enum:
+        - account.email_change
+        - account.password_change
+        - account.identity_link
+        - account.identity_unlink
+        - session.revoke_others
+        - vault.rewrap
+        - vault.recover
+        - vault.recovery_keys_regenerate
+        - vault.recovery_keys_rotate
+        - vault.passkey_register
+        - vault.passkey_revoke
+        - vault.reset
+        - export.decrypted
+        - account.delete
+    OauthCallbackStatus:
+      type: string
+      enum:
+        - login_ready
+        - linked
+        - reauth_ready
+        - cancelled
+        - identity_conflict
+        - invalid_flow
+        - provider_error
+        - reauth_unavailable
+    AuthConfig:
+      type: object
+      additionalProperties: false
+      required:
+        - oauth_providers
+        - email_verification_required
+        - captcha_site_key
+      properties:
+        oauth_providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/OauthProvider'
+        email_verification_required:
+          type: boolean
+        captcha_site_key:
+          type: [string, 'null']
+    Me:
+      type: object
+      additionalProperties: false
+      required: [user, settings, identities, features, vault]
+      properties:
+        user:
+          type: object
+          additionalProperties: false
+          required: [id, email, email_verified, created_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+            email_verified:
+              type: boolean
+            created_at:
+              type: string
+              format: date-time
+        settings:
+          type: object
+          additionalProperties: false
+          required: [locale, theme, auto_lock_minutes, semantic_suggest]
+          properties:
+            locale:
+              $ref: '#/components/schemas/Locale'
+            theme:
+              $ref: '#/components/schemas/Theme'
+            auto_lock_minutes:
+              $ref: '#/components/schemas/AutoLockMinutes'
+            semantic_suggest:
+              type: boolean
+        identities:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [provider, linked_at]
+            properties:
+              provider:
+                $ref: '#/components/schemas/IdentityProvider'
+              linked_at:
+                type: string
+                format: date-time
+        features:
+          type: object
+          additionalProperties: false
+          required:
+            - semantic_available
+            - email_verification_required
+            - oauth_providers
+            - oauth_reauth_providers
+            - password_enrollment_available
+            - captcha_site_key
+          properties:
+            semantic_available:
+              type: boolean
+            email_verification_required:
+              type: boolean
+            oauth_providers:
+              type: array
+              items:
+                $ref: '#/components/schemas/OauthProvider'
+            oauth_reauth_providers:
+              type: array
+              items:
+                type: string
+                enum: [google]
+            password_enrollment_available:
+              type: boolean
+            captcha_site_key:
+              type: [string, 'null']
+        vault:
+          type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [absent, present]
+              description: P02 luôn absent. locked/unlocked là trạng thái crypto client P03.
+    SignupRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+          maxLength: 1024
+          description: Không trim/normalize. Tối thiểu 12 Unicode; tối đa 1024 byte UTF-8.
+        locale:
+          $ref: '#/components/schemas/Locale'
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          maxLength: 1024
+        captcha_token:
+          type: string
+    TokenConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+    OauthReauthStartRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          $ref: '#/components/schemas/ReauthAction'
+    AuthorizationURL:
+      type: object
+      additionalProperties: false
+      required: [authorization_url]
+      properties:
+        authorization_url:
+          type: string
+          format: uri
+    ReauthRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [action, password]
+          properties:
+            action:
+              $ref: '#/components/schemas/ReauthAction'
+            password:
+              type: string
+          description: Không kèm provider.
+        - type: object
+          additionalProperties: false
+          required: [action, provider]
+          properties:
+            action:
+              $ref: '#/components/schemas/ReauthAction'
+            provider:
+              type: string
+              enum: [google]
+          description: Receipt nằm ở cookie sabk_reauth, không gửi password.
+    ReauthGrant:
+      type: object
+      additionalProperties: false
+      required: [grant, action, expires_at]
+      properties:
+        grant:
+          type: string
+        action:
+          $ref: '#/components/schemas/ReauthAction'
+        expires_at:
+          type: string
+          format: date-time
+    SettingsPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        locale:
+          $ref: '#/components/schemas/Locale'
+        theme:
+          $ref: '#/components/schemas/Theme'
+        auto_lock_minutes:
+          $ref: '#/components/schemas/AutoLockMinutes'
+        semantic_suggest:
+          type: boolean
+    PasswordChangeRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [new_password]
+          properties:
+            new_password:
+              type: string
+              minLength: 12
+              maxLength: 1024
+          description: Proof là X-Reauth-Token; không enrollment_token.
+        - type: object
+          additionalProperties: false
+          required: [new_password, enrollment_token]
+          properties:
+            new_password:
+              type: string
+              minLength: 12
+              maxLength: 1024
+            enrollment_token:
+              type: string
+          description: OAuth-only lần đầu; không kèm grant.
+    SessionList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionItem'
+        next_cursor:
+          type: [string, 'null']
+    SessionItem:
+      type: object
+      additionalProperties: false
+      required: [id, current, device_label, user_agent, created_at, last_seen_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        current:
+          type: boolean
+        device_label:
+          type: [string, 'null']
+        user_agent:
+          type: [string, 'null']
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    AuditList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditItem'
+        next_cursor:
+          type: [string, 'null']
+    AuditItem:
+      type: object
+      additionalProperties: false
+      required: [id, event, result, created_at]
+      properties:
+        id:
+          type: string
+          description: bigserial decimal string
+          pattern: '^[0-9]+$'
+        event:
+          type: string
+        result:
+          type: string
+          enum: [success, failure]
+        actor:
+          type: [string, 'null']
+        created_at:
+          type: string
+          format: date-time
+        meta:
+          type: object
+          additionalProperties: true
+    NotificationList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationItem'
+        next_cursor:
+          type: [string, 'null']
+    NotificationItem:
+      type: object
+      additionalProperties: false
+      required: [id, kind, created_at]
+      properties:
+        id:
+          type: string
+          description: bigserial decimal string
+          pattern: '^[0-9]+$'
+        kind:
+          type: string
+        meta:
+          type: object
+          additionalProperties: true
+        read_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time

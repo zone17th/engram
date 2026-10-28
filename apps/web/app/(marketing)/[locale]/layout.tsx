@@ -37,7 +37,7 @@ export default async function MarketingLayout({
     <html lang={locale} data-theme="light" className={fontVariables}>
       <body className="bg-canvas font-sans text-body antialiased">
         <NextIntlClientProvider>
-          <ThemeProvider>{children}</ThemeProvider>
+          <ThemeProvider initialLocale={locale as 'en' | 'vi'}>{children}</ThemeProvider>
         </NextIntlClientProvider>
       </body>
     </html>

@@ -1,6 +1,7 @@
 .git
 .github
 .claude
+.data
 
 # Never send local credentials or machine-specific environment files to Docker.
 .env

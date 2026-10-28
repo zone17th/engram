@@ -27,7 +27,7 @@
       <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
     </a>
     <div class="ml-auto flex items-center gap-2">
-      <button class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <span class="vault-pill vault-shut" aria-disabled="true">Chưa tạo kho</span>
       <a href="index.html" class="btn btn-tertiary no-underline !text-body">Xong</a>
       <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
     </div>
@@ -55,7 +55,28 @@
             <div class="text-[15px] font-semibold">minh@zone17th.click</div>
             <div class="text-[13px]" style="color:var(--muted)">Đã xác minh · tham gia 04/01/2026</div>
           </div>
-          <button class="btn btn-tertiary ml-auto">Đổi email</button>
+          <button type="button" class="btn btn-tertiary ml-auto" data-open-dialog="emailChangeDlg">Đổi email</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-4 p-5" style="border-top:1px solid var(--border)">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Mật khẩu đăng nhập</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Khác passphrase vault. Đổi mật khẩu đăng xuất các phiên khác.</p>
+          </div>
+          <button type="button" class="btn btn-tertiary ml-auto" data-open-dialog="passwordChangeDlg">Đổi mật khẩu</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-4 p-5" style="border-top:1px solid var(--border)">
+          <div class="min-w-0 flex-1 basis-[240px]">
+            <div class="text-[15px] font-semibold mb-1">Cách đăng nhập</div>
+            <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">Google đã liên kết · GitHub chưa liên kết</p>
+            <div class="flex flex-wrap gap-2">
+              <span class="chip">Google · đã liên kết</span>
+              <span class="chip" style="border-style:dashed;color:var(--muted)">GitHub · chưa liên kết</span>
+            </div>
+          </div>
+          <div class="flex flex-col gap-2 ml-auto">
+            <button type="button" class="btn btn-tertiary btn-sm" data-open-dialog="linkProviderDlg">Liên kết GitHub</button>
+            <button type="button" class="btn btn-tertiary btn-sm" data-open-dialog="unlinkProviderDlg">Gỡ Google</button>
+          </div>
         </div>
         <div class="flex flex-wrap items-center gap-4 p-5" style="border-top:1px solid var(--border)">
           <div class="min-w-0">
@@ -65,6 +86,17 @@
           <div class="seg ml-auto" data-seg>
             <button aria-pressed="true">Tiếng Việt</button>
             <button aria-pressed="false">English</button>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-4 p-5" style="border-top:1px solid var(--border)">
+          <div class="min-w-0">
+            <div class="text-[15px] font-semibold">Giao diện</div>
+            <div class="text-[13px]" style="color:var(--muted)">Theo hệ thống, sáng, hoặc tối.</div>
+          </div>
+          <div class="seg ml-auto" data-seg>
+            <button aria-pressed="true">Hệ thống</button>
+            <button aria-pressed="false">Sáng</button>
+            <button aria-pressed="false">Tối</button>
           </div>
         </div>
       </div>
@@ -145,24 +177,23 @@
         </div>
       </div>
 
-      <!-- auto-lock + thiết bị -->
-      <div class="card p-5 mb-3">
-        <div class="text-[15px] font-semibold mb-1">Tự khoá</div>
-        <p class="text-[13px] mb-4" style="color:var(--muted)">Vault khoá lại sau khi bạn ngừng thao tác.</p>
-        <div class="seg" data-seg>
-          <button aria-pressed="false">5 phút</button>
-          <button aria-pressed="true">15 phút</button>
-          <button aria-pressed="false">1 giờ</button>
-          <button aria-pressed="false">Khi đóng tab</button>
+      <!-- auto-lock + thiết bị (P03 — hiển thị nhưng chưa wire) -->
+      <div class="card p-5 mb-3 control-disabled" aria-disabled="true">
+        <div class="text-[15px] font-semibold mb-1">Tự khoá <span class="phase-badge">P03</span></div>
+        <p class="text-[13px] mb-4" style="color:var(--muted)">Vault khoá lại sau khi bạn ngừng thao tác. Có sau khi tạo vault.</p>
+        <div class="seg" data-seg tabindex="-1">
+          <button type="button" aria-pressed="false" disabled>5 phút</button>
+          <button type="button" aria-pressed="true" disabled>15 phút</button>
+          <button type="button" aria-pressed="false" disabled>1 giờ</button>
+          <button type="button" aria-pressed="false" disabled>Khi đóng tab</button>
         </div>
         <hr class="rule my-5">
         <div class="flex items-center gap-4 flex-wrap">
           <div class="min-w-0 flex-1 basis-[240px]">
             <div class="text-[15px] font-semibold mb-1">Nhớ thiết bị này</div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">Giữ một khoá riêng trong trình duyệt để mở vault không cần gõ lại. Chỉ bật trên máy của bạn.</p>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Giữ khoá riêng trong trình duyệt — bật sau khi có vault.</p>
           </div>
-          <button class="switch" role="switch" aria-checked="true" aria-label="Nhớ thiết bị này"
-                  onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked')==='true'?'false':'true')"></button>
+          <button type="button" class="switch" role="switch" aria-checked="false" aria-label="Nhớ thiết bị này" disabled></button>
         </div>
       </div>
 
@@ -170,7 +201,7 @@
       <div class="card p-5 mb-3">
         <div class="flex items-center gap-4 mb-4">
           <div class="text-[15px] font-semibold">Phiên đăng nhập</div>
-          <button class="btn btn-tertiary btn-sm ml-auto" onclick="SAK.toast('Đã đăng xuất 2 phiên khác')">Đăng xuất nơi khác</button>
+          <button type="button" class="btn btn-tertiary btn-sm ml-auto" data-open-dialog="revokeSessionsDlg">Đăng xuất nơi khác</button>
         </div>
         <div class="flex flex-col gap-2 text-[13px]">
           <div class="flex items-center gap-3"><span class="mono" style="color:var(--success)">●</span>
@@ -181,12 +212,19 @@
             <span>Firefox · Ubuntu</span><span class="ml-auto" style="color:var(--muted)">14/09/2026</span></div>
         </div>
         <hr class="rule my-5">
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-4 mb-5">
           <div class="min-w-0">
             <div class="text-[15px] font-semibold mb-1">Nhật ký bảo mật</div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">Mở vault, đổi passphrase, tạo và dùng recovery key.</p>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Đăng nhập, đổi email, liên kết provider, thu hồi phiên.</p>
           </div>
-          <button class="btn btn-tertiary ml-auto">Xem</button>
+          <button type="button" class="btn btn-tertiary ml-auto">Xem</button>
+        </div>
+        <div class="flex items-center gap-4">
+          <div class="min-w-0">
+            <div class="text-[15px] font-semibold mb-1">Thông báo trong app</div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">Cảnh báo bảo mật tài khoản — không chứa secret.</p>
+          </div>
+          <button type="button" class="btn btn-tertiary ml-auto">Xem</button>
         </div>
       </div>
 
@@ -205,16 +243,16 @@
     <section id="timkiem">
       <h2 class="t-title-md mb-6">Tìm kiếm</h2>
 
-      <div class="card p-5 mb-3">
+      <div class="card p-5 mb-3 control-disabled" aria-disabled="true">
         <div class="flex items-start gap-4 flex-wrap mb-4">
           <div class="min-w-0 flex-1 basis-[240px]">
-            <div class="text-[15px] font-semibold mb-1">Tìm gần nghĩa</div>
+            <div class="text-[15px] font-semibold mb-1">Tìm gần nghĩa <span class="phase-badge">P05</span></div>
             <p class="text-[13px] m-0" style="color:var(--muted)">
               Gõ “mật khẩu” cũng ra mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng, dưới kết quả khớp chữ,
               nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.
             </p>
           </div>
-          <button class="switch" role="switch" aria-checked="true" data-sem-toggle aria-label="Bật tìm gần nghĩa"></button>
+          <button type="button" class="switch" role="switch" aria-checked="false" aria-label="Bật tìm gần nghĩa" disabled></button>
         </div>
         <div class="rounded-md p-4" style="background:var(--surface)">
           <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
@@ -231,7 +269,7 @@
             <div class="text-[15px] font-semibold mb-1">Chỉ mục nhúng</div>
             <p class="text-[13px] m-0" style="color:var(--muted)">64 mục · 7 tag đã có vector. Tắt rồi bật lại sẽ nhúng lại phần đã đổi.</p>
           </div>
-          <button class="btn btn-tertiary" onclick="SAK.toast('Đang nhúng lại 71 mục…')">Nhúng lại tất cả</button>
+          <button type="button" class="btn btn-tertiary" disabled>Nhúng lại tất cả <span class="phase-badge">P05</span></button>
         </div>
       </div>
     </section>
@@ -345,6 +383,99 @@
     <div class="flex justify-end gap-2">
       <button class="btn btn-tertiary" data-close-dialog>Để sau</button>
       <button class="btn btn-danger" data-toast="Vault đã được đặt lại">Đặt lại vault</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== P02: đổi email ===== -->
+<dialog id="emailChangeDlg">
+  <div class="panel" style="width:min(520px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Đổi email</h2>
+    <p class="t-body mb-5" style="color:var(--muted)">Email hiện tại giữ nguyên đến khi bạn xác minh địa chỉ mới.</p>
+    <label class="field mb-5">
+      <span class="field-label" for="new-email">Email mới</span>
+      <input id="new-email" type="email" autocomplete="email" class="field-input">
+    </label>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button type="button" class="btn btn-primary" data-open-dialog="reauthDlg" data-close-dialog>Gửi xác minh</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== P02: đổi mật khẩu tài khoản ===== -->
+<dialog id="passwordChangeDlg">
+  <div class="panel" style="width:min(520px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Đổi mật khẩu đăng nhập</h2>
+    <p class="t-body mb-5" style="color:var(--muted)">Không phải passphrase vault. Sau khi đổi, các phiên khác bị đăng xuất.</p>
+    <label class="field field-password mb-4">
+      <span class="field-label" for="new-account-password">Mật khẩu mới</span>
+      <input id="new-account-password" type="password" autocomplete="new-password" class="field-input" aria-describedby="pwd-change-hint">
+      <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+      <span id="pwd-change-hint" class="field-hint">Ít nhất 12 ký tự.</span>
+    </label>
+    <label class="field field-password mb-6">
+      <span class="field-label" for="confirm-account-password">Nhập lại</span>
+      <input id="confirm-account-password" type="password" autocomplete="new-password" class="field-input">
+      <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+    </label>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button type="button" class="btn btn-primary" data-open-dialog="reauthDlg" data-close-dialog>Đổi mật khẩu</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== P02: liên kết provider ===== -->
+<dialog id="linkProviderDlg">
+  <div class="panel" style="width:min(480px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Liên kết GitHub</h2>
+    <p class="t-body mb-6" style="color:var(--muted)">Cần xác thực lại bằng phương thức hiện có trước khi redirect.</p>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button type="button" class="btn btn-primary" data-open-dialog="reauthDlg" data-close-dialog>Tiếp tục</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== P02: gỡ provider ===== -->
+<dialog id="unlinkProviderDlg">
+  <div class="panel" style="width:min(480px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Gỡ Google?</h2>
+    <p class="t-body mb-6" style="color:var(--muted)">Không thể gỡ phương thức đăng nhập cuối cùng. Cần xác thực lại.</p>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button type="button" class="btn btn-danger" data-open-dialog="reauthDlg" data-close-dialog>Gỡ liên kết</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== P02: re-auth (settings) ===== -->
+<dialog id="reauthDlg">
+  <div class="panel" style="width:min(520px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Xác nhận đây là bạn</h2>
+    <p class="t-body mb-5" style="color:var(--muted)">Việc đang chờ · Đổi email</p>
+    <label class="field field-password mb-4">
+      <span class="field-label" for="settings-reauth-password">Mật khẩu đăng nhập</span>
+      <input id="settings-reauth-password" type="password" autocomplete="current-password" class="field-input">
+      <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
+    </label>
+    <button type="button" class="btn btn-secondary w-full !justify-center mb-5">Xác nhận bằng Google</button>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button type="button" class="btn btn-primary" data-close-dialog disabled aria-busy="true">Đang xác nhận…</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===== P02: thu hồi phiên khác ===== -->
+<dialog id="revokeSessionsDlg">
+  <div class="panel" style="width:min(480px,94vw);padding:28px">
+    <h2 class="t-title-sm mb-1">Đăng xuất nơi khác?</h2>
+    <p class="t-body mb-6" style="color:var(--muted)">Giữ phiên trên thiết bị này. Thu hồi 2 phiên khác — cần xác thực lại.</p>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
+      <button type="button" class="btn btn-danger" data-open-dialog="reauthDlg" data-close-dialog>Đăng xuất nơi khác</button>
     </div>
   </div>
 </dialog>

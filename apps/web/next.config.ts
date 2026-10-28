@@ -9,8 +9,10 @@ const nextConfig: NextConfig = {
   skipMiddlewareUrlNormalize: true,
   async rewrites() {
     // Dev đi qua MỘT origin: browser gọi /api/... trên localhost:3000,
-    // Next chuyển tiếp sang Go. Nhờ vậy cookie path /api, credentials và CSP
-    // không xung đột, và không phải cấu hình CORS/CSRF cho dev (P01 §UI và route).
+    // Next chuyển tiếp sang Go (kèm X-Forwarded-For). API chỉ tin header đó
+    // khi peer nằm trong AUTH_TRUSTED_PROXY_CIDRS (dev mặc định: loopback +
+    // dải private). Cookie path /api, credentials và CSP không xung đột;
+    // không cấu hình CORS/CSRF cho origin khác (P01 §UI và route).
     return [
       {
         source: '/api/:path*',
@@ -42,12 +44,35 @@ const nextConfig: NextConfig = {
       "form-action 'self'",
     ].join('; ');
 
+    const turnstileCsp = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://challenges.cloudflare.com",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      "connect-src 'self' https://challenges.cloudflare.com",
+      "frame-src https://challenges.cloudflare.com",
+      "frame-ancestors 'none'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join('; ');
+
     return [
       {
         source: '/:path*',
         headers: [
           { key: 'Content-Security-Policy', value: csp },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+        ],
+      },
+      {
+        source: '/app/auth/:path*',
+        headers: [
+          { key: 'Content-Security-Policy', value: turnstileCsp },
+          { key: 'Referrer-Policy', value: 'no-referrer' },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'DENY' },
         ],
