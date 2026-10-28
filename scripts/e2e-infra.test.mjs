@@ -58,6 +58,7 @@ test('origin and diagnostic settings stay explicit and safe', () => {
 });
 
 test('artifact staging omits reports and keeps only public a11y screenshots', () => {
+  mkdirSync(join(ROOT, '.data'), { recursive: true });
   const tempRoot = mkdtempSync(join(ROOT, '.data', 'e2e-infra-test-'));
   const reportRoot = join(tempRoot, 'report');
   const resultsRoot = join(tempRoot, 'results');
