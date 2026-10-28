@@ -35,6 +35,9 @@ func NewWithMail(pool *pgxpool.Pool, logger *slog.Logger, retentionDays int, mai
 	if err := river.AddWorkerSafely(workers, NewAuthPruneWorker(pool, nil)); err != nil {
 		return nil, fmt.Errorf("đăng ký prune: %w", err)
 	}
+	if err := river.AddWorkerSafely(workers, NewIdempotencyPruneWorker(pool, nil)); err != nil {
+		return nil, fmt.Errorf("đăng ký idempotency prune: %w", err)
+	}
 	if mail != nil {
 		if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mailAdapter{mail}, logger)); err != nil {
 			return nil, fmt.Errorf("đăng ký notice: %w", err)
@@ -46,6 +49,13 @@ func NewWithMail(pool *pgxpool.Pool, logger *slog.Logger, retentionDays int, mai
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return AuthPruneArgs{RetentionDays: retentionDays}, nil
+			},
+			nil,
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return IdempotencyPruneArgs{}, nil
 			},
 			nil,
 		),
