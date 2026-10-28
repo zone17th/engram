@@ -1,0 +1,219 @@
+# ADR 0003 — WebAuthn PRF, DevKey và đồng bộ trạng thái khoá
+
+- Trạng thái: Đề xuất — chờ review độc lập và chữ ký chủ repo (plan mục 5)
+- Ngày: 2026-10-28
+- Phase: P03
+- Phụ thuộc: P02 HEAD `1a98cef` / plan P03 `9022c0b` (`authctx.Principal`, `httpx.RequireSession/RequireCSRF/RequireReauth`, `auth.Grants`, `use-reauth.tsx`), [ADR 0001](0001-auth-session-va-reauth-assurance.md) và [ADR 0002](0002-vault-crypto-layout.md) (byte layout wrap `sabk.vk.prf.v1`, `sabk.devkey.v1`, vòng đời VK trong Web Worker)
+- Không phải bằng chứng: ADR này chốt contract thiết kế cho P03; chưa khẳng định đã chạy smoke test trên thiết bị phần cứng PRF thật (Windows Hello, Android, YubiKey `hmac-secret`) hoặc hoàn tất nghiệm thu E2E
+
+## Bối cảnh
+
+SPEC v0.7 (§3.2–§3.3, §3.13–§3.15, §5.6, §5.10, §8, §9) quy định passkey WebAuthn có phần mở rộng PRF (`hmac-secret`) là phương thức mở khoá vault hạng nhất ở MVP (ngang hàng passphrase, không thay phiên đăng nhập cookie), đồng thời cho phép tuỳ chọn "Nhớ thiết bị này" bằng `DevKey` non-extractable trong IndexedDB và tự động khoá (`auto-lock`) theo thời gian nhàn rỗi.
+
+Trước khi viết migration, handler Go và Web Worker cho P03, cần chốt đầy đủ các quyết định kỹ thuật còn mở:
+
+1. Phạm vi bảng `webauthn_challenge` (chỉ phục vụ đăng ký hay cả mở khoá).
+2. Cách server xác minh attestation đăng ký khi DB chỉ lưu hàm băm của challenge (`challenge_hash`) thay vì challenge thô.
+3. Quy tắc server tự trích xuất `cred_id`, `pubkey`, `aaguid` từ `attestationObject` đã xác minh và bỏ qua mọi trường tương đương do client gửi.
+4. Lý do cuộc gọi `navigator.credentials.get()` nối tiếp ngay trong luồng đăng ký (khi `create()` chỉ trả `prf.enabled = true`) dùng challenge ngẫu nhiên do client tự sinh thay vì xin thêm route challenge từ server.
+5. Cách xử lý credential mồ côi trên thiết bị xác thực khi tạo passkey thành công ở bước `create()` nhưng thất bại trước hoặc trong lúc `POST /vault/passkeys`, hoặc sau khi thu hồi trên server.
+6. Cấu trúc namespace, định dạng lưu trữ và toàn bộ vòng đời của `DevKey` trong IndexedDB.
+7. Ma trận tương tác giữa `auto-lock`, `DevKey` và passkey theo đúng SPEC §5.6.
+8. Cơ chế đồng bộ trạng thái khoá/mở khoá và thay đổi vault giữa nhiều tab trình duyệt.
+9. Ghi nhận các điểm lệch so với phase doc P03 ban đầu (tái sử dụng grant P02 trong TTL cho thao tác passkey, phạm vi rate limit P03-B8, challenge phía client cho bước `get()` nối tiếp) ở trạng thái chờ chủ repo ký duyệt tại gate mục 5.
+
+Nguyên tắc xuyên suốt từ SPEC §5.2 và plan mục 1: **server không bao giờ nhận passphrase (ở bất kỳ dạng nào), KEK, VK, plaintext RK, PWK (PRF output) hay private key chưa wrap**; các giá trị này cũng không bao giờ xuất hiện trong log, audit, telemetry hay thông báo lỗi.
+
+## Quyết định
+
+### 1. Phạm vi WebAuthn và challenge store chỉ dùng cho đăng ký (plan mục 2.5)
+
+Ở MVP (P03), passkey chỉ dùng để bọc và mở khoá `VK` tại client thông qua phần mở rộng PRF; passkey **không** tạo phiên đăng nhập (login-with-passkey thuộc P07).
+
+- **Cấu hình Relying Party (RP):** Lấy từ config ứng dụng và kiểm tra lúc khởi động:
+  - Production: `RPID = key.zone17th.click`, `Origin = https://key.zone17th.click`.
+  - Development: `RPID = localhost`, `Origin` khớp chính xác `APP_ORIGIN` (bao gồm cả cổng, ví dụ `http://localhost:3000`).
+- **Bảng `webauthn_challenge` chỉ dùng cho đăng ký (`POST /vault/passkeys/register/options` → `POST /vault/passkeys`):**
+  - Lược đồ bảng gồm các cột: `id` (UUID), `user_id` (UUID), `session_id` (UUID), `vault_key_id` (text), `challenge_hash` (bytea, UNIQUE), `prf_salt` (bytea, 32 B), `expires_at` (timestamptz, TTL 5 phút), `consumed_at` (timestamptz, nullable).
+  - Mỗi challenge là 32 byte ngẫu nhiên sinh bằng CSPRNG, chỉ dùng một lần (one-time), gắn chặt với `user_id`, `session_id` và `vault_key_id` hiện tại của vault tại thời điểm xin options.
+  - Nếu người dùng reset rồi tạo lại vault giữa bước xin `register/options` và bước `POST /vault/passkeys`, `vault_key_id` đã thay đổi nên challenge cũ bị từ chối (`400 passkey_challenge_invalid`).
+- **Unlock options không lưu challenge (`POST /vault/unlock/passkey/options`):**
+  - Khi người dùng mở khoá vault bằng passkey, server kiểm tra user đã có passkey đăng ký chưa; nếu chưa có bất kỳ credential nào thì trả `404 passkey_not_found` (client ẩn nút mở bằng passkey).
+  - Nếu có, server trả về `PublicKeyCredentialRequestOptions` (gồm `allowCredentials`, `userVerification: "required"`, một `challenge` ngẫu nhiên 32 B) kèm danh sách `credentials: [{id, prf_salt, vk_wrap}]` và bản đồ `prf.evalByCredential` (mỗi credential dùng đúng `prf_salt` 32 B riêng của nó; tuyệt đối không dùng chung một salt cho nhiều credential).
+  - Server **không lưu** challenge của bước unlock vào `webauthn_challenge` vì ở P03 client không gửi `AuthenticatorAssertionResponse` quay lại server. Việc mở khoá diễn ra hoàn toàn cục bộ trong trình duyệt: authenticator trả PRF output (`PWK`), Web Worker dùng `PWK` mở `vk_wrap` (layout và AAD `sabk.vk.prf.v1` quy định tại `docs/adr/0002-vault-crypto-layout.md`). Trạng thái "unlocked" chỉ tồn tại ở bộ nhớ Worker phía client, không phải bằng chứng xác thực với server.
+
+### 2. Xác minh đăng ký khi server chỉ lưu hàm băm của challenge
+
+Để tránh lưu trữ giá trị challenge thô trong cơ sở dữ liệu (giống nguyên tắc chỉ lưu hash đối với token xác minh và refresh token ở P02), bảng `webauthn_challenge` chỉ lưu `challenge_hash = SHA-256(challenge_bytes)` (trong đó `challenge_bytes` là 32 byte ngẫu nhiên gốc; khi truyền trong JSON WebAuthn, challenge được mã hoá `base64url` không padding).
+
+Quy trình xác minh khi nhận `POST /vault/passkeys` với body `{challenge_id, attestation: {client_data_json, attestation_object}, prf_salt, vk_wrap, name}` diễn ra như sau:
+
+1. **Giải mã và đọc `clientDataJSON`:**
+   - Server giải mã `client_data_json` (base64url strict, không padding) và parse cấu trúc `CollectedClientData` để lấy trường chuỗi `challenge` (dạng base64url do trình duyệt ghi vào khi gọi `navigator.credentials.create()`).
+   - Server giải mã base64url chuỗi `challenge` này về mảng byte thô (phải đúng 32 byte), tính `SHA-256` để thu được `candidate_hash`.
+2. **Tra cứu và tiêu thụ nguyên tử (atomic consume) bản ghi challenge:**
+   - Trong transaction, server tìm và cập nhật (`UPDATE webauthn_challenge SET consumed_at = now() WHERE ... RETURNING ...`) bản ghi khớp đồng thời:
+     - `id = req.challenge_id` và `challenge_hash = candidate_hash` (so khớp đúng challenge đã cấp);
+     - `user_id = principal.UserID` và `session_id = principal.SessionID` (đúng người dùng và phiên đăng nhập đã khởi tạo);
+     - `vault_key_id = current_vault.vault_key_id` (vault chưa bị reset/tạo lại kể từ lúc lấy options);
+     - `consumed_at IS NULL` và `expires_at > now()` (chưa dùng và còn trong hạn 5 phút);
+     - `prf_salt` gửi trong request khớp hoàn toàn byte-for-byte với `prf_salt` đã lưu trong dòng challenge.
+   - Nếu bất kỳ điều kiện nào không thoả mãn, server từ chối ngay với lỗi `400 passkey_challenge_invalid`.
+3. **Truyền chuỗi challenge vào API xác minh cấp thấp của thư viện:**
+   - Sau khi xác nhận `candidate_hash` khớp với `challenge_hash` trong DB, chuỗi `challenge` (base64url) lấy từ `clientDataJSON` đã được chứng minh là chính challenge do server phát hành.
+   - Server dựng đối tượng đã parse (`protocol.ParsedCredentialCreationData` từ `client_data_json` và `attestation_object`) rồi truyền chính chuỗi `challenge` đó vào hàm xác minh cấp thấp `ParsedCredentialCreationData.Verify` của thư viện `github.com/go-webauthn/webauthn/protocol` cùng với:
+     - `relyingPartyID` = RP ID từ config (`key.zone17th.click` hoặc `localhost`);
+     - `rpOrigins` = `[config.AppOrigin]`;
+     - `verifyUser = true` (bắt buộc cờ `UV` — User Verified) và `verifyUserPresence = true` (bắt buộc cờ `UP` — User Present);
+     - Danh sách thuật toán COSE cho phép (`credParams`).
+   - Thư viện kiểm tra `clientData.type == "webauthn.create"`, `clientData.challenge == storedChallenge`, `clientData.origin` khớp `APP_ORIGIN`, `rpIdHash == SHA-256(RPID)`, cờ `UP`, `UV`, `AT` (Attested Credential Data) trong `authenticatorData`, cú pháp CBOR của `attestationObject` và chữ ký attestation (chấp nhận cả định dạng attestation `"none"`). Nếu thất bại, server trả `400 passkey_attestation_invalid`.
+
+### 3. Server tự trích xuất credential từ attestation và không tin trường do client gửi
+
+Theo SPEC §5.10 và plan mục 2.5, `pubkey` được lưu ngay từ MVP để P07 có thể mở rộng tính năng đăng nhập bằng passkey mà không cần migrate lại credential. Do đó, dữ liệu định danh và khoá công khai của credential phải đạt mức đảm bảo đã được xác minh mật mã từ authenticator:
+
+- **Nguồn dữ liệu duy nhất:** Sau khi `ParsedCredentialCreationData.Verify` thành công, server trích xuất trực tiếp từ cấu trúc `ParsedCredentialCreationData.Response.AttestationObject.AuthData.AttData` (`protocol.AttestedCredentialData`):
+  - `cred_id`: từ `AttData.CredentialID` (mảng byte định danh credential do authenticator sinh).
+  - `pubkey`: từ `AttData.CredentialPublicKey` (mảng byte COSE_Key CBOR đã qua bước kiểm tra thuật toán của thư viện).
+  - `aaguid`: từ `AttData.AAGUID` (16 byte định danh mẫu authenticator).
+- **Không tin dữ liệu do client tự khai:** Request body của `POST /vault/passkeys` theo contract mới chỉ nhận `{challenge_id, attestation: {client_data_json, attestation_object}, prf_salt, vk_wrap, name}`. Nếu client gửi kèm các trường rời như `cred_id`, `pubkey` hay `aaguid` bên ngoài `attestation_object`, server **bỏ qua hoàn toàn** (không đọc để lưu DB). Điều này ngăn chặn kịch bản client bị can thiệp gửi một `pubkey` giả mạo (không thuộc authenticator vừa tạo attestation) nhằm chiếm quyền đăng nhập khi P07 bật login-with-passkey.
+- **Kiểm tra trùng lặp và hợp lệ:**
+  - Nếu `cred_id` trích xuất được đã tồn tại trong `vault_passkey.cred_id` (UNIQUE toàn cục), server trả `409 passkey_exists` (khi xin `register/options`, server cũng đã điền mọi `cred_id` hiện có của user vào `excludeCredentials`).
+  - `vk_wrap` được kiểm tra độ dài đúng 73 byte và byte đầu `version == 0x01` bằng validator wrap dùng chung (chi tiết layout ở `docs/adr/0002-vault-crypto-layout.md`).
+  - `name` được chuẩn hoá `strings.TrimSpace`, kiểm tra độ dài 1–64 rune, từ chối mọi ký tự điều khiển Unicode (`unicode.IsControl`) và ký tự điều hướng hai chiều (bidi override: U+202A–U+202E, U+2066–U+2069, U+200E, U+200F, U+061C); nếu vi phạm trả `400 passkey_name_invalid` (áp dụng cho cả `POST /vault/passkeys` và `PATCH /vault/passkeys/{id}`).
+
+### 4. Lý do bước PRF `get()` nối tiếp dùng challenge do client tự sinh (chờ chủ repo ký duyệt — gate mục 5)
+
+Theo đặc tả WebAuthn PRF extension (và CTAP2 `hmac-secret`), khi trình duyệt gọi `navigator.credentials.create()` kèm `extensions: { prf: { eval: { first: prf_salt } } }`, có hai khả năng trả về trong `credential.getClientExtensionResults().prf`:
+
+1. **`enabled !== true`:** Trình duyệt hoặc khoá bảo mật không hỗ trợ PRF. Client dừng ngay luồng đăng ký, hiển thị thông báo `passkey.prf_unsupported`, không gọi tiếp và không gửi request lên server.
+2. **`enabled === true` kèm `results.first` (32 byte):** Authenticator đã tính luôn PRF output ngay trong bước `create()`. Client chuyển buffer `results.first` (làm `PWK`) sang Web Worker để bọc `VK` thành `vk_wrap`, mở thử lại để kiểm tra ra đúng `VK`, rồi gọi `POST /vault/passkeys`.
+3. **`enabled === true` nhưng không có `results.first`:** Nhiều platform/roaming authenticator chỉ xác nhận hỗ trợ PRF lúc tạo credential nhưng chỉ xuất `results.first` trong thao tác xác thực (`navigator.credentials.get()`). Khi đó client bắt buộc phải gọi ngay `navigator.credentials.get()` với `allowCredentials: [{ type: "public-key", id: cred.rawId }]`, `userVerification: "required"` và `extensions: { prf: { eval: { first: prf_salt } } }` để lấy 32 byte `PWK` trước khi có thể tạo `vk_wrap` và lưu passkey lên server.
+
+**Quyết định về challenge của bước `get()` nối tiếp:**
+
+- Cuộc gọi `navigator.credentials.get()` nối tiếp này sử dụng **challenge ngẫu nhiên (32 byte `crypto.getRandomValues`) do chính client tự sinh**; chữ ký assertion của bước `get()` này không gửi lên server.
+- **Lý do kỹ thuật:**
+  - Sự tồn tại, tính hợp lệ, cờ `UP`/`UV`, `RPID` và `Origin` của credential vừa tạo đã được chứng minh với server thông qua `attestationObject` và `clientDataJSON` của bước `create()` (gắn với challenge một lần trong `webauthn_challenge`).
+  - Bước `get()` nối tiếp hoàn toàn chỉ là cuộc gọi API cục bộ giữa trình duyệt và authenticator để trích xuất đầu ra hàm giả ngẫu nhiên `PRF(credential_secret, prf_salt)` thành `PWK` (32 B). Server không bao giờ được phép biết `PWK` và cũng không thể kiểm tra xem `vk_wrap` có thực sự được mã hoá bằng đúng `PWK` của credential đó hay không (server chỉ giữ `vk_wrap` như một blob opaque 73 B).
+  - Việc thêm một round-trip HTTP lên server để lấy và lưu một challenge thứ hai cho bước `get()` nối tiếp không tăng thêm bất kỳ đảm bảo mật mã nào cho server, trong khi làm kéo dài thời gian chờ giữa hai lần chạm khoá (dễ làm trượt cửa sổ user gesture của trình duyệt hoặc làm giảm thời gian còn lại của re-auth grant).
+- **Trạng thái phê duyệt (Gate Deviation 3):** Quyết định này lệch so với câu chữ ban đầu trong `docs/phases/P03-vault.md` (*"Xác định route challenge tiếp cho credential vừa create trước khi persist final wrapper"*). Theo plan mục 2.5 và mục 5, điểm lệch này được ghi nhận tại đây và cập nhật vào `docs/phases/P03-vault.md` với trạng thái **chờ chủ repo ký duyệt (plan mục 5)** trước khi bắt đầu viết code crypto/WebAuthn.
+
+### 5. Xử lý credential mồ côi (orphan credentials)
+
+Vì WebAuthn không có API cho phép Relying Party tự xoá một credential đã ghi vào bộ nhớ của authenticator từ phía server (ngoại trừ cơ chế tín hiệu gợi ý mới trên một số trình duyệt, không đảm bảo thực thi), sẽ phát sinh trường hợp **credential mồ côi** — authenticator giữ một passkey cho RP `key.zone17th.click` (hoặc `localhost`) nhưng server không có bản ghi tương ứng trong `vault_passkey`:
+
+- **Nguyên nhân phát sinh:**
+  1. Người dùng hoàn tất `navigator.credentials.create()` (credential đã được ghi vào Windows Hello / iCloud Keychain / Google Password Manager / YubiKey), nhưng sau đó huỷ ở bước `get()` nối tiếp, hoặc `get()` không trả `results.first`, hoặc grant re-auth hết hạn không gia hạn được, hoặc `POST /vault/passkeys` thất bại do lỗi mạng / `400` / `409` / `503`.
+  2. Người dùng thu hồi passkey (`DELETE /vault/passkeys/{id}`) hoặc thực hiện Reset vault (`DELETE /vault`), làm xoá bản ghi trên server trong khi credential vẫn nằm trên thiết bị.
+- **Cách xử lý ở UI và Server:**
+  - **Không lưu nửa vời trên server:** Server chỉ insert vào `vault_passkey` ở bước cuối cùng (`POST /vault/passkeys`) sau khi client đã lấy được `PWK`, tạo `vk_wrap`, tự mở thử lại `vk_wrap` khớp đúng `VK` trong Worker và gửi kèm `attestation` hợp lệ. Nếu thất bại ở bất kỳ bước nào trước đó, server không giữ credential không có `vk_wrap`.
+  - **Thông báo cho người dùng khi đăng ký dở dang:** Nếu `navigator.credentials.create()` đã trả về credential nhưng bước lấy PRF nối tiếp hoặc bước `POST /vault/passkeys` thất bại, UI hiển thị thông báo rõ ràng rằng passkey chưa được lưu vào vault và hướng dẫn người dùng có thể tự xoá credential thừa trong trình quản lý passkey của hệ điều hành / trình duyệt / thiết bị nếu muốn dọn dẹp.
+  - **Không ảnh hưởng các lần đăng ký và mở khoá sau:**
+    - Khi đăng ký lại: `POST /vault/passkeys/register/options` chỉ đưa vào `excludeCredentials` danh sách `cred_id` đang lưu trong bảng `vault_passkey` của user. Do credential mồ côi không nằm trong DB, nó không chặn người dùng tạo credential mới trên cùng authenticator (hoặc ghi đè tuỳ hành vi authenticator).
+    - Khi mở khoá: `POST /vault/unlock/passkey/options` luôn gửi danh sách `allowCredentials` tường minh chứa đúng các `cred_id` đang có trong `vault_passkey` của user. Nhờ có `allowCredentials` cụ thể, trình duyệt chỉ cho phép chọn các credential mà server thực sự đang giữ `vk_wrap`, tránh việc người dùng bấm nhầm vào một credential mồ côi không có bản bọc `VK` trên server.
+  - **Idempotency khi thu hồi:** Nếu client retry `DELETE /vault/passkeys/{id}` sau khi mạng đứt và nhận `404 passkey_not_found` cho chính `id` vừa gửi xoá, client coi thao tác thu hồi đã hoàn tất và tải lại danh sách passkey thay vì báo lỗi.
+
+### 6. DevKey: namespace, định dạng lưu trữ và vòng đời đầy đủ
+
+Tính năng "Nhớ thiết bị này" (opt-in, **mặc định tắt**) cho phép mở khoá vault im lặng trên thiết bị cá nhân mà không cần gõ lại passphrase hay chạm passkey mỗi lần tải lại trang hoặc sau khi auto-lock.
+
+- **Cơ chế mật mã và lưu trữ (chỉ ở IndexedDB, không bao giờ lên server):**
+  - Toàn bộ thao tác tạo, lưu, đọc và xoá `DevKey` chạy bên trong Web Worker (`apps/web/lib/crypto/device.ts`).
+  - `DevKey` là một `CryptoKey` đối xứng **WebCrypto AES-GCM 256-bit** được sinh với `extractable: false` và `keyUsages: ["encrypt", "decrypt"]`. Vì `extractable: false`, JavaScript trong cùng origin (kể cả khi bị XSS sau đó) không thể xuất raw bytes của `DevKey` để mang sang máy khác, dù vẫn có thể yêu cầu WebCrypto giải mã tại chỗ khi đang chạy trong origin.
+  - Bản bọc `VK` bởi `DevKey` tuân theo layout chuẩn của `docs/adr/0002-vault-crypto-layout.md` (plan mục 2.1):
+    - Thuật toán: WebCrypto `AES-GCM` 256-bit, `iv` 12 byte ngẫu nhiên CSPRNG mỗi lần bọc.
+    - Bytes lưu trữ: `iv(12) ‖ ciphertext_and_tag(32 + 16)` (tổng 60 byte).
+    - `additionalData` (AAD): `UTF8("sabk.devkey.v1") ‖ 0x00 ‖ UTF8(user_id) ‖ 0x00 ‖ UTF8(vault_key_id)` (trong đó `user_id` là UUID lowercase có gạch nối của tài khoản, `vault_key_id` là chuỗi `vk:...` của vault).
+- **Namespace trong IndexedDB:**
+  - Tên database IndexedDB: `sabk.device` (giữ nguyên tiền tố giao thức `sabk.`).
+  - Khoá phân vùng (namespace key) được định danh theo cặp **`(user_id, vault_key_id)`**. Mỗi bản ghi lưu `{ user_id, vault_key_id, dev_key: CryptoKey, wrapped_vk: Uint8Array, created_at }`.
+  - Việc gắn cả `user_id` và `vault_key_id` vào key lưu trữ lẫn vào AAD của AES-GCM đảm bảo:
+    1. Hai tài khoản khác nhau đăng nhập trên cùng một trình duyệt không bao giờ dùng nhầm hoặc ghi đè `DevKey` của nhau.
+    2. Nếu vault của cùng một user bị reset rồi tạo lại (sinh `vault_key_id` mới), bản ghi `DevKey` cũ không khớp `vault_key_id` cũng như không thể giải mã nếu bị đánh tráo AAD.
+- **Vòng đời đầy đủ của DevKey:**
+  1. **Tạo (Create):** Khi người dùng mở khoá vault thành công (hoặc ở bước cuối onboarding) và chủ động bật tuỳ chọn "Nhớ thiết bị này" (hoặc bật trong Settings › Bảo mật khi vault đang mở), Worker sinh `DevKey` mới, bọc `VK` với AAD chứa `(user_id, vault_key_id)`, mở thử lại để xác nhận khớp đúng `VK`, rồi ghi vào IndexedDB `sabk.device` dưới namespace `(user_id, vault_key_id)` (ghi đè mọi bản ghi cũ của cùng `user_id`).
+  2. **Sử dụng — Silent unlock (Use):** Khi tải lại trang, đăng nhập lại hoặc tương tác sau `auto-lock`, client **bắt buộc** gọi `GET /vault` trước. Chỉ khi `GET /vault` trả về `200 OK` và có bản ghi `DevKey` trong IndexedDB khớp chính xác `(me.user.id, vault.vault_key_id)`, Worker mới dùng `DevKey` giải mã `wrapped_vk` (kiểm tra `generation` trước khi gán `VK` vào bộ nhớ Worker) để chuyển sang trạng thái `unlocked` im lặng.
+  3. **Quên thiết bị (Forget):** Khi người dùng bấm "Quên thiết bị này" trong Settings › Bảo mật, Worker xoá ngay bản ghi của `user_id` hiện tại trong IndexedDB `sabk.device`. `VK` đang mở trong phiên hiện tại (nếu có) vẫn giữ nguyên cho đến khi khoá hoặc đăng xuất, nhưng lần khoá/tải lại tiếp theo sẽ yêu cầu passphrase hoặc passkey.
+  4. **Đổi passphrase / Recovery / Regenerate / Rotate RK (Rewrap / Rotate):** Các thao tác này chỉ thay đổi `vault.version`, `wrapK` hoặc danh sách RK nhưng **không đổi `VK` và không đổi `vault_key_id`**. Do đó `DevKey` hiện có vẫn hợp lệ và **không bị xoá** (đúng SPEC §5.6 và `vault.version` chỉ là revision concurrency, không phải điều kiện xoá `DevKey`).
+  5. **Đăng xuất chủ động (Logout):** Khi người dùng bấm Logout, client xoá sạch `VK`, `KEK`, `PWK` trong Worker và xoá toàn bộ cache plaintext/form, nhưng **giữ nguyên `DevKey` trong IndexedDB**. Ở lần sử dụng sau, người dùng bắt buộc phải đăng nhập lại tài khoản (email/password hoặc OAuth) để có session hợp lệ gọi được `GET /vault` trước khi `DevKey` có thể thực hiện silent unlock.
+  6. **Phiên bị thu hồi (Session Revoked):** Khi bất kỳ API nào trả về `401 session_invalid` với `reason = "revoked"` (hoặc nhận sự kiện broadcast `session_invalid` có `reason = "revoked"` từ tầng auth P02):
+     - Nếu client đang biết `user_id` hiện tại: xoá toàn bộ namespace IndexedDB thuộc `user_id` đó.
+     - Nếu client chưa biết `user_id` (ví dụ vừa reload trang và bước bootstrap/refresh đầu tiên trả về `reason = "revoked"`): client **xoá toàn bộ database IndexedDB `sabk.device`** để đảm bảo thiết bị bị thu hồi từ xa không còn giữ `DevKey`. (Giới hạn đã ghi trong SPEC §5.6: nếu thiết bị hoàn toàn offline thì server không thể chủ động xoá IndexedDB cho tới khi thiết bị gọi lại API và nhận phản hồi `revoked`).
+  7. **Reset vault hoặc lệch `vault_key_id`:** Khi người dùng thực hiện `DELETE /vault` trên thiết bị này, hoặc khi `GET /vault` trả về `404 vault_absent`, hoặc trả về `vault_key_id` khác với `vault_key_id` đang lưu trong bản ghi `DevKey` của `user_id` (do vault đã bị reset và tạo lại ở thiết bị/tab khác), client **xoá ngay** bản ghi `DevKey` cũ khỏi IndexedDB và không thực hiện silent unlock.
+  8. **Lỗi IndexedDB (Private Browsing / Storage Blocked):** Nếu trình duyệt chặn IndexedDB hoặc WebCrypto lỗi khi đọc/ghi `sabk.device`, client bắt lỗi êm, coi như thiết bị chưa được nhớ và rơi về màn hình nhập passphrase / passkey mà không làm crash ứng dụng.
+
+### 7. Ma trận tương tác Auto-lock × DevKey × Passkey (theo SPEC §5.6)
+
+Hành vi kết hợp giữa tự động khoá (`auto-lock`), nhớ thiết bị (`DevKey`) và passkey tuân thủ chính xác SPEC §5.6 và plan mục 2.6:
+
+- **Khi sự kiện Lock xảy ra (do hết thời gian idle `auto_lock_minutes`, bấm phím tắt `L`, bấm nút 🔒 / "Lock now", hoặc nhận tín hiệu `lock` từ tab khác):**
+  - Bất kể thiết bị có đang bật `DevKey` hay có passkey hay không, thao tác lock **luôn luôn thực thi đầy đủ**: Worker gọi `sodium_memzero` trên mọi buffer giữ `VK`, `KEK`, `PWK` và tăng biến đếm `generation`; main thread xoá toàn bộ query cache chứa dữ liệu entry đã giải mã, xoá state form đang mở, và chuyển UI sang trạng thái `locked` (tên mục, tag, kiểu entry và danh sách vẫn hiển thị; phần thân entry hiển thị `🔒 ••••••`; không cho phép tạo/sửa entry).
+  - Mọi tác vụ giải mã hoặc mở khoá bất đồng bộ đang chạy dở từ `generation` cũ khi hoàn tất sẽ bị Worker và client kiểm tra `generation`, gọi `sodium_memzero` và loại bỏ, không bao giờ làm "hồi sinh" nội dung plaintext sau khi đã khoá.
+- **Khi người dùng tương tác trở lại để mở khoá sau Auto-lock (hoặc khi mở lại ứng dụng):**
+  Thứ tự ưu tiên mở lại diễn ra theo đúng 3 nhánh của SPEC §5.6:
+
+| Trạng thái thiết bị / tài khoản | Hành vi khi mở lại sau Auto-lock | Ý nghĩa bảo mật |
+|---|---|---|
+| **1. Thiết bị đã nhớ (`DevKey` hợp lệ trong `sabk.device` khớp `user_id` + `vault_key_id`)** | **Re-unlock im lặng (Silent unlock)** bằng `DevKey` ngay khi người dùng yêu cầu mở lại / tương tác, không hỏi lại passphrase hay chạm passkey. | Trên máy đã bật "Nhớ thiết bị", `auto-lock` đóng vai trò **che nội dung trên màn hình** và giải phóng `VK`/plaintext khỏi RAM khi rời mắt; bảo vệ vật lý thực sự dựa vào khoá màn hình của hệ điều hành (OS screen lock). |
+| **2. Thiết bị chưa nhớ (`DevKey` tắt/không có), nhưng vault có đăng ký passkey** | Chuyển sang màn/hộp thoại mở khoá và **ưu tiên nhắc WebAuthn (`Unlock with passkey`)** (vẫn hiển thị ô nhập passphrase để dự phòng nếu người dùng huỷ hoặc không mang khoá). | Không lưu khoá giải mã trên đĩa của trình duyệt; mỗi lần mở lại sau `auto-lock` đòi hỏi xác thực người dùng (`UV required`) trên authenticator để lấy lại `PWK` từ PRF. |
+| **3. Thiết bị chưa nhớ và chưa có passkey** | Hiển thị **ô nhập encryption passphrase** (cùng liên kết "Tôi quên passphrase" dẫn tới luồng recovery key). | `VK` chỉ được tái tạo khi người dùng nhập lại passphrase để chạy Argon2id 64 MiB trong Worker. |
+
+### 8. Đồng bộ nhiều tab (BroadcastChannel và `lockEpoch`)
+
+Mỗi tab trình duyệt khởi tạo một Web Worker riêng và giữ bản sao `VK` riêng trong bộ nhớ của Worker đó (không dùng `SharedWorker` để tránh các giới hạn tương thích trình duyệt và giữ cô lập vòng đời tab). Để đồng bộ trạng thái bảo mật giữa các tab cùng origin, client sử dụng hai cơ chế bổ trợ theo plan mục 2.6:
+
+- **Kênh `BroadcastChannel("sabk.vault")`:**
+  - Tách biệt hoàn toàn với kênh quảng bá phiên đăng nhập của P02 (`apps/web/lib/auth/broadcast.ts`).
+  - Các loại thông điệp trên kênh `sabk.vault`:
+    1. `activity { at: number }`: Phát đi (có điều tiết / throttle hợp lý) khi người dùng thao tác trên một tab đang mở. Các tab cùng cập nhật mốc hoạt động chung `lastActivity = max(lastActivity, msg.at)`. Bộ đếm `auto-lock` chỉ khoá khi `Date.now() >= max(lastActivity của mọi tab) + auto_lock_minutes * 60_000`. Nhờ đó, một tab để ở nền không tự khoá cả phiên trong khi người dùng vẫn đang làm việc ở tab bên cạnh.
+    2. `lock { lockEpoch: number }`: Phát đi ngay khi một tab thực hiện khoá (bằng tay hoặc do hết hạn `auto-lock`). **Khoá lan sang mọi tab (`lock` propagates), nhưng mở khoá (`unlock`) thì không lan sang tab khác** (vì `VK` không bao giờ được gửi qua `BroadcastChannel` hay `localStorage`).
+    3. `vault_changed { vault_key_id: string, version: number | null }`: Phát đi sau khi một tab hoàn tất mutation làm thay đổi trạng thái vault (`PUT /vault/kek`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`, `DELETE /vault`). Các tab nhận được thông điệp này sẽ tải lại `GET /vault`: nếu nhận `404 vault_absent` hoặc `vault_key_id` mới khác với `vault_key_id` mà tab đang giữ (do vault vừa bị reset), tab đó **khoá ngay lập tức** và xoá `DevKey` cũ; nếu chỉ tăng `version`, tab cập nhật lại revision để dùng cho `If-Match`.
+    4. `settings_changed { auto_lock_minutes: number }`: Phát đi khi người dùng đổi cấu hình `auto_lock_minutes` (0 / 5 / 15 / 60) qua `PATCH /me/settings` ở một tab. Các tab khác tải lại `Me` (hoặc cập nhật ngay cấu hình timer): nếu đổi sang `0` (Never) thì huỷ timer và không kiểm tra hạn idle; nếu đổi sang số dương thì áp dụng ngay ngưỡng mới trên mốc `lastActivity` hiện tại.
+- **Khoá dự phòng qua `localStorage.lockEpoch` và kiểm tra đồng hồ khi tab thức dậy:**
+  - Các tab để ở nền hoặc trên thiết bị ngủ (sleep/freeze) có thể bị trình duyệt đóng băng (bfcache / background tab freezing) và bỏ lỡ sự kiện `BroadcastChannel`.
+  - Vì vậy, mỗi lần khoá, tab thực hiện ghi một số nguyên tăng dần (hoặc timestamp mốc khoá) vào `localStorage` tại khoá `sabk.vault.lockEpoch` (dữ liệu không nhạy cảm).
+  - Khi một tab hiển thị trở lại hoặc thức dậy (`visibilitychange` sang `visible`, `pageshow`, `focus`, hoặc resume), tab thực hiện kiểm tra đồng bộ ngay trước khi render tiếp:
+    1. Nếu `localStorage.getItem("sabk.vault.lockEpoch")` mới hơn mốc lúc tab đó unlock → **khoá ngay lập tức**.
+    2. Nếu `auto_lock_minutes > 0` và `Date.now() - lastActivity >= auto_lock_minutes * 60_000` → **khoá ngay lập tức** (không tin vào `setTimeout`/`setInterval` vì timer bị trình duyệt throttle khi tab ẩn hoặc máy sleep).
+    3. Nếu phát hiện đồng hồ hệ thống bị lùi quá 1 phút (`Date.now() < lastActivity - 60_000`) → **khoá ngay lập tức** (fail closed trước thao tác chỉnh lùi giờ hệ thống).
+
+### 9. Các điểm lệch chờ chủ repo ký duyệt (Crypto Gate — plan mục 5) và dependency đã pin
+
+Ngoài điểm lệch về challenge của bước `get()` nối tiếp đã nêu ở mục 4 (Gate Deviation 3), ADR này ghi nhận thêm hai điểm lệch liên quan trực tiếp đến luồng WebAuthn passkey, cả hai đều ở trạng thái **chờ chủ repo ký duyệt (plan mục 5)**:
+
+1. **Tái sử dụng grant re-auth P02 trong TTL cho thao tác passkey (Gate Deviation 1 — chờ chủ repo ký duyệt (plan mục 5)):**
+   - Như chi tiết tại `docs/adr/0002-vault-crypto-layout.md` và plan mục 1, grant re-auth của P02 (`auth.Grants`) là token HMAC stateless có TTL 5 phút, gắn với `(user_id, session_id, action)` và không có trạng thái "đã tiêu thụ một lần" (non-burning).
+   - Các mutation như rewrap, recover, regenerate, rotate và reset đều bắt buộc header `If-Match: "<vault_key_id>:<version>"`, nên sau một lần gọi thành công thì `version` tăng lên và cùng một request không thể lặp lại ngầm. Tuy nhiên, `POST /vault/passkeys` (action `vault.passkey_register`) và `DELETE /vault/passkeys/{id}` (action `vault.passkey_revoke`) **không tăng `vault.version` và không dùng `If-Match`**. Hệ quả là trong cửa sổ TTL 5 phút của một grant, client (hoặc kẻ tấn công đã chiếm được phiên và grant đó) có thể đăng ký hoặc thu hồi nhiều passkey cùng loại action.
+   - Ngoài ra, để tránh việc re-auth OAuth (`window.location.assign`) làm mất Web Worker, mất `VK` và làm đứt luồng WebAuthn, client luôn lấy grant `vault.passkey_register` **ngay khi người dùng bấm "Thêm passkey"** (trước khi gọi `register/options` và `navigator.credentials.create()`). Trước khi gửi `POST /vault/passkeys`, client kiểm tra grant còn hạn ít nhất 60 giây; nếu còn dưới 60 giây, user có password sẽ được nhắc xác thực lại tại chỗ (in-place modal), còn user chỉ có OAuth được thông báo hết thời gian và bắt đầu lại luồng.
+2. **Phạm vi rate limit của P03-B8 chỉ áp dụng cho recovery và passkey options (Gate Deviation 2 — chờ chủ repo ký duyệt (plan mục 5)):**
+   - Theo `docs/phases/P03-vault.md` ban đầu, P03-B8 ghi *"Rate limit unlock/recovery: Lần thứ 6 trong 15 phút bị chặn... passkey options quá 20/phút bị chặn"*.
+   - Vì passphrase unlock diễn ra hoàn toàn offline ở Web Worker sau khi tải `GET /vault` (chi tiết tại `docs/adr/0002-vault-crypto-layout.md`), server không có endpoint "unlock bằng passphrase" để đếm số lần thử sai mà không chặn nhầm việc tải trang (`GET /vault`).
+   - Do đó, ở phía WebAuthn và recovery, P03-B8 được cụ thể hoá thành các bucket trượt theo `user_id` trong bảng `rate_event` (plan mục 2.4):
+     - `vault_passkey_options`: giới hạn **20 yêu cầu / phút / user**, dùng chung một bucket cho cả `POST /vault/unlock/passkey/options` và `POST /vault/passkeys/register/options`.
+     - `vault_sensitive`: giới hạn **10 yêu cầu / phút / user**, áp dụng cho `POST /vault/passkeys`, `PATCH /vault/passkeys/{id}`, `DELETE /vault/passkeys/{id}` (cùng với `PUT /vault/kek`, `DELETE /vault`, regenerate, rotate).
+     - `vault_recovery_lookup` và `vault_recovery_complete`: mỗi scope **5 yêu cầu / 15 phút / user** (tách riêng 2 bucket).
+
+**Dependency WebAuthn được pin chính xác (plan mục 4 — không cài đặt trong Task 1):**
+
+| Thành phần | Gói (Module) | Phiên bản pin chính xác | Ghi chú |
+|---|---|---|---|
+| Xác minh WebAuthn phía Go API | `github.com/go-webauthn/webauthn` | `v0.16.5` | Tương thích trực tiếp với `go 1.26.0` và các dependency hiện có trong `apps/api/go.mod` (`golang-jwt/jwt/v5`, `google/uuid v1.6.0`, `stretchr/testify v1.11.1`); cung cấp `protocol.ParseCredentialCreationResponseBytes` và `ParsedCredentialCreationData.Verify`. Chỉ cài đặt ở Task 13, không cài trong Task 1. |
+| WebAuthn PRF & DevKey phía Web | Web API chuẩn của trình duyệt (`navigator.credentials`, `crypto.subtle`, `indexedDB`, `BroadcastChannel`) | Built-in (W3C WebAuthn Level 3 / WebCrypto) | Không dùng thêm thư viện wrapper WebAuthn bên thứ ba ở frontend; phần bọc AEAD `sabk.vk.prf.v1` dùng `libsodium-wrappers-sumo` đã pin trong `docs/adr/0002-vault-crypto-layout.md`. |
+
+## Các phương án đã cân nhắc
+
+1. **Lưu challenge thô (plaintext) trong bảng `webauthn_challenge` và dùng `WebAuthn.FinishRegistration` mặc định:**
+   - *Từ chối:* P02 đã thiết lập chuẩn bảo mật không lưu token/challenge một lần ở dạng plaintext trong DB (`email_verification.token_hash`, `oauth_transaction.state_hash`, `session.refresh_token_hash`). Việc lưu `challenge_hash = SHA-256(challenge)` rồi trích `challenge` từ `clientDataJSON` để kiểm tra băm trước khi gọi `ParsedCredentialCreationData.Verify` giữ nguyên tính chất one-time challenge mà không cần giữ plaintext trong DB.
+2. **Tạo thêm endpoint `POST /vault/passkeys/register/prf-challenge` cho bước `get()` nối tiếp:**
+   - *Từ chối:* Assertion của bước `get()` nối tiếp không gửi lên server và cũng không thể chứng minh với server rằng `PWK` trích xuất ra là đúng (vì PRF output là bí mật chỉ client biết). Thêm một endpoint sinh challenge chỉ tạo thêm độ trễ mạng giữa hai lần tương tác khoá bảo mật mà không mang lại giá trị bảo mật nào.
+3. **Tin tưởng các trường `cred_id`, `pubkey`, `aaguid` do client parse sẵn và gửi trong JSON body:**
+   - *Từ chối:* Rủi ro nghiêm trọng khi chuyển sang P07 (login-with-passkey): một client bị XSS hoặc request bị sửa đổi lúc đăng ký passkey có thể gửi `attestation_object` thật nhưng đính kèm `pubkey` của kẻ tấn công. Bắt buộc server tự parse CBOR qua thư viện `go-webauthn` và chỉ lấy dữ liệu từ `AttData` đã verify.
+4. **Dùng `SharedWorker` để chia sẻ một `VK` duy nhất giữa mọi tab:**
+   - *Từ chối:* `SharedWorker` không được hỗ trợ đầy đủ trên mọi trình duyệt di động (đặc biệt iOS Safari / Android Chrome tuỳ phiên bản) và làm phức tạp việc thu hồi bộ nhớ khi đóng tab. Mô hình mỗi tab một Dedicated Worker kết hợp `BroadcastChannel("sabk.vault")` và `localStorage.lockEpoch` hoạt động đồng nhất trên mọi nền tảng mục tiêu.
+
+## Hệ quả
+
+- `docs/SPEC.md` (§3.10, §5.9, §8, §9.1, §9.2), `docs/phases/P03-vault.md` và `apps/api/api/openapi.yaml` được cập nhật trong Task 1 để phản ánh bảng `webauthn_challenge`, body `POST /vault/passkeys` có `challenge_id` + `attestation`, route `PATCH /vault/passkeys/{id}` (đổi tên), các mã lỗi `passkey_*` mới và các điểm lệch chờ ký duyệt.
+- `docs/threat-model.md` bổ sung kịch bản một grant re-auth cho phép thực hiện nhiều thao tác passkey trong cửa sổ TTL 5 phút, đối chiếu về ADR này và `docs/adr/0002-vault-crypto-layout.md`.
+- Task 13 (WebAuthn API), Task 15 (Vault provider & multi-tab broadcast), Task 18 (DevKey) và Task 19 (Passkey client) triển khai trực tiếp theo các quy tắc tại ADR này sau khi qua cổng review độc lập và có chữ ký chủ repo (plan mục 5).
