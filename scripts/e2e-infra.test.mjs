@@ -43,7 +43,7 @@ test('harness does not parse or kill arbitrary port owners', () => {
 test('origin and diagnostic settings stay explicit and safe', () => {
   const config = readFileSync(join(ROOT, 'apps', 'web', 'playwright.config.ts'), 'utf8');
   const compose = readFileSync(join(ROOT, 'infra', 'docker-compose.yml'), 'utf8');
-  const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'e2e.yml'), 'utf8');
+  const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 
   assert.match(config, /trace: 'off'/);
   assert.match(config, /video: 'off'/);

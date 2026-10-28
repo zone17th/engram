@@ -1,44 +1,143 @@
-name: e2e
+name: ci
 
+# One run per pull request into develop: opened, every new push to it, reopened.
+# Pushes to develop, main or any other branch do not run CI.
 on:
   pull_request:
-    branches: [develop, main]
-    paths:
-      - apps/api/**
-      - apps/web/**
-      - packages/**
-      - infra/**
-      - .dockerignore
-      - .gitattributes
-      - scripts/**
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - .github/workflows/e2e.yml
-  push:
-    branches: [develop, main]
-    paths:
-      - apps/api/**
-      - apps/web/**
-      - packages/**
-      - infra/**
-      - .dockerignore
-      - .gitattributes
-      - scripts/**
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - .github/workflows/e2e.yml
+    branches: [develop]
 
 permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  browser:
+  # --- api ---
+  api-check:
+    name: Go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: '1'
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Check gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+
+      - name: Run short tests
+        run: go test ./... -short -race -count=1
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.14.0
+          working-directory: apps/api
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+      - name: Check sqlc drift
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+          sqlc diff
+
+      - name: Build all Go packages
+        run: go build ./...
+
+      # The non-short run exercises the migration and preflight tests through
+      # Testcontainers on the hosted runner's Docker daemon.
+      - name: Run integration tests
+        run: go test ./... -race -count=1 -timeout 10m
+
+  api-migration:
+    name: Compose migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml config --quiet
+
+      - name: Apply migrations in the pinned database image
+        run: >-
+          docker compose --env-file infra/image-pins.env
+          -f infra/docker-compose.yml
+          up --build --abort-on-container-exit --exit-code-from migrate migrate
+
+      - name: Show Compose logs on failure
+        if: failure()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml logs --no-color
+
+      - name: Tear down Compose resources
+        if: always()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  # --- web ---
+  web-check:
+    name: Web checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check generated OpenAPI client
+        shell: bash
+        run: |
+          pnpm --filter @engram/shared-types generate
+          git diff --exit-code -- packages/shared-types/src/api.d.ts
+
+      - name: Run lint
+        run: pnpm -r lint
+
+      - name: Run type checks
+        run: pnpm -r typecheck
+
+      - name: Run unit tests
+        run: pnpm -r test
+
+      - name: Build web application
+        run: pnpm --filter @engram/web build
+
+  # --- e2e ---
+  e2e-browser:
     name: Browser smoke and accessibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -143,7 +242,7 @@ jobs:
         if: always()
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
 
-  auth-verify-true:
+  e2e-auth-verify-true:
     name: Auth e2e (email verification required)
     runs-on: ubuntu-latest
     timeout-minutes: 40
