@@ -464,20 +464,21 @@ Regenerate/rotate RK và recovery complete dùng cùng re-auth policy; không c�
 
 ### 3.10 Flow: Quên passphrase → một recovery key → passphrase mới
 
-**Không** email khôi phục, không câu hỏi bí mật, không BIP39. Có **10 recovery key** single-use (§5.9).
+**Không** email khôi phục, không câu hỏi bí mật, không BIP39. Có **10 recovery key** single-use (§5.9, [ADR 0002](adr/0002-vault-crypto-layout.md)). Server **không bao giờ** nhận passphrase (dưới bất kỳ dạng nào), KEK, VK, plaintext RK, PWK hay private key chưa wrap.
 
-1. Link "Tôi quên passphrase" → giải thích: server **không** đọc body; nếu có passkey, thiết bị đang nhớ hoặc phiên còn VK thì unlock rồi đặt passphrase mới theo §3.9. Nếu không, dùng **một** RK chưa dùng; reset là lựa chọn cuối sau khi kiểm tra backup.
-2. User dán một RK (chấp nhận có/không dấu gạch; normalize Crockford). Client **không** thử lần lượt 10 wrap.
-3. `lookup = BLAKE2b-256("sabk.rk.lookup.v1" || rk_normalized)` → `POST /vault/unlock/recovery` `{lookup_hash}`.
-4. Server tìm hàng `used_at IS NULL` đúng `lookup_hash` **của vault user đang đăng nhập** → trả `{recovery_key_id, wrap}`. Không khớp → `401 RECOVERY_KEY_INVALID` (không tiết lộ còn bao nhiêu). Rate limit chặt.
-5. Client `VK = open(wrap, BLAKE2b-256("sabk.rk.wrap.v1" || rk_normalized))`. Sai (lỗi hiếm) → không consume.
-6. Re-auth tài khoản và **bắt buộc đặt passphrase mới** (cùng rule ≥ 12, zxcvbn ≥ 3) → `POST /vault/recover/complete` `{recovery_key_id, kdf, vault_key_wrapped_by_kek}` + `If-Match: version` + `Idempotency-Key`. Trong cùng tx: khoá vault/RK thuộc user hiện tại, kiểm tra RK còn unused và version khớp, rewrap KEK, tăng version, **DELETE** hàng RK, audit `vault.recover` + `recovery_key.consume`, tạo thông báo như §3.9. Hai request cạnh tranh không được cùng consume; retry request đã commit trả lại kết quả đã lưu, không rewrap lần nữa.
-7. Prompt: regenerate slot trống — client sinh key mới, hiện **chỉ** những key đó, POST wrap. Các RK còn lại không hiện lại. User có thể bỏ qua (còn 9) nhưng UI nhắc "nên đủ 10".
-8. Passkey **vẫn hoạt động** (VK không đổi). DevKey máy khác vẫn valid.
+1. Link "Tôi quên passphrase" → giải thích: server **không** đọc body; nếu có passkey, thiết bị đang nhớ (`DevKey`) hoặc phiên còn `VK` thì unlock rồi đặt passphrase mới theo §3.9. Nếu không, dùng **một** RK chưa dùng; reset là lựa chọn cuối sau khi kiểm tra backup.
+2. Ngay khi bắt đầu luồng recovery (trước khi đưa RK hoặc passphrase vào Worker), client lấy trước re-auth grant `vault.recover` (`X-Reauth-Token`, TTL 5 phút) để tránh việc OAuth re-auth chuyển trang (`window.location.assign`) làm mất Worker và trạng thái `recovering` ([ADR 0002](adr/0002-vault-crypto-layout.md)).
+3. User dán một RK (chuyển qua transferable `ArrayBuffer` vào Worker để chuẩn hoá theo đúng hàm 5 bước duy nhất ở §5.9). Client **không** thử lần lượt 10 wrap.
+4. Worker tính `lookup_hash = BLAKE2b-256(UTF8("sabk.rk.lookup.v1") ‖ UTF8(rk_norm))` → client gọi `POST /vault/unlock/recovery` `{lookup_hash}` (rate limit theo user `vault_recovery_lookup`: 5 lần / 15 phút, đếm mọi request kể cả trúng).
+5. Server tìm hàng đúng `lookup_hash` **thuộc vault của user đang đăng nhập** (mọi hàng trong `vault_recovery_key` đều là RK chưa dùng, không có cột `used_at`) → trả `200 {recovery_key_id, wrap}`. Không khớp → `401 recovery_key_invalid` (không tiết lộ còn bao nhiêu RK). Bước này **không** xoá (consume) hàng RK.
+6. Worker mở `VK = open(wrap, BLAKE2b-256(UTF8("sabk.rk.wrap.v1") ‖ UTF8(rk_norm)))` với AAD `UTF8("sabk.vk.rk.v1") ‖ 0x00 ‖ 0x01`. Nếu sai tag AEAD → không consume. Nếu mở được, client chuyển sang trạng thái `recovering`: `VK` lúc này **chỉ được dùng để rewrap sang KEK mới**, không được mở entry và không được tạo `DevKey` cho tới khi `POST /vault/recover/complete` trả 200 (rời trang hoặc huỷ → Worker xoá ngay `VK`).
+7. Người dùng **bắt buộc đặt passphrase mới** (≥ 12 ký tự, `zxcvbn ≥ 3`); Worker sinh `salt` 16 B mới (khác `salt` hiện tại, không hạ `ops`/`mem`) và tạo `vault_key_wrapped_by_kek` mới (tự mở thử lại kiểm tra khớp `VK`). Client kiểm tra grant `vault.recover` còn hạn ít nhất 60 giây (nếu dưới 60 giây: user có password xác thực lại tại chỗ, user OAuth-only được báo hết thời gian và bắt đầu lại), rồi gọi `POST /vault/recover/complete` `{recovery_key_id, kdf, vault_key_wrapped_by_kek}` + `X-Reauth-Token` + `If-Match: "<vault_key_id>:<version>"` + `Idempotency-Key` (rate limit `vault_recovery_complete`: 5 lần / 15 phút / user, tách bucket riêng với lookup; thứ tự middleware 8 bước theo §9.1). Trong cùng transaction: khoá hàng `vault` (`SELECT … FOR UPDATE`), kiểm tra `If-Match` khớp `vault_key_id` và `version` (không có vault → `404 vault_absent`; lệch → `412 version_mismatch`), kiểm tra `kdf`/`wrap` hợp lệ, tìm và **DELETE** hàng `vault_recovery_key` của user hiện tại (không còn hàng → `401 recovery_key_invalid`), cập nhật `kdf` + `vault_key_wrapped_by_kek`, tăng `vault.version`, ghi `idempotency_key` thành `done`, ghi audit `vault.recover` + `recovery_key.consume` và tạo thông báo/email như §3.9. Hai request cạnh tranh không thể cùng consume; retry idempotent của request đã commit trả lại kết quả đã lưu (`200 {version}`) kể cả khi grant đã hết hạn và không rewrap lần nữa.
+8. Prompt bù slot trống (regenerate): `GET /vault/recovery-keys` trả `{remaining, slots: 10, empty_slots: […]}` — client sinh RK mới cho các `slot` trong `empty_slots`, hiện **chỉ** những key mới + checkbox xác nhận, rồi gọi `POST /vault/recovery-keys/regenerate` kèm `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key`. Các RK còn lại không hiện lại. User có thể bỏ qua (còn 9) nhưng UI nhắc "nên đủ 10".
+9. Passkey **vẫn hoạt động** (`VK` và `vault_key_id` không đổi). `DevKey` máy khác vẫn hợp lệ ([ADR 0003](adr/0003-webauthn-prf-va-devkey.md)).
 
-Còn passkey / thiết bị đang "nhớ" / phiên đang unlock (không có RK): lấy VK bằng phương thức đó → re-auth tài khoản → đặt passphrase mới (§3.9). Không cần export rồi reset chỉ vì quên passphrase cũ.
+Còn passkey / thiết bị đang "nhớ" / phiên đang unlock (không có RK): lấy `VK` bằng phương thức đó → lấy grant `vault.rewrap` → đặt passphrase mới qua `PUT /vault/kek` kèm `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key` (§3.9). Không cần export rồi reset chỉ vì quên passphrase cũ.
 
-**Last resort — không còn passphrase, RK dùng được, passkey, DevKey hay VK trong phiên mở:** kiểm tra encrypted backup và bí mật có thể mở backup (§3.11). Nếu vẫn không lấy lại được VK, **Reset vault**: re-auth → xoá entries + vault + RK + passkey → onboard passphrase + 10 RK mới. **Items + tags giữ nguyên.** Audit `vault.reset`. Reset xoá nội dung đang lưu trên server; không xoá các bản backup người dùng đã giữ.
+**Last resort — không còn passphrase, RK dùng được, passkey, DevKey hay VK trong phiên mở:** kiểm tra encrypted backup và bí mật có thể mở backup (§3.11). Nếu vẫn không lấy lại được `VK`, **Reset vault**: lấy grant `vault.reset` → gọi `DELETE /vault` kèm `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key` → gọi reset hook xoá entries (hoàn tất ở P04) + xoá `vault`, RK, passkey và các bản ghi idempotency khác của user trên `/api/v1/vault%` → onboard passphrase + 10 RK mới (sinh `vault_key_id` mới). **Items + tags giữ nguyên.** Audit `vault.reset` + thông báo/email. Reset xoá nội dung đang lưu trên server; không xoá các bản backup người dùng đã giữ.
 
 ### 3.11 Flow: Export
 
@@ -741,44 +742,30 @@ Dùng **libsodium** cho Argon2id, XChaCha20-Poly1305, X25519/Ed25519, BLAKE2b (m
 
 ### 5.8 Threat model
 
-**Bảo vệ được:**
-
-- DB/backup/insider: thấy name, tag, type, metadata, ciphertext, `lookup_hash` RK, wrap RK/passkey — không VK, không body, không invert RK từ hash, không có PWK.
-- Session bị cắp (không VK): đọc/sửa/xoá item & tag, xoá entry, không đọc body; thay wrap → client thấy `vault.version` / AEAD fail. Không unwrap được RK/passkey nếu không có bí mật tương ứng.
-
-**Không bảo vệ được:**
-
-- Malware, extension độc, XSS → lộ VK/plaintext. Máy đã nhớ → JS trong origin unlock không cần passphrase. Passkey trên máy đã unlock session: XSS gọi `get()` nếu user chạm authenticator / UV đã cache.
-- Passphrase yếu + DB lộ → brute-force offline (Argon2id 64 MiB/3/1 làm chậm). zxcvbn ≥ 3. RK ~128-bit: không brute-force thực tế.
-- Không còn bất kỳ đường lấy lại VK nào (passphrase, RK + wrap tương ứng, passkey + PRF wrap, DevKey, phiên đang unlock hoặc backup mở được) → không đọc lại được body.
-- **DB bị đánh cắp + bản in RK unused** → attacker hash lookup + unwrap VK. Server **không** invert `lookup_hash` thành RK, không decrypt từ hash. (Shoulder-surf / screenshot lúc hiện lưới 10 key — cùng lớp rủi ro; nói một lần ở onboarding.)
-- **RK đã consume/rotate + wrap cũ trong backup** → vẫn lấy được VK cũ; để đọc entry không có trong backup, attacker cần **thêm ciphertext tương ứng** (DB dump mới hoặc session truy cập được). Nếu VK chưa rotate thì ciphertext mới vẫn dùng VK đó. Tương tự, passkey bị revoke nhưng còn thực hiện được PRF + `vk_wrap` đã copy vẫn lấy được VK. Xoá row không thu hồi bí mật hay wrapper đã sao chép.
-- Server không kiểm tra được wrap opaque có chứa đúng VK hoặc client thực sự đã unlock. Re-auth là control phía server cho mutation nhạy cảm; client xác minh wrap mở đúng VK. Audit/email giúp phát hiện thay đổi, không bảo vệ trước attacker đã kiểm soát phiên/VK và hoàn tất được re-auth.
-- **Name và tag không được bảo vệ** — theo thiết kế.
-- Server phát JS độc (supply-chain): giới hạn nội tại của web E2E. CSP, SRI, hash bundle; tương lai extension verifier.
-- Metadata: tên, tag, số entry, `type`, thời điểm, size bucket, số RK còn lại, số passkey.
+Mô hình mối đe doạ đầy đủ của `engram` (phân loại tài sản, các kịch bản bảo vệ được và giới hạn kế thừa từ SPEC v0.7, cùng ba mối đe doạ bổ sung của P03: vét cạn passphrase ngoại tuyến sau khi chiếm session tải `wrapK`, bản sao lưu chứa wrap cũ của passphrase/RK/passkey đã thay đổi, và một re-auth grant P02 cho phép thực hiện nhiều thao tác passkey trong cửa sổ TTL 5 phút) được tách thành tài liệu chuẩn tại **[docs/threat-model.md](threat-model.md)** (đối chiếu thiết kế chi tiết tại [ADR 0002](adr/0002-vault-crypto-layout.md) và [ADR 0003](adr/0003-webauthn-prf-va-devkey.md)). Nguyên tắc bất biến: **server không bao giờ nhận passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap**.
 
 ### 5.9 Recovery keys (10 key, high-entropy)
 
-**Không** BIP39. Mỗi key độc lập, ~128 bit, bọc **trực tiếp** VK (không RecoveryKEK trung gian).
+**Không** BIP39. Mỗi key độc lập, ~128 bit entropy, bọc **trực tiếp** `VK` (không có RecoveryKEK trung gian). Server **không bao giờ** nhận hay lưu plaintext RK, passphrase, KEK, VK hay PWK (chi tiết tại [ADR 0002](adr/0002-vault-crypto-layout.md)).
 
 | Mục | Quy ước |
 |-----|---------|
-| Số lượng | Đúng **10** lúc tạo vault; luôn *tối đa* 10 unused |
-| Entropy | 16 B CSPRNG / key |
-| Format | Prefix `rk{n}_` (`n` = 1…10 lúc sinh) + Crockford Base32, nhóm 4: `rk1_A1B2-C3D4-E5F6-G7H8-J9K0-MNPQ-RS` (26 ký tự Crockford ≈ 130 bit). Normalize: uppercase Crockford, bỏ hyphen, giữ prefix |
-| Server lưu | `id`, `vault_id`, `lookup_hash` **UNIQUE**, `wrap`, `used_at` (null = unused), `created_at`. **Không** plaintext RK, không salt Argon2id |
-| Lookup | Client gửi `BLAKE2b-256("sabk.rk.lookup.v1" \|\| rk_normalized)`. Không thử 10 wrap trên client |
-| Wrap | `seal(VK, BLAKE2b-256("sabk.rk.wrap.v1" \|\| rk_normalized), AAD="vault-key-rk-v1")` |
-| Single-use | **Chỉ trên live server**: recover + passphrase mới committed → **DELETE** hàng; request mới không dùng RK đó qua API được nữa. Không cam kết vô hiệu hoá wrap đã export/copy hoặc VK đã unwrap; retry idempotent không tính là lần consume mới |
-| Regenerate | Client sinh slot thiếu, hiện **chỉ** key mới, POST wrap; server không thấy plaintext |
-| Rotate all | Cần unlock + re-auth tài khoản; thay cả 10 trên live server, không rotate VK |
-| Đổi passphrase | Không đụng wrap RK |
-| UX bắt buộc | Lưới 10; Tải `.txt` / In / Sao chép; checkbox; không xong onboarding nếu thiếu |
+| Số lượng & Slot | Đúng **10** key ứng với các `slot` `n = 1…10` lúc tạo vault (`POST /vault`) và khi xoay toàn bộ (`rotate`); luôn *tối đa* 10 hàng chưa dùng trong `vault_recovery_key` (`UNIQUE (vault_id, slot)`). Khi bù key (`regenerate`), client chọn các slot đang trống (`empty_slots`) từ nhỏ đến lớn; server kiểm tra `slot` nằm trong `1…10` và đang trống |
+| Entropy & Sinh khoá | 16 B CSPRNG / key, đọc theo thứ tự big-endian thành số nguyên 128-bit, đệm 2 bit `0` vào bên trái thành 130 bit → mã hoá Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`) thành 26 ký tự (do 2 bit đầu là `00`, ký tự đầu tiên luôn nằm trong `'0'`–`'7'`) |
+| Format hiển thị | Tiền tố `rk{n}_` (`n` = `1…10`) + 6 nhóm 4 ký tự và 1 nhóm 2 ký tự nối bằng `-`: `rk{n}_XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX`. Ví dụ hợp lệ: `rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4` (chuẩn hoá: `rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4`) |
+| Chuẩn hoá (1 hàm duy nhất) | Dùng chung đúng một hàm cho sinh, lookup và wrap theo thứ tự 5 bước: **(1)** chuẩn hoá Unicode `NFKC`; xoá mọi ký tự khoảng trắng Unicode (`White_Space`, gồm `U+00A0`) và ký tự định dạng (category `Cf`, gồm `U+00AD`, `U+200B`–`U+200D`, `U+2060`, `U+FEFF`); đổi các dấu gạch `U+2010`–`U+2015` và `U+2212` thành `-`; **(2)** từ chối nếu còn bất kỳ ký tự nào ngoài ASCII (`> 0x7F`); **(3)** khớp tiền tố `^rk(10\|[1-9])[_-]` không phân biệt hoa/thường (`n` không có số `0` đứng đầu, bắt buộc có `_` hoặc `-` sau `n`) và chuẩn hoá thành `rk{n}_`; **(4)** phần thân: bỏ `-`, đổi chữ cái ASCII sang chữ hoa, ánh xạ `O→0`, `I`/`L→1`, **từ chối** ký tự `U` và mọi ký tự ngoài bảng Crockford (không xoá); **(5)** từ chối nếu độ dài phần thân khác 26 hoặc ký tự đầu tiên ngoài `'0'`–`'7'`. Kết quả `rk_norm` là `rk{n}_` + 26 ký tự Crockford viết hoa, không hyphen |
+| Server lưu | `id`, `vault_id`, `slot` (`1…10`, `UNIQUE (vault_id, slot)`), `lookup_hash` **UNIQUE** toàn cục, `wrap` (73 B), `created_at` (không có cột `used_at`). **Không** lưu plaintext RK, không có salt Argon2id |
+| Lookup | Client gửi `lookup_hash = BLAKE2b-256(UTF8("sabk.rk.lookup.v1") ‖ UTF8(rk_norm))` (32 B). Không thử 10 wrap trên client |
+| Wrap | `wrap_key = BLAKE2b-256(UTF8("sabk.rk.wrap.v1") ‖ UTF8(rk_norm))` (32 B, không dùng 16 B raw làm khoá AEAD); `seal(VK, wrap_key)` theo layout `version(1)=0x01 ‖ nonce(24) ‖ ciphertext(32) ‖ tag(16)` (73 B) với AAD `UTF8("sabk.vk.rk.v1") ‖ 0x00 ‖ 0x01` |
+| Single-use | **Chỉ trên live server**: `POST /vault/recover/complete` thành công → **DELETE** hàng RK trong cùng transaction với rewrap KEK và tăng `vault.version`; mọi hàng còn trong bảng đều là RK chưa dùng. Không cam kết vô hiệu hoá wrap đã export/copy hoặc `VK` đã unwrap; retry idempotent không tính là lần consume mới |
+| Regenerate | Client lấy `empty_slots` từ `GET /vault/recovery-keys`, sinh RK mới cho các slot trống, hiện **chỉ** key mới + checkbox, rồi gọi `POST /vault/recovery-keys/regenerate` `{recovery_keys: [{slot, lookup_hash, wrap}]}`; server không thấy plaintext RK |
+| Rotate all | Cần unlock + re-auth tài khoản (`vault.recovery_keys_rotate`) + `If-Match: "<vault_key_id>:<version>"`; thay đủ 10 slot `1…10` trên live server và tăng `vault.version`, không rotate `VK` |
+| Đổi passphrase | `PUT /vault/kek` không đụng wrap RK, không đụng passkey và không đổi `vault_key_id` |
+| UX bắt buộc | Lưới 10 key; Tải `.txt` / In / Sao chép; checkbox xác nhận đã lưu; không hoàn tất onboarding nếu thiếu. Plaintext RK chỉ tồn tại trong Worker, trong DOM của lưới hiển thị và ô nhập recovery; xoá khỏi state khi rời bước/luồng |
 
-Không còn RK unused vẫn có thể dùng passkey, DevKey hoặc phiên còn VK để đặt passphrase mới sau re-auth. Chỉ reset sau khi kiểm tra các đường đó và backup (§3.10).
+Không còn RK chưa dùng vẫn có thể dùng passkey, `DevKey` hoặc phiên còn `VK` để đặt passphrase mới sau re-auth. Chỉ reset sau khi kiểm tra các đường đó và backup (§3.10).
 
-**Backup / thu hồi:** backup là snapshot độc lập; RK đã consume có thể mở wrap cũ trong snapshot và dữ liệu mã hoá bằng VK đó. Backup không chứa các entry phát sinh sau snapshot; đọc các entry này còn cần ciphertext của chúng. Passkey revoke cũng chỉ xoá wrap trên live server, không làm bản copy mất tác dụng khi credential còn PRF. Muốn loại VK cũ khỏi dữ liệu đang dùng phải **rotate VK** (P07); dữ liệu/backup cũ vẫn không thể thu hồi bằng mật mã. Import không hồi sinh wrap cũ (§3.11); restore DB bằng PITR có thể rollback trạng thái consume/revoke (§10.5).
+**Backup / thu hồi:** backup là snapshot độc lập; RK đã consume (đã xoá trên live DB) vẫn có thể mở wrap cũ trong snapshot và dữ liệu mã hoá bằng `VK` đó. Backup không chứa các entry phát sinh sau snapshot; đọc các entry này còn cần ciphertext của chúng. Passkey revoke cũng chỉ xoá wrap trên live server, không làm bản copy mất tác dụng khi credential còn thực hiện được PRF. Muốn loại `VK` cũ khỏi dữ liệu đang dùng phải **rotate VK** (P07); dữ liệu/backup cũ vẫn không thể thu hồi bằng mật mã. Import không hồi sinh wrap cũ (§3.11); restore DB bằng PITR có thể rollback trạng thái consume/revoke (§10.5, [docs/threat-model.md](threat-model.md)).
 
 Copy lỗi recover (en/vi): `recovery.invalid` — "That recovery key is not valid." / "Recovery key không đúng hoặc đã dùng."; `recovery.need_new_passphrase` — "Set a new passphrase to finish recovery." / "Đặt passphrase mới để hoàn tất khôi phục."
 
@@ -1388,16 +1375,17 @@ CREATE TABLE user_notification (
 CREATE INDEX user_notification_user_time_idx
   ON user_notification (user_id, created_at DESC, id DESC);
 
+-- Server không bao giờ nhận/lưu passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap.
 CREATE TABLE vault (
   user_id                  uuid PRIMARY KEY REFERENCES app_user(id) ON DELETE CASCADE,
   version                  int  NOT NULL DEFAULT 1,
   kdf                      jsonb NOT NULL,
-  -- {"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"b64"}
-  vault_key_id             text  NOT NULL,
-  vault_key_wrapped_by_kek bytea NOT NULL,
-  x25519_public            bytea NOT NULL,
-  ed25519_public           bytea NOT NULL,
-  private_keys_wrapped     bytea NOT NULL,
+  -- {"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"<base64url 16B>"} (3<=ops<=10, 64MiB<=mem<=256MiB)
+  vault_key_id             text  NOT NULL UNIQUE, -- "vk:" + base64url(16B), khớp ^vk:[A-Za-z0-9_-]{22}$
+  vault_key_wrapped_by_kek bytea NOT NULL,        -- 73 B: 0x01 || nonce(24) || ct(32) || tag(16), AAD "sabk.vk.kek.v1\0\x01"
+  x25519_public            bytea NOT NULL,        -- 32 B
+  ed25519_public           bytea NOT NULL,        -- 32 B
+  private_keys_wrapped     bytea NOT NULL,        -- 105 B: 0x01 || nonce(24) || ct(64) || tag(16), AAD "sabk.priv.v1\0\x01"
   created_at               timestamptz NOT NULL DEFAULT now(),
   updated_at               timestamptz NOT NULL DEFAULT now()
 );
@@ -1405,26 +1393,38 @@ CREATE TABLE vault (
 CREATE TABLE vault_recovery_key (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   vault_id    uuid NOT NULL REFERENCES vault(user_id) ON DELETE CASCADE,
-  lookup_hash bytea NOT NULL UNIQUE,
-  wrap        bytea NOT NULL,
-  used_at     timestamptz,
-  created_at  timestamptz NOT NULL DEFAULT now()
+  slot        int  NOT NULL CHECK (slot BETWEEN 1 AND 10),
+  lookup_hash bytea NOT NULL UNIQUE, -- BLAKE2b-256("sabk.rk.lookup.v1" || rk_norm), 32 B
+  wrap        bytea NOT NULL,        -- 73 B: 0x01 || nonce(24) || ct(32) || tag(16), AAD "sabk.vk.rk.v1\0\x01"
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (vault_id, slot)
 );
-CREATE INDEX vault_rk_unused_idx ON vault_recovery_key (vault_id)
-  WHERE used_at IS NULL;
 
 CREATE TABLE vault_passkey (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    uuid NOT NULL REFERENCES vault(user_id) ON DELETE CASCADE,
   cred_id    bytea NOT NULL UNIQUE,
-  pubkey     bytea,
-  prf_salt   bytea NOT NULL,
-  vk_wrap    bytea NOT NULL,
+  pubkey     bytea NOT NULL,
+  prf_salt   bytea NOT NULL, -- 32 B riêng cho từng credential
+  vk_wrap    bytea NOT NULL, -- 73 B: 0x01 || nonce(24) || ct(32) || tag(16), AAD "sabk.vk.prf.v1\0\x01"
   aaguid     bytea,
   name       text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX vault_passkey_user_idx ON vault_passkey (user_id);
+
+CREATE TABLE webauthn_challenge (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  session_id     uuid NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  vault_key_id   text NOT NULL,
+  challenge_hash bytea NOT NULL UNIQUE, -- SHA-256(challenge 32 B), chỉ dùng cho đăng ký passkey
+  prf_salt       bytea NOT NULL,        -- 32 B
+  expires_at     timestamptz NOT NULL,  -- TTL 5 phút
+  consumed_at    timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX webauthn_challenge_expires_idx ON webauthn_challenge (expires_at);
 
 CREATE TABLE item (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1564,31 +1564,51 @@ CREATE INDEX audit_user_time_idx ON audit_log (user_id, created_at DESC, id DESC
 CREATE INDEX audit_created_idx ON audit_log (created_at);
 
 CREATE TABLE idempotency_key (
-  user_id    uuid NOT NULL,
-  key        text NOT NULL,
+  user_id      uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  key          text NOT NULL CHECK (char_length(key) BETWEEN 16 AND 128),
+  method       text NOT NULL,
+  path         text NOT NULL,
   request_hash bytea NOT NULL,
-  response   jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
+  status       text NOT NULL CHECK (status IN ('in_progress','done')),
+  owner_token  uuid NOT NULL,
+  claimed_at   timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  status_code  int,
+  response     jsonb, -- NULL khi status='in_progress' hoặc response không có body (ví dụ 204)
+  created_at   timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, key)
 );
+CREATE INDEX idempotency_key_user_path_idx ON idempotency_key (user_id, path);
+CREATE INDEX idempotency_key_expires_idx ON idempotency_key (expires_at);
+
+CREATE TABLE rate_event (
+  id      bigserial PRIMARY KEY,
+  scope   text NOT NULL,
+  user_id uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX rate_event_scope_user_at_idx ON rate_event (scope, user_id, at DESC);
+CREATE INDEX rate_event_at_idx ON rate_event (at);
 ```
 
 Ghi chú:
 
+- **Nguyên tắc bí mật trên DB:** Server không bao giờ nhận hoặc lưu passphrase (ở bất kỳ dạng nào), KEK, VK, plaintext RK, PWK hay private key chưa wrap; các cột `vault_key_wrapped_by_kek`, `private_keys_wrapped`, `vault_recovery_key.wrap` và `vault_passkey.vk_wrap` chỉ chứa các bản wrap AEAD opaque có byte đầu `version = 0x01`, còn `vault_recovery_key.lookup_hash` và `webauthn_challenge.challenge_hash` chỉ chứa giá trị băm một chiều (xem [ADR 0002](adr/0002-vault-crypto-layout.md), [ADR 0003](adr/0003-webauthn-prf-va-devkey.md)).
 - `entry_count` / `item_count`: trigger hoặc cập nhật trong cùng tx API. Trần 200 entry / 20 tag enforce ở API (`409 ITEM_ENTRY_LIMIT` / `ITEM_TAG_LIMIT`).
 - `last_used_at`: khi tạo entry, mở item, gán tag; throttle 5 phút.
 - `entry.user_id` phải khớp `item.user_id` (check trong API hoặc constraint trigger).
 - Entry ID do client sinh trước encrypt, UUID canonical trong AAD; API không bỏ qua hay thay ID. Duplicate ID khác request trả `409 ENTRY_ID_CONFLICT`; retry idempotent trả response gốc. Envelope validate strict trước khi lưu `jsonb`, JCS theo §5.5.
 - Hai bảng embedding là **một generation/model/revision duy nhất**; 16 hash partitions là cấu hình khởi đầu, điều chỉnh bằng migration/benchmark. PK `(user_id, target_id)` phục vụ tenant lookup/exact scan; composite FK chặn gắn vector sai tenant. Shadow tables giữ cùng cấu trúc với index riêng; không dùng PK `(target_id, model)` để chứa nhiều không gian vector trong một HNSW.
 - River job args/unique key chứa `generation_id` và tenant; hai job cho generation active/pending không được deduplicate thành một. Cấu hình generation, active pointer và tập generation nhận mutation được quản lý nhất quán theo §6.6; worker không suy generation từ env đã đổi giữa lúc claim và commit.
-- `vault.version` là revision concurrency của live vault; tăng khi rewrap/recover hoặc thay RK. Không dùng version một mình làm điều kiện xoá DevKey: rewrap không đổi VK, đối chiếu `vault_key_id` mới quyết định wrap thiết bị còn phù hợp.
+- **Quy ước tăng `vault.version` và `vault_key_id`:** `vault.version` là revision concurrency của live vault: các thao tác **rewrap** (`PUT /vault/kek`), **recover** (`POST /vault/recover/complete`), **regenerate RK** (`POST /vault/recovery-keys/regenerate`) và **rotate RK** (`POST /vault/recovery-keys/rotate`) làm tăng `vault.version`; ngược lại, các thao tác **passkey register** (`POST /vault/passkeys`), **passkey rename** (`PATCH /vault/passkeys/{id}`) và **passkey revoke** (`DELETE /vault/passkeys/{id}`) **không** làm tăng `vault.version` (vì không ảnh hưởng các bản wrap khác). `PUT /vault/kek` không làm thay đổi passkeys, recovery keys (RK) hay `vault_key_id`. Không dùng `vault.version` một mình làm điều kiện xoá `DevKey`: rewrap/recover/regenerate/rotate không đổi `VK`, chỉ đối chiếu `(user_id, vault_key_id)` mới quyết định wrap thiết bị trong IndexedDB `sabk.device` còn phù hợp ([ADR 0003](adr/0003-webauthn-prf-va-devkey.md)).
 - MVP API chỉ chấp `type` ∈ {`text`,`json`}; `link`/`file`/`image` giữ CHECK cho migration sau.
 - Không RLS ở MVP; P07 cân nhắc `SET LOCAL app.user_id`.
 - Purge: `DELETE FROM entry WHERE deleted_at < now() - interval '30 days'`.
-- `vault_recovery_key`: tối đa 10 hàng `used_at IS NULL` / vault (enforce API). Recover thành công → **DELETE** hàng (single-use). `lookup_hash` unique toàn cục.
-- `vault_passkey.pubkey` lưu từ MVP (P07 login); unlock MVP chỉ cần `cred_id` + `prf_salt` + `vk_wrap`.
+- `vault_recovery_key`: lưu `slot` (`1…10`, `UNIQUE (vault_id, slot)`) và `lookup_hash` (`UNIQUE` toàn cục); **không** có cột `used_at` và không có partial index theo `used_at`. Khi consume RK trong `POST /vault/recover/complete`, server **DELETE** hàng RK đó trong cùng transaction; mọi hàng hiện có trong bảng đều là RK chưa dùng (tối đa 10 hàng / vault).
+- `vault_passkey` & `webauthn_challenge`: `vault_passkey.pubkey` lưu từ MVP (để P07 mở rộng login-with-passkey), tự trích xuất cùng `cred_id` và `aaguid` từ `attestation_object` đã verify ở server (bỏ qua nếu client tự gửi các trường này); unlock MVP chỉ cần `cred_id` + `prf_salt` + `vk_wrap`. Bảng `webauthn_challenge` chỉ dùng cho đăng ký passkey (`POST /vault/passkeys/register/options` → `POST /vault/passkeys`), chỉ lưu `challenge_hash = SHA-256(challenge)` gắn với `user_id`, `session_id`, `vault_key_id` và `prf_salt` (TTL 5 phút, dùng một lần); bước mở khoá (`POST /vault/unlock/passkey/options`) không lưu challenge vào DB.
+- `idempotency_key` & `rate_event` (migration `0005_vault`): `idempotency_key` có thêm `method`, `path` (concrete path), `status` (`in_progress` \| `done`), `owner_token`, `claimed_at`, `status_code`, `expires_at` (24 giờ) và cho phép `response` nhận `NULL` (khi đang `in_progress` hoặc response không có body như `204`); index `(user_id, path)` phục vụ xoá nhanh các bản ghi idempotency khác trên `/api/v1/vault%` khi `DELETE /vault`. `rate_event` lưu sự kiện giới hạn tốc độ cửa sổ trượt theo `(scope, user_id, at)` trên PostgreSQL (kết hợp `pg_advisory_xact_lock` theo `(scope, user_id)`).
 - **Không** `is_private`, **không** `vector(512)`.
-- P02 tạo các bảng auth phụ (`session_refresh_used`, `auth_throttle`, `email_verification`, `oauth_transaction`, `oauth_reauth_receipt`, `user_notification`) trong migration `0004_auth`. **Không** tạo bảng vault ở P02. `user_notification.email_targets` chỉ phục vụ worker mail; không trả trên feed. ID audit/notification là `bigserial` trên DB, decimal string trên JSON. Tên field preference là `semantic_suggest` (cột JSONB), đồng nhất phase P02 / §8 / §9.
+- P02 tạo các bảng auth phụ (`session_refresh_used`, `auth_throttle`, `email_verification`, `oauth_transaction`, `oauth_reauth_receipt`, `user_notification`) trong migration `0004_auth`. **Không** tạo bảng vault ở P02 (`0005_vault` tạo `vault`, `vault_recovery_key`, `vault_passkey`, `webauthn_challenge`, `idempotency_key`, `rate_event`). `user_notification.email_targets` chỉ phục vụ worker mail; không trả trên feed. ID audit/notification là `bigserial` trên DB, decimal string trên JSON. Tên field preference là `semantic_suggest` (cột JSONB), đồng nhất phase P02 / §8 / §9.
 
 ---
 
@@ -1598,24 +1618,42 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 
 ### 9.1 Conventions
 
+- **Nguyên tắc bảo mật dữ liệu trên đường truyền:** Server **không bao giờ** nhận passphrase (ở bất kỳ dạng nào), KEK, VK, plaintext RK, PWK hay private key chưa wrap; các giá trị này cũng không bao giờ xuất hiện trong log, audit, telemetry hay thông báo lỗi. Mọi trường nhị phân trên JSON (các bản wrap, `salt`, public key, `lookup_hash`, `prf_salt`, `nonce`, `ciphertext`, `client_data_json`, `attestation_object`) dùng **base64url không padding** (server giải mã strict, kiểm tra độ dài và byte đầu `version = 0x01` của mọi bản wrap bằng validator dùng chung). Tham số `vault.kdf` bắt buộc đúng 5 trường `{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"<base64url 16B>"}` với `3 ≤ ops ≤ 10`, `64 MiB ≤ mem ≤ 256 MiB` (trần KDF 256 MiB là điểm lệch gate 4 — **chờ chủ repo ký duyệt (plan mục 5)**), `parallelism = 1`; khi rewrap/recover phải sinh `salt` 16 B mới và không hạ `ops`/`mem` ([ADR 0002](adr/0002-vault-crypto-layout.md)).
 - Auth cookies (host-only, `Secure`, `SameSite=Lax`; không `Domain`): `sabk_session` (JWT HS256, HttpOnly, path `/api`, `min(10m, session.expires_at)`), `sabk_refresh` (opaque 32 B base64url, HttpOnly, path `/api/v1/auth`, không vượt hạn tuyệt đối 30 ngày), `sabk_csrf` (JS đọc, path `/`), `sabk_anon` / `sabk_oauth` / `sabk_reauth` (HttpOnly, path `/api/v1/auth`). Preference `sabk_locale` / `sabk_theme` path `/`, không xoá khi logout. Chi tiết [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md).
-- `GET /auth/csrf` bootstrap 204: ký CSRF theo session nếu còn hiệu lực, hoặc nonce anonymous. Không rotate nonce còn hạn. Unsafe request: `Origin == APP_ORIGIN` + JSON + `X-CSRF-Token`. OAuth callback dùng state + cookie binding, không CSRF header.
+- `GET /auth/csrf` bootstrap 204: ký CSRF theo session nếu còn hiệu lực, hoặc nonce anonymous. Không rotate nonce còn hạn. Unsafe request: `Origin == APP_ORIGIN` + JSON + `X-CSRF-Token` (bỏ qua `RequireJSONContent` đối với `DELETE` không có body). OAuth callback dùng state + cookie binding, không CSRF header.
 - Refresh: không cần access còn hạn; **không grace window**; reuse sau CSRF hợp lệ **commit revoke**. `401 access_expired` chỉ JWT hết hạn trên route protected; thiếu JWT = `unauthenticated`; revoked/refresh invalid = `session_invalid` (`reason`: revoked\|expired\|invalid — token lạ = invalid). Login sai = `invalid_credentials` (cùng shape cho email không tồn tại / OAuth-only).
 - Client xử lý access cookie bị browser xoá bằng phục hồi có điều kiện: route cần session nhận `unauthenticated` và có CSRF cookie loại session mới được thử refresh trong Web Lock, sau khi đọc lại Me. Cookie CSRF chỉ là dấu hiệu điều phối phía client; API refresh vẫn kiểm proof/session đầy đủ. Lỗi mạng/5xx không được coi là logout hoặc tự retry refresh.
-- Re-auth tài khoản: `POST /auth/reauth` bằng password đăng nhập hoặc OAuth flow kiểm tra lại danh tính; server phát grant TTL 5 phút, gắn user + session + action, gửi trong `X-Reauth-Token`. Không dùng encryption passphrase hoặc chỉ trạng thái "vault unlocked" làm re-auth. Server kiểm tra grant + session chưa revoke + CSRF cho rewrap/recover, regenerate/rotate RK, register/revoke passkey, export decrypted, reset và xoá tài khoản. Audit mutation; rewrap/recover/rotate tạo thông báo trong app và email nếu có địa chỉ verified, không đưa bí mật vào thông báo. `AUTH_REQUIRE_EMAIL_VERIFICATION=false` không bị biến thành điều kiện phải verify để recovery; không có email verified thì vẫn có in-app notice/audit.
+- **Re-auth tài khoản và ngữ nghĩa grant:** `POST /auth/reauth` bằng password đăng nhập hoặc OAuth flow kiểm tra lại danh tính; server phát grant HMAC stateless (`auth.Grants`), TTL 5 phút, gắn `user_id + session_id + action`, gửi trong `X-Reauth-Token`. Không dùng encryption passphrase hoặc chỉ trạng thái "vault unlocked" làm re-auth. Grant **không** có trạng thái đã dùng trên server: trong cửa sổ TTL 5 phút, một grant cho phép nhiều mutation cùng `action` (các mutation có `If-Match` không lặp lại ngầm được vì `version` đổi sau lần đầu; riêng đăng ký và thu hồi passkey không có `If-Match` nên một grant có thể thực hiện nhiều thao tác passkey cùng action trong TTL — điểm lệch gate 1, **chờ chủ repo ký duyệt (plan mục 5)**, xem [ADR 0002](adr/0002-vault-crypto-layout.md), [ADR 0003](adr/0003-webauthn-prf-va-devkey.md), [docs/threat-model.md](threat-model.md)). Trong mọi luồng giữ secret (đổi passphrase, recovery, regenerate, rotate, reset, đăng ký/thu hồi passkey), client lấy grant **khi bắt đầu luồng** (trước khi đưa secret vào Worker hoặc gọi `navigator.credentials`); trước khi gửi request cuối, client kiểm tra grant còn hạn ít nhất 60 giây (nếu không: user có password re-auth tại chỗ, user OAuth-only báo hết thời gian và bắt đầu lại). Server kiểm tra grant + session chưa revoke + CSRF cho rewrap (`vault.rewrap`), recover (`vault.recover`), regenerate RK (`vault.recovery_keys_regenerate`), rotate RK (`vault.recovery_keys_rotate`), register passkey (`vault.passkey_register`), revoke passkey (`vault.passkey_revoke`), export decrypted, reset (`vault.reset`) và xoá tài khoản. Audit mutation; rewrap/recover/rotate/reset/passkey register tạo thông báo trong app và email nếu có địa chỉ verified (passkey revoke tạo audit + thông báo trong app), không đưa bí mật vào thông báo. `AUTH_REQUIRE_EMAIL_VERIFICATION=false` không bị biến thành điều kiện phải verify để recovery; không có email verified thì vẫn có in-app notice/audit.
 - OAuth-only đặt password lần đầu: `POST /auth/password/enroll/send` + `POST /me/password` với `enrollment_token`, **hoặc** grant `account.password_change`. Hai proof loại trừ. Password đã có luôn cần grant. Enrollment không phải reset và không mở vault.
-- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key. `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available`, `vault.status` — P02 luôn `absent`).
-- Lỗi: RFC 9457 `application/problem+json`. Code snake_case; catalog Go + TS + OpenAPI cùng thay đổi. `429` có header `Retry-After` và body `retry_after`. CAPTCHA: extension `captcha_required`.
+- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key. `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available`, `vault.status`: `absent` \| `present`).
+- **Concurrency (`If-Match`) và `GET /vault` không ETag:** `GET /vault` trả `vault_key_id` và `version` trong body kèm `Cache-Control: no-store, no-transform`, **không** có header `ETag` (vì danh sách `passkeys` trong body thay đổi mà không tăng `vault.version`). Mọi mutation trên vault (trừ `POST /vault`, `POST /vault/unlock/*` và các route passkey) bắt buộc gửi **`If-Match: "<vault_key_id>:<version>"`** (strong tag đặt trong ngoặc kép, thay cho `If-Match: version`). Parser chung (`httpx/ifmatch.go`) chỉ nhận đúng một strong tag `"…"` (thiếu header, `*`, weak tag `W/"…"` hoặc danh sách → `428 precondition_required`; P04 dùng lại parser này với `updated_at` của entry). Handler vault tách chuỗi ở dấu `:` **cuối cùng**: phần trước khớp `^vk:[A-Za-z0-9_-]{22}$`, phần sau là số thập phân không có số `0` đứng đầu (sai dạng → `428 precondition_required`). Server khoá hàng `vault` (`SELECT … FOR UPDATE`) rồi mới so: chưa có hàng vault → `404 vault_absent` (ưu tiên hơn `412`); lệch `vault_key_id` hoặc `version` → `412 version_mismatch` kèm `current_version` trong problem extension.
+- **Idempotency và thứ tự middleware 8 bước:** Header `Idempotency-Key` (chuỗi 16–128 ký tự `[A-Za-z0-9_-]`, giữ 24 giờ) bắt buộc cho `POST /vault`, **`PUT /vault/kek`**, **`DELETE /vault`**, `POST /vault/passkeys`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`, `POST /items`, `POST /tags`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`.
+  - **Fingerprint:** `SHA-256(method ‖ 0x00 ‖ path ‖ 0x00 ‖ body_bytes)`, trong đó `path` là **concrete path** đúng như server nhận (percent-encoded, không decode, không kèm query string), không dùng route pattern.
+  - **Thứ tự middleware** cho route có idempotency:
+    1. `RequireOrigin` → `RequireSession` → `RequireCSRF` → `RequireJSONContent` (bỏ qua với `DELETE` không có body).
+    2. **Idempotency lookup** theo `(user_id, key)` với `expires_at > now()`: nếu `done` + cùng fingerprint → trả ngay response đã lưu (`status_code`, body hoặc rỗng) và dừng (không kiểm tra grant, rate limit hay `If-Match`); nếu `done` hoặc `in_progress` + fingerprint khác → `409 idempotency_conflict`; nếu `in_progress` + cùng fingerprint với `claimed_at` trong 60 giây → `409 idempotency_in_progress` kèm `Retry-After: 1`; nếu không có hàng còn hạn hoặc `in_progress` cùng fingerprint đã quá 60 giây → sang bước 3.
+    3. `RequireReauth(action)` nếu route có `A`.
+    4. Rate limit theo user (request bị từ chối ở bước 3 không bị đếm).
+    5. Parse `If-Match` nếu route có `M`.
+    6. **Claim** trong transaction riêng ngắn (`INSERT INTO idempotency_key … status='in_progress', owner_token=$tok … ON CONFLICT (user_id, key) DO UPDATE … WHERE expires_at <= now() OR (status='in_progress' AND request_hash=EXCLUDED.request_hash AND claimed_at < now() - interval '60 seconds') RETURNING owner_token`); nếu không trả về dòng nào (thua race) → đọc lại hàng và phân loại như bước 2.
+    7. Handler chạy mutation trong transaction có `lock_timeout` và `statement_timeout` 30 giây; cuối transaction trước `COMMIT`, `UPDATE idempotency_key SET status='done', status_code=$s, response=$r WHERE user_id=$u AND key=$k AND owner_token=$tok` (không đúng 1 dòng → rollback toàn bộ mutation).
+    8. **Release:** chỉ khi biết chắc transaction mutation chưa commit (lỗi trước `COMMIT` hoặc rollback thành công) mới `DELETE FROM idempotency_key WHERE user_id=$u AND key=$k AND owner_token=$tok AND status='in_progress'`; lỗi ngay lúc `COMMIT` thì giữ nguyên hàng; lỗi sau `COMMIT` không đụng tới hàng `done`.
+  - Retry của mutation đã commit yêu cầu `Session` + `CSRF` hợp lệ nhưng **không cần grant re-auth còn hạn (khi grant đã hết hạn)**; mutation không bao giờ chạy hai lần. Khi `DELETE /vault`, server xoá các bản ghi idempotency khác của user trên `/api/v1/vault%` trong cùng transaction (`key <> $k`).
+- **Rate limit:**
+  - P02 (cửa sổ cố định 60 giây, in-memory có TTL/cap): Auth credential 5/phút/IP (signup, login, refresh, OAuth start/link/reauth start, re-auth, confirm token; GET me/config/csrf/lists và logout không tiêu quota này); OAuth callback + complete 20/phút/IP; gửi verification/enrollment 3/giờ/user và 1/phút/user.
+  - P03 (cửa sổ **trượt** theo `user_id` trên bảng PostgreSQL `rate_event(scope, user_id, at)` có `pg_advisory_xact_lock` theo `(scope, user_id)`, đặt sau idempotency replay và sau re-auth; request bị chặn trả `429 rate_limited` + `Retry-After` và không ghi thêm event; body không tiết lộ số RK còn lại hay passphrase đúng/sai một phần):
+    - `vault_recovery_lookup` (`POST /vault/unlock/recovery`): **5 yêu cầu / 15 phút / user** (đếm **mọi** request, kể cả lần tra cứu trúng).
+    - `vault_recovery_complete` (`POST /vault/recover/complete`): **5 yêu cầu / 15 phút / user** (bucket riêng, tách khỏi lookup để lần lookup trúng không làm cạn quota hoàn tất).
+    - `vault_passkey_options` (`POST /vault/unlock/passkey/options`, `POST /vault/passkeys/register/options`): **20 yêu cầu / phút / user** (dùng chung một bucket).
+    - `vault_sensitive` (`PUT /vault/kek`, `DELETE /vault`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`, `POST /vault/passkeys`, `PATCH /vault/passkeys/{id}`, `DELETE /vault/passkeys/{id}`): **10 yêu cầu / phút / user**.
+    - Mở khoá bằng passphrase diễn ra hoàn toàn offline trong Web Worker sau khi tải `GET /vault` nên **không có rate limit server thực sự** (`GET /vault` chỉ chịu read limit chung, không áp mức 5/15 phút để tránh khoá người dùng khi reload trang; phạm vi P03-B8 chỉ gồm recovery và passkey options — điểm lệch gate 2, **chờ chủ repo ký duyệt (plan mục 5)**, xem [ADR 0002](adr/0002-vault-crypto-layout.md)).
+  - Phase khác: suggest 20 rps burst 40; write chung 10 rps; export 3/giờ.
+- **Lỗi (RFC 9457 `application/problem+json`):** Code `snake_case`; catalog Go + TS + OpenAPI cập nhật trong cùng thay đổi. `429` có header `Retry-After` và body `retry_after`. CAPTCHA: extension `captcha_required`. Các mã lỗi bổ sung ở P03:
+  - Vault & Concurrency/Idempotency: `vault_exists` (`409`, `POST /vault` khi đã có vault), `vault_absent` (`404`, route vault khi chưa có vault, kể cả mutation có `If-Match`), `vault_kdf_invalid` (`400`, KDF params sai quy cách, hạ `ops`/`mem` hoặc dùng lại `salt` khi rewrap/recover), `vault_wrap_invalid` (`400`, wrap sai độ dài, sai byte `version` hoặc base64url hỏng), `vault_mutations_disabled` (`503`, khi công tắc `VAULT_KEY_MUTATIONS_DISABLED` bật), `precondition_required` (`428`, thiếu `If-Match` hợp lệ), `version_mismatch` (`412`, `If-Match` lệch `vault_key_id` hoặc `version`, kèm `current_version`), `idempotency_conflict` (`409`, cùng key nhưng fingerprint khác), `idempotency_in_progress` (`409`, cùng key đang chạy, kèm `Retry-After: 1`), `email_not_verified` (`403`, dùng lại từ P02 khi `POST /vault` lúc `AUTH_REQUIRE_EMAIL_VERIFICATION` bật).
+  - Recovery key: `recovery_keys_count` (`400`, số RK khác 10 khi create/rotate hoặc vượt số slot trống khi regenerate), `recovery_key_slot_taken` (`409`, regenerate ghi vào slot đang có key hoặc ngoài `1…10`), `recovery_key_invalid` (`401`, chung cho RK không tồn tại, đã dùng hoặc của vault khác), `recovery_key_conflict` (`409`, trùng `lookup_hash` ở create/regenerate/rotate).
+  - Passkey WebAuthn: `passkey_challenge_invalid` (`400`, challenge hết hạn, đã dùng, sai session, sai `vault_key_id` hoặc `prf_salt` không khớp), `passkey_attestation_invalid` (`400`, attestation/clientData/rpIdHash/origin/flags `UP`+`UV` sai), `passkey_name_invalid` (`400`, tên sau trim ngoài 1–64 rune hoặc có ký tự điều khiển / bidi override), `passkey_exists` (`409`, `cred_id` đã đăng ký), `passkey_not_found` (`404`, passkey không tồn tại / của user khác, hoặc gọi unlock options khi user chưa có passkey).
 - Pagination: cursor `?cursor=&limit=` 1..100 (mặc định 50); `{items, next_cursor}`; keyset `(created_at, id)`. ID audit/notification là decimal string.
-- Idempotency: `Idempotency-Key` cho `POST /items`, `POST /tags`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`, `POST /vault`, `POST /vault/passkeys`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`; giữ 24 h. Lưu request fingerprint (method + path + body), response và mutation trong cùng tx; dùng lại key với payload khác trả 409. Retry mutation đã commit yêu cầu session/CSRF hợp lệ nhưng không bắt grant cũ còn hạn; không thực thi lại mutation.
-- Rate limit:
-  - Auth credential 5 yêu cầu/phút/IP: signup, login, refresh, OAuth start/link/reauth start, re-auth, confirm token. GET me/config/csrf/lists và logout **không** tiêu quota này.
-  - OAuth callback + complete: 20/phút/IP.
-  - Gửi verification/enrollment: 3/giờ/user và 1/phút/user.
-  - Cửa sổ cố định 60 giây; `Retry-After` tới cuối cửa sổ. MVP một replica, map in-memory có TTL/cap.
-  - Phase khác: suggest 20 rps burst 40; write 10 rps; export 3/giờ; **unlock/recovery** 5/15 phút/user; passkey options 20/phút.
-- `ciphertext` base64url trong JSON (MVP).
-- Response auth `Cache-Control: no-store`. Access log chỉ method, route pattern, status, latency, request ID.
+- Response auth và `GET /vault` đặt `Cache-Control: no-store` (`GET /vault` dùng `no-store, no-transform`). Access log chỉ method, route pattern, status, latency, request ID.
 
 ### 9.2 Endpoints
 
@@ -1639,20 +1677,21 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 | | `GET /me/notifications` · `PATCH /me/notifications/{id}` | `{read:true}` |
 | | `POST /me/email` | grant `account.email_change`; 202, chưa đổi email |
 | | `POST /me/password` | grant hoặc `enrollment_token` loại trừ |
-| Vault | `GET /vault` | `vault_key_id`, kdf, wrapK, pubkeys, version, `recovery_keys_remaining`, passkey summaries (id, name, aaguid, created_at) — **không** plaintext RK |
-| | `POST /vault` | tạo lần đầu; body **bắt buộc** `recovery_keys` đúng 10 `{lookup_hash, wrap}` (400 nếu thiếu/thừa). Server sinh `vault_key_id` duy nhất cho vault mới, trả `{vault_key_id, version}` trước khi client tạo entry; retry idempotent giữ nguyên. 409 nếu đã có vault |
-| | `PUT /vault/kek` | VK đã unlock + re-auth tài khoản, không cần passphrase cũ; `If-Match: version`, tăng version + audit/notice; không đụng RK/passkey |
-| | `DELETE /vault` | reset: xoá entries + vault + RK + passkey, giữ items+tags; re-auth |
-| Recovery | `GET /vault/recovery-keys` | `{remaining, slots: 10}` |
-| | `POST /vault/unlock/recovery` | `{lookup_hash}` → `{recovery_key_id, wrap}` nếu unused; không consume |
-| | `POST /vault/recover/complete` | `{recovery_key_id, kdf, vault_key_wrapped_by_kek}` — re-auth + `If-Match: version` + idempotency; rewrap, tăng version + **DELETE** RK trong cùng tx; §3.10 |
-| | `POST /vault/recovery-keys/regenerate` | VK unlock + re-auth + `If-Match: version`; wrap các slot thiếu (client sinh RK, **không** gửi plaintext), lock/count trong tx + tăng version. UI chỉ hiện key mới |
-| | `POST /vault/recovery-keys/rotate` | VK unlock + re-auth + `If-Match: version`, không cần passphrase cũ. 10 `{lookup_hash, wrap}` mới; server thay unused + tăng version trong tx; audit/notice. Không rotate VK |
-| Passkey | `POST /vault/passkeys/register/options` | creation options + PRF; vault unlock; re-auth khi lưu credential; §3.13 |
-| | `POST /vault/passkeys` | `{cred_id, pubkey, prf_salt, vk_wrap, aaguid, name}` |
-| | `GET /vault/passkeys` | list meta (không PWK) |
-| | `DELETE /vault/passkeys/{id}` | re-auth; thu hồi trên live server, không vô hiệu hoá wrap đã copy |
-| | `POST /vault/unlock/passkey/options` | `allowCredentials` + `prf.evalByCredential` theo salt từng credential + `vk_wrap`; UV required — client unwrap local |
+| Vault | `GET /vault` (`vaultGet`) | **S**; `200 {vault_key_id, version, kdf, vault_key_wrapped_by_kek, x25519_public, ed25519_public, private_keys_wrapped, recovery_keys_remaining, passkeys:[{id, name, aaguid, created_at}]}` + `Cache-Control: no-store, no-transform`, **không** `ETag`; `404 vault_absent` — **không** trả plaintext RK hay PWK |
+| | `POST /vault` (`vaultCreate`) | **S+C+I+K**; body đủ trường §8 + `recovery_keys` đúng 10 `{slot, lookup_hash, wrap}` (`slot` 1…10); server sinh `vault_key_id`, trả `201 {vault_key_id, version}`; `409 vault_exists` / `recovery_key_conflict`; `403 email_not_verified` (khi cờ bật) |
+| | `PUT /vault/kek` (`vaultRewrap`) | **S+C+A(`vault.rewrap`)+R(`vault_sensitive`)+M+I+K**; `{kdf, vault_key_wrapped_by_kek}` (salt mới, không hạ params, không cần passphrase cũ); `200 {version}`; không đổi passkey, RK hay `vault_key_id`; audit + notice + mail |
+| | `DELETE /vault` (`vaultReset`) | **S+C+A(`vault.reset`)+R(`vault_sensitive`)+M+I+K**; `204`; gọi reset hook (P04 xoá entries), xoá vault/RK/passkey + idempotency khác trên `/api/v1/vault%`, giữ items+tags; audit + notice + mail |
+| Recovery | `GET /vault/recovery-keys` (`vaultRecoveryKeysGet`) | **S**; `200 {remaining, slots: 10, empty_slots: […]}` (`empty_slots` là các slot `1…10` đang không có hàng RK); `404 vault_absent` |
+| | `POST /vault/unlock/recovery` (`vaultRecoveryLookup`) | **S+C+R(`vault_recovery_lookup`)**; `{lookup_hash}` → `200 {recovery_key_id, wrap}`; `401 recovery_key_invalid`; **không** consume hàng RK |
+| | `POST /vault/recover/complete` (`vaultRecoverComplete`) | **S+C+A(`vault.recover`)+R(`vault_recovery_complete`)+M+I+K**; `{recovery_key_id, kdf, vault_key_wrapped_by_kek}`; rewrap KEK + tăng `vault.version` + **DELETE** hàng RK trong cùng tx → `200 {version}`; `401 recovery_key_invalid`; audit + notice + mail; §3.10 |
+| | `POST /vault/recovery-keys/regenerate` (`vaultRecoveryKeysRegenerate`) | **S+C+A(`vault.recovery_keys_regenerate`)+R(`vault_sensitive`)+M+I+K**; `{recovery_keys: [{slot, lookup_hash, wrap}]}` số lượng `1…(10−remaining)`, `slot` phải đang trống (`409 recovery_key_slot_taken` nếu đã có key hoặc ngoài `1…10`); tăng `vault.version` → `200 {remaining, version}`; audit |
+| | `POST /vault/recovery-keys/rotate` (`vaultRecoveryKeysRotate`) | **S+C+A(`vault.recovery_keys_rotate`)+R(`vault_sensitive`)+M+I+K**; `{recovery_keys: [{slot, lookup_hash, wrap}]}` đúng 10 phần tử (`slot` `1…10`); thay toàn bộ RK + tăng `vault.version` trong tx → `200 {remaining: 10, version}`; audit + notice + mail |
+| Passkey | `POST /vault/passkeys/register/options` (`vaultPasskeyRegisterOptions`) | **S+C+R(`vault_passkey_options`)**, yêu cầu vault present; lưu `challenge_hash` + `prf_salt` (32 B) vào `webauthn_challenge` (TTL 5 phút); trả `200 {challenge_id, public_key: CreationOptions, prf_salt}` |
+| | `POST /vault/passkeys` (`vaultPasskeyCreate`) | **S+C+A(`vault.passkey_register`)+R(`vault_sensitive`)+I+K**; `{challenge_id, attestation: {client_data_json, attestation_object}, prf_salt, vk_wrap, name}`; server verify attestation (`UP`+`UV`), tự trích `cred_id`/`pubkey`/`aaguid` (bỏ qua nếu client gửi), không tăng `vault.version`; `201 {id, name, aaguid, created_at}`; audit + notice + mail |
+| | `GET /vault/passkeys` (`vaultPasskeysList`) | **S**; `200 {items: [{id, name, aaguid, created_at}]}` (chỉ metadata, không trả `vk_wrap` hay `PWK`) |
+| | `PATCH /vault/passkeys/{id}` (`vaultPasskeyRename`) | **S+C+R(`vault_sensitive`)**, owner; `{name}` (trim, 1–64 rune, không control/bidi); không tăng `vault.version`; `200 {id, name, aaguid, created_at}`; `400 passkey_name_invalid`; `404 passkey_not_found` |
+| | `DELETE /vault/passkeys/{id}` (`vaultPasskeyRevoke`) | **S+C+A(`vault.passkey_revoke`)+R(`vault_sensitive`)**, owner; không tăng `vault.version`; `204`; thu hồi trên live server; audit + notice |
+| | `POST /vault/unlock/passkey/options` (`vaultPasskeyUnlockOptions`) | **S+C+R(`vault_passkey_options`)**; `200 {public_key: RequestOptions, credentials: [{id, prf_salt, vk_wrap}]}` (challenge ngẫu nhiên không lưu DB, `allowCredentials` + `prf.evalByCredential`, UV required); `404 passkey_not_found` khi user chưa có passkey |
 | Items | `GET /items?tag_id&q&cursor&limit&sort=recent\|alpha\|created` | `tag_id` = filter; `q` lexical nhẹ (trang list) |
 | | `POST /items` `{name, hint?, tag_ids?}` | **không** upsert theo name — luôn tạo trừ khi client gửi id. Trùng name = 201 mới |
 | | `GET /items/{id}` · `PATCH /items/{id}` `{name?, hint?}` · `DELETE /items/{id}` | đổi name → re-embed job |
@@ -1672,7 +1711,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 | Export | `POST /exports` `{kind:"encrypted"}` → 202 · `GET /exports/{id}` | decrypted: client-side + `POST /audit/export-decrypted` |
 | Meta | `GET /healthz` · `GET /readyz` · `GET /metrics` | |
 
-**Không có:** `/keywords`, `PUT /entries/{id}/keywords`, merge-keyword. **Không** endpoint nhận plaintext RK hoặc PWK. **Không** login-with-passkey ở MVP (`POST /auth/passkey/*` = P07).
+**Chú giải điều kiện bảng Vault / Recovery / Passkey (15 operations của P03):** `S` = yêu cầu session (`sabk_session`), `C` = `Origin == APP_ORIGIN` + `X-CSRF-Token`, `A(action)` = grant re-auth `X-Reauth-Token` đúng `action`, `M` = `If-Match: "<vault_key_id>:<version>"`, `I` = `Idempotency-Key`, `R(scope)` = rate limit theo user (§9.1), `K` = bị công tắc `VAULT_KEY_MUTATIONS_DISABLED` chặn (`503 vault_mutations_disabled`). **Không có:** `/keywords`, `PUT /entries/{id}/keywords`, merge-keyword. **Không** endpoint nào nhận passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap. **Không** login-with-passkey ở MVP (`POST /auth/passkey/*` = P07).
 
 ### 9.3 Ví dụ
 
