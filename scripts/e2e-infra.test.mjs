@@ -54,6 +54,8 @@ test('origin and diagnostic settings stay explicit and safe', () => {
   assert.doesNotMatch(workflow, /curl --fail --silent http:\/\/localhost:3000/);
   assert.match(workflow, /--env APP_ORIGIN/);
   assert.match(workflow, /sanitize-e2e-artifacts\.mjs/);
+  // Shared host mount must be writable by distroless nonroot (compose init as root).
+  assert.match(compose, /mail-sink-perms:[\s\S]*chmod 0777 \/sink/);
   assert.doesNotMatch(workflow, /path:\s*\|[\s\S]*apps\/web\/test-results\s*$/m);
 });
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
@@ -209,6 +209,8 @@ async function main() {
   const grep = parseGrepArg(argv);
   const skipStack = argv.includes('--skip-stack');
   mkdirSync(MAIL_SINK, { recursive: true });
+  // World-writable so Compose distroless nonroot can write the shared mount.
+  chmodSync(MAIL_SINK, 0o777);
 
   const baseEnv = {
     ...parseEnvFile(resolve(ROOT, '.env')),

@@ -4,7 +4,7 @@
 // scripts/https-e2e-proxy.mjs instead of reusing the plain-HTTP ports of
 // scripts/e2e.mjs. Ports are disjoint from that harness so both can be run in
 // sequence without either one adopting the other's leftovers.
-import { existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,6 +89,7 @@ async function main() {
     return 1;
   }
   mkdirSync(MAIL_SINK, { recursive: true });
+  chmodSync(MAIL_SINK, 0o777);
 
   const env = {
     ...parseEnvFile(resolve(ROOT, '.env')),

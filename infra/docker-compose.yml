@@ -30,6 +30,16 @@ services:
       db: { condition: service_healthy }
     restart: 'no'
 
+  # Distroless api/worker run as nonroot (uid 65532). Host-owned 0755 bind
+  # mounts are not writable → mail Send 503 and empty sink for Playwright.
+  mail-sink-perms:
+    image: ${NODE_IMAGE}
+    user: '0:0'
+    volumes:
+      - ../.data/mail-sink:/sink
+    command: ['sh', '-c', 'chmod 0777 /sink']
+    restart: 'no'
+
   api:
     build:
       context: ..
@@ -55,6 +65,7 @@ services:
     depends_on:
       db: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
+      mail-sink-perms: { condition: service_completed_successfully }
     healthcheck:
       test: ['CMD', '/app/api', '-healthcheck']
       interval: 10s
@@ -80,6 +91,7 @@ services:
       - ../.data/mail-sink:/tmp/engram-mail
     depends_on:
       migrate: { condition: service_completed_successfully }
+      mail-sink-perms: { condition: service_completed_successfully }
 
   web:
     build:
