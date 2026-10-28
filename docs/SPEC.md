@@ -124,7 +124,7 @@ Thuật ngữ **keyword** chỉ còn trong glossary: *cũ, đã thay bằng `Ite
 
 ```
 User  1 ─── 1  Vault
-Vault 1 ─── N  VaultRecoveryKey   // tối đa 10 hàng unused
+Vault 1 ─── N  VaultRecoveryKey   // tối đa 10 hàng (slot 1..10, consume = DELETE)
 Vault 1 ─── N  VaultPasskey
 User  1 ─── N  Item
 User  1 ─── N  Tag
@@ -198,6 +198,9 @@ erDiagram
     USER ||--|| VAULT : owns
     VAULT ||--o{ VAULT_RECOVERY_KEY : wraps_vk
     VAULT ||--o{ VAULT_PASSKEY : wraps_vk
+    USER ||--o{ WEBAUTHN_CHALLENGE : registers_passkey
+    USER ||--o{ IDEMPOTENCY_KEY : deduplicates
+    USER ||--o{ RATE_EVENT : throttles
     USER ||--o{ ITEM : owns
     USER ||--o{ TAG : owns
     USER ||--o{ AUDIT_LOG : generates
@@ -237,19 +240,21 @@ erDiagram
     VAULT {
         uuid user_id PK_FK
         int version
-        jsonb kdf "argon2id m=64MiB,t=3,p=1 + salt"
-        text vault_key_id
-        bytea vault_key_wrapped_by_kek
-        bytea x25519_public
-        bytea ed25519_public
-        bytea private_keys_wrapped
+        jsonb kdf "argon2id13 ops 3..10, mem 64..256MiB, p=1 + salt 16B"
+        text vault_key_id UK "vk: + base64url(16B)"
+        bytea vault_key_wrapped_by_kek "73B"
+        bytea x25519_public "32B"
+        bytea ed25519_public "32B"
+        bytea private_keys_wrapped "105B"
+        timestamptz created_at
+        timestamptz updated_at
     }
     VAULT_RECOVERY_KEY {
         uuid id PK
         uuid vault_id FK
-        bytea lookup_hash UK
-        bytea wrap "VK wrapped by RK"
-        timestamptz used_at "null = unused"
+        int slot "1..10, UK(vault_id,slot)"
+        bytea lookup_hash UK "32B BLAKE2b"
+        bytea wrap "73B VK wrapped by RK"
         timestamptz created_at
     }
     VAULT_PASSKEY {
@@ -257,11 +262,42 @@ erDiagram
         uuid user_id FK
         bytea cred_id UK
         bytea pubkey "P07 login"
-        bytea prf_salt
-        bytea vk_wrap
+        bytea prf_salt "32B"
+        bytea vk_wrap "73B"
         bytea aaguid
         text name
         timestamptz created_at
+    }
+    WEBAUTHN_CHALLENGE {
+        uuid id PK
+        uuid user_id FK
+        uuid session_id FK
+        text vault_key_id
+        bytea challenge_hash UK "SHA-256(challenge)"
+        bytea prf_salt "32B"
+        timestamptz expires_at "TTL 5m"
+        timestamptz consumed_at
+        timestamptz created_at
+    }
+    IDEMPOTENCY_KEY {
+        uuid user_id PK_FK
+        text key PK "16..128 chars"
+        text method
+        text path
+        bytea request_hash
+        text status "in_progress|done"
+        uuid owner_token
+        timestamptz claimed_at
+        timestamptz expires_at "TTL 24h"
+        int status_code
+        jsonb response "nullable"
+        timestamptz created_at
+    }
+    RATE_EVENT {
+        bigserial id PK
+        text scope
+        uuid user_id FK
+        timestamptz at
     }
     ITEM {
         uuid id PK
@@ -490,7 +526,7 @@ Import backup UI ở P07: không chép lại các RK/passkey wrap từ snapshot 
 ### 3.12 Flow: Regenerate / xoay recovery key
 
 - `GET /vault/recovery-keys` → `{remaining, slots: 10, empty_slots: […]}` (`empty_slots` là danh sách các slot từ `1…10` đang không có hàng RK) — **không** trả bí mật.
-- **Regenerate** (lấy grant `vault.recovery_keys_regenerate` ngay đầu luồng + vault đang unlock giữ `VK` trong Worker): client lấy `empty_slots` từ `GET /vault/recovery-keys`, chọn các slot trống từ nhỏ đến lớn (`1…(10 - remaining)`), sinh RK mới cho từng slot đó, hiện **chỉ key mới** + checkbox xác nhận, kiểm tra grant còn hạn ≥ 60 giây trước lần gửi đầu, rồi gọi `POST /vault/recovery-keys/regenerate` `{recovery_keys: [{slot, lookup_hash, wrap}…]}` kèm `X-Reauth-Token`, `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key`. Server không bao giờ thấy plaintext RK; khoá hàng `vault` (`SELECT … FOR UPDATE`) trong tx để kiểm tra mọi `slot` đều đang trống (nếu slot đã có key hoặc ngoài `1…10` trả `409 recovery_key_slot_taken`) và tổng số không vượt 10; tăng `vault.version`, trả `200 {remaining, version}` và ghi audit `recovery_key.regenerate`.
+- **Regenerate** (lấy grant `vault.recovery_keys_regenerate` ngay đầu luồng + vault đang unlock giữ `VK` trong Worker): client lấy `empty_slots` từ `GET /vault/recovery-keys`, chọn các slot nhỏ nhất trong `empty_slots`, số lượng `1…(10 - remaining)`, sinh RK mới cho từng slot đó, hiện **chỉ key mới** + checkbox xác nhận, kiểm tra grant còn hạn ≥ 60 giây trước lần gửi đầu, rồi gọi `POST /vault/recovery-keys/regenerate` `{recovery_keys: [{slot, lookup_hash, wrap}…]}` kèm `X-Reauth-Token`, `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key`. Server không bao giờ thấy plaintext RK; khoá hàng `vault` (`SELECT … FOR UPDATE`) trong tx để kiểm tra mọi `slot` đều đang trống (nếu slot đã có key hoặc ngoài `1…10` trả `409 recovery_key_slot_taken`) và tổng số không vượt 10; tăng `vault.version`, trả `200 {remaining, version}` và ghi audit `recovery_key.regenerate`.
 - **Rotate all** (lấy grant `vault.recovery_keys_rotate` ngay đầu luồng + vault đang unlock giữ `VK`, **không cần passphrase cũ**): client sinh đủ 10 key mới ứng với các `slot` `1…10`, hiện lưới đủ 10 + checkbox xác nhận, kiểm tra grant còn hạn ≥ 60 giây trước lần gửi đầu, rồi gọi `POST /vault/recovery-keys/rotate` `{recovery_keys: [{slot, lookup_hash, wrap}×10]}` kèm `X-Reauth-Token`, `If-Match: "<vault_key_id>:<version>"` và `Idempotency-Key` để thay toàn bộ RK trong tx, tăng `vault.version` và trả `200 {remaining: 10, version}`. Ghi audit `recovery_key.rotate` và thông báo bảo mật/email như §3.9. Passkey, `DevKey` và `VK`/`vault_key_id` không đổi; đây là xoay RK trên live server, không phải rotate `VK` (§5.9).
 
 ### 3.13 Flow: Đăng ký passkey (sau khi vault unlock)
@@ -1188,7 +1224,7 @@ Onboarding **3 bước** (+ optional nhớ thiết bị). **Không** BIP39.
  │  Quên passphrase: dùng *một* key, rồi đặt passphrase mới.  │
  │  Mỗi key dùng một lần. Chụp màn hình = rủi ro.             │
  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐        │
- │  │ rk1_0FAK-E000-0000-0000-0000-0000-01 │ │ rk2_0FAK-E… │   │
+ │  │ rk1_0FAK-E…  │ │ rk2_0FAK-E…  │ │ rk3_0FAK-E…  │        │
  │  └──────────────┘ └──────────────┘ └──────────────┘        │
  │  … lưới 2 hàng × 5 …                                       │
  │  [ Tải .txt ]  [ In ]  [ Sao chép tất cả ]                 │
@@ -1815,7 +1851,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 {"lookup_hash": "base64url_32B_hash"}
 ```
 
-→ `200 {"recovery_key_id":"3b241101-e2bb-4255-8caf-4136c566a962","wrap":"base64url_73B_wrap"}` · `401 {"type":"about:blank","title":"Recovery key không đúng hoặc đã dùng","status":401,"code":"recovery_key_invalid"}`
+→ `200 {"recovery_key_id":"3b241101-e2bb-4255-8caf-4136c566a962","wrap":"base64url_73B_wrap"}` · `401 {"type":"https://key.zone17th.click/problems/recovery_key_invalid","title":"Khoá khôi phục không hợp lệ","status":401,"code":"recovery_key_invalid"}`
 
 **`POST /api/v1/vault/passkeys`** (`X-Reauth-Token`, `Idempotency-Key`, `X-CSRF-Token`)
 
@@ -1860,7 +1896,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 - [ ] **SRI** / hash bundle mỗi release (`/.well-known/build-manifest`).
 - [ ] Cookies host-only `Secure; SameSite=Lax` theo tên/path ADR 0001; CSRF token (kể cả anonymous); refresh rotation + reuse detection **không grace window**; reuse commit revoke.
 - [ ] Password login: Argon2id server-side (`m=64MiB,t=3,p=1`), HIBP k-anonymity tùy chọn; email verification theo `AUTH_REQUIRE_EMAIL_VERIFICATION` (default **false**).
-- [ ] Vault KDF: Argon2id client **cố định** `ops=3, mem=64MiB, p=1`, salt 16 B; lưu trên vault; chỉ được nâng, không fallback thấp hơn.
+- [ ] Vault KDF: Argon2id client (`alg="argon2id13"`, `3 ≤ ops ≤ 10`, `64 MiB ≤ mem ≤ 256 MiB`, `p=1`, `salt` 16 B); tạo vault mới ở mức cơ sở `ops=3, mem=64MiB, p=1`; khi rewrap/recover giữ nguyên `(ops, mem, parallelism)` hợp lệ hiện tại kèm `salt` 16 B mới (server buộc `ops/mem >= current_kdf` và không fallback thấp hơn theo `advisor-dec-004`; trần 256 MiB là điểm lệch gate 4 — chờ chủ repo ký duyệt, plan mục 5).
 - [ ] Passphrase ≥ 12, zxcvbn ≥ 3; **không** gửi lên server.
 - [ ] Rate limit §9.1; lockout tăng dần; CAPTCHA (Turnstile) sau 5 lần login sai.
 - [ ] OAuth: PKCE, `state`, `nonce`; chỉ email verified từ provider; không auto-link bằng email; login callback `ready` rồi `POST /auth/oauth/complete` trong Web Lock. GitHub không cấp re-auth grant. Enrollment password lần đầu không phải reset.
@@ -2108,8 +2144,8 @@ Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyw
 | **Passphrase** | Cụm riêng, khác password đăng nhập; derive KEK |
 | **KEK** | Key derive Argon2id từ passphrase; wrap/unwrap **một** bản VK (`wrapK`) |
 | **VK (Vault Key)** | Khoá đối xứng 32 B; mã hoá mọi entry body |
-| **Recovery key (RK)** | 10 key ~128-bit (Crockford, `rkN_`); mỗi key bọc VK; single-use trên live server, không thu hồi wrap đã copy; không BIP39 |
-| **lookup_hash** | `BLAKE2b-256("sabk.rk.lookup.v1" \|\| rk)`; server dùng để tìm wrap, không invert được RK |
+| **Recovery key (RK)** | 10 key 16 B CSPRNG (đệm 2 bit `0` trái → 130-bit = 26 ký tự Crockford Base32, hiển thị `rk{n}_XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX`, chuẩn hoá `rk{n}_` + 26 ký tự theo plan mục 2.2); mỗi key bọc VK; single-use trên live server (consume = `DELETE`), không thu hồi wrap đã copy; không BIP39 |
+| **lookup_hash** | `BLAKE2b-256("sabk.rk.lookup.v1" \|\| rk_norm)`; server dùng để tìm wrap, không invert được RK |
 | **Passkey** | WebAuthn credential; MVP = **unlock vault** (PRF), không thay login |
 | **PRF / hmac-secret** | Extension WebAuthn/CTAP; 32 B PWK bọc VK. Thiếu PRF → từ chối đăng ký |
 | **PWK** | Passkey wrap key — output PRF, không lưu, không lên server |
@@ -2122,7 +2158,7 @@ Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyw
 | **JCS** | RFC 8785: canonical JSON cho envelope/AAD và hash metadata; không canonicalize body JSON |
 | **Source span** | Vùng offset/length trong text JSON; edit splice giữ nguyên byte ngoài vùng thay đổi |
 | **AEAD** | XChaCha20-Poly1305 IETF |
-| **Argon2id** | KDF chống brute-force GPU/ASIC; vault cố định 64 MiB / t=3 / p=1 |
+| **Argon2id** | KDF chống brute-force GPU/ASIC; vault tạo mới ở mức cơ sở `64 MiB / ops=3 / p=1` (hợp lệ `3 ≤ ops ≤ 10`, `64–256 MiB`; rewrap/recover giữ nguyên tham số hiện tại kèm salt 16 B mới theo `advisor-dec-004`) |
 | **pgvector** | Vector + ANN (HNSW) trong Postgres |
 | **pg_trgm** | Fuzzy trigram |
 | **HNSW** | Chỉ mục ANN; ở đây `vector(1024)` |
