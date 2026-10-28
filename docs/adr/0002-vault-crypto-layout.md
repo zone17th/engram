@@ -221,7 +221,7 @@ Theo plan mục 1 và mục 4, P03 sử dụng các thư viện chuyên dụng d
 | Web (`apps/web`) | `@zxcvbn-ts/language-common` | `4.1.3` | Từ điển mẫu phổ biến và bộ quy tắc tần suất dùng chung cho `@zxcvbn-ts/core`. |
 | Web (`apps/web`) | `@zxcvbn-ts/language-en` | `4.1.1` | Từ điển từ vựng và tên riêng cho `@zxcvbn-ts/core`. |
 | API (`apps/api`) | `github.com/gowebpki/jcs` | `v1.0.2` | Chuẩn hoá JSON theo RFC 8785 (JCS) cho `entry.envelope` ở phía Go (`internal/vault/envelope.go`). |
-| API (`apps/api`) | `github.com/go-webauthn/webauthn` | `v0.18.2` | Xác minh đăng ký WebAuthn (`ParsedCredentialCreationData.Verify`), kiểm tra `clientDataJSON`, `authenticatorData`, cờ UP+UV và trích xuất `cred_id`, `pubkey`, `aaguid` (chi tiết tại [ADR 0003](0003-webauthn-prf-va-devkey.md)). |
+| API (`apps/api`) | `github.com/go-webauthn/webauthn` | `v0.16.5` | Xác minh đăng ký WebAuthn (`ParsedCredentialCreationData.Verify`), kiểm tra `clientDataJSON`, `authenticatorData`, cờ UP+UV và trích xuất `cred_id`, `pubkey`, `aaguid` (chi tiết tại [ADR 0003](0003-webauthn-prf-va-devkey.md)). |
 | API (`apps/api`, đã có) | `golang.org/x/crypto` | `v0.56.0` (giữ nguyên từ P01/P02) | Dùng làm implementation độc lập trong `internal/vault/vectors_test.go` (`argon2.IDKey`, `chacha20poly1305.NewX`, `blake2b`, `curve25519`, `ed25519`) để kiểm chứng chéo toàn bộ vectors sinh từ `libsodium-wrappers-sumo`. |
 
 ## Các phương án đã cân nhắc
