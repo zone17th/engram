@@ -225,9 +225,15 @@ Theo plan mục 1 và mục 4, P03 sử dụng các thư viện chuyên dụng d
 | Web (`apps/web`) | `@zxcvbn-ts/core` | `4.2.0` | Đánh giá độ mạnh passphrase mã hoá vault (bắt buộc điểm `score >= 3` và độ dài `>= 12` ký tự) hoàn toàn ở phía client. |
 | Web (`apps/web`) | `@zxcvbn-ts/language-common` | `4.1.3` | Từ điển mẫu phổ biến và bộ quy tắc tần suất dùng chung cho `@zxcvbn-ts/core`. |
 | Web (`apps/web`) | `@zxcvbn-ts/language-en` | `4.1.1` | Từ điển từ vựng và tên riêng cho `@zxcvbn-ts/core`. |
-| API (`apps/api`) | `github.com/gowebpki/jcs` | `v1.0.2` | Chuẩn hoá JSON theo RFC 8785 (JCS) cho `entry.envelope` ở phía Go (`internal/vault/envelope.go`). |
-| API (`apps/api`) | `github.com/go-webauthn/webauthn` | `v0.16.5` | Xác minh đăng ký WebAuthn (`ParsedCredentialCreationData.Verify`), kiểm tra `clientDataJSON`, `authenticatorData`, cờ UP+UV và trích xuất `cred_id`, `pubkey`, `aaguid` (chi tiết tại [ADR 0003](0003-webauthn-prf-va-devkey.md)). |
+| API (`apps/api`) | `github.com/gowebpki/jcs` | `v1.0.2` | Chuẩn hoá JSON theo RFC 8785 (JCS) cho `entry.envelope` ở phía Go (`internal/vault/envelope.go`). Lưu ý Go MVS (`advisor-dec-005`): `go.mod` của `gowebpki/jcs@v1.0.2` yêu cầu `github.com/stretchr/testify v1.12.1` (tăng từ `v1.11.1` hiện có trong `apps/api/go.mod`, chỉ dùng cho test) — ngoại lệ cập nhật pin phụ thuộc **chờ chủ repo duyệt (pending owner approval)**. |
+| API (`apps/api`) | `github.com/go-webauthn/webauthn` | `v0.16.5` | Xác minh đăng ký WebAuthn (`ParsedCredentialCreationData.Verify`), kiểm tra `clientDataJSON`, `authenticatorData`, cờ UP+UV và trích xuất `cred_id`, `pubkey`, `aaguid` (chi tiết tại [ADR 0003](0003-webauthn-prf-va-devkey.md)). Lưu ý Go MVS (`advisor-dec-005`): `go.mod` của `go-webauthn/webauthn@v0.16.5` yêu cầu `github.com/golang-jwt/jwt/v5 v5.3.1` (tăng bản vá patch từ `v5.3.0` đang dùng ở runtime auth P02) — ngoại lệ cập nhật pin phụ thuộc **chờ chủ repo duyệt (pending owner approval)**. |
 | API (`apps/api`, đã có) | `golang.org/x/crypto` | `v0.56.0` (giữ nguyên từ P01/P02) | Dùng làm implementation độc lập trong `internal/vault/vectors_test.go` (`argon2.IDKey`, `chacha20poly1305.NewX`, `blake2b`, `curve25519`, `ed25519`) để kiểm chứng chéo toàn bộ vectors sinh từ `libsodium-wrappers-sumo`. |
+
+**Ngoại lệ nâng phiên bản phụ thuộc bắc cầu trong `apps/api/go.mod` do Go Minimal Version Selection (`advisor-dec-005` — chờ chủ repo duyệt / pending owner approval):**
+Khi cài đặt hai module đã chốt ở trên (`github.com/go-webauthn/webauthn v0.16.5` và `github.com/gowebpki/jcs v1.0.2`) ở các task thực thi code Go tiếp theo, cơ chế Go MVS bắt buộc nâng hai module đã pin từ P01/P02 trong `apps/api/go.mod`:
+1. `github.com/golang-jwt/jwt/v5`: `v5.3.0` → **`v5.3.1`** (phụ thuộc runtime đang được P02 auth sử dụng; chỉ nâng cấp bản vá patch, do `go-webauthn v0.16.5` yêu cầu).
+2. `github.com/stretchr/testify`: `v1.11.1` → **`v1.12.1`** (phụ thuộc chỉ dùng trong test / test-only, do `gowebpki/jcs v1.0.2` yêu cầu).
+Hai thay đổi pin bắc cầu này được ghi nhận tường minh theo quyết định `advisor-dec-005` ở trạng thái **chờ chủ repo duyệt (pending owner approval)** trước khi chỉnh `go.mod` ở task cài đặt; tuyệt đối **không** thay đổi phiên bản Go toolchain (`go 1.26.0` của module chính giữ nguyên, chỉ thị `toolchain` cục bộ trong module phụ thuộc không làm nâng toolchain của ứng dụng) và **không** sửa `apps/api/go.mod` trong Task 1.
 
 ## Các phương án đã cân nhắc
 
