@@ -15,11 +15,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 )
 
@@ -730,5 +732,109 @@ func TestUserLimit_VaultSensitiveScopeAndFailClosed(t *testing.T) {
 	nilRouter.ServeHTTP(recNil, httptest.NewRequest(http.MethodPut, "/vault/kek", nil))
 	if recNil.Code != http.StatusInternalServerError {
 		t.Fatalf("limiter nil = %d, muốn 500", recNil.Code)
+	}
+}
+
+// BE1-3: Allow phải lấy đồng hồ SAU KHI đã giữ advisory lock (scope, user).
+// Nếu một request phải chờ lock lâu hơn cả cửa sổ trượt rồi mới được cấp quyền,
+// sự kiện vừa ghi phải mang mốc thời gian sau khi chờ và vẫn được tính vào cửa sổ của request kế tiếp.
+func TestUserLimit_ClockSampledAfterAdvisoryLockWait(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+
+	userID, _ := seedRateLimitUser(t, pool, "post-lock-clock@example.com")
+	t0 := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(t0)
+
+	const scope = httpx.ScopeVaultRecoveryLookup
+	limiter := httpx.NewUserLimiterWithRules(pool, clk, map[string]httpx.RateLimitRule{
+		scope: {
+			Limit:  1,
+			Window: 15 * time.Minute,
+		},
+	})
+
+	ctx := context.Background()
+	holdTx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("BeginTx holdTx: %v", err)
+	}
+	defer func() { _ = holdTx.Rollback(ctx) }()
+
+	if err := gen.New(holdTx).AcquireRateLimitLock(ctx, gen.AcquireRateLimitLockParams{
+		Scope:  scope,
+		UserID: userID,
+	}); err != nil {
+		t.Fatalf("AcquireRateLimitLock holdTx: %v", err)
+	}
+
+	type allowResult struct {
+		ok    bool
+		retry int
+		err   error
+	}
+	resCh := make(chan allowResult, 1)
+	go func() {
+		ok, retry, err := limiter.Allow(ctx, scope, userID)
+		resCh <- allowResult{ok: ok, retry: retry, err: err}
+	}()
+
+	// Đợi deterministically tới khi goroutine Allow thực sự đang chờ advisory lock trong pg_locks.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiting); err != nil {
+			t.Fatalf("query pg_locks: %v", err)
+		}
+		if waiting >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout chờ Allow block trên pg_advisory_xact_lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Trong lúc Allow đang bị chặn trên advisory lock, dịch đồng hồ giả vượt quá cửa sổ 15 phút (lên t0 + 20m),
+	// sau đó nhả lock để Allow tiếp tục.
+	postWaitTime := t0.Add(20 * time.Minute)
+	clk.Set(postWaitTime)
+	if err := holdTx.Rollback(ctx); err != nil {
+		t.Fatalf("release holdTx: %v", err)
+	}
+
+	var res allowResult
+	select {
+	case res = <-resCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout chờ Allow hoàn tất sau khi nhả advisory lock")
+	}
+	if res.err != nil || !res.ok {
+		t.Fatalf("Allow thứ nhất sau khi chờ lock phải được phép: ok=%v retry=%d err=%v", res.ok, res.retry, res.err)
+	}
+
+	// Kiểm tra mốc thời gian đã ghi vào rate_event phải là mốc thời gian SAU KHI chờ lock (postWaitTime),
+	// không phải mốc t0 trước khi lấy lock.
+	var recordedAt time.Time
+	if err := pool.QueryRow(ctx, `SELECT at FROM rate_event WHERE scope = $1 AND user_id = $2`, scope, userID).Scan(&recordedAt); err != nil {
+		t.Fatalf("select recorded rate_event.at: %v", err)
+	}
+	if !recordedAt.UTC().Equal(postWaitTime) {
+		t.Fatalf("rate_event.at = %s, muốn %s (mốc thời gian sau khi lấy advisory lock)", recordedAt.UTC().Format(time.RFC3339Nano), postWaitTime.Format(time.RFC3339Nano))
+	}
+
+	// Ngay tại postWaitTime + 1m, sự kiện vừa được phép ở postWaitTime vẫn nằm trong cửa sổ 15 phút,
+	// nên request kế tiếp phải bị chặn (ok=false, retryAfter=840).
+	clk.Set(postWaitTime.Add(time.Minute))
+	ok2, retry2, err2 := limiter.Allow(ctx, scope, userID)
+	if err2 != nil {
+		t.Fatalf("Allow thứ hai trả lỗi: %v", err2)
+	}
+	if ok2 {
+		t.Fatal("Allow thứ hai phải bị chặn vì sự kiện vừa cấp phát ở postWaitTime vẫn còn trong cửa sổ 15 phút")
+	}
+	if retry2 != 14*60 {
+		t.Fatalf("Allow thứ hai retryAfter = %d, muốn 840 (14 phút)", retry2)
 	}
 }
