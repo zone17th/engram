@@ -177,7 +177,7 @@
             <span aria-hidden="true">🔑</span>
             <div class="min-w-0 flex-1 basis-[180px]">
               <div class="text-[14px] font-semibold">MacBook Pro · Touch ID</div>
-              <div class="text-[12px] mono" style="color:var(--muted)">thêm 12/02/2026 · dùng gần nhất hôm nay</div>
+              <div class="text-[12px] mono" style="color:var(--muted)">thêm 12/02/2026</div>
             </div>
             <span class="badge-type badge-text ml-auto">prf</span>
             <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đổi tên passkey')">Đổi tên</button>
@@ -187,7 +187,7 @@
             <span aria-hidden="true">🔑</span>
             <div class="min-w-0 flex-1 basis-[180px]">
               <div class="text-[14px] font-semibold">YubiKey 5C</div>
-              <div class="text-[12px] mono" style="color:var(--muted)">thêm 20/05/2026 · dùng gần nhất 02/09/2026</div>
+              <div class="text-[12px] mono" style="color:var(--muted)">thêm 20/05/2026</div>
             </div>
             <span class="badge-type badge-text ml-auto">prf</span>
             <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đổi tên passkey')">Đổi tên</button>
@@ -397,7 +397,11 @@
           Xác thực lại với Google trước khi nhập passphrase mới để tránh chuyển trang làm mất trạng thái đang gõ.
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-authenticate with Google at the start of the flow before entering your new passphrase so a redirect does not wipe your input.</span>
         </p>
-        <button type="button" class="btn btn-secondary w-full !justify-center">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+        <button type="button" class="btn btn-secondary w-full !justify-center mb-3">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+        <p class="text-[12px] m-0" style="color:var(--muted)">
+          Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại bằng passphrase hoặc passkey trước khi nhập passphrase mới.
+          <span lang="en" class="block mt-0.5">Google re-authentication leaves the page: the vault locks again — unlock it before entering your new passphrase.</span>
+        </p>
       </div>
       <div class="flex justify-end">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng</button>
@@ -546,7 +550,11 @@
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rk-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-secondary w-full !justify-center">Xác nhận bằng Google · <span lang="en">Google</span></button>
+        <button type="button" class="btn btn-secondary w-full !justify-center mb-3">Xác nhận bằng Google · <span lang="en">Google</span></button>
+        <p class="text-[12px] m-0" style="color:var(--muted)">
+          Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại bằng passphrase hoặc passkey rồi luồng tiếp tục.
+          <span lang="en" class="block mt-0.5">Google re-authentication leaves the page: the vault locks again — unlock it before the flow continues.</span>
+        </p>
       </div>
       <div class="flex justify-end gap-2">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
@@ -603,7 +611,7 @@
           <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Grant xác thực hết hạn trước khi lưu 5 key mới</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Nhập lại mật khẩu đăng nhập để lưu tiếp bộ <span class="mono">rk6</span>…<span class="mono">rk10</span> vừa hiển thị.
-            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-enter your login password in place to save the <span class="mono">rk6</span>…<span class="mono">rk10</span> keys you just saved.</span>
+            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-enter your login password in place to save the <span class="mono">rk6</span>…<span class="mono">rk10</span> keys just shown.</span>
           </p>
         </div>
         <label class="field field-password mb-3">
@@ -707,7 +715,11 @@
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rot-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-secondary w-full !justify-center">Xác nhận bằng Google · <span lang="en">Google</span></button>
+        <button type="button" class="btn btn-secondary w-full !justify-center mb-3">Xác nhận bằng Google · <span lang="en">Google</span></button>
+        <p class="text-[12px] m-0" style="color:var(--muted)">
+          Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại bằng passphrase hoặc passkey rồi luồng tiếp tục.
+          <span lang="en" class="block mt-0.5">Google re-authentication leaves the page: the vault locks again — unlock it before the flow continues.</span>
+        </p>
       </div>
       <div class="flex justify-end gap-2">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
@@ -872,7 +884,11 @@
           <span class="field-label">Mật khẩu đăng nhập (xác thực lại) · <span lang="en" class="font-normal" style="color:var(--muted)">Login password (re-auth)</span></span>
           <input id="pk-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-secondary w-full !justify-center mb-4">Hoặc xác nhận bằng Google (OAuth) · <span lang="en">Verify with Google</span></button>
+        <button type="button" class="btn btn-secondary w-full !justify-center mb-2">Hoặc xác nhận bằng Google (OAuth) · <span lang="en">Verify with Google</span></button>
+        <p class="text-[12px] m-0 mb-4" style="color:var(--muted)">
+          Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại bằng passphrase hoặc passkey rồi luồng tiếp tục.
+          <span lang="en" class="block mt-0.5">Google re-authentication leaves the page: the vault locks again — unlock it before the flow continues.</span>
+        </p>
         <label class="field mb-0">
           <span class="field-label">Tên gợi nhớ passkey · <span lang="en" class="font-normal" style="color:var(--muted)">Passkey name</span></span>
           <input id="pk-name" type="text" value="Windows Hello · Laptop" class="field-input" maxlength="64">
@@ -1142,13 +1158,13 @@
       <div class="card p-4 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2 break-words" style="color:var(--muted)">Tài khoản chỉ có OAuth · <span lang="en">OAuth-only user · restart</span></p>
         <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — bắt đầu lại từ bước 3</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — bắt đầu lại từ bước 1</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Vault chưa bị xoá. Bấm xác thực lại với Google rồi gõ lại từ xác nhận.
-            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Time ran out and the vault was not reset. Re-authenticate with Google and confirm again.</span>
+            Vault chưa bị xoá. Xác thực lại với Google chuyển trang nên luồng đặt lại bắt đầu lại từ bước 1; bạn sẽ xác nhận lại ở bước 3 và gõ lại từ xác nhận ở bước 4.
+            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Time ran out and the vault was not reset. Re-authenticating with Google redirects the page, so the reset flow restarts from step 1.</span>
           </p>
         </div>
-        <button type="button" class="btn btn-secondary">Xác thực lại với Google · <span lang="en">Restart re-auth</span></button>
+        <button type="button" class="btn btn-secondary">Bắt đầu lại · <span lang="en">Restart flow</span></button>
       </div>
       <div class="flex justify-end">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng</button>
