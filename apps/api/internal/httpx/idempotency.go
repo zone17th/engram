@@ -158,19 +158,37 @@ func ValidateIdempotencyKey(key string) bool {
 // ConcreteRequestPath trả concrete path đúng như server nhận (percent-encoded nếu có,
 // không decode, không kèm query string) theo SPEC §9.1 / plan mục 2.3.
 func ConcreteRequestPath(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if raw := r.RequestURI; raw != "" {
+		if idx := strings.IndexByte(raw, '?'); idx >= 0 {
+			raw = raw[:idx]
+		}
+		if idx := strings.Index(raw, "://"); idx >= 0 {
+			rest := raw[idx+3:]
+			if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+				raw = rest[slash:]
+			} else {
+				raw = "/"
+			}
+		}
+		if raw != "" {
+			return raw
+		}
+	}
 	if r.URL != nil {
 		if r.URL.RawPath != "" {
 			return r.URL.RawPath
+		}
+		if esc := r.URL.EscapedPath(); esc != "" {
+			return esc
 		}
 		if r.URL.Path != "" {
 			return r.URL.Path
 		}
 	}
-	raw := r.RequestURI
-	if idx := strings.IndexByte(raw, '?'); idx >= 0 {
-		raw = raw[:idx]
-	}
-	return raw
+	return ""
 }
 
 // ComputeIdempotencyFingerprint tính SHA-256(method || 0x00 || path || 0x00 || body).
@@ -187,9 +205,10 @@ func ComputeIdempotencyFingerprint(method, path string, body []byte) []byte {
 // Idempotency quản lý bước 2 (Lookup) và bước 6–8 (Claim, Finish trong Tx, Release)
 // theo đúng thứ tự 8 bước của plan mục 2.3 và SPEC §9.1.
 type Idempotency struct {
-	db          IdempotencyDB
-	clk         clock.Clock
-	onClaimRace func() // test hook tùy chọn chạy ngay trước câu lệnh INSERT ... ON CONFLICT ở bước 6
+	db            IdempotencyDB
+	clk           clock.Clock
+	onClaimRace   func() // test hook tùy chọn chạy ngay trước câu lệnh INSERT ... ON CONFLICT ở bước 6
+	onClaimReread func() // test hook tùy chọn chạy ngay trước khi request thua race đọc lại hàng ở bước 6
 }
 
 // NewIdempotency tạo bộ quản lý middleware idempotency. Nếu clk == nil thì dùng clock.System{}.
@@ -305,6 +324,9 @@ func (m *Idempotency) Claim(next http.Handler) http.Handler {
 			return
 		}
 		if !won {
+			if m.onClaimReread != nil {
+				m.onClaimReread()
+			}
 			q := gen.New(m.db)
 			row, getErr := q.GetIdempotencyKey(r.Context(), gen.GetIdempotencyKeyParams{
 				UserID: claim.UserID,
@@ -312,12 +334,18 @@ func (m *Idempotency) Claim(next http.Handler) http.Handler {
 				Now:    pgtype.Timestamptz{Time: now, Valid: true},
 			})
 			if getErr != nil {
+				if errors.Is(getErr, pgx.ErrNoRows) {
+					// Đối thủ vừa thắng race nhưng gặp lỗi trước COMMIT và đã release (xóa) hàng,
+					// hoặc hàng vừa hết hạn ngay giữa lúc thua race và lúc đọc lại:
+					// trả 409 idempotency_in_progress kèm Retry-After: 1 để client thử lại an toàn.
+					retry := 1
+					WriteProblemExtra(w, r, http.StatusConflict, "idempotency_in_progress", "Yêu cầu cùng khoá idempotency đang xử lý.", ProblemExtra{RetryAfter: &retry})
+					return
+				}
 				WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi máy chủ.")
 				return
 			}
 			if m.classifyAndRespond(w, r, row, claim.RequestHash, now) == idemProceed {
-				// Trường hợp cực hiếm: hàng vừa hết hạn hoặc bị xóa ngay giữa lúc thua race và lúc đọc lại;
-				// trả 409 idempotency_in_progress kèm Retry-After: 1 để client thử lại an toàn.
 				retry := 1
 				WriteProblemExtra(w, r, http.StatusConflict, "idempotency_in_progress", "Yêu cầu cùng khoá idempotency đang xử lý.", ProblemExtra{RetryAfter: &retry})
 			}

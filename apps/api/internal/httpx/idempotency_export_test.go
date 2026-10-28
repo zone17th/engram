@@ -6,3 +6,10 @@ package httpx
 func (m *Idempotency) SetClaimRaceHookForTest(fn func()) {
 	m.onClaimRace = fn
 }
+
+// SetClaimRereadHookForTest gắn một callback chỉ dùng trong test chạy ngay trước khi
+// request thua race ở bước 6 đọc lại hàng từ DB (giúp đồng bộ tất định tình huống
+// request thắng race gặp lỗi trước COMMIT và release hàng trước khi request thua đọc lại).
+func (m *Idempotency) SetClaimRereadHookForTest(fn func()) {
+	m.onClaimReread = fn
+}

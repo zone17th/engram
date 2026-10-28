@@ -1,13 +1,16 @@
 package httpx_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -149,9 +153,33 @@ func TestIdempotencyReplaySameKeyAndBodyIncluding204AndConflicts(t *testing.T) {
 
 	var createRuns atomic.Int32
 	var deleteRuns atomic.Int32
+	var entryRuns atomic.Int32
 
 	r := chi.NewRouter()
 
+	// Route non-vault (ví dụ P04 POST /api/v1/entries) dùng để chứng minh reset vault chỉ xóa
+	// các key trên `/api/v1/vault%` và giữ nguyên bản ghi hoàn tất của route khác cho cùng user.
+	entryHandler := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
+		AppOrigin:     testAppOrigin,
+		Authenticator: env.authn(),
+		CSRF:          strictCSRF{},
+		Idempotency:   env.idem,
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entryRuns.Add(1)
+		tx, err := httpx.BeginMutationTx(r.Context(), env.pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(r.Context()) }()
+		respBytes := []byte(`{"entry_id":"e-1","status":"saved"}`)
+		if err := httpx.CommitIdempotencyTx(r.Context(), tx, http.StatusCreated, respBytes); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(respBytes)
+	}))
+	r.Method(http.MethodPost, "/api/v1/entries", entryHandler)
 	// Route 1: POST /api/v1/vault trả 201 JSON và tăng version trong bảng vault.
 	createHandler := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
 		AppOrigin:     testAppOrigin,
@@ -267,8 +295,29 @@ func TestIdempotencyReplaySameKeyAndBodyIncluding204AndConflicts(t *testing.T) {
 		t.Fatalf("diff path: code = %q, muốn idempotency_conflict", probDiffPath.Code)
 	}
 
-	// 5. DELETE /api/v1/vault (204 không body, không Content-Type): lần 1 chạy mutation và purge keyCreate;
-	// lần 2 cùng keyDelete trả lại 204 không body và mutation chạy đúng 1 lần.
+	// 4b. Tạo thêm một bản ghi done trên route vault khác (`/api/v1/vault/passkeys`) và một bản ghi done,
+	// chưa hết hạn trên route KHÔNG phải vault (`/api/v1/entries`) cho cùng userA trước khi reset vault.
+	keyOtherVault := "idem_passkey_key_0001"
+	if _, err := env.pool.Exec(ctx, `
+		INSERT INTO idempotency_key (
+			user_id, key, method, path, request_hash, status, owner_token,
+			claimed_at, expires_at, status_code, response
+		) VALUES ($1, $2, 'POST', '/api/v1/vault/passkeys', '\xaa', 'done', $3, $4, $5, 201, '{"id":"pk-1"}'::jsonb)
+	`, env.userA.UserID, keyOtherVault, uuid.New(), env.clk.Now().UTC(), env.clk.Now().UTC().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	keyNonVault := "idem_nonvault_key_01"
+	bodyNonVault := `{"title":"note-1"}`
+	recEntry1 := httptest.NewRecorder()
+	r.ServeHTTP(recEntry1, env.newReq(http.MethodPost, "/api/v1/entries", bodyNonVault, "sess-a", keyNonVault, true))
+	if recEntry1.Code != http.StatusCreated || entryRuns.Load() != 1 {
+		t.Fatalf("first non-vault entry: status=%d runs=%d", recEntry1.Code, entryRuns.Load())
+	}
+
+	// 5. DELETE /api/v1/vault (204 không body, không Content-Type): lần 1 chạy mutation và purge các key
+	// trên `/api/v1/vault%` (keyCreate, keyOtherVault) nhưng giữ nguyên keyNonVault (`/api/v1/entries`)
+	// và giữ chính keyDelete để lần 2 trả lại 204 không body.
 	keyDelete := "idem_delete_key_0001"
 	recDel1 := httptest.NewRecorder()
 	r.ServeHTTP(recDel1, env.newReq(http.MethodDelete, "/api/v1/vault", "", "sess-a", keyDelete, true))
@@ -288,21 +337,39 @@ func TestIdempotencyReplaySameKeyAndBodyIncluding204AndConflicts(t *testing.T) {
 		t.Fatalf("sau replay deleteRuns = %d, muốn 1", deleteRuns.Load())
 	}
 
-	// Kiểm tra trong DB: keyCreate đã bị purge bởi reset vault, chỉ còn keyDelete với response IS NULL và status_code = 204.
+	// Kiểm tra trong DB: keyCreate và keyOtherVault đã bị purge bởi reset vault;
+	// chỉ còn đúng 2 bản ghi: keyDelete (204, response IS NULL) và keyNonVault (201, response còn nguyên).
 	var remaining int
-	var savedCode int32
-	var respNull bool
 	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1`, env.userA.UserID).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
-	if remaining != 1 {
-		t.Fatalf("sau reset vault, số idempotency_key còn lại = %d, muốn 1 (chỉ giữ key của chính request reset)", remaining)
+	if remaining != 2 {
+		t.Fatalf("sau reset vault, số idempotency_key còn lại = %d, muốn 2 (keyDelete và keyNonVault)", remaining)
 	}
+	var savedCode int32
+	var respNull bool
 	if err := env.pool.QueryRow(ctx, `SELECT status_code, response IS NULL FROM idempotency_key WHERE user_id = $1 AND key = $2`, env.userA.UserID, keyDelete).Scan(&savedCode, &respNull); err != nil {
 		t.Fatal(err)
 	}
 	if savedCode != http.StatusNoContent || !respNull {
 		t.Fatalf("204 row: status_code=%d responseIsNull=%v", savedCode, respNull)
+	}
+
+	var nonVaultStatus string
+	var nonVaultCode int32
+	var nonVaultResp []byte
+	if err := env.pool.QueryRow(ctx, `SELECT status, status_code, response FROM idempotency_key WHERE user_id = $1 AND key = $2`, env.userA.UserID, keyNonVault).Scan(&nonVaultStatus, &nonVaultCode, &nonVaultResp); err != nil {
+		t.Fatalf("keyNonVault phải sống sót sau reset vault: %v", err)
+	}
+	if nonVaultStatus != "done" || nonVaultCode != http.StatusCreated || !jsonEqual(t, nonVaultResp, []byte(`{"entry_id":"e-1","status":"saved"}`)) {
+		t.Fatalf("non-vault row sau reset: status=%q code=%d resp=%s", nonVaultStatus, nonVaultCode, string(nonVaultResp))
+	}
+
+	// Retry keyNonVault sau khi reset vault vẫn replay đúng response đã lưu, không chạy lại handler.
+	recEntryReplay := httptest.NewRecorder()
+	r.ServeHTTP(recEntryReplay, env.newReq(http.MethodPost, "/api/v1/entries", bodyNonVault, "sess-a", keyNonVault, true))
+	if recEntryReplay.Code != http.StatusCreated || !jsonEqual(t, recEntryReplay.Body.Bytes(), []byte(`{"entry_id":"e-1","status":"saved"}`)) || entryRuns.Load() != 1 {
+		t.Fatalf("non-vault replay after reset: status=%d body=%s runs=%d", recEntryReplay.Code, recEntryReplay.Body.String(), entryRuns.Load())
 	}
 }
 
@@ -313,6 +380,8 @@ func TestIdempotencyParallelRequestsAndLostClaimRaceReclassified(t *testing.T) {
 	// request thứ hai bị chặn ngay ở Lookup với 409 idempotency_in_progress + Retry-After: 1.
 	enteredHandler := make(chan struct{})
 	releaseHandler := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReq1 := func() { releaseOnce.Do(func() { close(releaseHandler) }) }
 	var runs atomic.Int32
 
 	r := chi.NewRouter()
@@ -347,15 +416,26 @@ func TestIdempotencyParallelRequestsAndLostClaimRaceReclassified(t *testing.T) {
 	bodyParallel := `{"kdf":"same"}`
 
 	rec1 := httptest.NewRecorder()
+	req1Done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(req1Done)
 		r.ServeHTTP(rec1, env.newReq(http.MethodPut, "/api/v1/vault/kek", bodyParallel, "sess-a", keyParallel, true))
 	}()
+	defer func() {
+		releaseReq1()
+		wg.Wait()
+	}()
 
-	<-enteredHandler
-
+	select {
+	case <-enteredHandler:
+	case <-req1Done:
+		t.Fatalf("parallel req1 kết thúc sớm trước khi vào handler: status=%d body=%s", rec1.Code, rec1.Body.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout chờ parallel req1 vào handler")
+	}
 	// Request 2 đến khi Request 1 đang in_progress (< 60s).
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, env.newReq(http.MethodPut, "/api/v1/vault/kek", bodyParallel, "sess-a", keyParallel, true))
@@ -373,7 +453,7 @@ func TestIdempotencyParallelRequestsAndLostClaimRaceReclassified(t *testing.T) {
 		t.Fatalf("parallel req2 problem: code=%q retry_after=%v", prob2.Code, prob2.RetryAfter)
 	}
 
-	close(releaseHandler)
+	releaseReq1()
 	wg.Wait()
 
 	if rec1.Code != http.StatusOK || runs.Load() != 1 {
@@ -507,6 +587,187 @@ func TestIdempotencyParallelRequestsAndLostClaimRaceReclassified(t *testing.T) {
 			t.Fatalf("handler không được chạy khi phân loại lại là done")
 		}
 	})
+
+	t.Run("lost_claim_race_winner_releases_before_reread_returns_409_not_500", func(t *testing.T) {
+		raceKey := "idem_claim_race_rel_01"
+		body := `{"race":"winner_released"}`
+
+		winnerEntered := make(chan struct{})
+		releaseWinner := make(chan struct{})
+		var releaseWinnerOnce sync.Once
+		closeReleaseWinner := func() { releaseWinnerOnce.Do(func() { close(releaseWinner) }) }
+		winnerReleased := make(chan struct{})
+
+		var winnerShouldFail atomic.Bool
+		winnerShouldFail.Store(true)
+		var subRuns atomic.Int32
+
+		subIdem := httpx.NewIdempotency(env.pool, env.clk)
+		subRouter := chi.NewRouter()
+		subHandler := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
+			AppOrigin:     testAppOrigin,
+			Authenticator: env.authn(),
+			CSRF:          strictCSRF{},
+			Idempotency:   subIdem,
+		}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if winnerShouldFail.Load() {
+				close(winnerEntered)
+				<-releaseWinner
+				// Winner thất bại trước COMMIT -> defer của Claim sẽ release (DELETE) hàng in_progress.
+				httpx.WriteProblem(w, r, http.StatusBadRequest, "vault_kdf_invalid", "KDF lỗi trước commit.")
+				return
+			}
+			subRuns.Add(1)
+			tx, err := httpx.BeginMutationTx(r.Context(), env.pool)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer func() { _ = tx.Rollback(r.Context()) }()
+			resp := []byte(`{"version":10}`)
+			if err := httpx.CommitIdempotencyTx(r.Context(), tx, http.StatusOK, resp); err != nil {
+				t.Error(err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(resp)
+		}))
+		subRouter.Method(http.MethodPut, "/api/v1/vault/kek", subHandler)
+
+		// Đồng bộ:
+		// 1. Loser chạy qua Lookup (chưa có hàng), đến ngay trước SQL Claim thì tạm dừng ở onClaimRace.
+		// 2. Trong lúc đó, Winner chạy thật từ đầu qua Lookup + Claim, vào handler và giữ hàng in_progress.
+		// 3. Loser chạy SQL Claim -> thua race (!won). Ngay trước khi Loser chạy GetIdempotencyKey (onClaimReread),
+		//    cho phép Winner trả 400 và hoàn tất defer ReleaseIdempotencyKey (xóa hàng khỏi Postgres thật).
+		// 4. Loser chạy GetIdempotencyKey -> nhận pgx.ErrNoRows -> phải trả 409 idempotency_in_progress + Retry-After: 1 (không được 500).
+		var raceHookEntered atomic.Bool
+		var winnerRec *httptest.ResponseRecorder
+		subIdem.SetClaimRaceHookForTest(func() {
+			if !raceHookEntered.CompareAndSwap(false, true) {
+				return
+			}
+			winnerRec = httptest.NewRecorder()
+			go func() {
+				defer close(winnerReleased)
+				subRouter.ServeHTTP(winnerRec, env.newReq(http.MethodPut, "/api/v1/vault/kek", body, "sess-a", raceKey, true))
+			}()
+			select {
+			case <-winnerEntered:
+			case <-winnerReleased:
+				t.Errorf("winner kết thúc sớm trước khi vào handler: status=%d", winnerRec.Code)
+			case <-time.After(10 * time.Second):
+				t.Error("timeout chờ winner vào handler")
+			}
+		})
+		defer subIdem.SetClaimRaceHookForTest(nil)
+
+		var rereadHookOnce sync.Once
+		subIdem.SetClaimRereadHookForTest(func() {
+			rereadHookOnce.Do(func() {
+				closeReleaseWinner()
+				select {
+				case <-winnerReleased:
+				case <-time.After(10 * time.Second):
+					t.Error("timeout chờ winner release hàng")
+				}
+			})
+		})
+		defer subIdem.SetClaimRereadHookForTest(nil)
+		defer func() {
+			closeReleaseWinner()
+		}()
+
+		loserRec := httptest.NewRecorder()
+		subRouter.ServeHTTP(loserRec, env.newReq(http.MethodPut, "/api/v1/vault/kek", body, "sess-a", raceKey, true))
+		if loserRec.Code != http.StatusConflict {
+			t.Fatalf("loser reread after winner pre-commit release: status=%d body=%s, muốn 409 (không được 500)", loserRec.Code, loserRec.Body.String())
+		}
+		if gotRetry := loserRec.Header().Get("Retry-After"); gotRetry != "1" {
+			t.Fatalf("loser Retry-After=%q, muốn 1", gotRetry)
+		}
+		var loserProb httpx.Problem
+		if err := json.Unmarshal(loserRec.Body.Bytes(), &loserProb); err != nil {
+			t.Fatal(err)
+		}
+		if loserProb.Code != "idempotency_in_progress" || loserProb.RetryAfter == nil || *loserProb.RetryAfter != 1 {
+			t.Fatalf("loser problem: code=%q retry_after=%v", loserProb.Code, loserProb.RetryAfter)
+		}
+		if winnerRec == nil || winnerRec.Code != http.StatusBadRequest {
+			t.Fatalf("winner status=%v, muốn 400", winnerRec)
+		}
+
+		// Sau khi cả hai kết thúc, client retry cùng key -> chạy thành công và commit đúng 1 mutation.
+		winnerShouldFail.Store(false)
+		retryRec := httptest.NewRecorder()
+		subRouter.ServeHTTP(retryRec, env.newReq(http.MethodPut, "/api/v1/vault/kek", body, "sess-a", raceKey, true))
+		if retryRec.Code != http.StatusOK || !jsonEqual(t, retryRec.Body.Bytes(), []byte(`{"version":10}`)) || subRuns.Load() != 1 {
+			t.Fatalf("retry after release: status=%d body=%s subRuns=%d", retryRec.Code, retryRec.Body.String(), subRuns.Load())
+		}
+
+		// Lỗi DB thực sự ở bước đọc lại sau thua race vẫn phải fail-closed (500 internal_error).
+		errDB := &rereadFailIdempotencyDB{IdempotencyDB: env.pool, rereadErr: errors.New("simulated db failure on reread")}
+		errIdem := httpx.NewIdempotency(errDB, env.clk)
+		errRouter := chi.NewRouter()
+		errHandler := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
+			AppOrigin:     testAppOrigin,
+			Authenticator: env.authn(),
+			CSRF:          strictCSRF{},
+			Idempotency:   errIdem,
+		}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("handler không được chạy khi lỗi DB")
+		}))
+		errRouter.Method(http.MethodPut, "/api/v1/vault/kek", errHandler)
+
+		errKey := "idem_claim_race_dberr1"
+		errIdem.SetClaimRaceHookForTest(func() {
+			_, err := gen.New(env.pool).ClaimIdempotencyKey(context.Background(), gen.ClaimIdempotencyKeyParams{
+				UserID:      env.userA.UserID,
+				Key:         errKey,
+				Method:      http.MethodPut,
+				Path:        "/api/v1/vault/kek",
+				RequestHash: httpx.ComputeIdempotencyFingerprint(http.MethodPut, "/api/v1/vault/kek", []byte(body)),
+				OwnerToken:  uuid.New(),
+				Now:         pgxTimestamptz(env.clk.Now()),
+			})
+			if err != nil {
+				t.Errorf("concurrent claim for errDB: %v", err)
+			}
+			errDB.failNextQuery.Store(true)
+		})
+		defer errIdem.SetClaimRaceHookForTest(nil)
+
+		errRec := httptest.NewRecorder()
+		errRouter.ServeHTTP(errRec, env.newReq(http.MethodPut, "/api/v1/vault/kek", body, "sess-a", errKey, true))
+		if errRec.Code != http.StatusInternalServerError {
+			t.Fatalf("DB error on reread: status=%d, muốn 500", errRec.Code)
+		}
+	})
+}
+
+type rereadFailIdempotencyDB struct {
+	httpx.IdempotencyDB
+	failNextQuery atomic.Bool
+	rereadErr     error
+}
+
+func (d *rereadFailIdempotencyDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if d.failNextQuery.CompareAndSwap(true, false) {
+		return errRow{err: d.rereadErr}
+	}
+	return d.IdempotencyDB.QueryRow(ctx, sql, args...)
+}
+
+func (d *rereadFailIdempotencyDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	return d.IdempotencyDB.Exec(ctx, sql, arguments...)
+}
+
+type errRow struct {
+	err error
+}
+
+func (r errRow) Scan(_ ...any) error {
+	return r.err
 }
 
 func TestIdempotencyGrantExpiredReplayCSRFRejectionAndUserIsolation(t *testing.T) {
@@ -636,7 +897,7 @@ func (f *failOnCommitTx) Commit(ctx context.Context) error {
 	// (hoặc ngay trong lúc COMMIT mà client không biết chắc đã commit hay chưa).
 	// Ở đây ta thực sự Rollback kết nối bên dưới để giải phóng connection về pool,
 	// nhưng trả lỗi từ Commit() để kiểm tra bước 8 giữ nguyên hàng idempotency_key.
-	_ = f.Tx.Rollback(ctx)
+	_ = f.Rollback(ctx)
 	return f.commitErr
 }
 
@@ -833,6 +1094,8 @@ func TestIdempotencySlowRequestOver60sTakenOverAndRolledBack(t *testing.T) {
 
 	req1Claimed := make(chan struct{})
 	req2Done := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReq1 := func() { releaseOnce.Do(func() { close(req2Done) }) }
 	var callNum atomic.Int32
 
 	r := chi.NewRouter()
@@ -880,15 +1143,26 @@ func TestIdempotencySlowRequestOver60sTakenOverAndRolledBack(t *testing.T) {
 	body := `{"kdf":"takeover"}`
 
 	rec1 := httptest.NewRecorder()
+	req1Finished := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(req1Finished)
 		r.ServeHTTP(rec1, env.newReq(http.MethodPut, "/api/v1/vault/kek", body, "sess-a", key, true))
 	}()
+	defer func() {
+		releaseReq1()
+		wg.Wait()
+	}()
 
-	<-req1Claimed
-
+	select {
+	case <-req1Claimed:
+	case <-req1Finished:
+		t.Fatalf("req1 kết thúc sớm trước khi vào handler: status=%d body=%s", rec1.Code, rec1.Body.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout chờ req1 claim và vào handler")
+	}
 	// Dịch đồng hồ 61 giây (> 60 giây): Request 2 cùng key + cùng fingerprint giành lại claim,
 	// chạy mutation và commit thành công (version tăng từ 1 lên 2).
 	env.clk.Advance(61 * time.Second)
@@ -900,7 +1174,7 @@ func TestIdempotencySlowRequestOver60sTakenOverAndRolledBack(t *testing.T) {
 
 	// Cho phép Request 1 chạy tiếp tới bước FinishIdempotencyTx -> phát hiện owner_token không khớp,
 	// rollback toàn bộ mutation của Request 1.
-	close(req2Done)
+	releaseReq1()
 	wg.Wait()
 
 	if rec1.Code != http.StatusConflict {
@@ -1022,6 +1296,168 @@ func TestIdempotencyExpiredUnprunedRowReclaimedWithNewFingerprintExpiresAtAndSta
 	}
 	if secondStatus != "done" || secondMethod != http.MethodPut || secondPath != "/api/v1/vault/kek" {
 		t.Fatalf("reclaimed row: method=%q path=%q status=%q", secondMethod, secondPath, secondStatus)
+	}
+}
+
+func TestIdempotencyRawReceivedPathFingerprintingAndWireRequests(t *testing.T) {
+	env := newIdemTestEnv(t)
+	ctx := context.Background()
+
+	var runs atomic.Int32
+	mux := http.NewServeMux()
+	h := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
+		AppOrigin:     testAppOrigin,
+		Authenticator: env.authn(),
+		CSRF:          strictCSRF{},
+		Idempotency:   env.idem,
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := runs.Add(1)
+		tx, err := httpx.BeginMutationTx(r.Context(), env.pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(r.Context()) }()
+		resp := []byte(fmt.Sprintf(`{"run":%d}`, n))
+		if err := httpx.CommitIdempotencyTx(r.Context(), tx, http.StatusOK, resp); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(resp)
+	}))
+	mux.Handle("/", h)
+
+	readWireReq := func(target, body, idemKey string) *http.Request {
+		t.Helper()
+		raw := fmt.Sprintf(
+			"POST %s HTTP/1.1\r\n"+
+				"Host: localhost:3000\r\n"+
+				"Origin: %s\r\n"+
+				"Content-Type: application/json\r\n"+
+				"Cookie: sabk_session=sess-a; sabk_csrf=csrf-valid\r\n"+
+				"X-CSRF-Token: csrf-valid\r\n"+
+				"Idempotency-Key: %s\r\n"+
+				"Content-Length: %d\r\n"+
+				"\r\n"+
+				"%s",
+			target, testAppOrigin, idemKey, len(body), body,
+		)
+		req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(raw)))
+		if err != nil {
+			t.Fatalf("ReadRequest(%q): %v", target, err)
+		}
+		return req
+	}
+
+	body := `{"v":1}`
+
+	// 1. Canonical percent-encoded UTF-8 (`%C3%A9`) vs literal UTF-8 (`é`):
+	// Phải lưu đúng chuỗi path thô đã nhận `/api/v1/items/caf%C3%A9/entries`,
+	// và khi gửi cùng key tới `/api/v1/items/café/entries` phải bị 409 idempotency_conflict.
+	keyUTF8 := "idem_rawpath_utf8_0001"
+	targetEncoded := "/api/v1/items/caf%C3%A9/entries"
+	targetLiteral := "/api/v1/items/café/entries"
+
+	recEnc := httptest.NewRecorder()
+	mux.ServeHTTP(recEnc, readWireReq(targetEncoded, body, keyUTF8))
+	if recEnc.Code != http.StatusOK {
+		t.Fatalf("encoded target: status=%d body=%s", recEnc.Code, recEnc.Body.String())
+	}
+
+	var savedPath string
+	var savedHash []byte
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyUTF8).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != targetEncoded {
+		t.Fatalf("saved path = %q, muốn %q", savedPath, targetEncoded)
+	}
+	wantHash := httpx.ComputeIdempotencyFingerprint(http.MethodPost, targetEncoded, []byte(body))
+	if !bytes.Equal(savedHash, wantHash) {
+		t.Fatalf("saved hash = %x, muốn %x", savedHash, wantHash)
+	}
+
+	// Gửi cùng key nhưng request-target là literal UTF-8 -> 409 idempotency_conflict.
+	recLit := httptest.NewRecorder()
+	mux.ServeHTTP(recLit, readWireReq(targetLiteral, body, keyUTF8))
+	if recLit.Code != http.StatusConflict {
+		t.Fatalf("literal UTF-8 with same key: status=%d, muốn 409", recLit.Code)
+	}
+
+	// Gửi cùng key với cách viết hex khác (`%c3%a9` chữ thường) -> 409 idempotency_conflict.
+	recLowerHex := httptest.NewRecorder()
+	mux.ServeHTTP(recLowerHex, readWireReq("/api/v1/items/caf%c3%a9/entries", body, keyUTF8))
+	if recLowerHex.Code != http.StatusConflict {
+		t.Fatalf("alternate hex case with same key: status=%d, muốn 409", recLowerHex.Code)
+	}
+
+	// 2. `%20` và query string: query string phải bị loại bỏ khỏi path lưu và fingerprint,
+	// nhưng `%20` phải được giữ nguyên không decode thành dấu cách.
+	keySpace := "idem_rawpath_space_001"
+	recSpace := httptest.NewRecorder()
+	mux.ServeHTTP(recSpace, readWireReq("/api/v1/items/a%20b/entries?foo=1&bar=2", body, keySpace))
+	if recSpace.Code != http.StatusOK {
+		t.Fatalf("space target: status=%d body=%s", recSpace.Code, recSpace.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keySpace).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	wantSpacePath := "/api/v1/items/a%20b/entries"
+	if savedPath != wantSpacePath {
+		t.Fatalf("space saved path = %q, muốn %q", savedPath, wantSpacePath)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, wantSpacePath, []byte(body))) {
+		t.Fatal("space saved hash không khớp fingerprint của raw path không kèm query")
+	}
+	// Replay với query string khác nhưng cùng raw path -> trả 200 replay, không tăng runs.
+	beforeRuns := runs.Load()
+	recSpaceReplay := httptest.NewRecorder()
+	mux.ServeHTTP(recSpaceReplay, readWireReq("/api/v1/items/a%20b/entries?other=9", body, keySpace))
+	if recSpaceReplay.Code != http.StatusOK || runs.Load() != beforeRuns {
+		t.Fatalf("replay with different query: status=%d runs=%d (before=%d)", recSpaceReplay.Code, runs.Load(), beforeRuns)
+	}
+
+	// 3. `%3F` (encoded `?` trong segment path) và alternate escape spelling (`%7E` vs `~`):
+	keyQMark := "idem_rawpath_qmark_001"
+	wantQMarkPath := "/api/v1/items/a%3Fb/entries"
+	recQMark := httptest.NewRecorder()
+	mux.ServeHTTP(recQMark, readWireReq(wantQMarkPath+"?real_query=1", body, keyQMark))
+	if recQMark.Code != http.StatusOK {
+		t.Fatalf("qmark target: status=%d body=%s", recQMark.Code, recQMark.Body.String())
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path, request_hash FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyQMark).Scan(&savedPath, &savedHash); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != wantQMarkPath {
+		t.Fatalf("qmark saved path = %q, muốn %q", savedPath, wantQMarkPath)
+	}
+	if !bytes.Equal(savedHash, httpx.ComputeIdempotencyFingerprint(http.MethodPost, wantQMarkPath, []byte(body))) {
+		t.Fatal("qmark saved hash không khớp")
+	}
+	// Nếu gửi `/api/v1/items/a?b/entries` (trong đó `?` là query delimiter thực sự, path chỉ là `/api/v1/items/a`) -> 409 conflict.
+	recUnescapedQMark := httptest.NewRecorder()
+	mux.ServeHTTP(recUnescapedQMark, readWireReq("/api/v1/items/a?b/entries", body, keyQMark))
+	if recUnescapedQMark.Code != http.StatusConflict {
+		t.Fatalf("unescaped ? with same key: status=%d, muốn 409", recUnescapedQMark.Code)
+	}
+
+	// Alternate escape spelling cho unreserved char (`%7E` vs `~`):
+	keyTilde := "idem_rawpath_tilde_001"
+	recTildeEnc := httptest.NewRecorder()
+	mux.ServeHTTP(recTildeEnc, readWireReq("/api/v1/items/%7Euser/entries", body, keyTilde))
+	if recTildeEnc.Code != http.StatusOK {
+		t.Fatalf("tilde encoded: status=%d", recTildeEnc.Code)
+	}
+	if err := env.pool.QueryRow(ctx, `SELECT path FROM idempotency_key WHERE user_id=$1 AND key=$2`, env.userA.UserID, keyTilde).Scan(&savedPath); err != nil {
+		t.Fatal(err)
+	}
+	if savedPath != "/api/v1/items/%7Euser/entries" {
+		t.Fatalf("tilde saved path = %q, muốn /api/v1/items/%%7Euser/entries", savedPath)
+	}
+	recTildeRaw := httptest.NewRecorder()
+	mux.ServeHTTP(recTildeRaw, readWireReq("/api/v1/items/~user/entries", body, keyTilde))
+	if recTildeRaw.Code != http.StatusConflict {
+		t.Fatalf("tilde unencoded with same key: status=%d, muốn 409", recTildeRaw.Code)
 	}
 }
 
