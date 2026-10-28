@@ -809,32 +809,124 @@ func TestUserLimit_VaultSensitiveScopeAndFailClosed(t *testing.T) {
 	}
 }
 
-// BE1-3: Allow phải lấy đồng hồ SAU KHI đã giữ advisory lock (scope, user).
+// BE1-3 / BE2-5: Allow phải lấy đồng hồ SAU KHI đã giữ advisory lock (scope, user).
 // Nếu một request phải chờ lock lâu hơn cả cửa sổ trượt rồi mới được cấp quyền,
 // sự kiện vừa ghi phải mang mốc thời gian sau khi chờ và vẫn được tính vào cửa sổ của request kế tiếp.
+// Đồng thời (BE2-5), khi có một phiên khác đang chờ một advisory lock không liên quan trên cùng DB/cluster,
+// phép thử vẫn phải đợi đúng backend Allow của chính nó chặn trên đúng định danh khóa (database, classid, objid, PID).
 func TestUserLimit_ClockSampledAfterAdvisoryLockWait(t *testing.T) {
 	dsn := dbtest.StartPostgres(t)
 	dbtest.MigrateUp(t, dsn)
 	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	// Mở một pool riêng giới hạn đúng 1 kết nối cho UserLimiter để xác định chính xác PID backend của Allow.
+	allowCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig allowPool: %v", err)
+	}
+	allowCfg.MaxConns = 1
+	allowCfg.MinConns = 1
+	allowPool, err := pgxpool.NewWithConfig(ctx, allowCfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig allowPool: %v", err)
+	}
+	t.Cleanup(allowPool.Close)
+
+	var allowPID int32
+	if err := allowPool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&allowPID); err != nil {
+		t.Fatalf("query allowPID: %v", err)
+	}
 
 	userID, _ := seedRateLimitUser(t, pool, "post-lock-clock@example.com")
 	t0 := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	clk := clock.NewFixed(t0)
 
 	const scope = httpx.ScopeVaultRecoveryLookup
-	limiter := httpx.NewUserLimiterWithRules(pool, clk, map[string]httpx.RateLimitRule{
+	limiter := httpx.NewUserLimiterWithRules(allowPool, clk, map[string]httpx.RateLimitRule{
 		scope: {
 			Limit:  1,
 			Window: 15 * time.Minute,
 		},
 	})
 
-	ctx := context.Background()
+	// Tạo một advisory lock waiter KHÔNG liên quan đang bị chặn sẵn trước khi chạy Allow
+	// để chứng minh phép chờ không bị đánh lừa bởi waiter của khóa/lane khác (BE2-5).
+	const unrelatedScope = "unrelated.advisory.scope"
+	unrelatedUserID := uuid.New()
+	unrelatedHoldTx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("BeginTx unrelatedHoldTx: %v", err)
+	}
+	defer func() { _ = unrelatedHoldTx.Rollback(ctx) }()
+	if err := gen.New(unrelatedHoldTx).AcquireRateLimitLock(ctx, gen.AcquireRateLimitLockParams{
+		Scope:  unrelatedScope,
+		UserID: unrelatedUserID,
+	}); err != nil {
+		t.Fatalf("AcquireRateLimitLock unrelatedHoldTx: %v", err)
+	}
+
+	unrelatedWaitCtx, unrelatedWaitCancel := context.WithCancel(ctx)
+	defer unrelatedWaitCancel()
+	unrelatedWaitDone := make(chan error, 1)
+	go func() {
+		tx, txErr := pool.BeginTx(unrelatedWaitCtx, pgx.TxOptions{})
+		if txErr != nil {
+			unrelatedWaitDone <- txErr
+			return
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		unrelatedWaitDone <- gen.New(tx).AcquireRateLimitLock(unrelatedWaitCtx, gen.AcquireRateLimitLockParams{
+			Scope:  unrelatedScope,
+			UserID: unrelatedUserID,
+		})
+	}()
+	defer func() {
+		unrelatedWaitCancel()
+		_ = unrelatedHoldTx.Rollback(ctx)
+		select {
+		case <-unrelatedWaitDone:
+		case <-time.After(5 * time.Second):
+			t.Error("timeout dọn dẹp unrelatedWaitDone")
+		}
+	}()
+
+	unrelatedDeadline := time.Now().Add(5 * time.Second)
+	for {
+		var unrelatedWaiting bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_locks AS l
+				JOIN pg_database AS d ON d.oid = l.database AND d.datname = current_database()
+				WHERE l.locktype = 'advisory'
+				  AND NOT l.granted
+				  AND l.objsubid = 2
+				  AND l.classid::int4 = hashtext($1::text)
+				  AND l.objid::int4 = hashtext(($2::uuid)::text)
+			)
+		`, unrelatedScope, unrelatedUserID).Scan(&unrelatedWaiting); err != nil {
+			t.Fatalf("query pg_locks unrelated waiter: %v", err)
+		}
+		if unrelatedWaiting {
+			break
+		}
+		if time.Now().After(unrelatedDeadline) {
+			t.Fatal("timeout chờ unrelated advisory waiter vào trạng thái NOT granted")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	holdTx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("BeginTx holdTx: %v", err)
 	}
 	defer func() { _ = holdTx.Rollback(ctx) }()
+
+	var holdPID int32
+	if err := holdTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holdPID); err != nil {
+		t.Fatalf("query holdPID: %v", err)
+	}
 
 	if err := gen.New(holdTx).AcquireRateLimitLock(ctx, gen.AcquireRateLimitLockParams{
 		Scope:  scope,
@@ -854,18 +946,37 @@ func TestUserLimit_ClockSampledAfterAdvisoryLockWait(t *testing.T) {
 		resCh <- allowResult{ok: ok, retry: retry, err: err}
 	}()
 
-	// Đợi deterministically tới khi goroutine Allow thực sự đang chờ advisory lock trong pg_locks.
+	// Đợi deterministically tới khi chính backend allowPID của goroutine Allow đang chờ đúng advisory lock
+	// (database oid của current_database(), classid = hashtext(scope), objid = hashtext(user_id::text), bị chặn bởi holdPID).
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		var waiting int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiting); err != nil {
-			t.Fatalf("query pg_locks: %v", err)
+		var waiting bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_locks AS l
+				JOIN pg_database AS d ON d.oid = l.database AND d.datname = current_database()
+				WHERE l.locktype = 'advisory'
+				  AND NOT l.granted
+				  AND l.pid = $1
+				  AND l.objsubid = 2
+				  AND l.classid::int4 = hashtext($2::text)
+				  AND l.objid::int4 = hashtext(($3::uuid)::text)
+				  AND $4 = ANY(pg_blocking_pids(l.pid))
+			)
+		`, allowPID, scope, userID, holdPID).Scan(&waiting); err != nil {
+			t.Fatalf("query pg_locks target waiter: %v", err)
 		}
-		if waiting >= 1 {
+		if waiting {
 			break
 		}
+		select {
+		case early := <-resCh:
+			t.Fatalf("Allow kết thúc sớm trước khi thấy trạng thái chờ advisory lock: %+v", early)
+		default:
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("timeout chờ Allow block trên pg_advisory_xact_lock")
+			t.Fatalf("timeout chờ allowPID=%d block trên pg_advisory_xact_lock (holdPID=%d)", allowPID, holdPID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
