@@ -30,7 +30,7 @@ Ngoài phạm vi: login-with-passkey, largeBlob/server-held fallback, rotate VK,
 
 | Thành phần | Contract |
 |---|---|
-| KDF | libsodium Worker Argon2id `64 MiB ≤ mem ≤ 256 MiB`, `3 ≤ ops ≤ 10`, `p=1`, `salt` 16 B (mặc định tạo/rewrap ở 64 MiB, `ops=3`; trần 256 MiB là điểm lệch gate 4 — **chờ chủ repo ký duyệt (plan mục 5)**); không fallback thấp hơn ([ADR 0002](../adr/0002-vault-crypto-layout.md)) |
+| KDF | libsodium Worker Argon2id `64 MiB ≤ mem ≤ 256 MiB`, `3 ≤ ops ≤ 10`, `p=1`, `salt` 16 B (tạo vault mới ở mức cơ sở `64 MiB, ops=3`; rewrap/recover giữ nguyên `ops/mem/parallelism` hợp lệ hiện tại kèm `salt` 16 B mới, server từ chối hạ `ops`/`mem` và chấp nhận bằng hoặc cao hơn trong `3…10` / `64…256 MiB` theo làm rõ `advisor-dec-004`; trần 256 MiB là điểm lệch gate 4 — **chờ chủ repo ký duyệt (plan mục 5)**); không fallback thấp hơn ([ADR 0002](../adr/0002-vault-crypto-layout.md)) |
 | VK/keypair | VK random 32 B; X25519 + Ed25519 suy từ seed lúc tạo vault, private blob (105 B) wrapped bằng VK |
 | Entry envelope | Đúng 5 field v1, JCS RFC 8785; AAD prefix/NUL/JCS/NUL/client UUID theo §5.5; không đổi protocol `sabk` |
 | Entry ID | Client UUID v4 trước seal, được API giữ nguyên; `vault_key_id` lấy từ vault response trước tạo entry |
