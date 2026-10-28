@@ -125,10 +125,10 @@ func (a *API) applySession(w http.ResponseWriter, r *http.Request, issued auth.I
 	SetSessionCookies(w, issued.Access, issued.AccessExp, issued.Refresh, issued.SessionExp)
 	clearCookie(w, CookieAnon, PathAuth, true)
 	clearCookie(w, CookieOAuth, PathAuth, true)
-	tok, err := a.svc.CSRF().Issue(auth.CSRFKindSession, issued.Principal.SessionID.String(), time.Until(issued.SessionExp))
-	if err == nil {
-		SetCSRFCookie(w, tok.Raw, tok.Expiry)
-	}
+	// Dùng issueSessionCSRF (clamp TTL) — không time.Until(wall): Fixed clock trong test
+	// có thể ở quá khứ so với wall, TTL âm khiến Issue fallback AnonTTL (10m) rồi hết hạn
+	// khi Advance verification 24h.
+	a.issueSessionCSRF(w, r, issued.Principal, auth.SessionTTL)
 }
 
 func (a *API) Signup(w http.ResponseWriter, r *http.Request) {
