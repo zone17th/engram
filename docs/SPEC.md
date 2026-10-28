@@ -691,7 +691,7 @@ flowchart TD
     P[Passphrase] -->|Argon2id m=64MiB t=3 p=1, salt 16B| KEK[KEK 32B]
     KEK -->|seal| WK[VK wrapped by KEK<br/>server — đổi passphrase chỉ đụng bản này]
     WK -->|open| VK[Vault Key 32B random]
-    RK[10 recovery keys<br/>~128-bit Crockford rkN_] -->|BLAKE2b wrap-key + seal| WR[VK wrapped by each RK<br/>server — tối đa 10 hàng slot 1..10]
+    RK[10 recovery keys<br/>~128-bit Crockford rk{n}_] -->|BLAKE2b wrap-key + seal| WR[VK wrapped by each RK<br/>server — tối đa 10 hàng slot 1..10]
     WR -->|open một RK| VK
     PK[Passkey WebAuthn PRF<br/>hmac-secret] -->|32B PWK + seal| WPW[VK wrapped by PWK<br/>server — N passkey]
     WPW -->|get + PRF| VK
@@ -722,8 +722,8 @@ flowchart TD
 | KDF | **Argon2id** (`alg = "argon2id13"`): tạo vault mới ở mức cơ sở `mem = 64 MiB` (`67108864`), `ops = 3`, `parallelism = 1`, `salt` 16 B; khoảng hợp lệ `3 ≤ ops ≤ 10`, `64 MiB ≤ mem ≤ 256 MiB` (`268435456`, trần 256 MiB là điểm lệch gate 4 — **chờ chủ repo ký duyệt (plan mục 5)**) | Mọi thiết bị giống nhau, **không** fallback thấp hơn. Khi rewrap/recover: client dùng lại nguyên vẹn `(ops, mem, parallelism)` hợp lệ hiện tại của `vault.kdf` kèm `salt` 16 B mới (không bao giờ hạ; P03 không nâng và không có UI nâng); server từ chối mọi rewrap/recover có `ops` hoặc `mem` thấp hơn `vault.kdf` hiện tại và chấp nhận bằng hoặc cao hơn trong khoảng `3…10` / `64…256 MiB` (client tương lai có thể nâng). Quy tắc này dung hoà cả hai câu trong plan mục 2.1 (*"không hạ ops/mem so với kdf hiện tại"* và *"P03 luôn tạo và rewrap ở mức tối thiểu"*) — làm rõ `advisor-dec-004` gửi kèm lô gate cho chủ repo (không phải điểm lệch thứ 5; xem [ADR 0002](adr/0002-vault-crypto-layout.md) §4–§5) |
 | AEAD | **XChaCha20-Poly1305** IETF, key 32 B, nonce 24 B random | Text và JSON cùng alg |
 | Wrap | Cùng AEAD (`version(1)=0x01 ‖ nonce(24) ‖ ciphertext ‖ tag(16)`: wrap VK 73 B, wrap private keys 105 B); AAD = `UTF8(nhãn) ‖ 0x00 ‖ 0x01` với nhãn `"sabk.vk.kek.v1"` (KEK), `"sabk.vk.rk.v1"` (RK), `"sabk.vk.prf.v1"` (PRF), `"sabk.priv.v1"` (private keys) | Thay thế dứt điểm các nhãn phác thảo cũ không tiền tố; chi tiết tại [ADR 0002](adr/0002-vault-crypto-layout.md) mục 1 |
-| Lookup RK | **BLAKE2b-256** domain-separated `"sabk.rk.lookup.v1" \|\| rk` | Không Argon2id — RK đã ~128-bit. Không lưu plaintext RK |
-| RK → wrap key | BLAKE2b-256 `"sabk.rk.wrap.v1" \|\| rk` (32 B) | Tách domain với lookup; không dùng 16 B raw làm key AEAD |
+| Lookup RK | **BLAKE2b-256** domain-separated `"sabk.rk.lookup.v1" \|\| rk_norm` | Không Argon2id — RK đã ~128-bit. Không lưu plaintext RK |
+| RK → wrap key | BLAKE2b-256 `"sabk.rk.wrap.v1" \|\| rk_norm` (32 B) | Tách domain với lookup; không dùng 16 B raw làm key AEAD |
 | Keypair | X25519, Ed25519 | Hai seed, một blob wrap |
 | Password login | Argon2id server-side, params riêng | Độc lập KDF vault |
 
