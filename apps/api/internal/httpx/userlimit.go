@@ -110,11 +110,6 @@ func (l *UserLimiter) Allow(ctx context.Context, scope string, userID uuid.UUID)
 		return false, 0, fmt.Errorf("scope rate limit không hợp lệ: %q", scope)
 	}
 
-	now := l.clk.Now().UTC()
-	since := now.Add(-rule.Window)
-	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
-	nowTS := pgtype.Timestamptz{Time: now, Valid: true}
-
 	tx, err := l.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, 0, err
@@ -131,6 +126,10 @@ func (l *UserLimiter) Allow(ctx context.Context, scope string, userID uuid.UUID)
 		return false, 0, err
 	}
 
+	now := l.clk.Now().UTC()
+	since := now.Add(-rule.Window)
+	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
+	nowTS := pgtype.Timestamptz{Time: now, Valid: true}
 	count, err := q.CountRateEventsSince(ctx, gen.CountRateEventsSinceParams{
 		Scope:  scope,
 		UserID: userID,

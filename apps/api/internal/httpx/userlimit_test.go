@@ -1,6 +1,7 @@
 package httpx_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,11 +16,15 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 )
 
@@ -31,6 +36,36 @@ func seedRateLimitUser(t *testing.T, pool *pgxpool.Pool, email string) (uuid.UUI
 		t.Fatalf("seed user %s: %v", email, err)
 	}
 	return userID, uuid.New()
+}
+
+func seedVaultAndRecoveryKeys(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, vaultKeyID string, rkCount int) {
+	t.Helper()
+	ctx := context.Background()
+	q := gen.New(pool)
+	if _, err := q.InsertVault(ctx, gen.InsertVaultParams{
+		UserID:               userID,
+		Kdf:                  []byte(`{"alg":"argon2id","m_kib":65536,"t":3,"p":4,"salt":"AAAAAAAAAAAAAAAAAAAAAA=="}`),
+		VaultKeyID:           vaultKeyID,
+		VaultKeyWrappedByKek: bytes.Repeat([]byte{0x11}, 60),
+		X25519Public:         bytes.Repeat([]byte{0x22}, 32),
+		Ed25519Public:        bytes.Repeat([]byte{0x33}, 32),
+		PrivateKeysWrapped:   bytes.Repeat([]byte{0x44}, 92),
+	}); err != nil {
+		t.Fatalf("InsertVault(%s): %v", userID, err)
+	}
+	for slot := 1; slot <= rkCount; slot++ {
+		hash := make([]byte, 32)
+		copy(hash, userID[:])
+		hash[16] = byte(slot)
+		if _, err := q.InsertRecoveryKey(ctx, gen.InsertRecoveryKeyParams{
+			UserID:     userID,
+			Slot:       int32(slot),
+			LookupHash: hash,
+			Wrap:       bytes.Repeat([]byte{byte(slot)}, 60),
+		}); err != nil {
+			t.Fatalf("InsertRecoveryKey(%s, slot=%d): %v", userID, slot, err)
+		}
+	}
 }
 
 func countRateEvents(t *testing.T, pool *pgxpool.Pool, scope string, userID uuid.UUID) int {
@@ -348,136 +383,165 @@ func TestUserLimit_LookupAndCompleteCountedSeparately(t *testing.T) {
 	}
 }
 
-// Bullet 6: replay idempotent (bước 2) và request bị từ chối ở bước re-auth / thiếu grant (bước 3)
-// không đi qua rate limit và không bị đếm (plan mục 2.3).
+// Bullet 6 (BE1-15): trên chuỗi middleware PRODUCTION (ChainIdempotencyMiddleware với UserLimiter
+// PostgreSQL thật, Idempotency lookup/claim thật, auth.Grants thật và clock giả):
+// - replay idempotent ở bước 2 không đi qua rate limit và ghi 0 rate_event;
+// - request thiếu grant hoặc grant sai/hết hạn với Idempotency-Key mới bị từ chối ở bước 3 và ghi 0 rate_event;
+// - sau đó user vẫn còn nguyên đủ toàn bộ quota hợp lệ (5 lượt).
 func TestUserLimit_IdempotentReplayAndMissingGrantNotCounted(t *testing.T) {
 	dsn := dbtest.StartPostgres(t)
 	dbtest.MigrateUp(t, dsn)
 	pool := dbtest.Pool(t, dsn)
 
-	userID, sessID := seedRateLimitUser(t, pool, "order-seam@example.com")
+	userID, sessID := seedRateLimitUser(t, pool, "order-prod-chain@example.com")
 	principal := authctx.Principal{UserID: userID, SessionID: sessID}
-	clk := clock.NewFixed(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC))
+	t0 := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(t0)
+
 	limiter := httpx.NewUserLimiter(pool, clk)
+	idem := httpx.NewIdempotency(pool, clk)
+	grants := auth.NewGrants(bytes.Repeat([]byte{0x5A}, 32), clk)
 
-	// Seam mô phỏng bước 2 (Idempotency lookup replay) của mục 2.3 mà không phụ thuộc file T3:
-	// khi key đã ở trạng thái done với cùng fingerprint, middleware bước 2 trả thẳng response gốc và dừng.
-	replayedKeys := map[string]int{"idem-already-done-0001": http.StatusOK}
-	idempotencyReplaySeam := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if status, ok := replayedKeys[r.Header.Get("Idempotency-Key")]; ok {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"version":2}`))
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	// Reauth verifier thật kiểm tra header X-Reauth-Token: thiếu token -> reauth_required (401),
-	// token sai/hết hạn -> reauth_invalid (401), token == "valid-grant" -> cho qua bước 4 (LimitUser).
-	reauthVerifier := reauthFunc(func(_ context.Context, _ authctx.Principal, action, token string) error {
-		if token == "" {
-			return &httpx.AuthError{Code: "reauth_required"}
-		}
-		if token != "valid-grant" || action != "vault.recover" {
-			return &httpx.AuthError{Code: "reauth_invalid"}
-		}
-		return nil
-	})
-
-	var handlerCalls int
+	var handlerCalls atomic.Int32
 	r := chi.NewRouter()
-	// Đúng thứ tự mục 2.3:
-	// 1. RequireSession / RequireCSRF
-	// 2. Idempotency replay lookup
-	// 3. RequireReauth
-	// 4. Rate limit theo user (LimitUser)
-	r.Use(httpx.RequireSession(stubAuth{p: principal}))
-	r.Use(httpx.RequireCSRF(stubCSRF{}))
-	r.Use(idempotencyReplaySeam)
-	r.Use(httpx.RequireReauth(reauthVerifier, "vault.recover"))
-	r.Use(limiter.Middleware(httpx.ScopeVaultRecoveryComplete))
-	r.Post("/vault/recover/complete", func(w http.ResponseWriter, r *http.Request) {
-		handlerCalls++
+	h := httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
+		AppOrigin:     testAppOrigin,
+		Authenticator: stubAuth{p: principal},
+		CSRF:          strictCSRF{},
+		Idempotency:   idem,
+		Reauth:        grantsReauthAdapter{g: grants},
+		ReauthAction:  "vault.recover",
+		RateLimit:     limiter.Middleware(httpx.ScopeVaultRecoveryComplete),
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := handlerCalls.Add(1)
+		tx, err := httpx.BeginMutationTx(r.Context(), pool)
+		if err != nil {
+			t.Fatalf("BeginMutationTx: %v", err)
+		}
+		defer func() { _ = tx.Rollback(r.Context()) }()
+		resp := []byte(fmt.Sprintf(`{"version":%d}`, n+1))
+		if err := httpx.CommitIdempotencyTx(r.Context(), tx, http.StatusOK, resp); err != nil {
+			t.Fatalf("CommitIdempotencyTx: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-	})
+		_, _ = w.Write(resp)
+	}))
+	r.Method(http.MethodPost, "/api/v1/vault/recover/complete", h)
 
-	// 1) Gửi 10 request replay idempotent (kể cả không có X-Reauth-Token hoặc grant đã hết hạn):
-	// tất cả trả 200 từ bước 2 và KHÔNG ghi bất kỳ rate_event nào.
-	for i := range 10 {
-		req := httptest.NewRequest(http.MethodPost, "/vault/recover/complete", nil)
+	sendProd := func(idemKey, reauthToken, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/vault/recover/complete", strings.NewReader(body))
+		req.Header.Set("Origin", testAppOrigin)
+		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(&http.Cookie{Name: "sabk_session", Value: "tok"})
-		req.AddCookie(&http.Cookie{Name: "sabk_csrf", Value: "c"})
-		req.Header.Set("X-CSRF-Token", "c")
-		req.Header.Set("Idempotency-Key", "idem-already-done-0001")
+		req.AddCookie(&http.Cookie{Name: "sabk_csrf", Value: "csrf-ok"})
+		req.Header.Set("X-CSRF-Token", "csrf-ok")
+		req.Header.Set("Idempotency-Key", idemKey)
+		if reauthToken != "" {
+			req.Header.Set("X-Reauth-Token", reauthToken)
+		}
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("replay %d = %d, muốn 200", i+1, rec.Code)
-		}
-	}
-	if got := countRateEvents(t, pool, httpx.ScopeVaultRecoveryComplete, userID); got != 0 {
-		t.Fatalf("idempotent replay không được tính vào rate_event, got %d", got)
+		return rec
 	}
 
-	// 2) Gửi 10 request thiếu grant và 10 request grant không hợp lệ:
-	// bị từ chối 401 ở bước 3 và KHÔNG tiêu quota rate limit ở bước 4.
+	// 1) Gửi 10 request thiếu grant và 10 request grant không hợp lệ với Idempotency-Key hoàn toàn mới:
+	// tất cả bị chặn 401 ở bước 3 (RequireReauth) và ghi 0 rate_event.
 	for i := range 10 {
-		reqMissing := httptest.NewRequest(http.MethodPost, "/vault/recover/complete", nil)
-		reqMissing.AddCookie(&http.Cookie{Name: "sabk_session", Value: "tok"})
-		reqMissing.AddCookie(&http.Cookie{Name: "sabk_csrf", Value: "c"})
-		reqMissing.Header.Set("X-CSRF-Token", "c")
-		reqMissing.Header.Set("Idempotency-Key", fmt.Sprintf("idem-missing-grant-%04d", i))
-		recMissing := httptest.NewRecorder()
-		r.ServeHTTP(recMissing, reqMissing)
+		recMissing := sendProd(fmt.Sprintf("idem-missing-grant-%04d", i), "", `{"slot":1}`)
 		if recMissing.Code != http.StatusUnauthorized {
-			t.Fatalf("missing grant %d = %d, muốn 401", i+1, recMissing.Code)
+			t.Fatalf("missing grant %d = %d, muốn 401: %s", i+1, recMissing.Code, recMissing.Body.String())
+		}
+		if p := decodeProblem(t, recMissing); p.Code != "reauth_required" {
+			t.Fatalf("missing grant %d code = %q, muốn reauth_required", i+1, p.Code)
 		}
 
-		reqInvalid := httptest.NewRequest(http.MethodPost, "/vault/recover/complete", nil)
-		reqInvalid.AddCookie(&http.Cookie{Name: "sabk_session", Value: "tok"})
-		reqInvalid.AddCookie(&http.Cookie{Name: "sabk_csrf", Value: "c"})
-		reqInvalid.Header.Set("X-CSRF-Token", "c")
-		reqInvalid.Header.Set("X-Reauth-Token", "expired-grant")
-		reqInvalid.Header.Set("Idempotency-Key", fmt.Sprintf("idem-invalid-grant-%04d", i))
-		recInvalid := httptest.NewRecorder()
-		r.ServeHTTP(recInvalid, reqInvalid)
+		recInvalid := sendProd(fmt.Sprintf("idem-invalid-grant-%04d", i), "invalid-or-expired-grant", `{"slot":1}`)
 		if recInvalid.Code != http.StatusUnauthorized {
-			t.Fatalf("invalid grant %d = %d, muốn 401", i+1, recInvalid.Code)
+			t.Fatalf("invalid grant %d = %d, muốn 401: %s", i+1, recInvalid.Code, recInvalid.Body.String())
+		}
+		if p := decodeProblem(t, recInvalid); p.Code != "reauth_invalid" {
+			t.Fatalf("invalid grant %d code = %q, muốn reauth_invalid", i+1, p.Code)
 		}
 	}
 	if got := countRateEvents(t, pool, httpx.ScopeVaultRecoveryComplete, userID); got != 0 {
-		t.Fatalf("request thiếu/sai grant không được tính vào rate_event, got %d", got)
+		t.Fatalf("request thiếu/sai grant trên production chain không được ghi rate_event, got %d", got)
 	}
 
-	// 3) Sau tất cả các request replay và thiếu grant ở trên, user vẫn còn nguyên đủ 5 lượt hợp lệ.
-	for i := range 5 {
-		req := httptest.NewRequest(http.MethodPost, "/vault/recover/complete", nil)
-		req.AddCookie(&http.Cookie{Name: "sabk_session", Value: "tok"})
-		req.AddCookie(&http.Cookie{Name: "sabk_csrf", Value: "c"})
-		req.Header.Set("X-CSRF-Token", "c")
-		req.Header.Set("X-Reauth-Token", "valid-grant")
-		req.Header.Set("Idempotency-Key", fmt.Sprintf("idem-fresh-valid-%04d", i))
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("valid request %d = %d, muốn 200", i+1, rec.Code)
+	// 2) Seed 1 bản ghi idempotency đã hoàn tất ('done') trong bảng idempotency_key của PostgreSQL
+	// thông qua chính queries chuẩn (ClaimIdempotencyKey + FinishIdempotencyKey) để chưa tốn bất kỳ rate_event nào,
+	// rồi bắn 10 request replay liên tiếp qua chuỗi production (cả khi thiếu grant hoặc gửi grant đã hết hạn):
+	// bước 2 (Idempotency.Lookup) phải trả ngay kết quả gốc và ghi 0 rate_event.
+	const replayKey = "idem-already-done-prod-0001"
+	const replayPath = "/api/v1/vault/recover/complete"
+	const replayBody = `{"slot":1,"wrap":"AA"}`
+	ownerTok := uuid.New()
+	q := gen.New(pool)
+	if _, err := q.ClaimIdempotencyKey(context.Background(), gen.ClaimIdempotencyKeyParams{
+		UserID:      userID,
+		Key:         replayKey,
+		Method:      http.MethodPost,
+		Path:        replayPath,
+		RequestHash: httpx.ComputeIdempotencyFingerprint(http.MethodPost, replayPath, []byte(replayBody)),
+		OwnerToken:  ownerTok,
+		Now:         pgtype.Timestamptz{Time: t0, Valid: true},
+	}); err != nil {
+		t.Fatalf("ClaimIdempotencyKey seed: %v", err)
+	}
+	if rows, err := q.FinishIdempotencyKey(context.Background(), gen.FinishIdempotencyKeyParams{
+		UserID:     userID,
+		Key:        replayKey,
+		OwnerToken: ownerTok,
+		StatusCode: 200,
+		Response:   []byte(`{"version":2}`),
+	}); err != nil || rows != 1 {
+		t.Fatalf("FinishIdempotencyKey seed: rows=%d err=%v", rows, err)
+	}
+
+	for i := range 10 {
+		tok := ""
+		if i%2 == 1 {
+			tok = "expired-or-invalid-grant"
+		}
+		recReplay := sendProd(replayKey, tok, replayBody)
+		if recReplay.Code != http.StatusOK || !jsonEqual(t, recReplay.Body.Bytes(), []byte(`{"version":2}`)) {
+			t.Fatalf("replay %d = %d body=%s, muốn 200 {\"version\":2}", i+1, recReplay.Code, recReplay.Body.String())
 		}
 	}
-	if handlerCalls != 5 {
-		t.Fatalf("handlerCalls = %d, muốn 5", handlerCalls)
+	if got := countRateEvents(t, pool, httpx.ScopeVaultRecoveryComplete, userID); got != 0 {
+		t.Fatalf("idempotent replay trên production chain phải ghi 0 rate_event, got %d", got)
+	}
+	if handlerCalls.Load() != 0 {
+		t.Fatalf("handlerCalls sau missing/invalid grants và replays = %d, muốn 0", handlerCalls.Load())
+	}
+
+	// 3) Sau toàn bộ 20 request thiếu/sai grant và 10 request replay (tổng 0 rate_event),
+	// user vẫn còn nguyên vẹn đủ toàn bộ quota hợp lệ (5 lượt).
+	validGrant, err := grants.Issue(principal, "vault.recover")
+	if err != nil {
+		t.Fatalf("Issue validGrant: %v", err)
+	}
+	for i := range 5 {
+		recValid := sendProd(fmt.Sprintf("idem-fresh-valid-%04d", i), validGrant.Grant, fmt.Sprintf(`{"slot":%d}`, i+1))
+		if recValid.Code != http.StatusOK {
+			t.Fatalf("valid request %d = %d, muốn 200: %s", i+1, recValid.Code, recValid.Body.String())
+		}
 	}
 	if got := countRateEvents(t, pool, httpx.ScopeVaultRecoveryComplete, userID); got != 5 {
-		t.Fatalf("rate_event sau 5 request hợp lệ = %d, muốn 5", got)
+		t.Fatalf("sau 5 request hợp lệ số rate_event = %d, muốn 5", got)
 	}
-}
+	if handlerCalls.Load() != 5 {
+		t.Fatalf("handlerCalls = %d, muốn 5", handlerCalls.Load())
+	}
 
-type reauthFunc func(ctx context.Context, principal authctx.Principal, action, token string) error
-
-func (f reauthFunc) VerifyReauth(ctx context.Context, principal authctx.Principal, action, token string) error {
-	return f(ctx, principal, action, token)
+	// Request hợp lệ thứ 6 trong cùng cửa sổ bị chặn 429 ở bước 4 và không ghi thêm rate_event.
+	rec6 := sendProd("idem-fresh-valid-0006", validGrant.Grant, `{"slot":6}`)
+	if rec6.Code != http.StatusTooManyRequests {
+		t.Fatalf("request thứ 6 phải bị chặn 429, got %d: %s", rec6.Code, rec6.Body.String())
+	}
+	if got := countRateEvents(t, pool, httpx.ScopeVaultRecoveryComplete, userID); got != 5 {
+		t.Fatalf("số rate_event sau request thứ 6 bị chặn = %d, muốn 5", got)
+	}
 }
 
 // Bullet 7: request thứ 21 trong 1 phút, chia giữa POST /vault/unlock/passkey/options
@@ -626,10 +690,22 @@ func TestUserLimit_MessageDoesNotLeakRemainingRKCount(t *testing.T) {
 	dbtest.MigrateUp(t, dsn)
 	pool := dbtest.Pool(t, dsn)
 
-	// Tạo 2 user với trạng thái RK khác nhau (user 1 còn 7 RK, user 2 còn 1 RK)
+	// Tạo 2 user với trạng thái vault + RK thật khác nhau (user 1 còn 7 RK, user 2 còn 1 RK)
 	// để chứng minh phản hồi 429 hoàn toàn giống nhau và không chứa bất kỳ thông tin RK/passphrase nào.
 	user1, sess1 := seedRateLimitUser(t, pool, "rk-leak-1@example.com")
 	user2, sess2 := seedRateLimitUser(t, pool, "rk-leak-2@example.com")
+	seedVaultAndRecoveryKeys(t, pool, user1, "vk:1111111111111111", 7)
+	seedVaultAndRecoveryKeys(t, pool, user2, "vk:2222222222222222", 1)
+
+	q := gen.New(pool)
+	cnt1, err := q.CountRecoveryKeysByUser(context.Background(), user1)
+	if err != nil || cnt1 != 7 {
+		t.Fatalf("CountRecoveryKeysByUser(user1) = %d, err = %v, muốn 7", cnt1, err)
+	}
+	cnt2, err := q.CountRecoveryKeysByUser(context.Background(), user2)
+	if err != nil || cnt2 != 1 {
+		t.Fatalf("CountRecoveryKeysByUser(user2) = %d, err = %v, muốn 1", cnt2, err)
+	}
 
 	clk := clock.NewFixed(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC))
 	limiter := httpx.NewUserLimiter(pool, clk)
@@ -730,5 +806,109 @@ func TestUserLimit_VaultSensitiveScopeAndFailClosed(t *testing.T) {
 	nilRouter.ServeHTTP(recNil, httptest.NewRequest(http.MethodPut, "/vault/kek", nil))
 	if recNil.Code != http.StatusInternalServerError {
 		t.Fatalf("limiter nil = %d, muốn 500", recNil.Code)
+	}
+}
+
+// BE1-3: Allow phải lấy đồng hồ SAU KHI đã giữ advisory lock (scope, user).
+// Nếu một request phải chờ lock lâu hơn cả cửa sổ trượt rồi mới được cấp quyền,
+// sự kiện vừa ghi phải mang mốc thời gian sau khi chờ và vẫn được tính vào cửa sổ của request kế tiếp.
+func TestUserLimit_ClockSampledAfterAdvisoryLockWait(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+
+	userID, _ := seedRateLimitUser(t, pool, "post-lock-clock@example.com")
+	t0 := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(t0)
+
+	const scope = httpx.ScopeVaultRecoveryLookup
+	limiter := httpx.NewUserLimiterWithRules(pool, clk, map[string]httpx.RateLimitRule{
+		scope: {
+			Limit:  1,
+			Window: 15 * time.Minute,
+		},
+	})
+
+	ctx := context.Background()
+	holdTx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("BeginTx holdTx: %v", err)
+	}
+	defer func() { _ = holdTx.Rollback(ctx) }()
+
+	if err := gen.New(holdTx).AcquireRateLimitLock(ctx, gen.AcquireRateLimitLockParams{
+		Scope:  scope,
+		UserID: userID,
+	}); err != nil {
+		t.Fatalf("AcquireRateLimitLock holdTx: %v", err)
+	}
+
+	type allowResult struct {
+		ok    bool
+		retry int
+		err   error
+	}
+	resCh := make(chan allowResult, 1)
+	go func() {
+		ok, retry, err := limiter.Allow(ctx, scope, userID)
+		resCh <- allowResult{ok: ok, retry: retry, err: err}
+	}()
+
+	// Đợi deterministically tới khi goroutine Allow thực sự đang chờ advisory lock trong pg_locks.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiting); err != nil {
+			t.Fatalf("query pg_locks: %v", err)
+		}
+		if waiting >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout chờ Allow block trên pg_advisory_xact_lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Trong lúc Allow đang bị chặn trên advisory lock, dịch đồng hồ giả vượt quá cửa sổ 15 phút (lên t0 + 20m),
+	// sau đó nhả lock để Allow tiếp tục.
+	postWaitTime := t0.Add(20 * time.Minute)
+	clk.Set(postWaitTime)
+	if err := holdTx.Rollback(ctx); err != nil {
+		t.Fatalf("release holdTx: %v", err)
+	}
+
+	var res allowResult
+	select {
+	case res = <-resCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout chờ Allow hoàn tất sau khi nhả advisory lock")
+	}
+	if res.err != nil || !res.ok {
+		t.Fatalf("Allow thứ nhất sau khi chờ lock phải được phép: ok=%v retry=%d err=%v", res.ok, res.retry, res.err)
+	}
+
+	// Kiểm tra mốc thời gian đã ghi vào rate_event phải là mốc thời gian SAU KHI chờ lock (postWaitTime),
+	// không phải mốc t0 trước khi lấy lock.
+	var recordedAt time.Time
+	if err := pool.QueryRow(ctx, `SELECT at FROM rate_event WHERE scope = $1 AND user_id = $2`, scope, userID).Scan(&recordedAt); err != nil {
+		t.Fatalf("select recorded rate_event.at: %v", err)
+	}
+	if !recordedAt.UTC().Equal(postWaitTime) {
+		t.Fatalf("rate_event.at = %s, muốn %s (mốc thời gian sau khi lấy advisory lock)", recordedAt.UTC().Format(time.RFC3339Nano), postWaitTime.Format(time.RFC3339Nano))
+	}
+
+	// Ngay tại postWaitTime + 1m, sự kiện vừa được phép ở postWaitTime vẫn nằm trong cửa sổ 15 phút,
+	// nên request kế tiếp phải bị chặn (ok=false, retryAfter=840).
+	clk.Set(postWaitTime.Add(time.Minute))
+	ok2, retry2, err2 := limiter.Allow(ctx, scope, userID)
+	if err2 != nil {
+		t.Fatalf("Allow thứ hai trả lỗi: %v", err2)
+	}
+	if ok2 {
+		t.Fatal("Allow thứ hai phải bị chặn vì sự kiện vừa cấp phát ở postWaitTime vẫn còn trong cửa sổ 15 phút")
+	}
+	if retry2 != 14*60 {
+		t.Fatalf("Allow thứ hai retryAfter = %d, muốn 840 (14 phút)", retry2)
 	}
 }
