@@ -3,16 +3,16 @@ package db_test
 import (
 	"context"
 	"errors"
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
@@ -224,8 +224,18 @@ func TestVaultMigration0005TablesConstraintsAndDown(t *testing.T) {
 	}); !isUniqueViolation(err) {
 		t.Fatalf("cred_id UNIQUE toàn cục phải chặn trùng, err=%v", err)
 	}
+	if _, err := q.InsertRecoveryKey(ctx, gen.InsertRecoveryKeyParams{
+		UserID: u2.ID, Slot: 1, LookupHash: hash2, Wrap: make([]byte, 73),
+	}); err != nil {
+		t.Fatalf("InsertRecoveryKey u2: %v", err)
+	}
+	if _, err := q.InsertPasskey(ctx, gen.InsertPasskeyParams{
+		UserID: u2.ID, CredID: []byte("cred-id-global-unique-0002"), Pubkey: []byte{1}, PrfSalt: make([]byte, 32), VkWrap: make([]byte, 73), Name: "Key 2",
+	}); err != nil {
+		t.Fatalf("InsertPasskey u2: %v", err)
+	}
 
-	// FK ON DELETE CASCADE: xoá vault u1 xoá cả RK và passkey của u1.
+	// FK ON DELETE CASCADE: xoá vault u1 xoá cả RK và passkey của u1, giữ nguyên của u2.
 	if _, err := q.DeleteVaultByUser(ctx, u1.ID); err != nil {
 		t.Fatalf("DeleteVaultByUser: %v", err)
 	}
@@ -235,6 +245,27 @@ func TestVaultMigration0005TablesConstraintsAndDown(t *testing.T) {
 	}
 	if rkCount != 0 {
 		t.Fatalf("xoá vault phải cascade xoá RK, còn %d", rkCount)
+	}
+	pkU1, err := q.ListPasskeysByUser(ctx, u1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkU1) != 0 {
+		t.Fatalf("xoá vault phải cascade xoá passkey, còn %d", len(pkU1))
+	}
+	rkCountU2, err := q.CountRecoveryKeysByUser(ctx, u2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rkCountU2 != 1 {
+		t.Fatalf("RK của u2 phải còn nguyên, còn %d", rkCountU2)
+	}
+	pkU2, err := q.ListPasskeysByUser(ctx, u2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkU2) != 1 {
+		t.Fatalf("passkey của u2 phải còn nguyên, còn %d", len(pkU2))
 	}
 
 	// Down 5 -> 4 xoá 6 bảng 0005 nhưng giữ bảng P02; up lại lên 5 thành công.
