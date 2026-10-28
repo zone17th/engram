@@ -1,6 +1,7 @@
 package httpx_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,36 @@ func seedRateLimitUser(t *testing.T, pool *pgxpool.Pool, email string) (uuid.UUI
 		t.Fatalf("seed user %s: %v", email, err)
 	}
 	return userID, uuid.New()
+}
+
+func seedVaultAndRecoveryKeys(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, vaultKeyID string, rkCount int) {
+	t.Helper()
+	ctx := context.Background()
+	q := gen.New(pool)
+	if _, err := q.InsertVault(ctx, gen.InsertVaultParams{
+		UserID:               userID,
+		Kdf:                  []byte(`{"alg":"argon2id","m_kib":65536,"t":3,"p":4,"salt":"AAAAAAAAAAAAAAAAAAAAAA=="}`),
+		VaultKeyID:           vaultKeyID,
+		VaultKeyWrappedByKek: bytes.Repeat([]byte{0x11}, 60),
+		X25519Public:         bytes.Repeat([]byte{0x22}, 32),
+		Ed25519Public:        bytes.Repeat([]byte{0x33}, 32),
+		PrivateKeysWrapped:   bytes.Repeat([]byte{0x44}, 92),
+	}); err != nil {
+		t.Fatalf("InsertVault(%s): %v", userID, err)
+	}
+	for slot := 1; slot <= rkCount; slot++ {
+		hash := make([]byte, 32)
+		copy(hash, userID[:])
+		hash[16] = byte(slot)
+		if _, err := q.InsertRecoveryKey(ctx, gen.InsertRecoveryKeyParams{
+			UserID:     userID,
+			Slot:       int32(slot),
+			LookupHash: hash,
+			Wrap:       bytes.Repeat([]byte{byte(slot)}, 60),
+		}); err != nil {
+			t.Fatalf("InsertRecoveryKey(%s, slot=%d): %v", userID, slot, err)
+		}
+	}
 }
 
 func countRateEvents(t *testing.T, pool *pgxpool.Pool, scope string, userID uuid.UUID) int {
@@ -628,10 +659,22 @@ func TestUserLimit_MessageDoesNotLeakRemainingRKCount(t *testing.T) {
 	dbtest.MigrateUp(t, dsn)
 	pool := dbtest.Pool(t, dsn)
 
-	// Tạo 2 user với trạng thái RK khác nhau (user 1 còn 7 RK, user 2 còn 1 RK)
+	// Tạo 2 user với trạng thái vault + RK thật khác nhau (user 1 còn 7 RK, user 2 còn 1 RK)
 	// để chứng minh phản hồi 429 hoàn toàn giống nhau và không chứa bất kỳ thông tin RK/passphrase nào.
 	user1, sess1 := seedRateLimitUser(t, pool, "rk-leak-1@example.com")
 	user2, sess2 := seedRateLimitUser(t, pool, "rk-leak-2@example.com")
+	seedVaultAndRecoveryKeys(t, pool, user1, "vk:1111111111111111", 7)
+	seedVaultAndRecoveryKeys(t, pool, user2, "vk:2222222222222222", 1)
+
+	q := gen.New(pool)
+	cnt1, err := q.CountRecoveryKeysByUser(context.Background(), user1)
+	if err != nil || cnt1 != 7 {
+		t.Fatalf("CountRecoveryKeysByUser(user1) = %d, err = %v, muốn 7", cnt1, err)
+	}
+	cnt2, err := q.CountRecoveryKeysByUser(context.Background(), user2)
+	if err != nil || cnt2 != 1 {
+		t.Fatalf("CountRecoveryKeysByUser(user2) = %d, err = %v, muốn 1", cnt2, err)
+	}
 
 	clk := clock.NewFixed(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC))
 	limiter := httpx.NewUserLimiter(pool, clk)
