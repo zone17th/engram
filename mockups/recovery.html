@@ -125,12 +125,13 @@
     </div>
 
     <!-- Các trạng thái lỗi ở bước tra cứu / mở wrap recovery key -->
+    <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
     <div class="flex flex-col gap-3 mb-4">
       <!-- 1. 401 recovery_key_invalid (§5.9 recovery.invalid) -->
       <div id="s2-err-invalid" class="card p-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">401 recovery_key_invalid · recovery.invalid</p>
         <div role="alert" class="auth-alert mb-2">
-          <p class="text-[14px] font-semibold m-0 mb-1">Recovery key không đúng hoặc đã dùng.</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Recovery key không đúng hoặc đã dùng.</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Một thông báo chung cho key không tồn tại, đã dùng hoặc thuộc vault khác — không tiết lộ còn bao nhiêu key. Hãy kiểm tra lại ký tự hoặc thử một key khác trong bộ 10 key của bạn.
           </p>
@@ -158,7 +159,7 @@
       <div id="s2-err-aead" class="card p-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">AEAD open failed · key not consumed</p>
         <div role="alert" class="auth-alert mb-2">
-          <p class="text-[14px] font-semibold m-0 mb-1">Tìm thấy bản wrap nhưng không giải mã được khoá vault</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Tìm thấy bản wrap nhưng không giải mã được khoá vault</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Máy chủ trả về bản wrap khớp mã tra cứu nhưng giải mã AEAD trên trình duyệt thất bại (trường hợp hiếm). <strong>Recovery key này chưa bị tiêu thụ</strong> — hãy thử lại hoặc dùng một recovery key khác trong bộ 10 key.
           </p>
@@ -220,8 +221,11 @@
     </div>
 
     <div class="rounded-md p-4" style="background:var(--surface)">
-      <p class="text-[13px] m-0" style="color:var(--body)">
+      <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
         Chỉ sau khi bước này lưu thành công, recovery key vừa dùng mới bị xoá trên máy chủ. Các recovery key còn lại (kể cả bản in cũ), passkey và thiết bị đã nhớ vẫn mở được như cũ.
+      </p>
+      <p class="text-[12px] m-0" lang="en" style="color:var(--muted)">
+        Only after this step succeeds is the recovery key deleted on the live server. Your remaining recovery keys (including old printouts), passkeys, and remembered devices keep working.
       </p>
     </div>
   </section>
@@ -229,6 +233,7 @@
   <!-- ============================================================= -->
   <!-- BƯỚC 3B — các trạng thái lỗi ở bước đặt passphrase mới          -->
   <!-- ============================================================= -->
+  <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
   <section data-view="s3-err" hidden class="flex flex-col gap-3">
     <h1 class="t-title-lg mb-2">Các lỗi khi hoàn tất khôi phục</h1>
     <p class="t-body-lg mb-3" style="color:var(--muted)">
@@ -243,11 +248,11 @@
         Grant xác thực từ đầu luồng còn dưới 60 giây hoặc đã hết hạn. Nhập <strong>mật khẩu đăng nhập</strong> ngay tại đây để lấy grant mới mà không chuyển trang — khoá đang mở trong Worker và passphrase mới bạn vừa gõ vẫn được giữ nguyên.
       </p>
       <label class="block mb-3">
-        <span class="text-[13px] font-semibold block mb-1">Mật khẩu đăng nhập (không phải passphrase vault)</span>
+        <span class="text-[13px] font-semibold block mb-1">Mật khẩu đăng nhập (không phải passphrase vault) · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
         <input type="password" value="••••••••••••" autocomplete="current-password" class="w-full text-[15px]"
                style="border:1px solid var(--border);border-radius:var(--r-md);padding:9px 12px;background:var(--canvas);color:var(--body);outline:none">
       </label>
-      <button type="button" class="btn btn-primary btn-sm mb-3">Xác nhận và hoàn tất khôi phục</button>
+      <button type="button" class="btn btn-primary mb-3">Xác nhận và hoàn tất khôi phục · <span lang="en">Verify &amp; finish recovery</span></button>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
         <strong style="color:var(--body)">Re-authentication expired (password account).</strong> Confirm your account <strong>login password</strong> in place to continue without leaving this page. Your unwrapped key in the Worker is preserved.
       </p>
@@ -257,7 +262,7 @@
     <div class="card p-5" id="s3-reauth-expired-oauth" style="border-color:var(--error)">
       <p class="t-label mb-2" style="color:var(--muted)">reauth_expired · tài khoản chỉ có OAuth</p>
       <div role="alert" class="auth-alert mb-2">
-        <p class="text-[14px] font-semibold m-0 mb-1">Hết thời gian xác thực — cần bắt đầu lại</p>
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — cần bắt đầu lại</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
           Tài khoản chỉ đăng nhập bằng OAuth phải chuyển trang tới nhà cung cấp để xác thực lại, làm xoá bộ nhớ Web Worker.
           Khoá vừa giải mã đã được xoá khỏi bộ nhớ và <strong>recovery key bạn vừa nhập CHƯA bị tiêu thụ</strong> — bạn có thể dùng lại chính key đó sau khi xác thực lại.
@@ -266,15 +271,15 @@
       <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
         <strong style="color:var(--body)">Time ran out (OAuth-only account).</strong> Re-authenticating with your OAuth provider requires a full-page redirect, so the entered recovery key and unwrapped vault key were dropped from memory. Your recovery key was <strong>not</strong> consumed — start again to re-authenticate and reuse it.
       </p>
-      <button type="button" class="btn btn-secondary btn-sm"
-              onclick="document.querySelector('[data-seg] [data-target=s1]').click()">Bắt đầu lại từ bước 1</button>
+      <button type="button" class="btn btn-secondary"
+              onclick="document.querySelector('[data-seg] [data-target=s1]').click()">Bắt đầu lại từ bước 1 · <span lang="en">Restart from step 1</span></button>
     </div>
 
     <!-- 3. Insufficient memory on derive -->
     <div class="card p-5" id="s3-err-oom" style="border-color:var(--error)">
       <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · derive failed</p>
       <div role="alert" class="auth-alert mb-2">
-        <p class="text-[14px] font-semibold m-0 mb-1">Thiết bị không đủ bộ nhớ để dẫn xuất passphrase mới</p>
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để dẫn xuất passphrase mới</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
           Trình duyệt không cấp phát đủ 64 MiB trong Web Worker để tạo khoá từ passphrase mới.
           <strong>Recovery key của bạn chưa bị tiêu thụ.</strong> Hãy đóng bớt tab rồi bấm thử lại, hoặc thực hiện khôi phục trên thiết bị khác.
@@ -289,7 +294,7 @@
     <div class="card p-5" id="s3-err-version" style="border-color:var(--error)">
       <p class="t-label mb-2" style="color:var(--muted)">412 version_mismatch</p>
       <div role="alert" class="auth-alert mb-2">
-        <p class="text-[14px] font-semibold m-0 mb-1">Vault vừa được thay đổi ở tab hoặc thiết bị khác</p>
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Vault vừa được thay đổi ở tab hoặc thiết bị khác</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
           Phiên bản vault trên máy chủ đã thay đổi trước khi hoàn tất khôi phục. Chưa có thay đổi nào từ tab này được lưu. Hãy tải lại trạng thái vault và bắt đầu lại.
         </p>
@@ -297,8 +302,8 @@
       <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
         <strong style="color:var(--body)">Vault was updated elsewhere (<span class="mono">412 version_mismatch</span>).</strong> Reload the latest vault state and start recovery again.
       </p>
-      <button type="button" class="btn btn-secondary btn-sm"
-              onclick="document.querySelector('[data-seg] [data-target=s1]').click()">Tải lại và bắt đầu lại</button>
+      <button type="button" class="btn btn-secondary"
+              onclick="document.querySelector('[data-seg] [data-target=s1]').click()">Tải lại và bắt đầu lại · <span lang="en">Reload &amp; start over</span></button>
     </div>
 
     <!-- 5. 429 rate_limited on complete -->
@@ -320,10 +325,28 @@
   <!-- BƯỚC 4 — bù lại slot trống (chỉ hiện key mới cho slot trống)    -->
   <!-- ============================================================= -->
   <section data-view="s4" hidden>
-    <div class="rounded-md p-4 mb-6" style="background:var(--pale-accent)">
+    <div class="rounded-md p-4 mb-5" style="background:var(--pale-accent)">
       <p class="text-[13px] m-0" style="color:var(--body)">
         <strong>Đã vào lại vault.</strong> Còn <strong>9/10</strong> recovery key dùng được (chỗ <span class="mono">rk3</span> đang trống do vừa dùng và đã bị xoá trên máy chủ).
+        <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)"><strong>Vault unlocked.</strong> <strong>9 of 10</strong> recovery keys remain active (slot <span class="mono">rk3</span> is now empty after being consumed and deleted on the live server).</span>
       </p>
+    </div>
+
+    <!-- Re-auth riêng cho action vault.recovery_keys_regenerate trước khi sinh key mới -->
+    <div class="card p-5 mb-6" id="s4-regenerate-reauth">
+      <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại trước khi tạo key bù · action: vault.recovery_keys_regenerate</p>
+      <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
+        Tạo bù recovery key cần một grant xác thực riêng (<span class="mono">vault.recovery_keys_regenerate</span>, tách biệt với <span class="mono">vault.recover</span>) ở đầu bước này trước khi Worker sinh key mới cho slot trống.
+        <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Regenerating replacement keys requires a separate <span class="mono">vault.recovery_keys_regenerate</span> grant (distinct from <span class="mono">vault.recover</span>) before the Worker generates keys for empty slots.</span>
+      </p>
+      <label class="field field-password mb-3">
+        <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+        <input id="s4-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
+      </label>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="btn btn-primary" onclick="SAK.toast('Đã xác thực vault.recovery_keys_regenerate')">Xác nhận mật khẩu · <span lang="en">Confirm password</span></button>
+        <button type="button" class="btn btn-secondary">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+      </div>
     </div>
 
     <h1 class="t-title-lg mb-2">Tạo key thay thế cho chỗ trống</h1>
@@ -348,29 +371,35 @@
         <span class="chip !font-mono">rk9</span>
         <span class="chip !font-mono">rk10</span>
       </div>
-      <p class="t-caption mb-2" style="color:var(--muted)">Key mới cấp vào chỗ trống <span class="mono">rk3</span> (chỉ hiện đúng lần này):</p>
+      <p class="t-caption mb-2" style="color:var(--muted)">
+        Key mới cấp vào chỗ trống <span class="mono">rk3</span> (chỉ hiện đúng lần này) · <span lang="en">New key for empty slot <span class="mono">rk3</span> (shown only once):</span>
+      </p>
       <div class="rounded-md p-4 mono text-[12.5px] sm:text-[13px] mb-4 break-all" style="background:var(--surface);border:1px dashed var(--border-strong)">
         rk3_0FAK-E8HK-D3ZQ-V6MB-X2NR-T9CG-A4
       </div>
       <div class="flex flex-wrap gap-2 mb-5">
-        <button class="btn btn-secondary" onclick="SAK.toast('Đã tải engram-recovery-key-rk3.txt')">Tải file</button>
-        <button class="btn btn-secondary" onclick="SAK.toast('Đang mở hộp thoại in…')">In</button>
-        <button class="btn btn-tertiary" onclick="SAK.toast('Đã chép · clipboard tự xoá sau 30 giây')">Sao chép</button>
+        <button class="btn btn-secondary" onclick="SAK.toast('Đã tải engram-recovery-key-rk3.txt')">Tải file · <span lang="en">Download</span></button>
+        <button class="btn btn-secondary" onclick="SAK.toast('Đang mở hộp thoại in…')">In · <span lang="en">Print</span></button>
+        <button class="btn btn-tertiary" onclick="SAK.toast('Đã chép · clipboard tự xoá sau 30 giây')">Sao chép · <span lang="en">Copy</span></button>
       </div>
       <label class="flex gap-3 items-start mb-5 cursor-pointer">
         <input type="checkbox" class="mt-1" id="s4RkSaved"
                onchange="document.getElementById('s4DoneBtn').disabled = !this.checked">
-        <span class="text-[14px]">Tôi đã lưu key thay thế (<span class="mono">rk3</span>) cùng chỗ với 9 key còn lại.</span>
+        <span class="text-[14px]">
+          Tôi đã lưu key thay thế (<span class="mono">rk3</span>) cùng chỗ với 9 key còn lại.
+          <span lang="en" class="block text-[12px]" style="color:var(--muted)">I have saved the replacement key (<span class="mono">rk3</span>) alongside my other 9 recovery keys.</span>
+        </span>
       </label>
       <div class="flex items-center gap-2 flex-wrap">
-        <a href="index.html" class="btn btn-tertiary no-underline !text-body">Bỏ qua (giữ 9/10 key)</a>
+        <a href="index.html" class="btn btn-tertiary no-underline !text-body">Bỏ qua (giữ 9/10 key) · <span lang="en">Skip (keep 9/10)</span></a>
         <button id="s4DoneBtn" class="btn btn-primary ml-auto" disabled
-                onclick="SAK.toast('Đã lưu key thay thế · đủ 10/10'); window.location.href='index.html'">Lưu key mới</button>
+                onclick="SAK.toast('Đã lưu key thay thế · đủ 10/10'); window.location.href='index.html'">Lưu key mới · <span lang="en">Save new key</span></button>
       </div>
     </div>
 
     <p class="t-caption m-0" style="color:var(--muted)">
       Bỏ qua cũng được — bạn vẫn còn 9 key. Có thể bù lại bất cứ lúc nào trong Cài đặt › Bảo mật.
+      <span lang="en" class="block mt-0.5">You can skip this step and keep 9 active keys, or regenerate missing slots anytime in Settings › Security.</span>
     </p>
   </section>
 </main>

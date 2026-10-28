@@ -331,9 +331,9 @@
 </main>
 
 <!-- ===== modal: đổi passphrase ===== -->
-<dialog id="passDlg">
+<dialog id="passDlg" aria-labelledby="passDlgTitle">
   <div class="panel" style="width:min(560px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
-    <h2 class="t-title-sm mb-1">Đổi passphrase · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Change passphrase</span></h2>
+    <h2 id="passDlgTitle" class="t-title-sm mb-1">Đổi passphrase · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Change passphrase</span></h2>
     <p class="t-body mb-4" style="color:var(--muted)">
       Vault đang mở trong phiên này nên không cần passphrase cũ. Xác thực lại tài khoản ở đầu luồng trước khi bọc lại khoá.
       <span lang="en" class="block text-[12px] mt-1">Your vault is unlocked in this session, so the old passphrase is not needed. Re-authenticate your account at the start of the flow before rewrapping the vault key.</span>
@@ -354,7 +354,7 @@
       <div class="rounded-md p-3.5 mb-4" style="background:var(--surface)">
         <p class="t-label mb-2" style="color:var(--muted)">Bước 1 · Xác thực lại tài khoản (P02) · <span lang="en">Step 1 · Account re-auth</span></p>
         <label class="field field-password mb-0">
-          <span class="field-label" for="pass-login-pwd">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="pass-login-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
           <button type="button" class="field-toggle" aria-label="Hiện mật khẩu">Hiện</button>
           <span class="field-hint">Mật khẩu đăng nhập tài khoản (P02), không phải passphrase mã hoá vault. · <span lang="en">Account login password, not your vault passphrase.</span></span>
@@ -362,7 +362,7 @@
       </div>
 
       <label class="field field-password mb-2">
-        <span class="field-label" for="pass-new-pp">Passphrase mới (mã hoá vault) · <span lang="en" class="font-normal" style="color:var(--muted)">New vault passphrase</span></span>
+        <span class="field-label">Passphrase mới (mã hoá vault) · <span lang="en" class="font-normal" style="color:var(--muted)">New vault passphrase</span></span>
         <input id="pass-new-pp" type="password" value="••••••••••••••" autocomplete="new-password" class="field-input">
       </label>
       <div class="flex items-center gap-2 mb-4">
@@ -372,7 +372,7 @@
         <span class="text-[12px]" style="color:var(--success)">đủ mạnh (zxcvbn ≥ 3) · <span lang="en">strong</span></span>
       </div>
       <label class="field field-password mb-4">
-        <span class="field-label" for="pass-confirm-pp">Nhập lại passphrase mới · <span lang="en" class="font-normal" style="color:var(--muted)">Confirm new passphrase</span></span>
+        <span class="field-label">Nhập lại passphrase mới · <span lang="en" class="font-normal" style="color:var(--muted)">Confirm new passphrase</span></span>
         <input id="pass-confirm-pp" type="password" value="••••••••••••••" autocomplete="new-password" class="field-input">
       </label>
 
@@ -409,7 +409,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · derive error</p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Thiết bị không đủ bộ nhớ để tính khoá</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để tính khoá</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Trình duyệt không cấp phát đủ 64 MiB cho Argon2id trong Worker. Đóng bớt tab hoặc ứng dụng khác rồi thử lại — passphrase hiện tại của bạn chưa thay đổi.
           </p>
@@ -425,33 +425,34 @@
     </section>
 
     <!-- 3. Re-auth expired mid-flow (< 60s left before PUT /vault/kek) -->
+    <!-- Danh sách tĩnh để review 2 nhánh (password / OAuth); khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
     <section data-view="pass-reauth-expired" hidden>
       <div class="card p-4 mb-3" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)">Có mật khẩu đăng nhập · xác thực lại tại chỗ · <span lang="en">Password user · re-auth in place</span></p>
         <div role="alert" class="mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Xác thực lại đã hết hạn trước khi lưu</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Xác thực lại đã hết hạn trước khi lưu</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Grant xác thực còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp — không chuyển trang, không mất khoá vừa tính.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your re-authentication grant has less than 60 seconds left. Re-enter your login password in place to finish saving without losing the derived key.</span>
           </p>
         </div>
         <label class="field field-password mb-3">
-          <span class="field-label" for="pass-reauth-inline">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="pass-reauth-inline" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-primary btn-sm">Xác nhận và lưu · <span lang="en">Verify &amp; save</span></button>
+        <button type="button" class="btn btn-primary">Xác nhận và lưu · <span lang="en">Verify &amp; save</span></button>
       </div>
 
       <div class="card p-4 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Tài khoản chỉ có OAuth · <span lang="en">OAuth-only user · restart flow</span></p>
         <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Hết thời gian xác thực — cần bắt đầu lại</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — cần bắt đầu lại</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Xác thực lại qua Google cần chuyển trang nên khoá tạm đã được xoá. Bấm bắt đầu lại để xác thực Google rồi đặt passphrase mới.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Time ran out. Because Google re-authentication redirects the page, temporary secrets were cleared. Restart the flow to re-authenticate and set your new passphrase.</span>
           </p>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm">Bắt đầu lại · <span lang="en">Restart flow</span></button>
+        <button type="button" class="btn btn-secondary">Bắt đầu lại · <span lang="en">Restart flow</span></button>
       </div>
 
       <div class="flex justify-end">
@@ -464,7 +465,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">412 version_mismatch</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Vault vừa thay đổi ở tab hoặc thiết bị khác</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Vault vừa thay đổi ở tab hoặc thiết bị khác</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Phiên bản vault trên máy chủ đã tăng. Chưa có gì được lưu từ hộp thoại này. Tải lại trạng thái vault rồi thực hiện lại nếu vẫn cần.
           </p>
@@ -484,7 +485,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span> · <span class="mono">Retry-After: 45</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Thao tác quá nhanh</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thao tác quá nhanh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
              Các thay đổi bảo mật vault giới hạn 10 lần mỗi phút. Đợi <span class="mono">45</span> giây rồi thử lại.
           </p>
@@ -516,17 +517,17 @@
 </dialog>
 
 <!-- ===== modal: tạo bù recovery key cho slot trống (regenerate) ===== -->
-<dialog id="rkDlg">
+<dialog id="rkDlg" aria-labelledby="rkDlgTitle">
   <div class="panel" style="width:min(600px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
-    <h2 class="t-title-sm mb-1">Tạo bù recovery key · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Regenerate missing recovery keys</span></h2>
+    <h2 id="rkDlgTitle" class="t-title-sm mb-1">Tạo bù recovery key · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Regenerate missing recovery keys</span></h2>
     <p class="t-body mb-4" style="color:var(--muted)">
       Chỉ sinh key mới cho 5 slot đang trống (<span class="mono">rk6</span>…<span class="mono">rk10</span>), từ slot nhỏ nhất. 5 key còn lại (<span class="mono">rk1</span>…<span class="mono">rk5</span>) giữ nguyên và <strong>không</strong> hiện lại.
       <span lang="en" class="block text-[12px] mt-1">Generates new keys only for the 5 empty slots (<span class="mono">rk6</span>…<span class="mono">rk10</span>), lowest slot first. Your 5 existing keys (<span class="mono">rk1</span>…<span class="mono">rk5</span>) stay unchanged and are never shown again.</span>
     </p>
 
     <div class="seg mb-5 flex-wrap" data-seg>
-      <button type="button" data-target="rk-reauth" aria-pressed="false">1 · Re-auth</button>
-      <button type="button" data-target="rk-keys" aria-pressed="true">2 · 5 key mới</button>
+      <button type="button" data-target="rk-reauth" aria-pressed="true">1 · Re-auth</button>
+      <button type="button" data-target="rk-keys" aria-pressed="false">2 · 5 key mới</button>
       <button type="button" data-target="rk-reauth-expired" aria-pressed="false">Hết hạn re-auth</button>
       <button type="button" data-target="rk-mismatch" aria-pressed="false">412 lệch phiên bản</button>
       <button type="button" data-target="rk-ratelimit" aria-pressed="false">429 giới hạn</button>
@@ -534,7 +535,7 @@
     </div>
 
     <!-- 1. Re-auth at start -->
-    <section data-view="rk-reauth" hidden>
+    <section data-view="rk-reauth">
       <div class="card p-5 mb-5">
         <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại trước khi sinh key · <span lang="en">Re-auth at flow start</span></p>
         <p class="text-[13px] m-0 mb-4" style="color:var(--body)">
@@ -542,7 +543,7 @@
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Confirm your account before the Worker generates recovery keys for the empty slots.</span>
         </p>
         <label class="field field-password mb-4">
-          <span class="field-label" for="rk-reauth-pwd">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rk-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
         <button type="button" class="btn btn-secondary w-full !justify-center">Xác nhận bằng Google · <span lang="en">Google</span></button>
@@ -554,7 +555,7 @@
     </section>
 
     <!-- 2. New keys for empty slots rk6..rk10 -->
-    <section data-view="rk-keys">
+    <section data-view="rk-keys" hidden>
       <div class="rounded-md p-3.5 mb-4" style="background:var(--pale-orange)">
         <p class="text-[13px] m-0" style="color:var(--body)">
           <strong>Chỉ hiện đúng một lần.</strong> Lưu 5 key mới này cùng chỗ với 5 key đang còn (<span class="mono">rk1</span>…<span class="mono">rk5</span>).
@@ -594,32 +595,33 @@
     </section>
 
     <!-- 3. Re-auth expired mid-flow -->
+    <!-- Danh sách tĩnh để review 2 nhánh (password / OAuth); khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
     <section data-view="rk-reauth-expired" hidden>
       <div class="card p-4 mb-3" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)">Có mật khẩu đăng nhập · xác thực lại tại chỗ · <span lang="en">Password user · re-auth in place</span></p>
         <div role="alert" class="mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Grant xác thực hết hạn trước khi lưu 5 key mới</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Grant xác thực hết hạn trước khi lưu 5 key mới</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Nhập lại mật khẩu đăng nhập để lưu tiếp bộ <span class="mono">rk6</span>…<span class="mono">rk10</span> vừa hiển thị.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-enter your login password in place to save the <span class="mono">rk6</span>…<span class="mono">rk10</span> keys you just saved.</span>
           </p>
         </div>
         <label class="field field-password mb-3">
-          <span class="field-label" for="rk-reauth-inline">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rk-reauth-inline" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-primary btn-sm">Xác nhận và lưu · <span lang="en">Verify &amp; save</span></button>
+        <button type="button" class="btn btn-primary">Xác nhận và lưu · <span lang="en">Verify &amp; save</span></button>
       </div>
       <div class="card p-4 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Tài khoản chỉ có OAuth · <span lang="en">OAuth-only user · restart</span></p>
         <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Hết thời gian xác thực — bỏ bộ key tạm và bắt đầu lại</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — bỏ bộ key tạm và bắt đầu lại</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Chưa có key mới nào được lưu lên máy chủ. Hãy bỏ bản vừa tải/in và bắt đầu lại để xác thực Google rồi sinh bộ mới.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Time ran out and nothing was saved on the server. Discard the temporary keys and restart the flow to re-authenticate with Google.</span>
           </p>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm">Bắt đầu lại · <span lang="en">Restart flow</span></button>
+        <button type="button" class="btn btn-secondary">Bắt đầu lại · <span lang="en">Restart flow</span></button>
       </div>
       <div class="flex justify-end">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng</button>
@@ -631,7 +633,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">412 version_mismatch</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Vault vừa thay đổi ở nơi khác — hãy bỏ các key vừa sinh</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Vault vừa thay đổi ở nơi khác — hãy bỏ các key vừa sinh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Các key <span class="mono">rk6</span>…<span class="mono">rk10</span> vừa hiện <strong>chưa được lưu</strong> lên máy chủ. Hãy huỷ bản vừa tải hoặc in, tải lại trạng thái vault rồi tạo lại.
           </p>
@@ -651,7 +653,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span> · <span class="mono">Retry-After: 38</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Thao tác quá nhanh</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thao tác quá nhanh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Giới hạn 10 thao tác nhạy cảm mỗi phút. Đợi <span class="mono">38</span> giây rồi bấm lưu lại.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Rate limited (10 sensitive vault mutations per minute). Wait <span class="mono">38</span> seconds (<span class="mono">Retry-After</span>) and try again.</span>
@@ -680,17 +682,17 @@
 </dialog>
 
 <!-- ===== modal: xoay cả 10 recovery key (rotate all 10) ===== -->
-<dialog id="rotateDlg">
+<dialog id="rotateDlg" aria-labelledby="rotateDlgTitle">
   <div class="panel" style="width:min(620px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
-    <h2 class="t-title-sm mb-1">Xoay cả 10 recovery key · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Rotate all 10 recovery keys</span></h2>
+    <h2 id="rotateDlgTitle" class="t-title-sm mb-1">Xoay cả 10 recovery key · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Rotate all 10 recovery keys</span></h2>
     <p class="t-body mb-4" style="color:var(--muted)">
       Cần vault đang mở và xác thực lại tài khoản. Thay toàn bộ bộ recovery key hiện tại bằng 10 key mới (<span class="mono">rk1</span>…<span class="mono">rk10</span>) trên máy chủ live.
       <span lang="en" class="block text-[12px] mt-1">Requires an unlocked vault and account re-authentication. Replaces all current recovery keys with 10 new keys (<span class="mono">rk1</span>…<span class="mono">rk10</span>) on the live server.</span>
     </p>
 
     <div class="seg mb-5 flex-wrap" data-seg>
-      <button type="button" data-target="rot-reauth" aria-pressed="false">1 · Re-auth</button>
-      <button type="button" data-target="rot-keys" aria-pressed="true">2 · Lưới 10 key mới</button>
+      <button type="button" data-target="rot-reauth" aria-pressed="true">1 · Re-auth</button>
+      <button type="button" data-target="rot-keys" aria-pressed="false">2 · Lưới 10 key mới</button>
       <button type="button" data-target="rot-reauth-expired" aria-pressed="false">Hết hạn re-auth</button>
       <button type="button" data-target="rot-mismatch" aria-pressed="false">412 lệch phiên bản</button>
       <button type="button" data-target="rot-ratelimit" aria-pressed="false">429 giới hạn</button>
@@ -698,11 +700,11 @@
     </div>
 
     <!-- 1. Re-auth at start -->
-    <section data-view="rot-reauth" hidden>
+    <section data-view="rot-reauth">
       <div class="card p-5 mb-5">
         <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại ở đầu luồng · <span lang="en">Re-auth at flow start</span></p>
         <label class="field field-password mb-4">
-          <span class="field-label" for="rot-reauth-pwd">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rot-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
         <button type="button" class="btn btn-secondary w-full !justify-center">Xác nhận bằng Google · <span lang="en">Google</span></button>
@@ -714,7 +716,7 @@
     </section>
 
     <!-- 2. Grid of 10 new keys + warning -->
-    <section data-view="rot-keys">
+    <section data-view="rot-keys" hidden>
       <div class="rounded-md p-4 mb-4" style="background:var(--pale-orange)">
         <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
           <strong>Cảnh báo:</strong> Ngay khi lưu bộ mới, toàn bộ recovery key hiện tại và các bản in cũ sẽ <strong>ngừng hoạt động trên máy chủ live</strong>.
@@ -727,16 +729,16 @@
 
       <div class="card p-4 mb-4">
         <div class="grid gap-1.5 sm:grid-cols-2">
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk1_0FAK-E7QK-4M2X-D9FR-AT1V-B60H-NZ</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk2_0FAK-EH3N-D5YT-PQ8Z-B2CV-K7MR-A6</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk3_0FAK-EZC9-X4KD-B1HQ-T8NV-M3GY-E5</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk4_0FAK-E5VB-N2QZ-R7MK-D4XT-C9HJ-F3</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk5_0FAK-ED8T-Q3JG-M6BZ-X1NK-V5YR-P4</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk6_0FAK-E9MR-A7CK-W4EZ-Q2BV-T8XN-D5</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk7_0FAK-E2XK-V6NB-D8QT-R5MZ-C1HJ-A4</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk8_0FAK-E6BZ-T9QH-M3KX-R7VN-D2CJ-G8</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk9_0FAK-E4NC-X8VK-Q1ZB-M9TR-D6GH-J7</code>
-          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk10_0FAK-E1JQ-D5MZ-K9XV-B3NR-T7CG-H6</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk1_0FAK-E3WR-9K2N-V7TX-D4MQ-B8HJ-C1</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk2_0FAK-E6YP-4T8M-N2VZ-Q9CK-R3DF-G7</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk3_0FAK-E8BN-2M5Q-X7KR-C4VT-D9HJ-P3</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk4_0FAK-E1GC-7X3V-B9NZ-T5QM-K2DR-W8</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk5_0FAK-E4KT-8N6B-M3QX-R2VZ-D7CH-J9</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk6_0FAK-E7MV-3Q9Z-K5XR-B8NT-C4DG-F2</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk7_0FAK-E5QH-6B2K-T8MZ-V4NR-X9CD-A1</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk8_0FAK-E9RX-1V7N-D3QB-M6KT-Z2CH-E4</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk9_0FAK-E2TZ-5D8R-Q4KM-N7VX-B3CH-Y6</code>
+          <code class="mono text-[12px] px-2.5 py-2 rounded-md" style="background:var(--surface)">rk10_0FAK-E0VB-9M4X-R6QZ-T2NK-D8CH-P5</code>
         </div>
       </div>
 
@@ -770,21 +772,21 @@
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Grant has less than 60s left. Re-enter your login password in place to finish saving this 10-key set.</span>
         </p>
         <label class="field field-password mb-3">
-          <span class="field-label" for="rot-reauth-inline">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rot-reauth-inline" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-primary btn-sm">Xác nhận và xoay key · <span lang="en">Verify &amp; rotate</span></button>
+        <button type="button" class="btn btn-primary">Xác nhận và xoay key · <span lang="en">Verify &amp; rotate</span></button>
       </div>
       <div class="card p-4 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Tài khoản chỉ có OAuth · <span lang="en">OAuth-only user · restart</span></p>
         <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Hết thời gian xác thực — bỏ bộ 10 key tạm</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — bỏ bộ 10 key tạm</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Bộ key hiện tại trên máy chủ vẫn giữ nguyên. Hãy huỷ bản 10 key vừa tải/in và bắt đầu lại.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your existing keys on the server were not changed. Discard the temporary 10-key set and restart the flow.</span>
           </p>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm">Bắt đầu lại · <span lang="en">Restart flow</span></button>
+        <button type="button" class="btn btn-secondary">Bắt đầu lại · <span lang="en">Restart flow</span></button>
       </div>
       <div class="flex justify-end">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng</button>
@@ -796,7 +798,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">412 version_mismatch</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Vault vừa thay đổi ở nơi khác — bỏ bộ 10 key vừa sinh</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Vault vừa thay đổi ở nơi khác — bỏ bộ 10 key vừa sinh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Bộ 10 key mới trong hộp thoại này <strong>chưa được lưu</strong>. Hãy bỏ bản vừa tải hoặc in, tải lại trạng thái vault rồi thực hiện lại.
           </p>
@@ -816,7 +818,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span> · <span class="mono">Retry-After: 52</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Thao tác quá nhanh</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thao tác quá nhanh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Giới hạn 10 thao tác nhạy cảm mỗi phút. Đợi <span class="mono">52</span> giây rồi thử lại.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Rate limited (10 sensitive vault mutations per minute). Wait <span class="mono">52</span> seconds (<span class="mono">Retry-After</span>) and try again.</span>
@@ -845,9 +847,9 @@
 </dialog>
 
 <!-- ===== modal: thêm passkey (#passkeyAddDlg) ===== -->
-<dialog id="passkeyAddDlg">
+<dialog id="passkeyAddDlg" aria-labelledby="passkeyAddDlgTitle">
   <div class="panel" style="width:min(560px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
-    <h2 class="t-title-sm mb-1">Thêm passkey · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Add a passkey</span></h2>
+    <h2 id="passkeyAddDlgTitle" class="t-title-sm mb-1">Thêm passkey · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Add a passkey</span></h2>
     <p class="t-body mb-4" style="color:var(--muted)">
       Xác thực lại tài khoản ở đầu luồng, kiểm tra phần mở rộng PRF trên khoá bảo mật rồi bọc khoá vault.
       <span lang="en" class="block text-[12px] mt-1">Re-authenticate at the start of the flow, verify WebAuthn PRF support on your authenticator, and wrap the vault key.</span>
@@ -865,12 +867,14 @@
     <!-- 1. Start (re-auth + name + touch authenticator) -->
     <section data-view="pk-start">
       <div class="card p-5 mb-5">
-        <label class="field field-password mb-4">
-          <span class="field-label" for="pk-reauth-pwd">Mật khẩu đăng nhập (xác thực lại) · <span lang="en" class="font-normal" style="color:var(--muted)">Login password (re-auth)</span></span>
+        <p class="t-label mb-2" style="color:var(--muted)">Bước 1 · Xác thực lại ở đầu luồng · <span lang="en">Step 1 · Re-auth at flow start</span></p>
+        <label class="field field-password mb-3">
+          <span class="field-label">Mật khẩu đăng nhập (xác thực lại) · <span lang="en" class="font-normal" style="color:var(--muted)">Login password (re-auth)</span></span>
           <input id="pk-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
+        <button type="button" class="btn btn-secondary w-full !justify-center mb-4">Hoặc xác nhận bằng Google (OAuth) · <span lang="en">Verify with Google</span></button>
         <label class="field mb-0">
-          <span class="field-label" for="pk-name">Tên gợi nhớ passkey · <span lang="en" class="font-normal" style="color:var(--muted)">Passkey name</span></span>
+          <span class="field-label">Tên gợi nhớ passkey · <span lang="en" class="font-normal" style="color:var(--muted)">Passkey name</span></span>
           <input id="pk-name" type="text" value="Windows Hello · Laptop" class="field-input" maxlength="64">
           <span class="field-hint">1–64 ký tự. Thiết bị có thể hỏi chạm lần thứ hai (<span class="mono">get()</span>) để lấy đầu ra PRF. · <span lang="en">1–64 characters. Your authenticator may prompt a second time (<span class="mono">get()</span>) to evaluate PRF.</span></span>
         </label>
@@ -886,7 +890,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">passkey.prf_unsupported</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Không hỗ trợ PRF — từ chối đăng ký</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Không hỗ trợ PRF — từ chối đăng ký</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key.
           </p>
@@ -905,7 +909,7 @@
       <div class="card p-5 mb-5">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">passkey.register_cancelled</span></p>
         <div role="alert" class="mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Đã huỷ đăng ký passkey.</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Đã huỷ đăng ký passkey.</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Bạn đã đóng hoặc huỷ lời nhắc trên thiết bị. Chưa có thay đổi nào được lưu.
           </p>
@@ -923,9 +927,9 @@
     <!-- 4. PRF output missing after follow-up get() -->
     <section data-view="pk-prf-missing" hidden>
       <div class="card p-5 mb-5" style="border-color:var(--error)">
-        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">passkey.register_failed</span> · <span class="mono">passkey.unlock_prf_missing</span></p>
+        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">passkey.register_failed</span> · follow-up <span class="mono">get()</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Khoá báo <span class="mono">prf.enabled = true</span> khi tạo nhưng bước xác nhận tiếp theo (<span class="mono">get()</span>) không trả về đầu ra PRF (<span class="mono">results.first</span>). Không thể bọc khoá vault nên chưa lưu gì lên máy chủ.
           </p>
@@ -945,7 +949,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Orphan credential · POST <span class="mono">/vault/passkeys</span> failed</p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Lưu passkey lên máy chủ thất bại — chưa có gì được lưu</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Lưu passkey lên máy chủ thất bại — chưa có gì được lưu</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Thiết bị của bạn đã tạo passkey cục bộ nhưng bước lưu lên máy chủ không thành công (chưa có gì được lưu trên máy chủ). Bạn có thể xoá credential thừa này trong trình quản lý passkey của thiết bị hoặc hệ điều hành rồi thử đăng ký lại.
           </p>
@@ -969,21 +973,21 @@
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-authentication grant has less than 60s left. Re-enter your login password in place to finish saving the passkey without touching the authenticator again.</span>
         </p>
         <label class="field field-password mb-3">
-          <span class="field-label" for="pk-reauth-inline">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="pk-reauth-inline" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-primary btn-sm">Xác nhận và lưu passkey · <span lang="en">Verify &amp; save</span></button>
+        <button type="button" class="btn btn-primary">Xác nhận và lưu passkey · <span lang="en">Verify &amp; save</span></button>
       </div>
       <div class="card p-4 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Tài khoản chỉ có OAuth · <span lang="en">OAuth-only user · restart</span></p>
         <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Hết thời gian xác thực — bắt đầu lại</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — bắt đầu lại</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Chưa có gì được lưu trên máy chủ (nếu thiết bị đã tạo credential cục bộ, bạn có thể xoá nó trong trình quản lý passkey của máy). Bấm bắt đầu lại để xác thực Google rồi đăng ký lại.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Time ran out and nothing was saved on the server (you may remove any local credential in your device's passkey manager). Restart the flow to re-authenticate with Google.</span>
           </p>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm">Bắt đầu lại · <span lang="en">Restart flow</span></button>
+        <button type="button" class="btn btn-secondary">Bắt đầu lại · <span lang="en">Restart flow</span></button>
       </div>
       <div class="flex justify-end">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng</button>
@@ -993,9 +997,9 @@
 </dialog>
 
 <!-- ===== modal: đặt lại vault (multi-step reset) ===== -->
-<dialog id="resetDlg">
+<dialog id="resetDlg" aria-labelledby="resetDlgTitle">
   <div class="panel" style="width:min(600px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
-    <h2 class="t-title-sm mb-1" style="color:var(--error)">Đặt lại vault · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Reset vault</span></h2>
+    <h2 id="resetDlgTitle" class="t-title-sm mb-1" style="color:var(--error)">Đặt lại vault · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Reset vault</span></h2>
     <p class="t-body mb-4" style="color:var(--muted)">
       Thao tác cuối cùng khi mọi đường mở khoá đều không còn: xoá vĩnh viễn nội dung 231 entry trên máy chủ, giữ nguyên tên mục và tag.
       <span lang="en" class="block text-[12px] mt-1">Last resort when all unlock paths are lost: permanently deletes 231 entry contents on the server while keeping item names and tags.</span>
@@ -1071,10 +1075,14 @@
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Confirm account ownership with your login password or OAuth provider before proceeding to the final confirmation step.</span>
         </p>
         <label class="field field-password mb-4">
-          <span class="field-label" for="rst-reauth-pwd">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rst-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-secondary w-full !justify-center">Xác nhận bằng Google · <span lang="en">Google</span></button>
+        <button type="button" class="btn btn-secondary w-full !justify-center mb-3">Xác nhận bằng Google · <span lang="en">Google</span></button>
+        <p class="text-[12px] m-0" style="color:var(--muted)">
+          Nếu xác thực qua OAuth (chuyển trang), khi quay lại luồng đặt lại vault sẽ bắt đầu lại từ bước 1 (các bước 1–2 không giữ bí mật nào).
+          <span lang="en" class="block mt-0.5">An OAuth sign-in redirect restarts the reset flow at step 1 (steps 1–2 hold no secrets).</span>
+        </p>
       </div>
       <div class="flex justify-between gap-2">
         <button type="button" class="btn btn-tertiary" onclick="this.closest('[data-seg-scope]').querySelector('[data-target=rst-s2]').click()">Quay lại</button>
@@ -1091,13 +1099,14 @@
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">All encrypted entry contents, the vault key, recovery keys, and passkeys on the server will be permanently deleted. Item names and tags are kept.</span>
         </p>
         <label class="field mb-0">
-          <span class="field-label" for="rst-confirm-word">Gõ <span class="mono">ĐẶT LẠI</span> (hoặc <span class="mono" lang="en">RESET</span>) để mở nút xoá · <span lang="en" class="font-normal" style="color:var(--muted)">Type ĐẶT LẠI or RESET to confirm</span></span>
-          <input id="rst-confirm-word" type="text" value="ĐẶT LẠI" class="field-input mono">
+          <span class="field-label">Gõ <span class="mono">ĐẶT LẠI</span> (hoặc <span class="mono" lang="en">RESET</span>) để mở nút xoá · <span lang="en" class="font-normal" style="color:var(--muted)">Type ĐẶT LẠI or RESET to confirm</span></span>
+          <input id="rst-confirm-word" type="text" value="" placeholder="ĐẶT LẠI / RESET" class="field-input mono"
+                 oninput="const v = this.value.trim(); document.getElementById('rstConfirmBtn').disabled = !(v === 'ĐẶT LẠI' || v === 'RESET');">
         </label>
       </div>
       <div class="flex flex-wrap justify-between gap-2">
         <button type="button" class="btn btn-tertiary" onclick="this.closest('[data-seg-scope]').querySelector('[data-target=rst-s3]').click()">Quay lại</button>
-        <button type="button" class="btn btn-danger" onclick="this.closest('[data-seg-scope]').querySelector('[data-target=rst-s5]').click()">Đặt lại vault · <span lang="en">Reset vault</span></button>
+        <button type="button" id="rstConfirmBtn" class="btn btn-danger" disabled onclick="this.closest('[data-seg-scope]').querySelector('[data-target=rst-s5]').click()">Đặt lại vault · <span lang="en">Reset vault</span></button>
       </div>
     </section>
 
@@ -1125,21 +1134,21 @@
           <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your re-authentication grant expired before <span class="mono">DELETE /vault</span>. Re-enter your login password in place to confirm the reset.</span>
         </p>
         <label class="field field-password mb-3">
-          <span class="field-label" for="rst-reauth-inline">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
+          <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
           <input id="rst-reauth-inline" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
         </label>
-        <button type="button" class="btn btn-danger btn-sm">Xác nhận và đặt lại · <span lang="en">Verify &amp; reset</span></button>
+        <button type="button" class="btn btn-danger">Xác nhận và đặt lại · <span lang="en">Verify &amp; reset</span></button>
       </div>
       <div class="card p-4 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)">Tài khoản chỉ có OAuth · <span lang="en">OAuth-only user · restart</span></p>
         <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1">Hết thời gian xác thực — bắt đầu lại từ bước 3</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — bắt đầu lại từ bước 3</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Vault chưa bị xoá. Bấm xác thực lại với Google rồi gõ lại từ xác nhận.
             <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Time ran out and the vault was not reset. Re-authenticate with Google and confirm again.</span>
           </p>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm">Xác thực lại với Google · <span lang="en">Restart re-auth</span></button>
+        <button type="button" class="btn btn-secondary">Xác thực lại với Google · <span lang="en">Restart re-auth</span></button>
       </div>
       <div class="flex justify-end">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng</button>
@@ -1151,7 +1160,7 @@
       <div class="card p-5 mb-5" style="border-color:var(--error)">
         <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">412 version_mismatch</span></p>
         <div role="alert" class="auth-alert mb-0">
-          <p class="text-[14px] font-semibold m-0 mb-1">Vault vừa thay đổi ở tab hoặc thiết bị khác</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Vault vừa thay đổi ở tab hoặc thiết bị khác</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             Phiên bản vault trên máy chủ đã thay đổi (có thể bạn vừa khôi phục được ở thiết bị khác). Chưa có gì bị xoá. Hãy tải lại trạng thái vault để kiểm tra trước khi tiếp tục.
           </p>

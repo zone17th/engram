@@ -59,7 +59,7 @@ P07/P08 phải thêm mockup riêng trước khi implement.
 | `rkDlg` | `rk-reauth`, `rk-keys` (`#rkRegenSaved`, `#rkRegenDoneBtn`), `rk-reauth-expired`, `rk-mismatch`, `rk-ratelimit`, `rk-done` | Tạo lại recovery key cho các slot trống (chỉ hiện key mới theo slot nhỏ nhất trước) |
 | `rotateDlg` | `rot-reauth`, `rot-keys` (`#rkRotateSaved`, `#rkRotateConfirmBtn`), `rot-reauth-expired`, `rot-mismatch`, `rot-ratelimit`, `rot-done` | Xoay cả 10 recovery key trên live server (thay cho thao tác thu hồi cũ; không xoay VK) |
 | `passkeyAddDlg` | `pk-start`, `pk-prf-unsupported`, `pk-cancelled`, `pk-prf-missing`, `pk-orphan`, `pk-reauth-expired` | Đăng ký passkey mở vault (kiểm PRF, xử lý credential thừa khi POST lỗi) |
-| `resetDlg` | `rst-s1`, `rst-s2`, `rst-s3`, `rst-s4`, `rst-s5`, `rst-reauth-expired`, `rst-mismatch` | Đặt lại vault 5 bước (thử đường mở khoá → kiểm backup → re-auth → gõ xác nhận → xong) |
+| `resetDlg` | `rst-s1`, `rst-s2`, `rst-s3`, `rst-s4` (`#rst-confirm-word`, `#rstConfirmBtn`), `rst-s5`, `rst-reauth-expired`, `rst-mismatch` | Đặt lại vault 5 bước (thử đường mở khoá → kiểm backup → re-auth → gõ xác nhận → xong) |
 
 ### Màn auth (`auth.html`) — view `data-target`
 
@@ -76,10 +76,10 @@ P07/P08 phải thêm mockup riêng trước khi implement.
 ### Màn vault & trạng thái (`onboarding.html`, `unlock.html`, `recovery.html`, `states.html`) — view `data-target`
 
 | File | Target | Nội dung & neo chính |
-|---|---|---|---|
+|---|---|---|
 | `onboarding.html` | `pp`, `pp-oom`, `rk`, `rk-exists`, `pk` | Bước 1 passphrase (`pp`) + thiếu bộ nhớ Argon2id (`pp-oom`, `#onboard-oom`); bước 2 lưới 10 RK (`rk`, `#rkOk`, `#createVault`) + `409 vault_exists` (`rk-exists`, `#onboard-vault-exists`); bước 3 passkey & nhớ thiết bị (`pk`: `#pk-prf-unsupported`, `#pk-cancelled`, `#pk-prf-missing`, `#pk-orphan`) |
-| `unlock.html` | `new`, `pk`, `known`, `err`, `err-pk` | Thiết bị mới (`new`); ưu tiên passkey (`pk`, `#unlock-passkey-not-found`); thiết bị đã nhớ (`known`); lỗi passphrase/phiên (`err`: `#err-passphrase-aead`, `#err-insufficient-memory`, `#err-rate-limited`, `#err-session-expired`); lỗi passkey (`err-pk`: `#err-prf-unsupported`, `#err-pk-cancelled`, `#err-prf-missing`, `#err-pk-aead`, `#err-pk-not-found`) |
-| `recovery.html` | `s1`, `s2`, `s3`, `s3-err`, `s4` | Thử đường khác + re-auth đầu luồng (`s1`, `#recovery-reauth-start`); nhập 1 RK (`s2`: `#s2-err-invalid`, `#s2-err-rate`, `#s2-err-aead`); đặt passphrase mới ở state `recovering` (`s3`, `#s3-recovering-note`); lỗi bước 3 (`s3-err`: `#s3-reauth-expired-password`, `#s3-reauth-expired-oauth`, `#s3-err-oom`, `#s3-err-version`, `#s3-err-rate`); tạo key bù slot trống (`s4`, `#s4-replacement-card`) |
+| `unlock.html` | `new`, `pk`, `known`, `err`, `err-pk` | Thiết bị mới (`new`); ưu tiên passkey (`pk`, `#unlock-passkey-not-found`); thiết bị đã nhớ (`known`); lỗi passphrase/phiên (`err`: `#err-passphrase-aead`, `#err-insufficient-memory`, `#err-session-expired`); lỗi passkey (`err-pk`: `#err-prf-unsupported`, `#err-pk-cancelled`, `#err-prf-missing`, `#err-pk-aead`, `#err-rate-limited`, `#err-pk-not-found`) |
+| `recovery.html` | `s1`, `s2`, `s3`, `s3-err`, `s4` | Thử đường khác + re-auth đầu luồng (`s1`, `#recovery-reauth-start`); nhập 1 RK (`s2`: `#s2-err-invalid`, `#s2-err-rate`, `#s2-err-aead`); đặt passphrase mới ở state `recovering` (`s3`, `#s3-recovering-note`); lỗi bước 3 (`s3-err`: `#s3-reauth-expired-password`, `#s3-reauth-expired-oauth`, `#s3-err-oom`, `#s3-err-version`, `#s3-err-rate`); tạo key bù slot trống (`s4`: `#s4-regenerate-reauth`, `#s4-replacement-card`) |
 | `states.html` | `empty`, `load`, `err`, `auth`, `vault`, `off`, `degr` | Rỗng (`empty`); đang tải (`load`); lỗi chung (`err`); Auth/P02 (`auth`); Vault/P03 (`vault`: `#vault-version-mismatch`, `#vault-reauth-expired-password`, `#vault-reauth-expired-oauth`, `#vault-rate-limited`, `#vault-mutations-disabled`, `#vault-locked-broadcast`, `#vault-insufficient-memory`); ngoại tuyến (`off`); giảm chức năng (`degr`) |
 
 - **Quy ước song ngữ vi/en (`advisor-dec-002`, option A):** tiếng Việt là ngôn ngữ chính; mọi chuỗi hoặc trạng thái mới bổ sung đều kèm bản tiếng Anh inline (`lang="en"`), không thêm nút chuyển ngôn ngữ trên khung mockup.

@@ -1026,6 +1026,14 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Empty / lỗi / Auth P02 / Vault P03 / offline / degraded (`empty`, `load`, `err`, `auth`, `vault`, `off`, `degr`) | `mockups/states.html` | §7.7 |
 | Tài liệu và quyền riêng tư | `mockups/docs.html` | §11.1, §5.1 |
 
+**Neo trạng thái & bước dialog chi tiết (P03 vault):**
+
+- `onboarding.html`: `pp-oom` (`#onboard-oom`), `rk` (`#rkOk`, `#createVault`), `rk-exists` (`#onboard-vault-exists`), `pk` (`#pk-prf-unsupported`, `#pk-cancelled`, `#pk-prf-missing`, `#pk-orphan`).
+- `unlock.html`: `pk` (`#unlock-passkey-not-found`), `err` (`#err-passphrase-aead`, `#err-insufficient-memory`, `#err-session-expired`), `err-pk` (`#err-prf-unsupported`, `#err-pk-cancelled`, `#err-prf-missing`, `#err-pk-aead`, `#err-rate-limited`, `#err-pk-not-found`).
+- `recovery.html`: `s1` (`#recovery-reauth-start`), `s2` (`#s2-err-invalid`, `#s2-err-rate`, `#s2-err-aead`), `s3` (`#s3-recovering-note`), `s3-err` (`#s3-reauth-expired-password`, `#s3-reauth-expired-oauth`, `#s3-err-oom`, `#s3-err-version`, `#s3-err-rate`), `s4` (`#s4-regenerate-reauth`, `#s4-replacement-card`).
+- `states.html` (`vault`): `#vault-version-mismatch`, `#vault-reauth-expired-password`, `#vault-reauth-expired-oauth`, `#vault-rate-limited`, `#vault-mutations-disabled`, `#vault-locked-broadcast`, `#vault-insufficient-memory`.
+- `settings.html#baomat` dialogs: `#passDlg` (`pass-form`, `pass-oauth`, `pass-oom`, `pass-reauth-expired`, `pass-mismatch`, `pass-ratelimit`, `pass-done`); `#rkDlg` (`rk-reauth`, `rk-keys` / `#rkRegenSaved` / `#rkRegenDoneBtn`, `rk-reauth-expired`, `rk-mismatch`, `rk-ratelimit`, `rk-done`); `#rotateDlg` (`rot-reauth`, `rot-keys` / `#rkRotateSaved` / `#rkRotateConfirmBtn`, `rot-reauth-expired`, `rot-mismatch`, `rot-ratelimit`, `rot-done`); `#passkeyAddDlg` (`pk-start`, `pk-prf-unsupported`, `pk-cancelled`, `pk-prf-missing`, `pk-orphan`, `pk-reauth-expired`); `#resetDlg` (`rst-s1`, `rst-s2`, `rst-s3`, `rst-s4` / `#rst-confirm-word` / `#rstConfirmBtn`, `rst-s5`, `rst-reauth-expired`, `rst-mismatch`).
+
 **Phân vai khi mockup và spec lệch nhau:**
 
 - **Mockup thắng** về thị giác: bố cục, khoảng cách, type scale, màu, bo góc, trạng thái hover/focus, cách xuống hàng ở mobile.
