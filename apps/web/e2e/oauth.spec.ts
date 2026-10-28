@@ -56,7 +56,7 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
     await waitForOAuthProviders(page);
     await page.getByRole('link', { name: /Continue with Google|Tiếp tục với Google/ }).click();
     await completeFakeOAuth(page, { outcome: 'cancel' });
-    await expect(page.getByText(/cancelled|huỷ/i)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/cancelled|huỷ|hủy/i)).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId('session-status')).toHaveCount(0);
   });
 

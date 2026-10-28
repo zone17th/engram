@@ -21,12 +21,13 @@ export function isPublicAuthRoute(path: string): boolean {
   return path === `${AUTH_PREFIX}/login` || path === `${AUTH_PREFIX}/signup`;
 }
 
-/** Keep fragment-token and public auth forms mounted so hash can be read and scrubbed. */
+/** Keep fragment-token, public auth forms, and OAuth callback mounted so hash/status UI can render. */
 export function keepAuthFormMountedWhileLoading(path: string): boolean {
   return (
     isPublicAuthRoute(path) ||
     path === `${AUTH_PREFIX}/verify-email` ||
-    path === `${AUTH_PREFIX}/password-enroll`
+    path === `${AUTH_PREFIX}/password-enroll` ||
+    path.startsWith(`${AUTH_PREFIX}/callback/`)
   );
 }
 
@@ -59,7 +60,8 @@ export function resolveGuardRedirect(input: {
   const enroll = pathname === `${AUTH_PREFIX}/password-enroll`;
 
   if (status === 'signed_out') {
-    if (isPublicAuthRoute(pathname)) return null;
+    // OAuth callback must stay reachable while signed out so cancel/error/conflict UI can render.
+    if (isPublicAuthRoute(pathname) || pathname.startsWith(`${AUTH_PREFIX}/callback/`)) return null;
     return loginUrl(pathname);
   }
 

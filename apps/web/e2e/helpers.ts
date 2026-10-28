@@ -55,9 +55,16 @@ function isCredLimitedPath(url: string): boolean {
 async function fulfillCredViaApi(route: Route, ip: string) {
   const req = route.request();
   const requestUrl = new URL(req.url());
-  const apiOrigin = new URL(E2E_API_URL).origin;
+  const apiUrl = new URL(E2E_API_URL);
+  const apiOrigin = apiUrl.origin;
   const dest = req.url().replace(requestUrl.origin, apiOrigin);
-  const headers = { ...req.headers(), 'x-forwarded-for': ip };
+  // Drop hop-by-hop headers: a stale content-length / host aimed at :3000 can
+  // stall route.fetch to the API and leave loginViaUi stuck on "submitting"
+  // with neither a navigation nor an auth-error-card (multi-context flake).
+  const headers: Record<string, string> = { ...req.headers(), 'x-forwarded-for': ip };
+  delete headers['content-length'];
+  delete headers['host'];
+  headers['host'] = apiUrl.host;
   if (dest === req.url() || requestUrl.origin === apiOrigin) {
     await route.continue({ headers });
     return;
@@ -191,14 +198,27 @@ export async function loginViaUi(page: Page, email: string, password = PASSWORD)
   await isolateRateLimit(page);
   await page.goto('/app/auth/login');
   await waitForAuthPageReady(page);
-  await page.getByLabel('Email').fill(email);
+  await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
   await page.getByLabel(/Login password|Mật khẩu đăng nhập/).fill(password);
+  const loginResponsePromise = page.waitForResponse(
+    (res) =>
+      res.request().method() === 'POST' && /\/api\/v1\/auth\/login$/.test(new URL(res.url()).pathname),
+    { timeout: 15_000 },
+  );
   await page.getByRole('button', { name: /Sign in|Đăng nhập/ }).click();
-  await Promise.race([
-    page.waitForURL(/\/app\/(onboarding|auth\/verify-email|settings)/, { timeout: 15_000 }),
-    page.getByTestId('auth-error-card').waitFor({ state: 'visible', timeout: 15_000 }),
-  ]).catch(() => undefined);
+  const loginResponse = await loginResponsePromise.catch(() => null);
   await assertNotRateLimited(page);
+  if (!loginResponse) {
+    throw new Error(`login request did not complete (url=${page.url()})`);
+  }
+  if (!loginResponse.ok()) {
+    await expect(page.getByTestId('auth-error-card')).toBeVisible({ timeout: 5_000 });
+    const text = await page.getByTestId('auth-error-card').innerText();
+    throw new Error(`login failed (${loginResponse.status()}): ${text}`);
+  }
+  // Login replace() goes to /app then RouteGuard may send onboarding — assert session, not a single path.
+  await expect(page.getByTestId('session-status')).toBeAttached({ timeout: 15_000 });
+  await expect(page.getByTestId('session-status')).toHaveText(/authenticated_/);
 }
 
 export async function expectSignedIn(page: Page) {

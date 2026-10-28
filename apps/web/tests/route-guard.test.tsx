@@ -72,11 +72,12 @@ describe('RouteGuard', () => {
 });
 
 describe('keepAuthFormMountedWhileLoading', () => {
-  it('keeps login, signup, verify-email, and password-enroll mounted', () => {
+  it('keeps login, signup, verify-email, password-enroll, and OAuth callback mounted', () => {
     expect(keepAuthFormMountedWhileLoading('/app/auth/login')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/signup')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/verify-email')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/password-enroll')).toBe(true);
+    expect(keepAuthFormMountedWhileLoading('/app/auth/callback/google')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/settings')).toBe(false);
     expect(keepAuthFormMountedWhileLoading('/app')).toBe(false);
   });
@@ -88,9 +89,12 @@ describe('resolveGuardRedirect', () => {
     expect(resolveGuardRedirect({ status: 'unavailable', pathname: '/app/settings', me: null })).toBeNull();
   });
 
-  it('sends signed-out users to login except public auth pages', () => {
+  it('sends signed-out users to login except public auth pages and OAuth callback', () => {
     expect(resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/login', me: null })).toBeNull();
     expect(resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/signup', me: null })).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/callback/google', me: null }),
+    ).toBeNull();
     expect(resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/verify-email', me: null })).toBe(
       '/app/auth/login?returnTo=%2Fapp%2Fauth%2Fverify-email',
     );
