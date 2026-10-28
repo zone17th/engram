@@ -36,7 +36,8 @@
     <button data-target="s2"     aria-pressed="false">2 · Nhập key</button>
     <button data-target="s3"     aria-pressed="false">3 · Passphrase mới</button>
     <button data-target="s3-err" aria-pressed="false">3b · Lỗi bước 3</button>
-    <button data-target="s4"     aria-pressed="false">4 · Bù key</button>
+    <button data-target="s4-reauth" aria-pressed="false">4a · Xác nhận lại</button>
+    <button data-target="s4"        aria-pressed="false">4 · Bù key</button>
   </div>
 
   <!-- ============================================================= -->
@@ -217,7 +218,7 @@
       </label>
 
       <button class="btn btn-primary w-full !justify-center"
-              onclick="SAK.toast('Đã đặt passphrase mới'); document.querySelector('[data-seg] [data-target=s4]').click()">Đặt passphrase và mở vault</button>
+              onclick="SAK.toast('Đã đặt passphrase mới'); document.querySelector('[data-seg] [data-target=s4-reauth]').click()">Đặt passphrase và mở vault</button>
     </div>
 
     <div class="rounded-md p-4" style="background:var(--surface)">
@@ -322,9 +323,9 @@
   </section>
 
   <!-- ============================================================= -->
-  <!-- BƯỚC 4 — bù lại slot trống (chỉ hiện key mới cho slot trống)    -->
+  <!-- BƯỚC 4A — xác nhận lại trước khi sinh key bù (chưa hiện key)    -->
   <!-- ============================================================= -->
-  <section data-view="s4" hidden>
+  <section data-view="s4-reauth" hidden>
     <div class="rounded-md p-4 mb-5" style="background:var(--pale-accent)">
       <p class="text-[13px] m-0" style="color:var(--body)">
         <strong>Đã vào lại vault.</strong> Còn <strong>9/10</strong> recovery key dùng được (chỗ <span class="mono">rk3</span> đang trống do vừa dùng và đã bị xoá trên máy chủ).
@@ -332,8 +333,16 @@
       </p>
     </div>
 
+    <h1 class="t-title-lg mb-2">Xác thực lại trước khi tạo key bù</h1>
+    <p class="t-body-lg mb-2" style="color:var(--muted)">
+      Tạo bù recovery key cho chỗ trống cần xác nhận lại tài khoản ở đầu bước này — key thay thế chỉ được tạo và hiển thị sau khi xác thực xong.
+    </p>
+    <p class="text-[13px] mt-0 mb-5" lang="en" style="color:var(--muted)">
+      Confirm your account before generating a replacement recovery key for the empty slot — the new key is generated and shown only after re-authentication.
+    </p>
+
     <!-- Re-auth riêng cho action vault.recovery_keys_regenerate trước khi sinh key mới -->
-    <div class="card p-5 mb-6" id="s4-regenerate-reauth">
+    <div class="card p-5 mb-5" id="s4-regenerate-reauth">
       <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại trước khi tạo key bù · action: vault.recovery_keys_regenerate</p>
       <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
         Tạo bù recovery key cần một grant xác thực riêng (<span class="mono">vault.recovery_keys_regenerate</span>, tách biệt với <span class="mono">vault.recover</span>) ở đầu bước này trước khi Worker sinh key mới cho slot trống.
@@ -344,9 +353,27 @@
         <input id="s4-reauth-pwd" type="password" value="••••••••••" autocomplete="current-password" class="field-input">
       </label>
       <div class="flex flex-wrap gap-2">
-        <button type="button" class="btn btn-primary" onclick="SAK.toast('Đã xác thực vault.recovery_keys_regenerate')">Xác nhận mật khẩu · <span lang="en">Confirm password</span></button>
-        <button type="button" class="btn btn-secondary">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+        <button type="button" class="btn btn-primary" onclick="SAK.toast('Đã xác thực vault.recovery_keys_regenerate'); document.querySelector('[data-seg] [data-target=s4]').click()">Xác nhận mật khẩu · <span lang="en">Confirm password</span></button>
+        <button type="button" class="btn btn-secondary" onclick="SAK.toast('Đã xác thực vault.recovery_keys_regenerate'); document.querySelector('[data-seg] [data-target=s4]').click()">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+        <a href="index.html" class="btn btn-tertiary no-underline !text-body ml-auto">Bỏ qua (giữ 9/10 key) · <span lang="en">Skip (keep 9/10)</span></a>
       </div>
+    </div>
+
+    <p class="t-caption m-0" style="color:var(--muted)">
+      Bỏ qua cũng được — bạn vẫn còn 9 key. Có thể bù lại bất cứ lúc nào trong Cài đặt › Bảo mật.
+      <span lang="en" class="block mt-0.5">You can skip this step and keep 9 active keys, or regenerate missing slots anytime in Settings › Security.</span>
+    </p>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- BƯỚC 4 — bù lại slot trống (chỉ hiện key mới cho slot trống)    -->
+  <!-- ============================================================= -->
+  <section data-view="s4" hidden>
+    <div class="rounded-md p-4 mb-5" style="background:var(--pale-accent)">
+      <p class="text-[13px] m-0" style="color:var(--body)">
+        <strong>Đã vào lại vault.</strong> Còn <strong>9/10</strong> recovery key dùng được (chỗ <span class="mono">rk3</span> đang trống do vừa dùng và đã bị xoá trên máy chủ).
+        <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)"><strong>Vault unlocked.</strong> <strong>9 of 10</strong> recovery keys remain active (slot <span class="mono">rk3</span> is now empty after being consumed and deleted on the live server).</span>
+      </p>
     </div>
 
     <h1 class="t-title-lg mb-2">Tạo key thay thế cho chỗ trống</h1>
