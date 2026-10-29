@@ -844,11 +844,8 @@ export function VaultProvider({
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
       ) {
-        if (predatesTransition() && currentVaultKeyIdRef.current !== null) {
-          // BE4-1: a vault is current again after a transition this 404 predates; it says nothing about that vault.
-          // (When no vault is current the 404 is consistent with the transition and still fails closed below.)
-          return currentLiveMeta();
-        }
+        // BE5-1: a local/broadcast transition never proves a 404 stale (the server may have evaluated it after that
+        // transition), so only an already-applied newer GET outcome may supersede it; otherwise it fails closed.
         const superseded = supersedingOutcome();
         if (superseded) {
           // A newer request already delivered authoritative state (present or absent); apply nothing from the older 404.

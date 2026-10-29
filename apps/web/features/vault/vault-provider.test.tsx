@@ -4666,7 +4666,12 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     return { vault, qc, idbFactory, pending, gate, devkeys, devkeyRecordKey, prefix };
   }
 
-  async function expectBe37LockedAndPurged(ctx: Awaited<ReturnType<typeof be37Setup>>) {
+  async function expectBe37LockedAndPurged(
+    ctx: Pick<
+      Awaited<ReturnType<typeof be37Setup>>,
+      'prefix' | 'vault' | 'qc' | 'idbFactory' | 'devkeys' | 'devkeyRecordKey'
+    >,
+  ) {
     await waitFor(() => {
       expect(screen.getByTestId(`${ctx.prefix}-state`)).toHaveTextContent('locked');
       expect(screen.getByTestId(`${ctx.prefix}-worker`)).toHaveTextContent('locked');
@@ -5324,6 +5329,142 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     });
     await expectBe37LockedAndPurged(ctx);
   }, 20_000);
+
+  // ---------------------------------------------------------------------------
+  // BE5-1 (fix round 5): an authoritative `404 vault_absent` always locks and purges unless a NEWER GET outcome was
+  // already APPLIED. A local/broadcast metadata transition alone never proves a 404 stale.
+  // ---------------------------------------------------------------------------
+  it('BE5-1: a create-201 notification that lands while an earlier GET is held cannot suppress that GET 404: provider and Worker lock, caches wipe, the device fence advances once and nothing revives', async () => {
+    const pending: Array<(res: Response) => void> = [];
+    const gate = { hold: false };
+    mockBe2Fetch({
+      vault: () =>
+        gate.hold
+          ? new Promise<Response>((resolve) => {
+              pending.push(resolve);
+            })
+          : jsonResponse(be2VaultBody('vk:be5-1-a', 1)),
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { vault } = renderBe2Provider(
+      'be51-create',
+      { idbFactory, locksManager: fakeLocks.createLockManager() },
+      qc,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('be51-create-state')).toHaveTextContent('locked');
+    });
+    // The prepared Worker already holds the new vault unlocked; no metadata GET has confirmed it yet.
+    await be2CreateVault(vault, 'be5-1-passphrase-1234');
+    expect(screen.getByTestId('be51-create-state')).toHaveTextContent('unlocked');
+    seedBe2DeviceMeta(10);
+    const devkeyRecordKey = formatDevKeyRecordKey(BE2_USER_ID, 'vk:be5-1-a');
+    const devkeys = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    devkeys.set(devkeyRecordKey, {
+      user_id: BE2_USER_ID,
+      vault_key_id: 'vk:be5-1-a',
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+    qc.setQueryData(vaultBodyQueryKey('be37-entry'), 'be5-1-decrypted-body');
+
+    // Earlier GET G starts and is held; its server evaluation happens after another tab/device reset the vault.
+    gate.hold = true;
+    const heldP = vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(pending).toHaveLength(1);
+    });
+    // The delayed create 201 arrives first; reset/lock notifications were missed. No newer GET outcome is applied.
+    act(() => {
+      vault().notifyVaultChanged({ vault_key_id: 'vk:be5-1-a', version: 1 });
+    });
+    await act(async () => {
+      pending[0]!(be2VaultAbsentResponse());
+      expect(await heldP).toBeNull();
+    });
+    await expectBe37LockedAndPurged({ prefix: 'be51-create', vault, qc, idbFactory, devkeys, devkeyRecordKey });
+
+    // Nothing revives the session: a later present answer applies metadata only, and the fence advanced exactly once.
+    gate.hold = false;
+    await act(async () => {
+      await vault().reloadVaultMeta();
+      await sleepReal(50);
+    });
+    expect(screen.getByTestId('be51-create-state')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be51-create-worker')).toHaveTextContent('locked');
+    expect(qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBeUndefined();
+    const meta = await readDeviceMetaRecord({ idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+  }, 20_000);
+
+  it('BE5-1 (Advisor regression): a held GET 404 that crosses a replacement transition still purges, advancing the device revision exactly once', async () => {
+    const ctx = await be37Setup('be51-transition');
+    ctx.gate.hold = true;
+    const heldP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    // A replacement vault key becomes current locally while the 404 is in flight.
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be5-1-b', version: 1 });
+    });
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      expect(await heldP).toBeNull();
+      await sleepReal(50);
+    });
+    await expectBe37LockedAndPurged(ctx);
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+  }, 20_000);
+
+  it.each(['stalled', 'failed'] as const)(
+    'BE5-1 control: a 404 that crosses a replacement transition (current key non-null) still locks and purges while the NEWER follow-up GET is %s',
+    async (followUp) => {
+      const ctx = await be37Setup(`be51-follow-${followUp}`);
+      ctx.gate.hold = true;
+      const olderP = ctx.vault().reloadVaultMeta();
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(1);
+      });
+      act(() => {
+        ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be5-1-b', version: 1 });
+      });
+      // A newer follow-up GET starts after the transition. Starting, stalling or failing is not supersession.
+      const outcome: { newerError: unknown } = { newerError: undefined };
+      const newerP = ctx.vault()
+        .reloadVaultMeta()
+        .catch((err: unknown) => {
+          outcome.newerError = err;
+        });
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(2);
+      });
+      if (followUp === 'failed') {
+        await act(async () => {
+          ctx.pending[1]!(be3ProblemResponse(503, 'service_unavailable'));
+          await newerP;
+        });
+        expect(outcome.newerError).toBeDefined();
+        expect(screen.getByTestId(`be51-follow-${followUp}-state`)).toHaveTextContent('unlocked');
+      }
+      await act(async () => {
+        ctx.pending[0]!(be2VaultAbsentResponse());
+        expect(await olderP).toBeNull();
+      });
+      await expectBe37LockedAndPurged(ctx);
+      if (followUp === 'stalled') {
+        // A late present answer from the stalled request is metadata only: it never revives the locked session.
+        await act(async () => {
+          ctx.pending[1]!(jsonResponse(be2VaultBody('vk:be5-1-b', 2)));
+          await newerP;
+        });
+        expect(screen.getByTestId(`be51-follow-${followUp}-state`)).toHaveTextContent('locked');
+        expect(screen.getByTestId(`be51-follow-${followUp}-worker`)).toHaveTextContent('locked');
+      }
+    },
+    20_000,
+  );
 
   it('BE4-5: an older same-key GET snapshot held across a local v3 update cannot lower the current metadata version', async () => {
     const ctx = await be37Setup('be45-regress');
