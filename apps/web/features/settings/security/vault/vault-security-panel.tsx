@@ -46,8 +46,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const resetDisabled = !isVaultPresent || vault.inFlight;
 
   // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
-  // If `GET /vault` returns 404 (`vault_absent`, e.g. another tab reset the vault and broadcast `vault_changed { version: null }`),
-  // `reloadVaultMeta()` resolves to `null`: refresh `Me` so `me.vault.status` transitions from stale `'present'` to `'absent'` (R1-11).
+  // TODO(sync-vaultweb): remove when the provider calls refetchMe() on vault_changed{version:null}
   useEffect(() => {
     if (!isVaultPresent || vault.vaultMeta !== null) return;
     void vault
