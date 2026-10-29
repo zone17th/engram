@@ -14,24 +14,35 @@ import {
 } from './helpers';
 
 const INITIAL_VAULT_PASSPHRASE = 'correct-horse-battery-staple-gn-v1';
-const UPDATED_VAULT_PASSPHRASE_1 = 'correct-horse-battery-staple-gn-v2';
-const UPDATED_VAULT_PASSPHRASE_2 = 'correct-horse-battery-staple-gn-v3';
+const UPDATED_VAULT_PASSPHRASE = 'correct-horse-battery-staple-gn-v2';
 const THEMES = ['light', 'dark'] as const;
 const WIDTHS = [
   { width: 390, height: 844 },
   { width: 1440, height: 900 },
 ] as const;
 
+const STEP_TIMEOUT = 15_000;
+const CRYPTO_STEP_TIMEOUT = 25_000;
+
 type Theme = (typeof THEMES)[number];
 type ViewportWidth = (typeof WIDTHS)[number]['width'];
 
+function logStep(testLabel: string, stepName: string) {
+  console.log(`[vault-settings-visual][${testLabel}] ${stepName}`);
+}
+
 async function confirmEmailToken(page: Page, token: string) {
-  await page.goto(`/app/auth/verify-email?token=${encodeURIComponent(token)}`);
+  await page.goto(`/app/auth/verify-email?token=${encodeURIComponent(token)}`, {
+    waitUntil: 'domcontentloaded',
+    timeout: STEP_TIMEOUT,
+  });
   const respPromise = page.waitForResponse(
     (r) => r.request().method() === 'POST' && r.url().includes('/api/v1/auth/verify-email/confirm'),
-    { timeout: 20_000 },
+    { timeout: STEP_TIMEOUT },
   );
-  await page.getByRole('button', { name: /Confirm|Xác nhận email/ }).click();
+  await page
+    .getByRole('button', { name: /Confirm|Xác nhận email/ })
+    .click({ timeout: STEP_TIMEOUT });
   const resp = await respPromise;
   expect(resp.status()).toBe(200);
 }
@@ -50,7 +61,7 @@ async function waitForVaultBridgeReady(page: Page) {
       return typeof win.__engramVaultTestBridge?.beginOp === 'function';
     },
     undefined,
-    { timeout: 20_000 },
+    { timeout: STEP_TIMEOUT },
   );
 }
 
@@ -199,7 +210,7 @@ async function prepareThemeAndLocale(page: Page, theme: Theme) {
 }
 
 async function settleForCapture(page: Page, email: string, theme: Theme) {
-  await expect(page.locator('html')).toHaveAttribute('data-theme', theme, { timeout: 15_000 });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', theme, { timeout: STEP_TIMEOUT });
   await page.evaluate(async () => {
     await document.fonts.ready;
   });
@@ -244,12 +255,14 @@ async function saveScreenshot(
   const buffer = options.target
     ? await options.target.screenshot({
         path: outputPath,
+        timeout: STEP_TIMEOUT,
         animations: 'disabled',
         caret: 'hide',
         ...(options.mask && options.mask.length > 0 ? { mask: options.mask } : {}),
       })
     : await page.screenshot({
         path: outputPath,
+        timeout: STEP_TIMEOUT,
         fullPage: options.fullPage ?? false,
         animations: 'disabled',
         caret: 'hide',
@@ -262,53 +275,88 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
   test.skip(!process.env.E2E_STACK, 'requires API + worker');
 
   for (const theme of THEMES) {
-    test(`captures vault security section and dialogs (${theme}, 390 + 1440)`, async ({
-      browser,
-    }, testInfo) => {
-      test.setTimeout(180_000);
-      const context = await newContext(browser);
-      try {
-        const page = await context.newPage();
-        await prepareThemeAndLocale(page, theme);
+    for (const viewport of WIDTHS) {
+      const testLabel = `${theme}-${viewport.width}`;
 
-        const email = uniqueEmail(`vaultsettings-visual-${theme}`);
-        await signupViaUi(page, email, PASSWORD);
-        if (verifyRequired()) {
-          const mail = await waitForMail(email, 'verify_email');
-          await confirmEmailToken(page, tokenFromLink(mail.link));
-        }
-        await expectSignedIn(page);
-        expect((await patchSettingsViaPage(page, { locale: 'vi', theme })).status).toBe(200);
-        await prepareThemeAndLocale(page, theme);
-        await page.goto('/app/settings', { waitUntil: 'networkidle' });
-        await createAndUnlockVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
-        await page.reload({ waitUntil: 'networkidle' });
-        await unlockExistingVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
-
-        await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/);
-        await expect(page.getByTestId('vault-security-section')).toBeVisible();
-        await expect(page.getByTestId('recovery-keys-remaining-badge')).toBeVisible();
-
-        for (const [idx, viewport] of WIDTHS.entries()) {
-          const nextPassphrase =
-            idx === 0 ? UPDATED_VAULT_PASSPHRASE_1 : UPDATED_VAULT_PASSPHRASE_2;
+      test(`captures vault security section and dialogs (${theme}, ${viewport.width})`, async ({
+        browser,
+      }, testInfo) => {
+        test.setTimeout(120_000);
+        const context = await newContext(browser);
+        try {
+          const page = await context.newPage();
           await page.setViewportSize({ width: viewport.width, height: viewport.height });
-          await settleForCapture(page, email, theme);
+          await prepareThemeAndLocale(page, theme);
+
+          logStep(testLabel, 'signup');
+          const email = uniqueEmail(`vaultsettings-visual-${theme}-${viewport.width}`);
+          await signupViaUi(page, email, PASSWORD);
+          if (verifyRequired()) {
+            logStep(testLabel, 'verify-email');
+            const mail = await waitForMail(email, 'verify_email');
+            await confirmEmailToken(page, tokenFromLink(mail.link));
+          }
+          await expectSignedIn(page);
+
+          logStep(testLabel, 'patch-settings-locale-theme');
+          expect((await patchSettingsViaPage(page, { locale: 'vi', theme })).status).toBe(200);
+          await prepareThemeAndLocale(page, theme);
+
+          logStep(testLabel, 'goto-settings-and-create-vault');
+          await page.goto('/app/settings', {
+            waitUntil: 'domcontentloaded',
+            timeout: STEP_TIMEOUT,
+          });
+          await createAndUnlockVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
+
+          logStep(testLabel, 'reload-settings-and-unlock-vault');
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: STEP_TIMEOUT });
+          await unlockExistingVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
+
+          if (viewport.width >= 640) {
+            await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, {
+              timeout: STEP_TIMEOUT,
+            });
+          } else {
+            await expect(page.getByTestId('vault-lock-button-mobile')).toBeVisible({
+              timeout: STEP_TIMEOUT,
+            });
+          }
+          await expect(page.getByTestId('vault-security-section')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await expect(page.getByTestId('recovery-keys-remaining-badge')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await expect(page.getByTestId('recovery-keys-slot-chips')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
 
           // (a) Settings security section with the vault section (unlocked, RK count shown)
-          await page.getByTestId('vault-security-section').scrollIntoViewIfNeeded();
+          logStep(testLabel, 'capture:section');
+          await settleForCapture(page, email, theme);
+          await page
+            .getByTestId('vault-security-section')
+            .scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
           await page.waitForTimeout(100);
           await saveScreenshot(page, testInfo, 'section', theme, viewport.width, {
             fullPage: false,
           });
 
           // (b) Change-passphrase dialog (all passphrase/password inputs empty AND masked)
-          await page.locator('[data-open-dialog="passDlg"]').click();
+          logStep(testLabel, 'capture:passphrase-dialog');
+          await page.locator('[data-open-dialog="passDlg"]').click({ timeout: STEP_TIMEOUT });
           const passDialog = page.getByRole('dialog');
-          await expect(passDialog).toBeVisible();
-          await expect(passDialog.locator('[data-view="pass-form"]')).toBeVisible();
-          await expect(passDialog.locator('#pass-new-pp')).toHaveValue('');
-          await expect(passDialog.locator('#pass-confirm-pp')).toHaveValue('');
+          await expect(passDialog).toBeVisible({ timeout: STEP_TIMEOUT });
+          await expect(passDialog.locator('[data-view="pass-form"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await expect(passDialog.locator('#pass-new-pp')).toHaveValue('', {
+            timeout: STEP_TIMEOUT,
+          });
+          await expect(passDialog.locator('#pass-confirm-pp')).toHaveValue('', {
+            timeout: STEP_TIMEOUT,
+          });
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'passphrase-dialog', theme, viewport.width, {
             target: passDialog.locator('.panel'),
@@ -320,162 +368,195 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           });
 
           // (b.2) Change-passphrase done step (`data-view="pass-done"`)
+          logStep(testLabel, 'capture:passphrase-done');
           const passLoginInput = passDialog.locator('#pass-login-pwd');
           if ((await passLoginInput.count()) > 0) {
-            await passLoginInput.fill(PASSWORD);
+            await passLoginInput.fill(PASSWORD, { timeout: STEP_TIMEOUT });
           }
-          await passDialog.locator('#pass-new-pp').fill(nextPassphrase);
-          await passDialog.locator('#pass-confirm-pp').fill(nextPassphrase);
-          await passDialog.getByRole('button', { name: /Change passphrase|Đổi passphrase/ }).click();
+          await passDialog.locator('#pass-new-pp').fill(UPDATED_VAULT_PASSPHRASE, {
+            timeout: STEP_TIMEOUT,
+          });
+          await passDialog.locator('#pass-confirm-pp').fill(UPDATED_VAULT_PASSPHRASE, {
+            timeout: STEP_TIMEOUT,
+          });
+          await passDialog
+            .getByRole('button', { name: /Change passphrase|Đổi passphrase/ })
+            .click({ timeout: STEP_TIMEOUT });
           await expect(passDialog.locator('[data-view="pass-done"]')).toBeVisible({
-            timeout: 20_000,
+            timeout: CRYPTO_STEP_TIMEOUT,
           });
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'passphrase-done', theme, viewport.width, {
             target: passDialog.locator('.panel'),
           });
-          await passDialog.getByRole('button', { name: /Done|Xong/ }).click();
-          await expect(passDialog).toBeHidden();
+          await passDialog
+            .getByRole('button', { name: /Done|Xong/ })
+            .click({ timeout: STEP_TIMEOUT });
+          await expect(passDialog).toBeHidden({ timeout: STEP_TIMEOUT });
 
           // (c) Recovery-keys dialog showing a NEW key sheet (all RK slot cells masked)
-          await page.locator('[data-open-dialog="rotateDlg"]').click();
+          logStep(testLabel, 'capture:rk-sheet');
+          await page.locator('[data-open-dialog="rotateDlg"]').click({ timeout: STEP_TIMEOUT });
           const rkDialog = page.getByRole('dialog');
-          await expect(rkDialog).toBeVisible();
+          await expect(rkDialog).toBeVisible({ timeout: STEP_TIMEOUT });
           const rkStage = rkDialog.locator('[data-view="rot-reauth"], [data-view="rot-keys"]');
-          await expect(rkStage).toBeVisible({ timeout: 20_000 });
+          await expect(rkStage).toBeVisible({ timeout: STEP_TIMEOUT });
           if ((await rkStage.getAttribute('data-view')) === 'rot-reauth') {
-            await rkDialog.locator('#rot-reauth-pwd').fill(PASSWORD);
-            await rkDialog.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
+            await rkDialog.locator('#rot-reauth-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await rkDialog
+              .getByRole('button', { name: /Continue|Tiếp tục/ })
+              .click({ timeout: STEP_TIMEOUT });
           }
           await expect(rkDialog.locator('[data-view="rot-keys"]')).toBeVisible({
-            timeout: 20_000,
+            timeout: CRYPTO_STEP_TIMEOUT,
           });
           const rkGrid = rkDialog.getByTestId('recovery-keys-grid');
-          await expect(rkGrid).toBeVisible({ timeout: 20_000 });
+          await expect(rkGrid).toBeVisible({ timeout: CRYPTO_STEP_TIMEOUT });
           const rkCells = rkDialog.locator('[data-testid^="recovery-key-slot-"]');
-          await expect(rkCells).toHaveCount(10);
-          await rkGrid.scrollIntoViewIfNeeded();
+          await expect(rkCells).toHaveCount(10, { timeout: STEP_TIMEOUT });
+          await rkGrid.scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'rk-sheet', theme, viewport.width, {
             target: rkDialog.locator('.panel'),
             mask: [rkCells, rkGrid],
           });
-          await rkDialog.getByRole('button', { name: /Cancel|Huỷ/ }).click();
-          await expect(rkDialog).toBeHidden();
-          await expect(page.locator('body')).not.toHaveText(/rk\d+_[0-9A-Z]{4}-[0-9A-Z]{4}/);
+          await rkDialog
+            .getByRole('button', { name: /Cancel|Huỷ/ })
+            .click({ timeout: STEP_TIMEOUT });
+          await expect(rkDialog).toBeHidden({ timeout: STEP_TIMEOUT });
+          await expect(page.locator('body')).not.toHaveText(
+            /rk\d+_[0-9A-Z]{4}-[0-9A-Z]{4}/,
+            { timeout: STEP_TIMEOUT },
+          );
 
           // (d) Reset-vault dialog (step 1 and the typed-confirmation step)
-          await page.locator('[data-open-dialog="resetDlg"]').click();
+          logStep(testLabel, 'capture:reset-step1');
+          await page.locator('[data-open-dialog="resetDlg"]').click({ timeout: STEP_TIMEOUT });
           const resetDialog = page.getByRole('dialog');
-          await expect(resetDialog).toBeVisible();
-          await expect(resetDialog.locator('[data-view="rst-s1"]')).toBeVisible();
+          await expect(resetDialog).toBeVisible({ timeout: STEP_TIMEOUT });
+          await expect(resetDialog.locator('[data-view="rst-s1"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'reset-step1', theme, viewport.width, {
             target: resetDialog.locator('.panel'),
           });
 
+          logStep(testLabel, 'capture:reset-confirm');
           await resetDialog
             .getByRole('button', { name: /None of these work|Không đường nào dùng được/ })
-            .click();
-          await expect(resetDialog.locator('[data-view="rst-s2"]')).toBeVisible();
+            .click({ timeout: STEP_TIMEOUT });
+          await expect(resetDialog.locator('[data-view="rst-s2"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
           await resetDialog
             .getByRole('button', { name: /Checked backups|Đã kiểm tra backup/ })
-            .click();
+            .click({ timeout: STEP_TIMEOUT });
 
           const rstStage = resetDialog.locator('[data-view="rst-s3"], [data-view="rst-s4"]');
-          await expect(rstStage).toBeVisible({ timeout: 20_000 });
+          await expect(rstStage).toBeVisible({ timeout: STEP_TIMEOUT });
           if ((await rstStage.getAttribute('data-view')) === 'rst-s3') {
-            await resetDialog.locator('#rst-reauth-pwd').fill(PASSWORD);
-            await resetDialog.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
+            await resetDialog.locator('#rst-reauth-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await resetDialog
+              .getByRole('button', { name: /Continue|Tiếp tục/ })
+              .click({ timeout: STEP_TIMEOUT });
           }
 
           await expect(resetDialog.locator('[data-view="rst-s4"]')).toBeVisible({
-            timeout: 20_000,
+            timeout: STEP_TIMEOUT,
           });
           const confirmWordInput = resetDialog.locator('#rst-confirm-word');
-          await confirmWordInput.fill('ĐẶT LẠI');
+          await confirmWordInput.fill('ĐẶT LẠI', { timeout: STEP_TIMEOUT });
           const rstConfirmBtn = resetDialog.locator('#rstConfirmBtn');
-          await expect(rstConfirmBtn).toBeEnabled();
-          await rstConfirmBtn.scrollIntoViewIfNeeded();
+          await expect(rstConfirmBtn).toBeEnabled({ timeout: STEP_TIMEOUT });
+          await rstConfirmBtn.scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'reset-confirm', theme, viewport.width, {
             target: resetDialog.locator('.panel'),
           });
 
-          if (idx === 0) {
-            await page.keyboard.press('Escape');
-            await expect(resetDialog).toBeHidden();
-          } else {
-            // On the final viewport (1440), lock to capture locked banner across both widths, then reset to capture absent banner across both widths
-            await page.keyboard.press('Escape');
-            await expect(resetDialog).toBeHidden();
-          }
-        }
+          await page.keyboard.press('Escape');
+          await expect(resetDialog).toBeHidden({ timeout: STEP_TIMEOUT });
 
-        // (e) Locked panel banner (`vault-security-locked-banner`) across 390 + 1440
-        await page.evaluate(async () => {
-          const win = window as unknown as {
-            __engramVaultTestBridge: { lockNow: () => Promise<void> };
-          };
-          await win.__engramVaultTestBridge.lockNow();
-        });
-        await expect(page.getByTestId('vault-security-locked-banner')).toBeVisible({
-          timeout: 15_000,
-        });
-        for (const viewport of WIDTHS) {
-          await page.setViewportSize({ width: viewport.width, height: viewport.height });
+          // (e) Locked panel banner (`vault-security-locked-banner`)
+          logStep(testLabel, 'capture:locked-banner');
+          await page.evaluate(async () => {
+            const win = window as unknown as {
+              __engramVaultTestBridge: { lockNow: () => Promise<void> };
+            };
+            await win.__engramVaultTestBridge.lockNow();
+          });
+          await expect(page.getByTestId('vault-security-locked-banner')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
           await settleForCapture(page, email, theme);
-          await page.getByTestId('vault-security-locked-banner').scrollIntoViewIfNeeded();
+          await page
+            .getByTestId('vault-security-locked-banner')
+            .scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
           await page.waitForTimeout(100);
           await saveScreenshot(page, testInfo, 'locked-banner', theme, viewport.width, {
             fullPage: false,
           });
-        }
 
-        // (f) Complete Reset Vault to transition to absent, then capture absent panel banner (`vault-security-absent-banner`) across 390 + 1440
-        await page.locator('[data-open-dialog="resetDlg"]').click();
-        const resetDlgForAbsent = page.getByRole('dialog');
-        await expect(resetDlgForAbsent.locator('[data-view="rst-s1"]')).toBeVisible();
-        await resetDlgForAbsent
-          .getByRole('button', { name: /None of these work|Không đường nào dùng được/ })
-          .click();
-        await expect(resetDlgForAbsent.locator('[data-view="rst-s2"]')).toBeVisible();
-        await resetDlgForAbsent
-          .getByRole('button', { name: /Checked backups|Đã kiểm tra backup/ })
-          .click();
-        const rstAbsentStage = resetDlgForAbsent.locator(
-          '[data-view="rst-s3"], [data-view="rst-s4"]',
-        );
-        await expect(rstAbsentStage).toBeVisible({ timeout: 20_000 });
-        if ((await rstAbsentStage.getAttribute('data-view')) === 'rst-s3') {
-          await resetDlgForAbsent.locator('#rst-reauth-pwd').fill(PASSWORD);
-          await resetDlgForAbsent.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
-        }
-        await expect(resetDlgForAbsent.locator('[data-view="rst-s4"]')).toBeVisible({
-          timeout: 20_000,
-        });
-        await resetDlgForAbsent.locator('#rst-confirm-word').fill('ĐẶT LẠI');
-        await resetDlgForAbsent.locator('#rstConfirmBtn').click();
-        await expect(resetDlgForAbsent.locator('[data-view="rst-s5"]')).toBeVisible({
-          timeout: 20_000,
-        });
-        await resetDlgForAbsent.getByRole('button', { name: /Close|Đóng/ }).click();
-        await expect(resetDlgForAbsent).toBeHidden();
-        await expect(page.getByTestId('vault-security-absent-banner')).toBeVisible({
-          timeout: 15_000,
-        });
-        for (const viewport of WIDTHS) {
-          await page.setViewportSize({ width: viewport.width, height: viewport.height });
+          // (f) Complete Reset Vault to transition to absent, then capture absent panel banner (`vault-security-absent-banner`)
+          logStep(testLabel, 'capture:absent-banner');
+          await page.locator('[data-open-dialog="resetDlg"]').click({ timeout: STEP_TIMEOUT });
+          const resetDlgForAbsent = page.getByRole('dialog');
+          await expect(resetDlgForAbsent.locator('[data-view="rst-s1"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await resetDlgForAbsent
+            .getByRole('button', { name: /None of these work|Không đường nào dùng được/ })
+            .click({ timeout: STEP_TIMEOUT });
+          await expect(resetDlgForAbsent.locator('[data-view="rst-s2"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await resetDlgForAbsent
+            .getByRole('button', { name: /Checked backups|Đã kiểm tra backup/ })
+            .click({ timeout: STEP_TIMEOUT });
+          const rstAbsentStage = resetDlgForAbsent.locator(
+            '[data-view="rst-s3"], [data-view="rst-s4"]',
+          );
+          await expect(rstAbsentStage).toBeVisible({ timeout: STEP_TIMEOUT });
+          if ((await rstAbsentStage.getAttribute('data-view')) === 'rst-s3') {
+            await resetDlgForAbsent
+              .locator('#rst-reauth-pwd')
+              .fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await resetDlgForAbsent
+              .getByRole('button', { name: /Continue|Tiếp tục/ })
+              .click({ timeout: STEP_TIMEOUT });
+          }
+          await expect(resetDlgForAbsent.locator('[data-view="rst-s4"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await resetDlgForAbsent
+            .locator('#rst-confirm-word')
+            .fill('ĐẶT LẠI', { timeout: STEP_TIMEOUT });
+          await resetDlgForAbsent.locator('#rstConfirmBtn').click({ timeout: STEP_TIMEOUT });
+          await expect(resetDlgForAbsent.locator('[data-view="rst-s5"]')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
+          await resetDlgForAbsent
+            .getByRole('button', { name: /Close|Đóng/ })
+            .click({ timeout: STEP_TIMEOUT });
+          await expect(resetDlgForAbsent).toBeHidden({ timeout: STEP_TIMEOUT });
+          await expect(page.getByTestId('vault-security-absent-banner')).toBeVisible({
+            timeout: STEP_TIMEOUT,
+          });
           await settleForCapture(page, email, theme);
-          await page.getByTestId('vault-security-absent-banner').scrollIntoViewIfNeeded();
+          await page
+            .getByTestId('vault-security-absent-banner')
+            .scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
           await page.waitForTimeout(100);
           await saveScreenshot(page, testInfo, 'absent-banner', theme, viewport.width, {
             fullPage: false,
           });
+
+          logStep(testLabel, 'done');
+        } finally {
+          await context.close();
         }
-      } finally {
-        await context.close();
-      }
-    });
+      });
+    }
   }
 });
