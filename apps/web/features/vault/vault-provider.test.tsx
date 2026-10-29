@@ -3834,29 +3834,19 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(winBridge).toBeDefined();
     expect(winBridge?.state).toBe('unlocked');
 
-    // 1. BE2-6: Trigger two overlapping wake events (`focus` then `pageshow`) where Verify #1 finishes while Verify #2 is still held.
-    // Plaintext MUST remain gated (`unlocking`) until Verify #2 also finishes.
-    holdVerifyCount = 2;
+    // 1. BE2-5: Trigger two burst wake events (`focus` then `pageshow`) for the same generation/sessionEpoch/wakeSeq ->
+    // verifyOnWake coalesces same-session burst wakes into a single Web Lock verification while holding plaintext gated (`unlocking`).
+    holdVerifyCount = 1;
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
       window.dispatchEvent(new Event('pageshow'));
     });
-    expect(pendingVerifies).toHaveLength(2);
+    expect(pendingVerifies).toHaveLength(1);
     expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('unlocking');
     expect(winBridge?.state).toBe('unlocking');
     expect(screen.getByTestId('be2-overlap-body')).toHaveTextContent('locked-surface');
 
-    // Release Verify #1 only -> Verify #2 is still pending, so state MUST remain 'unlocking' (never re-enabling plaintext early)
-    await act(async () => {
-      pendingVerifies.shift()?.();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(pendingVerifies).toHaveLength(1);
-    expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('unlocking');
-    expect(screen.getByTestId('be2-overlap-body')).toHaveTextContent('locked-surface');
-
-    // Release Verify #2 -> both verifications and Me refreshes complete, returning to 'unlocked'
+    // Release the coalesced wake verification -> verification and Me refresh complete, returning to 'unlocked'
     await act(async () => {
       pendingVerifies.shift()?.();
     });
@@ -4004,9 +3994,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
     await waitFor(() => {
       expect(screen.getByTestId('be2-8-state')).toHaveTextContent('locked');
+      expect(getVaultNetworkCalls).toBe(1);
+      expect(vaultCtx.vaultMeta?.version).toBe(1);
     });
-    expect(getVaultNetworkCalls).toBe(1);
-
     // BE1-8: Bump server version and call reloadVaultMeta() while cached query is still fresh under staleTime: 60_000.
     // reloadVaultMeta MUST bypass stale cache and perform a fresh network GET /vault.
     vaultVersion = 2;
@@ -4320,11 +4310,6 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     vi.useFakeTimers();
     vi.setSystemTime(t0 + 50_000);
     const opTimeout = vaultA.beginOp();
-    // Let the intent-start capture finish before holding the post-unlock verification
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(20);
-    });
-    holdPostUnlockVerify = true;
     let postUnlockTimeoutErr: unknown = null;
     const unlockTimeoutPromise = vaultA
       .unlockPassphrase({
@@ -4333,6 +4318,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
         privateKeysWrapped: created.private_keys_wrapped,
         opGeneration: opTimeout.opGeneration,
+        beforePostMessage: () => {
+          holdPostUnlockVerify = true;
+        },
       })
       .catch((err: unknown) => {
         postUnlockTimeoutErr = err;
