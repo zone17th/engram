@@ -149,7 +149,7 @@ func rejectDuplicateOrAliasJSONKeys(data []byte, dstType reflect.Type) error {
 }
 
 func derefType(t reflect.Type) reflect.Type {
-	for t != nil && t.Kind() == reflect.Ptr {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t
