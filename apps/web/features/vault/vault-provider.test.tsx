@@ -8,6 +8,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { resolveGuardRedirect } from '@/features/auth/guard-redirect';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import {
+  DEVICE_META_RECORD_KEY,
   DEVKEY_STORE_NAME,
   LOCK_EPOCH_RECORD_KEY,
   LOCK_EPOCH_STORE_NAME,
@@ -18,17 +19,23 @@ import {
   VaultProvider,
   classifyCryptoError,
   deriveVaultStateMachineMode,
+  formatDevKeyRecordKey,
   openSabkDeviceDb,
+  purgeDeviceKeysOnRevoked,
+  readDeviceMetaRecord,
   recordLockEpochEvent,
   resetVaultBroadcastForTests,
+  setDefaultDeviceStoreEnvironmentForTests,
+  setKnownDeviceSessionUserId,
   useVault,
   vaultBodyQueryKey,
   verifyUnlockBaseline,
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
+import { authFetch } from '@/lib/api/auth-fetch';
 import type { Me } from '@/lib/api/auth';
-import { CryptoClientError } from '@/lib/crypto/client';
+import { CryptoClientError, type CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
 import { createWorkerShim, type ShimmedWorkerInstance } from '@/lib/crypto/test/worker-shim';
@@ -120,7 +127,8 @@ interface FakeIdbOptions {
 class FakeIDBStorage {
   readonly stores = new Map<string, Map<string, unknown>>();
   options: FakeIdbOptions = {};
-
+  readonly transactions: Array<{ storeNames: string[]; mode: string }> = [];
+  deleteDatabaseCalls = 0;
   ensureStore(name: string): Map<string, unknown> {
     let store = this.stores.get(name);
     if (!store) {
@@ -164,6 +172,10 @@ class FakeIDBStorage {
 
         return req as unknown as IDBOpenDBRequest;
       },
+      deleteDatabase(): IDBOpenDBRequest {
+        storage.deleteDatabaseCalls += 1;
+        throw new Error('indexedDB.deleteDatabase must NEVER be called');
+      },
     };
 
     return factory as unknown as IDBFactory;
@@ -189,10 +201,10 @@ class FakeIDBStorage {
       close() {
         // no-op
       },
-      transaction(storeNames: string | string[]): IDBTransaction {
+      transaction(storeNames: string | string[], mode: IDBTransactionMode = 'readonly'): IDBTransaction {
         const names = Array.isArray(storeNames) ? storeNames : [storeNames];
+        storage.transactions.push({ storeNames: names, mode });
         for (const n of names) storage.ensureStore(n);
-
         let aborted = false;
         let pendingRequests = 0;
         let finishScheduled = false;
@@ -281,6 +293,17 @@ class FakeIDBStorage {
               delete(key: IDBValidKey): IDBRequest {
                 return makeRequest(() => {
                   backing.delete(String(key));
+                  return { ok: true, value: undefined };
+                });
+              },
+              getAllKeys(): IDBRequest {
+                return makeRequest(() => {
+                  return { ok: true, value: Array.from(backing.keys()) };
+                });
+              },
+              clear(): IDBRequest {
+                return makeRequest(() => {
+                  backing.clear();
                   return { ok: true, value: undefined };
                 });
               },
@@ -388,6 +411,8 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       ...navigator,
       locks: fakeLocks.createLockManager(),
     });
+    setDefaultDeviceStoreEnvironmentForTests({ idbFactory: fakeIdb.createFactory() });
+    setKnownDeviceSessionUserId(null);
     vi.stubGlobal('fetch', vi.fn());
   });
 
@@ -399,6 +424,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     resetVaultBroadcastForTests();
     HubBroadcastChannel.reset();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   function makeShimmedWorkerFactory(hooks: Parameters<typeof createWorkerShim>[0] = {}) {
@@ -1473,5 +1499,566 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         vaultState: 'unlocked',
       }),
     ).toBe('/app');
+  });
+
+  // -------------------------------------------------------------------------
+  // Task 15B — Shared multi-tab auto-lock, wake/resume Me deadline, clock skew,
+  // settings_changed, logout keeps DevKey, and revoked single-tx purge
+  // -------------------------------------------------------------------------
+  it('auto-locks after auto_lock_minutes * 60_000 ms using a fake clock', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z');
+    const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 5 });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    function Probe() {
+      vaultCtx = useVault();
+      return (
+        <div>
+          <output data-testid="state">{vaultCtx.state}</output>
+          <output data-testid="minutes-left">{String(vaultCtx.minutesLeft ?? 'none')}</output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <Probe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('locked'));
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const op = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.createVault({
+        passphrase: 'fake-clock-timer-passphrase-123',
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('minutes-left')).toHaveTextContent('5');
+    qc.setQueryData(vaultBodyQueryKey('item-timer'), 'secret-body-timer');
+
+    // Advance 4 minutes and 59 seconds -> still unlocked
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 60_000 + 59_000);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('minutes-left')).toHaveTextContent('1');
+
+    // Advance past the 5-minute mark -> locks immediately and wipes decrypted body cache
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('locked');
+    expect(qc.getQueryData(vaultBodyQueryKey('item-timer'))).toBeUndefined();
+  });
+
+  it('auto_lock_minutes=0 ("Never") never locks, including across tab switches and hours of idle time', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z');
+    const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 0 });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    function Probe() {
+      vaultCtx = useVault();
+      return (
+        <div>
+          <output data-testid="state">{vaultCtx.state}</output>
+          <output data-testid="minutes-left">{String(vaultCtx.minutesLeft ?? 'none')}</output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <Probe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('locked'));
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const op = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.createVault({
+        passphrase: 'never-auto-lock-passphrase-123',
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('minutes-left')).toHaveTextContent('none');
+
+    // Advance 24 hours with zero activity
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+
+    // Switch tab visibility and focus -> refreshes Me (which still returns auto_lock_minutes: 0) and stays unlocked
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+  });
+
+  it('idle background tab does not lock while another tab broadcasts user activity', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z');
+    const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 5 });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      return jsonResponse({});
+    });
+
+    let tabA!: VaultContextValue;
+    let tabB!: VaultContextValue;
+    function TabAProbe() {
+      tabA = useVault();
+      return <output data-testid="tab-a">{tabA.state}</output>;
+    }
+    function TabBProbe() {
+      tabB = useVault();
+      return <output data-testid="tab-b">{tabB.state}</output>;
+    }
+
+    const qcA = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qcB = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <div>
+        <QueryClientProvider client={qcA}>
+          <SessionProvider>
+            <VaultProvider
+              createWorker={makeShimmedWorkerFactory()}
+              lockEpochEnv={makeLockEpochEnv()}
+            >
+              <TabAProbe />
+            </VaultProvider>
+          </SessionProvider>
+        </QueryClientProvider>
+        <QueryClientProvider client={qcB}>
+          <SessionProvider>
+            <VaultProvider
+              createWorker={makeShimmedWorkerFactory()}
+              lockEpochEnv={makeLockEpochEnv()}
+            >
+              <TabBProbe />
+            </VaultProvider>
+          </SessionProvider>
+        </QueryClientProvider>
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('tab-b')).toHaveTextContent('locked');
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const opA = tabA.beginOp();
+    let created!: CreateVaultResult;
+    await act(async () => {
+      created = await tabA.createVault({
+        passphrase: 'shared-activity-passphrase-123',
+        opGeneration: opA.opGeneration,
+      });
+    });
+
+    const opB = tabB.beginOp();
+    await act(async () => {
+      await tabB.unlockPassphrase({
+        passphrase: 'shared-activity-passphrase-123',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opB.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('tab-a')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('tab-b')).toHaveTextContent('unlocked');
+
+    // Advance 3 minutes (Tab B is completely idle in background)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    });
+
+    // Tab A is active at t = +3m (or a remote tab broadcasts activity on 'sabk.vault')
+    const remotePeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    act(() => {
+      tabA.recordActivity(Date.now());
+      remotePeer.postMessage({ type: 'activity', at: Date.now() });
+    });
+
+    // Advance another 3 minutes (total 6 minutes since Tab B's own unlock, but only 3 minutes since Tab A's activity)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    });
+    // Neither tab should have locked because max(lastActivity across tabs) + 5m is at t = +8m
+    expect(screen.getByTestId('tab-a')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('tab-b')).toHaveTextContent('unlocked');
+
+    // Advance the remaining 2 minutes + 1s with no activity in any tab -> both lock
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60_000 + 1_000);
+    });
+    remotePeer.close();
+    expect(screen.getByTestId('tab-a')).toHaveTextContent('locked');
+    expect(screen.getByTestId('tab-b')).toHaveTextContent('locked');
+  });
+
+  it('locks immediately on wake when device slept past the deadline (without trusting throttled timers), when clock moves back > 1 minute, or when wake Me refresh fails/times out (5s deadline)', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+
+    let meResponseMode: 'ok' | 'hang' | '401' = 'ok';
+    const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 15 });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) {
+        if (meResponseMode === 'hang') {
+          return new Promise<Response>(() => {
+            // Never resolves -> triggers 5s wake deadline
+          });
+        }
+        if (meResponseMode === '401') {
+          return new Response(
+            JSON.stringify({
+              type: 'https://key.zone17th.click/problems/unauthenticated',
+              title: 'Unauthenticated',
+              status: 401,
+              code: 'unauthenticated',
+            }),
+            { status: 401, headers: { 'content-type': 'application/problem+json' } },
+          );
+        }
+        return jsonResponse(me);
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    function Probe() {
+      vaultCtx = useVault();
+      return <output data-testid="state">{vaultCtx.state}</output>;
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <Probe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('locked'));
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    // 1. Sleep past the 15-minute deadline without firing intermediate setTimeout callbacks
+    const op1 = vaultCtx.beginOp();
+    let created!: CreateVaultResult;
+    await act(async () => {
+      created = await vaultCtx.createVault({
+        passphrase: 'sleep-and-clock-skew-passphrase',
+        opGeneration: op1.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+
+    // Jump wall clock forward by 20 minutes (simulating OS sleep where timers were suspended)
+    vi.setSystemTime(t0 + 20 * 60_000);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('locked');
+
+    // 2. Clock going back by > 1 minute -> locks immediately
+    const t1 = t0 + 30 * 60_000;
+    vi.setSystemTime(t1);
+    const op2 = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.unlockPassphrase({
+        passphrase: 'sleep-and-clock-skew-passphrase',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op2.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+
+    // Move system clock back by 2 minutes (> 60_000 ms tolerance) and trigger wake/focus
+    vi.setSystemTime(t1 - 2 * 60_000);
+    await act(async () => {
+      window.dispatchEvent(new Event('resume'));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('locked');
+
+    // 3. Wake GET /auth/me hangs past the 5s ADR 0003 deadline -> locks fail-closed
+    const t2 = t0 + 60 * 60_000;
+    vi.setSystemTime(t2);
+    const op3 = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.unlockPassphrase({
+        passphrase: 'sleep-and-clock-skew-passphrase',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op3.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('unlocked');
+
+    meResponseMode = 'hang';
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100);
+    });
+    expect(screen.getByTestId('state')).toHaveTextContent('locked');
+    meResponseMode = 'ok';
+  });
+
+  it('changing auto_lock_minutes in Tab A broadcasts settings_changed and applies immediately in Tab B', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+
+    let currentAutoLock: 0 | 5 | 15 | 60 = 60;
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) {
+        return jsonResponse(
+          makeMeFixture({ vaultStatus: 'present', autoLockMinutes: currentAutoLock }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    let tabB!: VaultContextValue;
+    function TabBProbe() {
+      tabB = useVault();
+      return (
+        <div>
+          <output data-testid="tab-b-state">{tabB.state}</output>
+          <output data-testid="tab-b-minutes">{tabB.autoLockMinutes}</output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <TabBProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-b-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('tab-b-minutes')).toHaveTextContent('60');
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const op = tabB.beginOp();
+    await act(async () => {
+      await tabB.createVault({
+        passphrase: 'settings-changed-passphrase-123',
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('tab-b-state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('tab-b-minutes')).toHaveTextContent('60');
+
+    // Advance 6 minutes -> still unlocked under 60-minute timeout
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+    });
+    expect(screen.getByTestId('tab-b-state')).toHaveTextContent('unlocked');
+
+    // Tab A lowers auto_lock_minutes to 5 minutes and broadcasts settings_changed on 'sabk.vault'
+    currentAutoLock = 5;
+    const remoteTabA = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      remoteTabA.postMessage({ type: 'settings_changed', auto_lock_minutes: 5 });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    remoteTabA.close();
+
+    // Because 6 minutes have already elapsed since lastActivity, Tab B locks immediately upon applying 5m
+    expect(screen.getByTestId('tab-b-minutes')).toHaveTextContent('5');
+    expect(screen.getByTestId('tab-b-state')).toHaveTextContent('locked');
+  });
+
+  it('401 session_invalid with reason=revoked purges DevKey records in ONE readwrite transaction (never deleteDatabase) and rotates incarnation + bumps deviceRevision', async () => {
+    const USER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const USER_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    // Seed initial DevKey records for User A and User B plus initial origin-wide meta (deviceRevision = 3)
+    const devkeysMap = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    devkeysMap.set(formatDevKeyRecordKey(USER_A, 'vk:a1'), {
+      user_id: USER_A,
+      vault_key_id: 'vk:a1',
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+    devkeysMap.set(formatDevKeyRecordKey(USER_B, 'vk:b1'), {
+      user_id: USER_B,
+      vault_key_id: 'vk:b1',
+      wrapped_vk: new Uint8Array([4, 5, 6]),
+    });
+    const metaMap = fakeIdb.ensureStore(META_STORE_NAME);
+    metaMap.set(DEVICE_META_RECORD_KEY, {
+      incarnation: '00112233445566778899aabbccddeeff',
+      deviceRevision: 3,
+    });
+
+    // Case 1: Known user (User A) receives 401 session_invalid with reason="revoked"
+    setKnownDeviceSessionUserId(USER_A);
+    fakeIdb.transactions.length = 0;
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          type: 'https://key.zone17th.click/problems/session_invalid',
+          title: 'Session invalid',
+          status: 401,
+          code: 'session_invalid',
+          reason: 'revoked',
+        }),
+        { status: 401, headers: { 'content-type': 'application/problem+json' } },
+      ),
+    );
+
+    await expect(authFetch('/vault', { requireSession: true })).rejects.toThrow();
+
+    await waitFor(() => {
+      expect(devkeysMap.has(formatDevKeyRecordKey(USER_A, 'vk:a1'))).toBe(false);
+    });
+    // User B's DevKey record is preserved when User A is known
+    expect(devkeysMap.has(formatDevKeyRecordKey(USER_B, 'vk:b1'))).toBe(true);
+    // Exactly ONE readwrite transaction on ['devkeys', 'meta'] was used, and deleteDatabase was NEVER called
+    const readwriteTxs1 = fakeIdb.transactions.filter((t) => t.mode === 'readwrite');
+    expect(readwriteTxs1).toHaveLength(1);
+    expect(readwriteTxs1[0]?.storeNames).toEqual([DEVKEY_STORE_NAME, META_STORE_NAME]);
+    expect(fakeIdb.deleteDatabaseCalls).toBe(0);
+
+    const metaAfter1 = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaAfter1).not.toBeNull();
+    expect(metaAfter1?.deviceRevision).toBe(4);
+    expect(metaAfter1?.incarnation).not.toBe('00112233445566778899aabbccddeeff');
+    expect(metaAfter1?.incarnation).toMatch(/^[0-9a-f]{32}$/);
+
+    // Case 2: Unknown user (e.g. just reloaded before Me resolved) -> purges ALL users' DevKey records in ONE readwrite tx
+    devkeysMap.set(formatDevKeyRecordKey(USER_A, 'vk:a2'), {
+      user_id: USER_A,
+      vault_key_id: 'vk:a2',
+      wrapped_vk: new Uint8Array([7, 8, 9]),
+    });
+    setKnownDeviceSessionUserId(null);
+    fakeIdb.transactions.length = 0;
+
+    const purgeUnknownResult = await purgeDeviceKeysOnRevoked(null, {
+      idbFactory: fakeIdb.createFactory(),
+    });
+    expect(purgeUnknownResult.ok).toBe(true);
+    expect(devkeysMap.size).toBe(0);
+
+    const readwriteTxs2 = fakeIdb.transactions.filter((t) => t.mode === 'readwrite');
+    expect(readwriteTxs2).toHaveLength(1);
+    expect(readwriteTxs2[0]?.storeNames).toEqual([DEVKEY_STORE_NAME, META_STORE_NAME]);
+    expect(fakeIdb.deleteDatabaseCalls).toBe(0);
+
+    const metaAfter2 = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaAfter2?.deviceRevision).toBe(5);
+    expect(metaAfter2?.incarnation).not.toBe(metaAfter1?.incarnation);
   });
 });
