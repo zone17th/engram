@@ -360,11 +360,10 @@ export function VaultRecoveryFlow() {
     const currentVault = vaultRef.current;
     return currentVault.registerSecretFormReset(() => {
       const liveClient = currentVault.getClient();
-      const isHardLockOrError =
-        currentVault.workerState === 'locked' ||
-        currentVault.workerState === 'error' ||
-        liveClient.getState() === 'locked' ||
-        liveClient.getState() === 'error';
+      // Read the live Worker state only: `currentVault` is the context value captured when this effect first ran
+      // (Worker `locked`), so its `workerState` is permanently stale and made every wake gate look like a hard lock.
+      const liveWorkerState = liveClient.getState();
+      const isHardLockOrError = liveWorkerState === 'locked' || liveWorkerState === 'error';
 
       if (!isHardLockOrError) {
         // Wake verification gate while Worker is still unlocked or recovering (VS-R7-1 / BE2-4):
