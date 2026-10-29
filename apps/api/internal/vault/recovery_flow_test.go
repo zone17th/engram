@@ -514,6 +514,7 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 		closeSubRelease := func() { subReleaseOnce.Do(func() { close(subRelease) }) }
 		subResults := make([]result, 2)
 		subEarly := make(chan int, 2)
+		subWinnerEarly := make(chan int, 1)
 		var subWG sync.WaitGroup
 		subCtx, cancelSub := context.WithCancel(ctx)
 		cleanupSub := func() {
@@ -551,7 +552,7 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 				UA:                   "barrier-subtest",
 			})
 			subResults[0] = result{resp: resp, err: err, finishedAt: time.Now()}
-			subEarly <- 0
+			subWinnerEarly <- 0
 		}()
 		subWG.Add(1)
 		go func() {
@@ -576,7 +577,7 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 
 		select {
 		case <-subLocked:
-		case idx := <-subEarly:
+		case idx := <-subWinnerEarly:
 			t.Fatalf("subtest worker %d finished before winner acquired lock: err=%v", idx, subResults[idx].err)
 		case <-subCtx.Done():
 			t.Fatalf("subtest context cancelled before winner acquired lock: %v", subCtx.Err())
