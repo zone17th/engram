@@ -32,7 +32,7 @@ export function VaultSecurityPanel({ onOpenRevokeSessionsDialog }: VaultSecurity
 function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPanelProps) {
   const t = useTranslations('settings.vaultSecurity');
   const queryClient = useQueryClient();
-  const { me, sessionEpoch } = useSession();
+  const { me, sessionEpoch, refetchMe } = useSession();
   const vault = useVault();
 
   const [passDialogOpen, setPassDialogOpen] = useState(false);
@@ -45,27 +45,40 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const requiresUnlockedDisabled = !isVaultPresent || !isVaultUnlocked || vault.inFlight;
   const resetDisabled = !isVaultPresent || vault.inFlight;
 
-  // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready
+  // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
+  // If `GET /vault` returns 404 (`vault_absent`, e.g. another tab reset the vault and broadcast `vault_changed { version: null }`),
+  // `reloadVaultMeta()` resolves to `null`: refresh `Me` so `me.vault.status` transitions from stale `'present'` to `'absent'` (R1-11).
   useEffect(() => {
     if (!isVaultPresent || vault.vaultMeta !== null) return;
-    void vault.reloadVaultMeta().catch(() => undefined);
-  }, [isVaultPresent, vault]);
+    void vault
+      .reloadVaultMeta()
+      .then((loaded) => {
+        if (loaded === null) {
+          void refetchMe().catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+  }, [isVaultPresent, refetchMe, vault]);
 
+  // Fetch detailed RK slot status only while the vault is unlocked AND `vaultMeta` carries a numeric
+  // `recovery_keys_remaining` from the real OpenAPI `GET /vault` schema (F2: regenerating/rotating RK
+  // requires an unlocked vault, and avoids hitting unmocked `/api/v1/vault/recovery-keys` while locked
+  // or in Worker-only CSP harness tests whose mock `GET /vault` uses a legacy nested object).
+  const hasOpenApiVaultMeta = typeof vault.vaultMeta?.recovery_keys_remaining === 'number';
   const rkStatusQuery = useQuery({
     queryKey: ['vault', 'recovery-keys-status', sessionEpoch, vault.vaultMeta?.version ?? 0],
     queryFn: () => fetchRecoveryKeysStatus(),
-    enabled: Boolean(me && isVaultPresent),
+    enabled: Boolean(me && isVaultPresent && isVaultUnlocked && hasOpenApiVaultMeta),
     retry: false,
   });
-
   const remainingKeys =
     rkStatusQuery.data?.remaining ??
     vault.vaultMeta?.recovery_keys_remaining ??
-    10;
+    null;
   const totalSlots = rkStatusQuery.data?.slots ?? 10;
   const emptySlots = rkStatusQuery.data?.empty_slots ?? [];
   const emptySlotSet = new Set(emptySlots);
-  const hasEmptySlots = emptySlots.length > 0;
+  const hasEmptySlots = Boolean(rkStatusQuery.data && emptySlots.length > 0);
   const passkeysCount = vault.vaultMeta?.passkeys.length ?? 0;
 
   const handleStatusChanged = useCallback(() => {
@@ -158,15 +171,26 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
               <span className="text-[15px] font-semibold text-body">
                 {t('recoveryKeys.cardTitle')}
               </span>
-              <span
-                className="chip !font-mono text-[12px]"
-                data-testid="recovery-keys-remaining-badge"
-              >
-                {t('recoveryKeys.remainingBadge', {
-                  remaining: remainingKeys,
-                  slots: totalSlots,
-                })}
-              </span>
+              {remainingKeys !== null ? (
+                <span
+                  className="chip !font-mono text-[12px]"
+                  data-testid="recovery-keys-remaining-badge"
+                >
+                  {t('recoveryKeys.remainingBadge', {
+                    remaining: remainingKeys,
+                    slots: totalSlots,
+                  })}
+                </span>
+              ) : (
+                <span
+                  className="chip !font-mono text-[12px] text-muted"
+                  data-testid="recovery-keys-remaining-badge"
+                >
+                  {rkStatusQuery.isError
+                    ? t('recoveryKeys.statusUnavailable')
+                    : t('recoveryKeys.statusLoading')}
+                </span>
+              )}
             </div>
             <p className="m-0 text-[13px] text-muted">{t('recoveryKeys.cardBody')}</p>
           </div>
@@ -193,47 +217,82 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         </div>
 
         {/* 10 slot status chips (metadata only — never renders stored RK secrets) */}
-        <div
-          className="mb-3 flex flex-wrap gap-1.5"
-          role="list"
-          aria-label={t('recoveryKeys.cardTitle')}
-          data-testid="recovery-keys-slot-chips"
-        >
-          {ALL_SLOTS.map((slot) => {
-            const isEmpty = emptySlotSet.has(slot);
-            return (
-              <span
-                key={slot}
-                role="listitem"
-                data-slot={slot}
-                data-slot-empty={isEmpty ? 'true' : 'false'}
-                className="chip !font-mono"
-                style={
-                  isEmpty
-                    ? { borderStyle: 'dashed', color: 'var(--muted)' }
-                    : undefined
-                }
-              >
-                {isEmpty
-                  ? t('recoveryKeys.slotChipEmpty', { slot })
-                  : t('recoveryKeys.slotChipActive', { slot })}
-              </span>
-            );
-          })}
-        </div>
+        {rkStatusQuery.isError ? (
+          <div
+            className="mb-3 flex flex-wrap items-center gap-3 rounded-md bg-surface p-3 text-[13px] text-muted"
+            role="status"
+            data-testid="recovery-keys-status-error"
+          >
+            <span>{t('recoveryKeys.statusErrorBody')}</span>
+            <Button
+              type="button"
+              variant="tertiary"
+              size="sm"
+              className="ml-auto"
+              onClick={() => void rkStatusQuery.refetch()}
+            >
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : rkStatusQuery.data ? (
+          <>
+            <div
+              className="mb-3 flex flex-wrap gap-1.5"
+              role="list"
+              aria-label={t('recoveryKeys.cardTitle')}
+              data-testid="recovery-keys-slot-chips"
+            >
+              {ALL_SLOTS.map((slot) => {
+                const isEmpty = emptySlotSet.has(slot);
+                return (
+                  <span
+                    key={slot}
+                    role="listitem"
+                    data-slot={slot}
+                    data-slot-empty={isEmpty ? 'true' : 'false'}
+                    className="chip !font-mono"
+                    style={
+                      isEmpty
+                        ? { borderStyle: 'dashed', color: 'var(--muted)' }
+                        : undefined
+                    }
+                  >
+                    {isEmpty
+                      ? t('recoveryKeys.slotChipEmpty', { slot })
+                      : t('recoveryKeys.slotChipActive', { slot })}
+                  </span>
+                );
+              })}
+            </div>
 
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px] text-muted">
-          <span>
-            {hasEmptySlots
-              ? t('recoveryKeys.summaryWithEmpty', {
-                  remaining: remainingKeys,
-                  slots: totalSlots,
-                  emptyCount: emptySlots.length,
-                  slotRange: emptyRangeLabel,
-                })
-              : t('recoveryKeys.summaryFull')}
-          </span>
-        </div>
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px] text-muted">
+              <span>
+                {hasEmptySlots
+                  ? t('recoveryKeys.summaryWithEmpty', {
+                      remaining: remainingKeys ?? 0,
+                      slots: totalSlots,
+                      emptyCount: emptySlots.length,
+                      slotRange: emptyRangeLabel,
+                    })
+                  : t('recoveryKeys.summaryFull')}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div
+            className="mb-3 text-[13px] text-muted"
+            data-testid="recovery-keys-status-pending"
+          >
+            {isVaultUnlocked
+              ? t('recoveryKeys.statusLoading')
+              : remainingKeys !== null
+                ? t('recoveryKeys.remainingBadge', {
+                    remaining: remainingKeys,
+                    slots: totalSlots,
+                  })
+                : t('recoveryKeys.statusLockedHint')}
+          </div>
+        )}
 
         <div className="rounded-md bg-surface p-3 text-[12px] text-muted">
           {t('recoveryKeys.noViewNotice')}
@@ -250,7 +309,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           {t('reset.cardTitle')}
         </div>
         <p className="mb-4 text-[13px] text-muted">
-          {t('reset.cardBody', { remaining: remainingKeys })}
+          {t('reset.cardBody', { remaining: remainingKeys ?? 0 })}
         </p>
         <Button
           type="button"
@@ -277,7 +336,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         open={passDialogOpen}
         onOpenChange={setPassDialogOpen}
         vaultMeta={vault.vaultMeta}
-        remainingRecoveryKeys={remainingKeys}
+        remainingRecoveryKeys={remainingKeys ?? 0}
         passkeysCount={passkeysCount}
         onSuccessToast={setToastMessage}
         onOpenSignOutOthers={onOpenRevokeSessionsDialog}
@@ -288,7 +347,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         onClose={() => setRkDialogMode(null)}
         vaultMeta={vault.vaultMeta}
         emptySlots={emptySlots}
-        remainingRecoveryKeys={remainingKeys}
+        remainingRecoveryKeys={remainingKeys ?? 0}
         onSuccessToast={setToastMessage}
         onStatusChanged={handleStatusChanged}
       />
@@ -297,7 +356,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         open={resetDialogOpen}
         onOpenChange={setResetDialogOpen}
         vaultMeta={vault.vaultMeta}
-        remainingRecoveryKeys={remainingKeys}
+        remainingRecoveryKeys={remainingKeys ?? 0}
         passkeysCount={passkeysCount}
         canChangePassphraseNow={!requiresUnlockedDisabled}
         onSwitchToChangePassphrase={() => setPassDialogOpen(true)}

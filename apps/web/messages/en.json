@@ -392,7 +392,6 @@
         "cancel": "Cancel",
         "close": "Close",
         "done": "Done",
-        "continue": "Continue",
         "back": "Back",
         "retry": "Try again",
         "reloadVault": "Reload vault",
@@ -452,6 +451,7 @@
         "recoveryKeySlotTaken": "One or more recovery key slots were already filled in another tab (409). Reload the vault state and try again.",
         "recoveryKeyConflict": "Generated recovery key conflicted on the server (409). Please try again.",
         "networkError": "Could not reach the server. You can safely retry this exact operation without creating duplicate changes.",
+        "reauthFailed": "Incorrect login password or account re-authentication failed. Please try again.",
         "genericError": "Could not complete the vault operation. Please try again."
       },
       "passphrase": {
@@ -467,6 +467,8 @@
         "policyMinLength": "At least 12 characters (NFC-normalized)",
         "policyDistinct": "Separate from your account login password",
         "policyScore": "Uncommon & hard to guess (zxcvbn ≥ 3)",
+        "policyMet": "Requirement met",
+        "policyNotMet": "Requirement not met",
         "policyMismatch": "Passphrases do not match.",
         "policyTooShort": "Passphrase must be at least 12 characters.",
         "policyTooWeak": "Passphrase is too easy to guess (requires score ≥ 3).",
@@ -481,6 +483,10 @@
       "recoveryKeys": {
         "cardTitle": "Recovery keys",
         "remainingBadge": "{remaining} of {slots} left",
+        "statusLoading": "Loading recovery key status…",
+        "statusUnavailable": "Status unavailable",
+        "statusErrorBody": "Could not load recovery key status from the server.",
+        "statusLockedHint": "Unlock the vault to view slot status.",
         "cardBody": "Each key unlocks the vault on its own. Consuming a key deletes it on the live server. Changing your passphrase does not affect recovery keys — existing printouts still work until each key is used or you rotate all 10.",
         "regenerateButton": "Regenerate new keys",
         "rotateButton": "Rotate all 10",
@@ -501,11 +507,8 @@
           "dialogTitle": "Regenerate missing recovery keys",
           "dialogDescription": "Generates new keys only for the {emptyCount} empty slots ({slotRange}), lowest slot first. Your {remaining} existing keys stay unchanged and are never shown again.",
           "reauthBody": "Confirm your account before the Worker generates new recovery keys for the empty slots.",
-          "generating": "Generating recovery keys in Worker…",
           "ackCheckbox": "I have saved these new recovery keys in a safe place outside this browser.",
           "submitButton": "Done",
-          "doneStatus": "10 of 10 recovery keys active",
-          "doneBody": "Slots {slotRange} are now saved on the server. All 10/10 recovery keys are available.",
           "toastDone": "Regenerated {count} recovery keys · 10/10 active"
         },
         "rotate": {
@@ -514,11 +517,8 @@
           "reauthBody": "Confirm your account before the Worker generates a replacement set of 10 recovery keys.",
           "warningTitle": "Warning: Once saved, all current recovery keys and their printouts stop working on the live server.",
           "warningBody": "Rotating recovery keys does not rotate the vault key (VK) — previously copied wraps or exported backups are not cryptographically revoked.",
-          "generating": "Generating 10 recovery keys in Worker…",
           "ackCheckbox": "I have saved all 10 new recovery keys and understand the previous set will stop working on the live server.",
           "submitButton": "Rotate all 10",
-          "doneStatus": "All 10 recovery keys rotated (10 of 10 left)",
-          "doneBody": "The new set (rk1…rk10) is now active on the live server; previous recovery key printouts will no longer work against the server.",
           "toastDone": "Rotated all 10 recovery keys"
         }
       },
@@ -558,16 +558,6 @@
         "step5Body": "All entry contents and previous keys on the server have been deleted. Item names and tags were kept. You must create a new vault before saving new entries.",
         "createNewVaultLink": "Create new vault",
         "toastDone": "Vault has been reset"
-      },
-      "passkey": {
-        "prf_unsupported": "This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.",
-        "register_cancelled": "Passkey registration was cancelled.",
-        "register_failed": "Could not register this passkey. Try another authenticator.",
-        "unlock_cancelled": "Passkey prompt was cancelled.",
-        "unlock_failed": "Could not unlock with this passkey. Use your passphrase or a recovery key.",
-        "unlock_prf_missing": "Authenticator did not return PRF. Cannot unlock with passkey.",
-        "none_registered": "No passkeys yet. Add one in Settings after unlock.",
-        "revoked": "Passkey removed."
       }
     }
   },

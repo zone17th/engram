@@ -392,7 +392,6 @@
         "cancel": "Huỷ",
         "close": "Đóng",
         "done": "Xong",
-        "continue": "Tiếp tục",
         "back": "Quay lại",
         "retry": "Thử lại",
         "reloadVault": "Tải lại vault",
@@ -452,6 +451,7 @@
         "recoveryKeySlotTaken": "Một hoặc nhiều slot recovery key đã được lấp ở tab khác (409). Hãy tải lại trạng thái vault rồi thử lại.",
         "recoveryKeyConflict": "Recovery key vừa sinh bị trùng trên máy chủ (409). Hãy thử lại.",
         "networkError": "Không kết nối được máy chủ. Bạn có thể bấm thử lại an toàn mà không sợ lặp thao tác.",
+        "reauthFailed": "Mật khẩu đăng nhập không đúng hoặc xác thực lại thất bại. Hãy thử lại.",
         "genericError": "Không thực hiện được thao tác vault. Hãy thử lại."
       },
       "passphrase": {
@@ -467,6 +467,8 @@
         "policyMinLength": "Từ 12 ký tự trở lên (chuẩn hoá NFC)",
         "policyDistinct": "Khác mật khẩu đăng nhập tài khoản",
         "policyScore": "Đủ khó đoán (zxcvbn ≥ 3)",
+        "policyMet": "Đạt yêu cầu",
+        "policyNotMet": "Chưa đạt yêu cầu",
         "policyMismatch": "Hai passphrase không khớp.",
         "policyTooShort": "Passphrase phải có ít nhất 12 ký tự.",
         "policyTooWeak": "Passphrase còn dễ đoán (cần điểm zxcvbn ≥ 3).",
@@ -481,6 +483,10 @@
       "recoveryKeys": {
         "cardTitle": "Recovery key",
         "remainingBadge": "còn {remaining}/{slots}",
+        "statusLoading": "Đang tải trạng thái recovery key…",
+        "statusUnavailable": "Không tải được trạng thái",
+        "statusErrorBody": "Không tải được trạng thái recovery key từ máy chủ.",
+        "statusLockedHint": "Mở khoá vault để xem trạng thái từng slot.",
         "cardBody": "Mỗi key mở được vault một mình. Dùng xong thì key đó bị xoá trên máy chủ live. Đổi passphrase không đụng tới các key này — bản in cũ vẫn mở được cho tới khi từng key được dùng hoặc bạn xoay cả 10.",
         "regenerateButton": "Tạo key mới",
         "rotateButton": "Xoay cả 10",
@@ -501,11 +507,8 @@
           "dialogTitle": "Tạo bù recovery key",
           "dialogDescription": "Chỉ sinh key mới cho {emptyCount} slot đang trống ({slotRange}), từ slot nhỏ nhất. {remaining} key còn lại giữ nguyên và không hiện lại.",
           "reauthBody": "Xác nhận tài khoản trước khi Worker sinh recovery key mới cho các slot trống.",
-          "generating": "Đang sinh recovery key trong Worker…",
           "ackCheckbox": "Tôi đã lưu các recovery key mới này ở nơi an toàn, ngoài trình duyệt đang dùng.",
           "submitButton": "Xong",
-          "doneStatus": "Đã bù đủ 10/10 recovery key",
-          "doneBody": "Các slot {slotRange} đã được lưu trên máy chủ. Hiện có đủ 10/10 recovery key dùng được.",
           "toastDone": "Đã bù {count} recovery key · còn 10/10"
         },
         "rotate": {
@@ -514,11 +517,8 @@
           "reauthBody": "Xác nhận tài khoản trước khi Worker sinh bộ 10 recovery key mới.",
           "warningTitle": "Cảnh báo: Ngay khi lưu bộ mới, toàn bộ recovery key hiện tại và các bản in cũ sẽ ngừng hoạt động trên máy chủ live.",
           "warningBody": "Thao tác này không xoay khoá vault (VK): các bản bọc khoá hoặc bản backup đã chép ra trước đó không bị thu hồi bởi mật mã (xoay VK thuộc P07).",
-          "generating": "Đang sinh 10 recovery key trong Worker…",
           "ackCheckbox": "Tôi đã lưu bộ 10 recovery key mới này ở nơi an toàn và hiểu rằng bộ key cũ sẽ ngừng hoạt động trên máy chủ.",
           "submitButton": "Thay cả 10 key",
-          "doneStatus": "Đã xoay cả 10 recovery key (còn 10/10)",
-          "doneBody": "Bộ 10 key mới (rk1…rk10) đã có hiệu lực trên máy chủ; các bản in cũ trước đây không còn dùng để khôi phục trên máy chủ được nữa.",
           "toastDone": "Đã xoay cả 10 recovery key"
         }
       },
@@ -558,16 +558,6 @@
         "step5Body": "Nội dung mọi entry và bộ khoá cũ trên máy chủ đã bị xoá. Tên mục và tag vẫn được giữ nguyên. Để lưu và đọc nội dung mới, bạn cần tạo một vault mới.",
         "createNewVaultLink": "Tạo vault mới",
         "toastDone": "Vault đã được đặt lại"
-      },
-      "passkey": {
-        "prf_unsupported": "Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key.",
-        "register_cancelled": "Đã huỷ đăng ký passkey.",
-        "register_failed": "Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.",
-        "unlock_cancelled": "Đã huỷ mở khoá bằng passkey.",
-        "unlock_failed": "Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.",
-        "unlock_prf_missing": "Authenticator không trả PRF. Không mở vault bằng passkey.",
-        "none_registered": "Chưa có passkey. Thêm trong Settings sau khi mở vault.",
-        "revoked": "Đã gỡ passkey."
       }
     }
   },
