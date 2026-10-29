@@ -5466,6 +5466,46 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     20_000,
   );
 
+  // BE6-1 (fix round 6, table row 2): a present response for the CURRENT key is applied even when a local transition
+  // happened while it was in flight and no newer GET outcome was applied. Rows 3 and 4 are covered by the BE4-1 tests
+  // (stale retired key, nothing applied) and the BE2-9 "stale id" test (genuine replacement purges, locks, installs).
+  it('BE6-1: a present response for the current key that crosses a local transition is applied and returned, not dropped as null', async () => {
+    const pending: Array<(res: Response) => void> = [];
+    mockBe2Fetch({
+      vault: () =>
+        new Promise<Response>((resolve) => {
+          pending.push(resolve);
+        }),
+    });
+    const { vault } = renderBe2Provider('be61-current', {
+      idbFactory: fakeIdb.createFactory(),
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be61-current-state')).toHaveTextContent('locked');
+    });
+    const outcome: { value: { version: number } | null | 'unset' } = { value: 'unset' };
+    const heldP = vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.value = r;
+      });
+    await waitFor(() => {
+      expect(pending).toHaveLength(1);
+    });
+    // The create-201 notification makes the key current while the GET (sent with no known key) is held.
+    act(() => {
+      vault().notifyVaultChanged({ vault_key_id: 'vk:be6-1', version: 1 });
+    });
+    await act(async () => {
+      pending[0]!(jsonResponse(be2VaultBody('vk:be6-1', 2)));
+      await heldP;
+    });
+    expect((outcome.value as { version: number } | null)?.version).toBe(2);
+    expect(vault().vaultMeta?.vault_key_id).toBe('vk:be6-1');
+    expect(vault().vaultMeta?.version).toBe(2);
+  }, 20_000);
+
   // BE5-2: the superseded return (success, 404 and failure exits) must not hand back a same-key version older than the
   // live metadata when a local update landed after the saved applied outcome.
   it.each(['success', '404', 'failure'] as const)(

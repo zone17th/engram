@@ -399,10 +399,10 @@ export function VaultProvider({
     sessionEpoch: number;
     meta: VaultState | null;
   } | null>(null);
-  // Counts LOCAL/BROADCAST vault-metadata transitions (reset, replacement by another key) that are not GET outcomes.
-  // A held `GET /vault` response that predates one of them must not overwrite, purge or lock over it (BE4-1). A newer
-  // GET merely starting or failing is deliberately NOT a transition (BE3-7).
-  const vaultMetaTransitionSeqRef = useRef<number>(0);
+  // `vault_key_id`s this provider saw stop being current (replaced, or reset locally/by broadcast). Keys are never
+  // reused, so a `GET /vault` response naming one is stale by key (BE4-1). Local notifications only update this set and
+  // the current key; they never suppress or reorder a GET response.
+  const retiredVaultKeyIdsRef = useRef<Set<string>>(new Set());
   // Synchronous mirror of the committed `vaultMeta` state, so a stale response and `notifyVaultChanged` can compare
   // versions without waiting for a render (BE4-5).
   const liveVaultMetaRef = useRef<VaultState | null>(null);
@@ -746,11 +746,16 @@ export function VaultProvider({
 
 
   /**
-   * Reloads `GET /vault` from the server.
-   * Per plan §2.6 and ADR 0003 §8:
-   * - If `404 vault_absent` or `vault_key_id` differs from the tab's known `vault_key_id`, locks immediately.
-   * - If `vault_key_id` matches and `version` increased, updates `vaultMeta` for future operations without
-   *   overwriting any in-flight mutation's captured `If-Match`.
+   * Reloads `GET /vault` (plan §2.6, ADR 0003 §8). After the session/account fence every response goes through ONE
+   * table keyed on `vault_key_id`; `issuedKey` is the current key when the request was sent:
+   *   0. A NEWER GET outcome was already applied -> apply nothing, return it (BE3-7, BE5-2); a newer GET that only
+   *      started, stalled or failed is not supersession.
+   *   1. 404 -> lock, wipe caches/secrets, purge (BE5-1).
+   *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
+   *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
+   *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
+   * Other errors: supersession check, then rethrow. Local notifications and broadcasts only update the current and
+   * retired keys and the live metadata; they never suppress or reorder a GET response.
    */
   const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null }): Promise<VaultState | null> => {
     // `resetKeyId` is set only by this provider's own follow-up GET after it observed that vault's reset, so a
@@ -758,7 +763,6 @@ export function VaultProvider({
     const followUpResetKeyId = opts?.resetKeyId ?? null;
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
     const requestSeq = ++vaultMetaRequestSeqRef.current;
-    const requestTransitionSeq = vaultMetaTransitionSeqRef.current;
     const requestUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
     // Session/user fences: a response from another session or account never has any effect.
     const isForeignResponse = () => {
@@ -775,7 +779,6 @@ export function VaultProvider({
       const live = liveVaultMetaRef.current;
       return live && live.vault_key_id === currentVaultKeyIdRef.current ? live : null;
     };
-    const predatesTransition = () => vaultMetaTransitionSeqRef.current !== requestTransitionSeq;
     // Ordering fence: only a NEWER request whose outcome was already applied supersedes this response. The
     // superseding outcome is returned so callers see the authoritative state rather than a bare `null`
     // (which would be indistinguishable from `vault_absent`, BE3-9).
@@ -798,14 +801,13 @@ export function VaultProvider({
       if (isForeignResponse()) {
         return null;
       }
-      if (predatesTransition()) {
-        // BE4-1: a local/broadcast reset or replacement happened after this request started; the response describes
-        // the vault as it was before it. Apply nothing (no overwrite, purge or lock) and report the live metadata.
-        return currentLiveMeta();
-      }
       const superseded = supersedingOutcome();
       if (superseded) {
         return superseded.meta;
+      }
+      if (retiredVaultKeyIdsRef.current.has(fresh.vault_key_id)) {
+        // Row 3: a replaced or reset key is stale by key. Apply nothing and report the live current metadata (BE4-1).
+        return currentLiveMeta();
       }
       const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
       const prevKeyId = currentVaultKeyIdRef.current;
@@ -818,7 +820,8 @@ export function VaultProvider({
           : fresh;
       vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: applied };
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
-        // The previous vault is replaced: its reset id is historical now and must not be markable (BE4-3).
+        // Row 4: the previous vault is replaced: its reset id is historical now and must not be markable (BE4-3).
+        retiredVaultKeyIdsRef.current.add(prevKeyId);
         retireObservedResets();
         currentVaultKeyIdRef.current = fresh.vault_key_id;
         resetPurgedVaultKeyIdRef.current = null;
@@ -851,8 +854,8 @@ export function VaultProvider({
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
       ) {
-        // BE5-1: a local/broadcast transition never proves a 404 stale (the server may have evaluated it after that
-        // transition), so only an already-applied newer GET outcome may supersede it; otherwise it fails closed.
+        // Row 0, then row 1 (BE5-1): a local/broadcast transition never proves a 404 stale, so only an already-applied
+        // newer GET outcome may supersede it; otherwise it fails closed.
         const superseded = supersedingOutcome();
         if (superseded) {
           // A newer request already delivered authoritative state (present or absent); apply nothing from the older 404.
@@ -894,13 +897,13 @@ export function VaultProvider({
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
       if (payload.version === null) {
-        vaultMetaTransitionSeqRef.current += 1;
         const resetKeyId =
           (typeof payload.vault_key_id === 'string' && payload.vault_key_id.length > 0
             ? payload.vault_key_id
             : currentVaultKeyIdRef.current) ?? null;
         if (resetKeyId) {
           rememberObservedReset(resetKeyId);
+          retiredVaultKeyIdsRef.current.add(resetKeyId);
           resetPurgedVaultKeyIdRef.current = resetKeyId;
         }
         currentVaultKeyIdRef.current = null;
@@ -914,9 +917,9 @@ export function VaultProvider({
           resetPurgedVaultKeyIdRef.current = null;
         }
         if (currentVaultKeyIdRef.current !== payload.vault_key_id) {
-          // Another key becomes current: a held response for the previous vault now predates a transition (BE4-1)
-          // and the previous reset ids are historical (BE4-3).
-          vaultMetaTransitionSeqRef.current += 1;
+          // Another key becomes current: the previous key is retired (BE4-1) and the previous reset ids are
+          // historical (BE4-3).
+          if (currentVaultKeyIdRef.current) retiredVaultKeyIdsRef.current.add(currentVaultKeyIdRef.current);
           retireObservedResets();
         }
         currentVaultKeyIdRef.current = payload.vault_key_id;
@@ -1345,6 +1348,7 @@ export function VaultProvider({
         resetPurgedVaultKeyIdRef.current = null;
         resetPurgeInFlightVaultKeyIdRef.current = null;
         observedResetKeyIdsRef.current.clear();
+        retiredVaultKeyIdsRef.current.clear();
         resetPurgeEvidenceRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
@@ -1363,6 +1367,7 @@ export function VaultProvider({
       resetPurgedVaultKeyIdRef.current = null;
       resetPurgeInFlightVaultKeyIdRef.current = null;
       observedResetKeyIdsRef.current.clear();
+      retiredVaultKeyIdsRef.current.clear();
       resetPurgeEvidenceRef.current = null;
       setVaultMeta(null);
       queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
@@ -1443,7 +1448,8 @@ export function VaultProvider({
                 ? message.vault_key_id
                 : null;
             const transitionKeyId = incomingKeyId ?? knownKeyId ?? null;
-            vaultMetaTransitionSeqRef.current += 1;
+            if (incomingKeyId) retiredVaultKeyIdsRef.current.add(incomingKeyId);
+            if (knownKeyId) retiredVaultKeyIdsRef.current.add(knownKeyId);
             rememberObservedReset(transitionKeyId);
             currentVaultKeyIdRef.current = null;
             setVaultMeta(null);
@@ -1457,9 +1463,8 @@ export function VaultProvider({
             void loadVaultMeta({ resetKeyId: transitionKeyId }).catch(() => undefined);
             return;
           }
-          // Replacement by another key: held responses for the previous vault predate it (BE4-1) and its reset id
-          // is historical (BE4-3).
-          vaultMetaTransitionSeqRef.current += 1;
+          // Replacement by another key: the previous key is retired (BE4-1) and its reset id is historical (BE4-3).
+          if (knownKeyId) retiredVaultKeyIdsRef.current.add(knownKeyId);
           retireObservedResets();
           resetPurgedVaultKeyIdRef.current = null;
           resetPurgeInFlightVaultKeyIdRef.current = null;
