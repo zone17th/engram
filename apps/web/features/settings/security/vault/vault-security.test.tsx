@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionProvider } from '@/features/auth/session-provider';
+import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import {
   VaultProvider,
   resetVaultBroadcastForTests,
@@ -484,8 +484,10 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     vi.stubGlobal('fetch', fetchMock);
 
     let capturedVaultCtx: VaultContextValue | null = null;
+    let capturedSessionCtx: ReturnType<typeof useSession> | null = null;
     function VaultBridgeProbe() {
       capturedVaultCtx = useVault();
+      capturedSessionCtx = useSession();
       return null;
     }
 
@@ -553,6 +555,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     return {
       ...utils,
       getVaultCtx: () => capturedVaultCtx!,
+      getSessionCtx: () => capturedSessionCtx!,
       callLog,
       requestsByPath,
       setServerVaultMeta: (next: VaultState | null) => {
@@ -915,26 +918,29 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
   });
 
-  it('never renders stored recovery keys or a "view RK" control, and wipes newly generated RK from DOM on close and on lock', async () => {
-    const user = userEvent.setup();
-    const { getVaultCtx } = await renderSettingsHarness({
+  it('never renders stored recovery keys or a "view RK" control in Settings', async () => {
+    await renderSettingsHarness({
       rkStatus: makeRkStatus(8, [9, 10]),
     });
 
-    // Verify "8 of 10 left" badge and no stored RK secrets or "view RK" button in the panel
     await waitFor(() => {
       expect(screen.getByTestId('recovery-keys-remaining-badge')).toHaveTextContent('8 of 10 left');
     });
     expect(screen.queryByRole('button', { name: /view recovery keys|show recovery keys|xem rk/i })).toBeNull();
     expect(document.body.textContent).not.toMatch(/rk\d+_[0-7][0-9A-Z]{3}-/);
+  });
 
-    // Open Regenerate dialog -> re-auth -> Worker generates keys for empty slots [9, 10]
+  it('wipes newly generated recovery keys from DOM when the dialog closes after saving', async () => {
+    const user = userEvent.setup();
+    const { callLog } = await renderSettingsHarness({
+      rkStatus: makeRkStatus(8, [9, 10]),
+    });
+
     await user.click(screen.getByRole('button', { name: 'Regenerate new keys' }));
     const rkDlg = await screen.findByRole('dialog');
     await user.type(within(rkDlg).getByLabelText('Login password'), 'my-login-password');
     await user.click(within(rkDlg).getByRole('button', { name: 'Continue' }));
 
-    // Grid displays 2 newly generated keys (rk9_... and rk10_...)
     const grid = await within(rkDlg).findByTestId('recovery-key-grid');
     const items = within(grid).getAllByRole('listitem');
     expect(items).toHaveLength(2);
@@ -945,24 +951,24 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     const doneBtn = within(rkDlg).getByRole('button', { name: 'Done' });
     expect(doneBtn).toBeDisabled();
 
-    // Locking the vault while the RK grid is open immediately wipes the keys from DOM
-    await act(async () => {
-      await getVaultCtx().lockNow();
-    });
-    expect(within(rkDlg).queryByTestId('recovery-key-grid')).toBeNull();
-    expect(document.body.textContent).not.toMatch(/rk9_[0-7]/);
+    await user.click(within(rkDlg).getByRole('checkbox'));
+    expect(doneBtn).toBeEnabled();
+    await user.click(doneBtn);
 
-    // Close dialog, re-unlock, and verify normal regenerate completion also wipes keys from DOM
-    await user.click(within(rkDlg).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(document.body.textContent).not.toMatch(/rk9_[0-7]/);
+    expect(document.body.textContent).not.toMatch(/rk10_[0-7]/);
+    expect(callLog.slice(0, 3)).toEqual([
+      'POST /auth/reauth (vault.recovery_keys_regenerate)',
+      'Worker:makeRecoveryKeys',
+      'POST /vault/recovery-keys/regenerate',
+    ]);
+  });
 
-    await act(async () => {
-      const op = getVaultCtx().beginOp();
-      await getVaultCtx().createVault({
-        passphrase: 'reunlock-passphrase-12345',
-        opGeneration: op.opGeneration,
-        skipRecoveryKeys: true,
-      });
+  it('wipes newly generated recovery keys from DOM immediately when the vault locks while the dialog is open', async () => {
+    const user = userEvent.setup();
+    const { getVaultCtx } = await renderSettingsHarness({
+      rkStatus: makeRkStatus(8, [9, 10]),
     });
 
     await user.click(screen.getByRole('button', { name: 'Rotate all 10' }));
@@ -973,11 +979,11 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     const rotGrid = await within(rotDlg).findByTestId('recovery-key-grid');
     expect(within(rotGrid).getAllByRole('listitem')).toHaveLength(10);
 
-    const ackCheckbox = within(rotDlg).getByRole('checkbox');
-    await user.click(ackCheckbox);
-    await user.click(within(rotDlg).getByRole('button', { name: 'Rotate all 10' }));
-
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Locking the vault while the RK grid is open immediately wipes the keys from DOM
+    await act(async () => {
+      await getVaultCtx().lockNow();
+    });
+    expect(within(rotDlg).queryByTestId('recovery-key-grid')).toBeNull();
     expect(document.body.textContent).not.toMatch(/rk1_[0-7]/);
   });
 
@@ -1036,11 +1042,10 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(delReq!.headers.get('X-Reauth-Token')).toBe('grant-for-vault.reset');
   });
 
-  it('handles grant < 60 s remaining before POST: password user re-authenticates in place without losing derived wrap; OAuth-only user sees restart message', async () => {
+  it('handles grant < 60 s remaining before POST for password user: re-authenticates in place without losing derived wrap', async () => {
     const user = userEvent.setup();
     let reauthCallCount = 0;
 
-    // Part A: Password user with grant expiring in 30s (< 60s threshold)
     const { callLog } = await renderSettingsHarness({
       customFetch: (url) => {
         if (url.endsWith('/api/v1/auth/reauth')) {
@@ -1083,17 +1088,49 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
     expect(callLog.filter((c) => c === 'Worker:rewrap')).toHaveLength(1);
     expect(callLog.filter((c) => c === 'PUT /vault/kek')).toHaveLength(1);
+  });
 
-    cleanup();
+  it('handles grant < 60 s remaining or expired for OAuth-only user: clears temporary secrets and shows restart message', async () => {
+    const user = userEvent.setup();
 
-    // Part B: OAuth-only user when server returns reauth_invalid / expired grant
-    await renderSettingsHarness({
+    const { getSessionCtx } = await renderSettingsHarness({
       me: makeMeFixture({ hasPassword: false, oauthReauthProviders: ['google'] }),
+      customFetch: (url) => {
+        if (url.endsWith('/api/v1/auth/reauth')) {
+          // Simulate OAuth callback receipt returning a grant with only 25 s remaining (< 60 s threshold)
+          return jsonResponse({
+            action: 'vault.rewrap',
+            grant: 'oauth-grant-short-ttl',
+            expires_at: new Date(Date.now() + 25_000).toISOString(),
+          });
+        }
+        return undefined as unknown as Response;
+      },
     });
 
     await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
     const oauthDlg = await screen.findByRole('dialog');
     expect(within(oauthDlg).getByRole('button', { name: 'Verify with Google' })).toBeInTheDocument();
+
+    // Complete OAuth re-auth receipt (grant has < 60 s left, so form unlocks at > 1 s but fails the < 60 s pre-POST gate)
+    await act(async () => {
+      await getSessionCtx().reauth.consumeOauthReceipt('vault.rewrap', 'google');
+    });
+
+    const newInput = await within(oauthDlg).findByLabelText('New vault passphrase');
+    const confirmInput = within(oauthDlg).getByLabelText('Confirm new passphrase');
+    fireEvent.change(newInput, { target: { value: STRONG_PASSPHRASE } });
+    fireEvent.change(confirmInput, { target: { value: STRONG_PASSPHRASE } });
+    await user.click(within(oauthDlg).getByRole('button', { name: 'Change passphrase' }));
+
+    await waitFor(() => {
+      expect(
+        within(oauthDlg).getByText('Time ran out — restart required'),
+      ).toBeInTheDocument();
+    });
+    expect(
+      within(oauthDlg).getByRole('button', { name: 'Restart flow' }),
+    ).toBeInTheDocument();
   });
 
   it(
