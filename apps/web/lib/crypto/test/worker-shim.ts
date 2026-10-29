@@ -15,6 +15,7 @@ export interface ShimmedWorkerInstance {
   core: CryptoWorkerCore;
   workerPostMessageCalls: WorkerResponseMessage[];
   clientPostMessageCalls: WorkerRequestMessage[];
+  workerReceivedRequests: WorkerRequestMessage[];
   simulateCrash: () => void;
   simulateMessageError: () => void;
   close: () => void;
@@ -33,6 +34,7 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
 
   const workerPostMessageCalls: WorkerResponseMessage[] = [];
   const clientPostMessageCalls: WorkerRequestMessage[] = [];
+  const workerReceivedRequests: WorkerRequestMessage[] = [];
 
   let workerOnMessage: ((event: MessageEvent<WorkerRequestMessage>) => void) | null = null;
   let isTerminated = false;
@@ -55,6 +57,7 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
 
   workerPort.on('message', (data: WorkerRequestMessage) => {
     if (isTerminated) return;
+    workerReceivedRequests.push(data);
     workerScope.onmessage?.({ data } as MessageEvent<WorkerRequestMessage>);
   });
 
@@ -111,6 +114,7 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
     core,
     workerPostMessageCalls,
     clientPostMessageCalls,
+    workerReceivedRequests,
     simulateCrash() {
       if (onerrorHandler) {
         onerrorHandler(new Event('error'));

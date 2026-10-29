@@ -89,16 +89,10 @@ export interface ResumeRecoveryClientParams {
   opGeneration: number;
   beforePostMessage?: () => Promise<void> | void;
 }
-
-export type ResumeRecoveryNowClientParams = Omit<ResumeRecoveryClientParams, 'opGeneration'>;
-
 export interface ConfirmRecoveryClientParams {
   opGeneration: number;
   beforePostMessage?: () => Promise<void> | void;
 }
-
-export type ConfirmRecoveryNowClientParams = Omit<ConfirmRecoveryClientParams, 'opGeneration'>;
-
 export interface UnlockPrfClientParams {
   pwk: Uint8Array | ArrayBuffer;
   vkWrap: string;
@@ -106,9 +100,6 @@ export interface UnlockPrfClientParams {
   opGeneration: number;
   beforePostMessage?: () => Promise<void> | void;
 }
-
-export type UnlockPrfNowClientParams = Omit<UnlockPrfClientParams, 'opGeneration'>;
-
 export interface UnlockDevKeyClientParams {
   devKey: CryptoKey;
   wrappedVk: Uint8Array | string;
@@ -118,9 +109,6 @@ export interface UnlockDevKeyClientParams {
   opGeneration: number;
   beforePostMessage?: () => Promise<void> | void;
 }
-
-export type UnlockDevKeyNowClientParams = Omit<UnlockDevKeyClientParams, 'opGeneration'>;
-
 export interface RewrapClientParams {
   passphrase: string | Uint8Array;
   currentKdf: unknown;
@@ -143,9 +131,6 @@ export interface WrapForPasskeyClientParams {
   opGeneration: number;
   beforePostMessage?: () => Promise<void> | void;
 }
-
-export type WrapForPasskeyNowClientParams = Omit<WrapForPasskeyClientParams, 'opGeneration'>;
-
 export interface WrapForDeviceClientParams {
   devKey: CryptoKey;
   userId: string;
@@ -230,7 +215,12 @@ function toTransferableBytes(input: string | Uint8Array | ArrayBuffer): Uint8Arr
     }
     return encoded;
   }
-  if (input instanceof ArrayBuffer) {
+  if (
+    input instanceof ArrayBuffer ||
+    (typeof input === 'object' &&
+      input !== null &&
+      Object.prototype.toString.call(input) === '[object ArrayBuffer]')
+  ) {
     if (input.byteLength === 0) {
       throw new CryptoClientError(
         'SECRET_DETACHED_OR_EMPTY',
@@ -239,19 +229,20 @@ function toTransferableBytes(input: string | Uint8Array | ArrayBuffer): Uint8Arr
     }
     return new Uint8Array(input);
   }
-  if (input instanceof Uint8Array) {
+  if (input instanceof Uint8Array || ArrayBuffer.isView(input)) {
     if (input.byteLength === 0 || input.buffer.byteLength === 0) {
       throw new CryptoClientError(
         'SECRET_DETACHED_OR_EMPTY',
         'Secret Uint8Array is detached or empty',
       );
     }
-    if (input.byteOffset === 0 && input.byteLength === input.buffer.byteLength) {
-      return input;
+    const view = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) {
+      return view;
     }
-    const copy = new Uint8Array(input.byteLength);
-    copy.set(input);
-    input.fill(0);
+    const copy = new Uint8Array(view.byteLength);
+    copy.set(view);
+    view.fill(0);
     return copy;
   }
   throw new CryptoClientError('SECRET_DETACHED_OR_EMPTY', 'Invalid secret buffer type');
@@ -310,7 +301,11 @@ export class CryptoClient {
 
   private setState(nextState: VaultClientState): void {
     this.state = nextState;
-    this.onStateChange?.(nextState, this.currentGeneration);
+    try {
+      this.onStateChange?.(nextState, this.currentGeneration);
+    } catch {
+      // Observer exceptions must never abort command completion or teardown (FE2-6)
+    }
   }
 
   private ensureWorker(): CryptoWorkerPort {
@@ -633,13 +628,6 @@ export class CryptoClient {
     return res;
   }
 
-  async resumeRecoveryNow(params: ResumeRecoveryNowClientParams): Promise<ResumeRecoveryResult> {
-    return this.resumeRecovery({
-      ...params,
-      opGeneration: this.captureGeneration(),
-    });
-  }
-
   async confirmRecovery(params: ConfirmRecoveryClientParams): Promise<ConfirmRecoveryResult> {
     const opGeneration = params.opGeneration;
 
@@ -655,15 +643,6 @@ export class CryptoClient {
     this.assertGenerationOrWipe(opGeneration);
     this.setState('unlocked');
     return res;
-  }
-
-  async confirmRecoveryNow(
-    params: ConfirmRecoveryNowClientParams = {},
-  ): Promise<ConfirmRecoveryResult> {
-    return this.confirmRecovery({
-      ...params,
-      opGeneration: this.captureGeneration(),
-    });
   }
 
   async unlockPrf(params: UnlockPrfClientParams): Promise<{ unlocked: true }> {
@@ -698,13 +677,6 @@ export class CryptoClient {
     }
   }
 
-  async unlockPrfNow(params: UnlockPrfNowClientParams): Promise<{ unlocked: true }> {
-    return this.unlockPrf({
-      ...params,
-      opGeneration: this.captureGeneration(),
-    });
-  }
-
   async unlockDevKey(params: UnlockDevKeyClientParams): Promise<{ unlocked: true }> {
     const opGeneration = params.opGeneration;
     this.resetWorkerAfterErrorIfUnlocking();
@@ -726,13 +698,6 @@ export class CryptoClient {
     this.assertGenerationOrWipe(opGeneration);
     this.setState('unlocked');
     return res;
-  }
-
-  async unlockDevKeyNow(params: UnlockDevKeyNowClientParams): Promise<{ unlocked: true }> {
-    return this.unlockDevKey({
-      ...params,
-      opGeneration: this.captureGeneration(),
-    });
   }
 
   async rewrap(params: RewrapClientParams): Promise<RewrapResult> {
@@ -792,7 +757,7 @@ export class CryptoClient {
   }
 
   async makeRecoveryKeysNow(
-    params: MakeRecoveryKeysNowClientParams = {},
+    params: MakeRecoveryKeysNowClientParams,
   ): Promise<MakeRecoveryKeysResult> {
     return this.makeRecoveryKeys({
       ...params,
@@ -826,13 +791,6 @@ export class CryptoClient {
     } finally {
       wipeAttachedBytes(pwkBytes);
     }
-  }
-
-  async wrapForPasskeyNow(params: WrapForPasskeyNowClientParams): Promise<WrapForPasskeyResult> {
-    return this.wrapForPasskey({
-      ...params,
-      opGeneration: this.captureGeneration(),
-    });
   }
 
   async wrapForDevice(params: WrapForDeviceClientParams): Promise<WrapForDeviceResult> {

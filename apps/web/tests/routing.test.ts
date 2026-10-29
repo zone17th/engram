@@ -17,6 +17,8 @@ vi.mock('next-intl/middleware', () => ({
 }));
 
 import CryptoBenchPage from '../app/dev/crypto-bench/page';
+import { CryptoBenchClient } from '../app/dev/crypto-bench/bench-client';
+import { CryptoHarnessClient } from '../app/dev/crypto-bench/harness-client';
 import { withRequestOrigin } from '../i18n/internal-rewrite';
 import { routing } from '../i18n/routing';
 import middleware from '../middleware';
@@ -148,10 +150,30 @@ describe('cấu trúc route (P01-A3)', () => {
     }
   });
 
-  it('/dev/crypto-bench page calls notFound() when NODE_ENV === production and supports ?mode=harness in dev (advisor-dec-013, FE1-10)', async () => {
-    expect(() => CryptoBenchPage()).not.toThrow();
-    const harnessRendered = await CryptoBenchPage({ searchParams: { mode: 'harness' } });
-    expect(harnessRendered).toBeTruthy();
+  it('/dev/crypto-bench page calls notFound() when NODE_ENV === production and supports both object and Promise searchParams for ?mode=harness in dev (advisor-dec-013, FE1-10, FE2-11f)', async () => {
+    const defaultRendered = CryptoBenchPage() as {
+      props: { children: { props: { children: { type: unknown } } } };
+    };
+    expect(defaultRendered.props.children.props.children.type).toBe(CryptoBenchClient);
+
+    const harnessRendered = (await CryptoBenchPage({ searchParams: { mode: 'harness' } })) as {
+      props: { children: { props: { children: { type: unknown } } } };
+    };
+    expect(harnessRendered.props.children.props.children.type).toBe(CryptoHarnessClient);
+
+    const promiseHarnessRendered = (await CryptoBenchPage({
+      searchParams: Promise.resolve({ mode: 'harness' }),
+    })) as {
+      props: { children: { props: { children: { type: unknown } } } };
+    };
+    expect(promiseHarnessRendered.props.children.props.children.type).toBe(CryptoHarnessClient);
+
+    const promiseDefaultRendered = (await CryptoBenchPage({
+      searchParams: Promise.resolve({ mode: 'bench' }),
+    })) as {
+      props: { children: { props: { children: { type: unknown } } } };
+    };
+    expect(promiseDefaultRendered.props.children.props.children.type).toBe(CryptoBenchClient);
 
     vi.stubEnv('NODE_ENV', 'production');
     try {
@@ -159,6 +181,9 @@ describe('cấu trúc route (P01-A3)', () => {
       expect(() => CryptoBenchPage({ searchParams: { mode: 'harness' } })).toThrow(
         /NEXT_HTTP_ERROR_FALLBACK;404|NEXT_NOT_FOUND/,
       );
+      expect(() =>
+        CryptoBenchPage({ searchParams: Promise.resolve({ mode: 'harness' }) }),
+      ).toThrow(/NEXT_HTTP_ERROR_FALLBACK;404|NEXT_NOT_FOUND/);
     } finally {
       vi.unstubAllEnvs();
     }

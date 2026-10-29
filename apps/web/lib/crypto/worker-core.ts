@@ -133,20 +133,39 @@ function safeMemzero(
   }
 }
 
+function isCrossRealmArrayBuffer(val: unknown): val is ArrayBuffer {
+  if (!val || typeof val !== 'object') return false;
+  if (val instanceof ArrayBuffer) return true;
+  return Object.prototype.toString.call(val) === '[object ArrayBuffer]';
+}
+
 function wipeIncomingMessageSecrets(
   sodium: Sodium | null,
   msg: unknown,
   hook?: (kind: 'vk' | 'kek' | 'pwk' | 'rk' | 'seed' | 'plaintext') => void,
 ): void {
   if (typeof msg !== 'object' || msg === null) return;
-  if ('passphraseBuffer' in msg && msg.passphraseBuffer instanceof ArrayBuffer) {
+  if ('passphraseBuffer' in msg && isCrossRealmArrayBuffer(msg.passphraseBuffer)) {
     safeMemzero(sodium, new Uint8Array(msg.passphraseBuffer), hook, 'plaintext');
   }
-  if ('recoveryKeyBuffer' in msg && msg.recoveryKeyBuffer instanceof ArrayBuffer) {
+  if ('recoveryKeyBuffer' in msg && isCrossRealmArrayBuffer(msg.recoveryKeyBuffer)) {
     safeMemzero(sodium, new Uint8Array(msg.recoveryKeyBuffer), hook, 'rk');
   }
-  if ('pwkBuffer' in msg && msg.pwkBuffer instanceof ArrayBuffer) {
+  if ('pwkBuffer' in msg && isCrossRealmArrayBuffer(msg.pwkBuffer)) {
     safeMemzero(sodium, new Uint8Array(msg.pwkBuffer), hook, 'pwk');
+  }
+  if (
+    'type' in msg &&
+    msg.type === 'sealEntry' &&
+    'plaintext' in msg &&
+    ArrayBuffer.isView(msg.plaintext)
+  ) {
+    safeMemzero(
+      sodium,
+      new Uint8Array(msg.plaintext.buffer, msg.plaintext.byteOffset, msg.plaintext.byteLength),
+      hook,
+      'plaintext',
+    );
   }
 }
 
@@ -372,8 +391,22 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
     }
 
     if (vaultMode === 'locked' && !currentVk && cmdGen > workerGeneration) {
-      wipePendingRecovery(sodium);
+      if (msg.type !== 'resumeRecovery') {
+        wipePendingRecovery(sodium);
+      }
       workerGeneration = cmdGen;
+    }
+    assertGeneration(cmdGen);
+    if (
+      vaultMode === 'recovering' &&
+      msg.type !== 'rewrap' &&
+      msg.type !== 'confirmRecovery'
+    ) {
+      wipeIncomingMessageSecrets(sodium, msg, hooks.onKeyZeroed);
+      throw new CryptoWorkerError(
+        'VAULT_RECOVERING',
+        'Vault is in recovering mode; only rewrap, confirmRecovery, and lock are allowed (call lock() first to switch flows)',
+      );
     }
 
     switch (msg.type) {
@@ -535,6 +568,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
 
         try {
           assertGeneration(cmdGen);
+          wipePendingRecovery(sodium);
           let rkText: string;
           try {
             rkText = utf8Decoder.decode(rkBytes);
@@ -553,10 +587,11 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             assertGeneration(cmdGen);
             wipePendingRecovery(sodium);
             pendingRecovery = {
-              wrapKey: new Uint8Array(wrapKey),
+              wrapKey,
               lookupHash: lookupHashB64,
               generation: cmdGen,
             };
+            wrapKey = null;
             return { lookup_hash: lookupHashB64 } satisfies DeriveRecoveryLookupResult;
           }
 
@@ -866,6 +901,13 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
 
       case 'sealEntry': {
         let vkCopy: Uint8Array | null = null;
+        const incomingPtBytes = ArrayBuffer.isView(msg.plaintext)
+          ? new Uint8Array(
+              msg.plaintext.buffer,
+              msg.plaintext.byteOffset,
+              msg.plaintext.byteLength,
+            )
+          : null;
 
         try {
           assertGeneration(cmdGen);
@@ -875,11 +917,13 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           const sealed = sealEntryPayload(sodium, {
             entryId: msg.entryId,
             keyId: msg.keyId,
-            plaintext: msg.plaintext,
+            plaintext: incomingPtBytes ?? msg.plaintext,
             vk: vkCopy,
             adapter: envelopeAdapter,
           });
-          hooks.onKeyZeroed?.('plaintext');
+          if (!incomingPtBytes) {
+            hooks.onKeyZeroed?.('plaintext');
+          }
 
           assertGeneration(cmdGen);
           return {
@@ -887,6 +931,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             ciphertext: sealed.ciphertext,
           } satisfies SealEntryResult;
         } finally {
+          safeMemzero(sodium, incomingPtBytes, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
         }
       }
@@ -923,7 +968,10 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
     }
   }
 
-  function mapError(err: unknown): { code: CryptoWorkerErrorCode; message: string } {
+  function mapError(
+    err: unknown,
+    cmdType?: unknown,
+  ): { code: CryptoWorkerErrorCode; message: string } {
     if (err instanceof CryptoWorkerError) {
       return { code: err.code, message: err.message };
     }
@@ -940,7 +988,10 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
     if (err instanceof EnvelopeError || err instanceof JcsError || err instanceof Base64UrlError) {
       return { code: 'ENVELOPE_INVALID', message: err.message };
     }
-    if (err instanceof TypeError) {
+    if (
+      err instanceof TypeError &&
+      (cmdType === 'sealEntry' || cmdType === 'openEntry')
+    ) {
       return { code: 'ENVELOPE_INVALID', message: 'Invalid input encoding or type' };
     }
     if (err instanceof Error) {
@@ -991,7 +1042,8 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         };
       } catch (err) {
         wipeIncomingMessageSecrets(sodium, msg, hooks.onKeyZeroed);
-        const mapped = mapError(err);
+        const cmdType = msg && typeof msg === 'object' && 'type' in msg ? msg.type : undefined;
+        const mapped = mapError(err, cmdType);
         return {
           id: reqId,
           generation: reqGen,

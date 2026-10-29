@@ -1,23 +1,28 @@
 import { decodeBase64UrlStrict, encodeBase64Url } from './b64url';
 import { canonicalizeJcs, JcsError } from './jcs';
 import { toLocalBytes, type Sodium } from './sodium';
+import {
+  ENTRY_AEAD_TAG_BYTES,
+  ENTRY_CIPHERTEXT_MAX_BYTES,
+  ENTRY_PLAINTEXT_MAX_BYTES,
+  ENVELOPE_AAD_LABEL,
+  ENVELOPE_ALG,
+  ENVELOPE_CT_ENC,
+  ENVELOPE_VERSION,
+  type EntryEnvelopeV1,
+} from './protocol';
 import { VK_BYTES, WRAP_NONCE_BYTES, WrapError } from './wrap';
 
-export const ENVELOPE_VERSION = 1 as const;
-export const ENVELOPE_ALG = 'xchacha20poly1305-ietf' as const;
-export const ENVELOPE_CT_ENC = 'utf8' as const;
-export const ENVELOPE_AAD_LABEL = 'sabk.entry.v1' as const;
-export const ENTRY_PLAINTEXT_MAX_BYTES = 262_144; // 256 KiB
-export const ENTRY_CIPHERTEXT_MAX_BYTES = 263_168; // 256 KiB + AEAD slack
-export const ENTRY_AEAD_TAG_BYTES = 16;
-
-export interface EntryEnvelopeV1 {
-  v: typeof ENVELOPE_VERSION;
-  alg: typeof ENVELOPE_ALG;
-  key_id: string;
-  nonce: string;
-  ct_enc: typeof ENVELOPE_CT_ENC;
-}
+export {
+  ENTRY_AEAD_TAG_BYTES,
+  ENTRY_CIPHERTEXT_MAX_BYTES,
+  ENTRY_PLAINTEXT_MAX_BYTES,
+  ENVELOPE_AAD_LABEL,
+  ENVELOPE_ALG,
+  ENVELOPE_CT_ENC,
+  ENVELOPE_VERSION,
+  type EntryEnvelopeV1,
+};
 
 export interface EnvelopeAdapter {
   validateEntryEnvelope: (input: unknown) => EntryEnvelopeV1;
