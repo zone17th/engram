@@ -1435,7 +1435,60 @@ func (b *readQueryBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx
 	}
 }
 
-// TestMultiQueryReadsUseStableRepeatableReadSnapshot covers BE1-1:
+type tracedReadSetup struct {
+	barrier  *readQueryBarrier
+	pool     *pgxpool.Pool
+	svc      *vault.Service
+	ctx      context.Context
+	wg       sync.WaitGroup
+	teardown func()
+}
+
+func newTracedReadSetup(t *testing.T, parentCtx context.Context, h *harness, cfg *config.Config, matchSubstr, excludeSubstr string) *tracedReadSetup {
+	t.Helper()
+	barrier := newReadQueryBarrier(matchSubstr, excludeSubstr)
+	pcfg := h.pool.Config()
+	pcfg.ConnConfig.Tracer = barrier
+	pool, err := pgxpool.NewWithConfig(parentCtx, pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancelRead := context.WithCancel(parentCtx)
+	ts := &tracedReadSetup{
+		barrier: barrier,
+		pool:    pool,
+		ctx:     readCtx,
+	}
+	var closePoolOnce sync.Once
+	closePool := func() {
+		closePoolOnce.Do(pool.Close)
+	}
+	releaseAndDrain := func() {
+		barrier.closeRelease()
+		cancelRead()
+		ts.wg.Wait()
+	}
+	ts.teardown = func() {
+		releaseAndDrain()
+		closePool()
+	}
+	// Go runs t.Cleanup functions in LIFO order: register pool close first and
+	// barrier release + goroutine drain after (plus combined teardown) so any
+	// nested helper t.Fatal releases the barrier and drains checked-out connections
+	// before pgxpool.Close waits on the pool.
+	t.Cleanup(closePool)
+	t.Cleanup(releaseAndDrain)
+
+	svc, err := vault.NewService(cfg, pool, h.clk, audit.NewStore(pool), notification.NewStore(pool, nil), nil, nil, nil, nil)
+	if err != nil {
+		ts.teardown()
+		t.Fatal(err)
+	}
+	ts.svc = svc
+	return ts
+}
+
+// TestMultiQueryReadsUseStableRepeatableReadSnapshot covers BE1-1 (and BE2-3 / BE2-6):
 // pauses GET /vault, GET /vault/recovery-keys, and GET /vault/passkeys immediately after
 // their first SELECT inside the read-only transaction, performs a vault reset + recreate +
 // RK/passkey mutation in between, then resumes the read and verifies each response belongs
@@ -1465,34 +1518,25 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 	}
 
 	// Part A: svc.Get paused right after `SELECT ... FROM vault WHERE user_id = $1`.
-	getBarrier := newReadQueryBarrier("FROM vault\nWHERE", "FOR UPDATE")
-	t.Cleanup(getBarrier.closeRelease)
-	pcfg1 := h.pool.Config()
-	pcfg1.ConnConfig.Tracer = getBarrier
-	pool1, err := pgxpool.NewWithConfig(ctx, pcfg1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool1.Close)
-	svc1, err := vault.NewService(cfg, pool1, h.clk, audit.NewStore(pool1), notification.NewStore(pool1, nil), nil, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tsGet := newTracedReadSetup(t, ctx, h, cfg, "FROM vault\nWHERE", "FOR UPDATE")
+	defer tsGet.teardown()
+	getBarrier := tsGet.barrier
 
 	type getOutcome struct {
 		state vault.VaultState
 		err   error
 	}
 	getDone := make(chan getOutcome, 1)
+	tsGet.wg.Add(1)
 	go func() {
-		st, err := svc1.Get(ctx, me.User.ID)
+		defer tsGet.wg.Done()
+		st, err := tsGet.svc.Get(tsGet.ctx, me.User.ID)
 		getDone <- getOutcome{state: st, err: err}
 	}()
 
 	select {
 	case <-getBarrier.arrived:
 	case <-time.After(5 * time.Second):
-		getBarrier.closeRelease()
 		t.Fatal("timed out waiting for svc.Get first SELECT barrier")
 	}
 
@@ -1505,7 +1549,6 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 		grant:   resetGrant1,
 	})
 	if respReset1.StatusCode != http.StatusNoContent {
-		getBarrier.closeRelease()
 		t.Fatalf("reset gen1 = %d %s", respReset1.StatusCode, rawReset1)
 	}
 
@@ -1514,18 +1557,15 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 		idemKey: "idem-repread-create-gen2",
 	})
 	if resp2.StatusCode != http.StatusCreated {
-		getBarrier.closeRelease()
 		t.Fatalf("create gen2 = %d %s", resp2.StatusCode, raw2)
 	}
 	var gen2 vault.VaultCreatedResponse
 	if err := json.Unmarshal([]byte(raw2), &gen2); err != nil {
-		getBarrier.closeRelease()
 		t.Fatal(err)
 	}
 
 	q := gen.New(h.pool)
 	if _, err := h.pool.Exec(ctx, `DELETE FROM vault_recovery_key WHERE vault_id = $1 AND slot = 1`, me.User.ID); err != nil {
-		getBarrier.closeRelease()
 		t.Fatal(err)
 	}
 	pkGen2, err := q.InsertPasskey(ctx, gen.InsertPasskeyParams{
@@ -1537,7 +1577,6 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 		Name:    "gen2-only-passkey",
 	})
 	if err != nil {
-		getBarrier.closeRelease()
 		t.Fatal(err)
 	}
 
@@ -1559,33 +1598,13 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 	}
 
 	// Part B: GetRecoveryKeysStatus and ListPasskeys paused right after `SELECT EXISTS(SELECT 1 FROM vault WHERE user_id = $1)`.
-	rkBarrier := newReadQueryBarrier("SELECT EXISTS", "")
-	t.Cleanup(rkBarrier.closeRelease)
-	pcfgRK := h.pool.Config()
-	pcfgRK.ConnConfig.Tracer = rkBarrier
-	poolRK, err := pgxpool.NewWithConfig(ctx, pcfgRK)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(poolRK.Close)
-	svcRK, err := vault.NewService(cfg, poolRK, h.clk, audit.NewStore(poolRK), notification.NewStore(poolRK, nil), nil, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tsRK := newTracedReadSetup(t, ctx, h, cfg, "SELECT EXISTS", "")
+	defer tsRK.teardown()
+	rkBarrier := tsRK.barrier
 
-	pkBarrier := newReadQueryBarrier("SELECT EXISTS", "")
-	t.Cleanup(pkBarrier.closeRelease)
-	pcfgPK := h.pool.Config()
-	pcfgPK.ConnConfig.Tracer = pkBarrier
-	poolPK, err := pgxpool.NewWithConfig(ctx, pcfgPK)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(poolPK.Close)
-	svcPK, err := vault.NewService(cfg, poolPK, h.clk, audit.NewStore(poolPK), notification.NewStore(poolPK, nil), nil, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tsPK := newTracedReadSetup(t, ctx, h, cfg, "SELECT EXISTS", "")
+	defer tsPK.teardown()
+	pkBarrier := tsPK.barrier
 
 	type rkOutcome struct {
 		status vault.RecoveryKeysStatus
@@ -1597,27 +1616,27 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 	}
 	rkDone := make(chan rkOutcome, 1)
 	pkDone := make(chan pkOutcome, 1)
+	tsRK.wg.Add(1)
 	go func() {
-		st, err := svcRK.GetRecoveryKeysStatus(ctx, me.User.ID)
+		defer tsRK.wg.Done()
+		st, err := tsRK.svc.GetRecoveryKeysStatus(tsRK.ctx, me.User.ID)
 		rkDone <- rkOutcome{status: st, err: err}
 	}()
+	tsPK.wg.Add(1)
 	go func() {
-		ls, err := svcPK.ListPasskeys(ctx, me.User.ID)
+		defer tsPK.wg.Done()
+		ls, err := tsPK.svc.ListPasskeys(tsPK.ctx, me.User.ID)
 		pkDone <- pkOutcome{list: ls, err: err}
 	}()
 
 	select {
 	case <-rkBarrier.arrived:
 	case <-time.After(5 * time.Second):
-		rkBarrier.closeRelease()
-		pkBarrier.closeRelease()
 		t.Fatal("timed out waiting for GetRecoveryKeysStatus EXISTS barrier")
 	}
 	select {
 	case <-pkBarrier.arrived:
 	case <-time.After(5 * time.Second):
-		rkBarrier.closeRelease()
-		pkBarrier.closeRelease()
 		t.Fatal("timed out waiting for ListPasskeys EXISTS barrier")
 	}
 
@@ -1630,8 +1649,6 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 		grant:   resetGrant2,
 	})
 	if respReset2.StatusCode != http.StatusNoContent {
-		rkBarrier.closeRelease()
-		pkBarrier.closeRelease()
 		t.Fatalf("reset gen2 = %d %s", respReset2.StatusCode, rawReset2)
 	}
 
@@ -1651,6 +1668,82 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 	if len(gotPK.list.Items) != 1 || gotPK.list.Items[0].ID != pkGen2.ID {
 		t.Fatalf("ListPasskeys mixed snapshot after reset: got %+v, want 1 item (%s)", gotPK.list.Items, pkGen2.ID)
 	}
+
+	// Part C (BE2-3 / BE2-6): Prove that for each of the 3 readers (Get, GetRecoveryKeysStatus,
+	// ListPasskeys), running teardown while the reader is paused inside its query barrier releases
+	// the barrier and drains the reader goroutine BEFORE closing the pool, completing promptly without deadlock.
+	t.Run("TeardownWhilePausedReleasesAndDrainsBeforePoolClose", func(t *testing.T) {
+		gen3Payload := makeCreatePayload(t, 0x34)
+		resp3, raw3 := h.doReq(jar, http.MethodPost, "/api/v1/vault", mustJSON(t, gen3Payload), reqOptions{
+			idemKey: "idem-repread-create-gen3",
+		})
+		if resp3.StatusCode != http.StatusCreated {
+			t.Fatalf("create gen3 = %d %s", resp3.StatusCode, raw3)
+		}
+
+		cases := []struct {
+			name          string
+			matchSubstr   string
+			excludeSubstr string
+			invoke        func(ctx context.Context, svc *vault.Service) error
+		}{
+			{
+				name:          "Get",
+				matchSubstr:   "FROM vault\nWHERE",
+				excludeSubstr: "FOR UPDATE",
+				invoke: func(ctx context.Context, svc *vault.Service) error {
+					_, err := svc.Get(ctx, me.User.ID)
+					return err
+				},
+			},
+			{
+				name:        "GetRecoveryKeysStatus",
+				matchSubstr: "SELECT EXISTS",
+				invoke: func(ctx context.Context, svc *vault.Service) error {
+					_, err := svc.GetRecoveryKeysStatus(ctx, me.User.ID)
+					return err
+				},
+			},
+			{
+				name:        "ListPasskeys",
+				matchSubstr: "SELECT EXISTS",
+				invoke: func(ctx context.Context, svc *vault.Service) error {
+					_, err := svc.ListPasskeys(ctx, me.User.ID)
+					return err
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				ts := newTracedReadSetup(t, ctx, h, cfg, tc.matchSubstr, tc.excludeSubstr)
+				readerExited := make(chan struct{})
+				ts.wg.Add(1)
+				go func() {
+					defer ts.wg.Done()
+					defer close(readerExited)
+					_ = tc.invoke(ts.ctx, ts.svc)
+				}()
+
+				select {
+				case <-ts.barrier.arrived:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("timed out waiting for %s barrier arrival", tc.name)
+				}
+
+				start := time.Now()
+				ts.teardown()
+				select {
+				case <-readerExited:
+				default:
+					t.Fatalf("%s reader goroutine was not drained before teardown returned", tc.name)
+				}
+				if elapsed := time.Since(start); elapsed > 2*time.Second {
+					t.Fatalf("%s teardown while paused took %v, want < 2s", tc.name, elapsed)
+				}
+			})
+		}
+	})
 }
 
 // TestDecodeVaultJSONRejectsCaseVariantAndAliasPropertyNamesAtAllBoundaries covers BE1-2:
