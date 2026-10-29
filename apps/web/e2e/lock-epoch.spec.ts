@@ -724,10 +724,13 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
       return win.__engramVaultTestBridge.lastActivityAt;
     });
 
-    // Wait slightly so Date.now() advances, then trigger real user input (`pointerdown` + `keydown`) in Page A.
-    // Page A's production listener calls `recordActivity` -> `postVaultBroadcast({ type: 'activity', at })`
-    // over the browser's real `BroadcastChannel('sabk.vault')` to the separate browsing context Page B.
-    await pageA.waitForTimeout(100);
+    // Page A already broadcast `activity` when its unlock finished, and `recordActivity` throttles the broadcast
+    // (`ACTIVITY_BROADCAST_THROTTLE_MS` = 1s, leading edge only). Unlocking Page B can take less than that, so a click
+    // right away would be throttled by design and never reach Page B. Let the throttle window pass, then trigger
+    // real user input (`pointerdown`) in Page A: its production listener calls `recordActivity` ->
+    // `postVaultBroadcast({ type: 'activity', at })` over the browser's real `BroadcastChannel('sabk.vault')`
+    // to the separate browsing context Page B.
+    await pageA.waitForTimeout(1_250);
     await pageA.locator('body').click();
 
     await expect
