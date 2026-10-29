@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import {
@@ -23,19 +23,6 @@ const WIDTHS = [
 type Theme = (typeof THEMES)[number];
 type ViewportWidth = (typeof WIDTHS)[number]['width'];
 
-const TEST_VECTOR_KDF = {
-  alg: 'argon2id13' as const,
-  ops: 3,
-  mem: 67_108_864,
-  parallelism: 1,
-  salt: 'oKGio6SlpqeoqaqrrK2urw',
-};
-const TEST_VECTOR_WRAPPED_VK =
-  'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA';
-const TEST_VECTOR_WRAPPED_PRIV =
-  'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-';
-const TEST_VECTOR_VAULT_KEY_ID = 'vk:7f3a9b2c4d5e6f7a8b9c0d';
-
 async function confirmEmailToken(page: Page, token: string) {
   await page.goto(`/app/auth/verify-email?token=${encodeURIComponent(token)}`);
   const respPromise = page.waitForResponse(
@@ -47,12 +34,26 @@ async function confirmEmailToken(page: Page, token: string) {
   expect(resp.status()).toBe(200);
 }
 
-async function createAndUnlockVaultViaBridge(page: Page, passphrase = INITIAL_VAULT_PASSPHRASE) {
+async function waitForVaultBridgeReady(page: Page) {
   await page.waitForFunction(
-    () => '__engramVaultTestBridge' in window,
+    () => {
+      const win = window as unknown as {
+        __engramVaultTestBridge?: {
+          beginOp?: unknown;
+          reloadVaultMeta?: unknown;
+          unlockPassphrase?: unknown;
+          createVault?: unknown;
+        };
+      };
+      return typeof win.__engramVaultTestBridge?.beginOp === 'function';
+    },
     undefined,
     { timeout: 20_000 },
   );
+}
+
+async function createAndUnlockVaultViaBridge(page: Page, passphrase = INITIAL_VAULT_PASSPHRASE) {
+  await waitForVaultBridgeReady(page);
 
   await page.evaluate(async (pp) => {
     const win = window as unknown as {
@@ -134,11 +135,7 @@ async function createAndUnlockVaultViaBridge(page: Page, passphrase = INITIAL_VA
 }
 
 async function unlockExistingVaultViaBridge(page: Page, passphrase: string) {
-  await page.waitForFunction(
-    () => '__engramVaultTestBridge' in window,
-    undefined,
-    { timeout: 20_000 },
-  );
+  await waitForVaultBridgeReady(page);
 
   await page.evaluate(async (pp) => {
     const win = window as unknown as {
@@ -185,190 +182,6 @@ async function unlockExistingVaultViaBridge(page: Page, passphrase: string) {
       opGeneration,
     });
   }, passphrase);
-}
-
-/**
- * Installs stateful in-memory `/api/v1/*` route handlers when running without an external backend
- * (`E2E_API_URL` and `E2E_STACK` not set), while exercising the real browser CryptoClient Worker.
- */
-async function installStatefulVaultSettingsMocksIfNoBackend(
-  context: BrowserContext,
-  initialTheme: Theme,
-) {
-  if (process.env.E2E_API_URL || process.env.E2E_STACK) {
-    return { isMocked: false };
-  }
-
-  let currentTheme: Theme = initialTheme;
-  const currentVersion = 1;
-  const currentKdf = { ...TEST_VECTOR_KDF };
-  const currentWrappedVk = TEST_VECTOR_WRAPPED_VK;
-  const currentWrappedPriv = TEST_VECTOR_WRAPPED_PRIV;
-  const currentVaultKeyId = TEST_VECTOR_VAULT_KEY_ID;
-  const remainingRk = 10;
-
-  await context.route('**/api/v1/auth/csrf', async (route) => {
-    await route.fulfill({
-      status: 204,
-      headers: {
-        'set-cookie': 'sabk_csrf=e2e-csrf-token; Path=/; SameSite=Lax',
-      },
-    });
-  });
-
-  await context.route('**/api/v1/auth/config', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        oauth_providers: ['google'],
-        email_verification_required: false,
-        captcha_site_key: null,
-        hibp_enabled: false,
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/auth/me', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        user: {
-          id: '11111111-2222-3333-4444-555555555555',
-          email: 'visual.user@example.test',
-          email_verified: true,
-          locale: 'vi',
-          theme: currentTheme,
-          auto_lock_minutes: 15,
-          semantic_suggest: true,
-          created_at: '2026-10-29T00:00:00Z',
-        },
-        settings: {
-          locale: 'vi',
-          theme: currentTheme,
-          auto_lock_minutes: 15,
-          semantic_suggest: true,
-        },
-        identities: [{ provider: 'password', created_at: '2026-10-29T00:00:00Z' }],
-        session: {
-          id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-          created_at: '2026-10-29T00:00:00Z',
-          last_seen_at: '2026-10-29T00:00:00Z',
-        },
-        features: {
-          semantic_available: false,
-          email_verification_required: false,
-          oauth_providers: ['google'],
-          oauth_reauth_providers: [],
-          password_enrollment_available: false,
-          captcha_site_key: null,
-        },
-        vault: {
-          status: 'present',
-        },
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/me/settings', async (route) => {
-    const body = (route.request().postDataJSON() ?? {}) as { theme?: Theme };
-    if (body.theme) {
-      currentTheme = body.theme;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        settings: {
-          locale: 'vi',
-          theme: currentTheme,
-          auto_lock_minutes: 15,
-          semantic_suggest: true,
-        },
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/auth/reauth', async (route) => {
-    const reqBody = route.request().postDataJSON() as { action?: string };
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        grant: `grant-${reqBody?.action ?? 'vault'}-${Date.now()}`,
-        action: reqBody?.action ?? 'vault.rewrap',
-        expires_at: new Date(Date.now() + 300_000).toISOString(),
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/vault/recovery-keys', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        remaining: remainingRk,
-        slots: 10,
-        empty_slots: [],
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/vault', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        vault_key_id: currentVaultKeyId,
-        version: currentVersion,
-        kdf: currentKdf,
-        vault_key_wrapped_by_kek: currentWrappedVk,
-        x25519_public: 'EIT5fcwxJb3Sw8y-V9yHL-JGU5pDVlgw9H5ueCV7OnI',
-        ed25519_public: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
-        private_keys_wrapped: currentWrappedPriv,
-        recovery_keys_remaining: remainingRk,
-        passkeys: [],
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/auth/sessions**', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        items: [
-          {
-            id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-            created_at: '2026-10-29T00:00:00Z',
-            last_seen_at: '2026-10-29T00:00:00Z',
-            ip_prefix: '127.0.0.1/32',
-            user_agent_summary: 'Visual browser',
-            current: true,
-          },
-        ],
-      }),
-    });
-  });
-
-  await context.route('**/api/v1/auth/audit**', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ items: [] }),
-    });
-  });
-
-  await context.route('**/api/v1/me/notifications**', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ items: [] }),
-    });
-  });
-
-  return { isMocked: true };
 }
 
 async function prepareThemeAndLocale(page: Page, theme: Theme) {
@@ -436,6 +249,8 @@ async function saveScreenshot(
 }
 
 test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', () => {
+  test.skip(!process.env.E2E_STACK, 'requires API + worker');
+
   for (const theme of THEMES) {
     test(`captures vault security section and dialogs (${theme}, 390 + 1440)`, async ({
       browser,
@@ -443,29 +258,22 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
       test.setTimeout(180_000);
       const context = await newContext(browser);
       try {
-        const { isMocked } = await installStatefulVaultSettingsMocksIfNoBackend(context, theme);
         const page = await context.newPage();
         await prepareThemeAndLocale(page, theme);
 
-        let email = 'visual.user@example.test';
-        if (!isMocked) {
-          email = uniqueEmail(`vaultsettings-visual-${theme}`);
-          await signupViaUi(page, email, PASSWORD);
-          if (verifyRequired()) {
-            const mail = await waitForMail(email, 'verify_email');
-            await confirmEmailToken(page, tokenFromLink(mail.link));
-          }
-          await expectSignedIn(page);
-          expect((await patchSettingsViaPage(page, { locale: 'vi', theme })).status).toBe(200);
-          await prepareThemeAndLocale(page, theme);
-          await page.goto('/app/settings', { waitUntil: 'networkidle' });
-          await createAndUnlockVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
-          await page.reload({ waitUntil: 'networkidle' });
-          await unlockExistingVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
-        } else {
-          await page.goto('/app/settings', { waitUntil: 'networkidle' });
-          await unlockExistingVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
+        const email = uniqueEmail(`vaultsettings-visual-${theme}`);
+        await signupViaUi(page, email, PASSWORD);
+        if (verifyRequired()) {
+          const mail = await waitForMail(email, 'verify_email');
+          await confirmEmailToken(page, tokenFromLink(mail.link));
         }
+        await expectSignedIn(page);
+        expect((await patchSettingsViaPage(page, { locale: 'vi', theme })).status).toBe(200);
+        await prepareThemeAndLocale(page, theme);
+        await page.goto('/app/settings', { waitUntil: 'networkidle' });
+        await createAndUnlockVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
+        await page.reload({ waitUntil: 'networkidle' });
+        await unlockExistingVaultViaBridge(page, INITIAL_VAULT_PASSPHRASE);
 
         await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/);
         await expect(page.getByTestId('vault-security-section')).toBeVisible();
