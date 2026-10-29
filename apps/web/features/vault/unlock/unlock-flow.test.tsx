@@ -895,8 +895,10 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
     const lockEpochEnv = makeSimpleLockEpochEnv();
     let vaultCtx!: VaultContextValue;
-    const { unmount } = renderUnlock({
+    const workerFactory = makeUnlockWorkerFactory();
+    const { rerender, queryClient } = renderUnlock({
       locale: 'en',
+      workerFactory,
       lockEpochEnv,
       onVaultProbe: (ctx) => {
         vaultCtx = ctx;
@@ -950,16 +952,29 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
       expect(resolveGetVault).not.toBeNull();
     });
 
-    // Leave the unlock route while GET /vault is still in flight
-    unmount();
+    // Leave only the VaultUnlockFlow route (switching to ForgotPassphraseView) while keeping VaultProvider mounted!
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={queryClient}>
+            <SessionProvider>
+              <VaultProvider createWorker={workerFactory} lockEpochEnv={lockEpochEnv}>
+                <ForgotPassphraseView />
+              </VaultProvider>
+            </SessionProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
 
-    // Release GET /vault after unmount -> Worker stays locked and router.replace is never called
+    // Release GET /vault after VaultUnlockFlow unmounted (with VaultProvider still alive) -> Worker stays locked and router.replace is never called
     await act(async () => {
       holdGetVault = false;
       resolveGetVault?.();
       await Promise.resolve();
       await Promise.resolve();
     });
+    expect(vaultCtx.state).toBe('locked');
     expect(vaultCtx.workerState).toBe('locked');
     expect(routerMocks.replace).not.toHaveBeenCalled();
   }, 15_000);

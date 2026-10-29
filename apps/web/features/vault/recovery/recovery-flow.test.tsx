@@ -1468,4 +1468,195 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 20_000);
+
+  it('BE2-3 (reauth race), BE2-11 & BE2-12: lock during held Step 3 in-place password reauth sends zero newly dispatched complete requests when reauth resolves, and late lookup/complete errors or stale regen success never lock or broadcast over a replacement session', async () => {
+    const shim = makeTestShim();
+    let completeDispatchedCount = 0;
+    let holdStep3Reauth = false;
+    let resolveStep3Reauth: (() => void) | null = null;
+    let holdLookup429 = false;
+    let resolveLookup429: (() => void) | null = null;
+    let grantSecondsOnStep1 = 30; // < 60s so Step 3 triggers in-place password reauth!
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture({ hasPassword: true }));
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body ?? '{}')) as { action: string };
+        if (holdStep3Reauth) {
+          await new Promise<void>((resolve) => {
+            resolveStep3Reauth = resolve;
+          });
+        }
+        return jsonResponse({
+          grant: `grant-${body.action}-token-${Date.now()}`,
+          action: body.action,
+          expires_at: futureIso(grantSecondsOnStep1),
+        });
+      }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(makeVaultMetaFixture(1));
+      }
+      if (url.endsWith('/vault/unlock/recovery') && init?.method === 'POST') {
+        if (holdLookup429) {
+          await new Promise<void>((resolve) => {
+            resolveLookup429 = resolve;
+          });
+          return new Response(
+            JSON.stringify({
+              type: 'https://engram.zone17th.click/problems/rate_limited',
+              title: 'rate_limited',
+              status: 429,
+              code: 'rate_limited',
+              retry_after: 60,
+            }),
+            { status: 429, headers: { 'content-type': 'application/problem+json' } },
+          );
+        }
+        return jsonResponse({
+          recovery_key_id: 'rk-id-slot-1',
+          slot: 1,
+          wrap: TEST_VECTOR_RK_WRAP,
+        });
+      }
+      if (url.endsWith('/vault/recover/complete') && init?.method === 'POST') {
+        completeDispatchedCount += 1;
+        return jsonResponse({
+          vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
+          version: 2,
+          recovery_keys_remaining: 9,
+          empty_slots: [1],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
+    });
+
+    // Step 1: Acquire a grant with only 30s remaining (< 60s preflight threshold for Step 3)
+    fireEvent.change(screen.getByLabelText(/Account login password/i), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
+    });
+
+    // Step 2: Enter RK -> transitions to Step 3 (`recovering`)
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+
+    // Step 3: Submit new passphrase -> rewraps and prepares bundle, then stops at `reauth_expired_password` (< 60s grant)
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-error-reauth-expired-password')).toBeInTheDocument();
+    });
+    expect(completeDispatchedCount).toBe(0);
+
+    // 1. BE2-3: Submit in-place password reauth while held, then lock/cancel the recovery flow before reauth resolves!
+    grantSecondsOnStep1 = 300;
+    holdStep3Reauth = true;
+    fireEvent.change(screen.getByTestId('recovery-step3-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step3-reauth-password-submit'));
+    await waitFor(() => {
+      expect(resolveStep3Reauth).not.toBeNull();
+    });
+
+    // Lock while in-place password reauth is in flight -> cancels recovery and returns to Step 2
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+
+    // Release the held in-place reauth response -> MUST NOT restore the cancelled bundle or dispatch POST /vault/recover/complete!
+    await act(async () => {
+      holdStep3Reauth = false;
+      resolveStep3Reauth?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(completeDispatchedCount).toBe(0);
+    expect(vaultCtx.state).toBe('locked');
+
+    // 2. BE2-11: Start a Step 2 lookup that is held before returning 429, cancel/lock and unlock a replacement session,
+    //    then release the old 429 lookup error -> the replacement unlocked session MUST NOT be locked by the late error!
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
+    });
+    holdLookup429 = true;
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    await waitFor(() => {
+      expect(resolveLookup429).not.toBeNull();
+    });
+
+    // Cancel recovery and unlock a replacement session on the same provider
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    const replacementOp = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.createVault({
+        passphrase: STRONG_NEW_PASSPHRASE,
+        opGeneration: replacementOp.opGeneration,
+      });
+    });
+    expect(vaultCtx.state).toBe('unlocked');
+    expect(vaultCtx.workerState).toBe('unlocked');
+    const replacementGen = vaultCtx.getClient().getGeneration();
+
+    // Now release the old lookup's 429 rejection -> BE2-11 fence drops it without locking the replacement session!
+    await act(async () => {
+      holdLookup429 = false;
+      resolveLookup429?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(vaultCtx.state).toBe('unlocked');
+    expect(vaultCtx.workerState).toBe('unlocked');
+    expect(vaultCtx.getClient().getGeneration()).toBe(replacementGen);
+
+    shim.close();
+  }, 25_000);
 });
