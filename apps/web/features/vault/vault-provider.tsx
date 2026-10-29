@@ -418,6 +418,8 @@ export function VaultProvider({
     sessionEpoch: number;
     meta: DeviceMetaRecord;
   } | null>(null);
+  // Pending device-meta snapshot taken by an accepted `markResetPurged`; an unnamed 404 awaits it before judging a duplicate.
+  const resetMarkSnapshotRef = useRef<Promise<void> | null>(null);
   const setVaultMeta = useCallback((next: VaultState | null) => {
     liveVaultMetaRef.current = next;
     setVaultMetaState(next);
@@ -675,7 +677,18 @@ export function VaultProvider({
       return;
     }
     resetPurgedVaultKeyIdRef.current = token;
-  }, []);
+    // The accepted mark proves the acting tab's purge already ran: snapshot the post-purge `meta` so a later unnamed
+    // 404 for this reset is a proven duplicate only while nothing wrote to `sabk.device` since (BE2-9, VS-R4-1).
+    const markEpoch = vaultMetaSessionEpochRef.current;
+    const markUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
+    resetMarkSnapshotRef.current = readDeviceMetaRecord(effectiveDeviceStoreEnv)
+      .then((meta) => {
+        if (meta && vaultMetaSessionEpochRef.current === markEpoch) {
+          resetPurgeEvidenceRef.current = { userId: markUserId, sessionEpoch: markEpoch, meta };
+        }
+      })
+      .catch(() => undefined);
+  }, [effectiveDeviceStoreEnv]);
 
   const runIdempotentResetPurge = useCallback(
     (userId: string | null | undefined, transitionKeyId: string | null) => {
@@ -696,6 +709,7 @@ export function VaultProvider({
       // A transition that cannot name its vault (unknown 404) is purged unless device-state evidence proves the
       // previous purge already covers it: `meta` is still exactly the record that purge committed.
       const isProvenDuplicate = async (): Promise<boolean> => {
+        await resetMarkSnapshotRef.current;
         const evidence = resetPurgeEvidenceRef.current;
         if (!evidence || evidence.sessionEpoch !== purgeEpoch || evidence.userId !== purgeUserId) {
           return false;
