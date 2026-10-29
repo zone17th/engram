@@ -3457,6 +3457,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       autoLockMinutes: 15,
     });
     let vaultReturnedPresent = true;
+    let vaultKeyId = 'vk:reset-target-vs-r4-1';
     vi.mocked(fetch).mockImplementation(async (url) => {
       const u = String(url);
       if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -3473,7 +3474,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       if (u.endsWith('/vault')) {
         if (vaultReturnedPresent) {
           return jsonResponse({
-            vault_key_id: 'vk:reset-target-vs-r4-1',
+            vault_key_id: vaultKeyId,
             version: 1,
             kdf: {
               alg: 'argon2id13',
@@ -3590,10 +3591,12 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     const metaAfterReceivingTab = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
     expect(metaAfterReceivingTab?.deviceRevision).toBe(11);
 
-    // Path 2: Acting tab (Tab A) resets a second vault ('vk:reset-target-vs-r4-1'), its dialog purges once
-    // and marks the reset transition via markResetPurged('vk:reset-target-vs-r4-1') (or notifyVaultChanged),
+    // Path 2: Acting tab (Tab A) resets a second vault ('vk:reset-target-vs-r4-1-b'), its dialog purges once
+    // and marks the reset transition via markResetPurged('vk:reset-target-vs-r4-1-b') (or notifyVaultChanged),
     // post-reset /me fails, and the user clicks 'Reload vault' (tabAVault.reloadVaultMeta() -> 404) ->
     // reloadVaultMeta()'s 404 branch is a no-op (deviceRevision: 11 -> 12, never 13).
+    // Production vault_key_ids are unique per reset, so the second vault needs a new id (the first one is retired).
+    vaultKeyId = 'vk:reset-target-vs-r4-1-b';
     vaultReturnedPresent = true;
     await act(async () => {
       await tabAVault.reloadVaultMeta();
@@ -3604,7 +3607,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       await purgeDeviceKeysOnRevoked('11111111-1111-1111-1111-111111111111', {
         idbFactory: fakeIdb.createFactory(),
       });
-      tabAVault.markResetPurged('vk:reset-target-vs-r4-1');
+      tabAVault.markResetPurged('vk:reset-target-vs-r4-1-b');
     });
     const metaAfterDialogPurge = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
     expect(metaAfterDialogPurge?.deviceRevision).toBe(12);
