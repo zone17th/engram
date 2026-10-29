@@ -121,6 +121,22 @@ func (s *Service) KeyMutationsDisabled() bool {
 	return s != nil && s.cfg != nil && s.cfg.KeyMutationsDisabled
 }
 
+// WebAuthnRPID trả về Relying Party ID đã cấu hình của Service.
+func (s *Service) WebAuthnRPID() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return s.cfg.EffectiveWebAuthnRPID()
+}
+
+// WebAuthnRPOrigin trả về Relying Party Origin đã cấu hình của Service.
+func (s *Service) WebAuthnRPOrigin() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return s.cfg.EffectiveWebAuthnRPOrigin()
+}
+
 // SetResetHook cho phép cấu hình `ResetHook` (dùng trong test Task 12 và khi P04 nối xoá entry).
 func (s *Service) SetResetHook(hook ResetHook) {
 	if hook == nil {
