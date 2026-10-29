@@ -513,8 +513,8 @@ func TestServiceRegisterPasskey_ConcurrentChallengeConsumeAndRollback(t *testing
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `
-			DROP TRIGGER IF EXISTS trg_svc_fail_reg_audit ON audit_log;
-			DROP TRIGGER IF EXISTS trg_svc_fail_reg_notice ON user_notification;
+			DROP TRIGGER IF EXISTS trg_svc_fail_reg_audit_log ON audit_log;
+			DROP TRIGGER IF EXISTS trg_svc_fail_reg_user_notification ON user_notification;
 			DROP FUNCTION IF EXISTS test_svc_fail_passkey_reg();
 		`)
 	})

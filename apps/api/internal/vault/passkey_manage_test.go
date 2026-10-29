@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
@@ -20,6 +21,7 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/webauthntest"
 )
@@ -414,9 +416,24 @@ func TestServicePasskeyRenameRevokeAndUnlockOptions(t *testing.T) {
 	}
 }
 
+type writeThenFailNotifier struct {
+	inner     vault.Notifier
+	injectErr error
+}
+
+func (w *writeThenFailNotifier) NotifySecurity(ctx context.Context, tx pgx.Tx, n secevent.Notice) error {
+	if err := w.inner.NotifySecurity(ctx, tx, n); err != nil {
+		return err
+	}
+	return w.injectErr
+}
+
 // TestServicePasskeyRevoke_RollbackOnAuditAndNoticeFailure covers BE1-4 / BE1-8 for RevokePasskey:
-// when audit_log or user_notification write fails inside the transaction after DeletePasskeyByOwner,
-// the credential deletion rolls back and no audit/notice is committed.
+//   - when audit_log or user_notification write fails inside the transaction after DeletePasskeyByOwner,
+//     the credential deletion rolls back and no audit/notice is committed;
+//   - when NotifySecurity writes the notice row via the supplied transaction and then returns an injected
+//     post-write error, the transaction rollback removes the inserted notice, audit, and deletion together
+//     (regression-protecting the tx argument passed to s.notify.NotifySecurity).
 func TestServicePasskeyRevoke_RollbackOnAuditAndNoticeFailure(t *testing.T) {
 	dsn := dbtest.StartPostgres(t)
 	dbtest.MigrateUp(t, dsn)
@@ -511,5 +528,75 @@ func TestServicePasskeyRevoke_RollbackOnAuditAndNoticeFailure(t *testing.T) {
 		if audits != 0 || notices != 0 {
 			t.Fatalf("after %s rollback: audits=%d notices=%d, want 0/0", table, audits, notices)
 		}
+	}
+
+	// Post-write failure after real notification.Store.NotifySecurity succeeds inside the supplied tx:
+	// if RevokePasskey passed nil instead of tx to NotifySecurity, notification.Store would use a pool
+	// query and auto-commit the notice row before the injected error rolled back the mutation tx.
+	injectedNoticeErr := errors.New("simulated post-write revoke notice failure")
+	svcPostWriteFail, err := vault.NewService(
+		cfg,
+		pool,
+		clk,
+		aud,
+		&writeThenFailNotifier{inner: notes, injectErr: injectedNoticeErr},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("vault.NewService(writeThenFailNotifier): %v", err)
+	}
+
+	err = svcPostWriteFail.RevokePasskey(ctx, pA, vault.RevokePasskeyInput{
+		PasskeyID: pk.row.ID,
+		IP:        "127.0.0.1",
+		UA:        "svc-revoke-post-write-rb",
+	})
+	if !errors.Is(err, injectedNoticeErr) {
+		t.Fatalf("RevokePasskey(writeThenFailNotifier) = %v, want %v", err, injectedNoticeErr)
+	}
+
+	rowAfterPostWrite, err := q.GetPasskeyByUserAndID(ctx, gen.GetPasskeyByUserAndIDParams{
+		UserID: userA.ID,
+		ID:     pk.row.ID,
+	})
+	if err != nil || rowAfterPostWrite.Name != "Protected Credential" {
+		t.Fatalf("after post-write notice rollback: passkey missing or altered: row=%+v err=%v", rowAfterPostWrite, err)
+	}
+	var auditsAfterPostWrite, noticesAfterPostWrite int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, userA.ID, vault.EventPasskeyRevoke).Scan(&auditsAfterPostWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userA.ID).Scan(&noticesAfterPostWrite); err != nil {
+		t.Fatal(err)
+	}
+	if auditsAfterPostWrite != 0 || noticesAfterPostWrite != 0 {
+		t.Fatalf("after post-write notice rollback: audits=%d notices=%d, want 0/0", auditsAfterPostWrite, noticesAfterPostWrite)
+	}
+
+	// Verify normal RevokePasskey still succeeds afterward and commits deletion, audit, and notice.
+	if err := svc.RevokePasskey(ctx, pA, vault.RevokePasskeyInput{
+		PasskeyID: pk.row.ID,
+		IP:        "127.0.0.1",
+		UA:        "svc-revoke-ok",
+	}); err != nil {
+		t.Fatalf("RevokePasskey after rollback recovery: %v", err)
+	}
+	if _, err := q.GetPasskeyByUserAndID(ctx, gen.GetPasskeyByUserAndIDParams{
+		UserID: userA.ID,
+		ID:     pk.row.ID,
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetPasskeyByUserAndID after successful revoke = %v, want pgx.ErrNoRows", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, userA.ID, vault.EventPasskeyRevoke).Scan(&auditsAfterPostWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userA.ID).Scan(&noticesAfterPostWrite); err != nil {
+		t.Fatal(err)
+	}
+	if auditsAfterPostWrite != 1 || noticesAfterPostWrite != 1 {
+		t.Fatalf("after successful revoke: audits=%d notices=%d, want 1/1", auditsAfterPostWrite, noticesAfterPostWrite)
 	}
 }
