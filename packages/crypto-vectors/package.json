@@ -1,0 +1,6 @@
+{
+  "name": "@engram/crypto-vectors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic cross-language (TypeScript libsodium <-> Go x/crypto + gowebpki/jcs) vault crypto and recovery key test vectors for Engram P03."
+}
