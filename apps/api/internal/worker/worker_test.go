@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,14 +146,25 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 	runCtx, cancelRun := context.WithCancel(ctx)
 	runDone := make(chan error, 1)
 	go func() {
+		defer close(runDone)
 		runDone <- worker.Run(runCtx, cfg, silentLogger())
 	}()
+	var stopOnce sync.Once
+	var runErr error
+	var stopTimedOut bool
+	stopWorker := func() (error, bool) {
+		stopOnce.Do(func() {
+			cancelRun()
+			select {
+			case runErr = <-runDone:
+			case <-time.After(10 * time.Second):
+				stopTimedOut = true
+			}
+		})
+		return runErr, stopTimedOut
+	}
 	defer func() {
-		cancelRun()
-		select {
-		case <-runDone:
-		case <-time.After(10 * time.Second):
-		}
+		_, _ = stopWorker()
 	}()
 	time.Sleep(150 * time.Millisecond)
 
@@ -186,8 +198,9 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	cancelRun()
-	if err := <-runDone; err != nil {
+	if err, timedOut := stopWorker(); timedOut {
+		t.Fatal("timed out waiting for worker.Run to stop")
+	} else if err != nil {
 		t.Fatalf("worker.Run returned error: %v", err)
 	}
 

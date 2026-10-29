@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -499,14 +500,25 @@ func TestVaultRewrapRealWorkerRunDefaultDevelopmentMailSink(t *testing.T) {
 	runDone := make(chan error, 1)
 	silentLog := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	go func() {
+		defer close(runDone)
 		runDone <- worker.Run(runCtx, cfg, silentLog)
 	}()
+	var stopOnce sync.Once
+	var runErr error
+	var stopTimedOut bool
+	stopWorker := func() (error, bool) {
+		stopOnce.Do(func() {
+			cancelRun()
+			select {
+			case runErr = <-runDone:
+			case <-time.After(10 * time.Second):
+				stopTimedOut = true
+			}
+		})
+		return runErr, stopTimedOut
+	}
 	defer func() {
-		cancelRun()
-		select {
-		case <-runDone:
-		case <-time.After(10 * time.Second):
-		}
+		_, _ = stopWorker()
 	}()
 	time.Sleep(150 * time.Millisecond)
 
@@ -572,8 +584,9 @@ func TestVaultRewrapRealWorkerRunDefaultDevelopmentMailSink(t *testing.T) {
 		t.Fatalf("after replay: notices=%d jobs=%d, want 1/1", noticesCount, jobsCount)
 	}
 
-	cancelRun()
-	if err := <-runDone; err != nil {
+	if err, timedOut := stopWorker(); timedOut {
+		t.Fatal("timed out waiting for worker.Run to stop")
+	} else if err != nil {
 		t.Fatalf("worker.Run returned error: %v", err)
 	}
 
