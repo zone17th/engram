@@ -205,7 +205,53 @@ async function readPersistedLockEpochMarker(
     });
   });
 }
+async function expectWakeFailClosedWithinDeadline(page: Page, bodyEntryId: string) {
+  const startedAt = Date.now();
 
+  // Synchronously right after wake is triggered: state must already be gated (`'unlocking'` or `'locked'`, NEVER `'unlocked'`)
+  const immediateSnap = await page.evaluate((entryId) => {
+    const win = window as unknown as {
+      __engramVaultTestBridge: { state: string; workerState: string };
+      __engramQueryClient?: { getQueryData: (key: unknown[]) => unknown };
+    };
+    const state = win.__engramVaultTestBridge.state;
+    const cached = win.__engramQueryClient?.getQueryData(['vault', 'body', entryId]);
+    return {
+      state,
+      isPlaintextGated: state !== 'unlocked' || cached === undefined,
+    };
+  }, bodyEntryId);
+  expect(immediateSnap.state).not.toBe('unlocked');
+  expect(immediateSnap.isPlaintextGated).toBe(true);
+
+  // Deterministically poll until BOTH UI `state` and `workerState` reach `'locked'` and the decrypted body cache is wiped
+  // strictly within the 5-second fail-closed deadline (ADR 0003 §8.4).
+  await expect
+    .poll(
+      async () =>
+        page.evaluate((entryId) => {
+          const win = window as unknown as {
+            __engramVaultTestBridge: { state: string; workerState: string };
+            __engramQueryClient?: { getQueryData: (key: unknown[]) => unknown };
+          };
+          return {
+            state: win.__engramVaultTestBridge.state,
+            workerState: win.__engramVaultTestBridge.workerState,
+            bodyCacheCleared:
+              win.__engramQueryClient?.getQueryData(['vault', 'body', entryId]) === undefined,
+          };
+        }, bodyEntryId),
+      { timeout: 5_000, intervals: [25, 50, 100] },
+    )
+    .toEqual({
+      state: 'locked',
+      workerState: 'locked',
+      bodyCacheCleared: true,
+    });
+
+  expect(Date.now() - startedAt).toBeLessThanOrEqual(5_000);
+  await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+}
 test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freeze/resume, and failed-write fail-closed (ADR 0003 §8, FE R3-5)', () => {
   test('(a) two pages contend writing lock events under Web Lock "sabk.vault.lock" + IDB readwrite while a third page is frozen then resumed -> unique strictly increasing lockEpochs, no lost update, resumed page always locked', async ({
     context,
@@ -352,6 +398,10 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(stateCBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
 
     await pageC.evaluate(() => {
+      const win = window as unknown as {
+        __engramQueryClient?: { setQueryData: (key: unknown[], val: unknown) => void };
+      };
+      win.__engramQueryClient?.setQueryData(['vault', 'body', 'lock-epoch-c'], 'secret-c');
       Object.defineProperty(document, 'visibilityState', {
         configurable: true,
         get: () => 'visible',
@@ -365,18 +415,7 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    await expect(pageC.locator('.vault-pill')).toHaveClass(/vault-shut/);
-    const stateCAfterResume = await pageC.evaluate(() => {
-      const win = window as unknown as {
-        __engramVaultTestBridge: { state: string; workerState: string };
-      };
-      return {
-        state: win.__engramVaultTestBridge.state,
-        workerState: win.__engramVaultTestBridge.workerState,
-      };
-    });
-    expect(stateCAfterResume).toEqual({ state: 'locked', workerState: 'locked' });
-
+    await expectWakeFailClosedWithinDeadline(pageC, 'lock-epoch-c');
     await pageA.close();
     await pageB.close();
     await pageC.close();
@@ -483,6 +522,10 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     });
     expect(stateBBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
     await pageB.evaluate(() => {
+      const win = window as unknown as {
+        __engramQueryClient?: { setQueryData: (key: unknown[], val: unknown) => void };
+      };
+      win.__engramQueryClient?.setQueryData(['vault', 'body', 'lock-epoch-b1'], 'secret-b1');
       Object.defineProperty(document, 'visibilityState', {
         configurable: true,
         get: () => 'visible',
@@ -495,18 +538,7 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
       window.dispatchEvent(new Event('focus'));
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    await expect(pageB.locator('.vault-pill')).toHaveClass(/vault-shut/);
-    const stateBAfterMissingMarker = await pageB.evaluate(() => {
-      const win = window as unknown as {
-        __engramVaultTestBridge: { state: string; workerState: string };
-      };
-      return {
-        state: win.__engramVaultTestBridge.state,
-        workerState: win.__engramVaultTestBridge.workerState,
-      };
-    });
-    expect(stateBAfterMissingMarker).toEqual({ state: 'locked', workerState: 'locked' });
-
+    await expectWakeFailClosedWithinDeadline(pageB, 'lock-epoch-b1');
     // 3. Also verify the sub-case where another tab (Page A) re-initializes the marker with a new `epochIncarnation`
     //    before Frozen Tab (Page B) wakes up -> Page B sees `persistedMarker.epochIncarnation !== unlockBaseline.epochIncarnation`
     //    and locks fail-closed.
@@ -556,22 +588,16 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(markerAfterReinit!.lockEpoch).toBe(baselineB2!.lockEpoch);
     expect(markerAfterReinit!.epochIncarnation).not.toBe(baselineB2!.epochIncarnation);
 
-    // Now wake Page B -> sees `epochIncarnation !== unlockBaseline.epochIncarnation` (even though numeric lockEpoch is identical) and locks fail-closed
+    // Now wake Page B -> sees `epochIncarnation !== unlockBaseline.epochIncarnation` (even though numeric lockEpoch is identical) and locks fail-closed within 5s
     await pageB.evaluate(() => {
+      const win = window as unknown as {
+        __engramQueryClient?: { setQueryData: (key: unknown[], val: unknown) => void };
+      };
+      win.__engramQueryClient?.setQueryData(['vault', 'body', 'lock-epoch-b2'], 'secret-b2');
       window.dispatchEvent(new Event('resume'));
       window.dispatchEvent(new Event('focus'));
     });
-    await expect(pageB.locator('.vault-pill')).toHaveClass(/vault-shut/);
-    const stateBAfterIncarnationMismatch = await pageB.evaluate(() => {
-      const win = window as unknown as {
-        __engramVaultTestBridge: { state: string; workerState: string };
-      };
-      return {
-        state: win.__engramVaultTestBridge.state,
-        workerState: win.__engramVaultTestBridge.workerState,
-      };
-    });
-    expect(stateBAfterIncarnationMismatch).toEqual({ state: 'locked', workerState: 'locked' });
+    await expectWakeFailClosedWithinDeadline(pageB, 'lock-epoch-b2');
     await pageA.close();
     await pageB.close();
   });
