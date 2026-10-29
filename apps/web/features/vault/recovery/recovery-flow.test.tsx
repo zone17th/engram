@@ -1200,8 +1200,13 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       },
     });
 
+    // `recovery-step-reauth` renders while the session is still loading, before `reauth.capabilities.hasPassword`
+    // is known; the password field only exists once Me has loaded.
     await waitFor(() => {
-      expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
+      expect(screen.getByTestId('test-recovery-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+      expect(screen.getByTestId('recovery-reauth-password-input')).toBeInTheDocument();
     });
 
     // Step 1: Re-auth
@@ -1398,8 +1403,13 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       },
     });
 
+    // `recovery-step-reauth` renders while the session is still loading, before `reauth.capabilities.hasPassword`
+    // is known; the password field only exists once Me has loaded.
     await waitFor(() => {
-      expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
+      expect(screen.getByTestId('test-recovery-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+      expect(screen.getByTestId('recovery-reauth-password-input')).toBeInTheDocument();
     });
 
     // Step 1: Re-auth
@@ -1548,8 +1558,13 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       },
     });
 
+    // `recovery-step-reauth` renders while the session is still loading, before `reauth.capabilities.hasPassword`
+    // is known; the password field only exists once Me has loaded.
     await waitFor(() => {
-      expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
+      expect(screen.getByTestId('test-recovery-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+      expect(screen.getByTestId('recovery-reauth-password-input')).toBeInTheDocument();
     });
 
     // Step 1: Acquire a grant with only 30s remaining (< 60s preflight threshold for Step 3)
