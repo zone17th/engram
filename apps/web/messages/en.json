@@ -630,6 +630,14 @@
       "title": "Checking that your vault is still unlocked…",
       "body": "Replacement keys and password fields stay hidden until this check finishes. Your recovery progress is kept."
     },
+    "committedRecheck": {
+      "verifyingTitle": "Recovery completed — confirming your vault…",
+      "verifyingBody": "Your new passphrase was saved on the server. We are confirming that your vault is still the one you recovered. Do not reuse the recovery key you just entered.",
+      "recheckTitle": "Recovery completed — we could not confirm it yet",
+      "recheckBody": "Your new passphrase was saved on the server and the recovery key you entered is used up, but we could not reach the server to confirm the current state of your vault. Check again, or unlock with your new passphrase.",
+      "retryCta": "Check again",
+      "unlockCta": "Go to unlock"
+    },
     "step4": {
       "unlockedBanner": "Vault unlocked. {remaining} of 10 recovery keys remain active (slots: {emptySlots}).",
       "title": "Generate replacement keys for empty slots",

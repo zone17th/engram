@@ -2876,4 +2876,321 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       shim.close();
     }, 30_000);
   }
+
+  /** Committed recovery A: the complete POST is held, then a hard lock retires the flow (the old 200 is released by the test). */
+  async function driveToLockedCommittedRecovery(
+    fetchState: RecoveryRaceFetchState,
+    getVault: () => VaultContextValue,
+  ) {
+    await driveRecoveryToHeldComplete(fetchState);
+    await act(async () => {
+      await getVault().lockNow();
+    });
+    expect(getVault().state).toBe('locked');
+    routerMocks.replace.mockClear();
+  }
+
+  it('BE4-1: a reconciliation GET held across an announced vault B transition publishes nothing, navigates nowhere and causes no lock when the old metadata arrives', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+    const lockBroadcasts: number[] = [];
+    broadcastUnsubscribers.push(
+      subscribeVaultBroadcast((message) => {
+        if (message.type === 'lock') lockBroadcasts.push(message.lockEpoch);
+      }),
+    );
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    // The old success commits and its reconciliation GET /vault is held in flight.
+    fetchState.vaultGetHolds = 1;
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(fetchState.vaultGetReleases).toHaveLength(1);
+    });
+    expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+      'data-phase',
+      'verifying',
+    );
+
+    // While it is held a sibling announces the recreated vault B; no follow-up GET has produced any outcome.
+    await act(async () => {
+      vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+    });
+    const publishedAfterTransition = published.length;
+    const locksBeforeRelease = lockBroadcasts.length;
+    const lockEpochBeforeRelease = vaultCtx.tabKnownLockEpoch;
+    routerMocks.replace.mockClear();
+
+    // The held answer (the OLD vault A) arrives now.
+    await act(async () => {
+      fetchState.vaultGetReleases[0]?.();
+    });
+    await settle();
+    expect(published.slice(publishedAfterTransition)).toEqual([]);
+    expect(published.some((m) => m.vault_key_id === TEST_VECTOR_VAULT_KEY_ID)).toBe(false);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    // No extra lock for the already locked vault.
+    expect(lockBroadcasts.length).toBe(locksBeforeRelease);
+    expect(vaultCtx.tabKnownLockEpoch).toBe(lockEpochBeforeRelease);
+    expect(vaultCtx.state).toBe('locked');
+
+    shim.close();
+  }, 30_000);
+
+  it('BE4-1: a same-account successor recovery that starts while the reconciliation GET is held keeps its prepared bundle, busy state and route', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    fetchState.vaultGetHolds = 1;
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(fetchState.vaultGetReleases).toHaveLength(1);
+    });
+
+    // While the reconciliation waits, the same user starts a successor recovery that reaches a pending completion POST.
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
+    });
+    await submitRecoveryStep2();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    await waitFor(() => {
+      expect(fetchState.completeReleases).toHaveLength(2);
+    });
+    expect(vaultCtx.workerState).toBe('recovering');
+    expect(screen.getByTestId('recovery-step3-submit')).toBeDisabled();
+    routerMocks.replace.mockClear();
+
+    // The old reconciliation answers now: the successor's UI must not be cleared, navigated or published over.
+    await act(async () => {
+      fetchState.vaultGetReleases[0]?.();
+    });
+    await settle();
+    expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    expect(screen.getByTestId('recovery-step3-submit')).toBeDisabled();
+    expect(screen.getByTestId('recovery-new-passphrase-input')).toBeDisabled();
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(published).toEqual([]);
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('recovery-new-passphrase-input').closest('form')!);
+    });
+    expect(fetchState.completeCalls).toBe(2);
+
+    // The successor's own prepared bundle still completes.
+    await act(async () => {
+      fetchState.completeReleases[1]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    });
+    expect(vaultCtx.state).toBe('unlocked');
+
+    shim.close();
+  }, 30_000);
+
+  it('BE4-2: a failed reconciliation GET after a committed 200 keeps the completed outcome with a retry, publishes nothing unverified and opens no secret surface; the retry verifies and hands off', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    fetchState.vaultGetFailure = { status: 503, code: 'service_unavailable' };
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+        'data-phase',
+        'recheck_needed',
+      );
+    });
+    const notice = screen.getByTestId('recovery-committed-recheck-notice');
+    expect(notice).toHaveAttribute('role', 'alert');
+    expect(notice).toHaveTextContent(/Recovery completed/i);
+    expect(notice).toHaveTextContent(/could not confirm/i);
+    // Truthful and safe: nothing unverified is published, claimed or navigated, and no secret surface reopens.
+    expect(published).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-step-regenerate-reauth')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain(STRONG_NEW_PASSPHRASE);
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+
+    // Usable verification path: once the server answers, the retry verifies and completes the hand-off exactly once.
+    fetchState.vaultGetFailure = null;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    });
+    expect(published).toEqual([{ vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 2 }]);
+    expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recovery-completed-while-locked-notice')).toBeInTheDocument();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(true);
+
+    shim.close();
+  }, 30_000);
+
+  it('BE4-2: a stalled reconciliation GET shows the committed outcome as pending without publishing; a later failure asks for a re-check and a later success hands off exactly once', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    fetchState.vaultGetHolds = 1;
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(fetchState.vaultGetReleases).toHaveLength(1);
+    });
+    // Still pending: the user sees the committed outcome instead of an apparently unfinished recovery.
+    const pending = screen.getByTestId('recovery-committed-recheck-notice');
+    expect(pending).toHaveAttribute('data-phase', 'verifying');
+    expect(pending).toHaveAttribute('role', 'status');
+    expect(pending).toHaveTextContent(/Recovery completed/i);
+    expect(published).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('recovery-step-regenerate-reauth')).not.toBeInTheDocument();
+    expect(vaultCtx.state).toBe('locked');
+
+    // The stalled request then fails: a re-check is required, still nothing published.
+    fetchState.vaultGetFailure = 'network';
+    await act(async () => {
+      fetchState.vaultGetReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+        'data-phase',
+        'recheck_needed',
+      );
+    });
+    expect(published).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+
+    // A retry that the server answers verifies the vault and hands off once.
+    fetchState.vaultGetFailure = null;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    });
+    expect(published).toEqual([{ vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 2 }]);
+    expect(routerMocks.replace).toHaveBeenCalledTimes(1);
+
+    shim.close();
+  }, 30_000);
+
+  it('BE4-5: the reconciliation publishes the verified live version 3, not the stale completion version 2, and the next mutation sends If-Match 3', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    // The complete POST answers version 2, but another mutation of the same vault already reached version 3.
+    fetchState.vaultMetaOverride = makeVaultMetaFixture(3);
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    });
+    expect(published).toEqual([{ vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 3 }]);
+    expect(vaultCtx.vaultMeta?.version).toBe(3);
+
+    // The next mutation (a fresh recovery attempt on the same page) captures If-Match from the live version 3.
+    fetchState.holdComplete = false;
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
+    });
+    await submitRecoveryStep2();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    });
+    await waitFor(() => {
+      expect(fetchState.completeIfMatches).toHaveLength(2);
+    });
+    expect(fetchState.completeIfMatches[1]).toBe(`"${TEST_VECTOR_VAULT_KEY_ID}:3"`);
+
+    shim.close();
+  }, 30_000);
 });

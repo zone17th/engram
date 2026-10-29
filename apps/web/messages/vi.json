@@ -630,6 +630,14 @@
       "title": "Đang kiểm tra vault vẫn đang mở…",
       "body": "Recovery key mới và các ô mật khẩu được ẩn cho tới khi kiểm tra xong. Tiến trình khôi phục vẫn được giữ."
     },
+    "committedRecheck": {
+      "verifyingTitle": "Đã hoàn tất khôi phục — đang xác nhận vault…",
+      "verifyingBody": "Passphrase mới đã được lưu trên máy chủ. Chúng tôi đang xác nhận vault vẫn là vault bạn vừa khôi phục. Đừng dùng lại recovery key vừa nhập.",
+      "recheckTitle": "Đã hoàn tất khôi phục — chưa xác nhận được",
+      "recheckBody": "Passphrase mới đã được lưu trên máy chủ và recovery key bạn vừa nhập đã được dùng hết, nhưng chúng tôi chưa kết nối được máy chủ để xác nhận trạng thái hiện tại của vault. Hãy kiểm tra lại, hoặc mở khoá bằng passphrase mới.",
+      "retryCta": "Kiểm tra lại",
+      "unlockCta": "Tới trang mở khoá"
+    },
     "step4": {
       "unlockedBanner": "Đã vào lại vault. Còn {remaining}/10 recovery key dùng được (vị trí trống: {emptySlots}).",
       "title": "Tạo key thay thế cho chỗ trống",

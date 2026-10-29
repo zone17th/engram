@@ -9,6 +9,7 @@ import { AppHeader } from '@/components/app-shell/app-header';
 import { Button } from '@/components/ui/button';
 import { AuthStatus, Field } from '@/components/ui/field';
 import { useSession } from '@/features/auth/session-provider';
+import { subscribeVaultBroadcast } from '@/features/vault/broadcast';
 import { RecoveryKeysSheet } from '@/features/vault/onboarding';
 import { rememberRecoveryCompletedNotice } from '@/features/vault/unlock/recovery-notice';
 import {
@@ -99,6 +100,21 @@ interface PreparedRegenerateBundle {
   emptySlots: number[];
 }
 
+/** The account-scoped identity of a recovery whose `POST /vault/recover/complete` already answered 200. */
+interface CommittedRecoveryOutcome {
+  userId: string | null;
+  vaultKeyId: string;
+}
+
+/** BE4-2: feedback while a committed recovery cannot be promoted locally and its identity is not verified yet. */
+interface CommittedRecheckState extends CommittedRecoveryOutcome {
+  version: number;
+  phase: 'verifying' | 'recheck_needed';
+}
+
+/** Live Worker states in which a session other than the cancelled recovery already owns the vault surface. */
+const SUCCESSOR_WORKER_STATES: ReadonlyArray<string> = ['unlocked', 'recovering'];
+
 function isGrantFreshForFirstAttempt(grant: ReauthGrant | null, action: ReauthAction): boolean {
   if (!grant || grant.action !== action) return false;
   const exp = Date.parse(grant.expires_at);
@@ -187,6 +203,7 @@ export function VaultRecoveryFlow() {
   const [preparedCompleteBundle, setPreparedCompleteBundle] =
     useState<PreparedCompleteBundle | null>(null);
   const [completedWhileLockedNotice, setCompletedWhileLockedNotice] = useState(false);
+  const [committedRecheck, setCommittedRecheck] = useState<CommittedRecheckState | null>(null);
   // Step 4 state
   const [remainingCount, setRemainingCount] = useState<number>(9);
   const [emptySlots, setEmptySlots] = useState<number[]>([1]);
@@ -228,6 +245,9 @@ export function VaultRecoveryFlow() {
   const completeBusyTokenRef = useRef(0);
   const regenGenerateTokenRef = useRef(0);
   const regenSaveTokenRef = useRef(0);
+  // BE4-1: counts the recovery attempts (lookup, completion, cancel, restart) that took over this flow. A committed-recovery
+  // reconciliation captures it before its GET /vault and drops its effects when a successor attempt owns the UI by then.
+  const recoveryAttemptEpochRef = useRef(0);
   // FE1-4: async failures re-enable the form after it was disabled while pending; focus is restored afterwards.
   const refocusRecoveryKeyAfterErrorRef = useRef(false);
   const step4ErrorRef = useRef<HTMLDivElement>(null);
@@ -295,6 +315,12 @@ export function VaultRecoveryFlow() {
     clearReauthPasswordInputs,
     clearRecoveryKeyInputImmediate,
   ]);
+
+  // A new attempt owns the flow: a reconciliation still waiting for its GET must not touch the successor's UI.
+  const startNewRecoveryAttempt = useCallback(() => {
+    recoveryAttemptEpochRef.current += 1;
+    setCommittedRecheck(null);
+  }, []);
 
   const isVerifiedUnlockedAccess = useCallback(
     (expectedOpGen?: number, expectedFlowSeq?: number, expectedUserId?: string | null): boolean => {
@@ -541,13 +567,14 @@ export function VaultRecoveryFlow() {
   // Cancel / abort recovery at any point -> locks Worker (wiping VK + pendingRecovery continuation)
   const handleCancelRecovery = useCallback(async () => {
     clearAllSecrets();
+    startNewRecoveryAttempt();
     completedRecoveryRef.current = false;
     workerHoldsRecoveryStateRef.current = false;
     setRecoveryOpGeneration(null);
     setRecoveryKeyId(null);
     await vault.lock({ broadcast: false, reason: 'recovery_cancelled' });
     router.replace('/app/unlock/forgot');
-  }, [clearAllSecrets, router, vault]);
+  }, [clearAllSecrets, router, startNewRecoveryAttempt, vault]);
 
   // Step 2: Enter RK -> capture opGeneration -> unlockRecovery -> POST /vault/unlock/recovery -> resumeRecovery
   const handleStep2Submit = useCallback(
@@ -588,6 +615,7 @@ export function VaultRecoveryFlow() {
       // Clear RK input immediately right when unlockRecovery is invoked (Task 17A requirement #5).
       clearRecoveryKeyInputImmediate();
       const lookupToken = ++lookupBusyTokenRef.current;
+      startNewRecoveryAttempt();
       setLookingUpKey(true);
 
       const isStep2OpCurrent = () =>
@@ -717,6 +745,7 @@ export function VaultRecoveryFlow() {
       lookingUpKey,
       reauth,
       recoveryKeyInput,
+      startNewRecoveryAttempt,
       vault,
     ],
   );
@@ -726,29 +755,83 @@ export function VaultRecoveryFlow() {
   // committed outcome and tell siblings, but only for the originating account and only when the authoritative current vault
   // identity is still the one that recovered; never broadcast an obsolete identity into a replacement vault and never act
   // through an unmounted flow.
+  // BE4-1: the GET /vault below is awaited, so ownership is captured BEFORE it (account, successor attempts, vault-identity
+  // transitions announced meanwhile) and re-checked before anything is published, cleared or navigated.
+  // BE4-2: a failed or stalled GET is "not verified", never "absent": the committed outcome stays visible with a retry, and
+  // nothing is published (no unverified `vault_changed`) and no secret surface is reopened.
+  // BE4-5: the version published is the one just read from the server, never lower than the committed one.
   const reconcileCommittedRecovery = useCallback(
-    async (bundle: PreparedCompleteBundle, version: number) => {
+    async (outcome: CommittedRecoveryOutcome, committedVersion: number) => {
       const isOriginAccount = () =>
         isMountedRef.current &&
-        (bundle.userId === null || currentUserIdRef.current === bundle.userId);
+        (outcome.userId === null || currentUserIdRef.current === outcome.userId);
       if (!isOriginAccount()) {
         return;
       }
-      const live = await vaultRef.current.reloadVaultMeta().catch(() => null);
-      if (!isOriginAccount() || !live || live.vault_key_id !== bundle.vaultKeyId) {
+      const attemptEpoch = recoveryAttemptEpochRef.current;
+      const ownsFlow = () => isOriginAccount() && recoveryAttemptEpochRef.current === attemptEpoch;
+      // A vault-identity change announced locally or by a sibling tab while the read is pending outdates its answer.
+      let identityTransitioned = false;
+      const unsubscribeTransitions = subscribeVaultBroadcast((message) => {
+        if (
+          message.type === 'vault_changed' &&
+          (message.version === null || message.vault_key_id !== outcome.vaultKeyId)
+        ) {
+          identityTransitioned = true;
+        }
+      });
+      const recheckBase = {
+        userId: outcome.userId,
+        vaultKeyId: outcome.vaultKeyId,
+        version: committedVersion,
+      };
+      setCommittedRecheck({ ...recheckBase, phase: 'verifying' });
+      let live: VaultState | null = null;
+      let verificationFailed = false;
+      try {
+        live = await vaultRef.current.reloadVaultMeta();
+      } catch {
+        verificationFailed = true;
+      } finally {
+        unsubscribeTransitions();
+      }
+      if (!ownsFlow()) {
+        // A successor attempt (or another account) owns the UI now; it cleared its own feedback already.
+        if (isMountedRef.current && recoveryAttemptEpochRef.current === attemptEpoch) {
+          setCommittedRecheck(null);
+        }
+        return;
+      }
+      if (verificationFailed) {
+        setCommittedRecheck({ ...recheckBase, phase: 'recheck_needed' });
+        return;
+      }
+      setCommittedRecheck(null);
+      if (
+        !live ||
+        live.vault_key_id !== outcome.vaultKeyId ||
+        identityTransitioned ||
+        // Live Worker state, not the rendered context (which can lag a lock that just finished).
+        SUCCESSOR_WORKER_STATES.includes(vaultRef.current.getClient().getState())
+      ) {
         return;
       }
       vaultRef.current.notifyVaultChanged({
-        vault_key_id: bundle.vaultKeyId,
-        version,
+        vault_key_id: outcome.vaultKeyId,
+        version: Math.max(live.version, committedVersion),
       });
       setPreparedCompleteBundle(null);
       setCompletedWhileLockedNotice(true);
-      rememberRecoveryCompletedNotice(bundle.userId);
+      rememberRecoveryCompletedNotice(outcome.userId);
       router.replace('/app/unlock');
     },
     [router],
   );
+
+  const handleRecheckCommittedRecovery = useCallback(() => {
+    if (!committedRecheck || committedRecheck.phase !== 'recheck_needed') return;
+    void reconcileCommittedRecovery(committedRecheck, committedRecheck.version);
+  }, [committedRecheck, reconcileCommittedRecovery]);
 
   // Helper to send (or replay) `POST /vault/recover/complete` + `confirmRecovery`
   const executeCompleteRequest = useCallback(
@@ -767,6 +850,7 @@ export function VaultRecoveryFlow() {
       }
 
       const completeToken = ++completeBusyTokenRef.current;
+      startNewRecoveryAttempt();
       setCompletingRecovery(true);
       setStep3Error(null);
       setStep3RateDeadline(null);
@@ -910,7 +994,7 @@ export function VaultRecoveryFlow() {
         }
       }
     },
-    [reauth, reconcileCommittedRecovery, vault],
+    [reauth, reconcileCommittedRecovery, startNewRecoveryAttempt, vault],
   );
 
   // Step 3 submit: validate policy -> check grant >= 60s before FIRST send -> rewrap (stays `recovering`) -> complete
@@ -1129,6 +1213,7 @@ export function VaultRecoveryFlow() {
   // Step 3 reload after 412 version_mismatch or 409 idempotency_conflict:
   // Re-GET /vault, lock temporary state, and restart from Step 2 (or Step 1 if grant expired)
   const handleStep3ReloadAndRestart = useCallback(async () => {
+    startNewRecoveryAttempt();
     clearPassphraseInputsImmediate();
     setPreparedCompleteBundle(null);
     setStep3Error(null);
@@ -1145,10 +1230,11 @@ export function VaultRecoveryFlow() {
       void reauth.begin('vault.recover', '/app/recovery').catch(() => undefined);
       setStep('reauth');
     }
-  }, [clearPassphraseInputsImmediate, reauth, vault]);
+  }, [clearPassphraseInputsImmediate, reauth, startNewRecoveryAttempt, vault]);
 
   // Step 3 OAuth expired restart: return to Step 1 cleanly without burning any lookup
   const handleStep3OauthRestart = useCallback(async () => {
+    startNewRecoveryAttempt();
     clearAllSecrets();
     setStep3Error(null);
     reauth.clearGrant();
@@ -1161,7 +1247,7 @@ export function VaultRecoveryFlow() {
     }
     void reauth.begin('vault.recover', '/app/recovery').catch(() => undefined);
     setStep('reauth');
-  }, [clearAllSecrets, reauth, vault]);
+  }, [clearAllSecrets, reauth, startNewRecoveryAttempt, vault]);
 
   // Step 4a: Generate replacement keys for empty slots after acquiring `vault.recovery_keys_regenerate` grant
   const prepareRegenerationKeys = useCallback(
@@ -1550,6 +1636,13 @@ export function VaultRecoveryFlow() {
     </div>
   ) : null;
 
+  // BE4-2: the unverified committed outcome belongs to the account that completed it.
+  const visibleCommittedRecheck =
+    committedRecheck !== null &&
+    (committedRecheck.userId === null || committedRecheck.userId === (me?.user.id ?? null))
+      ? committedRecheck
+      : null;
+
   const wakeGateStatus = (
     <div
       role="status"
@@ -1597,6 +1690,57 @@ export function VaultRecoveryFlow() {
             >
               {t('step3.errors.completedWhileLockedCta')}
             </Button>
+          </div>
+        ) : null}
+        {visibleCommittedRecheck ? (
+          <div
+            role={visibleCommittedRecheck.phase === 'recheck_needed' ? 'alert' : 'status'}
+            className="card mb-6 p-5"
+            style={{
+              borderColor:
+                visibleCommittedRecheck.phase === 'recheck_needed'
+                  ? 'var(--warning)'
+                  : 'var(--success)',
+            }}
+            data-testid="recovery-committed-recheck-notice"
+            data-phase={visibleCommittedRecheck.phase}
+          >
+            <p
+              className="m-0 mb-1 text-[14px] font-semibold"
+              style={{ color: 'var(--body)' }}
+            >
+              {visibleCommittedRecheck.phase === 'recheck_needed'
+                ? t('committedRecheck.recheckTitle')
+                : t('committedRecheck.verifyingTitle')}
+            </p>
+            <p className="m-0 mb-3 text-[13px]" style={{ color: 'var(--muted)' }}>
+              {visibleCommittedRecheck.phase === 'recheck_needed'
+                ? t('committedRecheck.recheckBody')
+                : t('committedRecheck.verifyingBody')}
+            </p>
+            {visibleCommittedRecheck.phase === 'recheck_needed' ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleRecheckCommittedRecovery}
+                  data-testid="recovery-committed-recheck-retry"
+                >
+                  {t('committedRecheck.retryCta')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    rememberRecoveryCompletedNotice(currentUserIdRef.current);
+                    router.replace('/app/unlock');
+                  }}
+                  data-testid="recovery-committed-recheck-unlock"
+                >
+                  {t('committedRecheck.unlockCta')}
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {/* Stepper matching mockups/recovery.html */}
