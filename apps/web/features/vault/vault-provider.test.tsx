@@ -5422,9 +5422,50 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       expect(await heldP).toBeNull();
       await sleepReal(50);
     });
+    // Row 1b: the 404 only locks; the ONE follow-up GET under the replacement key decides. The vault really is absent
+    // here, so the follow-up 404 purges (revision +1 exactly once in total).
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+    await act(async () => {
+      ctx.pending[1]!(be2VaultAbsentResponse());
+      await sleepReal(50);
+    });
     await expectBe37LockedAndPurged(ctx);
     const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
     expect(meta?.deviceRevision).toBe(11);
+  }, 20_000);
+
+  it('BE5-1 control (row 1b): a held 404 that crosses a replacement transition locks, and a follow-up GET that returns the replacement present stays locked and purges nothing', async () => {
+    const ctx = await be37Setup('be51-present');
+    ctx.gate.hold = true;
+    const heldP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be5-1-b', version: 1 });
+    });
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      expect(await heldP).toBeNull();
+    });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+    await act(async () => {
+      ctx.pending[1]!(jsonResponse(be2VaultBody('vk:be5-1-b', 1)));
+      await sleepReal(50);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be51-present-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be51-present-worker')).toHaveTextContent('locked');
+    });
+    expect(ctx.qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBeUndefined();
+    expect(ctx.devkeys.has(ctx.devkeyRecordKey)).toBe(true);
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(10);
+    expect(ctx.pending).toHaveLength(2);
   }, 20_000);
 
   it.each(['stalled', 'failed'] as const)(
@@ -5460,6 +5501,14 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       await act(async () => {
         ctx.pending[0]!(be2VaultAbsentResponse());
         expect(await olderP).toBeNull();
+      });
+      // Row 1b: the older 404 only locks; its own single follow-up GET (the third request) answers 404 and purges.
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(3);
+      });
+      await act(async () => {
+        ctx.pending[2]!(be2VaultAbsentResponse());
+        await sleepReal(50);
       });
       await expectBe37LockedAndPurged(ctx);
       if (followUp === 'stalled') {
