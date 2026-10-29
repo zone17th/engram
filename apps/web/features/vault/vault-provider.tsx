@@ -14,10 +14,21 @@ import {
 } from 'react';
 import { useSession } from '@/features/auth/session-provider';
 import {
+  ACTIVITY_BROADCAST_THROTTLE_MS,
+  CLOCK_ROLLBACK_TOLERANCE_MS,
+  WAKE_ME_REFRESH_DEADLINE_MS,
+  evaluateAutoLockAt,
+  normalizeAutoLockMinutes,
+} from '@/features/vault/auto-lock';
+import {
   postVaultBroadcast,
   subscribeVaultBroadcast,
   type VaultBroadcastMessage,
 } from '@/features/vault/broadcast';
+import {
+  purgeDeviceKeysOnRevoked,
+  type DeviceStoreEnvironment,
+} from '@/features/vault/device-store';
 import {
   captureUnlockBaseline,
   recordLockEpochEvent,
@@ -26,6 +37,7 @@ import {
   type LockEpochMarker,
 } from '@/features/vault/lock-epoch';
 import { fetchVault, type VaultState } from '@/lib/api/vault';
+import { fetchMe } from '@/lib/api/auth';
 import {
   CryptoClient,
   CryptoClientError,
@@ -169,6 +181,12 @@ export interface VaultContextValue {
   tabKnownLockEpoch: number;
   /** Baseline `{ epochIncarnation, lockEpoch }` captured when the current unlock began. */
   unlockBaseline: LockEpochMarker | null;
+  /** Effective `auto_lock_minutes` setting (`0` = never, default `15`). */
+  autoLockMinutes: number;
+  /** Shared `max(lastActivity across tabs)` timestamp in ms. */
+  lastActivityAt: number;
+  /** Remaining whole minutes before auto-lock while unlocked (`undefined` when `autoLockMinutes === 0` or locked). */
+  minutesLeft: number | undefined;
   /** Lazily returns the tab's single `CryptoClient` instance. */
   getClient: () => CryptoClient;
   /**
@@ -195,6 +213,10 @@ export interface VaultContextValue {
   registerSecretFormReset: (resetFn: () => void) => () => void;
   /** Broadcasts `vault_changed { vault_key_id, version }` on `'sabk.vault'` and updates local `vaultMeta`. */
   notifyVaultChanged: (payload: { vault_key_id: string; version: number | null }) => void;
+  /** Broadcasts `settings_changed { auto_lock_minutes }` on `'sabk.vault'` and applies the new timeout immediately. */
+  notifySettingsChanged: (payload: { auto_lock_minutes: number }) => void;
+  /** Records user activity in this tab and broadcasts throttled `{ type: 'activity', at }` on `'sabk.vault'`. */
+  recordActivity: (at?: number) => void;
   /** Reloads `GET /vault` from the server and reconciles `vault_key_id` (locks immediately on 404 or `vault_key_id` mismatch). */
   reloadVaultMeta: () => Promise<VaultState | null>;
   /** Sets the active sub-state operation (`'onboarding'` | `'unlocking'` | `'rewrapping'` | `'resetting'` | `null`) while a flow is running. */
@@ -222,6 +244,8 @@ export interface VaultProviderProps {
   createWorker?: () => CryptoWorkerPort;
   /** Optional custom IndexedDB / Web Locks environment for unit tests. */
   lockEpochEnv?: LockEpochEnvironment;
+  /** Optional custom IndexedDB environment for `sabk.device` DevKey / purge tests. */
+  deviceStoreEnv?: DeviceStoreEnvironment;
 }
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -287,10 +311,10 @@ export function VaultProvider({
   children,
   createWorker,
   lockEpochEnv,
+  deviceStoreEnv,
 }: VaultProviderProps) {
   const queryClient = useQueryClient();
-  const { me, status: sessionStatus } = useSession();
-
+  const { me, status: sessionStatus, refetchMe } = useSession();
   const [workerState, setWorkerState] = useState<VaultClientState>('locked');
   const [generation, setGeneration] = useState<number>(0);
   const [epoch, setEpoch] = useState<number>(-1);
@@ -300,6 +324,9 @@ export function VaultProvider({
   const [vaultMeta, setVaultMeta] = useState<VaultState | null>(null);
   const [tabKnownLockEpoch, setTabKnownLockEpoch] = useState<number>(0);
   const [unlockBaseline, setUnlockBaseline] = useState<LockEpochMarker | null>(null);
+  const [autoLockMinutesOverride, setAutoLockMinutesOverride] = useState<number | null>(null);
+  const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
+  const [minutesLeft, setMinutesLeft] = useState<number | undefined>(undefined);
 
   const clientRef = useRef<CryptoClient | null>(null);
   const workerStateRef = useRef<VaultClientState>('locked');
@@ -308,6 +335,33 @@ export function VaultProvider({
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const previousUserIdRef = useRef<string | null>(null);
   const secretFormResettersRef = useRef<Set<() => void>>(new Set());
+  const lastActivityAtRef = useRef<number>(Date.now());
+  const lastBroadcastedActivityAtRef = useRef<number>(0);
+  const autoLockMinutesRef = useRef<number>(normalizeAutoLockMinutes(me?.settings.auto_lock_minutes));
+  const autoLockTimerRef = useRef<number | null>(null);
+
+  const effectiveDeviceStoreEnv = useMemo<DeviceStoreEnvironment>(
+    () => ({
+      idbFactory: deviceStoreEnv?.idbFactory ?? lockEpochEnv?.idbFactory,
+    }),
+    [deviceStoreEnv?.idbFactory, lockEpochEnv?.idbFactory],
+  );
+
+  const serverAutoLockMinutes = me?.settings.auto_lock_minutes;
+  useEffect(() => {
+    if (typeof serverAutoLockMinutes === 'number' && Number.isFinite(serverAutoLockMinutes)) {
+      setAutoLockMinutesOverride(null);
+    }
+  }, [serverAutoLockMinutes]);
+
+  const autoLockMinutes = useMemo(
+    () =>
+      normalizeAutoLockMinutes(
+        autoLockMinutesOverride !== null ? autoLockMinutesOverride : serverAutoLockMinutes,
+      ),
+    [autoLockMinutesOverride, serverAutoLockMinutes],
+  );
+  autoLockMinutesRef.current = autoLockMinutes;
 
   const updateTabKnownLockEpoch = useCallback((nextEpoch: number) => {
     if (!Number.isSafeInteger(nextEpoch) || nextEpoch < 0) return;
@@ -455,6 +509,7 @@ export function VaultProvider({
         currentVaultKeyIdRef.current = fresh.vault_key_id;
         setVaultMeta(fresh);
         queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
+        void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
         void lock({ broadcast: false, reason: 'vault_key_id_changed' });
         return fresh;
       }
@@ -470,12 +525,13 @@ export function VaultProvider({
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
+        void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
         void lock({ broadcast: false, reason: 'vault_absent' });
         return null;
       }
       throw err;
     }
-  }, [lock, queryClient]);
+  }, [effectiveDeviceStoreEnv, lock, me?.user.id, queryClient]);
 
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
@@ -499,6 +555,35 @@ export function VaultProvider({
     },
     [queryClient],
   );
+
+  const notifySettingsChanged = useCallback(
+    (payload: { auto_lock_minutes: number }) => {
+      const normalized = normalizeAutoLockMinutes(payload.auto_lock_minutes);
+      autoLockMinutesRef.current = normalized;
+      setAutoLockMinutesOverride(normalized);
+      postVaultBroadcast({
+        type: 'settings_changed',
+        auto_lock_minutes: normalized,
+      });
+    },
+    [],
+  );
+
+  const recordActivity = useCallback((at?: number) => {
+    const now = typeof at === 'number' && Number.isFinite(at) ? at : Date.now();
+    if (now < lastActivityAtRef.current - CLOCK_ROLLBACK_TOLERANCE_MS) {
+      // System clock rolled back by > 1 minute -> do not overwrite lastActivityAt; evaluation will lock.
+      return;
+    }
+    if (now > lastActivityAtRef.current) {
+      lastActivityAtRef.current = now;
+      setLastActivityAt(now);
+    }
+    if (now - lastBroadcastedActivityAtRef.current >= ACTIVITY_BROADCAST_THROTTLE_MS) {
+      lastBroadcastedActivityAtRef.current = now;
+      postVaultBroadcast({ type: 'activity', at: now });
+    }
+  }, []);
 
   /**
    * Executes a state-changing CryptoClient call with `inFlight` tracking, `activeOperation` sub-state,
@@ -555,8 +640,12 @@ export function VaultProvider({
           }
           unlockBaselineRef.current = capturedBaseline;
           setUnlockBaseline(capturedBaseline);
+          const unlockedAt = Date.now();
+          lastActivityAtRef.current = Math.max(lastActivityAtRef.current, unlockedAt);
+          setLastActivityAt(lastActivityAtRef.current);
+          lastBroadcastedActivityAtRef.current = unlockedAt;
+          postVaultBroadcast({ type: 'activity', at: lastActivityAtRef.current });
         }
-
         setGeneration(client.getGeneration());
         setEpoch(client.getEpoch());
         return result;
@@ -738,7 +827,7 @@ export function VaultProvider({
     }
   }, [lock, me?.user.id, queryClient, sessionStatus, vaultMeta]);
 
-  // Subscribe to BroadcastChannel('sabk.vault') for `lock` and `vault_changed` (Task 15A #5).
+  // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
     return subscribeVaultBroadcast((message: VaultBroadcastMessage, origin) => {
       if (origin === 'local') return;
@@ -746,6 +835,22 @@ export function VaultProvider({
       if (message.type === 'lock') {
         updateTabKnownLockEpoch(message.lockEpoch);
         void lockLocalOnly();
+        return;
+      }
+
+      if (message.type === 'activity') {
+        if (message.at > lastActivityAtRef.current) {
+          lastActivityAtRef.current = message.at;
+          setLastActivityAt(message.at);
+        }
+        return;
+      }
+
+      if (message.type === 'settings_changed') {
+        const normalized = normalizeAutoLockMinutes(message.auto_lock_minutes);
+        autoLockMinutesRef.current = normalized;
+        setAutoLockMinutesOverride(normalized);
+        void refetchMe().catch(() => undefined);
         return;
       }
 
@@ -759,6 +864,7 @@ export function VaultProvider({
             message.version === null ? null : message.vault_key_id;
           setVaultMeta(null);
           queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
+          void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
           void lockLocalOnly();
           void reloadVaultMeta().catch(() => undefined);
           return;
@@ -766,19 +872,124 @@ export function VaultProvider({
         void reloadVaultMeta().catch(() => undefined);
       }
     });
-  }, [lockLocalOnly, queryClient, reloadVaultMeta, updateTabKnownLockEpoch]);
+  }, [
+    effectiveDeviceStoreEnv,
+    lockLocalOnly,
+    me?.user.id,
+    queryClient,
+    refetchMe,
+    reloadVaultMeta,
+    updateTabKnownLockEpoch,
+  ]);
 
-  // Wake / resume / visibilitychange / pageshow / focus / popstate fail-closed check (ADR 0003 §8.4, Task 15A #3 & #6).
+  // Shared multi-tab auto-lock timer & user activity listeners (plan §2.6, Task 15B #1).
+  useEffect(() => {
+    if (autoLockTimerRef.current !== null) {
+      window.clearTimeout(autoLockTimerRef.current);
+      autoLockTimerRef.current = null;
+    }
+
+    if (workerState !== 'unlocked') {
+      setMinutesLeft(undefined);
+      return;
+    }
+
+    // When `auto_lock_minutes === 0` ("Never"), do not start any timer and do not run periodic checks.
+    if (autoLockMinutes === 0) {
+      setMinutesLeft(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    const scheduleCheck = () => {
+      if (cancelled || workerStateRef.current !== 'unlocked') return;
+      const currentMinutes = autoLockMinutesRef.current;
+      if (currentMinutes === 0) {
+        setMinutesLeft(undefined);
+        return;
+      }
+      const now = Date.now();
+      const evaluation = evaluateAutoLockAt({
+        now,
+        lastActivityAt: lastActivityAtRef.current,
+        autoLockMinutes: currentMinutes,
+      });
+      if (evaluation.shouldLock) {
+        setMinutesLeft(undefined);
+        void lock({ broadcast: true, reason: evaluation.reason });
+        return;
+      }
+      setMinutesLeft(evaluation.minutesLeft);
+      const remainingMs = evaluation.remainingMs ?? currentMinutes * 60_000;
+      // Wake up at either the exact deadline or the next minute boundary to update `minutesLeft`
+      const nextMinuteTickMs = (evaluation.remainingMs ?? 60_000) % 60_000 || 60_000;
+      const delayMs = Math.max(50, Math.min(remainingMs, nextMinuteTickMs));
+      autoLockTimerRef.current = window.setTimeout(scheduleCheck, delayMs);
+    };
+
+    scheduleCheck();
+
+    return () => {
+      cancelled = true;
+      if (autoLockTimerRef.current !== null) {
+        window.clearTimeout(autoLockTimerRef.current);
+        autoLockTimerRef.current = null;
+      }
+    };
+  }, [autoLockMinutes, lastActivityAt, lock, workerState]);
+
+  // User interaction activity listeners while unlocked (throttled broadcast to sibling tabs).
+  useEffect(() => {
+    if (typeof window === 'undefined' || workerState !== 'unlocked') return;
+
+    const onUserActivity = () => {
+      if (workerStateRef.current !== 'unlocked') return;
+      const now = Date.now();
+      if (now < lastActivityAtRef.current - CLOCK_ROLLBACK_TOLERANCE_MS) {
+        void lock({ broadcast: true, reason: 'clock_rollback' });
+        return;
+      }
+      recordActivity(now);
+    };
+
+    window.addEventListener('pointerdown', onUserActivity, { passive: true });
+    window.addEventListener('keydown', onUserActivity, { passive: true });
+    window.addEventListener('wheel', onUserActivity, { passive: true });
+    window.addEventListener('touchstart', onUserActivity, { passive: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', onUserActivity);
+      window.removeEventListener('keydown', onUserActivity);
+      window.removeEventListener('wheel', onUserActivity);
+      window.removeEventListener('touchstart', onUserActivity);
+    };
+  }, [lock, recordActivity, workerState]);
+
+  // Wake / resume / visibilitychange / pageshow / focus / popstate fail-closed check (ADR 0003 §8.4, Task 15A #3/#6, Task 15B #1/#3/#5).
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-    const verifyLockEpochOnWake = async () => {
+    const verifyOnWake = async () => {
       if (
         workerStateRef.current !== 'unlocked' &&
         workerStateRef.current !== 'recovering'
       ) {
         return;
       }
+
+      // 1. Immediate synchronous clock-rollback and known auto-lock check (do not trust throttled timers)
+      const wakeNow = Date.now();
+      const knownEvaluation = evaluateAutoLockAt({
+        now: wakeNow,
+        lastActivityAt: lastActivityAtRef.current,
+        autoLockMinutes: autoLockMinutesRef.current,
+      });
+      if (knownEvaluation.shouldLock) {
+        void lock({ broadcast: true, reason: knownEvaluation.reason });
+        return;
+      }
+
+      // 2. Authoritative `lockEpoch` check in IndexedDB under Web Lock `'sabk.vault.lock'`
       const baseline = unlockBaselineRef.current;
       const result = await verifyUnlockBaseline(baseline, envWithBroadcast);
       if (result.persistedMarker) {
@@ -786,12 +997,77 @@ export function VaultProvider({
       }
       if (!result.matches) {
         void lockLocalOnly();
+        return;
+      }
+
+      // 3. Authoritative `GET /auth/me` refresh on wake while unlocked (5s fail-closed deadline; never trust stale `0`)
+      if (workerStateRef.current !== 'unlocked') return;
+
+      let deadlineTimer: number | null = null;
+      let timedOut = false;
+      const timeoutPromise = new Promise<null>((resolve) => {
+        deadlineTimer = window.setTimeout(() => {
+          timedOut = true;
+          resolve(null);
+        }, WAKE_ME_REFRESH_DEADLINE_MS);
+      });
+
+      try {
+        const freshMe = await Promise.race([fetchMe(), timeoutPromise]);
+        if (deadlineTimer !== null) {
+          window.clearTimeout(deadlineTimer);
+          deadlineTimer = null;
+        }
+        if (timedOut || !freshMe) {
+          // Failed to verify `Me` within the 5s wake deadline -> fail closed, never assume `auto_lock_minutes = 0`
+          if (
+            workerStateRef.current === 'unlocked' ||
+            workerStateRef.current === 'recovering'
+          ) {
+            void lock({ broadcast: true, reason: 'wake_me_deadline_exceeded' });
+          }
+          return;
+        }
+
+        const freshMinutes = normalizeAutoLockMinutes(freshMe.settings.auto_lock_minutes);
+        autoLockMinutesRef.current = freshMinutes;
+        setAutoLockMinutesOverride(freshMinutes);
+        void refetchMe().catch(() => undefined);
+
+        if (freshMe.vault.status !== 'present') {
+          void purgeDeviceKeysOnRevoked(freshMe.user.id, effectiveDeviceStoreEnv);
+          void lock({ broadcast: true, reason: 'vault_absent_on_wake' });
+          return;
+        }
+
+        const afterMeEval = evaluateAutoLockAt({
+          now: Date.now(),
+          lastActivityAt: lastActivityAtRef.current,
+          autoLockMinutes: freshMinutes,
+        });
+        if (afterMeEval.shouldLock) {
+          void lock({ broadcast: true, reason: afterMeEval.reason });
+          return;
+        }
+        setMinutesLeft(afterMeEval.minutesLeft);
+      } catch {
+        if (deadlineTimer !== null) {
+          window.clearTimeout(deadlineTimer);
+          deadlineTimer = null;
+        }
+        // `401` (including `session_invalid`) or network failure on wake -> fail closed, lock immediately
+        if (
+          workerStateRef.current === 'unlocked' ||
+          workerStateRef.current === 'recovering'
+        ) {
+          void lock({ broadcast: true, reason: 'wake_me_failed' });
+        }
       }
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void verifyLockEpochOnWake();
+        void verifyOnWake();
       }
     };
 
@@ -799,11 +1075,11 @@ export function VaultProvider({
       if (event.persisted && workerStateRef.current === 'locked') {
         clearPlaintextAndFormsSync();
       }
-      void verifyLockEpochOnWake();
+      void verifyOnWake();
     };
 
     const onFocusOrResume = () => {
-      void verifyLockEpochOnWake();
+      void verifyOnWake();
     };
 
     const onPopState = () => {
@@ -811,7 +1087,7 @@ export function VaultProvider({
       if (workerStateRef.current !== 'unlocked') {
         clearPlaintextAndFormsSync();
       } else {
-        void verifyLockEpochOnWake();
+        void verifyOnWake();
       }
     };
 
@@ -828,7 +1104,15 @@ export function VaultProvider({
       window.removeEventListener('resume', onFocusOrResume);
       window.removeEventListener('popstate', onPopState);
     };
-  }, [clearPlaintextAndFormsSync, envWithBroadcast, lockLocalOnly, updateTabKnownLockEpoch]);
+  }, [
+    clearPlaintextAndFormsSync,
+    effectiveDeviceStoreEnv,
+    envWithBroadcast,
+    lock,
+    lockLocalOnly,
+    refetchMe,
+    updateTabKnownLockEpoch,
+  ]);
 
   // Keyboard shortcut `L` to lock immediately (ignored inside inputs/textareas/contenteditable and with modifiers, Task 15A #3).
   useEffect(() => {
@@ -896,6 +1180,9 @@ export function VaultProvider({
       vaultMeta,
       tabKnownLockEpoch,
       unlockBaseline,
+      autoLockMinutes,
+      lastActivityAt,
+      minutesLeft,
       getClient,
       captureOpGeneration,
       beginOp,
@@ -903,6 +1190,8 @@ export function VaultProvider({
       lockNow,
       registerSecretFormReset,
       notifyVaultChanged,
+      notifySettingsChanged,
+      recordActivity,
       reloadVaultMeta,
       setActiveOperation,
       clearError,
@@ -928,6 +1217,9 @@ export function VaultProvider({
       vaultMeta,
       tabKnownLockEpoch,
       unlockBaseline,
+      autoLockMinutes,
+      lastActivityAt,
+      minutesLeft,
       getClient,
       captureOpGeneration,
       beginOp,
@@ -935,6 +1227,8 @@ export function VaultProvider({
       lockNow,
       registerSecretFormReset,
       notifyVaultChanged,
+      notifySettingsChanged,
+      recordActivity,
       reloadVaultMeta,
       clearError,
       createVaultOp,
@@ -948,7 +1242,11 @@ export function VaultProvider({
     ],
   );
   useEffect(() => {
-    if (typeof window === 'undefined' || process.env.NODE_ENV === 'production') return;
+    if (typeof window === 'undefined') return;
+    const isLoopback =
+      window.location?.hostname === '127.0.0.1' ||
+      window.location?.hostname === 'localhost';
+    if (process.env.NODE_ENV === 'production' && !isLoopback) return;
     const win = window as unknown as {
       __engramVaultTestBridge?: VaultContextValue;
       __engramQueryClient?: typeof queryClient;

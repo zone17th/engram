@@ -420,6 +420,8 @@ export interface LockEpochEnvironment {
   idbFactory?: IDBFactory;
   locksManager?: LockManager;
   onBroadcastLock?: (lockEpoch: number) => void;
+  /** Optional test fault injection hook: when true, forces the primary increment transaction to abort/fail once. */
+  failIncrementOnce?: boolean;
 }
 
 export interface RecordLockEventResult {
@@ -447,6 +449,10 @@ export async function recordLockEpochEvent(
       try {
         db = await openSabkDeviceDb(env.idbFactory);
         try {
+          if (env.failIncrementOnce) {
+            env.failIncrementOnce = false;
+            throw new Error('Injected lockEpoch increment transaction failure');
+          }
           const marker = await incrementLockEpochTx(db, tabKnownLockEpoch, freshIncarnation);
           env.onBroadcastLock?.(marker.lockEpoch);
           return {
