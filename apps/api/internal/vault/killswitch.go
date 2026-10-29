@@ -14,7 +14,7 @@ import (
 //   - POST /vault/recover/complete
 //   - POST /vault/recovery-keys/regenerate
 //   - POST /vault/recovery-keys/rotate
-//   - POST /vault/passkeys (sẽ gắn ở Task 13 thông qua hook trên router)
+//   - POST /vault/passkeys
 //
 // Khi `disabled == true` (`VAULT_KEY_MUTATIONS_DISABLED=true`), middleware trả ngay
 // `503 vault_mutations_disabled`. Theo advisor-dec-022 (plan mục 2.3 bước 2), đặt ngay SAU

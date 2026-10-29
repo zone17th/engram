@@ -41,6 +41,8 @@ type Config struct {
 	AuditRetentionDays       int  `envconfig:"AUTH_AUDIT_RETENTION_DAYS" default:"90"`
 
 	KeyMutationsDisabled    bool   `envconfig:"VAULT_KEY_MUTATIONS_DISABLED" default:"false"`
+	WebAuthnRPID            string `envconfig:"WEBAUTHN_RP_ID"`
+	WebAuthnRPOrigin        string `envconfig:"WEBAUTHN_RP_ORIGIN"`
 	OAuthGoogleClientID     string `envconfig:"OAUTH_GOOGLE_CLIENT_ID"`
 	OAuthGoogleClientSecret string `envconfig:"OAUTH_GOOGLE_CLIENT_SECRET"`
 	OAuthGitHubClientID     string `envconfig:"OAUTH_GITHUB_CLIENT_ID"`
@@ -100,6 +102,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.validateAuthPolicy(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateWebAuthnPolicy(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -220,6 +225,120 @@ func (c *Config) validateAuthPolicy() error {
 	return nil
 }
 
+func (c *Config) validateWebAuthnPolicy() error {
+	rawAppOrigin := strings.TrimRight(strings.TrimSpace(c.AppOrigin), "/")
+	appURL, err := parseStrictOrigin(rawAppOrigin)
+	if err != nil {
+		return fmt.Errorf("APP_ORIGIN không hợp lệ cho WebAuthn: %w", err)
+	}
+	canonicalAppOrigin := appURL.Scheme + "://" + strings.ToLower(appURL.Host)
+	originHost := strings.ToLower(appURL.Hostname())
+
+	if c.Env == "production" || c.Env == "staging" {
+		if originHost == "localhost" || net.ParseIP(originHost) != nil || strings.Count(originHost, ".") < 1 {
+			return fmt.Errorf("APP_ORIGIN ở %s không được dùng localhost hoặc IP cho WebAuthn", c.Env)
+		}
+	}
+
+	rawRPOrigin := strings.TrimRight(strings.TrimSpace(c.WebAuthnRPOrigin), "/")
+	if rawRPOrigin == "" {
+		rawRPOrigin = canonicalAppOrigin
+	} else {
+		rpURL, err := parseStrictOrigin(rawRPOrigin)
+		if err != nil {
+			return fmt.Errorf("WEBAUTHN_RP_ORIGIN không hợp lệ: %w", err)
+		}
+		rawRPOrigin = rpURL.Scheme + "://" + strings.ToLower(rpURL.Host)
+	}
+	if rawRPOrigin != canonicalAppOrigin {
+		return fmt.Errorf("WEBAUTHN_RP_ORIGIN (%s) phải khớp chính xác APP_ORIGIN (%s)", rawRPOrigin, canonicalAppOrigin)
+	}
+
+	rpID := strings.ToLower(strings.TrimSpace(c.WebAuthnRPID))
+	if rpID == "" {
+		rpID = originHost
+	}
+	if !isValidRPIDHost(rpID) {
+		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không hợp lệ", c.WebAuthnRPID)
+	}
+	if !isRPIDMatchOrRegistrableSuffix(rpID, originHost) {
+		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không khớp với host của APP_ORIGIN (%q)", rpID, originHost)
+	}
+
+	c.WebAuthnRPID = rpID
+	c.WebAuthnRPOrigin = rawRPOrigin
+	return nil
+}
+
+func parseStrictOrigin(raw string) (*url.URL, error) {
+	if raw == "" {
+		return nil, fmt.Errorf("origin rỗng")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("scheme phải là http hoặc https")
+	}
+	if u.Host == "" || u.Hostname() == "" || u.User != nil {
+		return nil, fmt.Errorf("thiếu host hợp lệ")
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return nil, fmt.Errorf("port rỗng")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(raw, "?") || strings.Contains(raw, "#") {
+		return nil, fmt.Errorf("origin không được chứa path, query hoặc fragment")
+	}
+	return u, nil
+}
+
+func isValidRPIDHost(rpID string) bool {
+	if rpID == "" {
+		return false
+	}
+	if net.ParseIP(rpID) != nil {
+		return true
+	}
+	if strings.ContainsAny(rpID, ":/?#@ \t\r\n") {
+		return false
+	}
+	if strings.HasPrefix(rpID, ".") || strings.HasSuffix(rpID, ".") || strings.Contains(rpID, "..") {
+		return false
+	}
+	labels := strings.Split(rpID, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := range len(label) {
+			ch := label[i]
+			isLower := ch >= 'a' && ch <= 'z'
+			isDigit := ch >= '0' && ch <= '9'
+			if !isLower && !isDigit && ch != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isRPIDMatchOrRegistrableSuffix(rpID, originHost string) bool {
+	if rpID == originHost {
+		return true
+	}
+	if net.ParseIP(originHost) != nil || net.ParseIP(rpID) != nil {
+		return false
+	}
+	if strings.Count(rpID, ".") < 1 {
+		return false
+	}
+	return strings.HasSuffix(originHost, "."+rpID)
+}
+
 func requirePair(aName, bName, a, b string) error {
 	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
 	if (a == "") != (b == "") {
@@ -317,6 +436,32 @@ func (c *Config) EffectiveMailSinkDir() string {
 	return ""
 }
 
+// EffectiveWebAuthnRPID trả về RP ID đã cấu hình hoặc tự suy từ host của APP_ORIGIN.
+func (c *Config) EffectiveWebAuthnRPID() string {
+	if c == nil {
+		return ""
+	}
+	if rpID := strings.ToLower(strings.TrimSpace(c.WebAuthnRPID)); rpID != "" {
+		return rpID
+	}
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(c.AppOrigin), "/"))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// EffectiveWebAuthnRPOrigin trả về RP origin đã cấu hình hoặc chuẩn hoá từ APP_ORIGIN.
+func (c *Config) EffectiveWebAuthnRPOrigin() string {
+	if c == nil {
+		return ""
+	}
+	if rpOrigin := strings.TrimRight(strings.TrimSpace(c.WebAuthnRPOrigin), "/"); rpOrigin != "" {
+		return rpOrigin
+	}
+	return strings.TrimRight(strings.TrimSpace(c.AppOrigin), "/")
+}
+
 func (c *Config) TrustedProxyContains(ip net.IP) bool {
 	for _, n := range c.TrustedProxyCIDRs {
 		if n.Contains(ip) {
@@ -347,5 +492,7 @@ func (c *Config) Redacted() map[string]any {
 		"audit_retention_days":            c.AuditRetentionDays,
 		"trusted_proxy_cidrs":             len(c.TrustedProxyCIDRs),
 		"vault_key_mutations_disabled":    c.KeyMutationsDisabled,
+		"webauthn_rp_id":                  c.WebAuthnRPID,
+		"webauthn_rp_origin":              c.WebAuthnRPOrigin,
 	}
 }
