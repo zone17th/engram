@@ -3443,12 +3443,13 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(vaultCtx.unlockBaseline).toEqual(baselineAfterUnlockRecovery);
   });
 
-  it('VS-R4-1: receiving vault_changed { version: null } purges DevKey records once (deviceRevision increases by exactly 1)', async () => {
+  it('VS-R4-1: idempotent 404 reset-transition purge across receiving tab vault_changed { version: null } and acting tab Reload vault after dialog purge (deviceRevision increases by +1 exactly once per reset)', async () => {
     let currentMe = makeMeFixture({
       userId: '11111111-1111-1111-1111-111111111111',
       vaultStatus: 'present',
       autoLockMinutes: 15,
     });
+    let vaultReturnedPresent = true;
     vi.mocked(fetch).mockImplementation(async (url) => {
       const u = String(url);
       if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -3459,8 +3460,28 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
           captcha_site_key: null,
         });
       }
-      if (u.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (u.endsWith('/auth/me')) {
+        return jsonResponse(currentMe);
+      }
       if (u.endsWith('/vault')) {
+        if (vaultReturnedPresent) {
+          return jsonResponse({
+            vault_key_id: 'vk:reset-target-vs-r4-1',
+            version: 1,
+            kdf: {
+              alg: 'argon2id13',
+              ops: 3,
+              mem: 67108864,
+              parallelism: 1,
+              salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
+            },
+            vault_key_wrapped_by_kek: 'd3JhcHBlZC12aw',
+            x25519_public: 'eDI1NTE5LXB1Yg',
+            ed25519_public: 'ZWQyNTUxOS1wdWI',
+            private_keys_wrapped: 'd3JhcHBlZC1wcml2',
+            recovery_keys_remaining: 10,
+          });
+        }
         return new Response(
           JSON.stringify({
             type: 'https://engram.zone17th.click/problems/vault_absent',
@@ -3483,6 +3504,10 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
     let tabAVault!: VaultContextValue;
     let tabBVault!: VaultContextValue;
+    const workerFactoryA = makeShimmedWorkerFactory();
+    const workerFactoryB = makeShimmedWorkerFactory();
+    const lockEnvA = makeLockEpochEnv();
+    const lockEnvB = makeLockEpochEnv();
     function TabAProbe() {
       tabAVault = useVault();
       return <output data-testid="vs-r4-1-tab-a">{tabAVault.state}</output>;
@@ -3498,20 +3523,14 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       <div>
         <QueryClientProvider client={qcA}>
           <SessionProvider>
-            <VaultProvider
-              createWorker={makeShimmedWorkerFactory()}
-              lockEpochEnv={makeLockEpochEnv()}
-            >
+            <VaultProvider createWorker={workerFactoryA} lockEpochEnv={lockEnvA}>
               <TabAProbe />
             </VaultProvider>
           </SessionProvider>
         </QueryClientProvider>
         <QueryClientProvider client={qcB}>
           <SessionProvider>
-            <VaultProvider
-              createWorker={makeShimmedWorkerFactory()}
-              lockEpochEnv={makeLockEpochEnv()}
-            >
+            <VaultProvider createWorker={workerFactoryB} lockEpochEnv={lockEnvB}>
               <TabBProbe />
             </VaultProvider>
           </SessionProvider>
@@ -3524,27 +3543,72 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       expect(screen.getByTestId('vs-r4-1-tab-b')).toHaveTextContent('locked');
     });
 
+    // Both tabs load initial vaultMeta ('vk:reset-target-vs-r4-1')
+    await act(async () => {
+      await tabAVault.reloadVaultMeta();
+      await tabBVault.reloadVaultMeta();
+    });
+
     const metaBefore = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
     expect(metaBefore?.deviceRevision).toBe(10);
 
-    // Tab A resets vault and broadcasts vault_changed { version: null } to Tab B
+    // Path 1: Receiving tab (Tab B) receives vault_changed { version: null } when vault is now 404 ->
+    // purges once in broadcast handler and reloadVaultMeta() 404 branch is a no-op (deviceRevision: 10 -> 11).
+    vaultReturnedPresent = false;
     currentMe = makeMeFixture({
       userId: '11111111-1111-1111-1111-111111111111',
       vaultStatus: 'absent',
       autoLockMinutes: 15,
     });
+    const externalPeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
     await act(async () => {
-      tabAVault.notifyVaultChanged({
+      // Mark Tab A as already purged so this step isolates Tab B's receiving-tab behavior
+      tabAVault.markResetPurged('vk:reset-target-vs-r4-1');
+      externalPeer.postMessage({
+        type: 'vault_changed',
         vault_key_id: 'vk:reset-target-vs-r4-1',
         version: null,
       });
     });
+    externalPeer.close();
 
     await waitFor(() => {
       expect(screen.getByTestId('vs-r4-1-tab-b')).toHaveTextContent('no_vault');
     });
+    // Even if Tab B calls reloadVaultMeta() again on the same 404 reset transition, it stays a no-op
+    await act(async () => {
+      await tabBVault.reloadVaultMeta();
+    });
 
-    const metaAfter = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
-    expect(metaAfter?.deviceRevision).toBe(11);
+    const metaAfterReceivingTab = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaAfterReceivingTab?.deviceRevision).toBe(11);
+
+    // Path 2: Acting tab (Tab A) resets a second vault ('vk:reset-target-vs-r4-1'), its dialog purges once
+    // and marks the reset transition via markResetPurged('vk:reset-target-vs-r4-1') (or notifyVaultChanged),
+    // post-reset /me fails, and the user clicks 'Reload vault' (tabAVault.reloadVaultMeta() -> 404) ->
+    // reloadVaultMeta()'s 404 branch is a no-op (deviceRevision: 11 -> 12, never 13).
+    vaultReturnedPresent = true;
+    await act(async () => {
+      await tabAVault.reloadVaultMeta();
+    });
+    vaultReturnedPresent = false;
+    await act(async () => {
+      // Acting tab's reset dialog purges once and marks the reset transition purged
+      await purgeDeviceKeysOnRevoked('11111111-1111-1111-1111-111111111111', {
+        idbFactory: fakeIdb.createFactory(),
+      });
+      tabAVault.markResetPurged('vk:reset-target-vs-r4-1');
+    });
+    const metaAfterDialogPurge = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaAfterDialogPurge?.deviceRevision).toBe(12);
+
+    // User later clicks 'Reload vault' on the acting tab -> GET /vault returns 404 -> no second purge
+    await act(async () => {
+      await tabAVault.reloadVaultMeta();
+    });
+    const metaAfterReloadVaultClick = await readDeviceMetaRecord({
+      idbFactory: fakeIdb.createFactory(),
+    });
+    expect(metaAfterReloadVaultClick?.deviceRevision).toBe(12);
   });
 });

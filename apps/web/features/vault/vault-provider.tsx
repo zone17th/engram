@@ -219,6 +219,11 @@ export interface VaultContextValue {
   recordActivity: (at?: number) => void;
   /** Reloads `GET /vault` from the server and reconciles `vault_key_id` (locks immediately on 404 or `vault_key_id` mismatch). */
   reloadVaultMeta: () => Promise<VaultState | null>;
+  /**
+   * Marks the current reset transition (keyed to `vaultKeyId`, or the tab's last known `vault_key_id`)
+   * as already purged on this device so a subsequent 404 in `reloadVaultMeta()` does not purge a second time (VS-R4-1).
+   */
+  markResetPurged: (vaultKeyId?: string | null) => void;
   /** Sets the active sub-state operation (`'onboarding'` | `'unlocking'` | `'rewrapping'` | `'resetting'` | `null`) while a flow is running. */
   setActiveOperation: (op: VaultActiveOperation) => void;
   /** Clears `lastErrorCode`. */
@@ -364,6 +369,7 @@ export function VaultProvider({
   const settingsSyncSeqRef = useRef<number>(0);
   const vaultMetaSessionEpochRef = useRef<number>(0);
   const currentVaultKeyIdRef = useRef<string | null>(null);
+  const resetPurgedVaultKeyIdRef = useRef<string | null>(null);
   const previousUserIdRef = useRef<string | null>(null);
   const secretFormResettersRef = useRef<Set<() => void>>(new Set());
   const lastActivityAtRef = useRef<number>(Date.now());
@@ -551,6 +557,14 @@ export function VaultProvider({
   const clearError = useCallback(() => {
     setLastErrorCode(null);
   }, []);
+  const markResetPurged = useCallback((vaultKeyId?: string | null) => {
+    const token =
+      typeof vaultKeyId === 'string' && vaultKeyId.length > 0
+        ? vaultKeyId
+        : currentVaultKeyIdRef.current ?? '__absent__';
+    resetPurgedVaultKeyIdRef.current = token;
+  }, []);
+
 
   /**
    * Reloads `GET /vault` from the server.
@@ -575,6 +589,7 @@ export function VaultProvider({
       const prevKeyId = currentVaultKeyIdRef.current;
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
         currentVaultKeyIdRef.current = fresh.vault_key_id;
+        resetPurgedVaultKeyIdRef.current = null;
         setVaultMeta(fresh);
         queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
         void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
@@ -582,6 +597,12 @@ export function VaultProvider({
         return fresh;
       }
       currentVaultKeyIdRef.current = fresh.vault_key_id;
+      if (
+        resetPurgedVaultKeyIdRef.current !== null &&
+        resetPurgedVaultKeyIdRef.current !== fresh.vault_key_id
+      ) {
+        resetPurgedVaultKeyIdRef.current = null;
+      }
       setVaultMeta(fresh);
       queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
       return fresh;
@@ -598,10 +619,18 @@ export function VaultProvider({
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
       ) {
+        const prevKeyId = currentVaultKeyIdRef.current;
+        const transitionToken = prevKeyId ?? resetPurgedVaultKeyIdRef.current ?? '__absent__';
+        const alreadyPurgedForTransition =
+          resetPurgedVaultKeyIdRef.current !== null &&
+          (resetPurgedVaultKeyIdRef.current === transitionToken || prevKeyId === null);
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
-        void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
+        if (!alreadyPurgedForTransition) {
+          resetPurgedVaultKeyIdRef.current = transitionToken;
+          void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
+        }
         void lock({ broadcast: true, reason: 'vault_absent' });
         return null;
       }
@@ -612,10 +641,18 @@ export function VaultProvider({
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
       if (payload.version === null) {
+        resetPurgedVaultKeyIdRef.current =
+          payload.vault_key_id || currentVaultKeyIdRef.current || '__absent__';
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
       } else {
+        if (
+          resetPurgedVaultKeyIdRef.current !== null &&
+          resetPurgedVaultKeyIdRef.current !== payload.vault_key_id
+        ) {
+          resetPurgedVaultKeyIdRef.current = null;
+        }
         currentVaultKeyIdRef.current = payload.vault_key_id;
         setVaultMeta((prev) =>
           prev && prev.vault_key_id === payload.vault_key_id
@@ -952,6 +989,7 @@ export function VaultProvider({
         settingsSyncSeqRef.current += 1;
         previousUserIdRef.current = null;
         currentVaultKeyIdRef.current = null;
+        resetPurgedVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
         void lock({ broadcast: true, reason: 'signed_out' });
@@ -965,6 +1003,7 @@ export function VaultProvider({
       settingsSyncSeqRef.current += 1;
       previousUserIdRef.current = nextUserId;
       currentVaultKeyIdRef.current = null;
+      resetPurgedVaultKeyIdRef.current = null;
       setVaultMeta(null);
       queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
       void lock({ broadcast: true, reason: 'user_changed' });
@@ -1038,21 +1077,32 @@ export function VaultProvider({
           message.version === null ||
           (knownKeyId !== null && message.vault_key_id !== knownKeyId)
         ) {
-          currentVaultKeyIdRef.current =
-            message.version === null ? null : message.vault_key_id;
+          if (message.version === null) {
+            const transitionToken = message.vault_key_id || knownKeyId || '__absent__';
+            const alreadyPurged =
+              resetPurgedVaultKeyIdRef.current !== null &&
+              (resetPurgedVaultKeyIdRef.current === transitionToken || knownKeyId === null);
+            currentVaultKeyIdRef.current = null;
+            setVaultMeta(null);
+            queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
+            if (!alreadyPurged) {
+              resetPurgedVaultKeyIdRef.current = transitionToken;
+              void purgeDeviceKeysOnRevoked(
+                me?.user.id ?? previousUserIdRef.current,
+                effectiveDeviceStoreEnv,
+              );
+            }
+            void lock({ broadcast: true, reason: 'vault_reset_broadcast' });
+            void refetchMe().catch(() => undefined);
+            void reloadVaultMeta().catch(() => undefined);
+            return;
+          }
+          resetPurgedVaultKeyIdRef.current = null;
+          currentVaultKeyIdRef.current = message.vault_key_id;
           setVaultMeta(null);
           queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
           void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
-          void lock({
-            broadcast: true,
-            reason: message.version === null ? 'vault_reset_broadcast' : 'vault_key_id_changed_broadcast',
-          });
-          if (message.version === null) {
-            // VS-R1-11 & VS-R4-1: state is already cleared and DevKeys purged once above;
-            // refetch Me to transition serverVaultStatus to 'absent' without a second 404 purge in reloadVaultMeta().
-            void refetchMe().catch(() => undefined);
-            return;
-          }
+          void lock({ broadcast: true, reason: 'vault_key_id_changed_broadcast' });
           void reloadVaultMeta().catch(() => undefined);
           return;
         }
@@ -1486,6 +1536,7 @@ export function VaultProvider({
       notifySettingsChanged,
       recordActivity,
       reloadVaultMeta,
+      markResetPurged,
       setActiveOperation,
       clearError,
       createVault: createVaultOp,
@@ -1523,6 +1574,7 @@ export function VaultProvider({
       notifySettingsChanged,
       recordActivity,
       reloadVaultMeta,
+      markResetPurged,
       clearError,
       createVaultOp,
       unlockPassphraseOp,
