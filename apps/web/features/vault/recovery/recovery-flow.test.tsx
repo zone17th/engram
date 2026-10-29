@@ -329,7 +329,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture({ hasPassword: true }));
-      if (url.endsWith('/auth/reauth/password') && init?.method === 'POST') {
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body ?? '{}')) as { action: string };
         return jsonResponse({
           grant: `grant-${body.action}-token`,
@@ -515,7 +515,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture({ hasPassword: true }));
-      if (url.endsWith('/auth/reauth/password') && init?.method === 'POST') {
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         return jsonResponse({
           grant: 'grant-recover-token',
           action: 'vault.recover',
@@ -600,7 +600,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture({ hasPassword: true }));
-      if (url.endsWith('/auth/reauth/password') && init?.method === 'POST') {
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         return jsonResponse({
           grant: 'grant-recover-token',
           action: 'vault.recover',
@@ -766,7 +766,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture({ hasPassword: true }));
-      if (url.endsWith('/auth/reauth/password') && init?.method === 'POST') {
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         return jsonResponse({
           grant: 'grant-recover-token',
           action: 'vault.recover',
@@ -953,7 +953,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
           }),
         );
       }
-      if (url.endsWith('/auth/reauth/oauth') && init?.method === 'POST') {
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         return jsonResponse({
           grant: 'oauth-grant-token-1',
           action: 'vault.recover',

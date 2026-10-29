@@ -303,8 +303,7 @@ export function VaultUnlockFlow() {
             >
               <div className="mb-2 flex items-center gap-2">
                 <span
-                  className="badge-type"
-                  style={{ background: 'var(--pale-orange)', color: 'var(--error)' }}
+                  className="badge-type badge-json"
                 >
                   {t('errors.incorrectPassphraseBadge')}
                 </span>
@@ -494,8 +493,7 @@ export function VaultUnlockFlow() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <Link
               href="/app/unlock/forgot"
-              className="text-[14px]"
-              style={{ color: 'var(--link)' }}
+              style={{ fontSize: '14px' }}
               data-testid="unlock-forgot-passphrase-link"
             >
               {t('forgotPassphrase')}

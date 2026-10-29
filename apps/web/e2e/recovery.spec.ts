@@ -120,28 +120,29 @@ async function installRecoveryApiMocks(
     });
   });
 
-  await context.route('**/api/v1/auth/reauth/password', async (route) => {
-    const body = JSON.parse(route.request().postData() ?? '{}') as { action: string };
+  await context.route('**/api/v1/auth/reauth', async (route) => {
+    const body = JSON.parse(route.request().postData() ?? '{}') as {
+      action: string;
+      provider?: string;
+    };
+    const prefix = body.provider ? 'oauth-grant' : 'grant';
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        grant: `grant-${body.action}-token`,
+        grant: `${prefix}-${body.action}-token`,
         action: body.action,
         expires_at: new Date(Date.now() + state.grantTtlSeconds * 1000).toISOString(),
       }),
     });
   });
 
-  await context.route('**/api/v1/auth/reauth/oauth', async (route) => {
-    const body = JSON.parse(route.request().postData() ?? '{}') as { action: string };
+  await context.route('**/api/v1/auth/oauth/google/reauth', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        grant: `oauth-grant-${body.action}-token`,
-        action: body.action,
-        expires_at: new Date(Date.now() + state.grantTtlSeconds * 1000).toISOString(),
+        authorization_url: `${url}/app/auth/callback/google?status=reauth_ready`,
       }),
     });
   });
@@ -484,16 +485,10 @@ test.describe('P03-T17A Vault Recovery by Recovery Key', () => {
     };
     await installRecoveryApiMocks(context, state, 'en');
 
-    // Simulate OAuth callback returning to /app/recovery after acquiring `vault.recover` grant
+    // Click "Confirm with Google" on Step 1 -> redirects through OAuth callback -> returns to /app/recovery at Step 2
     await page.goto('/app/recovery');
     await expect(page.getByTestId('recovery-step-reauth')).toBeVisible();
-    await page.evaluate(() => {
-      window.sessionStorage.setItem(
-        'sabk.reauth.pending',
-        JSON.stringify({ action: 'vault.recover', returnPath: '/app/recovery' }),
-      );
-    });
-    await page.goto('/app/auth/callback/google?status=reauth_ready');
+    await page.getByTestId('recovery-reauth-google-button').click();
     await expect(page).toHaveURL(/\/app\/recovery$/);
     await expect(page.getByTestId('recovery-step-enter-key')).toBeVisible();
 
