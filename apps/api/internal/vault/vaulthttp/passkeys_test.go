@@ -7,16 +7,29 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/webauthntest"
 )
 
@@ -743,6 +756,39 @@ func TestPasskeyRegister_ChallengeAndAttestationRejections(t *testing.T) {
 				grant:   grantReg1,
 			})
 			assertPasskeyProblem(t, resp, raw, http.StatusBadRequest, "passkey_attestation_invalid")
+
+			// T-3: Verify the challenge was burned before attestation verification failed:
+			// consumed_at is set and reusing the same challenge with a valid attestation returns 400 passkey_challenge_invalid.
+			var consumedAt pgtype.Timestamptz
+			if err := h.pool.QueryRow(context.Background(), `SELECT consumed_at FROM webauthn_challenge WHERE id = $1`, opts.ChallengeID).Scan(&consumedAt); err != nil {
+				t.Fatalf("query webauthn_challenge consumed_at: %v", err)
+			}
+			if !consumedAt.Valid {
+				t.Fatalf("expected challenge %s to be burned (consumed_at valid) after rejected attestation", opts.ChallengeID)
+			}
+			validRetryAtt, err := va.CreateCredential(webauthntest.RegistrationOptions{
+				RPID:         h.vaultSvc.WebAuthnRPID(),
+				Origin:       h.origin,
+				ChallengeB64: opts.PublicKey.Challenge,
+			})
+			if err != nil {
+				t.Fatalf("CreateCredential retry: %v", err)
+			}
+			retryBody := makePasskeyCreateBody(
+				t,
+				opts.ChallengeID,
+				validRetryAtt.ClientDataJSONB64,
+				validRetryAtt.AttestationObjectB64,
+				opts.PRFSalt,
+				makeWrapB64U(t, vault.WrapKindPRF, 0x36),
+				"Retry After Rejected Attestation",
+				nil,
+			)
+			respBurned, rawBurned := h.doReq(jarA1, http.MethodPost, "/api/v1/vault/passkeys", retryBody, reqOptions{
+				idemKey: tc.idem + "-retry",
+				grant:   grantReg1,
+			})
+			assertPasskeyProblem(t, respBurned, rawBurned, http.StatusBadRequest, "passkey_challenge_invalid")
 		})
 	}
 	// 6. Name invalid (empty, whitespace, 65 runes, bidi override, control char) -> 400 passkey_name_invalid.
@@ -968,6 +1014,11 @@ func TestPasskeyCreate_KillSwitchAndIdempotentReplay(t *testing.T) {
 	// Turn on VAULT_KEY_MUTATIONS_DISABLED.
 	hDisabled := h.withKillSwitch(true)
 
+	var rateEventsBeforeReplay int
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM rate_event WHERE user_id = $1 AND scope = 'vault_sensitive'`, meA.User.ID).Scan(&rateEventsBeforeReplay); err != nil {
+		t.Fatal(err)
+	}
+
 	// 1. Replay of committed POST /vault/passkeys under killSwitch=true still returns stored 201!
 	respReplay, rawReplay := hDisabled.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", bodyCommitted, reqOptions{
 		idemKey: committedKey,
@@ -1004,6 +1055,11 @@ func TestPasskeyCreate_KillSwitchAndIdempotentReplay(t *testing.T) {
 		"Blocked By KillSwitch",
 		nil,
 	)
+	var rateEventsBeforeBlocked int
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM rate_event WHERE user_id = $1`, meA.User.ID).Scan(&rateEventsBeforeBlocked); err != nil {
+		t.Fatal(err)
+	}
+
 	const blockedKey = "idem-pk-ks-blocked-0002"
 	respBlocked, rawBlocked := hDisabled.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", bodyNew, reqOptions{
 		idemKey: blockedKey,
@@ -1011,7 +1067,20 @@ func TestPasskeyCreate_KillSwitchAndIdempotentReplay(t *testing.T) {
 	})
 	assertPasskeyProblem(t, respBlocked, rawBlocked, http.StatusServiceUnavailable, "vault_mutations_disabled")
 
-	// Verify no idempotency claim row was created for blockedKey.
+	// T-4: Verify no rate_event row and no idempotency claim row were created for the blocked request.
+	var rateEventsAfterBlocked, sensitiveRateEventsAfter int
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM rate_event WHERE user_id = $1`, meA.User.ID).Scan(&rateEventsAfterBlocked); err != nil {
+		t.Fatal(err)
+	}
+	if rateEventsAfterBlocked != rateEventsBeforeBlocked {
+		t.Fatalf("blocked request under kill switch must not record rate_event: before=%d after=%d", rateEventsBeforeBlocked, rateEventsAfterBlocked)
+	}
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM rate_event WHERE user_id = $1 AND scope = 'vault_sensitive'`, meA.User.ID).Scan(&sensitiveRateEventsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if sensitiveRateEventsAfter != rateEventsBeforeReplay {
+		t.Fatalf("vault_sensitive rate_event count changed under kill switch: before=%d after=%d", rateEventsBeforeReplay, sensitiveRateEventsAfter)
+	}
 	var claimRows int
 	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, blockedKey).Scan(&claimRows); err != nil {
 		t.Fatal(err)
@@ -1019,11 +1088,635 @@ func TestPasskeyCreate_KillSwitchAndIdempotentReplay(t *testing.T) {
 	if claimRows != 0 {
 		t.Fatalf("blocked request under kill switch must not claim idempotency_key, got %d rows", claimRows)
 	}
-
 	// 3. GET /vault/passkeys is not in K and still returns 200 with the 1 committed passkey.
 	list := hDisabled.listPasskeysForTest(jarA)
 	if len(list.Items) != 1 {
 		t.Fatalf("listPasskeysForTest under kill switch = %d items, want 1", len(list.Items))
+	}
+}
+
+// pollTwoBlockedChallengeConsumers polls pg_stat_activity / pg_blocking_pids until two backends in
+// current_database() are blocked directly or transitively on holderPID (the tx holding the FOR UPDATE
+// lock on the target webauthn_challenge row), failing fast if either HTTP worker exits early.
+func pollTwoBlockedChallengeConsumers(ctx context.Context, pool *pgxpool.Pool, holderPID int32, earlyDone <-chan int, formatEarly func(int) string) error {
+	for {
+		select {
+		case idx := <-earlyDone:
+			return fmt.Errorf("consumer %d exited before both consumers were blocked on holderPID=%d: %s", idx, holderPID, formatEarly(idx))
+		default:
+		}
+
+		var blockedCount int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*)
+			FROM pg_stat_activity AS a
+			WHERE a.datname = current_database()
+			  AND a.pid <> $1
+			  AND cardinality(pg_blocking_pids(a.pid)) > 0
+			  AND (
+			    $1 = ANY(pg_blocking_pids(a.pid))
+			    OR EXISTS (
+			      SELECT 1
+			      FROM unnest(pg_blocking_pids(a.pid)) AS mid_pid
+			      WHERE $1 = ANY(pg_blocking_pids(mid_pid))
+			    )
+			  )
+		`, holderPID).Scan(&blockedCount); err != nil {
+			return fmt.Errorf("query pg_blocking_pids for holderPID=%d: %w", holderPID, err)
+		}
+		if blockedCount >= 2 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for 2 consumers blocked on holderPID=%d (last blockedCount=%d): %w", holderPID, blockedCount, ctx.Err())
+		case idx := <-earlyDone:
+			return fmt.Errorf("consumer %d exited before both consumers were blocked on holderPID=%d: %s", idx, holderPID, formatEarly(idx))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestPasskeyRegister_ConcurrentChallengeConsumeDeterministic covers BE1-3 / BE1-7:
+// two concurrent POST /vault/passkeys requests using ONE live challenge, DIFFERENT Idempotency-Keys,
+// and DISTINCT credentials:
+//   - holds the webauthn_challenge row lock in a separate transaction until PostgreSQL pg_stat_activity /
+//     pg_blocking_pids confirms both consumers are blocked on the challenge row;
+//   - releases the lock and asserts exactly one 201 Created and one 400 passkey_challenge_invalid;
+//   - asserts exactly one new passkey (the winner's credential), one passkey.register audit, one security
+//     notice, one done idempotency row for the winner, and the loser's in_progress claim is released.
+func TestPasskeyRegister_ConcurrentChallengeConsumeDeterministic(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	ctx := context.Background()
+	va := webauthntest.New()
+
+	jarA, meA := h.signupUser("pk-conc-consume@example.com", "correcthorsebattery")
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatalf("verify email: %v", err)
+	}
+	h.createPasskeyTestVault(jarA, "idem-pk-conc-create-vault", 0x10)
+	grantReg := h.reauthGrant(jarA, "vault.passkey_register", "correcthorsebattery")
+
+	opts := h.registerPasskeyOptions(jarA)
+	reg0, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts.PublicKey.Challenge,
+		CredentialID: seqTestBytes(32, 0xA1),
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 0: %v", err)
+	}
+	reg1, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts.PublicKey.Challenge,
+		CredentialID: seqTestBytes(32, 0xB2),
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 1: %v", err)
+	}
+	if bytes.Equal(reg0.CredentialID, reg1.CredentialID) {
+		t.Fatal("credentials must have distinct CredentialIDs")
+	}
+
+	bodies := [2]string{
+		makePasskeyCreateBody(
+			t,
+			opts.ChallengeID,
+			reg0.ClientDataJSONB64,
+			reg0.AttestationObjectB64,
+			opts.PRFSalt,
+			makeWrapB64U(t, vault.WrapKindPRF, 0x71),
+			"Concurrent Key 0",
+			nil,
+		),
+		makePasskeyCreateBody(
+			t,
+			opts.ChallengeID,
+			reg1.ClientDataJSONB64,
+			reg1.AttestationObjectB64,
+			opts.PRFSalt,
+			makeWrapB64U(t, vault.WrapKindPRF, 0x72),
+			"Concurrent Key 1",
+			nil,
+		),
+	}
+	idemKeys := [2]string{
+		"idem-pk-conc-consume-0001",
+		"idem-pk-conc-consume-0002",
+	}
+	creds := [2][]byte{reg0.CredentialID, reg1.CredentialID}
+
+	// Hold the webauthn_challenge row FOR UPDATE in a separate transaction so both concurrent
+	// ConsumeWebAuthnChallenge UPDATEs block deterministically on the challenge row.
+	lockTx, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lockTx: %v", err)
+	}
+	defer func() { _ = lockTx.Rollback(ctx) }()
+
+	var holderPID int32
+	if err := lockTx.QueryRow(ctx,
+		`SELECT pg_backend_pid() FROM webauthn_challenge WHERE id = $1 FOR UPDATE`,
+		opts.ChallengeID,
+	).Scan(&holderPID); err != nil {
+		t.Fatalf("lock webauthn_challenge FOR UPDATE: %v", err)
+	}
+
+	type consumerResult struct {
+		status int
+		body   string
+		err    error
+	}
+	var results [2]consumerResult
+	earlyDone := make(chan int, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { earlyDone <- idx }()
+			req, reqErr := http.NewRequest(http.MethodPost, h.srv.URL+"/api/v1/vault/passkeys", strings.NewReader(bodies[idx]))
+			if reqErr != nil {
+				results[idx] = consumerResult{err: reqErr}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", h.origin)
+			req.Header.Set(httpx.HeaderIdempotencyKey, idemKeys[idx])
+			req.Header.Set(authhttp.HeaderReauth, grantReg)
+			jarA.apply(req)
+			if c := jarA[authhttp.CookieCSRF]; c != nil {
+				req.Header.Set(authhttp.HeaderCSRF, c.Value)
+			}
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr != nil {
+				results[idx] = consumerResult{err: doErr}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			var buf bytes.Buffer
+			_, _ = buf.ReadFrom(resp.Body)
+			results[idx] = consumerResult{
+				status: resp.StatusCode,
+				body:   buf.String(),
+			}
+		}(i)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer waitCancel()
+	if err := pollTwoBlockedChallengeConsumers(waitCtx, h.pool, holderPID, earlyDone, func(idx int) string {
+		r := results[idx]
+		return fmt.Sprintf("status=%d err=%v body=%s", r.status, r.err, r.body)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both distinct idempotency keys must be claimed as in_progress while blocked on the challenge row.
+	var inProgressClaims int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key IN ($2, $3) AND status = 'in_progress'`,
+		meA.User.ID, idemKeys[0], idemKeys[1],
+	).Scan(&inProgressClaims); err != nil {
+		t.Fatalf("count in_progress idempotency claims: %v", err)
+	}
+	if inProgressClaims != 2 {
+		t.Fatalf("in_progress idempotency claims while blocked = %d, want 2", inProgressClaims)
+	}
+
+	// Release the row lock so both consumers race on the challenge row.
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatalf("release lockTx: %v", err)
+	}
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+	select {
+	case <-doneCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent passkey registration consumers to finish")
+	}
+
+	winnerIdx := -1
+	loserIdx := -1
+	for i := range 2 {
+		if results[i].err != nil {
+			t.Fatalf("consumer %d transport error: %v", i, results[i].err)
+		}
+		switch results[i].status {
+		case http.StatusCreated:
+			winnerIdx = i
+		case http.StatusBadRequest:
+			prob := decodeProblem(t, results[i].body)
+			if prob.Code != "passkey_challenge_invalid" {
+				t.Fatalf("consumer %d 400 problem.Code = %q, want passkey_challenge_invalid (%s)", i, prob.Code, results[i].body)
+			}
+			loserIdx = i
+		default:
+			t.Fatalf("consumer %d unexpected status = %d (%s)", i, results[i].status, results[i].body)
+		}
+	}
+	if winnerIdx == -1 || loserIdx == -1 || winnerIdx == loserIdx {
+		t.Fatalf("expected exactly one 201 and one 400 passkey_challenge_invalid, got r0=%+v r1=%+v", results[0], results[1])
+	}
+
+	var createdItem vault.PasskeyItem
+	if err := json.Unmarshal([]byte(results[winnerIdx].body), &createdItem); err != nil {
+		t.Fatalf("unmarshal winner PasskeyItem: %v", err)
+	}
+
+	// Verify side effects: 1 passkey (with winner's credential ID), 1 passkey.register audit, 1 security notice, 1 River mail job.
+	var passkeyCount int
+	var storedCredID []byte
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*), (array_agg(cred_id))[1] FROM vault_passkey WHERE user_id = $1`,
+		meA.User.ID,
+	).Scan(&passkeyCount, &storedCredID); err != nil {
+		t.Fatalf("query vault_passkey: %v", err)
+	}
+	if passkeyCount != 1 || !bytes.Equal(storedCredID, creds[winnerIdx]) {
+		t.Fatalf("vault_passkey count=%d cred match=%v, want 1 and winner cred", passkeyCount, bytes.Equal(storedCredID, creds[winnerIdx]))
+	}
+
+	var auditCount, noticeCount, jobCount int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`,
+		meA.User.ID, vault.EventPasskeyRegister,
+	).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`,
+		meA.User.ID,
+	).Scan(&noticeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`,
+	).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 || noticeCount != 1 || jobCount != 1 {
+		t.Fatalf("side-effect counts: audit=%d notice=%d job=%d, want 1/1/1", auditCount, noticeCount, jobCount)
+	}
+
+	// Winner's idempotency claim is 'done' (201); loser's pre-commit 400 released its idempotency row.
+	winnerRow, err := gen.New(h.pool).GetIdempotencyKey(ctx, gen.GetIdempotencyKeyParams{
+		UserID: meA.User.ID,
+		Key:    idemKeys[winnerIdx],
+		Now:    pgtype.Timestamptz{Time: h.clk.Now(), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey(winner): %v", err)
+	}
+	if winnerRow.Status != "done" || winnerRow.StatusCode == nil || *winnerRow.StatusCode != http.StatusCreated {
+		t.Fatalf("winner idempotency row = %+v, want status=done status_code=201", winnerRow)
+	}
+	var loserIdemRows int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`,
+		meA.User.ID, idemKeys[loserIdx],
+	).Scan(&loserIdemRows); err != nil {
+		t.Fatal(err)
+	}
+	if loserIdemRows != 0 {
+		t.Fatalf("loser idempotency row count = %d, want 0 (released after pre-commit 400)", loserIdemRows)
+	}
+}
+
+// TestPasskeyRegister_RollbackOnAuditNoticeAndOwnerTokenMismatch covers BE1-4 / BE1-8 for registration:
+// injects failures inside the second (mutation) transaction AFTER InsertPasskey has executed:
+//  1. Postgres trigger raising on audit_log INSERT (event = 'passkey.register') -> rolls back passkey
+//     insert, leaves 0 passkeys, 0 audits, 0 notices, 0 mail jobs, 0 done idempotency rows, releases the
+//     in_progress idempotency claim per mục 2.3, and keeps the consumed challenge burned.
+//  2. Postgres trigger raising on user_notification INSERT (kind = 'security') -> rolls back both
+//     passkey insert and audit insert, leaves 0 passkeys/audits/notices/mail jobs/idempotency rows,
+//     and keeps the consumed challenge burned.
+//  3. Idempotency owner_token mismatch at FinishIdempotencyKey right before COMMIT (after InsertPasskey,
+//     RecordAuditTx, and RecordSecurityNoticeTx + River job insert) -> rolls back passkey, audit, notice,
+//     and River mail job, leaves no done response, preserves the new owner's claim, and keeps the
+//     consumed challenge burned.
+func TestPasskeyRegister_RollbackOnAuditNoticeAndOwnerTokenMismatch(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	ctx := context.Background()
+	va := webauthntest.New()
+
+	password := "correcthorsebattery"
+	email := "pk-rollback-reg@example.com"
+	jarA, meA := h.signupUser(email, password)
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatalf("verify email: %v", err)
+	}
+	h.createPasskeyTestVault(jarA, "idem-pk-rb-create-vault", 0x10)
+	grantReg := h.reauthGrant(jarA, "vault.passkey_register", password)
+
+	assertNoPasskeySideEffects := func(step string) {
+		t.Helper()
+		var passkeys, audits, notices, jobs int
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, meA.User.ID).Scan(&passkeys); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, meA.User.ID, vault.EventPasskeyRegister).Scan(&audits); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, meA.User.ID).Scan(&notices); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobs); err != nil {
+			t.Fatal(err)
+		}
+		if passkeys != 0 || audits != 0 || notices != 0 || jobs != 0 {
+			t.Fatalf("%s: leftover state after rollback: passkeys=%d audits=%d notices=%d jobs=%d, want 0/0/0/0",
+				step, passkeys, audits, notices, jobs)
+		}
+		if delivered := h.countSecurityMailsDelivered(email); delivered != 0 {
+			t.Fatalf("%s: delivered emails = %d, want 0", step, delivered)
+		}
+	}
+
+	// 1. Trigger failure on audit_log INSERT (after InsertPasskey has run in the mutation tx).
+	if _, err := h.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_fail_passkey_reg_audit() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.user_id = '`+meA.User.ID.String()+`'::uuid AND NEW.event = 'passkey.register' THEN
+				RAISE EXCEPTION 'simulated passkey.register audit failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER trg_fail_passkey_reg_audit
+		BEFORE INSERT ON audit_log
+		FOR EACH ROW EXECUTE FUNCTION test_fail_passkey_reg_audit();
+	`); err != nil {
+		t.Fatalf("create audit failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_fail_passkey_reg_audit ON audit_log;
+			DROP FUNCTION IF EXISTS test_fail_passkey_reg_audit();
+		`)
+	})
+
+	opts1 := h.registerPasskeyOptions(jarA)
+	reg1, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts1.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body1 := makePasskeyCreateBody(
+		t,
+		opts1.ChallengeID,
+		reg1.ClientDataJSONB64,
+		reg1.AttestationObjectB64,
+		opts1.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x81),
+		"Audit Rollback Key",
+		nil,
+	)
+	const idemKey1 = "idem-pk-rb-audit-fail-01"
+	resp1, raw1 := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
+		idemKey: idemKey1,
+		grant:   grantReg,
+	})
+	assertPasskeyProblem(t, resp1, raw1, http.StatusInternalServerError, "internal_error")
+	assertNoPasskeySideEffects("audit_log failure")
+
+	// Claim must be released on pre-commit 500, and challenge must stay burned.
+	var idemRows1 int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, idemKey1).Scan(&idemRows1); err != nil {
+		t.Fatal(err)
+	}
+	if idemRows1 != 0 {
+		t.Fatalf("audit_log failure: idempotency_key count = %d, want 0 (in_progress claim released)", idemRows1)
+	}
+	var consumed1 pgtype.Timestamptz
+	if err := h.pool.QueryRow(ctx, `SELECT consumed_at FROM webauthn_challenge WHERE id = $1`, opts1.ChallengeID).Scan(&consumed1); err != nil {
+		t.Fatal(err)
+	}
+	if !consumed1.Valid {
+		t.Fatal("audit_log failure: challenge must remain burned after mutation tx rollback")
+	}
+
+	if _, err := h.pool.Exec(ctx, `
+		DROP TRIGGER trg_fail_passkey_reg_audit ON audit_log;
+		DROP FUNCTION test_fail_passkey_reg_audit();
+	`); err != nil {
+		t.Fatalf("drop audit trigger: %v", err)
+	}
+
+	// Retrying with the same (released) idempotency key and same (burned) challenge executes fresh and returns 400 passkey_challenge_invalid.
+	respRetry1, rawRetry1 := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
+		idemKey: idemKey1,
+		grant:   grantReg,
+	})
+	assertPasskeyProblem(t, respRetry1, rawRetry1, http.StatusBadRequest, "passkey_challenge_invalid")
+
+	// 2. Trigger failure on user_notification INSERT (after InsertPasskey AND RecordAuditTx have run in the mutation tx).
+	if _, err := h.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_fail_passkey_reg_notice() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.user_id = '`+meA.User.ID.String()+`'::uuid AND NEW.kind = 'security' THEN
+				RAISE EXCEPTION 'simulated passkey.register notice failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER trg_fail_passkey_reg_notice
+		BEFORE INSERT ON user_notification
+		FOR EACH ROW EXECUTE FUNCTION test_fail_passkey_reg_notice();
+	`); err != nil {
+		t.Fatalf("create notice failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_fail_passkey_reg_notice ON user_notification;
+			DROP FUNCTION IF EXISTS test_fail_passkey_reg_notice();
+		`)
+	})
+
+	opts2 := h.registerPasskeyOptions(jarA)
+	reg2, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts2.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2 := makePasskeyCreateBody(
+		t,
+		opts2.ChallengeID,
+		reg2.ClientDataJSONB64,
+		reg2.AttestationObjectB64,
+		opts2.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x82),
+		"Notice Rollback Key",
+		nil,
+	)
+	const idemKey2 = "idem-pk-rb-notice-fail-2"
+	resp2, raw2 := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body2, reqOptions{
+		idemKey: idemKey2,
+		grant:   grantReg,
+	})
+	assertPasskeyProblem(t, resp2, raw2, http.StatusInternalServerError, "internal_error")
+	assertNoPasskeySideEffects("user_notification failure")
+
+	var idemRows2 int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, idemKey2).Scan(&idemRows2); err != nil {
+		t.Fatal(err)
+	}
+	if idemRows2 != 0 {
+		t.Fatalf("user_notification failure: idempotency_key count = %d, want 0 (in_progress claim released)", idemRows2)
+	}
+	var consumed2 pgtype.Timestamptz
+	if err := h.pool.QueryRow(ctx, `SELECT consumed_at FROM webauthn_challenge WHERE id = $1`, opts2.ChallengeID).Scan(&consumed2); err != nil {
+		t.Fatal(err)
+	}
+	if !consumed2.Valid {
+		t.Fatal("user_notification failure: challenge must remain burned after mutation tx rollback")
+	}
+
+	if _, err := h.pool.Exec(ctx, `
+		DROP TRIGGER trg_fail_passkey_reg_notice ON user_notification;
+		DROP FUNCTION test_fail_passkey_reg_notice();
+	`); err != nil {
+		t.Fatalf("drop notice trigger: %v", err)
+	}
+
+	// 3. Idempotency owner_token mismatch right before COMMIT (after InsertPasskey, RecordAuditTx,
+	//    and RecordSecurityNoticeTx + River job insert have all executed in the mutation tx).
+	opts3 := h.registerPasskeyOptions(jarA)
+	reg3, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts3.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body3 := makePasskeyCreateBody(
+		t,
+		opts3.ChallengeID,
+		reg3.ClientDataJSONB64,
+		reg3.AttestationObjectB64,
+		opts3.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x83),
+		"Owner Mismatch Rollback Key",
+		nil,
+	)
+	const idemKey3 = "idem-pk-rb-ownermismatch"
+	fp3 := httpx.ComputeIdempotencyFingerprint(http.MethodPost, "/api/v1/vault/passkeys", []byte(body3))
+	newOwner := uuid.New()
+	var takeoverErr error
+
+	tracer := &lateOwnershipTakeoverTracer{
+		onFinishTx: func() {
+			// Advance clock past the 60s in_progress window so a second claimant legitimately takes
+			// over idemKey3 right before the first transaction runs FinishIdempotencyKey.
+			h.clk.Advance(61 * time.Second)
+			reclaimNow := h.clk.Now()
+			_, takeoverErr = gen.New(h.pool).ClaimIdempotencyKey(ctx, gen.ClaimIdempotencyKeyParams{
+				UserID:      meA.User.ID,
+				Key:         idemKey3,
+				Method:      http.MethodPost,
+				Path:        "/api/v1/vault/passkeys",
+				RequestHash: fp3,
+				OwnerToken:  newOwner,
+				Now:         pgtype.Timestamptz{Time: reclaimNow, Valid: true},
+			})
+		},
+	}
+
+	pcfg := h.pool.Config()
+	pcfg.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AppOrigin = h.origin
+	riverInsert, err := river.NewClient(riverpgxv5.New(tracedPool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, authAPI, err := compose.NewAuth(cfg, tracedPool, riverInsert, h.clk, h.mail, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultSvc, vaultAPI, err := compose.NewVault(cfg, tracedPool, riverInsert, h.clk, h.mail, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authn, csrfv, reauth := compose.Adapters(h.authSvc)
+	srv := httptest.NewServer(httpx.NewRouter(httpx.Deps{
+		Config:        cfg,
+		Logger:        slog.Default(),
+		Authenticator: authn,
+		CSRF:          csrfv,
+		Reauth:        reauth,
+		MountAPI:      compose.MountAll(authhttp.Mount(authAPI), vaulthttp.Mount(vaultAPI)),
+	}))
+	t.Cleanup(srv.Close)
+
+	tracedHarness := &harness{
+		t:        t,
+		srv:      srv,
+		origin:   h.origin,
+		clk:      h.clk,
+		mail:     h.mail,
+		authSvc:  h.authSvc,
+		vaultSvc: vaultSvc,
+		vaultAPI: vaultAPI,
+		pool:     tracedPool,
+		logs:     h.logs,
+	}
+
+	resp3, raw3 := tracedHarness.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body3, reqOptions{
+		idemKey: idemKey3,
+		grant:   grantReg,
+	})
+	if takeoverErr != nil {
+		t.Fatalf("ownership takeover ClaimIdempotencyKey failed: %v", takeoverErr)
+	}
+	if !tracer.once.Load() {
+		t.Fatal("lateOwnershipTakeoverTracer was never triggered")
+	}
+	assertPasskeyProblem(t, resp3, raw3, http.StatusConflict, "idempotency_in_progress")
+	assertNoPasskeySideEffects("owner_token mismatch")
+
+	var consumed3 pgtype.Timestamptz
+	if err := h.pool.QueryRow(ctx, `SELECT consumed_at FROM webauthn_challenge WHERE id = $1`, opts3.ChallengeID).Scan(&consumed3); err != nil {
+		t.Fatal(err)
+	}
+	if !consumed3.Valid {
+		t.Fatal("owner_token mismatch: challenge must remain burned after mutation tx rollback")
+	}
+
+	idemRow3, err := gen.New(h.pool).GetIdempotencyKey(ctx, gen.GetIdempotencyKeyParams{
+		UserID: meA.User.ID,
+		Key:    idemKey3,
+		Now:    pgtype.Timestamptz{Time: h.clk.Now(), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey after owner_token mismatch rollback: %v", err)
+	}
+	if idemRow3.Status != "in_progress" || idemRow3.OwnerToken != newOwner || idemRow3.StatusCode != nil || len(idemRow3.Response) != 0 {
+		t.Fatalf("idempotency row after owner_token mismatch = %+v, want status=in_progress owner=%s status_code=NULL response=empty",
+			idemRow3, newOwner)
 	}
 }
 

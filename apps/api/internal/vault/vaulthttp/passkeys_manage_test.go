@@ -575,3 +575,141 @@ func TestPasskeyRegisterRenameUnlockAndRevokeFullLifecycleHTTP(t *testing.T) {
 		t.Fatalf("unlock options after revoke: status=%d body=%s", resp.StatusCode, raw)
 	}
 }
+
+// TestPasskeyRevoke_RollbackOnAuditAndNoticeFailureHTTP covers BE1-4 / BE1-8 for revoke over HTTP:
+// injects failures inside the DELETE /vault/passkeys/{id} mutation transaction AFTER DeletePasskeyByOwner:
+//  1. Postgres trigger raising on audit_log INSERT (event = 'passkey.revoke') -> rolls back credential
+//     deletion; credential remains in vault_passkey and GET /vault/passkeys, with 0 passkey.revoke audits
+//     and 0 security notices.
+//  2. Postgres trigger raising on user_notification INSERT (kind = 'security') -> rolls back both
+//     credential deletion and audit insert; credential remains intact with 0 passkey.revoke audits and
+//     0 security notices.
+func TestPasskeyRevoke_RollbackOnAuditAndNoticeFailureHTTP(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	ctx := context.Background()
+
+	password := "correct-horse-battery-staple"
+	jarA, meA := h.signupUser("pk-revoke-rollback@example.com", password)
+	resp, raw := h.doReq(jarA, http.MethodPost, "/api/v1/vault", mustJSON(t, makeCreatePayload(t, 0x35)), reqOptions{
+		idemKey: "idem-pk-revoke-rb-create",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /vault = %d %s", resp.StatusCode, raw)
+	}
+
+	va := webauthntest.New()
+	vk := seqTestBytes(vault.VKBytes, 0x77)
+	pk := h.seedPasskeyWithVA(ctx, va, meA.User.ID, vk, "Rollback Protected Key", 0x91)
+	revokeGrant := h.reauthGrant(jarA, "vault.passkey_revoke", password)
+
+	assertCredentialPreservedAndNoSideEffects := func(step string) {
+		t.Helper()
+		dbRow, err := gen.New(h.pool).GetPasskeyByUserAndID(ctx, gen.GetPasskeyByUserAndIDParams{
+			UserID: meA.User.ID,
+			ID:     pk.row.ID,
+		})
+		if err != nil || dbRow.Name != "Rollback Protected Key" {
+			t.Fatalf("%s: passkey missing or altered after rollback: row=%+v err=%v", step, dbRow, err)
+		}
+		list := h.listPasskeysForTest(jarA)
+		if len(list.Items) != 1 || list.Items[0].ID != pk.row.ID {
+			t.Fatalf("%s: GET /vault/passkeys = %+v, want [%s]", step, list.Items, pk.row.ID)
+		}
+		var audits, notices int
+		if err := h.pool.QueryRow(ctx,
+			`SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`,
+			meA.User.ID, vault.EventPasskeyRevoke,
+		).Scan(&audits); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx,
+			`SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`,
+			meA.User.ID,
+		).Scan(&notices); err != nil {
+			t.Fatal(err)
+		}
+		if audits != 0 || notices != 0 {
+			t.Fatalf("%s: leftover side effects after revoke rollback: audits=%d notices=%d, want 0/0", step, audits, notices)
+		}
+	}
+
+	// 1. Trigger failure on audit_log INSERT (after DeletePasskeyByOwner has run in the tx).
+	if _, err := h.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_fail_passkey_revoke_audit() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.user_id = '`+meA.User.ID.String()+`'::uuid AND NEW.event = 'passkey.revoke' THEN
+				RAISE EXCEPTION 'simulated passkey.revoke audit failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER trg_fail_passkey_revoke_audit
+		BEFORE INSERT ON audit_log
+		FOR EACH ROW EXECUTE FUNCTION test_fail_passkey_revoke_audit();
+	`); err != nil {
+		t.Fatalf("create revoke audit trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_fail_passkey_revoke_audit ON audit_log;
+			DROP FUNCTION IF EXISTS test_fail_passkey_revoke_audit();
+		`)
+	})
+
+	resp1, raw1 := h.doReq(jarA, http.MethodDelete, "/api/v1/vault/passkeys/"+pk.row.ID.String(), "", reqOptions{
+		grant: revokeGrant,
+	})
+	assertPasskeyProblem(t, resp1, raw1, http.StatusInternalServerError, "internal_error")
+	assertCredentialPreservedAndNoSideEffects("audit_log failure")
+
+	if _, err := h.pool.Exec(ctx, `
+		DROP TRIGGER trg_fail_passkey_revoke_audit ON audit_log;
+		DROP FUNCTION test_fail_passkey_revoke_audit();
+	`); err != nil {
+		t.Fatalf("drop revoke audit trigger: %v", err)
+	}
+
+	// 2. Trigger failure on user_notification INSERT (after DeletePasskeyByOwner AND RecordAuditTx have run).
+	if _, err := h.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_fail_passkey_revoke_notice() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.user_id = '`+meA.User.ID.String()+`'::uuid AND NEW.kind = 'security' THEN
+				RAISE EXCEPTION 'simulated passkey.revoke notice failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER trg_fail_passkey_revoke_notice
+		BEFORE INSERT ON user_notification
+		FOR EACH ROW EXECUTE FUNCTION test_fail_passkey_revoke_notice();
+	`); err != nil {
+		t.Fatalf("create revoke notice trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_fail_passkey_revoke_notice ON user_notification;
+			DROP FUNCTION IF EXISTS test_fail_passkey_revoke_notice();
+		`)
+	})
+
+	resp2, raw2 := h.doReq(jarA, http.MethodDelete, "/api/v1/vault/passkeys/"+pk.row.ID.String(), "", reqOptions{
+		grant: revokeGrant,
+	})
+	assertPasskeyProblem(t, resp2, raw2, http.StatusInternalServerError, "internal_error")
+	assertCredentialPreservedAndNoSideEffects("user_notification failure")
+
+	if _, err := h.pool.Exec(ctx, `
+		DROP TRIGGER trg_fail_passkey_revoke_notice ON user_notification;
+		DROP FUNCTION test_fail_passkey_revoke_notice();
+	`); err != nil {
+		t.Fatalf("drop revoke notice trigger: %v", err)
+	}
+
+	// 3. With triggers removed, DELETE /vault/passkeys/{id} succeeds (204) and commits deletion + audit + notice.
+	resp3, raw3 := h.doReq(jarA, http.MethodDelete, "/api/v1/vault/passkeys/"+pk.row.ID.String(), "", reqOptions{
+		grant: revokeGrant,
+	})
+	if resp3.StatusCode != http.StatusNoContent || raw3 != "" {
+		t.Fatalf("DELETE after rollback recovery = %d %q, want 204", resp3.StatusCode, raw3)
+	}
+}

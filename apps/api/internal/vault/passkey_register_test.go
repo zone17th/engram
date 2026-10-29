@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -298,5 +300,288 @@ func TestServiceRegisterPasskeyOptionsAndRegister(t *testing.T) {
 		Name:              "Valid Name",
 	}); !errors.Is(err, vault.ErrVaultWrapInvalid) {
 		t.Fatalf("expected ErrVaultWrapInvalid for bad wrap, got %v", err)
+	}
+}
+
+// TestServiceRegisterPasskey_ConcurrentChallengeConsumeAndRollback covers BE1-3 / BE1-7 and BE1-4 / BE1-8
+// at the service level:
+//  1. Two concurrent svc.RegisterPasskey calls using ONE challenge and DISTINCT credentials, synchronized
+//     by holding the webauthn_challenge row FOR UPDATE until pg_stat_activity / pg_blocking_pids confirms
+//     both consumers are blocked, then releasing: exactly one succeeds and the other returns ErrPasskeyChallengeInvalid.
+//  2. Failure injected after InsertPasskey (via Postgres trigger on audit_log and user_notification) rolls back
+//     the passkey insert, leaves 0 audits and 0 notices for the failed attempt, while keeping the challenge burned.
+func TestServiceRegisterPasskey_ConcurrentChallengeConsumeAndRollback(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	clk := clock.NewFixed(time.Date(2026, 10, 29, 13, 0, 0, 0, time.UTC))
+
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://localhost:3000")
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	aud := audit.NewStore(pool)
+	notes := notification.NewStore(pool, nil)
+	svc, err := vault.NewService(cfg, pool, clk, aud, notes, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	ctx := context.Background()
+	q := gen.New(pool)
+
+	userA, err := q.InsertUser(ctx, gen.InsertUserParams{
+		Email:  "passkey-svc-conc-rb@example.com",
+		Locale: "en",
+	})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+	sessA, err := q.InsertSession(ctx, gen.InsertSessionParams{
+		UserID:           userA.ID,
+		RefreshTokenHash: seqBytes(32, 0x31),
+		IpHash:           seqBytes(32, 0x32),
+		ExpiresAt:        pgtype.Timestamptz{Time: clk.Now().Add(24 * time.Hour), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	pA := authctx.Principal{
+		UserID:    userA.ID,
+		SessionID: sessA.ID,
+	}
+
+	if _, err := svc.Create(ctx, pA, makeValidCreateInput(t, 0x20)); err != nil {
+		t.Fatalf("svc.Create: %v", err)
+	}
+
+	va := webauthntest.New()
+
+	// Part 1: Deterministic concurrent challenge consumption with distinct credentials.
+	optsConc, err := svc.RegisterPasskeyOptions(ctx, pA)
+	if err != nil {
+		t.Fatalf("RegisterPasskeyOptions: %v", err)
+	}
+	regConc0, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         "localhost",
+		Origin:       "http://localhost:3000",
+		ChallengeB64: optsConc.PublicKey.Challenge,
+		CredentialID: seqBytes(32, 0xC1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	regConc1, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         "localhost",
+		Origin:       "http://localhost:3000",
+		ChallengeB64: optsConc.PublicKey.Challenge,
+		CredentialID: seqBytes(32, 0xD2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := [2]vault.RegisterPasskeyInput{
+		{
+			ChallengeID:       optsConc.ChallengeID,
+			ClientDataJSON:    regConc0.ClientDataJSONB64,
+			AttestationObject: regConc0.AttestationObjectB64,
+			PRFSalt:           optsConc.PRFSalt,
+			VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x41),
+			Name:              "Svc Concurrent 0",
+			IP:                "127.0.0.1",
+			UA:                "svc-test/0",
+		},
+		{
+			ChallengeID:       optsConc.ChallengeID,
+			ClientDataJSON:    regConc1.ClientDataJSONB64,
+			AttestationObject: regConc1.AttestationObjectB64,
+			PRFSalt:           optsConc.PRFSalt,
+			VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x42),
+			Name:              "Svc Concurrent 1",
+			IP:                "127.0.0.1",
+			UA:                "svc-test/1",
+		},
+	}
+
+	lockTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lockTx: %v", err)
+	}
+	defer func() { _ = lockTx.Rollback(ctx) }()
+
+	var holderPID int32
+	if err := lockTx.QueryRow(ctx,
+		`SELECT pg_backend_pid() FROM webauthn_challenge WHERE id = $1 FOR UPDATE`,
+		optsConc.ChallengeID,
+	).Scan(&holderPID); err != nil {
+		t.Fatalf("lock challenge row FOR UPDATE: %v", err)
+	}
+
+	var items [2]vault.PasskeyItem
+	var errs [2]error
+	earlyDone := make(chan int, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { earlyDone <- idx }()
+			items[idx], errs[idx] = svc.RegisterPasskey(ctx, pA, inputs[idx])
+		}(i)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer waitCancel()
+	for {
+		var blocked int
+		if err := pool.QueryRow(waitCtx, `
+			SELECT count(*)
+			FROM pg_stat_activity AS a
+			WHERE a.datname = current_database()
+			  AND a.pid <> $1
+			  AND cardinality(pg_blocking_pids(a.pid)) > 0
+			  AND (
+			    $1 = ANY(pg_blocking_pids(a.pid))
+			    OR EXISTS (
+			      SELECT 1
+			      FROM unnest(pg_blocking_pids(a.pid)) AS mid_pid
+			      WHERE $1 = ANY(pg_blocking_pids(mid_pid))
+			    )
+			  )
+		`, holderPID).Scan(&blocked); err != nil {
+			t.Fatalf("poll pg_blocking_pids: %v", err)
+		}
+		if blocked >= 2 {
+			break
+		}
+		select {
+		case idx := <-earlyDone:
+			t.Fatalf("consumer %d exited before both were blocked: err=%v", idx, errs[idx])
+		case <-waitCtx.Done():
+			t.Fatalf("timeout waiting for 2 blocked consumers (last blocked=%d)", blocked)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatalf("release lockTx: %v", err)
+	}
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+	select {
+	case <-doneCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent RegisterPasskey consumers")
+	}
+
+	var okCount, invalidCount int
+	for i := range 2 {
+		switch {
+		case errs[i] == nil && items[i].ID != uuid.Nil:
+			okCount++
+		case errors.Is(errs[i], vault.ErrPasskeyChallengeInvalid):
+			invalidCount++
+		default:
+			t.Fatalf("consumer %d unexpected result: item=%+v err=%v", i, items[i], errs[i])
+		}
+	}
+	if okCount != 1 || invalidCount != 1 {
+		t.Fatalf("concurrent consume results: ok=%d invalid=%d, want 1 and 1 (errs=%v)", okCount, invalidCount, fmt.Sprint(errs))
+	}
+
+	// Part 2: Rollback when audit_log or user_notification write fails after InsertPasskey.
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_svc_fail_passkey_reg() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.user_id = '`+userA.ID.String()+`'::uuid THEN
+				RAISE EXCEPTION 'simulated service passkey register failure on %', TG_TABLE_NAME;
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+	`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_svc_fail_reg_audit ON audit_log;
+			DROP TRIGGER IF EXISTS trg_svc_fail_reg_notice ON user_notification;
+			DROP FUNCTION IF EXISTS test_svc_fail_passkey_reg();
+		`)
+	})
+
+	for _, table := range []string{"audit_log", "user_notification"} {
+		trigName := "trg_svc_fail_reg_" + table
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`
+			CREATE TRIGGER %s
+			BEFORE INSERT ON %s
+			FOR EACH ROW EXECUTE FUNCTION test_svc_fail_passkey_reg();
+		`, trigName, table)); err != nil {
+			t.Fatalf("create trigger on %s: %v", table, err)
+		}
+
+		optsRB, err := svc.RegisterPasskeyOptions(ctx, pA)
+		if err != nil {
+			t.Fatalf("RegisterPasskeyOptions(%s): %v", table, err)
+		}
+		regRB, err := va.CreateCredential(webauthntest.RegistrationOptions{
+			RPID:         "localhost",
+			Origin:       "http://localhost:3000",
+			ChallengeB64: optsRB.PublicKey.Challenge,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, regErr := svc.RegisterPasskey(ctx, pA, vault.RegisterPasskeyInput{
+			ChallengeID:       optsRB.ChallengeID,
+			ClientDataJSON:    regRB.ClientDataJSONB64,
+			AttestationObject: regRB.AttestationObjectB64,
+			PRFSalt:           optsRB.PRFSalt,
+			VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x55),
+			Name:              "Rollback Key " + table,
+		})
+		if regErr == nil {
+			t.Fatalf("expected error when %s trigger raises", table)
+		}
+
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`DROP TRIGGER %s ON %s`, trigName, table)); err != nil {
+			t.Fatalf("drop trigger %s: %v", trigName, err)
+		}
+
+		var pkCount, auditCount, noticeCount int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, userA.ID).Scan(&pkCount); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, userA.ID, vault.EventPasskeyRegister).Scan(&auditCount); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userA.ID).Scan(&noticeCount); err != nil {
+			t.Fatal(err)
+		}
+		if pkCount != 1 || auditCount != 1 || noticeCount != 1 {
+			t.Fatalf("after %s rollback: passkeys=%d audits=%d notices=%d, want 1/1/1 (only Part 1 winner)",
+				table, pkCount, auditCount, noticeCount)
+		}
+
+		// Consumed challenge must stay burned even though the mutation tx rolled back.
+		if _, err := svc.RegisterPasskey(ctx, pA, vault.RegisterPasskeyInput{
+			ChallengeID:       optsRB.ChallengeID,
+			ClientDataJSON:    regRB.ClientDataJSONB64,
+			AttestationObject: regRB.AttestationObjectB64,
+			PRFSalt:           optsRB.PRFSalt,
+			VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x55),
+			Name:              "Retry After Rollback " + table,
+		}); !errors.Is(err, vault.ErrPasskeyChallengeInvalid) {
+			t.Fatalf("after %s rollback, retry with burned challenge = %v, want ErrPasskeyChallengeInvalid", table, err)
+		}
 	}
 }

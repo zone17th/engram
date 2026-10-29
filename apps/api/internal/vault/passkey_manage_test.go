@@ -413,3 +413,103 @@ func TestServicePasskeyRenameRevokeAndUnlockOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestServicePasskeyRevoke_RollbackOnAuditAndNoticeFailure covers BE1-4 / BE1-8 for RevokePasskey:
+// when audit_log or user_notification write fails inside the transaction after DeletePasskeyByOwner,
+// the credential deletion rolls back and no audit/notice is committed.
+func TestServicePasskeyRevoke_RollbackOnAuditAndNoticeFailure(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://localhost:3000")
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	clk := clock.NewFixed(time.Date(2026, 10, 29, 13, 30, 0, 0, time.UTC))
+	aud := audit.NewStore(pool)
+	notes := notification.NewStore(pool, nil)
+	svc, err := vault.NewService(cfg, pool, clk, aud, notes, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("vault.NewService: %v", err)
+	}
+
+	q := gen.New(pool)
+	userA, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "pk-svc-revoke-rb@example.com", Locale: "en"})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+	pA := authctx.Principal{UserID: userA.ID, SessionID: uuid.New()}
+	if _, err := svc.Create(ctx, pA, makeValidCreateInput(t, 0x33)); err != nil {
+		t.Fatalf("svc.Create: %v", err)
+	}
+
+	va := webauthntest.New()
+	vkA := seqBytes(vault.VKBytes, 0x99)
+	pk := seedVirtualAuthenticatorPasskey(t, ctx, q, va, svc.WebAuthnConfig(), userA.ID, vkA, "Protected Credential", 0xC1)
+
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_svc_fail_passkey_revoke() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.user_id = '`+userA.ID.String()+`'::uuid THEN
+				RAISE EXCEPTION 'simulated service passkey revoke failure on %', TG_TABLE_NAME;
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+	`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_svc_fail_revoke_audit_log ON audit_log;
+			DROP TRIGGER IF EXISTS trg_svc_fail_revoke_user_notification ON user_notification;
+			DROP FUNCTION IF EXISTS test_svc_fail_passkey_revoke();
+		`)
+	})
+
+	for _, table := range []string{"audit_log", "user_notification"} {
+		trigName := "trg_svc_fail_revoke_" + table
+		if _, err := pool.Exec(ctx, `CREATE TRIGGER `+trigName+` BEFORE INSERT ON `+table+` FOR EACH ROW EXECUTE FUNCTION test_svc_fail_passkey_revoke()`); err != nil {
+			t.Fatalf("create trigger on %s: %v", table, err)
+		}
+
+		err := svc.RevokePasskey(ctx, pA, vault.RevokePasskeyInput{
+			PasskeyID: pk.row.ID,
+			IP:        "127.0.0.1",
+			UA:        "svc-revoke-rb",
+		})
+		if err == nil {
+			t.Fatalf("expected RevokePasskey error when %s trigger raises", table)
+		}
+
+		if _, err := pool.Exec(ctx, `DROP TRIGGER `+trigName+` ON `+table); err != nil {
+			t.Fatalf("drop trigger %s: %v", trigName, err)
+		}
+
+		// Credential must still be present, with 0 passkey.revoke audits and 0 security notices.
+		rowAfter, err := q.GetPasskeyByUserAndID(ctx, gen.GetPasskeyByUserAndIDParams{
+			UserID: userA.ID,
+			ID:     pk.row.ID,
+		})
+		if err != nil || rowAfter.Name != "Protected Credential" {
+			t.Fatalf("after %s rollback: passkey missing or altered: row=%+v err=%v", table, rowAfter, err)
+		}
+		var audits, notices int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, userA.ID, vault.EventPasskeyRevoke).Scan(&audits); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userA.ID).Scan(&notices); err != nil {
+			t.Fatal(err)
+		}
+		if audits != 0 || notices != 0 {
+			t.Fatalf("after %s rollback: audits=%d notices=%d, want 0/0", table, audits, notices)
+		}
+	}
+}
