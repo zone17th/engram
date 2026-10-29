@@ -19,6 +19,7 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
 )
 
 type Auth struct {
@@ -66,7 +67,7 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 	if notes == nil {
 		return nil, nil, nil, fmt.Errorf("notification store nil")
 	}
-	svc, err := auth.NewService(cfg, pool, sessions, csrf, tokens, grants, lockout, clk, aud, notes, auth.ConfigProbe(cfg), mail, nil)
+	svc, err := auth.NewService(cfg, pool, sessions, csrf, tokens, grants, lockout, clk, aud, notes, auth.ConfigProbe(cfg), mail, vault.NewVaultStatus(pool))
 	if err != nil {
 		return nil, nil, nil, err
 	}
