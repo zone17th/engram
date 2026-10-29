@@ -14,6 +14,8 @@ import {
 } from './helpers';
 
 const INITIAL_VAULT_PASSPHRASE = 'correct-horse-battery-staple-gn-v1';
+const UPDATED_VAULT_PASSPHRASE_1 = 'correct-horse-battery-staple-gn-v2';
+const UPDATED_VAULT_PASSPHRASE_2 = 'correct-horse-battery-staple-gn-v3';
 const THEMES = ['light', 'dark'] as const;
 const WIDTHS = [
   { width: 390, height: 844 },
@@ -233,18 +235,26 @@ async function saveScreenshot(
   options: {
     fullPage?: boolean;
     mask?: Locator[];
+    target?: Locator;
   } = {},
 ) {
   const fileName = `vault-settings-${stateName}-${theme}-${width}.png`;
   const outputPath = testInfo.outputPath(fileName);
   mkdirSync(dirname(outputPath), { recursive: true });
-  const buffer = await page.screenshot({
-    path: outputPath,
-    fullPage: options.fullPage ?? false,
-    animations: 'disabled',
-    caret: 'hide',
-    ...(options.mask && options.mask.length > 0 ? { mask: options.mask } : {}),
-  });
+  const buffer = options.target
+    ? await options.target.screenshot({
+        path: outputPath,
+        animations: 'disabled',
+        caret: 'hide',
+        ...(options.mask && options.mask.length > 0 ? { mask: options.mask } : {}),
+      })
+    : await page.screenshot({
+        path: outputPath,
+        fullPage: options.fullPage ?? false,
+        animations: 'disabled',
+        caret: 'hide',
+        ...(options.mask && options.mask.length > 0 ? { mask: options.mask } : {}),
+      });
   expect(buffer.byteLength).toBeGreaterThan(0);
 }
 
@@ -279,7 +289,9 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
         await expect(page.getByTestId('vault-security-section')).toBeVisible();
         await expect(page.getByTestId('recovery-keys-remaining-badge')).toBeVisible();
 
-        for (const viewport of WIDTHS) {
+        for (const [idx, viewport] of WIDTHS.entries()) {
+          const nextPassphrase =
+            idx === 0 ? UPDATED_VAULT_PASSPHRASE_1 : UPDATED_VAULT_PASSPHRASE_2;
           await page.setViewportSize({ width: viewport.width, height: viewport.height });
           await settleForCapture(page, email, theme);
 
@@ -299,32 +311,53 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           await expect(passDialog.locator('#pass-confirm-pp')).toHaveValue('');
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'passphrase-dialog', theme, viewport.width, {
-            fullPage: false,
+            target: passDialog.locator('.panel'),
             mask: [
               passDialog.locator('#pass-login-pwd'),
               passDialog.locator('#pass-new-pp'),
               passDialog.locator('#pass-confirm-pp'),
             ],
           });
-          await passDialog.getByRole('button', { name: /Cancel|Huỷ/ }).click();
+
+          // (b.2) Change-passphrase done step (`data-view="pass-done"`)
+          const passLoginInput = passDialog.locator('#pass-login-pwd');
+          if ((await passLoginInput.count()) > 0) {
+            await passLoginInput.fill(PASSWORD);
+          }
+          await passDialog.locator('#pass-new-pp').fill(nextPassphrase);
+          await passDialog.locator('#pass-confirm-pp').fill(nextPassphrase);
+          await passDialog.getByRole('button', { name: /Change passphrase|Đổi passphrase/ }).click();
+          await expect(passDialog.locator('[data-view="pass-done"]')).toBeVisible({
+            timeout: 20_000,
+          });
+          await settleForCapture(page, email, theme);
+          await saveScreenshot(page, testInfo, 'passphrase-done', theme, viewport.width, {
+            target: passDialog.locator('.panel'),
+          });
+          await passDialog.getByRole('button', { name: /Done|Xong/ }).click();
           await expect(passDialog).toBeHidden();
 
           // (c) Recovery-keys dialog showing a NEW key sheet (all RK slot cells masked)
           await page.locator('[data-open-dialog="rotateDlg"]').click();
           const rkDialog = page.getByRole('dialog');
           await expect(rkDialog).toBeVisible();
-          const reauthInput = rkDialog.locator('#rot-reauth-pwd');
-          if (await reauthInput.isVisible()) {
-            await reauthInput.fill(PASSWORD);
+          const rkStage = rkDialog.locator('[data-view="rot-reauth"], [data-view="rot-keys"]');
+          await expect(rkStage).toBeVisible({ timeout: 20_000 });
+          if ((await rkStage.getAttribute('data-view')) === 'rot-reauth') {
+            await rkDialog.locator('#rot-reauth-pwd').fill(PASSWORD);
             await rkDialog.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
           }
+          await expect(rkDialog.locator('[data-view="rot-keys"]')).toBeVisible({
+            timeout: 20_000,
+          });
           const rkGrid = rkDialog.getByTestId('recovery-keys-grid');
           await expect(rkGrid).toBeVisible({ timeout: 20_000 });
           const rkCells = rkDialog.locator('[data-testid^="recovery-key-slot-"]');
           await expect(rkCells).toHaveCount(10);
+          await rkGrid.scrollIntoViewIfNeeded();
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'rk-sheet', theme, viewport.width, {
-            fullPage: false,
+            target: rkDialog.locator('.panel'),
             mask: [rkCells, rkGrid],
           });
           await rkDialog.getByRole('button', { name: /Cancel|Huỷ/ }).click();
@@ -338,7 +371,7 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           await expect(resetDialog.locator('[data-view="rst-s1"]')).toBeVisible();
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'reset-step1', theme, viewport.width, {
-            fullPage: false,
+            target: resetDialog.locator('.panel'),
           });
 
           await resetDialog
@@ -349,8 +382,9 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
             .getByRole('button', { name: /Checked backups|Đã kiểm tra backup/ })
             .click();
 
-          const rstReauthSection = resetDialog.locator('[data-view="rst-s3"]');
-          if (await rstReauthSection.isVisible()) {
+          const rstStage = resetDialog.locator('[data-view="rst-s3"], [data-view="rst-s4"]');
+          await expect(rstStage).toBeVisible({ timeout: 20_000 });
+          if ((await rstStage.getAttribute('data-view')) === 'rst-s3') {
             await resetDialog.locator('#rst-reauth-pwd').fill(PASSWORD);
             await resetDialog.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
           }
@@ -360,14 +394,84 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           });
           const confirmWordInput = resetDialog.locator('#rst-confirm-word');
           await confirmWordInput.fill('ĐẶT LẠI');
-          await expect(resetDialog.locator('#rstConfirmBtn')).toBeEnabled();
+          const rstConfirmBtn = resetDialog.locator('#rstConfirmBtn');
+          await expect(rstConfirmBtn).toBeEnabled();
+          await rstConfirmBtn.scrollIntoViewIfNeeded();
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'reset-confirm', theme, viewport.width, {
-            fullPage: false,
+            target: resetDialog.locator('.panel'),
           });
 
-          await page.keyboard.press('Escape');
-          await expect(resetDialog).toBeHidden();
+          if (idx === 0) {
+            await page.keyboard.press('Escape');
+            await expect(resetDialog).toBeHidden();
+          } else {
+            // On the final viewport (1440), lock to capture locked banner across both widths, then reset to capture absent banner across both widths
+            await page.keyboard.press('Escape');
+            await expect(resetDialog).toBeHidden();
+          }
+        }
+
+        // (e) Locked panel banner (`vault-security-locked-banner`) across 390 + 1440
+        await page.evaluate(async () => {
+          const win = window as unknown as {
+            __engramVaultTestBridge: { lockNow: () => Promise<void> };
+          };
+          await win.__engramVaultTestBridge.lockNow();
+        });
+        await expect(page.getByTestId('vault-security-locked-banner')).toBeVisible({
+          timeout: 15_000,
+        });
+        for (const viewport of WIDTHS) {
+          await page.setViewportSize({ width: viewport.width, height: viewport.height });
+          await settleForCapture(page, email, theme);
+          await page.getByTestId('vault-security-locked-banner').scrollIntoViewIfNeeded();
+          await page.waitForTimeout(100);
+          await saveScreenshot(page, testInfo, 'locked-banner', theme, viewport.width, {
+            fullPage: false,
+          });
+        }
+
+        // (f) Complete Reset Vault to transition to absent, then capture absent panel banner (`vault-security-absent-banner`) across 390 + 1440
+        await page.locator('[data-open-dialog="resetDlg"]').click();
+        const resetDlgForAbsent = page.getByRole('dialog');
+        await expect(resetDlgForAbsent.locator('[data-view="rst-s1"]')).toBeVisible();
+        await resetDlgForAbsent
+          .getByRole('button', { name: /None of these work|Không đường nào dùng được/ })
+          .click();
+        await expect(resetDlgForAbsent.locator('[data-view="rst-s2"]')).toBeVisible();
+        await resetDlgForAbsent
+          .getByRole('button', { name: /Checked backups|Đã kiểm tra backup/ })
+          .click();
+        const rstAbsentStage = resetDlgForAbsent.locator(
+          '[data-view="rst-s3"], [data-view="rst-s4"]',
+        );
+        await expect(rstAbsentStage).toBeVisible({ timeout: 20_000 });
+        if ((await rstAbsentStage.getAttribute('data-view')) === 'rst-s3') {
+          await resetDlgForAbsent.locator('#rst-reauth-pwd').fill(PASSWORD);
+          await resetDlgForAbsent.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
+        }
+        await expect(resetDlgForAbsent.locator('[data-view="rst-s4"]')).toBeVisible({
+          timeout: 20_000,
+        });
+        await resetDlgForAbsent.locator('#rst-confirm-word').fill('ĐẶT LẠI');
+        await resetDlgForAbsent.locator('#rstConfirmBtn').click();
+        await expect(resetDlgForAbsent.locator('[data-view="rst-s5"]')).toBeVisible({
+          timeout: 20_000,
+        });
+        await resetDlgForAbsent.getByRole('button', { name: /Close|Đóng/ }).click();
+        await expect(resetDlgForAbsent).toBeHidden();
+        await expect(page.getByTestId('vault-security-absent-banner')).toBeVisible({
+          timeout: 15_000,
+        });
+        for (const viewport of WIDTHS) {
+          await page.setViewportSize({ width: viewport.width, height: viewport.height });
+          await settleForCapture(page, email, theme);
+          await page.getByTestId('vault-security-absent-banner').scrollIntoViewIfNeeded();
+          await page.waitForTimeout(100);
+          await saveScreenshot(page, testInfo, 'absent-banner', theme, viewport.width, {
+            fullPage: false,
+          });
         }
       } finally {
         await context.close();

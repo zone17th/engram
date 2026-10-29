@@ -18,6 +18,10 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-settings-passphrase-dialog-light-1440.png',
   'vault-settings-passphrase-dialog-dark-390.png',
   'vault-settings-passphrase-dialog-dark-1440.png',
+  'vault-settings-passphrase-done-light-390.png',
+  'vault-settings-passphrase-done-light-1440.png',
+  'vault-settings-passphrase-done-dark-390.png',
+  'vault-settings-passphrase-done-dark-1440.png',
   'vault-settings-rk-sheet-light-390.png',
   'vault-settings-rk-sheet-light-1440.png',
   'vault-settings-rk-sheet-dark-390.png',
@@ -30,6 +34,14 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-settings-reset-confirm-light-1440.png',
   'vault-settings-reset-confirm-dark-390.png',
   'vault-settings-reset-confirm-dark-1440.png',
+  'vault-settings-locked-banner-light-390.png',
+  'vault-settings-locked-banner-light-1440.png',
+  'vault-settings-locked-banner-dark-390.png',
+  'vault-settings-locked-banner-dark-1440.png',
+  'vault-settings-absent-banner-light-390.png',
+  'vault-settings-absent-banner-light-1440.png',
+  'vault-settings-absent-banner-dark-390.png',
+  'vault-settings-absent-banner-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440']);
 
