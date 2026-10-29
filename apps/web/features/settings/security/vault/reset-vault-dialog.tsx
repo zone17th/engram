@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
 import { useSession } from '@/features/auth/session-provider';
+import { purgeDeviceKeysOnRevoked } from '@/features/vault/device-store';
 import { useVault } from '@/features/vault/vault-provider';
 import { reauthPassword, type ReauthGrant } from '@/lib/api/auth';
 import {
@@ -56,7 +57,7 @@ export function ResetVaultDialog({
   onSuccessToast,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
-  const { reauth, refetchMe } = useSession();
+  const { me, reauth, refetchMe } = useSession();
   const vault = useVault();
 
   const [step, setStep] = useState<ResetStep>('s1_paths');
@@ -94,9 +95,9 @@ export function ResetVaultDialog({
 
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
-      clearInputs();
+      resetDialogState();
     });
-  }, [clearInputs, vault]);
+  }, [resetDialogState, vault]);
 
   useEffect(() => {
     if (!open) {
@@ -143,6 +144,9 @@ export function ResetVaultDialog({
           return;
         case 'reauth_expired':
           setStep('reauth_expired');
+          return;
+        case 'reauth_failed':
+          setErrorMessage(t('errors.reauthFailed'));
           return;
         case 'rate_limited':
           setErrorMessage(
@@ -218,10 +222,20 @@ export function ResetVaultDialog({
         vault.setActiveOperation(null);
       }
 
-      // TODO(T18): Purge remembered DevKey records in IndexedDB `sabk.device` via single readwrite tx + incarnation rotation once Task 18 lands.
+      // R1-5: Purge remembered DevKey records in IndexedDB `sabk.device` via single readwrite tx + incarnation rotation (ADR 0003 §6).
+      // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
+      try {
+        await purgeDeviceKeysOnRevoked(me?.user.id);
+      } catch {
+        // Best-effort purge after 204
+      }
 
       // On 204: lock locally, notifyVaultChanged so other tabs lock (their reload gets 404), and refresh Me so provider/guard move to absent -> onboarding.
-      await vault.lock({ broadcast: false, reason: 'vault_reset' });
+      try {
+        await vault.lock({ broadcast: false, reason: 'vault_reset' });
+      } catch {
+        // Best-effort local lock after 204
+      }
       vault.notifyVaultChanged({
         vault_key_id: currentMeta.vault_key_id,
         version: null,
@@ -230,11 +244,15 @@ export function ResetVaultDialog({
       idempotencyKeyRef.current = null;
       activeGrantRef.current = null;
       reauth.clearGrant();
-      onSuccessToast?.(t('reset.toastDone'));
-      await refetchMe();
+      try {
+        onSuccessToast?.(t('reset.toastDone'));
+        await refetchMe();
+      } catch {
+        // Best-effort Me refresh after 204
+      }
       setStep('s5_done');
     },
-    [clearInputs, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
+    [clearInputs, me?.user.id, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
   );
 
   const handleConfirmReset = useCallback(async () => {
@@ -291,15 +309,12 @@ export function ResetVaultDialog({
       activeGrantRef.current = freshGrant;
       await executeResetDelete(freshGrant.grant);
     } catch (err) {
-      if (reauth.error) {
-        return;
-      }
       handleError(err);
     } finally {
       inFlightGuardRef.current = false;
       setSubmitting(false);
     }
-  }, [executeResetDelete, handleError, inlineReauthPassword, reauth, submitting]);
+  }, [executeResetDelete, handleError, inlineReauthPassword, submitting]);
 
   const handleRestartFromStep1 = useCallback(() => {
     clearInputs();
@@ -487,9 +502,9 @@ export function ResetVaultDialog({
                 )}
               </div>
 
-              {(errorMessage || reauth.error) && (
+              {errorMessage && (
                 <AuthStatus tone="error" className="mb-4">
-                  {errorMessage ?? reauth.error}
+                  {errorMessage}
                 </AuthStatus>
               )}
 
@@ -609,9 +624,9 @@ export function ResetVaultDialog({
                     disabled={submitting}
                     wrapperClassName="mb-3"
                   />
-                  {(errorMessage || reauth.error) && (
+                  {errorMessage && (
                     <AuthStatus tone="error" className="mb-3">
-                      {errorMessage ?? reauth.error}
+                      {errorMessage}
                     </AuthStatus>
                   )}
                   <Button

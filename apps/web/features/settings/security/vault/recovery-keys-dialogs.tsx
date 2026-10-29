@@ -103,12 +103,13 @@ export function RecoveryKeysDialog({
     activeGrantRef.current = null;
   }, [wipeKeysAndSecrets]);
 
-  // Register secret form reset so locking the vault immediately wipes displayed RK from DOM/state
+  // Register secret form reset so locking the vault immediately wipes displayed RK from DOM/state,
+  // clears idempotencyKeyRef, and returns to the first step (R1-7).
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
-      wipeKeysAndSecrets();
+      resetDialogState();
     });
-  }, [vault, wipeKeysAndSecrets]);
+  }, [resetDialogState, vault]);
 
   // Also wipe keys on component unmount
   useEffect(() => {
@@ -213,6 +214,9 @@ export function RecoveryKeysDialog({
           }
           setStep('reauth_expired');
           return;
+        case 'reauth_failed':
+          setErrorMessage(t('errors.reauthFailed'));
+          return;
         case 'recovery_key_slot_taken':
           setGeneratedKeys([]);
           uploadPayloadRef.current = null;
@@ -271,15 +275,12 @@ export function RecoveryKeysDialog({
       setLoginPassword('');
       await generateKeysInWorker(grantResult);
     } catch (err) {
-      if (reauth.error) {
-        return;
-      }
       handleError(err);
     } finally {
       inFlightGuardRef.current = false;
       setSubmitting(false);
     }
-  }, [generateKeysInWorker, handleError, loginPassword, reauth, requiredAction, submitting]);
+  }, [generateKeysInWorker, handleError, loginPassword, requiredAction, submitting]);
 
   const executeSaveKeys = useCallback(
     async (grantToken: string) => {
@@ -389,15 +390,12 @@ export function RecoveryKeysDialog({
       activeGrantRef.current = freshGrant;
       await executeSaveKeys(freshGrant.grant);
     } catch (err) {
-      if (reauth.error) {
-        return;
-      }
       handleError(err);
     } finally {
       inFlightGuardRef.current = false;
       setSubmitting(false);
     }
-  }, [executeSaveKeys, handleError, inlineReauthPassword, reauth, requiredAction, submitting]);
+  }, [executeSaveKeys, handleError, inlineReauthPassword, requiredAction, submitting]);
 
   const handleRestartOauthFlow = useCallback(() => {
     wipeKeysAndSecrets();
@@ -508,9 +506,9 @@ export function RecoveryKeysDialog({
                 )}
               </div>
 
-              {(errorMessage || reauth.error) && (
+              {errorMessage && (
                 <AuthStatus tone="error" className="mb-4">
-                  {errorMessage ?? reauth.error}
+                  {errorMessage}
                 </AuthStatus>
               )}
 
@@ -623,9 +621,9 @@ export function RecoveryKeysDialog({
                     disabled={submitting}
                     wrapperClassName="mb-3"
                   />
-                  {(errorMessage || reauth.error) && (
+                  {errorMessage && (
                     <AuthStatus tone="error" className="mb-3">
-                      {errorMessage ?? reauth.error}
+                      {errorMessage}
                     </AuthStatus>
                   )}
                   <Button

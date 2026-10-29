@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import {
   VaultProvider,
+  formatDevKeyRecordKey,
+  readDeviceMetaRecord,
   resetVaultBroadcastForTests,
+  setDefaultDeviceStoreEnvironmentForTests,
   useVault,
   type LockEpochEnvironment,
   type VaultContextValue,
@@ -197,6 +200,15 @@ class FakeIDBStorage {
                   return undefined;
                 });
               },
+              getAllKeys() {
+                return makeReq(() => Array.from(backing.keys()));
+              },
+              clear() {
+                return makeReq(() => {
+                  backing.clear();
+                  return undefined;
+                });
+              },
             } as unknown as IDBObjectStore;
           },
         };
@@ -335,9 +347,11 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     resetVaultBroadcastForTests();
     fakeIdb = new FakeIDBStorage();
     fakeLocks = new FakeWebLocks();
+    const idbFactory = fakeIdb.createFactory();
+    setDefaultDeviceStoreEnvironmentForTests({ idbFactory });
 
     vi.stubGlobal('BroadcastChannel', HubBroadcastChannel);
-    vi.stubGlobal('indexedDB', fakeIdb.createFactory());
+    vi.stubGlobal('indexedDB', idbFactory);
     vi.stubGlobal('navigator', {
       ...navigator,
       locks: fakeLocks.createLockManager(),
@@ -446,8 +460,21 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       if (url.endsWith('/api/v1/vault/kek') && method === 'PUT') {
         callLog.push('PUT /vault/kek');
         const nextVersion = (currentVaultMeta?.version ?? 1) + 1;
+        const parsedBody = bodyStr
+          ? (JSON.parse(bodyStr) as {
+              kdf?: VaultState['kdf'];
+              vault_key_wrapped_by_kek?: string;
+            })
+          : {};
         if (currentVaultMeta) {
-          currentVaultMeta = { ...currentVaultMeta, version: nextVersion };
+          currentVaultMeta = {
+            ...currentVaultMeta,
+            version: nextVersion,
+            ...(parsedBody.kdf ? { kdf: parsedBody.kdf } : {}),
+            ...(parsedBody.vault_key_wrapped_by_kek
+              ? { vault_key_wrapped_by_kek: parsedBody.vault_key_wrapped_by_kek }
+              : {}),
+          };
         }
         return jsonResponse({ version: nextVersion });
       }
@@ -567,9 +594,10 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     };
   }
 
-  it('asserts strict re-auth -> Worker rewrap -> PUT /vault/kek call order and wipes inputs without asking for old passphrase', async () => {
+  it('asserts strict re-auth -> Worker rewrap -> PUT /vault/kek call order, updates acting tab kdf.salt (loopback OFF), routes through done step, and wipes inputs without asking for old passphrase', async () => {
     const user = userEvent.setup();
-    const { callLog, requestsByPath } = await renderSettingsHarness();
+    expect(HubBroadcastChannel.allowLoopback).toBe(false);
+    const { getVaultCtx, callLog, requestsByPath } = await renderSettingsHarness();
 
     await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
 
@@ -588,8 +616,9 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
 
     await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
 
+    // R1-8: Success routes through the mockup's 'done' step before closing
     await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(within(dialog).getByText('Vault passphrase updated')).toBeInTheDocument();
     });
 
     // Strict call order: POST /auth/reauth BEFORE Worker:rewrap BEFORE PUT /vault/kek
@@ -606,6 +635,20 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(putReq!.headers.get('X-Reauth-Token')).toBe('grant-for-vault.rewrap');
     // Plaintext passphrase never sent over network
     expect(putReq!.body).not.toContain(STRONG_PASSPHRASE);
+
+    // R1-2: Acting tab's cached vaultMeta is reloaded after PUT 200 with BroadcastChannel loopback OFF,
+    // so vaultMeta.kdf.salt matches the new salt sent in the PUT body (not the initial salt).
+    const parsedPutBody = JSON.parse(putReq!.body) as { kdf: { salt: string } };
+    expect(parsedPutBody.kdf.salt).not.toBe(INITIAL_KDF.salt);
+    await waitFor(() => {
+      expect(getVaultCtx().vaultMeta?.version).toBe(2);
+      expect(getVaultCtx().vaultMeta?.kdf.salt).toBe(parsedPutBody.kdf.salt);
+    });
+
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
 
     // Reopen dialog to verify inputs were wiped
     await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
@@ -768,13 +811,16 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
 
     const submitBtn = within(dialog).getByRole('button', { name: 'Change passphrase' });
-    // Rapid double click
-    await Promise.all([user.click(submitBtn), user.click(submitBtn)]);
+    // R1-4: Two synchronous fireEvent.click calls before checkPassphrasePolicy resolves:
+    // single-flight guard is set synchronously before the first await -> 1 Worker:rewrap, 1 PUT, no CLIENT_BUSY alert.
+    fireEvent.click(submitBtn);
+    fireEvent.click(submitBtn);
 
-    // First attempt failed with network error; only 1 PUT request was sent
+    // First attempt failed with network error; only 1 PUT request was sent and no busy message flashed
     await waitFor(() => {
       expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not reach the server');
     });
+    expect(within(dialog).getByRole('alert')).not.toHaveTextContent(/already in progress/i);
     const firstPutRequests = requestsByPath.filter(
       (r) => r.method === 'PUT' && r.path.endsWith('/api/v1/vault/kek'),
     );
@@ -786,6 +832,10 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     const retryBtn = within(dialog).getByRole('button', { name: 'Try again' });
     await user.click(retryBtn);
 
+    await waitFor(() => {
+      expect(within(dialog).getByText('Vault passphrase updated')).toBeInTheDocument();
+    });
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
@@ -1084,6 +1134,10 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.click(within(dialog).getByRole('button', { name: 'Verify & save' }));
 
     await waitFor(() => {
+      expect(within(dialog).getByText('Vault passphrase updated')).toBeInTheDocument();
+    });
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
     expect(callLog.filter((c) => c === 'Worker:rewrap')).toHaveLength(1);
@@ -1212,4 +1266,81 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     },
     15_000,
   );
+
+  it('surfaces a distinct re-auth failure alert on 401/403 from /auth/reauth with zero Worker calls and zero PUT calls (R1-3)', async () => {
+    const user = userEvent.setup();
+    const { callLog, requestsByPath } = await renderSettingsHarness({
+      customFetch: (url) => {
+        if (url.endsWith('/api/v1/auth/reauth')) {
+          return problemResponse('invalid_credentials', 401, {
+            detail: 'Invalid login password',
+          });
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.type(within(dialog).getByLabelText('Login password'), 'wrong-login-password');
+    await user.type(within(dialog).getByLabelText('New vault passphrase'), STRONG_PASSPHRASE);
+    await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
+    await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(
+        'Incorrect login password or account re-authentication failed. Please try again.',
+      );
+    });
+
+    expect(callLog.filter((c) => c.startsWith('Worker:'))).toHaveLength(0);
+    expect(
+      requestsByPath.filter((r) => r.method === 'PUT' && r.path.endsWith('/api/v1/vault/kek')),
+    ).toHaveLength(0);
+  });
+
+  it('purges remembered DevKey records in fake IDB and rotates incarnation/deviceRevision on 204 DELETE /vault (R1-5)', async () => {
+    const user = userEvent.setup();
+    const userId = '11111111-1111-1111-1111-111111111111';
+    const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
+
+    // Seed a DevKey record for the user and initial meta in fake IDB
+    fakeIdb.ensureStore('devkeys').set(devKeyRecordKey, {
+      user_id: userId,
+      vault_key_id: VAULT_KEY_ID,
+      dev_key: { type: 'secret' },
+      wrapped_vk: new Uint8Array([1, 2, 3, 4]),
+      created_at: '2026-10-29T00:00:00Z',
+    });
+    fakeIdb.ensureStore('meta').set('__meta__', {
+      incarnation: '00112233445566778899aabbccddeeff',
+      deviceRevision: 2,
+    });
+
+    await renderSettingsHarness();
+
+    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+
+    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+    await user.type(confirmInput, 'RESET');
+    await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+    });
+
+    // DevKey record was deleted and meta incarnation/deviceRevision rotated in a single readwrite tx
+    expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
+    const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(rotatedMeta).not.toBeNull();
+    expect(rotatedMeta!.deviceRevision).toBe(3);
+    expect(rotatedMeta!.incarnation).not.toBe('00112233445566778899aabbccddeeff');
+    expect(rotatedMeta!.incarnation).toMatch(/^[0-9a-f]{32}$/);
+  });
 });

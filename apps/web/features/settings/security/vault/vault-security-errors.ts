@@ -27,6 +27,7 @@ export type VaultSettingsErrorKind =
   | 'kill_switch_disabled'
   | 'rate_limited'
   | 'reauth_expired'
+  | 'reauth_failed'
   | 'client_busy'
   | 'vault_recovering'
   | 'vault_locked'
@@ -84,6 +85,15 @@ export function classifyVaultSettingsError(err: unknown): ClassifiedVaultSetting
     }
     if (code === 'reauth_required' || code === 'reauth_invalid') {
       return { kind: 'reauth_expired', canRetrySameOperation: true };
+    }
+    if (
+      status === 401 ||
+      status === 403 ||
+      code === 'invalid_credentials' ||
+      code === 'reauth_failed' ||
+      code === 'account_locked'
+    ) {
+      return { kind: 'reauth_failed', canRetrySameOperation: true };
     }
     if (code === 'recovery_key_slot_taken') {
       return { kind: 'recovery_key_slot_taken', canRetrySameOperation: false };

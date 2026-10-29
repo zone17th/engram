@@ -97,12 +97,12 @@ export function ChangePassphraseDialog({
     idempotencyKeyRef.current = null;
   }, [wipeSecretState]);
 
-  // Register secret form reset on vault lock / logout
+  // Register secret form reset on vault lock / logout (R1-7: also clear idempotencyKeyRef, pendingRewrapResultRef, and return to form step)
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
-      wipeSecretState();
+      resetDialogState();
     });
-  }, [vault, wipeSecretState]);
+  }, [resetDialogState, vault]);
 
   // Obtain / begin re-auth (`vault.rewrap`) WHEN THE DIALOG OPENS, before any secret goes to the Worker (plan §1).
   useEffect(() => {
@@ -174,13 +174,16 @@ export function ChangePassphraseDialog({
         vault_key_id: currentMeta.vault_key_id,
         version: response.version,
       });
+      // R1-2: reload GET /vault best-effort so the acting tab's cached `vaultMeta` reflects the new kdf.salt and wrap
+      await vault.reloadVaultMeta().catch(() => undefined);
       wipeSecretState();
       idempotencyKeyRef.current = null;
       reauth.clearGrant();
       onSuccessToast?.(t('passphrase.toastUpdated'));
-      onOpenChange(false);
+      // R1-8: route through the mockup's 'done' step (`data-view="pass-done"`) before closing
+      setStep('done');
     },
-    [onOpenChange, onSuccessToast, reauth, t, vault, vaultMeta, wipeSecretState],
+    [onSuccessToast, reauth, t, vault, vaultMeta, wipeSecretState],
   );
 
   const handleError = useCallback(
@@ -205,6 +208,9 @@ export function ChangePassphraseDialog({
           return;
         case 'reauth_expired':
           setStep('reauth_expired');
+          return;
+        case 'reauth_failed':
+          setErrorMessage(t('errors.reauthFailed'));
           return;
         case 'precondition_required':
           setErrorMessage(t('errors.preconditionRequired'));
@@ -245,38 +251,37 @@ export function ChangePassphraseDialog({
 
   const handleSubmitForm = useCallback(async () => {
     if (inFlightGuardRef.current || submitting || vault.inFlight) return;
-
+    // R1-4: set single-flight guard synchronously BEFORE the first await (`checkPassphrasePolicy`)
+    inFlightGuardRef.current = true;
+    setSubmitting(true);
     setErrorMessage(null);
     setClassifiedError(null);
 
-    // 1. Validate passphrase policy using shared NFC policy helper before any API or Worker call
-    // (skip when retrying an already-derived pendingRewrapResult after a network / rate-limit error).
-    if (!pendingRewrapResultRef.current) {
-      const emailLocal = me?.user.email.split('@')[0] ?? '';
-      const policy = await checkPassphrasePolicy(newPassphrase, {
-        confirmPassphrase,
-        userInputs: emailLocal ? [emailLocal, me?.user.email ?? ''] : [],
-      });
-      setPolicyResult(policy);
-
-      if (!policy.valid) {
-        if (policy.reason === 'invalid_unicode') {
-          setErrorMessage(t('errors.passphraseInvalid'));
-        } else if (policy.reason === 'too_short') {
-          setErrorMessage(t('passphrase.policyTooShort'));
-        } else if (policy.reason === 'mismatch') {
-          setErrorMessage(t('passphrase.policyMismatch'));
-        } else {
-          setErrorMessage(t('passphrase.policyTooWeak'));
-        }
-        return;
-      }
-    }
-
-    inFlightGuardRef.current = true;
-    setSubmitting(true);
-
     try {
+      // 1. Validate passphrase policy using shared NFC policy helper before any API or Worker call
+      // (skip when retrying an already-derived pendingRewrapResult after a network / rate-limit error).
+      if (!pendingRewrapResultRef.current) {
+        const emailLocal = me?.user.email.split('@')[0] ?? '';
+        const policy = await checkPassphrasePolicy(newPassphrase, {
+          confirmPassphrase,
+          userInputs: emailLocal ? [emailLocal, me?.user.email ?? ''] : [],
+        });
+        setPolicyResult(policy);
+
+        if (!policy.valid) {
+          if (policy.reason === 'invalid_unicode') {
+            setErrorMessage(t('errors.passphraseInvalid'));
+          } else if (policy.reason === 'too_short') {
+            setErrorMessage(t('passphrase.policyTooShort'));
+          } else if (policy.reason === 'mismatch') {
+            setErrorMessage(t('passphrase.policyMismatch'));
+          } else {
+            setErrorMessage(t('passphrase.policyTooWeak'));
+          }
+          return;
+        }
+      }
+
       // 2. Capture immutable opGeneration BEFORE the first await of the operation (ADR 0002 §10.2)
       const { opGeneration, isCurrent } = vault.beginOp();
 
@@ -299,8 +304,9 @@ export function ChangePassphraseDialog({
             activeGrant = await reauthPassword('vault.rewrap', loginPassword);
             activeGrantRef.current = activeGrant;
             setLoginPassword('');
-          } catch {
-            // Re-auth failed -> do NOT call Worker or PUT /vault/kek
+          } catch (reauthErr) {
+            // Re-auth failed -> surface distinct error/rate-limit message and do NOT call Worker or PUT /vault/kek (R1-3)
+            handleError(reauthErr);
             return;
           }
         } else {
@@ -385,15 +391,12 @@ export function ChangePassphraseDialog({
       }
       await executePutKek(rewrapped, freshGrant.grant);
     } catch (err) {
-      if (reauth.error) {
-        return;
-      }
       handleError(err);
     } finally {
       inFlightGuardRef.current = false;
       setSubmitting(false);
     }
-  }, [executePutKek, handleError, inlineReauthPassword, reauth, submitting]);
+  }, [executePutKek, handleError, inlineReauthPassword, submitting]);
 
   const handleRestartOauthFlow = useCallback(() => {
     wipeSecretState();
@@ -488,7 +491,18 @@ export function ChangePassphraseDialog({
                     wrapperClassName="mb-2"
                   />
 
-                  <div className="mb-4 flex items-center gap-2" data-testid="passphrase-strength-bar">
+                  <div
+                    className="mb-4 flex items-center gap-2"
+                    data-testid="passphrase-strength-bar"
+                    role="progressbar"
+                    aria-label={t('passphrase.newLabel')}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={strengthPercent}
+                    aria-valuetext={
+                      isStrong ? t('passphrase.strengthStrong') : t('passphrase.strengthWeak')
+                    }
+                  >
                     <div
                       style={{
                         height: '4px',
@@ -506,7 +520,7 @@ export function ChangePassphraseDialog({
                         }}
                       />
                     </div>
-                    <span className="text-[12px] text-body">
+                    <span className="text-[12px] text-body" aria-live="polite">
                       {isStrong ? t('passphrase.strengthStrong') : t('passphrase.strengthWeak')}
                     </span>
                   </div>
@@ -526,14 +540,48 @@ export function ChangePassphraseDialog({
 
                   <ul className="m-0 mb-4 flex list-none flex-col gap-1 p-0 text-[12px] text-muted">
                     <li>
-                      <span className={policyResult?.meetsMinLength ? 'text-body' : 'text-muted'}>✓</span>{' '}
+                      <span
+                        aria-hidden="true"
+                        className={policyResult?.meetsMinLength ? 'text-body' : 'text-muted'}
+                      >
+                        {policyResult?.meetsMinLength ? '✓' : '○'}
+                      </span>{' '}
+                      <span className="sr-only">
+                        {policyResult?.meetsMinLength
+                          ? t('passphrase.policyMet')
+                          : t('passphrase.policyNotMet')}
+                        :{' '}
+                      </span>
                       {t('passphrase.policyMinLength')}
                     </li>
                     <li>
-                      <span className="text-body">✓</span> {t('passphrase.policyDistinct')}
+                      <span
+                        aria-hidden="true"
+                        className={newPassphrase.length > 0 ? 'text-body' : 'text-muted'}
+                      >
+                        {newPassphrase.length > 0 ? '✓' : '○'}
+                      </span>{' '}
+                      <span className="sr-only">
+                        {newPassphrase.length > 0
+                          ? t('passphrase.policyMet')
+                          : t('passphrase.policyNotMet')}
+                        :{' '}
+                      </span>
+                      {t('passphrase.policyDistinct')}
                     </li>
                     <li>
-                      <span className={policyResult?.meetsMinScore ? 'text-body' : 'text-muted'}>✓</span>{' '}
+                      <span
+                        aria-hidden="true"
+                        className={policyResult?.meetsMinScore ? 'text-body' : 'text-muted'}
+                      >
+                        {policyResult?.meetsMinScore ? '✓' : '○'}
+                      </span>{' '}
+                      <span className="sr-only">
+                        {policyResult?.meetsMinScore
+                          ? t('passphrase.policyMet')
+                          : t('passphrase.policyNotMet')}
+                        :{' '}
+                      </span>
                       {t('passphrase.policyScore')}
                     </li>
                   </ul>
@@ -549,9 +597,9 @@ export function ChangePassphraseDialog({
                 </>
               )}
 
-              {(errorMessage || reauth.error) && (
+              {errorMessage && (
                 <AuthStatus tone="error" className="mb-4">
-                  {errorMessage ?? reauth.error}
+                  {errorMessage}
                 </AuthStatus>
               )}
 
@@ -628,9 +676,9 @@ export function ChangePassphraseDialog({
                     disabled={submitting}
                     wrapperClassName="mb-3"
                   />
-                  {(errorMessage || reauth.error) && (
+                  {errorMessage && (
                     <AuthStatus tone="error" className="mb-3">
-                      {errorMessage ?? reauth.error}
+                      {errorMessage}
                     </AuthStatus>
                   )}
                   <Button
