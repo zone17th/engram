@@ -2138,6 +2138,103 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(metaAfterAbort?.deviceRevision).toBe(5);
     expect(metaAfterAbort?.incarnation).toBe(metaAfter2?.incarnation);
   });
+  // BE7-2 (device-store): `skipIfNoDevKeys` decides INSIDE the one readwrite purge transaction. Real IndexedDB serialises
+  // readwrite transactions with overlapping scope in creation order, so a DevKey write committed before the purge
+  // transaction is seen by its listing (and deleted), and one created after it commits after the skip. The fake does not
+  // queue transactions, so the "before" case is modelled by a write that lands before the purge transaction starts.
+  describe('purgeDeviceKeysOnRevoked skipIfNoDevKeys', () => {
+    const USER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const USER_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const devkey = (userId: string, vaultKeyId: string) => ({
+      user_id: userId,
+      vault_key_id: vaultKeyId,
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+    function seedStore() {
+      const devkeys = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+      fakeIdb.ensureStore(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, {
+        incarnation: '00112233445566778899aabbccddeeff',
+        deviceRevision: 3,
+      });
+      return devkeys;
+    }
+    const env = () => ({ idbFactory: fakeIdb.createFactory() });
+
+    it('without the option the purge is unconditional: it rotates the meta even with no DevKey', async () => {
+      seedStore();
+      const res = await purgeDeviceKeysOnRevoked(USER_A, env());
+      expect(res.ok).toBe(true);
+      expect(res.skipped).toBeUndefined();
+      expect(res.meta?.deviceRevision).toBe(4);
+      expect((await readDeviceMetaRecord(env()))?.deviceRevision).toBe(4);
+    });
+
+    it('known user with no DevKey (other users keep theirs): commits nothing, returns skipped with the unchanged meta and does not notify', async () => {
+      const devkeys = seedStore();
+      devkeys.set(formatDevKeyRecordKey(USER_B, 'vk:b'), devkey(USER_B, 'vk:b'));
+      const notifications: unknown[] = [];
+      const unsubscribe = subscribeDevicePurge((r) => notifications.push(r));
+      fakeIdb.transactions.length = 0;
+      const res = await purgeDeviceKeysOnRevoked(USER_A, env(), { skipIfNoDevKeys: true });
+      unsubscribe();
+      expect(res).toEqual({
+        ok: true,
+        meta: { incarnation: '00112233445566778899aabbccddeeff', deviceRevision: 3 },
+        deletedCount: 0,
+        skipped: true,
+      });
+      expect(notifications).toHaveLength(0);
+      expect(devkeys.has(formatDevKeyRecordKey(USER_B, 'vk:b'))).toBe(true);
+      expect(fakeIdb.transactions.filter((t) => t.mode === 'readwrite')).toHaveLength(1);
+      const meta = await readDeviceMetaRecord(env());
+      expect(meta?.deviceRevision).toBe(3);
+      expect(meta?.incarnation).toBe('00112233445566778899aabbccddeeff');
+    });
+
+    it('known user with a DevKey: purges as before (delete + rotate once), not skipped', async () => {
+      const devkeys = seedStore();
+      devkeys.set(formatDevKeyRecordKey(USER_A, 'vk:a'), devkey(USER_A, 'vk:a'));
+      devkeys.set(formatDevKeyRecordKey(USER_B, 'vk:b'), devkey(USER_B, 'vk:b'));
+      const res = await purgeDeviceKeysOnRevoked(USER_A, env(), { skipIfNoDevKeys: true });
+      expect(res.ok).toBe(true);
+      expect(res.skipped).toBeUndefined();
+      expect(res.deletedCount).toBe(1);
+      expect(devkeys.has(formatDevKeyRecordKey(USER_A, 'vk:a'))).toBe(false);
+      expect(devkeys.has(formatDevKeyRecordKey(USER_B, 'vk:b'))).toBe(true);
+      expect((await readDeviceMetaRecord(env()))?.deviceRevision).toBe(4);
+    });
+
+    it('unknown user: an empty devkeys store is skipped, a non-empty one is cleared and rotated', async () => {
+      const devkeys = seedStore();
+      const skipped = await purgeDeviceKeysOnRevoked(null, env(), { skipIfNoDevKeys: true });
+      expect(skipped.skipped).toBe(true);
+      expect((await readDeviceMetaRecord(env()))?.deviceRevision).toBe(3);
+      devkeys.set(formatDevKeyRecordKey(USER_B, 'vk:b'), devkey(USER_B, 'vk:b'));
+      const purged = await purgeDeviceKeysOnRevoked(null, env(), { skipIfNoDevKeys: true });
+      expect(purged.skipped).toBeUndefined();
+      expect(devkeys.size).toBe(0);
+      expect((await readDeviceMetaRecord(env()))?.deviceRevision).toBe(4);
+    });
+
+    it('a DevKey committed before the purge transaction starts blocks the skip (deleted + rotated); one written after the skip survives with the revision unchanged', async () => {
+      const devkeys = seedStore();
+      const racing = purgeDeviceKeysOnRevoked(USER_A, env(), { skipIfNoDevKeys: true });
+      // Lands before the purge transaction is created (the factory open is still pending).
+      devkeys.set(formatDevKeyRecordKey(USER_A, 'vk:a-race'), devkey(USER_A, 'vk:a-race'));
+      const first = await racing;
+      expect(first.skipped).toBeUndefined();
+      expect(first.deletedCount).toBe(1);
+      expect(devkeys.has(formatDevKeyRecordKey(USER_A, 'vk:a-race'))).toBe(false);
+      expect((await readDeviceMetaRecord(env()))?.deviceRevision).toBe(4);
+
+      const second = await purgeDeviceKeysOnRevoked(USER_A, env(), { skipIfNoDevKeys: true });
+      expect(second.skipped).toBe(true);
+      devkeys.set(formatDevKeyRecordKey(USER_A, 'vk:a-after'), devkey(USER_A, 'vk:a-after'));
+      expect(devkeys.has(formatDevKeyRecordKey(USER_A, 'vk:a-after'))).toBe(true);
+      expect((await readDeviceMetaRecord(env()))?.deviceRevision).toBe(4);
+    });
+  });
+
   it('BE1-1: holds post-unlock lockEpoch verification pending without exposing unlocked state or enabling decrypted consumers; locks on changed marker and unlocks on matching marker', async () => {
     const me = makeMeFixture({ vaultStatus: 'present' });
     vi.mocked(fetch).mockImplementation(async (url) => {
