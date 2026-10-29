@@ -3,6 +3,7 @@ package config_test
 import (
 	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.GoogleReauthEnabled {
 		t.Error("AUTH_GOOGLE_REAUTH_ENABLED mặc định phải false")
+	}
+	if cfg.KeyMutationsDisabled {
+		t.Error("VAULT_KEY_MUTATIONS_DISABLED mặc định phải false")
 	}
 	if cfg.AuditRetentionDays != 90 {
 		t.Errorf("AuditRetentionDays = %d", cfg.AuditRetentionDays)
@@ -225,6 +229,88 @@ func TestOAuthCallbackUsesAppOrigin(t *testing.T) {
 	got := cfg.OAuthCallbackURL("google")
 	if got != "http://localhost:3000/api/v1/auth/oauth/google/callback" {
 		t.Fatalf("callback = %q", got)
+	}
+}
+
+func TestLoadKeyMutationsDisabledParse(t *testing.T) {
+	setEnv(t, map[string]string{
+		"VAULT_KEY_MUTATIONS_DISABLED": "true",
+	})
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.KeyMutationsDisabled {
+		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED=true phải parse thành true")
+	}
+	if got, ok := cfg.Redacted()["vault_key_mutations_disabled"].(bool); !ok || !got {
+		t.Fatalf("Redacted()[vault_key_mutations_disabled] = %v, muốn true", cfg.Redacted()["vault_key_mutations_disabled"])
+	}
+
+	setEnv(t, map[string]string{
+		"VAULT_KEY_MUTATIONS_DISABLED": "not-a-bool",
+	})
+	if _, err := config.Load(); err == nil {
+		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED không hợp lệ phải báo lỗi lúc boot")
+	}
+}
+
+func TestEffectiveMailSinkDir(t *testing.T) {
+	defaultSink := filepath.Join(".data", "mail-sink")
+	customSink := filepath.Join("custom", "sink-dir")
+	cases := []struct {
+		name string
+		env  string
+		dir  string
+		want string
+	}{
+		{
+			name: "development + empty MailSinkDir uses default .data/mail-sink",
+			env:  "development",
+			dir:  "",
+			want: defaultSink,
+		},
+		{
+			name: "empty Env + empty MailSinkDir uses default .data/mail-sink",
+			env:  "",
+			dir:  "",
+			want: defaultSink,
+		},
+		{
+			name: "development + explicit MailSinkDir preserves explicit dir",
+			env:  "development",
+			dir:  customSink,
+			want: customSink,
+		},
+		{
+			name: "production + empty MailSinkDir returns empty",
+			env:  "production",
+			dir:  "",
+			want: "",
+		},
+		{
+			name: "staging + empty MailSinkDir returns empty",
+			env:  "staging",
+			dir:  "",
+			want: "",
+		},
+		{
+			name: "production + explicit MailSinkDir preserves explicit dir",
+			env:  "production",
+			dir:  customSink,
+			want: customSink,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Env:         tc.env,
+				MailSinkDir: tc.dir,
+			}
+			if got := cfg.EffectiveMailSinkDir(); got != tc.want {
+				t.Fatalf("EffectiveMailSinkDir() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

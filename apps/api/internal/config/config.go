@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type Config struct {
 	FakeOAuth                bool `envconfig:"AUTH_FAKE_OAUTH" default:"false"`
 	AuditRetentionDays       int  `envconfig:"AUTH_AUDIT_RETENTION_DAYS" default:"90"`
 
+	KeyMutationsDisabled    bool   `envconfig:"VAULT_KEY_MUTATIONS_DISABLED" default:"false"`
 	OAuthGoogleClientID     string `envconfig:"OAUTH_GOOGLE_CLIENT_ID"`
 	OAuthGoogleClientSecret string `envconfig:"OAUTH_GOOGLE_CLIENT_SECRET"`
 	OAuthGitHubClientID     string `envconfig:"OAUTH_GITHUB_CLIENT_ID"`
@@ -299,6 +301,22 @@ func (c *Config) JWTAudience() string {
 	return strings.TrimRight(c.AppOrigin, "/")
 }
 
+// EffectiveMailSinkDir trả thư mục mail sink hiệu lực:
+// dùng MailSinkDir nếu đã cấu hình; ngược lại ở môi trường development (hoặc rỗng)
+// dùng mặc định `.data/mail-sink`; các môi trường khác trả chuỗi rỗng.
+func (c *Config) EffectiveMailSinkDir() string {
+	if c == nil {
+		return ""
+	}
+	if c.MailSinkDir != "" {
+		return c.MailSinkDir
+	}
+	if c.Env == "development" || c.Env == "" {
+		return filepath.Join(".data", "mail-sink")
+	}
+	return ""
+}
+
 func (c *Config) TrustedProxyContains(ip net.IP) bool {
 	for _, n := range c.TrustedProxyCIDRs {
 		if n.Contains(ip) {
@@ -328,5 +346,6 @@ func (c *Config) Redacted() map[string]any {
 		"ephemeral_secrets":               c.EphemeralSecrets,
 		"audit_retention_days":            c.AuditRetentionDays,
 		"trusted_proxy_cidrs":             len(c.TrustedProxyCIDRs),
+		"vault_key_mutations_disabled":    c.KeyMutationsDisabled,
 	}
 }
