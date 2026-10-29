@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "gen:crypto-vectors": "vitest run lib/crypto/vectors.test.ts"
   },
   "dependencies": {
     "@engram/shared-types": "workspace:*",
