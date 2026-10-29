@@ -294,5 +294,27 @@
       "reauth": { "title": "Confirm it is you", "description": "Enter your login password or use Google if available.", "password": "Login password", "google": "Confirm with Google", "submit": "Confirm", "submitting": "Confirming…" },
       "revoke": { "title": "Sign out elsewhere?", "description": "Keep this device. Other sessions require re-authentication to revoke.", "submit": "Sign out elsewhere" }
     }
+  },
+  "vault": {
+    "state": {
+      "noVault": "No vault yet",
+      "onboarding": "Setting up vault…",
+      "locked": "Vault locked",
+      "unlocking": "Unlocking vault…",
+      "unlocked": "Vault open",
+      "recovering": "Recovering vault — set a new passphrase to finish",
+      "rewrapping": "Updating vault passphrase…",
+      "resetting": "Resetting vault…",
+      "error": "Vault error — unlock again to continue",
+      "busy": "Another vault operation is already in progress. Wait for it to finish or lock first.",
+      "recoveringSwitchHint": "Finish setting a new passphrase or lock the vault first to switch flows."
+    },
+    "lock": {
+      "button": "Lock now",
+      "shortcutHint": "Press L to lock immediately",
+      "lockedNoticeTitle": "Vault locked",
+      "lockedNoticeBody": "Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view or edit entry contents.",
+      "unlockCta": "Unlock vault"
+    }
   }
 }

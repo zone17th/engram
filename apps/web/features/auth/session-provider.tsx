@@ -137,10 +137,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     queryClient.removeQueries({ queryKey: ['auth', 'sessions'] });
     queryClient.removeQueries({ queryKey: ['auth', 'audit'] });
     queryClient.removeQueries({ queryKey: ['auth', 'notifications'] });
+    queryClient.removeQueries({ queryKey: ['vault', 'body'] });
+    queryClient.removeQueries({ queryKey: ['vault', 'meta'] });
     reauth.clearGrant();
     reauth.clearPending();
   }, [queryClient, reauth]);
-
   const refetchMe = useCallback(async () => {
     await meQuery.refetch();
   }, [meQuery]);

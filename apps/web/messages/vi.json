@@ -294,5 +294,27 @@
       "reauth": { "title": "Xác nhận đây là bạn", "description": "Nhập mật khẩu đăng nhập hoặc dùng Google nếu có.", "password": "Mật khẩu đăng nhập", "google": "Xác nhận bằng Google", "submit": "Xác nhận", "submitting": "Đang xác nhận…" },
       "revoke": { "title": "Đăng xuất nơi khác?", "description": "Giữ phiên trên thiết bị này. Cần xác thực lại để thu hồi.", "submit": "Đăng xuất nơi khác" }
     }
+  },
+  "vault": {
+    "state": {
+      "noVault": "Chưa tạo kho",
+      "onboarding": "Đang tạo vault…",
+      "locked": "Vault đang khoá",
+      "unlocking": "Đang mở khoá vault…",
+      "unlocked": "Vault mở",
+      "recovering": "Đang khôi phục vault — đặt passphrase mới để hoàn tất",
+      "rewrapping": "Đang cập nhật passphrase vault…",
+      "resetting": "Đang đặt lại vault…",
+      "error": "Lỗi bộ nhớ khoá — mở khoá lại để tiếp tục",
+      "busy": "Đang thực hiện một thao tác vault khác. Hãy chờ hoàn tất hoặc khoá vault trước.",
+      "recoveringSwitchHint": "Hoàn tất đặt passphrase mới hoặc khoá vault trước để chuyển sang luồng khác."
+    },
+    "lock": {
+      "button": "Khoá ngay",
+      "shortcutHint": "Nhấn L để khoá ngay",
+      "lockedNoticeTitle": "Vault đã khoá",
+      "lockedNoticeBody": "Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem hoặc sửa nội dung entry.",
+      "unlockCta": "Mở khoá lại"
+    }
   }
 }

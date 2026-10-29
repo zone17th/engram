@@ -1,9 +1,18 @@
+'use client';
+
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
 import { VaultPill, type VaultPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
+import { useOptionalVault, type VaultStateMachineMode } from '@/features/vault/vault-provider';
 import Link from 'next/link';
+
+function modeToPillState(mode: VaultStateMachineMode): VaultPillState {
+  if (mode === 'no_vault' || mode === 'onboarding') return 'absent';
+  if (mode === 'unlocked' || mode === 'rewrapping') return 'open';
+  return 'locked';
+}
 
 /** Header dính, nền mờ, cao 68px — chép từ mockups/index.html. */
 export function AppHeader({
@@ -12,11 +21,23 @@ export function AppHeader({
   settingsActive = false,
   showLogout = false,
 }: {
-  vault: { state: VaultPillState; minutesLeft?: number };
+  vault?: { state: VaultPillState; minutesLeft?: number };
   showSearch?: boolean;
   settingsActive?: boolean;
   showLogout?: boolean;
 }) {
+  const vaultCtx = useOptionalVault();
+  const effectivePillState: VaultPillState = vaultCtx
+    ? modeToPillState(vaultCtx.state)
+    : (vault?.state ?? 'locked');
+  const effectiveMinutesLeft = vault?.minutesLeft;
+  const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
+
+  const handleLockClick = () => {
+    if (!vaultCtx) return;
+    void vaultCtx.lockNow();
+  };
+
   return (
     <header className="sticky top-0 z-30 h-[68px] border-b border-line bg-surface/80 backdrop-blur">
       <div className="mx-auto flex h-full min-w-0 max-w-container items-center gap-2 px-5 sm:gap-4">
@@ -25,30 +46,57 @@ export function AppHeader({
         </Link>
         {showSearch ? <Omnibox compact className="hidden max-w-[420px] md:flex" /> : null}
         <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-1 sm:gap-2">
-          <VaultPill
-            state={vault.state}
-            minutesLeft={vault.minutesLeft}
-            className="hidden sm:inline-flex"
-          />
-          <span
-            className="grid h-9 w-9 place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
-            aria-label={
-              vault.state === 'open'
-                ? 'Vault mở'
-                : vault.state === 'absent'
-                  ? 'Chưa tạo kho'
-                  : 'Vault đang khoá'
-            }
-            title={
-              vault.state === 'open'
-                ? 'Vault mở'
-                : vault.state === 'absent'
-                  ? 'Chưa tạo kho'
-                  : 'Vault đang khoá'
-            }
-          >
-            {vault.state === 'open' ? '🔓' : '🔒'}
-          </span>
+          {canLockNow ? (
+            <button
+              type="button"
+              data-vault=""
+              data-testid="vault-lock-button"
+              onClick={handleLockClick}
+              aria-label="Khoá vault ngay (L)"
+              title="Khoá vault ngay (L)"
+              className="hidden cursor-pointer border-0 bg-transparent p-0 sm:inline-flex"
+            >
+              <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} />
+            </button>
+          ) : (
+            <VaultPill
+              state={effectivePillState}
+              minutesLeft={effectiveMinutesLeft}
+              className="hidden sm:inline-flex"
+            />
+          )}
+          {canLockNow ? (
+            <button
+              type="button"
+              data-testid="vault-lock-button-mobile"
+              onClick={handleLockClick}
+              className="grid h-9 w-9 cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
+              aria-label="Vault mở — Khoá vault ngay"
+              title="Vault mở — Khoá vault ngay"
+            >
+              🔓
+            </button>
+          ) : (
+            <span
+              className="grid h-9 w-9 place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
+              aria-label={
+                effectivePillState === 'open'
+                  ? 'Vault mở'
+                  : effectivePillState === 'absent'
+                    ? 'Chưa tạo kho'
+                    : 'Vault đang khoá'
+              }
+              title={
+                effectivePillState === 'open'
+                  ? 'Vault mở'
+                  : effectivePillState === 'absent'
+                    ? 'Chưa tạo kho'
+                    : 'Vault đang khoá'
+              }
+            >
+              {effectivePillState === 'open' ? '🔓' : '🔒'}
+            </span>
+          )}
           <Link
             href={settingsActive ? '/app' : '/app/settings'}
             className="btn btn-tertiary no-underline !text-body"
