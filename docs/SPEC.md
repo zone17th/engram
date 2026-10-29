@@ -1901,7 +1901,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 
 ### 10.2 Security checklist
 
-- [ ] **CSP** nghiêm: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'`; không inline script (nonce cho Next.js).
+- [ ] **CSP** nghiêm: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; worker-src 'self' blob:` (cho phép `worker-src 'self' blob:` vì Next.js 15.5.25 Turbopack khởi tạo Web Worker qua `blob:` URL bootstrap nạp các chunk same-origin bằng `importScripts`, `advisor-dec-014`; không thêm `blob:` vào `script-src`); không inline script (nonce cho Next.js).
 - [ ] **SRI** / hash bundle mỗi release (`/.well-known/build-manifest`).
 - [ ] Cookies host-only `Secure; SameSite=Lax` theo tên/path ADR 0001; CSRF token (kể cả anonymous); refresh rotation + reuse detection **không grace window**; reuse commit revoke.
 - [ ] Password login: Argon2id server-side (`m=64MiB,t=3,p=1`), HIBP k-anonymity tùy chọn; email verification theo `AUTH_REQUIRE_EMAIL_VERIFICATION` (default **false**).
