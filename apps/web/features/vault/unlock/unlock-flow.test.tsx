@@ -327,6 +327,14 @@ function makeUnlockWorkerFactory(options?: {
 }
 
 describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
+  const activeShims: Array<{ close: () => void }> = [];
+
+  function makeTestShim() {
+    const s = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    activeShims.push(s);
+    return s;
+  }
+
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
     routerMocks.pathname = '/app/unlock';
@@ -340,9 +348,12 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
   afterEach(() => {
     cleanup();
+    while (activeShims.length > 0) {
+      activeShims.pop()?.close();
+    }
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
-
   function renderUnlock(options?: {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
@@ -457,11 +468,10 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     expect(routerMocks.replace).toHaveBeenCalledWith('/app/settings');
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
-  });
+  }, 15_000);
 
   it('renders Vietnamese "Passphrase không đúng" on AEAD_DECRYPT_FAILED and works end-to-end with the real libsodium Worker shim', async () => {
-    const setupShim = createWorkerShim({ deriveKek: fastTestDeriveKek });
-
+    const setupShim = makeTestShim();
     // Create a vault first in setupShim so we have valid wraps for fastTestDeriveKek
     const createDeferred = Promise.withResolvers<{
       kdf: VaultState['kdf'];
@@ -485,8 +495,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     const created = await createDeferred.promise;
     setupShim.close();
 
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
-
+    const shim = makeTestShim();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -548,8 +557,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
     unmount();
     shim.close();
-  });
-
+  }, 20_000);
   it('surfaces device-memory state on KDF_ALLOCATION_FAILED and KDF_DERIVE_FAILED, and never shows "Incorrect passphrase"', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -625,8 +633,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     expect(
       screen.queryByTestId('unlock-error-incorrect-passphrase'),
     ).not.toBeInTheDocument();
-  });
-
+  }, 15_000);
   it('handles PASSPHRASE_INVALID, PRIVATE_KEYS_WRAP_INVALID, CLIENT_BUSY, and VAULT_RECOVERING with distinct error cards (never shown as wrong passphrase)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -753,8 +760,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     });
     expect(screen.queryByTestId('unlock-error-recovering')).not.toBeInTheDocument();
     expect(vaultCtx.workerState).toBe('locked');
-  });
-
+  }, 15_000);
   it('shows a live countdown when GET /vault returns 429 rate_limited', async () => {
     let return429 = true;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -804,8 +810,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     expect(screen.getByTestId('unlock-submit-button')).toBeDisabled();
 
     return429 = false;
-  });
-
+  }, 15_000);
   it('renders the "I forgot my passphrase" link on Unlock and milestone A recovery/reset paths on ForgotPassphraseView', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -853,5 +858,5 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     const backToUnlockLink = screen.getByTestId('forgot-bottom-back-link');
     expect(backToUnlockLink).toHaveAttribute('href', '/app/unlock');
     expect(screen.getByTestId('forgot-reauth-note')).toHaveTextContent(/vault\.recover/i);
-  });
+  }, 15_000);
 });

@@ -205,7 +205,12 @@ export function VaultRecoveryFlow() {
   const stepRef = useRef<RecoveryStep>(step);
   stepRef.current = step;
   const completedRecoveryRef = useRef(false);
+  const workerHoldsRecoveryStateRef = useRef(false);
   const suppressResetStepTransitionRef = useRef(false);
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const reauthGrantRef = useRef(reauth.grant);
+  reauthGrantRef.current = reauth.grant;
   const regenCheckboxId = useId();
 
   const step2Countdown = useRetryCountdown(step2RateDeadline);
@@ -302,8 +307,10 @@ export function VaultRecoveryFlow() {
   // Register secret form reset with VaultProvider: if the vault locks mid-recovery (manual lock, broadcast, auto-lock),
   // immediately wipe all secrets and return to step 1/2 so stale recovering state is never shown.
   useEffect(() => {
-    return vault.registerSecretFormReset(() => {
+    const currentVault = vaultRef.current;
+    return currentVault.registerSecretFormReset(() => {
       clearAllSecrets();
+      workerHoldsRecoveryStateRef.current = false;
       setRecoveryOpGeneration(null);
       setRecoveryKeyId(null);
       if (
@@ -312,25 +319,29 @@ export function VaultRecoveryFlow() {
           stepRef.current === 'regenerate-keys')
       ) {
         completedRecoveryRef.current = false;
+        const currentGrant = reauthGrantRef.current;
         const stillHasRecoverGrant = Boolean(
-          reauth.grant &&
-            reauth.grant.action === 'vault.recover' &&
-            grantStillValid(reauth.grant.expires_at),
+          currentGrant &&
+            currentGrant.action === 'vault.recover' &&
+            grantStillValid(currentGrant.expires_at),
         );
         setStep(stillHasRecoverGrant ? 'enter-key' : 'reauth');
       }
     });
-  }, [clearAllSecrets, reauth.grant, vault]);
+  }, [clearAllSecrets]);
 
-  // Leaving the recovery route mid-way (before recovery completes) MUST lock the client to wipe VK and pending continuation.
+  // Leaving the recovery route mid-way (after unlockRecovery started and before recovery completes)
+  // MUST lock the client to wipe VK and pending continuation; never send an unnecessary lock when
+  // leaving Step 1 before any Worker recovery state exists.
   useEffect(() => {
     return () => {
       clearAllSecrets();
-      if (!completedRecoveryRef.current) {
-        void vault.getClient().lock();
+      if (workerHoldsRecoveryStateRef.current && !completedRecoveryRef.current) {
+        workerHoldsRecoveryStateRef.current = false;
+        void vaultRef.current.lock({ broadcast: false, reason: 'recovery_unmounted' });
       }
     };
-  }, [clearAllSecrets, vault]);
+  }, [clearAllSecrets]);
 
   // Live NFC + lazy zxcvbn policy evaluation while typing in Step 3
   useEffect(() => {
@@ -422,6 +433,7 @@ export function VaultRecoveryFlow() {
   const handleCancelRecovery = useCallback(async () => {
     clearAllSecrets();
     completedRecoveryRef.current = false;
+    workerHoldsRecoveryStateRef.current = false;
     setRecoveryOpGeneration(null);
     setRecoveryKeyId(null);
     await vault.lock({ broadcast: false, reason: 'recovery_cancelled' });
@@ -467,11 +479,11 @@ export function VaultRecoveryFlow() {
 
       try {
         // 1. Derive lookup_hash and store wrapKey continuation inside Worker (single RK pass)
+        workerHoldsRecoveryStateRef.current = true;
         const derived = await vault.unlockRecovery({
           recoveryKey: rawRkSnapshot,
           opGeneration,
         });
-
         if (client.getGeneration() !== opGeneration) {
           return;
         }
@@ -479,6 +491,7 @@ export function VaultRecoveryFlow() {
         // 2. Ensure we have current GET /vault metadata (`private_keys_wrapped`, `kdf`, `vault_key_id`, `version`)
         const meta = vault.vaultMeta ?? (await vault.reloadVaultMeta());
         if (!meta) {
+          workerHoldsRecoveryStateRef.current = false;
           await vault.lock({ broadcast: false, reason: 'recovery_vault_absent' });
           return;
         }
@@ -519,17 +532,20 @@ export function VaultRecoveryFlow() {
           const { status, code, retry_after } = err.problem;
           if (status === 401 && code === 'recovery_key_invalid') {
             // Wipe pending continuation in Worker
+            workerHoldsRecoveryStateRef.current = false;
             await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_401' });
             setStep2Error({ kind: 'invalid' });
             return;
           }
           if (status === 429 || code === 'rate_limited') {
+            workerHoldsRecoveryStateRef.current = false;
             await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_429' });
             const seconds = normalizeRetryAfter(retry_after, 60);
             setStep2RateDeadline(Date.now() + seconds * 1000);
             setStep2Error({ kind: 'rate_limited', initialSeconds: seconds });
             return;
           }
+          workerHoldsRecoveryStateRef.current = false;
           await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_error' });
           setStep2Error({
             kind: 'network',
@@ -540,11 +556,13 @@ export function VaultRecoveryFlow() {
 
         const classified = classifyCryptoError(err);
         if (classified.kind === 'recovery_key_invalid') {
+          workerHoldsRecoveryStateRef.current = false;
           setStep2Error({ kind: 'invalid' });
           return;
         }
         if (classified.kind === 'wrong_passphrase' || classified.code === 'PRIVATE_KEYS_WRAP_INVALID') {
           // Local AEAD open of `wrap` failed after server lookup matched -> key NOT consumed
+          workerHoldsRecoveryStateRef.current = false;
           setStep2Error({ kind: 'aead_failed' });
           return;
         }
@@ -552,6 +570,7 @@ export function VaultRecoveryFlow() {
           return;
         }
         if (err instanceof CryptoClientError && err.code === 'SECRET_DETACHED_OR_EMPTY') {
+          workerHoldsRecoveryStateRef.current = false;
           setStep2Error({ kind: 'invalid' });
           return;
         }
@@ -599,6 +618,7 @@ export function VaultRecoveryFlow() {
         });
 
         completedRecoveryRef.current = true;
+        workerHoldsRecoveryStateRef.current = false;
         setPreparedCompleteBundle(null);
 
         vault.notifyVaultChanged({
@@ -665,6 +685,7 @@ export function VaultRecoveryFlow() {
               reauth.clearGrant();
               suppressResetStepTransitionRef.current = true;
               try {
+                workerHoldsRecoveryStateRef.current = false;
                 await vault.lock({ broadcast: false, reason: 'recovery_oauth_grant_expired' });
               } finally {
                 suppressResetStepTransitionRef.current = false;
@@ -786,6 +807,7 @@ export function VaultRecoveryFlow() {
             reauth.clearGrant();
             suppressResetStepTransitionRef.current = true;
             try {
+              workerHoldsRecoveryStateRef.current = false;
               await vault.lock({ broadcast: false, reason: 'recovery_oauth_grant_expired_preflight' });
             } finally {
               suppressResetStepTransitionRef.current = false;
@@ -871,6 +893,7 @@ export function VaultRecoveryFlow() {
     clearPassphraseInputsImmediate();
     setPreparedCompleteBundle(null);
     setStep3Error(null);
+    workerHoldsRecoveryStateRef.current = false;
     await vault.lock({ broadcast: false, reason: 'recovery_version_mismatch_reload' });
     const freshMeta = await vault.reloadVaultMeta().catch(() => null);
     if (freshMeta) {
@@ -892,6 +915,7 @@ export function VaultRecoveryFlow() {
     reauth.clearGrant();
     suppressResetStepTransitionRef.current = true;
     try {
+      workerHoldsRecoveryStateRef.current = false;
       await vault.lock({ broadcast: false, reason: 'recovery_oauth_restart' });
     } finally {
       suppressResetStepTransitionRef.current = false;

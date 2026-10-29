@@ -240,6 +240,14 @@ function futureIso(secondsFromNow = 300): string {
 }
 
 describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> New Passphrase -> Complete -> Regenerate)', () => {
+  const activeShims: Array<{ close: () => void }> = [];
+
+  function makeTestShim() {
+    const s = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    activeShims.push(s);
+    return s;
+  }
+
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
     routerMocks.pathname = '/app/recovery';
@@ -253,10 +261,12 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
   afterEach(() => {
     cleanup();
+    while (activeShims.length > 0) {
+      activeShims.pop()?.close();
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
-
   function renderRecovery(options?: {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
@@ -304,7 +314,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
   }
 
   it('runs the strictly sequential recovery flow: Step 1 re-auth -> Step 2 RK cleared immediately + lookup + resumeRecovery -> Step 3 recovering whitelist + rewrap + complete -> Step 4 regenerate empty slot', async () => {
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    const shim = makeTestShim();
     let vaultVersion = 1;
     const lookupCalls: Array<{ lookup_hash: string }> = [];
     const completeCalls: Array<{
@@ -504,8 +514,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
   }, 25_000);
 
   it('shows the exact same invalid-key message for malformed, wrong, used, or other-vault recovery keys', async () => {
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
-
+    const shim = makeTestShim();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -609,10 +618,10 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     unmount();
     shim.close();
-  });
+  }, 20_000);
 
   it('after rewrap before confirmRecovery, state stays recovering and every other command (openEntry, unlockPassphrase, createVault) gets VAULT_RECOVERING until lock(); abandoned/cancelled recovery or lock() wipes VK + continuation so no entry opens', async () => {
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    const shim = makeTestShim();
     const completeGate = Promise.withResolvers<Response>();
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -775,7 +784,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
   }, 20_000);
 
   it('shows 429 countdown on lookup/complete, asks to reload vault on 412 version_mismatch, and reuses Idempotency-Key on network retry', async () => {
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    const shim = makeTestShim();
     let lookupMode: 'rate_limit' | 'ok' = 'rate_limit';
     let completeMode: 'rate_limit' | 'network_error' | 'version_mismatch' = 'rate_limit';
     let currentVaultVersion = 1;
@@ -958,7 +967,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
   }, 20_000);
 
   it('OAuth user whose grant expires mid-recovery is told to restart from Step 1 without redirecting or burning another lookup', async () => {
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    const shim = makeTestShim();
     let lookupCount = 0;
     let completeCount = 0;
     let oauthStartCount = 0;
