@@ -5163,6 +5163,83 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be29-acting-state')).toHaveTextContent('locked');
   }, 15_000);
 
+  // advisor-dec-041: an accepted markResetPurged snapshots the post-purge device meta, so the unnamed 404 that follows a
+  // locally observed reset (current key null) is a proven duplicate while `sabk.device` is untouched.
+  it('BE2-9 (vaultsettings order): dialog purge, markResetPurged(K) while K is current, lock({broadcast:false}), notifyVaultChanged(K, null), then a Reload vault 404 purges exactly once in total', async () => {
+    const ctx = await be29Setup('be29-dialog');
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    await act(async () => {
+      await ctx.vault().lock({ broadcast: false });
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+    expect(screen.getByTestId('be29-dialog-state')).toHaveTextContent('locked');
+  }, 15_000);
+
+  it('BE2-9 (post-observation order): notifyVaultChanged(K, null), dialog purge, markResetPurged(K), then a Reload vault 404 purges exactly once in total', async () => {
+    const ctx = await be29Setup('be29-post');
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+    });
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+  }, 15_000);
+
+  it('BE2-9 (proof breaks): after the mark, a later device-store write changes meta, so the next unnamed 404 DOES purge', async () => {
+    const ctx = await be29Setup('be29-broken');
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+    });
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    await act(async () => {
+      ctx.vault().markResetPurged('vk:be29-a');
+      await sleepReal(30);
+    });
+    // A later write (another vault's DevKey / Remember) rotates `meta` after the mark.
+    const keyB = seedBe29DevKey(ctx.devkeys, 'vk:be29-b');
+    fakeIdb.ensureStore(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, {
+      key: DEVICE_META_RECORD_KEY,
+      incarnation: 'be29-after-mark-write-incarnation',
+      deviceRevision: 12,
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(13);
+    });
+    expect(ctx.devkeys.has(keyB)).toBe(false);
+  }, 15_000);
+
   it('BE2-9: a stale id from an earlier vault never suppresses the purge of the current vault reset', async () => {
     const ctx = await be29Setup('be29-stale');
     // The device now holds vault B (A was replaced; the key change is observed by the next reload).
