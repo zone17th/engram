@@ -59,7 +59,100 @@
     "body": "Đặt passphrase và nhận recovery key sẽ có ở P03. P02 vẫn cho quản lý tài khoản và phiên đăng nhập.",
     "absent": "Tài khoản này chưa có vault mã hoá. Khi P03 sẵn sàng, bạn sẽ đặt passphrase và nhận recovery key tại đây.",
     "present": "Vault đã tồn tại — khoá và mở khoá do P03 xử lý.",
-    "settings": "Cài đặt tài khoản"
+    "settings": "Cài đặt tài khoản",
+    "stepperLabel": "Các bước tạo vault",
+    "steps": {
+      "passphrase": "1 · Passphrase",
+      "recoveryKeys": "2 · Recovery key",
+      "passkey": "3 · Passkey"
+    },
+    "step1": {
+      "title": "Đặt passphrase cho vault",
+      "leadPrefix": "Đây là ",
+      "leadStrong1": "passphrase mã hoá vault",
+      "leadMiddle": " (khoá nội dung entry), hoàn toàn tách biệt với ",
+      "leadStrong2": "mật khẩu đăng nhập",
+      "leadSuffix": " tài khoản. Máy chủ không giữ bản sao — gõ sai thì không ai mở hộ được.",
+      "passphraseLabel": "Passphrase",
+      "confirmLabel": "Gõ lại passphrase",
+      "showPassphrase": "Hiện passphrase",
+      "hidePassphrase": "Ẩn passphrase",
+      "strengthMeterLabel": "Độ mạnh passphrase",
+      "strength": {
+        "empty": "Chưa nhập",
+        "veryWeak": "Rất yếu",
+        "weak": "Yếu",
+        "fair": "Dễ đoán",
+        "good": "Mạnh",
+        "strong": "Rất mạnh"
+      },
+      "rules": {
+        "minLength": "Từ 12 ký tự trở lên",
+        "distinctFromLogin": "Không dùng lại mật khẩu đăng nhập hay mật khẩu ở nơi khác",
+        "minScore": "Đủ khó đoán (zxcvbn ≥ 3)"
+      },
+      "warningBanner": "Mất passphrase mà không còn recovery key, passkey hay thiết bị đã nhớ thì nội dung entry không lấy lại được. Bước sau sẽ tạo sẵn 10 đường về cho bạn.",
+      "continue": "Tiếp tục",
+      "deriving": "Đang chuẩn bị khoá…",
+      "errors": {
+        "empty": "Hãy nhập passphrase cho vault.",
+        "tooShort": "Passphrase phải có ít nhất 12 ký tự (sau khi chuẩn hoá Unicode NFC).",
+        "tooWeak": "Passphrase còn dễ đoán. Hãy thêm từ hoặc ký tự ít gặp cho tới khi đạt mức Mạnh (zxcvbn ≥ 3).",
+        "mismatch": "Hai ô passphrase chưa khớp.",
+        "invalidUnicode": "Passphrase chứa ký tự Unicode lỗi. Hãy gõ lại passphrase."
+      },
+      "oom": {
+        "badge": "Argon2id 64 MiB · Worker OOM",
+        "title": "Thiết bị không đủ bộ nhớ để tạo vault",
+        "body": "Trình duyệt không cấp phát đủ 64 MiB trong Web Worker để dẫn xuất khoá mã hoá (Argon2id). Thiết bị này không thể tạo vault tại đây — hãy đóng bớt tab hoặc thử trên trình duyệt hay thiết bị khác. Chưa có gì được gửi lên máy chủ.",
+        "retry": "Thử lại"
+      }
+    },
+    "step2": {
+      "title": "10 recovery key của bạn",
+      "lead": "Mỗi key mở được vault một mình, không cần passphrase. Dùng xong thì key đó bị xoá trên máy chủ.",
+      "screenshotWarningStrong": "Chỉ hiện đúng lần này.",
+      "screenshotWarningBody": "Ảnh chụp màn hình hoặc người đứng sau lưng đều lấy được key. In ra hoặc tải file rồi cất offline — đừng để screenshot trên máy dùng chung.",
+      "gridLabel": "Danh sách 10 recovery key dùng một lần",
+      "slotLabel": "Recovery key {slot} trên 10",
+      "gridCaption": "Mỗi key gồm 16 byte ngẫu nhiên, mã hoá Crockford Base32 (26 ký tự).",
+      "downloadTxt": "Tải file",
+      "print": "In",
+      "copyAll": "Sao chép",
+      "downloadedStatus": "Đã tải engram-recovery-keys.txt",
+      "printedStatus": "Đang mở hộp thoại in…",
+      "copiedStatus": "Đã chép 10 key · clipboard tự xoá sau 30 giây",
+      "confirmSavedLabel": "Tôi đã lưu 10 recovery key ở nơi an toàn, ngoài trình duyệt này.",
+      "back": "Quay lại",
+      "createVault": "Tạo vault",
+      "creatingVault": "Đang tạo vault…",
+      "disabledHint": "Nút mở khoá sau khi tick. Trước lúc đó chưa có gì được gửi lên máy chủ."
+    },
+    "vaultExists": {
+      "badge": "409 vault_exists",
+      "title": "Vault đã được tạo ở tab hoặc thiết bị khác",
+      "bodyPrefix": "Tài khoản này đã có vault trước khi yêu cầu tạo tại đây hoàn tất. ",
+      "bodyStrong": "10 recovery key vừa hiển thị không thuộc về bất kỳ vault nào — hãy huỷ bỏ ngay",
+      "bodySuffix": " (không giữ lại, không in hay dùng bộ key đó).",
+      "goToUnlock": "Đi tới mở khoá vault"
+    },
+    "errors": {
+      "networkTitle": "Không kết nối được máy chủ",
+      "networkBody": "Kết nối bị gián đoạn trước khi máy chủ xác nhận tạo vault. Hãy bấm thử lại — ứng dụng dùng lại đúng khoá yêu cầu cũ để không tạo vault thứ hai.",
+      "inProgressTitle": "Yêu cầu tạo vault đang được xử lý",
+      "inProgressBody": "Yêu cầu trước đó vẫn đang chạy trên máy chủ. Chờ giây lát rồi thử lại với cùng khoá yêu cầu.",
+      "conflictTitle": "Xung đột khoá yêu cầu",
+      "conflictBody": "Trạng thái yêu cầu đã thay đổi. Hãy tải lại để kiểm tra xem vault đã được tạo hay chưa.",
+      "mutationsDisabledTitle": "Thao tác thay đổi khoá vault đang tạm dừng",
+      "mutationsDisabledBody": "Hệ thống đang tạm ngưng tạo vault mới để bảo trì an toàn (503 vault_mutations_disabled). Hãy thử lại sau.",
+      "emailNotVerifiedTitle": "Cần xác minh email trước khi tạo vault",
+      "emailNotVerifiedBody": "Địa chỉ email tài khoản cần được xác minh trước khi tạo vault.",
+      "rateLimitedTitle": "Thử quá nhiều lần cho thao tác vault này",
+      "rateLimitedBody": "Hãy chờ {seconds} giây trước khi thử lại.",
+      "genericTitle": "Không tạo được vault",
+      "genericBody": "Có lỗi xảy ra khi lưu vault lên máy chủ. Bạn có thể thử lại an toàn.",
+      "retry": "Thử lại"
+    }
   },
   "auth": {
     "nav": { "login": "Đăng nhập", "signup": "Tạo tài khoản" },
