@@ -502,6 +502,87 @@ describe('P03-T6 Envelope Validator, Duplicate-Key Tokenizer, JCS AAD, and Seal/
         }),
       ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
 
+
+      // Verify Worker-owned (structured-clone) byte plaintext is genuinely zeroed in finally on success and on every failure path
+      // (invalid UTF-8, oversized, and locked/rejected), while caller's main-thread Uint8Array and standalone sealEntryPayload caller array remain unchanged (BE2-3, BE2-6)
+      const standaloneCallerBytes = new TextEncoder().encode('standalone-helper-caller-owned-bytes');
+      sealEntryPayload(sodium, {
+        entryId: VALID_ENTRY_ID,
+        keyId: VALID_KEY_ID,
+        plaintext: standaloneCallerBytes,
+        vk: vkClosure,
+      });
+      expect(new TextDecoder().decode(standaloneCallerBytes)).toBe(
+        'standalone-helper-caller-owned-bytes',
+      );
+
+      // 1. Success path with Uint8Array plaintext: main-thread caller bytes stay intact; Worker's structured-cloned Uint8Array is zeroed
+      const mainThreadValidBytes = new TextEncoder().encode('worker-cloned-byte-plaintext-secret');
+      const reqCountBeforeValid = shim.workerReceivedRequests.length;
+      const sealedFromBytes = await client.sealEntry({
+        entryId: VALID_ENTRY_ID,
+        keyId: VALID_KEY_ID,
+        plaintext: mainThreadValidBytes,
+        opGeneration: client.captureGeneration(),
+      });
+      expect(new TextDecoder().decode(mainThreadValidBytes)).toBe(
+        'worker-cloned-byte-plaintext-secret',
+      );
+      const workerValidReq = shim.workerReceivedRequests[reqCountBeforeValid];
+      expect(workerValidReq?.type).toBe('sealEntry');
+      if (workerValidReq?.type === 'sealEntry') {
+        expect(ArrayBuffer.isView(workerValidReq.plaintext)).toBe(true);
+        const workerClone = workerValidReq.plaintext as Uint8Array;
+        expect(workerClone).not.toBe(mainThreadValidBytes);
+        expect(workerClone.byteLength).toBe(mainThreadValidBytes.byteLength);
+        expect(workerClone.every((b) => b === 0)).toBe(true);
+      }
+      const openedFromBytes = await client.openEntry({
+        entryId: VALID_ENTRY_ID,
+        envelope: sealedFromBytes.envelope,
+        ciphertext: sealedFromBytes.ciphertext,
+        opGeneration: client.captureGeneration(),
+      });
+      expect(openedFromBytes.plaintext).toBe('worker-cloned-byte-plaintext-secret');
+
+      // 2. Invalid UTF-8 byte failure path: Worker's structured-cloned Uint8Array is zeroed; main-thread input unchanged
+      const mainThreadBadUtf8 = new Uint8Array([0xff, 0xfe, 0xfd, 0xfc]);
+      const reqCountBeforeBadUtf8 = shim.workerReceivedRequests.length;
+      await expect(
+        client.sealEntry({
+          entryId: VALID_ENTRY_ID,
+          keyId: VALID_KEY_ID,
+          plaintext: mainThreadBadUtf8,
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+      expect(Array.from(mainThreadBadUtf8)).toEqual([0xff, 0xfe, 0xfd, 0xfc]);
+      const workerBadUtf8Req = shim.workerReceivedRequests[reqCountBeforeBadUtf8];
+      if (workerBadUtf8Req?.type === 'sealEntry') {
+        const workerClone = workerBadUtf8Req.plaintext as Uint8Array;
+        expect(workerClone.byteLength).toBe(4);
+        expect(workerClone.every((b) => b === 0)).toBe(true);
+      }
+
+      // 3. Oversized (> 256 KiB) byte failure path: Worker's structured-cloned Uint8Array is zeroed; main-thread input unchanged
+      const mainThreadOversized = new Uint8Array(ENTRY_PLAINTEXT_MAX_BYTES + 1).fill(0x61);
+      const reqCountBeforeOversized = shim.workerReceivedRequests.length;
+      await expect(
+        client.sealEntry({
+          entryId: VALID_ENTRY_ID,
+          keyId: VALID_KEY_ID,
+          plaintext: mainThreadOversized,
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+      expect(mainThreadOversized[0]).toBe(0x61);
+      expect(mainThreadOversized[ENTRY_PLAINTEXT_MAX_BYTES]).toBe(0x61);
+      const workerOversizedReq = shim.workerReceivedRequests[reqCountBeforeOversized];
+      if (workerOversizedReq?.type === 'sealEntry') {
+        const workerClone = workerOversizedReq.plaintext as Uint8Array;
+        expect(workerClone.byteLength).toBe(ENTRY_PLAINTEXT_MAX_BYTES + 1);
+        expect(workerClone.every((b) => b === 0)).toBe(true);
+      }
       expect(new WrapError('WRAP_INVALID', 'test').code).toBe('WRAP_INVALID');
     } finally {
       shim.close();

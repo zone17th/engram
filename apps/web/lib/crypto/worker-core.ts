@@ -18,6 +18,7 @@ import {
   type DeriveKekFn,
   type VaultKdfParams,
 } from './kdf';
+import { passphraseToKdfBytes } from './passphrase';
 import {
   CryptoWorkerError,
   type ConfirmRecoveryResult,
@@ -31,11 +32,13 @@ import {
   type ResumeRecoveryResult,
   type RewrapResult,
   type SealEntryResult,
+  type VaultMode,
   type WorkerCommandPayload,
   type WorkerCommandType,
   type WorkerErrorResponse,
   type WorkerRequestMessage,
   type WorkerResponseMessage,
+  type WorkerStateReport,
   type WorkerSuccessResponse,
   type WrapForDeviceResult,
   type WrapForPasskeyResult,
@@ -80,11 +83,13 @@ export {
   type RewrapResult,
   type SealEntryResult,
   type VaultKdfParams,
+  type VaultMode,
   type WorkerCommandPayload,
   type WorkerCommandType,
   type WorkerErrorResponse,
   type WorkerRequestMessage,
   type WorkerResponseMessage,
+  type WorkerStateReport,
   type WorkerSuccessResponse,
   type WrapForDeviceResult,
   type WrapForPasskeyResult,
@@ -112,7 +117,19 @@ export interface WorkerCoreHooks {
   recovery?: Partial<RecoveryKeyAdapter>;
   envelope?: Partial<EnvelopeAdapter>;
   onKeyZeroed?: (kind: 'vk' | 'kek' | 'pwk' | 'rk' | 'seed' | 'plaintext') => void;
+  /**
+   * Test-only: called with every Worker-owned secret COPY the core allocates itself (libsodium/WebCrypto
+   * outputs are tracked by wrapping those primitives), so tests can assert the actual allocation is zeroed.
+   */
+  onSecretAllocated?: (kind: SecretAllocationKind, buf: Uint8Array) => void;
 }
+
+export type SecretAllocationKind =
+  | 'vk-copy'
+  | 'wrap-key-copy'
+  | 'seed-copy'
+  | 'closure-vk'
+  | 'closure-seed';
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
@@ -133,20 +150,39 @@ function safeMemzero(
   }
 }
 
+function isCrossRealmArrayBuffer(val: unknown): val is ArrayBuffer {
+  if (!val || typeof val !== 'object') return false;
+  if (val instanceof ArrayBuffer) return true;
+  return Object.prototype.toString.call(val) === '[object ArrayBuffer]';
+}
+
 function wipeIncomingMessageSecrets(
   sodium: Sodium | null,
   msg: unknown,
   hook?: (kind: 'vk' | 'kek' | 'pwk' | 'rk' | 'seed' | 'plaintext') => void,
 ): void {
   if (typeof msg !== 'object' || msg === null) return;
-  if ('passphraseBuffer' in msg && msg.passphraseBuffer instanceof ArrayBuffer) {
+  if ('passphraseBuffer' in msg && isCrossRealmArrayBuffer(msg.passphraseBuffer)) {
     safeMemzero(sodium, new Uint8Array(msg.passphraseBuffer), hook, 'plaintext');
   }
-  if ('recoveryKeyBuffer' in msg && msg.recoveryKeyBuffer instanceof ArrayBuffer) {
+  if ('recoveryKeyBuffer' in msg && isCrossRealmArrayBuffer(msg.recoveryKeyBuffer)) {
     safeMemzero(sodium, new Uint8Array(msg.recoveryKeyBuffer), hook, 'rk');
   }
-  if ('pwkBuffer' in msg && msg.pwkBuffer instanceof ArrayBuffer) {
+  if ('pwkBuffer' in msg && isCrossRealmArrayBuffer(msg.pwkBuffer)) {
     safeMemzero(sodium, new Uint8Array(msg.pwkBuffer), hook, 'pwk');
+  }
+  if (
+    'type' in msg &&
+    msg.type === 'sealEntry' &&
+    'plaintext' in msg &&
+    ArrayBuffer.isView(msg.plaintext)
+  ) {
+    safeMemzero(
+      sodium,
+      new Uint8Array(msg.plaintext.buffer, msg.plaintext.byteOffset, msg.plaintext.byteLength),
+      hook,
+      'plaintext',
+    );
   }
 }
 
@@ -173,27 +209,79 @@ function validateSlots(slots: number[]): void {
   }
 }
 
+/**
+ * State-changing commands. They run strictly one at a time in the Worker's serial queue
+ * (ADR 0002 §10 rule 4); `lock` is exempt and preempts; the rest are read-only against committed state.
+ */
+const STATE_COMMANDS: ReadonlySet<WorkerCommandType> = new Set<WorkerCommandType>([
+  'createVault',
+  'unlockPassphrase',
+  'unlockRecovery',
+  'resumeRecovery',
+  'confirmRecovery',
+  'unlockPrf',
+  'unlockDevKey',
+  'rewrap',
+]);
+
+export interface WorkerStateSnapshot {
+  mode: VaultMode;
+  generation: number;
+  epoch: number;
+  hasPendingContinuation: boolean;
+}
+
 interface PendingRecoveryState {
   wrapKey: Uint8Array;
   lookupHash: string;
   generation: number;
 }
 
+type TransitionAction =
+  | { kind: 'lock'; nextGeneration: number }
+  | { kind: 'adoptGeneration'; generation: number; disposeContinuation: boolean }
+  | { kind: 'disposeContinuation' }
+  | { kind: 'installContinuation'; pending: PendingRecoveryState }
+  | {
+      kind: 'enterRecovering';
+      vk: Uint8Array;
+      x25519Seed?: Uint8Array | null;
+      ed25519Seed?: Uint8Array | null;
+    }
+  | { kind: 'rewrapInRecovering' }
+  | { kind: 'confirmRecovery' }
+  | {
+      kind: 'unlock';
+      vk: Uint8Array;
+      x25519Seed?: Uint8Array | null;
+      ed25519Seed?: Uint8Array | null;
+    }
+  | {
+      kind: 'createVault';
+      vk: Uint8Array;
+      x25519Seed?: Uint8Array | null;
+      ed25519Seed?: Uint8Array | null;
+    };
+
 export interface CryptoWorkerCore {
   handleMessage: (msg: WorkerRequestMessage) => Promise<WorkerResponseMessage>;
   getGeneration: () => number;
-  getState: () => 'locked' | 'unlocked' | 'recovering';
+  getEpoch: () => number;
+  getState: () => VaultMode;
+  getStateSnapshot: () => WorkerStateSnapshot;
+  getStateReport: () => WorkerStateReport;
   /** For white-box testing of VK isolation only (never exposed over postMessage). */
   inspectClosureVkForTest: () => Uint8Array | null;
 }
 
 export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore {
   let workerGeneration = 0;
+  let workerEpoch = 0;
   let currentVk: Uint8Array | null = null;
   let currentX25519Seed: Uint8Array | null = null;
   let currentEd25519Seed: Uint8Array | null = null;
   let pendingRecovery: PendingRecoveryState | null = null;
-  let vaultMode: 'locked' | 'unlocked' | 'recovering' = 'locked';
+  let vaultMode: VaultMode = 'locked';
 
   const recoveryAdapter: RecoveryKeyAdapter = {
     generateRecoveryKey: hooks.recovery?.generateRecoveryKey ?? generateRecoveryKey,
@@ -214,70 +302,209 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
     hooks.sealDevKeyWrap ??
     ((s, vk, devKey, userId, vaultKeyId) => sealDevKeyWrap(s, vk, devKey, userId, vaultKeyId));
 
-  function wipePendingRecovery(sodium: Sodium | null): void {
-    if (pendingRecovery) {
-      safeMemzero(sodium, pendingRecovery.wrapKey, hooks.onKeyZeroed, 'rk');
-      pendingRecovery = null;
-    }
+  function stateReport(): WorkerStateReport {
+    return { mode: vaultMode, generation: workerGeneration, epoch: workerEpoch };
   }
 
-  function wipeClosureKeys(sodium: Sodium | null): void {
-    wipePendingRecovery(sodium);
-    if (currentVk) {
-      safeMemzero(sodium, currentVk, hooks.onKeyZeroed, 'vk');
-      currentVk = null;
-    }
-    if (currentX25519Seed) {
-      safeMemzero(sodium, currentX25519Seed, hooks.onKeyZeroed, 'seed');
-      currentX25519Seed = null;
-    }
-    if (currentEd25519Seed) {
-      safeMemzero(sodium, currentEd25519Seed, hooks.onKeyZeroed, 'seed');
-      currentEd25519Seed = null;
-    }
-    vaultMode = 'locked';
+  function captureStateSnapshot(): WorkerStateSnapshot {
+    return {
+      mode: vaultMode,
+      generation: workerGeneration,
+      epoch: workerEpoch,
+      hasPendingContinuation: pendingRecovery !== null,
+    };
   }
 
-  function assignClosureKeys(
-    sodium: Sodium,
-    vk: Uint8Array,
-    mode: 'unlocked' | 'recovering',
-    x25519Seed?: Uint8Array | null,
-    ed25519Seed?: Uint8Array | null,
+  /**
+   * Single structural state-commit helper (r4 fix-3).
+   * Every state transition, key installation, or continuation install/disposal
+   * goes through this helper, which re-checks the captured `(mode, generation, epoch)`
+   * triple against the current state and the recovering whitelist before mutating
+   * closure keys/mode/continuation, and increments `workerEpoch` on every transition.
+   */
+  function commitTransition(
+    sodium: Sodium | null,
+    captured: WorkerStateSnapshot | null,
+    cmdType: WorkerCommandType,
+    action: TransitionAction,
   ): void {
-    wipeClosureKeys(sodium);
-    currentVk = new Uint8Array(vk);
-    if (x25519Seed) {
-      currentX25519Seed = new Uint8Array(x25519Seed);
+    function wipePendingInternal(): void {
+      if (pendingRecovery) {
+        safeMemzero(sodium, pendingRecovery.wrapKey, hooks.onKeyZeroed, 'rk');
+        pendingRecovery = null;
+      }
     }
-    if (ed25519Seed) {
-      currentEd25519Seed = new Uint8Array(ed25519Seed);
+
+    function wipeClosureInternal(): void {
+      wipePendingInternal();
+      if (currentVk) {
+        safeMemzero(sodium, currentVk, hooks.onKeyZeroed, 'vk');
+        currentVk = null;
+      }
+      if (currentX25519Seed) {
+        safeMemzero(sodium, currentX25519Seed, hooks.onKeyZeroed, 'seed');
+        currentX25519Seed = null;
+      }
+      if (currentEd25519Seed) {
+        safeMemzero(sodium, currentEd25519Seed, hooks.onKeyZeroed, 'seed');
+        currentEd25519Seed = null;
+      }
+      vaultMode = 'locked';
     }
-    vaultMode = mode;
+
+    function assignClosureInternal(
+      vk: Uint8Array,
+      nextMode: 'unlocked' | 'recovering',
+      x25519Seed?: Uint8Array | null,
+      ed25519Seed?: Uint8Array | null,
+    ): void {
+      wipeClosureInternal();
+      currentVk = new Uint8Array(vk);
+      hooks.onSecretAllocated?.('closure-vk', currentVk);
+      if (x25519Seed) {
+        currentX25519Seed = new Uint8Array(x25519Seed);
+        hooks.onSecretAllocated?.('closure-seed', currentX25519Seed);
+      }
+      if (ed25519Seed) {
+        currentEd25519Seed = new Uint8Array(ed25519Seed);
+        hooks.onSecretAllocated?.('closure-seed', currentEd25519Seed);
+      }
+      vaultMode = nextMode;
+    }
+
+    if (action.kind === 'lock') {
+      workerGeneration = action.nextGeneration;
+      wipeClosureInternal();
+      workerEpoch += 1;
+      return;
+    }
+
+    if (action.kind === 'adoptGeneration') {
+      if (action.disposeContinuation) {
+        wipePendingInternal();
+      }
+      workerGeneration = action.generation;
+      workerEpoch += 1;
+      return;
+    }
+
+    if (action.kind === 'disposeContinuation') {
+      if (pendingRecovery) {
+        wipePendingInternal();
+        workerEpoch += 1;
+      }
+      return;
+    }
+
+    if (!captured) {
+      throw new CryptoWorkerError('STALE_GENERATION', 'Missing captured state snapshot');
+    }
+
+    if (
+      vaultMode === 'recovering' &&
+      cmdType !== 'rewrap' &&
+      cmdType !== 'confirmRecovery' &&
+      cmdType !== 'lock'
+    ) {
+      throw new CryptoWorkerError(
+        'VAULT_RECOVERING',
+        'Vault is in recovering mode; only rewrap, confirmRecovery, and lock are allowed (call lock() first to switch flows)',
+      );
+    }
+
+    if (
+      captured.generation !== workerGeneration ||
+      captured.mode !== vaultMode ||
+      captured.epoch !== workerEpoch
+    ) {
+      throw new CryptoWorkerError(
+        'STALE_GENERATION',
+        'Worker state (mode, generation, epoch) changed before commit',
+      );
+    }
+
+    switch (action.kind) {
+      case 'installContinuation': {
+        wipePendingInternal();
+        pendingRecovery = action.pending;
+        workerEpoch += 1;
+        return;
+      }
+      case 'enterRecovering': {
+        assignClosureInternal(action.vk, 'recovering', action.x25519Seed, action.ed25519Seed);
+        workerEpoch += 1;
+        return;
+      }
+      case 'rewrapInRecovering': {
+        workerEpoch += 1;
+        return;
+      }
+      case 'confirmRecovery': {
+        if (!currentVk || vaultMode === 'locked') {
+          throw new CryptoWorkerError('VAULT_LOCKED', 'Vault is locked');
+        }
+        if (vaultMode !== 'recovering') {
+          throw new CryptoWorkerError(
+            'VAULT_NOT_RECOVERING',
+            'Vault is not in recovering mode',
+          );
+        }
+        vaultMode = 'unlocked';
+        workerEpoch += 1;
+        return;
+      }
+      case 'unlock':
+      case 'createVault': {
+        assignClosureInternal(action.vk, 'unlocked', action.x25519Seed, action.ed25519Seed);
+        workerEpoch += 1;
+        return;
+      }
+    }
   }
 
-  function assertGeneration(cmdGen: number): void {
-    if (!Number.isSafeInteger(cmdGen) || cmdGen < 0) {
-      throw new CryptoWorkerError('STALE_GENERATION', 'Invalid command generation');
-    }
-    if (cmdGen !== workerGeneration) {
-      throw new CryptoWorkerError('STALE_GENERATION', 'Operation cancelled by intervening lock');
-    }
-  }
-
-  function requireUnlockedVk(allowRecovering: boolean): Uint8Array {
-    if (!currentVk || vaultMode === 'locked') {
-      throw new CryptoWorkerError('VAULT_LOCKED', 'Vault is locked');
-    }
+  function assertReadOnlyStart(
+    allowRecovering: boolean,
+  ): { captured: WorkerStateSnapshot; vk: Uint8Array } {
     if (vaultMode === 'recovering' && !allowRecovering) {
       throw new CryptoWorkerError(
         'VAULT_RECOVERING',
         'Vault is in recovering mode; only rewrap and confirmRecovery are allowed until recovery completes',
       );
     }
-    return currentVk;
+    if (!currentVk || vaultMode === 'locked') {
+      throw new CryptoWorkerError('VAULT_LOCKED', 'Vault is locked');
+    }
+    return {
+      captured: captureStateSnapshot(),
+      vk: currentVk,
+    };
   }
 
+  function assertReadOnlyBeforeReturn(
+    sodium: Sodium,
+    captured: WorkerStateSnapshot,
+    vkCopy: Uint8Array,
+    allowRecovering: boolean,
+  ): void {
+    if (vaultMode === 'recovering' && !allowRecovering) {
+      throw new CryptoWorkerError(
+        'VAULT_RECOVERING',
+        'Vault is in recovering mode; only rewrap and confirmRecovery are allowed until recovery completes',
+      );
+    }
+    if (
+      captured.generation !== workerGeneration ||
+      captured.mode !== vaultMode ||
+      captured.epoch !== workerEpoch ||
+      !currentVk ||
+      !bytesEqual(sodium, currentVk, vkCopy)
+    ) {
+      throw new CryptoWorkerError(
+        'STALE_GENERATION',
+        'Worker state changed before read-only command completed',
+      );
+    }
+  }
   function buildAndVerifyRecoveryKeys(
     sodium: Sodium,
     vk: Uint8Array,
@@ -348,9 +575,28 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
     }
     try {
       const { x25519Seed, ed25519Seed } = unpackPrivateKeySeeds(combined);
+      hooks.onSecretAllocated?.('seed-copy', x25519Seed);
+      hooks.onSecretAllocated?.('seed-copy', ed25519Seed);
       return { x25519Seed, ed25519Seed };
     } finally {
       safeMemzero(sodium, combined, hooks.onKeyZeroed, 'seed');
+    }
+  }
+
+  /** Routed through `commitTransition`, the only writer of Worker state (BE4-5, T-r4-1). */
+  function disposePendingContinuation(sodium: Sodium | null): void {
+    commitTransition(sodium, null, 'lock', { kind: 'disposeContinuation' });
+  }
+
+  function cleanupCommandOnReject(sodium: Sodium | null, msg: unknown): void {
+    wipeIncomingMessageSecrets(sodium, msg, hooks.onKeyZeroed);
+    if (
+      typeof msg === 'object' &&
+      msg !== null &&
+      'type' in msg &&
+      (msg.type === 'resumeRecovery' || msg.type === 'unlockRecovery')
+    ) {
+      disposePendingContinuation(sodium);
     }
   }
 
@@ -360,25 +606,49 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         typeof msg.generation === 'number' && Number.isSafeInteger(msg.generation) && msg.generation >= 0
           ? msg.generation
           : workerGeneration + 1;
-      workerGeneration = Math.max(workerGeneration + 1, incomingGen);
-      wipeClosureKeys(sodium);
+      const nextGen = Math.max(workerGeneration + 1, incomingGen);
+      commitTransition(sodium, null, 'lock', { kind: 'lock', nextGeneration: nextGen });
       return { generation: workerGeneration } satisfies LockResult;
     }
 
     const cmdGen = msg.generation;
     if (typeof cmdGen !== 'number' || !Number.isSafeInteger(cmdGen) || cmdGen < 0) {
-      wipeIncomingMessageSecrets(sodium, msg, hooks.onKeyZeroed);
+      cleanupCommandOnReject(sodium, msg);
       throw new CryptoWorkerError('STALE_GENERATION', 'Invalid command generation');
     }
 
     if (vaultMode === 'locked' && !currentVk && cmdGen > workerGeneration) {
-      wipePendingRecovery(sodium);
-      workerGeneration = cmdGen;
+      commitTransition(sodium, null, msg.type, {
+        kind: 'adoptGeneration',
+        generation: cmdGen,
+        disposeContinuation: msg.type !== 'resumeRecovery',
+      });
     }
 
+    if (cmdGen !== workerGeneration) {
+      cleanupCommandOnReject(sodium, msg);
+      throw new CryptoWorkerError('STALE_GENERATION', 'Operation cancelled by intervening lock');
+    }
+
+    // Start-time whitelist (BE4-4): a non-whitelisted state command in `recovering` is rejected BEFORE any
+    // KDF or key work. The commit point re-checks it for commands that were already in flight.
+    if (
+      vaultMode === 'recovering' &&
+      STATE_COMMANDS.has(msg.type) &&
+      msg.type !== 'rewrap' &&
+      msg.type !== 'confirmRecovery'
+    ) {
+      cleanupCommandOnReject(sodium, msg);
+      throw new CryptoWorkerError(
+        'VAULT_RECOVERING',
+        'Vault is in recovering mode; only rewrap, confirmRecovery, and lock are allowed (call lock() first to switch flows)',
+      );
+    }
     switch (msg.type) {
       case 'createVault': {
+        const captured = captureStateSnapshot();
         const passphraseBytes = new Uint8Array(msg.passphraseBuffer);
+        let kdfPassphrase: Uint8Array | null = null;
         let vk: Uint8Array | null = null;
         let kek: Uint8Array | null = null;
         let x25519Seed: Uint8Array | null = null;
@@ -394,11 +664,9 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let reopenedEdPriv: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-
+          kdfPassphrase = passphraseToKdfBytes(passphraseBytes);
           const kdf = makeBaselineKdfParams(sodium);
-          kek = await deriveKek(sodium, passphraseBytes, kdf, hooks.deriveKek);
-          assertGeneration(cmdGen);
+          kek = await deriveKek(sodium, kdfPassphrase, kdf, hooks.deriveKek);
 
           vk = sodium.randombytes_buf(VK_BYTES);
           x25519Seed = sodium.randombytes_buf(SEED_BYTES);
@@ -466,8 +734,12 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             ? []
             : buildAndVerifyRecoveryKeys(sodium, vk, [...DEFAULT_SLOTS_1_TO_10]);
 
-          assertGeneration(cmdGen);
-          assignClosureKeys(sodium, vk, 'unlocked', x25519Seed, ed25519Seed);
+          commitTransition(sodium, captured, 'createVault', {
+            kind: 'createVault',
+            vk,
+            x25519Seed,
+            ed25519Seed,
+          });
 
           return {
             kdf,
@@ -479,6 +751,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           } satisfies CreateVaultResult;
         } finally {
           safeMemzero(sodium, passphraseBytes, hooks.onKeyZeroed, 'plaintext');
+          safeMemzero(sodium, kdfPassphrase, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, kek, hooks.onKeyZeroed, 'kek');
           safeMemzero(sodium, vk, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, x25519Seed, hooks.onKeyZeroed, 'seed');
@@ -496,28 +769,34 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       }
 
       case 'unlockPassphrase': {
+        const captured = captureStateSnapshot();
         const passphraseBytes = new Uint8Array(msg.passphraseBuffer);
+        let kdfPassphrase: Uint8Array | null = null;
         let kek: Uint8Array | null = null;
         let vk: Uint8Array | null = null;
         let x25519Seed: Uint8Array | null = null;
         let ed25519Seed: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          kek = await deriveKek(sodium, passphraseBytes, msg.kdf, hooks.deriveKek);
-          assertGeneration(cmdGen);
+          kdfPassphrase = passphraseToKdfBytes(passphraseBytes);
+          kek = await deriveKek(sodium, kdfPassphrase, msg.kdf, hooks.deriveKek);
+          if (vaultMode !== 'recovering') {
+            vk = openWrap(sodium, 'kek', msg.vaultKeyWrappedByKek, kek);
+            const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
+            x25519Seed = seeds.x25519Seed;
+            ed25519Seed = seeds.ed25519Seed;
+          }
 
-          vk = openWrap(sodium, 'kek', msg.vaultKeyWrappedByKek, kek);
-          const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
-          x25519Seed = seeds.x25519Seed;
-          ed25519Seed = seeds.ed25519Seed;
-
-          assertGeneration(cmdGen);
-          assignClosureKeys(sodium, vk, 'unlocked', x25519Seed, ed25519Seed);
-
+          commitTransition(sodium, captured, 'unlockPassphrase', {
+            kind: 'unlock',
+            vk: vk!,
+            x25519Seed,
+            ed25519Seed,
+          });
           return { unlocked: true };
         } finally {
           safeMemzero(sodium, passphraseBytes, hooks.onKeyZeroed, 'plaintext');
+          safeMemzero(sodium, kdfPassphrase, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, kek, hooks.onKeyZeroed, 'kek');
           safeMemzero(sodium, vk, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, x25519Seed, hooks.onKeyZeroed, 'seed');
@@ -534,40 +813,57 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let ed25519Seed: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          let rkText: string;
-          try {
-            rkText = utf8Decoder.decode(rkBytes);
-          } catch (err) {
-            throw new CryptoWorkerError('RECOVERY_KEY_INVALID', 'Invalid UTF-8 in recovery key', {
-              cause: err,
-            });
+          disposePendingContinuation(sodium);
+          const captured = captureStateSnapshot();
+          let lookupHashB64 = '';
+
+          if (vaultMode !== 'recovering') {
+            let rkText: string;
+            try {
+              rkText = utf8Decoder.decode(rkBytes);
+            } catch (err) {
+              throw new CryptoWorkerError('RECOVERY_KEY_INVALID', 'Invalid UTF-8 in recovery key', {
+                cause: err,
+              });
+            }
+
+            const rkNorm = recoveryAdapter.normalizeRecoveryKey(rkText);
+            lookupHashBytes = recoveryAdapter.deriveRecoveryLookupHash(sodium, rkNorm);
+            lookupHashB64 = encodeBase64Url(lookupHashBytes);
+            wrapKey = recoveryAdapter.deriveRecoveryWrapKey(sodium, rkNorm);
+
+            if (msg.wrap) {
+              vk = openWrap(sodium, 'rk', msg.wrap, wrapKey);
+              const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
+              x25519Seed = seeds.x25519Seed;
+              ed25519Seed = seeds.ed25519Seed;
+            }
           }
 
-          const rkNorm = recoveryAdapter.normalizeRecoveryKey(rkText);
-          lookupHashBytes = recoveryAdapter.deriveRecoveryLookupHash(sodium, rkNorm);
-          const lookupHashB64 = encodeBase64Url(lookupHashBytes);
-          wrapKey = recoveryAdapter.deriveRecoveryWrapKey(sodium, rkNorm);
-
+          commitTransition(
+            sodium,
+            captured,
+            'unlockRecovery',
+            msg.wrap
+              ? {
+                  kind: 'enterRecovering',
+                  vk: vk!,
+                  x25519Seed,
+                  ed25519Seed,
+                }
+              : {
+                  kind: 'installContinuation',
+                  pending: {
+                    wrapKey: wrapKey!,
+                    lookupHash: lookupHashB64,
+                    generation: cmdGen,
+                  },
+                },
+          );
           if (!msg.wrap) {
-            assertGeneration(cmdGen);
-            wipePendingRecovery(sodium);
-            pendingRecovery = {
-              wrapKey: new Uint8Array(wrapKey),
-              lookupHash: lookupHashB64,
-              generation: cmdGen,
-            };
+            wrapKey = null;
             return { lookup_hash: lookupHashB64 } satisfies DeriveRecoveryLookupResult;
           }
-
-          wipePendingRecovery(sodium);
-          vk = openWrap(sodium, 'rk', msg.wrap, wrapKey);
-          const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
-          x25519Seed = seeds.x25519Seed;
-          ed25519Seed = seeds.ed25519Seed;
-
-          assertGeneration(cmdGen);
-          assignClosureKeys(sodium, vk, 'recovering', x25519Seed, ed25519Seed);
 
           return {
             lookup_hash: lookupHashB64,
@@ -590,39 +886,48 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let wrapKeyCopy: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          if (!pendingRecovery) {
-            throw new CryptoWorkerError(
-              'RECOVERY_CONTINUATION_MISSING',
-              'No pending recovery key continuation is available',
-            );
+          let lookupHash = '';
+          let captured = captureStateSnapshot();
+          if (vaultMode !== 'recovering') {
+            if (!pendingRecovery) {
+              throw new CryptoWorkerError(
+                'RECOVERY_CONTINUATION_MISSING',
+                'No pending recovery key continuation is available',
+              );
+            }
+            if (pendingRecovery.generation !== cmdGen) {
+              disposePendingContinuation(sodium);
+              throw new CryptoWorkerError(
+                'STALE_GENERATION',
+                'Pending recovery continuation belongs to a different generation',
+              );
+            }
+
+            lookupHash = pendingRecovery.lookupHash;
+            wrapKeyCopy = new Uint8Array(pendingRecovery.wrapKey);
+            hooks.onSecretAllocated?.('wrap-key-copy', wrapKeyCopy);
+            disposePendingContinuation(sodium);
+            captured = captureStateSnapshot();
+
+            vk = openWrap(sodium, 'rk', msg.wrap, wrapKeyCopy);
+            const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
+            x25519Seed = seeds.x25519Seed;
+            ed25519Seed = seeds.ed25519Seed;
           }
-          if (pendingRecovery.generation !== cmdGen) {
-            wipePendingRecovery(sodium);
-            throw new CryptoWorkerError(
-              'STALE_GENERATION',
-              'Pending recovery continuation belongs to a different generation',
-            );
-          }
 
-          const lookupHash = pendingRecovery.lookupHash;
-          wrapKeyCopy = new Uint8Array(pendingRecovery.wrapKey);
-          wipePendingRecovery(sodium);
-
-          vk = openWrap(sodium, 'rk', msg.wrap, wrapKeyCopy);
-          const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
-          x25519Seed = seeds.x25519Seed;
-          ed25519Seed = seeds.ed25519Seed;
-
-          assertGeneration(cmdGen);
-          assignClosureKeys(sodium, vk, 'recovering', x25519Seed, ed25519Seed);
+          commitTransition(sodium, captured, 'resumeRecovery', {
+            kind: 'enterRecovering',
+            vk: vk!,
+            x25519Seed,
+            ed25519Seed,
+          });
 
           return {
             lookup_hash: lookupHash,
             recovering: true,
           } satisfies ResumeRecoveryResult;
         } finally {
-          wipePendingRecovery(sodium);
+          disposePendingContinuation(sodium);
           safeMemzero(sodium, wrapKeyCopy, hooks.onKeyZeroed, 'rk');
           safeMemzero(sodium, vk, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, x25519Seed, hooks.onKeyZeroed, 'seed');
@@ -631,39 +936,36 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       }
 
       case 'confirmRecovery': {
-        assertGeneration(cmdGen);
-        if (!currentVk || vaultMode === 'locked') {
-          throw new CryptoWorkerError('VAULT_LOCKED', 'Vault is locked');
-        }
-        if (vaultMode !== 'recovering') {
-          throw new CryptoWorkerError(
-            'VAULT_NOT_RECOVERING',
-            'Vault is not in recovering mode',
-          );
-        }
-        vaultMode = 'unlocked';
+        const captured = captureStateSnapshot();
+        commitTransition(sodium, captured, 'confirmRecovery', { kind: 'confirmRecovery' });
         return { unlocked: true } satisfies ConfirmRecoveryResult;
       }
 
       case 'unlockPrf': {
+        const captured = captureStateSnapshot();
         const pwkBytes = new Uint8Array(msg.pwkBuffer);
         let vk: Uint8Array | null = null;
         let x25519Seed: Uint8Array | null = null;
         let ed25519Seed: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          if (pwkBytes.byteLength !== VK_BYTES) {
-            throw new CryptoWorkerError('WRAP_INVALID', 'PRF output (PWK) must be 32 bytes');
+          if (vaultMode !== 'recovering') {
+            if (pwkBytes.byteLength !== VK_BYTES) {
+              throw new CryptoWorkerError('WRAP_INVALID', 'PRF output (PWK) must be 32 bytes');
+            }
+
+            vk = openWrap(sodium, 'prf', msg.vkWrap, pwkBytes);
+            const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
+            x25519Seed = seeds.x25519Seed;
+            ed25519Seed = seeds.ed25519Seed;
           }
 
-          vk = openWrap(sodium, 'prf', msg.vkWrap, pwkBytes);
-          const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
-          x25519Seed = seeds.x25519Seed;
-          ed25519Seed = seeds.ed25519Seed;
-
-          assertGeneration(cmdGen);
-          assignClosureKeys(sodium, vk, 'unlocked', x25519Seed, ed25519Seed);
+          commitTransition(sodium, captured, 'unlockPrf', {
+            kind: 'unlock',
+            vk: vk!,
+            x25519Seed,
+            ed25519Seed,
+          });
 
           return { unlocked: true };
         } finally {
@@ -675,21 +977,26 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       }
 
       case 'unlockDevKey': {
+        const captured = captureStateSnapshot();
         let vk: Uint8Array | null = null;
         let x25519Seed: Uint8Array | null = null;
         let ed25519Seed: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          vk = await openDevKeyWrap(msg.wrappedVk, msg.devKey, msg.userId, msg.vaultKeyId);
-          assertGeneration(cmdGen);
-
-          const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
-          x25519Seed = seeds.x25519Seed;
-          ed25519Seed = seeds.ed25519Seed;
-
-          assertGeneration(cmdGen);
-          assignClosureKeys(sodium, vk, 'unlocked', x25519Seed, ed25519Seed);
+          if (captured.mode !== 'recovering') {
+            vk = await openDevKeyWrap(msg.wrappedVk, msg.devKey, msg.userId, msg.vaultKeyId);
+            if (vaultMode !== 'recovering') {
+              const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
+              x25519Seed = seeds.x25519Seed;
+              ed25519Seed = seeds.ed25519Seed;
+            }
+          }
+          commitTransition(sodium, captured, 'unlockDevKey', {
+            kind: 'unlock',
+            vk: vk!,
+            x25519Seed,
+            ed25519Seed,
+          });
 
           return { unlocked: true };
         } finally {
@@ -701,23 +1008,19 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
 
       case 'rewrap': {
         const passphraseBytes = new Uint8Array(msg.passphraseBuffer);
+        let kdfPassphrase: Uint8Array | null = null;
         let kek: Uint8Array | null = null;
         let vkCopy: Uint8Array | null = null;
         let reopenedVk: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          const activeVk = requireUnlockedVk(true);
+          const { captured, vk: activeVk } = assertReadOnlyStart(true);
+          kdfPassphrase = passphraseToKdfBytes(passphraseBytes);
           vkCopy = new Uint8Array(activeVk);
+          hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const newKdf = makeRewrapKdfParams(sodium, msg.currentKdf);
-          kek = await deriveKek(sodium, passphraseBytes, newKdf, hooks.deriveKek);
-          assertGeneration(cmdGen);
-
-          const activeVkAfter = requireUnlockedVk(true);
-          if (!bytesEqual(sodium, activeVkAfter, vkCopy)) {
-            throw new CryptoWorkerError('STALE_GENERATION', 'Vault key changed during rewrap');
-          }
+          kek = await deriveKek(sodium, kdfPassphrase, newKdf, hooks.deriveKek);
 
           const wrapKBytes = doSealWrap(sodium, 'kek', vkCopy, kek);
           try {
@@ -736,8 +1039,10 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             );
           }
 
-          assertGeneration(cmdGen);
-          // Do NOT flip recovering -> unlocked here! Recovery stays restricted until confirmRecovery (BE1-12, FE1-1).
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, true);
+          if (captured.mode === 'recovering') {
+            commitTransition(sodium, captured, 'rewrap', { kind: 'rewrapInRecovering' });
+          }
 
           return {
             kdf: newKdf,
@@ -745,6 +1050,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           } satisfies RewrapResult;
         } finally {
           safeMemzero(sodium, passphraseBytes, hooks.onKeyZeroed, 'plaintext');
+          safeMemzero(sodium, kdfPassphrase, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, kek, hooks.onKeyZeroed, 'kek');
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, reopenedVk, hooks.onKeyZeroed, 'vk');
@@ -754,14 +1060,14 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       case 'makeRecoveryKeys': {
         let vkCopy: Uint8Array | null = null;
         try {
-          assertGeneration(cmdGen);
-          const activeVk = requireUnlockedVk(false);
+          const { captured, vk: activeVk } = assertReadOnlyStart(false);
           vkCopy = new Uint8Array(activeVk);
+          hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const slots = msg.slots ?? [...DEFAULT_SLOTS_1_TO_10];
           const recoveryKeys = buildAndVerifyRecoveryKeys(sodium, vkCopy, slots);
 
-          assertGeneration(cmdGen);
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, false);
           return { recovery_keys: recoveryKeys } satisfies MakeRecoveryKeysResult;
         } finally {
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
@@ -774,12 +1080,12 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let reopenedVk: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
+          const { captured, vk: activeVk } = assertReadOnlyStart(false);
           if (pwkBytes.byteLength !== VK_BYTES) {
             throw new CryptoWorkerError('WRAP_INVALID', 'PRF output (PWK) must be 32 bytes');
           }
-          const activeVk = requireUnlockedVk(false);
           vkCopy = new Uint8Array(activeVk);
+          hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const vkWrapBytes = doSealWrap(sodium, 'prf', vkCopy, pwkBytes);
           try {
@@ -798,7 +1104,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             );
           }
 
-          assertGeneration(cmdGen);
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, false);
           return { vk_wrap: encodeBase64Url(vkWrapBytes) } satisfies WrapForPasskeyResult;
         } finally {
           safeMemzero(sodium, pwkBytes, hooks.onKeyZeroed, 'pwk');
@@ -812,9 +1118,9 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let reopenedVk: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          const activeVk = requireUnlockedVk(false);
+          const { captured, vk: activeVk } = assertReadOnlyStart(false);
           vkCopy = new Uint8Array(activeVk);
+          hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const wrappedVk = await doSealDevKeyWrap(
             sodium,
@@ -823,12 +1129,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             msg.userId,
             msg.vaultKeyId,
           );
-          assertGeneration(cmdGen);
-
-          const activeVkAfterSeal = requireUnlockedVk(false);
-          if (!bytesEqual(sodium, activeVkAfterSeal, vkCopy)) {
-            throw new CryptoWorkerError('STALE_GENERATION', 'Vault key changed during wrapForDevice');
-          }
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, false);
 
           try {
             reopenedVk = await openDevKeyWrap(
@@ -851,12 +1152,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
             );
           }
 
-          assertGeneration(cmdGen);
-          const activeVkAfterOpen = requireUnlockedVk(false);
-          if (!bytesEqual(sodium, activeVkAfterOpen, vkCopy)) {
-            throw new CryptoWorkerError('STALE_GENERATION', 'Vault key changed during wrapForDevice');
-          }
-
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, false);
           return { wrapped_vk: wrappedVk } satisfies WrapForDeviceResult;
         } finally {
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
@@ -866,27 +1162,37 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
 
       case 'sealEntry': {
         let vkCopy: Uint8Array | null = null;
+        const incomingPtBytes = ArrayBuffer.isView(msg.plaintext)
+          ? new Uint8Array(
+              msg.plaintext.buffer,
+              msg.plaintext.byteOffset,
+              msg.plaintext.byteLength,
+            )
+          : null;
 
         try {
-          assertGeneration(cmdGen);
-          const activeVk = requireUnlockedVk(false);
+          const { captured, vk: activeVk } = assertReadOnlyStart(false);
           vkCopy = new Uint8Array(activeVk);
+          hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const sealed = sealEntryPayload(sodium, {
             entryId: msg.entryId,
             keyId: msg.keyId,
-            plaintext: msg.plaintext,
+            plaintext: incomingPtBytes ?? msg.plaintext,
             vk: vkCopy,
             adapter: envelopeAdapter,
           });
-          hooks.onKeyZeroed?.('plaintext');
+          if (!incomingPtBytes) {
+            hooks.onKeyZeroed?.('plaintext');
+          }
 
-          assertGeneration(cmdGen);
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, false);
           return {
             envelope: sealed.envelope,
             ciphertext: sealed.ciphertext,
           } satisfies SealEntryResult;
         } finally {
+          safeMemzero(sodium, incomingPtBytes, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
         }
       }
@@ -896,9 +1202,9 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let ptBytes: Uint8Array | null = null;
 
         try {
-          assertGeneration(cmdGen);
-          const activeVk = requireUnlockedVk(false);
+          const { captured, vk: activeVk } = assertReadOnlyStart(false);
           vkCopy = new Uint8Array(activeVk);
+          hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const opened = openEntryPayload(sodium, {
             entryId: msg.entryId,
@@ -909,7 +1215,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           });
           ptBytes = opened.plaintextBytes;
 
-          assertGeneration(cmdGen);
+          assertReadOnlyBeforeReturn(sodium, captured, vkCopy, false);
           return { plaintext: opened.plaintext } satisfies OpenEntryResult;
         } finally {
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
@@ -922,8 +1228,10 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       }
     }
   }
-
-  function mapError(err: unknown): { code: CryptoWorkerErrorCode; message: string } {
+  function mapError(
+    err: unknown,
+    cmdType?: unknown,
+  ): { code: CryptoWorkerErrorCode; message: string } {
     if (err instanceof CryptoWorkerError) {
       return { code: err.code, message: err.message };
     }
@@ -940,7 +1248,10 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
     if (err instanceof EnvelopeError || err instanceof JcsError || err instanceof Base64UrlError) {
       return { code: 'ENVELOPE_INVALID', message: err.message };
     }
-    if (err instanceof TypeError) {
+    if (
+      err instanceof TypeError &&
+      (cmdType === 'sealEntry' || cmdType === 'openEntry')
+    ) {
       return { code: 'ENVELOPE_INVALID', message: 'Invalid input encoding or type' };
     }
     if (err instanceof Error) {
@@ -950,6 +1261,115 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       return { code: 'WORKER_INTERNAL_ERROR', message: 'Crypto worker internal error' };
     }
     return { code: 'WORKER_INTERNAL_ERROR', message: 'Unknown crypto worker error' };
+  }
+
+  function errorReply(
+    reqId: number,
+    reqGen: number,
+    err: unknown,
+    cmdType: unknown,
+  ): WorkerErrorResponse {
+    return {
+      id: reqId,
+      generation: reqGen,
+      state: stateReport(),
+      ok: false,
+      error: mapError(err, cmdType),
+    };
+  }
+
+  /**
+   * Runs one command and builds its reply. The reply's `state` is captured synchronously after the command
+   * settled, so it is authoritative for the client (ADR 0002 §10 rule 5).
+   */
+  async function runCommand(
+    sodium: Sodium,
+    msg: WorkerRequestMessage,
+    reqId: number,
+    reqGen: number,
+  ): Promise<WorkerResponseMessage> {
+    try {
+      const result = await executeCommand(sodium, msg);
+      return {
+        id: reqId,
+        generation: msg.type === 'lock' ? workerGeneration : reqGen,
+        state: stateReport(),
+        ok: true,
+        result,
+      };
+    } catch (err) {
+      cleanupCommandOnReject(sodium, msg);
+      const cmdType = msg && typeof msg === 'object' && 'type' in msg ? msg.type : undefined;
+      return errorReply(reqId, reqGen, err, cmdType);
+    }
+  }
+
+  interface QueuedStateCommand {
+    sodium: Sodium;
+    msg: WorkerRequestMessage;
+    reqId: number;
+    reqGen: number;
+    settle: (response: WorkerResponseMessage) => void;
+  }
+
+  const stateQueue: QueuedStateCommand[] = [];
+  let stateRunning: QueuedStateCommand | null = null;
+
+  function pumpStateQueue(): void {
+    if (stateRunning) return;
+    const next = stateQueue.shift();
+    if (!next) return;
+    stateRunning = next;
+    void runCommand(next.sodium, next.msg, next.reqId, next.reqGen)
+      .then((response) => {
+        next.settle(response);
+      })
+      .finally(() => {
+        stateRunning = null;
+        pumpStateQueue();
+      });
+  }
+
+  function enqueueStateCommand(
+    sodium: Sodium,
+    msg: WorkerRequestMessage,
+    reqId: number,
+    reqGen: number,
+  ): Promise<WorkerResponseMessage> {
+    return new Promise<WorkerResponseMessage>((resolve) => {
+      stateQueue.push({ sodium, msg, reqId, reqGen, settle: resolve });
+      pumpStateQueue();
+    });
+  }
+
+  /**
+   * `lock` preempts: it never waits behind the queue. It commits immediately (wiping closure keys and any
+   * continuation, bumping generation and epoch), then every queued state command settles
+   * `STALE_GENERATION` without running and with its incoming secrets wiped. The one command already running
+   * cannot be aborted mid-KDF; its commit is rejected by the structural (mode, generation, epoch) rule.
+   */
+  function preemptWithLock(
+    sodium: Sodium,
+    msg: WorkerRequestMessage,
+    reqId: number,
+    reqGen: number,
+  ): Promise<WorkerResponseMessage> {
+    // `executeCommand` runs the lock commit synchronously, so the queue is cancelled in the same turn:
+    // no queued command can start between the lock commit and its cancellation.
+    const response = runCommand(sodium, msg, reqId, reqGen);
+    const cancelled = stateQueue.splice(0, stateQueue.length);
+    for (const entry of cancelled) {
+      cleanupCommandOnReject(entry.sodium, entry.msg);
+      entry.settle(
+        errorReply(
+          entry.reqId,
+          entry.reqGen,
+          new CryptoWorkerError('STALE_GENERATION', 'Operation cancelled by intervening lock'),
+          entry.msg.type,
+        ),
+      );
+    }
+    return response;
   }
 
   return {
@@ -964,47 +1384,49 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       try {
         sodium = await getSodium();
       } catch (err) {
-        wipeIncomingMessageSecrets(null, msg, hooks.onKeyZeroed);
-        const initErr = new CryptoWorkerError(
-          'WORKER_INIT_FAILED',
-          'Failed to initialize libsodium in Crypto Worker',
-          { cause: err },
+        cleanupCommandOnReject(null, msg);
+        return errorReply(
+          reqId,
+          reqGen,
+          new CryptoWorkerError(
+            'WORKER_INIT_FAILED',
+            'Failed to initialize libsodium in Crypto Worker',
+            { cause: err },
+          ),
+          undefined,
         );
-        return {
-          id: reqId,
-          generation: reqGen,
-          ok: false,
-          error: mapError(initErr),
-        };
       }
 
-      try {
-        if (!msg || typeof msg !== 'object') {
-          throw new CryptoWorkerError('WORKER_INTERNAL_ERROR', 'Malformed worker request message');
-        }
-        const result = await executeCommand(sodium, msg);
-        return {
-          id: reqId,
-          generation: msg.type === 'lock' ? workerGeneration : reqGen,
-          ok: true,
-          result,
-        };
-      } catch (err) {
-        wipeIncomingMessageSecrets(sodium, msg, hooks.onKeyZeroed);
-        const mapped = mapError(err);
-        return {
-          id: reqId,
-          generation: reqGen,
-          ok: false,
-          error: mapped,
-        };
+      if (!msg || typeof msg !== 'object') {
+        return errorReply(
+          reqId,
+          reqGen,
+          new CryptoWorkerError('WORKER_INTERNAL_ERROR', 'Malformed worker request message'),
+          undefined,
+        );
       }
+      if (msg.type === 'lock') {
+        return preemptWithLock(sodium, msg, reqId, reqGen);
+      }
+      if (STATE_COMMANDS.has(msg.type)) {
+        return enqueueStateCommand(sodium, msg, reqId, reqGen);
+      }
+      return runCommand(sodium, msg, reqId, reqGen);
     },
     getGeneration(): number {
       return workerGeneration;
     },
+    getEpoch(): number {
+      return workerEpoch;
+    },
     getState() {
       return vaultMode;
+    },
+    getStateSnapshot(): WorkerStateSnapshot {
+      return captureStateSnapshot();
+    },
+    getStateReport(): WorkerStateReport {
+      return stateReport();
     },
     inspectClosureVkForTest(): Uint8Array | null {
       return currentVk ? new Uint8Array(currentVk) : null;
@@ -1042,6 +1464,7 @@ export function attachWorkerCore(
             scope.postMessage({
               id: reqId,
               generation: reqGen,
+              state: core.getStateReport(),
               ok: false,
               error: {
                 code: 'WORKER_INTERNAL_ERROR',
@@ -1058,6 +1481,7 @@ export function attachWorkerCore(
           scope.postMessage({
             id: reqId,
             generation: reqGen,
+            state: core.getStateReport(),
             ok: false,
             error: {
               code: 'WORKER_INTERNAL_ERROR',

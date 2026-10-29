@@ -45,8 +45,7 @@ import {
   normalizeRecoveryKey,
   type RecoveryKeyAdapter,
 } from './recovery';
-import * as sodiumModule from './sodium';
-import { getSodium, resetSodiumForTest, type Sodium } from './sodium';
+import { getSodium, resetSodiumForTest, sodium as rawSodium, type Sodium } from './sodium';
 import { createWorkerShim, type ShimmedWorkerInstance } from './test/worker-shim';
 import { attachWorkerCore, createWorkerCore, type WorkerRequestMessage } from './worker-core';
 import {
@@ -55,7 +54,6 @@ import {
   VK_BYTES,
   VK_WRAP_BYTES,
   WRAP_VERSION,
-  WrapError,
   buildDevKeyAad,
   buildWrapAad,
   openDevKeyWrap,
@@ -847,7 +845,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       ...capturedKeks.map((k, idx) => ({ name: `kek_${idx}`, bytes: k })),
     ];
 
-    expect(shim.workerPostMessageCalls.length).toBeGreaterThanOrEqual(14);
+    expect(shim.workerPostMessageCalls).toHaveLength(19);
     for (const msg of shim.workerPostMessageCalls) {
       for (const secret of allSecretsToScan) {
         expect(
@@ -1302,7 +1300,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect(client.getState()).toBe('error');
   });
 
-  it('delivers lock/terminate/handleWorkerDeath teardown BEFORE notifying state observers and makes lock() total (never rejects) (BE1-8, FE1-2, FE1-21)', async () => {
+  it('delivers lock/terminate/handleWorkerDeath teardown BEFORE notifying state observers, catches observer exceptions in setState, and makes lock() total including postMessage delivery failure (BE1-8, FE1-2, FE1-21, FE2-6, FE2-11a, FE2-11b, FE2-11h)', async () => {
     const shim = createWorkerShim({
       deriveKek: fastTestDeriveKek,
       recovery: testRecoveryAdapter,
@@ -1319,16 +1317,18 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       },
     });
 
+    // 0. Throwing observer on createVault / unlock success path is caught inside setState so createVault does NOT reject or lose recovery keys (FE2-6)
+    throwOnObserver = true;
     const created = await client.createVault({
       passphrase: 'observer-safety-passphrase',
       skipRecoveryKeys: true,
       opGeneration: client.captureGeneration(),
     });
+    expect(created.kdf.ops).toBe(3);
     expect(client.getState()).toBe('unlocked');
     expect(shim.core.inspectClosureVkForTest()).not.toBeNull();
 
     // 1. Throwing onStateChange during lock() MUST NOT prevent lock command delivery or Worker VK wipe, and lock() must resolve (BE1-8, FE1-2)
-    throwOnObserver = true;
     const lockRes = await client.lock();
     expect(lockRes.generation).toBeGreaterThan(0);
     expect(client.getState()).toBe('locked');
@@ -1336,21 +1336,22 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect(shim.core.inspectClosureVkForTest()).toBeNull();
     throwOnObserver = false;
 
-    // 2. Concurrent back-to-back lock() calls both resolve and never reject with STALE_GENERATION (FE1-2)
+    // 2. Concurrent back-to-back lock() calls both resolve to the exact final generation and never reject with STALE_GENERATION (FE1-2, FE2-11h)
     await client.unlockPassphrase({
       passphrase: 'observer-safety-passphrase',
       kdf: created.kdf,
       vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
       opGeneration: client.captureGeneration(),
     });
+    const genBeforeConcurrentLock = client.getGeneration();
     const [l1, l2] = await Promise.all([client.lock(), client.lock()]);
-    expect(l1.generation).toBeGreaterThan(0);
-    expect(l2.generation).toBeGreaterThanOrEqual(l1.generation);
+    expect(l1.generation).toBe(genBeforeConcurrentLock + 2);
+    expect(l2.generation).toBe(genBeforeConcurrentLock + 2);
     expect(shim.core.inspectClosureVkForTest()).toBeNull();
 
-    // 3. Throwing onStateChange during terminate() still terminates the Worker and settles pending requests (BE1-8, FE1-21)
+    // 3. Throwing onStateChange during terminate() and handleWorkerDeath() is caught by setState, still terminates the Worker, and settles pending requests (BE1-8, FE1-21, FE2-6, FE2-11b)
     let pauseDerive = true;
-    const deriveStarted = Promise.withResolvers<void>();
+    let deriveStarted = Promise.withResolvers<void>();
     const termShim = createWorkerShim({
       deriveKek: async (s, pass, params) => {
         if (pauseDerive) {
@@ -1370,9 +1371,9 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     const termClient = new CryptoClient({
       createWorker: () => termShim.port,
-      onStateChange: (st) => {
-        if (st === 'locked' && throwOnObserver) {
-          throw new Error('Terminate observer boom');
+      onStateChange: () => {
+        if (throwOnObserver) {
+          throw new Error('Teardown observer boom');
         }
       },
     });
@@ -1386,13 +1387,105 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     await deriveStarted.promise;
 
     throwOnObserver = true;
-    expect(() => termClient.terminate()).toThrow('Terminate observer boom');
-    throwOnObserver = false;
-    pauseDerive = false;
-
+    expect(() => termClient.terminate()).not.toThrow();
+    expect(termClient.getState()).toBe('locked');
     expect(terminatedCalled).toBe(true);
     await expect(pendingUnlock).rejects.toMatchObject({
       code: 'STALE_GENERATION',
+    });
+
+    // 3b. Throwing observer during handleWorkerDeath (FE2-11b)
+    deriveStarted = Promise.withResolvers<void>();
+    const deathShim = createWorkerShim({
+      deriveKek: async (s, pass, params) => {
+        if (pauseDerive) {
+          deriveStarted.resolve();
+          await new Promise(() => {});
+        }
+        return fastTestDeriveKek(s, pass, params);
+      },
+    });
+    activeShims.push(deathShim);
+    let deathTerminated = false;
+    const origDeathTerminate = deathShim.port.terminate?.bind(deathShim.port);
+    deathShim.port.terminate = () => {
+      deathTerminated = true;
+      origDeathTerminate?.();
+    };
+    const deathClient = new CryptoClient({
+      createWorker: () => deathShim.port,
+      onStateChange: () => {
+        if (throwOnObserver) {
+          throw new Error('Death observer boom');
+        }
+      },
+    });
+    throwOnObserver = false;
+    const pendingDeathUnlock = deathClient.unlockPassphrase({
+      passphrase: 'observer-safety-passphrase',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: deathClient.captureGeneration(),
+    });
+    await deriveStarted.promise;
+    throwOnObserver = true;
+    expect(() => deathShim.simulateCrash()).not.toThrow();
+    throwOnObserver = false;
+    expect(deathTerminated).toBe(true);
+    expect(deathClient.getState()).toBe('error');
+    await expect(pendingDeathUnlock).rejects.toMatchObject({
+      code: 'WORKER_CRASHED',
+    });
+
+    // 4. lock() delivery-failure branch (client.ts:949-973): when activeWorker.postMessage throws during lock(),
+    //    terminates worker, settles in-flight requests with WORKER_CRASHED, transitions to 'error', and resolves lock() (FE2-11a)
+    deriveStarted = Promise.withResolvers<void>();
+    const lockFailShim = createWorkerShim({
+      deriveKek: async (s, pass, params) => {
+        if (pauseDerive) {
+          deriveStarted.resolve();
+          await new Promise(() => {});
+        }
+        return fastTestDeriveKek(s, pass, params);
+      },
+    });
+    activeShims.push(lockFailShim);
+    let lockFailTerminated = false;
+    const origLockFailTerminate = lockFailShim.port.terminate?.bind(lockFailShim.port);
+    lockFailShim.port.terminate = () => {
+      lockFailTerminated = true;
+      origLockFailTerminate?.();
+    };
+    const lockFailClient = new CryptoClient({
+      createWorker: () => lockFailShim.port,
+      onStateChange: () => {
+        if (throwOnObserver) {
+          throw new Error('Lock fail observer boom');
+        }
+      },
+    });
+    const inFlightBeforeLockFail = lockFailClient.unlockPassphrase({
+      passphrase: 'observer-safety-passphrase',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: lockFailClient.captureGeneration(),
+    });
+    await deriveStarted.promise;
+
+    // Force postMessage to throw on the next call (the lock command)
+    lockFailShim.port.postMessage = () => {
+      throw new Error('Port closed before lock delivery');
+    };
+    throwOnObserver = true;
+    const lockFailResult = await lockFailClient.lock();
+    throwOnObserver = false;
+    pauseDerive = false;
+
+    expect(lockFailResult.generation).toBeGreaterThan(0);
+    expect(lockFailTerminated).toBe(true);
+    expect(lockFailClient.getState()).toBe('error');
+    await expect(inFlightBeforeLockFail).rejects.toMatchObject({
+      code: 'WORKER_CRASHED',
     });
   });
 
@@ -1480,6 +1573,60 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     ).rejects.toBe(abortErr);
     expect(pwkBufAbort.every((b) => b === 0)).toBe(true);
 
+    // 2b. Also verify the remaining 3 secret-taking methods (unlockPassphrase, rewrap, wrapForPasskey) wipe buffers on rejected beforePostMessage (FE2-11d),
+    //     and unlockPassphraseNow({ beforePostMessage: () => client.lock() }) rejects with STALE_GENERATION and wipes the buffer (FE2-1)
+    const unlockPassAbortBuf = new Uint8Array([1, 2, 3, 4, 5]);
+    await expect(
+      client.unlockPassphrase({
+        passphrase: unlockPassAbortBuf,
+        kdf: {},
+        vaultKeyWrappedByKek: 'AA',
+        opGeneration: client.captureGeneration(),
+        beforePostMessage: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+    expect(unlockPassAbortBuf.every((b) => b === 0)).toBe(true);
+
+    const rewrapAbortBuf = new Uint8Array([6, 7, 8, 9, 10]);
+    await expect(
+      client.rewrap({
+        passphrase: rewrapAbortBuf,
+        currentKdf: {},
+        opGeneration: client.captureGeneration(),
+        beforePostMessage: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+    expect(rewrapAbortBuf.every((b) => b === 0)).toBe(true);
+
+    const wrapPwkAbortBuf = new Uint8Array(32).fill(0xcd);
+    await expect(
+      client.wrapForPasskey({
+        pwk: wrapPwkAbortBuf,
+        opGeneration: client.captureGeneration(),
+        beforePostMessage: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+    expect(wrapPwkAbortBuf.every((b) => b === 0)).toBe(true);
+
+    const nowLockPassBuf = new Uint8Array([91, 92, 93, 94]);
+    await expect(
+      client.unlockPassphraseNow({
+        passphrase: nowLockPassBuf,
+        kdf: {},
+        vaultKeyWrappedByKek: 'AA',
+        beforePostMessage: async () => {
+          await client.lock();
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    expect(nowLockPassBuf.every((b) => b === 0)).toBe(true);
+
     // 3. Worker constructor throw wipes caller secret buffer
     const throwingFactoryClient = new CryptoClient({
       createWorker: () => {
@@ -1516,47 +1663,132 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect(pwkBufCloneFail.every((b) => b === 0)).toBe(true);
   });
 
-  it('wipes incoming secret buffers in the Worker when getSodium() initialization fails, and retries sodium init on the next command (BE1-17, FE1-8)', async () => {
+  it('wipes incoming secret buffers in the Worker when sodium.ready rejects once, retries getSodium() without resetSodiumForTest, and transitions CryptoClient to error on WORKER_INIT_FAILED before spawning a fresh Worker (BE1-17, FE1-8, FE2-4, T-r2-1)', async () => {
     const realSodium = await getSodium();
-    const zeroedKinds: string[] = [];
-    const core = createWorkerCore({
-      deriveKek: fastTestDeriveKek,
-      onKeyZeroed: (kind) => zeroedKinds.push(kind),
-    });
+    const origReady = rawSodium.ready;
 
-    // 1. Simulate getSodium() rejecting once: incoming secret buffer MUST still be wiped (BE1-17)
-    const getSodiumSpy = vi
-      .spyOn(sodiumModule, 'getSodium')
-      .mockRejectedValueOnce(new Error('Simulated transient WASM instantiate OOM'));
-
-    const incomingPwk = new Uint8Array(32).fill(0xcc);
-    const failRes = await core.handleMessage({
-      id: 1,
-      generation: 0,
-      type: 'unlockPrf',
-      pwkBuffer: incomingPwk.buffer,
-      vkWrap: 'AA',
-    });
-
-    expect(failRes).toMatchObject({
-      ok: false,
-      error: { code: 'WORKER_INIT_FAILED' },
-    });
-    expect(incomingPwk.every((b) => b === 0)).toBe(true);
-    expect(zeroedKinds).toContain('pwk');
-
-    // 2. Subsequent call succeeds because sodium init failure is not cached forever (FE1-8)
-    getSodiumSpy.mockRestore();
+    // 1. Real sodium.ready reject-once-then-resolve test WITHOUT calling resetSodiumForTest between failure and retry (FE2-4, T-r2-1).
+    //    If `.catch(() => { readyPromise = null; ... })` is removed from sodium.ts, the second getSodium() call will fail!
     resetSodiumForTest();
-    const sAfterRetry = await getSodium();
-    expect(sAfterRetry).toBe(realSodium);
+    let readyAccessCount = 0;
+    Object.defineProperty(rawSodium, 'ready', {
+      configurable: true,
+      get() {
+        readyAccessCount += 1;
+        if (readyAccessCount === 1) {
+          return Promise.reject(new Error('Simulated transient WASM instantiate OOM'));
+        }
+        return origReady;
+      },
+    });
+
+    try {
+      const zeroedKinds: string[] = [];
+      const core = createWorkerCore({
+        deriveKek: fastTestDeriveKek,
+        onKeyZeroed: (kind) => zeroedKinds.push(kind),
+      });
+
+      const incomingPwk = new Uint8Array(32).fill(0xcc);
+      const failRes = await core.handleMessage({
+        id: 1,
+        generation: 0,
+        type: 'unlockPrf',
+        pwkBuffer: incomingPwk.buffer,
+        vkWrap: 'AA',
+      });
+
+      expect(failRes).toMatchObject({
+        ok: false,
+        error: { code: 'WORKER_INIT_FAILED' },
+      });
+      expect(incomingPwk.every((b) => b === 0)).toBe(true);
+      expect(zeroedKinds).toContain('pwk');
+
+      // Retry getSodium() directly WITHOUT calling resetSodiumForTest() — proves sodium.ts cleared readyPromise in .catch
+      const sAfterRetry = await getSodium();
+      expect(sAfterRetry).toBe(realSodium);
+      expect(readyAccessCount).toBe(2);
+    } finally {
+      Object.defineProperty(rawSodium, 'ready', {
+        configurable: true,
+        writable: true,
+        value: origReady,
+      });
+    }
+
+    // 2. Client test for WORKER_INIT_FAILED: Worker reply transitions client to 'error', rejects request with WORKER_INIT_FAILED,
+    //    terminates the failed Worker, and spawns a fresh Worker on the next unlock (FE2-4)
+    resetSodiumForTest();
+    let clientReadyAccess = 0;
+    Object.defineProperty(rawSodium, 'ready', {
+      configurable: true,
+      get() {
+        clientReadyAccess += 1;
+        if (clientReadyAccess === 1) {
+          return Promise.reject(new Error('Worker init failed on first spawn'));
+        }
+        return origReady;
+      },
+    });
+
+    try {
+      const createdShims: ShimmedWorkerInstance[] = [];
+      const observedStates: string[] = [];
+      const initFailClient = new CryptoClient({
+        createWorker: () => {
+          const s = createWorkerShim({
+            deriveKek: fastTestDeriveKek,
+            recovery: testRecoveryAdapter,
+          });
+          activeShims.push(s);
+          createdShims.push(s);
+          return s.port;
+        },
+        onStateChange: (st) => observedStates.push(st),
+      });
+
+      const passBuf = new Uint8Array(utf8Encoder.encode('init-fail-passphrase'));
+      await expect(
+        initFailClient.createVault({
+          passphrase: passBuf,
+          skipRecoveryKeys: true,
+          opGeneration: initFailClient.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({
+        code: 'WORKER_INIT_FAILED',
+      });
+      expect(initFailClient.getState()).toBe('error');
+      expect(observedStates).toContain('error');
+      expect(createdShims).toHaveLength(1);
+
+      // Next unlock/createVault spawns a fresh Worker (createdShims.length === 2) and succeeds
+      const createdAfterRetry = await initFailClient.createVault({
+        passphrase: 'init-retry-passphrase',
+        skipRecoveryKeys: true,
+        opGeneration: initFailClient.captureGeneration(),
+      });
+      expect(createdAfterRetry.kdf.ops).toBe(3);
+      expect(createdShims).toHaveLength(2);
+      expect(initFailClient.getState()).toBe('unlocked');
+    } finally {
+      Object.defineProperty(rawSodium, 'ready', {
+        configurable: true,
+        writable: true,
+        value: origReady,
+      });
+    }
   });
 
-  it('correlates overlapping concurrent commands out-of-order, guards wrapForDevice against concurrent VK swap, and handles unknown commands/malformed generations (FE1-12, FE1-17, FE1-18, FE1-22)', async () => {
+  it('correlates overlapping concurrent commands when replies arrive out-of-order, guards wrapForDevice against concurrent VK swap, and handles unknown commands/malformed generations (FE1-12, FE1-17, FE1-18, FE1-22, FE2-11c)', async () => {
     const sodium = await getSodium();
     let gateFirstDevKey = false;
     const firstSealEntered = Promise.withResolvers<void>();
     const releaseFirstSeal = Promise.withResolvers<void>();
+
+    let delayFirstOpen = false;
+    const firstOpenParked = Promise.withResolvers<void>();
+    const releaseFirstOpen = Promise.withResolvers<void>();
 
     const shim = createWorkerShim({
       deriveKek: fastTestDeriveKek,
@@ -1571,7 +1803,38 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       },
     });
     activeShims.push(shim);
-    const client = new CryptoClient({ createWorker: () => shim.port });
+
+    // Wrap workerScope.postMessage to hold the first openEntry response until after the second openEntry response is sent,
+    // proving true out-of-order request-ID correlation rather than FIFO matching (FE2-11c)
+    const origWorkerPost = shim.port;
+    void origWorkerPost;
+    const replyOrder: number[] = [];
+    let heldResponse: (() => void) | null = null;
+    const customClientPort: typeof shim.port = {
+      postMessage: (msg, transfer) => shim.port.postMessage(msg, transfer),
+      onmessage: null,
+      onerror: null,
+      onmessageerror: null,
+      terminate: () => shim.port.terminate?.(),
+    };
+    shim.port.onmessage = (ev) => {
+      if (delayFirstOpen && !heldResponse) {
+        delayFirstOpen = false;
+        firstOpenParked.resolve();
+        heldResponse = () => {
+          replyOrder.push(ev.data.id);
+          customClientPort.onmessage?.(ev);
+        };
+        void releaseFirstOpen.promise.then(() => {
+          heldResponse?.();
+        });
+        return;
+      }
+      replyOrder.push(ev.data.id);
+      customClientPort.onmessage?.(ev);
+    };
+
+    const client = new CryptoClient({ createWorker: () => customClientPort });
 
     await client.createVault({
       passphrase: 'overlap-passphrase-1',
@@ -1583,17 +1846,32 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     const entryId2 = '22222222-2222-4222-8222-222222222222';
     const keyId = 'vk:0123456789abcdefghijkl';
 
-    // 1. Overlapping concurrent sealEntry + openEntry calls resolve to their exact respective callers (FE1-12)
     const [s1, s2] = await Promise.all([
       client.sealEntryNow({ entryId: entryId1, keyId, plaintext: 'payload-one' }),
       client.sealEntryNow({ entryId: entryId2, keyId, plaintext: 'payload-two' }),
     ]);
-    const [o1, o2] = await Promise.all([
-      client.openEntryNow({ entryId: entryId1, envelope: s1.envelope, ciphertext: s1.ciphertext }),
-      client.openEntryNow({ entryId: entryId2, envelope: s2.envelope, ciphertext: s2.ciphertext }),
-    ]);
-    expect(o1.plaintext).toBe('payload-one');
+
+    // 1. Out-of-order replies: request 1 is parked while request 2 replies first; both resolve to their exact callers (FE1-12, FE2-11c)
+    replyOrder.length = 0;
+    delayFirstOpen = true;
+    const pOpen1 = client.openEntryNow({
+      entryId: entryId1,
+      envelope: s1.envelope,
+      ciphertext: s1.ciphertext,
+    });
+    await firstOpenParked.promise;
+    const o2 = await client.openEntryNow({
+      entryId: entryId2,
+      envelope: s2.envelope,
+      ciphertext: s2.ciphertext,
+    });
     expect(o2.plaintext).toBe('payload-two');
+    releaseFirstOpen.resolve();
+    const o1 = await pOpen1;
+    expect(o1.plaintext).toBe('payload-one');
+    // Reply for request 2 arrived BEFORE reply for request 1
+    expect(replyOrder).toHaveLength(2);
+    expect(replyOrder[0]).toBeGreaterThan(replyOrder[1]!);
 
     // 2. wrapForDevice re-checks active VK after await so a concurrent unlock replacing VK mid-await is rejected (FE1-22)
     const devKey = await generateTestDevKey();
@@ -1615,7 +1893,6 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     await expect(wrapDevPromise).rejects.toMatchObject({
       code: 'STALE_GENERATION',
     });
-
     // 3. Unknown command type -> NOT_IMPLEMENTED; non-integer generation -> STALE_GENERATION (FE1-18)
     const unknownRes = await shim.core.handleMessage({
       id: 777,
@@ -1667,16 +1944,40 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     void sodium;
   });
 
-  it('keeps libsodium and worker-core out of the client.ts main-thread import graph, works without Promise.withResolvers, and requires opGeneration in TypeScript (FE1-3, FE1-4, FE1-6, FE1-19)', async () => {
-    // 1. Inspect client.ts and protocol.ts imports to prove neither imports worker-core or sodium/libsodium (FE1-4, T-2, T-3)
+  it('enforces strict import allowlist on client.ts and protocol.ts, works without Promise.withResolvers, and requires opGeneration in TypeScript on all 13 command params (FE1-3, FE1-4, FE1-6, FE1-19, FE2-1, FE2-7)', async () => {
+    // 1. Strict import allowlist on client.ts and protocol.ts (FE2-7):
+    //    - protocol.ts must contain ZERO import/export-from statements and zero dynamic import()/require() calls.
+    //    - client.ts static import/export-from specifiers must ONLY be './protocol', and dynamic new URL(...) only './worker.ts'.
     const clientSource = readFileSync(resolve(__dirname, './client.ts'), 'utf8');
     const protocolSource = readFileSync(resolve(__dirname, './protocol.ts'), 'utf8');
-    expect(clientSource).not.toMatch(/from\s+['"]\.\/worker-core['"]/);
-    expect(clientSource).not.toMatch(/from\s+['"]\.\/sodium['"]/);
-    expect(clientSource).not.toMatch(/libsodium/);
-    expect(protocolSource).not.toMatch(/from\s+['"]\.\/worker-core['"]/);
-    expect(protocolSource).not.toMatch(/from\s+['"]\.\/sodium['"]/);
-    expect(protocolSource).not.toMatch(/libsodium/);
+
+    const extractSpecifiers = (src: string): string[] => {
+      const specs: string[] = [];
+      const fromRe = /^(?:import|export)\b[\s\S]*?\bfrom\s*['"]([^'"]+)['"]/gm;
+      const sideEffectImportRe = /^import\s*['"]([^'"]+)['"]/gm;
+      const dynamicImportRe = /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+      for (const re of [fromRe, sideEffectImportRe, dynamicImportRe]) {
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(src)) !== null) {
+          specs.push(m[1]!);
+        }
+      }
+      return specs;
+    };
+
+    expect(extractSpecifiers(protocolSource)).toEqual([]);
+    expect(extractSpecifiers(clientSource)).toEqual(['./protocol']);
+
+    // Verify removed *Now methods do not exist on CryptoClient prototype (FE2-1)
+    expect('confirmRecoveryNow' in CryptoClient.prototype).toBe(false);
+    expect('resumeRecoveryNow' in CryptoClient.prototype).toBe(false);
+    expect('unlockPrfNow' in CryptoClient.prototype).toBe(false);
+    expect('unlockDevKeyNow' in CryptoClient.prototype).toBe(false);
+    expect('wrapForPasskeyNow' in CryptoClient.prototype).toBe(false);
+
+    // 1b. The single-writer invariant for ALL Worker state (mode, closure keys, generation, epoch,
+    //     pendingRecovery) is an AST check in worker.fence.test.ts (BE4-5, T-r4-1), not a text regex.
+    expect('assignClosureKeys' in createWorkerCore()).toBe(false);
 
     // 2. Dynamic import intentionally exercises module loading boundary of worker.ts in a main-thread/jsdom environment where window exists (FE1-19)
     const prevWindowOnMessage = globalThis.onmessage;
@@ -1705,8 +2006,9 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       Promise.withResolvers = origWithResolvers;
     }
 
-    // 4. Type-level proof that opGeneration is required on CreateVaultClientParams / UnlockPassphraseClientParams (FE1-3)
+    // 4. Type-level proof that opGeneration is required on ALL 13 *ClientParams interfaces, and makeRecoveryKeysNow has no {} default (FE1-3, FE2-1)
     if (false as boolean) {
+      const dummyDevKey = {} as CryptoKey;
       // @ts-expect-error opGeneration is required on createVault
       await client.createVault({ passphrase: 'missing-op-generation' });
       // @ts-expect-error opGeneration is required on unlockPassphrase
@@ -1715,10 +2017,39 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
         kdf: {},
         vaultKeyWrappedByKek: 'AA',
       });
+      // @ts-expect-error opGeneration is required on unlockRecovery
+      await client.unlockRecovery({ recoveryKey: 'rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4' });
+      // @ts-expect-error opGeneration is required on resumeRecovery
+      await client.resumeRecovery({ wrap: 'AA' });
+      // @ts-expect-error opGeneration is required on confirmRecovery
+      await client.confirmRecovery({});
+      // @ts-expect-error opGeneration is required on unlockPrf
+      await client.unlockPrf({ pwk: new Uint8Array(32), vkWrap: 'AA' });
+      // @ts-expect-error opGeneration is required on unlockDevKey
+      await client.unlockDevKey({
+        devKey: dummyDevKey,
+        wrappedVk: 'AA',
+        userId: 'u1',
+        vaultKeyId: 'vk:1',
+      });
+      // @ts-expect-error opGeneration is required on rewrap
+      await client.rewrap({ passphrase: 'new', currentKdf: {} });
+      // @ts-expect-error opGeneration is required on makeRecoveryKeys
+      await client.makeRecoveryKeys({ slots: [1] });
+      // @ts-expect-error makeRecoveryKeysNow requires params object (no {} default)
+      await client.makeRecoveryKeysNow();
+      // @ts-expect-error opGeneration is required on wrapForPasskey
+      await client.wrapForPasskey({ pwk: new Uint8Array(32) });
+      // @ts-expect-error opGeneration is required on wrapForDevice
+      await client.wrapForDevice({ devKey: dummyDevKey, userId: 'u1', vaultKeyId: 'vk:1' });
+      // @ts-expect-error opGeneration is required on sealEntry
+      await client.sealEntry({ entryId: 'e1', keyId: 'vk:1', plaintext: 'pt' });
+      // @ts-expect-error opGeneration is required on openEntry
+      await client.openEntry({ entryId: 'e1', envelope: {}, ciphertext: 'AA' });
     }
   });
 
-  it('verifies default recovery.ts and envelope.ts adapters and error mappings work end-to-end (FE1-23)', async () => {
+  it('verifies default recovery.ts and envelope.ts adapters and scopes TypeError mapping to sealEntry/openEntry while testing each mapError class (FE1-23, FE2-9)', async () => {
     const sodium = await getSodium();
     const rk = generateRecoveryKey(sodium, 1);
     expect(rk.slot).toBe(1);
@@ -1744,16 +2075,27 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       buildEntryAad(validEnv, '00000000-0000-4000-8000-000000000000').byteLength,
     ).toBeGreaterThan(100);
 
-    // Verify mapError maps Base64UrlError, JcsError, and TypeError to ENVELOPE_INVALID (FE1-23)
+    // Exercise each mapError class separately: Base64UrlError -> ENVELOPE_INVALID, JcsError -> ENVELOPE_INVALID,
+    // TypeError on openEntry/sealEntry -> ENVELOPE_INVALID, TypeError on non-entry commands -> WORKER_INTERNAL_ERROR (FE2-9)
+    let mode: 'b64' | 'jcs' | 'type' = 'b64';
     const errCore = createWorkerCore({
       deriveKek: fastTestDeriveKek,
       envelope: {
-        validateEntryEnvelope: () => {
-          throw new Base64UrlError('bad base64url');
+        validateEntryEnvelope: (input) => {
+          if (mode === 'b64') {
+            throw new Base64UrlError('bad base64url');
+          }
+          if (mode === 'type') {
+            throw new TypeError('bad envelope type');
+          }
+          return validateEntryEnvelope(input);
         },
         canonicalizeEnvelopeJcs: () => {
           throw new JcsError('bad jcs');
         },
+      },
+      sealDevKeyWrap: async () => {
+        throw new TypeError('Invalid CryptoKey provided to WebCrypto');
       },
     });
     await errCore.handleMessage({
@@ -1763,6 +2105,9 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       passphraseBuffer: utf8Encoder.encode('pass').buffer,
       skipRecoveryKeys: true,
     });
+
+    // 1. Base64UrlError -> ENVELOPE_INVALID
+    mode = 'b64';
     const b64ErrRes = await errCore.handleMessage({
       id: 2,
       generation: 0,
@@ -1773,7 +2118,52 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     });
     expect(b64ErrRes).toMatchObject({
       ok: false,
+      error: { code: 'ENVELOPE_INVALID', message: 'bad base64url' },
+    });
+
+    // 2. JcsError -> ENVELOPE_INVALID
+    mode = 'jcs';
+    const jcsErrRes = await errCore.handleMessage({
+      id: 3,
+      generation: 0,
+      type: 'openEntry',
+      entryId: '00000000-0000-4000-8000-000000000000',
+      envelope: validEnv,
+      ciphertext: 'AA',
+    });
+    expect(jcsErrRes).toMatchObject({
+      ok: false,
+      error: { code: 'ENVELOPE_INVALID', message: 'bad jcs' },
+    });
+
+    // 3. TypeError on openEntry / sealEntry -> ENVELOPE_INVALID
+    mode = 'type';
+    const typeEntryErrRes = await errCore.handleMessage({
+      id: 4,
+      generation: 0,
+      type: 'sealEntry',
+      entryId: '00000000-0000-4000-8000-000000000000',
+      keyId: 'vk:0123456789abcdefghijkl',
+      plaintext: 'hello',
+    });
+    expect(typeEntryErrRes).toMatchObject({
+      ok: false,
       error: { code: 'ENVELOPE_INVALID' },
+    });
+
+    // 4. TypeError on a non-entry command (wrapForDevice / unlockDevKey) -> WORKER_INTERNAL_ERROR, NOT ENVELOPE_INVALID (FE2-9)
+    const devKey = await generateTestDevKey();
+    const typeNonEntryErrRes = await errCore.handleMessage({
+      id: 5,
+      generation: 0,
+      type: 'wrapForDevice',
+      devKey,
+      userId: '00000000-0000-4000-8000-000000000000',
+      vaultKeyId: 'vk:0123456789abcdefghijkl',
+    });
+    expect(typeNonEntryErrRes).toMatchObject({
+      ok: false,
+      error: { code: 'WORKER_INTERNAL_ERROR' },
     });
   });
 
@@ -1824,8 +2214,6 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       parallelism: 1,
       salt: encodeBase64Url(new Uint8Array(16).fill(5)),
     }).ops).toBe(4);
-    const sampleWrapErr = new WrapError('WRAP_INVALID', 'invalid wrap');
-    expect(sampleWrapErr.code).toBe('WRAP_INVALID');
   });
 
   it('runs the Argon2id 64 MiB benchmark helper across multiple runs and reports median/p95', async () => {
