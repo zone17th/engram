@@ -29,6 +29,8 @@ import {
 } from '@/features/vault/broadcast';
 import {
   purgeDeviceKeysOnRevoked,
+  readDeviceMetaRecord,
+  type DeviceMetaRecord,
   type DeviceStoreEnvironment,
 } from '@/features/vault/device-store';
 import {
@@ -393,6 +395,16 @@ export function VaultProvider({
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgedVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgeInFlightVaultKeyIdRef = useRef<string | null>(null);
+  // `vault_key_id`s of resets this provider itself observed (reload key change / 404, `vault_changed` reset,
+  // local `notifyVaultChanged`). `markResetPurged` only accepts such a token (BE2-9).
+  const observedResetKeyIdsRef = useRef<Set<string>>(new Set());
+  // Device-state proof of the last committed purge: a later 404 that cannot name its vault may skip a repeat purge
+  // only while `sabk.device` `meta` still equals the post-purge record, i.e. nothing was written to it since (BE2-9).
+  const resetPurgeEvidenceRef = useRef<{
+    userId: string | null;
+    sessionEpoch: number;
+    meta: DeviceMetaRecord;
+  } | null>(null);
   const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
   currentUserIdRef.current = me?.user.id ?? null;
   const previousUserIdRef = useRef<string | null>(null);
@@ -612,16 +624,32 @@ export function VaultProvider({
   const clearError = useCallback(() => {
     setLastErrorCode(null);
   }, []);
-  const markResetPurged = useCallback((vaultKeyId?: string | null) => {
-    // BE2-9: Require a positive reset identity (`vaultKeyId` or known `currentVaultKeyIdRef.current`);
-    // never store a wildcard `'__absent__'` receipt that could suppress a future purge for an unseen vault.
-    const token =
-      typeof vaultKeyId === 'string' && vaultKeyId.length > 0
-        ? vaultKeyId
-        : currentVaultKeyIdRef.current;
-    if (typeof token === 'string' && token.length > 0) {
-      resetPurgedVaultKeyIdRef.current = token;
+  const rememberObservedReset = useCallback((vaultKeyId: string | null | undefined) => {
+    if (typeof vaultKeyId !== 'string' || vaultKeyId.length === 0) return;
+    const observed = observedResetKeyIdsRef.current;
+    observed.delete(vaultKeyId);
+    observed.add(vaultKeyId);
+    if (observed.size > 16) {
+      const oldest = observed.values().next().value;
+      if (oldest !== undefined) observed.delete(oldest);
     }
+  }, []);
+
+  const markResetPurged = useCallback((vaultKeyId?: string | null) => {
+    // BE2-9: Require a positive reset identity that this provider can tie to a reset it observed: the tab's own
+    // current `vault_key_id`, or a key from a reset transition it saw. An arbitrary token is an assertion, not
+    // evidence, and would suppress a later purge for a vault whose reset was never seen here.
+    const explicit = typeof vaultKeyId === 'string' && vaultKeyId.length > 0 ? vaultKeyId : null;
+    const token = explicit ?? currentVaultKeyIdRef.current;
+    if (typeof token !== 'string' || token.length === 0) return;
+    if (
+      explicit !== null &&
+      explicit !== currentVaultKeyIdRef.current &&
+      !observedResetKeyIdsRef.current.has(explicit)
+    ) {
+      return;
+    }
+    resetPurgedVaultKeyIdRef.current = token;
   }, []);
 
   const runIdempotentResetPurge = useCallback(
@@ -636,11 +664,33 @@ export function VaultProvider({
         return;
       }
       const purgeEpoch = vaultMetaSessionEpochRef.current;
+      const purgeUserId = userId ?? null;
       if (transitionKeyId !== null) {
         resetPurgeInFlightVaultKeyIdRef.current = transitionKeyId;
       }
-      void purgeDeviceKeysOnRevoked(userId, effectiveDeviceStoreEnv)
-        .then((res) => {
+      // A transition that cannot name its vault (unknown 404) is purged unless device-state evidence proves the
+      // previous purge already covers it: `meta` is still exactly the record that purge committed.
+      const isProvenDuplicate = async (): Promise<boolean> => {
+        const evidence = resetPurgeEvidenceRef.current;
+        if (!evidence || evidence.sessionEpoch !== purgeEpoch || evidence.userId !== purgeUserId) {
+          return false;
+        }
+        const current = await readDeviceMetaRecord(effectiveDeviceStoreEnv);
+        return (
+          current !== null &&
+          current.incarnation === evidence.meta.incarnation &&
+          current.deviceRevision === evidence.meta.deviceRevision
+        );
+      };
+      const purge = () =>
+        purgeDeviceKeysOnRevoked(userId, effectiveDeviceStoreEnv).then((res) => {
+          if (res.ok && res.meta && vaultMetaSessionEpochRef.current === purgeEpoch) {
+            resetPurgeEvidenceRef.current = {
+              userId: purgeUserId,
+              sessionEpoch: purgeEpoch,
+              meta: res.meta,
+            };
+          }
           if (
             res.ok &&
             transitionKeyId !== null &&
@@ -649,7 +699,13 @@ export function VaultProvider({
           ) {
             resetPurgedVaultKeyIdRef.current = transitionKeyId;
           }
-        })
+        });
+      const run =
+        transitionKeyId === null
+          ? isProvenDuplicate().then((duplicate) => (duplicate ? undefined : purge()))
+          : purge();
+      void run
+        .catch(() => undefined)
         .finally(() => {
           if (
             transitionKeyId !== null &&
@@ -670,7 +726,10 @@ export function VaultProvider({
    * - If `vault_key_id` matches and `version` increased, updates `vaultMeta` for future operations without
    *   overwriting any in-flight mutation's captured `If-Match`.
    */
-  const reloadVaultMeta = useCallback(async (): Promise<VaultState | null> => {
+  const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null }): Promise<VaultState | null> => {
+    // `resetKeyId` is set only by this provider's own follow-up GET after it observed that vault's reset, so a
+    // `404` that cannot name its vault is attributed to that observed reset and not to an unseen later one.
+    const followUpResetKeyId = opts?.resetKeyId ?? null;
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
     const requestSeq = ++vaultMetaRequestSeqRef.current;
     const requestUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
@@ -706,6 +765,7 @@ export function VaultProvider({
       vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: fresh };
       const prevKeyId = currentVaultKeyIdRef.current;
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
+        rememberObservedReset(prevKeyId);
         currentVaultKeyIdRef.current = fresh.vault_key_id;
         resetPurgedVaultKeyIdRef.current = null;
         resetPurgeInFlightVaultKeyIdRef.current = null;
@@ -741,7 +801,9 @@ export function VaultProvider({
         const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
         vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: null };
         const prevKeyId = currentVaultKeyIdRef.current;
-        const transitionKeyId = prevKeyId ?? resetPurgedVaultKeyIdRef.current ?? null;
+        // BE2-9: never borrow an old purge receipt as the identity of an unnamed 404.
+        const transitionKeyId = prevKeyId ?? followUpResetKeyId;
+        rememberObservedReset(transitionKeyId);
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
@@ -756,7 +818,16 @@ export function VaultProvider({
       }
       throw err;
     }
-  }, [effectiveDeviceStoreEnv, lock, queryClient, runIdempotentResetPurge, sessionStatus]);
+  }, [
+    effectiveDeviceStoreEnv,
+    lock,
+    queryClient,
+    rememberObservedReset,
+    runIdempotentResetPurge,
+    sessionStatus,
+  ]);
+
+  const reloadVaultMeta = useCallback(() => loadVaultMeta(), [loadVaultMeta]);
 
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
@@ -766,6 +837,7 @@ export function VaultProvider({
             ? payload.vault_key_id
             : currentVaultKeyIdRef.current) ?? null;
         if (resetKeyId) {
+          rememberObservedReset(resetKeyId);
           resetPurgedVaultKeyIdRef.current = resetKeyId;
         }
         currentVaultKeyIdRef.current = null;
@@ -794,7 +866,7 @@ export function VaultProvider({
         providerSenderIdRef.current,
       );
     },
-    [queryClient],
+    [queryClient, rememberObservedReset],
   );
 
   const notifySettingsChanged = useCallback(
@@ -1203,6 +1275,8 @@ export function VaultProvider({
         currentVaultKeyIdRef.current = null;
         resetPurgedVaultKeyIdRef.current = null;
         resetPurgeInFlightVaultKeyIdRef.current = null;
+        observedResetKeyIdsRef.current.clear();
+        resetPurgeEvidenceRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
         void lock({ broadcast: true, reason: 'signed_out' });
@@ -1219,6 +1293,8 @@ export function VaultProvider({
       currentVaultKeyIdRef.current = null;
       resetPurgedVaultKeyIdRef.current = null;
       resetPurgeInFlightVaultKeyIdRef.current = null;
+      observedResetKeyIdsRef.current.clear();
+      resetPurgeEvidenceRef.current = null;
       setVaultMeta(null);
       queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
       void lock({ broadcast: true, reason: 'user_changed' });
@@ -1298,6 +1374,7 @@ export function VaultProvider({
                 ? message.vault_key_id
                 : null;
             const transitionKeyId = incomingKeyId ?? knownKeyId ?? null;
+            rememberObservedReset(transitionKeyId);
             currentVaultKeyIdRef.current = null;
             setVaultMeta(null);
             queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
@@ -1307,9 +1384,10 @@ export function VaultProvider({
             );
             void lock({ broadcast: true, reason: 'vault_reset_broadcast' });
             void refetchMe().catch(() => undefined);
-            void reloadVaultMeta().catch(() => undefined);
+            void loadVaultMeta({ resetKeyId: transitionKeyId }).catch(() => undefined);
             return;
           }
+          rememberObservedReset(knownKeyId);
           resetPurgedVaultKeyIdRef.current = null;
           resetPurgeInFlightVaultKeyIdRef.current = null;
           currentVaultKeyIdRef.current = message.vault_key_id;
@@ -1320,10 +1398,10 @@ export function VaultProvider({
             effectiveDeviceStoreEnv,
           );
           void lock({ broadcast: true, reason: 'vault_key_id_changed_broadcast' });
-          void reloadVaultMeta().catch(() => undefined);
+          void loadVaultMeta().catch(() => undefined);
           return;
         }
-        void reloadVaultMeta().catch(() => undefined);
+        void loadVaultMeta().catch(() => undefined);
       }
     });
   }, [
@@ -1334,7 +1412,8 @@ export function VaultProvider({
     me?.user.id,
     queryClient,
     refetchMe,
-    reloadVaultMeta,
+    loadVaultMeta,
+    rememberObservedReset,
     runIdempotentResetPurge,
     updateTabKnownLockEpoch,
   ]);

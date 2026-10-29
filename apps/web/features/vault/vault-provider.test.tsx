@@ -5022,4 +5022,146 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     });
     await expectBe31ReplacementUsable('be31-deadline', vault);
   }, 20_000);
+
+  // ---------------------------------------------------------------------------
+  // BE2-9 residual (fix round 3): an unnamed 404 never borrows an old purge receipt, and the setter only accepts a
+  // token that matches a reset this provider observed.
+  // ---------------------------------------------------------------------------
+  async function be29Setup(prefix: string) {
+    const gate: { mode: 'present' | 'absent' } = { mode: 'present' };
+    mockBe2Fetch({
+      vault: () =>
+        gate.mode === 'present' ? jsonResponse(be2VaultBody('vk:be29-a', 1)) : be2VaultAbsentResponse(),
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const { vault } = renderBe2Provider(prefix, {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('locked');
+    });
+    await act(async () => {
+      await vault().reloadVaultMeta();
+    });
+    expect(vault().vaultMeta?.vault_key_id).toBe('vk:be29-a');
+    seedBe2DeviceMeta(10);
+    return { vault, gate, idbFactory, devkeys: fakeIdb.ensureStore(DEVKEY_STORE_NAME) };
+  }
+
+  function seedBe29DevKey(devkeys: Map<string, unknown>, vaultKeyId: string) {
+    const recordKey = formatDevKeyRecordKey(BE2_USER_ID, vaultKeyId);
+    devkeys.set(recordKey, {
+      user_id: BE2_USER_ID,
+      vault_key_id: vaultKeyId,
+      wrapped_vk: new Uint8Array([4, 5, 6]),
+    });
+    return recordKey;
+  }
+
+  it('BE2-9: after an observed reset of A is purged, an unnamed 404 caused by a missed later reset of B purges again instead of reusing A receipt', async () => {
+    const ctx = await be29Setup('be29-missed');
+    ctx.gate.mode = 'absent';
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be29-a', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    expect(ctx.vault().vaultMeta).toBeNull();
+
+    // Vault B is created, remembered on this device and reset in another tab; this tab sees none of it. The device
+    // write that seeded B's DevKey rotated `meta` after the purge of A.
+    const keyB = seedBe29DevKey(ctx.devkeys, 'vk:be29-b');
+    fakeIdb.ensureStore(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, {
+      key: DEVICE_META_RECORD_KEY,
+      incarnation: 'be29-remember-write-incarnation',
+      deviceRevision: 12,
+    });
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(13);
+    });
+    expect(ctx.devkeys.has(keyB)).toBe(false);
+    peer.close();
+  }, 15_000);
+
+  it('BE2-9 control: a real duplicate-success of the SAME reset (device meta untouched since its purge) is not purged a second time by an unnamed 404', async () => {
+    const ctx = await be29Setup('be29-duplicate');
+    ctx.gate.mode = 'absent';
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be29-a', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+    peer.close();
+  }, 15_000);
+
+  it('BE2-9: markResetPurged with a token this provider never observed does not suppress the purge when that vault reset arrives', async () => {
+    const ctx = await be29Setup('be29-wrong-token');
+    ctx.gate.mode = 'absent';
+    const keyUnseen = seedBe29DevKey(ctx.devkeys, 'vk:be29-unseen');
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-unseen');
+    });
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be29-unseen', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    expect(ctx.devkeys.has(keyUnseen)).toBe(false);
+    peer.close();
+  }, 15_000);
+
+  it('BE2-9: markResetPurged without a token and without a known current vault records no receipt, so a later reset is still purged', async () => {
+    mockBe2Fetch({ vault: () => be2VaultAbsentResponse() });
+    const idbFactory = fakeIdb.createFactory();
+    const { vault } = renderBe2Provider('be29-no-token', {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be29-no-token-state')).toHaveTextContent('locked');
+    });
+    seedBe2DeviceMeta(10);
+    const devkeys = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    const key = seedBe29DevKey(devkeys, 'vk:be29-later');
+    act(() => {
+      vault().markResetPurged();
+      vault().markResetPurged(null);
+    });
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be29-later', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    expect(devkeys.has(key)).toBe(false);
+    peer.close();
+  }, 15_000);
 });
