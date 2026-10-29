@@ -782,7 +782,14 @@ export function VaultProvider({
     const supersedingOutcome = (): { meta: VaultState | null } | null => {
       const applied = vaultMetaAppliedRef.current;
       if (applied && applied.sessionEpoch === requestSessionEpoch && applied.seq > requestSeq) {
-        return { meta: applied.meta };
+        // BE5-2: a local same-key update that landed after the saved outcome is newer than it; never hand back the older
+        // version (the live metadata only differs from the outcome for the same key, otherwise the outcome stands).
+        const live = liveVaultMetaRef.current;
+        const meta =
+          applied.meta && live && live.vault_key_id === applied.meta.vault_key_id && live.version > applied.meta.version
+            ? live
+            : applied.meta;
+        return { meta };
       }
       return null;
     };

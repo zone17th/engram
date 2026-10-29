@@ -5466,6 +5466,52 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     20_000,
   );
 
+  // BE5-2: the superseded return (success, 404 and failure exits) must not hand back a same-key version older than the
+  // live metadata when a local update landed after the saved applied outcome.
+  it.each(['success', '404', 'failure'] as const)(
+    'BE5-2: G1/G2 -> G2 v2 -> local v3 -> G1 settles with %s returns v3 and the provider stays at v3',
+    async (exit) => {
+      const ctx = await be37Setup(`be52-${exit}`);
+      ctx.gate.hold = true;
+      const outcome: { g1: { version: number } | null | 'unset' } = { g1: 'unset' };
+      const g1P = ctx.vault()
+        .reloadVaultMeta()
+        .then((r) => {
+          outcome.g1 = r;
+        });
+      const g2P = ctx.vault().reloadVaultMeta();
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(2);
+      });
+      // The newer G2 applies v2 first; a local same-key notification then raises the live metadata to v3.
+      await act(async () => {
+        ctx.pending[1]!(jsonResponse(be2VaultBody('vk:be3-7', 2)));
+        expect((await g2P)?.version).toBe(2);
+      });
+      act(() => {
+        ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be3-7', version: 3 });
+      });
+      expect(ctx.vault().vaultMeta?.version).toBe(3);
+      await act(async () => {
+        ctx.pending[0]!(
+          exit === 'success'
+            ? jsonResponse(be2VaultBody('vk:be3-7', 1))
+            : exit === '404'
+              ? be2VaultAbsentResponse()
+              : be3ProblemResponse(503, 'service_unavailable'),
+        );
+        await g1P;
+      });
+      expect((outcome.g1 as { version: number } | null)?.version).toBe(3);
+      expect(ctx.vault().vaultMeta?.version).toBe(3);
+      expect(screen.getByTestId(`be52-${exit}-state`)).toHaveTextContent('unlocked');
+      expect(screen.getByTestId(`be52-${exit}-worker`)).toHaveTextContent('unlocked');
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(10);
+    },
+    20_000,
+  );
+
   it('BE4-5: an older same-key GET snapshot held across a local v3 update cannot lower the current metadata version', async () => {
     const ctx = await be37Setup('be45-regress');
     ctx.gate.hold = true;
