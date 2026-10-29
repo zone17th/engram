@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { NextIntlClientProvider } from 'next-intl';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { ThemeProvider } from '@/components/theme-provider';
@@ -5164,4 +5164,269 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(devkeys.has(key)).toBe(false);
     peer.close();
   }, 15_000);
+
+  // ---------------------------------------------------------------------------
+  // BE3-5 / BE1-6 (V1) / BE2-6 (fix round 3): a PENDING recovery continuation is locked mid-operation.
+  // The recovery call is held AFTER its baseline pre-check and BEFORE the Worker result is published; a real
+  // sibling lock (delivered) or a missed durable lockEpoch advance (durable post-check) then lands while the
+  // continuation is pending.
+  // ---------------------------------------------------------------------------
+  function renderRecordingProviders(
+    prefix: string,
+    env: { idbFactory: IDBFactory; locksManager: LockManager },
+    count: 1 | 2,
+  ) {
+    const holder: { a: VaultContextValue | null; b: VaultContextValue | null } = { a: null, b: null };
+    const statesA: string[] = [];
+    function ProbeA() {
+      const ctx = useVault();
+      holder.a = ctx;
+      statesA.push(ctx.state);
+      return (
+        <div>
+          <output data-testid={`${prefix}-state-a`}>{ctx.state}</output>
+          <output data-testid={`${prefix}-worker-a`}>{ctx.workerState}</output>
+        </div>
+      );
+    }
+    function ProbeB() {
+      const ctx = useVault();
+      holder.b = ctx;
+      return <output data-testid={`${prefix}-state-b`}>{ctx.state}</output>;
+    }
+    const mount = (probe: ReactNode) => (
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={env}
+            deviceStoreEnv={{ idbFactory: env.idbFactory }}
+          >
+            {probe}
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>
+    );
+    render(
+      <div>
+        {mount(<ProbeA />)}
+        {count === 2 ? mount(<ProbeB />) : null}
+      </div>,
+    );
+    return {
+      statesA,
+      vaultA: () => {
+        if (!holder.a) throw new Error('probe A has not rendered yet');
+        return holder.a;
+      },
+      vaultB: () => {
+        if (!holder.b) throw new Error('probe B has not rendered yet');
+        return holder.b;
+      },
+    };
+  }
+
+  function makeRecoveryHold() {
+    const hold: { reached: boolean; release: () => void; promise: Promise<void> } = {
+      reached: false,
+      release: () => undefined,
+      promise: Promise.resolve(),
+    };
+    hold.promise = new Promise<void>((resolve) => {
+      hold.release = resolve;
+    });
+    return hold;
+  }
+
+  async function be35EnterLookup(
+    prefix: string,
+    count: 1 | 2,
+  ): Promise<{
+    env: { idbFactory: IDBFactory; locksManager: LockManager };
+    p: ReturnType<typeof renderRecordingProviders>;
+    created: CreateVaultResult;
+    op: { opGeneration: number };
+  }> {
+    mockBe2Fetch();
+    const env = { idbFactory: fakeIdb.createFactory(), locksManager: fakeLocks.createLockManager() };
+    const p = renderRecordingProviders(prefix, env, count);
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state-a`)).toHaveTextContent('locked');
+    });
+    const created = await be2CreateVault(p.vaultA, 'be3-5-recovery-passphrase-1234');
+    await act(async () => {
+      await p.vaultA().lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state-a`)).toHaveTextContent('locked');
+    });
+    const op = p.vaultA().beginOp();
+    await act(async () => {
+      await p.vaultA().unlockRecovery({
+        recoveryKey: created.recovery_keys[0]!.display,
+        opGeneration: op.opGeneration,
+      });
+    });
+    return { env, p, created, op };
+  }
+
+  it('BE3-5 / BE1-6: a missed durable lockEpoch advance while resumeRecovery is pending is caught by the post-check -> stale rejection, no recovering continuation, both modes locked', async () => {
+    const { env, p, created, op } = await be35EnterLookup('be35-resume', 1);
+    expect(p.vaultA().unlockBaseline).not.toBeNull();
+
+    const hold = makeRecoveryHold();
+    const outcome: { err: unknown } = { err: null };
+    const resumeP = p
+      .vaultA()
+      .resumeRecovery({
+        wrap: created.recovery_keys[0]!.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op.opGeneration,
+        beforePostMessage: () => {
+          hold.reached = true;
+          return hold.promise;
+        },
+      })
+      .catch((err: unknown) => {
+        outcome.err = err;
+      });
+    await act(async () => {
+      await waitUntil(() => hold.reached);
+    });
+
+    // A sibling advanced the durable lockEpoch and this tab missed its notification.
+    await act(async () => {
+      await recordLockEpochEvent(p.vaultA().tabKnownLockEpoch, env);
+    });
+    await act(async () => {
+      hold.release();
+      await resumeP;
+    });
+    expect(outcome.err).toMatchObject({ code: 'STALE_GENERATION' });
+    await waitFor(() => {
+      expect(screen.getByTestId('be35-resume-state-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be35-resume-worker-a')).toHaveTextContent('locked');
+    });
+    expect(p.vaultA().unlockBaseline).toBeNull();
+
+    // The cancelled continuation is unusable and no fresh baseline is recaptured for it.
+    const confirmErr: { value: unknown } = { value: null };
+    await act(async () => {
+      try {
+        await p.vaultA().confirmRecovery({ opGeneration: op.opGeneration });
+      } catch (err) {
+        confirmErr.value = err;
+      }
+    });
+    expect(confirmErr.value).toMatchObject({ code: 'STALE_GENERATION' });
+    expect(screen.getByTestId('be35-resume-state-a')).toHaveTextContent('locked');
+  }, 20_000);
+
+  it('BE3-5 / BE2-6: a missed durable lockEpoch advance while confirmRecovery is pending is caught by the post-check -> stale rejection, never an unlocked render, both modes locked', async () => {
+    const { env, p, created, op } = await be35EnterLookup('be35-confirm', 1);
+    await act(async () => {
+      await p.vaultA().resumeRecovery({
+        wrap: created.recovery_keys[0]!.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be35-confirm-state-a')).toHaveTextContent('recovering');
+    const baselineE1 = p.vaultA().unlockBaseline;
+    expect(baselineE1).not.toBeNull();
+    p.statesA.length = 0;
+
+    const hold = makeRecoveryHold();
+    const outcome: { err: unknown } = { err: null };
+    const confirmP = p
+      .vaultA()
+      .confirmRecovery({
+        opGeneration: op.opGeneration,
+        beforePostMessage: () => {
+          hold.reached = true;
+          return hold.promise;
+        },
+      })
+      .catch((err: unknown) => {
+        outcome.err = err;
+      });
+    await act(async () => {
+      await waitUntil(() => hold.reached);
+    });
+    // The pre-check passed and the call is pending against the ORIGINAL baseline; nothing was substituted.
+    expect(p.vaultA().unlockBaseline).toEqual(baselineE1);
+
+    await act(async () => {
+      await recordLockEpochEvent(p.vaultA().tabKnownLockEpoch, env);
+    });
+    await act(async () => {
+      hold.release();
+      await confirmP;
+    });
+    expect(outcome.err).toMatchObject({ code: 'STALE_GENERATION' });
+    await waitFor(() => {
+      expect(screen.getByTestId('be35-confirm-state-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be35-confirm-worker-a')).toHaveTextContent('locked');
+    });
+    expect(p.vaultA().unlockBaseline).toBeNull();
+    // The unverified post-confirm Worker session was never exposed as unlocked application access.
+    expect(p.statesA).not.toContain('unlocked');
+  }, 20_000);
+
+  it('BE3-5: a real sibling VaultProvider.lock delivered while confirmRecovery is pending cancels the continuation -> stale rejection, both modes locked, continuation unusable', async () => {
+    const { p, created, op } = await be35EnterLookup('be35-sibling', 2);
+    await act(async () => {
+      await p.vaultA().resumeRecovery({
+        wrap: created.recovery_keys[0]!.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be35-sibling-state-a')).toHaveTextContent('recovering');
+
+    const hold = makeRecoveryHold();
+    const outcome: { err: unknown } = { err: null };
+    const confirmP = p
+      .vaultA()
+      .confirmRecovery({
+        opGeneration: op.opGeneration,
+        beforePostMessage: () => {
+          hold.reached = true;
+          return hold.promise;
+        },
+      })
+      .catch((err: unknown) => {
+        outcome.err = err;
+      });
+    await act(async () => {
+      await waitUntil(() => hold.reached);
+    });
+    expect(screen.getByTestId('be35-sibling-state-a')).toHaveTextContent('recovering');
+
+    // The sibling's real production lock lands while A's confirm is PENDING (not before it was admitted).
+    await act(async () => {
+      await p.vaultB().lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be35-sibling-state-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be35-sibling-worker-a')).toHaveTextContent('locked');
+    });
+    await act(async () => {
+      hold.release();
+      await confirmP;
+    });
+    expect(outcome.err).toMatchObject({ code: 'STALE_GENERATION' });
+    expect(screen.getByTestId('be35-sibling-state-a')).toHaveTextContent('locked');
+    expect(p.vaultA().unlockBaseline).toBeNull();
+
+    const retryErr: { value: unknown } = { value: null };
+    await act(async () => {
+      try {
+        await p.vaultA().confirmRecovery({ opGeneration: op.opGeneration });
+      } catch (err) {
+        retryErr.value = err;
+      }
+    });
+    expect(retryErr.value).toMatchObject({ code: 'STALE_GENERATION' });
+  }, 20_000);
 });
