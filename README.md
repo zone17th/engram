@@ -2,224 +2,89 @@
 
 > Một phần trí nhớ của bạn, được lưu bên ngoài đầu — với phần nội dung riêng tư chỉ bạn mới đọc được.
 
-**engram** là một web app giúp bạn lưu lại những mẩu thông tin nhỏ và tìm chúng thật nhanh khi cần. Mỗi thông tin nằm trong một **mục (Item)**, có tên, tag và các entry theo kiểu dữ liệu phù hợp.
+**engram** là web app để lưu những mẩu thông tin nhỏ và tìm lại thật nhanh. Mỗi thông tin là một **mục (Item)** có tên, tag và các entry `text` hoặc `json`. Mọi thao tác đi qua một ô nhập duy nhất:
 
-Bạn chỉ cần một ô nhập duy nhất:
+- `wifi: Abc123` — lưu nhanh một đoạn văn bản;
+- `wi` — tìm theo tên mục hoặc tag;
+- `#nhà` — lọc theo tag.
 
-- `wifi: Abc123` để lưu nhanh một đoạn văn bản;
-- `wi` để tìm theo tên mục hoặc tag;
-- `#nhà` để lọc theo tag.
+## Tính năng chính
 
-Gợi ý tìm kiếm kết hợp prefix, fuzzy và semantic search. Embedding được tự host bằng TEI với model `BAAI/bge-m3`, nên dữ liệu không phải đi qua OpenAI, Gemini hay Cohere.
+- **Tìm kiếm ba lớp** trên tên mục và tag: prefix, fuzzy và semantic. Kết quả khớp trực tiếp luôn đứng trước; semantic có thể tắt.
+- **Mã hoá đầu-cuối thân entry.** Tên mục, tag và kiểu entry để plaintext để server tìm được; nội dung text/JSON chỉ trình duyệt của bạn đọc được.
+- **Vault** mở bằng passphrase (Argon2id), 10 recovery key dùng một lần, passkey (WebAuthn PRF) hoặc thiết bị đã nhớ.
+- Giao diện English (mặc định) và Tiếng Việt.
 
-## engram làm gì?
+## Công nghệ
 
-### Lưu được những thứ nhỏ nhưng quan trọng
+- Web: Next.js 15, crypto chạy trong Web Worker (libsodium).
+- API và worker: Go (chi, pgx, sqlc, River).
+- Dữ liệu: PostgreSQL 16 với pgvector và pg_trgm.
+- Embedding: `noop` (mặc định), TEI tự host hoặc API tương thích OpenAI ([ADR 0004](docs/adr/0004-embedding-provider-openai-compat.md)).
 
-Một Item có thể có nhiều tag và nhiều entry. Ở MVP, entry hỗ trợ hai kiểu:
+## Cấu trúc repo
 
-- `text` cho ghi chú hoặc nội dung tự do;
-- `json` cho dữ liệu có cấu trúc, được hiển thị dưới dạng bảng lồng nhau.
-
-Tên mục có thể trùng nhau; tag được chuẩn hoá và duy trì tính duy nhất. Cách tổ chức này phù hợp với những thứ thường được lưu rải rác như thông tin Wi-Fi, cấu hình, ghi chú công việc hoặc các mẩu dữ liệu cần tìm lại sau này.
-
-### Tìm lại từ những gì bạn còn nhớ
-
-Search của engram chạy trên tên mục và tag, kết hợp ba lớp:
-
-1. **Prefix** — tìm ngay khi bạn mới gõ vài ký tự.
-2. **Fuzzy** — vẫn tìm được khi gõ thiếu hoặc sai một chút.
-3. **Semantic** — hiểu những cụm từ gần nghĩa, chẳng hạn tìm “mật khẩu wifi” có thể gợi ra mục `wifi-password` hoặc tag `mạng-nhà`.
-
-Kết quả semantic được bổ sung sau kết quả lexical để những gì khớp trực tiếp vẫn xuất hiện trước. Bạn có thể tắt semantic cho từng lần tìm bằng nút `≈` hoặc trong phần cài đặt; việc lập chỉ mục vẫn tiếp tục chạy. Ở cấp deployment, có thể tắt hoàn toàn cả hai phần semantic và indexing.
-
-## Riêng tư và mã hoá
-
-engram mã hoá đầu-cuối **thân của entry** — phần text hoặc JSON mà bạn lưu. `name`, tag và kiểu entry vẫn ở dạng plaintext để server có thể thực hiện tìm kiếm.
-
-Vault được mở từ passphrase thông qua Argon2id và KEK bọc Vault Key. Người dùng cũng có thể mở vault bằng một trong 10 recovery key hoặc passkey (WebAuthn PRF). Recovery key chỉ dùng một lần trên live server; việc xoá bản wrap của recovery key hoặc passkey không xoá các bản sao đã có trong backup.
-
-Khi cần, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản bằng Vault Key từ passkey, thiết bị đã nhớ hoặc phiên đang mở. Reset vault sẽ xoá các entry nhưng giữ lại item và tag.
-
-engram không dùng BIP39 và không phụ thuộc KMS bên ngoài.
-
-## Tài liệu và mockup
-
-- [`docs/SPEC.md`](docs/SPEC.md) — đặc tả sản phẩm: domain model, kiến trúc, E2E, search, UI, schema, API và roadmap.
-- [`docs/phases/`](docs/phases/README.md) — kế hoạch triển khai P01–P08, trong đó MVP là P01–P06.
-- [`mockups/`](mockups/README.md) — bộ mockup UI tĩnh cho landing, tìm kiếm, chi tiết item, cài đặt, đăng nhập, onboarding, mở khoá, khôi phục và các trạng thái lỗi.
-- [`clickup.design.md`](clickup.design.md) — nguồn token thị giác được dùng cho mockup.
-
-Để xem mockup cục bộ:
-
-```bash
-python -m http.server 5178 --directory mockups
-```
-
-Sau đó mở <http://localhost:5178/landing.html>. Mockup là chuẩn tham chiếu cho bố cục và thị giác; spec là nguồn chính cho hành vi và dữ liệu.
+| Thư mục | Nội dung |
+|---|---|
+| `apps/web` | Frontend Next.js |
+| `apps/api` | API, worker và migration (Go) |
+| `packages/shared-types` | Kiểu TypeScript sinh từ OpenAPI |
+| `infra` | Docker Compose và image pin |
+| `scripts` | Dev stack, smoke, e2e, sinh secret |
+| `docs` | SPEC, kế hoạch theo phase, ADR |
+| `mockups` | Mockup UI tĩnh |
 
 ## Chạy tại máy
 
-Yêu cầu: Node ≥ 20.19, pnpm 10.34.5, Go 1.27 (hoặc `GOTOOLCHAIN=auto` với `go` 1.25+ theo `apps/api/go.mod`), Docker + plugin Compose (`docker compose`).
+Yêu cầu: Node ≥ 20.19, pnpm 10.34.5, Go 1.26+, Docker với Compose.
 
 ```bash
 git clone https://github.com/zone17th/engram.git
 cd engram
-cp .env.example .env
+cp .env.example .env               # PowerShell: Copy-Item .env.example .env
 pnpm install
+node scripts/gen-dev-secrets.mjs   # tuỳ chọn: sinh secret AUTH_* cho .env
 ```
 
-PowerShell tương đương với lệnh sao chép đầu tiên là `Copy-Item .env.example .env`.
-Các lệnh host dev đọc `.env` làm giá trị mặc định; biến đã có trong shell vẫn được giữ
-nguyên để dễ override cục bộ.
-
-### Cách 1 — toàn bộ trong Docker
+Toàn bộ trong Docker:
 
 ```bash
 pnpm stack:up     # db + migrate + api + worker + web
 pnpm smoke        # kiểm tra nhanh
+pnpm stack:down
 ```
 
-Mở http://localhost:3000. Dừng bằng `pnpm stack:down`.
-`pnpm smoke` dùng Node, tự chờ có giới hạn để stack detached kịp sẵn sàng và không cần
-Bash trên Windows.
-
-### Cách 2 — chỉ DB trong Docker, phần còn lại chạy trên máy
+Hoặc chỉ DB trong Docker, phần còn lại chạy trên máy:
 
 ```bash
-make dev
+pnpm dev:stack    # hoặc: make dev
 ```
 
-`make dev` và `pnpm dev:stack` đều khởi động DB, chạy migration, API, worker và Next
-dev bằng cùng một env loader. Trên Windows (không có `make`), dùng:
+Mở <http://localhost:3000>. Trình duyệt chỉ nói chuyện với origin này; Next chuyển `/api/*` sang Go.
 
-```powershell
-pnpm dev:stack
-```
+Không cần TEI hay OAuth thật để chạy local: `EMBEDDING_PROVIDER=noop` là mặc định, `AUTH_FAKE_OAUTH=true` (chỉ development/e2e) giả lập Google/GitHub, mail xác thực được ghi ra `.data/mail-sink`.
 
-Nếu cần chạy từng tiến trình để debug, nạp env vào từng terminal PowerShell bằng cách
-dot-source helper trước lệnh Go hoặc pnpm:
-
-```powershell
-docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up -d db
-```
-
-```powershell
-. .\scripts\load-env.ps1
-Set-Location apps/api
-go run ./cmd/migrate up
-go run ./cmd/api
-```
-
-```powershell
-. .\scripts\load-env.ps1
-Set-Location apps/api
-go run ./cmd/worker
-```
-
-```powershell
-. .\scripts\load-env.ps1
-pnpm --filter @engram/web dev
-```
-
-Chạy riêng migration bằng `make migrate` hoặc `pnpm migrate` sau khi DB đã sẵn sàng.
-
-**Không cần TEI hay OAuth thật để xem landing.** `EMBEDDING_PROVIDER=noop` là mặc định;
-tìm kiếm ngữ nghĩa sẽ hiển thị là chưa khả dụng, đúng như thực tế.
-
-Muốn thử TEI (tải model ~2 GB):
+## Kiểm thử
 
 ```bash
-docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml --profile semantic up -d tei
-EMBEDDING_PROVIDER=tei TEI_URL=http://tei:80 pnpm stack:up
+cd apps/api && go test ./... -short   # không cần Docker
+cd apps/api && go test ./...          # cần Docker (testcontainers)
+pnpm -r test                          # test web và packages
+pnpm e2e                              # Playwright, ma trận auth
 ```
 
-Trong PowerShell, đặt override trước khi chạy stack:
+## Tài liệu
 
-```powershell
-$env:EMBEDDING_PROVIDER = 'tei'
-$env:TEI_URL = 'http://tei:80'
-pnpm stack:up
-```
+- [`docs/SPEC.md`](docs/SPEC.md) — đặc tả sản phẩm: domain, kiến trúc, mã hoá, tìm kiếm, UI, schema, API.
+- [`docs/phases/`](docs/phases/README.md) — kế hoạch P01–P08 (MVP là P01–P06).
+- [`docs/adr/`](docs/adr/) — các quyết định kiến trúc.
+- [`mockups/`](mockups/README.md) — chuẩn bố cục và thị giác. Xem bằng `python -m http.server 5178 --directory mockups`.
 
-Các lệnh trên dành cho full Compose, nên API/worker dùng DNS nội bộ `tei:80`. Nếu
-chạy API và worker trên máy với `pnpm dev:stack`, dùng `TEI_URL=http://localhost:8081`
-và giữ cổng `8081:80` của service `tei`.
+## Trạng thái
 
-### Auth local (P02)
+- P01 (nền tảng) và P02 (tài khoản, session) đã vào `develop`; P03 (vault và recovery) đang làm.
+- `develop` là nhánh tích hợp, `main` là nhánh release.
 
-Development tự sinh secret ephemeral nếu `AUTH_*` để trống (mất session khi restart).
-Tạo năm giá trị base64 khác nhau (mỗi cái ≥ 32 byte):
+## Tên gọi
 
-```powershell
-node scripts/gen-dev-secrets.mjs
-```
-
-Mail verification local ghi file JSON vào `AUTH_MAIL_SINK_DIR` (mặc định `.data/mail-sink`). Không commit thư mục này. Production không dùng sink.
-
-`AUTH_FAKE_OAUTH=true` (development/e2e only) mounts an in-process Google/GitHub stand-in at `/api/v1/__fake/oauth/{provider}`. That is not Google or GitHub production. Production and staging reject the flag.
-
-Two email-verification configs for e2e:
-
-```powershell
-pnpm e2e                 # both AUTH_REQUIRE_EMAIL_VERIFICATION=false then true
-pnpm e2e -- --verify=false
-make e2e                 # Unix; Windows dùng pnpm e2e
-```
-
-The script starts DB via Compose, migrates, builds Next production, runs API/worker on the host, then Playwright. It does not set `APP_ENV=production` on the API.
-
-HTTPS transport suite (cookie `Secure`/path/HttpOnly, security headers, logout cleanup). It needs a throwaway certificate pair at `.data/certs/local-cert.pem` and `.data/certs/local-key.pem` — `.data/` is gitignored; never commit a private key:
-
-```powershell
-pnpm e2e:https            # web :13000, API :18081, TLS proxy :13443
-pnpm e2e:https -- --skip-build
-```
-
-Next proxy `/api` sang Go; API chỉ tin `X-Forwarded-For` khi peer nằm trong `AUTH_TRUSTED_PROXY_CIDRS` (development mặc định tin loopback + dải private).
-
-### Kiểm thử
-
-```bash
-cd apps/api && go test ./... -short     # không cần Docker
-```
-
-```bash
-cd apps/api && go test ./...            # cần Docker (testcontainers)
-```
-
-```bash
-pnpm -r test
-```
-
-```bash
-pnpm --filter @engram/web exec playwright install chromium
-pnpm --filter @engram/web e2e          # P01 smoke if BASE_URL already up
-pnpm e2e                               # P02 auth matrix (Windows-friendly Node script)
-```
-
-### Một origin duy nhất
-
-Trình duyệt chỉ nói chuyện với `http://localhost:3000`. Next chuyển tiếp `/api/*`
-sang Go (`API_UPSTREAM`, mặc định host dev là `http://127.0.0.1:8080`; Compose build
-được truyền `http://api:8080`). Đừng gọi thẳng cổng 8080
-từ trình duyệt — cookie phiên có path `/api` và CSP chỉ cho `connect-src 'self'`.
-Full Compose chỉ cần `COMPOSE_API_UPSTREAM` khi cố ý đổi DNS mặc định; không dùng
-`API_UPSTREAM` của host dev cho container.
-
-## Trạng thái phát triển
-
-Implementation P01 (nền tảng và UI shell) đã được tích hợp vào `develop`. Bằng chứng và các mục nghiệm thu còn mở nằm trong [evidence P01](docs/phases/evidence/P01.md).
-
-- `develop` là nhánh tích hợp.
-- `main` là nhánh release.
-- Sản phẩm dự kiến là web app online-only, multi-user, xây dựng với Next.js 15, Go (chi, pgx, sqlc, River) và PostgreSQL 16 (pgvector, pg_trgm).
-- Giao diện hỗ trợ English (mặc định) và Tiếng Việt.
-
-## Về tên gọi
-
-Trong thần kinh học, **engram** là dấu vết vật lý mà một ký ức để lại. Cái tên này gợi đúng điều sản phẩm muốn làm: ghi lại một dấu vết nhỏ để lần sau có thể tìm về, ngay cả khi bạn chỉ còn nhớ một phần.
-
-Tên được viết thường trong mọi ngữ cảnh: `engram`, không phải `Engram` hay `ENGRAM`.
-
-Repo GitHub là [zone17th/engram](https://github.com/zone17th/engram); module Go/pnpm còn giữ đường dẫn lịch sử `save-all-by-keyword`. Domain đang dùng tạm là `key.zone17th.click`. Trước khi in ấn hoặc đăng ký chính thức, cần kiểm tra thêm domain và nhãn hiệu.
+Trong thần kinh học, **engram** là dấu vết mà một ký ức để lại. Tên luôn viết thường: `engram`. Module Go/pnpm còn giữ đường dẫn cũ `save-all-by-keyword`.
