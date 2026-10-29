@@ -382,6 +382,14 @@ export function VaultProvider({
   const settingsSyncSeqRef = useRef<number>(0);
   const vaultMetaSessionEpochRef = useRef<number>(0);
   const vaultMetaRequestSeqRef = useRef<number>(0);
+  // Newest request whose authoritative outcome (present metadata or `404 vault_absent`) this provider has applied.
+  // Only an applied (verified) newer outcome may supersede an older response; a newer request that merely started,
+  // stalled or failed is not evidence about vault state (BE3-7 / BE3-9).
+  const vaultMetaAppliedRef = useRef<{
+    seq: number;
+    sessionEpoch: number;
+    meta: VaultState | null;
+  } | null>(null);
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgedVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgeInFlightVaultKeyIdRef = useRef<string | null>(null);
@@ -666,17 +674,36 @@ export function VaultProvider({
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
     const requestSeq = ++vaultMetaRequestSeqRef.current;
     const requestUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
-    try {
-      const fresh = await fetchVault();
+    // Session/user fences: a response from another session or account never has any effect.
+    const isForeignResponse = () => {
       const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
-      if (
+      return (
         vaultMetaSessionEpochRef.current !== requestSessionEpoch ||
-        vaultMetaRequestSeqRef.current !== requestSeq ||
         sessionStatus === 'signed_out' ||
         (requestUserId !== null && liveUserId !== requestUserId)
-      ) {
+      );
+    };
+    // Ordering fence: only a NEWER request whose outcome was already applied supersedes this response. The
+    // superseding outcome is returned so callers see the authoritative state rather than a bare `null`
+    // (which would be indistinguishable from `vault_absent`, BE3-9).
+    const supersedingOutcome = (): { meta: VaultState | null } | null => {
+      const applied = vaultMetaAppliedRef.current;
+      if (applied && applied.sessionEpoch === requestSessionEpoch && applied.seq > requestSeq) {
+        return { meta: applied.meta };
+      }
+      return null;
+    };
+    try {
+      const fresh = await fetchVault();
+      if (isForeignResponse()) {
         return null;
       }
+      const superseded = supersedingOutcome();
+      if (superseded) {
+        return superseded.meta;
+      }
+      const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
+      vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: fresh };
       const prevKeyId = currentVaultKeyIdRef.current;
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
         currentVaultKeyIdRef.current = fresh.vault_key_id;
@@ -699,19 +726,20 @@ export function VaultProvider({
       queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
       return fresh;
     } catch (err) {
-      const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
-      if (
-        vaultMetaSessionEpochRef.current !== requestSessionEpoch ||
-        vaultMetaRequestSeqRef.current !== requestSeq ||
-        sessionStatus === 'signed_out' ||
-        (requestUserId !== null && liveUserId !== requestUserId)
-      ) {
+      if (isForeignResponse()) {
         return null;
       }
       if (
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
       ) {
+        const superseded = supersedingOutcome();
+        if (superseded) {
+          // A newer request already delivered authoritative state (present or absent); apply nothing from the older 404.
+          return superseded.meta;
+        }
+        const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
+        vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: null };
         const prevKeyId = currentVaultKeyIdRef.current;
         const transitionKeyId = prevKeyId ?? resetPurgedVaultKeyIdRef.current ?? null;
         currentVaultKeyIdRef.current = null;
@@ -720,6 +748,11 @@ export function VaultProvider({
         runIdempotentResetPurge(liveUserId, transitionKeyId);
         void lock({ broadcast: true, reason: 'vault_absent' });
         return null;
+      }
+      const supersededFailure = supersedingOutcome();
+      if (supersededFailure) {
+        // A failed older request is moot once a newer one has produced authoritative state.
+        return supersededFailure.meta;
       }
       throw err;
     }

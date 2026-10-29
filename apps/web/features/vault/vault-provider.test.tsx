@@ -4608,7 +4608,231 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       await p1;
     });
     expect(results.req2?.version).toBe(5);
-    expect(results.req1).toBeNull();
+    // BE3-9: a superseded present response reports the authoritative newer metadata, never a bare `null`
+    // (which callers read as `vault_absent`).
+    expect(results.req1?.version).toBe(5);
     expect(vault().vaultMeta?.version).toBe(5);
   }, 15_000);
+
+  // ---------------------------------------------------------------------------
+  // BE3-7 / BE3-9 (fix round 3): metadata response ordering vs. fail-closed reset handling.
+  // Only a NEWER request whose outcome was applied may supersede an older response; a newer request that merely
+  // started, stalled or failed is not evidence about vault state.
+  // ---------------------------------------------------------------------------
+  function be3ProblemResponse(status: number, code: string): Response {
+    return new Response(
+      JSON.stringify({ type: `https://engram.zone17th.click/problems/${code}`, title: code, status, code }),
+      { status, headers: { 'content-type': 'application/problem+json' } },
+    );
+  }
+
+  async function be37Setup(prefix: string) {
+    const pending: Array<(res: Response) => void> = [];
+    const gate = { hold: false };
+    mockBe2Fetch({
+      vault: () =>
+        gate.hold
+          ? new Promise<Response>((resolve) => {
+              pending.push(resolve);
+            })
+          : jsonResponse(be2VaultBody('vk:be3-7', 1)),
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { vault } = renderBe2Provider(
+      prefix,
+      { idbFactory, locksManager: fakeLocks.createLockManager() },
+      qc,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('locked');
+    });
+    await be2CreateVault(vault, 'be3-7-passphrase-1234');
+    expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('unlocked');
+    await act(async () => {
+      await vault().reloadVaultMeta();
+    });
+    expect(vault().vaultMeta?.vault_key_id).toBe('vk:be3-7');
+
+    seedBe2DeviceMeta(10);
+    const devkeyRecordKey = formatDevKeyRecordKey(BE2_USER_ID, 'vk:be3-7');
+    const devkeys = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    devkeys.set(devkeyRecordKey, {
+      user_id: BE2_USER_ID,
+      vault_key_id: 'vk:be3-7',
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+    qc.setQueryData(vaultBodyQueryKey('be37-entry'), 'be3-7-decrypted-body');
+    return { vault, qc, idbFactory, pending, gate, devkeys, devkeyRecordKey, prefix };
+  }
+
+  async function expectBe37LockedAndPurged(ctx: Awaited<ReturnType<typeof be37Setup>>) {
+    await waitFor(() => {
+      expect(screen.getByTestId(`${ctx.prefix}-state`)).toHaveTextContent('locked');
+      expect(screen.getByTestId(`${ctx.prefix}-worker`)).toHaveTextContent('locked');
+    });
+    expect(ctx.vault().vaultMeta).toBeNull();
+    expect(ctx.qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBeUndefined();
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    expect(ctx.devkeys.has(ctx.devkeyRecordKey)).toBe(false);
+  }
+
+  it('BE3-7: an older same-session 404 vault_absent still locks, wipes and purges when the NEWER GET /vault failed', async () => {
+    const ctx = await be37Setup('be37-failed');
+    ctx.gate.hold = true;
+    const outcome: { older: unknown; newerError: unknown } = { older: undefined, newerError: undefined };
+    const olderP = ctx.vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.older = r;
+      });
+    const newerP = ctx.vault()
+      .reloadVaultMeta()
+      .catch((err: unknown) => {
+        outcome.newerError = err;
+      });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+
+    // The newer request fails: that is no verified server state and must not touch the unlocked session.
+    await act(async () => {
+      ctx.pending[1]!(be3ProblemResponse(503, 'service_unavailable'));
+      await newerP;
+    });
+    expect(outcome.newerError).toBeDefined();
+    expect(screen.getByTestId('be37-failed-state')).toHaveTextContent('unlocked');
+    expect(ctx.qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBe('be3-7-decrypted-body');
+
+    // The older request now reports authoritative absence: fail closed immediately.
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      await olderP;
+    });
+    expect(outcome.older).toBeNull();
+    await expectBe37LockedAndPurged(ctx);
+  }, 20_000);
+
+  it('BE3-7: an older same-session 404 vault_absent still locks, wipes and purges while the NEWER GET /vault is stalled, and a late newer success cannot revive access', async () => {
+    const ctx = await be37Setup('be37-stalled');
+    ctx.gate.hold = true;
+    const outcome: { older: unknown } = { older: undefined };
+    const olderP = ctx.vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.older = r;
+      });
+    const newerP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+
+    // Newer request never settles; the older one reports authoritative absence.
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      await olderP;
+    });
+    expect(outcome.older).toBeNull();
+    await expectBe37LockedAndPurged(ctx);
+
+    // A late "present" answer from the stalled request is applied as metadata only: it never unlocks anything.
+    await act(async () => {
+      ctx.pending[1]!(jsonResponse(be2VaultBody('vk:be3-7', 2)));
+      await newerP;
+    });
+    expect(screen.getByTestId('be37-stalled-state')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be37-stalled-worker')).toHaveTextContent('locked');
+  }, 20_000);
+
+  it('BE3-7 control: an older 404 that was superseded by a newer SUCCESSFUL response neither locks nor purges and reports the newer metadata', async () => {
+    const ctx = await be37Setup('be37-control');
+    ctx.gate.hold = true;
+    const outcome: { older: unknown; newer: unknown } = { older: undefined, newer: undefined };
+    const olderP = ctx.vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.older = r;
+      });
+    const newerP = ctx.vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.newer = r;
+      });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+
+    await act(async () => {
+      ctx.pending[1]!(jsonResponse(be2VaultBody('vk:be3-7', 2)));
+      await newerP;
+    });
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      await olderP;
+    });
+    expect((outcome.newer as { version: number }).version).toBe(2);
+    expect((outcome.older as { version: number } | null)?.version).toBe(2);
+    expect(ctx.vault().vaultMeta?.version).toBe(2);
+    expect(screen.getByTestId('be37-control-state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('be37-control-worker')).toHaveTextContent('unlocked');
+    expect(ctx.qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBe('be3-7-decrypted-body');
+    expect(ctx.devkeys.has(ctx.devkeyRecordKey)).toBe(true);
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(10);
+  }, 20_000);
+
+  it('BE3-9: a first GET /vault that is superseded by a newer same-session request resolves with the authoritative metadata (not null), while a true 404 still resolves null and locks', async () => {
+    const pending: Array<(res: Response) => void> = [];
+    mockBe2Fetch({
+      vault: () =>
+        new Promise<Response>((resolve) => {
+          pending.push(resolve);
+        }),
+    });
+    const { vault } = renderBe2Provider('be39-superseded', {
+      idbFactory: fakeIdb.createFactory(),
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be39-superseded-state')).toHaveTextContent('locked');
+    });
+    const out: { first: unknown; second: unknown } = { first: 'unset', second: 'unset' };
+    const firstP = vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        out.first = r;
+      });
+    const secondP = vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        out.second = r;
+      });
+    await waitFor(() => {
+      expect(pending).toHaveLength(2);
+    });
+    // The newer request lands first; the older "present" answer is superseded and must not look like absence.
+    await act(async () => {
+      pending[1]!(jsonResponse(be2VaultBody('vk:be3-9', 3)));
+      await secondP;
+      pending[0]!(jsonResponse(be2VaultBody('vk:be3-9', 3)));
+      await firstP;
+    });
+    expect((out.second as { version: number }).version).toBe(3);
+    expect((out.first as { vault_key_id: string } | null)?.vault_key_id).toBe('vk:be3-9');
+    expect(vault().vaultMeta?.vault_key_id).toBe('vk:be3-9');
+
+    // True absence still resolves `null` (and drops the metadata).
+    const absentP = vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(pending).toHaveLength(3);
+    });
+    await act(async () => {
+      pending[2]!(be2VaultAbsentResponse());
+      expect(await absentP).toBeNull();
+    });
+    expect(vault().vaultMeta).toBeNull();
+  }, 20_000);
 });
