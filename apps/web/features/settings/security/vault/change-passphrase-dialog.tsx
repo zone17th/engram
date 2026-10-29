@@ -483,6 +483,7 @@ export function ChangePassphraseDialog({
                         label={t('reauth.passwordLabel')}
                         type="password"
                         autoComplete="current-password"
+                        data-vault-secret="true"
                         value={loginPassword}
                         onChange={(e) => setLoginPassword(e.target.value)}
                         hint={t('reauth.passwordHint')}
@@ -689,6 +690,7 @@ export function ChangePassphraseDialog({
                     label={t('reauth.passwordLabel')}
                     type="password"
                     autoComplete="current-password"
+                    data-vault-secret="true"
                     value={inlineReauthPassword}
                     onChange={(e) => setInlineReauthPassword(e.target.value)}
                     passwordToggleLabels={{ show: t('common.show'), hide: t('common.hide') }}
