@@ -347,6 +347,7 @@ export function VaultProvider({
   const [autoLockMinutesOverride, setAutoLockMinutesOverride] = useState<number | null>(null);
   const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
   const [minutesLeft, setMinutesLeft] = useState<number | undefined>(undefined);
+  const providerSenderIdRef = useRef<symbol>(Symbol('VaultProvider'));
   const clientRef = useRef<CryptoClient | null>(null);
   const workerStateRef = useRef<VaultClientState>('locked');
   const tabKnownLockEpochRef = useRef<number>(0);
@@ -445,7 +446,7 @@ export function VaultProvider({
       onBroadcastLock: (nextLockEpoch: number) => {
         updateTabKnownLockEpoch(nextLockEpoch);
         lockEpochEnv?.onBroadcastLock?.(nextLockEpoch);
-        postVaultBroadcast({ type: 'lock', lockEpoch: nextLockEpoch });
+        postVaultBroadcast({ type: 'lock', lockEpoch: nextLockEpoch }, providerSenderIdRef.current);
       },
     }),
     [lockEpochEnv, updateTabKnownLockEpoch],
@@ -485,20 +486,26 @@ export function VaultProvider({
       const shouldBroadcast = options?.broadcast ?? true;
       const lockPromise = lockLocalOnly();
 
-      if (shouldBroadcast) {
-        // Immediate wake notification before acquiring the Web Lock (ADR 0003 §8.3)
-        postVaultBroadcast({
-          type: 'lock',
-          lockEpoch: tabKnownLockEpochRef.current + 1,
-        });
-        void recordLockEpochEvent(tabKnownLockEpochRef.current, envWithBroadcast).then(
-          (res) => {
-            updateTabKnownLockEpoch(res.lockEpoch);
-          },
-        );
+      if (!shouldBroadcast) {
+        return lockPromise;
       }
 
-      return lockPromise;
+      // Immediate wake notification before acquiring the Web Lock (ADR 0003 §8.3)
+      postVaultBroadcast(
+        {
+          type: 'lock',
+          lockEpoch: tabKnownLockEpochRef.current + 1,
+        },
+        providerSenderIdRef.current,
+      );
+      const epochPromise = recordLockEpochEvent(
+        tabKnownLockEpochRef.current,
+        envWithBroadcast,
+      ).then((res) => {
+        updateTabKnownLockEpoch(res.lockEpoch);
+      });
+
+      return Promise.all([lockPromise, epochPromise]).then(([lockRes]) => lockRes);
     },
     [envWithBroadcast, lockLocalOnly, updateTabKnownLockEpoch],
   );
@@ -601,11 +608,14 @@ export function VaultProvider({
             : prev,
         );
       }
-      postVaultBroadcast({
-        type: 'vault_changed',
-        vault_key_id: payload.vault_key_id,
-        version: payload.version,
-      });
+      postVaultBroadcast(
+        {
+          type: 'vault_changed',
+          vault_key_id: payload.vault_key_id,
+          version: payload.version,
+        },
+        providerSenderIdRef.current,
+      );
     },
     [queryClient],
   );
@@ -616,10 +626,13 @@ export function VaultProvider({
       const normalized = normalizeAutoLockMinutes(payload.auto_lock_minutes);
       autoLockMinutesRef.current = normalized;
       setAutoLockMinutesOverride(normalized);
-      postVaultBroadcast({
-        type: 'settings_changed',
-        auto_lock_minutes: normalized,
-      });
+      postVaultBroadcast(
+        {
+          type: 'settings_changed',
+          auto_lock_minutes: normalized,
+        },
+        providerSenderIdRef.current,
+      );
     },
     [],
   );
@@ -640,7 +653,7 @@ export function VaultProvider({
     }
     if (now - lastBroadcastedActivityAtRef.current >= ACTIVITY_BROADCAST_THROTTLE_MS) {
       lastBroadcastedActivityAtRef.current = now;
-      postVaultBroadcast({ type: 'activity', at: now });
+      postVaultBroadcast({ type: 'activity', at: now }, providerSenderIdRef.current);
     }
   }, []);
 
@@ -690,7 +703,7 @@ export function VaultProvider({
             updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
           }
           if (!preCheck.matches || client.getGeneration() !== opGeneration) {
-            void lock({ broadcast: false, reason: 'baseline_mismatch_during_recovery' });
+            void lockLocalOnly();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed during recovery; failing closed',
@@ -705,7 +718,7 @@ export function VaultProvider({
         );
         if (!baseline) {
           // Fail closed if IndexedDB or Web Locks is unreadable/blocked during unlock baseline capture
-          void lock({ broadcast: false, reason: 'baseline_unreadable' });
+          void lockLocalOnly();
           throw new CryptoClientError(
             'STALE_GENERATION',
             'Failed to capture authoritative lockEpoch baseline; failing closed',
@@ -723,7 +736,7 @@ export function VaultProvider({
             updateTabKnownLockEpoch(verification.persistedMarker.lockEpoch);
           }
           if (!verification.matches || client.getGeneration() !== opGeneration || !capturedBaseline) {
-            void lock({ broadcast: false, reason: 'baseline_mismatch_after_unlock' });
+            void lockLocalOnly();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed during unlock; failing closed',
@@ -742,7 +755,7 @@ export function VaultProvider({
           lastActivityAtRef.current = Math.max(lastActivityAtRef.current, unlockedAt);
           setLastActivityAt(lastActivityAtRef.current);
           lastBroadcastedActivityAtRef.current = unlockedAt;
-          postVaultBroadcast({ type: 'activity', at: lastActivityAtRef.current });
+          postVaultBroadcast({ type: 'activity', at: lastActivityAtRef.current }, providerSenderIdRef.current);
         }
         setGeneration(client.getGeneration());
         setEpoch(client.getEpoch());
@@ -760,7 +773,7 @@ export function VaultProvider({
         setActiveOperation((current) => (current === opKind ? null : current));
       }
     },
-    [envWithBroadcast, getClient, lock, updateTabKnownLockEpoch],
+    [envWithBroadcast, getClient, lockLocalOnly, updateTabKnownLockEpoch],
   );
 
   const createVaultOp = useCallback(
@@ -948,8 +961,8 @@ export function VaultProvider({
 
   // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
-    return subscribeVaultBroadcast((message: VaultBroadcastMessage, origin) => {
-      if (origin === 'local') return;
+    return subscribeVaultBroadcast((message: VaultBroadcastMessage, origin, senderId) => {
+      if (origin === 'local' && senderId === providerSenderIdRef.current) return;
 
       if (message.type === 'lock') {
         updateTabKnownLockEpoch(message.lockEpoch);

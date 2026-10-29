@@ -310,6 +310,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -1018,6 +1019,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
     expect(simulatedClipboard).toBe('');
+    vi.useRealTimers();
   });
 
   it('BE1-9: late POST /vault success after Back / re-derive or lock never pairs committed vault A with Worker key B; locks and routes to /app/unlock cleanly', async () => {
