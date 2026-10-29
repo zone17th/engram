@@ -2017,4 +2017,94 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(screen.queryByTestId('vault-recovery-keys-card')).toBeNull();
     expect(screen.queryByTestId('vault-reset-card')).toBeNull();
   });
+
+  it('marks ChangePassphraseDialog secret inputs with data-vault-secret="true" and empties their values on vault.lock', async () => {
+    const user = userEvent.setup();
+    const { getVaultCtx } = await renderSettingsHarness();
+
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const dialog = await screen.findByRole('dialog');
+
+    const loginInput = within(dialog).getByLabelText('Login password') as HTMLInputElement;
+    const newInput = within(dialog).getByLabelText('New vault passphrase') as HTMLInputElement;
+    const confirmInput = within(dialog).getByLabelText('Confirm new passphrase') as HTMLInputElement;
+
+    expect(loginInput).toHaveAttribute('data-vault-secret', 'true');
+    expect(newInput).toHaveAttribute('data-vault-secret', 'true');
+    expect(confirmInput).toHaveAttribute('data-vault-secret', 'true');
+
+    await user.type(loginInput, 'my-login-password');
+    await user.type(newInput, STRONG_PASSPHRASE);
+    await user.type(confirmInput, STRONG_PASSPHRASE);
+
+    expect(loginInput.value).toBe('my-login-password');
+    expect(newInput.value).toBe(STRONG_PASSPHRASE);
+    expect(confirmInput.value).toBe(STRONG_PASSPHRASE);
+
+    await act(async () => {
+      await getVaultCtx().lock({ broadcast: false, reason: 'manual_lock' });
+    });
+
+    expect(loginInput.value).toBe('');
+    expect(newInput.value).toBe('');
+    expect(confirmInput.value).toBe('');
+  });
+
+  it('marks RecoveryKeysDialog re-auth password input with data-vault-secret="true" and empties its value on vault.lock', async () => {
+    const user = userEvent.setup();
+    const { getVaultCtx } = await renderSettingsHarness();
+
+    await user.click(screen.getByRole('button', { name: 'Rotate all 10' }));
+    const dialog = await screen.findByRole('dialog');
+
+    const loginInput = within(dialog).getByLabelText('Login password') as HTMLInputElement;
+    expect(loginInput).toHaveAttribute('data-vault-secret', 'true');
+
+    await user.type(loginInput, 'my-login-password');
+    expect(loginInput.value).toBe('my-login-password');
+
+    await act(async () => {
+      await getVaultCtx().lock({ broadcast: false, reason: 'manual_lock' });
+    });
+
+    expect(loginInput.value).toBe('');
+  });
+
+  it('marks ResetVaultDialog re-auth password input with data-vault-secret="true" (leaving the non-secret RESET confirmation word unmarked) and empties its value on vault.lock', async () => {
+    const user = userEvent.setup();
+    const { getVaultCtx } = await renderSettingsHarness();
+
+    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+
+    const loginInput = within(dialog).getByLabelText('Login password') as HTMLInputElement;
+    expect(loginInput).toHaveAttribute('data-vault-secret', 'true');
+
+    await user.type(loginInput, 'my-login-password');
+    expect(loginInput.value).toBe('my-login-password');
+
+    // Advance to step 4 first to verify the typed confirmation word ('RESET' / 'ĐẶT LẠI') is NOT marked data-vault-secret
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+    const confirmWordInput = (await within(dialog).findByLabelText(
+      /Type ĐẶT LẠI or RESET/i,
+    )) as HTMLInputElement;
+    expect(confirmWordInput).not.toHaveAttribute('data-vault-secret');
+
+    // Return to step 3 re-auth, type password, and lock the vault
+    await user.click(within(dialog).getByRole('button', { name: 'Back' }));
+    const step3LoginInput = within(dialog).getByLabelText('Login password') as HTMLInputElement;
+    expect(step3LoginInput).toHaveAttribute('data-vault-secret', 'true');
+    await user.type(step3LoginInput, 'my-login-password-again');
+    expect(step3LoginInput.value).toBe('my-login-password-again');
+
+    await act(async () => {
+      await getVaultCtx().lock({ broadcast: false, reason: 'manual_lock' });
+    });
+
+    expect(step3LoginInput.value).toBe('');
+    expect(within(dialog).queryByLabelText('Login password')).toBeNull();
+    expect(within(dialog).getByText(/Step 1 of 5/i)).toBeInTheDocument();
+  });
 });
