@@ -3618,4 +3618,81 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     });
     expect(metaAfterReloadVaultClick?.deviceRevision).toBe(12);
   });
+
+  it('VW-AUTH-E2E: lock clears [data-vault-secret] inputs and textareas while preserving non-vault <input type="password"> fields (login/signup/reauth)', async () => {
+    const me = makeMeFixture({ vaultStatus: 'present' });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    const workerFactory = makeShimmedWorkerFactory();
+    const lockEpochEnv = makeLockEpochEnv();
+    function SecretScopeProbe() {
+      vaultCtx = useVault();
+      return (
+        <div>
+          <output data-testid="vw-auth-state">{vaultCtx.state}</output>
+          <input
+            type="password"
+            name="password"
+            data-testid="auth-login-password"
+            defaultValue="login-password-preserved-123"
+          />
+          <input
+            type="password"
+            data-vault-secret="true"
+            data-testid="vault-secret-input"
+            defaultValue="vault-passphrase-wiped-456"
+          />
+          <textarea
+            data-vault-secret="true"
+            data-testid="vault-secret-textarea"
+            defaultValue="vault-recovery-secret-wiped-789"
+          />
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider createWorker={workerFactory} lockEpochEnv={lockEpochEnv}>
+            <SecretScopeProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vw-auth-state')).toHaveTextContent('locked');
+    });
+
+    const authPasswordInput = screen.getByTestId('auth-login-password') as HTMLInputElement;
+    const vaultSecretInput = screen.getByTestId('vault-secret-input') as HTMLInputElement;
+    const vaultSecretTextarea = screen.getByTestId('vault-secret-textarea') as HTMLTextAreaElement;
+
+    authPasswordInput.value = 'login-password-preserved-123';
+    vaultSecretInput.value = 'vault-passphrase-wiped-456';
+    vaultSecretTextarea.value = 'vault-recovery-secret-wiped-789';
+
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+
+    expect(authPasswordInput.value).toBe('login-password-preserved-123');
+    expect(vaultSecretInput.value).toBe('');
+    expect(vaultSecretTextarea.value).toBe('');
+  });
 });

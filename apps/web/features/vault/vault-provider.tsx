@@ -273,7 +273,7 @@ function clearDomSecretInputs(): void {
   if (typeof document === 'undefined') return;
   try {
     const inputs = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-      'input[type="password"], input[data-vault-secret], textarea[data-vault-secret]',
+      'input[data-vault-secret], textarea[data-vault-secret]',
     );
     inputs.forEach((el) => {
       el.value = '';
