@@ -603,9 +603,7 @@ test.describe('P03-T20A Vault Security Settings E2E (Change Passphrase, Recovery
     await rkDialog.locator('#rot-reauth-pwd').fill(PASSWORD);
     await rkDialog.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
 
-    await expect(
-      rkDialog.locator('[data-testid="recovery-key-grid"], [data-testid="recovery-keys-grid"]'),
-    ).toBeVisible({ timeout: 20_000 });
+    await expect(rkDialog.getByTestId('recovery-keys-grid')).toBeVisible({ timeout: 20_000 });
     await expect(rkDialog.getByRole('listitem')).toHaveCount(10);
 
     await rkDialog.getByRole('checkbox').check();

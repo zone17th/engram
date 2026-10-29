@@ -2,7 +2,6 @@ export {
   ChangePassphraseDialog,
   type ChangePassphraseDialogProps,
 } from './change-passphrase-dialog';
-export { RecoveryKeyGrid, type RecoveryKeyGridProps } from './recovery-key-grid';
 export {
   RecoveryKeysDialog,
   type RecoveryKeysDialogMode,

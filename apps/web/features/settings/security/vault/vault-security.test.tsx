@@ -941,7 +941,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.type(within(rkDlg).getByLabelText('Login password'), 'my-login-password');
     await user.click(within(rkDlg).getByRole('button', { name: 'Continue' }));
 
-    const grid = await within(rkDlg).findByTestId('recovery-key-grid');
+    const grid = await within(rkDlg).findByTestId('recovery-keys-grid');
     const items = within(grid).getAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(items[0]!.textContent).toMatch(/^rk9_[0-7]/);
@@ -976,14 +976,14 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.type(within(rotDlg).getByLabelText('Login password'), 'my-login-password');
     await user.click(within(rotDlg).getByRole('button', { name: 'Continue' }));
 
-    const rotGrid = await within(rotDlg).findByTestId('recovery-key-grid');
+    const rotGrid = await within(rotDlg).findByTestId('recovery-keys-grid');
     expect(within(rotGrid).getAllByRole('listitem')).toHaveLength(10);
 
     // Locking the vault while the RK grid is open immediately wipes the keys from DOM
     await act(async () => {
       await getVaultCtx().lockNow();
     });
-    expect(within(rotDlg).queryByTestId('recovery-key-grid')).toBeNull();
+    expect(within(rotDlg).queryByTestId('recovery-keys-grid')).toBeNull();
     expect(document.body.textContent).not.toMatch(/rk1_[0-7]/);
   });
 

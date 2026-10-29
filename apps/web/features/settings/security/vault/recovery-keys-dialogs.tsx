@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
 import { useSession } from '@/features/auth/session-provider';
+import { RecoveryKeysSheet } from '@/features/vault/onboarding';
 import { useVault } from '@/features/vault/vault-provider';
 import { reauthPassword, type ReauthAction, type ReauthGrant } from '@/lib/api/auth';
 import {
@@ -17,7 +18,6 @@ import {
   type VaultState,
 } from '@/lib/api/vault';
 import type { RecoveryKeyItemResult } from '@/lib/crypto/protocol';
-import { RecoveryKeyGrid } from './recovery-key-grid';
 import {
   classifyVaultSettingsError,
   formatSlotRange,
@@ -51,7 +51,7 @@ export function RecoveryKeysDialog({
   onStatusChanged,
 }: RecoveryKeysDialogsProps) {
   const t = useTranslations('settings.vaultSecurity');
-  const { reauth } = useSession();
+  const { me, reauth } = useSession();
   const vault = useVault();
 
   const open = mode !== null;
@@ -429,9 +429,6 @@ export function RecoveryKeysDialog({
   const dialogTitleId = isRotate ? 'rotateDlgTitle' : 'rkDlgTitle';
   const checkboxId = isRotate ? 'rkRotateSaved' : 'rkRegenSaved';
   const confirmBtnId = isRotate ? 'rkRotateConfirmBtn' : 'rkRegenDoneBtn';
-  const downloadFilename = isRotate
-    ? 'engram-recovery-keys.txt'
-    : `engram-recovery-keys-${slotRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '-')}.txt`;
 
   return (
     <Dialog
@@ -549,27 +546,30 @@ export function RecoveryKeysDialog({
                 </div>
               )}
 
-              <RecoveryKeyGrid
-                keys={generatedKeys}
-                filename={downloadFilename}
-                onNotice={onSuccessToast}
-              />
-
-              <label className="mb-6 flex cursor-pointer items-start gap-3">
-                <input
-                  id={checkboxId}
-                  type="checkbox"
-                  className="mt-1"
-                  checked={acknowledged}
+              {generatedKeys.length > 0 && (
+                <RecoveryKeysSheet
+                  keys={generatedKeys}
+                  accountEmail={me?.user.email}
+                  confirmedSaved={acknowledged}
+                  onConfirmedSavedChange={setAcknowledged}
                   disabled={submitting}
-                  onChange={(e) => setAcknowledged(e.target.checked)}
+                  checkboxId={checkboxId}
+                  labels={{
+                    gridLabel: t('recoveryKeys.cardTitle'),
+                    slotLabel: (slot) => t('recoveryKeys.slotChipActive', { slot }),
+                    screenshotWarningBody: t('recoveryKeys.grid.shownOnceWarning'),
+                    downloadTxt: t('recoveryKeys.grid.downloadTxt'),
+                    print: t('recoveryKeys.grid.print'),
+                    copyAll: t('recoveryKeys.grid.copy'),
+                    downloadedStatus: t('recoveryKeys.grid.downloadedToast'),
+                    printedStatus: t('recoveryKeys.grid.print'),
+                    copiedStatus: t('recoveryKeys.grid.copiedToast'),
+                    confirmSavedLabel: isRotate
+                      ? t('recoveryKeys.rotate.ackCheckbox')
+                      : t('recoveryKeys.regenerate.ackCheckbox'),
+                  }}
                 />
-                <span className="text-[14px] text-body">
-                  {isRotate
-                    ? t('recoveryKeys.rotate.ackCheckbox')
-                    : t('recoveryKeys.regenerate.ackCheckbox')}
-                </span>
-              </label>
+              )}
 
               {errorMessage && (
                 <AuthStatus tone="error" className="mb-4">
