@@ -1174,6 +1174,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     /** Answers every GET /vault (held ones at release time) with this failure instead of metadata. */
     vaultGetFailure: 'network' | { status: number; code: string } | null;
     completeIfMatches: Array<string | null>;
+    regenIfMatches: Array<string | null>;
     vaultVersion: number;
     completeCalls: number;
     regenCalls: number;
@@ -1205,6 +1206,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       vaultGetReleases: [],
       vaultGetFailure: null,
       completeIfMatches: [],
+      regenIfMatches: [],
       vaultVersion: 1,
       completeCalls: 0,
       regenCalls: 0,
@@ -1306,6 +1308,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       }
       if (url.endsWith('/vault/recovery-keys/regenerate') && init?.method === 'POST') {
         state.regenCalls += 1;
+        state.regenIfMatches.push(new Headers(init.headers).get('If-Match'));
         if (state.holdRegen) {
           await new Promise<void>((resolve) => {
             state.regenReleases.push(resolve);
@@ -3312,6 +3315,43 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     expect(published.slice(publishedAfterTransition)).toEqual([]);
     expect(routerMocks.replace).not.toHaveBeenCalled();
     expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+
+    shim.close();
+  }, 30_000);
+
+  it('BE5-2 (consumer boundary): a newly prepared regeneration bundle sends the live vault version, not the lower completion version', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+
+    // The completion answered version 2, but the vault is already at version 3 when the regeneration bundle is prepared.
+    fetchState.vaultMetaOverride = makeVaultMetaFixture(3);
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-save-button'));
+    });
+    await waitFor(() => {
+      expect(fetchState.regenCalls).toBe(1);
+    });
+    expect(fetchState.regenIfMatches).toEqual([`"${TEST_VECTOR_VAULT_KEY_ID}:3"`]);
 
     shim.close();
   }, 30_000);
