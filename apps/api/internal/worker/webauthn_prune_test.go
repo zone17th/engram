@@ -107,8 +107,7 @@ func TestWebAuthnChallengePruneHonorsBoundaryBatchesAndIsIdempotent(t *testing.T
 		t.Fatal("expected 3rd expired challenge to remain after 1 batch of size 2")
 	}
 
-	// 2. Default run (uses sqlc DeleteExpiredWebAuthnChallenges) deletes the remaining expired row
-	//    while preserving boundary and future rows.
+	// 2. Default run with empty args deletes the remaining expired row while preserving boundary and future rows.
 	if err := pruner.Work(ctx, &river.Job[worker.WebAuthnChallengePruneArgs]{
 		Args: worker.WebAuthnChallengePruneArgs{},
 	}); err != nil {
@@ -143,6 +142,67 @@ func TestWebAuthnChallengePruneHonorsBoundaryBatchesAndIsIdempotent(t *testing.T
 	}
 	if !existsByID(futureUnconsumed) || !existsByID(futureConsumed) {
 		t.Fatal("expected future challenges to remain")
+	}
+
+	// 5. Default scheduled run (empty WebAuthnChallengePruneArgs{}) is bounded by
+	//    DefaultWebAuthnChallengePruneBatchSize * DefaultWebAuthnChallengePruneMaxBatches (500 * 100 = 50,000):
+	//    a backlog of 50,002 expired rows deletes only the 50,000 oldest expired rows on the first run,
+	//    leaving the 2 newest expired rows for the next run while preserving exact-boundary and future rows.
+	curNow := clk.Now().UTC()
+	boundaryAtCurNow := insertChallenge(curNow, false)
+	defaultCapacity := int(worker.DefaultWebAuthnChallengePruneBatchSize) * worker.DefaultWebAuthnChallengePruneMaxBatches
+	backlogCount := defaultCapacity + 2
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO webauthn_challenge (user_id, session_id, vault_key_id, challenge_hash, prf_salt, expires_at)
+		SELECT $1,
+		       $2,
+		       'vk:AAECAwQFBgcICQoLDA0ODw',
+		       decode(lpad(to_hex(g), 64, '0'), 'hex'),
+		       decode(lpad(to_hex(g), 64, '0'), 'hex'),
+		       $3::timestamptz - (g * interval '1 microsecond')
+		FROM generate_series(1, $4::int) AS g
+	`, userID, sessionID, curNow, backlogCount); err != nil {
+		t.Fatalf("seed expired backlog (%d rows): %v", backlogCount, err)
+	}
+
+	// First empty-args run deletes exactly defaultCapacity (50,000) oldest expired rows and leaves 2 expired rows.
+	if err := pruner.Work(ctx, &river.Job[worker.WebAuthnChallengePruneArgs]{
+		Args: worker.WebAuthnChallengePruneArgs{},
+	}); err != nil {
+		t.Fatalf("empty-args bounded prune run 1: %v", err)
+	}
+
+	var remainingExpired int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM webauthn_challenge WHERE expires_at < $1`,
+		pgtype.Timestamptz{Time: curNow, Valid: true},
+	).Scan(&remainingExpired); err != nil {
+		t.Fatalf("count remaining expired after run 1: %v", err)
+	}
+	if remainingExpired != 2 {
+		t.Fatalf("remaining expired rows after 1st empty-args run = %d, want 2 (default capacity %d)", remainingExpired, defaultCapacity)
+	}
+	if !existsByID(boundaryAtCurNow) || !existsByID(futureUnconsumed) || !existsByID(futureConsumed) {
+		t.Fatal("expected exact-boundary and future challenges to survive 1st empty-args backlog run")
+	}
+
+	// Second empty-args run deletes the remaining 2 expired rows and preserves boundary + future rows.
+	if err := pruner.Work(ctx, &river.Job[worker.WebAuthnChallengePruneArgs]{
+		Args: worker.WebAuthnChallengePruneArgs{},
+	}); err != nil {
+		t.Fatalf("empty-args bounded prune run 2: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM webauthn_challenge WHERE expires_at < $1`,
+		pgtype.Timestamptz{Time: curNow, Valid: true},
+	).Scan(&remainingExpired); err != nil {
+		t.Fatalf("count remaining expired after run 2: %v", err)
+	}
+	if remainingExpired != 0 {
+		t.Fatalf("remaining expired rows after 2nd empty-args run = %d, want 0", remainingExpired)
+	}
+	if !existsByID(boundaryAtCurNow) || !existsByID(futureUnconsumed) || !existsByID(futureConsumed) {
+		t.Fatal("expected exact-boundary and future challenges to survive 2nd empty-args backlog run")
 	}
 }
 

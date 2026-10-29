@@ -8,7 +8,6 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 )
 
 const (
@@ -45,7 +44,7 @@ func (WebAuthnChallengePruneArgs) Kind() string { return "webauthn_challenge_pru
 type WebAuthnPruneArgs = WebAuthnChallengePruneArgs
 
 // WebAuthnChallengePruneWorker xoá các bản ghi `webauthn_challenge` đã hết hạn (`expires_at < now()`)
-// theo lô giới hạn (hoặc qua câu lệnh sqlc `DeleteExpiredWebAuthnChallenges`), idempotent.
+// theo lô giới hạn (`DefaultWebAuthnChallengePruneBatchSize` x `DefaultWebAuthnChallengePruneMaxBatches`), idempotent.
 type WebAuthnChallengePruneWorker struct {
 	river.WorkerDefaults[WebAuthnChallengePruneArgs]
 	pool *pgxpool.Pool
@@ -72,24 +71,16 @@ func NewWebAuthnPruneWorker(pool *pgxpool.Pool, clk clock.Clock) *WebAuthnChalle
 func (w *WebAuthnChallengePruneWorker) Work(ctx context.Context, job *river.Job[WebAuthnChallengePruneArgs]) error {
 	batchSize := DefaultWebAuthnChallengePruneBatchSize
 	maxBatches := DefaultWebAuthnChallengePruneMaxBatches
-	customBatch := false
 	if job != nil {
 		if job.Args.BatchSize > 0 {
 			batchSize = job.Args.BatchSize
-			customBatch = true
 		}
 		if job.Args.MaxBatches > 0 {
 			maxBatches = job.Args.MaxBatches
-			customBatch = true
 		}
 	}
 
 	now := pgtype.Timestamptz{Time: w.clk.Now().UTC(), Valid: true}
-	if !customBatch {
-		_, err := gen.New(w.pool).DeleteExpiredWebAuthnChallenges(ctx, now)
-		return err
-	}
-
 	for range maxBatches {
 		tag, err := w.pool.Exec(ctx, pruneExpiredWebAuthnChallengesBatchSQL, now, batchSize)
 		if err != nil {
