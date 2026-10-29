@@ -270,14 +270,19 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     await setSenderBroadcastSuppressed(pageB, true);
 
     const cdpC = await context.newCDPSession(pageC);
-    let cdpFreezeApplied = false;
-    try {
-      await cdpC.send('Page.setWebLifecycleState', { state: 'frozen' });
-      cdpFreezeApplied = true;
-    } catch {
-      // Headless shell may require background visibility before lifecycle freeze; deterministic broadcast suppression still isolates Page C
-    }
-
+    await pageA.bringToFront();
+    await pageC.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'hidden',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => true,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await cdpC.send('Page.setWebLifecycleState', { state: 'frozen' });
     // Run a tight concurrent contention loop across Page A and Page B (10 iterations each = 20 lock writes)
     // driving the ACTUAL product `VaultProvider.lock()` -> `recordLockEpochEvent` writer (BE1-12)
     const ITERATIONS_PER_PAGE = 10;
@@ -334,9 +339,7 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
 
     // Resume Page C from freeze -> verify Page C was still unlocked while suspended (BE1-13),
     // then runs its wake check against `sabk.device` under Web Lock and transitions BOTH UI and Worker to `locked`.
-    if (cdpFreezeApplied) {
-      await cdpC.send('Page.setWebLifecycleState', { state: 'active' });
-    }
+    await cdpC.send('Page.setWebLifecycleState', { state: 'active' });
     const stateCBeforeWake = await pageC.evaluate(() => {
       const win = window as unknown as {
         __engramVaultTestBridge: { state: string; workerState: string };
@@ -349,6 +352,14 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(stateCBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
 
     await pageC.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => false,
+      });
       window.dispatchEvent(new Event('resume'));
       window.dispatchEvent(new Event('focus'));
       document.dispatchEvent(new Event('visibilitychange'));
@@ -397,17 +408,21 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     });
     expect(baselineB1).not.toBeNull();
 
-    // Freeze Page B and sever its BroadcastChannel + storage listeners so it misses Page A's lock broadcast
-    await pageB.evaluate(() => {
-      // Neutralize BroadcastChannel delivery in Page B by overriding postMessage on Page A's channel below
-    });
+    // Freeze Page B via CDP (with explicit observable precondition, BE1-13) and suppress sender broadcasts so it misses Page A's lock broadcast
     const cdpB = await context.newCDPSession(pageB);
-    try {
-      await cdpB.send('Page.setWebLifecycleState', { state: 'frozen' });
-    } catch {
-      // Ignore
-    }
-
+    await pageA.bringToFront();
+    await pageB.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'hidden',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => true,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await cdpB.send('Page.setWebLifecycleState', { state: 'frozen' });
     // In Page A: suppress BroadcastChannel.prototype.postMessage + localStorage.setItem (simulating frozen Page B missing all notifications)
     // AND inject a `QuotaExceededError` on the primary `put` in `lock_epoch` so the increment tx aborts,
     // while allowing the fallback `delete('__lock_epoch__')` readwrite tx inside the same Web Lock region to succeed.
@@ -454,17 +469,43 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     const markerAfterFailedWrite = await readPersistedLockEpochMarker(pageA);
     expect(markerAfterFailedWrite).toBeNull();
 
-    // 2. Resume Frozen Tab (Page B) while marker is missing -> Page B sees missing marker and locks fail-closed
-    try {
-      await cdpB.send('Page.setWebLifecycleState', { state: 'active' });
-    } catch {
-      // Ignore
-    }
+    // 2. Resume Frozen Tab (Page B) while marker is missing -> verify Page B was still unlocked while frozen (BE1-13),
+    //    then sees missing marker on wake and locks fail-closed
+    await cdpB.send('Page.setWebLifecycleState', { state: 'active' });
+    const stateBBeforeWake = await pageB.evaluate(() => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: { state: string; workerState: string };
+      };
+      return {
+        state: win.__engramVaultTestBridge.state,
+        workerState: win.__engramVaultTestBridge.workerState,
+      };
+    });
+    expect(stateBBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
     await pageB.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => false,
+      });
       window.dispatchEvent(new Event('resume'));
       window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
     });
     await expect(pageB.locator('.vault-pill')).toHaveClass(/vault-shut/);
+    const stateBAfterMissingMarker = await pageB.evaluate(() => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: { state: string; workerState: string };
+      };
+      return {
+        state: win.__engramVaultTestBridge.state,
+        workerState: win.__engramVaultTestBridge.workerState,
+      };
+    });
+    expect(stateBAfterMissingMarker).toEqual({ state: 'locked', workerState: 'locked' });
 
     // 3. Also verify the sub-case where another tab (Page A) re-initializes the marker with a new `epochIncarnation`
     //    before Frozen Tab (Page B) wakes up -> Page B sees `persistedMarker.epochIncarnation !== unlockBaseline.epochIncarnation`

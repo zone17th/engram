@@ -2623,7 +2623,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be1-3-state')).toHaveTextContent('locked');
   });
 
-  it('BE1-5 & BE1-8: remote activity broadcasts and overlapping wake triggers during wake verification do not erase the pre-wake idle watermark, and stale settings_changed refresh across lock/re-unlock is fenced', async () => {
+  it('BE1-5 & BE1-15: missed Never-to-finite wake transition locks on wake without input, remote/local activity broadcasts and overlapping wake triggers do not erase the pre-wake idle watermark, and stale settings_changed refresh across lock/re-unlock is fenced', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
@@ -2938,7 +2938,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be1-6-worker')).toHaveTextContent('locked');
   });
 
-  it('BE1-10, BE1-11 & BE1-12: fences stale wake continuation across re-unlock, fences stale reloadVaultMeta across logout/account switch, and advances durable lockEpoch on reset/key-id-change', async () => {
+  it('BE1-8, BE1-11, BE1-16, BE1-17 & VS-R1-11: fences stale wake continuation across re-unlock, fences stale reloadVaultMeta across logout/account switch, advances durable lockEpoch on reset/key-id-change, refetches Me on vault_changed{version:null}, and locks on incarnation-only mismatch', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
@@ -3239,5 +3239,107 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       await staleReloadPromise;
     });
     expect(screen.getByTestId('be1-11-meta')).toHaveTextContent('none');
+  });
+
+  it('VS-R1-11: receiving vault_changed { version: null } refetches Me after locking and advancing durable lockEpoch so serverVaultStatus transitions from present to absent (no_vault)', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+
+    let currentMe = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 15 });
+    let meRefetchCount = 0;
+
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) {
+        meRefetchCount += 1;
+        return jsonResponse(currentMe);
+      }
+      if (u.endsWith('/vault')) {
+        return new Response(
+          JSON.stringify({
+            type: 'https://engram.zone17th.click/problems/vault_absent',
+            title: 'vault_absent',
+            status: 404,
+            code: 'vault_absent',
+          }),
+          { status: 404, headers: { 'content-type': 'application/problem+json' } },
+        );
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    function ResetStatusProbe() {
+      vaultCtx = useVault();
+      return (
+        <div>
+          <output data-testid="vs-r1-11-state">{vaultCtx.state}</output>
+          <output data-testid="vs-r1-11-server">{vaultCtx.serverVaultStatus}</output>
+          <output data-testid="vs-r1-11-worker">{vaultCtx.workerState}</output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <ResetStatusProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vs-r1-11-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('vs-r1-11-server')).toHaveTextContent('present');
+    });
+
+    vi.useRealTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const op = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.createVault({
+        passphrase: 'vs-r1-11-reset-passphrase',
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('vs-r1-11-state')).toHaveTextContent('unlocked');
+    const epochBeforeReset = vaultCtx.tabKnownLockEpoch;
+    const meCountBeforeReset = meRefetchCount;
+
+    // Tab A resets vault -> server Me now has vault.status = 'absent' and broadcasts vault_changed { version: null }
+    currentMe = makeMeFixture({ vaultStatus: 'absent', autoLockMinutes: 15 });
+    const remotePeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      remotePeer.postMessage({
+        type: 'vault_changed',
+        vault_key_id: 'vk:reset-target',
+        version: null,
+      });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    remotePeer.close();
+
+    expect(meRefetchCount).toBeGreaterThan(meCountBeforeReset);
+    expect(vaultCtx.tabKnownLockEpoch).toBeGreaterThan(epochBeforeReset);
+    expect(screen.getByTestId('vs-r1-11-worker')).toHaveTextContent('locked');
+    expect(screen.getByTestId('vs-r1-11-server')).toHaveTextContent('absent');
+    expect(screen.getByTestId('vs-r1-11-state')).toHaveTextContent('no_vault');
   });
 });

@@ -1020,7 +1020,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     expect(simulatedClipboard).toBe('');
   });
 
-  it('BE1-9 & BE1-15: late POST /vault success after Back / re-derive or lock never pairs committed vault A with Worker key B; locks and routes to /app/unlock cleanly', async () => {
+  it('BE1-9: late POST /vault success after Back / re-derive or lock never pairs committed vault A with Worker key B; locks and routes to /app/unlock cleanly', async () => {
     let currentMe = makeMeFixture('absent');
     let holdPost = false;
     let resolveHeldPost: ((res: Response) => void) | null = null;
