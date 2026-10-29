@@ -213,141 +213,223 @@ async function readPersistedLockEpochMarker(
     });
   });
 }
-async function seedHeavyConsumerAndDecryptedSecret(
-  page: Page,
-  bodyEntryId: string,
-  secretDomId: string,
-) {
-  await page.evaluate(
-    ({ entryId, domId, secretText }) => {
-      const win = window as unknown as {
-        __engramVaultTestBridge: {
-          registerSecretFormReset: (fn: () => void) => () => void;
-        };
-        __engramQueryClient?: { setQueryData: (key: unknown[], val: unknown) => void };
-      };
-      win.__engramQueryClient?.setQueryData(['vault', 'body', entryId], secretText);
+const WAKE_ROW_COUNT = 400;
+/** Display-only fixture, not a recovery key. */
+const WAKE_RK_DISPLAY_FIXTURE = 'WAKE-FIXTURE-AAAA-BBBB-CCCC-DDDD';
 
-      // Mount a heavy consumer DOM subtree (500 nodes) + decrypted entry surface
-      let heavyRoot = document.getElementById(`${domId}-heavy-root`);
-      if (!heavyRoot) {
-        heavyRoot = document.createElement('div');
-        heavyRoot.id = `${domId}-heavy-root`;
-        for (let i = 0; i < 500; i += 1) {
-          const row = document.createElement('div');
-          row.className = 'heavy-consumer-node';
-          row.textContent = `heavy-item-${i}`;
-          heavyRoot.appendChild(row);
-        }
-        document.body.appendChild(heavyRoot);
-      }
-
-      let host = document.getElementById(domId);
-      if (!host) {
-        host = document.createElement('div');
-        host.id = domId;
-        host.setAttribute('data-testid', domId);
-        host.setAttribute('data-vault-decrypted', 'true');
-        document.body.appendChild(host);
-      }
-      host.textContent = secretText;
-
-      win.__engramVaultTestBridge.registerSecretFormReset(() => {
-        if (host) {
-          host.textContent = '[LOCKED]';
-        }
-      });
-    },
-    { entryId: bodyEntryId, domId: secretDomId, secretText: WAKE_SECRET_PLAINTEXT },
-  );
-  await expect(page.getByTestId(secretDomId)).toHaveText(WAKE_SECRET_PLAINTEXT);
+interface WakeSnapshot {
+  state: string;
+  workerState: string;
+  consumerState: string | null;
+  bodyNodePresent: boolean;
+  recoveryGridText: boolean;
+  documentHasSecret: boolean;
+  rowsMounted: number;
+  rowsWithSecret: number;
+  cacheCleared: boolean;
 }
 
-async function expectWakeFailClosedWithinDeadline(
-  page: Page,
-  bodyEntryId: string,
-  secretDomId: string,
-) {
-  const startedAt = Date.now();
+/**
+ * Mounts the REAL React vault consumer (`features/vault/vault-test-consumer.tsx`, rendered inside the production
+ * `VaultProvider` tree, gating on `useVault().state`, holding display RKs in React state behind the real untagged
+ * `RecoveryKeysSheet`, with a few hundred `useVault()` subscribers) and fills it with data that went through the
+ * real Worker: a VALID entry is sealed and opened (`sealEntryNow` / `openEntryNow`), its plaintext is put into
+ * the `['vault','body',entryId]` cache and the same envelope is kept for a post-lock decrypt probe.
+ * Nothing in the page wipes its own DOM: whatever hides is the provider's synchronous gate.
+ */
+async function mountRealConsumerWithDecryptedData(page: Page, entryId: string) {
+  await page.evaluate(
+    async ({ entryId: id, secretText, rkDisplay, keyId, rowCount }) => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: {
+          getClient: () => {
+            sealEntryNow: (p: {
+              entryId: string;
+              keyId: string;
+              plaintext: string;
+            }) => Promise<{ envelope: unknown; ciphertext: string }>;
+            openEntryNow: (p: {
+              entryId: string;
+              envelope: unknown;
+              ciphertext: string;
+            }) => Promise<{ plaintext: string }>;
+          };
+        };
+        __engramQueryClient?: { setQueryData: (key: unknown[], val: unknown) => void };
+        __engramMountVaultTestConsumer?: (
+          host: HTMLElement,
+          options: { entryId: string; rowCount: number },
+        ) => Promise<{ setRecoveryKeys: (keys: Array<{ slot: number; display: string }>) => void }>;
+        __vsR71Payload?: { entryId: string; envelope: unknown; ciphertext: string; plaintext: string };
+      };
+      if (!win.__engramMountVaultTestConsumer || !win.__engramQueryClient) {
+        throw new Error('vault test consumer mount hook is not available');
+      }
+      document.getElementById('vs-r7-1-host')?.remove();
+      const host = document.createElement('div');
+      host.id = 'vs-r7-1-host';
+      document.body.appendChild(host);
+      const api = await win.__engramMountVaultTestConsumer(host, { entryId: id, rowCount });
 
-  // Synchronously right after wake is triggered:
-  // 1. State must already be gated (`'unlocking'` or `'locked'`, NEVER `'unlocked'`)
-  // 2. Decrypted query cache must already be cleared AND no decrypted entry text remains in the DOM (VS-R7-1)
-  const immediateSnap = await page.evaluate(
-    ({ entryId, domId, secretText }) => {
+      const client = win.__engramVaultTestBridge.getClient();
+      const sealed = await client.sealEntryNow({ entryId: id, keyId, plaintext: secretText });
+      const opened = await client.openEntryNow({
+        entryId: id,
+        envelope: sealed.envelope,
+        ciphertext: sealed.ciphertext,
+      });
+      win.__vsR71Payload = {
+        entryId: id,
+        envelope: sealed.envelope,
+        ciphertext: sealed.ciphertext,
+        plaintext: opened.plaintext,
+      };
+      win.__engramQueryClient.setQueryData(['vault', 'body', id], opened.plaintext);
+      api.setRecoveryKeys([{ slot: 1, display: rkDisplay }]);
+    },
+    {
+      entryId,
+      secretText: WAKE_SECRET_PLAINTEXT,
+      rkDisplay: WAKE_RK_DISPLAY_FIXTURE,
+      keyId: TEST_VECTOR_VAULT_KEY_ID,
+      rowCount: WAKE_ROW_COUNT,
+    },
+  );
+  // Positive control: before any wake the consumer renders the decrypted data through the production contract.
+  await expect(page.getByTestId('vs-r7-1-body')).toHaveText(WAKE_SECRET_PLAINTEXT);
+  await expect(page.locator('code', { hasText: WAKE_RK_DISPLAY_FIXTURE })).toBeVisible();
+  await expect(page.getByTestId('vs-r7-1-row').first()).toContainText(WAKE_SECRET_PLAINTEXT);
+}
+
+/**
+ * Dispatches the wake events and reads the DOM in the SAME synchronous turn: there is no `await` (and no
+ * `return`) between `dispatchEvent` and the snapshot, so React must already have re-rendered through the
+ * provider's synchronous store notification + `flushSync`, not "one task later".
+ */
+async function dispatchWakeAndSnapshotSameTurn(
+  page: Page,
+  entryId: string,
+  options: { watchLeaks?: boolean } = {},
+): Promise<WakeSnapshot> {
+  return page.evaluate(
+    ({ id, secretText, rkDisplay, watchLeaks }) => {
       const win = window as unknown as {
         __engramVaultTestBridge: { state: string; workerState: string };
         __engramQueryClient?: { getQueryData: (key: unknown[]) => unknown };
+        __vsR71Leaks?: { count: number; observer: MutationObserver | null };
       };
-      const state = win.__engramVaultTestBridge.state;
-      const cached = win.__engramQueryClient?.getQueryData(['vault', 'body', entryId]);
-      const hostText = document.getElementById(domId)?.textContent ?? '';
-      const bodyHasPlaintext = (document.body.textContent ?? '').includes(secretText);
+      if (watchLeaks) {
+        const leaks = { count: 0, observer: null as MutationObserver | null };
+        leaks.observer = new MutationObserver(() => {
+          if ((document.body.textContent ?? '').includes(secretText)) leaks.count += 1;
+        });
+        leaks.observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+        win.__vsR71Leaks = leaks;
+      }
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      window.dispatchEvent(new Event('resume'));
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      // ---- same synchronous turn: nothing above is awaited ----
+      const rows = Array.from(document.querySelectorAll('[data-testid="vs-r7-1-row"]'));
       return {
-        state,
-        isPlaintextGated: state !== 'unlocked' && cached === undefined,
-        hostText,
-        bodyHasPlaintext,
+        state: win.__engramVaultTestBridge.state,
+        workerState: win.__engramVaultTestBridge.workerState,
+        consumerState:
+          document.querySelector('[data-testid="vs-r7-1-consumer"]')?.getAttribute('data-vault-state') ?? null,
+        bodyNodePresent: document.querySelector('[data-testid="vs-r7-1-body"]') !== null,
+        recoveryGridText: Array.from(document.querySelectorAll('code')).some((c) =>
+          (c.textContent ?? '').includes(rkDisplay),
+        ),
+        documentHasSecret: (document.body.textContent ?? '').includes(secretText),
+        rowsMounted: rows.length,
+        rowsWithSecret: rows.filter((r) => (r.textContent ?? '').includes(secretText)).length,
+        cacheCleared: win.__engramQueryClient?.getQueryData(['vault', 'body', id]) === undefined,
       };
     },
-    { entryId: bodyEntryId, domId: secretDomId, secretText: WAKE_SECRET_PLAINTEXT },
+    {
+      id: entryId,
+      secretText: WAKE_SECRET_PLAINTEXT,
+      rkDisplay: WAKE_RK_DISPLAY_FIXTURE,
+      watchLeaks: options.watchLeaks ?? false,
+    },
   );
-  expect(immediateSnap.state).not.toBe('unlocked');
-  expect(immediateSnap.isPlaintextGated).toBe(true);
-  expect(immediateSnap.hostText).toBe('[LOCKED]');
-  expect(immediateSnap.bodyHasPlaintext).toBe(false);
+}
 
-  // Deterministically poll until BOTH UI `state` and `workerState` reach `'locked'`, decrypted body cache is wiped,
-  // no decrypted text is in the DOM, AND Worker decrypt (`openEntryNow`) is refused strictly within the 5s deadline (VS-R7-1, ADR 0003 §8.4).
+function expectSnapshotGated(snap: WakeSnapshot) {
+  expect(snap.state).not.toBe('unlocked');
+  expect(snap.consumerState).not.toBe('unlocked');
+  expect(snap.cacheCleared).toBe(true);
+  expect(snap.bodyNodePresent).toBe(false);
+  expect(snap.recoveryGridText).toBe(false);
+  expect(snap.documentHasSecret).toBe(false);
+  expect(snap.rowsMounted).toBe(WAKE_ROW_COUNT);
+  expect(snap.rowsWithSecret).toBe(0);
+}
+
+/**
+ * Valid-envelope decrypt probe: the SAME envelope/ciphertext that decrypted successfully before the wake must now
+ * be refused by the locked Worker with the specific `VAULT_LOCKED` code (never "any error").
+ */
+async function probeValidDecrypt(page: Page) {
+  return page.evaluate(async () => {
+    const win = window as unknown as {
+      __engramVaultTestBridge: {
+        state: string;
+        workerState: string;
+        getClient: () => {
+          openEntryNow: (p: {
+            entryId: string;
+            envelope: unknown;
+            ciphertext: string;
+          }) => Promise<{ plaintext: string }>;
+        };
+      };
+      __vsR71Payload?: { entryId: string; envelope: unknown; ciphertext: string; plaintext: string };
+    };
+    const payload = win.__vsR71Payload;
+    if (!payload) throw new Error('missing valid decrypt payload');
+    try {
+      const opened = await win.__engramVaultTestBridge.getClient().openEntryNow({
+        entryId: payload.entryId,
+        envelope: payload.envelope,
+        ciphertext: payload.ciphertext,
+      });
+      return { outcome: 'decrypted', code: null, matches: opened.plaintext === payload.plaintext };
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      return { outcome: 'refused', code: typeof code === 'string' ? code : 'NO_CODE', matches: false };
+    }
+  });
+}
+
+async function expectWakeFailClosedWithinDeadline(page: Page, entryId: string, startedAt: number) {
+  // Deterministically poll until BOTH UI `state` and `workerState` reach `'locked'`, the decrypted cache and DOM stay
+  // clean, AND the Worker refuses a previously VALID decrypt with `VAULT_LOCKED`, strictly within the 5s deadline
+  // measured from the wake dispatch (VS-R7-1, ADR 0003 §8.4).
   await expect
     .poll(
-      async () =>
-        page.evaluate(
-          async ({ entryId, secretText }) => {
+      async () => {
+        const live = await page.evaluate(
+          ({ id, secretText }) => {
             const win = window as unknown as {
-              __engramVaultTestBridge: {
-                state: string;
-                workerState: string;
-                getClient: () => {
-                  openEntryNow: (params: {
-                    entryId: string;
-                    envelope: { v: 1; alg: 'xchacha20poly1305'; key_id: string };
-                    ciphertext: string;
-                  }) => Promise<unknown>;
-                };
-              };
+              __engramVaultTestBridge: { state: string; workerState: string };
               __engramQueryClient?: { getQueryData: (key: unknown[]) => unknown };
             };
-            const bridge = win.__engramVaultTestBridge;
-            const state = bridge.state;
-            const workerState = bridge.workerState;
-            const bodyCacheCleared =
-              win.__engramQueryClient?.getQueryData(['vault', 'body', entryId]) === undefined;
-            const domCleared = !(document.body.textContent ?? '').includes(secretText);
-
-            let workerDecryptRefused = false;
-            if (workerState === 'locked') {
-              try {
-                await bridge.getClient().openEntryNow({
-                  entryId,
-                  envelope: { v: 1, alg: 'xchacha20poly1305', key_id: 'vk:test' },
-                  ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-                });
-              } catch {
-                workerDecryptRefused = true;
-              }
-            }
-
             return {
-              state,
-              workerState,
-              bodyCacheCleared,
-              domCleared,
-              workerDecryptRefused,
+              state: win.__engramVaultTestBridge.state,
+              workerState: win.__engramVaultTestBridge.workerState,
+              bodyCacheCleared: win.__engramQueryClient?.getQueryData(['vault', 'body', id]) === undefined,
+              domCleared: !(document.body.textContent ?? '').includes(secretText),
             };
           },
-          { entryId: bodyEntryId, secretText: WAKE_SECRET_PLAINTEXT },
-        ),
+          { id: entryId, secretText: WAKE_SECRET_PLAINTEXT },
+        );
+        const probe =
+          live.workerState === 'locked' ? await probeValidDecrypt(page) : { outcome: 'not-probed', code: null };
+        return { ...live, decryptOutcome: probe.outcome, decryptCode: probe.code };
+      },
       { timeout: 5_000, intervals: [25, 50, 100] },
     )
     .toEqual({
@@ -355,12 +437,60 @@ async function expectWakeFailClosedWithinDeadline(
       workerState: 'locked',
       bodyCacheCleared: true,
       domCleared: true,
-      workerDecryptRefused: true,
+      decryptOutcome: 'refused',
+      decryptCode: 'VAULT_LOCKED',
     });
 
   expect(Date.now() - startedAt).toBeLessThanOrEqual(5_000);
   await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
 }
+
+/** Holds the wake's authoritative `GET /auth/me` until released (or failed) so verification stays pending. */
+async function installHeldWakeMe(context: BrowserContext) {
+  let armed = false;
+  let markArrived: () => void = () => undefined;
+  let decide: (mode: 'ok' | 'fail') => void = () => undefined;
+  let arrived: Promise<void> = Promise.resolve();
+  let gate: Promise<'ok' | 'fail'> = Promise.resolve('ok');
+  await context.route('**/api/v1/auth/me', async (route) => {
+    if (!armed) {
+      await route.fallback();
+      return;
+    }
+    armed = false;
+    markArrived();
+    if ((await gate) === 'fail') {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({
+          type: 'https://engram.zone17th.click/problems/service_unavailable',
+          title: 'service_unavailable',
+          status: 503,
+          code: 'service_unavailable',
+        }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  return {
+    /** Holds the NEXT `/auth/me` request (the wake's verification) until `release`. */
+    arm() {
+      armed = true;
+      arrived = new Promise<void>((resolve) => {
+        markArrived = resolve;
+      });
+      gate = new Promise<'ok' | 'fail'>((resolve) => {
+        decide = resolve;
+      });
+    },
+    /** Resolves once the held request reached the network layer (verification is genuinely pending). */
+    arrived: () => arrived,
+    release: (mode: 'ok' | 'fail') => decide(mode),
+  };
+}
+
 test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freeze/resume, and failed-write fail-closed (ADR 0003 §8, FE R3-5)', () => {
   test('(a) two pages contend writing lock events under Web Lock "sabk.vault.lock" + IDB readwrite while a third page is frozen then resumed -> unique strictly increasing lockEpochs, no lost update, resumed page always locked', async ({
     context,
@@ -506,22 +636,11 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     });
     expect(stateCBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
 
-    await seedHeavyConsumerAndDecryptedSecret(pageC, 'lock-epoch-c', 'wake-secret-c');
-    await pageC.evaluate(() => {
-      Object.defineProperty(document, 'visibilityState', {
-        configurable: true,
-        get: () => 'visible',
-      });
-      Object.defineProperty(document, 'hidden', {
-        configurable: true,
-        get: () => false,
-      });
-      window.dispatchEvent(new Event('resume'));
-      window.dispatchEvent(new Event('focus'));
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-
-    await expectWakeFailClosedWithinDeadline(pageC, 'lock-epoch-c', 'wake-secret-c');
+    const entryIdC = '018f3a40-0000-7000-8000-0000000000c1';
+    await mountRealConsumerWithDecryptedData(pageC, entryIdC);
+    const wakeStartedAtC = Date.now();
+    expectSnapshotGated(await dispatchWakeAndSnapshotSameTurn(pageC, entryIdC));
+    await expectWakeFailClosedWithinDeadline(pageC, entryIdC, wakeStartedAtC);
     await pageA.close();
     await pageB.close();
     await pageC.close();
@@ -627,21 +746,11 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
       };
     });
     expect(stateBBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
-    await seedHeavyConsumerAndDecryptedSecret(pageB, 'lock-epoch-b1', 'wake-secret-b1');
-    await pageB.evaluate(() => {
-      Object.defineProperty(document, 'visibilityState', {
-        configurable: true,
-        get: () => 'visible',
-      });
-      Object.defineProperty(document, 'hidden', {
-        configurable: true,
-        get: () => false,
-      });
-      window.dispatchEvent(new Event('resume'));
-      window.dispatchEvent(new Event('focus'));
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-    await expectWakeFailClosedWithinDeadline(pageB, 'lock-epoch-b1', 'wake-secret-b1');
+    const entryIdB1 = '018f3a40-0000-7000-8000-0000000000b1';
+    await mountRealConsumerWithDecryptedData(pageB, entryIdB1);
+    const wakeStartedAtB1 = Date.now();
+    expectSnapshotGated(await dispatchWakeAndSnapshotSameTurn(pageB, entryIdB1));
+    await expectWakeFailClosedWithinDeadline(pageB, entryIdB1, wakeStartedAtB1);
     // 3. Also verify the sub-case where another tab (Page A) re-initializes the marker with a new `epochIncarnation`
     //    before Frozen Tab (Page B) wakes up -> Page B sees `persistedMarker.epochIncarnation !== unlockBaseline.epochIncarnation`
     //    and locks fail-closed.
@@ -692,12 +801,11 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(markerAfterReinit!.epochIncarnation).not.toBe(baselineB2!.epochIncarnation);
 
     // Now wake Page B -> sees `epochIncarnation !== unlockBaseline.epochIncarnation` (even though numeric lockEpoch is identical) and locks fail-closed within 5s
-    await seedHeavyConsumerAndDecryptedSecret(pageB, 'lock-epoch-b2', 'wake-secret-b2');
-    await pageB.evaluate(() => {
-      window.dispatchEvent(new Event('resume'));
-      window.dispatchEvent(new Event('focus'));
-    });
-    await expectWakeFailClosedWithinDeadline(pageB, 'lock-epoch-b2', 'wake-secret-b2');
+    const entryIdB2 = '018f3a40-0000-7000-8000-0000000000b2';
+    await mountRealConsumerWithDecryptedData(pageB, entryIdB2);
+    const wakeStartedAtB2 = Date.now();
+    expectSnapshotGated(await dispatchWakeAndSnapshotSameTurn(pageB, entryIdB2));
+    await expectWakeFailClosedWithinDeadline(pageB, entryIdB2, wakeStartedAtB2);
     await pageA.close();
     await pageB.close();
   });
@@ -943,6 +1051,101 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(snapshotAfterRetryPurge.meta?.deviceRevision).toBe(8);
     expect(snapshotAfterRetryPurge.meta?.incarnation).not.toBe(initialIncarnation);
 
+    await page.close();
+  });
+
+  test('(e) VS-R7-1 / BE3-4: a wake whose authoritative verification is HELD hides every decrypted surface of a real heavy React consumer in the same synchronous turn, and a matching release restores access only after verification', async ({
+    context,
+  }) => {
+    test.setTimeout(90_000);
+    await installAuthenticatedVaultApiMocks(context, { autoLockMinutes: 15 });
+    const heldMe = await installHeldWakeMe(context);
+
+    const page = await context.newPage();
+    await page.goto('/app/settings');
+    await unlockPageViaRealWorker(page);
+    const entryId = '018f3a40-0000-7000-8000-0000000000e1';
+    await mountRealConsumerWithDecryptedData(page, entryId);
+
+    heldMe.arm();
+    const snapshot = await dispatchWakeAndSnapshotSameTurn(page, entryId, { watchLeaks: true });
+    // Same turn as the wake event: the provider has flushed the gate before this callback returned.
+    expectSnapshotGated(snapshot);
+    expect(snapshot.state).toBe('unlocking');
+
+    // Verification is genuinely pending at the network layer; access stays withheld while it is held.
+    await heldMe.arrived();
+    const whileHeld = await page.evaluate((secretText) => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: { state: string; workerState: string };
+      };
+      return {
+        state: win.__engramVaultTestBridge.state,
+        documentHasSecret: (document.body.textContent ?? '').includes(secretText),
+        bodyNodePresent: document.querySelector('[data-testid="vs-r7-1-body"]') !== null,
+      };
+    }, WAKE_SECRET_PLAINTEXT);
+    expect(whileHeld).toEqual({ state: 'unlocking', documentHasSecret: false, bodyNodePresent: false });
+
+    // Release the matching verification: access resumes ONLY now (the consumer is no longer gated).
+    heldMe.release('ok');
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const win = window as unknown as { __engramVaultTestBridge: { state: string } };
+            return win.__engramVaultTestBridge.state;
+          }),
+        { timeout: 5_000, intervals: [25, 50, 100] },
+      )
+      .toBe('unlocked');
+    await expect(page.getByTestId('vs-r7-1-consumer')).toHaveAttribute('data-vault-state', 'unlocked');
+
+    // Nothing decrypted ever reappeared while the wake was pending or on release (the cache was purged).
+    const leaks = await page.evaluate(() => {
+      const win = window as unknown as { __vsR71Leaks?: { count: number; observer: MutationObserver | null } };
+      win.__vsR71Leaks?.observer?.disconnect();
+      return win.__vsR71Leaks?.count ?? -1;
+    });
+    expect(leaks).toBe(0);
+
+    // The verified session decrypts the same valid envelope again and the consumer renders it.
+    const reopened = await probeValidDecrypt(page);
+    expect(reopened).toEqual({ outcome: 'decrypted', code: null, matches: true });
+    await page.close();
+  });
+
+  test('(f) VS-R7-1 / BE3-4: a wake whose verification FAILS leaves no decrypted DOM and the Worker refuses a previously valid decrypt with VAULT_LOCKED within the 5s budget', async ({
+    context,
+  }) => {
+    test.setTimeout(90_000);
+    await installAuthenticatedVaultApiMocks(context, { autoLockMinutes: 15 });
+    const heldMe = await installHeldWakeMe(context);
+
+    const page = await context.newPage();
+    await page.goto('/app/settings');
+    await unlockPageViaRealWorker(page);
+    const entryId = '018f3a40-0000-7000-8000-0000000000f1';
+    await mountRealConsumerWithDecryptedData(page, entryId);
+
+    // Positive control right before the wake: the valid envelope decrypts through the live Worker.
+    expect(await probeValidDecrypt(page)).toEqual({ outcome: 'decrypted', code: null, matches: true });
+
+    heldMe.arm();
+    const startedAt = Date.now();
+    const snapshot = await dispatchWakeAndSnapshotSameTurn(page, entryId, { watchLeaks: true });
+    expectSnapshotGated(snapshot);
+    await heldMe.arrived();
+
+    // The authoritative refresh fails -> the provider fails closed.
+    heldMe.release('fail');
+    await expectWakeFailClosedWithinDeadline(page, entryId, startedAt);
+    const leaks = await page.evaluate(() => {
+      const win = window as unknown as { __vsR71Leaks?: { count: number; observer: MutationObserver | null } };
+      win.__vsR71Leaks?.observer?.disconnect();
+      return win.__vsR71Leaks?.count ?? -1;
+    });
+    expect(leaks).toBe(0);
     await page.close();
   });
 });

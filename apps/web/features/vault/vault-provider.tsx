@@ -3,7 +3,9 @@
 import { ProblemError } from '@engram/shared-types';
 import { useQueryClient } from '@tanstack/react-query';
 import {
+  Suspense,
   createContext,
+  lazy,
   useCallback,
   useContext,
   useEffect,
@@ -13,7 +15,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { useSession } from '@/features/auth/session-provider';
 import {
   ACTIVITY_BROADCAST_THROTTLE_MS,
@@ -40,6 +42,7 @@ import {
   type LockEpochEnvironment,
   type LockEpochMarker,
 } from '@/features/vault/lock-epoch';
+import type { VaultTestConsumerApi } from '@/features/vault/vault-test-consumer';
 import { fetchVault, type VaultState } from '@/lib/api/vault';
 import { fetchMe } from '@/lib/api/auth';
 import {
@@ -252,6 +255,10 @@ interface VaultStoreContextValue {
 }
 
 const VaultContext = createContext<VaultStoreContextValue | null>(null);
+
+// Browser-test-only vault consumer (VS-R7-1 / BE3-4): a lazily loaded real React consumer that the e2e specs mount
+// into this provider's tree through `window.__engramMountVaultTestConsumer` (same gate as the test bridge).
+const VaultTestConsumer = lazy(() => import('@/features/vault/vault-test-consumer'));
 
 export interface VaultProviderProps {
   children: ReactNode;
@@ -1973,6 +1980,36 @@ export function VaultProvider({
       }
     };
   }, [queryClient, value]);
+  const [testConsumer, setTestConsumer] = useState<{
+    host: HTMLElement;
+    entryId: string;
+    rowCount: number;
+    onReady: (api: VaultTestConsumerApi) => void;
+  } | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isLoopback =
+      window.location?.hostname === '127.0.0.1' ||
+      window.location?.hostname === 'localhost';
+    if (process.env.NODE_ENV === 'production' && !isLoopback) return;
+    const win = window as unknown as {
+      __engramMountVaultTestConsumer?: (
+        host: HTMLElement,
+        options: { entryId: string; rowCount: number },
+      ) => Promise<VaultTestConsumerApi>;
+    };
+    const mount = (host: HTMLElement, options: { entryId: string; rowCount: number }) =>
+      new Promise<VaultTestConsumerApi>((resolve) => {
+        setTestConsumer({ host, entryId: options.entryId, rowCount: options.rowCount, onReady: resolve });
+      });
+    win.__engramMountVaultTestConsumer = mount;
+    return () => {
+      if (win.__engramMountVaultTestConsumer === mount) {
+        delete win.__engramMountVaultTestConsumer;
+      }
+    };
+  }, []);
+
   const subscribeStore = useCallback((listener: () => void) => {
     storeListenersRef.current.add(listener);
     return () => {
@@ -2001,7 +2038,23 @@ export function VaultProvider({
     [getLiveStateSnapshot, subscribeStore, value],
   );
 
-  return <VaultContext.Provider value={storeValue}>{children}</VaultContext.Provider>;
+  return (
+    <VaultContext.Provider value={storeValue}>
+      {children}
+      {testConsumer
+        ? createPortal(
+            <Suspense fallback={null}>
+              <VaultTestConsumer
+                entryId={testConsumer.entryId}
+                rowCount={testConsumer.rowCount}
+                onReady={testConsumer.onReady}
+              />
+            </Suspense>,
+            testConsumer.host,
+          )
+        : null}
+    </VaultContext.Provider>
+  );
 }
 
 const noopSubscribe = () => () => {};
