@@ -276,7 +276,11 @@ export function CryptoBenchClient({ createWorker = defaultCreateBenchWorker }: C
                 Run #{r.run}: {r.ms} ms —{' '}
                 {r.ok
                   ? 'SUCCESS'
-                  : `FAILED (code=${r.errorCode ?? 'UNKNOWN_ERROR'} | name=${r.errorName ?? 'Error'} | constructor=${r.errorConstructorName ?? r.errorName ?? 'Error'}: ${r.errorMessage ?? ''})`}
+                  : `FAILED (code=${r.errorCode ?? 'UNKNOWN_ERROR'} | name=${r.errorName ?? 'Error'} | constructor=${r.errorConstructorName ?? r.errorName ?? 'Error'}${
+                      r.errorCauseName && r.errorCauseName !== r.errorName
+                        ? ` | cause=${r.errorCauseName}[${r.errorCauseConstructorName ?? r.errorCauseName}]`
+                        : ''
+                    }: ${r.errorMessage ?? ''})`}
               </li>
             ))}
           </ul>

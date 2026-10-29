@@ -8,6 +8,7 @@ import {
   KDF_OPS_MIN,
   KDF_PARALLELISM,
   KDF_SALT_BYTES,
+  KdfError,
   type VaultKdfParams,
 } from './kdf';
 import { getSodium, type Sodium, toLocalBytes } from './sodium';
@@ -20,6 +21,9 @@ export interface BenchRunEntry {
   errorName?: string;
   errorMessage?: string;
   errorConstructorName?: string;
+  errorCauseName?: string;
+  errorCauseMessage?: string;
+  errorCauseConstructorName?: string;
 }
 
 export interface BenchResultMessage {
@@ -45,6 +49,23 @@ export interface BenchErrorMessage {
   errorMessage: string;
   errorConstructorName: string;
   errorCode?: string;
+  errorCauseName?: string;
+  errorCauseMessage?: string;
+  errorCauseConstructorName?: string;
+}
+
+export interface BenchRunnerDeps {
+  getSodium?: () => Promise<Sodium>;
+  deriveKek?: (
+    sodium: Sodium,
+    passphrase: Uint8Array,
+    kdfParams: VaultKdfParams,
+  ) => Uint8Array | Promise<Uint8Array>;
+}
+
+export interface BenchWorkerScopeLike {
+  onmessage: ((event: MessageEvent<BenchStartMessage>) => void) | null;
+  postMessage: (message: BenchWorkerOutboundMessage) => void;
 }
 
 export type BenchWorkerOutboundMessage = BenchResultMessage | BenchErrorMessage;
@@ -56,11 +77,10 @@ export interface BenchStartMessage {
 }
 const utf8Encoder = new TextEncoder();
 
-function extractErrorSignature(err: unknown): {
-  errorName: string;
-  errorMessage: string;
-  errorConstructorName: string;
-  errorCode: string;
+function readRawErrorSignature(err: unknown): {
+  name: string;
+  message: string;
+  constructorName: string;
 } {
   const errObj = err instanceof Error ? err : new Error(String(err));
   let constructorName = errObj.name;
@@ -70,19 +90,54 @@ function extractErrorSignature(err: unknown): {
       constructorName = ctor.name;
     }
   }
+  return {
+    name: errObj.name,
+    message: errObj.message,
+    constructorName,
+  };
+}
+
+export function extractErrorSignature(err: unknown): {
+  errorName: string;
+  errorMessage: string;
+  errorConstructorName: string;
+  errorCode: string;
+  errorCauseName?: string;
+  errorCauseMessage?: string;
+  errorCauseConstructorName?: string;
+} {
   let code = 'UNKNOWN_ERROR';
   if (typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string') {
     code = err.code;
   }
+  if (err instanceof KdfError && err.cause !== undefined && err.cause !== null) {
+    const causeSig = readRawErrorSignature(err.cause);
+    return {
+      errorName: causeSig.name,
+      errorMessage: causeSig.message,
+      errorConstructorName: causeSig.constructorName,
+      errorCode: code,
+      errorCauseName: causeSig.name,
+      errorCauseMessage: causeSig.message,
+      errorCauseConstructorName: causeSig.constructorName,
+    };
+  }
+  const rawSig = readRawErrorSignature(err);
   return {
-    errorName: errObj.name,
-    errorMessage: errObj.message,
-    errorConstructorName: constructorName,
+    errorName: rawSig.name,
+    errorMessage: rawSig.message,
+    errorConstructorName: rawSig.constructorName,
     errorCode: code,
   };
 }
 
-export async function runArgon2idBenchmark(runsCount = 3, runId?: number): Promise<BenchResultMessage> {
+export async function runArgon2idBenchmark(
+  runsCount = 3,
+  runId?: number,
+  deps: BenchRunnerDeps = {},
+): Promise<BenchResultMessage> {
+  const loadSodium = deps.getSodium ?? getSodium;
+  const runDeriveKek = deps.deriveKek ?? deriveKek;
   const safeRunsCount =
     Number.isInteger(runsCount) && runsCount >= 1 && runsCount <= 20 ? runsCount : 3;
   const entries: BenchRunEntry[] = [];
@@ -90,7 +145,7 @@ export async function runArgon2idBenchmark(runsCount = 3, runId?: number): Promi
 
   let preloadedSodium: Sodium | null = null;
   try {
-    preloadedSodium = await getSodium();
+    preloadedSodium = await loadSodium();
   } catch {
     // Handled inside per-run try/catch so the failure signature is recorded per run
   }
@@ -98,7 +153,7 @@ export async function runArgon2idBenchmark(runsCount = 3, runId?: number): Promi
   for (let i = 1; i <= safeRunsCount; i++) {
     const t0 = performance.now();
     try {
-      const sodium = preloadedSodium ?? (await getSodium());
+      const sodium = preloadedSodium ?? (await loadSodium());
       const saltBytes = sodium.randombytes_buf(KDF_SALT_BYTES);
       const kdfParams: VaultKdfParams = {
         alg: KDF_ALG,
@@ -108,7 +163,7 @@ export async function runArgon2idBenchmark(runsCount = 3, runId?: number): Promi
         salt: encodeBase64Url(saltBytes),
       };
       const passphraseBytes = toLocalBytes(utf8Encoder.encode(`engram-p03-t5-bench-run-${i}`));
-      const kek = await deriveKek(sodium, passphraseBytes, kdfParams);
+      const kek = await runDeriveKek(sodium, passphraseBytes, kdfParams);
       const ms = Math.round((performance.now() - t0) * 100) / 100;
       sodium.memzero(passphraseBytes);
       sodium.memzero(toLocalBytes(kek));
@@ -129,6 +184,13 @@ export async function runArgon2idBenchmark(runsCount = 3, runId?: number): Promi
         errorName: sig.errorName,
         errorMessage: sig.errorMessage,
         errorConstructorName: sig.errorConstructorName,
+        ...(sig.errorCauseName !== undefined ? { errorCauseName: sig.errorCauseName } : {}),
+        ...(sig.errorCauseMessage !== undefined
+          ? { errorCauseMessage: sig.errorCauseMessage }
+          : {}),
+        ...(sig.errorCauseConstructorName !== undefined
+          ? { errorCauseConstructorName: sig.errorCauseConstructorName }
+          : {}),
       });
     }
   }
@@ -172,14 +234,17 @@ const isDedicatedWorkerScope =
     ? self instanceof WorkerGlobalScope
     : !('window' in globalThis));
 
-if (isDedicatedWorkerScope) {
-  self.onmessage = (event: MessageEvent<BenchStartMessage>) => {
+export function attachBenchWorkerScope(
+  scope: BenchWorkerScopeLike,
+  runner: (runsCount?: number, runId?: number) => Promise<BenchResultMessage> = runArgon2idBenchmark,
+): void {
+  scope.onmessage = (event: MessageEvent<BenchStartMessage>) => {
     if (event.data?.type !== 'startBench') return;
     const count = event.data.runs ?? 3;
     const runId = event.data.runId;
-    void runArgon2idBenchmark(count, runId)
+    void runner(count, runId)
       .then((result) => {
-        self.postMessage(result);
+        scope.postMessage(result);
       })
       .catch((err: unknown) => {
         const sig = extractErrorSignature(err);
@@ -190,8 +255,19 @@ if (isDedicatedWorkerScope) {
           errorMessage: sig.errorMessage,
           errorConstructorName: sig.errorConstructorName,
           errorCode: sig.errorCode,
+          ...(sig.errorCauseName !== undefined ? { errorCauseName: sig.errorCauseName } : {}),
+          ...(sig.errorCauseMessage !== undefined
+            ? { errorCauseMessage: sig.errorCauseMessage }
+            : {}),
+          ...(sig.errorCauseConstructorName !== undefined
+            ? { errorCauseConstructorName: sig.errorCauseConstructorName }
+            : {}),
         };
-        self.postMessage(errorMsg);
+        scope.postMessage(errorMsg);
       });
   };
+}
+
+if (isDedicatedWorkerScope) {
+  attachBenchWorkerScope(self);
 }
