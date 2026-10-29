@@ -2770,4 +2770,110 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 30_000);
+
+  for (const verifier of ['succeeds', 'fails'] as const) {
+    it(`BE2-4 (Worker generation): replacement-key plaintext returned by the Worker while the wake verification is still held is never rendered, and a verifier that ${verifier} does not bring it back`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock();
+      const { baseLockEpochEnv, lockEpochEnv, wake } = makeHeldWakeLockEpochEnv();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        lockEpochEnv,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveRecoveryToStep4A(() => vaultCtx);
+
+      // Instrument the real Worker call: it is held before the message is posted, and the plaintext it later returns is recorded.
+      const client = vaultCtx.getClient();
+      const realMakeRecoveryKeys = client.makeRecoveryKeys.bind(client);
+      const workerGate = Promise.withResolvers<void>();
+      let makeStarted = false;
+      let plaintextReturned = false;
+      let plaintextKeys: string[] = [];
+      vi.spyOn(client, 'makeRecoveryKeys').mockImplementation(async (params) => {
+        makeStarted = true;
+        const result = await realMakeRecoveryKeys({
+          ...params,
+          beforePostMessage: () => workerGate.promise,
+        });
+        plaintextKeys = result.recovery_keys.map((rk) => rk.display);
+        plaintextReturned = true;
+        return result;
+      });
+
+      fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+        target: { value: 'account-login-password-123' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+      });
+      await waitFor(() => {
+        expect(makeStarted).toBe(true);
+      });
+      expect(plaintextReturned).toBe(false);
+
+      // The wake verification starts AFTER makeRecoveryKeys began and stays held.
+      wake.hold = true;
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(vaultCtx.state).toBe('unlocking');
+
+      // The Worker plaintext returns while the verifier is still held: it must not be published.
+      await act(async () => {
+        workerGate.resolve();
+      });
+      await waitFor(() => {
+        expect(plaintextReturned).toBe(true);
+      });
+      await settle();
+      expect(vaultCtx.state).toBe('unlocking');
+      expect(plaintextKeys.length).toBeGreaterThan(0);
+      const expectNoReplacementKeyRendered = () => {
+        expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+        for (const display of plaintextKeys) {
+          expect(document.body.textContent ?? '').not.toContain(display);
+        }
+      };
+      expectNoReplacementKeyRendered();
+      expect(fetchState.regenCalls).toBe(0);
+
+      if (verifier === 'fails') {
+        // A sibling lock that the verification discovers: access is never verified.
+        await act(async () => {
+          await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, baseLockEpochEnv);
+        });
+      }
+      await act(async () => {
+        wake.release?.();
+      });
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe(verifier === 'fails' ? 'locked' : 'unlocked');
+      });
+      await settle();
+      expectNoReplacementKeyRendered();
+      if (verifier === 'fails') {
+        expect(screen.getByTestId('recovery-completed-while-locked-notice')).toBeInTheDocument();
+      } else {
+        // The dropped generation does not resume by itself once access is verified again.
+        expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+      }
+
+      // No later reappearance after another wake either.
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      await settle();
+      expectNoReplacementKeyRendered();
+      expect(fetchState.regenCalls).toBe(0);
+
+      shim.close();
+    }, 30_000);
+  }
 });
