@@ -283,8 +283,15 @@ export function deriveVaultStateMachineMode(input: {
   workerState: VaultClientState;
   activeOperation: VaultActiveOperation;
   baselineVerified?: boolean;
+  wakeVerifying?: boolean;
 }): VaultStateMachineMode {
-  const { serverVaultStatus, workerState, activeOperation, baselineVerified = true } = input;
+  const {
+    serverVaultStatus,
+    workerState,
+    activeOperation,
+    baselineVerified = true,
+    wakeVerifying = false,
+  } = input;
 
   // Worker error or recovering state is authoritative over sub-states
   if (workerState === 'error') return 'error';
@@ -296,14 +303,23 @@ export function deriveVaultStateMachineMode(input: {
     return 'unlocked';
   }
 
-  // workerState === 'locked' (or post-unlock baseline verification is still pending/unverified)
+  // workerState === 'locked' (or post-unlock / wake baseline verification is still pending/unverified)
   if (serverVaultStatus === 'absent') {
     if (activeOperation === 'onboarding') return 'onboarding';
     return 'no_vault';
   }
 
   // serverVaultStatus === 'present' && (workerState === 'locked' || !baselineVerified)
-  if (activeOperation === 'unlocking' || activeOperation === 'onboarding') return 'unlocking';
+  // While `workerState === 'unlocked'` and wake verification is pending (`wakeVerifying`),
+  // report `'unlocking'` so plaintext consumers are gated without falsely reporting `'locked'`
+  // before `client.lock()` has locked the Worker.
+  if (
+    activeOperation === 'unlocking' ||
+    activeOperation === 'onboarding' ||
+    (workerState === 'unlocked' && (!baselineVerified || wakeVerifying))
+  ) {
+    return 'unlocking';
+  }
   if (activeOperation === 'rewrapping') return 'recovering';
   if (activeOperation === 'resetting') return 'resetting';
   return 'locked';
@@ -327,10 +343,10 @@ export function VaultProvider({
   const [tabKnownLockEpoch, setTabKnownLockEpoch] = useState<number>(0);
   const [unlockBaseline, setUnlockBaseline] = useState<LockEpochMarker | null>(null);
   const [baselineVerified, setBaselineVerified] = useState<boolean>(false);
+  const [wakeVerifyingCount, setWakeVerifyingCount] = useState<number>(0);
   const [autoLockMinutesOverride, setAutoLockMinutesOverride] = useState<number | null>(null);
   const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
   const [minutesLeft, setMinutesLeft] = useState<number | undefined>(undefined);
-
   const clientRef = useRef<CryptoClient | null>(null);
   const workerStateRef = useRef<VaultClientState>('locked');
   const tabKnownLockEpochRef = useRef<number>(0);
@@ -338,7 +354,9 @@ export function VaultProvider({
   const baselineVerifiedRef = useRef<boolean>(false);
   const wakeVerificationSeqRef = useRef<number>(0);
   const wakeVerifyingCountRef = useRef<number>(0);
+  const wakePreIdleAtRef = useRef<number | null>(null);
   const settingsSyncSeqRef = useRef<number>(0);
+  const vaultMetaSessionEpochRef = useRef<number>(0);
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const previousUserIdRef = useRef<string | null>(null);
   const secretFormResettersRef = useRef<Set<() => void>>(new Set());
@@ -405,8 +423,10 @@ export function VaultProvider({
           if (nextState === 'locked' || nextState === 'error') {
             wakeVerificationSeqRef.current += 1;
             wakeVerifyingCountRef.current = 0;
+            wakePreIdleAtRef.current = null;
             unlockBaselineRef.current = null;
             baselineVerifiedRef.current = false;
+            setWakeVerifyingCount(0);
             setUnlockBaseline(null);
             setBaselineVerified(false);
             setActiveOperation(null);
@@ -438,8 +458,10 @@ export function VaultProvider({
   const lockLocalOnly = useCallback((): Promise<LockResult> => {
     wakeVerificationSeqRef.current += 1;
     wakeVerifyingCountRef.current = 0;
+    wakePreIdleAtRef.current = null;
     unlockBaselineRef.current = null;
     baselineVerifiedRef.current = false;
+    setWakeVerifyingCount(0);
     setUnlockBaseline(null);
     setBaselineVerified(false);
     setActiveOperation(null);
@@ -516,15 +538,25 @@ export function VaultProvider({
    *   overwriting any in-flight mutation's captured `If-Match`.
    */
   const reloadVaultMeta = useCallback(async (): Promise<VaultState | null> => {
+    const requestSessionEpoch = vaultMetaSessionEpochRef.current;
+    const requestUserId = me?.user.id ?? previousUserIdRef.current ?? null;
     try {
       const fresh = await fetchVault();
+      const currentUserId = me?.user.id ?? previousUserIdRef.current ?? null;
+      if (
+        vaultMetaSessionEpochRef.current !== requestSessionEpoch ||
+        sessionStatus === 'signed_out' ||
+        (requestUserId !== null && currentUserId !== requestUserId)
+      ) {
+        return null;
+      }
       const prevKeyId = currentVaultKeyIdRef.current;
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
         currentVaultKeyIdRef.current = fresh.vault_key_id;
         setVaultMeta(fresh);
         queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
-        void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
-        void lock({ broadcast: false, reason: 'vault_key_id_changed' });
+        void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
+        void lock({ broadcast: true, reason: 'vault_key_id_changed' });
         return fresh;
       }
       currentVaultKeyIdRef.current = fresh.vault_key_id;
@@ -532,6 +564,14 @@ export function VaultProvider({
       queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
       return fresh;
     } catch (err) {
+      const currentUserId = me?.user.id ?? previousUserIdRef.current ?? null;
+      if (
+        vaultMetaSessionEpochRef.current !== requestSessionEpoch ||
+        sessionStatus === 'signed_out' ||
+        (requestUserId !== null && currentUserId !== requestUserId)
+      ) {
+        return null;
+      }
       if (
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
@@ -539,13 +579,13 @@ export function VaultProvider({
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
-        void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
-        void lock({ broadcast: false, reason: 'vault_absent' });
+        void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
+        void lock({ broadcast: true, reason: 'vault_absent' });
         return null;
       }
       throw err;
     }
-  }, [effectiveDeviceStoreEnv, lock, me?.user.id, queryClient]);
+  }, [effectiveDeviceStoreEnv, lock, me?.user.id, queryClient, sessionStatus]);
 
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
@@ -623,8 +663,13 @@ export function VaultProvider({
       }
 
       if (requiresUnlockBaseline) {
+        // Invalidate any in-flight wake verification from an earlier unlock/recovering cycle
+        wakeVerificationSeqRef.current += 1;
+        wakeVerifyingCountRef.current = 0;
+        wakePreIdleAtRef.current = null;
         unlockBaselineRef.current = null;
         baselineVerifiedRef.current = false;
+        setWakeVerifyingCount(0);
         setUnlockBaseline(null);
         setBaselineVerified(false);
       }
@@ -663,8 +708,13 @@ export function VaultProvider({
               'Authoritative lockEpoch changed during unlock; failing closed',
             );
           }
+          // Invalidate any wake verification started before this unlock baseline finished verifying
+          wakeVerificationSeqRef.current += 1;
+          wakeVerifyingCountRef.current = 0;
+          wakePreIdleAtRef.current = null;
           unlockBaselineRef.current = capturedBaseline;
           baselineVerifiedRef.current = true;
+          setWakeVerifyingCount(0);
           setUnlockBaseline(capturedBaseline);
           setBaselineVerified(true);
           const unlockedAt = Date.now();
@@ -736,9 +786,16 @@ export function VaultProvider({
     ): Promise<DeriveRecoveryLookupResult & { recovering?: boolean }> => {
       return runStateChangingOp(
         'unlocking',
-        false,
+        true,
         params.opGeneration,
-        (client) => client.unlockRecovery(params),
+        (client, prepareBaseline) =>
+          client.unlockRecovery({
+            ...params,
+            beforePostMessage: async () => {
+              await prepareBaseline?.();
+              await params.beforePostMessage?.();
+            },
+          }),
       );
     },
     [runStateChangingOp],
@@ -746,8 +803,18 @@ export function VaultProvider({
 
   const resumeRecoveryOp = useCallback(
     (params: ResumeRecoveryClientParams): Promise<ResumeRecoveryResult> => {
-      return runStateChangingOp('unlocking', false, params.opGeneration, (client) =>
-        client.resumeRecovery(params),
+      return runStateChangingOp(
+        'unlocking',
+        true,
+        params.opGeneration,
+        (client, prepareBaseline) =>
+          client.resumeRecovery({
+            ...params,
+            beforePostMessage: async () => {
+              await prepareBaseline?.();
+              await params.beforePostMessage?.();
+            },
+          }),
       );
     },
     [runStateChangingOp],
@@ -830,6 +897,8 @@ export function VaultProvider({
         workerStateRef.current !== 'locked' ||
         vaultMeta !== null
       ) {
+        vaultMetaSessionEpochRef.current += 1;
+        settingsSyncSeqRef.current += 1;
         previousUserIdRef.current = null;
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
@@ -841,6 +910,8 @@ export function VaultProvider({
 
     if (nextUserId && prevUserId && nextUserId !== prevUserId) {
       // Account switch in the same tab: wipe VK/plaintext + vault metadata immediately
+      vaultMetaSessionEpochRef.current += 1;
+      settingsSyncSeqRef.current += 1;
       previousUserIdRef.current = nextUserId;
       currentVaultKeyIdRef.current = null;
       setVaultMeta(null);
@@ -866,6 +937,10 @@ export function VaultProvider({
       }
 
       if (message.type === 'activity') {
+        // Never allow remote activity broadcasts to erase the pre-wake idle watermark while wake verification is pending
+        if (wakeVerifyingCountRef.current > 0) {
+          return;
+        }
         if (message.at > lastActivityAtRef.current) {
           lastActivityAtRef.current = message.at;
           setLastActivityAt(message.at);
@@ -883,9 +958,17 @@ export function VaultProvider({
           setAutoLockMinutesOverride(hintMinutes);
         }
         const syncSeq = ++settingsSyncSeqRef.current;
+        const syncGen = getClient().getGeneration();
+        const syncSessionEpoch = vaultMetaSessionEpochRef.current;
         void fetchMe()
           .then((freshMe) => {
-            if (settingsSyncSeqRef.current !== syncSeq) return;
+            if (
+              settingsSyncSeqRef.current !== syncSeq ||
+              getClient().getGeneration() !== syncGen ||
+              vaultMetaSessionEpochRef.current !== syncSessionEpoch
+            ) {
+              return;
+            }
             const authoritative = normalizeAutoLockMinutes(freshMe.settings.auto_lock_minutes);
             autoLockMinutesRef.current = authoritative;
             setAutoLockMinutesOverride(authoritative);
@@ -909,7 +992,10 @@ export function VaultProvider({
           setVaultMeta(null);
           queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
           void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
-          void lockLocalOnly();
+          void lock({
+            broadcast: true,
+            reason: message.version === null ? 'vault_reset_broadcast' : 'vault_key_id_changed_broadcast',
+          });
           void reloadVaultMeta().catch(() => undefined);
           return;
         }
@@ -918,6 +1004,8 @@ export function VaultProvider({
     });
   }, [
     effectiveDeviceStoreEnv,
+    getClient,
+    lock,
     lockLocalOnly,
     me?.user.id,
     queryClient,
@@ -933,7 +1021,9 @@ export function VaultProvider({
       autoLockTimerRef.current = null;
     }
 
-    if (workerState !== 'unlocked' || !baselineVerified) {
+    const isProtectedSessionActive =
+      (workerState === 'unlocked' && baselineVerified) || workerState === 'recovering';
+    if (!isProtectedSessionActive) {
       setMinutesLeft(undefined);
       return;
     }
@@ -946,7 +1036,10 @@ export function VaultProvider({
 
     let cancelled = false;
     const scheduleCheck = () => {
-      if (cancelled || workerStateRef.current !== 'unlocked' || !baselineVerifiedRef.current) return;
+      const stillActive =
+        (workerStateRef.current === 'unlocked' && baselineVerifiedRef.current) ||
+        workerStateRef.current === 'recovering';
+      if (cancelled || !stillActive) return;
       const currentMinutes = autoLockMinutesRef.current;
       if (currentMinutes === 0) {
         setMinutesLeft(undefined);
@@ -984,10 +1077,15 @@ export function VaultProvider({
 
   // User interaction activity listeners while unlocked (throttled broadcast to sibling tabs).
   useEffect(() => {
-    if (typeof window === 'undefined' || workerState !== 'unlocked' || !baselineVerified) return;
+    const isProtectedSessionActive =
+      (workerState === 'unlocked' && baselineVerified) || workerState === 'recovering';
+    if (typeof window === 'undefined' || !isProtectedSessionActive) return;
 
     const onUserActivity = () => {
-      if (workerStateRef.current !== 'unlocked' || !baselineVerifiedRef.current) return;
+      const stillActive =
+        (workerStateRef.current === 'unlocked' && baselineVerifiedRef.current) ||
+        workerStateRef.current === 'recovering';
+      if (!stillActive) return;
       const now = Date.now();
       if (now < lastActivityAtRef.current - CLOCK_ROLLBACK_TOLERANCE_MS) {
         void lock({ broadcast: true, reason: 'clock_rollback' });
@@ -995,7 +1093,6 @@ export function VaultProvider({
       }
       recordActivity(now);
     };
-
     window.addEventListener('pointerdown', onUserActivity, { passive: true });
     window.addEventListener('keydown', onUserActivity, { passive: true });
     window.addEventListener('wheel', onUserActivity, { passive: true });
@@ -1012,25 +1109,26 @@ export function VaultProvider({
   // Wake / resume / visibilitychange / pageshow / focus / popstate fail-closed check (ADR 0003 §8.4, Task 15A #3/#6, Task 15B #1/#3/#5).
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    let wakeInFlightPromise: Promise<void> | null = null;
 
-    const verifyOnWake = async () => {
+    const verifyOnWake = (): Promise<void> => {
       const initialWorkerState = workerStateRef.current;
       if (initialWorkerState !== 'unlocked' && initialWorkerState !== 'recovering') {
-        return;
+        return Promise.resolve();
       }
       if (initialWorkerState === 'unlocked' && !baselineVerifiedRef.current && wakeVerifyingCountRef.current === 0) {
         // Initial post-unlock verification is still in flight; runStateChangingOp handles it
-        return;
+        return Promise.resolve();
       }
 
-      // Capture pre-wake idle watermark and operation generation BEFORE any await
+      // Preserve the earliest pre-wake idle watermark across overlapping wake triggers
       const wakeNow = Date.now();
-      const preWakeLastActivityAt = lastActivityAtRef.current;
-      const client = getClient();
-      const wakeOpGeneration = client.getGeneration();
-      const wakeSeq = ++wakeVerificationSeqRef.current;
+      if (wakeVerifyingCountRef.current === 0 || wakePreIdleAtRef.current === null) {
+        wakePreIdleAtRef.current = lastActivityAtRef.current;
+      }
+      const preWakeLastActivityAt = wakePreIdleAtRef.current;
 
-      // 1. Immediate synchronous clock-rollback and known auto-lock check (do not trust throttled timers)
+      // Immediate synchronous clock-rollback and known auto-lock check (do not trust throttled timers)
       const knownEvaluation = evaluateAutoLockAt({
         now: wakeNow,
         lastActivityAt: preWakeLastActivityAt,
@@ -1038,16 +1136,28 @@ export function VaultProvider({
       });
       if (knownEvaluation.shouldLock) {
         void lock({ broadcast: true, reason: knownEvaluation.reason });
-        return;
+        return Promise.resolve();
       }
 
-      // Gate plaintext access immediately while wake verification (Web Lock / IDB + Me) is pending
+      // Coalesce burst wake events (`resume` + `focus` + `visibilitychange` fired in the same wake cycle)
+      // so a second event cannot abort the in-flight Web Lock + IDB + Me verification before `lockLocalOnly()` runs.
+      if (wakeInFlightPromise) {
+        return wakeInFlightPromise;
+      }
+
+      const client = getClient();
+      const wakeOpGeneration = client.getGeneration();
+      const wakeSessionEpoch = vaultMetaSessionEpochRef.current;
+      const wakeSeq = ++wakeVerificationSeqRef.current;
+
+      const runWake = async () => {
+        // Gate plaintext access immediately while wake verification (Web Lock / IDB + Me) is pending
       wakeVerifyingCountRef.current += 1;
+      setWakeVerifyingCount(wakeVerifyingCountRef.current);
       if (initialWorkerState === 'unlocked') {
         baselineVerifiedRef.current = false;
         setBaselineVerified(false);
       }
-
       // Start bounded 5s fail-closed deadline BEFORE the first async wait (covers Web Lock + IDB + Me)
       let deadlineTimer: number | null = null;
       let timedOut = false;
@@ -1073,7 +1183,7 @@ export function VaultProvider({
 
       try {
         // 2. Authoritative `lockEpoch` check in IndexedDB under Web Lock `'sabk.vault.lock'`
-        if (initialWorkerState === 'unlocked') {
+        if (initialWorkerState === 'unlocked' || initialWorkerState === 'recovering') {
           const baseline = unlockBaselineRef.current;
           const baselineOrTimeout = await Promise.race([
             verifyUnlockBaseline(baseline, envWithBroadcast),
@@ -1083,7 +1193,8 @@ export function VaultProvider({
             timedOut ||
             baselineOrTimeout === 'timeout' ||
             wakeVerificationSeqRef.current !== wakeSeq ||
-            client.getGeneration() !== wakeOpGeneration
+            client.getGeneration() !== wakeOpGeneration ||
+            vaultMetaSessionEpochRef.current !== wakeSessionEpoch
           ) {
             return;
           }
@@ -1096,8 +1207,8 @@ export function VaultProvider({
           }
         }
 
-        // 3. Authoritative `GET /auth/me` refresh on wake while unlocked (5s fail-closed deadline; never trust stale `0`)
-        if (workerStateRef.current !== 'unlocked') {
+        // 3. Authoritative `GET /auth/me` refresh on wake while unlocked or recovering (5s fail-closed deadline; never trust stale `0`)
+        if (workerStateRef.current !== 'unlocked' && workerStateRef.current !== 'recovering') {
           return;
         }
 
@@ -1107,7 +1218,8 @@ export function VaultProvider({
           freshMeOrTimeout === 'timeout' ||
           !freshMeOrTimeout ||
           wakeVerificationSeqRef.current !== wakeSeq ||
-          client.getGeneration() !== wakeOpGeneration
+          client.getGeneration() !== wakeOpGeneration ||
+          vaultMetaSessionEpochRef.current !== wakeSessionEpoch
         ) {
           if (
             (timedOut || !freshMeOrTimeout) &&
@@ -1146,12 +1258,19 @@ export function VaultProvider({
         if (
           wakeVerificationSeqRef.current === wakeSeq &&
           client.getGeneration() === wakeOpGeneration &&
-          workerStateRef.current === 'unlocked' &&
+          vaultMetaSessionEpochRef.current === wakeSessionEpoch &&
+          (workerStateRef.current === 'unlocked' || workerStateRef.current === 'recovering') &&
           unlockBaselineRef.current !== null
         ) {
           baselineVerifiedRef.current = true;
           setBaselineVerified(true);
           setMinutesLeft(afterMeEval.minutesLeft);
+          // Now that wake verification succeeded, advance the idle watermark to the wake event time
+          const postWakeNow = Date.now();
+          if (postWakeNow > lastActivityAtRef.current) {
+            lastActivityAtRef.current = postWakeNow;
+            setLastActivityAt(postWakeNow);
+          }
         }
       } catch {
         // `401` (including `session_invalid`) or network failure on wake -> fail closed, lock immediately
@@ -1163,10 +1282,22 @@ export function VaultProvider({
         }
       } finally {
         clearDeadlineTimer();
-        wakeVerifyingCountRef.current = Math.max(0, wakeVerifyingCountRef.current - 1);
+        if (wakeVerificationSeqRef.current === wakeSeq) {
+          wakeVerifyingCountRef.current = 0;
+          wakePreIdleAtRef.current = null;
+          setWakeVerifyingCount(0);
+        }
       }
-    };
+      };
 
+      const p = runWake().finally(() => {
+        if (wakeInFlightPromise === p) {
+          wakeInFlightPromise = null;
+        }
+      });
+      wakeInFlightPromise = p;
+      return p;
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         void verifyOnWake();
@@ -1263,8 +1394,9 @@ export function VaultProvider({
         workerState,
         activeOperation,
         baselineVerified,
+        wakeVerifying: wakeVerifyingCount > 0,
       }),
-    [serverVaultStatus, workerState, activeOperation, baselineVerified],
+    [serverVaultStatus, workerState, activeOperation, baselineVerified, wakeVerifyingCount],
   );
 
   const inFlight = inFlightCount > 0;

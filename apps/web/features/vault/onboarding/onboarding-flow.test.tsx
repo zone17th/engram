@@ -1019,4 +1019,101 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     });
     expect(simulatedClipboard).toBe('');
   });
+
+  it('BE1-9 & BE1-15: late POST /vault success after Back / re-derive or lock never pairs committed vault A with Worker key B; locks and routes to /app/unlock cleanly', async () => {
+    let currentMe = makeMeFixture('absent');
+    let holdPost = false;
+    let resolveHeldPost: ((res: Response) => void) | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPost) {
+          holdPost = false;
+          return new Promise<Response>((resolve) => {
+            resolveHeldPost = resolve;
+          });
+        }
+        currentMe = makeMeFixture('present');
+        return jsonResponse({ vault_key_id: 'vk:be1-9-vault-b', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    renderOnboarding({
+      locale: 'en',
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    // Derive bundle A in Step 1
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // Confirm checkbox and submit bundle A while holding POST /vault in flight
+    holdPost = true;
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    });
+    expect(resolveHeldPost).not.toBeNull();
+
+    // User clicks Back to Step 1 and derives bundle B while POST A is still in flight
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-back-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: `${STRONG_PASSPHRASE}-B` },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: `${STRONG_PASSPHRASE}-B` },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // Now the late POST for bundle A succeeds on the server!
+    // It must NOT navigate to /app with Worker key B unlocked; instead it locks the Worker and redirects to /app/unlock.
+    currentMe = makeMeFixture('present');
+    await act(async () => {
+      resolveHeldPost?.(jsonResponse({ vault_key_id: 'vk:be1-9-vault-a', version: 1 }, 201));
+      resolveHeldPost = null;
+    });
+
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    });
+    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+    expect(vaultCtx.workerState).toBe('locked');
+  });
 });
