@@ -4835,4 +4835,191 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     });
     expect(vault().vaultMeta).toBeNull();
   }, 20_000);
+
+  // ---------------------------------------------------------------------------
+  // BE3-1 (fix round 3): an obsolete post-unlock verification must never lock a replacement session.
+  // ---------------------------------------------------------------------------
+  const BE3_ENTRY_ID = '018f3a40-0000-7000-8000-000000000001';
+  const BE3_KEY_ID = 'vk:ABCDEFGHIJKLMNOPQRSTUV';
+
+  function makeGatedLockManager(base: LockManager) {
+    const gate: { hold: boolean; release: (() => void) | null } = { hold: false, release: null };
+    const manager = {
+      request(
+        name: string,
+        optionsOrCallback: LockOptions | LockGrantedCallback<unknown>,
+        maybeCallback?: LockGrantedCallback<unknown>,
+      ): Promise<unknown> {
+        const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
+        if (gate.hold) {
+          gate.hold = false;
+          return new Promise<void>((resolve) => {
+            gate.release = resolve;
+          }).then(() => base.request(name, { mode: 'exclusive' }, cb));
+        }
+        return base.request(name, { mode: 'exclusive' }, cb);
+      },
+      query: () => Promise.resolve({ held: [], pending: [] }),
+    } as unknown as LockManager;
+    return { gate, manager };
+  }
+
+  async function waitUntil(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 400 && !predicate(); i += 1) {
+      await sleepReal(5);
+    }
+    if (!predicate()) throw new Error('waitUntil: condition never became true');
+  }
+
+  async function be31StartObsoleteUnlock(prefix: string) {
+    const { gate, manager } = makeGatedLockManager(fakeLocks.createLockManager());
+    const idbFactory = fakeIdb.createFactory();
+    mockBe2Fetch();
+    const { vault } = renderBe2Provider(prefix, { idbFactory, locksManager: manager });
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('locked');
+    });
+    const created = await be2CreateVault(vault, 'be3-1-passphrase-1234');
+    await act(async () => {
+      await vault().lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('locked');
+    });
+    return { gate, vault, created };
+  }
+
+  async function be31UnlockReplacement(
+    vault: () => VaultContextValue,
+    created: CreateVaultResult,
+  ) {
+    const op = vault().beginOp();
+    await act(async () => {
+      await vault().unlockPassphrase({
+        passphrase: 'be3-1-passphrase-1234',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op.opGeneration,
+      });
+    });
+  }
+
+  async function expectBe31ReplacementUsable(prefix: string, vault: () => VaultContextValue) {
+    expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('unlocked');
+    expect(screen.getByTestId(`${prefix}-worker`)).toHaveTextContent('unlocked');
+    const sealed = await vault().getClient().sealEntryNow({
+      entryId: BE3_ENTRY_ID,
+      keyId: BE3_KEY_ID,
+      plaintext: 'be3-1-replacement-secret',
+    });
+    const opened = await vault().getClient().openEntryNow({
+      entryId: BE3_ENTRY_ID,
+      envelope: sealed.envelope,
+      ciphertext: sealed.ciphertext,
+    });
+    expect(opened.plaintext).toBe('be3-1-replacement-secret');
+  }
+
+  it('BE3-1: releasing an obsolete post-unlock verification after lock + replacement unlock rejects the old wrapper without locking the replacement session', async () => {
+    const { gate, vault, created } = await be31StartObsoleteUnlock('be31-release');
+    const oldOp = vault().beginOp();
+    const oldOutcome: { err: unknown } = { err: null };
+    const oldUnlock = vault()
+      .unlockPassphrase({
+        passphrase: 'be3-1-passphrase-1234',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: oldOp.opGeneration,
+        beforePostMessage: () => {
+          gate.hold = true;
+        },
+      })
+      .catch((err: unknown) => {
+        oldOutcome.err = err;
+      });
+    // Wait until the old unlock's post-Worker verification is parked on the Web Lock.
+    await act(async () => {
+      await waitUntil(() => gate.release !== null);
+    });
+    expect(screen.getByTestId('be31-release-state')).not.toHaveTextContent('unlocked');
+
+    // Explicit lock, then a successful replacement unlock (generation G+1) while the old verifier is still held.
+    await act(async () => {
+      await vault().lockNow();
+    });
+    await be31UnlockReplacement(vault, created);
+    const replacementGeneration = vault().generation;
+    expect(screen.getByTestId('be31-release-state')).toHaveTextContent('unlocked');
+
+    // Release the obsolete verification: durable marker moved (lockNow), so the old wrapper must fail closed
+    // for ITSELF only.
+    await act(async () => {
+      gate.release?.();
+      await oldUnlock;
+    });
+    expect(oldOutcome.err).toMatchObject({ code: 'STALE_GENERATION' });
+    expect(vault().generation).toBe(replacementGeneration);
+    await expectBe31ReplacementUsable('be31-release', vault);
+  }, 20_000);
+
+  it('BE3-1: the obsolete operation 5s deadline firing after lock + replacement unlock rejects the old wrapper without locking the replacement session', async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const { gate, vault, created } = await be31StartObsoleteUnlock('be31-deadline');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const oldOp = vault().beginOp();
+      const oldOutcome: { err: unknown } = { err: null };
+      const oldUnlock = vault()
+        .unlockPassphrase({
+          passphrase: 'be3-1-passphrase-1234',
+          kdf: created.kdf,
+          vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+          privateKeysWrapped: created.private_keys_wrapped,
+          opGeneration: oldOp.opGeneration,
+          beforePostMessage: () => {
+            gate.hold = true;
+          },
+        })
+        .catch((err: unknown) => {
+          oldOutcome.err = err;
+        });
+      await act(async () => {
+        for (let i = 0; i < 400 && gate.release === null; i += 1) {
+          await new Promise<void>((resolve) => {
+            realSetTimeout(resolve, 5);
+          });
+        }
+      });
+      expect(gate.release).not.toBeNull();
+
+      await act(async () => {
+        await vault().lockNow();
+      });
+      await be31UnlockReplacement(vault, created);
+      const replacementGeneration = vault().generation;
+      expect(screen.getByTestId('be31-deadline-state')).toHaveTextContent('unlocked');
+
+      // Cross the OLD operation's 5s verification deadline while it is still parked.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_200);
+      });
+      await act(async () => {
+        await oldUnlock;
+      });
+      expect(oldOutcome.err).toMatchObject({ code: 'STALE_GENERATION' });
+      expect(vault().generation).toBe(replacementGeneration);
+    } finally {
+      vi.useRealTimers();
+    }
+    await expectBe31ReplacementUsable('be31-deadline', vault);
+
+    // A late completion of the abandoned verification still changes nothing.
+    await act(async () => {
+      gate.release?.();
+      await sleepReal(30);
+    });
+    await expectBe31ReplacementUsable('be31-deadline', vault);
+  }, 20_000);
 });

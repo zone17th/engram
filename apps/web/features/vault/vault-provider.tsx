@@ -867,6 +867,15 @@ export function VaultProvider({
         }
       };
 
+      // BE3-1: only the operation that still owns the client's generation may destroy key material on failure. Once
+      // the generation moved on, the Worker was already locked by whoever bumped it and a replacement session
+      // (G+1) may now hold live keys that this obsolete wrapper must never lock.
+      const lockIfOwner = async () => {
+        if (client.getGeneration() === opGeneration) {
+          await lockLocalOnly();
+        }
+      };
+
       const prepareBaseline = async () => {
         if (!requiresUnlockBaseline) return;
         // Invalidate any in-flight wake verification only once the operation is admitted (BE2-6)
@@ -880,7 +889,7 @@ export function VaultProvider({
         if (baselineMode === 'require_existing') {
           if (!existingBaseline) {
             // BE2-6: confirmRecovery / resumeRecovery must NEVER recapture a fresh baseline when missing; fail closed
-            await lockLocalOnly();
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Missing recovery lockEpoch baseline; failing closed',
@@ -892,7 +901,7 @@ export function VaultProvider({
             updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
           }
           if (!preCheck.matches || client.getGeneration() !== opGeneration) {
-            await lockLocalOnly();
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed during recovery; failing closed',
@@ -909,7 +918,7 @@ export function VaultProvider({
         if (intentBaselinePromise) {
           const intentBaseline = await intentBaselinePromise;
           if (!intentBaseline || client.getGeneration() !== opGeneration) {
-            await lockLocalOnly();
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Failed to capture intent-start lockEpoch baseline; failing closed',
@@ -920,7 +929,7 @@ export function VaultProvider({
             updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
           }
           if (!preCheck.matches || client.getGeneration() !== opGeneration) {
-            await lockLocalOnly();
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed after unlock intent started; failing closed',
@@ -936,7 +945,7 @@ export function VaultProvider({
         );
         if (!baseline || client.getGeneration() !== opGeneration) {
           // Fail closed if IndexedDB or Web Locks is unreadable/blocked during unlock baseline capture
-          await lockLocalOnly();
+          await lockIfOwner();
           throw new CryptoClientError(
             'STALE_GENERATION',
             'Failed to capture authoritative lockEpoch baseline; failing closed',
@@ -981,7 +990,7 @@ export function VaultProvider({
             ) {
               updateTabKnownLockEpoch(verificationOrTimeout.persistedMarker.lockEpoch);
             }
-            await lockLocalOnly();
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed or timed out during unlock; failing closed',
