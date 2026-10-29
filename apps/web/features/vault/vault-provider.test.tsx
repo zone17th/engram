@@ -450,15 +450,16 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     vi.stubGlobal('fetch', vi.fn());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
     for (const shim of activeShims.splice(0)) {
       shim.close();
     }
     resetVaultBroadcastForTests();
     HubBroadcastChannel.reset();
-    vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+    await Promise.resolve();
   });
 
   function makeShimmedWorkerFactory(hooks: Parameters<typeof createWorkerShim>[0] = {}) {
@@ -2762,7 +2763,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         opGeneration: op3.opGeneration,
       });
     });
-    vaultCtx.notifySettingsChanged({ auto_lock_minutes: 5 });
+    await act(async () => {
+      vaultCtx.notifySettingsChanged({ auto_lock_minutes: 5 });
+    });
     expect(screen.getByTestId('be1-5-minutes')).toHaveTextContent('5');
 
     // Now resolve the stale settings_changed fetchMe with 0 (Never) -> must be ignored because generation & seq changed
@@ -2862,12 +2865,10 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       });
     });
     await expect(
-      act(async () => {
-        await vaultCtx.resumeRecovery({
-          wrap: rk0.wrap,
-          privateKeysWrapped: created.private_keys_wrapped,
-          opGeneration: opRec1.opGeneration,
-        });
+      vaultCtx.resumeRecovery({
+        wrap: rk0.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opRec1.opGeneration,
       }),
     ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
     expect(screen.getByTestId('be1-6-state')).toHaveTextContent('locked');
@@ -2909,10 +2910,8 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       });
     });
     await expect(
-      act(async () => {
-        await vaultCtx.confirmRecovery({
-          opGeneration: opRec2.opGeneration,
-        });
+      vaultCtx.confirmRecovery({
+        opGeneration: opRec2.opGeneration,
       }),
     ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
     expect(screen.getByTestId('be1-6-state')).toHaveTextContent('locked');
