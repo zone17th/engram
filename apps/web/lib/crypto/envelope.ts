@@ -57,7 +57,7 @@ const REQUIRED_ENVELOPE_KEYS: Record<keyof EntryEnvelopeV1, true> = {
 };
 
 const utf8Encoder = new TextEncoder();
-const utf8DecoderFatal = new TextDecoder('utf-8', { fatal: true });
+const utf8DecoderFatal = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function isWellFormedString(value: string): boolean {
   if (typeof value.isWellFormed === 'function') {
@@ -569,6 +569,7 @@ export interface SealEntryParams {
   plaintext: string | Uint8Array;
   vk: Uint8Array;
   nonce?: Uint8Array;
+  adapter?: EnvelopeAdapter;
 }
 
 export interface SealedEntryPayload {
@@ -591,11 +592,13 @@ export function sealEntryPayload(sodium: Sodium, params: SealEntryParams): Seale
   }
 
   let ptBytes: Uint8Array;
+  let ownsPtBytes = false;
   if (typeof params.plaintext === 'string') {
     if (!isWellFormedString(params.plaintext)) {
       throw new EnvelopeError('Entry plaintext contains lone UTF-16 surrogate');
     }
     ptBytes = toLocalBytes(utf8Encoder.encode(params.plaintext));
+    ownsPtBytes = true;
   } else if (params.plaintext instanceof Uint8Array || ArrayBuffer.isView(params.plaintext)) {
     ptBytes = toLocalBytes(params.plaintext);
     // Verify valid UTF-8 per SPEC §5.5 (ct_enc="utf8")
@@ -608,45 +611,56 @@ export function sealEntryPayload(sodium: Sodium, params: SealEntryParams): Seale
     throw new EnvelopeError('Entry plaintext must be a string or Uint8Array');
   }
 
-  if (ptBytes.byteLength > ENTRY_PLAINTEXT_MAX_BYTES) {
-    throw new EnvelopeError(
-      `Entry plaintext exceeds max size of ${ENTRY_PLAINTEXT_MAX_BYTES} bytes (got ${ptBytes.byteLength})`,
+  try {
+    if (ptBytes.byteLength > ENTRY_PLAINTEXT_MAX_BYTES) {
+      throw new EnvelopeError(
+        `Entry plaintext exceeds max size of ${ENTRY_PLAINTEXT_MAX_BYTES} bytes (got ${ptBytes.byteLength})`,
+      );
+    }
+
+    const nonceBytes = params.nonce ?? sodium.randombytes_buf(WRAP_NONCE_BYTES);
+    if (nonceBytes.byteLength !== WRAP_NONCE_BYTES) {
+      throw new EnvelopeError('Entry nonce must be 24 bytes');
+    }
+
+    const validateFn = params.adapter?.validateEntryEnvelope ?? validateEntryEnvelope;
+    const canonicalizeFn = params.adapter?.canonicalizeEnvelopeJcs ?? canonicalizeEnvelopeJcs;
+    const buildAadFn = params.adapter?.buildEntryAad ?? buildEntryAad;
+
+    const envelope = validateFn({
+      v: ENVELOPE_VERSION,
+      alg: ENVELOPE_ALG,
+      key_id: params.keyId,
+      nonce: encodeBase64Url(nonceBytes),
+      ct_enc: ENVELOPE_CT_ENC,
+    });
+
+    const jcs = canonicalizeFn(envelope);
+    const aad = buildAadFn(envelope, entryId);
+
+    const ciphertextBytes = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+      ptBytes,
+      toLocalBytes(aad),
+      null,
+      toLocalBytes(nonceBytes),
+      toLocalBytes(params.vk),
+      'uint8array',
     );
+
+    return {
+      envelope,
+      jcs,
+      aad,
+      ciphertextBytes,
+      ciphertext: encodeBase64Url(ciphertextBytes),
+    };
+  } finally {
+    if (ownsPtBytes) {
+      sodium.memzero(ptBytes);
+    }
   }
-
-  const nonceBytes = params.nonce ?? sodium.randombytes_buf(WRAP_NONCE_BYTES);
-  if (nonceBytes.byteLength !== WRAP_NONCE_BYTES) {
-    throw new EnvelopeError('Entry nonce must be 24 bytes');
-  }
-
-  const envelope = validateEntryEnvelope({
-    v: ENVELOPE_VERSION,
-    alg: ENVELOPE_ALG,
-    key_id: params.keyId,
-    nonce: encodeBase64Url(nonceBytes),
-    ct_enc: ENVELOPE_CT_ENC,
-  });
-
-  const jcs = canonicalizeEnvelopeJcs(envelope);
-  const aad = buildEntryAad(envelope, entryId);
-
-  const ciphertextBytes = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-    ptBytes,
-    toLocalBytes(aad),
-    null,
-    toLocalBytes(nonceBytes),
-    toLocalBytes(params.vk),
-    'uint8array',
-  );
-
-  return {
-    envelope,
-    jcs,
-    aad,
-    ciphertextBytes,
-    ciphertext: encodeBase64Url(ciphertextBytes),
-  };
 }
+
 
 export interface OpenEntryParams {
   entryId: string;
@@ -654,12 +668,13 @@ export interface OpenEntryParams {
   ciphertext: string | Uint8Array;
   vk: Uint8Array;
   expectedKeyId?: string;
+  adapter?: EnvelopeAdapter;
 }
 
 /**
  * Validates `envelope` (including duplicate-key rejection when raw JSON is passed),
  * canonicalizes via JCS, builds AAD, decrypts `ciphertext` with `XChaCha20-Poly1305 IETF`,
- * and decodes strict UTF-8 plaintext.
+ * and decodes strict UTF-8 plaintext (preserving leading U+FEFF via `ignoreBOM: true`).
  */
 export function openEntryPayload(
   sodium: Sodium,
@@ -670,16 +685,27 @@ export function openEntryPayload(
     throw new WrapError('WRAP_INVALID', 'Entry VK must be 32 bytes');
   }
 
-  const validatedEnvelope = validateEntryEnvelope(params.envelope);
+  const validateFn = params.adapter?.validateEntryEnvelope ?? validateEntryEnvelope;
+  const canonicalizeFn = params.adapter?.canonicalizeEnvelopeJcs ?? canonicalizeEnvelopeJcs;
+  const buildAadFn = params.adapter?.buildEntryAad ?? buildEntryAad;
+
+  const validatedEnvelope = validateFn(params.envelope);
   if (params.expectedKeyId !== undefined && validatedEnvelope.key_id !== params.expectedKeyId) {
     throw new EnvelopeError(
       `Envelope key_id "${validatedEnvelope.key_id}" does not match expected "${params.expectedKeyId}"`,
     );
   }
 
-  const aad = buildEntryAad(validatedEnvelope, entryId);
-  const nonceBytes = decodeBase64UrlStrict(validatedEnvelope.nonce, WRAP_NONCE_BYTES);
-
+  void canonicalizeFn(validatedEnvelope);
+  const aad = buildAadFn(validatedEnvelope, entryId);
+  let nonceBytes: Uint8Array;
+  try {
+    nonceBytes = decodeBase64UrlStrict(validatedEnvelope.nonce, WRAP_NONCE_BYTES);
+  } catch (err) {
+    throw new EnvelopeError('Envelope nonce must be valid 24-byte base64url without padding', {
+      cause: err,
+    });
+  }
   let ctBytes: Uint8Array;
   if (typeof params.ciphertext === 'string') {
     try {

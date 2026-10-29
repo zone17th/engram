@@ -291,7 +291,56 @@ describe('P03-T6 Envelope Validator, Duplicate-Key Tokenizer, JCS AAD, and Seal/
     ).toThrowError(EnvelopeError);
   });
 
-  it('executes sealEntry and openEntry through the real Worker without custom envelope adapter overrides', async () => {
+  it('preserves 1 and 2 leading U+FEFF (BOM) characters through Worker sealEntry and openEntry and matches raw UTF-8 bytes (BE1-4, BE1-20)', async () => {
+    const sodium = await getSodium();
+    const shim = createWorkerShim({
+      deriveKek: fastTestDeriveKek,
+    });
+    try {
+      const client = new CryptoClient({ createWorker: () => shim.port });
+      await client.createVault({
+        passphrase: 'worker-bom-test-passphrase',
+        skipRecoveryKeys: true,
+        opGeneration: client.captureGeneration(),
+      });
+
+      const singleBomText = '\uFEFFleading-bom-entry-text-21';
+      const doubleBomText = '\uFEFF\uFEFFdouble-leading-bom-entry-text';
+      for (const bomInput of [singleBomText, doubleBomText]) {
+        const sealedBom = await client.sealEntry({
+          entryId: VALID_ENTRY_ID,
+          keyId: VALID_KEY_ID,
+          plaintext: bomInput,
+          opGeneration: client.captureGeneration(),
+        });
+        const openedBom = await client.openEntry({
+          entryId: VALID_ENTRY_ID,
+          envelope: sealedBom.envelope,
+          ciphertext: sealedBom.ciphertext,
+          opGeneration: client.captureGeneration(),
+        });
+        expect(openedBom.plaintext).toBe(bomInput);
+        expect(openedBom.plaintext.length).toBe(bomInput.length);
+
+        const vkInClosure = shim.core.inspectClosureVkForTest()!;
+        const rawOpened = openEntryPayload(sodium, {
+          entryId: VALID_ENTRY_ID,
+          envelope: sealedBom.envelope,
+          ciphertext: sealedBom.ciphertext,
+          vk: vkInClosure,
+        });
+        expect(rawOpened.plaintext).toBe(bomInput);
+        expect(Array.from(rawOpened.plaintextBytes)).toEqual(
+          Array.from(new TextEncoder().encode(bomInput)),
+        );
+      }
+    } finally {
+      shim.close();
+    }
+  });
+
+  it('executes sealEntry and openEntry through the real Worker without custom envelope adapter overrides, enforcing UTF-8 validity, size bounds, and base64url error mapping (BE1-1, BE1-2, BE1-3, BE1-5, BE1-14, BE1-15, BE1-27, FE1-7)', async () => {
+    const sodium = await getSodium();
     const shim = createWorkerShim({
       deriveKek: fastTestDeriveKek,
     });
@@ -300,12 +349,14 @@ describe('P03-T6 Envelope Validator, Duplicate-Key Tokenizer, JCS AAD, and Seal/
       await client.createVault({
         passphrase: 'worker-envelope-test-passphrase',
         skipRecoveryKeys: true,
+        opGeneration: client.captureGeneration(),
       });
 
       const sealed = await client.sealEntry({
         entryId: VALID_ENTRY_ID,
         keyId: VALID_KEY_ID,
         plaintext: 'secret-wifi-password-123',
+        opGeneration: client.captureGeneration(),
       });
 
       expect(sealed.envelope.v).toBe(1);
@@ -324,8 +375,112 @@ describe('P03-T6 Envelope Validator, Duplicate-Key Tokenizer, JCS AAD, and Seal/
           v: sealed.envelope.v,
         },
         ciphertext: sealed.ciphertext,
+        opGeneration: client.captureGeneration(),
       });
       expect(opened.plaintext).toBe('secret-wifi-password-123');
+
+      // Reject lone UTF-16 surrogates and invalid UTF-8 bytes at public Worker sealEntry boundary (BE1-2, BE1-15, BE1-27, FE1-7)
+      await expect(
+        client.sealEntry({
+          entryId: VALID_ENTRY_ID,
+          keyId: VALID_KEY_ID,
+          plaintext: 'unpaired-high-surrogate-\uD800-tail',
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+
+      const invalidUtf8Input = new Uint8Array([0xff, 0xfe, 0xfd]);
+      await expect(
+        client.sealEntry({
+          entryId: VALID_ENTRY_ID,
+          keyId: VALID_KEY_ID,
+          plaintext: invalidUtf8Input,
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+      expect(Array.from(invalidUtf8Input)).toEqual([0xff, 0xfe, 0xfd]);
+
+      // Inclusive 262144-byte plaintext boundary succeeds; 262145 bytes rejects with ENVELOPE_INVALID at Worker boundary (BE1-1, BE1-3, BE1-14, BE1-27)
+      const maxPlaintext = 'a'.repeat(ENTRY_PLAINTEXT_MAX_BYTES);
+      const sealedMax = await client.sealEntry({
+        entryId: VALID_ENTRY_ID,
+        keyId: VALID_KEY_ID,
+        plaintext: maxPlaintext,
+        opGeneration: client.captureGeneration(),
+      });
+      const openedMax = await client.openEntry({
+        entryId: VALID_ENTRY_ID,
+        envelope: sealedMax.envelope,
+        ciphertext: sealedMax.ciphertext,
+        opGeneration: client.captureGeneration(),
+      });
+      expect(openedMax.plaintext.length).toBe(ENTRY_PLAINTEXT_MAX_BYTES);
+
+      await expect(
+        client.sealEntry({
+          entryId: VALID_ENTRY_ID,
+          keyId: VALID_KEY_ID,
+          plaintext: new Uint8Array(ENTRY_PLAINTEXT_MAX_BYTES + 1).fill(0x61),
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+
+      // Ciphertext bounds at Worker openEntry boundary: < 16 B, > 263168 B, and authenticated 262145 B plaintext (BE1-3, BE1-14, BE1-27)
+      await expect(
+        client.openEntry({
+          entryId: VALID_ENTRY_ID,
+          envelope: sealed.envelope,
+          ciphertext: new Uint8Array(15),
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+
+      await expect(
+        client.openEntry({
+          entryId: VALID_ENTRY_ID,
+          envelope: sealed.envelope,
+          ciphertext: new Uint8Array(ENTRY_CIPHERTEXT_MAX_BYTES + 1),
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+
+      // Authenticated 262145-byte plaintext (within 263168 ciphertext slack) rejected by openEntry
+      const vkClosure = shim.core.inspectClosureVkForTest()!;
+      const nonce24 = sodium.randombytes_buf(WRAP_NONCE_BYTES);
+      const envForOversized: EntryEnvelopeV1 = {
+        v: 1,
+        alg: 'xchacha20poly1305-ietf',
+        key_id: VALID_KEY_ID,
+        nonce: encodeBase64Url(nonce24),
+        ct_enc: 'utf8',
+      };
+      const aadForOversized = buildEntryAad(envForOversized, VALID_ENTRY_ID);
+      const forgedOversizedCt = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+        new Uint8Array(ENTRY_PLAINTEXT_MAX_BYTES + 1).fill(0x61),
+        toLocalBytes(aadForOversized),
+        null,
+        toLocalBytes(nonce24),
+        toLocalBytes(vkClosure),
+        'uint8array',
+      );
+      await expect(
+        client.openEntry({
+          entryId: VALID_ENTRY_ID,
+          envelope: envForOversized,
+          ciphertext: forgedOversizedCt,
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
+
+      // Malformed base64url ciphertext maps to ENVELOPE_INVALID, not WORKER_INTERNAL_ERROR (BE1-5, FE1-23)
+      await expect(
+        client.openEntry({
+          entryId: VALID_ENTRY_ID,
+          envelope: sealed.envelope,
+          ciphertext: '=',
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
 
       // Invalid envelope rejected with ENVELOPE_INVALID
       await expect(
@@ -333,6 +488,7 @@ describe('P03-T6 Envelope Validator, Duplicate-Key Tokenizer, JCS AAD, and Seal/
           entryId: VALID_ENTRY_ID,
           envelope: { v: 1 },
           ciphertext: sealed.ciphertext,
+          opGeneration: client.captureGeneration(),
         }),
       ).rejects.toMatchObject({ code: 'ENVELOPE_INVALID' });
 
@@ -342,10 +498,11 @@ describe('P03-T6 Envelope Validator, Duplicate-Key Tokenizer, JCS AAD, and Seal/
           entryId: '11111111-1111-4111-8111-111111111111',
           envelope: sealed.envelope,
           ciphertext: sealed.ciphertext,
+          opGeneration: client.captureGeneration(),
         }),
       ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
 
-      void WrapError;
+      expect(new WrapError('WRAP_INVALID', 'test').code).toBe('WRAP_INVALID');
     } finally {
       shim.close();
     }
