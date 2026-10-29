@@ -1097,6 +1097,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
       expect(getVaultCtx().workerState).toBe('locked');
       expect(getVaultCtx().state).toBe('no_vault');
+      expect(screen.getByTestId('vault-security-absent-banner')).toBeInTheDocument();
     });
 
     expect(callLog).toContain('POST /auth/reauth (vault.reset)');
@@ -1551,7 +1552,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(putReqs[1]!.headers.get('Idempotency-Key')).not.toBe(firstKey);
   });
 
-  it('reaches s5_done without flashing s1_paths even when refetchMe rejects after 204 DELETE /vault (R1-6, R2-1, R2-5, R3-3, R4-4, R5-2, R5-4)', async () => {
+  it('reaches s5_done without flashing s1_paths even when refetchMe rejects after 204 DELETE /vault, and keeps purgeCount at 1 across Reload vault retry (R1-6, R2-1, R2-5, R3-3, R4-4, R5-2, VS-R4-1)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
@@ -1576,13 +1577,18 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
 
     try {
+      let failGetVaultAfterDelete = false;
       const { setServerVaultMeta, setServerMe } = await renderSettingsHarness({
         customFetch: (url, init) => {
           const method = (init?.method ?? 'GET').toUpperCase();
           if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
             deleteCalled = true;
             failMeFetch = true;
+            failGetVaultAfterDelete = true;
             return new Response(null, { status: 204 });
+          }
+          if (url.endsWith('/api/v1/vault') && method === 'GET' && failGetVaultAfterDelete) {
+            throw new TypeError('Failed to fetch /vault after reset');
           }
           if (url.endsWith('/api/v1/auth/me') && method === 'GET' && failMeFetch) {
             throw new TypeError('Failed to fetch /auth/me after reset');
@@ -1642,10 +1648,13 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       await delayMs(50);
       expect(purgeCount).toBe(1);
 
-      // R4-4 / R5-2: When refetchMe fails after 204 and the dialog closes while Me is still `present`,
-      // the close fallback clears the suppress flag and shows the Reload vault retry button on the Reset card.
-      // Drive server vaultMeta to null (404) and Me to absent before clicking Retry so reloadVaultMeta -> 404 -> refetchMe flips Me to absent.
+      // R4-4 / R5-2 / VS-R4-1: When refetchMe and GET /vault fail after 204, the panel's passive `vaultMeta === null`
+      // reload effect catches the error and exposes `vault-meta-retry-button` (`Reload vault`) on the Reset card.
+      // Because `ResetVaultDialog` calls `vault.markResetPurged(resetVaultKeyId)` (and `notifyVaultChanged({ version: null })`
+      // also records the transition token), clicking `Reload vault` when `GET /vault` returns 404 is idempotent
+      // and does NOT purge a second time (`purgeCount === 1`, `deviceRevision === 3`).
       failMeFetch = false;
+      failGetVaultAfterDelete = false;
       setServerVaultMeta(null);
       setServerMe(makeMeFixture({ vaultStatus: 'absent' }));
 
@@ -1662,10 +1671,11 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
         expect(screen.queryByTestId('vault-recovery-keys-card')).toBeNull();
         expect(screen.queryByTestId('vault-reset-card')).toBeNull();
       });
-      // R5-4: The later user-initiated Retry hits VaultProvider.reloadVaultMeta's 404 branch,
-      // which runs a second purge (accepted exception on the /me-failure recovery path).
       await delayMs(50);
-      expect(purgeCount).toBe(2);
+      expect(purgeCount).toBe(1);
+      const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+      expect(rotatedMeta).not.toBeNull();
+      expect(rotatedMeta!.deviceRevision).toBe(3);
     } finally {
       unsubscribePurge();
     }
@@ -1717,11 +1727,14 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
   });
 
-  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when GET /vault fails with 500 after 204 DELETE /vault (R3-1 path 2, R4-3)', async () => {
+  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when GET /vault fails with 500 after 204 DELETE /vault and then returns 404 on Reload vault retry (R3-1 path 2, R4-3, R6-1)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
     let deleteCommitted = false;
+    let failGetVaultWith500 = true;
+    let getVault500HitCount = 0;
+    let getVault404HitCount = 0;
 
     fakeIdb.ensureStore('devkeys').set(devKeyRecordKey, {
       user_id: userId,
@@ -1741,7 +1754,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
 
     try {
-      const { getVaultCtx } = await renderSettingsHarness({
+      const { getVaultCtx, setServerMe } = await renderSettingsHarness({
         customFetch: (url, init) => {
           const method = (init?.method ?? 'GET').toUpperCase();
           if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
@@ -1749,7 +1762,12 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
             return new Response(null, { status: 204 });
           }
           if (url.endsWith('/api/v1/vault') && method === 'GET' && deleteCommitted) {
-            return problemResponse('internal_error', 500);
+            if (failGetVaultWith500) {
+              getVault500HitCount += 1;
+              return problemResponse('internal_error', 500);
+            }
+            getVault404HitCount += 1;
+            return problemResponse('vault_absent', 404);
           }
           return undefined as unknown as Response;
         },
@@ -1770,6 +1788,23 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
         expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
         expect(getVaultCtx().workerState).toBe('locked');
         expect(purgeCount).toBe(1);
+        expect(getVault500HitCount).toBeGreaterThanOrEqual(1);
+      });
+
+      // R6-1: Close dialog, flip GET /vault from 500 to 404, and click Reload vault so VaultProvider.reloadVaultMeta's
+      // 404 branch is exercised and proved idempotent (`markResetPurged` keeps purgeCount === 1 and deviceRevision === 3).
+      await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+      failGetVaultWith500 = false;
+      setServerMe(makeMeFixture({ vaultStatus: 'absent' }));
+      const retryVaultBtn = await screen.findByTestId('vault-meta-retry-button');
+      await user.click(retryVaultBtn);
+
+      await waitFor(() => {
+        expect(getVault404HitCount).toBeGreaterThanOrEqual(1);
+        expect(screen.getByTestId('vault-security-absent-banner')).toBeInTheDocument();
       });
       await delayMs(50);
       expect(purgeCount).toBe(1);
@@ -1783,12 +1818,14 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     }
   });
 
-  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when the panel unmounts mid-DELETE while VaultProvider stays alive (R3-1 path 1, R4-3)', async () => {
+  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when the panel unmounts mid-DELETE and VaultProvider.reloadVaultMeta subsequently hits 404 (R3-1 path 1, R4-3, R6-1)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
     const { promise: deleteGate, resolve: releaseDelete } = Promise.withResolvers<Response>();
     const { promise: deleteInFlight, resolve: notifyDeleteInFlight } = Promise.withResolvers<void>();
+    let deleteResolved = false;
+    let getVault404HitCount = 0;
 
     fakeIdb.ensureStore('devkeys').set(devKeyRecordKey, {
       user_id: userId,
@@ -1815,6 +1852,10 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
             notifyDeleteInFlight();
             return deleteGate;
           }
+          if (url.endsWith('/api/v1/vault') && method === 'GET' && deleteResolved) {
+            getVault404HitCount += 1;
+            return problemResponse('vault_absent', 404);
+          }
           return undefined as unknown as Response;
         },
       });
@@ -1834,12 +1875,19 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       // R4-3: Unmount ONLY the panel (and dialog) while keeping VaultProvider mounted & alive
       unmountPanelOnly();
       expect(screen.queryByTestId('vault-security-section')).toBeNull();
+      deleteResolved = true;
       releaseDelete(new Response(null, { status: 204 }));
 
       await waitFor(() => {
         expect(getVaultCtx().workerState).toBe('locked');
         expect(purgeCount).toBe(1);
       });
+      // R6-1: Explicitly invoke reloadVaultMeta() while the provider is still mounted after the panel unmounted
+      // so the 404 branch runs and proves `markResetPurged` prevents a second purge.
+      await act(async () => {
+        await getVaultCtx().reloadVaultMeta();
+      });
+      expect(getVault404HitCount).toBe(1);
       await delayMs(50);
       expect(purgeCount).toBe(1);
       expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
@@ -1852,7 +1900,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     }
   });
 
-  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when Me flips to absent before the panel effect runs (R3-1 path 3, R4-3)', async () => {
+  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when Me flips to absent before the panel effect runs and reloadVaultMeta subsequently hits 404 (R3-1 path 3, R4-3, R6-1)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
@@ -1877,7 +1925,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
 
     try {
-      const { getSessionCtx, setServerMe, setServerVaultMeta } = await renderSettingsHarness({
+      const { getSessionCtx, getVaultCtx, setServerMe, setServerVaultMeta } = await renderSettingsHarness({
         customFetch: (url, init) => {
           const method = (init?.method ?? 'GET').toUpperCase();
           if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
@@ -1910,6 +1958,9 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
 
       await waitFor(() => {
         expect(purgeCount).toBe(1);
+      });
+      await act(async () => {
+        await getVaultCtx().reloadVaultMeta();
       });
       await delayMs(50);
       expect(purgeCount).toBe(1);
