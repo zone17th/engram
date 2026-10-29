@@ -2854,19 +2854,19 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         opGeneration: opRec1.opGeneration,
       });
     });
+    // Simulate a sibling tab recording a durable lock event while BroadcastChannel is missed before resumeRecovery
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, {
+        idbFactory: fakeIdb.createFactory(),
+        locksManager: fakeLocks.createLockManager(),
+      });
+    });
     await expect(
       act(async () => {
         await vaultCtx.resumeRecovery({
           wrap: rk0.wrap,
           privateKeysWrapped: created.private_keys_wrapped,
           opGeneration: opRec1.opGeneration,
-          beforePostMessage: async () => {
-            // Simulate a sibling tab recording a durable lock event while BroadcastChannel is missed
-            await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, {
-              idbFactory: fakeIdb.createFactory(),
-              locksManager: fakeLocks.createLockManager(),
-            });
-          },
         });
       }),
     ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
@@ -2881,6 +2881,8 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         recoveryKey: rk0.display,
         opGeneration: opRec2.opGeneration,
       });
+    });
+    await act(async () => {
       await vaultCtx.resumeRecovery({
         wrap: rk0.wrap,
         privateKeysWrapped: created.private_keys_wrapped,
@@ -2923,6 +2925,8 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         recoveryKey: rk0.display,
         opGeneration: opRec3.opGeneration,
       });
+    });
+    await act(async () => {
       await vaultCtx.resumeRecovery({
         wrap: rk0.wrap,
         privateKeysWrapped: created.private_keys_wrapped,

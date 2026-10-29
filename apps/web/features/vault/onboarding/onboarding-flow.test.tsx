@@ -1086,12 +1086,14 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
     });
-    expect(resolveHeldPost).not.toBeNull();
+    await waitFor(() => {
+      expect(resolveHeldPost).not.toBeNull();
+    });
 
-    // User clicks Back to Step 1 while POST A is still in flight; then late POST A succeeds on the server ->
-    // It must NOT navigate to /app or leave any new Worker key active; instead it locks the Worker and redirects to /app/unlock.
+    // User locks the vault (e.g. pressing L or auto-lock) while POST A is still in flight ->
+    // registerSecretFormReset synchronously wipes Step 2 bundle and returns the user to Step 1
     await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-back-button'));
+      await vaultCtx.lockNow();
     });
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();

@@ -349,6 +349,10 @@ export function VaultProvider({
   const [minutesLeft, setMinutesLeft] = useState<number | undefined>(undefined);
   const providerSenderIdRef = useRef<symbol>(Symbol('VaultProvider'));
   const clientRef = useRef<CryptoClient | null>(null);
+  const createWorkerRef = useRef<VaultProviderProps['createWorker']>(createWorker);
+  createWorkerRef.current = createWorker;
+  const lockEpochEnvRef = useRef<VaultProviderProps['lockEpochEnv']>(lockEpochEnv);
+  lockEpochEnvRef.current = lockEpochEnv;
   const workerStateRef = useRef<VaultClientState>('locked');
   const inFlightStateOpRef = useRef<boolean>(false);
   const tabKnownLockEpochRef = useRef<number>(0);
@@ -416,7 +420,7 @@ export function VaultProvider({
   const getClient = useCallback((): CryptoClient => {
     if (!clientRef.current) {
       const instance = new CryptoClient({
-        createWorker,
+        createWorker: createWorkerRef.current,
         onStateChange: (nextState, nextGen) => {
           workerStateRef.current = nextState;
           setWorkerState(nextState);
@@ -443,18 +447,23 @@ export function VaultProvider({
       clientRef.current = instance;
     }
     return clientRef.current;
-  }, [clearPlaintextAndFormsSync, createWorker]);
+  }, [clearPlaintextAndFormsSync]);
 
   const envWithBroadcast = useMemo<LockEpochEnvironment>(
     () => ({
-      ...lockEpochEnv,
+      get idbFactory() {
+        return lockEpochEnvRef.current?.idbFactory;
+      },
+      get locksManager() {
+        return lockEpochEnvRef.current?.locksManager;
+      },
       onBroadcastLock: (nextLockEpoch: number) => {
         updateTabKnownLockEpoch(nextLockEpoch);
-        lockEpochEnv?.onBroadcastLock?.(nextLockEpoch);
+        lockEpochEnvRef.current?.onBroadcastLock?.(nextLockEpoch);
         postVaultBroadcast({ type: 'lock', lockEpoch: nextLockEpoch }, providerSenderIdRef.current);
       },
     }),
-    [lockEpochEnv, updateTabKnownLockEpoch],
+    [updateTabKnownLockEpoch],
   );
 
   /**
@@ -849,14 +858,15 @@ export function VaultProvider({
         'unlocking',
         'reuse_or_capture',
         params.opGeneration,
-        (client, prepareBaseline) =>
-          client.resumeRecovery({
+        async (client, prepareBaseline) => {
+          // Verify the recovery baseline BEFORE acquiring the CryptoClient single-flight slot so a fail-closed
+          // lockLocalOnly() on baseline mismatch never leaves client.stateSlot held when the caller retries (BE1-6).
+          await prepareBaseline?.();
+          return client.resumeRecovery({
             ...params,
-            beforePostMessage: async () => {
-              await prepareBaseline?.();
-              await params.beforePostMessage?.();
-            },
-          }),
+            beforePostMessage: params.beforePostMessage,
+          });
+        },
       );
     },
     [runStateChangingOp],
@@ -868,14 +878,13 @@ export function VaultProvider({
         'rewrapping',
         'reuse_or_capture',
         params.opGeneration,
-        (client, prepareBaseline) =>
-          client.confirmRecovery({
+        async (client, prepareBaseline) => {
+          await prepareBaseline?.();
+          return client.confirmRecovery({
             ...params,
-            beforePostMessage: async () => {
-              await prepareBaseline?.();
-              await params.beforePostMessage?.();
-            },
-          }),
+            beforePostMessage: params.beforePostMessage,
+          });
+        },
       );
     },
     [runStateChangingOp],

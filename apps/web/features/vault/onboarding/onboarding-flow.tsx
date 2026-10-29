@@ -99,6 +99,8 @@ export function VaultOnboardingFlow() {
   const evalSeqRef = useRef(0);
   const stepRef = useRef<OnboardingStep>(step);
   stepRef.current = step;
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
   const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
   currentUserIdRef.current = me?.user.id ?? null;
   const postSubmitSeqRef = useRef(0);
@@ -134,13 +136,14 @@ export function VaultOnboardingFlow() {
   }, [clearPassphraseFields]);
   // Register secret form reset with VaultProvider so any lock / logout / account switch wipes state synchronously.
   useEffect(() => {
-    return vault.registerSecretFormReset(() => {
+    const currentVault = vaultRef.current;
+    return currentVault.registerSecretFormReset(() => {
       clearRecoveryKeysAndSecrets();
       if (stepRef.current === 'recovery-keys') {
         setStep('passphrase');
       }
     });
-  }, [clearRecoveryKeysAndSecrets, vault]);
+  }, [clearRecoveryKeysAndSecrets]);
 
   // Wipe secrets and cancel clipboard timer when unmounting (leaving the onboarding route).
   useEffect(() => {
