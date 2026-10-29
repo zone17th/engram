@@ -2864,13 +2864,17 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         locksManager: fakeLocks.createLockManager(),
       });
     });
-    await expect(
-      vaultCtx.resumeRecovery({
-        wrap: rk0.wrap,
-        privateKeysWrapped: created.private_keys_wrapped,
-        opGeneration: opRec1.opGeneration,
-      }),
-    ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    let rec1Err: unknown = null;
+    await act(async () => {
+      rec1Err = await vaultCtx
+        .resumeRecovery({
+          wrap: rk0.wrap,
+          privateKeysWrapped: created.private_keys_wrapped,
+          opGeneration: opRec1.opGeneration,
+        })
+        .catch((err: unknown) => err);
+    });
+    expect(rec1Err).toMatchObject({ code: 'STALE_GENERATION' });
     expect(screen.getByTestId('be1-6-state')).toHaveTextContent('locked');
     expect(screen.getByTestId('be1-6-worker')).toHaveTextContent('locked');
 
@@ -2909,11 +2913,15 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         locksManager: fakeLocks.createLockManager(),
       });
     });
-    await expect(
-      vaultCtx.confirmRecovery({
-        opGeneration: opRec2.opGeneration,
-      }),
-    ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    let rec2Err: unknown = null;
+    await act(async () => {
+      rec2Err = await vaultCtx
+        .confirmRecovery({
+          opGeneration: opRec2.opGeneration,
+        })
+        .catch((err: unknown) => err);
+    });
+    expect(rec2Err).toMatchObject({ code: 'STALE_GENERATION' });
     expect(screen.getByTestId('be1-6-state')).toHaveTextContent('locked');
     expect(screen.getByTestId('be1-6-worker')).toHaveTextContent('locked');
 

@@ -756,7 +756,7 @@ export function VaultProvider({
             updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
           }
           if (!preCheck.matches || client.getGeneration() !== opGeneration) {
-            void lockLocalOnly();
+            await lockLocalOnly();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed during recovery; failing closed',
@@ -771,7 +771,7 @@ export function VaultProvider({
         );
         if (!baseline) {
           // Fail closed if IndexedDB or Web Locks is unreadable/blocked during unlock baseline capture
-          void lockLocalOnly();
+          await lockLocalOnly();
           throw new CryptoClientError(
             'STALE_GENERATION',
             'Failed to capture authoritative lockEpoch baseline; failing closed',
@@ -789,7 +789,7 @@ export function VaultProvider({
             updateTabKnownLockEpoch(verification.persistedMarker.lockEpoch);
           }
           if (!verification.matches || client.getGeneration() !== opGeneration || !capturedBaseline) {
-            void lockLocalOnly();
+            await lockLocalOnly();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed during unlock; failing closed',
