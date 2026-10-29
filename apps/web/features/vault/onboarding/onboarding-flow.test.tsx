@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
-import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
+import { resetVaultBroadcastForTests, subscribeVaultBroadcast } from '@/features/vault/broadcast';
 import type { LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { VaultOnboardingFlow } from '@/features/vault/onboarding';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
@@ -318,6 +319,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
     onVaultProbe?: (ctx: VaultContextValue) => void;
+    /** Receives a setter that mounts / unmounts only the onboarding flow (provider and session stay mounted). */
+    onFlowGate?: (setShowFlow: (show: boolean) => void) => void;
   }) {
     const locale = options?.locale ?? 'en';
     const messages = locale === 'vi' ? viMessages : enMessages;
@@ -337,6 +340,14 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       );
     }
 
+    function FlowGate() {
+      const [showFlow, setShowFlow] = useState(true);
+      useEffect(() => {
+        options?.onFlowGate?.(setShowFlow);
+      }, []);
+      return showFlow ? <VaultOnboardingFlow /> : null;
+    }
+
     const utils = render(
       <NextIntlClientProvider locale={locale} messages={messages}>
         <ThemeProvider>
@@ -347,7 +358,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
                 lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
-                <VaultOnboardingFlow />
+                <FlowGate />
               </VaultProvider>
             </SessionProvider>
           </QueryClientProvider>
@@ -1400,4 +1411,111 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     });
     expect(routerMocks.replace).not.toHaveBeenCalled();
   });
+  it('BE1-9 (retained provider): a POST /vault success that returns after only the onboarding route was left never locks, refreshes Me, broadcasts or navigates the replacement session', async () => {
+    let holdPostVault = true;
+    let resolvePostVault: (() => void) | null = null;
+    let authMeFetches = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) {
+        authMeFetches += 1;
+        return jsonResponse(makeMeFixture('absent'));
+      }
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPostVault) {
+          await new Promise<void>((resolve) => {
+            resolvePostVault = resolve;
+          });
+        }
+        return jsonResponse({ vault_key_id: 'vk:be1-9-retained-provider', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    const published: Array<{ vault_key_id: string; version: number | null }> = [];
+    const unsubscribe = subscribeVaultBroadcast((message) => {
+      if (message.type === 'vault_changed') {
+        published.push({ vault_key_id: message.vault_key_id, version: message.version });
+      }
+    });
+
+    let vaultCtx!: VaultContextValue;
+    let setShowFlow!: (show: boolean) => void;
+    try {
+      renderOnboarding({
+        locale: 'en',
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+        onFlowGate: (setter) => {
+          setShowFlow = setter;
+        },
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+        target: { value: STRONG_PASSPHRASE },
+      });
+      fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+        target: { value: STRONG_PASSPHRASE },
+      });
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+      });
+
+      // POST /vault for bundle A is accepted by the server but its response is held.
+      fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      await waitFor(() => {
+        expect(resolvePostVault).not.toBeNull();
+      });
+
+      // The user leaves the onboarding route; the persistent provider keeps running and a replacement session unlocks.
+      await act(async () => {
+        setShowFlow(false);
+      });
+      await act(async () => {
+        await vaultCtx.lockNow();
+      });
+      const replacementOp = vaultCtx.beginOp();
+      await act(async () => {
+        await vaultCtx.createVault({
+          passphrase: `${STRONG_PASSPHRASE}-replacement`,
+          opGeneration: replacementOp.opGeneration,
+        });
+      });
+      expect(vaultCtx.state).toBe('unlocked');
+      const replacementGeneration = vaultCtx.getClient().getGeneration();
+      const meFetchesBeforeRelease = authMeFetches;
+      routerMocks.replace.mockClear();
+      const publishedBeforeRelease = published.length;
+
+      // The old success returns: it must leave the replacement session completely untouched.
+      await act(async () => {
+        holdPostVault = false;
+        resolvePostVault?.();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(authMeFetches).toBe(meFetchesBeforeRelease);
+      expect(published.slice(publishedBeforeRelease)).toEqual([]);
+      expect(vaultCtx.state).toBe('unlocked');
+      expect(vaultCtx.workerState).toBe('unlocked');
+      expect(vaultCtx.getClient().getGeneration()).toBe(replacementGeneration);
+    } finally {
+      unsubscribe();
+    }
+  }, 20_000);
 });
