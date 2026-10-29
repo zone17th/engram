@@ -364,7 +364,7 @@ export function VaultProvider({
   const [inFlightCount, setInFlightCount] = useState<number>(0);
   const [activeOperation, setActiveOperation] = useState<VaultActiveOperation>(null);
   const [lastErrorCode, setLastErrorCode] = useState<CryptoClientErrorCode | null>(null);
-  const [vaultMeta, setVaultMeta] = useState<VaultState | null>(null);
+  const [vaultMeta, setVaultMetaState] = useState<VaultState | null>(null);
   const [tabKnownLockEpoch, setTabKnownLockEpoch] = useState<number>(0);
   const [unlockBaseline, setUnlockBaseline] = useState<LockEpochMarker | null>(null);
   const [baselineVerified, setBaselineVerified] = useState<boolean>(false);
@@ -399,6 +399,13 @@ export function VaultProvider({
     sessionEpoch: number;
     meta: VaultState | null;
   } | null>(null);
+  // Counts LOCAL/BROADCAST vault-metadata transitions (reset, replacement by another key) that are not GET outcomes.
+  // A held `GET /vault` response that predates one of them must not overwrite, purge or lock over it (BE4-1). A newer
+  // GET merely starting or failing is deliberately NOT a transition (BE3-7).
+  const vaultMetaTransitionSeqRef = useRef<number>(0);
+  // Synchronous mirror of the committed `vaultMeta` state, so a stale response and `notifyVaultChanged` can compare
+  // versions without waiting for a render (BE4-5).
+  const liveVaultMetaRef = useRef<VaultState | null>(null);
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgedVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgeInFlightVaultKeyIdRef = useRef<string | null>(null);
@@ -412,6 +419,10 @@ export function VaultProvider({
     sessionEpoch: number;
     meta: DeviceMetaRecord;
   } | null>(null);
+  const setVaultMeta = useCallback((next: VaultState | null) => {
+    liveVaultMetaRef.current = next;
+    setVaultMetaState(next);
+  }, []);
   const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
   currentUserIdRef.current = me?.user.id ?? null;
   const previousUserIdRef = useRef<string | null>(null);
@@ -642,10 +653,18 @@ export function VaultProvider({
     }
   }, []);
 
+  // BE4-3: an observed reset id is only a valid `markResetPurged` token while its transition is still the active one,
+  // i.e. before a replacement vault key became current. Once a replacement is established the historical ids are
+  // retired so a stale mark can never overwrite the replacement's purge receipt.
+  const retireObservedResets = useCallback(() => {
+    observedResetKeyIdsRef.current.clear();
+  }, []);
+
   const markResetPurged = useCallback((vaultKeyId?: string | null) => {
     // BE2-9: Require a positive reset identity that this provider can tie to a reset it observed: the tab's own
-    // current `vault_key_id`, or a key from a reset transition it saw. An arbitrary token is an assertion, not
-    // evidence, and would suppress a later purge for a vault whose reset was never seen here.
+    // current `vault_key_id`, or the key of the still-active observed reset transition. An arbitrary or historical
+    // token is an assertion, not evidence, and would suppress a later purge for a vault whose reset was never seen
+    // here (or replace the valid receipt of the replacement vault, BE4-3).
     const explicit = typeof vaultKeyId === 'string' && vaultKeyId.length > 0 ? vaultKeyId : null;
     const token = explicit ?? currentVaultKeyIdRef.current;
     if (typeof token !== 'string' || token.length === 0) return;
@@ -739,6 +758,7 @@ export function VaultProvider({
     const followUpResetKeyId = opts?.resetKeyId ?? null;
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
     const requestSeq = ++vaultMetaRequestSeqRef.current;
+    const requestTransitionSeq = vaultMetaTransitionSeqRef.current;
     const requestUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
     // Session/user fences: a response from another session or account never has any effect.
     const isForeignResponse = () => {
@@ -749,6 +769,13 @@ export function VaultProvider({
         (requestUserId !== null && liveUserId !== requestUserId)
       );
     };
+    // Live metadata, but only when it belongs to the vault that is current now: a replaced vault's metadata must never
+    // be handed back as if it described its replacement.
+    const currentLiveMeta = (): VaultState | null => {
+      const live = liveVaultMetaRef.current;
+      return live && live.vault_key_id === currentVaultKeyIdRef.current ? live : null;
+    };
+    const predatesTransition = () => vaultMetaTransitionSeqRef.current !== requestTransitionSeq;
     // Ordering fence: only a NEWER request whose outcome was already applied supersedes this response. The
     // superseding outcome is returned so callers see the authoritative state rather than a bare `null`
     // (which would be indistinguishable from `vault_absent`, BE3-9).
@@ -764,23 +791,40 @@ export function VaultProvider({
       if (isForeignResponse()) {
         return null;
       }
+      if (predatesTransition()) {
+        // BE4-1: a local/broadcast reset or replacement happened after this request started; the response describes
+        // the vault as it was before it. Apply nothing (no overwrite, purge or lock) and report the live metadata.
+        return currentLiveMeta();
+      }
       const superseded = supersedingOutcome();
       if (superseded) {
         return superseded.meta;
       }
       const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
-      vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: fresh };
       const prevKeyId = currentVaultKeyIdRef.current;
+      // BE4-5: never lower the current same-key metadata version below a newer authoritative outcome (a local
+      // update that landed while this response was in flight). Captured in-flight mutation snapshots are untouched.
+      const liveMeta = liveVaultMetaRef.current;
+      const applied: VaultState =
+        liveMeta && liveMeta.vault_key_id === fresh.vault_key_id && liveMeta.version > fresh.version
+          ? liveMeta
+          : fresh;
+      vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: applied };
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
-        rememberObservedReset(prevKeyId);
+        // The previous vault is replaced: its reset id is historical now and must not be markable (BE4-3).
+        retireObservedResets();
         currentVaultKeyIdRef.current = fresh.vault_key_id;
         resetPurgedVaultKeyIdRef.current = null;
         resetPurgeInFlightVaultKeyIdRef.current = null;
-        setVaultMeta(fresh);
-        queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
+        setVaultMeta(applied);
+        queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, applied);
         void purgeDeviceKeysOnRevoked(liveUserId, effectiveDeviceStoreEnv);
         void lock({ broadcast: true, reason: 'vault_key_id_changed' });
-        return fresh;
+        return applied;
+      }
+      if (prevKeyId !== fresh.vault_key_id) {
+        // A vault became current after an observed reset: that transition is over, retire its ids (BE4-3).
+        retireObservedResets();
       }
       currentVaultKeyIdRef.current = fresh.vault_key_id;
       if (
@@ -789,9 +833,9 @@ export function VaultProvider({
       ) {
         resetPurgedVaultKeyIdRef.current = null;
       }
-      setVaultMeta(fresh);
-      queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
-      return fresh;
+      setVaultMeta(applied);
+      queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, applied);
+      return applied;
     } catch (err) {
       if (isForeignResponse()) {
         return null;
@@ -800,6 +844,11 @@ export function VaultProvider({
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
       ) {
+        if (predatesTransition() && currentVaultKeyIdRef.current !== null) {
+          // BE4-1: a vault is current again after a transition this 404 predates; it says nothing about that vault.
+          // (When no vault is current the 404 is consistent with the transition and still fails closed below.)
+          return currentLiveMeta();
+        }
         const superseded = supersedingOutcome();
         if (superseded) {
           // A newer request already delivered authoritative state (present or absent); apply nothing from the older 404.
@@ -830,8 +879,10 @@ export function VaultProvider({
     lock,
     queryClient,
     rememberObservedReset,
+    retireObservedResets,
     runIdempotentResetPurge,
     sessionStatus,
+    setVaultMeta,
   ]);
 
   const reloadVaultMeta = useCallback(() => loadVaultMeta(), [loadVaultMeta]);
@@ -839,6 +890,7 @@ export function VaultProvider({
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
       if (payload.version === null) {
+        vaultMetaTransitionSeqRef.current += 1;
         const resetKeyId =
           (typeof payload.vault_key_id === 'string' && payload.vault_key_id.length > 0
             ? payload.vault_key_id
@@ -857,12 +909,18 @@ export function VaultProvider({
         ) {
           resetPurgedVaultKeyIdRef.current = null;
         }
+        if (currentVaultKeyIdRef.current !== payload.vault_key_id) {
+          // Another key becomes current: a held response for the previous vault now predates a transition (BE4-1)
+          // and the previous reset ids are historical (BE4-3).
+          vaultMetaTransitionSeqRef.current += 1;
+          retireObservedResets();
+        }
         currentVaultKeyIdRef.current = payload.vault_key_id;
-        setVaultMeta((prev) =>
-          prev && prev.vault_key_id === payload.vault_key_id
-            ? { ...prev, version: payload.version ?? prev.version }
-            : prev,
-        );
+        const prev = liveVaultMetaRef.current;
+        if (prev && prev.vault_key_id === payload.vault_key_id) {
+          // BE4-5: a notification never lowers the current same-key version.
+          setVaultMeta({ ...prev, version: Math.max(prev.version, payload.version) });
+        }
       }
       postVaultBroadcast(
         {
@@ -873,7 +931,7 @@ export function VaultProvider({
         providerSenderIdRef.current,
       );
     },
-    [queryClient, rememberObservedReset],
+    [queryClient, rememberObservedReset, retireObservedResets, setVaultMeta],
   );
 
   const notifySettingsChanged = useCallback(
@@ -1311,7 +1369,7 @@ export function VaultProvider({
     if (nextUserId) {
       previousUserIdRef.current = nextUserId;
     }
-  }, [lock, me?.user.id, queryClient, sessionStatus, vaultMeta]);
+  }, [lock, me?.user.id, queryClient, sessionStatus, setVaultMeta, vaultMeta]);
 
   // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
@@ -1381,6 +1439,7 @@ export function VaultProvider({
                 ? message.vault_key_id
                 : null;
             const transitionKeyId = incomingKeyId ?? knownKeyId ?? null;
+            vaultMetaTransitionSeqRef.current += 1;
             rememberObservedReset(transitionKeyId);
             currentVaultKeyIdRef.current = null;
             setVaultMeta(null);
@@ -1394,7 +1453,10 @@ export function VaultProvider({
             void loadVaultMeta({ resetKeyId: transitionKeyId }).catch(() => undefined);
             return;
           }
-          rememberObservedReset(knownKeyId);
+          // Replacement by another key: held responses for the previous vault predate it (BE4-1) and its reset id
+          // is historical (BE4-3).
+          vaultMetaTransitionSeqRef.current += 1;
+          retireObservedResets();
           resetPurgedVaultKeyIdRef.current = null;
           resetPurgeInFlightVaultKeyIdRef.current = null;
           currentVaultKeyIdRef.current = message.vault_key_id;
@@ -1421,7 +1483,9 @@ export function VaultProvider({
     refetchMe,
     loadVaultMeta,
     rememberObservedReset,
+    retireObservedResets,
     runIdempotentResetPurge,
+    setVaultMeta,
     updateTabKnownLockEpoch,
   ]);
 

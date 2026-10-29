@@ -5217,6 +5217,145 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     peer.close();
   }, 15_000);
 
+  it('BE4-3: a historical stale reset id (observed A->B) never overwrites the valid receipt of B, so B reset 404 advances the device revision exactly once', async () => {
+    const ctx = await be29Setup('be43-stale');
+    // Observe A -> B: A becomes a historical id (the replacement purges once itself: 10 -> 11).
+    ctx.gate.keyId = 'vk:be29-b';
+    await act(async () => {
+      await ctx.vault().reloadVaultMeta();
+    });
+    await waitFor(() => {
+      expect(ctx.vault().vaultMeta?.vault_key_id).toBe('vk:be29-b');
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    // The acting dialog resets B: its purge commits (11 -> 12) and marks the CURRENT vault B before B's 404 is seen.
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-b');
+    });
+    // An obsolete mark for the historical A arrives afterwards: it must be rejected, not replace B's receipt.
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    // Exactly one purge for B in total: the dialog's. With A's stale mark honoured B's 404 purged again (13).
+    expect(meta?.deviceRevision).toBe(12);
+    expect(screen.getByTestId('be43-stale-state')).toHaveTextContent('locked');
+  }, 15_000);
+
+  // ---------------------------------------------------------------------------
+  // BE4-1 / BE4-5 (fix round 4): a held GET /vault response must not be applied over a local/broadcast metadata
+  // transition it predates, and a same-key metadata version never regresses.
+  // ---------------------------------------------------------------------------
+  it('BE4-1: a held GET /vault for vault A is dropped (no overwrite, purge, lock) after notifyVaultChanged moved the provider to another key', async () => {
+    const ctx = await be37Setup('be41-replace');
+    ctx.gate.hold = true;
+    const outcome: { value: unknown } = { value: 'unset' };
+    const heldP = ctx.vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.value = r;
+      });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    // Local transition that the held response predates: another vault key becomes current.
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be4-1-b', version: 1 });
+    });
+    await act(async () => {
+      ctx.pending[0]!(jsonResponse(be2VaultBody('vk:be3-7', 2)));
+      await heldP;
+    });
+    // Nothing from the obsolete response was applied: no purge, lock, cache wipe or metadata overwrite.
+    expect(outcome.value).toBeNull();
+    expect(ctx.vault().vaultMeta?.version).toBe(1);
+    expect(screen.getByTestId('be41-replace-state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('be41-replace-worker')).toHaveTextContent('unlocked');
+    expect(ctx.qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBe('be3-7-decrypted-body');
+    expect(ctx.devkeys.has(ctx.devkeyRecordKey)).toBe(true);
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(10);
+  }, 20_000);
+
+  it('BE4-1: a held GET /vault that returns vault A present never resurrects metadata after a local reset of A', async () => {
+    const ctx = await be37Setup('be41-reset');
+    ctx.gate.hold = true;
+    const heldP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be3-7', version: null });
+    });
+    expect(ctx.vault().vaultMeta).toBeNull();
+    await act(async () => {
+      ctx.pending[0]!(jsonResponse(be2VaultBody('vk:be3-7', 2)));
+      expect(await heldP).toBeNull();
+    });
+    expect(ctx.vault().vaultMeta).toBeNull();
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(10);
+  }, 20_000);
+
+  it('BE4-1 control (BE3-7 preserved): an older 404 held across a local reset of the same vault still locks and purges', async () => {
+    const ctx = await be37Setup('be41-fail-closed');
+    ctx.gate.hold = true;
+    const heldP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be3-7', version: null });
+    });
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      expect(await heldP).toBeNull();
+    });
+    await expectBe37LockedAndPurged(ctx);
+  }, 20_000);
+
+  it('BE4-5: an older same-key GET snapshot held across a local v3 update cannot lower the current metadata version', async () => {
+    const ctx = await be37Setup('be45-regress');
+    ctx.gate.hold = true;
+    const outcome: { value: { version: number } | null } = { value: null };
+    const heldP = ctx.vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        outcome.value = r;
+      });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    // An authoritative local outcome moves the same vault to v3 while the older GET (about to report v2) is held.
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be3-7', version: 3 });
+    });
+    expect(ctx.vault().vaultMeta?.version).toBe(3);
+    await act(async () => {
+      ctx.pending[0]!(jsonResponse(be2VaultBody('vk:be3-7', 2)));
+      await heldP;
+    });
+    expect(ctx.vault().vaultMeta?.version).toBe(3);
+    expect(outcome.value?.version).toBe(3);
+    // A late, lower local notification never lowers it either.
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be3-7', version: 2 });
+    });
+    expect(ctx.vault().vaultMeta?.version).toBe(3);
+    expect(screen.getByTestId('be45-regress-state')).toHaveTextContent('unlocked');
+  }, 20_000);
+
   // ---------------------------------------------------------------------------
   // BE3-5 / BE1-6 (V1) / BE2-6 (fix round 3): a PENDING recovery continuation is locked mid-operation.
   // The recovery call is held AFTER its baseline pre-check and BEFORE the Worker result is published; a real
