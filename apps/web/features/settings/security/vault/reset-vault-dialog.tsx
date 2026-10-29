@@ -30,8 +30,6 @@ export interface ResetVaultDialogProps {
   canChangePassphraseNow: boolean;
   onSwitchToChangePassphrase?: () => void;
   onSuccessToast?: (message: string) => void;
-  // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
-  onBeforeResetCommit?: () => void;
 }
 
 type ResetStep =
@@ -57,7 +55,6 @@ export function ResetVaultDialog({
   canChangePassphraseNow,
   onSwitchToChangePassphrase,
   onSuccessToast,
-  onBeforeResetCommit,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth, refetchMe } = useSession();
@@ -233,25 +230,25 @@ export function ResetVaultDialog({
       // and transition to s5_done right after lock before awaiting refetchMe().
       committedResetRef.current = true;
 
-      // R3-1 / R1-5 / ADR 0003 §3 item 7 & §6: ResetVaultDialog is the single acting-tab owner of
+      // R3-1 / R1-5 / VS-R4-1 / ADR 0003 §3 item 7 & §6: ResetVaultDialog is the single acting-tab owner of
       // the `sabk.device` readwrite DevKey purge (+ incarnation/deviceRevision rotation) on 204 DELETE /vault.
-      // Suppress VaultSecurityPanel's passive `vaultMeta === null` reload effect BEFORE `notifyVaultChanged`
-      // so `VaultProvider.reloadVaultMeta()` does not run a second 404 purge in the acting tab, and so
-      // the purge executes reliably even if the panel unmounts mid-DELETE, `GET /vault` fails non-404,
-      // or `refetchMe()` flips `me.vault.status` to `'absent'` first.
-      // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it (note: R5-4 user-initiated Retry after a /me refresh failure hits VaultProvider.reloadVaultMeta's 404 branch and is the accepted 2-purge exception)
+      // Record `vault.markResetPurged(resetVaultKeyId)` immediately alongside the dialog's single purge
+      // (and `vault.notifyVaultChanged({ vault_key_id, version: null })` also sets `resetPurgedVaultKeyIdRef`
+      // synchronously) so any subsequent `VaultProvider.reloadVaultMeta()` 404 branch in the acting tab is
+      // idempotent and never runs a second purge.
       // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
       // R4-5: Start the purge transaction first, run local lock and broadcast immediately so the Worker
       // drops VK and peer tabs hear about the reset without waiting on IDB, then await the purge before refetchMe.
-      onBeforeResetCommit?.();
+      const resetVaultKeyId = currentMeta.vault_key_id;
       const purgePromise = purgeDeviceKeysOnRevoked(me?.user.id);
+      vault.markResetPurged(resetVaultKeyId);
       try {
         await vault.lock({ broadcast: false, reason: 'vault_reset' });
       } catch {
         // Best-effort local lock after 204
       }
       vault.notifyVaultChanged({
-        vault_key_id: currentMeta.vault_key_id,
+        vault_key_id: resetVaultKeyId,
         version: null,
       });
       clearInputs();
@@ -268,13 +265,12 @@ export function ResetVaultDialog({
         onSuccessToast?.(t('reset.toastDone'));
         await refetchMe();
       } catch {
-        // Best-effort Me refresh after 204 (TanStack Query refetch resolves on error; close fallback in panel handles retry UI)
+        // Best-effort Me refresh after 204 (TanStack Query refetch resolves on error)
       }
     },
     [
       clearInputs,
       me?.user.id,
-      onBeforeResetCommit,
       onSuccessToast,
       reauth,
       refetchMe,
@@ -402,10 +398,8 @@ export function ResetVaultDialog({
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
                     {t('reset.path1Label', { passkeys: passkeysCount })}
                   </span>
-                  {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
                   <Link
                     href="/app/unlock"
-                    prefetch={false}
                     className="btn btn-tertiary btn-sm ml-auto no-underline"
                   >
                     {t('reset.path1Action')}
@@ -419,10 +413,8 @@ export function ResetVaultDialog({
                       ? t('reset.path2Label', { remaining: remainingRecoveryKeys })
                       : t('reset.path2LabelUnknown')}
                   </span>
-                  {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
                   <Link
                     href="/app/recovery"
-                    prefetch={false}
                     className="btn btn-tertiary btn-sm ml-auto no-underline"
                   >
                     {t('reset.path2Action')}
@@ -434,10 +426,8 @@ export function ResetVaultDialog({
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
                     {t('reset.path3Label')}
                   </span>
-                  {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
                   <Link
                     href="/app/unlock"
-                    prefetch={false}
                     className="btn btn-tertiary btn-sm ml-auto no-underline"
                   >
                     {t('reset.path3Action')}
@@ -462,10 +452,8 @@ export function ResetVaultDialog({
                       {t('reset.path4Action')}
                     </Button>
                   ) : (
-                    // TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route
                     <Link
                       href="/app/unlock"
-                      prefetch={false}
                       className="btn btn-tertiary btn-sm ml-auto no-underline"
                     >
                       {t('reset.path1Action')}

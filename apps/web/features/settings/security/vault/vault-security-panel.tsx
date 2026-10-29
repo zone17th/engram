@@ -49,21 +49,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const refetchMeRef = useRef(refetchMe);
   refetchMeRef.current = refetchMe;
   const nullTransitionRef = useRef(false);
-  // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
-  const suppressNextNullReloadRef = useRef(false);
 
-  const handleBeforeResetCommit = useCallback(() => {
-    suppressNextNullReloadRef.current = true;
-  }, []);
-
-  // R4-4 / R5-4: Clear the suppress flag and surface the retry control when the dialog closes while Me is still `present`
-  // (accepted exception: a subsequent user-initiated Retry click hits VaultProvider.reloadVaultMeta's 404 branch and purges a second time).
-  // TODO(sync-vaultweb): drop handleResetMeRefreshFailed/suppress once the provider owns the reset transition
-  const handleResetMeRefreshFailed = useCallback(() => {
-    suppressNextNullReloadRef.current = false;
-    nullTransitionRef.current = false;
-    setVaultMetaLoadFailed(true);
-  }, []);
   const handleRetryVaultMetaReload = useCallback(() => {
     nullTransitionRef.current = true;
     setVaultMetaLoadFailed(false);
@@ -81,19 +67,16 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   }, [vault]);
 
   // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
-  // TODO(sync-vaultweb): remove when the provider calls refetchMe() on vault_changed{version:null}
+  // Kept after the vaultweb sync: `VaultProvider` only runs `refetchMe()` on remote `vault_changed{version:null}`
+  // broadcasts (`vault-provider.tsx:1021,1096`) and does not auto-load `GET /vault` on mount when `Me.vault.status === 'present'`.
+  // `nullTransitionRef` + `refetchMeRef.current()` bound 404 retries (R2-3) and reconcile `Me` in the acting tab if an
+  // initial or post-reset `refetchMe()` fails and `reloadVaultMeta()` later observes `404 vault_absent` (R4-4 / R5-2).
   useEffect(() => {
     if (!isVaultPresent || vault.vaultMeta !== null) {
       nullTransitionRef.current = false;
-      if (!isVaultPresent) {
-        // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
-        suppressNextNullReloadRef.current = false;
-      }
       setVaultMetaLoadFailed(false);
       return;
     }
-    // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
-    if (suppressNextNullReloadRef.current) return;
     if (nullTransitionRef.current) return;
     nullTransitionRef.current = true;
     setVaultMetaLoadFailed(false);
@@ -177,10 +160,8 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
               </div>
               <p className="m-0 text-[13px] text-muted">{t('stateBanner.lockedBody')}</p>
             </div>
-            {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
             <Link
               href="/app/unlock?returnTo=%2Fapp%2Fsettings"
-              prefetch={false}
               className="btn btn-secondary btn-sm ml-auto no-underline"
             >
               {t('stateBanner.lockedCta')}
@@ -428,22 +409,13 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
 
       <ResetVaultDialog
         open={resetDialogOpen}
-        // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
-        onOpenChange={(nextOpen) => {
-          setResetDialogOpen(nextOpen);
-          if (!nextOpen && isVaultPresent && vault.vaultMeta === null) {
-            // R4-4: If the reset dialog closes while Me is still `present` and vaultMeta is null,
-            // ensure the suppress flag is cleared and the retry button is available.
-            handleResetMeRefreshFailed();
-          }
-        }}
+        onOpenChange={setResetDialogOpen}
         vaultMeta={vault.vaultMeta}
         remainingRecoveryKeys={remainingKeys}
         passkeysCount={passkeysCount}
         canChangePassphraseNow={!requiresUnlockedDisabled}
         onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
         onSuccessToast={setToastMessage}
-        onBeforeResetCommit={handleBeforeResetCommit}
       />
     </div>
   );
