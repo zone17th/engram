@@ -200,7 +200,8 @@ export function VaultRecoveryFlow() {
   const step1PassInputRef = useRef<HTMLInputElement>(null);
   const step3ReauthPassInputRef = useRef<HTMLInputElement>(null);
   const step4ReauthPassInputRef = useRef<HTMLInputElement>(null);
-
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const prevStepForFocusRef = useRef<RecoveryStep>(step);
   const evalSeqRef = useRef(0);
   const stepRef = useRef<RecoveryStep>(step);
   stepRef.current = step;
@@ -342,6 +343,14 @@ export function VaultRecoveryFlow() {
       }
     };
   }, [clearAllSecrets]);
+  // Focus management on step transitions so keyboard/screen-reader users land on the new step heading (FE1-4).
+  useEffect(() => {
+    if (prevStepForFocusRef.current === step) return;
+    prevStepForFocusRef.current = step;
+    if (step !== 'done') {
+      stepHeadingRef.current?.focus();
+    }
+  }, [step]);
 
   // Live NFC + lazy zxcvbn policy evaluation while typing in Step 3
   useEffect(() => {
@@ -465,6 +474,7 @@ export function VaultRecoveryFlow() {
       if (recoveryKeyInput.trim().length === 0) {
         clearRecoveryKeyInputImmediate();
         setStep2Error({ kind: 'invalid' });
+        queueMicrotask(() => rkInputRef.current?.focus());
         return;
       }
 
@@ -744,6 +754,13 @@ export function VaultRecoveryFlow() {
 
       if (!policy.valid) {
         setStep3PolicyReason(policy.reason);
+        queueMicrotask(() => {
+          if (policy.reason === 'mismatch') {
+            confirmPassInputRef.current?.focus();
+          } else {
+            newPassInputRef.current?.focus();
+          }
+        });
         return;
       }
 
@@ -827,6 +844,7 @@ export function VaultRecoveryFlow() {
         }
         if (classified.kind === 'passphrase_invalid') {
           setStep3PolicyReason('invalid_unicode');
+          queueMicrotask(() => newPassInputRef.current?.focus());
           return;
         }
         if (classified.kind === 'stale_generation' && client.getGeneration() !== opGen) {
@@ -1215,7 +1233,7 @@ export function VaultRecoveryFlow() {
         {/* STEP 1 — Acquire `vault.recover` grant FIRST (before entering any RK) */}
         {step === 'reauth' ? (
           <section data-view="s1" data-testid="recovery-step-reauth">
-            <h1 className="t-title-lg mb-2 text-ink">{t('step1.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step1.title')}</h1>
             <p className="t-body-lg mb-6" style={{ color: 'var(--muted)' }}>
               {t('step1.lead')}
             </p>
@@ -1302,7 +1320,7 @@ export function VaultRecoveryFlow() {
             <p className="t-label mb-2" style={{ color: 'var(--body)' }}>
               {t('step2.grantActiveBadge')}
             </p>
-            <h1 className="t-title-lg mb-2 text-ink">{t('step2.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step2.title')}</h1>
             <p className="t-body-lg mb-6" style={{ color: 'var(--muted)' }}>
               {t('step2.lead')}
             </p>
@@ -1469,7 +1487,7 @@ export function VaultRecoveryFlow() {
         {/* STEP 3 — Set a new passphrase while Worker is in `recovering` state */}
         {step === 'new-passphrase' ? (
           <section data-view="s3" data-testid="recovery-step-new-passphrase">
-            <h1 className="t-title-lg mb-2 text-ink">{t('step3.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step3.title')}</h1>
             <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
               {t('step3.lead')}
             </p>
@@ -1572,7 +1590,11 @@ export function VaultRecoveryFlow() {
                     error={
                       step3PolicyReason === 'mismatch'
                         ? (step3PolicyErrorText ?? undefined)
-                        : undefined
+                        : newPassphrase.length > 0 &&
+                            confirmPassphrase.length > 0 &&
+                            newPassphrase.normalize('NFC') !== confirmPassphrase.normalize('NFC')
+                          ? t('step3.policyErrors.mismatch')
+                          : undefined
                     }
                     onChange={(e) => {
                       setConfirmPassphrase(e.target.value);
@@ -1896,7 +1918,7 @@ export function VaultRecoveryFlow() {
               </p>
             </div>
 
-            <h1 className="t-title-lg mb-2 text-ink">{t('step4Reauth.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step4Reauth.title')}</h1>
             <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
               {t('step4Reauth.lead')}
             </p>
@@ -2016,7 +2038,7 @@ export function VaultRecoveryFlow() {
               </p>
             </div>
 
-            <h1 className="t-title-lg mb-2 text-ink">{t('step4.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step4.title')}</h1>
             <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
               {t('step4.lead', { remaining: remainingCount })}
             </p>

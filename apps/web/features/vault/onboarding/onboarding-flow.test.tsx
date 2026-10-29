@@ -1220,4 +1220,86 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     });
     expect(postIdempotencyKeys[1]).not.toBe(postIdempotencyKeys[0]);
   });
+
+  it('FE1-1, FE1-4, FE1-5, FE1-6, FE1-7: renders English header pill/actions on en locale, shows neutral rule bullet, live mismatch error, focuses step heading on step swap, and surfaces non-OOM createVault errors visibly', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('absent'));
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    renderOnboarding({
+      locale: 'en',
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    // FE1-1: English locale renders English pill & header labels (no Vietnamese strings on en locale)
+    expect(screen.getByText('No vault yet')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/app/settings');
+    expect(screen.queryByText(/Chưa tạo/i)).not.toBeInTheDocument();
+
+    // FE1-5: distinctFromLogin rule uses neutral bullet · instead of ✓, and minLength/minScore start with ·
+    expect(screen.getByTestId('rule-distinct-login')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-length')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-score')).toHaveTextContent(/^·/);
+
+    const passInput = screen.getByLabelText(/^Passphrase$/i);
+    const confirmInput = screen.getByLabelText(/Confirm passphrase/i);
+
+    // FE1-6: live confirmation mismatch warning appears while typing before submit
+    fireEvent.change(passInput, { target: { value: STRONG_PASSPHRASE } });
+    fireEvent.change(confirmInput, { target: { value: `${STRONG_PASSPHRASE}-diff` } });
+    expect(screen.getByText(/Passphrases do not match/i)).toBeInTheDocument();
+
+    // FE1-4: validation error on submit moves focus to the invalid field
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    await waitFor(() => {
+      expect(confirmInput).toHaveFocus();
+    });
+
+    // Fix confirmation so they match -> live mismatch disappears
+    fireEvent.change(confirmInput, { target: { value: STRONG_PASSPHRASE } });
+    expect(screen.queryByText(/Passphrases do not match/i)).not.toBeInTheDocument();
+
+    // FE1-7: non-OOM / unexpected failure in createVault surfaces a visible error alert on Step 1
+    vi.spyOn(vaultCtx, 'createVault').mockRejectedValueOnce(new Error('Worker unexpected failure'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step1-error')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('onboarding-step1-error')).toHaveTextContent(/Worker unexpected failure/i);
+
+    // Re-enter passphrase and succeed -> FE1-4 focuses Step 2 heading on step transition
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+    const step2Heading = screen.getByRole('heading', { level: 1 });
+    expect(step2Heading).toHaveFocus();
+  });
 });

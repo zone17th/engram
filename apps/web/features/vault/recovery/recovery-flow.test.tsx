@@ -1090,13 +1090,14 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     expect(completeCount).toBe(0);
     expect(oauthStartCount).toBe(0);
 
-    // Clicking "Restart from step 1" returns to Step 1 cleanly without burning a lookup
+    // Clicking "Restart from step 1" returns to Step 1 cleanly without burning a lookup and focuses the Step 1 heading (FE1-4)
     await act(async () => {
       fireEvent.click(screen.getByTestId('recovery-step3-oauth-restart-button'));
     });
     await waitFor(() => {
       expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
     });
+    expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
     expect(lookupCount).toBe(1);
 
     unmount();

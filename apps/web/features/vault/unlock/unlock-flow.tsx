@@ -4,7 +4,7 @@ import { ProblemError } from '@engram/shared-types';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
@@ -39,13 +39,11 @@ export function VaultUnlockFlow() {
   const vault = useVault();
 
   const [passphrase, setPassphrase] = useState('');
-  const [rememberDevice, setRememberDevice] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<UnlockErrorState | null>(null);
   const [rateLimitDeadline, setRateLimitDeadline] = useState<number | null>(null);
 
   const passInputRef = useRef<HTMLInputElement>(null);
-  const rememberCheckboxId = useId();
   const countdownSeconds = useRetryCountdown(rateLimitDeadline);
   const isRateLimitedActive =
     errorState?.kind === 'rate_limited' && rateLimitDeadline !== null && countdownSeconds > 0;
@@ -64,7 +62,6 @@ export function VaultUnlockFlow() {
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
       clearPassphraseField();
-      setRememberDevice(false);
     });
   }, [clearPassphraseField, vault]);
 
@@ -85,12 +82,14 @@ export function VaultUnlockFlow() {
 
       if (passphrase.length === 0) {
         setErrorState({ kind: 'empty' });
+        queueMicrotask(() => passInputRef.current?.focus());
         return;
       }
 
       if (hasLoneSurrogate(passphrase)) {
         clearPassphraseField();
         setErrorState({ kind: 'passphrase_invalid' });
+        queueMicrotask(() => passInputRef.current?.focus());
         return;
       }
 
@@ -250,31 +249,7 @@ export function VaultUnlockFlow() {
                   data-testid="unlock-passphrase-input"
                 />
               </div>
-
-              <label
-                htmlFor={rememberCheckboxId}
-                className="mb-5 flex cursor-pointer items-start gap-3"
-              >
-                <input
-                  id={rememberCheckboxId}
-                  type="checkbox"
-                  className="mt-1"
-                  checked={rememberDevice}
-                  disabled={submitting || vault.inFlight}
-                  onChange={(e) => setRememberDevice(e.target.checked)}
-                  data-testid="unlock-remember-device-checkbox"
-                />
-                <span className="text-[14px] text-body">
-                  {t('rememberDeviceLabel')}
-                  <span
-                    className="block text-[13px]"
-                    style={{ color: 'var(--muted)' }}
-                  >
-                    {t('rememberDeviceHint')}
-                  </span>
-                </span>
-              </label>
-
+              {/* FE1-3: "Remember this device" checkbox is hidden until T18 (WebAuthn PRF + DevKey) implements device persistence. */}
               <Button
                 type="submit"
                 variant="primary"

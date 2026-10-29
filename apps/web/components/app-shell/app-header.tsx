@@ -7,7 +7,7 @@ import { VaultPill, type VaultPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
 import { useOptionalVault, type VaultStateMachineMode } from '@/features/vault/vault-provider';
 import Link from 'next/link';
-
+import { useTranslations } from 'next-intl';
 function modeToPillState(mode: VaultStateMachineMode): VaultPillState {
   if (mode === 'no_vault' || mode === 'onboarding') return 'absent';
   if (mode === 'unlocked' || mode === 'rewrapping') return 'open';
@@ -26,11 +26,13 @@ export function AppHeader({
   settingsActive?: boolean;
   showLogout?: boolean;
 }) {
+  const tHeader = useTranslations('app.header');
+  const tVault = useTranslations('vault.state');
   const vaultCtx = useOptionalVault();
   const effectivePillState: VaultPillState = vaultCtx
     ? modeToPillState(vaultCtx.state)
     : (vault?.state ?? 'locked');
-  const effectiveMinutesLeft = vault?.minutesLeft;
+  const effectiveMinutesLeft = vault?.minutesLeft ?? vaultCtx?.minutesLeft;
   const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
 
   const handleLockClick = () => {
@@ -38,10 +40,17 @@ export function AppHeader({
     void vaultCtx.lockNow();
   };
 
+  const mobilePillLabel =
+    effectivePillState === 'open'
+      ? tVault('unlocked')
+      : effectivePillState === 'absent'
+        ? tVault('noVault')
+        : tVault('locked');
+
   return (
     <header className="sticky top-0 z-30 h-[68px] border-b border-line bg-surface/80 backdrop-blur">
       <div className="mx-auto flex h-full min-w-0 max-w-container items-center gap-2 px-5 sm:gap-4">
-        <Link href="/app" className="min-w-0 shrink-0 no-underline" aria-label="engram — Mục gần đây">
+        <Link href="/app" className="min-w-0 shrink-0 no-underline" aria-label={tHeader('logoLabel')}>
           <Logo wordmarkClassName="hidden min-[480px]:inline" />
         </Link>
         {showSearch ? <Omnibox compact className="hidden max-w-[420px] md:flex" /> : null}
@@ -52,8 +61,8 @@ export function AppHeader({
               data-vault=""
               data-testid="vault-lock-button"
               onClick={handleLockClick}
-              aria-label="Khoá vault ngay (L)"
-              title="Khoá vault ngay (L)"
+              aria-label={tHeader('lockNow')}
+              title={tHeader('lockNow')}
               className="hidden cursor-pointer border-0 bg-transparent p-0 sm:inline-flex"
             >
               <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} />
@@ -71,28 +80,16 @@ export function AppHeader({
               data-testid="vault-lock-button-mobile"
               onClick={handleLockClick}
               className="grid h-9 w-9 cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
-              aria-label="Vault mở — Khoá vault ngay"
-              title="Vault mở — Khoá vault ngay"
+              aria-label={tHeader('openAndLockNow')}
+              title={tHeader('openAndLockNow')}
             >
               🔓
             </button>
           ) : (
             <span
               className="grid h-9 w-9 place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
-              aria-label={
-                effectivePillState === 'open'
-                  ? 'Vault mở'
-                  : effectivePillState === 'absent'
-                    ? 'Chưa tạo kho'
-                    : 'Vault đang khoá'
-              }
-              title={
-                effectivePillState === 'open'
-                  ? 'Vault mở'
-                  : effectivePillState === 'absent'
-                    ? 'Chưa tạo kho'
-                    : 'Vault đang khoá'
-              }
+              aria-label={mobilePillLabel}
+              title={mobilePillLabel}
             >
               {effectivePillState === 'open' ? '🔓' : '🔒'}
             </span>
@@ -102,7 +99,7 @@ export function AppHeader({
             className="btn btn-tertiary no-underline !text-body"
             aria-current={settingsActive ? 'page' : undefined}
           >
-            {settingsActive ? 'Xong' : 'Cài đặt'}
+            {settingsActive ? tHeader('settingsDone') : tHeader('settings')}
           </Link>
           {showLogout ? <AppShellLogoutButton /> : null}
           <ThemeToggle />

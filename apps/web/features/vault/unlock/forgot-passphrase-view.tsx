@@ -113,7 +113,7 @@ export function ForgotPassphraseView() {
             <Link
               href="/app/settings#baomat"
               className="btn btn-danger no-underline"
-              style={{ color: '#B4232A' }}
+              style={{ color: 'var(--error)' }}
               data-testid="forgot-reset-vault-link"
             >
               {t('lastResort.resetCta')}

@@ -44,7 +44,14 @@
     "recent": "Recent items",
     "semantic": "Similar meaning",
     "vaultOpen": "Vault open",
-    "vaultLocked": "Vault locked"
+    "vaultLocked": "Vault locked",
+    "header": {
+      "logoLabel": "engram — Recent items",
+      "lockNow": "Lock vault now (L)",
+      "openAndLockNow": "Vault open — Lock vault now (L)",
+      "settings": "Settings",
+      "settingsDone": "Done"
+    }
   },
   "states": {
     "emptyTitle": "Nothing here yet",
@@ -408,6 +415,9 @@
       "lockedNoticeTitle": "Vault locked",
       "lockedNoticeBody": "Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view or edit entry contents.",
       "unlockCta": "Unlock vault"
+    },
+    "pill": {
+      "minutesLeft": "· {minutes} min"
     }
   },
   "unlock": {
@@ -419,8 +429,6 @@
     "passphraseHint": "Not your account login password.",
     "showPassphrase": "Show passphrase",
     "hidePassphrase": "Hide passphrase",
-    "rememberDeviceLabel": "Remember this device",
-    "rememberDeviceHint": "Opens automatically next time on this browser. Do not enable on a shared machine.",
     "submit": "Unlock",
     "submitting": "Deriving key… (Argon2id 64 MiB)",
     "caption": "Slow devices may take a few seconds. Key derivation runs entirely inside your browser.",

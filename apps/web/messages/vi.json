@@ -44,7 +44,14 @@
     "recent": "Mục gần đây",
     "semantic": "Gần nghĩa",
     "vaultOpen": "Vault mở",
-    "vaultLocked": "Vault đang khoá"
+    "vaultLocked": "Vault đang khoá",
+    "header": {
+      "logoLabel": "engram — Mục gần đây",
+      "lockNow": "Khoá vault ngay (L)",
+      "openAndLockNow": "Vault mở — Khoá vault ngay (L)",
+      "settings": "Cài đặt",
+      "settingsDone": "Xong"
+    }
   },
   "states": {
     "emptyTitle": "Chưa có gì ở đây",
@@ -408,6 +415,9 @@
       "lockedNoticeTitle": "Vault đã khoá",
       "lockedNoticeBody": "Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem hoặc sửa nội dung entry.",
       "unlockCta": "Mở khoá lại"
+    },
+    "pill": {
+      "minutesLeft": "· {minutes} phút"
     }
   },
   "unlock": {
@@ -419,8 +429,6 @@
     "passphraseHint": "Không phải mật khẩu đăng nhập.",
     "showPassphrase": "Hiện passphrase",
     "hidePassphrase": "Ẩn passphrase",
-    "rememberDeviceLabel": "Nhớ thiết bị này",
-    "rememberDeviceHint": "Lần sau máy này tự mở, không cần gõ. Đừng bật trên máy dùng chung.",
     "submit": "Mở khoá",
     "submitting": "Đang tính khoá… (Argon2id 64 MiB)",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
