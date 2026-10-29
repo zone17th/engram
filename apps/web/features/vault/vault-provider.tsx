@@ -753,6 +753,8 @@ export function VaultProvider({
    *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
    *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
    *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
+   * Rows 1a and 4 purge USER-scoped device keys (`purgeDeviceKeysOnRevoked`); a key-scoped compare-and-delete is
+   * deferred to T18 (CF-T18-KEYSCOPED-PURGE).
    * Other errors: supersession check, then rethrow. Local notifications never suppress or reorder a GET response.
    */
   const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null }): Promise<VaultState | null> => {
