@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import type { UseReauthReturn } from '@/features/auth/use-reauth';
-import { resetVaultBroadcastForTests, subscribeVaultBroadcast } from '@/features/vault/broadcast';
+import {
+  postVaultBroadcast,
+  resetVaultBroadcastForTests,
+  subscribeVaultBroadcast,
+} from '@/features/vault/broadcast';
 import { recordLockEpochEvent, type LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { VaultRecoveryFlow } from '@/features/vault/recovery';
 import { hasRecoveryCompletedNotice } from '@/features/vault/unlock/recovery-notice';
@@ -3318,6 +3322,68 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 30_000);
+
+  for (const announce of ['local notifyVaultChanged', 'sibling-tab broadcast'] as const) {
+    it(`FE5-1: a vault B announced (${announce}) while the old completion A's 200 is still held, with the Worker staying locked, never lets A's failing recheck bring old notice or actions back`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+      const published = collectVaultChangedBroadcasts();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+      // Pre-reconciliation interval: A's 200 is still held when the recreated vault B is announced; the Worker stays locked.
+      fetchState.vaultMetaOverride = {
+        ...makeVaultMetaFixture(1),
+        vault_key_id: REPLACEMENT_VAULT_KEY_ID,
+      };
+      await act(async () => {
+        if (announce === 'local notifyVaultChanged') {
+          vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+        } else {
+          postVaultBroadcast({
+            type: 'vault_changed',
+            vault_key_id: REPLACEMENT_VAULT_KEY_ID,
+            version: 1,
+          });
+        }
+      });
+      await settle();
+      expect(vaultCtx.state).toBe('locked');
+      expect(vaultCtx.workerState).toBe('locked');
+      const publishedAfterTransition = published.length;
+      const uiBefore = document.body.textContent;
+      routerMocks.replace.mockClear();
+
+      // A's 200 is released now and its recheck GET fails.
+      fetchState.vaultGetFailure = { status: 503, code: 'service_unavailable' };
+      await act(async () => {
+        fetchState.completeReleases[0]?.();
+      });
+      await settle();
+      await settle();
+
+      // No old notice or actions at any point, and B's route and UI are unchanged.
+      expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+      expect(published.slice(publishedAfterTransition)).toEqual([]);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+      expect(document.body.textContent).toBe(uiBefore);
+      expect(vaultCtx.state).toBe('locked');
+      expect(vaultCtx.workerState).toBe('locked');
+
+      shim.close();
+    }, 30_000);
+  }
 
   it('BE5-2 (consumer boundary): a newly prepared regeneration bundle sends the live vault version, not the lower completion version', async () => {
     const shim = makeTestShim();

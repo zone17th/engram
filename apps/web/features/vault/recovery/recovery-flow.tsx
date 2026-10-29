@@ -115,6 +115,29 @@ interface CommittedRecheckState extends CommittedRecoveryOutcome {
 /** Live Worker states in which a session other than the cancelled recovery already owns the vault surface. */
 const SUCCESSOR_WORKER_STATES: ReadonlyArray<string> = ['unlocked', 'recovering'];
 
+/**
+ * FE5-1: remembers whether the vault identity (reset, or another vault key) was announced locally or by a sibling tab since
+ * the observer was created. Created when a completion is SENT, so a transition that lands while its 200 is still held
+ * outdates the committed outcome even though reconciliation starts only afterwards.
+ */
+interface VaultIdentityTransitionObserver {
+  transitioned: () => boolean;
+  release: () => void;
+}
+
+function observeVaultIdentityTransitions(vaultKeyId: string): VaultIdentityTransitionObserver {
+  let transitioned = false;
+  const release = subscribeVaultBroadcast((message) => {
+    if (
+      message.type === 'vault_changed' &&
+      (message.version === null || message.vault_key_id !== vaultKeyId)
+    ) {
+      transitioned = true;
+    }
+  });
+  return { transitioned: () => transitioned, release };
+}
+
 function isGrantFreshForFirstAttempt(grant: ReauthGrant | null, action: ReauthAction): boolean {
   if (!grant || grant.action !== action) return false;
   const exp = Date.parse(grant.expires_at);
@@ -771,6 +794,7 @@ export function VaultRecoveryFlow() {
       outcome: CommittedRecoveryOutcome,
       committedVersion: number,
       originSuccessorEpoch: number = recoverySuccessorEpochRef.current,
+      originTransitions?: VaultIdentityTransitionObserver,
     ) => {
       const isOriginAccount = () =>
         isMountedRef.current &&
@@ -786,22 +810,20 @@ export function VaultRecoveryFlow() {
       const attemptEpoch = recoveryAttemptEpochRef.current;
       const ownsFlow = () =>
         isOriginAccount() && !succeeded() && recoveryAttemptEpochRef.current === attemptEpoch;
-      // A vault-identity change announced locally or by a sibling tab while the read is pending outdates its answer.
-      let identityTransitioned = false;
-      const unsubscribeTransitions = subscribeVaultBroadcast((message) => {
-        if (
-          message.type === 'vault_changed' &&
-          (message.version === null || message.vault_key_id !== outcome.vaultKeyId)
-        ) {
-          identityTransitioned = true;
-        }
-      });
+      // FE5-1: a vault-identity change announced locally or by a sibling tab since the completion was sent (not only since
+      // this read began) outdates the committed outcome; the origin observer was listening while the 200 was held. A retry
+      // has no origin observer, so it listens from here on and the live vault identity covers what came before.
+      const transitions = originTransitions ?? observeVaultIdentityTransitions(outcome.vaultKeyId);
       const recheckBase = {
         userId: outcome.userId,
         vaultKeyId: outcome.vaultKeyId,
         version: committedVersion,
       };
-      setCommittedRecheck({ ...recheckBase, phase: 'verifying' });
+      // No feedback of any phase is installed for an outcome that is already outdated; the read still runs so the live
+      // identity is verified before anything else could be published.
+      if (!transitions.transitioned()) {
+        setCommittedRecheck({ ...recheckBase, phase: 'verifying' });
+      }
       let live: VaultState | null = null;
       let verificationFailed = false;
       try {
@@ -809,7 +831,7 @@ export function VaultRecoveryFlow() {
       } catch {
         verificationFailed = true;
       } finally {
-        unsubscribeTransitions();
+        if (!originTransitions) transitions.release();
       }
       if (!ownsFlow()) {
         // A successor attempt (or another account) owns the UI now; it cleared its own feedback already.
@@ -821,7 +843,7 @@ export function VaultRecoveryFlow() {
       if (verificationFailed) {
         // FE4-1: the same ownership checks as a verified read; an obsolete notice is removed, never turned into actions.
         const outdated =
-          identityTransitioned ||
+          transitions.transitioned() ||
           SUCCESSOR_WORKER_STATES.includes(vaultRef.current.getClient().getState());
         setCommittedRecheck(outdated ? null : { ...recheckBase, phase: 'recheck_needed' });
         return;
@@ -830,7 +852,7 @@ export function VaultRecoveryFlow() {
       if (
         !live ||
         live.vault_key_id !== outcome.vaultKeyId ||
-        identityTransitioned ||
+        transitions.transitioned() ||
         // Live Worker state, not the rendered context (which can lag a lock that just finished).
         SUCCESSOR_WORKER_STATES.includes(vaultRef.current.getClient().getState())
       ) {
@@ -873,6 +895,8 @@ export function VaultRecoveryFlow() {
       startNewRecoveryAttempt(true);
       // FE4-1: the attempt this completion belongs to; any later lookup/complete is a successor that owns the feedback.
       const originSuccessorEpoch = recoverySuccessorEpochRef.current;
+      // FE5-1: identity transitions are recorded from the moment the completion is SENT, not from the start of reconciliation.
+      const originTransitions = observeVaultIdentityTransitions(bundle.vaultKeyId);
       setCompletingRecovery(true);
       setStep3Error(null);
       setStep3RateDeadline(null);
@@ -891,7 +915,12 @@ export function VaultRecoveryFlow() {
         if (!isBundleCurrent()) {
           // FE1-7: POST /vault/recover/complete succeeded on the server (rewrapping under the new passphrase
           // and consuming the RK) while this tab locked or the flow was replaced.
-          await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
+          await reconcileCommittedRecovery(
+            bundle,
+            completeRes.version,
+            originSuccessorEpoch,
+            originTransitions,
+          );
           return;
         }
 
@@ -901,7 +930,12 @@ export function VaultRecoveryFlow() {
         });
 
         if (!isBundleCurrent()) {
-          await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
+          await reconcileCommittedRecovery(
+            bundle,
+            completeRes.version,
+            originSuccessorEpoch,
+            originTransitions,
+          );
           return;
         }
 
@@ -918,7 +952,12 @@ export function VaultRecoveryFlow() {
         try {
           const rkStatus = await fetchRecoveryKeysStatus();
           if (!isBundleCurrent()) {
-            await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
+            await reconcileCommittedRecovery(
+            bundle,
+            completeRes.version,
+            originSuccessorEpoch,
+            originTransitions,
+          );
             return;
           }
           setRemainingCount(rkStatus.remaining);
@@ -926,7 +965,12 @@ export function VaultRecoveryFlow() {
           setEmptySlots(sortedEmpty);
         } catch {
           if (!isBundleCurrent()) {
-            await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
+            await reconcileCommittedRecovery(
+            bundle,
+            completeRes.version,
+            originSuccessorEpoch,
+            originTransitions,
+          );
             return;
           }
           setRemainingCount(9);
@@ -939,7 +983,12 @@ export function VaultRecoveryFlow() {
         if (!isBundleCurrent()) {
           if (committedVersion !== null) {
             // BE3-8: the lock was detected while confirming an already committed recovery; do not drop it silently.
-            await reconcileCommittedRecovery(bundle, committedVersion, originSuccessorEpoch);
+            await reconcileCommittedRecovery(
+              bundle,
+              committedVersion,
+              originSuccessorEpoch,
+              originTransitions,
+            );
           }
           return;
         }
@@ -1011,6 +1060,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
+        originTransitions.release();
         if (isMountedRef.current && completeBusyTokenRef.current === completeToken) {
           setCompletingRecovery(false);
         }
