@@ -29,9 +29,9 @@ type RewrapInput struct {
 //     -> sai trả `400 vault_wrap_invalid`).
 //   - Cập nhật `kdf` + `vault_key_wrapped_by_kek`, tăng `version = version + 1` (không đổi `vault_key_id`,
 //     không đụng RK hay passkey).
-//   - Ghi audit `vault.rewrap`, tạo in-app security notice (`user_notification`) và đánh dấu `idempotency_key`
-//     `status = 'done'` trong cùng transaction trước khi `COMMIT`.
-//   - Sau khi `COMMIT`, gửi email thông báo bảo mật best-effort qua adapter P02 (lỗi gửi mail không rollback).
+//   - Ghi audit `vault.rewrap`, tạo in-app security notice (`user_notification` + job `security_notice_mail`
+//     qua P02 `Notifier`) và đánh dấu `idempotency_key` `status = 'done'` trong cùng transaction trước khi `COMMIT`.
+//     Worker gửi email sau khi `COMMIT`, nên lỗi gửi mail không bao giờ làm rollback mutation đã commit.
 func (s *Service) Rewrap(ctx context.Context, p authctx.Principal, in RewrapInput) (VaultVersionResponse, error) {
 	if s.KeyMutationsDisabled() {
 		return VaultVersionResponse{}, ErrVaultMutationsDisabled
@@ -82,9 +82,8 @@ func (s *Service) Rewrap(ctx context.Context, p authctx.Principal, in RewrapInpu
 		return VaultVersionResponse{}, err
 	}
 
-	// 6. Create in-app security notice in the same transaction (created even if user has no verified email).
-	emailTargets, err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{})
-	if err != nil {
+	// 6. Create in-app security notice (and transactional River mail job if email verified) in the same transaction.
+	if err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{}); err != nil {
 		return VaultVersionResponse{}, err
 	}
 
@@ -96,9 +95,6 @@ func (s *Service) Rewrap(ctx context.Context, p authctx.Principal, in RewrapInpu
 	if _, err := s.CommitMutationWithIdempotency(ctx, tx, http.StatusOK, resp); err != nil {
 		return VaultVersionResponse{}, err
 	}
-
-	// 8. After COMMIT, send security email notification best-effort; mail errors never roll back or fail the mutation.
-	s.SendSecurityEmailsBestEffort(ctx, emailTargets, EventVaultRewrap)
 
 	return resp, nil
 }

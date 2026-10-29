@@ -425,7 +425,7 @@ func TestRecoveryKeysRotateReplacesAllOldLookupFailsAndNoReauthBypass(t *testing
 	var lookupNew vault.RecoveryLookupResponse
 	_ = json.Unmarshal([]byte(rawNew), &lookupNew)
 	// Verify audit_log has recovery_key.rotate and user_notification was created.
-	var rotAudits, notices int
+	var rotAudits, notices, jobs int
 	if err := h.pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`,
 		meA.User.ID, vault.EventRecoveryKeyRotate,
@@ -438,8 +438,22 @@ func TestRecoveryKeysRotateReplacesAllOldLookupFailsAndNoReauthBypass(t *testing
 	).Scan(&notices); err != nil {
 		t.Fatal(err)
 	}
-	if rotAudits != 1 || notices != 1 {
-		t.Fatalf("rotate audit=%d notices=%d, want 1 and 1", rotAudits, notices)
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`,
+	).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if rotAudits != 1 || notices != 1 || jobs != 1 {
+		t.Fatalf("rotate audit=%d notices=%d jobs=%d, want 1/1/1", rotAudits, notices, jobs)
+	}
+	if beforeWorker := h.countSecurityMailsDelivered("rk-rotate-a@example.com"); beforeWorker != 0 {
+		t.Fatalf("direct emails before worker on rotate = %d, want 0", beforeWorker)
+	}
+	if ran, err := h.runSecurityNoticeWorker(context.Background(), h.mail); err != nil || ran != 1 {
+		t.Fatalf("runSecurityNoticeWorker after rotate = (%d, %v), want (1, nil)", ran, err)
+	}
+	if total := h.countSecurityMailsDelivered("rk-rotate-a@example.com"); total != 1 {
+		t.Fatalf("total security emails delivered after rotate = %d, want 1", total)
 	}
 
 	// 3. No re-auth bypass via regenerate-then-recover (or recover-then-regenerate):

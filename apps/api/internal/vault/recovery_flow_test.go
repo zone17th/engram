@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
@@ -78,7 +80,11 @@ func TestServiceRecoveryLookupAndComplete(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	clk := clock.NewFixed(time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
 	aud := audit.NewStore(pool)
-	notes := notification.NewStore(pool, nil)
+	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	notes := notification.NewStore(pool, riverInsert)
 	reg := prometheus.NewRegistry()
 	metrics := vault.NewMetrics(reg)
 	mailer := &failingRecoverMailer{}
@@ -215,8 +221,15 @@ func TestServiceRecoveryLookupAndComplete(t *testing.T) {
 	if completeResp.Version != 2 {
 		t.Fatalf("completeResp.Version = %d, want 2", completeResp.Version)
 	}
+	if mailer.calls.Load() != 0 {
+		t.Fatalf("direct mailer calls before worker run = %d, want 0", mailer.calls.Load())
+	}
+	ranJobs, workErr := runQueuedSecurityNoticeJobs(ctx, pool, mailer, logger)
+	if ranJobs != 1 || workErr == nil {
+		t.Fatalf("runQueuedSecurityNoticeJobs = (%d, %v), want (1, non-nil mailer error)", ranJobs, workErr)
+	}
 	if mailer.calls.Load() != 1 {
-		t.Fatalf("expected mailer to be called once after commit, got %d", mailer.calls.Load())
+		t.Fatalf("expected mailer to be called once by worker after commit, got %d", mailer.calls.Load())
 	}
 	if gotRecoverTotal := gatherCounterValue(t, reg, "vault_recover_total", "", ""); gotRecoverTotal != 1 {
 		t.Fatalf("vault_recover_total = %v, want 1", gotRecoverTotal)

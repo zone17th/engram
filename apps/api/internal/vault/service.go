@@ -39,13 +39,14 @@ type Auditor interface {
 	Record(ctx context.Context, tx pgx.Tx, rec secevent.Record) error
 }
 
-// Notifier tạo thông báo bảo mật trong ứng dụng (`user_notification`) và (tuỳ chọn) enqueue job River.
+// Notifier tạo thông báo bảo mật trong ứng dụng (`user_notification`) và enqueue job
+// `security_notice_mail` trong cùng transaction River để `worker.SecurityNoticeWorker` gửi sau khi commit.
 type Notifier interface {
 	NotifySecurity(ctx context.Context, tx pgx.Tx, n secevent.Notice) error
 }
 
-// Mailer gửi email thông báo bảo mật (qua adapter P02 `auth.Mailer`).
-// Theo plan Task 9/10/11/12 và SPEC §3.9: lỗi gửi email không được làm rollback mutation đã commit.
+// Mailer được giữ lại cho chữ ký tương thích của `compose.NewVault`; việc gửi email bảo mật
+// thuộc duy nhất về hàng đợi giao dịch P02 (`notification.Store.NotifySecurity` -> `worker.SecurityNoticeWorker`).
 type Mailer interface {
 	Send(ctx context.Context, recipient, purpose, link string) error
 }
@@ -60,7 +61,6 @@ type Service struct {
 	clk       clock.Clock
 	audit     Auditor
 	notify    Notifier
-	mail      Mailer
 	metrics   *Metrics
 	resetHook ResetHook
 	logger    *slog.Logger
@@ -76,7 +76,7 @@ func NewService(
 	clk clock.Clock,
 	audit Auditor,
 	notify Notifier,
-	mail Mailer,
+	_ Mailer,
 	metrics *Metrics,
 	resetHook ResetHook,
 	logger *slog.Logger,
@@ -100,7 +100,6 @@ func NewService(
 		clk:       clk,
 		audit:     audit,
 		notify:    notify,
-		mail:      mail,
 		metrics:   metrics,
 		resetHook: resetHook,
 		logger:    logger,
@@ -196,49 +195,28 @@ func (s *Service) RecordAuditTx(ctx context.Context, tx pgx.Tx, p authctx.Princi
 	})
 }
 
-// RecordSecurityNoticeTx tạo in-app security notice (`user_notification`) trong cùng transaction `tx`
-// và trả về danh sách địa chỉ email đã xác minh của user (nếu có) để caller gửi email sau khi commit
-// (hoặc qua worker River nếu `notification.Store` có gắn River client).
-// Lưu ý (SPEC §3.9, plan Task 9): notice luôn được tạo trong DB kể cả khi user chưa xác minh email;
-// lỗi của mail adapter bên ngoài không bao giờ làm rollback transaction đã commit.
-func (s *Service) RecordSecurityNoticeTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, meta secevent.Meta) ([]string, error) {
+// RecordSecurityNoticeTx tạo in-app security notice (`user_notification`) và (khi user có email đã xác minh)
+// xếp hàng job `security_notice_mail` vào River trong cùng transaction `tx` thông qua `s.notify.NotifySecurity`.
+// Lưu ý (SPEC §3.9, plan Task 9–12, BE1-12/BE1-16):
+//   - Notice luôn được tạo trong DB kể cả khi user chưa xác minh email (`email_targets` rỗng -> không xếp job mail).
+//   - Việc gửi email thực tế diễn ra sau khi transaction đã commit qua `worker.SecurityNoticeWorker`,
+//     nên lỗi gửi mail không bao giờ làm rollback mutation đã commit và mỗi mutation chỉ có duy nhất một chủ sở hữu gửi mail.
+func (s *Service) RecordSecurityNoticeTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, meta secevent.Meta) error {
 	q := s.q.WithTx(tx)
 	u, err := q.GetUserByID(ctx, userID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var targets []string
 	if u.EmailVerifiedAt.Valid && u.Email != "" {
 		targets = []string{u.Email}
 	}
-	if err := s.notify.NotifySecurity(ctx, tx, secevent.Notice{
+	return s.notify.NotifySecurity(ctx, tx, secevent.Notice{
 		UserID:       userID,
 		Kind:         secevent.NoticeSecurity,
 		Meta:         meta.Sanitize(),
 		EmailTargets: targets,
-	}); err != nil {
-		return nil, err
-	}
-	return targets, nil
-}
-
-// SendSecurityEmailsBestEffort gửi email thông báo bảo mật tới các địa chỉ đã xác minh sau khi transaction
-// đã commit thành công. Mọi lỗi từ `s.mail.Send` chỉ được ghi log cảnh báo (không lộ dữ liệu nhạy cảm)
-// và KHÔNG bao giờ trả lỗi làm hỏng response của mutation (SPEC §3.9, plan Task 9/10/11/12).
-func (s *Service) SendSecurityEmailsBestEffort(ctx context.Context, targets []string, purpose string) {
-	if s == nil || s.mail == nil || len(targets) == 0 {
-		return
-	}
-	if purpose == "" {
-		purpose = secevent.NoticeSecurity
-	}
-	for _, to := range targets {
-		if err := s.mail.Send(ctx, to, purpose, ""); err != nil {
-			if s.logger != nil {
-				s.logger.WarnContext(ctx, "gửi email thông báo bảo mật thất bại (không rollback)", slog.String("purpose", purpose))
-			}
-		}
-	}
+	})
 }
 
 // DTO dùng chung cho các endpoint `/vault*` (khớp OpenAPI `api/openapi.yaml` và plan mục 3).

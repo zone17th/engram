@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
@@ -43,7 +45,11 @@ func TestServiceResetHookRollbackOtherUserIsolationAndNewVaultKeyID(t *testing.T
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	clk := clock.NewFixed(time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
 	aud := audit.NewStore(pool)
-	notes := notification.NewStore(pool, nil)
+	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	notes := notification.NewStore(pool, riverInsert)
 	_, obsMetrics := obs.NewRegistry()
 	mailer := &spyMailer{}
 
@@ -168,8 +174,11 @@ func TestServiceResetHookRollbackOtherUserIsolationAndNewVaultKeyID(t *testing.T
 	if st, err := svc.VaultStatus(ctx, userA.ID); err != nil || st != vault.StatusPresent {
 		t.Fatalf("VaultStatus after failed hook = %q, %v, want present", st, err)
 	}
-	if mailer.count() != 0 {
-		t.Fatalf("mailer count after failed hook = %d, want 0", mailer.count())
+	var failedJobs, failedNotices int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&failedJobs)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1`, userA.ID).Scan(&failedNotices)
+	if failedJobs != 0 || failedNotices != 0 || mailer.count() != 0 {
+		t.Fatalf("after failed hook: jobs=%d notices=%d mailer=%d, want 0/0/0", failedJobs, failedNotices, mailer.count())
 	}
 
 	// 2. Succeeding ResetHook -> commits inside the same tx: deletes User A's vault, RKs, passkeys, challenges,
@@ -211,8 +220,15 @@ func TestServiceResetHookRollbackOtherUserIsolationAndNewVaultKeyID(t *testing.T
 	if rkA != 0 || pkA != 0 || chA != 0 || auditResetA != 1 || noticeA != 1 {
 		t.Fatalf("User A after reset: rk=%d pk=%d ch=%d audit=%d notice=%d", rkA, pkA, chA, auditResetA, noticeA)
 	}
+	if mailer.count() != 0 {
+		t.Fatalf("direct mailer count before worker after reset = %d, want 0", mailer.count())
+	}
+	ranJobs, workErr := runQueuedSecurityNoticeJobs(ctx, pool, mailer, logger)
+	if ranJobs != 1 || workErr != nil {
+		t.Fatalf("runQueuedSecurityNoticeJobs = (%d, %v), want (1, nil)", ranJobs, workErr)
+	}
 	if mailer.count() != 1 {
-		t.Fatalf("mailer count after reset = %d, want 1", mailer.count())
+		t.Fatalf("mailer count after reset worker = %d, want 1", mailer.count())
 	}
 
 	// User B is unaffected: vault present, 10 RKs, 1 passkey, 1 challenge.

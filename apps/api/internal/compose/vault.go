@@ -3,7 +3,6 @@ package compose
 import (
 	"fmt"
 	"log/slog"
-	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -11,7 +10,6 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
@@ -36,7 +34,7 @@ func NewVault(
 	pool *pgxpool.Pool,
 	riverc *river.Client[pgx.Tx],
 	clk clock.Clock,
-	mail vault.Mailer,
+	_ vault.Mailer,
 	metrics *obs.Metrics,
 	resetHook vault.ResetHook,
 	logger *slog.Logger,
@@ -47,20 +45,6 @@ func NewVault(
 	if clk == nil {
 		clk = clock.System{}
 	}
-	if mail == nil {
-		dir := cfg.MailSinkDir
-		if dir == "" && (cfg.Env == "development" || cfg.Env == "") {
-			dir = filepath.Join(".data", "mail-sink")
-		}
-		if dir == "" {
-			return nil, nil, fmt.Errorf("thiếu mail adapter")
-		}
-		m, err := auth.NewSinkMailer(dir)
-		if err != nil {
-			return nil, nil, err
-		}
-		mail = m
-	}
 	aud := audit.NewStore(pool)
 	if aud == nil {
 		return nil, nil, fmt.Errorf("audit store nil")
@@ -70,7 +54,7 @@ func NewVault(
 		return nil, nil, fmt.Errorf("notification store nil")
 	}
 	vMetrics := vault.MetricsFromObs(metrics)
-	svc, err := vault.NewService(cfg, pool, clk, aud, notes, mail, vMetrics, resetHook, logger)
+	svc, err := vault.NewService(cfg, pool, clk, aud, notes, nil, vMetrics, resetHook, logger)
 	if err != nil {
 		return nil, nil, err
 	}

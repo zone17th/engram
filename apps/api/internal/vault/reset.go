@@ -26,9 +26,9 @@ type ResetInput struct {
 //   - Xoá recovery keys (`vault_recovery_key`), passkeys (`vault_passkey`), challenges (`webauthn_challenge`),
 //     các bản ghi idempotency khác của user trên `/api/v1/vault%` (`path LIKE '/api/v1/vault%' AND key <> $k`,
 //     giữ lại bản ghi của chính request reset hiện tại), và hàng `vault` (kèm FK `ON DELETE CASCADE`).
-//   - Ghi audit `vault.reset`, tạo in-app security notice (`user_notification`) và đánh dấu `idempotency_key`
-//     `status = 'done'` (`status_code = 204`, `response = NULL`) trong cùng transaction trước khi `COMMIT`.
-//   - Sau khi `COMMIT`, gửi email thông báo bảo mật best-effort qua adapter P02 (lỗi gửi mail không rollback).
+//   - Ghi audit `vault.reset`, tạo in-app security notice (`user_notification` + job `security_notice_mail`
+//     trong tx) và đánh dấu `idempotency_key` `status = 'done'` (`status_code = 204`, `response = NULL`)
+//     trong cùng transaction trước khi `COMMIT`.
 func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput) error {
 	if s.KeyMutationsDisabled() {
 		return ErrVaultMutationsDisabled
@@ -88,9 +88,8 @@ func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput)
 		return err
 	}
 
-	// 5. Create in-app security notice in the same transaction.
-	emailTargets, err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{})
-	if err != nil {
+	// 5. Create in-app security notice (and transactional River mail job if email verified) in the same transaction.
+	if err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{}); err != nil {
 		return err
 	}
 
@@ -98,9 +97,6 @@ func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput)
 	if _, err := s.CommitMutationWithIdempotency(ctx, tx, http.StatusNoContent, nil); err != nil {
 		return err
 	}
-
-	// 7. After COMMIT, send security email notification best-effort; mail errors never roll back.
-	s.SendSecurityEmailsBestEffort(ctx, emailTargets, EventVaultReset)
 
 	return nil
 }

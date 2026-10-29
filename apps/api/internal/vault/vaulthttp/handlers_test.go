@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
@@ -29,9 +31,11 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/worker"
 )
 
 type cookieJar map[string]*http.Cookie
@@ -127,11 +131,15 @@ func newHarness(t *testing.T, opts harnessOpts) *harness {
 	logBuf := &safeBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	authSvc, _, authAPI, err := compose.NewAuth(cfg, pool, nil, clk, mail, nil)
+	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	vaultSvc, vaultAPI, err := compose.NewVault(cfg, pool, nil, clk, mail, metrics, nil, logger)
+	authSvc, _, authAPI, err := compose.NewAuth(cfg, pool, riverInsert, clk, mail, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultSvc, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, clk, mail, metrics, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,11 +189,15 @@ func (h *harness) withKillSwitch(disabled bool) *harness {
 	cfg.KeyMutationsDisabled = disabled
 	reg, metrics := obs.NewRegistry()
 	logger := slog.New(slog.NewJSONHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	_, _, authAPI, err := compose.NewAuth(cfg, h.pool, nil, h.clk, h.mail, nil)
+	riverInsert, err := river.NewClient(riverpgxv5.New(h.pool), &river.Config{})
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	vaultSvc, vaultAPI, err := compose.NewVault(cfg, h.pool, nil, h.clk, h.mail, metrics, nil, logger)
+	_, _, authAPI, err := compose.NewAuth(cfg, h.pool, riverInsert, h.clk, h.mail, nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	vaultSvc, vaultAPI, err := compose.NewVault(cfg, h.pool, riverInsert, h.clk, h.mail, metrics, nil, logger)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -216,6 +228,74 @@ func (h *harness) withKillSwitch(disabled bool) *harness {
 		reg:      reg,
 		logs:     h.logs,
 	}
+}
+
+// runSecurityNoticeWorker runs all queued `security_notice_mail` jobs in `river_job` through the
+// actual `worker.SecurityNoticeWorker` and removes each processed row so subsequent checks only see
+// newly queued jobs.
+func (h *harness) runSecurityNoticeWorker(ctx context.Context, mail auth.Mailer) (int, error) {
+	h.t.Helper()
+	rows, err := h.pool.Query(ctx, `SELECT id, args FROM river_job WHERE kind = 'security_notice_mail' ORDER BY id ASC`)
+	if err != nil {
+		return 0, err
+	}
+	type jobRow struct {
+		id   int64
+		args notification.SecurityNoticeArgs
+	}
+	var jobs []jobRow
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		var a notification.SecurityNoticeArgs
+		if err := json.Unmarshal(raw, &a); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		jobs = append(jobs, jobRow{id: id, args: a})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	w := worker.NewSecurityNoticeWorker(h.pool, mail, nil)
+	var firstErr error
+	for _, j := range jobs {
+		if _, err := h.pool.Exec(ctx, `DELETE FROM river_job WHERE id = $1`, j.id); err != nil {
+			return 0, err
+		}
+		if err := w.Work(ctx, &river.Job[notification.SecurityNoticeArgs]{Args: j.args}); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return len(jobs), firstErr
+}
+
+// countSecurityMailsDelivered counts all security emails delivered to `recipient` in `h.mail`
+// across both `"security"` (queued worker) and any direct vault event purpose (`vault.rewrap`,
+// `vault.recover`, `recovery_key.rotate`, `vault.reset`) so duplicate-owner regressions are caught.
+func (h *harness) countSecurityMailsDelivered(recipient string) int {
+	h.t.Helper()
+	purposes := []string{
+		"security",
+		vault.EventVaultRewrap,
+		vault.EventVaultRecover,
+		vault.EventRecoveryKeyRotate,
+		vault.EventVaultReset,
+	}
+	total := 0
+	for _, p := range purposes {
+		entries, err := h.mail.EntriesFor(recipient, p)
+		if err != nil {
+			h.t.Fatalf("EntriesFor(%q, %q): %v", recipient, p, err)
+		}
+		total += len(entries)
+	}
+	return total
 }
 
 type reqOptions struct {

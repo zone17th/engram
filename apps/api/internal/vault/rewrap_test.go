@@ -12,8 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
@@ -23,6 +27,7 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/worker"
 )
 
 type spyMailer struct {
@@ -54,6 +59,50 @@ func (m *spyMailer) count() int {
 	return len(m.calls)
 }
 
+// runQueuedSecurityNoticeJobs runs all queued `security_notice_mail` River jobs through the
+// actual `worker.SecurityNoticeWorker` and deletes each processed row from `river_job` so
+// subsequent mutations in the same test only process newly queued jobs.
+func runQueuedSecurityNoticeJobs(ctx context.Context, pool *pgxpool.Pool, mail auth.Mailer, logger *slog.Logger) (int, error) {
+	rows, err := pool.Query(ctx, `SELECT id, args FROM river_job WHERE kind = 'security_notice_mail' ORDER BY id ASC`)
+	if err != nil {
+		return 0, err
+	}
+	type jobRow struct {
+		id   int64
+		args notification.SecurityNoticeArgs
+	}
+	var jobs []jobRow
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		var a notification.SecurityNoticeArgs
+		if err := json.Unmarshal(raw, &a); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		jobs = append(jobs, jobRow{id: id, args: a})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	w := worker.NewSecurityNoticeWorker(pool, mail, logger)
+	var firstErr error
+	for _, j := range jobs {
+		if _, err := pool.Exec(ctx, `DELETE FROM river_job WHERE id = $1`, j.id); err != nil {
+			return 0, err
+		}
+		if err := w.Work(ctx, &river.Job[notification.SecurityNoticeArgs]{Args: j.args}); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return len(jobs), firstErr
+}
+
 func TestServiceRewrapRulesAuditNoticeAndMailFailureDoesNotRollback(t *testing.T) {
 	dsn := dbtest.StartPostgres(t)
 	dbtest.MigrateUp(t, dsn)
@@ -73,7 +122,11 @@ func TestServiceRewrapRulesAuditNoticeAndMailFailureDoesNotRollback(t *testing.T
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	clk := clock.NewFixed(time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
 	aud := audit.NewStore(pool)
-	notes := notification.NewStore(pool, nil)
+	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	notes := notification.NewStore(pool, riverInsert)
 	_, obsMetrics := obs.NewRegistry()
 	mailer := &spyMailer{}
 
@@ -198,16 +251,21 @@ func TestServiceRewrapRulesAuditNoticeAndMailFailureDoesNotRollback(t *testing.T
 	if res2.Version != 2 {
 		t.Fatalf("res2.Version = %d, want 2", res2.Version)
 	}
-	if mailer.count() != 0 {
-		t.Fatalf("unverified user should not trigger mail.Send, got %d calls", mailer.count())
-	}
-
-	var noticeCount int
+	var noticeCount, jobCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userUnverified.ID).Scan(&noticeCount); err != nil {
 		t.Fatal(err)
 	}
 	if noticeCount != 1 {
 		t.Fatalf("user_notification count for unverified user = %d, want 1", noticeCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobCount != 0 {
+		t.Fatalf("river_job count for unverified user = %d, want 0", jobCount)
+	}
+	if mailer.count() != 0 {
+		t.Fatalf("unverified user should not trigger mail.Send, got %d calls", mailer.count())
 	}
 
 	// 6. Now current KDF has ops=4, mem=128 MiB. Attempting to downgrade ops=3 or mem=64 MiB -> ErrVaultKDFInvalid.
@@ -244,8 +302,15 @@ func TestServiceRewrapRulesAuditNoticeAndMailFailureDoesNotRollback(t *testing.T
 	if res3.Version != 3 {
 		t.Fatalf("res3.Version = %d, want 3", res3.Version)
 	}
+	if mailer.count() != 0 {
+		t.Fatalf("direct mailer calls before worker run = %d, want 0 (single queued owner)", mailer.count())
+	}
+	ranJobs, workErr := runQueuedSecurityNoticeJobs(ctx, pool, mailer, logger)
+	if ranJobs != 1 || workErr == nil {
+		t.Fatalf("runQueuedSecurityNoticeJobs = (%d, %v), want (1, non-nil mailer error)", ranJobs, workErr)
+	}
 	if mailer.count() != 1 {
-		t.Fatalf("mailer.count() = %d, want 1", mailer.count())
+		t.Fatalf("mailer.count() after worker = %d, want 1", mailer.count())
 	}
 
 	// Verify vault state, RK rows, and passkeys are intact after both rewraps.

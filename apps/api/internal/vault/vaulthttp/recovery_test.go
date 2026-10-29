@@ -325,6 +325,9 @@ func TestRecoverCompleteCrossUserStaleVersionAndIdempotentRetry(t *testing.T) {
 	jarB, _ := h.signupUser("rec-complete-b@example.com", password)
 
 	payloadA := makeCreatePayload(t, 0x22)
+	if _, err := h.pool.Exec(context.Background(), `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatal(err)
+	}
 	respA, rawA := h.doReq(jarA, http.MethodPost, "/api/v1/vault", mustJSON(t, payloadA), reqOptions{
 		idemKey: "idem-rec-comp-create-a",
 	})
@@ -467,15 +470,29 @@ func TestRecoverCompleteCrossUserStaleVersionAndIdempotentRetry(t *testing.T) {
 		}
 	}
 
-	var noticeCount int
+	var noticeCount, jobCount int
 	if err := h.pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM user_notification WHERE user_id = $1`,
 		meA.User.ID,
 	).Scan(&noticeCount); err != nil {
 		t.Fatal(err)
 	}
-	if noticeCount != 1 {
-		t.Fatalf("user_notification count = %d, want 1", noticeCount)
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`,
+	).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if noticeCount != 1 || jobCount != 1 {
+		t.Fatalf("user_notification=%d river_job=%d after recover+replay, want 1 and 1", noticeCount, jobCount)
+	}
+	if beforeWorker := h.countSecurityMailsDelivered("rec-complete-a@example.com"); beforeWorker != 0 {
+		t.Fatalf("direct emails before worker = %d, want 0", beforeWorker)
+	}
+	if ran, err := h.runSecurityNoticeWorker(context.Background(), h.mail); err != nil || ran != 1 {
+		t.Fatalf("runSecurityNoticeWorker = (%d, %v), want (1, nil)", ran, err)
+	}
+	if total := h.countSecurityMailsDelivered("rec-complete-a@example.com"); total != 1 {
+		t.Fatalf("total security emails delivered after recover+replay = %d, want 1", total)
 	}
 
 	_, rawAudit := h.doReq(jarA, http.MethodGet, "/api/v1/auth/audit", "", reqOptions{})

@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -15,18 +13,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/riverqueue/river"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/worker"
 )
 
 type rewrapPayload struct {
@@ -278,13 +271,20 @@ func TestVaultRewrapGrantsPreconditionsKDFValidationAndUntouchedRKsPasskeys(t *t
 		}
 	}
 
-	// 12. Verify in-app security notice exists for user without verified email, and audit_log has exactly 1 vault.rewrap row.
-	var noticeCount, auditCount int
+	// 12. Verify in-app security notice exists for user without verified email, no security_notice_mail job is queued,
+	// and audit_log has exactly 1 vault.rewrap row.
+	var noticeCount, jobCount, auditCount int
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, meA.User.ID).Scan(&noticeCount); err != nil {
 		t.Fatal(err)
 	}
 	if noticeCount != 1 {
 		t.Fatalf("user_notification count for unverified user = %d, want 1", noticeCount)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobCount != 0 {
+		t.Fatalf("river_job security_notice_mail count for unverified user = %d, want 0", jobCount)
 	}
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, meA.User.ID, vault.EventVaultRewrap).Scan(&auditCount); err != nil {
 		t.Fatal(err)
@@ -294,80 +294,21 @@ func TestVaultRewrapGrantsPreconditionsKDFValidationAndUntouchedRKsPasskeys(t *t
 	}
 }
 
-// TestVaultRewrapFailingMailAdapterStillCommits covers plan Task 9 bullet:
-// "mail adapter lỗi vẫn commit".
+// TestVaultRewrapFailingMailAdapterStillCommits covers plan Task 9 ("mail adapter lỗi vẫn commit")
+// and BE1-12 + BE1-16 with a real River-backed notifier + SecurityNoticeWorker:
+//   - failed mutation leaves 0 user_notification rows and 0 river_job rows;
+//   - one committed mutation creates 1 user_notification row and 1 river_job row, with 0 immediate direct sends;
+//   - idempotent replay adds 0 notices, 0 jobs, and 0 delivered emails;
+//   - failing mail delivery in SecurityNoticeWorker never rolls back the committed mutation;
+//   - successful worker execution delivers exactly 1 message (never 2).
 func TestVaultRewrapFailingMailAdapterStillCommits(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	origin := "http://" + ln.Addr().String()
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
-	clk := clock.NewFixed(time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
-
-	t.Setenv("DATABASE_URL", dsn)
-	t.Setenv("APP_ORIGIN", origin)
-	t.Setenv("APP_ENV", "development")
-	t.Setenv("AUTH_REQUIRE_EMAIL_VERIFICATION", "false")
-	t.Setenv("VAULT_KEY_MUTATIONS_DISABLED", "false")
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg, metrics := obs.NewRegistry()
-	logBuf := &safeBuffer{}
-	logger := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	failMail := &failingMailer{}
-	authSvc, _, authAPI, err := compose.NewAuth(cfg, pool, nil, clk, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	vaultSvc, vaultAPI, err := compose.NewVault(cfg, pool, nil, clk, failMail, metrics, nil, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authn, csrfv, reauth := compose.Adapters(authSvc)
-
-	hnd := httpx.NewRouter(httpx.Deps{
-		Config:           cfg,
-		Logger:           logger,
-		Ready:            func(context.Context) error { return nil },
-		Metrics:          promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}),
-		MetricsCollector: metrics,
-		Authenticator:    authn,
-		CSRF:             csrfv,
-		Reauth:           reauth,
-		MountAPI:         compose.MountAll(authhttp.Mount(authAPI), vaulthttp.Mount(vaultAPI)),
-	})
-	srv := httptest.NewUnstartedServer(hnd)
-	_ = srv.Listener.Close()
-	srv.Listener = ln
-	srv.Start()
-	t.Cleanup(srv.Close)
-
-	h := &harness{
-		t:        t,
-		srv:      srv,
-		origin:   origin,
-		clk:      clk,
-		authSvc:  authSvc,
-		vaultSvc: vaultSvc,
-		vaultAPI: vaultAPI,
-		pool:     pool,
-		reg:      reg,
-		logs:     logBuf,
-	}
-
+	h := newHarness(t, harnessOpts{})
 	password := "correct-horse-battery-staple"
-	jarA, meA := h.signupUser("verified-mail-fail@example.com", password)
+	email := "verified-mail-fail@example.com"
+	jarA, meA := h.signupUser(email, password)
 
-	// Mark email as verified so RecordSecurityNoticeTx populates email_targets and SendSecurityEmailsBestEffort calls failMail.
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -384,29 +325,89 @@ func TestVaultRewrapFailingMailAdapterStillCommits(t *testing.T) {
 	}
 
 	grant := h.reauthGrant(jarA, "vault.rewrap", password)
-	ifMatch := formatIfMatchTag(created.VaultKeyID, created.Version)
 	rewrapReq := makeRewrapPayload(t, 3, 67108864, 0x77, 0x88)
+	rewrapBody := mustJSON(t, rewrapReq)
 
-	respRewrap, rawRewrap := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", mustJSON(t, rewrapReq), reqOptions{
-		idemKey: "idem-mailfail-rewrap-0001",
+	// 1. Failed mutation (stale If-Match -> 412) leaves 0 notices and 0 queued jobs.
+	respFail, rawFail := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: "idem-mailfail-rewrap-stale",
+		ifMatch: formatIfMatchTag(created.VaultKeyID, 99),
+		grant:   grant,
+	})
+	if respFail.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("stale PUT /vault/kek = %d %s, want 412", respFail.StatusCode, rawFail)
+	}
+	var noticesAfterFail, jobsAfterFail int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1`, meA.User.ID).Scan(&noticesAfterFail); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobsAfterFail); err != nil {
+		t.Fatal(err)
+	}
+	if noticesAfterFail != 0 || jobsAfterFail != 0 {
+		t.Fatalf("failed mutation left notices=%d jobs=%d, want 0/0", noticesAfterFail, jobsAfterFail)
+	}
+
+	// 2. Successful mutation -> 200 {version: 2}, 1 notice, 1 River job, 0 direct emails before worker runs.
+	ifMatch := formatIfMatchTag(created.VaultKeyID, created.Version)
+	idemKeyOK := "idem-mailfail-rewrap-0001"
+	respRewrap, rawRewrap := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: idemKeyOK,
 		ifMatch: ifMatch,
 		grant:   grant,
 	})
 	if respRewrap.StatusCode != http.StatusOK {
-		t.Fatalf("PUT /vault/kek with failing mail adapter = %d %s, want 200", respRewrap.StatusCode, rawRewrap)
+		t.Fatalf("PUT /vault/kek = %d %s, want 200", respRewrap.StatusCode, rawRewrap)
 	}
 	var vResp vault.VaultVersionResponse
-	if err := json.Unmarshal([]byte(rawRewrap), &vResp); err != nil {
+	if err := json.Unmarshal([]byte(rawRewrap), &vResp); err != nil || vResp.Version != 2 {
+		t.Fatalf("vResp = %+v (err=%v), want version=2", vResp, err)
+	}
+	if gotDirect := h.countSecurityMailsDelivered(email); gotDirect != 0 {
+		t.Fatalf("immediate security emails delivered before worker run = %d, want 0 (single queued owner)", gotDirect)
+	}
+
+	// 3. Idempotent replay adds 0 notices and 0 jobs.
+	respReplay, rawReplay := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: idemKeyOK,
+		ifMatch: ifMatch,
+		grant:   grant,
+	})
+	if respReplay.StatusCode != http.StatusOK {
+		t.Fatalf("replay PUT /vault/kek = %d %s, want 200", respReplay.StatusCode, rawReplay)
+	}
+
+	var noticeID int64
+	var noticesAfterOK, jobsAfterOK int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*), coalesce(max(id), 0) FROM user_notification WHERE user_id = $1`, meA.User.ID).Scan(&noticesAfterOK, &noticeID); err != nil {
 		t.Fatal(err)
 	}
-	if vResp.Version != 2 {
-		t.Fatalf("vResp.Version = %d, want 2", vResp.Version)
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobsAfterOK); err != nil {
+		t.Fatal(err)
+	}
+	if noticesAfterOK != 1 || jobsAfterOK != 1 || noticeID == 0 {
+		t.Fatalf("after commit + replay: notices=%d jobs=%d noticeID=%d, want 1/1/>0", noticesAfterOK, jobsAfterOK, noticeID)
+	}
+
+	// 4. Failing mail delivery in SecurityNoticeWorker returns the adapter error and NEVER rolls back the committed mutation.
+	failMail := &failingMailer{}
+	var rawArgs []byte
+	if err := h.pool.QueryRow(ctx, `SELECT args FROM river_job WHERE kind = 'security_notice_mail' LIMIT 1`).Scan(&rawArgs); err != nil {
+		t.Fatal(err)
+	}
+	var jobArgs notification.SecurityNoticeArgs
+	if err := json.Unmarshal(rawArgs, &jobArgs); err != nil {
+		t.Fatal(err)
+	}
+	failWorker := worker.NewSecurityNoticeWorker(h.pool, failMail, slog.New(slog.NewJSONHandler(h.logs, nil)))
+	if err := failWorker.Work(ctx, &river.Job[notification.SecurityNoticeArgs]{Args: jobArgs}); err == nil {
+		t.Fatal("expected SecurityNoticeWorker with failingMailer to return error")
 	}
 	if failMail.calls.Load() != 1 {
 		t.Fatalf("failingMailer calls = %d, want 1", failMail.calls.Load())
 	}
 
-	// Verify DB committed version=2, wrap, audit, and notification.
+	// Verify DB committed version=2, wrap, audit, and notification remain intact after worker mail failure.
 	respGet, rawGet := h.doReq(jarA, http.MethodGet, "/api/v1/vault", "", reqOptions{})
 	if respGet.StatusCode != http.StatusOK {
 		t.Fatalf("GET /vault = %d %s", respGet.StatusCode, rawGet)
@@ -419,8 +420,17 @@ func TestVaultRewrapFailingMailAdapterStillCommits(t *testing.T) {
 		t.Fatalf("state after failing mail = %+v", state)
 	}
 
-	// Ensure logs never contain recipient email or wrap.
-	if strings.Contains(logBuf.String(), rewrapReq.VaultKeyWrappedByKEK) {
-		t.Fatalf("logs leaked wrap: %s", logBuf.String())
+	// 5. Running the queued job with the working SinkMailer delivers 1 message; total delivered across all purposes is 1 (never 2).
+	ranJobs, err := h.runSecurityNoticeWorker(ctx, h.mail)
+	if err != nil || ranJobs != 1 {
+		t.Fatalf("runSecurityNoticeWorker = (%d, %v), want (1, nil)", ranJobs, err)
+	}
+	if totalDelivered := h.countSecurityMailsDelivered(email); totalDelivered != 1 {
+		t.Fatalf("total security emails delivered for one rewrap = %d, want 1", totalDelivered)
+	}
+
+	// Ensure logs never contain wrap.
+	if strings.Contains(h.logs.String(), rewrapReq.VaultKeyWrappedByKEK) {
+		t.Fatalf("logs leaked wrap: %s", h.logs.String())
 	}
 }

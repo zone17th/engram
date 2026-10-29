@@ -183,7 +183,7 @@ func (s *Service) RegenerateRecoveryKeys(ctx context.Context, p authctx.Principa
 //     `UNIQUE(lookup_hash)` (trong cùng request hoặc trùng với user khác) sang `409 recovery_key_conflict`
 //     (không lộ chủ sở hữu) và `UNIQUE(vault_id, slot)` sang `409 recovery_key_slot_taken`.
 //   - Tăng `vault.version = version + 1`, ghi audit `recovery_key.rotate`, tạo in-app security notice
-//     và cập nhật `idempotency_key` `status = 'done'` trước khi `COMMIT`; gửi email best-effort sau `COMMIT`.
+//     (kèm job mail River trong tx) và cập nhật `idempotency_key` `status = 'done'` trước khi `COMMIT`.
 func (s *Service) RotateRecoveryKeys(ctx context.Context, p authctx.Principal, in RecoveryKeysRotateInput) (RecoveryKeysMutationResponse, error) {
 	if s.KeyMutationsDisabled() {
 		return RecoveryKeysMutationResponse{}, ErrVaultMutationsDisabled
@@ -252,9 +252,8 @@ func (s *Service) RotateRecoveryKeys(ctx context.Context, p authctx.Principal, i
 		return RecoveryKeysMutationResponse{}, err
 	}
 
-	// 7. Create in-app security notice in the same transaction.
-	emailTargets, err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{})
-	if err != nil {
+	// 7. Create in-app security notice (and transactional River mail job if email verified) in the same transaction.
+	if err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{}); err != nil {
 		return RecoveryKeysMutationResponse{}, err
 	}
 
@@ -267,9 +266,6 @@ func (s *Service) RotateRecoveryKeys(ctx context.Context, p authctx.Principal, i
 	if _, err := s.CommitMutationWithIdempotency(ctx, tx, http.StatusOK, resp); err != nil {
 		return RecoveryKeysMutationResponse{}, err
 	}
-
-	// 9. After COMMIT, send best-effort security emails.
-	s.SendSecurityEmailsBestEffort(ctx, emailTargets, EventRecoveryKeyRotate)
 
 	return resp, nil
 }

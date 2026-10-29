@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
@@ -43,7 +45,11 @@ func TestServiceRegenerateAndRotateRecoveryKeys(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	clk := clock.NewFixed(time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
 	aud := audit.NewStore(pool)
-	notes := notification.NewStore(pool, nil)
+	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	notes := notification.NewStore(pool, riverInsert)
 	mailer := &failingRecoverMailer{}
 
 	svc, err := vault.NewService(cfg, pool, clk, aud, notes, mailer, nil, nil, logger)
@@ -206,8 +212,15 @@ func TestServiceRegenerateAndRotateRecoveryKeys(t *testing.T) {
 	if rotResp.Remaining != 10 || rotResp.Version != 3 {
 		t.Fatalf("rotResp = %+v, want {Remaining:10, Version:3}", rotResp)
 	}
+	if mailer.calls.Load() != 0 {
+		t.Fatalf("direct mailer calls before worker run = %d, want 0", mailer.calls.Load())
+	}
+	ranJobs, workErr := runQueuedSecurityNoticeJobs(ctx, pool, mailer, logger)
+	if ranJobs != 1 || workErr == nil {
+		t.Fatalf("runQueuedSecurityNoticeJobs = (%d, %v), want (1, non-nil mailer error)", ranJobs, workErr)
+	}
 	if mailer.calls.Load() != 1 {
-		t.Fatalf("expected mailer call on rotate, got %d", mailer.calls.Load())
+		t.Fatalf("expected mailer call on rotate via worker, got %d", mailer.calls.Load())
 	}
 
 	// Old RKs (both original slot 1 and regenerated slot 2) now fail lookup with ErrRecoveryKeyInvalid (401),

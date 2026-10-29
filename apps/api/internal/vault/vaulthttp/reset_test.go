@@ -82,6 +82,11 @@ func TestVaultResetCommitSameKeyRetryHookRollbackOtherUserAndIdempotencyPurge(t 
 	if respRewrapA.StatusCode != http.StatusOK {
 		t.Fatalf("PUT /vault/kek (Alice) = %d %s", respRewrapA.StatusCode, rawRewrapA)
 	}
+	// Drain the rewrap security_notice_mail job before testing reset so reset job/mail counts are isolated.
+	if ran, err := h.runSecurityNoticeWorker(ctx, h.mail); err != nil || ran != 1 {
+		t.Fatalf("drain rewrap job before reset = (%d, %v), want (1, nil)", ran, err)
+	}
+	mailsBeforeReset := h.countSecurityMailsDelivered("reset-alice@example.com")
 
 	// Insert passkey, webauthn_challenge, and a non-vault idempotency row for Alice (and passkey/challenge for Bob).
 	if _, err := q.InsertPasskey(ctx, gen.InsertPasskeyParams{
@@ -163,6 +168,13 @@ func TestVaultResetCommitSameKeyRetryHookRollbackOtherUserAndIdempotencyPurge(t 
 	if respGetStillThere.StatusCode != http.StatusOK {
 		t.Fatalf("Alice GET /vault after failed hook = %d, want 200", respGetStillThere.StatusCode)
 	}
+	var jobsAfterFailHook int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobsAfterFailHook); err != nil {
+		t.Fatal(err)
+	}
+	if jobsAfterFailHook != 0 {
+		t.Fatalf("river_job count after failed ResetHook = %d, want 0", jobsAfterFailHook)
+	}
 
 	// 3. Restore working ResetHook (recording the call inside tx) and run DELETE /vault:
 	// commits 204 No Content with empty body.
@@ -232,6 +244,22 @@ func TestVaultResetCommitSameKeyRetryHookRollbackOtherUserAndIdempotencyPurge(t 
 	}
 	if auditResetA != 1 {
 		t.Fatalf("audit vault.reset count = %d, want 1", auditResetA)
+	}
+	var resetJobs int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&resetJobs); err != nil {
+		t.Fatal(err)
+	}
+	if resetJobs != 1 {
+		t.Fatalf("river_job count after reset+retry = %d, want 1", resetJobs)
+	}
+	if gotBeforeWorker := h.countSecurityMailsDelivered("reset-alice@example.com") - mailsBeforeReset; gotBeforeWorker != 0 {
+		t.Fatalf("direct emails before worker on reset = %d, want 0", gotBeforeWorker)
+	}
+	if ran, err := h.runSecurityNoticeWorker(ctx, h.mail); err != nil || ran != 1 {
+		t.Fatalf("runSecurityNoticeWorker after reset = (%d, %v), want (1, nil)", ran, err)
+	}
+	if gotAfterWorker := h.countSecurityMailsDelivered("reset-alice@example.com") - mailsBeforeReset; gotAfterWorker != 1 {
+		t.Fatalf("security emails delivered for reset = %d, want 1", gotAfterWorker)
 	}
 
 	// 6. Verify Bob (other user) is completely unaffected: vault present, 10 RKs, 1 passkey, 1 challenge,

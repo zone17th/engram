@@ -96,7 +96,7 @@ func (s *Service) RecoveryLookup(ctx context.Context, p authctx.Principal, in Re
 //     7. Ghi 2 bản ghi `audit_log`: `vault.recover` và `recovery_key.consume` (metadata không chứa bí mật).
 //     8. Tạo in-app security notice (`user_notification`) trong cùng transaction.
 //     9. Cập nhật `idempotency_key` `status = 'done'` kèm kiểm tra `owner_token` ngay trước `COMMIT`.
-//   - Sau khi `COMMIT` thành công: tăng `vault_recover_total` và gửi email thông báo bảo mật best-effort.
+//   - Sau khi `COMMIT` thành công: tăng `vault_recover_total` (việc gửi email bảo mật do worker River xử lý từ job đã xếp trong tx).
 func (s *Service) RecoverComplete(ctx context.Context, p authctx.Principal, in RecoverCompleteInput) (VaultVersionResponse, error) {
 	if s.KeyMutationsDisabled() {
 		return VaultVersionResponse{}, ErrVaultMutationsDisabled
@@ -184,9 +184,8 @@ func (s *Service) RecoverComplete(ctx context.Context, p authctx.Principal, in R
 		return VaultVersionResponse{}, err
 	}
 
-	// 8. Create in-app security notice in the same transaction (created even if user has no verified email).
-	emailTargets, err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{})
-	if err != nil {
+	// 8. Create in-app security notice (and transactional River mail job if email verified) in the same transaction.
+	if err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{}); err != nil {
 		return VaultVersionResponse{}, err
 	}
 
@@ -199,9 +198,8 @@ func (s *Service) RecoverComplete(ctx context.Context, p authctx.Principal, in R
 		return VaultVersionResponse{}, err
 	}
 
-	// 10. After COMMIT, increment Prometheus counter `vault_recover_total` and send best-effort security emails.
+	// 10. After COMMIT, increment Prometheus counter `vault_recover_total`.
 	s.IncRecoverTotal()
-	s.SendSecurityEmailsBestEffort(ctx, emailTargets, EventVaultRecover)
 
 	return resp, nil
 }
