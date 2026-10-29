@@ -175,7 +175,12 @@ type reqOptions struct {
 	noCSRF  bool
 }
 
-func (h *harness) doReq(j cookieJar, method, path, body string, opt reqOptions) (*http.Response, string) {
+type testResponse struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func (h *harness) doReq(j cookieJar, method, path, body string, opt reqOptions) (testResponse, string) {
 	h.t.Helper()
 	var rdr io.Reader
 	if body != "" {
@@ -210,13 +215,16 @@ func (h *harness) doReq(j cookieJar, method, path, body string, opt reqOptions) 
 	if err != nil {
 		h.t.Fatal(err)
 	}
+	defer func() { _ = resp.Body.Close() }()
 	j.capture(resp)
 	b, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	return resp, string(b)
+	return testResponse{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header,
+	}, string(b)
 }
 
 func (h *harness) signupUser(email, password string) (cookieJar, auth.Me) {
@@ -700,7 +708,7 @@ func TestVaultReadsPrincipalIsolationNoStoreAndNoETag(t *testing.T) {
 	}
 }
 
-func assertNoStoreNoTransformNoETag(t *testing.T, route string, resp *http.Response) {
+func assertNoStoreNoTransformNoETag(t *testing.T, route string, resp testResponse) {
 	t.Helper()
 	cc := resp.Header.Get("Cache-Control")
 	if cc != "no-store, no-transform" {
