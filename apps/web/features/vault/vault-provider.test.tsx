@@ -5028,10 +5028,10 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
   // token that matches a reset this provider observed.
   // ---------------------------------------------------------------------------
   async function be29Setup(prefix: string) {
-    const gate: { mode: 'present' | 'absent' } = { mode: 'present' };
+    const gate: { mode: 'present' | 'absent'; keyId: string } = { mode: 'present', keyId: 'vk:be29-a' };
     mockBe2Fetch({
       vault: () =>
-        gate.mode === 'present' ? jsonResponse(be2VaultBody('vk:be29-a', 1)) : be2VaultAbsentResponse(),
+        gate.mode === 'present' ? jsonResponse(be2VaultBody(gate.keyId, 1)) : be2VaultAbsentResponse(),
     });
     const idbFactory = fakeIdb.createFactory();
     const { vault } = renderBe2Provider(prefix, {
@@ -5132,6 +5132,58 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       expect(meta?.deviceRevision).toBe(11);
     });
     expect(ctx.devkeys.has(keyUnseen)).toBe(false);
+    peer.close();
+  }, 15_000);
+
+  it('BE2-9 acting-tab order: dialog purge, markResetPurged(current vault id) BEFORE the reset is observed, then GET /vault 404 purges exactly once in total', async () => {
+    const ctx = await be29Setup('be29-acting');
+    // The acting tab's reset dialog purges (rev 10 -> 11) and marks the CURRENT vault, before this provider has seen
+    // any 404 or vault_changed for it.
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+    expect(screen.getByTestId('be29-acting-state')).toHaveTextContent('locked');
+  }, 15_000);
+
+  it('BE2-9: a stale id from an earlier vault never suppresses the purge of the current vault reset', async () => {
+    const ctx = await be29Setup('be29-stale');
+    // The device now holds vault B (A was replaced; the key change is observed by the next reload).
+    ctx.gate.keyId = 'vk:be29-b';
+    await act(async () => {
+      await ctx.vault().reloadVaultMeta();
+    });
+    await waitFor(() => {
+      expect(ctx.vault().vaultMeta?.vault_key_id).toBe('vk:be29-b');
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    const keyB = seedBe29DevKey(ctx.devkeys, 'vk:be29-b');
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    ctx.gate.mode = 'absent';
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be29-b', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(12);
+    });
+    expect(ctx.devkeys.has(keyB)).toBe(false);
     peer.close();
   }, 15_000);
 
