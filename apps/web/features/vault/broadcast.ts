@@ -19,6 +19,7 @@ export type VaultBroadcastOrigin = 'local' | 'remote';
 export type VaultBroadcastHandler = (
   message: VaultBroadcastMessage,
   origin: VaultBroadcastOrigin,
+  senderId?: symbol,
 ) => void;
 
 let sharedChannel: BroadcastChannel | null = null;
@@ -56,10 +57,10 @@ function getChannel(): BroadcastChannel | null {
   return sharedChannel;
 }
 
-export function postVaultBroadcast(message: VaultBroadcastMessage): void {
+export function postVaultBroadcast(message: VaultBroadcastMessage, senderId?: symbol): void {
   for (const subscriber of [...subscribers]) {
     try {
-      subscriber(message, 'local');
+      subscriber(message, 'local', senderId);
     } catch {
       // Subscriber errors must not prevent broadcast delivery
     }

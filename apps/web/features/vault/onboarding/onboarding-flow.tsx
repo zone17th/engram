@@ -21,6 +21,7 @@ import {
 import {
   createIdempotencyKey,
   createVault as postCreateVault,
+  fetchVault,
   type VaultCreateRequest,
 } from '@/lib/api/vault';
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
@@ -31,6 +32,8 @@ export type OnboardingStep = 'passphrase' | 'passphrase-oom' | 'recovery-keys' |
 interface PreparedOnboardingBundle {
   /** Generation captured before `createVault` so any intervening lock invalidates the bundle. */
   opGeneration: number;
+  /** User ID captured when the bundle was prepared so any account switch invalidates it. */
+  userId: string | null;
   /** Display strings for the 10 recovery keys; wiped from state/DOM immediately when leaving step 2 or on 409. */
   displayRecoveryKeys: ReadonlyArray<{ slot: number; display: string }>;
   /** Exact serialized JSON body for `POST /vault` — reused byte-for-byte on retry with the same `idempotencyKey`. */
@@ -38,7 +41,6 @@ interface PreparedOnboardingBundle {
   /** Single UUID v4 `Idempotency-Key` generated once per user operation and reused across network retries. */
   idempotencyKey: string;
 }
-
 type Step2ErrorAlert =
   | { kind: 'network' }
   | { kind: 'in_progress' }
@@ -97,7 +99,11 @@ export function VaultOnboardingFlow() {
   const evalSeqRef = useRef(0);
   const stepRef = useRef<OnboardingStep>(step);
   stepRef.current = step;
-
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
+  currentUserIdRef.current = me?.user.id ?? null;
+  const postSubmitSeqRef = useRef(0);
   const confirmCheckboxId = useId();
   const gridHeadingId = useId();
 
@@ -123,20 +129,21 @@ export function VaultOnboardingFlow() {
   }, []);
 
   const clearRecoveryKeysAndSecrets = useCallback(() => {
+    postSubmitSeqRef.current += 1;
     clearPassphraseFields();
     setPreparedBundle(null);
     setConfirmedSaved(false);
   }, [clearPassphraseFields]);
-
   // Register secret form reset with VaultProvider so any lock / logout / account switch wipes state synchronously.
   useEffect(() => {
-    return vault.registerSecretFormReset(() => {
+    const currentVault = vaultRef.current;
+    return currentVault.registerSecretFormReset(() => {
       clearRecoveryKeysAndSecrets();
       if (stepRef.current === 'recovery-keys') {
         setStep('passphrase');
       }
     });
-  }, [clearRecoveryKeysAndSecrets, vault]);
+  }, [clearRecoveryKeysAndSecrets]);
 
   // Wipe secrets and cancel clipboard timer when unmounting (leaving the onboarding route).
   useEffect(() => {
@@ -210,10 +217,10 @@ export function VaultOnboardingFlow() {
       setStep1Reason(null);
       setStep2Error(null);
 
-      // Capture immutable opGeneration BEFORE the first await (ADR 0002 §10.2).
+      // Capture immutable opGeneration and userId BEFORE the first await (ADR 0002 §10.2).
       const client = vault.getClient();
       const opGeneration = client.captureGeneration();
-
+      const opUserId = currentUserIdRef.current;
       const policy = await checkPassphrasePolicy(passphrase, {
         confirmPassphrase,
         userInputs,
@@ -244,7 +251,7 @@ export function VaultOnboardingFlow() {
           opGeneration,
         });
 
-        if (client.getGeneration() !== opGeneration) {
+        if (client.getGeneration() !== opGeneration || currentUserIdRef.current !== opUserId) {
           return;
         }
 
@@ -267,6 +274,7 @@ export function VaultOnboardingFlow() {
 
         setPreparedBundle({
           opGeneration,
+          userId: opUserId,
           displayRecoveryKeys: created.recovery_keys.map((rk) => ({
             slot: rk.slot,
             display: rk.display,
@@ -311,13 +319,41 @@ export function VaultOnboardingFlow() {
       return;
     }
 
+    const client = vault.getClient();
+    const currentUserId = currentUserIdRef.current;
+    if (
+      client.getGeneration() !== preparedBundle.opGeneration ||
+      (preparedBundle.userId !== null && currentUserId !== preparedBundle.userId)
+    ) {
+      clearRecoveryKeysAndSecrets();
+      setStep2Error(null);
+      setStep('passphrase');
+      return;
+    }
+
+    const submitBundle = preparedBundle;
+    const submitSeq = ++postSubmitSeqRef.current;
     setSubmittingVault(true);
     setStep2Error(null);
 
     try {
-      const response = await postCreateVault(preparedBundle.requestBodyJson, {
-        idempotencyKey: preparedBundle.idempotencyKey,
+      const response = await postCreateVault(submitBundle.requestBodyJson, {
+        idempotencyKey: submitBundle.idempotencyKey,
       });
+
+      if (
+        postSubmitSeqRef.current !== submitSeq ||
+        client.getGeneration() !== submitBundle.opGeneration ||
+        (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
+      ) {
+        // Server committed vault A while the tab locked, went back, or started deriving vault B:
+        // never pair vault A's server state with a newer Worker key; lock so the user unlocks vault A cleanly.
+        clearRecoveryKeysAndSecrets();
+        await vault.lock({ broadcast: false, reason: 'stale_onboarding_post_succeeded' });
+        await refetchMe().catch(() => undefined);
+        router.replace('/app/unlock');
+        return;
+      }
 
       // Immediately wipe the 10 display RKs from React state and DOM once POST /vault succeeds.
       clearRecoveryKeysAndSecrets();
@@ -331,6 +367,13 @@ export function VaultOnboardingFlow() {
       await refetchMe();
       router.replace('/app');
     } catch (err) {
+      if (
+        postSubmitSeqRef.current !== submitSeq ||
+        client.getGeneration() !== submitBundle.opGeneration ||
+        (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
+      ) {
+        return;
+      }
       if (err instanceof ProblemError) {
         const { code, status } = err.problem;
         if (status === 409 && code === 'vault_exists') {
@@ -345,6 +388,36 @@ export function VaultOnboardingFlow() {
           return;
         }
         if (status === 409 && code === 'idempotency_conflict') {
+          // ADR 0002 §8.4: retire the rejected Idempotency-Key so retries never reuse the conflicted key,
+          // and reconcile server state via GET /vault first.
+          setPreparedBundle((prev) =>
+            prev ? { ...prev, idempotencyKey: createIdempotencyKey() } : null,
+          );
+          try {
+            await fetchVault();
+            if (
+              postSubmitSeqRef.current !== submitSeq ||
+              client.getGeneration() !== submitBundle.opGeneration ||
+              (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
+            ) {
+              return;
+            }
+            clearRecoveryKeysAndSecrets();
+            await vault.lock({ broadcast: false, reason: 'vault_exists_after_conflict' });
+            setStep('vault-exists');
+            return;
+          } catch (reconcileErr) {
+            if (
+              postSubmitSeqRef.current !== submitSeq ||
+              client.getGeneration() !== submitBundle.opGeneration ||
+              (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
+            ) {
+              return;
+            }
+            // If GET /vault returns 404 vault_absent (or fails transiently), stay on Step 2
+            // with the retired Idempotency-Key so the user can retry without locking the prepared Worker key.
+            void reconcileErr;
+          }
           setStep2Error({ kind: 'idempotency_conflict' });
           return;
         }
@@ -371,7 +444,9 @@ export function VaultOnboardingFlow() {
       // Network / fetch failure: keep `preparedBundle` (same `idempotencyKey` and `requestBodyJson`) for retry.
       setStep2Error({ kind: 'network' });
     } finally {
-      setSubmittingVault(false);
+      if (postSubmitSeqRef.current === submitSeq) {
+        setSubmittingVault(false);
+      }
     }
   }, [
     clearRecoveryKeysAndSecrets,
@@ -382,7 +457,6 @@ export function VaultOnboardingFlow() {
     submittingVault,
     vault,
   ]);
-
   const handleGoToUnlock = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
     await refetchMe().catch(() => undefined);

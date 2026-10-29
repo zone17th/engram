@@ -66,17 +66,15 @@ export function RecoveryKeysSheet({
   const effectiveCheckboxId = checkboxId ?? generatedId;
 
   const [actionStatus, setActionStatus] = useState<string | null>(null);
-  const clipboardCleanupRef = useRef<(() => void) | null>(null);
+  const clipboardCleanupRef = useRef<((options?: { clearNow?: boolean }) => void) | null>(null);
 
   useEffect(() => {
     return () => {
-      if (clipboardCleanupRef.current) {
-        clipboardCleanupRef.current();
-        clipboardCleanupRef.current = null;
-      }
+      // Preserve the scheduled 30-second best-effort clipboard expiry across sheet unmount
+      // (e.g. completing onboarding, pressing Back, or locking within 30s — BE1-4).
+      clipboardCleanupRef.current = null;
     };
   }, []);
-
   const handleDownloadTxt = useCallback(() => {
     downloadRecoveryKeysTxt(keys, accountEmail);
     setActionStatus(labels.downloadedStatus);
@@ -90,10 +88,15 @@ export function RecoveryKeysSheet({
   const handleCopyAll = useCallback(async () => {
     if (clipboardCleanupRef.current) {
       clipboardCleanupRef.current();
+      clipboardCleanupRef.current = null;
     }
-    const cleanup = await copyRecoveryKeysToClipboard(keys);
-    clipboardCleanupRef.current = cleanup;
-    setActionStatus(labels.copiedStatus);
+    try {
+      const cleanup = await copyRecoveryKeysToClipboard(keys);
+      clipboardCleanupRef.current = cleanup;
+      setActionStatus(labels.copiedStatus);
+    } catch {
+      // Browser clipboard permission denied: fail gracefully without throwing or recording keys
+    }
   }, [keys, labels.copiedStatus]);
 
   const sortedKeys = [...keys].sort((a, b) => a.slot - b.slot);

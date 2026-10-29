@@ -310,6 +310,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -323,7 +324,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-
+    const workerFactory = options?.workerFactory ?? makeFastOnboardingWorkerFactory();
+    const lockEpochEnv = makeSimpleLockEpochEnv();
     function Probe() {
       const v = useVault();
       const s = useSession();
@@ -341,8 +343,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
           <QueryClientProvider client={qc}>
             <SessionProvider>
               <VaultProvider
-                createWorker={options?.workerFactory ?? makeFastOnboardingWorkerFactory()}
-                lockEpochEnv={makeSimpleLockEpochEnv()}
+                createWorker={workerFactory}
+                lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
                 <VaultOnboardingFlow />
@@ -899,5 +901,323 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     });
     expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
     expect(document.body.textContent ?? '').not.toContain('rk1_3F8K');
+  });
+
+  it('BE1-4: copying recovery keys then leaving via completion, Back, or lock preserves the 30s clipboard wipe and handles clipboard permission errors safely', async () => {
+    let currentMe = makeMeFixture('absent');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        currentMe = makeMeFixture('present');
+        return jsonResponse({ vault_key_id: 'vk:be1-4-key', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    let simulatedClipboard = '';
+    let rejectClipboardWrite = false;
+    const writeTextSpy = vi.fn(async (text: string) => {
+      if (rejectClipboardWrite) {
+        throw new DOMException('Clipboard write permission denied', 'NotAllowedError');
+      }
+      simulatedClipboard = text;
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextSpy },
+    });
+
+    const { unmount } = renderOnboarding({ locale: 'en' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+
+    // 1. Copy keys, then press Back (unmounts RecoveryKeysSheet) before 30s ->
+    //    Advancing past 30s MUST still wipe the clipboard to empty string.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(simulatedClipboard).toContain('rk1_3F8K');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-back-button'));
+    });
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(simulatedClipboard).toBe('');
+
+    vi.useRealTimers();
+
+    // 2. Re-enter Step 2, test permission-denied path on Copy, then copy and complete onboarding (unmounts sheet) ->
+    //    Advancing past 30s MUST wipe the clipboard.
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // Permission denied on initial copy must not throw or leave unhandled rejection
+    rejectClipboardWrite = true;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(simulatedClipboard).toBe('');
+    rejectClipboardWrite = false;
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+
+    // Copy succeeds, then complete onboarding (sheet unmounts)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(simulatedClipboard).toContain('rk1_3F8K');
+
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    unmount();
+
+    // Even if clipboard permission is later denied during the 30s timer callback, it swallows the error cleanly;
+    // when allowed, it clears the clipboard after 30s despite sheet unmount.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(simulatedClipboard).toBe('');
+    vi.useRealTimers();
+  });
+
+  it('BE1-9: late POST /vault success after Back / re-derive or lock never pairs committed vault A with Worker key B; locks and routes to /app/unlock cleanly', async () => {
+    let currentMe = makeMeFixture('absent');
+    let holdPost = false;
+    let resolveHeldPost: ((res: Response) => void) | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPost) {
+          holdPost = false;
+          return new Promise<Response>((resolve) => {
+            resolveHeldPost = resolve;
+          });
+        }
+        currentMe = makeMeFixture('present');
+        return jsonResponse({ vault_key_id: 'vk:be1-9-vault-b', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    renderOnboarding({
+      locale: 'en',
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    // Derive bundle A in Step 1
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // Confirm checkbox and submit bundle A while holding POST /vault in flight
+    holdPost = true;
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    });
+    await waitFor(() => {
+      expect(resolveHeldPost).not.toBeNull();
+    });
+
+    // User locks the vault (e.g. pressing L or auto-lock) while POST A is still in flight ->
+    // registerSecretFormReset synchronously wipes Step 2 bundle and returns the user to Step 1
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    // User starts deriving bundle B in Step 1 before late POST A arrives
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: `${STRONG_PASSPHRASE}-B` },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: `${STRONG_PASSPHRASE}-B` },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+    expect(vaultCtx.workerState).toBe('unlocked');
+
+    // Now the late POST for bundle A succeeds on the server!
+    // It must NOT navigate to /app with Worker key B unlocked; instead it locks the Worker and redirects to /app/unlock.
+    currentMe = makeMeFixture('present');
+    await act(async () => {
+      resolveHeldPost?.(jsonResponse({ vault_key_id: 'vk:be1-9-vault-a', version: 1 }, 201));
+      resolveHeldPost = null;
+    });
+
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    });
+    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+    expect(vaultCtx.workerState).toBe('locked');
+  });
+
+  it('BE1-10: 409 idempotency_conflict retires the rejected Idempotency-Key and reconciles GET /vault before retrying', async () => {
+    let currentMe = makeMeFixture('absent');
+    const postIdempotencyKeys: Array<string | null> = [];
+    let vaultGetReconcileCount = 0;
+    const vaultExistsOnServer = false;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        vaultGetReconcileCount += 1;
+        if (!vaultExistsOnServer) {
+          return problemResponse(404, 'vault_absent', { detail: 'Vault not created yet.' });
+        }
+        return jsonResponse({
+          vault_key_id: 'vk:be1-10-existing',
+          version: 1,
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67_108_864,
+            parallelism: 1,
+            salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
+          },
+          vault_key_wrapped_by_kek: 'dGVzdC12ay13cmFw',
+          x25519_public: 'dGVzdC14MjU1MTktcHVi',
+          ed25519_public: 'dGVzdC1lZDI1NTE5LXB1Yg',
+          private_keys_wrapped: 'dGVzdC1wcml2LXdyYXA',
+          passkey_slots: [],
+          recovery_keys_remaining: 10,
+        });
+      }
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        const headers = new Headers(init.headers);
+        postIdempotencyKeys.push(headers.get('Idempotency-Key'));
+        if (postIdempotencyKeys.length === 1) {
+          return problemResponse(409, 'idempotency_conflict', {
+            detail: 'Idempotency key already used with different request fingerprint.',
+          });
+        }
+        currentMe = makeMeFixture('present');
+        return jsonResponse({ vault_key_id: 'vk:be1-10-created', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    renderOnboarding({ locale: 'en' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step2-error')).toBeInTheDocument();
+    });
+    expect(postIdempotencyKeys).toHaveLength(1);
+    expect(vaultGetReconcileCount).toBe(1);
+
+    // Retry through the UI -> must use a fresh Idempotency-Key (never reusing the conflicted key)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    });
+    await waitFor(() => {
+      expect(postIdempotencyKeys).toHaveLength(2);
+    });
+    expect(postIdempotencyKeys[1]).not.toBe(postIdempotencyKeys[0]);
   });
 });
