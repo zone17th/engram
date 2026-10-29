@@ -51,6 +51,44 @@ func makeRecoverCompletePayload(t *testing.T, rkID uuid.UUID, seed byte) recover
 	}
 }
 
+// waitForHTTPBlockedBackendPID polls Postgres `pg_stat_activity` + `pg_blocking_pids` until a second
+// backend in `current_database()` is actively blocked on `holdPID` (the winner holding the vault
+// FOR UPDATE row lock), failing immediately if any HTTP worker finishes early.
+func waitForHTTPBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int) int32 {
+	t.Helper()
+	if holdPID == 0 {
+		t.Fatal("winner backend PID is 0")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiterPID int32
+		if err := pool.QueryRow(ctx, `
+			SELECT COALESCE((
+				SELECT a.pid
+				FROM pg_stat_activity AS a
+				WHERE a.datname = current_database()
+				  AND a.pid <> $1
+				  AND $1 = ANY(pg_blocking_pids(a.pid))
+				LIMIT 1
+			), 0)
+		`, holdPID).Scan(&waiterPID); err != nil {
+			t.Fatalf("query pg_blocking_pids for holdPID=%d: %v", holdPID, err)
+		}
+		if waiterPID != 0 {
+			return waiterPID
+		}
+		select {
+		case idx := <-earlyDone:
+			t.Fatalf("HTTP worker %d finished early before second backend blocked on holdPID=%d", idx, holdPID)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for second HTTP backend to block on vault row lock held by pid=%d", holdPID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func readPromCounter(t *testing.T, reg *prometheus.Registry, metricName, labelName, labelValue string) float64 {
 	t.Helper()
 	families, err := reg.Gather()
@@ -201,31 +239,46 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	grant := h.reauthGrant(jarA, "vault.recover", password)
 	ifMatch := `"` + created.VaultKeyID + `:1"`
 
-	// Install barrier hook inside Service.RecoverComplete (which runs AFTER Idempotency.Claim in routes.go).
+	// Hold the winner right after LockVaultAndCheckIfMatch (while holding the vault FOR UPDATE lock)
+	// and wait until Postgres pg_blocking_pids proves the second HTTP request's backend is blocked on
+	// the winner's backend PID (and both idempotency keys are 'in_progress' in Postgres).
 	var arrived atomic.Int32
-	bothClaimed := make(chan struct{})
+	var winnerPID atomic.Int32
+	winnerLocked := make(chan struct{})
 	release := make(chan struct{})
-	vault.SetRecoverCompleteTestHook(func(_ context.Context) {
-		if arrived.Add(1) == 2 {
-			close(bothClaimed)
-		}
-		<-release
-	})
-	t.Cleanup(func() { vault.SetRecoverCompleteTestHook(nil) })
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
 
 	type callResult struct {
-		status int
-		body   string
+		status     int
+		body       string
+		finishedAt time.Time
 	}
 	results := make([]callResult, 2)
+	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
+	defer func() {
+		closeRelease()
+		vault.SetRecoverCompleteTestHook(nil)
+		wg.Wait()
+	}()
+
+	vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
+		if arrived.Add(1) == 1 {
+			winnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+			close(winnerLocked)
+			select {
+			case <-release:
+			case <-hookCtx.Done():
+			}
+		}
+	})
 
 	idemKeys := []string{"idem-barrier-complete-key-1", "idem-barrier-complete-key-2"}
 	for i := range 2 {
 		go func(idx int) {
 			defer wg.Done()
-			// Clone cookieJar per goroutine to avoid map race in test client.
 			localJar := cookieJar{}
 			for k, v := range jarA {
 				localJar[k] = v
@@ -236,32 +289,42 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 				ifMatch: ifMatch,
 				grant:   grant,
 			})
-			results[idx] = callResult{status: r.StatusCode, body: raw}
+			results[idx] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			earlyDone <- idx
 		}(i)
 	}
 
 	select {
-	case <-bothClaimed:
-		// While both requests are held at the barrier, verify both idempotency keys are claimed ('in_progress') in Postgres.
-		var inProgressCount int
-		if err := h.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND status = 'in_progress'`,
-			meA.User.ID,
-		).Scan(&inProgressCount); err != nil {
-			close(release)
-			t.Fatalf("query in_progress claims: %v", err)
-		}
-		if inProgressCount != 2 {
-			close(release)
-			t.Fatalf("expected 2 in_progress idempotency claims at barrier, got %d", inProgressCount)
-		}
-		close(release)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for both HTTP requests to reach RecoverComplete barrier")
+	case <-winnerLocked:
+	case idx := <-earlyDone:
+		t.Fatalf("HTTP worker %d finished before winner reached vault lock hook: %+v", idx, results[idx])
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for winner HTTP request to acquire vault row lock in RecoverComplete")
 	}
-	wg.Wait()
 
-	// Disable hook for subsequent checks.
+	ctx := context.Background()
+	holdPID := winnerPID.Load()
+	waiterPID := waitForHTTPBlockedBackendPID(t, ctx, h.pool, holdPID, earlyDone)
+	if waiterPID == 0 || waiterPID == holdPID {
+		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
+	}
+
+	// While the winner holds the vault row lock and the loser is blocked on it in Postgres,
+	// verify both idempotency keys are claimed ('in_progress').
+	var inProgressCount int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND status = 'in_progress'`,
+		meA.User.ID,
+	).Scan(&inProgressCount); err != nil {
+		t.Fatalf("query in_progress claims: %v", err)
+	}
+	if inProgressCount != 2 {
+		t.Fatalf("expected 2 in_progress idempotency claims while blocked on vault lock, got %d", inProgressCount)
+	}
+
+	releasedAt := time.Now()
+	closeRelease()
+	wg.Wait()
 	vault.SetRecoverCompleteTestHook(nil)
 
 	okCount := 0
@@ -274,14 +337,14 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 			if err := json.Unmarshal([]byte(res.body), &vr); err != nil || vr.Version != 2 {
 				t.Fatalf("winner [%d] body = %s, want version=2", i, res.body)
 			}
-		case http.StatusPreconditionFailed, http.StatusUnauthorized:
+		case http.StatusPreconditionFailed:
 			errCount++
-			prob := decodeProblem(t, res.body)
-			if res.status == http.StatusPreconditionFailed && prob.Code != "version_mismatch" {
-				t.Fatalf("loser [%d] 412 code = %q, want version_mismatch", i, prob.Code)
+			if res.finishedAt.Before(releasedAt) {
+				t.Fatalf("loser [%d] finished at %v before winner released lock at %v", i, res.finishedAt, releasedAt)
 			}
-			if res.status == http.StatusUnauthorized && prob.Code != "recovery_key_invalid" {
-				t.Fatalf("loser [%d] 401 code = %q, want recovery_key_invalid", i, prob.Code)
+			prob := decodeProblem(t, res.body)
+			if prob.Code != "version_mismatch" {
+				t.Fatalf("loser [%d] 412 code = %q, want version_mismatch", i, prob.Code)
 			}
 		default:
 			t.Fatalf("unexpected status on concurrent complete [%d]: %d %s", i, res.status, res.body)
@@ -290,7 +353,6 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	if okCount != 1 || errCount != 1 {
 		t.Fatalf("barrier results: okCount=%d errCount=%d (%+v)", okCount, errCount, results)
 	}
-
 	// Verify RK row is gone once (remaining = 9, slot 1 empty).
 	respRK, rawRK := h.doReq(jarA, http.MethodGet, "/api/v1/vault/recovery-keys", "", reqOptions{})
 	if respRK.StatusCode != http.StatusOK {

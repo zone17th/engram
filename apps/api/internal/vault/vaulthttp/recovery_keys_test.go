@@ -41,25 +41,43 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	grant := h.reauthGrant(jarA, "vault.recovery_keys_regenerate", password)
 	ifMatch := `"` + created.VaultKeyID + `:1"`
 
-	// Hold both concurrent HTTP regenerate requests at a barrier after Idempotency.Claim.
+	// Hold the winner right after LockVaultAndCheckIfMatch (while holding the vault FOR UPDATE lock)
+	// and wait until Postgres pg_blocking_pids proves the second HTTP request's backend is blocked on
+	// the winner's backend PID. Each request targets a DIFFERENT empty slot (worker 0 -> slot 1,
+	// worker 1 -> slot 2) so UNIQUE(vault_id, slot) cannot reject either request; only the vault
+	// FOR UPDATE row lock + version check serializes them.
 	var arrived atomic.Int32
-	bothClaimed := make(chan struct{})
+	var winnerPID atomic.Int32
+	winnerLocked := make(chan struct{})
 	release := make(chan struct{})
-	vault.SetRegenerateTestHook(func(_ context.Context) {
-		if arrived.Add(1) == 2 {
-			close(bothClaimed)
-		}
-		<-release
-	})
-	t.Cleanup(func() { vault.SetRegenerateTestHook(nil) })
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
 
 	type callResult struct {
-		status int
-		body   string
+		status     int
+		body       string
+		finishedAt time.Time
 	}
 	results := make([]callResult, 2)
+	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
+	defer func() {
+		closeRelease()
+		vault.SetRegenerateTestHook(nil)
+		wg.Wait()
+	}()
+
+	vault.SetRegenerateTestHook(func(hookCtx context.Context) {
+		if arrived.Add(1) == 1 {
+			winnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+			close(winnerLocked)
+			select {
+			case <-release:
+			case <-hookCtx.Done():
+			}
+		}
+	})
 
 	idemKeys := []string{"idem-rk-conc-regen-key-1", "idem-rk-conc-regen-key-2"}
 	for i := range 2 {
@@ -69,17 +87,12 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 			for k, v := range jarA {
 				localJar[k] = v
 			}
-			// Each request attempts to regenerate both empty slots (1 and 2) with distinct hashes.
+			targetSlot := idx + 1 // worker 0 -> slot 1, worker 1 -> slot 2 (distinct empty slots)
 			items := []vault.RecoveryKeyUploadItem{
 				{
-					Slot:       1,
+					Slot:       targetSlot,
 					LookupHash: vault.EncodeBase64URL(seqTestBytes(32, byte(0x80+idx*13))),
 					Wrap:       makeWrapB64U(t, vault.WrapKindRK, byte(0x80+idx*13)),
-				},
-				{
-					Slot:       2,
-					LookupHash: vault.EncodeBase64URL(seqTestBytes(32, byte(0x85+idx*13))),
-					Wrap:       makeWrapB64U(t, vault.WrapKindRK, byte(0x85+idx*13)),
 				},
 			}
 			body := mustJSON(t, map[string]any{"recovery_keys": items})
@@ -88,16 +101,39 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 				ifMatch: ifMatch,
 				grant:   grant,
 			})
-			results[idx] = callResult{status: r.StatusCode, body: raw}
+			results[idx] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			earlyDone <- idx
 		}(i)
 	}
 
 	select {
-	case <-bothClaimed:
-		close(release)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for both regenerate requests at barrier")
+	case <-winnerLocked:
+	case idx := <-earlyDone:
+		t.Fatalf("HTTP worker %d finished before winner reached vault lock hook: %+v", idx, results[idx])
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for winner HTTP request to acquire vault row lock in Regenerate")
 	}
+
+	ctx := context.Background()
+	holdPID := winnerPID.Load()
+	waiterPID := waitForHTTPBlockedBackendPID(t, ctx, h.pool, holdPID, earlyDone)
+	if waiterPID == 0 || waiterPID == holdPID {
+		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
+	}
+
+	var inProgressCount int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND status = 'in_progress'`,
+		meA.User.ID,
+	).Scan(&inProgressCount); err != nil {
+		t.Fatalf("query in_progress claims: %v", err)
+	}
+	if inProgressCount != 2 {
+		t.Fatalf("expected 2 in_progress idempotency claims while blocked on vault lock, got %d", inProgressCount)
+	}
+
+	releasedAt := time.Now()
+	closeRelease()
 	wg.Wait()
 	vault.SetRegenerateTestHook(nil)
 
@@ -108,11 +144,18 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 		case http.StatusOK:
 			okCount++
 			var mr vault.RecoveryKeysMutationResponse
-			if err := json.Unmarshal([]byte(res.body), &mr); err != nil || mr.Remaining != 10 || mr.Version != 2 {
-				t.Fatalf("winner [%d] body = %s, want remaining=10 version=2", i, res.body)
+			if err := json.Unmarshal([]byte(res.body), &mr); err != nil || mr.Remaining != 9 || mr.Version != 2 {
+				t.Fatalf("winner [%d] body = %s, want remaining=9 version=2", i, res.body)
 			}
-		case http.StatusPreconditionFailed, http.StatusConflict, http.StatusBadRequest:
+		case http.StatusPreconditionFailed:
 			errCount++
+			if res.finishedAt.Before(releasedAt) {
+				t.Fatalf("loser [%d] finished at %v before winner released lock at %v", i, res.finishedAt, releasedAt)
+			}
+			prob := decodeProblem(t, res.body)
+			if prob.Code != "version_mismatch" {
+				t.Fatalf("loser [%d] 412 code = %q, want version_mismatch", i, prob.Code)
+			}
 		default:
 			t.Fatalf("unexpected status on concurrent regenerate [%d]: %d %s", i, res.status, res.body)
 		}
@@ -121,16 +164,16 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 		t.Fatalf("concurrent regenerate results: okCount=%d errCount=%d (%+v)", okCount, errCount, results)
 	}
 
-	// Verify DB count never exceeded 10.
+	// Verify DB count is 9 (only winner's slot inserted; loser was rejected by vault row lock + version check).
 	var dbCount int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(ctx,
 		`SELECT count(*) FROM vault_recovery_key WHERE vault_id = $1`,
 		meA.User.ID,
 	).Scan(&dbCount); err != nil {
 		t.Fatal(err)
 	}
-	if dbCount != 10 {
-		t.Fatalf("DB recovery key count = %d, want 10", dbCount)
+	if dbCount != 9 {
+		t.Fatalf("DB recovery key count = %d, want 9", dbCount)
 	}
 }
 

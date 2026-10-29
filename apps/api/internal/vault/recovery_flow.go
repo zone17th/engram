@@ -18,9 +18,9 @@ import (
 
 var dummyRKWrapBytes [VKWrapBytes]byte
 
-// recoverCompleteBeforeTxHook cho phép barrier test trên Postgres thật giữ hai request
-// `POST /vault/recover/complete` ngay sau khi cả hai đã qua bước `Idempotency.Claim`
-// (bước 6) và chuẩn bị vào transaction khoá hàng `vault` + `vault_recovery_key` (bước 7).
+// recoverCompleteBeforeTxHook cho phép barrier test trên Postgres thật giữ request thắng cuộc
+// ngay sau khi đã khoá hàng `vault` (`LockVaultAndCheckIfMatch` — `SELECT ... FOR UPDATE`)
+// để chứng minh request thứ hai thực sự bị chặn trên khoá hàng của Postgres (`pg_blocking_pids`).
 var recoverCompleteBeforeTxHook atomic.Pointer[func(context.Context)]
 
 // SetRecoverCompleteTestHook đăng ký (hoặc gỡ bỏ khi truyền nil) hook đồng bộ cho barrier test Task 10.
@@ -108,10 +108,6 @@ func (s *Service) RecoverComplete(ctx context.Context, p authctx.Principal, in R
 		return VaultVersionResponse{}, ErrInvalidRequest
 	}
 
-	if fnPtr := recoverCompleteBeforeTxHook.Load(); fnPtr != nil && *fnPtr != nil {
-		(*fnPtr)(ctx)
-	}
-
 	tx, err := s.BeginMutationTx(ctx)
 	if err != nil {
 		return VaultVersionResponse{}, err
@@ -124,6 +120,11 @@ func (s *Service) RecoverComplete(ctx context.Context, p authctx.Principal, in R
 	curVault, err := LockVaultAndCheckIfMatch(ctx, q, p.UserID, in.IfMatch)
 	if err != nil {
 		return VaultVersionResponse{}, err
+	}
+	if fnPtr := recoverCompleteBeforeTxHook.Load(); fnPtr != nil && *fnPtr != nil {
+		var pid int32
+		_ = tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid)
+		(*fnPtr)(withTestHookBackendPID(ctx, pid))
 	}
 
 	// 2. Lock the user's recovery key row FOR UPDATE; must exist and belong to this user.

@@ -283,74 +283,114 @@ func TestServiceRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 		t.Fatalf("svc.Create: %v", err)
 	}
 
-	// Delete 1 RK (slot 1) so 9 remain and only 1 slot is empty.
-	if _, err := pool.Exec(ctx, `DELETE FROM vault_recovery_key WHERE vault_id = $1 AND slot = 1`, user.ID); err != nil {
-		t.Fatalf("delete slot 1: %v", err)
+	// Delete 2 RKs (slots 1 and 2) so 8 remain and slots 1 and 2 are both empty.
+	// Each concurrent request targets a DIFFERENT empty slot (worker 0 -> slot 1, worker 1 -> slot 2)
+	// so UNIQUE(vault_id, slot) cannot reject either request; only the vault FOR UPDATE row lock
+	// + version/count check serializes them.
+	if _, err := pool.Exec(ctx, `DELETE FROM vault_recovery_key WHERE vault_id = $1 AND slot IN (1, 2)`, user.ID); err != nil {
+		t.Fatalf("delete slots 1 and 2: %v", err)
 	}
 
 	var arrived atomic.Int32
-	bothReady := make(chan struct{})
+	var winnerPID atomic.Int32
+	winnerLocked := make(chan struct{})
 	release := make(chan struct{})
-	vault.SetRegenerateTestHook(func(_ context.Context) {
-		if arrived.Add(1) == 2 {
-			close(bothReady)
-		}
-		<-release
-	})
-	t.Cleanup(func() { vault.SetRegenerateTestHook(nil) })
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
 
 	type result struct {
-		resp vault.RecoveryKeysMutationResponse
-		err  error
+		resp       vault.RecoveryKeysMutationResponse
+		err        error
+		finishedAt time.Time
 	}
 	results := make([]result, 2)
+	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
+	defer func() {
+		closeRelease()
+		vault.SetRegenerateTestHook(nil)
+		wg.Wait()
+	}()
+
+	vault.SetRegenerateTestHook(func(hookCtx context.Context) {
+		if arrived.Add(1) == 1 {
+			winnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+			close(winnerLocked)
+			select {
+			case <-release:
+			case <-hookCtx.Done():
+			}
+		}
+	})
 
 	for i := range 2 {
 		go func(idx int) {
 			defer wg.Done()
+			targetSlot := idx + 1 // idx 0 -> slot 1, idx 1 -> slot 2 (distinct empty slots)
 			h := seqBytes(32, byte(0xD0+idx*11))
 			resp, err := svc.RegenerateRecoveryKeys(ctx, p, vault.RecoveryKeysRegenerateInput{
 				RecoveryKeys: []vault.RecoveryKeyUploadItem{
 					{
-						Slot:       1,
+						Slot:       targetSlot,
 						LookupHash: vault.EncodeBase64URL(h),
 						Wrap:       makeValidWrapB64U(t, vault.WrapKindRK, byte(0xD0+idx*11)),
 					},
 				},
 				IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 1},
 			})
-			results[idx] = result{resp: resp, err: err}
+			results[idx] = result{resp: resp, err: err, finishedAt: time.Now()}
+			earlyDone <- idx
 		}(i)
 	}
 
 	select {
-	case <-bothReady:
-		close(release)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for both goroutines at Regenerate barrier")
+	case <-winnerLocked:
+	case idx := <-earlyDone:
+		t.Fatalf("worker %d finished before winner reached vault lock hook: %+v", idx, results[idx])
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for winner to acquire vault row lock in Regenerate")
 	}
+
+	holdPID := winnerPID.Load()
+	waiterPID := waitForBlockedBackendPID(t, ctx, pool, holdPID, earlyDone)
+	if waiterPID == 0 || waiterPID == holdPID {
+		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
+	}
+
+	releasedAt := time.Now()
+	closeRelease()
 	wg.Wait()
+	vault.SetRegenerateTestHook(nil)
 
 	successes := 0
-	for _, r := range results {
+	losers := 0
+	for i, r := range results {
 		if r.err == nil {
 			successes++
-			if r.resp.Remaining != 10 || r.resp.Version != 2 {
-				t.Fatalf("unexpected success resp: %+v", r.resp)
+			if r.resp.Remaining != 9 || r.resp.Version != 2 {
+				t.Fatalf("unexpected winner [%d] resp: %+v, want {Remaining:9, Version:2}", i, r.resp)
 			}
+			continue
 		}
+		if r.finishedAt.Before(releasedAt) {
+			t.Fatalf("loser goroutine %d finished at %v before winner released lock at %v", i, r.finishedAt, releasedAt)
+		}
+		ve, ok := vault.AsError(r.err)
+		if !ok || ve.Code != "version_mismatch" || ve.CurrentVersion == nil || *ve.CurrentVersion != 2 {
+			t.Fatalf("loser [%d] err = %v (%+v), want 412 version_mismatch(current=2) from vault lock", i, r.err, ve)
+		}
+		losers++
 	}
-	if successes != 1 {
-		t.Fatalf("expected exactly 1 success in concurrent regenerate, got %d (%+v)", successes, results)
+	if successes != 1 || losers != 1 {
+		t.Fatalf("expected 1 winner and 1 version_mismatch loser in concurrent regenerate, got successes=%d losers=%d (%+v)", successes, losers, results)
 	}
 
 	status, err := svc.GetRecoveryKeysStatus(ctx, user.ID)
 	if err != nil {
 		t.Fatalf("GetRecoveryKeysStatus: %v", err)
 	}
-	if status.Remaining != 10 || len(status.EmptySlots) != 0 {
-		t.Fatalf("status after concurrent regenerate = %+v, want Remaining=10", status)
+	if status.Remaining != 9 || len(status.EmptySlots) != 1 {
+		t.Fatalf("status after concurrent regenerate = %+v, want Remaining=9 and 1 empty slot", status)
 	}
 }

@@ -13,6 +13,19 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 )
 
+type testHookBackendPIDKey struct{}
+
+func withTestHookBackendPID(ctx context.Context, pid int32) context.Context {
+	return context.WithValue(ctx, testHookBackendPIDKey{}, pid)
+}
+
+// TestHookBackendPIDFrom trả về `pg_backend_pid()` của kết nối transaction đang giữ khoá `FOR UPDATE`
+// trên hàng `vault` khi gọi test hook sau `LockVaultAndCheckIfMatch` (dùng trong barrier test T-3/T-6).
+func TestHookBackendPIDFrom(ctx context.Context) int32 {
+	pid, _ := ctx.Value(testHookBackendPIDKey{}).(int32)
+	return pid
+}
+
 // LockVaultAndCheckIfMatch khoá hàng `vault` của user (`SELECT ... FOR UPDATE`) trong `tx`
 // và kiểm tra điều kiện tiên quyết `If-Match: "<vault_key_id>:<version>"` theo đúng thứ tự
 // ưu tiên của plan mục 2.3 và SPEC §9.1:

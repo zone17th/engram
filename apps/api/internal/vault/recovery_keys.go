@@ -15,7 +15,7 @@ import (
 )
 
 // regenerateBeforeTxHook cho phép test đồng bộ hai request `POST /vault/recovery-keys/regenerate`
-// song song ngay sau bước `Idempotency.Claim` để kiểm chứng trên Postgres thật không bao giờ vượt 10 RK.
+// song song ngay sau khi request thắng đã khoá hàng `vault` (`LockVaultAndCheckIfMatch` — `SELECT ... FOR UPDATE`).
 var regenerateBeforeTxHook atomic.Pointer[func(context.Context)]
 
 // SetRegenerateTestHook đăng ký (hoặc gỡ bỏ khi truyền nil) hook đồng bộ cho test song song Task 11.
@@ -86,10 +86,6 @@ func (s *Service) RegenerateRecoveryKeys(ctx context.Context, p authctx.Principa
 		return RecoveryKeysMutationResponse{}, ErrPreconditionRequired
 	}
 
-	if fnPtr := regenerateBeforeTxHook.Load(); fnPtr != nil && *fnPtr != nil {
-		(*fnPtr)(ctx)
-	}
-
 	tx, err := s.BeginMutationTx(ctx)
 	if err != nil {
 		return RecoveryKeysMutationResponse{}, err
@@ -102,6 +98,11 @@ func (s *Service) RegenerateRecoveryKeys(ctx context.Context, p authctx.Principa
 	curVault, err := LockVaultAndCheckIfMatch(ctx, q, p.UserID, in.IfMatch)
 	if err != nil {
 		return RecoveryKeysMutationResponse{}, err
+	}
+	if fnPtr := regenerateBeforeTxHook.Load(); fnPtr != nil && *fnPtr != nil {
+		var pid int32
+		_ = tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid)
+		(*fnPtr)(withTestHookBackendPID(ctx, pid))
 	}
 
 	// 2. Count remaining RKs while holding the vault lock; accept 1..(10-remaining) items.
