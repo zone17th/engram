@@ -1111,6 +1111,8 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     let resolveLookup: (() => void) | null = null;
     let vaultVersion = 1;
     let regenCallsCount = 0;
+    let rkStatusFetchCount = 0;
+    let regenReauthPostCount = 0;
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -1127,6 +1129,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       }
       if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body ?? '{}')) as { action: string };
+        if (body.action === 'vault.recovery_keys_regenerate') regenReauthPostCount += 1;
         return jsonResponse({
           grant: `grant-${body.action}-token`,
           action: body.action,
@@ -1157,12 +1160,20 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
           empty_slots: [1],
         });
       }
+      if (url.endsWith('/vault/recovery-keys') && (!init?.method || init.method === 'GET')) {
+        // Step 4A reads the live empty slots before generating replacement keys (`fetchRecoveryKeysStatus`)
+        rkStatusFetchCount += 1;
+        return jsonResponse({
+          remaining: 9,
+          empty_slots: [1],
+        });
+      }
       if (url.endsWith('/vault/recovery-keys/regenerate') && init?.method === 'POST') {
         regenCallsCount += 1;
         vaultVersion = 3;
         return jsonResponse({
           version: 3,
-          recovery_keys_remaining: 10,
+          remaining: 10,
         });
       }
       return jsonResponse({});
@@ -1276,6 +1287,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     // BE2-4 Case A: While on Step 4A (`regenerate-reauth`), trigger a wake event whose lockEpoch verification is held (`vault.state === 'unlocking'`).
     // Attempting to submit Step 4A re-auth while `vault.state !== 'unlocked'` MUST NOT invoke Worker `makeRecoveryKeys` or advance to `regenerate-keys`!
+    const rkStatusFetchesBeforeGate = rkStatusFetchCount;
     holdWakeVerify = true;
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
@@ -1290,6 +1302,9 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     });
     // Because vault.state was 'unlocking' (unverified), prepareRegenerateKeys refused to call Worker makeRecoveryKeys or advance to regenerate-keys
     expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    // ...and never reached the network (no regenerate re-auth grant, no empty-slot lookup) while the wake gate was held
+    expect(regenReauthPostCount).toBe(0);
+    expect(rkStatusFetchCount).toBe(rkStatusFetchesBeforeGate);
 
     // Release wake verification -> state returns to 'unlocked'
     await act(async () => {
