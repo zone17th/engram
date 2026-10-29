@@ -548,14 +548,17 @@ export function VaultRecoveryFlow() {
           setStep2Error({ kind: 'aead_failed' });
           return;
         }
-        if (classified.kind === 'stale_generation') {
+        if (classified.kind === 'stale_generation' && client.getGeneration() !== opGeneration) {
           return;
         }
         if (err instanceof CryptoClientError && err.code === 'SECRET_DETACHED_OR_EMPTY') {
           setStep2Error({ kind: 'invalid' });
           return;
         }
-        setStep2Error({ kind: 'network' });
+        setStep2Error({
+          kind: 'network',
+          detail: err instanceof Error ? err.message : undefined,
+        });
       } finally {
         setLookingUpKey(false);
       }
@@ -678,7 +681,10 @@ export function VaultRecoveryFlow() {
         }
 
         // Network / timeout error: preserve `preparedCompleteBundle` (`sentAtLeastOnce = true`) for idempotent replay
-        setStep3Error({ kind: 'network' });
+        setStep3Error({
+          kind: 'network',
+          detail: err instanceof Error ? err.message : undefined,
+        });
       } finally {
         setCompletingRecovery(false);
       }
@@ -801,10 +807,13 @@ export function VaultRecoveryFlow() {
           setStep3PolicyReason('invalid_unicode');
           return;
         }
-        if (classified.kind === 'stale_generation') {
+        if (classified.kind === 'stale_generation' && client.getGeneration() !== opGen) {
           return;
         }
-        setStep3Error({ kind: 'network' });
+        setStep3Error({
+          kind: 'network',
+          detail: err instanceof Error ? err.message : undefined,
+        });
       } finally {
         setCompletingRecovery(false);
       }
@@ -966,7 +975,10 @@ export function VaultRecoveryFlow() {
           });
           return;
         }
-        setStep4Error({ kind: 'network' });
+        setStep4Error({
+          kind: 'network',
+          detail: err instanceof Error ? err.message : undefined,
+        });
       } finally {
         setGeneratingRegenKeys(false);
       }
@@ -1086,7 +1098,10 @@ export function VaultRecoveryFlow() {
         });
         return;
       }
-      setStep4Error({ kind: 'network' });
+      setStep4Error({
+        kind: 'network',
+        detail: err instanceof Error ? err.message : undefined,
+      });
     } finally {
       setSavingRegenKeys(false);
     }

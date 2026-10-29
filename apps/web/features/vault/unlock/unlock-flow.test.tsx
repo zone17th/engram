@@ -354,7 +354,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-
+    const lockEpochEnv = makeSimpleLockEpochEnv();
     function Probe() {
       const v = useVault();
       const s = useSession();
@@ -373,7 +373,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
             <SessionProvider>
               <VaultProvider
                 createWorker={options?.workerFactory ?? makeUnlockWorkerFactory()}
-                lockEpochEnv={makeSimpleLockEpochEnv()}
+                lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
                 {options?.view === 'forgot' ? <ForgotPassphraseView /> : <VaultUnlockFlow />}

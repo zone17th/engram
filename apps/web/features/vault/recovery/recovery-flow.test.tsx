@@ -11,7 +11,7 @@ import { VaultRecoveryFlow } from '@/features/vault/recovery';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
 import type { VaultState } from '@/lib/api/vault';
-import type { CryptoWorkerPort } from '@/lib/crypto/client';
+import { CryptoClientError, type CryptoWorkerPort } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
 import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
@@ -253,6 +253,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -267,6 +268,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    const lockEpochEnv = makeSimpleLockEpochEnv();
 
     function Probe() {
       const v = useVault();
@@ -287,7 +289,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
             <SessionProvider>
               <VaultProvider
                 createWorker={options?.workerFactory}
-                lockEpochEnv={makeSimpleLockEpochEnv()}
+                lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
                 <VaultRecoveryFlow />
@@ -530,9 +532,13 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       return jsonResponse({});
     });
 
+    let vaultCtx!: VaultContextValue;
     const { unmount } = renderRecovery({
       locale: 'en',
       workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
     });
 
     await waitFor(() => {
@@ -580,6 +586,26 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     const usedOrWrongAlertText = screen.getByRole('alert').textContent ?? '';
     // Identical message for wrong, used, or other-vault RK
     expect(usedOrWrongAlertText).toBe(malformedAlertText);
+
+    // 3. CLIENT_BUSY or unexpected crypto error on Step 2 surfaces a visible error card instead of hanging silently
+    vi.spyOn(vaultCtx, 'unlockRecovery').mockRejectedValueOnce(
+      new CryptoClientError(
+        'CLIENT_BUSY',
+        'Another state-changing crypto call is already in flight',
+      ),
+    );
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-error-lookup-network')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('recovery-error-lookup-network')).toHaveTextContent(
+      /Another state-changing crypto call is already in flight/i,
+    );
 
     unmount();
     shim.close();
@@ -778,7 +804,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       }
       if (url.endsWith('/vault/unlock/recovery') && init?.method === 'POST') {
         if (lookupMode === 'rate_limit') {
-          return problemResponse(429, 'rate_limited', { retry_after: 1 });
+          return problemResponse(429, 'rate_limited', { retry_after: 15 });
         }
         return jsonResponse({
           recovery_key_id: 'rk-id-slot-1',
@@ -793,7 +819,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
           body: String(init.body ?? ''),
         });
         if (completeMode === 'rate_limit') {
-          return problemResponse(429, 'rate_limited', { retry_after: 1 });
+          return problemResponse(429, 'rate_limited', { retry_after: 15 });
         }
         if (completeMode === 'network_error') {
           throw new TypeError('Failed to fetch');
@@ -825,7 +851,13 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
     });
 
-    // 1. 429 on lookup shows countdown
+    // 1. 429 on lookup shows countdown and disables submit button
+    let simulatedOffsetMs = 0;
+    const realDateNow = Date.now.bind(Date);
+    const dateNowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realDateNow() + simulatedOffsetMs);
+
     fireEvent.change(screen.getByTestId('recovery-key-input'), {
       target: { value: TEST_VECTOR_RK_DISPLAY },
     });
@@ -839,18 +871,15 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     expect(screen.getByRole('alert')).toHaveTextContent(
       /Too many recovery attempts — please wait/i,
     );
+    expect(screen.getByTestId('recovery-key-submit')).toBeDisabled();
 
-    // Wait for 1s countdown to expire and proceed to Step 3
+    // Advance clock past the 15s rate-limit deadline and type RK -> submit re-enables immediately
     lookupMode = 'ok';
-    await waitFor(
-      () => {
-        expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
-      },
-      { timeout: 3000 },
-    );
+    simulatedOffsetMs += 20_000;
     fireEvent.change(screen.getByTestId('recovery-key-input'), {
       target: { value: TEST_VECTOR_RK_DISPLAY },
     });
+    expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
     await act(async () => {
       fireEvent.click(screen.getByTestId('recovery-key-submit'));
     });
@@ -859,7 +888,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
     });
 
-    // 2. 429 on complete shows countdown
+    // 2. 429 on complete shows countdown and disables submit button
     fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
       target: { value: STRONG_NEW_PASSPHRASE },
     });
@@ -878,15 +907,18 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     expect(screen.getByRole('alert')).toHaveTextContent(
       /Too many recovery completion requests — please wait/i,
     );
+    expect(screen.getByTestId('recovery-step3-submit')).toBeDisabled();
 
-    // 3. Network error preserves Idempotency-Key & body, and retry reuses them into 412 version_mismatch
+    // 3. Advance clock past the 15s rate-limit deadline; network error preserves Idempotency-Key & body, and retry reuses them into 412 version_mismatch
     completeMode = 'network_error';
-    await waitFor(
-      () => {
-        expect(screen.getByTestId('recovery-step3-submit')).not.toBeDisabled();
-      },
-      { timeout: 3000 },
-    );
+    simulatedOffsetMs += 20_000;
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    expect(screen.getByTestId('recovery-step3-submit')).not.toBeDisabled();
+
+    dateNowSpy.mockRestore();
+
     await act(async () => {
       fireEvent.click(screen.getByTestId('recovery-step3-submit'));
     });
