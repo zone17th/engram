@@ -1,22 +1,29 @@
 import { decodeBase64UrlStrict, encodeBase64Url } from './b64url';
 import { toLocalBytes, type Sodium } from './sodium';
 
-export const KDF_ALG = 'argon2id13' as const;
-export const KDF_OPS_MIN = 3;
-export const KDF_OPS_MAX = 10;
-export const KDF_MEM_MIN = 67_108_864; // 64 MiB
-export const KDF_MEM_MAX = 268_435_456; // 256 MiB
-export const KDF_PARALLELISM = 1 as const;
-export const KDF_SALT_BYTES = 16;
-export const KEK_BYTES = 32;
+import {
+  KDF_ALG,
+  KDF_MEM_MAX,
+  KDF_MEM_MIN,
+  KDF_OPS_MAX,
+  KDF_OPS_MIN,
+  KDF_PARALLELISM,
+  KDF_SALT_BYTES,
+  KEK_BYTES,
+  type VaultKdfParams,
+} from './protocol';
 
-export interface VaultKdfParams {
-  alg: typeof KDF_ALG;
-  ops: number;
-  mem: number;
-  parallelism: typeof KDF_PARALLELISM;
-  salt: string;
-}
+export {
+  KDF_ALG,
+  KDF_MEM_MAX,
+  KDF_MEM_MIN,
+  KDF_OPS_MAX,
+  KDF_OPS_MIN,
+  KDF_PARALLELISM,
+  KDF_SALT_BYTES,
+  KEK_BYTES,
+  type VaultKdfParams,
+};
 
 export interface ValidatedKdfParams extends VaultKdfParams {
   saltBytes: Uint8Array;
@@ -163,23 +170,23 @@ export type DeriveKekFn = (
   params: ValidatedKdfParams,
 ) => Uint8Array | Promise<Uint8Array>;
 
-function isAllocationFailure(err: unknown): boolean {
+const ENOMEM = 12;
+
+/**
+ * Classifies WASM/Argon2id memory allocation failures by error type or errno
+ * (`RangeError`, `WebAssembly.RuntimeError`, or `errno === 12` / `code === 'ENOMEM'`),
+ * never by substring matching on arbitrary error messages (FE1-14).
+ */
+export function isAllocationFailure(err: unknown): boolean {
   if (err instanceof RangeError) return true;
   if (typeof WebAssembly !== 'undefined' && err instanceof WebAssembly.RuntimeError) {
-    const msg = err.message.toLowerCase();
-    if (msg.includes('memory') || msg.includes('alloc') || msg.includes('out of bounds')) {
+    return true;
+  }
+  if (typeof err === 'object' && err !== null) {
+    if ('errno' in err && err.errno === ENOMEM) {
       return true;
     }
-  }
-  if (err instanceof Error) {
-    const msg = `${err.name} ${err.message}`.toLowerCase();
-    if (
-      msg.includes('out of memory') ||
-      msg.includes('cannot enlarge memory') ||
-      msg.includes('allocation') ||
-      msg.includes('memory') ||
-      msg.includes('oom')
-    ) {
+    if ('code' in err && err.code === 'ENOMEM') {
       return true;
     }
   }

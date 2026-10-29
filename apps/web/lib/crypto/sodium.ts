@@ -10,9 +10,16 @@ let readyPromise: Promise<Sodium> | null = null;
  */
 export function getSodium(): Promise<Sodium> {
   if (!readyPromise) {
-    readyPromise = sodium.ready.then(() => sodium);
+    readyPromise = sodium.ready.then(() => sodium).catch((err: unknown) => {
+      readyPromise = null;
+      throw err;
+    });
   }
   return readyPromise;
+}
+
+export function resetSodiumForTest(): void {
+  readyPromise = null;
 }
 
 export { sodium };

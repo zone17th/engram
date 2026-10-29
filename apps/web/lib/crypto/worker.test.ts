@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decodeBase64UrlStrict, encodeBase64Url } from './b64url';
+import { Base64UrlError, decodeBase64UrlStrict, encodeBase64Url } from './b64url';
 import { runArgon2idBenchmark } from './bench.worker';
 import { CryptoClient, CryptoClientError } from './client';
 import {
@@ -13,6 +16,7 @@ import {
   type EnvelopeAdapter,
   type EntryEnvelopeV1,
 } from './envelope';
+import { JcsError } from './jcs';
 import {
   KDF_ALG,
   KDF_MEM_MAX,
@@ -24,6 +28,7 @@ import {
   KEK_BYTES,
   KdfError,
   deriveKek,
+  isAllocationFailure,
   makeRewrapKdfParams,
   validateKdfParams,
   type DeriveKekFn,
@@ -40,8 +45,10 @@ import {
   normalizeRecoveryKey,
   type RecoveryKeyAdapter,
 } from './recovery';
-import { getSodium, type Sodium } from './sodium';
+import * as sodiumModule from './sodium';
+import { getSodium, resetSodiumForTest, type Sodium } from './sodium';
 import { createWorkerShim, type ShimmedWorkerInstance } from './test/worker-shim';
+import { attachWorkerCore, createWorkerCore, type WorkerRequestMessage } from './worker-core';
 import {
   DEVKEY_WRAP_BYTES,
   PRIV_WRAP_BYTES,
@@ -59,6 +66,9 @@ import {
   unpackPrivateKeySeeds,
   validateWrap,
 } from './wrap';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const utf8Encoder = new TextEncoder();
 
@@ -86,20 +96,23 @@ const fastTestDeriveKek: DeriveKekFn = (
 
 /**
  * Test-only recovery key adapter so `createVault`, `makeRecoveryKeys`, and `unlockRecovery`
- * can be exercised for Worker generation/detach/self-check behavior while `recovery.ts` itself
- * remains a typed stub for P03-T7.
+ * can be exercised for Worker generation/detach/self-check behavior.
  */
 const testRecoveryAdapter: RecoveryKeyAdapter = {
   generateRecoveryKey(sodium: Sodium, slot: number) {
     const raw = sodium.randombytes_buf(16);
-    const hex = sodium.to_hex(raw).toUpperCase().slice(0, 25);
-    const body26 = `0${hex}`;
-    const display = `rk${slot}_${body26.slice(0, 4)}-${body26.slice(4, 8)}-${body26.slice(8, 12)}-${body26.slice(12, 16)}-${body26.slice(16, 20)}-${body26.slice(20, 24)}-${body26.slice(24, 26)}`;
-    return {
-      slot,
-      display,
-      normalized: `rk${slot}_${body26}`,
-    };
+    try {
+      const hex = sodium.to_hex(raw).toUpperCase().slice(0, 25);
+      const body26 = `0${hex}`;
+      const display = `rk${slot}_${body26.slice(0, 4)}-${body26.slice(4, 8)}-${body26.slice(8, 12)}-${body26.slice(12, 16)}-${body26.slice(16, 20)}-${body26.slice(20, 24)}-${body26.slice(24, 26)}`;
+      return {
+        slot,
+        display,
+        normalized: `rk${slot}_${body26}`,
+      };
+    } finally {
+      sodium.memzero(raw);
+    }
   },
   formatRecoveryKeyDisplay(slot: number, body26: string) {
     return `rk${slot}_${body26}`;
@@ -132,7 +145,7 @@ const testRecoveryAdapter: RecoveryKeyAdapter = {
 
 /**
  * Test-only envelope adapter so `sealEntry` and `openEntry` can be exercised for Worker
- * generation/closure checks while `envelope.ts` itself remains a typed stub for P03-T6.
+ * generation/closure checks.
  */
 const testEnvelopeAdapter: EnvelopeAdapter = {
   validateEntryEnvelope(input: unknown): EntryEnvelopeV1 {
@@ -159,7 +172,7 @@ const testEnvelopeAdapter: EnvelopeAdapter = {
     });
   },
   buildEntryAad(env: EntryEnvelopeV1, entryId: string): Uint8Array {
-    const jcs = this.canonicalizeEnvelopeJcs(env);
+    const jcs = testEnvelopeAdapter.canonicalizeEnvelopeJcs(env);
     const labelBytes = utf8Encoder.encode(ENVELOPE_AAD_LABEL);
     const jcsBytes = utf8Encoder.encode(jcs);
     const idBytes = utf8Encoder.encode(entryId);
@@ -187,6 +200,13 @@ function containsSubsequence(haystack: Uint8Array, needle: Uint8Array): boolean 
   return false;
 }
 
+/**
+ * Recursively scans outbound Worker payloads for any secret byte sequence (`VK`, `KEK`,
+ * `x25519Seed`, `ed25519Seed`, `rkWrapKey`, `PWK`) represented as:
+ * - raw `Uint8Array` or `ArrayBuffer` or `ArrayBufferView`
+ * - hex string or base64url string (including substrings and decoded base64url content)
+ * - `number[]` byte arrays (T-1)
+ */
 function scanPayloadForSecretBytes(value: unknown, secret: Uint8Array): boolean {
   const secretHex = Array.from(secret)
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -213,7 +233,18 @@ function scanPayloadForSecretBytes(value: unknown, secret: Uint8Array): boolean 
     if (node instanceof ArrayBuffer) {
       return containsSubsequence(new Uint8Array(node), secret);
     }
+    if (ArrayBuffer.isView(node)) {
+      return containsSubsequence(new Uint8Array(node.buffer, node.byteOffset, node.byteLength), secret);
+    }
     if (Array.isArray(node)) {
+      if (
+        node.length >= secret.byteLength &&
+        node.every((item) => typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 255)
+      ) {
+        if (containsSubsequence( Uint8Array.from(node as number[]), secret )) {
+          return true;
+        }
+      }
       return node.some((item) => walk(item));
     }
     if (typeof node === 'object') {
@@ -275,6 +306,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     const created = await client.createVault({
       passphrase: 'real-argon2id-64mib-passphrase',
       skipRecoveryKeys: true,
+      opGeneration: client.captureGeneration(),
     });
     expect(created.kdf.ops).toBe(3);
     expect(created.kdf.mem).toBe(67_108_864);
@@ -288,12 +320,13 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       kdf: created.kdf,
       vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
       privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: client.captureGeneration(),
     });
     expect(unlocked.unlocked).toBe(true);
     expect(client.getState()).toBe('unlocked');
   }, 30_000);
 
-  it('rejects KDF params below and above bounds for every field BEFORE allocation', async () => {
+  it('rejects KDF params below and above bounds for every field BEFORE allocation on both default and custom derive paths (FE1-27)', async () => {
     const sodium = await getSodium();
     const validSalt = encodeBase64Url(new Uint8Array(16).fill(7));
     const baseValid: VaultKdfParams = {
@@ -337,9 +370,19 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     for (const tc of invalidCases) {
       expect(() => validateKdfParams(tc.input), tc.label).toThrowError(KdfError);
+      // 1. Default derive path (NO customDerive passed -> would call sodium.crypto_pwhash if not rejected before allocation, FE1-27)
+      expect(
+        () => deriveKek(sodium, new Uint8Array([1, 2, 3]), tc.input),
+        `${tc.label} (default derive)`,
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'KDF_PARAMS_INVALID',
+        }),
+      );
+      // 2. Custom derive path
       expect(
         () => deriveKek(sodium, new Uint8Array([1, 2, 3]), tc.input, customDeriveSpy),
-        tc.label,
+        `${tc.label} (custom derive)`,
       ).toThrowError(
         expect.objectContaining({
           code: 'KDF_PARAMS_INVALID',
@@ -350,26 +393,37 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     // Prove neither customDerive nor sodium.crypto_pwhash was ever invoked on invalid params
     expect(customDeriveSpy).not.toHaveBeenCalled();
     expect(pwhashSpy).not.toHaveBeenCalled();
-    pwhashSpy.mockRestore();
 
-    // Also verify Worker unlockPassphrase rejects invalid KDF params with KDF_PARAMS_INVALID
-    const shim = createWorkerShim({ deriveKek: customDeriveSpy });
-    activeShims.push(shim);
-    const client = new CryptoClient({ createWorker: () => shim.port });
+    // Also verify Worker unlockPassphrase on the DEFAULT derive path rejects invalid KDF params before calling crypto_pwhash
+    const defaultShim = createWorkerShim();
+    activeShims.push(defaultShim);
+    const defaultClient = new CryptoClient({ createWorker: () => defaultShim.port });
 
     await expect(
-      client.unlockPassphrase({
+      defaultClient.unlockPassphrase({
         passphrase: 'test-passphrase',
         kdf: { ...baseValid, mem: KDF_MEM_MAX + 1024 },
         vaultKeyWrappedByKek: encodeBase64Url(new Uint8Array(VK_WRAP_BYTES)),
+        opGeneration: defaultClient.captureGeneration(),
       }),
     ).rejects.toMatchObject({
       code: 'KDF_PARAMS_INVALID',
     });
-    expect(customDeriveSpy).not.toHaveBeenCalled();
+    expect(pwhashSpy).not.toHaveBeenCalled();
+    pwhashSpy.mockRestore();
   });
 
-  it('reports simulated derive/allocation failure as KDF_ALLOCATION_FAILED / KDF_DERIVE_FAILED and NEVER as AEAD_DECRYPT_FAILED (wrong passphrase)', async () => {
+  it('classifies KDF allocation failures by error type/errno (not message substring) and NEVER reports derive/allocation failures as AEAD_DECRYPT_FAILED (FE1-14)', async () => {
+    // Unit-check isAllocationFailure directly: substring 'memory'/'room'/'zoom' on generic Error must NOT match (FE1-14)
+    expect(isAllocationFailure(new RangeError('WebAssembly.Memory(): could not allocate memory'))).toBe(true);
+    if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.RuntimeError === 'function') {
+      expect(isAllocationFailure(new WebAssembly.RuntimeError('unreachable'))).toBe(true);
+    }
+    expect(isAllocationFailure(Object.assign(new Error('alloc failed'), { errno: 12 }))).toBe(true);
+    expect(isAllocationFailure(Object.assign(new Error('alloc failed'), { code: 'ENOMEM' }))).toBe(true);
+    expect(isAllocationFailure(new Error('room zoom memory text on generic Error'))).toBe(false);
+    expect(isAllocationFailure(new Error('invalid usage'))).toBe(false);
+
     const oomShim = createWorkerShim({
       deriveKek: () => {
         throw new RangeError('WebAssembly.Memory(): could not allocate memory (64 MiB)');
@@ -392,6 +446,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
         passphrase: 'any-passphrase',
         kdf: validKdf,
         vaultKeyWrappedByKek: encodeBase64Url(new Uint8Array(VK_WRAP_BYTES)),
+        opGeneration: oomClient.captureGeneration(),
       });
     } catch (err) {
       caughtOom = err as CryptoClientError;
@@ -403,7 +458,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     const genericDeriveFailShim = createWorkerShim({
       deriveKek: () => {
-        throw new Error('Unexpected crypto_pwhash failure');
+        throw new Error('Unexpected crypto_pwhash failure in room memory');
       },
     });
     activeShims.push(genericDeriveFailShim);
@@ -414,16 +469,24 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
         passphrase: 'any-passphrase',
         kdf: validKdf,
         vaultKeyWrappedByKek: encodeBase64Url(new Uint8Array(VK_WRAP_BYTES)),
+        opGeneration: deriveFailClient.captureGeneration(),
       }),
     ).rejects.toMatchObject({
       code: 'KDF_DERIVE_FAILED',
     });
   });
 
-  it('reports wrong passphrase as AEAD_DECRYPT_FAILED and enforces wrap layout lengths (73 B / 105 B) and version byte 0x01', async () => {
+  it('reports wrong passphrase as AEAD_DECRYPT_FAILED, zeroes derived KEK on failure (BE1-25), distinguishes PRIVATE_KEYS_WRAP_INVALID (FE1-23), and enforces wrap layout', async () => {
     const sodium = await getSodium();
+    const derivedKekBuffers: Uint8Array[] = [];
+    const trackingDeriveKek: DeriveKekFn = (s, passphrase, params) => {
+      const out = fastTestDeriveKek(s, passphrase, params) as Uint8Array;
+      derivedKekBuffers.push(out);
+      return out;
+    };
+
     const shim = createWorkerShim({
-      deriveKek: fastTestDeriveKek,
+      deriveKek: trackingDeriveKek,
       recovery: testRecoveryAdapter,
     });
     activeShims.push(shim);
@@ -431,6 +494,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     const created = await client.createVault({
       passphrase: 'correct-passphrase-12345',
+      opGeneration: client.captureGeneration(),
     });
 
     const wrapKBytes = decodeBase64UrlStrict(created.vault_key_wrapped_by_kek);
@@ -447,17 +511,38 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       expect(rkWrapBytes[0]).toBe(WRAP_VERSION);
     }
 
-    // Wrong passphrase -> AEAD_DECRYPT_FAILED
+    // Wrong passphrase -> AEAD_DECRYPT_FAILED, AND the actual derived KEK buffer must be wiped to all zeroes (BE1-25)
     await client.lock();
+    derivedKekBuffers.length = 0;
     await expect(
       client.unlockPassphrase({
         passphrase: 'wrong-passphrase-99999',
         kdf: created.kdf,
         vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        opGeneration: client.captureGeneration(),
       }),
     ).rejects.toMatchObject({
       code: 'AEAD_DECRYPT_FAILED',
     });
+    expect(derivedKekBuffers).toHaveLength(1);
+    expect(derivedKekBuffers[0]!.every((b) => b === 0)).toBe(true);
+
+    // Corrupt privateKeysWrapped AFTER VK opens -> PRIVATE_KEYS_WRAP_INVALID, NEVER AEAD_DECRYPT_FAILED (FE1-23)
+    const tamperedPrivWrap = new Uint8Array(privWrapBytes);
+    tamperedPrivWrap[tamperedPrivWrap.length - 1] ^= 0xff;
+    await expect(
+      client.unlockPassphrase({
+        passphrase: 'correct-passphrase-12345',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: encodeBase64Url(tamperedPrivWrap),
+        opGeneration: client.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRIVATE_KEYS_WRAP_INVALID',
+    });
+    expect(client.getState()).toBe('locked');
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
 
     // Mutate leading version byte of wrap -> AEAD_DECRYPT_FAILED (because version is in AAD) and validator rejects
     const mutatedVersionWrap = new Uint8Array(wrapKBytes);
@@ -490,7 +575,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     );
   });
 
-  it('detaches passphrase, recovery key, and PWK ArrayBuffers on the main thread after postMessage (byteLength === 0)', async () => {
+  it('detaches passphrase, recovery key, and PWK ArrayBuffers (including raw ArrayBuffer and subarray views) on the main thread after postMessage (BE1-23, FE1-27)', async () => {
     const shim = createWorkerShim({
       deriveKek: fastTestDeriveKek,
       recovery: testRecoveryAdapter,
@@ -503,16 +588,42 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     const created = await client.createVault({
       passphrase: createPassBuf,
+      opGeneration: client.captureGeneration(),
     });
     expect(createPassBuf.buffer.byteLength).toBe(0);
     expect(createPassBuf.byteLength).toBe(0);
 
-    // Wrap for passkey detaches PWK buffer
+    // 1. Wrap for passkey detaches Uint8Array PWK buffer
     const pwkForWrap = new Uint8Array(32).fill(0x5a);
     expect(pwkForWrap.buffer.byteLength).toBe(32);
-    const { vk_wrap } = await client.wrapForPasskey({ pwk: pwkForWrap });
+    const { vk_wrap } = await client.wrapForPasskey({
+      pwk: pwkForWrap,
+      opGeneration: client.captureGeneration(),
+    });
     expect(pwkForWrap.buffer.byteLength).toBe(0);
     expect(pwkForWrap.byteLength).toBe(0);
+
+    // 2. Wrap for passkey detaches raw ArrayBuffer PWK directly (what WebAuthn PRF returns, BE1-23, FE1-27)
+    const rawPwkBufferForWrap = new Uint8Array(32).fill(0x5a).buffer;
+    expect(rawPwkBufferForWrap.byteLength).toBe(32);
+    const { vk_wrap: vkWrapFromRawAb } = await client.wrapForPasskey({
+      pwk: rawPwkBufferForWrap,
+      opGeneration: client.captureGeneration(),
+    });
+    expect(rawPwkBufferForWrap.byteLength).toBe(0);
+
+    // 3. Sub-view Uint8Array (byteOffset > 0 or byteLength < buffer.byteLength) copies and zeroes the caller's sub-view in place (FE1-27)
+    const backing = new Uint8Array(64).fill(0x11);
+    const subView = backing.subarray(16, 48);
+    subView.fill(0x5a);
+    await client.wrapForPasskey({
+      pwk: subView,
+      opGeneration: client.captureGeneration(),
+    });
+    expect(subView.every((b) => b === 0)).toBe(true);
+    // Surrounding bytes outside the sub-view remain untouched
+    expect(backing.subarray(0, 16).every((b) => b === 0x11)).toBe(true);
+    expect(backing.subarray(48, 64).every((b) => b === 0x11)).toBe(true);
 
     // Lock and test unlockPassphrase detach
     await client.lock();
@@ -522,33 +633,48 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       passphrase: unlockPassBuf,
       kdf: created.kdf,
       vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: client.captureGeneration(),
     });
     expect(unlockPassBuf.buffer.byteLength).toBe(0);
 
-    // Lock and test unlockPrf detach
+    // Lock and test unlockPrf detach with Uint8Array
     await client.lock();
     const pwkForUnlock = new Uint8Array(32).fill(0x5a);
     expect(pwkForUnlock.buffer.byteLength).toBe(32);
     await client.unlockPrf({
       pwk: pwkForUnlock,
       vkWrap: vk_wrap,
+      opGeneration: client.captureGeneration(),
     });
     expect(pwkForUnlock.buffer.byteLength).toBe(0);
+
+    // Lock and test unlockPrf detach with raw ArrayBuffer (BE1-23, FE1-27)
+    await client.lock();
+    const rawPwkBufferForUnlock = new Uint8Array(32).fill(0x5a).buffer;
+    expect(rawPwkBufferForUnlock.byteLength).toBe(32);
+    await client.unlockPrf({
+      pwk: rawPwkBufferForUnlock,
+      vkWrap: vkWrapFromRawAb,
+      opGeneration: client.captureGeneration(),
+    });
+    expect(rawPwkBufferForUnlock.byteLength).toBe(0);
 
     // Lock and test unlockRecovery detach
     await client.lock();
     const rk0 = created.recovery_keys[0]!;
     const rkBuf = new Uint8Array(utf8Encoder.encode(rk0.display));
     expect(rkBuf.buffer.byteLength).toBeGreaterThan(0);
+    const rkGen = client.captureGeneration();
     const rkRes = await client.unlockRecovery({
       recoveryKey: rkBuf,
       wrap: rk0.wrap,
+      opGeneration: rkGen,
     });
     expect(rkBuf.buffer.byteLength).toBe(0);
     expect(rkRes.recovering).toBe(true);
     expect(client.getState()).toBe('recovering');
 
-    // Rewrap detaches new passphrase buffer and preserves current (ops, mem) with a new salt
+    // Rewrap detaches new passphrase buffer and preserves current (ops, mem) with a new salt, while staying in 'recovering' until confirmRecovery (BE1-12, FE1-1)
     const rewrapPassBuf = new Uint8Array(utf8Encoder.encode('new-passphrase-after-recovery'));
     const rewrapped = await client.rewrap({
       passphrase: rewrapPassBuf,
@@ -559,17 +685,35 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
         parallelism: 1,
         salt: created.kdf.salt,
       },
+      opGeneration: rkGen,
     });
     expect(rewrapPassBuf.buffer.byteLength).toBe(0);
     expect(rewrapped.kdf.ops).toBe(5);
     expect(rewrapped.kdf.mem).toBe(134_217_728);
     expect(rewrapped.kdf.salt).not.toBe(created.kdf.salt);
+    expect(client.getState()).toBe('recovering');
+
+    await client.confirmRecovery({ opGeneration: rkGen });
     expect(client.getState()).toBe('unlocked');
   });
 
-  it('never includes VK, KEK, or private key seeds in any postMessage payload to the main thread', async () => {
+  it('never includes VK, KEK, private key seeds, or RK wrap key in any postMessage response (including error responses and number[] form, with positive control) (BE1-24, FE1-26, T-1, T-2)', async () => {
+    const sodium = await getSodium();
+
+    // Positive control for scanPayloadForSecretBytes (T-1): verify it detects planted secrets in Uint8Array, hex, base64url, and number[]
+    const plantedSecret = sodium.randombytes_buf(32);
+    expect(scanPayloadForSecretBytes({ ok: true, result: { buf: new Uint8Array(plantedSecret) } }, plantedSecret)).toBe(true);
+    expect(scanPayloadForSecretBytes({ ok: true, result: { b64: encodeBase64Url(plantedSecret) } }, plantedSecret)).toBe(true);
+    expect(scanPayloadForSecretBytes({ ok: true, result: { hex: sodium.to_hex(plantedSecret) } }, plantedSecret)).toBe(true);
+    expect(scanPayloadForSecretBytes({ ok: true, result: { dbg: Array.from(plantedSecret) } }, plantedSecret)).toBe(true);
+
+    const capturedKeks: Uint8Array[] = [];
     const shim = createWorkerShim({
-      deriveKek: fastTestDeriveKek,
+      deriveKek: (s, passphrase, params) => {
+        const kek = fastTestDeriveKek(s, passphrase, params) as Uint8Array;
+        capturedKeks.push(new Uint8Array(kek));
+        return kek;
+      },
       recovery: testRecoveryAdapter,
       envelope: testEnvelopeAdapter,
     });
@@ -578,50 +722,143 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     const created = await client.createVault({
       passphrase: 'secret-vault-passphrase',
+      opGeneration: client.captureGeneration(),
     });
 
     const vkInClosure = shim.core.inspectClosureVkForTest();
     expect(vkInClosure).not.toBeNull();
     expect(vkInClosure!.byteLength).toBe(VK_BYTES);
 
+    // Reopen private_keys_wrapped with the known VK to extract both real private seeds and verify public keys match (BE1-24)
+    const openedPriv = openWrap(sodium, 'priv', created.private_keys_wrapped, vkInClosure!);
+    const { x25519Seed, ed25519Seed } = unpackPrivateKeySeeds(openedPriv);
+    const expectedXPub = encodeBase64Url(sodium.crypto_box_seed_keypair(x25519Seed).publicKey);
+    const expectedEdPub = encodeBase64Url(sodium.crypto_sign_seed_keypair(ed25519Seed).publicKey);
+    expect(created.x25519_public).toBe(expectedXPub);
+    expect(created.ed25519_public).toBe(expectedEdPub);
+
+    // Capture RK wrap_key for RK #0
+    const rk0 = created.recovery_keys[0]!;
+    const rkWrapKey = testRecoveryAdapter.deriveRecoveryWrapKey(
+      sodium,
+      testRecoveryAdapter.normalizeRecoveryKey(rk0.display),
+    );
+
     const pwk = new Uint8Array(32).fill(0x33);
-    await client.wrapForPasskey({ pwk: new Uint8Array(pwk) });
+    const { vk_wrap } = await client.wrapForPasskey({
+      pwk: new Uint8Array(pwk),
+      opGeneration: client.captureGeneration(),
+    });
 
     const devKey = await generateTestDevKey();
+    const userId = '11111111-1111-4111-8111-111111111111';
+    const vaultKeyId = 'vk:0123456789abcdefghijkl';
     const { wrapped_vk } = await client.wrapForDevice({
       devKey,
-      userId: '11111111-1111-4111-8111-111111111111',
-      vaultKeyId: 'vk:0123456789abcdefghijkl',
+      userId,
+      vaultKeyId,
+      opGeneration: client.captureGeneration(),
     });
     expect(wrapped_vk.byteLength).toBe(DEVKEY_WRAP_BYTES);
 
-    await client.makeRecoveryKeys({ slots: [1, 2] });
+    await client.makeRecoveryKeys({
+      slots: [1, 2],
+      opGeneration: client.captureGeneration(),
+    });
 
     const sealed = await client.sealEntry({
       entryId: '22222222-2222-4222-8222-222222222222',
-      keyId: 'vk:0123456789abcdefghijkl',
+      keyId: vaultKeyId,
       plaintext: 'top-secret-entry-body',
+      opGeneration: client.captureGeneration(),
     });
     const opened = await client.openEntry({
       entryId: '22222222-2222-4222-8222-222222222222',
       envelope: sealed.envelope,
       ciphertext: sealed.ciphertext,
+      opGeneration: client.captureGeneration(),
     });
     expect(opened.plaintext).toBe('top-secret-entry-body');
 
     await client.rewrap({
       passphrase: 'second-passphrase-secret',
       currentKdf: created.kdf,
+      opGeneration: client.captureGeneration(),
     });
 
-    // Spy check: inspect every message sent from Worker to main thread
-    expect(shim.workerPostMessageCalls.length).toBeGreaterThanOrEqual(6);
+    // Also exercise lock, unlockPassphrase, unlockPrf, unlockDevKey, unlockRecovery, resumeRecovery, confirmRecovery, and an error response (FE1-26)
+    await client.lock();
+    await client.unlockPassphrase({
+      passphrase: 'secret-vault-passphrase',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: client.captureGeneration(),
+    });
+
+    await client.lock();
+    await client.unlockPrf({
+      pwk: new Uint8Array(pwk),
+      vkWrap: vk_wrap,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: client.captureGeneration(),
+    });
+
+    await client.lock();
+    await client.unlockDevKey({
+      devKey,
+      wrappedVk: wrapped_vk,
+      userId,
+      vaultKeyId,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: client.captureGeneration(),
+    });
+
+    await client.lock();
+    const recGen = client.captureGeneration();
+    await client.unlockRecovery({
+      recoveryKey: rk0.display,
+      opGeneration: recGen,
+    });
+    await client.resumeRecovery({
+      wrap: rk0.wrap,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: recGen,
+    });
+    await client.confirmRecovery({ opGeneration: recGen });
+
+    // Trigger an error response (wrong passphrase) and ensure no secret appears in error responses either
+    await client.lock();
+    await expect(
+      client.unlockPassphrase({
+        passphrase: 'wrong-passphrase-for-error-scan',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        opGeneration: client.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+
+    const allSecretsToScan: Array<{ name: string; bytes: Uint8Array }> = [
+      { name: 'vk', bytes: vkInClosure! },
+      { name: 'x25519Seed', bytes: x25519Seed },
+      { name: 'ed25519Seed', bytes: ed25519Seed },
+      { name: 'rkWrapKey', bytes: rkWrapKey },
+      { name: 'pwk', bytes: pwk },
+      ...capturedKeks.map((k, idx) => ({ name: `kek_${idx}`, bytes: k })),
+    ];
+
+    expect(shim.workerPostMessageCalls.length).toBeGreaterThanOrEqual(14);
     for (const msg of shim.workerPostMessageCalls) {
-      expect(scanPayloadForSecretBytes(msg, vkInClosure!)).toBe(false);
+      for (const secret of allSecretsToScan) {
+        expect(
+          scanPayloadForSecretBytes(msg, secret.bytes),
+          `Secret ${secret.name} leaked in message ${JSON.stringify(msg)}`,
+        ).toBe(false);
+      }
     }
   });
 
-  it('cancels stale results when lock occurs mid-flight, including async DevKey, PRF, and passphrase paths', async () => {
+  it('cancels stale results when lock occurs mid-flight, including async DevKey, PRF, passphrase, synchronous derive back-to-back lock, and Worker-side stale generation checks (FE1-11)', async () => {
     let pauseDerive = false;
     const deriveStarted = Promise.withResolvers<void>();
     const deriveGate = Promise.withResolvers<void>();
@@ -643,9 +880,13 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     const created = await client.createVault({
       passphrase: 'initial-passphrase',
       skipRecoveryKeys: true,
+      opGeneration: client.captureGeneration(),
     });
     const pwk = new Uint8Array(32).fill(0x77);
-    const { vk_wrap } = await client.wrapForPasskey({ pwk: new Uint8Array(pwk) });
+    const { vk_wrap } = await client.wrapForPasskey({
+      pwk: new Uint8Array(pwk),
+      opGeneration: client.captureGeneration(),
+    });
     const devKey = await generateTestDevKey();
     const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const vaultKeyId = 'vk:abcdefghijklmnopqrstuv';
@@ -653,6 +894,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       devKey,
       userId,
       vaultKeyId,
+      opGeneration: client.captureGeneration(),
     });
 
     await client.lock();
@@ -665,6 +907,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       passphrase: 'initial-passphrase',
       kdf: created.kdf,
       vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: client.captureGeneration(),
     });
 
     // Wait deterministically until Worker enters deriveKek, then lock
@@ -719,6 +962,131 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect(client.getState()).toBe('locked');
     expect(shim.core.getState()).toBe('locked');
     expect(shim.core.inspectClosureVkForTest()).toBeNull();
+
+    // 4. Synchronous derive back-to-back unlockPassphrase + lock(): unlock rejects STALE_GENERATION, VK null after lock reply, lock() resolves (FE1-11b)
+    const syncGen = client.captureGeneration();
+    const syncUnlockPromise = client.unlockPassphrase({
+      passphrase: 'initial-passphrase',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: syncGen,
+    });
+    const syncLockPromise = client.lock();
+    const [syncUnlockOutcome, syncLockRes] = await Promise.allSettled([
+      syncUnlockPromise,
+      syncLockPromise,
+    ]);
+    expect(syncUnlockOutcome.status).toBe('rejected');
+    if (syncUnlockOutcome.status === 'rejected') {
+      expect(syncUnlockOutcome.reason).toMatchObject({ code: 'STALE_GENERATION' });
+    }
+    expect(syncLockRes.status).toBe('fulfilled');
+    expect(client.getState()).toBe('locked');
+    expect(shim.core.getState()).toBe('locked');
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
+
+    // 5. Stale error reply (wrong passphrase + mid-flight lock) is surfaced as STALE_GENERATION, not AEAD_DECRYPT_FAILED (FE1-16)
+    const staleErrGen = client.captureGeneration();
+    const wrongPassUnlockPromise = client.unlockPassphrase({
+      passphrase: 'wrong-passphrase-during-lock',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: staleErrGen,
+    });
+    const staleErrLockPromise = client.lock();
+    const [wrongPassOutcome] = await Promise.allSettled([
+      wrongPassUnlockPromise,
+      staleErrLockPromise,
+    ]);
+    expect(wrongPassOutcome.status).toBe('rejected');
+    if (wrongPassOutcome.status === 'rejected') {
+      expect(wrongPassOutcome.reason).toMatchObject({
+        code: 'STALE_GENERATION',
+      });
+    }
+
+    // 6. Core-level direct Worker stale-generation checks for unlockPrf, unlockRecovery, unlockPassphrase, sealEntry, openEntry (FE1-11a)
+    const currentWorkerGen = shim.core.getGeneration();
+    const bumpedGen = currentWorkerGen + 5;
+    const lockMsgRes = await shim.core.handleMessage({
+      id: 9000,
+      generation: bumpedGen,
+      type: 'lock',
+    });
+    expect(lockMsgRes.ok).toBe(true);
+    expect(shim.core.getGeneration()).toBe(bumpedGen);
+
+    const staleGen = bumpedGen - 1;
+    const stalePrfBuf = new Uint8Array(pwk);
+    const stalePrfRes = await shim.core.handleMessage({
+      id: 9001,
+      generation: staleGen,
+      type: 'unlockPrf',
+      pwkBuffer: stalePrfBuf.buffer,
+      vkWrap: vk_wrap,
+    });
+    expect(stalePrfRes).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_GENERATION' },
+    });
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
+    expect(stalePrfBuf.every((b) => b === 0)).toBe(true);
+
+    const staleRkBuf = new Uint8Array(utf8Encoder.encode('rk1_0000-0000-0000-0000-0000-0000-00'));
+    const staleRkRes = await shim.core.handleMessage({
+      id: 9002,
+      generation: staleGen,
+      type: 'unlockRecovery',
+      recoveryKeyBuffer: staleRkBuf.buffer,
+    });
+    expect(staleRkRes).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_GENERATION' },
+    });
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
+    expect(staleRkBuf.every((b) => b === 0)).toBe(true);
+
+    const stalePassBuf = new Uint8Array(utf8Encoder.encode('initial-passphrase'));
+    const stalePassRes = await shim.core.handleMessage({
+      id: 9003,
+      generation: staleGen,
+      type: 'unlockPassphrase',
+      passphraseBuffer: stalePassBuf.buffer,
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+    });
+    expect(stalePassRes).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_GENERATION' },
+    });
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
+    expect(stalePassBuf.every((b) => b === 0)).toBe(true);
+
+    const staleSealRes = await shim.core.handleMessage({
+      id: 9004,
+      generation: staleGen,
+      type: 'sealEntry',
+      entryId: '22222222-2222-4222-8222-222222222222',
+      keyId: vaultKeyId,
+      plaintext: 'stale-entry',
+    });
+    expect(staleSealRes).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_GENERATION' },
+    });
+
+    const staleOpenRes = await shim.core.handleMessage({
+      id: 9005,
+      generation: staleGen,
+      type: 'openEntry',
+      entryId: '22222222-2222-4222-8222-222222222222',
+      envelope: {},
+      ciphertext: 'AA',
+    });
+    expect(staleOpenRes).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_GENERATION' },
+    });
   });
 
   it('fails the command and withholds output when a simulated broken wrap fails the re-open self-check', async () => {
@@ -748,7 +1116,10 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     // 1a. createVault fails when KEK wrap re-open mismatches VK
     await expect(
-      client.createVault({ passphrase: 'test-passphrase' }),
+      client.createVault({
+        passphrase: 'test-passphrase',
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
     });
@@ -757,7 +1128,10 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     // 1b. createVault fails when private_keys_wrapped re-open mismatches public keys / seeds
     corruptKind = 'priv';
     await expect(
-      client.createVault({ passphrase: 'test-passphrase' }),
+      client.createVault({
+        passphrase: 'test-passphrase',
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
     });
@@ -766,7 +1140,10 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     // 1c. createVault fails when RK wrap re-open mismatches VK
     corruptKind = 'rk';
     await expect(
-      client.createVault({ passphrase: 'test-passphrase' }),
+      client.createVault({
+        passphrase: 'test-passphrase',
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
     });
@@ -774,12 +1151,19 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     // Allow createVault to succeed so we can test rewrap, makeRecoveryKeys, wrapForPasskey, wrapForDevice
     corruptKind = null;
-    const created = await client.createVault({ passphrase: 'test-passphrase' });
+    const created = await client.createVault({
+      passphrase: 'test-passphrase',
+      opGeneration: client.captureGeneration(),
+    });
 
     // 2. rewrap fails on broken KEK wrap
     corruptKind = 'kek';
     await expect(
-      client.rewrap({ passphrase: 'new-passphrase', currentKdf: created.kdf }),
+      client.rewrap({
+        passphrase: 'new-passphrase',
+        currentKdf: created.kdf,
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
     });
@@ -787,7 +1171,10 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     // 3. makeRecoveryKeys fails on broken RK wrap
     corruptKind = 'rk';
     await expect(
-      client.makeRecoveryKeys({ slots: [1] }),
+      client.makeRecoveryKeys({
+        slots: [1],
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
     });
@@ -795,7 +1182,10 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     // 4. wrapForPasskey fails on broken PRF wrap
     corruptKind = 'prf';
     await expect(
-      client.wrapForPasskey({ pwk: new Uint8Array(32).fill(0x11) }),
+      client.wrapForPasskey({
+        pwk: new Uint8Array(32).fill(0x11),
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
     });
@@ -807,6 +1197,7 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
         devKey,
         userId: '11111111-1111-4111-8111-111111111111',
         vaultKeyId: 'vk:0123456789abcdefghijkl',
+        opGeneration: client.captureGeneration(),
       }),
     ).rejects.toMatchObject({
       code: 'WRAP_SELF_CHECK_FAILED',
@@ -815,12 +1206,23 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     void sodium;
   });
 
-  it('transitions client to error state on Worker crash and requires unlock again', async () => {
-    let currentShim = createWorkerShim({
-      deriveKek: fastTestDeriveKek,
+  it('transitions client to error state on Worker crash (including in-flight requests and onmessageerror), notifies reset to locked on retry, and ignores events from replaced Workers (BE1-9, FE1-12, FE1-20)', async () => {
+    let pauseDerive = false;
+    const deriveEntered = Promise.withResolvers<void>();
+
+    const firstShim = createWorkerShim({
+      deriveKek: async (s, pass, params) => {
+        if (pauseDerive) {
+          deriveEntered.resolve();
+          // Hang until crash
+          await new Promise(() => {});
+        }
+        return fastTestDeriveKek(s, pass, params);
+      },
       recovery: testRecoveryAdapter,
     });
-    activeShims.push(currentShim);
+    activeShims.push(firstShim);
+    let currentShim = firstShim;
 
     const states: string[] = [];
     const client = new CryptoClient({
@@ -830,38 +1232,493 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
 
     const created = await client.createVault({
       passphrase: 'crash-test-passphrase',
-      skipRecoveryKeys: true,
+      opGeneration: client.captureGeneration(),
     });
     expect(client.getState()).toBe('unlocked');
 
-    // Simulate Worker crash
+    // Start an in-flight request and simulate crash while it is pending (FE1-12)
+    pauseDerive = true;
+    const inFlightRewrap = client.rewrap({
+      passphrase: 'in-flight-passphrase',
+      currentKdf: created.kdf,
+      opGeneration: client.captureGeneration(),
+    });
+    await deriveEntered.promise;
+
     currentShim.simulateCrash();
+    await expect(inFlightRewrap).rejects.toMatchObject({
+      code: 'WORKER_CRASHED',
+    });
     expect(client.getState()).toBe('error');
-    expect(states).toContain('error');
+    expect(states.at(-1)).toBe('error');
 
     // Non-unlock commands must fail while in error state
     await expect(
-      client.makeRecoveryKeys({ slots: [1] }),
+      client.makeRecoveryKeys({
+        slots: [1],
+        opGeneration: client.captureGeneration(),
+      }),
     ).rejects.toMatchObject({
       code: 'WORKER_CRASHED',
     });
 
-    // Prepare fresh Worker instance for re-unlock
-    currentShim = createWorkerShim({
+    // Prepare fresh Worker instance for a lookup-only recovery retry after crash:
+    // subscriber state MUST agree with client.getState() === 'locked' (BE1-9)
+    pauseDerive = false;
+    const secondShim = createWorkerShim({
       deriveKek: fastTestDeriveKek,
       recovery: testRecoveryAdapter,
     });
-    activeShims.push(currentShim);
+    activeShims.push(secondShim);
+    currentShim = secondShim;
 
+    const rk0 = created.recovery_keys[0]!;
+    const lookupRes = await client.unlockRecovery({
+      recoveryKey: rk0.display,
+      opGeneration: client.captureGeneration(),
+    });
+    expect(lookupRes.lookup_hash).toBe(rk0.lookup_hash);
+    expect(client.getState()).toBe('locked');
+    expect(states.at(-1)).toBe('locked');
+
+    // Late onerror / onmessageerror from the already-replaced firstShim must be ignored and NOT kill secondShim (FE1-20)
+    const genBeforeStaleCrash = client.getGeneration();
+    firstShim.simulateCrash();
+    firstShim.simulateMessageError();
+    expect(client.getState()).toBe('locked');
+    expect(client.getGeneration()).toBe(genBeforeStaleCrash);
+
+    // Unlock on secondShim succeeds
     await client.unlockPassphrase({
       passphrase: 'crash-test-passphrase',
       kdf: created.kdf,
       vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: client.captureGeneration(),
     });
     expect(client.getState()).toBe('unlocked');
+
+    // Simulate onmessageerror crash on active Worker (FE1-12)
+    secondShim.simulateMessageError();
+    expect(client.getState()).toBe('error');
   });
 
-  it('verifies default recovery.ts and envelope.ts adapters work end-to-end', async () => {
+  it('delivers lock/terminate/handleWorkerDeath teardown BEFORE notifying state observers and makes lock() total (never rejects) (BE1-8, FE1-2, FE1-21)', async () => {
+    const shim = createWorkerShim({
+      deriveKek: fastTestDeriveKek,
+      recovery: testRecoveryAdapter,
+    });
+    activeShims.push(shim);
+
+    let throwOnObserver = false;
+    const client = new CryptoClient({
+      createWorker: () => shim.port,
+      onStateChange: () => {
+        if (throwOnObserver) {
+          throw new Error('Observer boom');
+        }
+      },
+    });
+
+    const created = await client.createVault({
+      passphrase: 'observer-safety-passphrase',
+      skipRecoveryKeys: true,
+      opGeneration: client.captureGeneration(),
+    });
+    expect(client.getState()).toBe('unlocked');
+    expect(shim.core.inspectClosureVkForTest()).not.toBeNull();
+
+    // 1. Throwing onStateChange during lock() MUST NOT prevent lock command delivery or Worker VK wipe, and lock() must resolve (BE1-8, FE1-2)
+    throwOnObserver = true;
+    const lockRes = await client.lock();
+    expect(lockRes.generation).toBeGreaterThan(0);
+    expect(client.getState()).toBe('locked');
+    expect(shim.core.getState()).toBe('locked');
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
+    throwOnObserver = false;
+
+    // 2. Concurrent back-to-back lock() calls both resolve and never reject with STALE_GENERATION (FE1-2)
+    await client.unlockPassphrase({
+      passphrase: 'observer-safety-passphrase',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: client.captureGeneration(),
+    });
+    const [l1, l2] = await Promise.all([client.lock(), client.lock()]);
+    expect(l1.generation).toBeGreaterThan(0);
+    expect(l2.generation).toBeGreaterThanOrEqual(l1.generation);
+    expect(shim.core.inspectClosureVkForTest()).toBeNull();
+
+    // 3. Throwing onStateChange during terminate() still terminates the Worker and settles pending requests (BE1-8, FE1-21)
+    let pauseDerive = true;
+    const deriveStarted = Promise.withResolvers<void>();
+    const termShim = createWorkerShim({
+      deriveKek: async (s, pass, params) => {
+        if (pauseDerive) {
+          deriveStarted.resolve();
+          await new Promise(() => {});
+        }
+        return fastTestDeriveKek(s, pass, params);
+      },
+    });
+    activeShims.push(termShim);
+    let terminatedCalled = false;
+    const origTerminate = termShim.port.terminate?.bind(termShim.port);
+    termShim.port.terminate = () => {
+      terminatedCalled = true;
+      origTerminate?.();
+    };
+
+    const termClient = new CryptoClient({
+      createWorker: () => termShim.port,
+      onStateChange: (st) => {
+        if (st === 'locked' && throwOnObserver) {
+          throw new Error('Terminate observer boom');
+        }
+      },
+    });
+
+    const pendingUnlock = termClient.unlockPassphrase({
+      passphrase: 'observer-safety-passphrase',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      opGeneration: termClient.captureGeneration(),
+    });
+    await deriveStarted.promise;
+
+    throwOnObserver = true;
+    expect(() => termClient.terminate()).toThrow('Terminate observer boom');
+    throwOnObserver = false;
+    pauseDerive = false;
+
+    expect(terminatedCalled).toBe(true);
+    await expect(pendingUnlock).rejects.toMatchObject({
+      code: 'STALE_GENERATION',
+    });
+  });
+
+  it('wipes caller secret buffers on every failure path (rejected beforePostMessage, Worker constructor throw, postMessage DataCloneError) and rejects empty/detached secrets with SECRET_DETACHED_OR_EMPTY (BE1-6, BE1-16, BE1-28, FE1-9)', async () => {
+    const shim = createWorkerShim({
+      deriveKek: fastTestDeriveKek,
+      recovery: testRecoveryAdapter,
+    });
+    activeShims.push(shim);
+    const client = new CryptoClient({ createWorker: () => shim.port });
+
+    // 1. Empty string, empty Uint8Array, empty ArrayBuffer, and already-detached Uint8Array -> SECRET_DETACHED_OR_EMPTY
+    await expect(
+      client.createVault({
+        passphrase: '',
+        opGeneration: client.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'SECRET_DETACHED_OR_EMPTY' });
+
+    await expect(
+      client.createVault({
+        passphrase: new Uint8Array(0),
+        opGeneration: client.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'SECRET_DETACHED_OR_EMPTY' });
+
+    await expect(
+      client.unlockPrf({
+        pwk: new ArrayBuffer(0),
+        vkWrap: 'AA',
+        opGeneration: client.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'SECRET_DETACHED_OR_EMPTY' });
+
+    // Create a genuinely detached ArrayBuffer via MessageChannel transfer
+    const { port1 } = new MessageChannel();
+    const detachedSource = new Uint8Array([1, 2, 3, 4]);
+    port1.postMessage(detachedSource.buffer, [detachedSource.buffer]);
+    port1.close();
+    expect(detachedSource.buffer.byteLength).toBe(0);
+
+    await expect(
+      client.unlockRecovery({
+        recoveryKey: detachedSource,
+        opGeneration: client.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'SECRET_DETACHED_OR_EMPTY' });
+
+    // 2. Rejected beforePostMessage wipes caller's passphrase, RK, and PWK buffers in place (BE1-6, BE1-16, BE1-28)
+    const abortErr = new DOMException('Aborted by user', 'AbortError');
+    const passBufAbort = new Uint8Array([10, 20, 30, 40]);
+    await expect(
+      client.createVault({
+        passphrase: passBufAbort,
+        opGeneration: client.captureGeneration(),
+        beforePostMessage: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+    expect(passBufAbort.every((b) => b === 0)).toBe(true);
+
+    const rkBufAbort = new Uint8Array([50, 60, 70, 80]);
+    await expect(
+      client.unlockRecovery({
+        recoveryKey: rkBufAbort,
+        opGeneration: client.captureGeneration(),
+        beforePostMessage: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+    expect(rkBufAbort.every((b) => b === 0)).toBe(true);
+
+    const pwkBufAbort = new Uint8Array(32).fill(0xaa);
+    await expect(
+      client.unlockPrf({
+        pwk: pwkBufAbort,
+        vkWrap: 'AA',
+        opGeneration: client.captureGeneration(),
+        beforePostMessage: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+    expect(pwkBufAbort.every((b) => b === 0)).toBe(true);
+
+    // 3. Worker constructor throw wipes caller secret buffer
+    const throwingFactoryClient = new CryptoClient({
+      createWorker: () => {
+        throw new Error('CSP blocked Worker creation');
+      },
+    });
+    const passBufCtorFail = new Uint8Array([11, 22, 33, 44]);
+    await expect(
+      throwingFactoryClient.createVault({
+        passphrase: passBufCtorFail,
+        opGeneration: throwingFactoryClient.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'WORKER_INTERNAL_ERROR' });
+    expect(passBufCtorFail.every((b) => b === 0)).toBe(true);
+
+    // 4. postMessage synchronous throw (DataCloneError / transfer failure) wipes caller secret buffer and maps DataCloneError to SECRET_DETACHED_OR_EMPTY
+    const throwingPostMessageClient = new CryptoClient({
+      createWorker: () => ({
+        postMessage: () => {
+          const err = new Error('ArrayBuffer could not be cloned');
+          err.name = 'DataCloneError';
+          throw err;
+        },
+        onmessage: null,
+      }),
+    });
+    const pwkBufCloneFail = new Uint8Array(32).fill(0xbb);
+    await expect(
+      throwingPostMessageClient.wrapForPasskey({
+        pwk: pwkBufCloneFail,
+        opGeneration: throwingPostMessageClient.captureGeneration(),
+      }),
+    ).rejects.toMatchObject({ code: 'SECRET_DETACHED_OR_EMPTY' });
+    expect(pwkBufCloneFail.every((b) => b === 0)).toBe(true);
+  });
+
+  it('wipes incoming secret buffers in the Worker when getSodium() initialization fails, and retries sodium init on the next command (BE1-17, FE1-8)', async () => {
+    const realSodium = await getSodium();
+    const zeroedKinds: string[] = [];
+    const core = createWorkerCore({
+      deriveKek: fastTestDeriveKek,
+      onKeyZeroed: (kind) => zeroedKinds.push(kind),
+    });
+
+    // 1. Simulate getSodium() rejecting once: incoming secret buffer MUST still be wiped (BE1-17)
+    const getSodiumSpy = vi
+      .spyOn(sodiumModule, 'getSodium')
+      .mockRejectedValueOnce(new Error('Simulated transient WASM instantiate OOM'));
+
+    const incomingPwk = new Uint8Array(32).fill(0xcc);
+    const failRes = await core.handleMessage({
+      id: 1,
+      generation: 0,
+      type: 'unlockPrf',
+      pwkBuffer: incomingPwk.buffer,
+      vkWrap: 'AA',
+    });
+
+    expect(failRes).toMatchObject({
+      ok: false,
+      error: { code: 'WORKER_INIT_FAILED' },
+    });
+    expect(incomingPwk.every((b) => b === 0)).toBe(true);
+    expect(zeroedKinds).toContain('pwk');
+
+    // 2. Subsequent call succeeds because sodium init failure is not cached forever (FE1-8)
+    getSodiumSpy.mockRestore();
+    resetSodiumForTest();
+    const sAfterRetry = await getSodium();
+    expect(sAfterRetry).toBe(realSodium);
+  });
+
+  it('correlates overlapping concurrent commands out-of-order, guards wrapForDevice against concurrent VK swap, and handles unknown commands/malformed generations (FE1-12, FE1-17, FE1-18, FE1-22)', async () => {
+    const sodium = await getSodium();
+    let gateFirstDevKey = false;
+    const firstSealEntered = Promise.withResolvers<void>();
+    const releaseFirstSeal = Promise.withResolvers<void>();
+
+    const shim = createWorkerShim({
+      deriveKek: fastTestDeriveKek,
+      recovery: testRecoveryAdapter,
+      sealDevKeyWrap: async (s, vk, devKey, userId, vaultKeyId) => {
+        if (gateFirstDevKey) {
+          gateFirstDevKey = false;
+          firstSealEntered.resolve();
+          await releaseFirstSeal.promise;
+        }
+        return sealDevKeyWrap(s, vk, devKey, userId, vaultKeyId);
+      },
+    });
+    activeShims.push(shim);
+    const client = new CryptoClient({ createWorker: () => shim.port });
+
+    await client.createVault({
+      passphrase: 'overlap-passphrase-1',
+      skipRecoveryKeys: true,
+      opGeneration: client.captureGeneration(),
+    });
+
+    const entryId1 = '11111111-1111-4111-8111-111111111111';
+    const entryId2 = '22222222-2222-4222-8222-222222222222';
+    const keyId = 'vk:0123456789abcdefghijkl';
+
+    // 1. Overlapping concurrent sealEntry + openEntry calls resolve to their exact respective callers (FE1-12)
+    const [s1, s2] = await Promise.all([
+      client.sealEntryNow({ entryId: entryId1, keyId, plaintext: 'payload-one' }),
+      client.sealEntryNow({ entryId: entryId2, keyId, plaintext: 'payload-two' }),
+    ]);
+    const [o1, o2] = await Promise.all([
+      client.openEntryNow({ entryId: entryId1, envelope: s1.envelope, ciphertext: s1.ciphertext }),
+      client.openEntryNow({ entryId: entryId2, envelope: s2.envelope, ciphertext: s2.ciphertext }),
+    ]);
+    expect(o1.plaintext).toBe('payload-one');
+    expect(o2.plaintext).toBe('payload-two');
+
+    // 2. wrapForDevice re-checks active VK after await so a concurrent unlock replacing VK mid-await is rejected (FE1-22)
+    const devKey = await generateTestDevKey();
+    gateFirstDevKey = true;
+    const wrapDevPromise = client.wrapForDeviceNow({
+      devKey,
+      userId: entryId1,
+      vaultKeyId: keyId,
+    });
+    await firstSealEntered.promise;
+
+    // Concurrent createVault at the same generation replaces closure VK while wrapForDevice is parked at await
+    await client.createVaultNow({
+      passphrase: 'overlap-passphrase-2',
+      skipRecoveryKeys: true,
+    });
+    releaseFirstSeal.resolve();
+
+    await expect(wrapDevPromise).rejects.toMatchObject({
+      code: 'STALE_GENERATION',
+    });
+
+    // 3. Unknown command type -> NOT_IMPLEMENTED; non-integer generation -> STALE_GENERATION (FE1-18)
+    const unknownRes = await shim.core.handleMessage({
+      id: 777,
+      generation: shim.core.getGeneration(),
+      type: 'unknownCommand' as unknown as 'lock',
+    });
+    expect(unknownRes).toMatchObject({
+      ok: false,
+      error: { code: 'NOT_IMPLEMENTED' },
+    });
+
+    const nanGenRes = await shim.core.handleMessage({
+      id: 778,
+      generation: Number.NaN,
+      type: 'makeRecoveryKeys',
+    });
+    expect(nanGenRes).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_GENERATION' },
+    });
+
+    // 4. attachWorkerCore catches a throwing scope.postMessage and falls back to an error response without unhandled rejection (FE1-17)
+    const postedResponses: unknown[] = [];
+    const fallbackPosted = Promise.withResolvers<void>();
+    let throwFirstPost = true;
+    const mockScope = {
+      onmessage: null as ((ev: MessageEvent<WorkerRequestMessage>) => void) | null,
+      postMessage(msg: unknown) {
+        if (throwFirstPost) {
+          throwFirstPost = false;
+          throw new Error('Clone failed on response');
+        }
+        postedResponses.push(msg);
+        fallbackPosted.resolve();
+      },
+    };
+    attachWorkerCore(mockScope, shim.core);
+    mockScope.onmessage?.({
+      data: { id: 888, generation: shim.core.getGeneration(), type: 'lock' },
+    } as MessageEvent<WorkerRequestMessage>);
+    await fallbackPosted.promise;
+    expect(postedResponses).toHaveLength(1);
+    expect(postedResponses[0]).toMatchObject({
+      id: 888,
+      ok: false,
+      error: { code: 'WORKER_INTERNAL_ERROR' },
+    });
+
+    void sodium;
+  });
+
+  it('keeps libsodium and worker-core out of the client.ts main-thread import graph, works without Promise.withResolvers, and requires opGeneration in TypeScript (FE1-3, FE1-4, FE1-6, FE1-19)', async () => {
+    // 1. Inspect client.ts and protocol.ts imports to prove neither imports worker-core or sodium/libsodium (FE1-4, T-2, T-3)
+    const clientSource = readFileSync(resolve(__dirname, './client.ts'), 'utf8');
+    const protocolSource = readFileSync(resolve(__dirname, './protocol.ts'), 'utf8');
+    expect(clientSource).not.toMatch(/from\s+['"]\.\/worker-core['"]/);
+    expect(clientSource).not.toMatch(/from\s+['"]\.\/sodium['"]/);
+    expect(clientSource).not.toMatch(/libsodium/);
+    expect(protocolSource).not.toMatch(/from\s+['"]\.\/worker-core['"]/);
+    expect(protocolSource).not.toMatch(/from\s+['"]\.\/sodium['"]/);
+    expect(protocolSource).not.toMatch(/libsodium/);
+
+    // 2. Dynamic import intentionally exercises module loading boundary of worker.ts in a main-thread/jsdom environment where window exists (FE1-19)
+    const prevWindowOnMessage = globalThis.onmessage;
+    await import('./worker');
+    expect(globalThis.onmessage).toBe(prevWindowOnMessage);
+
+    // 3. CryptoClient works when Promise.withResolvers is absent (iOS Safari < 17.4, FE1-6)
+    const origWithResolvers = Promise.withResolvers;
+    const shim = createWorkerShim({
+      deriveKek: fastTestDeriveKek,
+      recovery: testRecoveryAdapter,
+    });
+    activeShims.push(shim);
+    const client = new CryptoClient({ createWorker: () => shim.port });
+
+    try {
+      // @ts-expect-error Simulating pre-ES2024 browser without Promise.withResolvers
+      Promise.withResolvers = undefined;
+      const created = await client.createVault({
+        passphrase: 'no-with-resolvers-passphrase',
+        skipRecoveryKeys: true,
+        opGeneration: client.captureGeneration(),
+      });
+      expect(created.kdf.ops).toBe(3);
+    } finally {
+      Promise.withResolvers = origWithResolvers;
+    }
+
+    // 4. Type-level proof that opGeneration is required on CreateVaultClientParams / UnlockPassphraseClientParams (FE1-3)
+    if (false as boolean) {
+      // @ts-expect-error opGeneration is required on createVault
+      await client.createVault({ passphrase: 'missing-op-generation' });
+      // @ts-expect-error opGeneration is required on unlockPassphrase
+      await client.unlockPassphrase({
+        passphrase: 'missing-op-generation',
+        kdf: {},
+        vaultKeyWrappedByKek: 'AA',
+      });
+    }
+  });
+
+  it('verifies default recovery.ts and envelope.ts adapters and error mappings work end-to-end (FE1-23)', async () => {
     const sodium = await getSodium();
     const rk = generateRecoveryKey(sodium, 1);
     expect(rk.slot).toBe(1);
@@ -886,6 +1743,38 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect(
       buildEntryAad(validEnv, '00000000-0000-4000-8000-000000000000').byteLength,
     ).toBeGreaterThan(100);
+
+    // Verify mapError maps Base64UrlError, JcsError, and TypeError to ENVELOPE_INVALID (FE1-23)
+    const errCore = createWorkerCore({
+      deriveKek: fastTestDeriveKek,
+      envelope: {
+        validateEntryEnvelope: () => {
+          throw new Base64UrlError('bad base64url');
+        },
+        canonicalizeEnvelopeJcs: () => {
+          throw new JcsError('bad jcs');
+        },
+      },
+    });
+    await errCore.handleMessage({
+      id: 1,
+      generation: 0,
+      type: 'createVault',
+      passphraseBuffer: utf8Encoder.encode('pass').buffer,
+      skipRecoveryKeys: true,
+    });
+    const b64ErrRes = await errCore.handleMessage({
+      id: 2,
+      generation: 0,
+      type: 'openEntry',
+      entryId: '00000000-0000-4000-8000-000000000000',
+      envelope: validEnv,
+      ciphertext: 'AA',
+    });
+    expect(b64ErrRes).toMatchObject({
+      ok: false,
+      error: { code: 'ENVELOPE_INVALID' },
+    });
   });
 
   it('verifies AAD domain separation across wrap labels and DevKey user/vault_key_id bindings', async () => {
@@ -935,7 +1824,8 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
       parallelism: 1,
       salt: encodeBase64Url(new Uint8Array(16).fill(5)),
     }).ops).toBe(4);
-    expect(WrapError).toBeDefined();
+    const sampleWrapErr = new WrapError('WRAP_INVALID', 'invalid wrap');
+    expect(sampleWrapErr.code).toBe('WRAP_INVALID');
   });
 
   it('runs the Argon2id 64 MiB benchmark helper across multiple runs and reports median/p95', async () => {

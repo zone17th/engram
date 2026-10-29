@@ -1,8 +1,10 @@
 import { MessageChannel, type TransferListItem } from 'node:worker_threads';
 import type { CryptoWorkerPort } from '../client';
 import {
+  attachWorkerCore,
   createWorkerCore,
   type CryptoWorkerCore,
+  type MessagePortLike,
   type WorkerCoreHooks,
   type WorkerRequestMessage,
   type WorkerResponseMessage,
@@ -14,13 +16,16 @@ export interface ShimmedWorkerInstance {
   workerPostMessageCalls: WorkerResponseMessage[];
   clientPostMessageCalls: WorkerRequestMessage[];
   simulateCrash: () => void;
+  simulateMessageError: () => void;
   close: () => void;
 }
 
 /**
  * Hosts `worker-core` behind a real Node `MessageChannel` (`node:worker_threads`)
- * so `postMessage(msg, [arrayBuffer])` performs genuine structured cloning AND
- * detaches transferred `ArrayBuffer`s (`byteLength === 0`) on the sender side.
+ * wired through the real receive-side `attachWorkerCore(workerScope, core)` entrypoint
+ * so `postMessage(msg, [arrayBuffer])` performs genuine structured cloning,
+ * detaches transferred `ArrayBuffer`s (`byteLength === 0`) on the sender side,
+ * and exercises `attachWorkerCore`'s `onmessage` -> `postMessage` boundary (BE1-22, FE1-10).
  */
 export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInstance {
   const { port1: mainPort, port2: workerPort } = new MessageChannel();
@@ -29,11 +34,28 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
   const workerPostMessageCalls: WorkerResponseMessage[] = [];
   const clientPostMessageCalls: WorkerRequestMessage[] = [];
 
+  let workerOnMessage: ((event: MessageEvent<WorkerRequestMessage>) => void) | null = null;
+  let isTerminated = false;
+
+  const workerScope: MessagePortLike = {
+    postMessage(message: unknown, transfer: Transferable[] = []) {
+      if (isTerminated) return;
+      workerPostMessageCalls.push(message as WorkerResponseMessage);
+      workerPort.postMessage(message, transfer as unknown as readonly TransferListItem[]);
+    },
+    get onmessage() {
+      return workerOnMessage;
+    },
+    set onmessage(handler) {
+      workerOnMessage = handler;
+    },
+  };
+
+  attachWorkerCore(workerScope, core);
+
   workerPort.on('message', (data: WorkerRequestMessage) => {
-    void core.handleMessage(data).then((response) => {
-      workerPostMessageCalls.push(response);
-      workerPort.postMessage(response);
-    });
+    if (isTerminated) return;
+    workerScope.onmessage?.({ data } as MessageEvent<WorkerRequestMessage>);
   });
 
   let onmessageHandler: ((event: MessageEvent<WorkerResponseMessage>) => void) | null = null;
@@ -41,12 +63,14 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
   let onmessageerrorHandler: ((event: MessageEvent) => void) | null = null;
 
   mainPort.on('message', (data: WorkerResponseMessage) => {
+    if (isTerminated) return;
     if (onmessageHandler) {
       onmessageHandler({ data } as MessageEvent<WorkerResponseMessage>);
     }
   });
 
   mainPort.on('messageerror', (err: Error) => {
+    if (isTerminated) return;
     if (onmessageerrorHandler) {
       onmessageerrorHandler({ data: err } as unknown as MessageEvent);
     }
@@ -76,6 +100,7 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
       onmessageerrorHandler = handler;
     },
     terminate() {
+      isTerminated = true;
       mainPort.close();
       workerPort.close();
     },
@@ -91,7 +116,13 @@ export function createWorkerShim(hooks: WorkerCoreHooks = {}): ShimmedWorkerInst
         onerrorHandler(new Event('error'));
       }
     },
+    simulateMessageError() {
+      if (onmessageerrorHandler) {
+        onmessageerrorHandler(new MessageEvent('messageerror'));
+      }
+    },
     close() {
+      isTerminated = true;
       mainPort.close();
       workerPort.close();
     },
