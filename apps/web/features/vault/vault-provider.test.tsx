@@ -5382,6 +5382,15 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       pending[0]!(be2VaultAbsentResponse());
       expect(await heldP).toBeNull();
     });
+    // Row 1b: the 404 may predate the create, so it only locks; the ONE follow-up GET under the new key decides. Here
+    // the vault really is absent, so the follow-up 404 purges (the device fence advances once in total).
+    await waitFor(() => {
+      expect(pending).toHaveLength(2);
+    });
+    await act(async () => {
+      pending[1]!(be2VaultAbsentResponse());
+      await sleepReal(50);
+    });
     await expectBe37LockedAndPurged({ prefix: 'be51-create', vault, qc, idbFactory, devkeys, devkeyRecordKey });
 
     // Nothing revives the session: a later present answer applies metadata only, and the fence advanced exactly once.
@@ -5505,6 +5514,132 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(vault().vaultMeta?.vault_key_id).toBe('vk:be6-1');
     expect(vault().vaultMeta?.version).toBe(2);
   }, 20_000);
+
+  // BE6-1 row 1b (Advisor amendment): a 404 for a GET sent with no known key, held across the creation of key K' (this
+  // tab or another tab), locks but never purges K' device keys; ONE follow-up GET under K' decides.
+  async function be61KSetup(prefix: string) {
+    const pending: Array<(res: Response) => void> = [];
+    const rejects: Array<(err: unknown) => void> = [];
+    const gate = { hold: false };
+    mockBe2Fetch({
+      vault: () =>
+        gate.hold
+          ? new Promise<Response>((resolve, reject) => {
+              pending.push(resolve);
+              rejects.push(reject);
+            })
+          : jsonResponse(be2VaultBody('vk:be6-k', 1)),
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { vault } = renderBe2Provider(
+      prefix,
+      { idbFactory, locksManager: fakeLocks.createLockManager() },
+      qc,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('locked');
+    });
+    // The Worker holds the new vault unlocked; no metadata GET has confirmed it, so GETs are sent with no known key.
+    await be2CreateVault(vault, 'be6-k-passphrase-1234');
+    expect(screen.getByTestId(`${prefix}-state`)).toHaveTextContent('unlocked');
+    seedBe2DeviceMeta(10);
+    const devkeyRecordKey = formatDevKeyRecordKey(BE2_USER_ID, 'vk:be6-k');
+    const devkeys = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    devkeys.set(devkeyRecordKey, {
+      user_id: BE2_USER_ID,
+      vault_key_id: 'vk:be6-k',
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+    qc.setQueryData(vaultBodyQueryKey('be37-entry'), 'be6-k-decrypted-body');
+    gate.hold = true;
+    return { vault, qc, idbFactory, pending, rejects, devkeys, devkeyRecordKey, prefix };
+  }
+
+  async function expectBe61KLockedNothingPurged(ctx: Awaited<ReturnType<typeof be61KSetup>>) {
+    await waitFor(() => {
+      expect(screen.getByTestId(`${ctx.prefix}-state`)).toHaveTextContent('locked');
+      expect(screen.getByTestId(`${ctx.prefix}-worker`)).toHaveTextContent('locked');
+    });
+    expect(ctx.qc.getQueryData(vaultBodyQueryKey('be37-entry'))).toBeUndefined();
+    expect(ctx.devkeys.has(ctx.devkeyRecordKey)).toBe(true);
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(10);
+  }
+
+  it.each(['local', 'broadcast'] as const)(
+    "BE6-1 row 1b: an old 404 held across K' created by %s locks without purging K' device keys, and a follow-up GET that returns K' present stays locked and purges nothing",
+    async (origin) => {
+      const ctx = await be61KSetup(`be61-k-${origin}`);
+      const heldP = ctx.vault().reloadVaultMeta();
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(1);
+      });
+      const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+      if (origin === 'local') {
+        act(() => {
+          ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be6-k', version: 1 });
+        });
+      } else {
+        await act(async () => {
+          peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be6-k', version: 1 });
+          await sleepReal(50);
+        });
+        // The broadcast itself reloads metadata: that GET is pending too.
+        await waitFor(() => {
+          expect(ctx.pending).toHaveLength(2);
+        });
+      }
+      await act(async () => {
+        ctx.pending[0]!(be2VaultAbsentResponse());
+        expect(await heldP).toBeNull();
+      });
+      // Locked right away, but K' device keys and the device fence are untouched.
+      await expectBe61KLockedNothingPurged(ctx);
+      const followUp = origin === 'local' ? 1 : 2;
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(followUp + 1);
+      });
+      await act(async () => {
+        ctx.pending[followUp]!(jsonResponse(be2VaultBody('vk:be6-k', 1)));
+        await sleepReal(50);
+      });
+      await expectBe61KLockedNothingPurged(ctx);
+      expect(ctx.pending).toHaveLength(followUp + 1);
+      peer.close();
+    },
+    20_000,
+  );
+
+  it.each(['network error', 'abort'] as const)(
+    "BE6-1 row 1b: when the follow-up GET under K' ends in a %s the provider stays locked and purges nothing",
+    async (failure) => {
+      const ctx = await be61KSetup(`be61-k-${failure === 'abort' ? 'abort' : 'net'}`);
+      const heldP = ctx.vault().reloadVaultMeta();
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(1);
+      });
+      act(() => {
+        ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be6-k', version: 1 });
+      });
+      await act(async () => {
+        ctx.pending[0]!(be2VaultAbsentResponse());
+        expect(await heldP).toBeNull();
+      });
+      await waitFor(() => {
+        expect(ctx.pending).toHaveLength(2);
+      });
+      await act(async () => {
+        ctx.rejects[1]!(
+          failure === 'abort' ? new DOMException('aborted', 'AbortError') : new TypeError('network error'),
+        );
+        await sleepReal(50);
+      });
+      await expectBe61KLockedNothingPurged(ctx);
+      expect(ctx.pending).toHaveLength(2);
+    },
+    20_000,
+  );
 
   // BE5-2: the superseded return (success, 404 and failure exits) must not hand back a same-key version older than the
   // live metadata when a local update landed after the saved applied outcome.

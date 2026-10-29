@@ -399,9 +399,8 @@ export function VaultProvider({
     sessionEpoch: number;
     meta: VaultState | null;
   } | null>(null);
-  // `vault_key_id`s this provider saw stop being current (replaced, or reset locally/by broadcast). Keys are never
-  // reused, so a `GET /vault` response naming one is stale by key (BE4-1). Local notifications only update this set and
-  // the current key; they never suppress or reorder a GET response.
+  // `vault_key_id`s that stopped being current (replaced or reset). Keys are never reused, so a `GET /vault` response
+  // naming one is stale by key (BE4-1).
   const retiredVaultKeyIdsRef = useRef<Set<string>>(new Set());
   // Synchronous mirror of the committed `vaultMeta` state, so a stale response and `notifyVaultChanged` can compare
   // versions without waiting for a render (BE4-5).
@@ -748,14 +747,13 @@ export function VaultProvider({
   /**
    * Reloads `GET /vault` (plan §2.6, ADR 0003 §8). After the session/account fence every response goes through ONE
    * table keyed on `vault_key_id`; `issuedKey` is the current key when the request was sent:
-   *   0. A NEWER GET outcome was already applied -> apply nothing, return it (BE3-7, BE5-2); a newer GET that only
-   *      started, stalled or failed is not supersession.
-   *   1. 404 -> lock, wipe caches/secrets, purge (BE5-1).
+   *   0. A NEWER GET outcome was already applied -> apply nothing, return it (BE3-7, BE5-2).
+   *   1. 404 -> 1a lock, wipe, purge (BE5-1); 1b `issuedKey` null but a key is current now: lock, no purge, ONE
+   *      follow-up GET under it.
    *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
    *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
    *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
-   * Other errors: supersession check, then rethrow. Local notifications and broadcasts only update the current and
-   * retired keys and the live metadata; they never suppress or reorder a GET response.
+   * Other errors: supersession check, then rethrow. Local notifications never suppress or reorder a GET response.
    */
   const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null }): Promise<VaultState | null> => {
     // `resetKeyId` is set only by this provider's own follow-up GET after it observed that vault's reset, so a
@@ -763,6 +761,7 @@ export function VaultProvider({
     const followUpResetKeyId = opts?.resetKeyId ?? null;
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
     const requestSeq = ++vaultMetaRequestSeqRef.current;
+    const issuedKey = currentVaultKeyIdRef.current;
     const requestUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
     // Session/user fences: a response from another session or account never has any effect.
     const isForeignResponse = () => {
@@ -861,9 +860,16 @@ export function VaultProvider({
           // A newer request already delivered authoritative state (present or absent); apply nothing from the older 404.
           return superseded.meta;
         }
+        const prevKeyId = currentVaultKeyIdRef.current;
+        if (issuedKey === null && prevKeyId !== null && !retiredVaultKeyIdsRef.current.has(prevKeyId)) {
+          // Row 1b: `prevKeyId` was created or learned after this request was sent. Lock, purge nothing, and let ONE
+          // follow-up GET (sent under `prevKeyId`, so never ambiguous) decide.
+          void lock({ broadcast: true, reason: 'vault_absent' });
+          void loadVaultMeta({ resetKeyId: prevKeyId }).catch(() => undefined);
+          return null;
+        }
         const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
         vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: null };
-        const prevKeyId = currentVaultKeyIdRef.current;
         // BE2-9: never borrow an old purge receipt as the identity of an unnamed 404.
         const transitionKeyId = prevKeyId ?? followUpResetKeyId;
         rememberObservedReset(transitionKeyId);
@@ -1478,6 +1484,11 @@ export function VaultProvider({
           void lock({ broadcast: true, reason: 'vault_key_id_changed_broadcast' });
           void loadVaultMeta().catch(() => undefined);
           return;
+        }
+        if (knownKeyId === null && !retiredVaultKeyIdsRef.current.has(message.vault_key_id)) {
+          // Learn another tab's new key so a held older 404 is treated as row 1b.
+          retireObservedResets();
+          currentVaultKeyIdRef.current = message.vault_key_id;
         }
         void loadVaultMeta().catch(() => undefined);
       }
