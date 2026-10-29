@@ -243,7 +243,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$PLAYWRIGHT_IMAGE" \
-            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project=vault-prod e2e/lock.spec.ts e2e/lock-epoch.spec.ts
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project=vault-prod --output=test-results-vault-prod e2e/lock.spec.ts e2e/lock-epoch.spec.ts
       - name: Stage sanitized browser artifacts
         if: always()
         run: node scripts/sanitize-e2e-artifacts.mjs
