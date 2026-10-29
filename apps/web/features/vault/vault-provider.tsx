@@ -894,8 +894,6 @@ export function VaultProvider({
             );
           }
           capturedBaseline = intentBaseline;
-          unlockBaselineRef.current = intentBaseline;
-          setUnlockBaseline(intentBaseline);
           return;
         }
 
@@ -912,8 +910,6 @@ export function VaultProvider({
           );
         }
         capturedBaseline = baseline;
-        unlockBaselineRef.current = baseline;
-        setUnlockBaseline(baseline);
         updateTabKnownLockEpoch(baseline.lockEpoch);
       };
 
