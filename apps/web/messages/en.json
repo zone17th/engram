@@ -59,7 +59,100 @@
     "body": "Vault setup, passphrase, and recovery keys arrive in P03. In P02 you can still manage your account and sessions.",
     "absent": "This account has no encrypted vault yet. When P03 is ready, you will set a passphrase and receive recovery keys here.",
     "present": "A vault already exists — lock and unlock are handled in P03.",
-    "settings": "Account settings"
+    "settings": "Account settings",
+    "stepperLabel": "Vault setup steps",
+    "steps": {
+      "passphrase": "1 · Passphrase",
+      "recoveryKeys": "2 · Recovery keys",
+      "passkey": "3 · Passkey"
+    },
+    "step1": {
+      "title": "Set your vault passphrase",
+      "leadPrefix": "This is your ",
+      "leadStrong1": "vault encryption passphrase",
+      "leadMiddle": " (it locks your entry contents) and is completely separate from your account ",
+      "leadStrong2": "login password",
+      "leadSuffix": ". The server never keeps a copy — if you forget it, no one can open your vault for you.",
+      "passphraseLabel": "Passphrase",
+      "confirmLabel": "Confirm passphrase",
+      "showPassphrase": "Show passphrase",
+      "hidePassphrase": "Hide passphrase",
+      "strengthMeterLabel": "Passphrase strength",
+      "strength": {
+        "empty": "Not entered",
+        "veryWeak": "Very weak",
+        "weak": "Weak",
+        "fair": "Too guessable",
+        "good": "Strong",
+        "strong": "Very strong"
+      },
+      "rules": {
+        "minLength": "At least 12 characters",
+        "distinctFromLogin": "Do not reuse your login password or a password from another site",
+        "minScore": "Hard enough to guess (zxcvbn ≥ 3)"
+      },
+      "warningBanner": "If you lose your passphrase without a recovery key, passkey, or remembered device, your entry contents cannot be recovered. The next step prepares 10 recovery keys for you.",
+      "continue": "Continue",
+      "deriving": "Preparing keys…",
+      "errors": {
+        "empty": "Enter a vault passphrase.",
+        "tooShort": "Passphrase must be at least 12 characters (after Unicode NFC normalization).",
+        "tooWeak": "Passphrase is too easy to guess. Add more uncommon words or characters until strength reaches Strong (zxcvbn ≥ 3).",
+        "mismatch": "Passphrases do not match.",
+        "invalidUnicode": "Passphrase contains invalid Unicode characters. Re-type your passphrase."
+      },
+      "oom": {
+        "badge": "Argon2id 64 MiB · Worker OOM",
+        "title": "Not enough memory to create your vault",
+        "body": "This browser could not allocate 64 MiB in the Web Worker to derive your encryption key (Argon2id). This device cannot create a vault right now — close other tabs or try another browser or device. Nothing was sent to the server.",
+        "retry": "Try again"
+      }
+    },
+    "step2": {
+      "title": "Your 10 recovery keys",
+      "lead": "Each key unlocks your vault on its own without your passphrase. Consuming a key deletes it on the live server.",
+      "screenshotWarningStrong": "Shown only this once.",
+      "screenshotWarningBody": "A screenshot or someone looking over your shoulder can take these keys. Print or download the file and store it offline — do not leave screenshots on a shared machine.",
+      "gridLabel": "10 single-use recovery keys",
+      "slotLabel": "Recovery key {slot} of 10",
+      "gridCaption": "Each key is 16 random bytes encoded in Crockford Base32 (26 characters).",
+      "downloadTxt": "Download .txt",
+      "print": "Print",
+      "copyAll": "Copy all",
+      "downloadedStatus": "Downloaded engram-recovery-keys.txt",
+      "printedStatus": "Opening print dialog…",
+      "copiedStatus": "Copied 10 keys · clipboard clears in 30 seconds",
+      "confirmSavedLabel": "I have saved all 10 recovery keys in a safe place outside this browser.",
+      "back": "Back",
+      "createVault": "Create vault",
+      "creatingVault": "Creating vault…",
+      "disabledHint": "Unlocks after you tick the box above. Nothing has been sent to the server yet."
+    },
+    "vaultExists": {
+      "badge": "409 vault_exists",
+      "title": "Vault was created elsewhere (another tab or device)",
+      "bodyPrefix": "This account already has a vault before this request finished. ",
+      "bodyStrong": "The 10 recovery keys just generated belong to no vault — discard them immediately",
+      "bodySuffix": " (do not keep, print, or use that set of keys).",
+      "goToUnlock": "Go to unlock vault"
+    },
+    "errors": {
+      "networkTitle": "Could not reach the server",
+      "networkBody": "Your connection dropped before the server confirmed creation. Retry safely — we reuse the same request key so a second vault is never created.",
+      "inProgressTitle": "Vault creation is still in progress",
+      "inProgressBody": "The previous request is still being processed. Wait a moment and retry with the same request key.",
+      "conflictTitle": "Request key conflict",
+      "conflictBody": "The request state changed. Reload to check whether your vault was already created.",
+      "mutationsDisabledTitle": "Vault key changes are temporarily paused",
+      "mutationsDisabledBody": "Creating a new vault is temporarily disabled for maintenance (503 vault_mutations_disabled). Please try again later.",
+      "emailNotVerifiedTitle": "Verify your email before creating a vault",
+      "emailNotVerifiedBody": "Your account email must be verified before you can create a vault.",
+      "rateLimitedTitle": "Too many vault requests",
+      "rateLimitedBody": "Please wait {seconds} seconds before trying again.",
+      "genericTitle": "Could not create vault",
+      "genericBody": "Something went wrong while saving your vault. You can retry safely.",
+      "retry": "Retry"
+    }
   },
   "auth": {
     "nav": { "login": "Sign in", "signup": "Create account" },
