@@ -763,7 +763,8 @@ export function VaultProvider({
    * table keyed on `vault_key_id`; `issuedKey` is the current key when the request was sent:
    *   0. A NEWER GET outcome was already applied -> apply nothing, return it (BE3-7, BE5-2).
    *   1. 404 -> 1a lock, wipe, purge (BE5-1); 1b the current key differs from `issuedKey` and is not retired: lock,
-   *      no purge, ONE follow-up GET under it.
+   *      no purge, ONE follow-up GET under it. The follow-up's own 404 is never 1b again (BE7-1): current still the
+   *      key it was sent under, null or retired -> 1a; moved to another non-retired key -> lock only, no purge, no GET.
    *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
    *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
    *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
@@ -771,10 +772,12 @@ export function VaultProvider({
    * deferred to T18 (CF-T18-KEYSCOPED-PURGE).
    * Other errors: supersession check, then rethrow. Local notifications never suppress or reorder a GET response.
    */
-  const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null }): Promise<VaultState | null> => {
+  const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null; followUp?: boolean }): Promise<VaultState | null> => {
     // `resetKeyId` is set only by this provider's own follow-up GET after it observed that vault's reset, so a
     // `404` that cannot name its vault is attributed to that observed reset and not to an unseen later one.
+    // `followUp` marks that same internal GET: its 404 never takes row 1b again (exactly ONE follow-up).
     const followUpResetKeyId = opts?.resetKeyId ?? null;
+    const isFollowUp = opts?.followUp === true;
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
     const requestSeq = ++vaultMetaRequestSeqRef.current;
     const issuedKey = currentVaultKeyIdRef.current;
@@ -880,9 +883,12 @@ export function VaultProvider({
         if (prevKeyId !== null && prevKeyId !== issuedKey && !retiredVaultKeyIdsRef.current.has(prevKeyId)) {
           // Row 1b: `prevKeyId` became current after this request was sent (the purge is user-scoped and would wipe its
           // device keys on ambiguous evidence). Lock, purge nothing, and let ONE follow-up GET (sent under `prevKeyId`,
-          // so never ambiguous) decide.
+          // so never ambiguous) decide. A follow-up response is never itself ambiguous (advisor-dec-038a, BE7-1): if the
+          // key moved again while it was held, lock only; the new key's own GET or broadcast decides about it.
           void lock({ broadcast: true, reason: 'vault_absent' });
-          void loadVaultMeta({ resetKeyId: prevKeyId }).catch(() => undefined);
+          if (!isFollowUp) {
+            void loadVaultMeta({ resetKeyId: prevKeyId, followUp: true }).catch(() => undefined);
+          }
           return null;
         }
         const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;

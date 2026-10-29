@@ -5770,6 +5770,78 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     20_000,
   );
 
+  // BE7-1: the row-1b follow-up is never itself ambiguous (advisor-dec-038a: exactly ONE follow-up).
+  it("BE7-1: a follow-up 404 held while the current key moves K -> C locks and purges nothing, and sends no third GET", async () => {
+    const ctx = await be61KSetup('be71-moved');
+    const heldP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be6-k', version: 1 });
+    });
+    // The old 404 (sent with no key) is row 1b: its follow-up GET goes out under K and is held.
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      expect(await heldP).toBeNull();
+    });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+    // K is replaced locally by C (K retired, C not) while the follow-up is still held.
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be7-c', version: 1 });
+    });
+    await act(async () => {
+      ctx.pending[1]!(be2VaultAbsentResponse());
+      await sleepReal(100);
+    });
+    await expectBe61KLockedNothingPurged(ctx);
+    // Exactly 2 GETs in total, even after the turn queue drains.
+    await act(async () => {
+      await sleepReal(100);
+    });
+    expect(ctx.pending).toHaveLength(2);
+  }, 20_000);
+
+  it('BE7-1: a follow-up 404 with the current key still the one it was sent under is row 1a: purge, device revision +1 exactly once', async () => {
+    const ctx = await be61KSetup('be71-same');
+    const heldP = ctx.vault().reloadVaultMeta();
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(1);
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be6-k', version: 1 });
+    });
+    await act(async () => {
+      ctx.pending[0]!(be2VaultAbsentResponse());
+      expect(await heldP).toBeNull();
+    });
+    await waitFor(() => {
+      expect(ctx.pending).toHaveLength(2);
+    });
+    // Nothing is purged until the follow-up decides.
+    await expectBe61KLockedNothingPurged(ctx);
+    await act(async () => {
+      ctx.pending[1]!(be2VaultAbsentResponse());
+      await sleepReal(100);
+    });
+    await waitFor(() => {
+      expect(ctx.devkeys.has(ctx.devkeyRecordKey)).toBe(false);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    await act(async () => {
+      await sleepReal(100);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+    expect(screen.getByTestId('be71-same-state')).toHaveTextContent('locked');
+    expect(ctx.pending).toHaveLength(2);
+  }, 20_000);
+
   // BE5-2: the superseded return (success, 404 and failure exits) must not hand back a same-key version older than the
   // live metadata when a local update landed after the saved applied outcome.
   it.each(['success', '404', 'failure'] as const)(
