@@ -299,4 +299,90 @@ test.describe('P03-T15A Vault lock propagation and History Back protection', () 
     await pageA.close();
     await pageB.close();
   });
+
+  test('CF T-5 + FE2-11e: instantiates real lib/crypto/worker.ts under production CSP headers, publishes locked/unlocked Worker state to UI, and completes lock() round-trip with 0 CSP violations', async ({
+    context,
+  }) => {
+    test.setTimeout(90_000);
+    await installAuthenticatedVaultApiMocks(context);
+
+    const page = await context.newPage();
+    const cspViolations: string[] = [];
+    const consoleErrors: string[] = [];
+
+    page.on('console', (msg) => {
+      const text = msg.text();
+      if (/Content Security Policy|Refused to create a worker|violates the following/i.test(text)) {
+        cspViolations.push(text);
+      }
+      if (msg.type() === 'error') {
+        consoleErrors.push(text);
+      }
+    });
+
+    page.on('pageerror', (err) => {
+      consoleErrors.push(`pageerror: ${err.message}`);
+    });
+
+    const response = await page.goto('/app/settings', {
+      waitUntil: 'domcontentloaded',
+    });
+    expect(response).not.toBeNull();
+    expect(response?.status()).toBe(200);
+
+    // Verify production CSP headers as shipped by next.config.ts (advisor-dec-014)
+    const cspHeader = response?.headers()['content-security-policy'] ?? '';
+    expect(cspHeader).toContain("default-src 'self'");
+    expect(cspHeader).toContain("worker-src 'self' blob:");
+    expect(cspHeader).toContain("'wasm-unsafe-eval'");
+    expect(cspHeader).not.toContain("script-src 'self' blob:");
+
+    // Initial state from Me.vault.status='present' + Worker='locked' reaches the UI
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+
+    // Unlock through VaultProvider -> real CryptoClient -> real lib/crypto/worker.ts (Argon2id 64 MiB)
+    await unlockPageViaRealWorkerAndSeedSecret(page, 'csp-secret-preview');
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/);
+    await expect(page.getByTestId('vault-lock-button')).toBeVisible();
+    await expect(page.getByTestId('csp-secret-preview')).toHaveText(SECRET_BODY_TEXT);
+
+    // Execute a full lock() round-trip through the UI lock button -> Worker wipes VK and publishes `locked`
+    await page.getByTestId('vault-lock-button').click();
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+    await expect(page.getByTestId('csp-secret-preview')).toHaveText('[LOCKED]');
+    await expect(page.locator('body')).not.toContainText(SECRET_BODY_TEXT);
+
+    const finalBridgeState = await page.evaluate(() => {
+      const win = window as unknown as {
+        __engramVaultTestBridge?: {
+          state: string;
+          workerState: string;
+          generation: number;
+          epoch: number;
+          tabKnownLockEpoch: number;
+        };
+      };
+      return win.__engramVaultTestBridge
+        ? {
+            state: win.__engramVaultTestBridge.state,
+            workerState: win.__engramVaultTestBridge.workerState,
+            generation: win.__engramVaultTestBridge.generation,
+            epoch: win.__engramVaultTestBridge.epoch,
+            tabKnownLockEpoch: win.__engramVaultTestBridge.tabKnownLockEpoch,
+          }
+        : null;
+    });
+    expect(finalBridgeState).toMatchObject({
+      state: 'locked',
+      workerState: 'locked',
+    });
+    expect(finalBridgeState?.generation).toBeGreaterThanOrEqual(1);
+    expect(finalBridgeState?.epoch).toBeGreaterThanOrEqual(1);
+    expect(finalBridgeState?.tabKnownLockEpoch).toBeGreaterThanOrEqual(1);
+
+    expect(cspViolations).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+
+    await page.close();
+  });
 });

@@ -31,6 +31,11 @@ import {
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 import { hasWebLocks } from '@/lib/auth/session-lock';
 import { useReauth, type UseReauthReturn } from '@/features/auth/use-reauth';
+import {
+  getKnownDeviceSessionUserId,
+  purgeDeviceKeysOnRevoked,
+  setKnownDeviceSessionUserId,
+} from '@/features/vault/device-store';
 
 export type SessionStatus =
   | 'loading'
@@ -115,6 +120,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const reauth = useReauth(me);
 
   useEffect(() => {
+    if (me?.user.id) {
+      setKnownDeviceSessionUserId(me.user.id);
+    }
+  }, [me?.user.id]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
@@ -150,6 +161,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (reason: SessionEndReason = 'logout') => {
       await apiSignOut(reason);
       setLastSessionEndReason(reason);
+      // Voluntary logout keeps DevKey records untouched; clear known user pointer after sign-out.
+      setKnownDeviceSessionUserId(null);
       clearPrivateCache();
       resetSessionEpoch();
       setSessionEpochState(getSessionEpoch());
@@ -161,6 +174,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signup = useCallback(
     async (...args: Parameters<typeof apiSignup>) => {
       const result = await apiSignup(...args);
+      setKnownDeviceSessionUserId(result.user.id);
       bumpSessionEpoch();
       setSessionEpochState(getSessionEpoch());
       clearPrivateCache();
@@ -173,6 +187,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (...args: Parameters<typeof apiLogin>) => {
       const result = await apiLogin(...args);
+      setKnownDeviceSessionUserId(result.user.id);
       bumpSessionEpoch();
       setSessionEpochState(getSessionEpoch());
       clearPrivateCache();
@@ -185,6 +200,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const completeOAuthLogin = useCallback(async () => {
     const result = await oauthComplete();
     bumpSessionEpoch();
+    setKnownDeviceSessionUserId(result.user.id);
     setSessionEpochState(getSessionEpoch());
     clearPrivateCache();
     queryClient.setQueryData(['auth', 'me', getSessionEpoch()], result);
@@ -211,14 +227,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         void meQuery.refetch();
       }
       if (message.type === 'signed_out') {
-        setLastSessionEndReason(message.reason ?? 'logout');
+        const reason = message.reason ?? 'logout';
+        if (reason === 'revoked' && origin === 'remote') {
+          void purgeDeviceKeysOnRevoked(me?.user.id ?? getKnownDeviceSessionUserId());
+        }
+        setKnownDeviceSessionUserId(null);
+        setLastSessionEndReason(reason);
         clearPrivateCache();
         resetSessionEpoch();
         setSessionEpochState(getSessionEpoch());
         void queryClient.setQueryData(['auth', 'me', getSessionEpoch()], null);
       }
     });
-  }, [clearPrivateCache, meQuery, queryClient, sessionEpoch]);
+  }, [clearPrivateCache, me?.user.id, meQuery, queryClient, sessionEpoch]);
 
   useEffect(() => {
     if (meQuery.isError) {

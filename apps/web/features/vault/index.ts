@@ -11,6 +11,33 @@ export {
 } from './broadcast';
 
 export {
+  ACTIVITY_BROADCAST_THROTTLE_MS,
+  CLOCK_ROLLBACK_TOLERANCE_MS,
+  DEFAULT_AUTO_LOCK_MINUTES,
+  MIN_POSITIVE_AUTO_LOCK_MINUTES,
+  WAKE_ME_REFRESH_DEADLINE_MS,
+  evaluateAutoLockAt,
+  normalizeAutoLockMinutes,
+  type AutoLockEvaluation,
+} from './auto-lock';
+
+export {
+  formatDevKeyRecordKey,
+  getKnownDeviceSessionUserId,
+  isValidDeviceMetaRecord,
+  parseDevKeyRecordUserId,
+  purgeDeviceKeysOnRevoked,
+  readDeviceMetaRecord,
+  setDefaultDeviceStoreEnvironmentForTests,
+  setKnownDeviceSessionUserId,
+  subscribeDevicePurge,
+  type DeviceMetaRecord,
+  type DeviceStoreEnvironment,
+  type PurgeDeviceKeysResult,
+  type StoredDevKeyRecord,
+} from './device-store';
+
+export {
   DEVKEY_STORE_NAME,
   DEVICE_META_RECORD_KEY,
   LOCK_EPOCH_RECORD_KEY,
