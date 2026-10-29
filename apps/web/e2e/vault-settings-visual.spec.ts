@@ -209,8 +209,43 @@ async function prepareThemeAndLocale(page: Page, theme: Theme) {
   await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
 }
 
+async function dismissVisibleToasts(page: Page) {
+  const toastCloseButtons = page.locator('.toast button');
+  while ((await toastCloseButtons.count()) > 0) {
+    await toastCloseButtons.first().click({ timeout: STEP_TIMEOUT });
+  }
+}
+
+async function scrollSecurityHeadingBelowStickyHeader(page: Page) {
+  await page.evaluate(() => {
+    const heading =
+      document.getElementById('security-heading') ??
+      document.getElementById('baomat') ??
+      document.querySelector('[data-testid="vault-security-section"]');
+    if (!heading) return;
+    const header = document.querySelector('header');
+    const headerHeight = header ? header.getBoundingClientRect().height : 68;
+    const rect = heading.getBoundingClientRect();
+    const targetTop = Math.max(0, window.scrollY + rect.top - headerHeight - 16);
+    window.scrollTo({ top: targetTop, behavior: 'instant' });
+  });
+}
+
+async function scrollPanelToTop(panel: Locator) {
+  await panel.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+}
+
+async function scrollPanelToBottom(panel: Locator) {
+  await panel.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
 async function settleForCapture(page: Page, email: string, theme: Theme) {
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme, { timeout: STEP_TIMEOUT });
+  await dismissVisibleToasts(page);
   await page.evaluate(async () => {
     await document.fonts.ready;
   });
@@ -335,9 +370,7 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           // (a) Settings security section with the vault section (unlocked, RK count shown)
           logStep(testLabel, 'capture:section');
           await settleForCapture(page, email, theme);
-          await page
-            .getByTestId('vault-security-section')
-            .scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
+          await scrollSecurityHeadingBelowStickyHeader(page);
           await page.waitForTimeout(100);
           await saveScreenshot(page, testInfo, 'section', theme, viewport.width, {
             fullPage: false,
@@ -357,16 +390,24 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           await expect(passDialog.locator('#pass-confirm-pp')).toHaveValue('', {
             timeout: STEP_TIMEOUT,
           });
+          const passPanel = passDialog.locator('.panel');
+          await scrollPanelToTop(passPanel);
           await settleForCapture(page, email, theme);
+          const passInputMasks = [
+            passDialog.locator('#pass-login-pwd'),
+            passDialog.locator('#pass-new-pp'),
+            passDialog.locator('#pass-confirm-pp'),
+          ];
           await saveScreenshot(page, testInfo, 'passphrase-dialog', theme, viewport.width, {
-            target: passDialog.locator('.panel'),
-            mask: [
-              passDialog.locator('#pass-login-pwd'),
-              passDialog.locator('#pass-new-pp'),
-              passDialog.locator('#pass-confirm-pp'),
-            ],
+            target: passPanel,
+            mask: passInputMasks,
           });
-
+          await scrollPanelToBottom(passPanel);
+          await page.waitForTimeout(50);
+          await saveScreenshot(page, testInfo, 'passphrase-dialog-bottom', theme, viewport.width, {
+            target: passPanel,
+            mask: passInputMasks,
+          });
           // (b.2) Change-passphrase done step (`data-view="pass-done"`)
           logStep(testLabel, 'capture:passphrase-done');
           const passLoginInput = passDialog.locator('#pass-login-pwd');
@@ -393,6 +434,7 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
             .getByRole('button', { name: /Done|Xong/ })
             .click({ timeout: STEP_TIMEOUT });
           await expect(passDialog).toBeHidden({ timeout: STEP_TIMEOUT });
+          await dismissVisibleToasts(page);
 
           // (c) Recovery-keys dialog showing a NEW key sheet (all RK slot cells masked)
           logStep(testLabel, 'capture:rk-sheet');
@@ -414,10 +456,17 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           await expect(rkGrid).toBeVisible({ timeout: CRYPTO_STEP_TIMEOUT });
           const rkCells = rkDialog.locator('[data-testid^="recovery-key-slot-"]');
           await expect(rkCells).toHaveCount(10, { timeout: STEP_TIMEOUT });
-          await rkGrid.scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
+          const rkPanel = rkDialog.locator('.panel');
+          await scrollPanelToTop(rkPanel);
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'rk-sheet', theme, viewport.width, {
-            target: rkDialog.locator('.panel'),
+            target: rkPanel,
+            mask: [rkCells, rkGrid],
+          });
+          await scrollPanelToBottom(rkPanel);
+          await page.waitForTimeout(50);
+          await saveScreenshot(page, testInfo, 'rk-sheet-bottom', theme, viewport.width, {
+            target: rkPanel,
             mask: [rkCells, rkGrid],
           });
           await rkDialog
@@ -443,11 +492,17 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           await expect(resetDialog.locator('[data-view="rst-s1"]')).toBeVisible({
             timeout: STEP_TIMEOUT,
           });
+          const resetPanel = resetDialog.locator('.panel');
+          await scrollPanelToTop(resetPanel);
           await settleForCapture(page, email, theme);
           await saveScreenshot(page, testInfo, 'reset-step1', theme, viewport.width, {
-            target: resetDialog.locator('.panel'),
+            target: resetPanel,
           });
-
+          await scrollPanelToBottom(resetPanel);
+          await page.waitForTimeout(50);
+          await saveScreenshot(page, testInfo, 'reset-step1-bottom', theme, viewport.width, {
+            target: resetPanel,
+          });
           logStep(testLabel, 'capture:reset-confirm');
           await resetDialog
             .getByRole('button', { name: /None of these work|Không đường nào dùng được/ })
@@ -496,9 +551,7 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
             timeout: STEP_TIMEOUT,
           });
           await settleForCapture(page, email, theme);
-          await page
-            .getByTestId('vault-security-locked-banner')
-            .scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
+          await scrollSecurityHeadingBelowStickyHeader(page);
           await page.waitForTimeout(100);
           await saveScreenshot(page, testInfo, 'locked-banner', theme, viewport.width, {
             fullPage: false,
@@ -546,13 +599,12 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
             .getByRole('button', { name: /Close|Đóng/ })
             .click({ timeout: STEP_TIMEOUT });
           await expect(resetDlgForAbsent).toBeHidden({ timeout: STEP_TIMEOUT });
+          await dismissVisibleToasts(page);
           await expect(page.getByTestId('vault-security-absent-banner')).toBeVisible({
             timeout: STEP_TIMEOUT,
           });
           await settleForCapture(page, email, theme);
-          await page
-            .getByTestId('vault-security-absent-banner')
-            .scrollIntoViewIfNeeded({ timeout: STEP_TIMEOUT });
+          await scrollSecurityHeadingBelowStickyHeader(page);
           await page.waitForTimeout(100);
           await saveScreenshot(page, testInfo, 'absent-banner', theme, viewport.width, {
             fullPage: false,

@@ -3,14 +3,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NextIntlClientProvider } from 'next-intl';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionProvider, useSession } from '@/features/auth/session-provider';
+import { SessionProvider, useSession, type SessionState } from '@/features/auth/session-provider';
+import type { UseReauthReturn } from '@/features/auth/use-reauth';
 import {
   VaultProvider,
   formatDevKeyRecordKey,
   readDeviceMetaRecord,
   resetVaultBroadcastForTests,
   setDefaultDeviceStoreEnvironmentForTests,
+  subscribeDevicePurge,
   useVault,
   type LockEpochEnvironment,
   type VaultContextValue,
@@ -386,6 +389,11 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       locksManager: fakeLocks.createLockManager(),
     };
   }
+  function delayMs(ms: number): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    return promise;
+  }
 
   interface RenderHarnessOptions {
     me?: Me;
@@ -511,13 +519,18 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     vi.stubGlobal('fetch', fetchMock);
 
     let capturedVaultCtx: VaultContextValue | null = null;
-    let capturedSessionCtx: ReturnType<typeof useSession> | null = null;
+    let capturedSessionCtx: (SessionState & { refetchMe: () => Promise<void>; reauth: UseReauthReturn }) | null = null;
+    let setPanelMountedExternal: ((mounted: boolean) => void) | null = null;
     function VaultBridgeProbe() {
       capturedVaultCtx = useVault();
       capturedSessionCtx = useSession();
       return null;
     }
-
+    function MountablePanelHost() {
+      const [panelMounted, setPanelMounted] = useState(true);
+      setPanelMountedExternal = setPanelMounted;
+      return panelMounted ? <VaultSecurityPanel /> : null;
+    }
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -542,7 +555,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
           <SessionProvider>
             <VaultProvider createWorker={workerFactory} lockEpochEnv={makeLockEpochEnv()}>
               <VaultBridgeProbe />
-              <VaultSecurityPanel />
+              <MountablePanelHost />
             </VaultProvider>
           </SessionProvider>
         </QueryClientProvider>
@@ -583,6 +596,11 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       ...utils,
       getVaultCtx: () => capturedVaultCtx!,
       getSessionCtx: () => capturedSessionCtx!,
+      unmountPanelOnly: () => {
+        act(() => {
+          setPanelMountedExternal?.(false);
+        });
+      },
       callLog,
       requestsByPath,
       setServerVaultMeta: (next: VaultState | null) => {
@@ -1300,7 +1318,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     ).toHaveLength(0);
   });
 
-  it('purges remembered DevKey records in fake IDB and rotates incarnation/deviceRevision on 204 DELETE /vault (R1-5)', async () => {
+  it('purges remembered DevKey records in fake IDB and rotates incarnation/deviceRevision on 204 DELETE /vault (R1-5, R4-3)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
@@ -1318,32 +1336,42 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       deviceRevision: 2,
     });
 
-    await renderSettingsHarness();
-
-    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
-    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
-    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
-
-    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
-    await user.type(confirmInput, 'RESET');
-    await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
-
-    await waitFor(() => {
-      expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+    let purgeCount = 0;
+    const unsubscribePurge = subscribeDevicePurge(() => {
+      purgeCount += 1;
     });
 
-    // DevKey record was deleted and meta incarnation/deviceRevision rotated in a single readwrite tx (2 -> 3 via ResetVaultDialog single purge owner; panel reload suppressed)
-    await waitFor(async () => {
+    try {
+      const { getVaultCtx } = await renderSettingsHarness();
+
+      await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+
+      const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+      await user.type(confirmInput, 'RESET');
+      await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+
+      await waitFor(() => {
+        expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+        expect(getVaultCtx().state).toBe('no_vault');
+      });
+
+      // R4-3: Settle microtasks and timers after refetchMe so any late duplicate purge would be caught
+      await delayMs(50);
+      expect(purgeCount).toBe(1);
       expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
       const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
       expect(rotatedMeta).not.toBeNull();
       expect(rotatedMeta!.deviceRevision).toBe(3);
       expect(rotatedMeta!.incarnation).not.toBe('00112233445566778899aabbccddeeff');
       expect(rotatedMeta!.incarnation).toMatch(/^[0-9a-f]{32}$/);
-    });
+    } finally {
+      unsubscribePurge();
+    }
   });
 
   it('does not misclassify PUT /vault/kek 403 csrf_invalid as a password re-authentication failure (R2-2)', async () => {
@@ -1586,6 +1614,23 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(seenViews).not.toContain('rst-s1');
     expect(seenViews).toContain('rst-s5');
     expect(within(dialog).queryByText(/Step 1 of 5/i)).toBeNull();
+
+    // R4-4: When refetchMe fails after 204 and the dialog closes while Me is still `present`,
+    // the suppress flag is cleared and the Reload vault retry button is shown on the Reset card.
+    deleteCalled = false;
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    const resetCard = screen.getByTestId('vault-reset-card');
+    const retryVaultBtn = await within(resetCard).findByTestId('vault-meta-retry-button');
+    await user.click(retryVaultBtn);
+    await waitFor(() => {
+      expect(screen.getByTestId('vault-security-absent-banner')).toBeInTheDocument();
+      expect(screen.queryByTestId('vault-passphrase-card')).toBeNull();
+      expect(screen.queryByTestId('vault-recovery-keys-card')).toBeNull();
+      expect(screen.queryByTestId('vault-reset-card')).toBeNull();
+    });
   });
 
   it('renders recovery-keys-status-error with no slot chips when GET /vault/recovery-keys returns 500, and surfaces 401 /auth/reauth errors in RK and Reset dialogs (R1-10, R2-5)', async () => {
@@ -1634,7 +1679,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     });
   });
 
-  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when GET /vault fails with 500 after 204 DELETE /vault (R3-1 path 2)', async () => {
+  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when GET /vault fails with 500 after 204 DELETE /vault (R3-1 path 2, R4-3)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
@@ -1652,45 +1697,55 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       deviceRevision: 2,
     });
 
-    await renderSettingsHarness({
-      customFetch: (url, init) => {
-        const method = (init?.method ?? 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
-          deleteCommitted = true;
-          return new Response(null, { status: 204 });
-        }
-        if (url.endsWith('/api/v1/vault') && method === 'GET' && deleteCommitted) {
-          return problemResponse('internal_error', 500);
-        }
-        return undefined as unknown as Response;
-      },
+    let purgeCount = 0;
+    const unsubscribePurge = subscribeDevicePurge(() => {
+      purgeCount += 1;
     });
 
-    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
-    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
-    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+    try {
+      const { getVaultCtx } = await renderSettingsHarness({
+        customFetch: (url, init) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
+            deleteCommitted = true;
+            return new Response(null, { status: 204 });
+          }
+          if (url.endsWith('/api/v1/vault') && method === 'GET' && deleteCommitted) {
+            return problemResponse('internal_error', 500);
+          }
+          return undefined as unknown as Response;
+        },
+      });
 
-    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
-    await user.type(confirmInput, 'RESET');
-    await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+      await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
 
-    await waitFor(() => {
-      expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
-    });
+      const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+      await user.type(confirmInput, 'RESET');
+      await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
 
-    await waitFor(async () => {
+      await waitFor(() => {
+        expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+        expect(getVaultCtx().state).toBe('no_vault');
+      });
+
+      await delayMs(50);
+      expect(purgeCount).toBe(1);
       expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
       const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
       expect(rotatedMeta).not.toBeNull();
       expect(rotatedMeta!.deviceRevision).toBe(3);
       expect(rotatedMeta!.incarnation).not.toBe('00112233445566778899aabbccddeeff');
-    });
+    } finally {
+      unsubscribePurge();
+    }
   });
 
-  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when the panel unmounts mid-DELETE before 204 resolves (R3-1 path 1)', async () => {
+  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when the panel unmounts mid-DELETE while VaultProvider stays alive (R3-1 path 1, R4-3)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
@@ -1709,43 +1764,57 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       deviceRevision: 2,
     });
 
-    const { unmount } = await renderSettingsHarness({
-      customFetch: (url, init) => {
-        const method = (init?.method ?? 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
-          notifyDeleteInFlight();
-          return deleteGate;
-        }
-        return undefined as unknown as Response;
-      },
+    let purgeCount = 0;
+    const unsubscribePurge = subscribeDevicePurge(() => {
+      purgeCount += 1;
     });
 
-    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
-    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
-    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+    try {
+      const { getVaultCtx, unmountPanelOnly } = await renderSettingsHarness({
+        customFetch: (url, init) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
+            notifyDeleteInFlight();
+            return deleteGate;
+          }
+          return undefined as unknown as Response;
+        },
+      });
 
-    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
-    await user.type(confirmInput, 'RESET');
-    void user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+      await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
 
-    await deleteInFlight;
-    // Unmount the panel (and dialog) while DELETE /vault is still in flight
-    unmount();
-    releaseDelete(new Response(null, { status: 204 }));
+      const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+      await user.type(confirmInput, 'RESET');
+      void user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
 
-    await waitFor(async () => {
+      await deleteInFlight;
+      // R4-3: Unmount ONLY the panel (and dialog) while keeping VaultProvider mounted & alive
+      unmountPanelOnly();
+      expect(screen.queryByTestId('vault-security-section')).toBeNull();
+      releaseDelete(new Response(null, { status: 204 }));
+
+      await waitFor(() => {
+        expect(getVaultCtx().workerState).toBe('locked');
+        expect(getVaultCtx().state).toBe('no_vault');
+      });
+      await delayMs(50);
+      expect(purgeCount).toBe(1);
       expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
       const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
       expect(rotatedMeta).not.toBeNull();
       expect(rotatedMeta!.deviceRevision).toBe(3);
       expect(rotatedMeta!.incarnation).not.toBe('00112233445566778899aabbccddeeff');
-    });
+    } finally {
+      unsubscribePurge();
+    }
   });
 
-  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when Me flips to absent before the panel effect runs (R3-1 path 3)', async () => {
+  it('runs exactly one DevKey readwrite purge (deviceRevision 2 -> 3) when Me flips to absent before the panel effect runs (R3-1 path 3, R4-3)', async () => {
     const user = userEvent.setup();
     const userId = '11111111-1111-1111-1111-111111111111';
     const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
@@ -1764,44 +1833,56 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       deviceRevision: 2,
     });
 
-    const { getSessionCtx, setServerMe, setServerVaultMeta } = await renderSettingsHarness({
-      customFetch: (url, init) => {
-        const method = (init?.method ?? 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
-          notifyDeleteInFlight();
-          return deleteGate;
-        }
-        return undefined as unknown as Response;
-      },
+    let purgeCount = 0;
+    const unsubscribePurge = subscribeDevicePurge(() => {
+      purgeCount += 1;
     });
 
-    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
-    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
-    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+    try {
+      const { getSessionCtx, setServerMe, setServerVaultMeta } = await renderSettingsHarness({
+        customFetch: (url, init) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
+            notifyDeleteInFlight();
+            return deleteGate;
+          }
+          return undefined as unknown as Response;
+        },
+      });
 
-    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
-    await user.type(confirmInput, 'RESET');
-    void user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+      await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
 
-    await deleteInFlight;
-    // Flip Me to absent BEFORE DELETE resolves so `isVaultPresent` is already false when `notifyVaultChanged` runs
-    setServerVaultMeta(null);
-    setServerMe(makeMeFixture({ vaultStatus: 'absent' }));
-    await act(async () => {
-      await getSessionCtx().refetchMe();
-    });
-    releaseDelete(new Response(null, { status: 204 }));
+      const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+      await user.type(confirmInput, 'RESET');
+      void user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
 
-    await waitFor(async () => {
+      await deleteInFlight;
+      // Flip Me to absent BEFORE DELETE resolves so `isVaultPresent` is already false when `notifyVaultChanged` runs
+      setServerVaultMeta(null);
+      setServerMe(makeMeFixture({ vaultStatus: 'absent' }));
+      await act(async () => {
+        await getSessionCtx().refetchMe();
+      });
+      releaseDelete(new Response(null, { status: 204 }));
+
+      await waitFor(() => {
+        expect(purgeCount).toBe(1);
+      });
+      await delayMs(50);
+      expect(purgeCount).toBe(1);
       expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
       const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
       expect(rotatedMeta).not.toBeNull();
       expect(rotatedMeta!.deviceRevision).toBe(3);
       expect(rotatedMeta!.incarnation).not.toBe('00112233445566778899aabbccddeeff');
-    });
+    } finally {
+      unsubscribePurge();
+    }
   });
 
   it('keeps the distinct-from-login-password checklist row neutral when loginPassword is not in state (R3-4)', async () => {
@@ -1834,5 +1915,17 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(distinctRow).not.toBeNull();
     expect(distinctRow!.textContent).toContain('○');
     expect(distinctRow!.textContent).toContain('Requirement not met');
+  });
+
+  it('hides passphrase, recovery keys, and reset cards when the vault is absent (V-6)', async () => {
+    await renderSettingsHarness({
+      me: makeMeFixture({ vaultStatus: 'absent' }),
+      unlocked: false,
+    });
+
+    expect(screen.getByTestId('vault-security-absent-banner')).toBeInTheDocument();
+    expect(screen.queryByTestId('vault-passphrase-card')).toBeNull();
+    expect(screen.queryByTestId('vault-recovery-keys-card')).toBeNull();
+    expect(screen.queryByTestId('vault-reset-card')).toBeNull();
   });
 });
