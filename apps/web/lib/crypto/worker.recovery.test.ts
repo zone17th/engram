@@ -779,8 +779,7 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
     void originalVk;
   });
 
-  it('fences in-flight async unlockDevKey, unlockPassphrase, unlockPrf, and createVault completions when recovery starts at the same generation (BE3-1, BE3-3, FE3-1)', async () => {
-    const sodium = await getSodium();
+  it('rejects every state-changing call made while an unlockDevKey, unlockPassphrase, createVault or unlockPrf is in flight with CLIENT_BUSY, never contacting the Worker (BE3-1, BE3-3, FE3-1, BE4-1)', async () => {
     let gateDerive = false;
     let deriveParked = Promise.withResolvers<void>();
     let releaseDerive = Promise.withResolvers<void>();
@@ -830,12 +829,46 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
       opGeneration: client.captureGeneration(),
     });
 
-    // 1. In-flight unlockDevKey paused at real crypto.subtle.decrypt while recovery enters at same generation G (BE3-1, BE3-3)
+    const expectBusyCalls = async (gen: number): Promise<void> => {
+      const before = shim.clientPostMessageCalls.length;
+      const rkInput = new Uint8Array(new TextEncoder().encode(rk0.display));
+      await expect(
+        client.unlockRecovery({
+          recoveryKey: rkInput,
+          wrap: rk0.wrap,
+          privateKeysWrapped: created.private_keys_wrapped,
+          opGeneration: gen,
+        }),
+      ).rejects.toMatchObject({ code: 'CLIENT_BUSY' });
+      expect(rkInput.every((b) => b === 0)).toBe(true);
+      await expect(
+        client.resumeRecovery({
+          wrap: rk0.wrap,
+          privateKeysWrapped: created.private_keys_wrapped,
+          opGeneration: gen,
+        }),
+      ).rejects.toMatchObject({ code: 'CLIENT_BUSY' });
+      await expect(client.confirmRecovery({ opGeneration: gen })).rejects.toMatchObject({
+        code: 'CLIENT_BUSY',
+      });
+      const pwkInput = new Uint8Array(pwk);
+      await expect(
+        client.unlockPrf({
+          pwk: pwkInput,
+          vkWrap: vk_wrap,
+          privateKeysWrapped: created.private_keys_wrapped,
+          opGeneration: gen,
+        }),
+      ).rejects.toMatchObject({ code: 'CLIENT_BUSY' });
+      expect(pwkInput.every((b) => b === 0)).toBe(true);
+      expect(shim.clientPostMessageCalls.length).toBe(before);
+    };
+
+    // 1. In-flight unlockDevKey paused at the real crypto.subtle.decrypt
     await client.lock();
     const gen1 = client.captureGeneration();
     const decryptStarted = Promise.withResolvers<void>();
     const releaseDecrypt = Promise.withResolvers<void>();
-    const capturedDecryptOutputs: Uint8Array[] = [];
     const origDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
     const decryptSpy = vi
       .spyOn(crypto.subtle, 'decrypt')
@@ -845,11 +878,8 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
         await releaseDecrypt.promise;
         return realBuf;
       });
-    const origSubarray = Uint8Array.prototype.slice;
-    void origSubarray;
-
     try {
-      const inFlightDevKeyPromise = client.unlockDevKey({
+      const inFlightDevKey = client.unlockDevKey({
         devKey,
         wrappedVk: wrapped_vk,
         userId,
@@ -858,74 +888,25 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
         opGeneration: gen1,
       });
       await decryptStarted.promise;
-
-      // Enter recovering at the SAME generation gen1 (lookup + resume)
-      await client.unlockRecovery({
-        recoveryKey: rk0.display,
-        opGeneration: gen1,
-      });
-      await client.resumeRecovery({
-        wrap: rk0.wrap,
-        privateKeysWrapped: created.private_keys_wrapped,
-        opGeneration: gen1,
-      });
-      expect(client.getState()).toBe('recovering');
-      expect(shim.core.getState()).toBe('recovering');
-      await expect(
-        client.openEntry({
-          entryId,
-          envelope: sealedEntry.envelope,
-          ciphertext: sealedEntry.ciphertext,
-          opGeneration: gen1,
-        }),
-      ).rejects.toMatchObject({ code: 'VAULT_RECOVERING' });
-
-      // Spy on openWrap for 'priv' to capture the temporary vk buffer passed into openAndVerifyPrivateKeys if reached,
-      // or spy on memzero to capture the zeroed temporary vk allocation
-      const zeroedBuffers: Uint8Array[] = [];
-      const origMemzero = sodium.memzero.bind(sodium);
-      const memzeroSpy = vi.spyOn(sodium, 'memzero').mockImplementation((buf: Uint8Array) => {
-        zeroedBuffers.push(buf);
-        origMemzero(buf);
-      });
-      try {
-        releaseDecrypt.resolve();
-        await expect(inFlightDevKeyPromise).rejects.toMatchObject({
-          code: 'VAULT_RECOVERING',
-        });
-        expect(zeroedBuffers.length).toBeGreaterThan(0);
-        for (const b of zeroedBuffers) {
-          expect(b.every((x) => x === 0)).toBe(true);
-        }
-      } finally {
-        memzeroSpy.mockRestore();
-      }
-
-      // Both client and Worker MUST remain in 'recovering' and entry MUST remain inaccessible!
-      expect(client.getState()).toBe('recovering');
-      expect(shim.core.getState()).toBe('recovering');
-      expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
-      await expect(
-        client.openEntry({
-          entryId,
-          envelope: sealedEntry.envelope,
-          ciphertext: sealedEntry.ciphertext,
-          opGeneration: gen1,
-        }),
-      ).rejects.toMatchObject({ code: 'VAULT_RECOVERING' });
+      await expectBusyCalls(gen1);
+      expect(client.getState()).toBe('locked');
+      expect(shim.core.getState()).toBe('locked');
+      releaseDecrypt.resolve();
+      await expect(inFlightDevKey).resolves.toEqual({ unlocked: true });
     } finally {
       decryptSpy.mockRestore();
-      void capturedDecryptOutputs;
     }
+    expect(client.getState()).toBe('unlocked');
+    expect(shim.core.getState()).toBe('unlocked');
+    expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
 
-    // 2. In-flight unlockPassphrase paused in deriveKek while recovery enters at same generation (FE3-1)
+    // 2. In-flight unlockPassphrase paused in deriveKek; 3. in-flight createVault paused in deriveKek
     await client.lock();
     const gen2 = client.captureGeneration();
     deriveParked = Promise.withResolvers<void>();
     releaseDerive = Promise.withResolvers<void>();
     gateDerive = true;
-
-    const inFlightPassPromise = client.unlockPassphrase({
+    const inFlightPass = client.unlockPassphrase({
       passphrase: 'passphrase-for-inflight-fence',
       kdf: created.kdf,
       vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
@@ -933,64 +914,37 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
       opGeneration: gen2,
     });
     await deriveParked.promise;
-
-    await client.unlockRecovery({
-      recoveryKey: rk0.display,
-      wrap: rk0.wrap,
-      privateKeysWrapped: created.private_keys_wrapped,
-      opGeneration: gen2,
-    });
-    expect(client.getState()).toBe('recovering');
-    expect(shim.core.getState()).toBe('recovering');
-
+    await expectBusyCalls(gen2);
     releaseDerive.resolve();
-    await expect(inFlightPassPromise).rejects.toMatchObject({
-      code: 'VAULT_RECOVERING',
-    });
-    expect(client.getState()).toBe('recovering');
-    expect(shim.core.getState()).toBe('recovering');
+    await expect(inFlightPass).resolves.toEqual({ unlocked: true });
+    expect(client.getState()).toBe('unlocked');
     expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
 
-    // 3. In-flight createVault paused in deriveKek while recovery enters at same generation (FE3-1)
     await client.lock();
     const gen3 = client.captureGeneration();
     deriveParked = Promise.withResolvers<void>();
     releaseDerive = Promise.withResolvers<void>();
     gateDerive = true;
-
-    const inFlightCreatePromise = client.createVault({
+    const inFlightCreate = client.createVault({
       passphrase: 'competing-new-vault-passphrase',
       skipRecoveryKeys: true,
       opGeneration: gen3,
     });
     await deriveParked.promise;
-
-    await client.unlockRecovery({
-      recoveryKey: rk0.display,
-      wrap: rk0.wrap,
-      privateKeysWrapped: created.private_keys_wrapped,
-      opGeneration: gen3,
-    });
-    expect(client.getState()).toBe('recovering');
-    expect(shim.core.getState()).toBe('recovering');
-
+    await expectBusyCalls(gen3);
     releaseDerive.resolve();
-    await expect(inFlightCreatePromise).rejects.toMatchObject({
-      code: 'VAULT_RECOVERING',
-    });
-    expect(client.getState()).toBe('recovering');
-    expect(shim.core.getState()).toBe('recovering');
-    // Closure VK was NOT overwritten by the late createVault!
-    expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
+    await expect(inFlightCreate).resolves.toMatchObject({ recovery_keys: [] });
+    expect(client.getState()).toBe('unlocked');
+    expect(shim.core.getState()).toBe('unlocked');
+    expect(shim.core.inspectClosureVkForTest()).not.toEqual(originalVk);
 
-    // 4. In-flight unlockPrf paused before Worker postMessage while recovery enters at same generation (FE3-1)
+    // 4. In-flight unlockPrf parked before the Worker post (the single-flight slot is held from call entry)
     await client.lock();
     const gen4 = client.captureGeneration();
     const prfParked = Promise.withResolvers<void>();
     const releasePrf = Promise.withResolvers<void>();
-    const pwkInput = new Uint8Array(pwk);
-    const inFlightPrfPromise = client.unlockPrf({
-      pwk: pwkInput,
+    const inFlightPrf = client.unlockPrf({
+      pwk: new Uint8Array(pwk),
       vkWrap: vk_wrap,
       privateKeysWrapped: created.private_keys_wrapped,
       opGeneration: gen4,
@@ -1000,23 +954,14 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
       },
     });
     await prfParked.promise;
-
-    await client.unlockRecovery({
-      recoveryKey: rk0.display,
-      wrap: rk0.wrap,
-      privateKeysWrapped: created.private_keys_wrapped,
-      opGeneration: gen4,
-    });
-    expect(client.getState()).toBe('recovering');
+    await expectBusyCalls(gen4);
     releasePrf.resolve();
-    await expect(inFlightPrfPromise).rejects.toMatchObject({
-      code: 'VAULT_RECOVERING',
-    });
-    expect(client.getState()).toBe('recovering');
-    expect(shim.core.getState()).toBe('recovering');
+    await expect(inFlightPrf).resolves.toEqual({ unlocked: true });
+    expect(client.getState()).toBe('unlocked');
+    expect(shim.core.getState()).toBe('unlocked');
     expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
 
-    // Proper lock-first switching still works cleanly
+    // The slot is free again once the call settled, and lock-first switching still works cleanly
     await client.lock();
     const genSwitch = client.captureGeneration();
     await client.unlockDevKey({

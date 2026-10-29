@@ -48,7 +48,10 @@ export type CryptoWorkerErrorCode =
   | 'ENVELOPE_INVALID'
   | 'NOT_IMPLEMENTED'
   | 'WORKER_INIT_FAILED'
-  | 'WORKER_INTERNAL_ERROR';
+  | 'WORKER_INTERNAL_ERROR'
+  // Produced only by CryptoClient (never by the Worker): a second state-changing call was made
+  // while one is already in flight (ADR 0002 §10 rule 6).
+  | 'CLIENT_BUSY';
 
 export class CryptoWorkerError extends Error {
   readonly code: CryptoWorkerErrorCode;
@@ -202,9 +205,22 @@ export type WorkerRequestMessage = WorkerCommandPayload & {
 
 export type WorkerCommandType = WorkerCommandPayload['type'];
 
+export type VaultMode = 'locked' | 'unlocked' | 'recovering';
+
+/**
+ * Authoritative Worker state `{mode, generation, epoch}` captured synchronously when a reply is built.
+ * Every reply, success or error, carries it; the client adopts it and never infers state itself.
+ */
+export interface WorkerStateReport {
+  mode: VaultMode;
+  generation: number;
+  epoch: number;
+}
+
 export interface WorkerSuccessResponse<T = unknown> {
   id: number;
   generation: number;
+  state: WorkerStateReport;
   ok: true;
   result: T;
 }
@@ -212,6 +228,7 @@ export interface WorkerSuccessResponse<T = unknown> {
 export interface WorkerErrorResponse {
   id: number;
   generation: number;
+  state: WorkerStateReport;
   ok: false;
   error: {
     code: CryptoWorkerErrorCode;

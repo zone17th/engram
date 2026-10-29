@@ -1975,26 +1975,9 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect('unlockDevKeyNow' in CryptoClient.prototype).toBe(false);
     expect('wrapForPasskeyNow' in CryptoClient.prototype).toBe(false);
 
-    // 1b. Structural single-writer invariant on worker-core.ts (r4 fix-3):
-    //     Only commitTransition (and initial declaration) may assign currentVk, currentX25519Seed,
-    //     currentEd25519Seed, or vaultMode; assignClosureKeys is private to commitTransition.
-    const workerCoreSource = readFileSync(resolve(__dirname, './worker-core.ts'), 'utf8');
-    expect(workerCoreSource).not.toMatch(/\bfunction\s+assignClosureKeys\b/);
-    const commitStart = workerCoreSource.indexOf('function commitTransition(');
-    const commitEnd = workerCoreSource.indexOf('function assertReadOnlyStart(');
-    expect(commitStart).toBeGreaterThan(0);
-    expect(commitEnd).toBeGreaterThan(commitStart);
-    const outsideCommit =
-      workerCoreSource.slice(0, commitStart) + workerCoreSource.slice(commitEnd);
-    // Outside commitTransition, only the 4 `let` declarations at createWorkerCore top-level may assign these variables
-    const vkWritesOutside = [...outsideCommit.matchAll(/\bcurrentVk(?:\s*:[^=]+)?\s*=(?!=)/g)];
-    const xSeedWritesOutside = [...outsideCommit.matchAll(/\bcurrentX25519Seed(?:\s*:[^=]+)?\s*=(?!=)/g)];
-    const edSeedWritesOutside = [...outsideCommit.matchAll(/\bcurrentEd25519Seed(?:\s*:[^=]+)?\s*=(?!=)/g)];
-    const modeWritesOutside = [...outsideCommit.matchAll(/\bvaultMode(?:\s*:[^=]+)?\s*(?:=(?!=)|\+=|-=)/g)];
-    expect(vkWritesOutside).toHaveLength(1);
-    expect(xSeedWritesOutside).toHaveLength(1);
-    expect(edSeedWritesOutside).toHaveLength(1);
-    expect(modeWritesOutside).toHaveLength(1);
+    // 1b. The single-writer invariant for ALL Worker state (mode, closure keys, generation, epoch,
+    //     pendingRecovery) is an AST check in worker.fence.test.ts (BE4-5, T-r4-1), not a text regex.
+    expect('assignClosureKeys' in createWorkerCore()).toBe(false);
 
     // 2. Dynamic import intentionally exercises module loading boundary of worker.ts in a main-thread/jsdom environment where window exists (FE1-19)
     const prevWindowOnMessage = globalThis.onmessage;
