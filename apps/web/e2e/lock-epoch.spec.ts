@@ -1148,4 +1148,126 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(leaks).toBe(0);
     await page.close();
   });
+
+  /**
+   * BE1-14 deadline crossing on an INDEPENDENT page. The shared `context.clock` (installed before any page loads, so
+   * both pages and the `BroadcastChannel` live under the same fake time) is jumped past the ORIGINAL idle deadline
+   * of Page B. Only the activity that real Page A sent over the real `BroadcastChannel` can explain Page B surviving.
+   */
+  async function readAutoLockObservables(page: Page) {
+    return page.evaluate(() => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: {
+          state: string;
+          workerState: string;
+          lastActivityAt: number;
+          minutesLeft: number | undefined;
+        };
+      };
+      const bridge = win.__engramVaultTestBridge;
+      return {
+        state: bridge.state,
+        workerState: bridge.workerState,
+        lastActivityAt: bridge.lastActivityAt,
+        minutesLeft: bridge.minutesLeft ?? null,
+        now: Date.now(),
+      };
+    });
+  }
+
+  test('(g) BE1-14: user input in real Page A extends independent Page B idle deadline -> Page B survives the ORIGINAL 5 minute deadline and locks only at the extended one', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    const FIVE_MINUTES_MS = 5 * 60_000;
+    await context.clock.install();
+    await installAuthenticatedVaultApiMocks(context, { autoLockMinutes: 5 });
+
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await pageA.goto('/app/settings');
+    await pageB.goto('/app/settings');
+    await unlockPageViaRealWorker(pageA);
+    await unlockPageViaRealWorker(pageB);
+    const before = await readAutoLockObservables(pageB);
+    expect(before.state).toBe('unlocked');
+
+    // 4 minutes of silence: both pages are still inside the original deadline.
+    await context.clock.fastForward(4 * 60_000);
+    // Real user input on Page A (clock is >1 s past A's unlock broadcast, so the activity throttle is open).
+    await pageA.locator('body').click();
+    await expect
+      .poll(async () => (await readAutoLockObservables(pageB)).lastActivityAt, {
+        timeout: 10_000,
+        intervals: [25, 50, 100],
+      })
+      .toBeGreaterThan(before.lastActivityAt + 3.5 * 60_000);
+
+    // Cross the ORIGINAL deadline of Page B (its own last activity + 5 min) but stay short of the extended one.
+    await context.clock.fastForward(2 * 60_000);
+    await expect
+      .poll(
+        async () => {
+          const o = await readAutoLockObservables(pageB);
+          // `minutesLeft` <= 3 proves the idle check re-ran after the jump (it was 5 or 4 before) and chose to keep the session.
+          return {
+            state: o.state,
+            workerState: o.workerState,
+            recheckedAfterJump: o.minutesLeft !== null && o.minutesLeft <= 3,
+          };
+        },
+        { timeout: 10_000, intervals: [25, 50, 100] },
+      )
+      .toEqual({ state: 'unlocked', workerState: 'unlocked', recheckedAfterJump: true });
+    const middle = await readAutoLockObservables(pageB);
+    expect(middle.now - before.lastActivityAt).toBeGreaterThan(FIVE_MINUTES_MS);
+    expect(middle.now - middle.lastActivityAt).toBeLessThan(FIVE_MINUTES_MS);
+
+    // Now cross the EXTENDED deadline with no further input: Page B (and A) lock.
+    await context.clock.fastForward(4 * 60_000);
+    await expect
+      .poll(
+        async () => {
+          const o = await readAutoLockObservables(pageB);
+          return { state: o.state, workerState: o.workerState };
+        },
+        { timeout: 10_000, intervals: [25, 50, 100] },
+      )
+      .toEqual({ state: 'locked', workerState: 'locked' });
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test('(h) BE1-14 control: with NO input anywhere, independent Page B idle-locks at the ORIGINAL 5 minute deadline', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    const FIVE_MINUTES_MS = 5 * 60_000;
+    await context.clock.install();
+    await installAuthenticatedVaultApiMocks(context, { autoLockMinutes: 5 });
+
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await pageA.goto('/app/settings');
+    await pageB.goto('/app/settings');
+    await unlockPageViaRealWorker(pageA);
+    await unlockPageViaRealWorker(pageB);
+    const before = await readAutoLockObservables(pageB);
+    expect(before.state).toBe('unlocked');
+
+    await context.clock.fastForward(FIVE_MINUTES_MS + 30_000);
+    await expect
+      .poll(
+        async () => {
+          const o = await readAutoLockObservables(pageB);
+          return { state: o.state, workerState: o.workerState };
+        },
+        { timeout: 10_000, intervals: [25, 50, 100] },
+      )
+      .toEqual({ state: 'locked', workerState: 'locked' });
+    const after = await readAutoLockObservables(pageB);
+    expect(after.now - before.lastActivityAt).toBeGreaterThan(FIVE_MINUTES_MS);
+    await pageA.close();
+    await pageB.close();
+  });
 });
