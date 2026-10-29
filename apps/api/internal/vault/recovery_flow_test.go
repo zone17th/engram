@@ -165,6 +165,7 @@ func TestServiceRecoveryLookupAndComplete(t *testing.T) {
 	pB := authctx.Principal{UserID: userB.ID, SessionID: uuid.New()}
 
 	inA := makeValidCreateInput(t, 0x10)
+	inA.KDFRaw = json.RawMessage(`{"alg":"argon2id13","ops":4,"mem":134217728,"parallelism":1,"salt":"` + vault.EncodeBase64URL(seqBytes(16, 0x10)) + `"}`)
 	createdA, err := svc.Create(ctx, pA, inA)
 	if err != nil {
 		t.Fatalf("svc.Create(A): %v", err)
@@ -208,11 +209,11 @@ func TestServiceRecoveryLookupAndComplete(t *testing.T) {
 		t.Fatalf("vault_unlock_failures_total after 2 misses = %v, want 2", gotFail)
 	}
 
-	// 3. RecoverComplete validation: wrong user's RK -> ErrRecoveryKeyInvalid (401); stale version -> 412; reused salt / lowered ops -> ErrVaultKDFInvalid; invalid wrap -> ErrVaultWrapInvalid.
+	// 3. RecoverComplete validation: wrong user's RK -> ErrRecoveryKeyInvalid (401); stale version -> 412;
+	// reused salt / lowered ops only / lowered mem only -> ErrVaultKDFInvalid (BE1-14); invalid wrap -> ErrVaultWrapInvalid.
 	freshSalt := vault.EncodeBase64URL(seqBytes(16, 0x99))
-	validNewKDF := json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"` + freshSalt + `"}`)
+	validNewKDF := json.RawMessage(`{"alg":"argon2id13","ops":4,"mem":134217728,"parallelism":1,"salt":"` + freshSalt + `"}`)
 	validNewWrap := makeValidWrapB64U(t, vault.WrapKindKEK, 0x99)
-
 	// User B tries to complete recovery using User A's RecoveryKeyID.
 	_, err = svc.RecoverComplete(ctx, pB, vault.RecoverCompleteInput{
 		RecoveryKeyID:        hit1.RecoveryKeyID,
@@ -244,6 +245,32 @@ func TestServiceRecoveryLookupAndComplete(t *testing.T) {
 	})
 	if !errors.Is(err, vault.ErrVaultKDFInvalid) {
 		t.Fatalf("RecoverComplete reused salt = %v, want ErrVaultKDFInvalid", err)
+	}
+
+	// Against current {ops:4, mem:134217728}, independently reject fresh-salt {ops:3, mem:134217728}
+	// and {ops:4, mem:67108864} (BE1-14).
+	for _, tc := range []struct {
+		name string
+		kdf  json.RawMessage
+	}{
+		{
+			name: "lower_ops_only",
+			kdf:  json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":134217728,"parallelism":1,"salt":"` + freshSalt + `"}`),
+		},
+		{
+			name: "lower_mem_only",
+			kdf:  json.RawMessage(`{"alg":"argon2id13","ops":4,"mem":67108864,"parallelism":1,"salt":"` + freshSalt + `"}`),
+		},
+	} {
+		_, err = svc.RecoverComplete(ctx, pA, vault.RecoverCompleteInput{
+			RecoveryKeyID:        hit1.RecoveryKeyID,
+			KDFRaw:               tc.kdf,
+			VaultKeyWrappedByKEK: validNewWrap,
+			IfMatch:              httpx.VaultIfMatch{VaultKeyID: createdA.VaultKeyID, Version: 1},
+		})
+		if !errors.Is(err, vault.ErrVaultKDFInvalid) {
+			t.Fatalf("RecoverComplete(%s) = %v, want ErrVaultKDFInvalid", tc.name, err)
+		}
 	}
 
 	// Invalid wrap -> ErrVaultWrapInvalid.

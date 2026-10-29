@@ -268,16 +268,35 @@ func TestServiceRewrapRulesAuditNoticeAndMailFailureDoesNotRollback(t *testing.T
 		t.Fatalf("unverified user should not trigger mail.Send, got %d calls", mailer.count())
 	}
 
-	// 6. Now current KDF has ops=4, mem=128 MiB. Attempting to downgrade ops=3 or mem=64 MiB -> ErrVaultKDFInvalid.
+	// 6. Now current KDF has ops=4, mem=128 MiB (134217728).
+	// Attempting to downgrade ONLY ops (3, 128 MiB), ONLY mem (4, 64 MiB), or both (3, 64 MiB)
+	// with a fresh salt must each independently fail with ErrVaultKDFInvalid (BE1-14).
 	salt3 := vault.EncodeBase64URL(seqBytes(16, 0x41))
-	downgradedKDF := json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"` + salt3 + `"}`)
-	_, err = svc.Rewrap(ctx, pA, vault.RewrapInput{
-		KDFRaw:               downgradedKDF,
-		VaultKeyWrappedByKEK: makeValidWrapB64U(t, vault.WrapKindKEK, 0x41),
-		IfMatch:              httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 2},
-	})
-	if !errors.Is(err, vault.ErrVaultKDFInvalid) {
-		t.Fatalf("Rewrap with lower KDF than current = %v, want ErrVaultKDFInvalid", err)
+	for _, tc := range []struct {
+		name string
+		kdf  json.RawMessage
+	}{
+		{
+			name: "lower_ops_only",
+			kdf:  json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":134217728,"parallelism":1,"salt":"` + salt3 + `"}`),
+		},
+		{
+			name: "lower_mem_only",
+			kdf:  json.RawMessage(`{"alg":"argon2id13","ops":4,"mem":67108864,"parallelism":1,"salt":"` + salt3 + `"}`),
+		},
+		{
+			name: "lower_both",
+			kdf:  json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"` + salt3 + `"}`),
+		},
+	} {
+		_, err = svc.Rewrap(ctx, pA, vault.RewrapInput{
+			KDFRaw:               tc.kdf,
+			VaultKeyWrappedByKEK: makeValidWrapB64U(t, vault.WrapKindKEK, 0x41),
+			IfMatch:              httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 2},
+		})
+		if !errors.Is(err, vault.ErrVaultKDFInvalid) {
+			t.Fatalf("Rewrap(%s) with lower KDF than current = %v, want ErrVaultKDFInvalid", tc.name, err)
+		}
 	}
 
 	// 7. Mark user email verified, configure mailer to return an error, and rewrap (v2->v3):

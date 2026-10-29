@@ -231,18 +231,28 @@ func TestVaultRewrapGrantsPreconditionsKDFValidationAndUntouchedRKsPasskeys(t *t
 		t.Fatalf("stale If-Match problem = %+v, want version_mismatch with current_version=2", probStale)
 	}
 
-	// 10. Lower KDF params than current (current has ops=4, mem=128 MiB; request sends ops=3, mem=64 MiB) -> 400 vault_kdf_invalid.
+	// 10. Lower KDF params than current (current has ops=4, mem=134217728):
+	// independently reject fresh-salt {ops:3, mem:134217728}, {ops:4, mem:67108864}, and {ops:3, mem:67108864} -> 400 vault_kdf_invalid (BE1-14).
 	ifMatchV2 := formatIfMatchTag(created.VaultKeyID, 2)
-	lowerKDFBody := mustJSON(t, makeRewrapPayload(t, 3, 67108864, 0x41, 0x42))
-	respLower, rawLower := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", lowerKDFBody, reqOptions{
-		idemKey: "idem-rewrap-lower-kdf-01",
-		ifMatch: ifMatchV2,
-		grant:   rewrapGrant2,
-	})
-	if respLower.StatusCode != http.StatusBadRequest || decodeProblem(t, rawLower).Code != "vault_kdf_invalid" {
-		t.Fatalf("lower KDF = %d %s, want 400 vault_kdf_invalid", respLower.StatusCode, rawLower)
+	for i, tc := range []struct {
+		name string
+		ops  int
+		mem  int
+	}{
+		{name: "lower_ops_only", ops: 3, mem: 134217728},
+		{name: "lower_mem_only", ops: 4, mem: 67108864},
+		{name: "lower_both", ops: 3, mem: 67108864},
+	} {
+		lowerKDFBody := mustJSON(t, makeRewrapPayload(t, tc.ops, tc.mem, byte(0x41+i*3), byte(0x42+i*3)))
+		respLower, rawLower := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", lowerKDFBody, reqOptions{
+			idemKey: "idem-rewrap-lower-kdf-" + tc.name,
+			ifMatch: ifMatchV2,
+			grant:   rewrapGrant2,
+		})
+		if respLower.StatusCode != http.StatusBadRequest || decodeProblem(t, rawLower).Code != "vault_kdf_invalid" {
+			t.Fatalf("lower KDF (%s) = %d %s, want 400 vault_kdf_invalid", tc.name, respLower.StatusCode, rawLower)
+		}
 	}
-
 	// 11. Verify RK rows and passkeys are completely unchanged after rewrap, and vault_key_id is unchanged.
 	respGet, rawGet := h.doReq(jarA, http.MethodGet, "/api/v1/vault", "", reqOptions{})
 	if respGet.StatusCode != http.StatusOK {

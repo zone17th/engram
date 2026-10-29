@@ -639,22 +639,44 @@ func TestRecoverCompleteCrossUserStaleVersionAndIdempotentRetry(t *testing.T) {
 		t.Fatalf("reconsume deleted RK = %d %s, want 401 recovery_key_invalid", respReconsume.StatusCode, rawReconsume)
 	}
 
-	// 5. Same-key retry after grant expires (and even if we drain the remaining 2 rate-limit slots in the 15-min window):
-	// First use up the remaining 2 attempts in User A's 5/15m vault_recovery_complete bucket (we already used 4 above: stale, ok, reconsume + 1 more).
-	_, _ = h.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete",
-		mustJSON(t, makeRecoverCompletePayload(t, lookupA.RecoveryKeyID, 0xB2)),
+	// 5. Against User A's current KDF {ops:4, mem:134217728} at version 2, independently reject
+	// fresh-salt {ops:3, mem:134217728} (lower_ops_only) and {ops:4, mem:67108864} (lower_mem_only)
+	// with 400 vault_kdf_invalid (BE1-14). Using slot 2 RK also consumes the remaining 2 attempts in User A's
+	// 5/15m vault_recovery_complete bucket without consuming slot 2 RK.
+	_, rawLookupA2 := h.doReq(jarA, http.MethodPost, "/api/v1/vault/unlock/recovery",
+		`{"lookup_hash":"`+payloadA.RecoveryKeys[1].LookupHash+`"}`, reqOptions{})
+	var lookupA2 vault.RecoveryLookupResponse
+	if err := json.Unmarshal([]byte(rawLookupA2), &lookupA2); err != nil || lookupA2.RecoveryKeyID == uuid.Nil {
+		t.Fatalf("lookup slot 2 RK = %s (%v)", rawLookupA2, err)
+	}
+
+	lowerOpsPayload := makeRecoverCompletePayload(t, lookupA2.RecoveryKeyID, 0xB2)
+	lowerOpsPayload.KDF.Ops = 3
+	lowerOpsPayload.KDF.Mem = 134217728
+	respLowerOps, rawLowerOps := h.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete",
+		mustJSON(t, lowerOpsPayload),
 		reqOptions{
-			idemKey: "idem-rec-comp-drain-04",
+			idemKey: "idem-rec-comp-lower-ops-04",
 			ifMatch: `"` + createdA.VaultKeyID + `:2"`,
 			grant:   grantA,
 		})
-	_, _ = h.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete",
-		mustJSON(t, makeRecoverCompletePayload(t, lookupA.RecoveryKeyID, 0xB3)),
+	if respLowerOps.StatusCode != http.StatusBadRequest || decodeProblem(t, rawLowerOps).Code != "vault_kdf_invalid" {
+		t.Fatalf("recover/complete lower_ops_only = %d %s, want 400 vault_kdf_invalid", respLowerOps.StatusCode, rawLowerOps)
+	}
+
+	lowerMemPayload := makeRecoverCompletePayload(t, lookupA2.RecoveryKeyID, 0xB3)
+	lowerMemPayload.KDF.Ops = 4
+	lowerMemPayload.KDF.Mem = 67108864
+	respLowerMem, rawLowerMem := h.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete",
+		mustJSON(t, lowerMemPayload),
 		reqOptions{
-			idemKey: "idem-rec-comp-drain-05",
+			idemKey: "idem-rec-comp-lower-mem-05",
 			ifMatch: `"` + createdA.VaultKeyID + `:2"`,
 			grant:   grantA,
 		})
+	if respLowerMem.StatusCode != http.StatusBadRequest || decodeProblem(t, rawLowerMem).Code != "vault_kdf_invalid" {
+		t.Fatalf("recover/complete lower_mem_only = %d %s, want 400 vault_kdf_invalid", respLowerMem.StatusCode, rawLowerMem)
+	}
 
 	// Advance clock by 6 minutes: grantA (5m TTL) is now EXPIRED, while the 15m rate-limit window is STILL FULL (5/5).
 	h.clk.Advance(6 * time.Minute)
