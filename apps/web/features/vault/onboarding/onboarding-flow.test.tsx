@@ -734,11 +734,11 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       return jsonResponse({});
     });
 
+    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
     const { unmount } = renderOnboarding({
       locale: 'vi',
-      workerFactory: () => createWorkerShim({ deriveKek: fastTestDeriveKek }).port,
+      workerFactory: () => shim.port,
     });
-
     await waitFor(() => {
       expect(screen.getByTestId('test-session-status')).toHaveTextContent('authenticated_without_vault');
       expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
@@ -765,6 +765,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
 
     // Simulate reload / leaving mid-flow before ticking -> unmount leaves zero RKs in DOM or storage
     unmount();
+    shim.close();
     expect(document.body.textContent ?? '').not.toContain(slot1);
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
