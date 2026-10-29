@@ -1507,6 +1507,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
   // -------------------------------------------------------------------------
   it('auto-locks after auto_lock_minutes * 60_000 ms using a fake clock', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z');
+    // Pin Date to t0 BEFORE mount so the provider's lastActivityAt starts at t0 (no clock-rollback lock).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
     const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 5 });
     vi.mocked(fetch).mockImplementation(async (url) => {
       const u = String(url);
@@ -1549,6 +1552,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('locked'));
 
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(t0);
 
@@ -1580,6 +1584,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
   it('auto_lock_minutes=0 ("Never") never locks, including across tab switches and hours of idle time', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z');
+    // Pin Date to t0 BEFORE mount so the provider's lastActivityAt starts at t0 (no clock-rollback lock).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
     const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 0 });
     vi.mocked(fetch).mockImplementation(async (url) => {
       const u = String(url);
@@ -1622,6 +1629,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('locked'));
 
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(t0);
 
@@ -1652,6 +1660,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
   it('idle background tab does not lock while another tab broadcasts user activity', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z');
+    // Pin Date to t0 BEFORE mount so the provider's lastActivityAt starts at t0 (no clock-rollback lock).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
     const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 5 });
     vi.mocked(fetch).mockImplementation(async (url) => {
       const u = String(url);
@@ -1710,6 +1721,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       expect(screen.getByTestId('tab-b')).toHaveTextContent('locked');
     });
 
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(t0);
 
@@ -1766,6 +1778,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
   it('locks immediately on wake when device slept past the deadline (without trusting throttled timers), when clock moves back > 1 minute, or when wake Me refresh fails/times out (5s deadline)', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+    // Pin Date to t0 BEFORE mount so the provider's lastActivityAt starts at t0 (no clock-rollback lock).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
 
     let meResponseMode: 'ok' | 'hang' | '401' = 'ok';
     const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 15 });
@@ -1823,6 +1838,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('locked'));
 
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(t0);
 
@@ -1896,6 +1912,9 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
 
   it('changing auto_lock_minutes in Tab A broadcasts settings_changed and applies immediately in Tab B', async () => {
     const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+    // Pin Date to t0 BEFORE mount so the provider's lastActivityAt starts at t0 (no clock-rollback lock).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
 
     let currentAutoLock: 0 | 5 | 15 | 60 = 60;
     vi.mocked(fetch).mockImplementation(async (url) => {
@@ -1946,6 +1965,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       expect(screen.getByTestId('tab-b-minutes')).toHaveTextContent('60');
     });
 
+    vi.useRealTimers();
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(t0);
 
