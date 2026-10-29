@@ -3,7 +3,9 @@ package vaulthttp_test
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,9 +14,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
 )
 
 type recoverCompletePayload struct {
@@ -589,5 +602,220 @@ func TestRecoveryRateLimitsSeparateBucketsSixthBlocked(t *testing.T) {
 	probC6 := decodeProblem(t, rawC6)
 	if probC6.Code != "rate_limited" || probC6.RetryAfter == nil || *probC6.RetryAfter <= 0 {
 		t.Fatalf("6th complete problem = %+v, want rate_limited with retry_after", probC6)
+	}
+}
+
+type lateOwnershipTakeoverTracer struct {
+	once       atomic.Bool
+	onFinishTx func()
+}
+
+func (t *lateOwnershipTakeoverTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(d.SQL, "UPDATE idempotency_key") && t.once.CompareAndSwap(false, true) {
+		t.onFinishTx()
+	}
+	return ctx
+}
+
+func (t *lateOwnershipTakeoverTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+}
+
+// TestRecoverCompleteLateOwnershipLossRollsBackVaultRKsAuditNoticeAndJob covers BE1-15:
+// forces idempotency ownership loss inside a real POST /vault/recover/complete mutation
+// AFTER vault KDF/wrap update, RK consumption, audit insertion, and security notice + River
+// job insertion, right before FinishIdempotencyKey / COMMIT. Verifies full rollback atomicity:
+//   - original vault/KDF/wrap/version (1) and all 10 RKs remain intact;
+//   - zero vault.recover / recovery_key.consume audit rows;
+//   - zero user_notification rows, zero river_job rows, zero delivered emails (would fail if
+//     NotifySecurity were passed a nil tx);
+//   - no finalized idempotency response (status remains 'in_progress', response/status_code NULL);
+//   - the new owner's claim token is preserved (not deleted by step-8 release).
+func TestRecoverCompleteLateOwnershipLossRollsBackVaultRKsAuditNoticeAndJob(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	password := "correct-horse-battery-staple"
+	email := "late-ownership-loss@example.com"
+	jarA, meA := h.signupUser(email, password)
+	ctx := context.Background()
+
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	createPayload := makeCreatePayload(t, 0x31)
+	respCreate, rawCreate := h.doReq(jarA, http.MethodPost, "/api/v1/vault", mustJSON(t, createPayload), reqOptions{
+		idemKey: "idem-late-fail-create-0001",
+	})
+	if respCreate.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /vault = %d %s", respCreate.StatusCode, rawCreate)
+	}
+	var created vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(rawCreate), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	respLookup, rawLookup := h.doReq(jarA, http.MethodPost, "/api/v1/vault/unlock/recovery",
+		`{"lookup_hash":"`+createPayload.RecoveryKeys[0].LookupHash+`"}`, reqOptions{})
+	if respLookup.StatusCode != http.StatusOK {
+		t.Fatalf("lookup slot 1 = %d %s", respLookup.StatusCode, rawLookup)
+	}
+	var lookupRes vault.RecoveryLookupResponse
+	if err := json.Unmarshal([]byte(rawLookup), &lookupRes); err != nil {
+		t.Fatal(err)
+	}
+
+	idemKey := "idem-late-fail-recover-0001"
+	completePayload := makeRecoverCompletePayload(t, lookupRes.RecoveryKeyID, 0x84)
+	completeBody := mustJSON(t, completePayload)
+	fp := httpx.ComputeIdempotencyFingerprint(http.MethodPost, "/api/v1/vault/recover/complete", []byte(completeBody))
+	newOwner := uuid.New()
+	var takeoverErr error
+
+	tracer := &lateOwnershipTakeoverTracer{
+		onFinishTx: func() {
+			// Advance clock past the 60s in_progress window so a second claimant can legitimately
+			// take over the in_progress row right before the first transaction runs FinishIdempotencyKey.
+			h.clk.Advance(61 * time.Second)
+			reclaimNow := h.clk.Now()
+			_, takeoverErr = gen.New(h.pool).ClaimIdempotencyKey(ctx, gen.ClaimIdempotencyKeyParams{
+				UserID:      meA.User.ID,
+				Key:         idemKey,
+				Method:      http.MethodPost,
+				Path:        "/api/v1/vault/recover/complete",
+				RequestHash: fp,
+				OwnerToken:  newOwner,
+				Now:         pgtype.Timestamptz{Time: reclaimNow, Valid: true},
+			})
+		},
+	}
+
+	pcfg := h.pool.Config()
+	pcfg.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AppOrigin = h.origin
+	riverInsert, err := river.NewClient(riverpgxv5.New(tracedPool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, authAPI, err := compose.NewAuth(cfg, tracedPool, riverInsert, h.clk, h.mail, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultSvc, vaultAPI, err := compose.NewVault(cfg, tracedPool, riverInsert, h.clk, h.mail, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authn, csrfv, reauth := compose.Adapters(h.authSvc)
+	srv := httptest.NewServer(httpx.NewRouter(httpx.Deps{
+		Config:        cfg,
+		Logger:        slog.Default(),
+		Authenticator: authn,
+		CSRF:          csrfv,
+		Reauth:        reauth,
+		MountAPI:      compose.MountAll(authhttp.Mount(authAPI), vaulthttp.Mount(vaultAPI)),
+	}))
+	t.Cleanup(srv.Close)
+
+	tracedHarness := &harness{
+		t:        t,
+		srv:      srv,
+		origin:   h.origin,
+		clk:      h.clk,
+		mail:     h.mail,
+		authSvc:  h.authSvc,
+		vaultSvc: vaultSvc,
+		vaultAPI: vaultAPI,
+		pool:     tracedPool,
+		logs:     h.logs,
+	}
+
+	grant := h.reauthGrant(jarA, "vault.recover", password)
+	ifMatch := formatIfMatchTag(created.VaultKeyID, 1)
+	resp, raw := tracedHarness.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete", completeBody, reqOptions{
+		idemKey: idemKey,
+		ifMatch: ifMatch,
+		grant:   grant,
+	})
+	if takeoverErr != nil {
+		t.Fatalf("ownership takeover ClaimIdempotencyKey failed: %v", takeoverErr)
+	}
+	if !tracer.once.Load() {
+		t.Fatal("lateOwnershipTakeoverTracer was never triggered")
+	}
+	if resp.StatusCode < 400 {
+		t.Fatalf("expected non-2xx on late ownership loss, got %d %s", resp.StatusCode, raw)
+	}
+
+	// 1. Original vault/KDF/wrap/version and all 10 RKs remain unchanged.
+	respGet, rawGet := h.doReq(jarA, http.MethodGet, "/api/v1/vault", "", reqOptions{})
+	if respGet.StatusCode != http.StatusOK {
+		t.Fatalf("GET /vault = %d %s", respGet.StatusCode, rawGet)
+	}
+	var state vault.VaultState
+	if err := json.Unmarshal([]byte(rawGet), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.VaultKeyID != created.VaultKeyID ||
+		state.Version != 1 ||
+		state.KDF != createPayload.KDF ||
+		state.VaultKeyWrappedByKEK != createPayload.VaultKeyWrappedByKEK ||
+		state.RecoveryKeysRemaining != 10 {
+		t.Fatalf("vault state altered after rolled-back recovery: got %+v, want version=1 kdf=%+v wrap=%s remaining=10",
+			state, createPayload.KDF, createPayload.VaultKeyWrappedByKEK)
+	}
+
+	// Slot 1 RK is still present and lookup still succeeds.
+	respLookupAfter, rawLookupAfter := h.doReq(jarA, http.MethodPost, "/api/v1/vault/unlock/recovery",
+		`{"lookup_hash":"`+createPayload.RecoveryKeys[0].LookupHash+`"}`, reqOptions{})
+	if respLookupAfter.StatusCode != http.StatusOK {
+		t.Fatalf("slot 1 lookup after rollback = %d %s, want 200", respLookupAfter.StatusCode, rawLookupAfter)
+	}
+
+	// 2. Zero audit rows for vault.recover or recovery_key.consume, zero notices, zero River jobs, zero emails.
+	var recAudits, notices, jobs int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_log WHERE user_id = $1 AND event IN ($2, $3)`,
+		meA.User.ID, vault.EventVaultRecover, vault.EventRecoveryKeyConsume,
+	).Scan(&recAudits); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_notification WHERE user_id = $1`,
+		meA.User.ID,
+	).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`,
+	).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if recAudits != 0 || notices != 0 || jobs != 0 {
+		t.Fatalf("leftover side effects after rollback: audits=%d notices=%d jobs=%d, want 0/0/0", recAudits, notices, jobs)
+	}
+	if delivered := h.countSecurityMailsDelivered(email); delivered != 0 {
+		t.Fatalf("delivered emails after rollback = %d, want 0", delivered)
+	}
+
+	// 3. No finalized idempotency response, and the new owner's claim is preserved.
+	idemRow, err := gen.New(h.pool).GetIdempotencyKey(ctx, gen.GetIdempotencyKeyParams{
+		UserID: meA.User.ID,
+		Key:    idemKey,
+		Now:    pgtype.Timestamptz{Time: h.clk.Now(), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey after rollback: %v", err)
+	}
+	if idemRow.Status != "in_progress" || idemRow.OwnerToken != newOwner || idemRow.StatusCode != nil || len(idemRow.Response) != 0 {
+		t.Fatalf("idempotency row after rollback = %+v, want status=in_progress owner=%s status_code=NULL response=empty",
+			idemRow, newOwner)
 	}
 }
