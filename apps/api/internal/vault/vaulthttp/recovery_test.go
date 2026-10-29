@@ -3,6 +3,8 @@ package vaulthttp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -51,13 +53,13 @@ func makeRecoverCompletePayload(t *testing.T, rkID uuid.UUID, seed byte) recover
 	}
 }
 
-// waitForHTTPBlockedBackendPID polls Postgres `pg_stat_activity` + `pg_blocking_pids` until a second
+// pollHTTPBlockedBackendPID polls Postgres `pg_stat_activity` + `pg_blocking_pids` until a second
 // backend in `current_database()` is actively blocked on `holdPID` (the winner holding the vault
-// FOR UPDATE row lock), failing immediately if any HTTP worker finishes early.
-func waitForHTTPBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int) int32 {
-	t.Helper()
+// FOR UPDATE row lock), returning immediately with the failing worker's diagnostic if any HTTP
+// worker finishes early.
+func pollHTTPBlockedBackendPID(ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int, formatEarly func(int) string) (int32, error) {
 	if holdPID == 0 {
-		t.Fatal("winner backend PID is 0")
+		return 0, errors.New("winner backend PID is 0")
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -72,21 +74,34 @@ func waitForHTTPBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpo
 				LIMIT 1
 			), 0)
 		`, holdPID).Scan(&waiterPID); err != nil {
-			t.Fatalf("query pg_blocking_pids for holdPID=%d: %v", holdPID, err)
+			return 0, fmt.Errorf("query pg_blocking_pids for holdPID=%d: %w", holdPID, err)
 		}
 		if waiterPID != 0 {
-			return waiterPID
+			return waiterPID, nil
 		}
 		select {
 		case idx := <-earlyDone:
-			t.Fatalf("HTTP worker %d finished early before second backend blocked on holdPID=%d", idx, holdPID)
+			detail := ""
+			if formatEarly != nil {
+				detail = ": " + formatEarly(idx)
+			}
+			return 0, fmt.Errorf("HTTP worker %d finished early before second backend blocked on holdPID=%d%s", idx, holdPID, detail)
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for second HTTP backend to block on vault row lock held by pid=%d", holdPID)
+			return 0, fmt.Errorf("timed out waiting for second HTTP backend to block on vault row lock held by pid=%d", holdPID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func waitForHTTPBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int, formatEarly func(int) string) int32 {
+	t.Helper()
+	waiterPID, err := pollHTTPBlockedBackendPID(ctx, pool, holdPID, earlyDone, formatEarly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return waiterPID
 }
 
 func readPromCounter(t *testing.T, reg *prometheus.Registry, metricName, labelName, labelValue string) float64 {
@@ -258,11 +273,13 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	defer func() {
+	cleanupBarrier := func() {
 		closeRelease()
 		vault.SetRecoverCompleteTestHook(nil)
 		wg.Wait()
-	}()
+	}
+	t.Cleanup(cleanupBarrier)
+	defer cleanupBarrier()
 
 	vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
 		if arrived.Add(1) == 1 {
@@ -304,7 +321,9 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 
 	ctx := context.Background()
 	holdPID := winnerPID.Load()
-	waiterPID := waitForHTTPBlockedBackendPID(t, ctx, h.pool, holdPID, earlyDone)
+	waiterPID := waitForHTTPBlockedBackendPID(t, ctx, h.pool, holdPID, earlyDone, func(idx int) string {
+		return fmt.Sprintf("status=%d body=%s", results[idx].status, results[idx].body)
+	})
 	if waiterPID == 0 || waiterPID == holdPID {
 		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
 	}
@@ -386,6 +405,101 @@ func TestRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	if got := readPromCounter(t, h.reg, "vault_recover_total", "", ""); got != 1 {
 		t.Fatalf("vault_recover_total = %v, want 1", got)
 	}
+
+	t.Run("EarlyFailureUnblocksHTTPBarrierPromptly", func(t *testing.T) {
+		respLookup2, rawLookup2 := h.doReq(jarA, http.MethodPost, "/api/v1/vault/unlock/recovery",
+			mustJSON(t, map[string]string{"lookup_hash": payloadA.RecoveryKeys[1].LookupHash}), reqOptions{})
+		if respLookup2.StatusCode != http.StatusOK {
+			t.Fatalf("lookup[1] = %d %s", respLookup2.StatusCode, rawLookup2)
+		}
+		var lookupRes2 vault.RecoveryLookupResponse
+		if err := json.Unmarshal([]byte(rawLookup2), &lookupRes2); err != nil {
+			t.Fatal(err)
+		}
+		ifMatchV2 := `"` + created.VaultKeyID + `:2"`
+
+		var subArrived atomic.Int32
+		var subWinnerPID atomic.Int32
+		subLocked := make(chan struct{})
+		subRelease := make(chan struct{})
+		var subReleaseOnce sync.Once
+		closeSubRelease := func() { subReleaseOnce.Do(func() { close(subRelease) }) }
+		subResults := make([]callResult, 2)
+		subEarly := make(chan int, 2)
+		var subWG sync.WaitGroup
+		subWG.Add(2)
+		cleanupSub := func() {
+			closeSubRelease()
+			vault.SetRecoverCompleteTestHook(nil)
+			subWG.Wait()
+		}
+		t.Cleanup(cleanupSub)
+		defer cleanupSub()
+
+		vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
+			if subArrived.Add(1) == 1 {
+				subWinnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+				close(subLocked)
+				select {
+				case <-subRelease:
+				case <-hookCtx.Done():
+				}
+			}
+		})
+
+		start := time.Now()
+		go func() {
+			defer subWG.Done()
+			localJar := cookieJar{}
+			for k, v := range jarA {
+				localJar[k] = v
+			}
+			body := mustJSON(t, makeRecoverCompletePayload(t, lookupRes2.RecoveryKeyID, 0xA1))
+			r, raw := h.doReq(localJar, http.MethodPost, "/api/v1/vault/recover/complete", body, reqOptions{
+				idemKey: "idem-barrier-complete-subtest-ok",
+				ifMatch: ifMatchV2,
+				grant:   grant,
+			})
+			subResults[0] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			subEarly <- 0
+		}()
+		go func() {
+			defer subWG.Done()
+			<-subLocked
+			localJar := cookieJar{}
+			for k, v := range jarA {
+				localJar[k] = v
+			}
+			body := mustJSON(t, makeRecoverCompletePayload(t, lookupRes2.RecoveryKeyID, 0xA2))
+			// Deliberately omit If-Match so HTTP worker 1 fails early with 428 precondition_required.
+			r, raw := h.doReq(localJar, http.MethodPost, "/api/v1/vault/recover/complete", body, reqOptions{
+				idemKey: "idem-barrier-complete-subtest-fail",
+				ifMatch: "",
+				grant:   grant,
+			})
+			subResults[1] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			subEarly <- 1
+		}()
+
+		select {
+		case <-subLocked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for HTTP subtest winner to acquire lock")
+		}
+
+		_, pollErr := pollHTTPBlockedBackendPID(ctx, h.pool, subWinnerPID.Load(), subEarly, func(idx int) string {
+			return fmt.Sprintf("status=%d body=%s", subResults[idx].status, subResults[idx].body)
+		})
+		if pollErr == nil || !strings.Contains(pollErr.Error(), "HTTP worker 1 finished early") || !strings.Contains(pollErr.Error(), "precondition_required") {
+			t.Fatalf("pollHTTPBlockedBackendPID on early failing sibling = %v, want HTTP worker 1 precondition_required diagnostic", pollErr)
+		}
+		closeSubRelease()
+		subWG.Wait()
+		vault.SetRecoverCompleteTestHook(nil)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("HTTP barrier early-failure cleanup took %v, want < 2s", elapsed)
+		}
+	})
 }
 
 // TestRecoverCompleteCrossUserStaleVersionAndIdempotentRetry covers Task 10 bullets:

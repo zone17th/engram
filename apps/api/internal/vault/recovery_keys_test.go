@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -307,11 +308,13 @@ func TestServiceRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	defer func() {
+	cleanupBarrier := func() {
 		closeRelease()
 		vault.SetRegenerateTestHook(nil)
 		wg.Wait()
-	}()
+	}
+	t.Cleanup(cleanupBarrier)
+	defer cleanupBarrier()
 
 	vault.SetRegenerateTestHook(func(hookCtx context.Context) {
 		if arrived.Add(1) == 1 {
@@ -353,7 +356,9 @@ func TestServiceRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	}
 
 	holdPID := winnerPID.Load()
-	waiterPID := waitForBlockedBackendPID(t, ctx, pool, holdPID, earlyDone)
+	waiterPID := waitForBlockedBackendPID(t, ctx, pool, holdPID, earlyDone, func(idx int) string {
+		return fmt.Sprintf("%+v", results[idx])
+	})
 	if waiterPID == 0 || waiterPID == holdPID {
 		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
 	}
@@ -393,4 +398,93 @@ func TestServiceRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	if status.Remaining != 9 || len(status.EmptySlots) != 1 {
 		t.Fatalf("status after concurrent regenerate = %+v, want Remaining=9 and 1 empty slot", status)
 	}
+
+	t.Run("EarlyFailureAndContextCancelUnblockBarrierPromptly", func(t *testing.T) {
+		var subArrived atomic.Int32
+		var subWinnerPID atomic.Int32
+		subLocked := make(chan struct{})
+		subRelease := make(chan struct{})
+		var subReleaseOnce sync.Once
+		closeSubRelease := func() { subReleaseOnce.Do(func() { close(subRelease) }) }
+		subResults := make([]result, 2)
+		subEarly := make(chan int, 2)
+		var subWG sync.WaitGroup
+		subWG.Add(2)
+		subCtx, cancelSub := context.WithCancel(ctx)
+		cleanupSub := func() {
+			closeSubRelease()
+			cancelSub()
+			vault.SetRegenerateTestHook(nil)
+			subWG.Wait()
+		}
+		t.Cleanup(cleanupSub)
+		defer cleanupSub()
+
+		vault.SetRegenerateTestHook(func(hookCtx context.Context) {
+			if subArrived.Add(1) == 1 {
+				subWinnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+				close(subLocked)
+				select {
+				case <-subRelease:
+				case <-hookCtx.Done():
+				}
+			}
+		})
+
+		remainingSlot := status.EmptySlots[0]
+		start := time.Now()
+		go func() {
+			defer subWG.Done()
+			h := seqBytes(32, 0xE1)
+			resp, err := svc.RegenerateRecoveryKeys(subCtx, p, vault.RecoveryKeysRegenerateInput{
+				RecoveryKeys: []vault.RecoveryKeyUploadItem{
+					{
+						Slot:       remainingSlot,
+						LookupHash: vault.EncodeBase64URL(h),
+						Wrap:       makeValidWrapB64U(t, vault.WrapKindRK, 0xE1),
+					},
+				},
+				IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 2},
+			})
+			subResults[0] = result{resp: resp, err: err, finishedAt: time.Now()}
+			subEarly <- 0
+		}()
+		go func() {
+			defer subWG.Done()
+			<-subLocked
+			// Deliberately invalid If-Match (Version: 0 -> precondition_required before DB lock).
+			resp, err := svc.RegenerateRecoveryKeys(subCtx, p, vault.RecoveryKeysRegenerateInput{
+				RecoveryKeys: []vault.RecoveryKeyUploadItem{
+					{
+						Slot:       remainingSlot,
+						LookupHash: vault.EncodeBase64URL(seqBytes(32, 0xE2)),
+						Wrap:       makeValidWrapB64U(t, vault.WrapKindRK, 0xE2),
+					},
+				},
+				IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 0},
+			})
+			subResults[1] = result{resp: resp, err: err, finishedAt: time.Now()}
+			subEarly <- 1
+		}()
+
+		select {
+		case <-subLocked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for subtest winner to acquire lock")
+		}
+
+		_, pollErr := pollBlockedBackendPID(ctx, pool, subWinnerPID.Load(), subEarly, func(idx int) string {
+			return fmt.Sprintf("err=%v", subResults[idx].err)
+		})
+		if pollErr == nil || !strings.Contains(pollErr.Error(), "worker 1 finished early") || !strings.Contains(pollErr.Error(), "precondition_required") {
+			t.Fatalf("pollBlockedBackendPID on early failing sibling = %v, want worker 1 precondition_required diagnostic", pollErr)
+		}
+		cancelSub()
+		subWG.Wait()
+		closeSubRelease()
+		vault.SetRegenerateTestHook(nil)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("barrier early-failure + context-cancel cleanup took %v, want < 2s", elapsed)
+		}
+	})
 }

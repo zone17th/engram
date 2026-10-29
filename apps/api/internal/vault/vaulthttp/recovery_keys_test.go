@@ -3,6 +3,7 @@ package vaulthttp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,11 +63,13 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	defer func() {
+	cleanupBarrier := func() {
 		closeRelease()
 		vault.SetRegenerateTestHook(nil)
 		wg.Wait()
-	}()
+	}
+	t.Cleanup(cleanupBarrier)
+	defer cleanupBarrier()
 
 	vault.SetRegenerateTestHook(func(hookCtx context.Context) {
 		if arrived.Add(1) == 1 {
@@ -116,7 +119,9 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 
 	ctx := context.Background()
 	holdPID := winnerPID.Load()
-	waiterPID := waitForHTTPBlockedBackendPID(t, ctx, h.pool, holdPID, earlyDone)
+	waiterPID := waitForHTTPBlockedBackendPID(t, ctx, h.pool, holdPID, earlyDone, func(idx int) string {
+		return fmt.Sprintf("status=%d body=%s", results[idx].status, results[idx].body)
+	})
 	if waiterPID == 0 || waiterPID == holdPID {
 		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
 	}
@@ -175,6 +180,114 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	if dbCount != 9 {
 		t.Fatalf("DB recovery key count = %d, want 9", dbCount)
 	}
+
+	t.Run("EarlyFailureUnblocksHTTPBarrierPromptly", func(t *testing.T) {
+		var subArrived atomic.Int32
+		var subWinnerPID atomic.Int32
+		subLocked := make(chan struct{})
+		subRelease := make(chan struct{})
+		var subReleaseOnce sync.Once
+		closeSubRelease := func() { subReleaseOnce.Do(func() { close(subRelease) }) }
+		subResults := make([]callResult, 2)
+		subEarly := make(chan int, 2)
+		var subWG sync.WaitGroup
+		subWG.Add(2)
+		cleanupSub := func() {
+			closeSubRelease()
+			vault.SetRegenerateTestHook(nil)
+			subWG.Wait()
+		}
+		t.Cleanup(cleanupSub)
+		defer cleanupSub()
+
+		vault.SetRegenerateTestHook(func(hookCtx context.Context) {
+			if subArrived.Add(1) == 1 {
+				subWinnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+				close(subLocked)
+				select {
+				case <-subRelease:
+				case <-hookCtx.Done():
+				}
+			}
+		})
+
+		// Determine which slot (1 or 2) is still empty after the first winner inserted its slot.
+		respRK, rawRK := h.doReq(jarA, http.MethodGet, "/api/v1/vault/recovery-keys", "", reqOptions{})
+		if respRK.StatusCode != http.StatusOK {
+			t.Fatalf("GET /vault/recovery-keys = %d %s", respRK.StatusCode, rawRK)
+		}
+		var rkStatus vault.RecoveryKeysStatus
+		if err := json.Unmarshal([]byte(rawRK), &rkStatus); err != nil || len(rkStatus.EmptySlots) != 1 {
+			t.Fatalf("rkStatus = %+v, err = %v", rkStatus, err)
+		}
+		remainingSlot := rkStatus.EmptySlots[0]
+		ifMatchV2 := `"` + created.VaultKeyID + `:2"`
+
+		start := time.Now()
+		go func() {
+			defer subWG.Done()
+			localJar := cookieJar{}
+			for k, v := range jarA {
+				localJar[k] = v
+			}
+			items := []vault.RecoveryKeyUploadItem{
+				{
+					Slot:       remainingSlot,
+					LookupHash: vault.EncodeBase64URL(seqTestBytes(32, 0xA1)),
+					Wrap:       makeWrapB64U(t, vault.WrapKindRK, 0xA1),
+				},
+			}
+			r, raw := h.doReq(localJar, http.MethodPost, "/api/v1/vault/recovery-keys/regenerate", mustJSON(t, map[string]any{"recovery_keys": items}), reqOptions{
+				idemKey: "idem-rk-conc-subtest-ok",
+				ifMatch: ifMatchV2,
+				grant:   grant,
+			})
+			subResults[0] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			subEarly <- 0
+		}()
+		go func() {
+			defer subWG.Done()
+			<-subLocked
+			localJar := cookieJar{}
+			for k, v := range jarA {
+				localJar[k] = v
+			}
+			items := []vault.RecoveryKeyUploadItem{
+				{
+					Slot:       remainingSlot,
+					LookupHash: vault.EncodeBase64URL(seqTestBytes(32, 0xA2)),
+					Wrap:       makeWrapB64U(t, vault.WrapKindRK, 0xA2),
+				},
+			}
+			// Deliberately omit If-Match so HTTP worker 1 fails early with 428 precondition_required.
+			r, raw := h.doReq(localJar, http.MethodPost, "/api/v1/vault/recovery-keys/regenerate", mustJSON(t, map[string]any{"recovery_keys": items}), reqOptions{
+				idemKey: "idem-rk-conc-subtest-fail",
+				ifMatch: "",
+				grant:   grant,
+			})
+			subResults[1] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			subEarly <- 1
+		}()
+
+		select {
+		case <-subLocked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for HTTP subtest winner to acquire lock")
+		}
+
+		_, pollErr := pollHTTPBlockedBackendPID(ctx, h.pool, subWinnerPID.Load(), subEarly, func(idx int) string {
+			return fmt.Sprintf("status=%d body=%s", subResults[idx].status, subResults[idx].body)
+		})
+		if pollErr == nil || !strings.Contains(pollErr.Error(), "HTTP worker 1 finished early") || !strings.Contains(pollErr.Error(), "precondition_required") {
+			t.Fatalf("pollHTTPBlockedBackendPID on early failing sibling = %v, want HTTP worker 1 precondition_required diagnostic", pollErr)
+		}
+		closeSubRelease()
+		subWG.Wait()
+		vault.SetRegenerateTestHook(nil)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("HTTP barrier early-failure cleanup took %v, want < 2s", elapsed)
+		}
+	})
 }
 
 // TestRecoveryKeysRegenerateValidationAndUniqueMapping covers Task 11 bullets:

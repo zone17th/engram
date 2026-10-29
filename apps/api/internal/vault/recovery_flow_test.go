@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -62,13 +63,13 @@ func gatherCounterValue(t *testing.T, reg *prometheus.Registry, name string, lab
 	return 0
 }
 
-// waitForBlockedBackendPID polls Postgres `pg_stat_activity` + `pg_blocking_pids` until a second
+// pollBlockedBackendPID polls Postgres `pg_stat_activity` + `pg_blocking_pids` until a second
 // backend in `current_database()` is actively blocked on `holdPID` (the winner holding the vault
-// FOR UPDATE row lock), failing immediately if any worker finishes early before blocking is observed.
-func waitForBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int) int32 {
-	t.Helper()
+// FOR UPDATE row lock), returning immediately with the failing worker's diagnostic if any worker
+// finishes early before blocking is observed.
+func pollBlockedBackendPID(ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int, formatEarly func(int) string) (int32, error) {
 	if holdPID == 0 {
-		t.Fatal("winner backend PID is 0")
+		return 0, errors.New("winner backend PID is 0")
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -83,21 +84,34 @@ func waitForBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpool.P
 				LIMIT 1
 			), 0)
 		`, holdPID).Scan(&waiterPID); err != nil {
-			t.Fatalf("query pg_blocking_pids for holdPID=%d: %v", holdPID, err)
+			return 0, fmt.Errorf("query pg_blocking_pids for holdPID=%d: %w", holdPID, err)
 		}
 		if waiterPID != 0 {
-			return waiterPID
+			return waiterPID, nil
 		}
 		select {
 		case idx := <-earlyDone:
-			t.Fatalf("worker %d finished early before second backend blocked on holdPID=%d", idx, holdPID)
+			detail := ""
+			if formatEarly != nil {
+				detail = ": " + formatEarly(idx)
+			}
+			return 0, fmt.Errorf("worker %d finished early before second backend blocked on holdPID=%d%s", idx, holdPID, detail)
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for second backend to block on vault row lock held by pid=%d", holdPID)
+			return 0, fmt.Errorf("timed out waiting for second backend to block on vault row lock held by pid=%d", holdPID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func waitForBlockedBackendPID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holdPID int32, earlyDone <-chan int, formatEarly func(int) string) int32 {
+	t.Helper()
+	waiterPID, err := pollBlockedBackendPID(ctx, pool, holdPID, earlyDone, formatEarly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return waiterPID
 }
 
 func TestServiceRecoveryLookupAndComplete(t *testing.T) {
@@ -359,11 +373,13 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	defer func() {
+	cleanupBarrier := func() {
 		closeRelease()
 		vault.SetRecoverCompleteTestHook(nil)
 		wg.Wait()
-	}()
+	}
+	t.Cleanup(cleanupBarrier)
+	defer cleanupBarrier()
 
 	vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
 		if arrived.Add(1) == 1 {
@@ -404,7 +420,9 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	}
 
 	holdPID := winnerPID.Load()
-	waiterPID := waitForBlockedBackendPID(t, ctx, pool, holdPID, earlyDone)
+	waiterPID := waitForBlockedBackendPID(t, ctx, pool, holdPID, earlyDone, func(idx int) string {
+		return fmt.Sprintf("%+v", results[idx])
+	})
 	if waiterPID == 0 || waiterPID == holdPID {
 		t.Fatalf("invalid waiterPID=%d for holdPID=%d", waiterPID, holdPID)
 	}
@@ -445,4 +463,100 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	if rkStatus.Remaining != 9 {
 		t.Fatalf("Remaining after concurrent complete = %d, want 9", rkStatus.Remaining)
 	}
+
+	t.Run("EarlyFailureAndContextCancelUnblockBarrierPromptly", func(t *testing.T) {
+		// Lookup a second valid recovery key (index 1) for the barrier cleanup subtest.
+		lookup2, err := svc.RecoveryLookup(ctx, p, vault.RecoveryLookupInput{
+			LookupHash: inCreate.RecoveryKeys[1].LookupHash,
+		})
+		if err != nil {
+			t.Fatalf("RecoveryLookup[1]: %v", err)
+		}
+
+		// (a) Deliberately failing sibling request (invalid If-Match) while worker 0 holds the barrier:
+		// pollBlockedBackendPID must surface worker 1's error immediately without hanging, and once-only
+		// release cleanup must unblock and drain worker 0 promptly.
+		var subArrived atomic.Int32
+		var subWinnerPID atomic.Int32
+		subLocked := make(chan struct{})
+		subRelease := make(chan struct{})
+		var subReleaseOnce sync.Once
+		closeSubRelease := func() { subReleaseOnce.Do(func() { close(subRelease) }) }
+		subResults := make([]result, 2)
+		subEarly := make(chan int, 2)
+		var subWG sync.WaitGroup
+		subWG.Add(2)
+		subCtx, cancelSub := context.WithCancel(ctx)
+		cleanupSub := func() {
+			closeSubRelease()
+			cancelSub()
+			vault.SetRecoverCompleteTestHook(nil)
+			subWG.Wait()
+		}
+		t.Cleanup(cleanupSub)
+		defer cleanupSub()
+
+		vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
+			if subArrived.Add(1) == 1 {
+				subWinnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
+				close(subLocked)
+				select {
+				case <-subRelease:
+				case <-hookCtx.Done():
+				}
+			}
+		})
+
+		start := time.Now()
+		go func() {
+			defer subWG.Done()
+			salt := vault.EncodeBase64URL(seqBytes(16, 0x91))
+			kdfRaw := json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"` + salt + `"}`)
+			wrap := makeValidWrapB64U(t, vault.WrapKindKEK, 0x91)
+			resp, err := svc.RecoverComplete(subCtx, p, vault.RecoverCompleteInput{
+				RecoveryKeyID:        lookup2.RecoveryKeyID,
+				KDFRaw:               kdfRaw,
+				VaultKeyWrappedByKEK: wrap,
+				IfMatch:              httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 2},
+				IP:                   "127.0.0.1",
+				UA:                   "barrier-subtest",
+			})
+			subResults[0] = result{resp: resp, err: err, finishedAt: time.Now()}
+			subEarly <- 0
+		}()
+		go func() {
+			defer subWG.Done()
+			<-subLocked
+			// Deliberately invalid If-Match (Version: 0 -> precondition_required before DB lock).
+			resp, err := svc.RecoverComplete(subCtx, p, vault.RecoverCompleteInput{
+				RecoveryKeyID:        lookup2.RecoveryKeyID,
+				KDFRaw:               json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"` + vault.EncodeBase64URL(seqBytes(16, 0x92)) + `"}`),
+				VaultKeyWrappedByKEK: makeValidWrapB64U(t, vault.WrapKindKEK, 0x92),
+				IfMatch:              httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 0},
+			})
+			subResults[1] = result{resp: resp, err: err, finishedAt: time.Now()}
+			subEarly <- 1
+		}()
+
+		select {
+		case <-subLocked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for subtest winner to acquire lock")
+		}
+
+		_, pollErr := pollBlockedBackendPID(ctx, pool, subWinnerPID.Load(), subEarly, func(idx int) string {
+			return fmt.Sprintf("err=%v", subResults[idx].err)
+		})
+		if pollErr == nil || !strings.Contains(pollErr.Error(), "worker 1 finished early") || !strings.Contains(pollErr.Error(), "precondition_required") {
+			t.Fatalf("pollBlockedBackendPID on early failing sibling = %v, want worker 1 precondition_required diagnostic", pollErr)
+		}
+		// Cancel context BEFORE closing subRelease to prove hookCtx.Done() unblocks the held winner promptly.
+		cancelSub()
+		subWG.Wait()
+		closeSubRelease()
+		vault.SetRecoverCompleteTestHook(nil)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("barrier early-failure + context-cancel cleanup took %v, want < 2s", elapsed)
+		}
+	})
 }
