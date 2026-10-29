@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
 import { useSession } from '@/features/auth/session-provider';
+import { purgeDeviceKeysOnRevoked } from '@/features/vault/device-store';
 import { useVault } from '@/features/vault/vault-provider';
 import { reauthPassword, type ReauthGrant } from '@/lib/api/auth';
 import {
@@ -29,6 +30,7 @@ export interface ResetVaultDialogProps {
   canChangePassphraseNow: boolean;
   onSwitchToChangePassphrase?: () => void;
   onSuccessToast?: (message: string) => void;
+  onBeforeResetCommit?: () => void;
 }
 
 type ResetStep =
@@ -54,9 +56,10 @@ export function ResetVaultDialog({
   canChangePassphraseNow,
   onSwitchToChangePassphrase,
   onSuccessToast,
+  onBeforeResetCommit,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
-  const { reauth, refetchMe } = useSession();
+  const { me, reauth, refetchMe } = useSession();
   const vault = useVault();
 
   const [step, setStep] = useState<ResetStep>('s1_paths');
@@ -229,11 +232,19 @@ export function ResetVaultDialog({
       // and transition to s5_done right after lock before awaiting refetchMe().
       committedResetRef.current = true;
 
-      // R1-5 / ADR 0003 §6: Remembered DevKey records in `sabk.device` are purged in ONE readwrite tx (+ incarnation rotation)
-      // by VaultProvider's `reloadVaultMeta()` -> `404 vault_absent` transition triggered when `notifyVaultChanged({ version: null })`
-      // clears `vaultMeta` below (do not call `purgeDeviceKeysOnRevoked` here as well, which would run a duplicate purge in the acting tab).
+      // R3-1 / R1-5 / ADR 0003 §3 item 7 & §6: ResetVaultDialog is the single acting-tab owner of
+      // the `sabk.device` readwrite DevKey purge (+ incarnation/deviceRevision rotation) on 204 DELETE /vault.
+      // Suppress VaultSecurityPanel's passive `vaultMeta === null` reload effect BEFORE `notifyVaultChanged`
+      // so `VaultProvider.reloadVaultMeta()` does not run a second 404 purge in the acting tab, and so
+      // the purge executes reliably even if the panel unmounts mid-DELETE, `GET /vault` fails non-404,
+      // or `refetchMe()` flips `me.vault.status` to `'absent'` first.
       // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
-      // On 204: lock locally, notifyVaultChanged so other tabs lock (their reload gets 404), and refresh Me so provider/guard move to absent -> onboarding.
+      onBeforeResetCommit?.();
+      try {
+        await purgeDeviceKeysOnRevoked(me?.user.id);
+      } catch {
+        // Best-effort DevKey purge after 204
+      }
       try {
         await vault.lock({ broadcast: false, reason: 'vault_reset' });
       } catch {
@@ -255,7 +266,7 @@ export function ResetVaultDialog({
         // Best-effort Me refresh after 204
       }
     },
-    [clearInputs, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
+    [clearInputs, me?.user.id, onBeforeResetCommit, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
   );
 
   const handleConfirmReset = useCallback(async () => {
@@ -376,7 +387,7 @@ export function ResetVaultDialog({
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
                     {t('reset.path1Label', { passkeys: passkeysCount })}
                   </span>
-                  {/* prefetch off until the vaultweb T17A sync lands this route */}
+                  {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
                   <Link
                     href="/app/unlock"
                     prefetch={false}
@@ -389,10 +400,11 @@ export function ResetVaultDialog({
                 <div className="flex flex-wrap items-center gap-3 rounded-md bg-surface p-3">
                   <span className="mono text-muted">2</span>
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
-                    {t('reset.path2Label', {
-                      remaining: remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining'),
-                    })}
+                    {remainingRecoveryKeys !== null
+                      ? t('reset.path2Label', { remaining: remainingRecoveryKeys })
+                      : t('reset.path2LabelUnknown')}
                   </span>
+                  {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
                   <Link
                     href="/app/recovery"
                     prefetch={false}
@@ -407,6 +419,7 @@ export function ResetVaultDialog({
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
                     {t('reset.path3Label')}
                   </span>
+                  {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
                   <Link
                     href="/app/unlock"
                     prefetch={false}
@@ -415,7 +428,6 @@ export function ResetVaultDialog({
                     {t('reset.path3Action')}
                   </Link>
                 </div>
-
                 <div className="flex flex-wrap items-center gap-3 rounded-md bg-surface p-3">
                   <span className="mono text-muted">4</span>
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
@@ -435,6 +447,7 @@ export function ResetVaultDialog({
                       {t('reset.path4Action')}
                     </Button>
                   ) : (
+                    // TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route
                     <Link
                       href="/app/unlock"
                       prefetch={false}

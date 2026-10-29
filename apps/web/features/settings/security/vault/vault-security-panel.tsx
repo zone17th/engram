@@ -39,6 +39,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const [rkDialogMode, setRkDialogMode] = useState<RecoveryKeysDialogMode | null>(null);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [vaultMetaLoadFailed, setVaultMetaLoadFailed] = useState(false);
 
   const isVaultPresent = me?.vault.status === 'present';
   const isVaultUnlocked = vault.workerState === 'unlocked';
@@ -48,16 +49,15 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const refetchMeRef = useRef(refetchMe);
   refetchMeRef.current = refetchMe;
   const nullTransitionRef = useRef(false);
+  const suppressNextNullReloadRef = useRef(false);
 
-  // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
-  // TODO(sync-vaultweb): remove when the provider calls refetchMe() on vault_changed{version:null}
-  useEffect(() => {
-    if (!isVaultPresent || vault.vaultMeta !== null) {
-      nullTransitionRef.current = false;
-      return;
-    }
-    if (nullTransitionRef.current) return;
+  const handleBeforeResetCommit = useCallback(() => {
+    suppressNextNullReloadRef.current = true;
+  }, []);
+
+  const handleRetryVaultMetaReload = useCallback(() => {
     nullTransitionRef.current = true;
+    setVaultMetaLoadFailed(false);
     void vault
       .reloadVaultMeta()
       .then((loaded) => {
@@ -65,9 +65,39 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           void refetchMeRef.current().catch(() => undefined);
         }
       })
-      .catch(() => undefined);
-  }, [isVaultPresent, vault]);
+      .catch(() => {
+        nullTransitionRef.current = false;
+        setVaultMetaLoadFailed(true);
+      });
+  }, [vault]);
 
+  // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
+  // TODO(sync-vaultweb): remove when the provider calls refetchMe() on vault_changed{version:null}
+  useEffect(() => {
+    if (!isVaultPresent || vault.vaultMeta !== null) {
+      nullTransitionRef.current = false;
+      if (!isVaultPresent) {
+        suppressNextNullReloadRef.current = false;
+      }
+      setVaultMetaLoadFailed(false);
+      return;
+    }
+    if (suppressNextNullReloadRef.current) return;
+    if (nullTransitionRef.current) return;
+    nullTransitionRef.current = true;
+    setVaultMetaLoadFailed(false);
+    void vault
+      .reloadVaultMeta()
+      .then((loaded) => {
+        if (loaded === null) {
+          void refetchMeRef.current().catch(() => undefined);
+        }
+      })
+      .catch(() => {
+        nullTransitionRef.current = false;
+        setVaultMetaLoadFailed(true);
+      });
+  }, [isVaultPresent, vault]);
   // Fetch detailed RK slot status only while the vault is unlocked AND `vaultMeta` carries a numeric
   // `recovery_keys_remaining` from the real OpenAPI `GET /vault` schema (F2: regenerating/rotating RK
   // requires an unlocked vault, and avoids hitting unmocked `/api/v1/vault/recovery-keys` while locked
@@ -136,7 +166,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
               </div>
               <p className="m-0 text-[13px] text-muted">{t('stateBanner.lockedBody')}</p>
             </div>
-            {/* prefetch off until the vaultweb T17A sync lands this route */}
+            {/* TODO(sync-vaultweb): remove prefetch={false} when the vaultweb T17A sync lands this route */}
             <Link
               href="/app/unlock?returnTo=%2Fapp%2Fsettings"
               prefetch={false}
@@ -324,19 +354,32 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           {t('reset.cardTitle')}
         </div>
         <p className="mb-4 text-[13px] text-muted">
-          {t('reset.cardBody', {
-            remaining: remainingKeys ?? t('recoveryKeys.unknownRemaining'),
-          })}
+          {remainingKeys !== null
+            ? t('reset.cardBody', { remaining: remainingKeys })
+            : t('reset.cardBodyUnknown')}
         </p>
-        <Button
-          type="button"
-          variant="danger"
-          disabled={resetDisabled}
-          data-open-dialog="resetDlg"
-          onClick={() => setResetDialogOpen(true)}
-        >
-          {t('reset.openButton')}
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            variant="danger"
+            disabled={resetDisabled}
+            data-open-dialog="resetDlg"
+            onClick={() => setResetDialogOpen(true)}
+          >
+            {t('reset.openButton')}
+          </Button>
+          {isVaultPresent && vault.vaultMeta === null && vaultMetaLoadFailed && (
+            <Button
+              type="button"
+              variant="tertiary"
+              size="sm"
+              data-testid="vault-meta-retry-button"
+              onClick={handleRetryVaultMetaReload}
+            >
+              {t('common.reloadVault')}
+            </Button>
+          )}
+        </div>
       </div>
 
       {toastMessage && (
@@ -378,6 +421,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         canChangePassphraseNow={!requiresUnlockedDisabled}
         onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
         onSuccessToast={setToastMessage}
+        onBeforeResetCommit={handleBeforeResetCommit}
       />
     </div>
   );

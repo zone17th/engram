@@ -468,11 +468,16 @@ export function RecoveryKeysDialog({
             description={
               isRotate
                 ? t('recoveryKeys.rotate.dialogDescription')
-                : t('recoveryKeys.regenerate.dialogDescription', {
-                    emptyCount: targetSlots.length,
-                    slotRange: slotRangeLabel,
-                    remaining: remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining'),
-                  })
+                : remainingRecoveryKeys !== null
+                  ? t('recoveryKeys.regenerate.dialogDescription', {
+                      emptyCount: targetSlots.length,
+                      slotRange: slotRangeLabel,
+                      remaining: remainingRecoveryKeys,
+                    })
+                  : t('recoveryKeys.regenerate.dialogDescriptionUnknown', {
+                      emptyCount: targetSlots.length,
+                      slotRange: slotRangeLabel,
+                    })
             }
             className="mb-4"
           />

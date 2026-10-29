@@ -474,17 +474,18 @@
         "policyTooShort": "Passphrase phải có ít nhất 12 ký tự.",
         "policyTooWeak": "Passphrase còn dễ đoán (cần điểm zxcvbn ≥ 3).",
         "preserveNote": "Sau khi đổi: {remaining} recovery key còn lại (kể cả bản in cũ) và {passkeys} passkey vẫn mở được vault bình thường. Thiết bị đã nhớ vẫn hợp lệ.",
+        "preserveNoteUnknown": "Sau khi đổi: các recovery key còn lại (kể cả bản in cũ) và {passkeys} passkey vẫn mở được vault bình thường. Thiết bị đã nhớ vẫn hợp lệ.",
         "submitButton": "Đổi passphrase",
         "submittingButton": "Đang đổi passphrase…",
         "doneStatus": "Đã đổi passphrase cho vault",
         "doneBody": "Khoá bọc wrapK đã cập nhật với salt mới. {remaining} recovery key còn lại (kể cả bản in cũ) và {passkeys} passkey vẫn mở được vault. Bạn có muốn đăng xuất các phiên đăng nhập khác không?",
+        "doneBodyUnknown": "Khoá bọc wrapK đã cập nhật với salt mới. Các recovery key còn lại (kể cả bản in cũ) và {passkeys} passkey vẫn mở được vault. Bạn có muốn đăng xuất các phiên đăng nhập khác không?",
         "signOutOthersButton": "Đăng xuất phiên khác",
         "toastUpdated": "Đã đổi passphrase"
       },
       "recoveryKeys": {
         "cardTitle": "Recovery key",
         "remainingBadge": "còn {remaining}/{slots}",
-        "unknownRemaining": "chưa rõ",
         "statusLoading": "Đang tải trạng thái recovery key…",
         "statusUnavailable": "Không tải được trạng thái",
         "statusErrorBody": "Không tải được trạng thái recovery key từ máy chủ.",
@@ -508,6 +509,7 @@
         "regenerate": {
           "dialogTitle": "Tạo bù recovery key",
           "dialogDescription": "Chỉ sinh key mới cho {emptyCount} slot đang trống ({slotRange}), từ slot nhỏ nhất. {remaining} key còn lại giữ nguyên và không hiện lại.",
+          "dialogDescriptionUnknown": "Chỉ sinh key mới cho {emptyCount} slot đang trống ({slotRange}), từ slot nhỏ nhất. Các key hiện có giữ nguyên và không hiện lại.",
           "reauthBody": "Xác nhận tài khoản trước khi Worker sinh recovery key mới cho các slot trống.",
           "ackCheckbox": "Tôi đã lưu các recovery key mới này ở nơi an toàn, ngoài trình duyệt đang dùng.",
           "submitButton": "Xong",
@@ -527,6 +529,7 @@
       "reset": {
         "cardTitle": "Đặt lại vault",
         "cardBody": "Xoá vĩnh viễn nội dung mọi entry trên máy chủ và đặt lại vault. Tên mục và tag được giữ nguyên. Chỉ dùng khi passphrase, {remaining} recovery key còn lại, passkey, thiết bị đã nhớ và bản backup đều không mở được.",
+        "cardBodyUnknown": "Xoá vĩnh viễn nội dung mọi entry trên máy chủ và đặt lại vault. Tên mục và tag được giữ nguyên. Chỉ dùng khi passphrase, các recovery key còn lại (chưa tải được trạng thái), passkey, thiết bị đã nhớ và bản backup đều không mở được.",
         "openButton": "Đặt lại vault",
         "dialogTitle": "Đặt lại vault",
         "dialogDescription": "Thao tác cuối cùng khi mọi đường mở khoá đều không còn: xoá vĩnh viễn nội dung mọi entry trên máy chủ, giữ nguyên tên mục và tag.",
@@ -534,6 +537,7 @@
         "path1Label": "Passkey — ({passkeys} đã đăng ký)",
         "path1Action": "Thử",
         "path2Label": "Recovery key — còn {remaining}/10 key dùng được",
+        "path2LabelUnknown": "Recovery key — chưa tải được số key còn lại",
         "path2Action": "Thử",
         "path3Label": "Thiết bị đã nhớ — trình duyệt hoặc máy khác đang nhớ",
         "path3Action": "Thử",

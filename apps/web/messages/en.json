@@ -474,17 +474,18 @@
         "policyTooShort": "Passphrase must be at least 12 characters.",
         "policyTooWeak": "Passphrase is too easy to guess (requires score ≥ 3).",
         "preserveNote": "After changing: your {remaining} remaining recovery keys (including old printouts) and {passkeys} passkeys still unlock the vault. Remembered devices stay valid.",
+        "preserveNoteUnknown": "After changing: your remaining recovery keys (including old printouts) and {passkeys} passkeys still unlock the vault. Remembered devices stay valid.",
         "submitButton": "Change passphrase",
         "submittingButton": "Updating passphrase…",
         "doneStatus": "Vault passphrase updated",
         "doneBody": "The passphrase wrap (wrapK) was updated with a new salt. Your {remaining} remaining recovery keys (including old printouts) and {passkeys} passkeys still work. Would you also like to sign out other sessions?",
+        "doneBodyUnknown": "The passphrase wrap (wrapK) was updated with a new salt. Your remaining recovery keys (including old printouts) and {passkeys} passkeys still work. Would you also like to sign out other sessions?",
         "signOutOthersButton": "Sign out other sessions",
         "toastUpdated": "Vault passphrase updated"
       },
       "recoveryKeys": {
         "cardTitle": "Recovery keys",
         "remainingBadge": "{remaining} of {slots} left",
-        "unknownRemaining": "unknown",
         "statusLoading": "Loading recovery key status…",
         "statusUnavailable": "Status unavailable",
         "statusErrorBody": "Could not load recovery key status from the server.",
@@ -508,6 +509,7 @@
         "regenerate": {
           "dialogTitle": "Regenerate missing recovery keys",
           "dialogDescription": "Generates new keys only for the {emptyCount} empty slots ({slotRange}), lowest slot first. Your {remaining} existing keys stay unchanged and are never shown again.",
+          "dialogDescriptionUnknown": "Generates new keys only for the {emptyCount} empty slots ({slotRange}), lowest slot first. Your existing keys stay unchanged and are never shown again.",
           "reauthBody": "Confirm your account before the Worker generates new recovery keys for the empty slots.",
           "ackCheckbox": "I have saved these new recovery keys in a safe place outside this browser.",
           "submitButton": "Done",
@@ -527,6 +529,7 @@
       "reset": {
         "cardTitle": "Reset vault",
         "cardBody": "Permanently deletes all entry contents on the server and resets the vault. Item names and tags are kept. Use only after checking passkeys, your {remaining} remaining recovery keys, remembered devices, open sessions, and backups.",
+        "cardBodyUnknown": "Permanently deletes all entry contents on the server and resets the vault. Item names and tags are kept. Use only after checking passkeys, your remaining recovery keys (status unavailable), remembered devices, open sessions, and backups.",
         "openButton": "Reset vault",
         "dialogTitle": "Reset vault",
         "dialogDescription": "Last resort when all unlock paths are lost: permanently deletes all encrypted entry contents on the server while keeping item names and tags.",
@@ -534,6 +537,7 @@
         "path1Label": "Passkeys — ({passkeys} registered)",
         "path1Action": "Try",
         "path2Label": "Recovery keys — ({remaining} of 10 left)",
+        "path2LabelUnknown": "Recovery keys — (remaining count unavailable)",
         "path2Action": "Try",
         "path3Label": "Remembered device — another browser or machine that remembers this vault",
         "path3Action": "Try",

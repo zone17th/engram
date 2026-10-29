@@ -435,11 +435,9 @@ export function ChangePassphraseDialog({
   const isStrong = Boolean(policyResult?.meetsMinScore && policyResult?.meetsMinLength);
   const isDistinctFromLogin = Boolean(
     newPassphrase.length > 0 &&
-      (loginPassword.length === 0 ||
-        newPassphrase.normalize('NFC') !== loginPassword.normalize('NFC')),
+      loginPassword.length > 0 &&
+      newPassphrase.normalize('NFC') !== loginPassword.normalize('NFC'),
   );
-  const remainingLabel = remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining');
-
   return (
     <Dialog
       open={open}
@@ -605,10 +603,14 @@ export function ChangePassphraseDialog({
 
                   <div className="mb-5 rounded-md bg-surface p-3.5">
                     <p className="m-0 text-[13px] text-body">
-                      {t('passphrase.preserveNote', {
-                        remaining: remainingLabel,
-                        passkeys: passkeysCount,
-                      })}
+                      {remainingRecoveryKeys !== null
+                        ? t('passphrase.preserveNote', {
+                            remaining: remainingRecoveryKeys,
+                            passkeys: passkeysCount,
+                          })
+                        : t('passphrase.preserveNoteUnknown', {
+                            passkeys: passkeysCount,
+                          })}
                     </p>
                   </div>
                 </>
@@ -791,10 +793,14 @@ export function ChangePassphraseDialog({
                   {t('passphrase.doneStatus')}
                 </AuthStatus>
                 <p className="m-0 mb-3 text-[13px] text-body">
-                  {t('passphrase.doneBody', {
-                    remaining: remainingLabel,
-                    passkeys: passkeysCount,
-                  })}
+                  {remainingRecoveryKeys !== null
+                    ? t('passphrase.doneBody', {
+                        remaining: remainingRecoveryKeys,
+                        passkeys: passkeysCount,
+                      })
+                    : t('passphrase.doneBodyUnknown', {
+                        passkeys: passkeysCount,
+                      })}
                 </p>
                 {onOpenSignOutOthers && (
                   <Button
