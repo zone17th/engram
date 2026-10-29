@@ -1168,6 +1168,12 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     /** GET /vault answers this vault (a replacement vault B) instead of the recovered one. */
     vaultMetaOverride: VaultState | null;
     vaultGets: number;
+    /** Holds the next N GET /vault requests; each held GET answers the body it saw when it was requested. */
+    vaultGetHolds: number;
+    vaultGetReleases: Array<() => void>;
+    /** Answers every GET /vault (held ones at release time) with this failure instead of metadata. */
+    vaultGetFailure: 'network' | { status: number; code: string } | null;
+    completeIfMatches: Array<string | null>;
     vaultVersion: number;
     completeCalls: number;
     regenCalls: number;
@@ -1195,6 +1201,10 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       regenReauthReleases: [],
       vaultMetaOverride: null,
       vaultGets: 0,
+      vaultGetHolds: 0,
+      vaultGetReleases: [],
+      vaultGetFailure: null,
+      completeIfMatches: [],
       vaultVersion: 1,
       completeCalls: 0,
       regenCalls: 0,
@@ -1233,7 +1243,20 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       }
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
         state.vaultGets += 1;
-        return jsonResponse(state.vaultMetaOverride ?? makeVaultMetaFixture(state.vaultVersion));
+        const metaAtRequest = state.vaultMetaOverride ?? makeVaultMetaFixture(state.vaultVersion);
+        if (state.vaultGetHolds > 0) {
+          state.vaultGetHolds -= 1;
+          await new Promise<void>((resolve) => {
+            state.vaultGetReleases.push(resolve);
+          });
+        }
+        if (state.vaultGetFailure === 'network') {
+          throw new TypeError('network down');
+        }
+        if (state.vaultGetFailure) {
+          return problemResponse(state.vaultGetFailure.status, state.vaultGetFailure.code);
+        }
+        return jsonResponse(metaAtRequest);
       }
       if (url.endsWith('/vault/unlock/recovery') && init?.method === 'POST') {
         state.lookupPosts += 1;
@@ -1251,6 +1274,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       }
       if (url.endsWith('/vault/recover/complete') && init?.method === 'POST') {
         state.completeCalls += 1;
+        state.completeIfMatches.push(new Headers(init.headers).get('If-Match'));
         if (state.holdComplete) {
           await new Promise<void>((resolve) => {
             state.completeReleases.push(resolve);
@@ -2673,4 +2697,77 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       shim.close();
     }, 30_000);
   }
+
+  it('BE4-4: a completion A released with an error while the hard-locked successor B completion POST is pending keeps B busy; a forced submit sends nothing and only B settling releases it', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToHeldComplete(fetchState);
+
+    // A hard lock retires completion A; the form is usable again and successor B reaches its own held completion POST.
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
+    });
+    await submitRecoveryStep2();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    await waitFor(() => {
+      expect(fetchState.completeReleases).toHaveLength(2);
+    });
+    expect(fetchState.completeCalls).toBe(2);
+    expect(vaultCtx.workerState).toBe('recovering');
+    expect(screen.getByTestId('recovery-step3-submit')).toBeDisabled();
+
+    // Completion A now returns with an ERROR while B is pending: its finalizer must not release B's busy state.
+    fetchState.completeProblem = { status: 503, code: 'vault_mutations_disabled' };
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await settle();
+    fetchState.completeProblem = null;
+    expect(screen.getByTestId('recovery-step3-submit')).toBeDisabled();
+    expect(screen.getByTestId('recovery-new-passphrase-input')).toBeDisabled();
+    expect(screen.getByTestId('recovery-confirm-passphrase-input')).toBeDisabled();
+    // A's obsolete error is not rendered for B either.
+    expect(screen.queryByTestId('recovery-error-mutations-disabled')).not.toBeInTheDocument();
+
+    // A forced submit (Enter key / form submit) while B is pending sends no third completion request.
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('recovery-new-passphrase-input').closest('form')!);
+    });
+    await settle();
+    expect(fetchState.completeCalls).toBe(2);
+    expect(screen.getByTestId('recovery-step3-submit')).toBeDisabled();
+
+    // Only B's own settlement releases it and carries the flow to Step 4A.
+    await act(async () => {
+      fetchState.completeReleases[1]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    });
+    expect(fetchState.completeCalls).toBe(2);
+    expect(vaultCtx.state).toBe('unlocked');
+
+    shim.close();
+  }, 30_000);
 });
