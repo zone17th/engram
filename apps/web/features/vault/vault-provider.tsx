@@ -10,8 +10,10 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { flushSync } from 'react-dom';
 import { useSession } from '@/features/auth/session-provider';
 import {
   ACTIVITY_BROADCAST_THROTTLE_MS,
@@ -241,7 +243,13 @@ export interface VaultContextValue {
   rewrap: (params: RewrapClientParams) => Promise<RewrapResult>;
 }
 
-const VaultContext = createContext<VaultContextValue | null>(null);
+interface VaultStoreContextValue {
+  value: VaultContextValue;
+  subscribe: (listener: () => void) => () => void;
+  getStateSnapshot: () => VaultStateMachineMode;
+}
+
+const VaultContext = createContext<VaultStoreContextValue | null>(null);
 
 export interface VaultProviderProps {
   children: ReactNode;
@@ -278,11 +286,14 @@ function clearDomSecretInputs(): void {
     inputs.forEach((el) => {
       el.value = '';
     });
+    const decryptedPreviews = document.querySelectorAll<HTMLElement>('[data-vault-decrypted]');
+    decryptedPreviews.forEach((el) => {
+      el.textContent = '[LOCKED]';
+    });
   } catch {
     // Ignore DOM traversal errors
   }
 }
-
 export function deriveVaultStateMachineMode(input: {
   serverVaultStatus: 'absent' | 'present';
   workerState: VaultClientState;
@@ -378,6 +389,16 @@ export function VaultProvider({
   currentUserIdRef.current = me?.user.id ?? null;
   const previousUserIdRef = useRef<string | null>(null);
   const secretFormResettersRef = useRef<Set<() => void>>(new Set());
+  const storeListenersRef = useRef<Set<() => void>>(new Set());
+  const notifyStoreListeners = useCallback(() => {
+    for (const listener of [...storeListenersRef.current]) {
+      try {
+        listener();
+      } catch {
+        // Ignore listener errors
+      }
+    }
+  }, []);
   const lastActivityAtRef = useRef<number>(Date.now());
   const lastBroadcastedActivityAtRef = useRef<number>(0);
   const autoLockMinutesRef = useRef<number>(normalizeAutoLockMinutes(me?.settings.auto_lock_minutes));
@@ -454,13 +475,15 @@ export function VaultProvider({
             activeOperationRef.current = null;
             setActiveOperation(null);
             clearPlaintextAndFormsSync();
+            notifyStoreListeners();
           }
+          notifyStoreListeners();
         },
       });
       clientRef.current = instance;
     }
     return clientRef.current;
-  }, [clearPlaintextAndFormsSync]);
+  }, [clearPlaintextAndFormsSync, notifyStoreListeners]);
 
   const envWithBroadcast = useMemo<LockEpochEnvironment>(
     () => ({
@@ -497,12 +520,13 @@ export function VaultProvider({
     setBaselineVerified(false);
     setActiveOperation(null);
     clearPlaintextAndFormsSync();
+    notifyStoreListeners();
     const client = getClient();
     const lockPromise = client.lock();
     setGeneration(client.getGeneration());
     setEpoch(client.getEpoch());
     return lockPromise;
-  }, [clearPlaintextAndFormsSync, getClient]);
+  }, [clearPlaintextAndFormsSync, getClient, notifyStoreListeners]);
 
   /**
    * Full lock operation:
@@ -819,7 +843,7 @@ export function VaultProvider({
         setWakeVerifyingCount(0);
         baselineVerifiedRef.current = false;
         setBaselineVerified(false);
-
+        notifyStoreListeners();
         if (baselineMode === 'require_existing') {
           if (!existingBaseline) {
             // BE2-6: confirmRecovery / resumeRecovery must NEVER recapture a fresh baseline when missing; fail closed
@@ -946,6 +970,7 @@ export function VaultProvider({
           setWakeVerifyingCount(0);
           setUnlockBaseline(capturedBaseline);
           setBaselineVerified(true);
+          notifyStoreListeners();
           const unlockedAt = Date.now();
           lastActivityAtRef.current = Math.max(lastActivityAtRef.current, unlockedAt);
           setLastActivityAt(lastActivityAtRef.current);
@@ -972,9 +997,10 @@ export function VaultProvider({
           activeOperationRef.current = null;
         }
         setActiveOperation((current) => (current === opKind ? null : current));
+        notifyStoreListeners();
       }
     },
-    [envWithBroadcast, getClient, lockLocalOnly, updateTabKnownLockEpoch],
+    [envWithBroadcast, getClient, lockLocalOnly, notifyStoreListeners, updateTabKnownLockEpoch],
   );
 
   const createVaultOp = useCallback(
@@ -1432,14 +1458,31 @@ export function VaultProvider({
         };
 
         try {
-          // Gate plaintext access immediately while wake verification (Web Lock / IDB + Me) is pending
+          // VS-R7-1: Gate plaintext access synchronously on wake (before any async await or next paint):
+          // 1. Update ref-backed gate state and notify useSyncExternalStore subscribers.
+          // 2. Synchronously purge decrypted entry body cache (`['vault', 'body', ...]`), clear `[data-vault-secret]`
+          //    inputs and `[data-vault-decrypted]` nodes, and run registered secret form resetters so no decrypted
+          //    plaintext remains in the DOM even on a heavy page.
+          // 3. Flush state updates synchronously via flushSync when outside render.
           wakeVerifyingCountRef.current += 1;
-          setWakeVerifyingCount(wakeVerifyingCountRef.current);
           if (initialWorkerState === 'unlocked') {
             baselineVerifiedRef.current = false;
-            setBaselineVerified(false);
           }
-
+          clearPlaintextAndFormsSync();
+          notifyStoreListeners();
+          try {
+            flushSync(() => {
+              setWakeVerifyingCount(wakeVerifyingCountRef.current);
+              if (initialWorkerState === 'unlocked') {
+                setBaselineVerified(false);
+              }
+            });
+          } catch {
+            setWakeVerifyingCount(wakeVerifyingCountRef.current);
+            if (initialWorkerState === 'unlocked') {
+              setBaselineVerified(false);
+            }
+          }
           // BE2-2: Use a standard Promise constructor (never Promise.withResolvers) inside the fail-closed try/finally
           // so older Safari/Chrome runtimes or any setup error always enter catch/finally and lock fail-closed.
           let timedOut = false;
@@ -1541,7 +1584,7 @@ export function VaultProvider({
           baselineVerifiedRef.current = true;
           setBaselineVerified(true);
           setMinutesLeft(afterMeEval.minutesLeft);
-          // Now that wake verification succeeded, advance the idle watermark to the wake event time
+          notifyStoreListeners();
           const postWakeNow = Date.now();
           if (postWakeNow > lastActivityAtRef.current) {
             lastActivityAtRef.current = postWakeNow;
@@ -1562,6 +1605,7 @@ export function VaultProvider({
           wakeVerifyingCountRef.current = 0;
           wakePreIdleAtRef.current = null;
           setWakeVerifyingCount(0);
+          notifyStoreListeners();
         }
       }
       };
@@ -1627,6 +1671,7 @@ export function VaultProvider({
     getClient,
     lock,
     lockLocalOnly,
+    notifyStoreListeners,
     refetchMe,
     updateTabKnownLockEpoch,
   ]);
@@ -1811,19 +1856,66 @@ export function VaultProvider({
       }
     };
   }, [queryClient, value]);
+  const subscribeStore = useCallback((listener: () => void) => {
+    storeListenersRef.current.add(listener);
+    return () => {
+      storeListenersRef.current.delete(listener);
+    };
+  }, []);
 
-  return <VaultContext.Provider value={value}>{children}</VaultContext.Provider>;
+  const getLiveStateSnapshot = useCallback(
+    (): VaultStateMachineMode =>
+      deriveVaultStateMachineMode({
+        serverVaultStatus: serverVaultStatusRef.current,
+        workerState: workerStateRef.current,
+        activeOperation: activeOperationRef.current,
+        baselineVerified: baselineVerifiedRef.current,
+        wakeVerifying: wakeVerifyingCountRef.current > 0,
+      }),
+    [],
+  );
+
+  const storeValue = useMemo(
+    () => ({
+      value,
+      subscribe: subscribeStore,
+      getStateSnapshot: getLiveStateSnapshot,
+    }),
+    [getLiveStateSnapshot, subscribeStore, value],
+  );
+
+  return <VaultContext.Provider value={storeValue}>{children}</VaultContext.Provider>;
 }
 
+const noopSubscribe = () => () => {};
+const defaultLockedSnapshot = (): VaultStateMachineMode => 'locked';
+
 export function useVault(): VaultContextValue {
-  const ctx = useContext(VaultContext);
-  if (!ctx) {
+  const store = useContext(VaultContext);
+  const liveState = useSyncExternalStore(
+    store ? store.subscribe : noopSubscribe,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+  );
+  if (!store) {
     throw new Error('useVault must be used within a VaultProvider');
   }
-  return ctx;
+  return useMemo(
+    () => (store.value.state === liveState ? store.value : { ...store.value, state: liveState }),
+    [liveState, store.value],
+  );
 }
 
 /** Optional hook for components that may render outside `VaultProvider` (e.g. standalone unit tests). */
 export function useOptionalVault(): VaultContextValue | null {
-  return useContext(VaultContext);
+  const store = useContext(VaultContext);
+  const liveState = useSyncExternalStore(
+    store ? store.subscribe : noopSubscribe,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+  );
+  return useMemo(() => {
+    if (!store) return null;
+    return store.value.state === liveState ? store.value : { ...store.value, state: liveState };
+  }, [liveState, store]);
 }
