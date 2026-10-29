@@ -6,7 +6,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import type { UseReauthReturn } from '@/features/auth/use-reauth';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
-import type { LockEpochEnvironment } from '@/features/vault/lock-epoch';
+import { recordLockEpochEvent, type LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { VaultRecoveryFlow } from '@/features/vault/recovery';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
@@ -270,6 +270,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
   function renderRecovery(options?: {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
+    lockEpochEnv?: LockEpochEnvironment;
     onVaultProbe?: (ctx: VaultContextValue) => void;
     onReauthProbe?: (reauth: UseReauthReturn) => void;
   }) {
@@ -278,7 +279,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const lockEpochEnv = makeSimpleLockEpochEnv();
+    const lockEpochEnv = options?.lockEpochEnv ?? makeSimpleLockEpochEnv();
 
     function Probe() {
       const v = useVault();
@@ -1103,4 +1104,236 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     unmount();
     shim.close();
   }, 20_000);
+
+  it('BE2-3, BE2-4, BE2-11 & BE2-12: sibling durable lock during recovery lookup fails closed, held wake verification on Step 4 gates decrypted recovery keys and worker makeRecoveryKeys, and route leave or late responses never promote/retain recovery secrets', async () => {
+    const shim = makeTestShim();
+    let holdLookup = true;
+    let resolveLookup: (() => void) | null = null;
+    let vaultVersion = 1;
+    let regenCallsCount = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) {
+        return jsonResponse(makeMeFixture({ hasPassword: true }));
+      }
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body ?? '{}')) as { action: string };
+        return jsonResponse({
+          grant: `grant-${body.action}-token`,
+          action: body.action,
+          expires_at: futureIso(300),
+        });
+      }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(makeVaultMetaFixture(vaultVersion));
+      }
+      if (url.endsWith('/vault/unlock/recovery') && init?.method === 'POST') {
+        if (holdLookup) {
+          await new Promise<void>((resolve) => {
+            resolveLookup = resolve;
+          });
+        }
+        return jsonResponse({
+          recovery_key_id: 'rk-id-slot-1',
+          slot: 1,
+          wrap: TEST_VECTOR_RK_WRAP,
+        });
+      }
+      if (url.endsWith('/vault/recover/complete') && init?.method === 'POST') {
+        vaultVersion = 2;
+        return jsonResponse({
+          vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
+          version: 2,
+          recovery_keys_remaining: 9,
+          empty_slots: [1],
+        });
+      }
+      if (url.endsWith('/vault/recovery-keys/regenerate') && init?.method === 'POST') {
+        regenCallsCount += 1;
+        vaultVersion = 3;
+        return jsonResponse({
+          version: 3,
+          recovery_keys_remaining: 10,
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const baseLockEpochEnv = makeSimpleLockEpochEnv();
+    let holdWakeVerify = false;
+    let releaseWakeVerify: (() => void) | null = null;
+    const lockEpochEnv: LockEpochEnvironment = {
+      idbFactory: baseLockEpochEnv.idbFactory,
+      locksManager: {
+        request: async (name: string, opts: unknown, cb: () => Promise<unknown>) => {
+          if (holdWakeVerify) {
+            holdWakeVerify = false;
+            await new Promise<void>((resolve) => {
+              releaseWakeVerify = resolve;
+            });
+          }
+          return baseLockEpochEnv.locksManager!.request(
+            name,
+            opts as LockOptions,
+            cb as LockGrantedCallback<unknown>,
+          );
+        },
+      } as unknown as LockManager,
+    };
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
+    });
+
+    // Step 1: Re-auth
+    fireEvent.change(screen.getByLabelText(/Account login password/i), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
+    });
+
+    // 1. BE2-3: Submit Step 2 recovery key -> beginUnlockOp captures durable lockEpoch baseline BEFORE lookup_hash / POST /vault/unlock/recovery.
+    // While POST /vault/unlock/recovery is in flight, a sibling tab locks and increments durable lockEpoch.
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    fireEvent.click(screen.getByTestId('recovery-key-submit'));
+
+    await waitFor(() => {
+      expect(resolveLookup).not.toBeNull();
+    });
+
+    // Sibling tab writes durable lockEpoch while recovery lookup is in flight!
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, baseLockEpochEnv);
+    });
+
+    // Release POST /vault/unlock/recovery -> resumeRecovery reuses the pre-lookup baseline and MUST reject with STALE_GENERATION + lockLocalOnly (never entering Step 3 or recovering)
+    await act(async () => {
+      holdLookup = false;
+      resolveLookup?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
+    });
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+    expect(screen.queryByTestId('recovery-step-new-passphrase')).not.toBeInTheDocument();
+
+    // 2. Now proceed through Step 2 & Step 3 cleanly to Step 4 (`regenerate-reauth` -> `regenerate-keys`)
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    expect(vaultCtx.state).toBe('recovering');
+
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    });
+    expect(vaultCtx.state).toBe('unlocked');
+
+    // BE2-4 Case A: While on Step 4A (`regenerate-reauth`), trigger a wake event whose lockEpoch verification is held (`vault.state === 'unlocking'`).
+    // Attempting to submit Step 4A re-auth while `vault.state !== 'unlocked'` MUST NOT invoke Worker `makeRecoveryKeys` or advance to `regenerate-keys`!
+    holdWakeVerify = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(vaultCtx.state).toBe('unlocking');
+
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+    });
+    // Because vault.state was 'unlocking' (unverified), prepareRegenerateKeys refused to call Worker makeRecoveryKeys or advance to regenerate-keys
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+
+    // Release wake verification -> state returns to 'unlocked'
+    await act(async () => {
+      releaseWakeVerify?.();
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('unlocked');
+    });
+
+    // Now submit Step 4A while verified unlocked -> advances to Step 4B (`regenerate-keys`) showing the replacement recovery key
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+
+    // BE2-4 Case B: While on Step 4B (`regenerate-keys`), trigger a held wake verification (`vault.state === 'unlocking'`).
+    // The replacement recovery key sheet MUST immediately hide while `vault.state !== 'unlocked'`!
+    holdWakeVerify = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(vaultCtx.state).toBe('unlocking');
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-key-slot-1')).not.toBeInTheDocument();
+
+    // Release wake verification -> Step 4B replacement recovery key sheet reappears once verified unlocked
+    await act(async () => {
+      releaseWakeVerify?.();
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('unlocked');
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+
+    // Save replacement recovery key -> completes and navigates to /app
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-save-button'));
+    });
+    await waitFor(() => {
+      expect(regenCallsCount).toBe(1);
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    });
+
+    shim.close();
+  }, 25_000);
 });

@@ -3695,4 +3695,366 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(vaultSecretInput.value).toBe('');
     expect(vaultSecretTextarea.value).toBe('');
   });
+
+  it('BE2-2, BE2-6, BE2-7, BE2-9 & VS-R7-1: overlapping wake/recovery verification preserves verifying gate, fails closed on 5s deadline, fences stale reset purge, and bridges reactive state', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+
+    const currentMe = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 0 });
+    let holdMe = false;
+    let resolveMe: (() => void) | null = null;
+    const currentVaultVersion = 2;
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) {
+        if (holdMe) {
+          await new Promise<void>((resolve) => {
+            resolveMe = resolve;
+          });
+        }
+        return jsonResponse(currentMe);
+      }
+      if (u.endsWith('/vault')) {
+        return jsonResponse({
+          vault_key_id: 'vk:be2-overlap',
+          version: currentVaultVersion,
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67108864,
+            parallelism: 1,
+            salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
+          },
+          vault_key_wrapped_by_kek: 'd3JhcHBlZC12aw',
+          x25519_public: 'eDI1NTE5LXB1Yg',
+          ed25519_public: 'ZWQyNTUxOS1wdWI',
+          private_keys_wrapped: 'd3JhcHBlZC1wcml2',
+          recovery_keys_remaining: 10,
+        });
+      }
+      return jsonResponse({});
+    });
+
+    let holdVerifyCount = 0;
+    const pendingVerifies: Array<() => void> = [];
+    const idbFactory = fakeIdb.createFactory();
+    const baseLockManager = fakeLocks.createLockManager();
+    const gatedLockManager: LockManager = {
+      request(
+        name: string,
+        optionsOrCallback: LockOptions | LockGrantedCallback<unknown>,
+        maybeCallback?: LockGrantedCallback<unknown>,
+      ): Promise<unknown> {
+        const cb =
+          typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
+        if (holdVerifyCount > 0) {
+          holdVerifyCount -= 1;
+          return new Promise<void>((resolve) => {
+            pendingVerifies.push(resolve);
+          }).then(() => baseLockManager.request(name, { mode: 'exclusive' }, cb));
+        }
+        return baseLockManager.request(name, { mode: 'exclusive' }, cb);
+      },
+      query: () => Promise.resolve({ held: [], pending: [] }),
+    } as unknown as LockManager;
+
+    const lockEpochEnv: LockEpochEnvironment = {
+      idbFactory,
+      locksManager: gatedLockManager,
+    };
+
+    let vaultCtx!: VaultContextValue;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function Probe() {
+      vaultCtx = useVault();
+      const bodyQuery = useQuery({
+        queryKey: vaultBodyQueryKey('be2-overlap-entry'),
+        queryFn: () => 'be2-overlap-decrypted-secret',
+        enabled: vaultCtx.state === 'unlocked',
+      });
+      return (
+        <div>
+          <output data-testid="be2-overlap-state">{vaultCtx.state}</output>
+          <output data-testid="be2-overlap-worker">{vaultCtx.workerState}</output>
+          <output data-testid="be2-overlap-body">
+            {vaultCtx.state === 'unlocked' && bodyQuery.data ? bodyQuery.data : 'locked-surface'}
+          </output>
+        </div>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={lockEpochEnv}
+            deviceStoreEnv={{ idbFactory }}
+          >
+            <Probe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('locked');
+    });
+
+    const op1 = vaultCtx.beginOp();
+    let created!: CreateVaultResult;
+    await act(async () => {
+      created = await vaultCtx.createVault({
+        passphrase: 'be2-overlap-passphrase-1234',
+        opGeneration: op1.opGeneration,
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('unlocked');
+      expect(screen.getByTestId('be2-overlap-body')).toHaveTextContent(
+        'be2-overlap-decrypted-secret',
+      );
+    });
+
+    // VS-R7-1: window.__engramVaultTestBridge exposes reactive getters matching live provider state
+    const winBridge = (
+      window as unknown as {
+        __engramVaultTestBridge?: VaultContextValue;
+      }
+    ).__engramVaultTestBridge;
+    expect(winBridge).toBeDefined();
+    expect(winBridge?.state).toBe('unlocked');
+
+    // 1. BE2-6: Trigger two overlapping wake events (`focus` then `pageshow`) where Verify #1 finishes while Verify #2 is still held.
+    // Plaintext MUST remain gated (`unlocking`) until Verify #2 also finishes.
+    holdVerifyCount = 2;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('pageshow'));
+    });
+    expect(pendingVerifies).toHaveLength(2);
+    expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('unlocking');
+    expect(winBridge?.state).toBe('unlocking');
+    expect(screen.getByTestId('be2-overlap-body')).toHaveTextContent('locked-surface');
+
+    // Release Verify #1 only -> Verify #2 is still pending, so state MUST remain 'unlocking' (never re-enabling plaintext early)
+    await act(async () => {
+      pendingVerifies.shift()?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pendingVerifies).toHaveLength(1);
+    expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('unlocking');
+    expect(screen.getByTestId('be2-overlap-body')).toHaveTextContent('locked-surface');
+
+    // Release Verify #2 -> both verifications and Me refreshes complete, returning to 'unlocked'
+    await act(async () => {
+      pendingVerifies.shift()?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('unlocked');
+      expect(screen.getByTestId('be2-overlap-body')).toHaveTextContent(
+        'be2-overlap-decrypted-secret',
+      );
+    });
+
+    // 2. BE2-7: A second wake event while Wake #1's Me refresh is already at 4s MUST NOT reset Wake #1's 5s fail-closed deadline.
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.setSystemTime(t0 + 10_000);
+    holdMe = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    // Advance 4s (1s before Wake #1's 5s deadline) and fire a second wake event (`pageshow`)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+      window.dispatchEvent(new Event('pageshow'));
+    });
+    // Advance 1.1s more (5.1s since Wake #1 started, only 1.1s since Wake #2) -> Wake #1's 5s deadline MUST fire and lock fail-closed!
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_100);
+    });
+    expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('locked');
+    expect(winBridge?.state).toBe('locked');
+    holdMe = false;
+    const unblockMe: (() => void) | null = resolveMe;
+    if (unblockMe !== null) {
+      (unblockMe as () => void)();
+    }
+
+    // 3. BE2-2: While in `recovering`, a remote sibling lock increments durable `lockEpoch` and wake verification runs while `auto_lock_minutes === 0` (`Never`).
+    // Wake verification MUST run in `recovering`, detect the durable lockEpoch mismatch, and lock fail-closed!
+    vi.useRealTimers();
+    const rk0 = created.recovery_keys[0]!;
+    const opRec = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.unlockRecovery({
+        recoveryKey: rk0.display,
+        opGeneration: opRec.opGeneration,
+      });
+    });
+    await act(async () => {
+      await vaultCtx.resumeRecovery({
+        wrap: rk0.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opRec.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('recovering');
+    expect(screen.getByTestId('be2-overlap-worker')).toHaveTextContent('recovering');
+
+    // Sibling tab locks and increments durable lockEpoch while BroadcastChannel was missed
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, {
+        idbFactory,
+        locksManager: baseLockManager,
+      });
+    });
+    // Trigger wake while recovering -> wake verification runs in 'recovering' and locks immediately on lockEpoch mismatch!
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be2-overlap-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be2-overlap-worker')).toHaveTextContent('locked');
+    });
+  });
+
+  it('BE2-5, BE2-8 & BE1-8: concurrent state-changing operations keep baseline/inFlight fences alive and reloadVaultMeta forces fresh network fetch with currentVaultKeyIdRef updated from server responses', async () => {
+    let vaultVersion = 1;
+    let currentVaultKeyId = 'vk:be2-8-initial';
+    let getVaultNetworkCalls = 0;
+    const userId = '11111111-1111-1111-1111-111111111111';
+    const me = makeMeFixture({ userId, vaultStatus: 'present', autoLockMinutes: 15 });
+
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      if (u.endsWith('/vault')) {
+        getVaultNetworkCalls += 1;
+        return jsonResponse({
+          vault_key_id: currentVaultKeyId,
+          version: vaultVersion,
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67108864,
+            parallelism: 1,
+            salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
+          },
+          vault_key_wrapped_by_kek: 'd3JhcHBlZC12aw',
+          x25519_public: 'eDI1NTE5LXB1Yg',
+          ed25519_public: 'ZWQyNTUxOS1wdWI',
+          private_keys_wrapped: 'd3JhcHBlZC1wcml2',
+          recovery_keys_remaining: 10,
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const idbFactory = fakeIdb.createFactory();
+    const locksManager = fakeLocks.createLockManager();
+    const lockEpochEnv: LockEpochEnvironment = { idbFactory, locksManager };
+
+    let vaultCtx!: VaultContextValue;
+    const qc = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+          staleTime: 60_000, // Even with a 60s staleTime on QueryClient, reloadVaultMeta MUST force a fresh network GET /vault (BE1-8)
+        },
+      },
+    });
+    function Probe() {
+      vaultCtx = useVault();
+      return <output data-testid="be2-8-state">{vaultCtx.state}</output>;
+    }
+
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={lockEpochEnv}
+            deviceStoreEnv={{ idbFactory }}
+          >
+            <Probe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('be2-8-state')).toHaveTextContent('locked');
+    });
+    expect(getVaultNetworkCalls).toBe(1);
+
+    // BE1-8: Bump server version and call reloadVaultMeta() while cached query is still fresh under staleTime: 60_000.
+    // reloadVaultMeta MUST bypass stale cache and perform a fresh network GET /vault.
+    vaultVersion = 2;
+    let reloadedVersion: number | null = null;
+    await act(async () => {
+      const meta = await vaultCtx.reloadVaultMeta();
+      reloadedVersion = meta?.version ?? null;
+    });
+    expect(getVaultNetworkCalls).toBe(2);
+    expect(reloadedVersion).toBe(2);
+
+    // Seed DevKey for vk:be2-8-initial
+    const devkeysMap = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    devkeysMap.set(formatDevKeyRecordKey(userId, 'vk:be2-8-initial'), {
+      user_id: userId,
+      vault_key_id: 'vk:be2-8-initial',
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+
+    // BE2-8: Reset vault on server -> vault_changed { version: null } purges once for vk:be2-8-initial.
+    // Then server creates a new vault ONLY observed via GET /vault (`reloadVaultMeta`) without calling notifyVaultChanged({ vault_key_id }).
+    // A subsequent vault_changed { version: null } for the new vault MUST NOT be suppressed by resetPurgedVaultKeyIdRef!
+    const remotePeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      remotePeer.postMessage({ type: 'vault_changed', version: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const metaAfterFirstReset = await readDeviceMetaRecord({ idbFactory });
+    const revAfterFirstReset = metaAfterFirstReset?.deviceRevision ?? 0;
+    expect(revAfterFirstReset).toBeGreaterThanOrEqual(1);
+
+    // New vault created on another tab; this tab learns the new vault_key_id via reloadVaultMeta() (GET /vault)
+    currentVaultKeyId = 'vk:be2-8-second-vault';
+    vaultVersion = 1;
+    await act(async () => {
+      await vaultCtx.reloadVaultMeta();
+    });
+    expect(vaultCtx.vaultMeta?.vault_key_id).toBe('vk:be2-8-second-vault');
+
+    // Second reset happens -> must purge again and bump deviceRevision (not suppressed by first vault's purge latch!)
+    await act(async () => {
+      remotePeer.postMessage({ type: 'vault_changed', version: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const metaAfterSecondReset = await readDeviceMetaRecord({ idbFactory });
+    expect(metaAfterSecondReset?.deviceRevision).toBe(revAfterFirstReset + 1);
+    remotePeer.close();
+  });
 });

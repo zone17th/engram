@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
-import type { LockEpochEnvironment } from '@/features/vault/lock-epoch';
+import { recordLockEpochEvent, type LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { ForgotPassphraseView, VaultUnlockFlow } from '@/features/vault/unlock';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
@@ -357,6 +357,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
   function renderUnlock(options?: {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
+    lockEpochEnv?: LockEpochEnvironment;
     onVaultProbe?: (ctx: VaultContextValue) => void;
     view?: 'unlock' | 'forgot';
   }) {
@@ -365,7 +366,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const lockEpochEnv = makeSimpleLockEpochEnv();
+    const lockEpochEnv = options?.lockEpochEnv ?? makeSimpleLockEpochEnv();
     function Probe() {
       const v = useVault();
       const s = useSession();
@@ -865,5 +866,102 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     const backToUnlockLink = screen.getByTestId('forgot-bottom-back-link');
     expect(backToUnlockLink).toHaveAttribute('href', '/app/unlock');
     expect(screen.getByTestId('forgot-reauth-note')).toHaveTextContent(/vault\.recover/i);
+  }, 15_000);
+
+  it('BE2-1 & BE2-13: sibling durable lock during in-flight GET /vault on unlock fails closed on baseline mismatch (never reaching unlocked), and route leave during GET /vault aborts unlock', async () => {
+    let holdGetVault = true;
+    let resolveGetVault: (() => void) | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('present'));
+      if (url.endsWith('/vault')) {
+        if (holdGetVault) {
+          await new Promise<void>((resolve) => {
+            resolveGetVault = resolve;
+          });
+        }
+        return jsonResponse(makeVaultMetaFixture());
+      }
+      return jsonResponse({});
+    });
+
+    const lockEpochEnv = makeSimpleLockEpochEnv();
+    let vaultCtx!: VaultContextValue;
+    const { unmount } = renderUnlock({
+      locale: 'en',
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-vault-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+    });
+
+    // 1. BE2-1: Submit unlock -> beginUnlockOp captures durable lockEpoch baseline BEFORE awaiting GET /vault.
+    // While GET /vault is in flight, a sibling tab writes a durable lockEpoch increment (missed BroadcastChannel).
+    const passInput = screen.getByTestId('unlock-passphrase-input') as HTMLInputElement;
+    fireEvent.change(passInput, { target: { value: TEST_VECTOR_PASSPHRASE } });
+    fireEvent.click(screen.getByTestId('unlock-submit-button'));
+
+    await waitFor(() => {
+      expect(resolveGetVault).not.toBeNull();
+    });
+
+    // Sibling tab locks and increments durable lockEpoch while GET /vault is still in flight!
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, lockEpochEnv);
+    });
+
+    // Release GET /vault -> unlockPassphrase reuses the pre-GET baseline and MUST reject with STALE_GENERATION + lockLocalOnly (never reaching unlocked or navigating)
+    await act(async () => {
+      holdGetVault = false;
+      resolveGetVault?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-submit-button')).not.toBeDisabled();
+    });
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+
+    // 2. BE2-13: Submit unlock again while holding GET /vault, then unmount the unlock view before GET /vault settles.
+    // Unmounting MUST retire the unlock intent and never unlock the Worker or navigate when GET /vault later resolves.
+    resolveGetVault = null;
+    holdGetVault = true;
+    fireEvent.change(screen.getByTestId('unlock-passphrase-input'), {
+      target: { value: TEST_VECTOR_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('unlock-submit-button'));
+
+    await waitFor(() => {
+      expect(resolveGetVault).not.toBeNull();
+    });
+
+    // Leave the unlock route while GET /vault is still in flight
+    unmount();
+
+    // Release GET /vault after unmount -> Worker stays locked and router.replace is never called
+    await act(async () => {
+      holdGetVault = false;
+      resolveGetVault?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(vaultCtx.workerState).toBe('locked');
+    expect(routerMocks.replace).not.toHaveBeenCalled();
   }, 15_000);
 });

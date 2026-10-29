@@ -1302,4 +1302,96 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     const step2Heading = screen.getByRole('heading', { level: 1 });
     expect(step2Heading).toHaveFocus();
   });
+
+  it('BE2-10 & BE1-9: a failed second Copy all preserves the original 30-second clipboard expiry, and unmounting while POST /vault is in flight never navigates after completion', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let holdPostVault = true;
+    let resolvePostVault: (() => void) | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('absent'));
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPostVault) {
+          await new Promise<void>((resolve) => {
+            resolvePostVault = resolve;
+          });
+        }
+        return jsonResponse({ vault_key_id: 'vk:be2-10-created', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: writeTextSpy },
+      configurable: true,
+    });
+
+    const { unmount } = renderOnboarding({ locale: 'en' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // 1. BE2-10: First Copy all succeeds -> schedules 30-second clipboard clear
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(writeTextSpy).toHaveBeenCalledTimes(1);
+    expect(writeTextSpy).toHaveBeenLastCalledWith(expect.stringContaining('rk1_3F8K'));
+
+    // Second Copy all rejects (e.g. clipboard permission denied or focus lost)
+    writeTextSpy.mockRejectedValueOnce(new Error('Clipboard write denied'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(writeTextSpy).toHaveBeenCalledTimes(2);
+
+    // Advance 30 seconds -> the original 30s expiry timer MUST still fire and wipe the clipboard with ''!
+    writeTextSpy.mockResolvedValue(undefined);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(writeTextSpy).toHaveBeenCalledTimes(3);
+    expect(writeTextSpy).toHaveBeenLastCalledWith('');
+
+    // 2. BE1-9 residual: Submit POST /vault while held, then unmount onboarding before POST /vault resolves.
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    await waitFor(() => {
+      expect(resolvePostVault).not.toBeNull();
+    });
+
+    unmount();
+
+    // Release POST /vault after unmount -> must not call router.replace('/app')
+    await act(async () => {
+      holdPostVault = false;
+      resolvePostVault?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+  });
 });

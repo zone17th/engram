@@ -44,6 +44,12 @@ export function VaultUnlockFlow() {
   const [rateLimitDeadline, setRateLimitDeadline] = useState<number | null>(null);
 
   const passInputRef = useRef<HTMLInputElement>(null);
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const isMountedRef = useRef(true);
+  const unlockIntentSeqRef = useRef(0);
+  const activeWorkerUnlockOpGenRef = useRef<number | null>(null);
+  const completedNavigationRef = useRef(false);
   const countdownSeconds = useRetryCountdown(rateLimitDeadline);
   const isRateLimitedActive =
     errorState?.kind === 'rate_limited' && rateLimitDeadline !== null && countdownSeconds > 0;
@@ -65,13 +71,23 @@ export function VaultUnlockFlow() {
     });
   }, [clearPassphraseField, vault]);
 
-  // Wipe passphrase input when leaving the unlock route.
+  // Wipe passphrase input and retire any pending unlock intent when leaving the unlock route (BE2-13).
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      unlockIntentSeqRef.current += 1;
       clearPassphraseField();
+      const pendingOpGen = activeWorkerUnlockOpGenRef.current;
+      activeWorkerUnlockOpGenRef.current = null;
+      if (pendingOpGen !== null && !completedNavigationRef.current) {
+        const client = vaultRef.current.getClient();
+        if (client.getGeneration() === pendingOpGen) {
+          void vaultRef.current.lock({ broadcast: false, reason: 'unlock_route_unmounted' });
+        }
+      }
     };
   }, [clearPassphraseField]);
-
   const handleUnlockSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
@@ -93,40 +109,58 @@ export function VaultUnlockFlow() {
         return;
       }
 
-      // Capture immutable opGeneration BEFORE the first await (before GET /vault, ADR 0002 §10.2).
-      const client = vault.getClient();
-      const opGeneration = client.captureGeneration();
+      // Capture immutable opGeneration AND durable lockEpoch baseline at intent start BEFORE GET /vault (BE2-1, ADR 0003 §8.4).
+      const { opGeneration, client } = vault.beginOp();
+      const intentSeq = ++unlockIntentSeqRef.current;
 
-      const passphraseSnapshot = passphrase;
+      let passphraseSnapshot: string | null = passphrase;
       // Clear the passphrase input field immediately before async work (ADR 0002 §11).
       clearPassphraseField();
       setSubmitting(true);
 
       try {
         const meta = await vault.reloadVaultMeta();
-        if (!meta) {
-          // 404 vault_absent -> RouteGuard / Me refresh handles redirect to onboarding
+        if (
+          !meta ||
+          !isMountedRef.current ||
+          unlockIntentSeqRef.current !== intentSeq ||
+          client.getGeneration() !== opGeneration
+        ) {
+          passphraseSnapshot = null;
           return;
         }
 
-        if (client.getGeneration() !== opGeneration) {
-          return;
-        }
-
+        const passToUse = passphraseSnapshot;
+        passphraseSnapshot = null;
+        activeWorkerUnlockOpGenRef.current = opGeneration;
         await vault.unlockPassphrase({
-          passphrase: passphraseSnapshot,
+          passphrase: passToUse,
           kdf: meta.kdf,
           vaultKeyWrappedByKek: meta.vault_key_wrapped_by_kek,
           privateKeysWrapped: meta.private_keys_wrapped,
           opGeneration,
         });
 
-        if (client.getGeneration() !== opGeneration) {
+        if (
+          !isMountedRef.current ||
+          unlockIntentSeqRef.current !== intentSeq ||
+          client.getGeneration() !== opGeneration
+        ) {
+          if (client.getGeneration() === opGeneration) {
+            activeWorkerUnlockOpGenRef.current = null;
+            await vault.lock({ broadcast: false, reason: 'unlock_intent_abandoned' });
+          }
           return;
         }
 
+        completedNavigationRef.current = true;
+        activeWorkerUnlockOpGenRef.current = null;
         router.replace(destinationPath);
       } catch (err) {
+        passphraseSnapshot = null;
+        if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
+          return;
+        }
         if (err instanceof ProblemError) {
           const { status, code, retry_after } = err.problem;
           if (status === 429 || code === 'rate_limited') {
@@ -180,7 +214,10 @@ export function VaultUnlockFlow() {
             setErrorState({ kind: 'network' });
         }
       } finally {
-        setSubmitting(false);
+        activeWorkerUnlockOpGenRef.current = null;
+        if (isMountedRef.current && unlockIntentSeqRef.current === intentSeq) {
+          setSubmitting(false);
+        }
       }
     },
     [

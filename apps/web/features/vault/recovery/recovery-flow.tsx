@@ -74,6 +74,8 @@ export type Step4ErrorState =
 
 interface PreparedCompleteBundle {
   opGeneration: number;
+  flowSeq: number;
+  userId: string | null;
   vaultKeyId: string;
   ifMatch: string;
   idempotencyKey: string;
@@ -84,6 +86,8 @@ interface PreparedCompleteBundle {
 
 interface PreparedRegenerateBundle {
   opGeneration: number;
+  flowSeq: number;
+  userId: string | null;
   vaultKeyId: string;
   ifMatch: string;
   idempotencyKey: string;
@@ -205,6 +209,10 @@ export function VaultRecoveryFlow() {
   const evalSeqRef = useRef(0);
   const stepRef = useRef<RecoveryStep>(step);
   stepRef.current = step;
+  const isMountedRef = useRef(true);
+  const recoveryFlowSeqRef = useRef(0);
+  const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
+  currentUserIdRef.current = me?.user.id ?? null;
   const completedRecoveryRef = useRef(false);
   const workerHoldsRecoveryStateRef = useRef(false);
   const suppressResetStepTransitionRef = useRef(false);
@@ -263,6 +271,7 @@ export function VaultRecoveryFlow() {
   }, []);
 
   const clearAllSecrets = useCallback(() => {
+    recoveryFlowSeqRef.current += 1;
     clearRecoveryKeyInputImmediate();
     clearPassphraseInputsImmediate();
     clearReauthPasswordInputs();
@@ -274,6 +283,46 @@ export function VaultRecoveryFlow() {
     clearReauthPasswordInputs,
     clearRecoveryKeyInputImmediate,
   ]);
+
+  const isVerifiedUnlockedAccess = useCallback(
+    (expectedOpGen?: number, expectedFlowSeq?: number, expectedUserId?: string | null): boolean => {
+      const liveVault = vaultRef.current;
+      const client = liveVault.getClient();
+      if (!isMountedRef.current) return false;
+      if (expectedFlowSeq !== undefined && recoveryFlowSeqRef.current !== expectedFlowSeq) {
+        return false;
+      }
+      if (expectedOpGen !== undefined && client.getGeneration() !== expectedOpGen) {
+        return false;
+      }
+      if (
+        expectedUserId !== undefined &&
+        expectedUserId !== null &&
+        currentUserIdRef.current !== expectedUserId
+      ) {
+        return false;
+      }
+      // Check both live provider state and any test bridge getter (BE2-4 / VS-R7-1)
+      let effectiveState: string = liveVault.state;
+      if (typeof window !== 'undefined' && '__engramVaultTestBridge' in window) {
+        const bridgeCandidate = window.__engramVaultTestBridge;
+        if (
+          bridgeCandidate &&
+          typeof bridgeCandidate === 'object' &&
+          'state' in bridgeCandidate &&
+          typeof bridgeCandidate.state === 'string'
+        ) {
+          effectiveState = bridgeCandidate.state;
+        }
+      }
+      return (
+        effectiveState === 'unlocked' &&
+        liveVault.workerState === 'unlocked' &&
+        liveVault.unlockBaseline !== null
+      );
+    },
+    [],
+  );
 
   // Ensure reauth pendingAction is initialized when on Step 1 or Step 4a
   useEffect(() => {
@@ -335,7 +384,9 @@ export function VaultRecoveryFlow() {
   // MUST lock the client to wipe VK and pending continuation; never send an unnecessary lock when
   // leaving Step 1 before any Worker recovery state exists.
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       clearAllSecrets();
       if (workerHoldsRecoveryStateRef.current && !completedRecoveryRef.current) {
         workerHoldsRecoveryStateRef.current = false;
@@ -478,14 +529,22 @@ export function VaultRecoveryFlow() {
         return;
       }
 
-      // Capture immutable opGeneration BEFORE the first await (ADR 0002 §10.2).
+      // Capture immutable opGeneration, flowSeq, and userId BEFORE the first await (ADR 0002 §10.2, BE2-11).
       const client = vault.getClient();
       const opGeneration = client.captureGeneration();
+      const opFlowSeq = recoveryFlowSeqRef.current;
+      const opUserId = currentUserIdRef.current;
 
       const rawRkSnapshot = recoveryKeyInput;
       // Clear RK input immediately right when unlockRecovery is invoked (Task 17A requirement #5).
       clearRecoveryKeyInputImmediate();
       setLookingUpKey(true);
+
+      const isStep2OpCurrent = () =>
+        isMountedRef.current &&
+        recoveryFlowSeqRef.current === opFlowSeq &&
+        client.getGeneration() === opGeneration &&
+        (opUserId === null || currentUserIdRef.current === opUserId);
 
       try {
         // 1. Derive lookup_hash and store wrapKey continuation inside Worker (single RK pass)
@@ -494,12 +553,15 @@ export function VaultRecoveryFlow() {
           recoveryKey: rawRkSnapshot,
           opGeneration,
         });
-        if (client.getGeneration() !== opGeneration) {
+        if (!isStep2OpCurrent()) {
           return;
         }
 
         // 2. Ensure we have current GET /vault metadata (`private_keys_wrapped`, `kdf`, `vault_key_id`, `version`)
         const meta = vault.vaultMeta ?? (await vault.reloadVaultMeta());
+        if (!isStep2OpCurrent()) {
+          return;
+        }
         if (!meta) {
           workerHoldsRecoveryStateRef.current = false;
           await vault.lock({ broadcast: false, reason: 'recovery_vault_absent' });
@@ -507,16 +569,12 @@ export function VaultRecoveryFlow() {
         }
         setCapturedVaultMeta(meta);
 
-        if (client.getGeneration() !== opGeneration) {
-          return;
-        }
-
         // 3. POST /vault/unlock/recovery { lookup_hash } (does NOT consume the key)
         const lookupRes = await lookupRecoveryKey({
           lookup_hash: derived.lookup_hash,
         });
 
-        if (client.getGeneration() !== opGeneration) {
+        if (!isStep2OpCurrent()) {
           return;
         }
 
@@ -527,7 +585,7 @@ export function VaultRecoveryFlow() {
           opGeneration,
         });
 
-        if (client.getGeneration() !== opGeneration) {
+        if (!isStep2OpCurrent()) {
           return;
         }
 
@@ -538,11 +596,14 @@ export function VaultRecoveryFlow() {
         setStep3PolicyReason(null);
         setStep('new-passphrase');
       } catch (err) {
+        // BE2-11: Fence late lookup/recovery errors by originating opGeneration, flowSeq, and userId
+        // so an obsolete failure never locks a replacement session or mutates UI after cancel/lock/leave.
+        if (!isStep2OpCurrent()) {
+          return;
+        }
         if (err instanceof ProblemError) {
           const { status, code, retry_after } = err.problem;
           if (status === 401 && code === 'recovery_key_invalid') {
-            // Wipe pending continuation in Worker
-            workerHoldsRecoveryStateRef.current = false;
             await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_401' });
             setStep2Error({ kind: 'invalid' });
             return;
@@ -589,7 +650,9 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        setLookingUpKey(false);
+        if (isMountedRef.current && recoveryFlowSeqRef.current === opFlowSeq) {
+          setLookingUpKey(false);
+        }
       }
     },
     [
@@ -606,6 +669,18 @@ export function VaultRecoveryFlow() {
   const executeCompleteRequest = useCallback(
     async (bundle: PreparedCompleteBundle) => {
       const client = vault.getClient();
+      const isBundleCurrent = () =>
+        isMountedRef.current &&
+        recoveryFlowSeqRef.current === bundle.flowSeq &&
+        client.getGeneration() === bundle.opGeneration &&
+        (bundle.userId === null || currentUserIdRef.current === bundle.userId);
+
+      // BE2-3: Check generation, flow identity, and user BEFORE dispatching POST /vault/recover/complete
+      // so a cancelled or locked recovery flow never sends a consuming mutation.
+      if (!isBundleCurrent()) {
+        return;
+      }
+
       setCompletingRecovery(true);
       setStep3Error(null);
       setStep3RateDeadline(null);
@@ -618,7 +693,7 @@ export function VaultRecoveryFlow() {
           reauthToken: bundle.reauthToken,
         });
 
-        if (client.getGeneration() !== bundle.opGeneration) {
+        if (!isBundleCurrent()) {
           return;
         }
 
@@ -626,6 +701,10 @@ export function VaultRecoveryFlow() {
         await vault.confirmRecovery({
           opGeneration: bundle.opGeneration,
         });
+
+        if (!isBundleCurrent()) {
+          return;
+        }
 
         completedRecoveryRef.current = true;
         workerHoldsRecoveryStateRef.current = false;
@@ -639,16 +718,26 @@ export function VaultRecoveryFlow() {
         // Query remaining recovery keys and empty slots to suggest regeneration (Step 4)
         try {
           const rkStatus = await fetchRecoveryKeysStatus();
+          if (!isBundleCurrent()) {
+            return;
+          }
           setRemainingCount(rkStatus.remaining);
           const sortedEmpty = [...rkStatus.empty_slots].sort((a, b) => a - b);
           setEmptySlots(sortedEmpty);
         } catch {
+          if (!isBundleCurrent()) {
+            return;
+          }
           setRemainingCount(9);
           setEmptySlots([1]);
         }
 
         setStep('regenerate-reauth');
       } catch (err) {
+        // BE2-11: Fence late completion errors by originating bundle identity before any lock, grant, or state effect.
+        if (!isBundleCurrent()) {
+          return;
+        }
         if (err instanceof ProblemError) {
           const { status, code, retry_after } = err.problem;
           if (status === 412 || code === 'version_mismatch') {
@@ -717,7 +806,9 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        setCompletingRecovery(false);
+        if (isMountedRef.current && recoveryFlowSeqRef.current === bundle.flowSeq) {
+          setCompletingRecovery(false);
+        }
       }
     },
     [reauth, vault],
@@ -742,7 +833,8 @@ export function VaultRecoveryFlow() {
 
       const client = vault.getClient();
       const opGen = recoveryOpGeneration ?? client.captureGeneration();
-
+      const opFlowSeq = recoveryFlowSeqRef.current;
+      const opUserId = currentUserIdRef.current;
       const policy = await checkPassphrasePolicy(newPassphrase, {
         confirmPassphrase,
         userInputs,
@@ -764,11 +856,15 @@ export function VaultRecoveryFlow() {
         return;
       }
 
-      if (client.getGeneration() !== opGen) {
+      if (
+        !isMountedRef.current ||
+        recoveryFlowSeqRef.current !== opFlowSeq ||
+        client.getGeneration() !== opGen ||
+        (opUserId !== null && currentUserIdRef.current !== opUserId)
+      ) {
         clearPassphraseInputsImmediate();
         return;
       }
-
       const meta = capturedVaultMeta ?? vault.vaultMeta;
       if (!meta || !recoveryKeyId) {
         setStep3Error({ kind: 'version_mismatch' });
@@ -790,7 +886,12 @@ export function VaultRecoveryFlow() {
             opGeneration: opGen,
           });
 
-          if (client.getGeneration() !== opGen) {
+          if (
+            !isMountedRef.current ||
+            recoveryFlowSeqRef.current !== opFlowSeq ||
+            client.getGeneration() !== opGen ||
+            (opUserId !== null && currentUserIdRef.current !== opUserId)
+          ) {
             return;
           }
 
@@ -802,6 +903,8 @@ export function VaultRecoveryFlow() {
 
           bundle = {
             opGeneration: opGen,
+            flowSeq: opFlowSeq,
+            userId: opUserId,
             vaultKeyId: meta.vault_key_id,
             ifMatch: formatVaultIfMatch(meta.vault_key_id, meta.version),
             idempotencyKey: createIdempotencyKey(),
@@ -855,7 +958,9 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        setCompletingRecovery(false);
+        if (isMountedRef.current && recoveryFlowSeqRef.current === opFlowSeq) {
+          setCompletingRecovery(false);
+        }
       }
     },
     [
@@ -880,6 +985,11 @@ export function VaultRecoveryFlow() {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (reauth.submitting || !step3ReauthPassword) return;
+      const client = vault.getClient();
+      const capturedBundle = preparedCompleteBundle;
+      const capturedFlowSeq = recoveryFlowSeqRef.current;
+      const capturedOpGen = capturedBundle?.opGeneration ?? recoveryOpGeneration ?? client.getGeneration();
+      const capturedUserId = capturedBundle?.userId ?? currentUserIdRef.current;
       try {
         if (reauth.pendingAction !== 'vault.recover') {
           void reauth.begin('vault.recover', '/app/recovery').catch(() => undefined);
@@ -888,9 +998,20 @@ export function VaultRecoveryFlow() {
         setStep3ReauthPassword('');
         if (step3ReauthPassInputRef.current) step3ReauthPassInputRef.current.value = '';
         const freshGrant = await reauth.submitPassword(pwd);
-        if (preparedCompleteBundle) {
+        // BE2-3: Never restore or submit a prepared completion bundle if the recovery flow was locked,
+        // cancelled, unmounted, or switched accounts while password re-auth was in flight.
+        if (
+          !isMountedRef.current ||
+          recoveryFlowSeqRef.current !== capturedFlowSeq ||
+          client.getGeneration() !== capturedOpGen ||
+          stepRef.current !== 'new-passphrase' ||
+          (capturedUserId !== null && currentUserIdRef.current !== capturedUserId)
+        ) {
+          return;
+        }
+        if (capturedBundle) {
           const updatedBundle: PreparedCompleteBundle = {
-            ...preparedCompleteBundle,
+            ...capturedBundle,
             reauthToken: freshGrant.grant,
           };
           setPreparedCompleteBundle(updatedBundle);
@@ -902,7 +1023,7 @@ export function VaultRecoveryFlow() {
         // Error surfaced in reauth.error
       }
     },
-    [executeCompleteRequest, preparedCompleteBundle, reauth, step3ReauthPassword],
+    [executeCompleteRequest, preparedCompleteBundle, reauth, recoveryOpGeneration, step3ReauthPassword, vault],
   );
 
   // Step 3 reload after 412 version_mismatch or 409 idempotency_conflict:
@@ -946,20 +1067,26 @@ export function VaultRecoveryFlow() {
   const prepareRegenerationKeys = useCallback(
     async (grantToUse: ReauthGrant) => {
       if (generatingRegenKeys) return;
+      // BE2-4: Require verified unlocked application access (not wake-gated) before starting regeneration
+      if (!isVerifiedUnlockedAccess()) {
+        return;
+      }
       setGeneratingRegenKeys(true);
       setStep4Error(null);
 
-      try {
-        const client = vault.getClient();
-        const opGen = client.captureGeneration();
+      const client = vault.getClient();
+      const opGen = client.captureGeneration();
+      const opFlowSeq = recoveryFlowSeqRef.current;
+      const opUserId = currentUserIdRef.current;
 
+      try {
         // Fetch fresh empty slots and vault metadata
         const [rkStatus, freshMeta] = await Promise.all([
           fetchRecoveryKeysStatus(),
           vault.reloadVaultMeta(),
         ]);
 
-        if (!freshMeta) {
+        if (!freshMeta || !isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
           return;
         }
 
@@ -972,7 +1099,8 @@ export function VaultRecoveryFlow() {
           return;
         }
 
-        if (client.getGeneration() !== opGen) {
+        // BE2-4: Must still be in verified unlocked state (not wake-gated) immediately before makeRecoveryKeys
+        if (!isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
           return;
         }
 
@@ -981,7 +1109,8 @@ export function VaultRecoveryFlow() {
           opGeneration: opGen,
         });
 
-        if (client.getGeneration() !== opGen) {
+        // BE2-4: Must still be in verified unlocked state (not wake-gated) before publishing plaintext RKs
+        if (!isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
           return;
         }
 
@@ -995,6 +1124,8 @@ export function VaultRecoveryFlow() {
 
         setPreparedRegenBundle({
           opGeneration: opGen,
+          flowSeq: opFlowSeq,
+          userId: opUserId,
           vaultKeyId: freshMeta.vault_key_id,
           ifMatch: formatVaultIfMatch(freshMeta.vault_key_id, freshMeta.version),
           idempotencyKey: createIdempotencyKey(),
@@ -1010,6 +1141,9 @@ export function VaultRecoveryFlow() {
         setConfirmedRegenSaved(false);
         setStep('regenerate-keys');
       } catch (err) {
+        if (!isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
+          return;
+        }
         if (err instanceof ProblemError) {
           setStep4Error({
             kind: 'network',
@@ -1022,16 +1156,23 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        setGeneratingRegenKeys(false);
+        if (isMountedRef.current && recoveryFlowSeqRef.current === opFlowSeq) {
+          setGeneratingRegenKeys(false);
+        }
       }
     },
-    [generatingRegenKeys, router, vault],
+    [generatingRegenKeys, isVerifiedUnlockedAccess, router, vault],
   );
 
   const handleStep4PasswordReauth = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (reauth.submitting || generatingRegenKeys || !step4ReauthPassword) return;
+      if (!isVerifiedUnlockedAccess()) return;
+      const client = vault.getClient();
+      const opGen = client.getGeneration();
+      const opFlowSeq = recoveryFlowSeqRef.current;
+      const opUserId = currentUserIdRef.current;
       try {
         if (reauth.pendingAction !== 'vault.recovery_keys_regenerate') {
           void reauth
@@ -1042,12 +1183,15 @@ export function VaultRecoveryFlow() {
         setStep4ReauthPassword('');
         if (step4ReauthPassInputRef.current) step4ReauthPassInputRef.current.value = '';
         const grant = await reauth.submitPassword(pwd);
+        if (!isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
+          return;
+        }
         await prepareRegenerationKeys(grant);
       } catch {
         // Error surfaced in reauth.error
       }
     },
-    [generatingRegenKeys, prepareRegenerationKeys, reauth, step4ReauthPassword],
+    [generatingRegenKeys, isVerifiedUnlockedAccess, prepareRegenerationKeys, reauth, step4ReauthPassword, vault],
   );
 
   const handleStep4GoogleReauth = useCallback(async () => {
@@ -1066,9 +1210,23 @@ export function VaultRecoveryFlow() {
       return;
     }
 
+    const submitRegenBundle = preparedRegenBundle;
+    // BE2-4 & BE2-12: Require verified unlocked access and matching opGeneration/flowSeq/userId/vaultKeyId before dispatch
+    if (
+      !isVerifiedUnlockedAccess(
+        submitRegenBundle.opGeneration,
+        submitRegenBundle.flowSeq,
+        submitRegenBundle.userId,
+      ) ||
+      (vaultRef.current.vaultMeta !== null &&
+        vaultRef.current.vaultMeta.vault_key_id !== submitRegenBundle.vaultKeyId)
+    ) {
+      return;
+    }
+
     // Check 60s grant preflight only before the first attempt
     if (
-      !preparedRegenBundle.sentAtLeastOnce &&
+      !submitRegenBundle.sentAtLeastOnce &&
       !isGrantFreshForFirstAttempt(reauth.grant, 'vault.recovery_keys_regenerate')
     ) {
       if (reauth.capabilities.hasPassword) {
@@ -1088,18 +1246,32 @@ export function VaultRecoveryFlow() {
     setStep4Error(null);
     setStep4RateDeadline(null);
 
+    const isRegenStillCurrent = () =>
+      isMountedRef.current &&
+      recoveryFlowSeqRef.current === submitRegenBundle.flowSeq &&
+      vaultRef.current.getClient().getGeneration() === submitRegenBundle.opGeneration &&
+      (submitRegenBundle.userId === null || currentUserIdRef.current === submitRegenBundle.userId) &&
+      (vaultRef.current.vaultMeta === null ||
+        vaultRef.current.vaultMeta.vault_key_id === submitRegenBundle.vaultKeyId);
+
     try {
-      preparedRegenBundle.sentAtLeastOnce = true;
+      submitRegenBundle.sentAtLeastOnce = true;
       const tokenToUse =
         reauth.grant?.action === 'vault.recovery_keys_regenerate'
           ? reauth.grant.grant
-          : preparedRegenBundle.reauthToken;
+          : submitRegenBundle.reauthToken;
 
-      const res = await regenerateRecoveryKeys(preparedRegenBundle.requestBodyJson, {
-        idempotencyKey: preparedRegenBundle.idempotencyKey,
-        ifMatch: preparedRegenBundle.ifMatch,
+      const res = await regenerateRecoveryKeys(submitRegenBundle.requestBodyJson, {
+        idempotencyKey: submitRegenBundle.idempotencyKey,
+        ifMatch: submitRegenBundle.ifMatch,
         reauthToken: tokenToUse,
       });
+
+      // BE2-12: If the vault locked, switched accounts, or changed vault_key_id while POST was in flight,
+      // drop stale publication and navigation so an obsolete vault_key_id is never broadcast!
+      if (!isRegenStillCurrent()) {
+        return;
+      }
 
       // Immediately wipe the displayed replacement keys from state & DOM
       setPreparedRegenBundle(null);
@@ -1107,13 +1279,18 @@ export function VaultRecoveryFlow() {
       setStep('done');
 
       vault.notifyVaultChanged({
-        vault_key_id: preparedRegenBundle.vaultKeyId,
+        vault_key_id: submitRegenBundle.vaultKeyId,
         version: res.version,
       });
 
       await refetchMe().catch(() => undefined);
-      router.replace('/app');
+      if (isRegenStillCurrent()) {
+        router.replace('/app');
+      }
     } catch (err) {
+      if (!isRegenStillCurrent()) {
+        return;
+      }
       if (err instanceof ProblemError) {
         const { status, code, retry_after } = err.problem;
         if (status === 412 || code === 'version_mismatch') {
@@ -1145,11 +1322,14 @@ export function VaultRecoveryFlow() {
         detail: err instanceof Error ? err.message : undefined,
       });
     } finally {
-      setSavingRegenKeys(false);
+      if (isMountedRef.current && recoveryFlowSeqRef.current === submitRegenBundle.flowSeq) {
+        setSavingRegenKeys(false);
+      }
     }
   }, [
     confirmedRegenSaved,
     isStep4RateLimited,
+    isVerifiedUnlockedAccess,
     preparedRegenBundle,
     reauth,
     refetchMe,
@@ -2024,7 +2204,7 @@ export function VaultRecoveryFlow() {
         ) : null}
 
         {/* STEP 4B — Replacement recovery keys for empty slots (reusing RecoveryKeysSheet) */}
-        {step === 'regenerate-keys' && preparedRegenBundle ? (
+        {step === 'regenerate-keys' && preparedRegenBundle && vault.state === 'unlocked' ? (
           <section data-view="s4" data-testid="recovery-step-regenerate-keys">
             <div
               className="mb-5 rounded-md p-4"

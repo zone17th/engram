@@ -105,6 +105,7 @@ export function VaultOnboardingFlow() {
   vaultRef.current = vault;
   const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
   currentUserIdRef.current = me?.user.id ?? null;
+  const isMountedRef = useRef(true);
   const postSubmitSeqRef = useRef(0);
   const confirmCheckboxId = useId();
   const gridHeadingId = useId();
@@ -147,9 +148,11 @@ export function VaultOnboardingFlow() {
     });
   }, [clearRecoveryKeysAndSecrets]);
 
-  // Wipe secrets and cancel clipboard timer when unmounting (leaving the onboarding route).
+  // Wipe secrets and mark unmounted when leaving the onboarding route (BE1-9).
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       clearRecoveryKeysAndSecrets();
     };
   }, [clearRecoveryKeysAndSecrets]);
@@ -369,16 +372,31 @@ export function VaultOnboardingFlow() {
       });
 
       if (
-        postSubmitSeqRef.current !== submitSeq ||
-        client.getGeneration() !== submitBundle.opGeneration ||
+        !isMountedRef.current ||
+        currentUserIdRef.current === null ||
         (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
       ) {
-        // Server committed vault A while the tab locked, went back, or started deriving vault B:
+        // BE1-9 residual: if the onboarding flow already unmounted or the tab switched to a different account,
+        // never lock or navigate the new user's session.
+        return;
+      }
+
+      if (
+        postSubmitSeqRef.current !== submitSeq ||
+        client.getGeneration() !== submitBundle.opGeneration
+      ) {
+        // Same-account stale POST /vault succeeded while the tab locked, went back, or started deriving vault B:
         // never pair vault A's server state with a newer Worker key; lock so the user unlocks vault A cleanly.
         clearRecoveryKeysAndSecrets();
         await vault.lock({ broadcast: false, reason: 'stale_onboarding_post_succeeded' });
         await refetchMe().catch(() => undefined);
-        router.replace('/app/unlock');
+        if (
+          isMountedRef.current &&
+          currentUserIdRef.current !== null &&
+          (submitBundle.userId === null || currentUserIdRef.current === submitBundle.userId)
+        ) {
+          router.replace('/app/unlock');
+        }
         return;
       }
 
@@ -392,11 +410,19 @@ export function VaultOnboardingFlow() {
       });
 
       await refetchMe();
-      router.replace('/app');
+      if (
+        isMountedRef.current &&
+        currentUserIdRef.current !== null &&
+        (submitBundle.userId === null || currentUserIdRef.current === submitBundle.userId)
+      ) {
+        router.replace('/app');
+      }
     } catch (err) {
       if (
+        !isMountedRef.current ||
         postSubmitSeqRef.current !== submitSeq ||
         client.getGeneration() !== submitBundle.opGeneration ||
+        currentUserIdRef.current === null ||
         (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
       ) {
         return;
