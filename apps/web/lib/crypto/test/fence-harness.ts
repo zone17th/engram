@@ -851,10 +851,10 @@ export class LockstepRun {
         this.world.decrypt.parked === gates.decrypt
       );
     };
-    let ticks = 0;
-    while (!matches() && ticks < 2000) {
+    // Real WebCrypto on the thread pool can outlast a fixed turn budget on loaded CI runners (CF-T5-HARNESS-TIMING).
+    const deadline = performance.now() + 5000;
+    while (!matches() && performance.now() < deadline) {
       await nextTurn();
-      ticks += 1;
     }
     // Negative check: nothing else may settle or park while the model says it must not.
     for (let i = 0; i < 4; i += 1) await nextTurn();
