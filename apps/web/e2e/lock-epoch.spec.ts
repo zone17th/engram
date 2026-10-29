@@ -1,4 +1,11 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import {
+  DEVICE_META_RECORD_KEY,
+  DEVKEY_STORE_NAME,
+  META_STORE_NAME,
+  SABK_DEVICE_DB_NAME,
+  SABK_DEVICE_DB_VERSION,
+} from '../features/vault/lock-epoch';
 
 /**
  * Deterministic JS v1 crypto vectors from `packages/crypto-vectors/vectors/js-v1.json`
@@ -726,16 +733,16 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     await expect
       .poll(
         async () =>
-          pageB.evaluate(() => {
+          pageB.evaluate((prevLastActivityB) => {
             const win = window as unknown as {
               __engramVaultTestBridge: { lastActivityAt: number; state: string; workerState: string };
             };
             return {
-              advanced: win.__engramVaultTestBridge.lastActivityAt > initialLastActivityB,
+              advanced: win.__engramVaultTestBridge.lastActivityAt > prevLastActivityB,
               state: win.__engramVaultTestBridge.state,
               workerState: win.__engramVaultTestBridge.workerState,
             };
-          }),
+          }, initialLastActivityB),
         { timeout: 5_000, intervals: [25, 50, 100] },
       )
       .toEqual({
@@ -756,7 +763,9 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
 
     const page = await context.newPage();
     await page.goto('/app/settings');
-    await waitForVaultBridge(page);
+    // Unlock first via the real app path so `openSabkDeviceDb` creates `sabk.device` (version 1)
+    // with all three object stores (`lock_epoch`, `devkeys`, `meta`) in Chromium IndexedDB.
+    await unlockPageViaRealWorker(page);
 
     // 1. Seed a real DevKey record (`devkeys`) and initial `meta.__meta__` record (`deviceRevision: 7`) in Chromium IndexedDB `sabk.device`
     const userId = '11111111-1111-4111-8111-111111111111';
@@ -764,15 +773,15 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     const initialIncarnation = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     await page.evaluate(
-      async ({ uId, recKey, inc }) => {
+      async ({ uId, recKey, inc, dbName, dbVersion, devStore, metaStore, metaKey }) => {
         const db = await new Promise<IDBDatabase>((resolve, reject) => {
-          const req = indexedDB.open('sabk.device', 1);
+          const req = indexedDB.open(dbName, dbVersion);
           req.onsuccess = () => resolve(req.result);
           req.onerror = () => reject(req.error);
         });
         await new Promise<void>((resolve, reject) => {
-          const tx = db.transaction(['devkeys', 'meta'], 'readwrite');
-          tx.objectStore('devkeys').put(
+          const tx = db.transaction([devStore, metaStore], 'readwrite');
+          tx.objectStore(devStore).put(
             {
               user_id: uId,
               vault_key_id: 'vk:be1-18-browser-test',
@@ -780,34 +789,43 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
             },
             recKey,
           );
-          tx.objectStore('meta').put(
+          tx.objectStore(metaStore).put(
             {
               incarnation: inc,
               deviceRevision: 7,
             },
-            '__meta__',
+            metaKey,
           );
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
         });
         db.close();
       },
-      { uId: userId, recKey: devKeyId, inc: initialIncarnation },
+      {
+        uId: userId,
+        recKey: devKeyId,
+        inc: initialIncarnation,
+        dbName: SABK_DEVICE_DB_NAME,
+        dbVersion: SABK_DEVICE_DB_VERSION,
+        devStore: DEVKEY_STORE_NAME,
+        metaStore: META_STORE_NAME,
+        metaKey: DEVICE_META_RECORD_KEY,
+      },
     );
 
-    // 2. Intercept `IDBObjectStore.prototype.put` on `'meta'` so the readwrite transaction aborts AFTER `devkeys.delete`
-    //    and `meta.put` have been issued inside the single transaction, then trigger a revoked purge via `vault_changed { version: null }`.
+    // 2. Intercept `IDBObjectStore.prototype.put` on `'meta'` so the production `purgeDeviceKeysInSingleTx`
+    //    readwrite transaction aborts AFTER `devkeys.delete` and `meta.put` have been issued inside the single
+    //    transaction, then trigger a reset purge via `vault_changed { version: null }`.
     const snapshotAfterAbortedPurge = await page.evaluate(
-      async ({ recKey }) => {
+      async ({ recKey, dbName, dbVersion, devStore, metaStore, metaKey }) => {
         const origPut = IDBObjectStore.prototype.put;
         let metaPutAbortedOnce = false;
 
         IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
           const req = origPut.call(this, value, key);
-          if (!metaPutAbortedOnce && this.name === 'meta' && key === '__meta__') {
+          if (!metaPutAbortedOnce && this.name === metaStore && key === metaKey) {
             metaPutAbortedOnce = true;
             const tx = this.transaction;
-            const origOnSuccess = Object.getOwnPropertyDescriptor(IDBRequest.prototype, 'onsuccess');
             req.addEventListener('success', () => {
               try {
                 tx.abort();
@@ -815,7 +833,6 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
                 // Ignore if already aborting
               }
             });
-            void origOnSuccess;
           }
           return req;
         };
@@ -834,7 +851,7 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
         }
 
         const db = await new Promise<IDBDatabase>((resolve, reject) => {
-          const req = indexedDB.open('sabk.device', 1);
+          const req = indexedDB.open(dbName, dbVersion);
           req.onsuccess = () => resolve(req.result);
           req.onerror = () => reject(req.error);
         });
@@ -842,9 +859,9 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
           hasDevKey: boolean;
           meta: { incarnation: string; deviceRevision: number } | null;
         }>((resolve, reject) => {
-          const tx = db.transaction(['devkeys', 'meta'], 'readonly');
-          const devReq = tx.objectStore('devkeys').get(recKey);
-          const metaReq = tx.objectStore('meta').get('__meta__');
+          const tx = db.transaction([devStore, metaStore], 'readonly');
+          const devReq = tx.objectStore(devStore).get(recKey);
+          const metaReq = tx.objectStore(metaStore).get(metaKey);
           tx.oncomplete = () =>
             resolve({
               hasDevKey: devReq.result !== undefined,
@@ -855,9 +872,15 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
         db.close();
         return state;
       },
-      { recKey: devKeyId },
+      {
+        recKey: devKeyId,
+        dbName: SABK_DEVICE_DB_NAME,
+        dbVersion: SABK_DEVICE_DB_VERSION,
+        devStore: DEVKEY_STORE_NAME,
+        metaStore: META_STORE_NAME,
+        metaKey: DEVICE_META_RECORD_KEY,
+      },
     );
-
     // Because the real Chromium IndexedDB readwrite transaction aborted after `devkeys.delete` and `meta.put`,
     // Chromium rolled back BOTH stores atomically AND BE2-8 did NOT cache the failed purge as committed!
     expect(snapshotAfterAbortedPurge.hasDevKey).toBe(true);
@@ -869,7 +892,7 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     // 3. Now repeat the reset broadcast without the abort injection -> the retry purge succeeds (`ok: true`),
     //    deleting the DevKey and rotating `meta.__meta__` (`deviceRevision: 8`).
     const snapshotAfterRetryPurge = await page.evaluate(
-      async ({ recKey }) => {
+      async ({ recKey, dbName, dbVersion, devStore, metaStore, metaKey }) => {
         const bc = new BroadcastChannel('sabk.vault');
         bc.postMessage({
           type: 'vault_changed',
@@ -880,7 +903,7 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
         await new Promise((r) => setTimeout(r, 150));
 
         const db = await new Promise<IDBDatabase>((resolve, reject) => {
-          const req = indexedDB.open('sabk.device', 1);
+          const req = indexedDB.open(dbName, dbVersion);
           req.onsuccess = () => resolve(req.result);
           req.onerror = () => reject(req.error);
         });
@@ -888,9 +911,9 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
           hasDevKey: boolean;
           meta: { incarnation: string; deviceRevision: number } | null;
         }>((resolve, reject) => {
-          const tx = db.transaction(['devkeys', 'meta'], 'readonly');
-          const devReq = tx.objectStore('devkeys').get(recKey);
-          const metaReq = tx.objectStore('meta').get('__meta__');
+          const tx = db.transaction([devStore, metaStore], 'readonly');
+          const devReq = tx.objectStore(devStore).get(recKey);
+          const metaReq = tx.objectStore(metaStore).get(metaKey);
           tx.oncomplete = () =>
             resolve({
               hasDevKey: devReq.result !== undefined,
@@ -901,9 +924,15 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
         db.close();
         return state;
       },
-      { recKey: devKeyId },
+      {
+        recKey: devKeyId,
+        dbName: SABK_DEVICE_DB_NAME,
+        dbVersion: SABK_DEVICE_DB_VERSION,
+        devStore: DEVKEY_STORE_NAME,
+        metaStore: META_STORE_NAME,
+        metaKey: DEVICE_META_RECORD_KEY,
+      },
     );
-
     expect(snapshotAfterRetryPurge.hasDevKey).toBe(false);
     expect(snapshotAfterRetryPurge.meta?.deviceRevision).toBe(8);
     expect(snapshotAfterRetryPurge.meta?.incarnation).not.toBe(initialIncarnation);
