@@ -1,10 +1,25 @@
 import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const intlCalls: string[] = [];
+
+vi.mock('next-intl/middleware', () => ({
+  default: () => (req: { url: string; nextUrl: { pathname: string; origin: string } }) => {
+    intlCalls.push(req.nextUrl.pathname);
+    return new Response(null, {
+      headers: {
+        'x-middleware-rewrite': `http://localhost:3040/en${req.nextUrl.pathname === '/' ? '' : req.nextUrl.pathname}`,
+      },
+    });
+  },
+}));
+
+import CryptoBenchPage from '../app/dev/crypto-bench/page';
 import { withRequestOrigin } from '../i18n/internal-rewrite';
 import { routing } from '../i18n/routing';
-
+import middleware from '../middleware';
 const WEB = resolve(__dirname, '..');
 
 describe('cấu trúc route (P01-A3)', () => {
@@ -63,5 +78,51 @@ describe('cấu trúc route (P01-A3)', () => {
     expect(layout).toContain('locale={locale}');
     expect(layout).toContain('resolveAppLocale');
     expect(layout).not.toContain('APP_LOCALE');
+  });
+
+  it('dev-only /dev/crypto-bench bypasses next-intl only when NODE_ENV !== production while production and other paths go through next-intl', () => {
+    intlCalls.length = 0;
+    const makeReq = (pathname: string) =>
+      ({
+        url: `http://localhost:3040${pathname}`,
+        nextUrl: new URL(`http://localhost:3040${pathname}`),
+      }) as unknown as Parameters<typeof middleware>[0];
+
+    try {
+      // Non-production exact /dev/crypto-bench bypasses next-intl
+      const devBenchRes = middleware(makeReq('/dev/crypto-bench'));
+      expect(devBenchRes.headers.get('x-middleware-rewrite')).toBeNull();
+      expect(intlCalls).toEqual([]);
+
+      // Non-production other /dev/* and / still go through next-intl
+      const devOtherRes = middleware(makeReq('/dev/other'));
+      expect(devOtherRes.headers.get('x-middleware-rewrite')).toBe(
+        'http://localhost:3040/en/dev/other',
+      );
+      const rootRes = middleware(makeReq('/'));
+      expect(rootRes.headers.get('x-middleware-rewrite')).toBe('http://localhost:3040/en');
+      expect(intlCalls).toEqual(['/dev/other', '/']);
+
+      // Production /dev/crypto-bench goes through next-intl as before
+      vi.stubEnv('NODE_ENV', 'production');
+      const prodBenchRes = middleware(makeReq('/dev/crypto-bench'));
+      expect(prodBenchRes.headers.get('x-middleware-rewrite')).toBe(
+        'http://localhost:3040/en/dev/crypto-bench',
+      );
+      expect(intlCalls).toEqual(['/dev/other', '/', '/dev/crypto-bench']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('/dev/crypto-bench page calls notFound() when NODE_ENV === production (advisor-dec-013)', () => {
+    expect(() => CryptoBenchPage()).not.toThrow();
+
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      expect(() => CryptoBenchPage()).toThrow(/NEXT_HTTP_ERROR_FALLBACK;404|NEXT_NOT_FOUND/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

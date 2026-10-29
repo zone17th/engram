@@ -1,4 +1,4 @@
-import type { NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import createMiddleware from 'next-intl/middleware';
 import { withRequestOrigin } from './i18n/internal-rewrite';
 import { routing } from './i18n/routing';
@@ -6,6 +6,9 @@ import { routing } from './i18n/routing';
 const intlMiddleware = createMiddleware(routing);
 
 export default function middleware(request: NextRequest) {
+  if (process.env.NODE_ENV !== 'production' && request.nextUrl.pathname === '/dev/crypto-bench') {
+    return NextResponse.next();
+  }
   const response = intlMiddleware(request);
   // An origin change makes Next proxy back through middleware, looping /en -> /.
   for (const header of ['x-middleware-rewrite', 'location']) {
