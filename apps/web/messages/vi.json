@@ -96,7 +96,9 @@
       "rules": {
         "minLength": "Từ 12 ký tự trở lên",
         "distinctFromLogin": "Không dùng lại mật khẩu đăng nhập hay mật khẩu ở nơi khác",
-        "minScore": "Đủ khó đoán (zxcvbn ≥ 3)"
+        "minScore": "Đủ khó đoán (zxcvbn ≥ 3)",
+        "met": "Đạt:",
+        "notMet": "Chưa đạt:"
       },
       "warningBanner": "Mất passphrase mà không còn recovery key, passkey hay thiết bị đã nhớ thì nội dung entry không lấy lại được. Bước sau sẽ tạo sẵn 10 đường về cho bạn.",
       "continue": "Tiếp tục",
@@ -600,7 +602,10 @@
         "rateLimitedBody": "Yêu cầu hoàn tất khôi phục giới hạn 5 lần / 15 phút (bucket riêng với bước tra cứu). Thử lại sau {clock} ({seconds} giây · Retry-After: {seconds}).",
         "networkTitle": "Không kết nối được máy chủ",
         "networkBody": "Kết nối bị gián đoạn trước khi máy chủ xác nhận hoàn tất. Hãy bấm thử lại — ứng dụng dùng lại đúng Idempotency-Key và nội dung yêu cầu ban đầu.",
-        "retryCta": "Thử lại hoàn tất"
+        "retryCta": "Thử lại hoàn tất",
+        "completedWhileLockedTitle": "Đã hoàn tất khôi phục — mở khoá bằng passphrase mới",
+        "completedWhileLockedBody": "Passphrase mới của bạn đã được lưu trên máy chủ trong lúc tab này khoá lại. Đang chuyển tới trang mở khoá bằng passphrase mới…",
+        "completedWhileLockedCta": "Tới trang mở khoá"
       }
     },
     "step4Reauth": {

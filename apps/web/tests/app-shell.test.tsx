@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createEvent, fireEvent, render, screen } from '@testing-library/react';
+import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { AppHeader } from '../components/app-shell/app-header';
@@ -10,9 +11,14 @@ import { PreviewNotice } from '../components/app-shell/preview-notice';
 import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
 import { DEMO_TAGS } from '../lib/demo-fixtures';
+import viMessages from '../messages/vi.json';
 
 function renderWithTheme(ui: ReactNode) {
-  return render(<ThemeProvider>{ui}</ThemeProvider>);
+  return render(
+    <NextIntlClientProvider locale="vi" messages={viMessages}>
+      <ThemeProvider>{ui}</ThemeProvider>
+    </NextIntlClientProvider>,
+  );
 }
 
 const WEB_ROOT = resolve(__dirname, '..');
@@ -29,9 +35,11 @@ describe('AppHeader', () => {
     expect(screen.getByText(/15 phút/)).toBeInTheDocument();
 
     rerender(
-      <ThemeProvider>
-        <AppHeader vault={{ state: 'locked' }} />
-      </ThemeProvider>,
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <AppHeader vault={{ state: 'locked' }} />
+        </ThemeProvider>
+      </NextIntlClientProvider>,
     );
     expect(screen.getByText(/Vault đang khoá/)).toBeInTheDocument();
   });

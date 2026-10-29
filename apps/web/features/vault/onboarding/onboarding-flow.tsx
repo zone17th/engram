@@ -625,6 +625,7 @@ export function VaultOnboardingFlow() {
                   </div>
                   <span
                     data-testid="passphrase-strength-label"
+                    aria-live="polite"
                     className="text-[12px]"
                     style={{ color: 'var(--body)' }}
                   >
@@ -687,19 +688,33 @@ export function VaultOnboardingFlow() {
                   style={{ color: 'var(--muted)' }}
                 >
                   <li data-testid="rule-min-length" data-satisfied={meetsMinLength}>
-                    <span style={{ color: meetsMinLength ? 'var(--success)' : 'var(--body)' }}>
+                    <span
+                      aria-hidden="true"
+                      style={{ color: meetsMinLength ? 'var(--success)' : 'var(--body)' }}
+                    >
                       {meetsMinLength ? '✓' : '·'}
                     </span>{' '}
+                    <span className="sr-only" data-testid="rule-min-length-status">
+                      {meetsMinLength ? t('step1.rules.met') : t('step1.rules.notMet')}{' '}
+                    </span>
                     {t('step1.rules.minLength')}
                   </li>
                   <li data-testid="rule-distinct-login">
-                    <span style={{ color: 'var(--muted)' }}>·</span>{' '}
+                    <span aria-hidden="true" style={{ color: 'var(--muted)' }}>
+                      ·
+                    </span>{' '}
                     {t('step1.rules.distinctFromLogin')}
                   </li>
                   <li data-testid="rule-min-score" data-satisfied={meetsMinScore}>
-                    <span style={{ color: meetsMinScore ? 'var(--success)' : 'var(--body)' }}>
+                    <span
+                      aria-hidden="true"
+                      style={{ color: meetsMinScore ? 'var(--success)' : 'var(--body)' }}
+                    >
                       {meetsMinScore ? '✓' : '·'}
                     </span>{' '}
+                    <span className="sr-only" data-testid="rule-min-score-status">
+                      {meetsMinScore ? t('step1.rules.met') : t('step1.rules.notMet')}{' '}
+                    </span>
                     {t('step1.rules.minScore')}
                   </li>
                 </ul>

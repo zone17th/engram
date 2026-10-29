@@ -830,11 +830,11 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
     const { unmount } = renderUnlock({ locale: 'en', view: 'unlock' });
 
+    // FE1-1 & FE1-3: English header pill/actions rendered, and non-operative Remember-device checkbox is hidden until T18
     await waitFor(() => {
       expect(screen.getByTestId('unlock-forgot-passphrase-link')).toBeInTheDocument();
+      expect(screen.getByText('Vault locked')).toBeInTheDocument();
     });
-    // FE1-1 & FE1-3: English header pill/actions rendered, and non-operative Remember-device checkbox is hidden until T18
-    expect(screen.getByText('Vault locked')).toBeInTheDocument();
     expect(screen.queryByTestId('unlock-remember-device-checkbox')).not.toBeInTheDocument();
 
     expect(screen.getByTestId('unlock-forgot-passphrase-link')).toHaveAttribute(
@@ -852,17 +852,16 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('forgot-passphrase-page')).toBeInTheDocument();
+      expect(screen.getByText('Vault locked')).toBeInTheDocument();
     });
-    expect(screen.getByText('Vault locked')).toBeInTheDocument();
     const useRecoveryKeyLink = screen.getByTestId('forgot-use-recovery-key-cta');
     expect(useRecoveryKeyLink).toHaveAttribute('href', '/app/recovery');
 
     const resetVaultLink = screen.getByTestId('forgot-reset-vault-link');
     expect(resetVaultLink).toHaveAttribute('href', '/app/settings#baomat');
-    // FE1-2: uses CSS token var(--error) instead of hardcoded #B4232A
-    expect(resetVaultLink.getAttribute('style')).toContain('var(--error)');
-    expect(resetVaultLink.getAttribute('style')).not.toContain('#B4232A');
-
+    // FE1-2: uses AA-safe .auth-alert token class instead of hardcoded #B4232A inline style
+    expect(resetVaultLink).toHaveClass('auth-alert');
+    expect(resetVaultLink.getAttribute('style') ?? '').not.toContain('#B4232A');
     const backToUnlockLink = screen.getByTestId('forgot-bottom-back-link');
     expect(backToUnlockLink).toHaveAttribute('href', '/app/unlock');
     expect(screen.getByTestId('forgot-reauth-note')).toHaveTextContent(/vault\.recover/i);

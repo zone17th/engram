@@ -185,7 +185,7 @@ export function VaultRecoveryFlow() {
   const [step3ReauthPassword, setStep3ReauthPassword] = useState('');
   const [preparedCompleteBundle, setPreparedCompleteBundle] =
     useState<PreparedCompleteBundle | null>(null);
-
+  const [completedWhileLockedNotice, setCompletedWhileLockedNotice] = useState(false);
   // Step 4 state
   const [remainingCount, setRemainingCount] = useState<number>(9);
   const [emptySlots, setEmptySlots] = useState<number[]>([1]);
@@ -694,6 +694,23 @@ export function VaultRecoveryFlow() {
         });
 
         if (!isBundleCurrent()) {
+          // FE1-7: POST /vault/recover/complete succeeded on the server (rewrapping under the new passphrase
+          // and consuming the RK), so notifyVaultChanged even if this tab locked while the request was in flight.
+          if (
+            bundle.userId === null ||
+            currentUserIdRef.current === bundle.userId
+          ) {
+            vault.notifyVaultChanged({
+              vault_key_id: bundle.vaultKeyId,
+              version: completeRes.version,
+            });
+            if (isMountedRef.current) {
+              setPreparedCompleteBundle(null);
+              setCompletingRecovery(false);
+              setCompletedWhileLockedNotice(true);
+              router.replace('/app/unlock');
+            }
+          }
           return;
         }
 
@@ -811,7 +828,7 @@ export function VaultRecoveryFlow() {
         }
       }
     },
-    [reauth, vault],
+    [reauth, router, vault],
   );
 
   // Step 3 submit: validate policy -> check grant >= 60s before FIRST send -> rewrap (stays `recovering`) -> complete
@@ -1372,6 +1389,32 @@ export function VaultRecoveryFlow() {
         className="mx-auto max-w-[640px] px-5 pt-10 pb-24"
         data-testid="vault-recovery-page"
       >
+        {completedWhileLockedNotice ? (
+          <div
+            role="alert"
+            className="card mb-6 p-5"
+            style={{ borderColor: 'var(--success)' }}
+            data-testid="recovery-completed-while-locked-notice"
+          >
+            <p
+              className="m-0 mb-1 text-[14px] font-semibold"
+              style={{ color: 'var(--body)' }}
+            >
+              {t('step3.errors.completedWhileLockedTitle')}
+            </p>
+            <p className="m-0 mb-3 text-[13px]" style={{ color: 'var(--muted)' }}>
+              {t('step3.errors.completedWhileLockedBody')}
+            </p>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => router.replace('/app/unlock')}
+              data-testid="recovery-completed-while-locked-cta"
+            >
+              {t('step3.errors.completedWhileLockedCta')}
+            </Button>
+          </div>
+        ) : null}
         {/* Stepper matching mockups/recovery.html */}
         <nav aria-label={t('stepperLabel')} className="mb-7 flex items-center gap-3">
           <div className="seg flex-wrap" data-seg>
@@ -1747,6 +1790,7 @@ export function VaultRecoveryFlow() {
                   </div>
                   <span
                     data-testid="recovery-passphrase-strength-label"
+                    aria-live="polite"
                     className="text-[12px]"
                     style={{ color: 'var(--body)' }}
                   >

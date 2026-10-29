@@ -1336,4 +1336,136 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 25_000);
+
+  it('FE1-7: lock while POST /vault/recover/complete is in flight and resolves 200 calls notifyVaultChanged, shows completed-while-locked notice, and routes to /app/unlock', async () => {
+    const shim = makeTestShim();
+    let holdComplete = true;
+    let resolveComplete: (() => void) | null = null;
+    let vaultVersion = 1;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture({ hasPassword: true }));
+      if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body ?? '{}')) as { action: string };
+        return jsonResponse({
+          grant: `grant-${body.action}-token`,
+          action: body.action,
+          expires_at: futureIso(300),
+        });
+      }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(makeVaultMetaFixture(vaultVersion));
+      }
+      if (url.endsWith('/vault/unlock/recovery') && init?.method === 'POST') {
+        return jsonResponse({
+          recovery_key_id: 'rk-id-slot-1',
+          slot: 1,
+          wrap: TEST_VECTOR_RK_WRAP,
+        });
+      }
+      if (url.endsWith('/vault/recover/complete') && init?.method === 'POST') {
+        if (holdComplete) {
+          await new Promise<void>((resolve) => {
+            resolveComplete = resolve;
+          });
+        }
+        vaultVersion = 2;
+        return jsonResponse({
+          vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
+          version: 2,
+          recovery_keys_remaining: 9,
+          empty_slots: [1],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-reauth')).toBeInTheDocument();
+    });
+
+    // Step 1: Re-auth
+    fireEvent.change(screen.getByLabelText(/Account login password/i), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
+    });
+
+    // Step 2: Enter RK
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('recovery-passphrase-strength-label')).toHaveAttribute(
+      'aria-live',
+      'polite',
+    );
+
+    // Step 3: Submit new passphrase -> holds on POST /vault/recover/complete
+    const notifySpy = vi.spyOn(vaultCtx, 'notifyVaultChanged');
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+
+    await waitFor(() => {
+      expect(resolveComplete).not.toBeNull();
+    });
+
+    // Lock while POST /vault/recover/complete is in flight!
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    expect(vaultCtx.state).toBe('locked');
+
+    // Resolve POST /vault/recover/complete with 200 -> must call notifyVaultChanged, show notice, and route to /app/unlock
+    await act(async () => {
+      holdComplete = false;
+      resolveComplete?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-completed-while-locked-notice')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('recovery-completed-while-locked-notice')).toHaveTextContent(
+      /Recovery completed — unlock with your new passphrase/i,
+    );
+    expect(notifySpy).toHaveBeenCalledWith({
+      vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
+      version: 2,
+    });
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+
+    shim.close();
+  }, 20_000);
 });

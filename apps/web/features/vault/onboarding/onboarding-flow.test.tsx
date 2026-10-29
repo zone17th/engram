@@ -1253,10 +1253,13 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/app/settings');
     expect(screen.queryByText(/Chưa tạo/i)).not.toBeInTheDocument();
 
-    // FE1-5: distinctFromLogin rule uses neutral bullet · instead of ✓, and minLength/minScore start with ·
+    // FE1-5: strength label has aria-live="polite", distinctFromLogin rule uses neutral bullet · instead of ✓, and minLength/minScore expose sr-only met/not-met status
+    expect(screen.getByTestId('passphrase-strength-label')).toHaveAttribute('aria-live', 'polite');
     expect(screen.getByTestId('rule-distinct-login')).toHaveTextContent(/^·/);
     expect(screen.getByTestId('rule-min-length')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-length-status')).toHaveTextContent(/Not met:/i);
     expect(screen.getByTestId('rule-min-score')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-score-status')).toHaveTextContent(/Not met:/i);
 
     const passInput = screen.getByLabelText(/^Passphrase$/i);
     const confirmInput = screen.getByLabelText(/Confirm passphrase/i);
@@ -1265,7 +1268,10 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     fireEvent.change(passInput, { target: { value: STRONG_PASSPHRASE } });
     fireEvent.change(confirmInput, { target: { value: `${STRONG_PASSPHRASE}-diff` } });
     expect(screen.getByText(/Passphrases do not match/i)).toBeInTheDocument();
-
+    await waitFor(() => {
+      expect(screen.getByTestId('rule-min-length-status')).toHaveTextContent(/Met:/i);
+      expect(screen.getByTestId('rule-min-score-status')).toHaveTextContent(/Met:/i);
+    });
     // FE1-4: validation error on submit moves focus to the invalid field
     fireEvent.click(screen.getByTestId('onboarding-continue-button'));
     await waitFor(() => {
