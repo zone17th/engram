@@ -274,6 +274,13 @@ export function VaultRecoveryFlow() {
   // Bumped only by attempts that begin a new recovery (RK lookup, complete POST); a cancel/restart does not take ownership of
   // an earlier committed outcome (FE4-1).
   const recoverySuccessorEpochRef = useRef(0);
+  // FE6-1: the vault-identity observation of a committed recovery whose recheck read failed. It outlives that read so a vault
+  // announced before the user's retry is still known; kept until a read succeeds, a newer attempt or key replaces it, or the
+  // flow unmounts.
+  const pendingTransitionsRef = useRef<{
+    vaultKeyId: string;
+    observer: VaultIdentityTransitionObserver;
+  } | null>(null);
   // FE1-4: async failures re-enable the form after it was disabled while pending; focus is restored afterwards.
   const refocusRecoveryKeyAfterErrorRef = useRef(false);
   const step4ErrorRef = useRef<HTMLDivElement>(null);
@@ -348,6 +355,8 @@ export function VaultRecoveryFlow() {
     if (startsRecovery) {
       recoverySuccessorEpochRef.current += 1;
     }
+    pendingTransitionsRef.current?.observer.release();
+    pendingTransitionsRef.current = null;
     setCommittedRecheck(null);
   }, []);
 
@@ -491,6 +500,8 @@ export function VaultRecoveryFlow() {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      pendingTransitionsRef.current?.observer.release();
+      pendingTransitionsRef.current = null;
       clearAllSecrets();
       if (workerHoldsRecoveryStateRef.current && !completedRecoveryRef.current) {
         workerHoldsRecoveryStateRef.current = false;
@@ -811,9 +822,21 @@ export function VaultRecoveryFlow() {
       const ownsFlow = () =>
         isOriginAccount() && !succeeded() && recoveryAttemptEpochRef.current === attemptEpoch;
       // FE5-1: a vault-identity change announced locally or by a sibling tab since the completion was sent (not only since
-      // this read began) outdates the committed outcome; the origin observer was listening while the 200 was held. A retry
-      // has no origin observer, so it listens from here on and the live vault identity covers what came before.
-      const transitions = originTransitions ?? observeVaultIdentityTransitions(outcome.vaultKeyId);
+      // this read began) outdates the committed outcome; the origin observer was listening while the 200 was held.
+      // FE6-1: a retry resumes the observer parked by the failed read before it (same vault key), so a vault announced
+      // between the two reads is still known; only a retry without one starts listening from here on.
+      const parked = pendingTransitionsRef.current;
+      pendingTransitionsRef.current = null;
+      if (originTransitions || parked?.vaultKeyId !== outcome.vaultKeyId) parked?.observer.release();
+      const ownsObserver = !originTransitions;
+      const transitions =
+        originTransitions ??
+        (parked?.vaultKeyId === outcome.vaultKeyId ? parked.observer : null) ??
+        observeVaultIdentityTransitions(outcome.vaultKeyId);
+      // The reconciliation's own observer is released on every path except a failed read that parks it again.
+      const releaseOwnObserver = () => {
+        if (ownsObserver) transitions.release();
+      };
       const recheckBase = {
         userId: outcome.userId,
         vaultKeyId: outcome.vaultKeyId,
@@ -821,7 +844,10 @@ export function VaultRecoveryFlow() {
       };
       // No feedback of any phase is installed for an outcome that is already outdated; the read still runs so the live
       // identity is verified before anything else could be published.
-      if (!transitions.transitioned()) {
+      if (transitions.transitioned()) {
+        // FE6-1: a retry over a notice that a later vault already outdated removes it before the read, never reuses it.
+        setCommittedRecheck(null);
+      } else {
         setCommittedRecheck({ ...recheckBase, phase: 'verifying' });
       }
       let live: VaultState | null = null;
@@ -830,10 +856,9 @@ export function VaultRecoveryFlow() {
         live = await vaultRef.current.reloadVaultMeta();
       } catch {
         verificationFailed = true;
-      } finally {
-        if (!originTransitions) transitions.release();
       }
       if (!ownsFlow()) {
+        releaseOwnObserver();
         // A successor attempt (or another account) owns the UI now; it cleared its own feedback already.
         if (isMountedRef.current && recoveryAttemptEpochRef.current === attemptEpoch) {
           setCommittedRecheck(null);
@@ -845,9 +870,21 @@ export function VaultRecoveryFlow() {
         const outdated =
           transitions.transitioned() ||
           SUCCESSOR_WORKER_STATES.includes(vaultRef.current.getClient().getState());
-        setCommittedRecheck(outdated ? null : { ...recheckBase, phase: 'recheck_needed' });
+        if (outdated) {
+          releaseOwnObserver();
+          setCommittedRecheck(null);
+          return;
+        }
+        // FE6-1: the identity observation survives the failed read until a read succeeds or a newer attempt replaces it.
+        // An origin observer is released by its sender, so the retry gets a fresh one (no await between check and subscribe).
+        pendingTransitionsRef.current = {
+          vaultKeyId: outcome.vaultKeyId,
+          observer: ownsObserver ? transitions : observeVaultIdentityTransitions(outcome.vaultKeyId),
+        };
+        setCommittedRecheck({ ...recheckBase, phase: 'recheck_needed' });
         return;
       }
+      releaseOwnObserver();
       setCommittedRecheck(null);
       if (
         !live ||

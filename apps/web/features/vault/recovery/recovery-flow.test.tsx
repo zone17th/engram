@@ -3385,6 +3385,172 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     }, 30_000);
   }
 
+  // FE6-1: the identity observation outlives a failed recheck read. A's 200 is released with GET /vault failing 503, so the
+  // flow shows the retry; the tests then announce replacement vault B before the user's retry.
+  async function driveToFailedRecheck(
+    fetchState: ReturnType<typeof installRecoveryRaceFetchMock>,
+    getVaultCtx: () => VaultContextValue,
+  ) {
+    await driveToLockedCommittedRecovery(fetchState, getVaultCtx);
+    fetchState.vaultGetFailure = { status: 503, code: 'service_unavailable' };
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+        'data-phase',
+        'recheck_needed',
+      );
+    });
+  }
+
+  for (const announce of ['local notifyVaultChanged', 'sibling-tab broadcast'] as const) {
+    it(`FE6-1: a vault B announced (${announce}) after A's failed recheck and before the retry is still known when the retry also fails, so no old notice or actions come back`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+      const published = collectVaultChangedBroadcasts();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveToFailedRecheck(fetchState, () => vaultCtx);
+
+      // The failed read ended; the retry is shown. Only now is the recreated vault B announced; the Worker stays locked.
+      fetchState.vaultMetaOverride = {
+        ...makeVaultMetaFixture(1),
+        vault_key_id: REPLACEMENT_VAULT_KEY_ID,
+      };
+      await act(async () => {
+        if (announce === 'local notifyVaultChanged') {
+          vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+        } else {
+          postVaultBroadcast({
+            type: 'vault_changed',
+            vault_key_id: REPLACEMENT_VAULT_KEY_ID,
+            version: 1,
+          });
+        }
+      });
+      await settle();
+      expect(vaultCtx.state).toBe('locked');
+      expect(vaultCtx.workerState).toBe('locked');
+      const publishedAfterTransition = published.length;
+      routerMocks.replace.mockClear();
+
+      // The user's retry also fails.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+      });
+      await settle();
+      await settle();
+
+      expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+      expect(published.slice(publishedAfterTransition)).toEqual([]);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+      expect(vaultCtx.state).toBe('locked');
+      expect(vaultCtx.workerState).toBe('locked');
+
+      shim.close();
+    }, 30_000);
+  }
+
+  it('FE6-1: an ordinary origin retry that fails again keeps the observation, so a vault B announced after the second failed read still outdates the third', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToFailedRecheck(fetchState, () => vaultCtx);
+
+    // BE4-2 control: with no vault change a failing retry still shows the truthful re-check feedback.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+        'data-phase',
+        'recheck_needed',
+      );
+    });
+    expect(published).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+    });
+    await settle();
+    const publishedAfterTransition = published.length;
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+    });
+    await settle();
+    await settle();
+    expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
+    expect(published.slice(publishedAfterTransition)).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+
+    shim.close();
+  }, 30_000);
+
+  it('FE6-1: a vault B announced after the failed read and a retry whose read succeeds (answering B) clears the pending observation without publishing or navigating', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToFailedRecheck(fetchState, () => vaultCtx);
+
+    fetchState.vaultMetaOverride = {
+      ...makeVaultMetaFixture(1),
+      vault_key_id: REPLACEMENT_VAULT_KEY_ID,
+    };
+    await act(async () => {
+      vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+    });
+    await settle();
+    const publishedAfterTransition = published.length;
+
+    fetchState.vaultGetFailure = null;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+    });
+    await settle();
+    await settle();
+    expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(published.slice(publishedAfterTransition)).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    expect(vaultCtx.state).toBe('locked');
+
+    shim.close();
+  }, 30_000);
+
   it('BE5-2 (consumer boundary): a newly prepared regeneration bundle sends the live vault version, not the lower completion version', async () => {
     const shim = makeTestShim();
     const fetchState = installRecoveryRaceFetchMock();
