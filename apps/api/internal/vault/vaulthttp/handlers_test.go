@@ -950,14 +950,14 @@ func TestT9ToT12RouteChainEnforcesReauthRateLimitIfMatchAndIdempotency(t *testin
 	}
 
 	// 4. DELETE /vault with empty body does NOT fail with 415 Unsupported Media Type;
-	// with valid grant + If-Match it reaches the T12 stub (501).
+	// with valid grant + If-Match it reaches the T12 handler and returns 404 vault_absent (since jarA has no vault).
 	resetGrant := h.reauthGrant(jarA, "vault.reset", password)
 	respDel, rawDel := h.doReq(jarA, http.MethodDelete, "/api/v1/vault", "", reqOptions{
 		idemKey: "idem-chain-reset-empty-body",
 		ifMatch: `"vk:AAECAwQFBgcICQoLDA0ODw:1"`,
 		grant:   resetGrant,
 	})
-	if respDel.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("DELETE /vault empty body = %d %s, want 501 stub", respDel.StatusCode, rawDel)
+	if respDel.StatusCode != http.StatusNotFound || decodeProblem(t, rawDel).Code != "vault_absent" {
+		t.Fatalf("DELETE /vault empty body = %d %s, want 404 vault_absent", respDel.StatusCode, rawDel)
 	}
 }
