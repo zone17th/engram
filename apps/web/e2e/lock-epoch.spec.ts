@@ -816,86 +816,49 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
       },
     );
 
-    // 2. Intercept `IDBObjectStore.prototype.put` on `'meta'` so the production `purgeDeviceKeysInSingleTx`
-    //    readwrite transaction aborts AFTER `devkeys.delete` and `meta.put` have been issued inside the single
-    //    transaction, then trigger a reset purge via `vault_changed { version: null }`.
-    const snapshotAfterAbortedPurge = await page.evaluate(
-      async ({ recKey, dbName, dbVersion, devStore, metaStore, metaKey }) => {
+    // 2. Intercept `IDBObjectStore.prototype.put` on `'meta'` so the production device-purge readwrite transaction
+    //    (`devkeys` + `meta`) aborts AFTER `meta.put` succeeded. The interception installs an `abort` listener on
+    //    that very transaction and records it in a witness, so the test can PROVE the abort ran instead of
+    //    reading unchanged stores that would equally satisfy "the purge never started".
+    await page.evaluate(
+      ({ metaStore, metaKey }) => {
+        const win = window as unknown as {
+          __be118Witness?: {
+            intercepted: boolean;
+            storeNames: string[];
+            abortEvents: number;
+            txErrorName: string | null;
+          };
+          __be118OrigPut?: typeof IDBObjectStore.prototype.put;
+        };
+        const witness = { intercepted: false, storeNames: [] as string[], abortEvents: 0, txErrorName: null as string | null };
+        win.__be118Witness = witness;
         const origPut = IDBObjectStore.prototype.put;
-        let metaPutAbortedOnce = false;
-
+        win.__be118OrigPut = origPut;
+        let armed = true;
         IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
           const req = origPut.call(this, value, key);
-          if (!metaPutAbortedOnce && this.name === metaStore && key === metaKey) {
-            metaPutAbortedOnce = true;
+          if (armed && this.name === metaStore && key === metaKey) {
+            armed = false;
             const tx = this.transaction;
+            witness.intercepted = true;
+            witness.storeNames = Array.from(tx.objectStoreNames).sort();
+            tx.addEventListener('abort', () => {
+              witness.abortEvents += 1;
+              witness.txErrorName = tx.error?.name ?? null;
+            });
             req.addEventListener('success', () => {
-              try {
-                tx.abort();
-              } catch {
-                // Ignore if already aborting
-              }
+              tx.abort();
             });
           }
           return req;
         };
-
-        try {
-          const bc = new BroadcastChannel('sabk.vault');
-          bc.postMessage({
-            type: 'vault_changed',
-            vault_key_id: 'vk:be1-18-browser-test',
-            version: null,
-          });
-          bc.close();
-          await new Promise((r) => setTimeout(r, 150));
-        } finally {
-          IDBObjectStore.prototype.put = origPut;
-        }
-
-        const db = await new Promise<IDBDatabase>((resolve, reject) => {
-          const req = indexedDB.open(dbName, dbVersion);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
-        const state = await new Promise<{
-          hasDevKey: boolean;
-          meta: { incarnation: string; deviceRevision: number } | null;
-        }>((resolve, reject) => {
-          const tx = db.transaction([devStore, metaStore], 'readonly');
-          const devReq = tx.objectStore(devStore).get(recKey);
-          const metaReq = tx.objectStore(metaStore).get(metaKey);
-          tx.oncomplete = () =>
-            resolve({
-              hasDevKey: devReq.result !== undefined,
-              meta: metaReq.result ?? null,
-            });
-          tx.onerror = () => reject(tx.error);
-        });
-        db.close();
-        return state;
       },
-      {
-        recKey: devKeyId,
-        dbName: SABK_DEVICE_DB_NAME,
-        dbVersion: SABK_DEVICE_DB_VERSION,
-        devStore: DEVKEY_STORE_NAME,
-        metaStore: META_STORE_NAME,
-        metaKey: DEVICE_META_RECORD_KEY,
-      },
+      { metaStore: META_STORE_NAME, metaKey: DEVICE_META_RECORD_KEY },
     );
-    // Because the real Chromium IndexedDB readwrite transaction aborted after `devkeys.delete` and `meta.put`,
-    // Chromium rolled back BOTH stores atomically AND BE2-8 did NOT cache the failed purge as committed!
-    expect(snapshotAfterAbortedPurge.hasDevKey).toBe(true);
-    expect(snapshotAfterAbortedPurge.meta).toEqual({
-      incarnation: initialIncarnation,
-      deviceRevision: 7,
-    });
 
-    // 3. Now repeat the reset broadcast without the abort injection -> the retry purge succeeds (`ok: true`),
-    //    deleting the DevKey and rotating `meta.__meta__` (`deviceRevision: 8`).
-    const snapshotAfterRetryPurge = await page.evaluate(
-      async ({ recKey, dbName, dbVersion, devStore, metaStore, metaKey }) => {
+    const broadcastReset = () =>
+      page.evaluate(() => {
         const bc = new BroadcastChannel('sabk.vault');
         bc.postMessage({
           type: 'vault_changed',
@@ -903,39 +866,79 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
           version: null,
         });
         bc.close();
-        await new Promise((r) => setTimeout(r, 150));
+      });
+    await broadcastReset();
 
-        const db = await new Promise<IDBDatabase>((resolve, reject) => {
-          const req = indexedDB.open(dbName, dbVersion);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
-        const state = await new Promise<{
-          hasDevKey: boolean;
-          meta: { incarnation: string; deviceRevision: number } | null;
-        }>((resolve, reject) => {
-          const tx = db.transaction([devStore, metaStore], 'readonly');
-          const devReq = tx.objectStore(devStore).get(recKey);
-          const metaReq = tx.objectStore(metaStore).get(metaKey);
-          tx.oncomplete = () =>
-            resolve({
-              hasDevKey: devReq.result !== undefined,
-              meta: metaReq.result ?? null,
-            });
-          tx.onerror = () => reject(tx.error);
-        });
-        db.close();
-        return state;
-      },
-      {
-        recKey: devKeyId,
-        dbName: SABK_DEVICE_DB_NAME,
-        dbVersion: SABK_DEVICE_DB_VERSION,
-        devStore: DEVKEY_STORE_NAME,
-        metaStore: META_STORE_NAME,
-        metaKey: DEVICE_META_RECORD_KEY,
-      },
-    );
+    // Wait on the OBSERVABLE: the production purge transaction (devkeys + meta) was intercepted and its `abort`
+    // event fired. A purge that never reached `meta.put` can never satisfy this and times out instead.
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __be118Witness?: unknown }).__be118Witness), {
+        timeout: 10_000,
+        intervals: [25, 50, 100],
+      })
+      .toMatchObject({
+        intercepted: true,
+        storeNames: [DEVKEY_STORE_NAME, META_STORE_NAME].sort(),
+        abortEvents: 1,
+      });
+    await page.evaluate(() => {
+      const win = window as unknown as { __be118OrigPut?: typeof IDBObjectStore.prototype.put };
+      if (win.__be118OrigPut) IDBObjectStore.prototype.put = win.__be118OrigPut;
+    });
+
+    // Because the real Chromium IndexedDB readwrite transaction aborted after `devkeys.delete` and `meta.put`
+    // were issued, Chromium rolled back BOTH stores atomically AND the failed purge was not cached as committed.
+    const readDeviceState = () =>
+      page.evaluate(
+        async ({ recKey, dbName, dbVersion, devStore, metaStore, metaKey }) => {
+          const db = await new Promise<IDBDatabase>((resolve, reject) => {
+            const req = indexedDB.open(dbName, dbVersion);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          const state = await new Promise<{
+            hasDevKey: boolean;
+            meta: { incarnation: string; deviceRevision: number } | null;
+          }>((resolve, reject) => {
+            const tx = db.transaction([devStore, metaStore], 'readonly');
+            const devReq = tx.objectStore(devStore).get(recKey);
+            const metaReq = tx.objectStore(metaStore).get(metaKey);
+            tx.oncomplete = () =>
+              resolve({
+                hasDevKey: devReq.result !== undefined,
+                meta: metaReq.result ?? null,
+              });
+            tx.onerror = () => reject(tx.error);
+          });
+          db.close();
+          return state;
+        },
+        {
+          recKey: devKeyId,
+          dbName: SABK_DEVICE_DB_NAME,
+          dbVersion: SABK_DEVICE_DB_VERSION,
+          devStore: DEVKEY_STORE_NAME,
+          metaStore: META_STORE_NAME,
+          metaKey: DEVICE_META_RECORD_KEY,
+        },
+      );
+    const snapshotAfterAbortedPurge = await readDeviceState();
+    expect(snapshotAfterAbortedPurge.hasDevKey).toBe(true);
+    expect(snapshotAfterAbortedPurge.meta).toEqual({
+      incarnation: initialIncarnation,
+      deviceRevision: 7,
+    });
+
+    // 3. Now repeat the reset broadcast without the abort injection -> the retry purge succeeds (`ok: true`),
+    //    deleting the DevKey and rotating `meta.__meta__` (`deviceRevision: 8`). Poll the committed state.
+    await broadcastReset();
+    await expect
+      .poll(async () => (await readDeviceState()).meta?.deviceRevision, {
+        timeout: 10_000,
+        intervals: [25, 50, 100],
+      })
+      .toBe(8);
+    const snapshotAfterRetryPurge = await readDeviceState();
     expect(snapshotAfterRetryPurge.hasDevKey).toBe(false);
     expect(snapshotAfterRetryPurge.meta?.deviceRevision).toBe(8);
     expect(snapshotAfterRetryPurge.meta?.incarnation).not.toBe(initialIncarnation);
