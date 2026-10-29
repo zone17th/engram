@@ -32,7 +32,7 @@ export interface RecoveryKeysDialogsProps {
   onClose: () => void;
   vaultMeta: VaultState | null;
   emptySlots: readonly number[];
-  remainingRecoveryKeys: number;
+  remainingRecoveryKeys: number | null;
   onSuccessToast?: (message: string) => void;
   onStatusChanged?: () => void;
 }
@@ -189,8 +189,8 @@ export function RecoveryKeysDialog({
   }, [onClose, reauth, requiredAction, resetDialogState, submitting]);
 
   const handleError = useCallback(
-    (err: unknown) => {
-      const classified = classifyVaultSettingsError(err);
+    (err: unknown, options: { isReauthStep?: boolean } = {}) => {
+      const classified = classifyVaultSettingsError(err, options);
       setClassifiedError(classified);
       if (!classified.canRetrySameOperation) {
         idempotencyKeyRef.current = null;
@@ -271,7 +271,13 @@ export function RecoveryKeysDialog({
     setClassifiedError(null);
 
     try {
-      const grantResult = await reauthPassword(requiredAction, loginPassword);
+      let grantResult: ReauthGrant;
+      try {
+        grantResult = await reauthPassword(requiredAction, loginPassword);
+      } catch (reauthErr) {
+        handleError(reauthErr, { isReauthStep: true });
+        return;
+      }
       setLoginPassword('');
       await generateKeysInWorker(grantResult);
     } catch (err) {
@@ -385,7 +391,13 @@ export function RecoveryKeysDialog({
     setErrorMessage(null);
 
     try {
-      const freshGrant = await reauthPassword(requiredAction, inlineReauthPassword);
+      let freshGrant: ReauthGrant;
+      try {
+        freshGrant = await reauthPassword(requiredAction, inlineReauthPassword);
+      } catch (reauthErr) {
+        handleError(reauthErr, { isReauthStep: true });
+        return;
+      }
       setInlineReauthPassword('');
       activeGrantRef.current = freshGrant;
       await executeSaveKeys(freshGrant.grant);
@@ -459,7 +471,7 @@ export function RecoveryKeysDialog({
                 : t('recoveryKeys.regenerate.dialogDescription', {
                     emptyCount: targetSlots.length,
                     slotRange: slotRangeLabel,
-                    remaining: remainingRecoveryKeys,
+                    remaining: remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining'),
                   })
             }
             className="mb-4"

@@ -1343,4 +1343,247 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(rotatedMeta!.incarnation).not.toBe('00112233445566778899aabbccddeeff');
     expect(rotatedMeta!.incarnation).toMatch(/^[0-9a-f]{32}$/);
   });
+
+  it('does not misclassify PUT /vault/kek 403 csrf_invalid as a password re-authentication failure (R2-2)', async () => {
+    const user = userEvent.setup();
+    const { requestsByPath } = await renderSettingsHarness({
+      customFetch: (url, init) => {
+        if (url.endsWith('/api/v1/vault/kek') && init?.method?.toUpperCase() === 'PUT') {
+          return problemResponse('csrf_invalid', 403, {
+            detail: 'CSRF token mismatch',
+          });
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.type(within(dialog).getByLabelText('New vault passphrase'), STRONG_PASSPHRASE);
+    await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
+    await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
+
+    await waitFor(() => {
+      const alertText = within(dialog).getByRole('alert').textContent ?? '';
+      expect(alertText).toContain('Could not complete the vault operation');
+      expect(alertText).not.toContain('Incorrect login password');
+      expect(alertText).not.toContain('re-authentication failed');
+    });
+
+    expect(
+      requestsByPath.filter((r) => r.method === 'PUT' && r.path.endsWith('/api/v1/vault/kek')),
+    ).toHaveLength(1);
+  });
+
+  it('shows unknown remaining recovery keys and disables Reset vault when GET /vault fails with 500 or is gated off (R2-6)', async () => {
+    await renderSettingsHarness({
+      unlocked: false,
+      customFetch: (url, init) => {
+        if (url.endsWith('/api/v1/vault') && (init?.method ?? 'GET').toUpperCase() === 'GET') {
+          return problemResponse('internal_error', 500);
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    const resetCard = screen.getByTestId('vault-reset-card');
+    expect(resetCard.textContent).not.toContain('0 remaining');
+    expect(resetCard.textContent).toContain('unknown remaining recovery keys');
+    expect(within(resetCard).getByRole('button', { name: 'Reset vault' })).toBeDisabled();
+
+    // Also verify gated-off RK query (unlocked with legacy non-numeric vaultMeta) shows Status unavailable instead of endless Loading
+    cleanup();
+    const legacyMeta = {
+      ...makeVaultMeta(1, 5),
+      recovery_keys_remaining: undefined as unknown as number,
+    };
+    await renderSettingsHarness({
+      vaultMeta: legacyMeta,
+      unlocked: true,
+    });
+
+    expect(screen.getByTestId('recovery-keys-remaining-badge')).toHaveTextContent(
+      'Status unavailable',
+    );
+    expect(screen.getByTestId('recovery-keys-status-pending')).toHaveTextContent(
+      'Status unavailable',
+    );
+  });
+
+  it('bounds GET /api/v1/auth/me and GET /api/v1/vault requests to <= 3 over ~1 s when Me is present and GET /vault returns 404 forever (R2-3)', async () => {
+    let meCount = 0;
+    let vaultCount = 0;
+
+    await renderSettingsHarness({
+      unlocked: false,
+      customFetch: (url, init) => {
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.endsWith('/api/v1/auth/me') && method === 'GET') {
+          meCount += 1;
+          return jsonResponse(makeMeFixture({ vaultStatus: 'present' }));
+        }
+        if (url.endsWith('/api/v1/vault') && method === 'GET') {
+          vaultCount += 1;
+          return problemResponse('vault_absent', 404);
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    const { promise: delayPromise, resolve: resolveDelay } = Promise.withResolvers<void>();
+    setTimeout(resolveDelay, 1_000);
+    await delayPromise;
+
+    expect(meCount).toBeLessThanOrEqual(3);
+    expect(vaultCount).toBeLessThanOrEqual(3);
+  });
+
+  it('clears idempotencyKeyRef and restores form step when the vault locks during Change Passphrase (R1-7, R2-5)', async () => {
+    const user = userEvent.setup();
+    let putAttempt = 0;
+
+    const { getVaultCtx, requestsByPath } = await renderSettingsHarness({
+      customFetch: (url, init) => {
+        if (url.endsWith('/api/v1/vault/kek') && init?.method?.toUpperCase() === 'PUT') {
+          putAttempt += 1;
+          if (putAttempt === 1) {
+            throw new TypeError('Failed to fetch: network error');
+          }
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.type(within(dialog).getByLabelText('New vault passphrase'), STRONG_PASSPHRASE);
+    await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
+    await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not reach the server');
+    });
+    const firstPut = requestsByPath.find(
+      (r) => r.method === 'PUT' && r.path.endsWith('/api/v1/vault/kek'),
+    );
+    const firstKey = firstPut?.headers.get('Idempotency-Key');
+    expect(firstKey).toBeTruthy();
+
+    // Lock the vault -> dialog state resets to form, error cleared, idempotencyKeyRef dropped
+    await act(async () => {
+      await getVaultCtx().lockNow();
+    });
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Change passphrase' })).toBeInTheDocument();
+
+    // Unlock again and submit a fresh attempt -> generates a new Idempotency-Key
+    await act(async () => {
+      const op = getVaultCtx().beginOp();
+      await getVaultCtx().createVault({
+        passphrase: 're-unlocked-passphrase-12345',
+        opGeneration: op.opGeneration,
+        skipRecoveryKeys: true,
+      });
+      await getVaultCtx().reloadVaultMeta();
+    });
+
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.type(within(dialog).getByLabelText('New vault passphrase'), STRONG_PASSPHRASE);
+    await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
+    await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByText('Vault passphrase updated')).toBeInTheDocument();
+    });
+    const putReqs = requestsByPath.filter(
+      (r) => r.method === 'PUT' && r.path.endsWith('/api/v1/vault/kek'),
+    );
+    expect(putReqs).toHaveLength(2);
+    expect(putReqs[1]!.headers.get('Idempotency-Key')).not.toBe(firstKey);
+  });
+
+  it('reaches s5_done without flashing s1_paths even when refetchMe rejects after 204 DELETE /vault (R1-6, R2-1, R2-5)', async () => {
+    const user = userEvent.setup();
+    let deleteCalled = false;
+
+    await renderSettingsHarness({
+      customFetch: (url, init) => {
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
+          deleteCalled = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.endsWith('/api/v1/auth/me') && method === 'GET' && deleteCalled) {
+          throw new TypeError('Failed to fetch /auth/me after reset');
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+
+    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+    await user.type(confirmInput, 'RESET');
+    await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+    });
+    expect(within(dialog).queryByText(/Step 1 of 5/i)).toBeNull();
+  });
+
+  it('renders recovery-keys-status-error with no slot chips when GET /vault/recovery-keys returns 500, and surfaces 401 /auth/reauth errors in RK and Reset dialogs (R1-10, R2-5)', async () => {
+    const user = userEvent.setup();
+    await renderSettingsHarness({
+      customFetch: (url) => {
+        if (url.endsWith('/api/v1/vault/recovery-keys')) {
+          return problemResponse('internal_error', 500);
+        }
+        if (url.endsWith('/api/v1/auth/reauth')) {
+          return problemResponse('invalid_credentials', 401);
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-keys-status-error')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('recovery-keys-slot-chips')).toBeNull();
+
+    // 1. Rotate Recovery Keys 401 /auth/reauth -> surfaces reauthFailed alert
+    await user.click(screen.getByRole('button', { name: 'Rotate all 10' }));
+    const rotDlg = await screen.findByRole('dialog');
+    await user.type(within(rotDlg).getByLabelText('Login password'), 'wrong-password');
+    await user.click(within(rotDlg).getByRole('button', { name: 'Continue' }));
+    await waitFor(() => {
+      expect(within(rotDlg).getByRole('alert')).toHaveTextContent(
+        'Incorrect login password or account re-authentication failed. Please try again.',
+      );
+    });
+    await user.click(within(rotDlg).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // 2. Reset Vault step 3 401 /auth/reauth -> surfaces reauthFailed alert
+    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+    const rstDlg = await screen.findByRole('dialog');
+    await user.click(within(rstDlg).getByRole('button', { name: 'None of these work' }));
+    await user.click(within(rstDlg).getByRole('button', { name: 'Checked backups' }));
+    await user.type(within(rstDlg).getByLabelText('Login password'), 'wrong-password');
+    await user.click(within(rstDlg).getByRole('button', { name: 'Continue' }));
+    await waitFor(() => {
+      expect(within(rstDlg).getByRole('alert')).toHaveTextContent(
+        'Incorrect login password or account re-authentication failed. Please try again.',
+      );
+    });
+  });
 });

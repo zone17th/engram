@@ -50,7 +50,10 @@ export interface ClassifiedVaultSettingsError {
  * Maps HTTP ProblemError and CryptoClient/CryptoWorker errors into distinct, non-secret UI error states.
  * Never returns "wrong passphrase" for Settings rewrap/RK/reset flows, and never echoes secret inputs.
  */
-export function classifyVaultSettingsError(err: unknown): ClassifiedVaultSettingsError {
+export function classifyVaultSettingsError(
+  err: unknown,
+  options: { isReauthStep?: boolean } = {},
+): ClassifiedVaultSettingsError {
   if (err instanceof ProblemError) {
     const { code, status, retry_after, current_version } = err.problem;
     if (status === 412 || code === 'version_mismatch') {
@@ -87,11 +90,10 @@ export function classifyVaultSettingsError(err: unknown): ClassifiedVaultSetting
       return { kind: 'reauth_expired', canRetrySameOperation: true };
     }
     if (
-      status === 401 ||
-      status === 403 ||
       code === 'invalid_credentials' ||
       code === 'reauth_failed' ||
-      code === 'account_locked'
+      code === 'account_locked' ||
+      (options.isReauthStep && (status === 401 || status === 403))
     ) {
       return { kind: 'reauth_failed', canRetrySameOperation: true };
     }

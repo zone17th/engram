@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { AuthStatus } from '@/components/ui/field';
 import { Toast } from '@/components/ui/toast';
@@ -43,27 +43,39 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const isVaultPresent = me?.vault.status === 'present';
   const isVaultUnlocked = vault.workerState === 'unlocked';
   const requiresUnlockedDisabled = !isVaultPresent || !isVaultUnlocked || vault.inFlight;
-  const resetDisabled = !isVaultPresent || vault.inFlight;
+  const resetDisabled = !isVaultPresent || vault.vaultMeta === null || vault.inFlight;
+
+  const refetchMeRef = useRef(refetchMe);
+  refetchMeRef.current = refetchMe;
+  const nullTransitionRef = useRef(false);
 
   // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
   // TODO(sync-vaultweb): remove when the provider calls refetchMe() on vault_changed{version:null}
   useEffect(() => {
-    if (!isVaultPresent || vault.vaultMeta !== null) return;
+    if (!isVaultPresent || vault.vaultMeta !== null) {
+      nullTransitionRef.current = false;
+      return;
+    }
+    if (nullTransitionRef.current) return;
+    nullTransitionRef.current = true;
     void vault
       .reloadVaultMeta()
       .then((loaded) => {
         if (loaded === null) {
-          void refetchMe().catch(() => undefined);
+          void refetchMeRef.current().catch(() => undefined);
         }
       })
       .catch(() => undefined);
-  }, [isVaultPresent, refetchMe, vault]);
+  }, [isVaultPresent, vault]);
 
   // Fetch detailed RK slot status only while the vault is unlocked AND `vaultMeta` carries a numeric
   // `recovery_keys_remaining` from the real OpenAPI `GET /vault` schema (F2: regenerating/rotating RK
   // requires an unlocked vault, and avoids hitting unmocked `/api/v1/vault/recovery-keys` while locked
   // or in Worker-only CSP harness tests whose mock `GET /vault` uses a legacy nested object).
   const hasOpenApiVaultMeta = typeof vault.vaultMeta?.recovery_keys_remaining === 'number';
+  const isRkQueryGatedOff = Boolean(
+    vault.vaultMeta !== null && !hasOpenApiVaultMeta,
+  );
   const rkStatusQuery = useQuery({
     queryKey: ['vault', 'recovery-keys-status', sessionEpoch, vault.vaultMeta?.version ?? 0],
     queryFn: () => fetchRecoveryKeysStatus(),
@@ -185,7 +197,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
                   className="chip !font-mono text-[12px] text-muted"
                   data-testid="recovery-keys-remaining-badge"
                 >
-                  {rkStatusQuery.isError
+                  {rkStatusQuery.isError || isRkQueryGatedOff || !isVaultUnlocked
                     ? t('recoveryKeys.statusUnavailable')
                     : t('recoveryKeys.statusLoading')}
                 </span>
@@ -283,7 +295,9 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
             data-testid="recovery-keys-status-pending"
           >
             {isVaultUnlocked
-              ? t('recoveryKeys.statusLoading')
+              ? isRkQueryGatedOff
+                ? t('recoveryKeys.statusUnavailable')
+                : t('recoveryKeys.statusLoading')
               : remainingKeys !== null
                 ? t('recoveryKeys.remainingBadge', {
                     remaining: remainingKeys,
@@ -308,7 +322,9 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           {t('reset.cardTitle')}
         </div>
         <p className="mb-4 text-[13px] text-muted">
-          {t('reset.cardBody', { remaining: remainingKeys ?? 0 })}
+          {t('reset.cardBody', {
+            remaining: remainingKeys ?? t('recoveryKeys.unknownRemaining'),
+          })}
         </p>
         <Button
           type="button"
@@ -335,7 +351,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         open={passDialogOpen}
         onOpenChange={setPassDialogOpen}
         vaultMeta={vault.vaultMeta}
-        remainingRecoveryKeys={remainingKeys ?? 0}
+        remainingRecoveryKeys={remainingKeys}
         passkeysCount={passkeysCount}
         onSuccessToast={setToastMessage}
         onOpenSignOutOthers={onOpenRevokeSessionsDialog}
@@ -346,7 +362,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         onClose={() => setRkDialogMode(null)}
         vaultMeta={vault.vaultMeta}
         emptySlots={emptySlots}
-        remainingRecoveryKeys={remainingKeys ?? 0}
+        remainingRecoveryKeys={remainingKeys}
         onSuccessToast={setToastMessage}
         onStatusChanged={handleStatusChanged}
       />
@@ -355,7 +371,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         open={resetDialogOpen}
         onOpenChange={setResetDialogOpen}
         vaultMeta={vault.vaultMeta}
-        remainingRecoveryKeys={remainingKeys ?? 0}
+        remainingRecoveryKeys={remainingKeys}
         passkeysCount={passkeysCount}
         canChangePassphraseNow={!requiresUnlockedDisabled}
         onSwitchToChangePassphrase={() => setPassDialogOpen(true)}

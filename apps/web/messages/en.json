@@ -483,6 +483,7 @@
       "recoveryKeys": {
         "cardTitle": "Recovery keys",
         "remainingBadge": "{remaining} of {slots} left",
+        "unknownRemaining": "unknown",
         "statusLoading": "Loading recovery key status…",
         "statusUnavailable": "Status unavailable",
         "statusErrorBody": "Could not load recovery key status from the server.",

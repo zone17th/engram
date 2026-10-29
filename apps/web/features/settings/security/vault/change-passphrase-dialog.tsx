@@ -29,7 +29,7 @@ export interface ChangePassphraseDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   vaultMeta: VaultState | null;
-  remainingRecoveryKeys: number;
+  remainingRecoveryKeys: number | null;
   passkeysCount: number;
   onSuccessToast?: (message: string) => void;
   onOpenSignOutOthers?: () => void;
@@ -187,8 +187,8 @@ export function ChangePassphraseDialog({
   );
 
   const handleError = useCallback(
-    (err: unknown) => {
-      const classified = classifyVaultSettingsError(err);
+    (err: unknown, options: { isReauthStep?: boolean } = {}) => {
+      const classified = classifyVaultSettingsError(err, options);
       setClassifiedError(classified);
       if (!classified.canRetrySameOperation) {
         idempotencyKeyRef.current = null;
@@ -267,9 +267,14 @@ export function ChangePassphraseDialog({
           userInputs: emailLocal ? [emailLocal, me?.user.email ?? ''] : [],
         });
         setPolicyResult(policy);
-
-        if (!policy.valid) {
-          if (policy.reason === 'invalid_unicode') {
+        const matchesLoginPwd = Boolean(
+          loginPassword.length > 0 &&
+            newPassphrase.normalize('NFC') === loginPassword.normalize('NFC'),
+        );
+        if (!policy.valid || matchesLoginPwd) {
+          if (matchesLoginPwd) {
+            setErrorMessage(t('passphrase.policyDistinct'));
+          } else if (policy.reason === 'invalid_unicode') {
             setErrorMessage(t('errors.passphraseInvalid'));
           } else if (policy.reason === 'too_short') {
             setErrorMessage(t('passphrase.policyTooShort'));
@@ -305,8 +310,8 @@ export function ChangePassphraseDialog({
             activeGrantRef.current = activeGrant;
             setLoginPassword('');
           } catch (reauthErr) {
-            // Re-auth failed -> surface distinct error/rate-limit message and do NOT call Worker or PUT /vault/kek (R1-3)
-            handleError(reauthErr);
+            // Re-auth failed -> surface distinct error/rate-limit message and do NOT call Worker or PUT /vault/kek (R1-3, R2-2)
+            handleError(reauthErr, { isReauthStep: true });
             return;
           }
         } else {
@@ -381,7 +386,13 @@ export function ChangePassphraseDialog({
     setErrorMessage(null);
 
     try {
-      const freshGrant = await reauthPassword('vault.rewrap', inlineReauthPassword);
+      let freshGrant: ReauthGrant;
+      try {
+        freshGrant = await reauthPassword('vault.rewrap', inlineReauthPassword);
+      } catch (reauthErr) {
+        handleError(reauthErr, { isReauthStep: true });
+        return;
+      }
       activeGrantRef.current = freshGrant;
       setInlineReauthPassword('');
       const rewrapped = pendingRewrapResultRef.current;
@@ -422,6 +433,12 @@ export function ChangePassphraseDialog({
 
   const strengthPercent = policyResult ? Math.min(100, Math.round(((policyResult.score + 1) / 5) * 100)) : 0;
   const isStrong = Boolean(policyResult?.meetsMinScore && policyResult?.meetsMinLength);
+  const isDistinctFromLogin = Boolean(
+    newPassphrase.length > 0 &&
+      (loginPassword.length === 0 ||
+        newPassphrase.normalize('NFC') !== loginPassword.normalize('NFC')),
+  );
+  const remainingLabel = remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining');
 
   return (
     <Dialog
@@ -494,16 +511,16 @@ export function ChangePassphraseDialog({
                   <div
                     className="mb-4 flex items-center gap-2"
                     data-testid="passphrase-strength-bar"
-                    role="progressbar"
-                    aria-label={t('passphrase.newLabel')}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={strengthPercent}
-                    aria-valuetext={
-                      isStrong ? t('passphrase.strengthStrong') : t('passphrase.strengthWeak')
-                    }
                   >
                     <div
+                      role="progressbar"
+                      aria-label={t('passphrase.newLabel')}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={strengthPercent}
+                      aria-valuetext={
+                        isStrong ? t('passphrase.strengthStrong') : t('passphrase.strengthWeak')
+                      }
                       style={{
                         height: '4px',
                         flex: 1,
@@ -557,12 +574,12 @@ export function ChangePassphraseDialog({
                     <li>
                       <span
                         aria-hidden="true"
-                        className={newPassphrase.length > 0 ? 'text-body' : 'text-muted'}
+                        className={isDistinctFromLogin ? 'text-body' : 'text-muted'}
                       >
-                        {newPassphrase.length > 0 ? '✓' : '○'}
+                        {isDistinctFromLogin ? '✓' : '○'}
                       </span>{' '}
                       <span className="sr-only">
-                        {newPassphrase.length > 0
+                        {isDistinctFromLogin
                           ? t('passphrase.policyMet')
                           : t('passphrase.policyNotMet')}
                         :{' '}
@@ -589,7 +606,7 @@ export function ChangePassphraseDialog({
                   <div className="mb-5 rounded-md bg-surface p-3.5">
                     <p className="m-0 text-[13px] text-body">
                       {t('passphrase.preserveNote', {
-                        remaining: remainingRecoveryKeys,
+                        remaining: remainingLabel,
                         passkeys: passkeysCount,
                       })}
                     </p>
@@ -775,7 +792,7 @@ export function ChangePassphraseDialog({
                 </AuthStatus>
                 <p className="m-0 mb-3 text-[13px] text-body">
                   {t('passphrase.doneBody', {
-                    remaining: remainingRecoveryKeys,
+                    remaining: remainingLabel,
                     passkeys: passkeysCount,
                   })}
                 </p>

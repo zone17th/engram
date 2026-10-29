@@ -483,6 +483,7 @@
       "recoveryKeys": {
         "cardTitle": "Recovery key",
         "remainingBadge": "còn {remaining}/{slots}",
+        "unknownRemaining": "chưa rõ",
         "statusLoading": "Đang tải trạng thái recovery key…",
         "statusUnavailable": "Không tải được trạng thái",
         "statusErrorBody": "Không tải được trạng thái recovery key từ máy chủ.",

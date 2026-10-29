@@ -25,7 +25,7 @@ export interface ResetVaultDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   vaultMeta: VaultState | null;
-  remainingRecoveryKeys: number;
+  remainingRecoveryKeys: number | null;
   passkeysCount: number;
   canChangePassphraseNow: boolean;
   onSwitchToChangePassphrase?: () => void;
@@ -72,6 +72,7 @@ export function ResetVaultDialog({
   const inFlightGuardRef = useRef(false);
   const idempotencyKeyRef = useRef<string | null>(null);
   const activeGrantRef = useRef<ReauthGrant | null>(null);
+  const committedResetRef = useRef(false);
 
   const hasPassword = reauth.capabilities.hasPassword;
   const hasGoogleOauth = reauth.capabilities.oauthReauthProviders.includes('google');
@@ -95,12 +96,14 @@ export function ResetVaultDialog({
 
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
+      if (committedResetRef.current) return;
       resetDialogState();
     });
   }, [resetDialogState, vault]);
 
   useEffect(() => {
     if (!open) {
+      committedResetRef.current = false;
       resetDialogState();
     }
   }, [open, resetDialogState]);
@@ -110,6 +113,7 @@ export function ResetVaultDialog({
     if (reauth.pendingAction === 'vault.reset') {
       reauth.cancel();
     }
+    committedResetRef.current = false;
     resetDialogState();
     onOpenChange(false);
   }, [onOpenChange, reauth, resetDialogState, submitting]);
@@ -130,8 +134,8 @@ export function ResetVaultDialog({
   }, [reauth]);
 
   const handleError = useCallback(
-    (err: unknown) => {
-      const classified = classifyVaultSettingsError(err);
+    (err: unknown, options: { isReauthStep?: boolean } = {}) => {
+      const classified = classifyVaultSettingsError(err, options);
       setCanRetrySameOp(classified.canRetrySameOperation);
       if (!classified.canRetrySameOperation) {
         idempotencyKeyRef.current = null;
@@ -189,7 +193,7 @@ export function ResetVaultDialog({
       activeGrantRef.current = grantResult;
       setStep('s4_confirm');
     } catch (err) {
-      handleError(err);
+      handleError(err, { isReauthStep: true });
     } finally {
       inFlightGuardRef.current = false;
       setSubmitting(false);
@@ -222,6 +226,10 @@ export function ResetVaultDialog({
         vault.setActiveOperation(null);
       }
 
+      // R2-1: Mark reset committed before calling vault.lock so registerSecretFormReset does not flash s1_paths,
+      // and transition to s5_done right after lock before awaiting refetchMe().
+      committedResetRef.current = true;
+
       // R1-5: Purge remembered DevKey records in IndexedDB `sabk.device` via single readwrite tx + incarnation rotation (ADR 0003 §6).
       // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
       try {
@@ -244,13 +252,13 @@ export function ResetVaultDialog({
       idempotencyKeyRef.current = null;
       activeGrantRef.current = null;
       reauth.clearGrant();
+      setStep('s5_done');
       try {
         onSuccessToast?.(t('reset.toastDone'));
         await refetchMe();
       } catch {
         // Best-effort Me refresh after 204
       }
-      setStep('s5_done');
     },
     [clearInputs, me?.user.id, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
   );
@@ -304,7 +312,13 @@ export function ResetVaultDialog({
     setErrorMessage(null);
 
     try {
-      const freshGrant = await reauthPassword('vault.reset', inlineReauthPassword);
+      let freshGrant: ReauthGrant;
+      try {
+        freshGrant = await reauthPassword('vault.reset', inlineReauthPassword);
+      } catch (reauthErr) {
+        handleError(reauthErr, { isReauthStep: true });
+        return;
+      }
       setInlineReauthPassword('');
       activeGrantRef.current = freshGrant;
       await executeResetDelete(freshGrant.grant);
@@ -375,7 +389,9 @@ export function ResetVaultDialog({
                 <div className="flex flex-wrap items-center gap-3 rounded-md bg-surface p-3">
                   <span className="mono text-muted">2</span>
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
-                    {t('reset.path2Label', { remaining: remainingRecoveryKeys })}
+                    {t('reset.path2Label', {
+                      remaining: remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining'),
+                    })}
                   </span>
                   <Link href="/app/recovery" className="btn btn-tertiary btn-sm ml-auto no-underline">
                     {t('reset.path2Action')}
