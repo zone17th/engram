@@ -3,6 +3,7 @@ package config_test
 import (
 	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -251,6 +252,65 @@ func TestLoadKeyMutationsDisabledParse(t *testing.T) {
 	})
 	if _, err := config.Load(); err == nil {
 		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED không hợp lệ phải báo lỗi lúc boot")
+	}
+}
+
+func TestEffectiveMailSinkDir(t *testing.T) {
+	defaultSink := filepath.Join(".data", "mail-sink")
+	customSink := filepath.Join("custom", "sink-dir")
+	cases := []struct {
+		name string
+		env  string
+		dir  string
+		want string
+	}{
+		{
+			name: "development + empty MailSinkDir uses default .data/mail-sink",
+			env:  "development",
+			dir:  "",
+			want: defaultSink,
+		},
+		{
+			name: "empty Env + empty MailSinkDir uses default .data/mail-sink",
+			env:  "",
+			dir:  "",
+			want: defaultSink,
+		},
+		{
+			name: "development + explicit MailSinkDir preserves explicit dir",
+			env:  "development",
+			dir:  customSink,
+			want: customSink,
+		},
+		{
+			name: "production + empty MailSinkDir returns empty",
+			env:  "production",
+			dir:  "",
+			want: "",
+		},
+		{
+			name: "staging + empty MailSinkDir returns empty",
+			env:  "staging",
+			dir:  "",
+			want: "",
+		},
+		{
+			name: "production + explicit MailSinkDir preserves explicit dir",
+			env:  "production",
+			dir:  customSink,
+			want: customSink,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Env:         tc.env,
+				MailSinkDir: tc.dir,
+			}
+			if got := cfg.EffectiveMailSinkDir(); got != tc.want {
+				t.Fatalf("EffectiveMailSinkDir() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

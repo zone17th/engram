@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -300,6 +301,21 @@ func (c *Config) JWTAudience() string {
 	return strings.TrimRight(c.AppOrigin, "/")
 }
 
+// EffectiveMailSinkDir trả thư mục mail sink hiệu lực:
+// dùng MailSinkDir nếu đã cấu hình; ngược lại ở môi trường development (hoặc rỗng)
+// dùng mặc định `.data/mail-sink`; các môi trường khác trả chuỗi rỗng.
+func (c *Config) EffectiveMailSinkDir() string {
+	if c == nil {
+		return ""
+	}
+	if c.MailSinkDir != "" {
+		return c.MailSinkDir
+	}
+	if c.Env == "development" || c.Env == "" {
+		return filepath.Join(".data", "mail-sink")
+	}
+	return ""
+}
 func (c *Config) TrustedProxyContains(ip net.IP) bool {
 	for _, n := range c.TrustedProxyCIDRs {
 		if n.Contains(ip) {

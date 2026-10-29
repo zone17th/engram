@@ -111,8 +111,8 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	}
 
 	var mail auth.Mailer
-	if cfg.MailSinkDir != "" {
-		m, err := auth.NewSinkMailer(cfg.MailSinkDir)
+	if dir := cfg.EffectiveMailSinkDir(); dir != "" {
+		m, err := auth.NewSinkMailer(dir)
 		if err != nil {
 			return err
 		}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -15,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
@@ -442,5 +446,142 @@ func TestVaultRewrapFailingMailAdapterStillCommits(t *testing.T) {
 	// Ensure logs never contain wrap.
 	if strings.Contains(h.logs.String(), rewrapReq.VaultKeyWrappedByKEK) {
 		t.Fatalf("logs leaked wrap: %s", h.logs.String())
+	}
+}
+
+// TestVaultRewrapRealWorkerRunDefaultDevelopmentMailSink covers BE2-1 and BE2-4 (advisor-dec-024):
+// with AUTH_MAIL_SINK_DIR unset/empty in development, committing a verified-email vault rewrap
+// over HTTP and running the REAL worker.Run delivers exactly 1 security email to the shared
+// default sink (.data/mail-sink in the temp working directory), and an idempotent replay adds none.
+func TestVaultRewrapRealWorkerRunDefaultDevelopmentMailSink(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("AUTH_MAIL_SINK_DIR", "")
+
+	h := newHarness(t, harnessOpts{})
+	password := "correct-horse-battery-staple"
+	email := "rewrap-real-worker-default-sink@example.com"
+	jarA, meA := h.signupUser(email, password)
+
+	ctx := context.Background()
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	createReq := makeCreatePayload(t, 0x31)
+	respCreate, rawCreate := h.doReq(jarA, http.MethodPost, "/api/v1/vault", mustJSON(t, createReq), reqOptions{
+		idemKey: "idem-real-worker-create-01",
+	})
+	if respCreate.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /vault = %d %s", respCreate.StatusCode, rawCreate)
+	}
+	var created vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(rawCreate), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	cfg.ShutdownTimeout = 5 * time.Second
+	wantSink := filepath.Join(".data", "mail-sink")
+	if cfg.MailSinkDir != "" || cfg.EffectiveMailSinkDir() != wantSink {
+		t.Fatalf("MailSinkDir=%q EffectiveMailSinkDir()=%q, want empty and %q", cfg.MailSinkDir, cfg.EffectiveMailSinkDir(), wantSink)
+	}
+
+	grant := h.reauthGrant(jarA, "vault.rewrap", password)
+	rewrapReq := makeRewrapPayload(t, 3, 67108864, 0x51, 0x61)
+	rewrapBody := mustJSON(t, rewrapReq)
+	ifMatch := formatIfMatchTag(created.VaultKeyID, created.Version)
+	idemKey := "idem-real-worker-rewrap-01"
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	runDone := make(chan error, 1)
+	silentLog := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	go func() {
+		runDone <- worker.Run(runCtx, cfg, silentLog)
+	}()
+	defer func() {
+		cancelRun()
+		select {
+		case <-runDone:
+		case <-time.After(10 * time.Second):
+		}
+	}()
+	time.Sleep(150 * time.Millisecond)
+
+	respRewrap, rawRewrap := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: idemKey,
+		ifMatch: ifMatch,
+		grant:   grant,
+	})
+	if respRewrap.StatusCode != http.StatusOK {
+		t.Fatalf("PUT /vault/kek = %d %s, want 200", respRewrap.StatusCode, rawRewrap)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var state, jobErrors string
+		err := h.pool.QueryRow(ctx,
+			`SELECT state::text, coalesce(errors::text, '') FROM river_job WHERE kind = 'security_notice_mail' ORDER BY id DESC LIMIT 1`,
+		).Scan(&state, &jobErrors)
+		if err == nil {
+			if strings.Contains(jobErrors, "not registered") || strings.Contains(jobErrors, "Unhandled job kind") {
+				t.Fatalf("security_notice_mail failed with unhandled job kind under worker.Run: state=%q errors=%s", state, jobErrors)
+			}
+			if state == "completed" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for real worker.Run to complete security_notice_mail (state=%q errors=%s)", state, jobErrors)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	defaultSinkMailer, err := auth.NewSinkMailer(wantSink)
+	if err != nil {
+		t.Fatalf("NewSinkMailer(%q): %v", wantSink, err)
+	}
+	entries, err := defaultSinkMailer.EntriesFor(email, "security")
+	if err != nil {
+		t.Fatalf("EntriesFor after rewrap: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("delivered security emails in default sink %q = %d, want 1", wantSink, len(entries))
+	}
+
+	// Idempotent replay while worker.Run is active returns 200 and adds no notice, job, or delivered message.
+	respReplay, rawReplay := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: idemKey,
+		ifMatch: ifMatch,
+		grant:   grant,
+	})
+	if respReplay.StatusCode != http.StatusOK {
+		t.Fatalf("replay PUT /vault/kek = %d %s, want 200", respReplay.StatusCode, rawReplay)
+	}
+
+	var noticesCount, jobsCount int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1`, meA.User.ID).Scan(&noticesCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobsCount); err != nil {
+		t.Fatal(err)
+	}
+	if noticesCount != 1 || jobsCount != 1 {
+		t.Fatalf("after replay: notices=%d jobs=%d, want 1/1", noticesCount, jobsCount)
+	}
+
+	cancelRun()
+	if err := <-runDone; err != nil {
+		t.Fatalf("worker.Run returned error: %v", err)
+	}
+
+	entriesAfterReplay, err := defaultSinkMailer.EntriesFor(email, "security")
+	if err != nil {
+		t.Fatalf("EntriesFor after replay: %v", err)
+	}
+	if len(entriesAfterReplay) != 1 {
+		t.Fatalf("delivered security emails after replay = %d, want 1", len(entriesAfterReplay))
 	}
 }

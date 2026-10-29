@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -40,10 +39,7 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 		clk = clock.System{}
 	}
 	if mail == nil {
-		dir := cfg.MailSinkDir
-		if dir == "" && (cfg.Env == "development" || cfg.Env == "") {
-			dir = filepath.Join(".data", "mail-sink")
-		}
+		dir := cfg.EffectiveMailSinkDir()
 		if dir == "" {
 			return nil, nil, nil, fmt.Errorf("thiếu mail adapter")
 		}
