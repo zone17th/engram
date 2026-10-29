@@ -861,36 +861,31 @@ describe('P03-T5 Crypto Worker, Client, KDF, and Wrap Layout', () => {
     expect(client.getState()).toBe('unlocked');
   });
 
-  it('verifies default recovery.ts and envelope.ts stubs throw NOT_IMPLEMENTED for T7 and T6', async () => {
+  it('verifies default recovery.ts and envelope.ts adapters work end-to-end', async () => {
     const sodium = await getSodium();
-    expect(() => generateRecoveryKey(sodium, 1)).toThrow('NOT_IMPLEMENTED: P03-T7');
-    expect(() => formatRecoveryKeyDisplay(1, '0'.repeat(26))).toThrow('NOT_IMPLEMENTED: P03-T7');
-    expect(() => normalizeRecoveryKey('rk1_0000')).toThrow('NOT_IMPLEMENTED: P03-T7');
-    expect(() => deriveRecoveryLookupHash(sodium, 'rk1_0000')).toThrow('NOT_IMPLEMENTED: P03-T7');
-    expect(() => deriveRecoveryWrapKey(sodium, 'rk1_0000')).toThrow('NOT_IMPLEMENTED: P03-T7');
+    const rk = generateRecoveryKey(sodium, 1);
+    expect(rk.slot).toBe(1);
+    expect(normalizeRecoveryKey(rk.display)).toBe(rk.normalized);
+    expect(formatRecoveryKeyDisplay(1, rk.normalized.slice(4))).toBe(rk.display);
+    expect(deriveRecoveryLookupHash(sodium, rk.display).byteLength).toBe(32);
+    expect(deriveRecoveryWrapKey(sodium, rk.display).byteLength).toBe(32);
 
-    expect(() => validateEntryEnvelope({})).toThrow('NOT_IMPLEMENTED: P03-T6');
-    expect(() =>
-      canonicalizeEnvelopeJcs({
-        v: 1,
-        alg: 'xchacha20poly1305-ietf',
-        key_id: 'vk:0123456789abcdefghijkl',
-        nonce: '0'.repeat(32),
-        ct_enc: 'utf8',
-      }),
-    ).toThrow('NOT_IMPLEMENTED: P03-T6');
-    expect(() =>
-      buildEntryAad(
-        {
-          v: 1,
-          alg: 'xchacha20poly1305-ietf',
-          key_id: 'vk:0123456789abcdefghijkl',
-          nonce: '0'.repeat(32),
-          ct_enc: 'utf8',
-        },
-        '00000000-0000-4000-8000-000000000000',
-      ),
-    ).toThrow('NOT_IMPLEMENTED: P03-T6');
+    expect(() => validateEntryEnvelope({})).toThrowError(
+      expect.objectContaining({ code: 'ENVELOPE_INVALID' }),
+    );
+    const validEnv: EntryEnvelopeV1 = {
+      v: 1,
+      alg: 'xchacha20poly1305-ietf',
+      key_id: 'vk:0123456789abcdefghijkl',
+      nonce: '0'.repeat(32),
+      ct_enc: 'utf8',
+    };
+    expect(canonicalizeEnvelopeJcs(validEnv)).toBe(
+      '{"alg":"xchacha20poly1305-ietf","ct_enc":"utf8","key_id":"vk:0123456789abcdefghijkl","nonce":"00000000000000000000000000000000","v":1}',
+    );
+    expect(
+      buildEntryAad(validEnv, '00000000-0000-4000-8000-000000000000').byteLength,
+    ).toBeGreaterThan(100);
   });
 
   it('verifies AAD domain separation across wrap labels and DevKey user/vault_key_id bindings', async () => {

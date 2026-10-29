@@ -5,6 +5,7 @@ import {
   ENVELOPE_ALG,
   ENVELOPE_CT_ENC,
   ENVELOPE_VERSION,
+  EnvelopeError,
   validateEntryEnvelope,
   type EnvelopeAdapter,
   type EntryEnvelopeV1,
@@ -23,6 +24,7 @@ import {
   formatRecoveryKeyDisplay,
   generateRecoveryKey,
   normalizeRecoveryKey,
+  RecoveryKeyError,
   RK_SLOT_MAX,
   RK_SLOT_MIN,
   type RecoveryKeyAdapter,
@@ -939,6 +941,12 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       return { code: err.code, message: err.message };
     }
     if (err instanceof WrapError) {
+      return { code: err.code, message: err.message };
+    }
+    if (err instanceof RecoveryKeyError) {
+      return { code: err.code, message: err.message };
+    }
+    if (err instanceof EnvelopeError) {
       return { code: err.code, message: err.message };
     }
     if (err instanceof Error) {
