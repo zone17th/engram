@@ -424,10 +424,16 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
             .getByRole('button', { name: /Cancel|Huỷ/ })
             .click({ timeout: STEP_TIMEOUT });
           await expect(rkDialog).toBeHidden({ timeout: STEP_TIMEOUT });
-          await expect(page.locator('body')).not.toHaveText(
-            /rk\d+_[0-9A-Z]{4}-[0-9A-Z]{4}/,
-            { timeout: STEP_TIMEOUT },
-          );
+          // R3-5: Use boolean evaluate instead of `not.toHaveText` on `body` so a failure never prints RK text to the CI log
+          await expect
+            .poll(
+              async () =>
+                page.evaluate(() =>
+                  /rk\d+_[0-9A-Z]{4}-[0-9A-Z]{4}/.test(document.body.innerText),
+                ),
+              { timeout: STEP_TIMEOUT },
+            )
+            .toBe(false);
 
           // (d) Reset-vault dialog (step 1 and the typed-confirmation step)
           logStep(testLabel, 'capture:reset-step1');

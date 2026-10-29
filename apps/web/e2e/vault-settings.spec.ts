@@ -474,10 +474,16 @@ test.describe('P03-T20A Vault Security Settings E2E (Change Passphrase, Recovery
       await expect(pageA.getByTestId('recovery-keys-remaining-badge')).toContainText('10', {
         timeout: STEP_TIMEOUT,
       });
-      await expect(pageA.locator('body')).not.toHaveText(
-        /rk\d+_[0-9A-Z]{4}-[0-9A-Z]{4}/,
-        { timeout: STEP_TIMEOUT },
-      );
+      // R3-5: Use boolean evaluate instead of `not.toHaveText` on `body` so a failure never prints RK text to the CI log
+      await expect
+        .poll(
+          async () =>
+            pageA.evaluate(() =>
+              /rk\d+_[0-9A-Z]{4}-[0-9A-Z]{4}/.test(document.body.innerText),
+            ),
+          { timeout: STEP_TIMEOUT },
+        )
+        .toBe(false);
 
       logStep(testLabel, 'pageB-poll-version-3');
       await expect
