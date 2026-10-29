@@ -18,6 +18,7 @@ import {
   type DeriveKekFn,
   type VaultKdfParams,
 } from './kdf';
+import { passphraseToKdfBytes } from './passphrase';
 import {
   CryptoWorkerError,
   type ConfirmRecoveryResult,
@@ -647,6 +648,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       case 'createVault': {
         const captured = captureStateSnapshot();
         const passphraseBytes = new Uint8Array(msg.passphraseBuffer);
+        let kdfPassphrase: Uint8Array | null = null;
         let vk: Uint8Array | null = null;
         let kek: Uint8Array | null = null;
         let x25519Seed: Uint8Array | null = null;
@@ -662,8 +664,9 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
         let reopenedEdPriv: Uint8Array | null = null;
 
         try {
+          kdfPassphrase = passphraseToKdfBytes(passphraseBytes);
           const kdf = makeBaselineKdfParams(sodium);
-          kek = await deriveKek(sodium, passphraseBytes, kdf, hooks.deriveKek);
+          kek = await deriveKek(sodium, kdfPassphrase, kdf, hooks.deriveKek);
 
           vk = sodium.randombytes_buf(VK_BYTES);
           x25519Seed = sodium.randombytes_buf(SEED_BYTES);
@@ -748,6 +751,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           } satisfies CreateVaultResult;
         } finally {
           safeMemzero(sodium, passphraseBytes, hooks.onKeyZeroed, 'plaintext');
+          safeMemzero(sodium, kdfPassphrase, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, kek, hooks.onKeyZeroed, 'kek');
           safeMemzero(sodium, vk, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, x25519Seed, hooks.onKeyZeroed, 'seed');
@@ -767,13 +771,15 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
       case 'unlockPassphrase': {
         const captured = captureStateSnapshot();
         const passphraseBytes = new Uint8Array(msg.passphraseBuffer);
+        let kdfPassphrase: Uint8Array | null = null;
         let kek: Uint8Array | null = null;
         let vk: Uint8Array | null = null;
         let x25519Seed: Uint8Array | null = null;
         let ed25519Seed: Uint8Array | null = null;
 
         try {
-          kek = await deriveKek(sodium, passphraseBytes, msg.kdf, hooks.deriveKek);
+          kdfPassphrase = passphraseToKdfBytes(passphraseBytes);
+          kek = await deriveKek(sodium, kdfPassphrase, msg.kdf, hooks.deriveKek);
           if (vaultMode !== 'recovering') {
             vk = openWrap(sodium, 'kek', msg.vaultKeyWrappedByKek, kek);
             const seeds = openAndVerifyPrivateKeys(sodium, vk, msg.privateKeysWrapped);
@@ -790,6 +796,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           return { unlocked: true };
         } finally {
           safeMemzero(sodium, passphraseBytes, hooks.onKeyZeroed, 'plaintext');
+          safeMemzero(sodium, kdfPassphrase, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, kek, hooks.onKeyZeroed, 'kek');
           safeMemzero(sodium, vk, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, x25519Seed, hooks.onKeyZeroed, 'seed');
@@ -1001,17 +1008,19 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
 
       case 'rewrap': {
         const passphraseBytes = new Uint8Array(msg.passphraseBuffer);
+        let kdfPassphrase: Uint8Array | null = null;
         let kek: Uint8Array | null = null;
         let vkCopy: Uint8Array | null = null;
         let reopenedVk: Uint8Array | null = null;
 
         try {
           const { captured, vk: activeVk } = assertReadOnlyStart(true);
+          kdfPassphrase = passphraseToKdfBytes(passphraseBytes);
           vkCopy = new Uint8Array(activeVk);
           hooks.onSecretAllocated?.('vk-copy', vkCopy);
 
           const newKdf = makeRewrapKdfParams(sodium, msg.currentKdf);
-          kek = await deriveKek(sodium, passphraseBytes, newKdf, hooks.deriveKek);
+          kek = await deriveKek(sodium, kdfPassphrase, newKdf, hooks.deriveKek);
 
           const wrapKBytes = doSealWrap(sodium, 'kek', vkCopy, kek);
           try {
@@ -1041,6 +1050,7 @@ export function createWorkerCore(hooks: WorkerCoreHooks = {}): CryptoWorkerCore 
           } satisfies RewrapResult;
         } finally {
           safeMemzero(sodium, passphraseBytes, hooks.onKeyZeroed, 'plaintext');
+          safeMemzero(sodium, kdfPassphrase, hooks.onKeyZeroed, 'plaintext');
           safeMemzero(sodium, kek, hooks.onKeyZeroed, 'kek');
           safeMemzero(sodium, vkCopy, hooks.onKeyZeroed, 'vk');
           safeMemzero(sodium, reopenedVk, hooks.onKeyZeroed, 'vk');

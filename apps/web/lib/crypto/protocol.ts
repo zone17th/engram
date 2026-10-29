@@ -39,6 +39,9 @@ export type CryptoWorkerErrorCode =
   | 'KDF_PARAMS_INVALID'
   | 'KDF_ALLOCATION_FAILED'
   | 'KDF_DERIVE_FAILED'
+  // Passphrase is not well-formed Unicode (unpaired surrogate on the client, invalid UTF-8 in the Worker); the
+  // message never echoes the input (ADR 0002 §4, user-dec-003).
+  | 'PASSPHRASE_INVALID'
   | 'AEAD_DECRYPT_FAILED'
   | 'PRIVATE_KEYS_WRAP_INVALID'
   | 'WRAP_INVALID'
@@ -52,6 +55,24 @@ export type CryptoWorkerErrorCode =
   // Produced only by CryptoClient (never by the Worker): a second state-changing call was made
   // while one is already in flight (ADR 0002 §10 rule 6).
   | 'CLIENT_BUSY';
+
+export const PASSPHRASE_INVALID_MESSAGE =
+  'Passphrase must be well-formed Unicode text (no unpaired surrogates, valid UTF-8)';
+
+/** Manual scan (not `String.prototype.isWellFormed`, which older iOS Safari / Chrome lack). */
+export function hasLoneSurrogate(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const unit = value.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      i += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export class CryptoWorkerError extends Error {
   readonly code: CryptoWorkerErrorCode;

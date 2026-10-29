@@ -1,5 +1,7 @@
 import {
   CryptoWorkerError,
+  hasLoneSurrogate,
+  PASSPHRASE_INVALID_MESSAGE,
   type ConfirmRecoveryResult,
   type CreateVaultResult,
   type CryptoWorkerErrorCode,
@@ -204,6 +206,54 @@ function createDeferred<T>(): {
   return { promise, resolve, reject };
 }
 
+function isArrayBufferLike(value: unknown): value is ArrayBuffer {
+  return (
+    value instanceof ArrayBuffer ||
+    (typeof value === 'object' &&
+      value !== null &&
+      Object.prototype.toString.call(value) === '[object ArrayBuffer]')
+  );
+}
+
+type SecretInput =
+  | { kind: 'string'; value: string }
+  | { kind: 'bytes'; view: Uint8Array }
+  | { kind: 'detached' }
+  | { kind: 'invalid' };
+
+/**
+ * ONE classifier for every supported secret input form, used by the normal path (`toTransferableBytes`) and by
+ * the CLIENT_BUSY wipe, so both recognize exactly the same inputs: strings, `ArrayBuffer`s and typed arrays /
+ * views, including cross-realm ones (object tag / `ArrayBuffer.isView`, never `instanceof` alone). An empty or
+ * already-detached buffer is `detached` and never throws.
+ */
+function classifySecretInput(input: unknown): SecretInput {
+  if (typeof input === 'string') return { kind: 'string', value: input };
+  try {
+    if (isArrayBufferLike(input)) {
+      return input.byteLength === 0
+        ? { kind: 'detached' }
+        : { kind: 'bytes', view: new Uint8Array(input) };
+    }
+    if (ArrayBuffer.isView(input)) {
+      if (input.byteLength === 0 || input.buffer.byteLength === 0) return { kind: 'detached' };
+      return {
+        kind: 'bytes',
+        view: new Uint8Array(input.buffer as ArrayBuffer, input.byteOffset, input.byteLength),
+      };
+    }
+  } catch {
+    return { kind: 'detached' };
+  }
+  return { kind: 'invalid' };
+}
+
+/** Best-effort in-place zeroing of a caller-owned secret input of any supported form. */
+function wipeSecretInput(input: unknown): void {
+  const classified = classifySecretInput(input);
+  if (classified.kind === 'bytes') wipeAttachedBytes(classified.view);
+}
+
 function wipeAttachedBytes(buf: Uint8Array | null | undefined): void {
   if (!buf) return;
   try {
@@ -224,44 +274,48 @@ function wipeAttachedBytes(buf: Uint8Array | null | undefined): void {
  * copies into a fresh standalone `Uint8Array` and zeroes the caller's sub-view in place.
  */
 function toTransferableBytes(input: string | Uint8Array | ArrayBuffer): Uint8Array {
-  if (typeof input === 'string') {
-    const encoded = utf8Encoder.encode(input);
-    if (encoded.byteLength === 0) {
-      throw new CryptoClientError('SECRET_DETACHED_OR_EMPTY', 'Secret string must not be empty');
+  const classified = classifySecretInput(input);
+  switch (classified.kind) {
+    case 'string': {
+      const encoded = utf8Encoder.encode(classified.value);
+      if (encoded.byteLength === 0) {
+        throw new CryptoClientError('SECRET_DETACHED_OR_EMPTY', 'Secret string must not be empty');
+      }
+      return encoded;
     }
-    return encoded;
-  }
-  if (
-    input instanceof ArrayBuffer ||
-    (typeof input === 'object' &&
-      input !== null &&
-      Object.prototype.toString.call(input) === '[object ArrayBuffer]')
-  ) {
-    if (input.byteLength === 0) {
+    case 'detached':
       throw new CryptoClientError(
         'SECRET_DETACHED_OR_EMPTY',
-        'Secret ArrayBuffer is detached or empty',
+        isArrayBufferLike(input)
+          ? 'Secret ArrayBuffer is detached or empty'
+          : 'Secret Uint8Array is detached or empty',
       );
+    case 'invalid':
+      throw new CryptoClientError('SECRET_DETACHED_OR_EMPTY', 'Invalid secret buffer type');
+    case 'bytes': {
+      const { view } = classified;
+      if (isArrayBufferLike(input)) return view;
+      if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) {
+        return view;
+      }
+      const copy = new Uint8Array(view.byteLength);
+      copy.set(view);
+      view.fill(0);
+      return copy;
     }
-    return new Uint8Array(input);
   }
-  if (input instanceof Uint8Array || ArrayBuffer.isView(input)) {
-    if (input.byteLength === 0 || input.buffer.byteLength === 0) {
-      throw new CryptoClientError(
-        'SECRET_DETACHED_OR_EMPTY',
-        'Secret Uint8Array is detached or empty',
-      );
-    }
-    const view = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-    if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) {
-      return view;
-    }
-    const copy = new Uint8Array(view.byteLength);
-    copy.set(view);
-    view.fill(0);
-    return copy;
+}
+
+/**
+ * Passphrase input (user-dec-003, FE1-13): a string with an unpaired surrogate is rejected `PASSPHRASE_INVALID`
+ * BEFORE encoding, so `TextEncoder` never substitutes U+FFFD. The message never echoes the input. NFC
+ * normalization and strict UTF-8 validation of the bytes happen in the Worker (`passphraseToKdfBytes`).
+ */
+function toPassphraseBytes(input: string | Uint8Array | ArrayBuffer): Uint8Array {
+  if (typeof input === 'string' && hasLoneSurrogate(input)) {
+    throw new CryptoClientError('PASSPHRASE_INVALID', PASSPHRASE_INVALID_MESSAGE);
   }
-  throw new CryptoClientError('SECRET_DETACHED_OR_EMPTY', 'Invalid secret buffer type');
+  return toTransferableBytes(input);
 }
 
 function isDataCloneError(err: unknown): boolean {
@@ -469,13 +523,9 @@ export class CryptoClient {
    */
   private acquireStateSlot(secrets: ReadonlyArray<unknown>): object {
     if (this.stateSlot) {
-      for (const secret of secrets) {
-        if (secret instanceof ArrayBuffer) {
-          wipeAttachedBytes(new Uint8Array(secret));
-        } else if (ArrayBuffer.isView(secret)) {
-          wipeAttachedBytes(new Uint8Array(secret.buffer, secret.byteOffset, secret.byteLength));
-        }
-      }
+      // CLIENT_BUSY wins over input validation: wipe whatever supported form was passed (a detached or
+      // foreign-realm buffer included) and reject with the busy code, never an uncoded TypeError.
+      for (const secret of secrets) wipeSecretInput(secret);
       throw new CryptoClientError(
         'CLIENT_BUSY',
         'Another state-changing crypto call is already in flight; wait for it or call lock()',
@@ -574,7 +624,7 @@ export class CryptoClient {
     const slot = this.acquireStateSlot([params.passphrase]);
     let passBytes: Uint8Array | null = null;
     try {
-      passBytes = toTransferableBytes(params.passphrase);
+      passBytes = toPassphraseBytes(params.passphrase);
       this.resetWorkerAfterErrorIfUnlocking();
 
       if (params.beforePostMessage) {
@@ -613,7 +663,7 @@ export class CryptoClient {
     const slot = this.acquireStateSlot([params.passphrase]);
     let passBytes: Uint8Array | null = null;
     try {
-      passBytes = toTransferableBytes(params.passphrase);
+      passBytes = toPassphraseBytes(params.passphrase);
       this.resetWorkerAfterErrorIfUnlocking();
 
       if (params.beforePostMessage) {
@@ -814,7 +864,7 @@ export class CryptoClient {
     const slot = this.acquireStateSlot([params.passphrase]);
     let passBytes: Uint8Array | null = null;
     try {
-      passBytes = toTransferableBytes(params.passphrase);
+      passBytes = toPassphraseBytes(params.passphrase);
 
       if (params.beforePostMessage) {
         await params.beforePostMessage();
