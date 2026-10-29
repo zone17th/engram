@@ -56,6 +56,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.GoogleReauthEnabled {
 		t.Error("AUTH_GOOGLE_REAUTH_ENABLED mặc định phải false")
 	}
+	if cfg.KeyMutationsDisabled {
+		t.Error("VAULT_KEY_MUTATIONS_DISABLED mặc định phải false")
+	}
 	if cfg.AuditRetentionDays != 90 {
 		t.Errorf("AuditRetentionDays = %d", cfg.AuditRetentionDays)
 	}
@@ -225,6 +228,29 @@ func TestOAuthCallbackUsesAppOrigin(t *testing.T) {
 	got := cfg.OAuthCallbackURL("google")
 	if got != "http://localhost:3000/api/v1/auth/oauth/google/callback" {
 		t.Fatalf("callback = %q", got)
+	}
+}
+
+func TestLoadKeyMutationsDisabledParse(t *testing.T) {
+	setEnv(t, map[string]string{
+		"VAULT_KEY_MUTATIONS_DISABLED": "true",
+	})
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.KeyMutationsDisabled {
+		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED=true phải parse thành true")
+	}
+	if got, ok := cfg.Redacted()["vault_key_mutations_disabled"].(bool); !ok || !got {
+		t.Fatalf("Redacted()[vault_key_mutations_disabled] = %v, muốn true", cfg.Redacted()["vault_key_mutations_disabled"])
+	}
+
+	setEnv(t, map[string]string{
+		"VAULT_KEY_MUTATIONS_DISABLED": "not-a-bool",
+	})
+	if _, err := config.Load(); err == nil {
+		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED không hợp lệ phải báo lỗi lúc boot")
 	}
 }
 

@@ -39,6 +39,7 @@ type Config struct {
 	FakeOAuth                bool `envconfig:"AUTH_FAKE_OAUTH" default:"false"`
 	AuditRetentionDays       int  `envconfig:"AUTH_AUDIT_RETENTION_DAYS" default:"90"`
 
+	KeyMutationsDisabled    bool   `envconfig:"VAULT_KEY_MUTATIONS_DISABLED" default:"false"`
 	OAuthGoogleClientID     string `envconfig:"OAUTH_GOOGLE_CLIENT_ID"`
 	OAuthGoogleClientSecret string `envconfig:"OAUTH_GOOGLE_CLIENT_SECRET"`
 	OAuthGitHubClientID     string `envconfig:"OAUTH_GITHUB_CLIENT_ID"`
@@ -328,5 +329,6 @@ func (c *Config) Redacted() map[string]any {
 		"ephemeral_secrets":               c.EphemeralSecrets,
 		"audit_retention_days":            c.AuditRetentionDays,
 		"trusted_proxy_cidrs":             len(c.TrustedProxyCIDRs),
+		"vault_key_mutations_disabled":    c.KeyMutationsDisabled,
 	}
 }
