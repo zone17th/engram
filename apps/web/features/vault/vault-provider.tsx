@@ -31,8 +31,6 @@ import {
 } from '@/features/vault/broadcast';
 import {
   purgeDeviceKeysOnRevoked,
-  readDeviceMetaRecord,
-  type DeviceMetaRecord,
   type DeviceStoreEnvironment,
 } from '@/features/vault/device-store';
 import {
@@ -411,15 +409,6 @@ export function VaultProvider({
   // `vault_key_id`s of resets this provider itself observed (reload key change / 404, `vault_changed` reset,
   // local `notifyVaultChanged`). `markResetPurged` only accepts such a token (BE2-9).
   const observedResetKeyIdsRef = useRef<Set<string>>(new Set());
-  // Device-state proof of the last committed purge: a later 404 that cannot name its vault may skip a repeat purge
-  // only while `sabk.device` `meta` still equals the post-purge record, i.e. nothing was written to it since (BE2-9).
-  const resetPurgeEvidenceRef = useRef<{
-    userId: string | null;
-    sessionEpoch: number;
-    meta: DeviceMetaRecord;
-  } | null>(null);
-  // Pending device-meta snapshot taken by an accepted `markResetPurged`; an unnamed 404 awaits it before judging a duplicate.
-  const resetMarkSnapshotRef = useRef<Promise<void> | null>(null);
   const setVaultMeta = useCallback((next: VaultState | null) => {
     liveVaultMetaRef.current = next;
     setVaultMetaState(next);
@@ -677,18 +666,7 @@ export function VaultProvider({
       return;
     }
     resetPurgedVaultKeyIdRef.current = token;
-    // The accepted mark proves the acting tab's purge already ran: snapshot the post-purge `meta` so a later unnamed
-    // 404 for this reset is a proven duplicate only while nothing wrote to `sabk.device` since (BE2-9, VS-R4-1).
-    const markEpoch = vaultMetaSessionEpochRef.current;
-    const markUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
-    resetMarkSnapshotRef.current = readDeviceMetaRecord(effectiveDeviceStoreEnv)
-      .then((meta) => {
-        if (meta && vaultMetaSessionEpochRef.current === markEpoch) {
-          resetPurgeEvidenceRef.current = { userId: markUserId, sessionEpoch: markEpoch, meta };
-        }
-      })
-      .catch(() => undefined);
-  }, [effectiveDeviceStoreEnv]);
+  }, []);
 
   const runIdempotentResetPurge = useCallback(
     (userId: string | null | undefined, transitionKeyId: string | null) => {
@@ -702,47 +680,30 @@ export function VaultProvider({
         return;
       }
       const purgeEpoch = vaultMetaSessionEpochRef.current;
-      const purgeUserId = userId ?? null;
       if (transitionKeyId !== null) {
         resetPurgeInFlightVaultKeyIdRef.current = transitionKeyId;
       }
-      // A transition that cannot name its vault (unknown 404) is purged unless device-state evidence proves the
-      // previous purge already covers it: `meta` is still exactly the record that purge committed.
-      const isProvenDuplicate = async (): Promise<boolean> => {
-        await resetMarkSnapshotRef.current;
-        const evidence = resetPurgeEvidenceRef.current;
-        if (!evidence || evidence.sessionEpoch !== purgeEpoch || evidence.userId !== purgeUserId) {
-          return false;
+      // A transition that cannot name its vault (unknown 404) skips its purge only when a receipt for a reset exists
+      // (an accepted `markResetPurged`, an observed reset or a committed purge) AND the purge transaction itself finds
+      // no DevKey for this user: the check and the skip happen inside the same readwrite transaction (`skipIfNoDevKeys`),
+      // so marked-but-not-purged and a DevKey written after the mark both purge, and a true duplicate costs nothing
+      // (BE2-9, BE7-2).
+      const skipIfNoDevKeys = transitionKeyId === null && resetPurgedVaultKeyIdRef.current !== null;
+      const run = purgeDeviceKeysOnRevoked(
+        userId,
+        effectiveDeviceStoreEnv,
+        skipIfNoDevKeys ? { skipIfNoDevKeys: true } : undefined,
+      ).then((res) => {
+        if (
+          res.ok &&
+          !res.skipped &&
+          transitionKeyId !== null &&
+          vaultMetaSessionEpochRef.current === purgeEpoch &&
+          currentVaultKeyIdRef.current === null
+        ) {
+          resetPurgedVaultKeyIdRef.current = transitionKeyId;
         }
-        const current = await readDeviceMetaRecord(effectiveDeviceStoreEnv);
-        return (
-          current !== null &&
-          current.incarnation === evidence.meta.incarnation &&
-          current.deviceRevision === evidence.meta.deviceRevision
-        );
-      };
-      const purge = () =>
-        purgeDeviceKeysOnRevoked(userId, effectiveDeviceStoreEnv).then((res) => {
-          if (res.ok && res.meta && vaultMetaSessionEpochRef.current === purgeEpoch) {
-            resetPurgeEvidenceRef.current = {
-              userId: purgeUserId,
-              sessionEpoch: purgeEpoch,
-              meta: res.meta,
-            };
-          }
-          if (
-            res.ok &&
-            transitionKeyId !== null &&
-            vaultMetaSessionEpochRef.current === purgeEpoch &&
-            currentVaultKeyIdRef.current === null
-          ) {
-            resetPurgedVaultKeyIdRef.current = transitionKeyId;
-          }
-        });
-      const run =
-        transitionKeyId === null
-          ? isProvenDuplicate().then((duplicate) => (duplicate ? undefined : purge()))
-          : purge();
+      });
       void run
         .catch(() => undefined)
         .finally(() => {
@@ -1378,7 +1339,6 @@ export function VaultProvider({
         resetPurgeInFlightVaultKeyIdRef.current = null;
         observedResetKeyIdsRef.current.clear();
         retiredVaultKeyIdsRef.current.clear();
-        resetPurgeEvidenceRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
         void lock({ broadcast: true, reason: 'signed_out' });
@@ -1397,7 +1357,6 @@ export function VaultProvider({
       resetPurgeInFlightVaultKeyIdRef.current = null;
       observedResetKeyIdsRef.current.clear();
       retiredVaultKeyIdsRef.current.clear();
-      resetPurgeEvidenceRef.current = null;
       setVaultMeta(null);
       queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
       void lock({ broadcast: true, reason: 'user_changed' });

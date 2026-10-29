@@ -5286,6 +5286,82 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be29-dialog-state')).toHaveTextContent('locked');
   }, 15_000);
 
+  it('BE7-2: markResetPurged WITHOUT a purge, then an unnamed 404, purges (the DevKey is still there)', async () => {
+    const ctx = await be29Setup('be72-mark-only');
+    const keyA = seedBe29DevKey(ctx.devkeys, 'vk:be29-a');
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    expect(ctx.devkeys.has(keyA)).toBe(false);
+  }, 15_000);
+
+  it('BE7-2: purge A, markResetPurged, then a B DevKey/meta write lands at once (no delay), then an unnamed 404, purges B', async () => {
+    const ctx = await be29Setup('be72-b-write');
+    seedBe29DevKey(ctx.devkeys, 'vk:be29-a');
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    const keyB = seedBe29DevKey(ctx.devkeys, 'vk:be29-b');
+    fakeIdb.ensureStore(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, {
+      key: DEVICE_META_RECORD_KEY,
+      incarnation: 'be72-b-write-incarnation',
+      deviceRevision: 12,
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(13);
+    });
+    expect(ctx.devkeys.has(keyB)).toBe(false);
+  }, 15_000);
+
+  it('BE7-2: a true duplicate (A purged and marked, no DevKey since) is not purged again by an unnamed 404, however often it repeats', async () => {
+    const ctx = await be29Setup('be72-duplicate');
+    seedBe29DevKey(ctx.devkeys, 'vk:be29-a');
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+    });
+    const afterPurge = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(afterPurge?.deviceRevision).toBe(11);
+    act(() => {
+      ctx.vault().markResetPurged('vk:be29-a');
+    });
+    act(() => {
+      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+    });
+    ctx.gate.mode = 'absent';
+    await act(async () => {
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+      await sleepReal(50);
+    });
+    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+    expect(meta?.deviceRevision).toBe(11);
+    expect(meta?.incarnation).toBe(afterPurge?.incarnation);
+  }, 15_000);
+
   it('BE2-9 (post-observation order): notifyVaultChanged(K, null), dialog purge, markResetPurged(K), then a Reload vault 404 purges exactly once in total', async () => {
     const ctx = await be29Setup('be29-post');
     act(() => {
