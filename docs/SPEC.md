@@ -145,7 +145,7 @@ Chuẩn hoá để search, **không** để identity:
 
 `name_normalized` = NFC → lowercase → trim → collapse whitespace → bỏ dấu câu đầu/cuối. **Giữ dấu tiếng Việt** (`mã` ≠ `ma`). Fuzzy/unaccent ở tầng search (§6).
 
-Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server và dịch vụ embedding đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
+Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
 
 **`Tag` — first-class, unique theo `normalized`.**
 Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` mà `normalized` trùng tag khác → `409 TAG_CONFLICT` (merge tag = P07).
@@ -1227,7 +1227,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 |---------------|-----|
 | Tài khoản | Email, locale en/vi, theme, link Google/GitHub, đổi password đăng nhập. OAuth-only đặt password lần đầu qua enrollment (email đã verified) hoặc Google re-auth nếu freshness bật — không gọi đó là phục hồi dữ liệu. Notification in-app + audit trên U7. |
 | Bảo mật | Đổi passphrase (VK + re-auth tài khoản; không cần passphrase cũ; RK/passkey vẫn mở) · **Recovery keys: còn N/10** (không hiện bí mật) · Regenerate slot thiếu · Xoay cả 10 · **Passkeys** (thêm / đổi tên / thu hồi) · Auto-lock 5/**15**/60/Never · Thiết bị này đã nhớ? · Quên thiết bị · Phiên · Audit · Reset vault |
-| Tìm kiếm | Gợi ý gần nghĩa on/off — "bật thì tên mục, tag, hint và từ khoá được gửi tới dịch vụ embedding bên thứ ba; nội dung entry không bao giờ gửi" (ADR 0004). Ẩn nếu server tắt |
+| Tìm kiếm | Gợi ý gần nghĩa on/off. Ẩn nếu server tắt |
 | Dữ liệu | Export encrypted · Export decrypted (cảnh báo + re-auth) · Xoá tài khoản |
 
 ### 7.7 Empty / error states

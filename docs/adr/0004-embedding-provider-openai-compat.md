@@ -62,16 +62,12 @@ Nhánh semantic đã là request riêng (`semantic=0` trả lexical trước), n
 
 - Khi provider là `openai_compat`, `item.name`, `hint`, `tag.display` và query semantic `q` rời hạ tầng sản phẩm: router → OpenRouter → nhà cung cấp chạy model. Body entry vẫn không bao giờ đi (đã mã hoá, §5).
 - `user.settings.semantic_suggest = false` nghĩa là **không gửi gì của user đó** ra provider: không embed query, không enqueue embed item/tag, xoá vector hiện có của user trong mọi generation. Bật lại → backfill riêng user đó (`ReembedUser`). Thay hành vi "tắt vẫn index" của §6.6/§6.10 khi provider không phải `tei`/`noop`.
-- Onboarding, nhãn `hint`, Settings `≈` và §10.4 nói rõ name/tag/hint/query được gửi tới dịch vụ embedding bên thứ ba khi bật gợi ý gần nghĩa.
-- `EMBEDDING_BASE_URL` production phải là `https://` hoặc địa chỉ riêng (loopback, RFC 1918, CGNAT/Tailscale `100.64.0.0/10`, mạng Docker); config từ chối `http://` tới IP công khai. Key không vào repo, log hay trace; log chỉ ghi số lượng input và latency.
+- Không thêm thông báo onboarding, không đổi nhãn `hint` hay Settings `≈` (owner 2026-10-29: "k cần báo"); `semantic_suggest` giữ mặc định `true` như migration P02. Chỉ privacy statement §10.4 được sửa cho đúng sự thật, vì câu cũ "không gửi tới bên thứ ba" không còn đúng.
+- Triển khai: engram và router host chung một máy (owner 2026-10-29), nên API/worker gọi router qua loopback hoặc mạng Docker nội bộ, không qua IP công khai. Quy tắc chung: `EMBEDDING_BASE_URL` production phải là `https://` hoặc địa chỉ riêng (loopback, RFC 1918, CGNAT/Tailscale `100.64.0.0/10`, mạng Docker); config từ chối `http://` tới IP công khai. Key không vào repo, log hay trace; log chỉ ghi số lượng input và latency.
 - Tài khoản OpenRouter cấu hình chỉ cho route tới provider không lưu/không train trên prompt; đây là điều kiện vận hành P06, không kiểm được từ API.
 
 ## Hệ quả
 
 - P05: thêm `internal/embedding/openai_compat.go`, config validate mở rộng (`oneof=noop tei openai_compat` + rule URL/key), migration thêm `semantic_min_cos` vào generation, `ReembedUser`, bộ đánh giá ngưỡng, test fake server cho dims/normalize/429/timeout.
-- P06: privacy/docs/onboarding theo mục trên; deploy không cần TEI trên host ARM.
+- P06: privacy statement §10.4; deploy router cạnh engram trên cùng host, không cần TEI trên host ARM.
 - Chi phí: probe ~4e-7 USD cho 6 input ngắn; backfill 100k item + 20k tag là cỡ cent. Phụ thuộc mạng ngoài: semantic tắt êm (degraded) khi router/OpenRouter lỗi, lexical không ảnh hưởng.
-
-## Câu hỏi mở
-
-- `semantic_suggest` mặc định: giữ `true` (P02 đã migrate default) kèm thông báo onboarding, hay chuyển opt-in `false` cho user mới vì dữ liệu rời hạ tầng. Chưa quyết; P05 chốt trước khi bật semantic production.
