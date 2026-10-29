@@ -651,7 +651,7 @@ export function VaultProvider({
   const runStateChangingOp = useCallback(
     async <T,>(
       opKind: VaultActiveOperation,
-      requiresUnlockBaseline: boolean,
+      baselineMode: 'none' | 'capture_fresh' | 'reuse_or_capture',
       opGeneration: number,
       invoke: (client: CryptoClient, injectBeforePost?: () => Promise<void>) => Promise<T>,
     ): Promise<T> => {
@@ -662,21 +662,43 @@ export function VaultProvider({
         setActiveOperation(opKind);
       }
 
+      const requiresUnlockBaseline = baselineMode !== 'none';
+      const existingBaseline =
+        baselineMode === 'reuse_or_capture' ? unlockBaselineRef.current : null;
+
       if (requiresUnlockBaseline) {
         // Invalidate any in-flight wake verification from an earlier unlock/recovering cycle
         wakeVerificationSeqRef.current += 1;
         wakeVerifyingCountRef.current = 0;
         wakePreIdleAtRef.current = null;
-        unlockBaselineRef.current = null;
-        baselineVerifiedRef.current = false;
         setWakeVerifyingCount(0);
-        setUnlockBaseline(null);
+        if (!existingBaseline) {
+          unlockBaselineRef.current = null;
+          setUnlockBaseline(null);
+        }
+        baselineVerifiedRef.current = false;
         setBaselineVerified(false);
       }
 
-      let capturedBaseline: LockEpochMarker | null = null;
+      let capturedBaseline: LockEpochMarker | null = existingBaseline;
       const prepareBaseline = async () => {
         if (!requiresUnlockBaseline) return;
+        if (existingBaseline) {
+          // Verify the baseline captured at recovery start has not changed before continuing (`resumeRecovery` / `confirmRecovery`)
+          const preCheck = await verifyUnlockBaseline(existingBaseline, envWithBroadcast);
+          if (preCheck.persistedMarker) {
+            updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
+          }
+          if (!preCheck.matches || client.getGeneration() !== opGeneration) {
+            void lock({ broadcast: false, reason: 'baseline_mismatch_during_recovery' });
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Authoritative lockEpoch changed during recovery; failing closed',
+            );
+          }
+          capturedBaseline = existingBaseline;
+          return;
+        }
         const baseline = await captureUnlockBaseline(
           tabKnownLockEpochRef.current,
           envWithBroadcast,
@@ -692,7 +714,6 @@ export function VaultProvider({
         capturedBaseline = baseline;
         updateTabKnownLockEpoch(baseline.lockEpoch);
       };
-
       try {
         const result = await invoke(client, prepareBaseline);
 
@@ -746,7 +767,7 @@ export function VaultProvider({
     (params: CreateVaultClientParams): Promise<CreateVaultResult> => {
       return runStateChangingOp(
         'onboarding',
-        true,
+        'capture_fresh',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.createVault({
@@ -765,7 +786,7 @@ export function VaultProvider({
     (params: UnlockPassphraseClientParams): Promise<{ unlocked: true }> => {
       return runStateChangingOp(
         'unlocking',
-        true,
+        'capture_fresh',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.unlockPassphrase({
@@ -786,7 +807,7 @@ export function VaultProvider({
     ): Promise<DeriveRecoveryLookupResult & { recovering?: boolean }> => {
       return runStateChangingOp(
         'unlocking',
-        true,
+        'capture_fresh',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.unlockRecovery({
@@ -805,7 +826,7 @@ export function VaultProvider({
     (params: ResumeRecoveryClientParams): Promise<ResumeRecoveryResult> => {
       return runStateChangingOp(
         'unlocking',
-        true,
+        'reuse_or_capture',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.resumeRecovery({
@@ -824,7 +845,7 @@ export function VaultProvider({
     (params: ConfirmRecoveryClientParams): Promise<ConfirmRecoveryResult> => {
       return runStateChangingOp(
         'rewrapping',
-        true,
+        'reuse_or_capture',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.confirmRecovery({
@@ -843,7 +864,7 @@ export function VaultProvider({
     (params: UnlockPrfClientParams): Promise<{ unlocked: true }> => {
       return runStateChangingOp(
         'unlocking',
-        true,
+        'capture_fresh',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.unlockPrf({
@@ -862,7 +883,7 @@ export function VaultProvider({
     (params: UnlockDevKeyClientParams): Promise<{ unlocked: true }> => {
       return runStateChangingOp(
         'unlocking',
-        true,
+        'capture_fresh',
         params.opGeneration,
         (client, prepareBaseline) =>
           client.unlockDevKey({
@@ -879,7 +900,7 @@ export function VaultProvider({
 
   const rewrapOp = useCallback(
     (params: RewrapClientParams): Promise<RewrapResult> => {
-      return runStateChangingOp('rewrapping', false, params.opGeneration, (client) =>
+      return runStateChangingOp('rewrapping', 'none', params.opGeneration, (client) =>
         client.rewrap(params),
       );
     },
@@ -996,6 +1017,9 @@ export function VaultProvider({
             broadcast: true,
             reason: message.version === null ? 'vault_reset_broadcast' : 'vault_key_id_changed_broadcast',
           });
+          if (message.version === null) {
+            void refetchMe().catch(() => undefined);
+          }
           void reloadVaultMeta().catch(() => undefined);
           return;
         }

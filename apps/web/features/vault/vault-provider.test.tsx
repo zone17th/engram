@@ -27,6 +27,7 @@ import {
   resetVaultBroadcastForTests,
   setDefaultDeviceStoreEnvironmentForTests,
   setKnownDeviceSessionUserId,
+  subscribeDevicePurge,
   useVault,
   vaultBodyQueryKey,
   verifyUnlockBaseline,
@@ -122,8 +123,8 @@ interface FakeIdbOptions {
   failOpen?: boolean;
   failPutOnStore?: string;
   failGetOnStore?: string;
+  abortBeforeCompleteOnStore?: string;
 }
-
 class FakeIDBStorage {
   readonly stores = new Map<string, Map<string, unknown>>();
   options: FakeIdbOptions = {};
@@ -204,10 +205,32 @@ class FakeIDBStorage {
       transaction(storeNames: string | string[], mode: IDBTransactionMode = 'readonly'): IDBTransaction {
         const names = Array.isArray(storeNames) ? storeNames : [storeNames];
         storage.transactions.push({ storeNames: names, mode });
-        for (const n of names) storage.ensureStore(n);
+        const snapshots = new Map<string, Map<string, unknown>>();
+        for (const n of names) {
+          const existing = storage.ensureStore(n);
+          if (mode === 'readwrite') {
+            const copy = new Map<string, unknown>();
+            for (const [k, v] of existing.entries()) {
+              copy.set(k, structuredClone(v));
+            }
+            snapshots.set(n, copy);
+          }
+        }
         let aborted = false;
         let pendingRequests = 0;
         let finishScheduled = false;
+        let shouldAbortBeforeComplete = false;
+
+        const rollbackSnapshots = () => {
+          if (mode !== 'readwrite') return;
+          for (const [storeName, snap] of snapshots.entries()) {
+            const backing = storage.ensureStore(storeName);
+            backing.clear();
+            for (const [k, v] of snap.entries()) {
+              backing.set(k, structuredClone(v));
+            }
+          }
+        };
 
         const tx: Record<string, unknown> = {
           error: null,
@@ -217,6 +240,7 @@ class FakeIDBStorage {
           abort() {
             if (aborted) return;
             aborted = true;
+            rollbackSnapshots();
             queueMicrotask(() => {
               if (typeof tx.onabort === 'function') (tx.onabort as () => void)();
             });
@@ -230,6 +254,13 @@ class FakeIDBStorage {
                 finishScheduled = true;
                 queueMicrotask(() => {
                   if (!aborted && pendingRequests === 0) {
+                    if (shouldAbortBeforeComplete) {
+                      aborted = true;
+                      tx.error = new Error('Simulated transaction abort before commit');
+                      rollbackSnapshots();
+                      if (typeof tx.onabort === 'function') (tx.onabort as () => void)();
+                      return;
+                    }
                     if (typeof tx.oncomplete === 'function') (tx.oncomplete as () => void)();
                   }
                 });
@@ -252,9 +283,9 @@ class FakeIDBStorage {
                 if (!outcome.ok) {
                   r.error = outcome.err ?? new Error('IDB request failed');
                   tx.error = r.error;
-                  if (typeof r.onerror === 'function') (r.onerror as () => void)();
                   if (!aborted) {
                     aborted = true;
+                    rollbackSnapshots();
                     queueMicrotask(() => {
                       if (typeof tx.onabort === 'function') (tx.onabort as () => void)();
                     });
@@ -285,6 +316,9 @@ class FakeIDBStorage {
                 return makeRequest(() => {
                   if (storage.options.failPutOnStore === name) {
                     return { ok: false, err: new Error('QuotaExceededError') };
+                  }
+                  if (storage.options.abortBeforeCompleteOnStore === name) {
+                    shouldAbortBeforeComplete = true;
                   }
                   backing.set(String(key), structuredClone(value));
                   return { ok: true, value: key };
@@ -1752,11 +1786,10 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       await vi.advanceTimersByTimeAsync(3 * 60_000);
     });
 
-    // Tab A is active at t = +3m (or a remote tab broadcasts activity on 'sabk.vault')
-    const remotePeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    // BE1-14: Trigger ONLY Tab A's production `recordActivity` sender (without injecting any manual remotePeer.postMessage)
+    // and verify Tab B receives the broadcast through the shared BroadcastChannel / subscriber hub and extends its deadline!
     act(() => {
       tabA.recordActivity(Date.now());
-      remotePeer.postMessage({ type: 'activity', at: Date.now() });
     });
 
     // Advance another 3 minutes (total 6 minutes since Tab B's own unlock, but only 3 minutes since Tab A's activity)
@@ -1771,7 +1804,6 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2 * 60_000 + 1_000);
     });
-    remotePeer.close();
     expect(screen.getByTestId('tab-a')).toHaveTextContent('locked');
     expect(screen.getByTestId('tab-b')).toHaveTextContent('locked');
   });
@@ -2080,8 +2112,31 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     const metaAfter2 = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
     expect(metaAfter2?.deviceRevision).toBe(5);
     expect(metaAfter2?.incarnation).not.toBe(metaAfter1?.incarnation);
-  });
 
+    // Case 3 (BE1-18): DevKey delete and meta put requests succeed, then the encompassing readwrite transaction aborts before commit ->
+    // must return ok:false, emit no purge success notification, and roll back both DevKey and metadata stores!
+    devkeysMap.set(formatDevKeyRecordKey(USER_A, 'vk:a3'), {
+      user_id: USER_A,
+      vault_key_id: 'vk:a3',
+      wrapped_vk: new Uint8Array([10, 11, 12]),
+    });
+    const notifications: unknown[] = [];
+    const unsubscribePurge = subscribeDevicePurge((res) => notifications.push(res));
+    fakeIdb.options.abortBeforeCompleteOnStore = META_STORE_NAME;
+
+    const abortPurgeResult = await purgeDeviceKeysOnRevoked(USER_A, {
+      idbFactory: fakeIdb.createFactory(),
+    });
+    fakeIdb.options.abortBeforeCompleteOnStore = undefined;
+    unsubscribePurge();
+
+    expect(abortPurgeResult.ok).toBe(false);
+    expect(notifications).toHaveLength(0);
+    expect(devkeysMap.has(formatDevKeyRecordKey(USER_A, 'vk:a3'))).toBe(true);
+    const metaAfterAbort = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaAfterAbort?.deviceRevision).toBe(5);
+    expect(metaAfterAbort?.incarnation).toBe(metaAfter2?.incarnation);
+  });
   it('BE1-1: holds post-unlock lockEpoch verification pending without exposing unlocked state or enabling decrypted consumers; locks on changed marker and unlocks on matching marker', async () => {
     const me = makeMeFixture({ vaultStatus: 'present' });
     vi.mocked(fetch).mockImplementation(async (url) => {
@@ -2835,15 +2890,31 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be1-6-state')).toHaveTextContent('recovering');
     expect(vaultCtx.unlockBaseline).not.toBeNull();
 
+    // Ordinary focus while in recovering with unchanged marker MUST preserve recovering state (BE1-6)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByTestId('be1-6-state')).toHaveTextContent('recovering');
+    expect(screen.getByTestId('be1-6-worker')).toHaveTextContent('recovering');
+
+    // Missed remote durable lock while in recovering before confirmRecovery ->
+    // confirmRecovery MUST verify the original recovery-start baseline (never overwriting it with a fresh capture) and fail closed!
     await act(async () => {
       await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, {
         idbFactory: fakeIdb.createFactory(),
         locksManager: fakeLocks.createLockManager(),
       });
-      window.dispatchEvent(new Event('focus'));
-      await vi.advanceTimersByTimeAsync(50);
     });
+    await expect(
+      act(async () => {
+        await vaultCtx.confirmRecovery({
+          opGeneration: opRec2.opGeneration,
+        });
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
     expect(screen.getByTestId('be1-6-state')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be1-6-worker')).toHaveTextContent('locked');
 
     // Case 3 (BE1-7): Enter recovering cleanly and stay idle for 5 minutes -> auto-lock timer locks recovering state!
     const opRec3 = vaultCtx.beginOp();
@@ -3065,7 +3136,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be1-11-state')).toHaveTextContent('locked');
     expect(vaultCtx.tabKnownLockEpoch).toBeGreaterThan(epochBeforeMismatch);
 
-    // Verify persisted lockEpoch in IndexedDB also advanced so a frozen sibling tab will lock on wake
+    // Verify persisted lockEpoch in IndexedDB also advanced so a frozen sibling tab will lock on wake (BE1-16)
     const checkFrozen = await verifyUnlockBaseline(
       { epochIncarnation: 'stale', lockEpoch: epochBeforeMismatch },
       { idbFactory: fakeIdb.createFactory(), locksManager: baseLockManager },
@@ -3073,7 +3144,56 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(checkFrozen.matches).toBe(false);
     expect(checkFrozen.persistedMarker?.lockEpoch).toBeGreaterThan(epochBeforeMismatch);
 
-    // 3. BE1-10: Start reloadVaultMeta for User A, then switch session to User B before it resolves ->
+    // VS-R1-11 & BE1-16: Receiving vault_changed { version: null } (remote vault reset) locks, advances durable lockEpoch,
+    // and calls refetchMe() so serverVaultStatus transitions from 'present' to 'absent' ('no_vault').
+    const epochBeforeResetBroadcast = vaultCtx.tabKnownLockEpoch;
+    currentMe = makeMeFixture({
+      userId: '11111111-1111-1111-1111-111111111111',
+      vaultStatus: 'absent',
+      autoLockMinutes: 15,
+    });
+    const resetPeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      resetPeer.postMessage({
+        type: 'vault_changed',
+        vault_key_id: vaultKeyIdOnServer,
+        version: null,
+      });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    resetPeer.close();
+    expect(screen.getByTestId('be1-11-state')).toHaveTextContent('no_vault');
+    expect(vaultCtx.tabKnownLockEpoch).toBeGreaterThan(epochBeforeResetBroadcast);
+
+    // Restore currentMe to 'present' for subsequent test step and verify BE1-17 (incarnation-only mismatch with identical numeric lockEpoch)
+    currentMe = makeMeFixture({
+      userId: '11111111-1111-1111-1111-111111111111',
+      vaultStatus: 'present',
+      autoLockMinutes: 15,
+    });
+    await act(async () => {
+      await sessionRefetch();
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    const opInc = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.createVault({
+        passphrase: 'be1-17-incarnation-only-passphrase',
+        opGeneration: opInc.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be1-11-state')).toHaveTextContent('unlocked');
+    const baselineBeforeIncSwap = vaultCtx.unlockBaseline!;
+    expect(baselineBeforeIncSwap).not.toBeNull();
+    fakeIdb.ensureStore(LOCK_EPOCH_STORE_NAME).set(LOCK_EPOCH_RECORD_KEY, {
+      epochIncarnation: '99999999999999999999999999999999',
+      lockEpoch: baselineBeforeIncSwap.lockEpoch,
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByTestId('be1-11-state')).toHaveTextContent('locked');
     //    late User A response is ignored and never populates vaultMeta for User B!
     holdVaultFetch = true;
     let staleReloadPromise!: Promise<unknown>;

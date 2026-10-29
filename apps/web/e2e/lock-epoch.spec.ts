@@ -234,83 +234,71 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     expect(baselineC).not.toBeNull();
     const initialEpoch = baselineC!.lockEpoch;
 
-    // Suspend BroadcastChannel & storage listeners in Page C and set CDP lifecycle state to `frozen`
-    await pageC.evaluate(() => {
-      const win = window as unknown as {
-        __suspendVaultBroadcastForFreezeTest?: boolean;
-      };
-      win.__suspendVaultBroadcastForFreezeTest = true;
-      // Close Page C's BroadcastChannel so it cannot receive live broadcasts while frozen
-      const OrigBC = window.BroadcastChannel;
-      window.BroadcastChannel = class extends OrigBC {} as typeof BroadcastChannel;
-    });
+    // Deterministically suppress live broadcast/storage delivery from Page A and Page B while Page C is frozen
+    // so Page C must rely on its wake check against `sabk.device` under Web Lock `'sabk.vault.lock'`.
+    const setSenderBroadcastSuppressed = async (page: Page, suppressed: boolean) => {
+      await page.evaluate((shouldSuppress) => {
+        const win = window as unknown as {
+          __origPostMessage?: typeof BroadcastChannel.prototype.postMessage;
+          __origSetItem?: typeof Storage.prototype.setItem;
+        };
+        if (shouldSuppress) {
+          if (!win.__origPostMessage) {
+            win.__origPostMessage = BroadcastChannel.prototype.postMessage;
+          }
+          if (!win.__origSetItem) {
+            win.__origSetItem = Storage.prototype.setItem;
+          }
+          BroadcastChannel.prototype.postMessage = function () {
+            // Simulated dropped broadcast to frozen receiver Page C
+          };
+          Storage.prototype.setItem = function () {
+            // Simulated dropped storage event to frozen receiver Page C
+          };
+        } else {
+          if (win.__origPostMessage) {
+            BroadcastChannel.prototype.postMessage = win.__origPostMessage;
+          }
+          if (win.__origSetItem) {
+            Storage.prototype.setItem = win.__origSetItem;
+          }
+        }
+      }, suppressed);
+    };
+
+    await setSenderBroadcastSuppressed(pageA, true);
+    await setSenderBroadcastSuppressed(pageB, true);
+
     const cdpC = await context.newCDPSession(pageC);
+    let cdpFreezeApplied = false;
     try {
       await cdpC.send('Page.setWebLifecycleState', { state: 'frozen' });
+      cdpFreezeApplied = true;
     } catch {
-      // Headless shell fallback if lifecycle state requires background visibility
+      // Headless shell may require background visibility before lifecycle freeze; deterministic broadcast suppression still isolates Page C
     }
 
     // Run a tight concurrent contention loop across Page A and Page B (10 iterations each = 20 lock writes)
-    // using the exact writer protocol: navigator.locks.request("sabk.vault.lock", { mode: "exclusive" }) + IDB readwrite tx
+    // driving the ACTUAL product `VaultProvider.lock()` -> `recordLockEpochEvent` writer (BE1-12)
     const ITERATIONS_PER_PAGE = 10;
     const runContentionLoop = (page: Page, iterations: number) =>
       page.evaluate(async (count) => {
         const produced: number[] = [];
-        let localKnown = 0;
-
-        const writeOneLockEvent = async (): Promise<number> => {
-          return navigator.locks.request(
-            'sabk.vault.lock',
-            { mode: 'exclusive' },
-            async () => {
-              const db = await new Promise<IDBDatabase>((resolve, reject) => {
-                const req = indexedDB.open('sabk.device', 1);
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error ?? new Error('open failed'));
-              });
-              try {
-                const marker = await new Promise<{
-                  epochIncarnation: string;
-                  lockEpoch: number;
-                }>((resolve, reject) => {
-                  const tx = db.transaction('lock_epoch', 'readwrite');
-                  const store = tx.objectStore('lock_epoch');
-                  const getReq = store.get('__lock_epoch__');
-                  let nextMarker: { epochIncarnation: string; lockEpoch: number } | null = null;
-                  getReq.onsuccess = () => {
-                    const cur = getReq.result as
-                      | { epochIncarnation: string; lockEpoch: number }
-                      | undefined;
-                    const nextEpoch = Math.max(cur?.lockEpoch ?? 0, localKnown) + 1;
-                    nextMarker = {
-                      epochIncarnation:
-                        cur?.epochIncarnation ?? '0123456789abcdef0123456789abcdef',
-                      lockEpoch: nextEpoch,
-                    };
-                    const putReq = store.put(nextMarker, '__lock_epoch__');
-                    putReq.onerror = () => tx.abort();
-                  };
-                  getReq.onerror = () => tx.abort();
-                  tx.oncomplete = () => {
-                    if (nextMarker) resolve(nextMarker);
-                    else reject(new Error('missing nextMarker'));
-                  };
-                  tx.onerror = () => reject(tx.error ?? new Error('tx error'));
-                  tx.onabort = () => reject(tx.error ?? new Error('tx abort'));
-                });
-                localKnown = Math.max(localKnown, marker.lockEpoch);
-                return marker.lockEpoch;
-              } finally {
-                db.close();
-              }
-            },
-          );
+        const win = window as unknown as {
+          __engramVaultTestBridge: {
+            lock: (opts?: { broadcast?: boolean; reason?: string }) => Promise<unknown>;
+            tabKnownLockEpoch: number;
+          };
         };
 
         for (let i = 0; i < count; i += 1) {
-          const epoch = await writeOneLockEvent();
-          produced.push(epoch);
+          await win.__engramVaultTestBridge.lock({
+            broadcast: true,
+            reason: `contention_${i}`,
+          });
+          // Wait for the queued exclusive Web Lock `'sabk.vault.lock'` + IDB readwrite tx from `recordLockEpochEvent` to settle
+          await navigator.locks.request('sabk.vault.lock', { mode: 'exclusive' }, async () => {});
+          produced.push(win.__engramVaultTestBridge.tabKnownLockEpoch);
         }
         return produced;
       }, iterations);
@@ -319,6 +307,9 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
       runContentionLoop(pageA, ITERATIONS_PER_PAGE),
       runContentionLoop(pageB, ITERATIONS_PER_PAGE),
     ]);
+
+    await setSenderBroadcastSuppressed(pageA, false);
+    await setSenderBroadcastSuppressed(pageB, false);
 
     // Every single page's own sequence must be strictly increasing
     for (let i = 1; i < epochsA.length; i += 1) {
@@ -341,12 +332,22 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     const persistedAfterContention = await readPersistedLockEpochMarker(pageA);
     expect(persistedAfterContention?.lockEpoch).toBe(initialEpoch + ITERATIONS_PER_PAGE * 2);
 
-    // Resume Page C from freeze -> Page C runs its wake check against `sabk.device` under Web Lock and immediately transitions to `locked`
-    try {
+    // Resume Page C from freeze -> verify Page C was still unlocked while suspended (BE1-13),
+    // then runs its wake check against `sabk.device` under Web Lock and transitions BOTH UI and Worker to `locked`.
+    if (cdpFreezeApplied) {
       await cdpC.send('Page.setWebLifecycleState', { state: 'active' });
-    } catch {
-      // Ignore if not supported in headless shell
     }
+    const stateCBeforeWake = await pageC.evaluate(() => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: { state: string; workerState: string };
+      };
+      return {
+        state: win.__engramVaultTestBridge.state,
+        workerState: win.__engramVaultTestBridge.workerState,
+      };
+    });
+    expect(stateCBeforeWake).toEqual({ state: 'unlocked', workerState: 'unlocked' });
+
     await pageC.evaluate(() => {
       window.dispatchEvent(new Event('resume'));
       window.dispatchEvent(new Event('focus'));
@@ -479,37 +480,57 @@ test.describe('P03-T15B Two-page / Three-page lockEpoch writer contention, freez
     });
     expect(baselineB2).not.toBeNull();
 
-    // Delete the marker (as in a failed write) and then re-unlock Page A so `captureUnlockBaseline` initializes
-    // a brand-new `epochIncarnation` token in `sabk.device`
-    await pageA.evaluate(async () => {
-      await navigator.locks.request('sabk.vault.lock', { mode: 'exclusive' }, async () => {
-        const db = await new Promise<IDBDatabase>((resolve, reject) => {
-          const req = indexedDB.open('sabk.device', 1);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
+    // Replace the marker in `sabk.device` with the EXACT SAME numeric `lockEpoch` (`baselineB2.lockEpoch`)
+    // but a brand-new `epochIncarnation` token (BE1-17: isolates incarnation-only mismatch from numeric lockEpoch mismatch)
+    const fixedEpoch = baselineB2!.lockEpoch;
+    const newIncarnation =
+      baselineB2!.epochIncarnation === 'ffffffffffffffffffffffffffffffff'
+        ? 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+        : 'ffffffffffffffffffffffffffffffff';
+    await pageA.evaluate(
+      async ({ lockEpoch, epochIncarnation }) => {
+        await navigator.locks.request('sabk.vault.lock', { mode: 'exclusive' }, async () => {
+          const db = await new Promise<IDBDatabase>((resolve, reject) => {
+            const req = indexedDB.open('sabk.device', 1);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction('lock_epoch', 'readwrite');
+            tx.objectStore('lock_epoch').put(
+              { epochIncarnation, lockEpoch },
+              '__lock_epoch__',
+            );
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          });
+          db.close();
         });
-        await new Promise<void>((resolve, reject) => {
-          const tx = db.transaction('lock_epoch', 'readwrite');
-          tx.objectStore('lock_epoch').delete('__lock_epoch__');
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-        });
-        db.close();
-      });
-    });
+      },
+      { lockEpoch: fixedEpoch, epochIncarnation: newIncarnation },
+    );
 
-    await unlockPageViaRealWorker(pageA);
     const markerAfterReinit = await readPersistedLockEpochMarker(pageA);
     expect(markerAfterReinit).not.toBeNull();
+    expect(markerAfterReinit!.lockEpoch).toBe(baselineB2!.lockEpoch);
     expect(markerAfterReinit!.epochIncarnation).not.toBe(baselineB2!.epochIncarnation);
 
-    // Now wake Page B -> sees `epochIncarnation !== unlockBaseline.epochIncarnation` and locks fail-closed
+    // Now wake Page B -> sees `epochIncarnation !== unlockBaseline.epochIncarnation` (even though numeric lockEpoch is identical) and locks fail-closed
     await pageB.evaluate(() => {
       window.dispatchEvent(new Event('resume'));
       window.dispatchEvent(new Event('focus'));
     });
     await expect(pageB.locator('.vault-pill')).toHaveClass(/vault-shut/);
-
+    const stateBAfterIncarnationMismatch = await pageB.evaluate(() => {
+      const win = window as unknown as {
+        __engramVaultTestBridge: { state: string; workerState: string };
+      };
+      return {
+        state: win.__engramVaultTestBridge.state,
+        workerState: win.__engramVaultTestBridge.workerState,
+      };
+    });
+    expect(stateBAfterIncarnationMismatch).toEqual({ state: 'locked', workerState: 'locked' });
     await pageA.close();
     await pageB.close();
   });

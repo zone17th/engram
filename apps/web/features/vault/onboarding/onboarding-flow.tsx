@@ -384,6 +384,29 @@ export function VaultOnboardingFlow() {
           return;
         }
         if (status === 409 && code === 'idempotency_conflict') {
+          // ADR 0002 §8.4: retire the rejected Idempotency-Key so retries never reuse the conflicted key,
+          // and reconcile server state via GET /vault first.
+          setPreparedBundle((prev) =>
+            prev ? { ...prev, idempotencyKey: createIdempotencyKey() } : null,
+          );
+          try {
+            const existingVault = await vault.reloadVaultMeta();
+            if (
+              postSubmitSeqRef.current !== submitSeq ||
+              client.getGeneration() !== submitBundle.opGeneration ||
+              (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
+            ) {
+              return;
+            }
+            if (existingVault) {
+              clearRecoveryKeysAndSecrets();
+              await vault.lock({ broadcast: false, reason: 'vault_exists_after_conflict' });
+              setStep('vault-exists');
+              return;
+            }
+          } catch {
+            // If GET /vault fails transiently, still surface the conflict alert with the retired key
+          }
           setStep2Error({ kind: 'idempotency_conflict' });
           return;
         }
