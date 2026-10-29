@@ -124,12 +124,17 @@ interface FakeIdbOptions {
   failPutOnStore?: string;
   failGetOnStore?: string;
   abortBeforeCompleteOnStore?: string;
+  /** Opt-in: readwrite transactions run strictly in creation order, like real IndexedDB for overlapping scopes. */
+  serializeReadwrite?: boolean;
+  /** Opt-in (needs `serializeReadwrite`): the NEXT readwrite transaction does not start until this promise settles. */
+  holdNextReadwrite?: Promise<void>;
 }
 class FakeIDBStorage {
   readonly stores = new Map<string, Map<string, unknown>>();
   options: FakeIdbOptions = {};
   readonly transactions: Array<{ storeNames: string[]; mode: string }> = [];
   deleteDatabaseCalls = 0;
+  private readwriteTail: Promise<void> = Promise.resolve();
   ensureStore(name: string): Map<string, unknown> {
     let store = this.stores.get(name);
     if (!store) {
@@ -206,16 +211,34 @@ class FakeIDBStorage {
         const names = Array.isArray(storeNames) ? storeNames : [storeNames];
         storage.transactions.push({ storeNames: names, mode });
         const snapshots = new Map<string, Map<string, unknown>>();
-        for (const n of names) {
-          const existing = storage.ensureStore(n);
-          if (mode === 'readwrite') {
-            const copy = new Map<string, unknown>();
-            for (const [k, v] of existing.entries()) {
-              copy.set(k, structuredClone(v));
+        const takeSnapshots = () => {
+          for (const n of names) {
+            const existing = storage.ensureStore(n);
+            if (mode === 'readwrite') {
+              const copy = new Map<string, unknown>();
+              for (const [k, v] of existing.entries()) {
+                copy.set(k, structuredClone(v));
+              }
+              snapshots.set(n, copy);
             }
-            snapshots.set(n, copy);
           }
+        };
+        // Serialised readwrite (opt-in): wait for the previous readwrite transaction (and an optional hold) before the
+        // first request runs; snapshots are then taken at the real start so a rollback never reverts a predecessor.
+        const gated = mode === 'readwrite' && storage.options.serializeReadwrite === true;
+        let turn: Promise<void> | null = null;
+        let releaseTurn: () => void = () => undefined;
+        if (gated) {
+          const hold = storage.options.holdNextReadwrite;
+          storage.options.holdNextReadwrite = undefined;
+          turn = storage.readwriteTail.then(() => hold);
+          storage.readwriteTail = new Promise<void>((resolve) => {
+            releaseTurn = resolve;
+          });
+        } else {
+          takeSnapshots();
         }
+        let snapshotsTaken = !gated;
         let aborted = false;
         let pendingRequests = 0;
         let finishScheduled = false;
@@ -243,6 +266,7 @@ class FakeIDBStorage {
             rollbackSnapshots();
             queueMicrotask(() => {
               if (typeof tx.onabort === 'function') (tx.onabort as () => void)();
+              releaseTurn();
             });
           },
           objectStore(name: string): IDBObjectStore {
@@ -259,9 +283,11 @@ class FakeIDBStorage {
                       tx.error = new Error('Simulated transaction abort before commit');
                       rollbackSnapshots();
                       if (typeof tx.onabort === 'function') (tx.onabort as () => void)();
+                      releaseTurn();
                       return;
                     }
                     if (typeof tx.oncomplete === 'function') (tx.oncomplete as () => void)();
+                    releaseTurn();
                   }
                 });
               }
@@ -276,9 +302,13 @@ class FakeIDBStorage {
                 onsuccess: null,
                 onerror: null,
               };
-              queueMicrotask(() => {
+              const execute = () => {
                 pendingRequests -= 1;
                 if (aborted) return;
+                if (!snapshotsTaken) {
+                  snapshotsTaken = true;
+                  takeSnapshots();
+                }
                 const outcome = runOp();
                 if (!outcome.ok) {
                   r.error = outcome.err ?? new Error('IDB request failed');
@@ -288,6 +318,7 @@ class FakeIDBStorage {
                     rollbackSnapshots();
                     queueMicrotask(() => {
                       if (typeof tx.onabort === 'function') (tx.onabort as () => void)();
+                      releaseTurn();
                     });
                   }
                   return;
@@ -295,7 +326,9 @@ class FakeIDBStorage {
                 r.result = outcome.value;
                 if (typeof r.onsuccess === 'function') (r.onsuccess as () => void)();
                 scheduleCheckComplete();
-              });
+              };
+              if (turn) void turn.then(execute);
+              else queueMicrotask(execute);
               return r as unknown as IDBRequest;
             };
 
@@ -5260,31 +5293,61 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('be29-acting-state')).toHaveTextContent('locked');
   }, 15_000);
 
-  // advisor-dec-041: an accepted markResetPurged snapshots the post-purge device meta, so the unnamed 404 that follows a
-  // locally observed reset (current key null) is a proven duplicate while `sabk.device` is untouched.
-  it('BE2-9 (vaultsettings order): dialog purge, markResetPurged(K) while K is current, lock({broadcast:false}), notifyVaultChanged(K, null), then a Reload vault 404 purges exactly once in total', async () => {
-    const ctx = await be29Setup('be29-dialog');
-    await act(async () => {
-      await purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
-    });
-    act(() => {
-      ctx.vault().markResetPurged('vk:be29-a');
-    });
-    await act(async () => {
-      await ctx.vault().lock({ broadcast: false });
-    });
-    act(() => {
-      ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
-    });
-    ctx.gate.mode = 'absent';
-    await act(async () => {
-      expect(await ctx.vault().reloadVaultMeta()).toBeNull();
-      await sleepReal(50);
-    });
-    const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
-    expect(meta?.deviceRevision).toBe(11);
-    expect(screen.getByTestId('be29-dialog-state')).toHaveTextContent('locked');
-  }, 15_000);
+  // advisor-dec-041 / BE7-2: an unnamed 404 after a reset skips its purge only when a reset receipt exists AND the
+  // purge transaction itself finds no DevKey for the user (`skipIfNoDevKeys`, checked inside the readwrite transaction).
+  // The vaultsettings order mirrors defd837 reset-vault-dialog.tsx:251-262: the purge is started and NOT awaited,
+  // `markResetPurged` follows at once, then lock({broadcast:false}), then the reset notification; the Reload vault 404
+  // may land before or after the purge commits. Readwrite transactions are serialised (opt-in fake option), as in IndexedDB.
+  it.each(['before', 'after'] as const)(
+    'BE2-9 (vaultsettings order, literal): purge started and not awaited, markResetPurged(K) at once, lock({broadcast:false}), notifyVaultChanged(K, null), then a Reload vault 404 while the purge commits %s it purges exactly once in total',
+    async (when) => {
+      const ctx = await be29Setup(`be29-dialog-${when}`);
+      const keyA = seedBe29DevKey(ctx.devkeys, 'vk:be29-a');
+      fakeIdb.options.serializeReadwrite = true;
+      let release: () => void = () => undefined;
+      if (when === 'after') {
+        fakeIdb.options.holdNextReadwrite = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      const purgeP = purgeDeviceKeysOnRevoked(BE2_USER_ID, { idbFactory: ctx.idbFactory });
+      act(() => {
+        ctx.vault().markResetPurged('vk:be29-a');
+      });
+      await act(async () => {
+        await ctx.vault().lock({ broadcast: false });
+      });
+      act(() => {
+        ctx.vault().notifyVaultChanged({ vault_key_id: 'vk:be29-a', version: null });
+      });
+      ctx.gate.mode = 'absent';
+      if (when === 'before') {
+        await act(async () => {
+          await purgeP;
+        });
+        await act(async () => {
+          expect(await ctx.vault().reloadVaultMeta()).toBeNull();
+          await sleepReal(50);
+        });
+      } else {
+        await act(async () => {
+          const reloadP = ctx.vault().reloadVaultMeta();
+          // The 404 is evaluated while the purge is still held: its skip transaction queues behind the purge.
+          await sleepReal(50);
+          expect(ctx.devkeys.has(keyA)).toBe(true);
+          release();
+          await purgeP;
+          expect(await reloadP).toBeNull();
+          await sleepReal(50);
+        });
+      }
+      expect(ctx.devkeys.has(keyA)).toBe(false);
+      const meta = await readDeviceMetaRecord({ idbFactory: ctx.idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+      expect(screen.getByTestId(`be29-dialog-${when}-state`)).toHaveTextContent('locked');
+    },
+    15_000,
+  );
 
   it('BE7-2: markResetPurged WITHOUT a purge, then an unnamed 404, purges (the DevKey is still there)', async () => {
     const ctx = await be29Setup('be72-mark-only');
