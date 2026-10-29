@@ -1,6 +1,6 @@
 # engram — Project Specification
 
-> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06. P02 bổ sung contract session/CSRF/enrollment vào §3.1, §8, §9, §10.2 — xem [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md).
+> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06. P02 bổ sung contract session/CSRF/enrollment vào §3.1, §8, §9, §10.2 — xem [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md). 2026-10-29: embedding qua API tương thích OpenAI (`qwen3-embedding-8b`, 1024 dims) — xem [ADR 0004](adr/0004-embedding-provider-openai-compat.md); ADR thắng các đoạn TEI-only còn sót.
 >
 > Tài liệu này là spec tổng thể cho sản phẩm **engram** (repo `save-all-by-keyword`): lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
 
@@ -36,7 +36,7 @@
 - **E2E chỉ cho thân entry**: server thấy `name`, tag, kiểu entry, timestamps; **không** thấy text hay JSON. Key chỉ nằm ở browser.
 - **Entry có kiểu**: `text` (văn bản tự do) và `json` (tài liệu JSON, UI render **bảng lồng nhau**). Schema sẵn cho `link` / `file` / `image` (không làm ở MVP).
 - **Server-first, multi-user, multi-device**: đăng nhập máy khác, **unlock vault** bằng passphrase, **passkey (PRF)**, hoặc **một recovery key** (rồi đặt passphrase mới).
-- **Miễn phí, embedding self-host**: không gói trả phí; vector chạy TEI trong hạ tầng sản phẩm (`BAAI/bge-m3`). Name và tag **không** gửi ra nhà cung cấp AI bên thứ ba.
+- **Miễn phí, embedding qua provider cấu hình được**: không gói trả phí; mặc định production gọi API tương thích OpenAI (`qwen/qwen3-embedding-8b`, 1024 dims) qua router của sản phẩm, TEI tự host vẫn là lựa chọn ([ADR 0004](adr/0004-embedding-provider-openai-compat.md)). Khi bật gợi ý gần nghĩa, name/tag/hint/query **được gửi** tới dịch vụ embedding bên thứ ba; tắt `≈` thì không gửi gì của user đó.
 
 **Tên sản phẩm: `engram`** — dấu vết vật lý mà một ký ức để lại. Viết thường trong mọi ngữ cảnh (`engram`, không `Engram`). Chốt ở v0.6, thay cho tên tạm cũ; lý do chọn và các tên đã loại nằm trong [README](../README.md#tên). **Tên repo giữ `save-all-by-keyword`** vì lịch sử, và thư mục gốc trong §11.1 giữ nguyên. Chưa tra domain và nhãn hiệu — phải kiểm trước khi đăng ký gì.
 
@@ -65,7 +65,7 @@ Thực thể chính **không** còn là "keyword". Xem §2 và §14.
 - **Không** email khôi phục, không câu hỏi bí mật, không KMS ngoài: chỉ khi không còn passphrase, RK dùng được, passkey, DevKey hoặc VK trong phiên đang mở mới không còn đường unlock trực tiếp. Kiểm tra backup trước khi reset; reset vault xoá entry, giữ item/tag. Email thông báo bảo mật không phải phương thức khôi phục.
 - **Không** login-with-passkey ở MVP (P07). **Không** WebAuthn largeBlob; **không** đăng ký passkey khi thiếu PRF.
 - **Không** pricing / gói / tier: sản phẩm miễn phí; marketing chỉ landing + docs.
-- **Không** embedding API bên thứ ba: không OpenAI, không Gemini, không Cohere. Provider duy nhất: `tei` \| `noop`.
+- **Không** để user tự chọn model embedding. Provider cấp deployment: `noop` \| `tei` \| `openai_compat` ([ADR 0004](adr/0004-embedding-provider-openai-compat.md)); không gọi thẳng SDK riêng của từng hãng.
 - **Không** "private name" / blind index: `name` và tag luôn plaintext — không có roadmap mã hoá tên.
 - **Không** quan hệ entry ↔ nhiều item: một entry thuộc **đúng một** Item.
 
@@ -145,7 +145,7 @@ Chuẩn hoá để search, **không** để identity:
 
 `name_normalized` = NFC → lowercase → trim → collapse whitespace → bỏ dấu câu đầu/cuối. **Giữ dấu tiếng Việt** (`mã` ≠ `ma`). Fuzzy/unaccent ở tầng search (§6).
 
-Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
+Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server và dịch vụ embedding đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
 
 **`Tag` — first-class, unique theo `normalized`.**
 Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` mà `normalized` trùng tag khác → `409 TAG_CONFLICT` (merge tag = P07).
@@ -537,7 +537,7 @@ flowchart LR
         VA[Vault keys · RK wraps · passkeys]
         EX[Export]
         WK[Worker: embedding jobs]
-        EP[Embedding Provider<br/>tei | noop]
+        EP[Embedding Provider<br/>openai_compat | tei | noop]
     end
 
     subgraph Data
@@ -545,8 +545,9 @@ flowchart LR
         RD[(Redis — optional<br/>rate limit / cache)]
     end
 
-    subgraph Emb["Self-hosted embedding (compose profile semantic / cùng VPC)"]
-        TEI[TEI container CPU<br/>BAAI/bge-m3 · 1024 dims<br/>HTTP :8081]
+    subgraph Emb["Embedding (ADR 0004)"]
+        RT[Router OpenAI-compat<br/>→ OpenRouter<br/>qwen3-embedding-8b · 1024 dims]
+        TEI[TEI tự host, tuỳ chọn<br/>BAAI/bge-m3 · 1024 dims]
     end
 
     NG[nginx reverse proxy<br/>key.zone17th.click · TLS] --> Edge
@@ -557,11 +558,12 @@ flowchart LR
     WK --> PG
     WK --> EP
     IT -- query embedding --> EP
-    EP -- HTTP nội bộ --> TEI
+    EP -- HTTPS / mạng riêng --> RT
+    EP -. HTTP nội bộ .-> TEI
     IT -. cache .-> RD
 ```
 
-Toàn bộ chạy trong hạ tầng sản phẩm. **Không** có network call ra dịch vụ AI bên thứ ba. Chỉ `item.name` / `tag.display` đi Postgres → Go → TEI nội bộ.
+Với `openai_compat`, chỉ `item.name` (+ hint), `tag.display` và query semantic đi Go → router → dịch vụ embedding bên thứ ba; body entry không bao giờ đi. Với `tei`, toàn bộ ở trong hạ tầng sản phẩm. Xem [ADR 0004](adr/0004-embedding-provider-openai-compat.md).
 
 ### 4.1 Cái gì chạy ở đâu
 
@@ -575,8 +577,8 @@ Toàn bộ chạy trong hạ tầng sản phẩm. **Không** có network call ra
 | Auth, sessions | Go API | Cookie HttpOnly, SameSite=Lax, refresh rotation |
 | Item / Tag CRUD, suggest, search | Go API + Postgres | Lexical (pg_trgm, prefix) + vector (pgvector) trên **hai** bảng |
 | Entry CRUD | Go API + Postgres | Blob opaque + `type` + `position`; validate size & envelope |
-| Embedding (index) | Go worker (River) → TEI | Async; CPU image; compose profile `semantic`; không public |
-| Embedding (query) | Go API → TEI | Sync khi suggest; LRU + circuit breaker (§6.6) |
+| Embedding (index) | Go worker (River) → provider | Async; `openai_compat` (mặc định) hoặc TEI compose profile `semantic` |
+| Embedding (query) | Go API → provider | Sync khi suggest, budget `EMBEDDING_QUERY_TIMEOUT`; LRU + circuit breaker (§6.6) |
 | Rate limit / cache suggest | Go in-memory (MVP) → Redis khi scale ngang | |
 | Reverse proxy / TLS | nginx trước Next.js + Go API | Domain tạm `key.zone17th.click`; cấu hình khi deploy (§11.5) |
 
@@ -610,9 +612,9 @@ type Provider interface {
 }
 ```
 
-MVP: **`tei`** (`POST /embed`, đọc `/info` lúc boot: `model_id`, `model_sha`, dims → `model_version`) và **`noop`** (vector 0, dev/test không TEI). Env: `EMBEDDING_PROVIDER=tei|noop`, `TEI_URL`.
+MVP: **`openai_compat`** (`POST /embeddings`, `dimensions`, instruction query; env và quy tắc trong [ADR 0004](adr/0004-embedding-provider-openai-compat.md)), **`tei`** (`POST /embed`, đọc `/info` lúc boot: `model_id`, `model_sha`, dims → `model_version`) và **`noop`** (vector 0, dev/test không TEI). Env: `EMBEDDING_PROVIDER=noop|tei|openai_compat`, `TEI_URL`, `EMBEDDING_*`.
 
-Đổi model (fallback host: `intfloat/multilingual-e5-base`, 768 dims, cần prefix `query:`/`passage:` qua `TEI_INPUT_PREFIX_*`) qua shadow tables + cutover §6.6; không đổi query model trước khi index mới sẵn sàng. **Không** implement provider gọi API bên thứ ba.
+Đổi model (fallback host: `intfloat/multilingual-e5-base`, 768 dims, cần prefix `query:`/`passage:` qua `TEI_INPUT_PREFIX_*`) qua shadow tables + cutover §6.6; không đổi query model trước khi index mới sẵn sàng. Không implement SDK riêng từng hãng; mọi API ngoài đi qua `openai_compat`.
 
 ---
 
@@ -877,11 +879,11 @@ Gắn tag chips cho mỗi item hit: `SELECT tag_id, display FROM item_tag JOIN t
 
 ### 6.4 Hybrid ranking
 
-Chạy lexical item/tag song song (timeout 50 ms / nhánh). Nhánh semantic gọi TEI một lần (budget tối đa 300 ms), rồi hai query vector song song (budget còn lại, tối đa 80 ms / nhánh); tổng hybrid cache miss ≤ 350 ms server. UI nhận lexical trước qua `semantic=0`, semantic đến sau không được di chuyển hàng đã hiện.
+Chạy lexical item/tag song song (timeout 50 ms / nhánh). Nhánh semantic gọi provider một lần (budget `EMBEDDING_QUERY_TIMEOUT`: 300 ms với TEI, 4 s với `openai_compat`), rồi hai query vector song song (budget còn lại, tối đa 80 ms / nhánh); tổng hybrid cache miss ≤ 350 ms server. UI nhận lexical trước qua `semantic=0`, semantic đến sau không được di chuyển hàng đã hiện.
 
 **MVP dùng thứ tự theo tier và các tiêu chí lần lượt, không cộng RRF/recency thành một score.** Quy tắc trên cùng snapshot dữ liệu:
 
-- `tier`: prefix > fuzzy (`trgm ≥ 0.35`) > semantic only (`cos ≥ 0.55`); `q` rỗng dùng recent riêng.
+- `tier`: prefix > fuzzy (`trgm ≥ 0.35`) > semantic only (`cos ≥ semantic_min_cos` của generation active, hiệu chỉnh trên bộ đánh giá — ADR 0004; tạm 0.58 cho qwen3@1024); `q` rỗng dùng recent riêng.
 - Prefix/fuzzy trong từng corpus: `tier DESC`, `trgm_score DESC`, `last_used_at DESC`, `count DESC`, `id ASC`. Recency/count chỉ phá hoà khi relevance bằng nhau, không cộng trọng số để lấn át relevance. `count` = `entry_count` (item) hoặc `item_count` (tag).
 - Semantic only: bỏ mọi `(kind,id)` đã có trong lexical, xếp `cos_sim DESC`, `last_used_at DESC`, `count DESC`, `id ASC`. Điểm semantic của một lexical hit không thay đổi vị trí hit đó. Không so trộn numeric score giữa corpus item và tag.
 - Dropdown: lexical **Tags**, lexical **Items**, rồi một vùng **Gần nghĩa** ở cuối (row có `kind`). Khi merge, giữ nguyên thứ tự và node identity của toàn bộ lexical rows, chỉ append/remove vùng semantic; selection bám `(kind,id)`, không bám row index. Không chèn semantic tag lên trước lexical item đã hiện. Quota lexical xác định từ request đầu; nếu đã đủ `limit`, bỏ semantic thừa thay vì loại lexical.
@@ -950,7 +952,7 @@ sequenceDiagram
 
 Trigger: tạo/đổi `item.name`/`hint`; tạo/đổi `tag.display`. Gán/gỡ `item_tag` **không** re-embed (văn bản không đổi). Soft-delete → xoá vector trong mọi generation và không enqueue; hard-delete → FK cascade. Restore item/tag → enqueue input hiện tại cho các generation còn nhận mutation.
 
-`SEARCH_SEMANTIC_ENABLED=false` (cấp **deployment**): không enqueue. Bật lại → `ReembedAll` cho item/tag active có **vector thiếu hoặc `input_hash` khác hash hiện tại hoặc `model`/`model_version` khác generation active**. Tắt `user.settings.semantic_suggest` vẫn chạy embed job (§6.10), không cần backfill khi user bật lại.
+`SEARCH_SEMANTIC_ENABLED=false` (cấp **deployment**): không enqueue. Bật lại → `ReembedAll` cho item/tag active có **vector thiếu hoặc `input_hash` khác hash hiện tại hoặc `model`/`model_version` khác generation active**. Với `tei`: tắt `user.settings.semantic_suggest` vẫn chạy embed job (§6.10), không cần backfill khi user bật lại. Với `openai_compat`: tắt thì không enqueue và xoá vector của user, bật lại → `ReembedUser` (ADR 0004).
 
 **Đổi model/revision/preprocessing luôn dùng shadow tables**, kể cả dims không đổi: tạo `item_embedding_v2` / `tag_embedding_v2` với vector(N), partition và HNSW riêng. Không đổi PK thành `(item_id, model)` để trộn hai model vào một HNSW. Backfill batch 64, concurrency TEI mặc định 2; query vẫn dùng generation cũ. Trong lúc build, mutation enqueue cho cả generation active và pending; retry/delete phải xử lý cả hai, kết quả job kiểm tra input hash trước ghi.
 
@@ -958,11 +960,11 @@ Cutover khi **cả hai corpus** pending đã phủ mọi item/tag active tại w
 
 Query embedding cache: LRU key `generation_id || normalized(q)`, TTL 24 h; generation đổi → namespace mới. `ReembedAll` là sửa thiếu/stale trong một generation; thay model dùng quy trình shadow/cutover riêng.
 
-Degraded: TEI > 300 ms / 5xx / refused → circuit 60 s → lexical-only, `semantic: false, semantic_reason: "degraded"`. Job retry 1 m → 1 h, dead-letter sau 24 h.
+Degraded: provider quá `EMBEDDING_QUERY_TIMEOUT` / 5xx / 429 / refused → circuit 60 s → lexical-only, `semantic: false, semantic_reason: "degraded"`. Job retry 1 m → 1 h, dead-letter sau 24 h.
 
 ### 6.7 Model — self-host
 
-**Quyết định:** TEI (CPU) trong Docker Compose, Go HTTP nội bộ. API bên thứ ba **loại**.
+**Thay bởi [ADR 0004](adr/0004-embedding-provider-openai-compat.md):** mặc định `openai_compat` với `qwen/qwen3-embedding-8b` cắt 1024 dims. Bảng dưới giữ cho lựa chọn TEI tự host (host x86).
 
 | Tiêu chí | **BAAI/bge-m3** (mặc định) | multilingual-e5-base (fallback host) |
 |----------|---------------------------|--------------------------------------|
@@ -1000,7 +1002,7 @@ Chọn **bge-m3**, `normalize: true`, cosine. Host nhỏ: đổi e5-base qua sha
 | Tầng | Cơ chế | Khi tắt |
 |------|--------|---------|
 | **Deployment** | `SEARCH_SEMANTIC_ENABLED` default `true` | Không cần TEI (compose profile `semantic`); không enqueue; suggest/search lexical; `features.semantic_available: false`; `PATCH semantic_suggest` → `409 SEMANTIC_UNAVAILABLE`; bật lại → `ReembedAll` |
-| **User** | `settings.semantic_suggest` default `true`; Settings + toggle **`≈`** trên omnibox | Không gọi TEI cho query user đó; **vẫn** chạy embed job (bật lại là có vector). `semantic_reason: "disabled_user"` |
+| **User** | `settings.semantic_suggest` default `true`; Settings + toggle **`≈`** trên omnibox | Không gọi provider cho query user đó. Với `tei` **vẫn** chạy embed job (bật lại là có vector); với `openai_compat` không gửi gì, xoá vector, bật lại → `ReembedUser` (ADR 0004). `semantic_reason: "disabled_user"` |
 | **Degraded** | Circuit TEI | Như tắt user, 60 s; `semantic_reason: "degraded"` |
 
 Thứ tự: server → user → breaker → `len(q) ≥ 3`. Tắt user **không** xoá vector.
@@ -1225,7 +1227,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 |---------------|-----|
 | Tài khoản | Email, locale en/vi, theme, link Google/GitHub, đổi password đăng nhập. OAuth-only đặt password lần đầu qua enrollment (email đã verified) hoặc Google re-auth nếu freshness bật — không gọi đó là phục hồi dữ liệu. Notification in-app + audit trên U7. |
 | Bảo mật | Đổi passphrase (VK + re-auth tài khoản; không cần passphrase cũ; RK/passkey vẫn mở) · **Recovery keys: còn N/10** (không hiện bí mật) · Regenerate slot thiếu · Xoay cả 10 · **Passkeys** (thêm / đổi tên / thu hồi) · Auto-lock 5/**15**/60/Never · Thiết bị này đã nhớ? · Quên thiết bị · Phiên · Audit · Reset vault |
-| Tìm kiếm | Gợi ý gần nghĩa on/off — "mô hình trên máy chủ của chúng tôi (TEI), không gửi name/tag ra bên thứ ba". Ẩn nếu server tắt |
+| Tìm kiếm | Gợi ý gần nghĩa on/off — "bật thì tên mục, tag, hint và từ khoá được gửi tới dịch vụ embedding bên thứ ba; nội dung entry không bao giờ gửi" (ADR 0004). Ẩn nếu server tắt |
 | Dữ liệu | Export encrypted · Export decrypted (cảnh báo + re-auth) · Xoá tài khoản |
 
 ### 7.7 Empty / error states
@@ -1808,7 +1810,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 
 ### 10.1 Performance
 
-Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; libsodium WASM lazy sau login (~300 KB, gzip ~120 KB). Argon2id 64 MiB trên laptop mục tiêu ~0.5–1.5 s, mobile tầm trung ~2–4 s — **không** hạ mem; máy quá yếu: cảnh báo "thiết bị chậm", params vẫn 64 MiB. Host app (Postgres + Go + Next + TEI bge-m3) tính ~8 GB RAM khi bật semantic; host nhỏ hơn thì `SEARCH_SEMANTIC_ENABLED=false` hoặc e5-base.
+Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; libsodium WASM lazy sau login (~300 KB, gzip ~120 KB). Argon2id 64 MiB trên laptop mục tiêu ~0.5–1.5 s, mobile tầm trung ~2–4 s — **không** hạ mem; máy quá yếu: cảnh báo "thiết bị chậm", params vẫn 64 MiB. Host app (Postgres + Go + Next + TEI bge-m3) tính ~8 GB RAM khi bật semantic bằng TEI; với `openai_compat` (ADR 0004) host không chạy model. Host nhỏ không dùng API ngoài thì `SEARCH_SEMANTIC_ENABLED=false` hoặc e5-base.
 
 ### 10.2 Security checklist
 
@@ -1841,7 +1843,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 
 ### 10.4 Privacy statement (docs / marketing)
 
-> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước xấp xỉ. Khi hệ thống bật semantic, tên mục, tag và hint được xử lý bởi mô hình embedding **tự chạy trên máy chủ của chúng tôi** (TEI, không gửi tới nhà cung cấp AI bên thứ ba). Tắt gợi ý "gần nghĩa" trong Settings hoặc bằng nút `≈` sẽ ngừng tạo embedding cho truy vấn và ngừng dùng vector cho tìm kiếm của bạn; việc tạo/cập nhật vector của tên mục và tag vẫn tiếp tục trên hạ tầng của chúng tôi. Bạn mở vault bằng encryption passphrase, **passkey** (WebAuthn PRF), **một recovery key** còn dùng được, hoặc thiết bị đã nhớ. Nếu quên passphrase nhưng vẫn mở được vault, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản. Chỉ khi không còn đường lấy lại khoá, kể cả qua backup mở được, mới không đọc lại được nội dung; reset vault xoá entry trên server, giữ lại mục và tag.
+> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước xấp xỉ. Khi bạn bật gợi ý "gần nghĩa", tên mục, tag, hint và từ khoá tìm kiếm được gửi tới **dịch vụ embedding bên thứ ba** (qua OpenRouter) để tạo vector; nội dung entry không bao giờ được gửi. Tắt gợi ý "gần nghĩa" trong Settings hoặc bằng nút `≈` sẽ ngừng gửi mọi dữ liệu của bạn tới dịch vụ đó và xoá vector đã tạo. Bạn mở vault bằng encryption passphrase, **passkey** (WebAuthn PRF), **một recovery key** còn dùng được, hoặc thiết bị đã nhớ. Nếu quên passphrase nhưng vẫn mở được vault, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản. Chỉ khi không còn đường lấy lại khoá, kể cả qua backup mở được, mới không đọc lại được nội dung; reset vault xoá entry trên server, giữ lại mục và tag.
 
 ### 10.5 Backup & DR
 

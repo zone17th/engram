@@ -12,10 +12,10 @@ Tìm lại bằng name/tag trên hai corpus, prefix/fuzzy trước và semantic 
 | Mốc | Phạm vi |
 |---|---|
 | P05-A — Lexical | Normalize/unaccent, prefix/pg_trgm, two-corpus suggest/search, keyboard/highlight/quotas |
-| P05-B — Semantic | TEI bge-m3, query cache, jobs, toggle hai tầng, timeout/circuit, stable merge |
+| P05-B — Semantic | Provider `openai_compat` qwen3-embedding-8b@1024 (ADR 0004) + TEI tuỳ chọn, bộ đánh giá ngưỡng, query cache, jobs, toggle hai tầng, timeout/circuit, stable merge |
 | P05-C — Scale/rollout | Exact vs partitioned HNSW, backfill stale, shadow model generation, benchmark/cutover/rollback |
 
-Ngoài phạm vi: search body plaintext phía server hoặc client content index, third-party embedding API, user tự chọn model, private-name/blind index. Không thêm user opt-out indexing toggle hoặc nút global `ReembedAll` theo demo.
+Ngoài phạm vi: search body plaintext phía server hoặc client content index, SDK embedding riêng từng hãng (mọi API ngoài qua `openai_compat`, ADR 0004), user tự chọn model, private-name/blind index. Không thêm user opt-out indexing toggle hoặc nút global `ReembedAll` theo demo.
 
 ## UI
 
@@ -31,12 +31,12 @@ Ngoài phạm vi: search body plaintext phía server hoặc client content index
 - Không RRF weighted sum. Trong prefix/fuzzy: relevance trước rồi last_used/count/id tie-break; semantic-only dedup với lexical rồi sort cosine/tie-break theo §6.4.
 - Chốt quotas item/tag và vùng semantic cho từng limit trong OpenAPI trước UI: cùng q/scope/limit phải giữ cùng quota lexical khi toggle semantic. Không lấy chỗ lexical đã hiện để nhét semantic; full response không được thay selection thành index khác.
 - Request `semantic=0` ép lexical, `1` không override env/user/breaker. Hai response cùng query giữ snapshot lexical đang hiển thị và selection `(kind,id)`; query/data refresh mới là thời điểm reconcile có chủ đích.
-- User setting off: không TEI query và không vector lookup; indexing vẫn chạy. Deployment off/noop: không enqueue/query semantic và features unavailable. Degraded: timeout/circuit 60 s, lexical response còn hợp lệ.
+- User setting off: không query provider và không vector lookup. Với `tei` indexing vẫn chạy; với `openai_compat` không enqueue, xoá vector của user, bật lại → `ReembedUser` (ADR 0004). Deployment off/noop: không enqueue/query semantic và features unavailable. Degraded: timeout/circuit 60 s, lexical response còn hợp lệ.
 - Query cache key generation + normalized query; response/client cache còn gồm user, scope, limit, mode/settings. Không cache response dữ liệu của user dưới key chỉ có q. Không log raw q.
 
 ## Embedding và storage
 
-- Provider chỉ `tei`/`noop`; bge-m3 1024 dims normalize cosine, đọc model revision/dims từ provider. Item input name + optional hint, tag input display; body không vào jobs/TEI.
+- Provider `noop`/`tei`/`openai_compat` (ADR 0004: instruction query, `dimensions=1024`, L2-normalize ở Go, canary drift, URL https/mạng riêng). Ngưỡng `semantic_min_cos` theo generation, hiệu chỉnh trên bộ đánh giá ≥ 80 cặp vi/en commit trong repo trước khi bật cho user. Item input name + optional hint, tag input display; body không vào jobs/TEI.
 - Mutation P04 enqueue River trong transaction khi deployment enabled; target/user/generation/input_hash. Job đọc current input, so hash trước UPSERT để job chậm không đè rename mới; soft-delete loại vector, restore enqueue lại.
 - `ReembedAll` sửa missing **hoặc** hash/model/version mismatch. Test case bắt buộc deployment off → sửa name/hint/tag → on. User-off không cần backfill đặc biệt vì vẫn enqueue.
 - Exact khi corpus user ≤ `SEARCH_EXACT_MAX_VECTORS` khởi đầu 5000: preselect tenant bằng B-tree/materialized CTE rồi exact sort. Corpus lớn dùng 16 hash partitions theo user làm baseline, HNSW/index từng partition.
@@ -65,7 +65,7 @@ TEI timeout/5xx, queue retry/dead-letter, generation sai dims/hash đều có me
 | P05-A3 | Query privacy | Add-mode body không vào q; log/cache không lộ response user khác |
 | P05-B1 | Toggle matrix | Env off/user off/noop/breaker/short q đều đúng behavior + feature flags |
 | P05-B2 | Async indexing | Create/rename/delete/restore và job đến trễ đúng hash; lag p95 <10 s trên môi trường ghi rõ |
-| P05-B3 | Backfill | Deployment off edits được sửa khi bật lại; user-off vẫn cập nhật index |
+| P05-B3 | Backfill | Deployment off edits được sửa khi bật lại; user-off vẫn cập nhật index với `tei`; với `openai_compat` user-off không gửi gì và bật lại thì backfill đúng user |
 | P05-C1 | Search performance | Dataset 100k item +20k tag/user: lexical server p95 <40 ms, hybrid cache hit <100 ms, miss <350 ms; report hardware/concurrency/cache mode |
 | P05-C2 | Tenant scale | Thêm nhiều tenant và skew; đo exact baseline recall@20, p95/p99, underfill/scan cap, tune ngưỡng; mục tiêu recall định lượng phải ghi trước chạy benchmark |
 | P05-C3 | Model switch | Shadow cùng dims lẫn khác dims, mutation lúc build, active flip/rollback đều không trộn query/index model |
