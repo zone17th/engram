@@ -10,7 +10,7 @@ import {
   KDF_SALT_BYTES,
   type VaultKdfParams,
 } from './kdf';
-import { getSodium, toLocalBytes } from './sodium';
+import { getSodium, type Sodium, toLocalBytes } from './sodium';
 
 export interface BenchRunEntry {
   run: number;
@@ -19,10 +19,12 @@ export interface BenchRunEntry {
   errorCode?: string;
   errorName?: string;
   errorMessage?: string;
+  errorConstructorName?: string;
 }
 
 export interface BenchResultMessage {
   type: 'benchResult';
+  runId?: number;
   params: {
     alg: typeof KDF_ALG;
     ops: number;
@@ -36,21 +38,67 @@ export interface BenchResultMessage {
   allSucceeded: boolean;
 }
 
-export interface BenchStartMessage {
-  type: 'startBench';
-  runs?: number;
+export interface BenchErrorMessage {
+  type: 'benchError';
+  runId?: number;
+  errorName: string;
+  errorMessage: string;
+  errorConstructorName: string;
+  errorCode?: string;
 }
 
+export type BenchWorkerOutboundMessage = BenchResultMessage | BenchErrorMessage;
+
+export interface BenchStartMessage {
+  type: 'startBench';
+  runId?: number;
+  runs?: number;
+}
 const utf8Encoder = new TextEncoder();
 
-export async function runArgon2idBenchmark(runsCount = 3): Promise<BenchResultMessage> {
+function extractErrorSignature(err: unknown): {
+  errorName: string;
+  errorMessage: string;
+  errorConstructorName: string;
+  errorCode: string;
+} {
+  const errObj = err instanceof Error ? err : new Error(String(err));
+  let constructorName = errObj.name;
+  if (typeof err === 'object' && err !== null) {
+    const ctor: unknown = Reflect.get(err, 'constructor');
+    if (typeof ctor === 'function' && ctor.name) {
+      constructorName = ctor.name;
+    }
+  }
+  let code = 'UNKNOWN_ERROR';
+  if (typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string') {
+    code = err.code;
+  }
+  return {
+    errorName: errObj.name,
+    errorMessage: errObj.message,
+    errorConstructorName: constructorName,
+    errorCode: code,
+  };
+}
+
+export async function runArgon2idBenchmark(runsCount = 3, runId?: number): Promise<BenchResultMessage> {
+  const safeRunsCount =
+    Number.isInteger(runsCount) && runsCount >= 1 && runsCount <= 20 ? runsCount : 3;
   const entries: BenchRunEntry[] = [];
   const durations: number[] = [];
 
-  for (let i = 1; i <= runsCount; i++) {
+  let preloadedSodium: Sodium | null = null;
+  try {
+    preloadedSodium = await getSodium();
+  } catch {
+    // Handled inside per-run try/catch so the failure signature is recorded per run
+  }
+
+  for (let i = 1; i <= safeRunsCount; i++) {
     const t0 = performance.now();
     try {
-      const sodium = await getSodium();
+      const sodium = preloadedSodium ?? (await getSodium());
       const saltBytes = sodium.randombytes_buf(KDF_SALT_BYTES);
       const kdfParams: VaultKdfParams = {
         alg: KDF_ALG,
@@ -72,18 +120,15 @@ export async function runArgon2idBenchmark(runsCount = 3): Promise<BenchResultMe
       });
     } catch (err) {
       const ms = Math.round((performance.now() - t0) * 100) / 100;
-      const errObj = err instanceof Error ? err : new Error(String(err));
-      const code =
-        'code' in errObj && typeof errObj.code === 'string'
-          ? errObj.code
-          : 'UNKNOWN_ERROR';
+      const sig = extractErrorSignature(err);
       entries.push({
         run: i,
         ms,
         ok: false,
-        errorCode: code,
-        errorName: errObj.name,
-        errorMessage: errObj.message,
+        errorCode: sig.errorCode,
+        errorName: sig.errorName,
+        errorMessage: sig.errorMessage,
+        errorConstructorName: sig.errorConstructorName,
       });
     }
   }
@@ -103,28 +148,50 @@ export async function runArgon2idBenchmark(runsCount = 3): Promise<BenchResultMe
 
   return {
     type: 'benchResult',
+    ...(runId !== undefined ? { runId } : {}),
     params: {
       alg: KDF_ALG,
       ops: KDF_OPS_MIN,
       mem: KDF_MEM_MIN,
       parallelism: KDF_PARALLELISM,
-      runs: runsCount,
+      runs: safeRunsCount,
     },
     runs: entries,
     medianMs,
     p95Ms,
-    allSucceeded: entries.length === runsCount && entries.every((r) => r.ok),
+    allSucceeded: safeRunsCount > 0 && entries.length === safeRunsCount && entries.every((r) => r.ok),
   };
 }
 
 declare const self: DedicatedWorkerGlobalScope;
 
-if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+const isDedicatedWorkerScope =
+  typeof self !== 'undefined' &&
+  typeof self.postMessage === 'function' &&
+  (typeof WorkerGlobalScope !== 'undefined'
+    ? self instanceof WorkerGlobalScope
+    : !('window' in globalThis));
+
+if (isDedicatedWorkerScope) {
   self.onmessage = (event: MessageEvent<BenchStartMessage>) => {
     if (event.data?.type !== 'startBench') return;
     const count = event.data.runs ?? 3;
-    void runArgon2idBenchmark(count).then((result) => {
-      self.postMessage(result);
-    });
+    const runId = event.data.runId;
+    void runArgon2idBenchmark(count, runId)
+      .then((result) => {
+        self.postMessage(result);
+      })
+      .catch((err: unknown) => {
+        const sig = extractErrorSignature(err);
+        const errorMsg: BenchErrorMessage = {
+          type: 'benchError',
+          ...(runId !== undefined ? { runId } : {}),
+          errorName: sig.errorName,
+          errorMessage: sig.errorMessage,
+          errorConstructorName: sig.errorConstructorName,
+          errorCode: sig.errorCode,
+        };
+        self.postMessage(errorMsg);
+      });
   };
 }
