@@ -56,8 +56,9 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
     suppressNextNullReloadRef.current = true;
   }, []);
 
-  // R4-4: Clear the suppress flag and surface the retry control if refetchMe fails after 204
-  // TODO(sync-vaultweb): drop onResetMeRefreshFailed/suppress once the provider owns the reset transition
+  // R4-4 / R5-4: Clear the suppress flag and surface the retry control when the dialog closes while Me is still `present`
+  // (accepted exception: a subsequent user-initiated Retry click hits VaultProvider.reloadVaultMeta's 404 branch and purges a second time).
+  // TODO(sync-vaultweb): drop handleResetMeRefreshFailed/suppress once the provider owns the reset transition
   const handleResetMeRefreshFailed = useCallback(() => {
     suppressNextNullReloadRef.current = false;
     nullTransitionRef.current = false;
@@ -427,6 +428,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
 
       <ResetVaultDialog
         open={resetDialogOpen}
+        // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
         onOpenChange={(nextOpen) => {
           setResetDialogOpen(nextOpen);
           if (!nextOpen && isVaultPresent && vault.vaultMeta === null) {
@@ -442,7 +444,6 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
         onSuccessToast={setToastMessage}
         onBeforeResetCommit={handleBeforeResetCommit}
-        onResetMeRefreshFailed={handleResetMeRefreshFailed}
       />
     </div>
   );

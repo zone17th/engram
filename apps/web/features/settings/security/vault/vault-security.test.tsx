@@ -1551,86 +1551,124 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(putReqs[1]!.headers.get('Idempotency-Key')).not.toBe(firstKey);
   });
 
-  it('reaches s5_done without flashing s1_paths even when refetchMe rejects after 204 DELETE /vault (R1-6, R2-1, R2-5, R3-3)', async () => {
+  it('reaches s5_done without flashing s1_paths even when refetchMe rejects after 204 DELETE /vault (R1-6, R2-1, R2-5, R3-3, R4-4, R5-2, R5-4)', async () => {
     const user = userEvent.setup();
+    const userId = '11111111-1111-1111-1111-111111111111';
+    const devKeyRecordKey = formatDevKeyRecordKey(userId, VAULT_KEY_ID);
     let deleteCalled = false;
+    let failMeFetch = false;
 
-    await renderSettingsHarness({
-      customFetch: (url, init) => {
-        const method = (init?.method ?? 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
-          deleteCalled = true;
-          return new Response(null, { status: 204 });
-        }
-        if (url.endsWith('/api/v1/auth/me') && method === 'GET' && deleteCalled) {
-          throw new TypeError('Failed to fetch /auth/me after reset');
-        }
-        return undefined as unknown as Response;
-      },
+    fakeIdb.ensureStore('devkeys').set(devKeyRecordKey, {
+      user_id: userId,
+      vault_key_id: VAULT_KEY_ID,
+      dev_key: { type: 'secret' },
+      wrapped_vk: new Uint8Array([1, 2, 3, 4]),
+      created_at: '2026-10-29T00:00:00Z',
+    });
+    fakeIdb.ensureStore('meta').set('__meta__', {
+      incarnation: '00112233445566778899aabbccddeeff',
+      deviceRevision: 2,
     });
 
-    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
-    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
-    await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
-
-    const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
-    await user.type(confirmInput, 'RESET');
-
-    // R3-3: Record every `data-view` transition from clicking Reset vault until Done via MutationObserver
-    const seenViews: string[] = [];
-    const collectViews = () => {
-      dialog.querySelectorAll<HTMLElement>('[data-view]').forEach((el) => {
-        const view = el.getAttribute('data-view');
-        if (view && seenViews[seenViews.length - 1] !== view) {
-          seenViews.push(view);
-        }
-      });
-    };
-    collectViews();
-    const observer = new MutationObserver(() => {
-      collectViews();
-    });
-    observer.observe(dialog, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['data-view'],
+    let purgeCount = 0;
+    const unsubscribePurge = subscribeDevicePurge(() => {
+      purgeCount += 1;
     });
 
     try {
-      await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
-
-      await waitFor(() => {
-        expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+      const { setServerVaultMeta, setServerMe } = await renderSettingsHarness({
+        customFetch: (url, init) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (url.endsWith('/api/v1/vault') && method === 'DELETE') {
+            deleteCalled = true;
+            failMeFetch = true;
+            return new Response(null, { status: 204 });
+          }
+          if (url.endsWith('/api/v1/auth/me') && method === 'GET' && failMeFetch) {
+            throw new TypeError('Failed to fetch /auth/me after reset');
+          }
+          return undefined as unknown as Response;
+        },
       });
+
+      await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+
+      const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+      await user.type(confirmInput, 'RESET');
+
+      // R3-3: Record every `data-view` transition from clicking Reset vault until Done via MutationObserver
+      const seenViews: string[] = [];
+      const collectViews = () => {
+        dialog.querySelectorAll<HTMLElement>('[data-view]').forEach((el) => {
+          const view = el.getAttribute('data-view');
+          if (view && seenViews[seenViews.length - 1] !== view) {
+            seenViews.push(view);
+          }
+        });
+      };
       collectViews();
+      const observer = new MutationObserver(() => {
+        collectViews();
+      });
+      observer.observe(dialog, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-view'],
+      });
+
+      try {
+        await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+
+        await waitFor(() => {
+          expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+        });
+        collectViews();
+      } finally {
+        observer.disconnect();
+      }
+
+      expect(deleteCalled).toBe(true);
+      expect(seenViews).not.toContain('rst-s1');
+      expect(seenViews).toContain('rst-s5');
+      expect(within(dialog).queryByText(/Step 1 of 5/i)).toBeNull();
+
+      // Settle executeResetDelete (purge + refetchMe) so Close is interactive and initial purgeCount is 1
+      await delayMs(50);
+      expect(purgeCount).toBe(1);
+
+      // R4-4 / R5-2: When refetchMe fails after 204 and the dialog closes while Me is still `present`,
+      // the close fallback clears the suppress flag and shows the Reload vault retry button on the Reset card.
+      // Drive server vaultMeta to null (404) and Me to absent before clicking Retry so reloadVaultMeta -> 404 -> refetchMe flips Me to absent.
+      failMeFetch = false;
+      setServerVaultMeta(null);
+      setServerMe(makeMeFixture({ vaultStatus: 'absent' }));
+
+      await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+      const resetCard = screen.getByTestId('vault-reset-card');
+      const retryVaultBtn = await within(resetCard).findByTestId('vault-meta-retry-button');
+      await user.click(retryVaultBtn);
+      await waitFor(() => {
+        expect(screen.getByTestId('vault-security-absent-banner')).toBeInTheDocument();
+        expect(screen.queryByTestId('vault-passphrase-card')).toBeNull();
+        expect(screen.queryByTestId('vault-recovery-keys-card')).toBeNull();
+        expect(screen.queryByTestId('vault-reset-card')).toBeNull();
+      });
+      // R5-4: The later user-initiated Retry hits VaultProvider.reloadVaultMeta's 404 branch,
+      // which runs a second purge (accepted exception on the /me-failure recovery path).
+      await delayMs(50);
+      expect(purgeCount).toBe(2);
     } finally {
-      observer.disconnect();
+      unsubscribePurge();
     }
-
-    expect(seenViews).not.toContain('rst-s1');
-    expect(seenViews).toContain('rst-s5');
-    expect(within(dialog).queryByText(/Step 1 of 5/i)).toBeNull();
-
-    // R4-4: When refetchMe fails after 204 and the dialog closes while Me is still `present`,
-    // the suppress flag is cleared and the Reload vault retry button is shown on the Reset card.
-    deleteCalled = false;
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    });
-    const resetCard = screen.getByTestId('vault-reset-card');
-    const retryVaultBtn = await within(resetCard).findByTestId('vault-meta-retry-button');
-    await user.click(retryVaultBtn);
-    await waitFor(() => {
-      expect(screen.getByTestId('vault-security-absent-banner')).toBeInTheDocument();
-      expect(screen.queryByTestId('vault-passphrase-card')).toBeNull();
-      expect(screen.queryByTestId('vault-recovery-keys-card')).toBeNull();
-      expect(screen.queryByTestId('vault-reset-card')).toBeNull();
-    });
   });
 
   it('renders recovery-keys-status-error with no slot chips when GET /vault/recovery-keys returns 500, and surfaces 401 /auth/reauth errors in RK and Reset dialogs (R1-10, R2-5)', async () => {
@@ -1730,9 +1768,9 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
 
       await waitFor(() => {
         expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
-        expect(getVaultCtx().state).toBe('no_vault');
+        expect(getVaultCtx().workerState).toBe('locked');
+        expect(purgeCount).toBe(1);
       });
-
       await delayMs(50);
       expect(purgeCount).toBe(1);
       expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
@@ -1800,7 +1838,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
 
       await waitFor(() => {
         expect(getVaultCtx().workerState).toBe('locked');
-        expect(getVaultCtx().state).toBe('no_vault');
+        expect(purgeCount).toBe(1);
       });
       await delayMs(50);
       expect(purgeCount).toBe(1);

@@ -32,8 +32,6 @@ export interface ResetVaultDialogProps {
   onSuccessToast?: (message: string) => void;
   // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
   onBeforeResetCommit?: () => void;
-  // TODO(sync-vaultweb): drop onResetMeRefreshFailed/suppress once the provider owns the reset transition
-  onResetMeRefreshFailed?: () => void;
 }
 
 type ResetStep =
@@ -60,7 +58,6 @@ export function ResetVaultDialog({
   onSwitchToChangePassphrase,
   onSuccessToast,
   onBeforeResetCommit,
-  onResetMeRefreshFailed,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth, refetchMe } = useSession();
@@ -242,7 +239,7 @@ export function ResetVaultDialog({
       // so `VaultProvider.reloadVaultMeta()` does not run a second 404 purge in the acting tab, and so
       // the purge executes reliably even if the panel unmounts mid-DELETE, `GET /vault` fails non-404,
       // or `refetchMe()` flips `me.vault.status` to `'absent'` first.
-      // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
+      // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it (note: R5-4 user-initiated Retry after a /me refresh failure hits VaultProvider.reloadVaultMeta's 404 branch and is the accepted 2-purge exception)
       // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
       // R4-5: Start the purge transaction first, run local lock and broadcast immediately so the Worker
       // drops VK and peer tabs hear about the reset without waiting on IDB, then await the purge before refetchMe.
@@ -271,15 +268,13 @@ export function ResetVaultDialog({
         onSuccessToast?.(t('reset.toastDone'));
         await refetchMe();
       } catch {
-        // R4-4: Clear the suppress flag and surface the retry control if refetchMe fails after 204
-        onResetMeRefreshFailed?.();
+        // Best-effort Me refresh after 204 (TanStack Query refetch resolves on error; close fallback in panel handles retry UI)
       }
     },
     [
       clearInputs,
       me?.user.id,
       onBeforeResetCommit,
-      onResetMeRefreshFailed,
       onSuccessToast,
       reauth,
       refetchMe,

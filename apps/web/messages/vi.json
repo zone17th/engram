@@ -403,7 +403,7 @@
         "saving": "Đang lưu…"
       },
       "stateBanner": {
-        "absentTitle": "Chưa tạo kho",
+        "absentTitle": "Chưa tạo vault",
         "absentBody": "Hãy tạo vault trước để quản lý passphrase mã hoá, recovery key và đặt lại vault.",
         "absentCta": "Tạo vault",
         "lockedTitle": "Vault đang khoá",
