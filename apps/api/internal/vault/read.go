@@ -11,7 +11,7 @@ import (
 // Get trả trạng thái vault hiện tại của `userID` cho `GET /vault` (`vaultGet`, plan Task 8, mục 3).
 // Chỉ đọc dữ liệu của chính `userID` từ principal; nếu chưa tạo vault trả `ErrVaultAbsent` (404).
 func (s *Service) Get(ctx context.Context, userID uuid.UUID) (VaultState, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return VaultState{}, err
 	}
@@ -43,7 +43,7 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (VaultState, error)
 // của `userID` cho `GET /vault/recovery-keys` (`vaultRecoveryKeysGet`, plan Task 8, mục 3).
 // Không bao giờ trả lại `lookup_hash` hay `wrap`. Nếu chưa có vault trả `ErrVaultAbsent` (404).
 func (s *Service) GetRecoveryKeysStatus(ctx context.Context, userID uuid.UUID) (RecoveryKeysStatus, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return RecoveryKeysStatus{}, err
 	}
@@ -76,7 +76,7 @@ func (s *Service) GetRecoveryKeysStatus(ctx context.Context, userID uuid.UUID) (
 // cho `GET /vault/passkeys` (`vaultPasskeysList`, plan Task 8, mục 3).
 // Không bao giờ trả `vk_wrap`, `prf_salt`, `cred_id` hay `pubkey`. Nếu chưa có vault trả `ErrVaultAbsent` (404).
 func (s *Service) ListPasskeys(ctx context.Context, userID uuid.UUID) (PasskeyList, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return PasskeyList{}, err
 	}

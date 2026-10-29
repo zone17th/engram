@@ -11,10 +11,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +24,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
@@ -1388,5 +1391,264 @@ func TestT9ToT12RouteChainEnforcesReauthRateLimitIfMatchAndIdempotency(t *testin
 	})
 	if respDel.StatusCode != http.StatusNotFound || decodeProblem(t, rawDel).Code != "vault_absent" {
 		t.Fatalf("DELETE /vault empty body = %d %s, want 404 vault_absent", respDel.StatusCode, rawDel)
+	}
+}
+
+type readQueryBarrierContextKey struct{}
+
+type readQueryBarrier struct {
+	matchSubstring string
+	excludeSubstr  string
+	arrived        chan struct{}
+	release        chan struct{}
+	once           atomic.Bool
+	closeOnce      sync.Once
+}
+
+func newReadQueryBarrier(matchSubstring, excludeSubstr string) *readQueryBarrier {
+	return &readQueryBarrier{
+		matchSubstring: matchSubstring,
+		excludeSubstr:  excludeSubstr,
+		arrived:        make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+}
+
+func (b *readQueryBarrier) closeRelease() {
+	b.closeOnce.Do(func() { close(b.release) })
+}
+
+func (b *readQueryBarrier) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, readQueryBarrierContextKey{}, d.SQL)
+}
+
+func (b *readQueryBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	sql, _ := ctx.Value(readQueryBarrierContextKey{}).(string)
+	if strings.Contains(sql, b.matchSubstring) &&
+		(b.excludeSubstr == "" || !strings.Contains(sql, b.excludeSubstr)) &&
+		b.once.CompareAndSwap(false, true) {
+		close(b.arrived)
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+		}
+	}
+}
+
+// TestMultiQueryReadsUseStableRepeatableReadSnapshot covers BE1-1:
+// pauses GET /vault, GET /vault/recovery-keys, and GET /vault/passkeys immediately after
+// their first SELECT inside the read-only transaction, performs a vault reset + recreate +
+// RK/passkey mutation in between, then resumes the read and verifies each response belongs
+// wholly to the old generation or wholly to the new generation (never a mixed snapshot).
+func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	password := "correct-horse-battery-staple"
+	jar, me := h.signupUser("repeatable-read@example.com", password)
+	ctx := context.Background()
+
+	// 1. Create generation-1 vault (10 RKs, 0 passkeys).
+	gen1Payload := makeCreatePayload(t, 0x14)
+	resp1, raw1 := h.doReq(jar, http.MethodPost, "/api/v1/vault", mustJSON(t, gen1Payload), reqOptions{
+		idemKey: "idem-repread-create-gen1",
+	})
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("create gen1 = %d %s", resp1.StatusCode, raw1)
+	}
+	var gen1 vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(raw1), &gen1); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Part A: svc.Get paused right after `SELECT ... FROM vault WHERE user_id = $1`.
+	getBarrier := newReadQueryBarrier("FROM vault\nWHERE", "FOR UPDATE")
+	t.Cleanup(getBarrier.closeRelease)
+	pcfg1 := h.pool.Config()
+	pcfg1.ConnConfig.Tracer = getBarrier
+	pool1, err := pgxpool.NewWithConfig(ctx, pcfg1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool1.Close)
+	svc1, err := vault.NewService(cfg, pool1, h.clk, audit.NewStore(pool1), notification.NewStore(pool1, nil), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type getOutcome struct {
+		state vault.VaultState
+		err   error
+	}
+	getDone := make(chan getOutcome, 1)
+	go func() {
+		st, err := svc1.Get(ctx, me.User.ID)
+		getDone <- getOutcome{state: st, err: err}
+	}()
+
+	select {
+	case <-getBarrier.arrived:
+	case <-time.After(5 * time.Second):
+		getBarrier.closeRelease()
+		t.Fatal("timed out waiting for svc.Get first SELECT barrier")
+	}
+
+	// While svc.Get is paused after reading generation 1's vault row:
+	// reset generation 1, recreate generation 2, delete 1 RK (leaving 9), and insert 1 passkey into generation 2.
+	resetGrant1 := h.reauthGrant(jar, "vault.reset", password)
+	respReset1, rawReset1 := h.doReq(jar, http.MethodDelete, "/api/v1/vault", "", reqOptions{
+		idemKey: "idem-repread-reset-gen1",
+		ifMatch: formatIfMatchTag(gen1.VaultKeyID, 1),
+		grant:   resetGrant1,
+	})
+	if respReset1.StatusCode != http.StatusNoContent {
+		getBarrier.closeRelease()
+		t.Fatalf("reset gen1 = %d %s", respReset1.StatusCode, rawReset1)
+	}
+
+	gen2Payload := makeCreatePayload(t, 0x24)
+	resp2, raw2 := h.doReq(jar, http.MethodPost, "/api/v1/vault", mustJSON(t, gen2Payload), reqOptions{
+		idemKey: "idem-repread-create-gen2",
+	})
+	if resp2.StatusCode != http.StatusCreated {
+		getBarrier.closeRelease()
+		t.Fatalf("create gen2 = %d %s", resp2.StatusCode, raw2)
+	}
+	var gen2 vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(raw2), &gen2); err != nil {
+		getBarrier.closeRelease()
+		t.Fatal(err)
+	}
+
+	q := gen.New(h.pool)
+	if _, err := h.pool.Exec(ctx, `DELETE FROM vault_recovery_key WHERE vault_id = $1 AND slot = 1`, me.User.ID); err != nil {
+		getBarrier.closeRelease()
+		t.Fatal(err)
+	}
+	pkGen2, err := q.InsertPasskey(ctx, gen.InsertPasskeyParams{
+		UserID:  me.User.ID,
+		CredID:  seqTestBytes(32, 0x91),
+		Pubkey:  seqTestBytes(32, 0x92),
+		PrfSalt: seqTestBytes(32, 0x93),
+		VkWrap:  seqTestBytes(vault.VKWrapBytes, 0x01),
+		Name:    "gen2-only-passkey",
+	})
+	if err != nil {
+		getBarrier.closeRelease()
+		t.Fatal(err)
+	}
+
+	getBarrier.closeRelease()
+	gotGet := <-getDone
+	if gotGet.err != nil {
+		t.Fatalf("svc.Get returned error: %v", gotGet.err)
+	}
+	whollyGen1 := gotGet.state.VaultKeyID == gen1.VaultKeyID &&
+		gotGet.state.RecoveryKeysRemaining == 10 &&
+		len(gotGet.state.Passkeys) == 0
+	whollyGen2 := gotGet.state.VaultKeyID == gen2.VaultKeyID &&
+		gotGet.state.RecoveryKeysRemaining == 9 &&
+		len(gotGet.state.Passkeys) == 1 &&
+		gotGet.state.Passkeys[0].ID == pkGen2.ID
+	if !whollyGen1 && !whollyGen2 {
+		t.Fatalf("svc.Get returned mixed-generation state: VaultKeyID=%s (gen1=%s gen2=%s) Remaining=%d Passkeys=%+v",
+			gotGet.state.VaultKeyID, gen1.VaultKeyID, gen2.VaultKeyID, gotGet.state.RecoveryKeysRemaining, gotGet.state.Passkeys)
+	}
+
+	// Part B: GetRecoveryKeysStatus and ListPasskeys paused right after `SELECT EXISTS(SELECT 1 FROM vault WHERE user_id = $1)`.
+	rkBarrier := newReadQueryBarrier("SELECT EXISTS", "")
+	t.Cleanup(rkBarrier.closeRelease)
+	pcfgRK := h.pool.Config()
+	pcfgRK.ConnConfig.Tracer = rkBarrier
+	poolRK, err := pgxpool.NewWithConfig(ctx, pcfgRK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(poolRK.Close)
+	svcRK, err := vault.NewService(cfg, poolRK, h.clk, audit.NewStore(poolRK), notification.NewStore(poolRK, nil), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pkBarrier := newReadQueryBarrier("SELECT EXISTS", "")
+	t.Cleanup(pkBarrier.closeRelease)
+	pcfgPK := h.pool.Config()
+	pcfgPK.ConnConfig.Tracer = pkBarrier
+	poolPK, err := pgxpool.NewWithConfig(ctx, pcfgPK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(poolPK.Close)
+	svcPK, err := vault.NewService(cfg, poolPK, h.clk, audit.NewStore(poolPK), notification.NewStore(poolPK, nil), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type rkOutcome struct {
+		status vault.RecoveryKeysStatus
+		err    error
+	}
+	type pkOutcome struct {
+		list vault.PasskeyList
+		err  error
+	}
+	rkDone := make(chan rkOutcome, 1)
+	pkDone := make(chan pkOutcome, 1)
+	go func() {
+		st, err := svcRK.GetRecoveryKeysStatus(ctx, me.User.ID)
+		rkDone <- rkOutcome{status: st, err: err}
+	}()
+	go func() {
+		ls, err := svcPK.ListPasskeys(ctx, me.User.ID)
+		pkDone <- pkOutcome{list: ls, err: err}
+	}()
+
+	select {
+	case <-rkBarrier.arrived:
+	case <-time.After(5 * time.Second):
+		rkBarrier.closeRelease()
+		pkBarrier.closeRelease()
+		t.Fatal("timed out waiting for GetRecoveryKeysStatus EXISTS barrier")
+	}
+	select {
+	case <-pkBarrier.arrived:
+	case <-time.After(5 * time.Second):
+		rkBarrier.closeRelease()
+		pkBarrier.closeRelease()
+		t.Fatal("timed out waiting for ListPasskeys EXISTS barrier")
+	}
+
+	// While both metadata reads are paused after seeing gen2 exist (9 RKs with slot 1 empty, 1 passkey pkGen2):
+	// reset gen2 so the vault, RKs, and passkeys are deleted.
+	resetGrant2 := h.reauthGrant(jar, "vault.reset", password)
+	respReset2, rawReset2 := h.doReq(jar, http.MethodDelete, "/api/v1/vault", "", reqOptions{
+		idemKey: "idem-repread-reset-gen2",
+		ifMatch: formatIfMatchTag(gen2.VaultKeyID, 1),
+		grant:   resetGrant2,
+	})
+	if respReset2.StatusCode != http.StatusNoContent {
+		rkBarrier.closeRelease()
+		pkBarrier.closeRelease()
+		t.Fatalf("reset gen2 = %d %s", respReset2.StatusCode, rawReset2)
+	}
+
+	rkBarrier.closeRelease()
+	pkBarrier.closeRelease()
+	gotRK := <-rkDone
+	gotPK := <-pkDone
+	if gotRK.err != nil {
+		t.Fatalf("GetRecoveryKeysStatus error: %v", gotRK.err)
+	}
+	if gotPK.err != nil {
+		t.Fatalf("ListPasskeys error: %v", gotPK.err)
+	}
+	if gotRK.status.Remaining != 9 || len(gotRK.status.EmptySlots) != 1 || gotRK.status.EmptySlots[0] != 1 {
+		t.Fatalf("GetRecoveryKeysStatus mixed snapshot after reset: got %+v, want Remaining=9 EmptySlots=[1]", gotRK.status)
+	}
+	if len(gotPK.list.Items) != 1 || gotPK.list.Items[0].ID != pkGen2.ID {
+		t.Fatalf("ListPasskeys mixed snapshot after reset: got %+v, want 1 item (%s)", gotPK.list.Items, pkGen2.ID)
 	}
 }
