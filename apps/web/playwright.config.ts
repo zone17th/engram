@@ -67,6 +67,15 @@ export default defineConfig({
       testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
+    ...(process.env.E2E_CRYPTO_DEV === '1'
+      ? [
+          {
+            name: 'crypto-dev',
+            testMatch: /crypto-worker\.dev\.spec\.ts/,
+            use: { ...devices['Desktop Chrome'] },
+          },
+        ]
+      : []),
   ],
   webServer: externalServer
     ? undefined

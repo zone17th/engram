@@ -1,34 +1,10 @@
-import { existsSync } from 'node:fs';
+/**
+ * Dev-only real-browser Crypto Worker e2e spec.
+ * Requires `next dev` (`NODE_ENV !== 'production'`, where `/dev/crypto-bench` is enabled)
+ * and `E2E_CRYPTO_DEV=1` (`playwright test --project crypto-dev`).
+ * Not part of CI (`e2e-browser` runs against the production stack where `/dev/crypto-bench` returns 404).
+ */
 import { expect, test } from '@playwright/test';
-
-const SYSTEM_CHROME_CANDIDATES = [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-];
-
-function resolveLocalBrowserChannel(): 'chrome' | 'msedge' | undefined {
-  const pwChromiumShell =
-    'C:/Users/minht/AppData/Local/ms-playwright/chromium_headless_shell-1194/chrome-win/headless_shell.exe';
-  if (existsSync(pwChromiumShell)) {
-    return undefined;
-  }
-  if (
-    existsSync(SYSTEM_CHROME_CANDIDATES[0]!) ||
-    existsSync(SYSTEM_CHROME_CANDIDATES[1]!)
-  ) {
-    return 'chrome';
-  }
-  if (existsSync(SYSTEM_CHROME_CANDIDATES[2]!)) {
-    return 'msedge';
-  }
-  return undefined;
-}
-
-const channel = resolveLocalBrowserChannel();
-if (channel) {
-  test.use({ channel });
-}
 
 interface HarnessStepResult {
   step: string;
