@@ -196,6 +196,9 @@ describe('CryptoBenchClient (dev benchmark page lifecycle & diagnostics)', () =>
               errorName: 'RangeError',
               errorConstructorName: 'WebAssemblyInstantiationError',
               errorMessage: 'WebAssembly.Memory(): could not allocate memory',
+              errorCauseName: 'RangeError',
+              errorCauseConstructorName: 'WebAssemblyInstantiationError',
+              errorCauseMessage: 'WebAssembly.Memory(): could not allocate memory',
             },
           ],
         }),
@@ -205,7 +208,6 @@ describe('CryptoBenchClient (dev benchmark page lifecycle & diagnostics)', () =>
     expect(screen.getByTestId('bench-run-2')).toHaveTextContent(
       'FAILED (code=KDF_ALLOCATION_FAILED | name=RangeError | constructor=WebAssemblyInstantiationError: WebAssembly.Memory(): could not allocate memory)',
     );
-
     const jsonText = screen.getByTestId('bench-result-json').textContent ?? '';
     const parsed = JSON.parse(jsonText) as {
       userAgent: string;
@@ -236,6 +238,9 @@ describe('CryptoBenchClient (dev benchmark page lifecycle & diagnostics)', () =>
       errorName: 'RangeError',
       errorConstructorName: 'WebAssemblyInstantiationError',
       errorMessage: 'WebAssembly.Memory(): could not allocate memory',
+      errorCauseName: 'RangeError',
+      errorCauseConstructorName: 'WebAssemblyInstantiationError',
+      errorCauseMessage: 'WebAssembly.Memory(): could not allocate memory',
     });
   });
 

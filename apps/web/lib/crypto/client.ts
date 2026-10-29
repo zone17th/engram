@@ -165,10 +165,11 @@ interface PendingRequest {
   id: number;
   kind: WorkerCommandType;
   opGeneration: number;
+  capturedEpoch: number;
+  nextStateOnSuccess?: VaultClientState;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
 }
-
 const utf8Encoder = new TextEncoder();
 
 /**
@@ -271,6 +272,7 @@ function defaultWorkerFactory(): CryptoWorkerPort {
 export class CryptoClient {
   private worker: CryptoWorkerPort | null = null;
   private currentGeneration = 0;
+  private clientEpoch = 0;
   private nextRequestId = 1;
   private state: VaultClientState = 'locked';
   private readonly pending = new Map<number, PendingRequest>();
@@ -298,9 +300,13 @@ export class CryptoClient {
   getState(): VaultClientState {
     return this.state;
   }
+  getEpoch(): number {
+    return this.clientEpoch;
+  }
 
   private setState(nextState: VaultClientState): void {
     this.state = nextState;
+    this.clientEpoch += 1;
     try {
       this.onStateChange?.(nextState, this.currentGeneration);
     } catch {
@@ -340,7 +346,7 @@ export class CryptoClient {
 
       // Check generation first for both success AND error replies so stale errors
       // (e.g. a wrong-passphrase error arriving after the user locked) are reported as STALE_GENERATION (FE1-16).
-      if (req.opGeneration !== this.currentGeneration) {
+      if (req.opGeneration !== this.currentGeneration || msg.generation !== this.currentGeneration) {
         req.reject(
           new CryptoClientError(
             'STALE_GENERATION',
@@ -364,6 +370,29 @@ export class CryptoClient {
         return;
       }
 
+      if (req.nextStateOnSuccess !== undefined) {
+        if (this.state === 'recovering' && req.kind !== 'confirmRecovery') {
+          req.reject(
+            new CryptoClientError(
+              'VAULT_RECOVERING',
+              'Vault is in recovering mode; only rewrap, confirmRecovery, and lock are allowed (call lock() first to switch flows)',
+            ),
+          );
+          return;
+        }
+        if (req.capturedEpoch !== this.clientEpoch) {
+          if (!(req.kind === 'confirmRecovery' && this.state === 'recovering')) {
+            req.reject(
+              new CryptoClientError(
+                'STALE_GENERATION',
+                'Client state changed before request reply arrived',
+              ),
+            );
+            return;
+          }
+        }
+        this.setState(req.nextStateOnSuccess);
+      }
       req.resolve(msg.result);
     };
 
@@ -432,6 +461,7 @@ export class CryptoClient {
     payload: WorkerCommandPayload,
     transfer: Transferable[] = [],
     secretBuf?: Uint8Array,
+    nextStateOnSuccess?: VaultClientState,
   ): Promise<T> {
     let worker: CryptoWorkerPort;
     try {
@@ -462,10 +492,11 @@ export class CryptoClient {
       id,
       kind: payload.type,
       opGeneration,
+      capturedEpoch: this.clientEpoch,
+      nextStateOnSuccess,
       resolve: resolve as (value: unknown) => void,
       reject,
     });
-
     try {
       worker.postMessage(message, transfer);
     } catch (err) {
@@ -506,10 +537,10 @@ export class CryptoClient {
         },
         [passBytes.buffer as ArrayBuffer],
         passBytes,
+        'unlocked',
       );
 
       this.assertGenerationOrWipe(opGeneration);
-      this.setState('unlocked');
       return res;
     } finally {
       wipeAttachedBytes(passBytes);
@@ -546,10 +577,10 @@ export class CryptoClient {
         },
         [passBytes.buffer as ArrayBuffer],
         passBytes,
+        'unlocked',
       );
 
       this.assertGenerationOrWipe(opGeneration);
-      this.setState('unlocked');
       return res;
     } finally {
       wipeAttachedBytes(passBytes);
@@ -587,12 +618,10 @@ export class CryptoClient {
         },
         [rkBytes.buffer as ArrayBuffer],
         rkBytes,
+        params.wrap ? 'recovering' : undefined,
       );
 
       this.assertGenerationOrWipe(opGeneration);
-      if (params.wrap) {
-        this.setState('recovering');
-      }
       return res;
     } finally {
       wipeAttachedBytes(rkBytes);
@@ -617,14 +646,19 @@ export class CryptoClient {
     }
     this.assertGenerationOrWipe(opGeneration);
 
-    const res = await this.sendToWorker<ResumeRecoveryResult>(opGeneration, {
-      type: 'resumeRecovery',
-      wrap: params.wrap,
-      privateKeysWrapped: params.privateKeysWrapped,
-    });
+    const res = await this.sendToWorker<ResumeRecoveryResult>(
+      opGeneration,
+      {
+        type: 'resumeRecovery',
+        wrap: params.wrap,
+        privateKeysWrapped: params.privateKeysWrapped,
+      },
+      [],
+      undefined,
+      'recovering',
+    );
 
     this.assertGenerationOrWipe(opGeneration);
-    this.setState('recovering');
     return res;
   }
 
@@ -636,12 +670,17 @@ export class CryptoClient {
     }
     this.assertGenerationOrWipe(opGeneration);
 
-    const res = await this.sendToWorker<ConfirmRecoveryResult>(opGeneration, {
-      type: 'confirmRecovery',
-    });
+    const res = await this.sendToWorker<ConfirmRecoveryResult>(
+      opGeneration,
+      {
+        type: 'confirmRecovery',
+      },
+      [],
+      undefined,
+      'unlocked',
+    );
 
     this.assertGenerationOrWipe(opGeneration);
-    this.setState('unlocked');
     return res;
   }
 
@@ -667,10 +706,10 @@ export class CryptoClient {
         },
         [pwkBytes.buffer as ArrayBuffer],
         pwkBytes,
+        'unlocked',
       );
 
       this.assertGenerationOrWipe(opGeneration);
-      this.setState('unlocked');
       return res;
     } finally {
       wipeAttachedBytes(pwkBytes);
@@ -686,17 +725,22 @@ export class CryptoClient {
     }
     this.assertGenerationOrWipe(opGeneration);
 
-    const res = await this.sendToWorker<{ unlocked: true }>(opGeneration, {
-      type: 'unlockDevKey',
-      devKey: params.devKey,
-      wrappedVk: params.wrappedVk,
-      userId: params.userId,
-      vaultKeyId: params.vaultKeyId,
-      privateKeysWrapped: params.privateKeysWrapped,
-    });
+    const res = await this.sendToWorker<{ unlocked: true }>(
+      opGeneration,
+      {
+        type: 'unlockDevKey',
+        devKey: params.devKey,
+        wrappedVk: params.wrappedVk,
+        userId: params.userId,
+        vaultKeyId: params.vaultKeyId,
+        privateKeysWrapped: params.privateKeysWrapped,
+      },
+      [],
+      undefined,
+      'unlocked',
+    );
 
     this.assertGenerationOrWipe(opGeneration);
-    this.setState('unlocked');
     return res;
   }
 
@@ -723,9 +767,6 @@ export class CryptoClient {
       );
 
       this.assertGenerationOrWipe(opGeneration);
-      if (this.state !== 'recovering') {
-        this.setState('unlocked');
-      }
       return res;
     } finally {
       wipeAttachedBytes(passBytes);
@@ -894,6 +935,7 @@ export class CryptoClient {
         id,
         kind: 'lock',
         opGeneration: lockGen,
+        capturedEpoch: this.clientEpoch,
         resolve: resolve as (value: unknown) => void,
         reject,
       });

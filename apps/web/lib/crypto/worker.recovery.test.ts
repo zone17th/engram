@@ -682,43 +682,360 @@ describe('P03-T7 Worker Recovery Key Integration (createVault, makeRecoveryKeys,
     expect(client.getState()).toBe('locked');
     expect(shim.core.getState()).toBe('locked');
     expect(shim.core.inspectClosureVkForTest()).toBeNull();
-    // 3. Direct pendingRecovery generation mismatch on resumeRecovery -> STALE_GENERATION and wipes continuation,
-    //    so next resume at the new generation -> RECOVERY_CONTINUATION_MISSING (FE2-5, T-r2-2)
-    const genMismatchBase = shim.core.getGeneration();
-    const directLookupRes = await shim.core.handleMessage({
-      id: 8100,
-      generation: genMismatchBase,
-      type: 'unlockRecovery',
-      recoveryKeyBuffer: utf8Encoder.encode(rk0.display).buffer,
-    });
-    expect(directLookupRes.ok).toBe(true);
-    // Calling resumeRecovery directly with an older generation (while pendingRecovery is at genMismatchBase)
-    // Wait: if cmdGen < workerGeneration, assertGeneration(cmdGen) throws STALE_GENERATION before line 600.
-    // To hit line 600 (`if (pendingRecovery.generation !== cmdGen)`), workerGeneration must equal cmdGen while pendingRecovery.generation !== cmdGen!
-    // That happens when vaultMode === 'locked' && cmdGen > workerGeneration advances workerGeneration = cmdGen on resumeRecovery!
-    const mismatchResumeRes = await shim.core.handleMessage({
-      id: 8101,
-      generation: genMismatchBase + 1,
-      type: 'resumeRecovery',
-      wrap: rk0.wrap,
-    });
-    expect(mismatchResumeRes).toMatchObject({
-      ok: false,
-      error: { code: 'STALE_GENERATION' },
-    });
-    const nextResumeRes = await shim.core.handleMessage({
-      id: 8102,
-      generation: genMismatchBase + 1,
-      type: 'resumeRecovery',
-      wrap: rk0.wrap,
-    });
-    expect(nextResumeRes).toMatchObject({
-      ok: false,
-      error: { code: 'RECOVERY_CONTINUATION_MISSING' },
-    });
+    // 3. Direct pendingRecovery generation mismatch on resumeRecovery (BOTH older G-1 and newer G+1) ->
+    //    STALE_GENERATION, zeroes the actual pendingRecovery.wrapKey allocation, and next resume at current
+    //    generation rejects with RECOVERY_CONTINUATION_MISSING (BE3-2, BE3-4, BE1-13, FE2-5, T-r2-2)
+    const staleHashAllocs: Uint8Array[] = [];
+    const origGenericHashStale = sodium.crypto_generichash.bind(sodium);
+    const staleHashSpy = vi
+      .spyOn(sodium, 'crypto_generichash')
+      .mockImplementation(((
+        hashLength: number,
+        message: string | Uint8Array,
+        key?: string | Uint8Array | null,
+      ) => {
+        const out = origGenericHashStale(hashLength, message, key ?? null, 'uint8array');
+        staleHashAllocs.push(out);
+        return out;
+      }) as typeof sodium.crypto_generichash);
+
+    try {
+      // 3a. Older stale generation (G - 1) while pending lookup is at G > 0 (BE3-2, BE3-4)
+      const genOlderBase = shim.core.getGeneration();
+      expect(genOlderBase).toBeGreaterThan(0);
+      staleHashAllocs.length = 0;
+      const olderLookupRes = await shim.core.handleMessage({
+        id: 8090,
+        generation: genOlderBase,
+        type: 'unlockRecovery',
+        recoveryKeyBuffer: utf8Encoder.encode(rk0.display).buffer,
+      });
+      expect(olderLookupRes.ok).toBe(true);
+      expect(staleHashAllocs).toHaveLength(2);
+      const olderPendingWrapAlloc = staleHashAllocs[1]!;
+      expect(olderPendingWrapAlloc.some((b) => b !== 0)).toBe(true);
+
+      const olderStaleResumeRes = await shim.core.handleMessage({
+        id: 8091,
+        generation: genOlderBase - 1,
+        type: 'resumeRecovery',
+        wrap: rk0.wrap,
+      });
+      expect(olderStaleResumeRes).toMatchObject({
+        ok: false,
+        error: { code: 'STALE_GENERATION' },
+      });
+      // The actual retained pendingRecovery.wrapKey allocation MUST be all zeros immediately after G-1 rejection!
+      expect(olderPendingWrapAlloc.every((b) => b === 0)).toBe(true);
+      // And a subsequent ordinary public-client resume at current generation G MUST fail with RECOVERY_CONTINUATION_MISSING!
+      await expect(
+        client.resumeRecovery({
+          wrap: rk0.wrap,
+          opGeneration: client.captureGeneration(),
+        }),
+      ).rejects.toMatchObject({ code: 'RECOVERY_CONTINUATION_MISSING' });
+
+      // 3b. Newer stale generation (G + 1) while pending lookup is at G (BE3-2, BE3-4, FE2-5)
+      const genMismatchBase = shim.core.getGeneration();
+      staleHashAllocs.length = 0;
+      const directLookupRes = await shim.core.handleMessage({
+        id: 8100,
+        generation: genMismatchBase,
+        type: 'unlockRecovery',
+        recoveryKeyBuffer: utf8Encoder.encode(rk0.display).buffer,
+      });
+      expect(directLookupRes.ok).toBe(true);
+      expect(staleHashAllocs).toHaveLength(2);
+      const newerPendingWrapAlloc = staleHashAllocs[1]!;
+      expect(newerPendingWrapAlloc.some((b) => b !== 0)).toBe(true);
+
+      const mismatchResumeRes = await shim.core.handleMessage({
+        id: 8101,
+        generation: genMismatchBase + 1,
+        type: 'resumeRecovery',
+        wrap: rk0.wrap,
+      });
+      expect(mismatchResumeRes).toMatchObject({
+        ok: false,
+        error: { code: 'STALE_GENERATION' },
+      });
+      expect(newerPendingWrapAlloc.every((b) => b === 0)).toBe(true);
+
+      const nextResumeRes = await shim.core.handleMessage({
+        id: 8102,
+        generation: genMismatchBase + 1,
+        type: 'resumeRecovery',
+        wrap: rk0.wrap,
+      });
+      expect(nextResumeRes).toMatchObject({
+        ok: false,
+        error: { code: 'RECOVERY_CONTINUATION_MISSING' },
+      });
+    } finally {
+      staleHashSpy.mockRestore();
+    }
     await client.lock();
     await client.lock();
     void originalVk;
+  });
+
+  it('fences in-flight async unlockDevKey, unlockPassphrase, unlockPrf, and createVault completions when recovery starts at the same generation (BE3-1, BE3-3, FE3-1)', async () => {
+    const sodium = await getSodium();
+    let gateDerive = false;
+    let deriveParked = Promise.withResolvers<void>();
+    let releaseDerive = Promise.withResolvers<void>();
+
+    const shim = createWorkerShim({
+      deriveKek: async (s, pass, params) => {
+        if (gateDerive) {
+          gateDerive = false;
+          deriveParked.resolve();
+          await releaseDerive.promise;
+        }
+        return fastTestDeriveKek(s, pass, params);
+      },
+    });
+    activeShims.push(shim);
+    const client = new CryptoClient({ createWorker: () => shim.port });
+
+    const created = await client.createVault({
+      passphrase: 'passphrase-for-inflight-fence',
+      opGeneration: client.captureGeneration(),
+    });
+    const originalVk = shim.core.inspectClosureVkForTest()!;
+    const rk0 = created.recovery_keys[0]!;
+    const entryId = '3fa85f64-5717-4562-b3fc-2c963f66afa6';
+    const keyId = 'vk:7f3a9b2c4d5e6f7a8b9c0d';
+    const userId = '11111111-1111-4111-8111-111111111111';
+
+    const sealedEntry = await client.sealEntry({
+      entryId,
+      keyId,
+      plaintext: 'entry-protected-across-inflight-unlock',
+      opGeneration: client.captureGeneration(),
+    });
+    const devKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+      'encrypt',
+      'decrypt',
+    ]);
+    const { wrapped_vk } = await client.wrapForDevice({
+      devKey,
+      userId,
+      vaultKeyId: keyId,
+      opGeneration: client.captureGeneration(),
+    });
+    const pwk = new Uint8Array(32).fill(0x5a);
+    const { vk_wrap } = await client.wrapForPasskey({
+      pwk: new Uint8Array(pwk),
+      opGeneration: client.captureGeneration(),
+    });
+
+    // 1. In-flight unlockDevKey paused at real crypto.subtle.decrypt while recovery enters at same generation G (BE3-1, BE3-3)
+    await client.lock();
+    const gen1 = client.captureGeneration();
+    const decryptStarted = Promise.withResolvers<void>();
+    const releaseDecrypt = Promise.withResolvers<void>();
+    const capturedDecryptOutputs: Uint8Array[] = [];
+    const origDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+    const decryptSpy = vi
+      .spyOn(crypto.subtle, 'decrypt')
+      .mockImplementationOnce(async (alg, key, data) => {
+        const realBuf = await origDecrypt(alg, key, data);
+        decryptStarted.resolve();
+        await releaseDecrypt.promise;
+        return realBuf;
+      });
+    const origSubarray = Uint8Array.prototype.slice;
+    void origSubarray;
+
+    try {
+      const inFlightDevKeyPromise = client.unlockDevKey({
+        devKey,
+        wrappedVk: wrapped_vk,
+        userId,
+        vaultKeyId: keyId,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: gen1,
+      });
+      await decryptStarted.promise;
+
+      // Enter recovering at the SAME generation gen1 (lookup + resume)
+      await client.unlockRecovery({
+        recoveryKey: rk0.display,
+        opGeneration: gen1,
+      });
+      await client.resumeRecovery({
+        wrap: rk0.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: gen1,
+      });
+      expect(client.getState()).toBe('recovering');
+      expect(shim.core.getState()).toBe('recovering');
+      await expect(
+        client.openEntry({
+          entryId,
+          envelope: sealedEntry.envelope,
+          ciphertext: sealedEntry.ciphertext,
+          opGeneration: gen1,
+        }),
+      ).rejects.toMatchObject({ code: 'VAULT_RECOVERING' });
+
+      // Spy on openWrap for 'priv' to capture the temporary vk buffer passed into openAndVerifyPrivateKeys if reached,
+      // or spy on memzero to capture the zeroed temporary vk allocation
+      const zeroedBuffers: Uint8Array[] = [];
+      const origMemzero = sodium.memzero.bind(sodium);
+      const memzeroSpy = vi.spyOn(sodium, 'memzero').mockImplementation((buf: Uint8Array) => {
+        zeroedBuffers.push(buf);
+        origMemzero(buf);
+      });
+      try {
+        releaseDecrypt.resolve();
+        await expect(inFlightDevKeyPromise).rejects.toMatchObject({
+          code: 'VAULT_RECOVERING',
+        });
+        expect(zeroedBuffers.length).toBeGreaterThan(0);
+        for (const b of zeroedBuffers) {
+          expect(b.every((x) => x === 0)).toBe(true);
+        }
+      } finally {
+        memzeroSpy.mockRestore();
+      }
+
+      // Both client and Worker MUST remain in 'recovering' and entry MUST remain inaccessible!
+      expect(client.getState()).toBe('recovering');
+      expect(shim.core.getState()).toBe('recovering');
+      expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
+      await expect(
+        client.openEntry({
+          entryId,
+          envelope: sealedEntry.envelope,
+          ciphertext: sealedEntry.ciphertext,
+          opGeneration: gen1,
+        }),
+      ).rejects.toMatchObject({ code: 'VAULT_RECOVERING' });
+    } finally {
+      decryptSpy.mockRestore();
+      void capturedDecryptOutputs;
+    }
+
+    // 2. In-flight unlockPassphrase paused in deriveKek while recovery enters at same generation (FE3-1)
+    await client.lock();
+    const gen2 = client.captureGeneration();
+    deriveParked = Promise.withResolvers<void>();
+    releaseDerive = Promise.withResolvers<void>();
+    gateDerive = true;
+
+    const inFlightPassPromise = client.unlockPassphrase({
+      passphrase: 'passphrase-for-inflight-fence',
+      kdf: created.kdf,
+      vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: gen2,
+    });
+    await deriveParked.promise;
+
+    await client.unlockRecovery({
+      recoveryKey: rk0.display,
+      wrap: rk0.wrap,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: gen2,
+    });
+    expect(client.getState()).toBe('recovering');
+    expect(shim.core.getState()).toBe('recovering');
+
+    releaseDerive.resolve();
+    await expect(inFlightPassPromise).rejects.toMatchObject({
+      code: 'VAULT_RECOVERING',
+    });
+    expect(client.getState()).toBe('recovering');
+    expect(shim.core.getState()).toBe('recovering');
+    expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
+
+    // 3. In-flight createVault paused in deriveKek while recovery enters at same generation (FE3-1)
+    await client.lock();
+    const gen3 = client.captureGeneration();
+    deriveParked = Promise.withResolvers<void>();
+    releaseDerive = Promise.withResolvers<void>();
+    gateDerive = true;
+
+    const inFlightCreatePromise = client.createVault({
+      passphrase: 'competing-new-vault-passphrase',
+      skipRecoveryKeys: true,
+      opGeneration: gen3,
+    });
+    await deriveParked.promise;
+
+    await client.unlockRecovery({
+      recoveryKey: rk0.display,
+      wrap: rk0.wrap,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: gen3,
+    });
+    expect(client.getState()).toBe('recovering');
+    expect(shim.core.getState()).toBe('recovering');
+
+    releaseDerive.resolve();
+    await expect(inFlightCreatePromise).rejects.toMatchObject({
+      code: 'VAULT_RECOVERING',
+    });
+    expect(client.getState()).toBe('recovering');
+    expect(shim.core.getState()).toBe('recovering');
+    // Closure VK was NOT overwritten by the late createVault!
+    expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
+
+    // 4. In-flight unlockPrf paused before Worker postMessage while recovery enters at same generation (FE3-1)
+    await client.lock();
+    const gen4 = client.captureGeneration();
+    const prfParked = Promise.withResolvers<void>();
+    const releasePrf = Promise.withResolvers<void>();
+    const pwkInput = new Uint8Array(pwk);
+    const inFlightPrfPromise = client.unlockPrf({
+      pwk: pwkInput,
+      vkWrap: vk_wrap,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: gen4,
+      beforePostMessage: async () => {
+        prfParked.resolve();
+        await releasePrf.promise;
+      },
+    });
+    await prfParked.promise;
+
+    await client.unlockRecovery({
+      recoveryKey: rk0.display,
+      wrap: rk0.wrap,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: gen4,
+    });
+    expect(client.getState()).toBe('recovering');
+    releasePrf.resolve();
+    await expect(inFlightPrfPromise).rejects.toMatchObject({
+      code: 'VAULT_RECOVERING',
+    });
+    expect(client.getState()).toBe('recovering');
+    expect(shim.core.getState()).toBe('recovering');
+    expect(shim.core.inspectClosureVkForTest()).toEqual(originalVk);
+
+    // Proper lock-first switching still works cleanly
+    await client.lock();
+    const genSwitch = client.captureGeneration();
+    await client.unlockDevKey({
+      devKey,
+      wrappedVk: wrapped_vk,
+      userId,
+      vaultKeyId: keyId,
+      privateKeysWrapped: created.private_keys_wrapped,
+      opGeneration: genSwitch,
+    });
+    expect(client.getState()).toBe('unlocked');
+    expect(shim.core.getState()).toBe('unlocked');
+    const openedAfterSwitch = await client.openEntry({
+      entryId,
+      envelope: sealedEntry.envelope,
+      ciphertext: sealedEntry.ciphertext,
+      opGeneration: genSwitch,
+    });
+    expect(openedAfterSwitch.plaintext).toBe('entry-protected-across-inflight-unlock');
   });
 
   it('unlockRecovery rejects invalid recovery keys with RECOVERY_KEY_INVALID without echoing input chars, and wrong wraps with AEAD_DECRYPT_FAILED (FE1-5)', async () => {
