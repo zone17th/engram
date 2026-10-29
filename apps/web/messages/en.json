@@ -462,6 +462,7 @@
         "dialogDescription": "Your vault is unlocked in this session, so the old passphrase is not needed. Re-authenticate your account at the start of the flow before rewrapping the vault key.",
         "newLabel": "New vault passphrase",
         "confirmLabel": "Confirm new passphrase",
+        "strengthMeterLabel": "Passphrase strength",
         "strengthWeak": "too weak (needs zxcvbn ≥ 3)",
         "strengthStrong": "strong (zxcvbn ≥ 3)",
         "policyMinLength": "At least 12 characters (NFC-normalized)",

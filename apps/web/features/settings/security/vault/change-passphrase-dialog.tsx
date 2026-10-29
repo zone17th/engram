@@ -514,7 +514,7 @@ export function ChangePassphraseDialog({
                   >
                     <div
                       role="progressbar"
-                      aria-label={t('passphrase.newLabel')}
+                      aria-label={t('passphrase.strengthMeterLabel')}
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={strengthPercent}

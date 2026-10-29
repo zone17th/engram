@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
 import { useSession } from '@/features/auth/session-provider';
-import { purgeDeviceKeysOnRevoked } from '@/features/vault/device-store';
 import { useVault } from '@/features/vault/vault-provider';
 import { reauthPassword, type ReauthGrant } from '@/lib/api/auth';
 import {
@@ -57,7 +56,7 @@ export function ResetVaultDialog({
   onSuccessToast,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
-  const { me, reauth, refetchMe } = useSession();
+  const { reauth, refetchMe } = useSession();
   const vault = useVault();
 
   const [step, setStep] = useState<ResetStep>('s1_paths');
@@ -230,14 +229,10 @@ export function ResetVaultDialog({
       // and transition to s5_done right after lock before awaiting refetchMe().
       committedResetRef.current = true;
 
-      // R1-5: Purge remembered DevKey records in IndexedDB `sabk.device` via single readwrite tx + incarnation rotation (ADR 0003 §6).
+      // R1-5 / ADR 0003 §6: Remembered DevKey records in `sabk.device` are purged in ONE readwrite tx (+ incarnation rotation)
+      // by VaultProvider's `reloadVaultMeta()` -> `404 vault_absent` transition triggered when `notifyVaultChanged({ version: null })`
+      // clears `vaultMeta` below (do not call `purgeDeviceKeysOnRevoked` here as well, which would run a duplicate purge in the acting tab).
       // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
-      try {
-        await purgeDeviceKeysOnRevoked(me?.user.id);
-      } catch {
-        // Best-effort purge after 204
-      }
-
       // On 204: lock locally, notifyVaultChanged so other tabs lock (their reload gets 404), and refresh Me so provider/guard move to absent -> onboarding.
       try {
         await vault.lock({ broadcast: false, reason: 'vault_reset' });
@@ -260,7 +255,7 @@ export function ResetVaultDialog({
         // Best-effort Me refresh after 204
       }
     },
-    [clearInputs, me?.user.id, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
+    [clearInputs, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
   );
 
   const handleConfirmReset = useCallback(async () => {

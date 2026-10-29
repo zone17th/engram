@@ -462,6 +462,7 @@
         "dialogDescription": "Vault đang mở trong phiên này nên không cần passphrase cũ. Xác thực lại tài khoản ở đầu luồng trước khi bọc lại khoá.",
         "newLabel": "Passphrase mới (mã hoá vault)",
         "confirmLabel": "Nhập lại passphrase mới",
+        "strengthMeterLabel": "Độ mạnh passphrase",
         "strengthWeak": "chưa đủ mạnh (cần zxcvbn ≥ 3)",
         "strengthStrong": "đủ mạnh (zxcvbn ≥ 3)",
         "policyMinLength": "Từ 12 ký tự trở lên (chuẩn hoá NFC)",

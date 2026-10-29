@@ -1335,7 +1335,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
     });
 
-    // DevKey record was deleted and meta incarnation/deviceRevision rotated in a single readwrite tx
+    // DevKey record was deleted and meta incarnation/deviceRevision rotated in a single readwrite tx (2 -> 3 via VaultProvider's 404 vault_absent transition)
     expect(fakeIdb.ensureStore('devkeys').has(devKeyRecordKey)).toBe(false);
     const rotatedMeta = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
     expect(rotatedMeta).not.toBeNull();
