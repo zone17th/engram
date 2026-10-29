@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
@@ -121,7 +122,7 @@ func DecodeVaultJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "Thiếu nội dung JSON.")
 		return false
 	}
-	if err := rejectDuplicateJSONKeys(body); err != nil {
+	if err := rejectDuplicateOrAliasJSONKeys(body, reflect.TypeOf(dst)); err != nil {
 		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "JSON không hợp lệ.")
 		return false
 	}
@@ -139,21 +140,60 @@ func DecodeVaultJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-func rejectDuplicateJSONKeys(data []byte) error {
+var rawMessageType = reflect.TypeOf(json.RawMessage(nil))
+
+func rejectDuplicateOrAliasJSONKeys(data []byte, dstType reflect.Type) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	return walkDuplicateJSON(dec, false)
+	return walkStrictJSON(dec, dstType)
 }
 
-func walkDuplicateJSON(dec *json.Decoder, inArray bool) error {
+func derefType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t
+}
+
+func allowedStructJSONFields(t reflect.Type) map[string]reflect.Type {
+	out := make(map[string]reflect.Type, t.NumField())
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name := f.Name
+		if tag != "" {
+			if head, _, _ := strings.Cut(tag, ","); head != "" {
+				name = head
+			}
+		}
+		out[name] = f.Type
+	}
+	return out
+}
+
+func walkStrictJSON(dec *json.Decoder, targetType reflect.Type) error {
 	tok, err := dec.Token()
 	if err != nil {
 		return err
 	}
-	switch t := tok.(type) {
+	t := derefType(targetType)
+	if t == rawMessageType {
+		t = nil
+	}
+	switch d := tok.(type) {
 	case json.Delim:
-		switch t {
+		switch d {
 		case '{':
+			var allowed map[string]reflect.Type
+			if t != nil && t.Kind() == reflect.Struct {
+				allowed = allowedStructJSONFields(t)
+			}
 			seen := map[string]struct{}{}
 			for dec.More() {
 				kt, err := dec.Token()
@@ -168,7 +208,15 @@ func walkDuplicateJSON(dec *json.Decoder, inArray bool) error {
 					return errors.New("duplicate key")
 				}
 				seen[k] = struct{}{}
-				if err := walkDuplicateJSON(dec, false); err != nil {
+				var childType reflect.Type
+				if allowed != nil {
+					ft, ok := allowed[k]
+					if !ok {
+						return errors.New("unknown or non-canonical JSON property")
+					}
+					childType = ft
+				}
+				if err := walkStrictJSON(dec, childType); err != nil {
 					return err
 				}
 			}
@@ -176,12 +224,16 @@ func walkDuplicateJSON(dec *json.Decoder, inArray bool) error {
 			if err != nil {
 				return err
 			}
-			if d, ok := end.(json.Delim); !ok || d != '}' {
+			if ed, ok := end.(json.Delim); !ok || ed != '}' {
 				return errors.New("unclosed object")
 			}
 		case '[':
+			var elemType reflect.Type
+			if t != nil && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
+				elemType = t.Elem()
+			}
 			for dec.More() {
-				if err := walkDuplicateJSON(dec, true); err != nil {
+				if err := walkStrictJSON(dec, elemType); err != nil {
 					return err
 				}
 			}
@@ -189,14 +241,12 @@ func walkDuplicateJSON(dec *json.Decoder, inArray bool) error {
 			if err != nil {
 				return err
 			}
-			if d, ok := end.(json.Delim); !ok || d != ']' {
+			if ed, ok := end.(json.Delim); !ok || ed != ']' {
 				return errors.New("unclosed array")
 			}
 		default:
 			return errors.New("unexpected delimiter")
 		}
-	default:
-		_ = inArray
 	}
 	return nil
 }

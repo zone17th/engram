@@ -1652,3 +1652,128 @@ func TestMultiQueryReadsUseStableRepeatableReadSnapshot(t *testing.T) {
 		t.Fatalf("ListPasskeys mixed snapshot after reset: got %+v, want 1 item (%s)", gotPK.list.Items, pkGen2.ID)
 	}
 }
+
+// TestDecodeVaultJSONRejectsCaseVariantAndAliasPropertyNamesAtAllBoundaries covers BE1-2:
+// rejects case-variant/alias JSON property names at every typed object boundary (outer bodies
+// and nested RecoveryKeyUploadItem objects) whether sent alone or alongside the canonical name,
+// while preserving valid canonical requests.
+func TestDecodeVaultJSONRejectsCaseVariantAndAliasPropertyNamesAtAllBoundaries(t *testing.T) {
+	// 1. Direct unit check on DecodeVaultJSON (canonical+alias and alias-only).
+	for _, rawBody := range []string{
+		`{"vault_key_wrapped_by_kek":"first","VAULT_KEY_WRAPPED_BY_KEK":"second"}`,
+		`{"VAULT_KEY_WRAPPED_BY_KEK":"only-alias"}`,
+	} {
+		var dst struct {
+			Wrap string `json:"vault_key_wrapped_by_kek"`
+		}
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/vault/kek", strings.NewReader(rawBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if vaulthttp.DecodeVaultJSON(rec, req, &dst) {
+			t.Fatalf("DecodeVaultJSON accepted non-canonical payload %s (dst=%+v)", rawBody, dst)
+		}
+		if rec.Code != http.StatusBadRequest || decodeProblem(t, rec.Body.String()).Code != "invalid_request" {
+			t.Fatalf("DecodeVaultJSON(%s) = %d %s, want 400 invalid_request", rawBody, rec.Code, rec.Body.String())
+		}
+	}
+
+	// 2. End-to-end HTTP checks across outer mutation objects and nested recovery_keys items.
+	h := newHarness(t, harnessOpts{})
+	password := "correct-horse-battery-staple"
+	jar, _ := h.signupUser("json-alias@example.com", password)
+
+	baseCreate := makeCreatePayload(t, 0x18)
+
+	// Outer alias-only on POST /vault (`VAULT_KEY_WRAPPED_BY_KEK` instead of `vault_key_wrapped_by_kek`).
+	outerAliasOnlyCreate := strings.Replace(mustJSON(t, baseCreate), `"vault_key_wrapped_by_kek"`, `"VAULT_KEY_WRAPPED_BY_KEK"`, 1)
+	resp, raw := h.doReq(jar, http.MethodPost, "/api/v1/vault", outerAliasOnlyCreate, reqOptions{
+		idemKey: "idem-alias-create-outer-only",
+	})
+	if resp.StatusCode != http.StatusBadRequest || decodeProblem(t, raw).Code != "invalid_request" {
+		t.Fatalf("POST /vault outer alias-only = %d %s, want 400 invalid_request", resp.StatusCode, raw)
+	}
+
+	// Outer canonical + alias on POST /vault.
+	outerBothCreate := strings.TrimSuffix(mustJSON(t, baseCreate), "}") + `,"VAULT_KEY_WRAPPED_BY_KEK":"` + baseCreate.VaultKeyWrappedByKEK + `"}`
+	resp, raw = h.doReq(jar, http.MethodPost, "/api/v1/vault", outerBothCreate, reqOptions{
+		idemKey: "idem-alias-create-outer-both",
+	})
+	if resp.StatusCode != http.StatusBadRequest || decodeProblem(t, raw).Code != "invalid_request" {
+		t.Fatalf("POST /vault outer canonical+alias = %d %s, want 400 invalid_request", resp.StatusCode, raw)
+	}
+
+	// Nested recovery_keys item alias-only (`"Slot":1` instead of `"slot":1`) on POST /vault.
+	nestedAliasOnlyCreate := strings.Replace(mustJSON(t, baseCreate), `"slot":1`, `"Slot":1`, 1)
+	resp, raw = h.doReq(jar, http.MethodPost, "/api/v1/vault", nestedAliasOnlyCreate, reqOptions{
+		idemKey: "idem-alias-create-nested-only",
+	})
+	if resp.StatusCode != http.StatusBadRequest || decodeProblem(t, raw).Code != "invalid_request" {
+		t.Fatalf("POST /vault nested alias-only = %d %s, want 400 invalid_request", resp.StatusCode, raw)
+	}
+
+	// Nested recovery_keys item canonical + alias (`"slot":1,"SLOT":2`) on POST /vault.
+	nestedBothCreate := strings.Replace(mustJSON(t, baseCreate), `"slot":1`, `"slot":1,"SLOT":2`, 1)
+	resp, raw = h.doReq(jar, http.MethodPost, "/api/v1/vault", nestedBothCreate, reqOptions{
+		idemKey: "idem-alias-create-nested-both",
+	})
+	if resp.StatusCode != http.StatusBadRequest || decodeProblem(t, raw).Code != "invalid_request" {
+		t.Fatalf("POST /vault nested canonical+alias = %d %s, want 400 invalid_request", resp.StatusCode, raw)
+	}
+
+	// Canonical POST /vault succeeds (201).
+	respCreateOK, rawCreateOK := h.doReq(jar, http.MethodPost, "/api/v1/vault", mustJSON(t, baseCreate), reqOptions{
+		idemKey: "idem-alias-create-canonical",
+	})
+	if respCreateOK.StatusCode != http.StatusCreated {
+		t.Fatalf("canonical POST /vault = %d %s, want 201", respCreateOK.StatusCode, rawCreateOK)
+	}
+	var created vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(rawCreateOK), &created); err != nil {
+		t.Fatal(err)
+	}
+	ifMatchV1 := formatIfMatchTag(created.VaultKeyID, 1)
+
+	// PUT /vault/kek outer alias-only and canonical+alias -> 400 invalid_request.
+	rewrapGrant := h.reauthGrant(jar, "vault.rewrap", password)
+	canonRewrap := mustJSON(t, makeRewrapPayload(t, 3, 67108864, 0x35, 0x36))
+	for idx, body := range []string{
+		strings.Replace(canonRewrap, `"vault_key_wrapped_by_kek"`, `"Vault_Key_Wrapped_By_Kek"`, 1),
+		strings.TrimSuffix(canonRewrap, "}") + `,"VAULT_KEY_WRAPPED_BY_KEK":"` + baseCreate.VaultKeyWrappedByKEK + `"}`,
+	} {
+		r, rawBody := h.doReq(jar, http.MethodPut, "/api/v1/vault/kek", body, reqOptions{
+			idemKey: "idem-alias-rewrap-case-0" + string(rune('1'+idx)),
+			ifMatch: ifMatchV1,
+			grant:   rewrapGrant,
+		})
+		if r.StatusCode != http.StatusBadRequest || decodeProblem(t, rawBody).Code != "invalid_request" {
+			t.Fatalf("PUT /vault/kek alias case %d = %d %s, want 400 invalid_request", idx, r.StatusCode, rawBody)
+		}
+	}
+
+	// POST /vault/recovery-keys/rotate nested item alias-only and canonical+alias -> 400 invalid_request.
+	rotateGrant := h.reauthGrant(jar, "vault.recovery_keys_rotate", password)
+	rotItems := mustJSON(t, map[string]any{"recovery_keys": makeCreatePayload(t, 0x45).RecoveryKeys})
+	for idx, body := range []string{
+		strings.Replace(rotItems, `"lookup_hash"`, `"Lookup_Hash"`, 1),
+		strings.Replace(rotItems, `"slot":1`, `"slot":1,"Slot":1`, 1),
+	} {
+		r, rawBody := h.doReq(jar, http.MethodPost, "/api/v1/vault/recovery-keys/rotate", body, reqOptions{
+			idemKey: "idem-alias-rotate-case-0" + string(rune('1'+idx)),
+			ifMatch: ifMatchV1,
+			grant:   rotateGrant,
+		})
+		if r.StatusCode != http.StatusBadRequest || decodeProblem(t, rawBody).Code != "invalid_request" {
+			t.Fatalf("POST /vault/recovery-keys/rotate alias case %d = %d %s, want 400 invalid_request", idx, r.StatusCode, rawBody)
+		}
+	}
+
+	// Canonical PUT /vault/kek still succeeds (200).
+	respRewrapOK, rawRewrapOK := h.doReq(jar, http.MethodPut, "/api/v1/vault/kek", canonRewrap, reqOptions{
+		idemKey: "idem-alias-rewrap-canonical",
+		ifMatch: ifMatchV1,
+		grant:   rewrapGrant,
+	})
+	if respRewrapOK.StatusCode != http.StatusOK {
+		t.Fatalf("canonical PUT /vault/kek = %d %s, want 200", respRewrapOK.StatusCode, rawRewrapOK)
+	}
+}
