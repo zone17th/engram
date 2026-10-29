@@ -2081,4 +2081,461 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(metaAfter2?.deviceRevision).toBe(5);
     expect(metaAfter2?.incarnation).not.toBe(metaAfter1?.incarnation);
   });
+
+  it('BE1-1: holds post-unlock lockEpoch verification pending without exposing unlocked state or enabling decrypted consumers; locks on changed marker and unlocks on matching marker', async () => {
+    const me = makeMeFixture({ vaultStatus: 'present' });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      return jsonResponse({});
+    });
+
+    let holdNextLockRequest = false;
+    let releaseHeldLock: (() => void) | null = null;
+    let lockRequestCount = 0;
+    const baseLockManager = fakeLocks.createLockManager();
+    const gatedLockManager: LockManager = {
+      request(
+        name: string,
+        optionsOrCallback: LockOptions | LockGrantedCallback<unknown>,
+        maybeCallback?: LockGrantedCallback<unknown>,
+      ): Promise<unknown> {
+        lockRequestCount += 1;
+        const cb =
+          typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
+        if (holdNextLockRequest) {
+          holdNextLockRequest = false;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          releaseHeldLock = resolve;
+          return promise.then(() => baseLockManager.request(name, { mode: 'exclusive' }, cb));
+        }
+        return baseLockManager.request(name, { mode: 'exclusive' }, cb);
+      },
+      query: async () => ({ held: [], pending: [] }),
+    } as unknown as LockManager;
+
+    let vaultCtx!: VaultContextValue;
+    const seenStates: string[] = [];
+
+    function DecryptedConsumerProbe() {
+      vaultCtx = useVault();
+      seenStates.push(vaultCtx.state);
+      const bodyQuery = useQuery({
+        queryKey: vaultBodyQueryKey('be1-1-entry'),
+        queryFn: () => 'be1-1-decrypted-secret',
+        enabled: vaultCtx.state === 'unlocked',
+      });
+      return (
+        <div>
+          <output data-testid="be1-1-state">{vaultCtx.state}</output>
+          <output data-testid="be1-1-baseline">
+            {vaultCtx.unlockBaseline ? String(vaultCtx.unlockBaseline.lockEpoch) : 'none'}
+          </output>
+          <output data-testid="be1-1-body">
+            {vaultCtx.state === 'unlocked' && bodyQuery.data ? bodyQuery.data : 'locked-surface'}
+          </output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={{
+              idbFactory: fakeIdb.createFactory(),
+              locksManager: gatedLockManager,
+            }}
+          >
+            <DecryptedConsumerProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('be1-1-state')).toHaveTextContent('locked'));
+
+    // Control step 0: create vault to get valid wrapped keys, then lock
+    const opInit = vaultCtx.beginOp();
+    const created = await vaultCtx.createVault({
+      passphrase: 'be1-1-baseline-gate-passphrase',
+      opGeneration: opInit.opGeneration,
+    });
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    await waitFor(() => expect(screen.getByTestId('be1-1-state')).toHaveTextContent('locked'));
+    seenStates.length = 0;
+
+    // Case A: Hold post-unlock verification pending -> state MUST stay 'unlocking' (never 'unlocked'),
+    // decrypted consumer query MUST NOT enable, and changing the marker before release MUST reject and lock.
+    const opMismatch = vaultCtx.beginOp();
+    let settledMismatch = false;
+    const unlockMismatchPromise = vaultCtx
+      .unlockPassphrase({
+        passphrase: 'be1-1-baseline-gate-passphrase',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opMismatch.opGeneration,
+        beforePostMessage: () => {
+          // Next Web Lock request will be verifyUnlockBaseline after Worker responds
+          holdNextLockRequest = true;
+        },
+      })
+      .finally(() => {
+        settledMismatch = true;
+      });
+    unlockMismatchPromise.catch(() => undefined);
+
+    // Wait until the post-unlock verification Web Lock is held
+    await waitFor(() => {
+      expect(releaseHeldLock).not.toBeNull();
+    });
+
+    // While verification is pending, Worker has already replied unlocked,
+    // but provider MUST NOT expose 'unlocked' or enable decrypted body consumers.
+    expect(settledMismatch).toBe(false);
+    expect(screen.getByTestId('be1-1-state')).toHaveTextContent('unlocking');
+    expect(screen.getByTestId('be1-1-baseline')).toHaveTextContent('none');
+    expect(screen.getByTestId('be1-1-body')).toHaveTextContent('locked-surface');
+    expect(qc.getQueryData(vaultBodyQueryKey('be1-1-entry'))).toBeUndefined();
+    expect(seenStates).not.toContain('unlocked');
+
+    // Mutate the durable lockEpoch marker in IndexedDB while verification is waiting (simulating concurrent lock)
+    fakeIdb.ensureStore(LOCK_EPOCH_STORE_NAME).set(LOCK_EPOCH_RECORD_KEY, {
+      epochIncarnation: 'changed-incarnation-during-unlock',
+      lockEpoch: 99,
+    });
+
+    // Release the post-unlock verification gate -> operation rejects with STALE_GENERATION and provider locks
+    act(() => {
+      releaseHeldLock?.();
+      releaseHeldLock = null;
+    });
+
+    await expect(unlockMismatchPromise).rejects.toSatisfy(
+      (err: unknown) => err instanceof CryptoClientError && err.code === 'STALE_GENERATION',
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('be1-1-state')).toHaveTextContent('locked');
+    });
+    expect(screen.getByTestId('be1-1-body')).toHaveTextContent('locked-surface');
+    expect(qc.getQueryData(vaultBodyQueryKey('be1-1-entry'))).toBeUndefined();
+    // Confirm 'unlocked' was NEVER rendered at any point during the mismatched unlock attempt
+    expect(seenStates).not.toContain('unlocked');
+
+    // Case B (Control): Hold post-unlock verification pending, keep marker matching, then release -> transitions cleanly to 'unlocked'
+    const opMatch = vaultCtx.beginOp();
+    let settledMatch = false;
+    const unlockMatchPromise = vaultCtx
+      .unlockPassphrase({
+        passphrase: 'be1-1-baseline-gate-passphrase',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opMatch.opGeneration,
+        beforePostMessage: () => {
+          holdNextLockRequest = true;
+        },
+      })
+      .finally(() => {
+        settledMatch = true;
+      });
+
+    await waitFor(() => {
+      expect(releaseHeldLock).not.toBeNull();
+    });
+    expect(settledMatch).toBe(false);
+    expect(screen.getByTestId('be1-1-state')).toHaveTextContent('unlocking');
+    expect(screen.getByTestId('be1-1-body')).toHaveTextContent('locked-surface');
+
+    act(() => {
+      releaseHeldLock?.();
+      releaseHeldLock = null;
+    });
+
+    await expect(unlockMatchPromise).resolves.toEqual({ unlocked: true });
+    await waitFor(() => {
+      expect(screen.getByTestId('be1-1-state')).toHaveTextContent('unlocked');
+      expect(screen.getByTestId('be1-1-body')).toHaveTextContent('be1-1-decrypted-secret');
+    });
+    expect(lockRequestCount).toBeGreaterThan(0);
+  });
+
+  it('BE1-2: pending Web Lock or IDB verification on wake gates plaintext immediately, enforces the 5s fail-closed deadline (including auto_lock_minutes=0), and ignores late completion', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+
+    let currentMe = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 0 });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(currentMe);
+      return jsonResponse({});
+    });
+
+    let holdWakeLock = false;
+    let releaseWakeLock: (() => void) | null = null;
+    const baseLockManager = fakeLocks.createLockManager();
+    const gatedLockManager: LockManager = {
+      request(
+        name: string,
+        optionsOrCallback: LockOptions | LockGrantedCallback<unknown>,
+        maybeCallback?: LockGrantedCallback<unknown>,
+      ): Promise<unknown> {
+        const cb =
+          typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
+        if (holdWakeLock) {
+          holdWakeLock = false;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          releaseWakeLock = resolve;
+          return promise.then(() => baseLockManager.request(name, { mode: 'exclusive' }, cb));
+        }
+        return baseLockManager.request(name, { mode: 'exclusive' }, cb);
+      },
+      query: async () => ({ held: [], pending: [] }),
+    } as unknown as LockManager;
+
+    let vaultCtx!: VaultContextValue;
+    function WakeProbe() {
+      vaultCtx = useVault();
+      const cachedBody = qc.getQueryData<string>(vaultBodyQueryKey('be1-2-entry'));
+      return (
+        <div>
+          <output data-testid="be1-2-state">{vaultCtx.state}</output>
+          <output data-testid="be1-2-worker">{vaultCtx.workerState}</output>
+          <output data-testid="be1-2-body">
+            {vaultCtx.state === 'unlocked' && cachedBody ? cachedBody : 'gated'}
+          </output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={{
+              idbFactory: fakeIdb.createFactory(),
+              locksManager: gatedLockManager,
+            }}
+          >
+            <WakeProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('be1-2-state')).toHaveTextContent('locked'));
+
+    vi.useRealTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const op1 = vaultCtx.beginOp();
+    let created!: CreateVaultResult;
+    await act(async () => {
+      created = await vaultCtx.createVault({
+        passphrase: 'be1-2-wake-deadline-passphrase',
+        opGeneration: op1.opGeneration,
+      });
+    });
+    qc.setQueryData(vaultBodyQueryKey('be1-2-entry'), 'be1-2-plaintext');
+    expect(screen.getByTestId('be1-2-state')).toHaveTextContent('unlocked');
+    expect(qc.getQueryData(vaultBodyQueryKey('be1-2-entry'))).toBe('be1-2-plaintext');
+
+    // Hold the wake Web Lock acquisition unresolved and dispatch focus while policy is 0 (Never)
+    holdWakeLock = true;
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Plaintext surface must be gated immediately while wake verification is pending
+    expect(screen.getByTestId('be1-2-state')).not.toHaveTextContent('unlocked');
+    expect(screen.getByTestId('be1-2-body')).toHaveTextContent('gated');
+
+    // Advance 6 seconds past the 5s wake fail-closed deadline while Web Lock is still held ->
+    // Tab MUST lock fail-closed and wipe the decrypted body cache
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(screen.getByTestId('be1-2-state')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be1-2-worker')).toHaveTextContent('locked');
+    expect(qc.getQueryData(vaultBodyQueryKey('be1-2-entry'))).toBeUndefined();
+
+    // Late completion of the held Web Lock / IDB check MUST NOT restore unlocked access
+    await act(async () => {
+      releaseWakeLock?.();
+      releaseWakeLock = null;
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(screen.getByTestId('be1-2-state')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be1-2-worker')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be1-2-body')).toHaveTextContent('gated');
+
+    // Control: unlock again, wake with fast Web Lock + Me returning 0 -> gates briefly then restores unlocked
+    const op2 = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.unlockPassphrase({
+        passphrase: 'be1-2-wake-deadline-passphrase',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op2.opGeneration,
+      });
+    });
+    act(() => {
+      qc.setQueryData(vaultBodyQueryKey('be1-2-entry'), 'be1-2-plaintext-control');
+    });
+    expect(screen.getByTestId('be1-2-state')).toHaveTextContent('unlocked');
+
+    // Also verify EC-P3 / VG-P2: if tab was at 0 (Never), missed notification changing server to 5m,
+    // slept 10m, and user dispatches activity during wake before Me resolves, it still locks on Me completion!
+    currentMe = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 5 });
+    vi.setSystemTime(t0 + 10 * 60_000);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      // User input during wake before Me finishes must not erase the pre-wake idle watermark
+      window.dispatchEvent(new Event('pointerdown'));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByTestId('be1-2-state')).toHaveTextContent('locked');
+    expect(qc.getQueryData(vaultBodyQueryKey('be1-2-entry'))).toBeUndefined();
+  });
+
+  it('BE1-3: stale settings_changed {auto_lock_minutes:0} notification does not override an unchanged server positive policy (5m), reconciles on every successful Me refresh, and does not relax to Never on failed refresh or cross-tab reordering', async () => {
+    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+
+    const serverMinutes: 0 | 5 | 15 | 60 = 5;
+    let failMeFetch = false;
+    let meRefetchCount = 0;
+
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) {
+        meRefetchCount += 1;
+        if (failMeFetch) {
+          throw new Error('Simulated network failure during Me refresh');
+        }
+        return jsonResponse(
+          makeMeFixture({ vaultStatus: 'present', autoLockMinutes: serverMinutes }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    function SettingsProbe() {
+      vaultCtx = useVault();
+      return (
+        <div>
+          <output data-testid="be1-3-state">{vaultCtx.state}</output>
+          <output data-testid="be1-3-minutes">{vaultCtx.autoLockMinutes}</output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <SettingsProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('be1-3-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be1-3-minutes')).toHaveTextContent('5');
+    });
+
+    vi.useRealTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(t0);
+
+    const op1 = vaultCtx.beginOp();
+    await act(async () => {
+      await vaultCtx.createVault({
+        passphrase: 'be1-3-stale-never-passphrase',
+        opGeneration: op1.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be1-3-state')).toHaveTextContent('unlocked');
+    expect(screen.getByTestId('be1-3-minutes')).toHaveTextContent('5');
+
+    const remotePeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+
+    // 1. Deliver a stale { auto_lock_minutes: 0 } notification while server remains 5 ->
+    //    Provider refreshes Me (which still returns numeric 5), keeps 5 authoritative, and enforces the 5m idle deadline.
+    const countBeforeStale = meRefetchCount;
+    await act(async () => {
+      remotePeer.postMessage({ type: 'settings_changed', auto_lock_minutes: 0 });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(meRefetchCount).toBeGreaterThan(countBeforeStale);
+    expect(screen.getByTestId('be1-3-minutes')).toHaveTextContent('5');
+    expect(screen.getByTestId('be1-3-state')).toHaveTextContent('unlocked');
+
+    // 2. Deliver a { auto_lock_minutes: 0 } notification when Me refresh fails ->
+    //    Must NOT relax the current positive 5m policy to Never (0).
+    failMeFetch = true;
+    await act(async () => {
+      remotePeer.postMessage({ type: 'settings_changed', auto_lock_minutes: 0 });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    failMeFetch = false;
+    expect(screen.getByTestId('be1-3-minutes')).toHaveTextContent('5');
+
+    // 3. Cross-tab reordering: a notification sets a different value transiently, then a delayed stale 0 arrives
+    //    while server is 5 -> reconciled back to 5 and original 5m idle deadline is enforced.
+    await act(async () => {
+      remotePeer.postMessage({ type: 'settings_changed', auto_lock_minutes: 15 });
+      remotePeer.postMessage({ type: 'settings_changed', auto_lock_minutes: 0 });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByTestId('be1-3-minutes')).toHaveTextContent('5');
+
+    // Advance to the 5-minute mark -> original 5-minute idle deadline locks the vault
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    });
+    remotePeer.close();
+    expect(screen.getByTestId('be1-3-state')).toHaveTextContent('locked');
+  });
 });

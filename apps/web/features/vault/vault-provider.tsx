@@ -282,27 +282,29 @@ export function deriveVaultStateMachineMode(input: {
   serverVaultStatus: 'absent' | 'present';
   workerState: VaultClientState;
   activeOperation: VaultActiveOperation;
+  baselineVerified?: boolean;
 }): VaultStateMachineMode {
-  const { serverVaultStatus, workerState, activeOperation } = input;
+  const { serverVaultStatus, workerState, activeOperation, baselineVerified = true } = input;
 
   // Worker error or recovering state is authoritative over sub-states
   if (workerState === 'error') return 'error';
   if (workerState === 'recovering') return 'recovering';
 
-  if (workerState === 'unlocked') {
+  if (workerState === 'unlocked' && baselineVerified) {
     if (activeOperation === 'rewrapping') return 'rewrapping';
     if (activeOperation === 'resetting') return 'resetting';
     return 'unlocked';
   }
 
-  // workerState === 'locked'
+  // workerState === 'locked' (or post-unlock baseline verification is still pending/unverified)
   if (serverVaultStatus === 'absent') {
     if (activeOperation === 'onboarding') return 'onboarding';
     return 'no_vault';
   }
 
-  // serverVaultStatus === 'present' && workerState === 'locked'
-  if (activeOperation === 'unlocking') return 'unlocking';
+  // serverVaultStatus === 'present' && (workerState === 'locked' || !baselineVerified)
+  if (activeOperation === 'unlocking' || activeOperation === 'onboarding') return 'unlocking';
+  if (activeOperation === 'rewrapping') return 'recovering';
   if (activeOperation === 'resetting') return 'resetting';
   return 'locked';
 }
@@ -324,6 +326,7 @@ export function VaultProvider({
   const [vaultMeta, setVaultMeta] = useState<VaultState | null>(null);
   const [tabKnownLockEpoch, setTabKnownLockEpoch] = useState<number>(0);
   const [unlockBaseline, setUnlockBaseline] = useState<LockEpochMarker | null>(null);
+  const [baselineVerified, setBaselineVerified] = useState<boolean>(false);
   const [autoLockMinutesOverride, setAutoLockMinutesOverride] = useState<number | null>(null);
   const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
   const [minutesLeft, setMinutesLeft] = useState<number | undefined>(undefined);
@@ -332,6 +335,10 @@ export function VaultProvider({
   const workerStateRef = useRef<VaultClientState>('locked');
   const tabKnownLockEpochRef = useRef<number>(0);
   const unlockBaselineRef = useRef<LockEpochMarker | null>(null);
+  const baselineVerifiedRef = useRef<boolean>(false);
+  const wakeVerificationSeqRef = useRef<number>(0);
+  const wakeVerifyingCountRef = useRef<number>(0);
+  const settingsSyncSeqRef = useRef<number>(0);
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const previousUserIdRef = useRef<string | null>(null);
   const secretFormResettersRef = useRef<Set<() => void>>(new Set());
@@ -339,7 +346,6 @@ export function VaultProvider({
   const lastBroadcastedActivityAtRef = useRef<number>(0);
   const autoLockMinutesRef = useRef<number>(normalizeAutoLockMinutes(me?.settings.auto_lock_minutes));
   const autoLockTimerRef = useRef<number | null>(null);
-
   const effectiveDeviceStoreEnv = useMemo<DeviceStoreEnvironment>(
     () => ({
       idbFactory: deviceStoreEnv?.idbFactory ?? lockEpochEnv?.idbFactory,
@@ -352,7 +358,7 @@ export function VaultProvider({
     if (typeof serverAutoLockMinutes === 'number' && Number.isFinite(serverAutoLockMinutes)) {
       setAutoLockMinutesOverride(null);
     }
-  }, [serverAutoLockMinutes]);
+  }, [me, serverAutoLockMinutes]);
 
   const autoLockMinutes = useMemo(
     () =>
@@ -397,8 +403,12 @@ export function VaultProvider({
           setGeneration(nextGen);
           setEpoch(instance.getEpoch());
           if (nextState === 'locked' || nextState === 'error') {
+            wakeVerificationSeqRef.current += 1;
+            wakeVerifyingCountRef.current = 0;
             unlockBaselineRef.current = null;
+            baselineVerifiedRef.current = false;
             setUnlockBaseline(null);
+            setBaselineVerified(false);
             setActiveOperation(null);
             clearPlaintextAndFormsSync();
           }
@@ -426,8 +436,12 @@ export function VaultProvider({
    * synchronously clears cache + forms and invokes `client.lock()` without re-writing `lockEpoch`.
    */
   const lockLocalOnly = useCallback((): Promise<LockResult> => {
+    wakeVerificationSeqRef.current += 1;
+    wakeVerifyingCountRef.current = 0;
     unlockBaselineRef.current = null;
+    baselineVerifiedRef.current = false;
     setUnlockBaseline(null);
+    setBaselineVerified(false);
     setActiveOperation(null);
     clearPlaintextAndFormsSync();
     const client = getClient();
@@ -558,6 +572,7 @@ export function VaultProvider({
 
   const notifySettingsChanged = useCallback(
     (payload: { auto_lock_minutes: number }) => {
+      settingsSyncSeqRef.current += 1;
       const normalized = normalizeAutoLockMinutes(payload.auto_lock_minutes);
       autoLockMinutesRef.current = normalized;
       setAutoLockMinutesOverride(normalized);
@@ -570,6 +585,10 @@ export function VaultProvider({
   );
 
   const recordActivity = useCallback((at?: number) => {
+    if (wakeVerifyingCountRef.current > 0) {
+      // Do not overwrite pre-wake idle watermark while wake verification is pending
+      return;
+    }
     const now = typeof at === 'number' && Number.isFinite(at) ? at : Date.now();
     if (now < lastActivityAtRef.current - CLOCK_ROLLBACK_TOLERANCE_MS) {
       // System clock rolled back by > 1 minute -> do not overwrite lastActivityAt; evaluation will lock.
@@ -603,6 +622,13 @@ export function VaultProvider({
         setActiveOperation(opKind);
       }
 
+      if (requiresUnlockBaseline) {
+        unlockBaselineRef.current = null;
+        baselineVerifiedRef.current = false;
+        setUnlockBaseline(null);
+        setBaselineVerified(false);
+      }
+
       let capturedBaseline: LockEpochMarker | null = null;
       const prepareBaseline = async () => {
         if (!requiresUnlockBaseline) return;
@@ -619,7 +645,6 @@ export function VaultProvider({
           );
         }
         capturedBaseline = baseline;
-        unlockBaselineRef.current = baseline;
         updateTabKnownLockEpoch(baseline.lockEpoch);
       };
 
@@ -631,7 +656,7 @@ export function VaultProvider({
           if (verification.persistedMarker) {
             updateTabKnownLockEpoch(verification.persistedMarker.lockEpoch);
           }
-          if (!verification.matches || client.getGeneration() !== opGeneration) {
+          if (!verification.matches || client.getGeneration() !== opGeneration || !capturedBaseline) {
             void lock({ broadcast: false, reason: 'baseline_mismatch_after_unlock' });
             throw new CryptoClientError(
               'STALE_GENERATION',
@@ -639,7 +664,9 @@ export function VaultProvider({
             );
           }
           unlockBaselineRef.current = capturedBaseline;
+          baselineVerifiedRef.current = true;
           setUnlockBaseline(capturedBaseline);
+          setBaselineVerified(true);
           const unlockedAt = Date.now();
           lastActivityAtRef.current = Math.max(lastActivityAtRef.current, unlockedAt);
           setLastActivityAt(lastActivityAtRef.current);
@@ -847,10 +874,27 @@ export function VaultProvider({
       }
 
       if (message.type === 'settings_changed') {
-        const normalized = normalizeAutoLockMinutes(message.auto_lock_minutes);
-        autoLockMinutesRef.current = normalized;
-        setAutoLockMinutesOverride(normalized);
-        void refetchMe().catch(() => undefined);
+        const hintMinutes = normalizeAutoLockMinutes(message.auto_lock_minutes);
+        const currentMinutes = autoLockMinutesRef.current;
+        // Never relax a positive auto-lock policy to Never (0) or a longer timeout before authoritative Me confirms it;
+        // apply stricter (shorter positive) hints immediately as an optimistic guard, then reconcile from fetchMe().
+        if (hintMinutes > 0 && (currentMinutes === 0 || hintMinutes < currentMinutes)) {
+          autoLockMinutesRef.current = hintMinutes;
+          setAutoLockMinutesOverride(hintMinutes);
+        }
+        const syncSeq = ++settingsSyncSeqRef.current;
+        void fetchMe()
+          .then((freshMe) => {
+            if (settingsSyncSeqRef.current !== syncSeq) return;
+            const authoritative = normalizeAutoLockMinutes(freshMe.settings.auto_lock_minutes);
+            autoLockMinutesRef.current = authoritative;
+            setAutoLockMinutesOverride(authoritative);
+            void refetchMe().catch(() => undefined);
+          })
+          .catch(() => {
+            // Failed refresh must not relax a positive policy to Never; keep current positive policy intact.
+            void refetchMe().catch(() => undefined);
+          });
         return;
       }
 
@@ -889,7 +933,7 @@ export function VaultProvider({
       autoLockTimerRef.current = null;
     }
 
-    if (workerState !== 'unlocked') {
+    if (workerState !== 'unlocked' || !baselineVerified) {
       setMinutesLeft(undefined);
       return;
     }
@@ -902,7 +946,7 @@ export function VaultProvider({
 
     let cancelled = false;
     const scheduleCheck = () => {
-      if (cancelled || workerStateRef.current !== 'unlocked') return;
+      if (cancelled || workerStateRef.current !== 'unlocked' || !baselineVerifiedRef.current) return;
       const currentMinutes = autoLockMinutesRef.current;
       if (currentMinutes === 0) {
         setMinutesLeft(undefined);
@@ -936,14 +980,14 @@ export function VaultProvider({
         autoLockTimerRef.current = null;
       }
     };
-  }, [autoLockMinutes, lastActivityAt, lock, workerState]);
+  }, [autoLockMinutes, baselineVerified, lastActivityAt, lock, workerState]);
 
   // User interaction activity listeners while unlocked (throttled broadcast to sibling tabs).
   useEffect(() => {
-    if (typeof window === 'undefined' || workerState !== 'unlocked') return;
+    if (typeof window === 'undefined' || workerState !== 'unlocked' || !baselineVerified) return;
 
     const onUserActivity = () => {
-      if (workerStateRef.current !== 'unlocked') return;
+      if (workerStateRef.current !== 'unlocked' || !baselineVerifiedRef.current) return;
       const now = Date.now();
       if (now < lastActivityAtRef.current - CLOCK_ROLLBACK_TOLERANCE_MS) {
         void lock({ broadcast: true, reason: 'clock_rollback' });
@@ -963,25 +1007,33 @@ export function VaultProvider({
       window.removeEventListener('wheel', onUserActivity);
       window.removeEventListener('touchstart', onUserActivity);
     };
-  }, [lock, recordActivity, workerState]);
+  }, [baselineVerified, lock, recordActivity, workerState]);
 
   // Wake / resume / visibilitychange / pageshow / focus / popstate fail-closed check (ADR 0003 §8.4, Task 15A #3/#6, Task 15B #1/#3/#5).
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
     const verifyOnWake = async () => {
-      if (
-        workerStateRef.current !== 'unlocked' &&
-        workerStateRef.current !== 'recovering'
-      ) {
+      const initialWorkerState = workerStateRef.current;
+      if (initialWorkerState !== 'unlocked' && initialWorkerState !== 'recovering') {
+        return;
+      }
+      if (initialWorkerState === 'unlocked' && !baselineVerifiedRef.current && wakeVerifyingCountRef.current === 0) {
+        // Initial post-unlock verification is still in flight; runStateChangingOp handles it
         return;
       }
 
-      // 1. Immediate synchronous clock-rollback and known auto-lock check (do not trust throttled timers)
+      // Capture pre-wake idle watermark and operation generation BEFORE any await
       const wakeNow = Date.now();
+      const preWakeLastActivityAt = lastActivityAtRef.current;
+      const client = getClient();
+      const wakeOpGeneration = client.getGeneration();
+      const wakeSeq = ++wakeVerificationSeqRef.current;
+
+      // 1. Immediate synchronous clock-rollback and known auto-lock check (do not trust throttled timers)
       const knownEvaluation = evaluateAutoLockAt({
         now: wakeNow,
-        lastActivityAt: lastActivityAtRef.current,
+        lastActivityAt: preWakeLastActivityAt,
         autoLockMinutes: autoLockMinutesRef.current,
       });
       if (knownEvaluation.shouldLock) {
@@ -989,46 +1041,86 @@ export function VaultProvider({
         return;
       }
 
-      // 2. Authoritative `lockEpoch` check in IndexedDB under Web Lock `'sabk.vault.lock'`
-      const baseline = unlockBaselineRef.current;
-      const result = await verifyUnlockBaseline(baseline, envWithBroadcast);
-      if (result.persistedMarker) {
-        updateTabKnownLockEpoch(result.persistedMarker.lockEpoch);
-      }
-      if (!result.matches) {
-        void lockLocalOnly();
-        return;
+      // Gate plaintext access immediately while wake verification (Web Lock / IDB + Me) is pending
+      wakeVerifyingCountRef.current += 1;
+      if (initialWorkerState === 'unlocked') {
+        baselineVerifiedRef.current = false;
+        setBaselineVerified(false);
       }
 
-      // 3. Authoritative `GET /auth/me` refresh on wake while unlocked (5s fail-closed deadline; never trust stale `0`)
-      if (workerStateRef.current !== 'unlocked') return;
-
+      // Start bounded 5s fail-closed deadline BEFORE the first async wait (covers Web Lock + IDB + Me)
       let deadlineTimer: number | null = null;
       let timedOut = false;
-      const timeoutPromise = new Promise<null>((resolve) => {
-        deadlineTimer = window.setTimeout(() => {
-          timedOut = true;
-          resolve(null);
-        }, WAKE_ME_REFRESH_DEADLINE_MS);
-      });
+      const { promise: timeoutPromise, resolve: resolveTimeout } = Promise.withResolvers<'timeout'>();
+      deadlineTimer = window.setTimeout(() => {
+        timedOut = true;
+        if (
+          wakeVerificationSeqRef.current === wakeSeq &&
+          client.getGeneration() === wakeOpGeneration &&
+          (workerStateRef.current === 'unlocked' || workerStateRef.current === 'recovering')
+        ) {
+          void lock({ broadcast: true, reason: 'wake_me_deadline_exceeded' });
+        }
+        resolveTimeout('timeout');
+      }, WAKE_ME_REFRESH_DEADLINE_MS);
 
-      try {
-        const freshMe = await Promise.race([fetchMe(), timeoutPromise]);
+      const clearDeadlineTimer = () => {
         if (deadlineTimer !== null) {
           window.clearTimeout(deadlineTimer);
           deadlineTimer = null;
         }
-        if (timedOut || !freshMe) {
-          // Failed to verify `Me` within the 5s wake deadline -> fail closed, never assume `auto_lock_minutes = 0`
+      };
+
+      try {
+        // 2. Authoritative `lockEpoch` check in IndexedDB under Web Lock `'sabk.vault.lock'`
+        if (initialWorkerState === 'unlocked') {
+          const baseline = unlockBaselineRef.current;
+          const baselineOrTimeout = await Promise.race([
+            verifyUnlockBaseline(baseline, envWithBroadcast),
+            timeoutPromise,
+          ]);
           if (
-            workerStateRef.current === 'unlocked' ||
-            workerStateRef.current === 'recovering'
+            timedOut ||
+            baselineOrTimeout === 'timeout' ||
+            wakeVerificationSeqRef.current !== wakeSeq ||
+            client.getGeneration() !== wakeOpGeneration
+          ) {
+            return;
+          }
+          if (baselineOrTimeout.persistedMarker) {
+            updateTabKnownLockEpoch(baselineOrTimeout.persistedMarker.lockEpoch);
+          }
+          if (!baselineOrTimeout.matches) {
+            void lockLocalOnly();
+            return;
+          }
+        }
+
+        // 3. Authoritative `GET /auth/me` refresh on wake while unlocked (5s fail-closed deadline; never trust stale `0`)
+        if (workerStateRef.current !== 'unlocked') {
+          return;
+        }
+
+        const freshMeOrTimeout = await Promise.race([fetchMe(), timeoutPromise]);
+        if (
+          timedOut ||
+          freshMeOrTimeout === 'timeout' ||
+          !freshMeOrTimeout ||
+          wakeVerificationSeqRef.current !== wakeSeq ||
+          client.getGeneration() !== wakeOpGeneration
+        ) {
+          if (
+            (timedOut || !freshMeOrTimeout) &&
+            client.getGeneration() === wakeOpGeneration &&
+            (workerStateRef.current === 'unlocked' || workerStateRef.current === 'recovering')
           ) {
             void lock({ broadcast: true, reason: 'wake_me_deadline_exceeded' });
           }
           return;
         }
 
+        const freshMe = freshMeOrTimeout;
+        settingsSyncSeqRef.current += 1;
         const freshMinutes = normalizeAutoLockMinutes(freshMe.settings.auto_lock_minutes);
         autoLockMinutesRef.current = freshMinutes;
         setAutoLockMinutesOverride(freshMinutes);
@@ -1042,26 +1134,36 @@ export function VaultProvider({
 
         const afterMeEval = evaluateAutoLockAt({
           now: Date.now(),
-          lastActivityAt: lastActivityAtRef.current,
+          lastActivityAt: preWakeLastActivityAt,
           autoLockMinutes: freshMinutes,
         });
         if (afterMeEval.shouldLock) {
           void lock({ broadcast: true, reason: afterMeEval.reason });
           return;
         }
-        setMinutesLeft(afterMeEval.minutesLeft);
-      } catch {
-        if (deadlineTimer !== null) {
-          window.clearTimeout(deadlineTimer);
-          deadlineTimer = null;
+
+        // Only restore unlocked application access if generation and wake sequence are still current
+        if (
+          wakeVerificationSeqRef.current === wakeSeq &&
+          client.getGeneration() === wakeOpGeneration &&
+          workerStateRef.current === 'unlocked' &&
+          unlockBaselineRef.current !== null
+        ) {
+          baselineVerifiedRef.current = true;
+          setBaselineVerified(true);
+          setMinutesLeft(afterMeEval.minutesLeft);
         }
+      } catch {
         // `401` (including `session_invalid`) or network failure on wake -> fail closed, lock immediately
         if (
-          workerStateRef.current === 'unlocked' ||
-          workerStateRef.current === 'recovering'
+          client.getGeneration() === wakeOpGeneration &&
+          (workerStateRef.current === 'unlocked' || workerStateRef.current === 'recovering')
         ) {
           void lock({ broadcast: true, reason: 'wake_me_failed' });
         }
+      } finally {
+        clearDeadlineTimer();
+        wakeVerifyingCountRef.current = Math.max(0, wakeVerifyingCountRef.current - 1);
       }
     };
 
@@ -1108,6 +1210,7 @@ export function VaultProvider({
     clearPlaintextAndFormsSync,
     effectiveDeviceStoreEnv,
     envWithBroadcast,
+    getClient,
     lock,
     lockLocalOnly,
     refetchMe,
@@ -1159,8 +1262,9 @@ export function VaultProvider({
         serverVaultStatus,
         workerState,
         activeOperation,
+        baselineVerified,
       }),
-    [serverVaultStatus, workerState, activeOperation],
+    [serverVaultStatus, workerState, activeOperation, baselineVerified],
   );
 
   const inFlight = inFlightCount > 0;
