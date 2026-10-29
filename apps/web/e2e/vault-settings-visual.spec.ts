@@ -210,10 +210,19 @@ async function prepareThemeAndLocale(page: Page, theme: Theme) {
 }
 
 async function dismissVisibleToasts(page: Page) {
-  const toastCloseButtons = page.locator('.toast button');
-  while ((await toastCloseButtons.count()) > 0) {
-    await toastCloseButtons.first().click({ timeout: STEP_TIMEOUT });
+  // Never use Playwright pointer clicks here: while a Radix modal Dialog is open
+  // (e.g. `pass-done`), `<div class="dialog-overlay" data-state="open">` intercepts
+  // pointer events and `body` has `pointer-events: none`.
+  const openDialogs = page.locator('[role="dialog"]');
+  if ((await openDialogs.count()) > 0) {
+    return;
   }
+  await page.evaluate(() => {
+    for (const btn of document.querySelectorAll<HTMLButtonElement>('.toast button')) {
+      btn.click();
+    }
+  });
+  await expect(page.locator('.toast')).toHaveCount(0, { timeout: STEP_TIMEOUT });
 }
 
 async function scrollSecurityHeadingBelowStickyHeader(page: Page) {
@@ -251,7 +260,7 @@ async function settleForCapture(page: Page, email: string, theme: Theme) {
   });
   await page.addStyleTag({
     content:
-      '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important;}',
+      '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important;}.toast{display:none!important;}',
   });
   await page.evaluate((accountEmail) => {
     const root = document.querySelector('main');
