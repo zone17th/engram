@@ -18,6 +18,10 @@ import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
 import { CryptoClientError } from '@/lib/crypto/client';
 import { hasLoneSurrogate } from '@/lib/crypto/protocol';
+import {
+  clearRecoveryCompletedNotice,
+  hasRecoveryCompletedNotice,
+} from './recovery-notice';
 
 export type UnlockErrorState =
   | { kind: 'empty' }
@@ -42,6 +46,9 @@ export function VaultUnlockFlow() {
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<UnlockErrorState | null>(null);
   const [rateLimitDeadline, setRateLimitDeadline] = useState<number | null>(null);
+  // FE1-7: recovery that committed while its tab locked hands this notice over through sessionStorage (route change).
+  const [recoveredNotice, setRecoveredNotice] = useState(false);
+  const meUserId = me?.user.id ?? null;
 
   const passInputRef = useRef<HTMLInputElement>(null);
   const vaultRef = useRef(vault);
@@ -50,6 +57,8 @@ export function VaultUnlockFlow() {
   const unlockIntentSeqRef = useRef(0);
   const activeWorkerUnlockOpGenRef = useRef<number | null>(null);
   const completedNavigationRef = useRef(false);
+  // FE1-4: an async failure re-enables the form after it had been disabled while pending; focus must come back to it.
+  const refocusPassphraseAfterErrorRef = useRef(false);
   const countdownSeconds = useRetryCountdown(rateLimitDeadline);
   const isRateLimitedActive =
     errorState?.kind === 'rate_limited' && rateLimitDeadline !== null && countdownSeconds > 0;
@@ -63,6 +72,10 @@ export function VaultUnlockFlow() {
       passInputRef.current.value = '';
     }
   }, []);
+
+  useEffect(() => {
+    setRecoveredNotice(hasRecoveryCompletedNotice(meUserId));
+  }, [meUserId]);
 
   // Register secret form reset with VaultProvider so any lock / logout / account switch wipes state synchronously.
   useEffect(() => {
@@ -155,6 +168,7 @@ export function VaultUnlockFlow() {
 
         completedNavigationRef.current = true;
         activeWorkerUnlockOpGenRef.current = null;
+        clearRecoveryCompletedNotice();
         router.replace(destinationPath);
       } catch (err) {
         passphraseSnapshot = null;
@@ -173,6 +187,7 @@ export function VaultUnlockFlow() {
             setErrorState({ kind: 'session_expired' });
             return;
           }
+          refocusPassphraseAfterErrorRef.current = true;
           setErrorState({
             kind: 'network',
             detail: err.problem.detail ?? err.problem.title,
@@ -182,22 +197,27 @@ export function VaultUnlockFlow() {
 
         const classified = classifyCryptoError(err);
         if (classified.code === 'PRIVATE_KEYS_WRAP_INVALID') {
+          refocusPassphraseAfterErrorRef.current = true;
           setErrorState({ kind: 'private_keys_wrap_invalid' });
           return;
         }
 
         switch (classified.kind) {
           case 'wrong_passphrase':
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'incorrect_passphrase' });
             return;
           case 'passphrase_invalid':
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'passphrase_invalid' });
             return;
           case 'insufficient_memory':
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'insufficient_memory' });
             return;
           case 'busy':
             // CLIENT_BUSY is NEVER shown as wrong passphrase.
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'busy' });
             return;
           case 'recovering_locked_to_whitelist':
@@ -207,6 +227,7 @@ export function VaultUnlockFlow() {
           case 'stale_generation':
             return;
           default:
+            refocusPassphraseAfterErrorRef.current = true;
             if (err instanceof CryptoClientError) {
               setErrorState({ kind: 'network', detail: err.message });
               return;
@@ -231,6 +252,14 @@ export function VaultUnlockFlow() {
     ],
   );
 
+  // FE1-4: restore keyboard focus to the passphrase field once the pending state that disabled it has cleared.
+  const formUsable = !submitting && !vault.inFlight && !isRateLimitedActive;
+  useEffect(() => {
+    if (!refocusPassphraseAfterErrorRef.current || errorState === null || !formUsable) return;
+    refocusPassphraseAfterErrorRef.current = false;
+    passInputRef.current?.focus();
+  }, [errorState, formUsable]);
+
   const handleLockAndSwitchFromRecovering = useCallback(async () => {
     setErrorState(null);
     await vault.lock({ broadcast: false, reason: 'unlock_switch_from_recovering' });
@@ -248,6 +277,21 @@ export function VaultUnlockFlow() {
         className="mx-auto max-w-[560px] px-5 pt-10 pb-24"
         data-testid="vault-unlock-page"
       >
+        {recoveredNotice ? (
+          <div
+            role="status"
+            className="card mb-6 p-5"
+            style={{ borderColor: 'var(--success)' }}
+            data-testid="unlock-recovered-notice"
+          >
+            <p className="m-0 mb-1 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+              {t('recoveredNoticeTitle')}
+            </p>
+            <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+              {t('recoveredNoticeBody')}
+            </p>
+          </div>
+        ) : null}
         <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
           {me?.user.email
             ? t('signedInAs', { email: me.user.email })

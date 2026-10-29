@@ -3,7 +3,7 @@
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
-import { VaultPill, type VaultPillState } from '@/components/ui/vault-pill';
+import { useVaultPillLabel, VaultPill, type VaultPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
 import { useOptionalVault, type VaultStateMachineMode } from '@/features/vault/vault-provider';
 import Link from 'next/link';
@@ -34,6 +34,9 @@ export function AppHeader({
     : (vault?.state ?? 'locked');
   const effectiveMinutesLeft = vault?.minutesLeft ?? vaultCtx?.minutesLeft;
   const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
+  // FE1-1: the accessible name of the lock button must contain the pill's visible text ("Vault open · N min").
+  const pillLabel = useVaultPillLabel(effectivePillState, effectiveMinutesLeft);
+  const lockNowName = tHeader('lockNowNamed', { state: pillLabel });
 
   const handleLockClick = () => {
     if (!vaultCtx) return;
@@ -61,7 +64,8 @@ export function AppHeader({
               data-vault=""
               data-testid="vault-lock-button"
               onClick={handleLockClick}
-              aria-label={tHeader('lockNow')}
+              aria-label={lockNowName}
+              aria-keyshortcuts="L"
               title={tHeader('lockNow')}
               className="hidden cursor-pointer border-0 bg-transparent p-0 sm:inline-flex"
             >

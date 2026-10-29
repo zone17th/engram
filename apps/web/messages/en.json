@@ -49,6 +49,7 @@
       "logoLabel": "engram — Recent items",
       "lockNow": "Lock vault now (L)",
       "openAndLockNow": "Vault open — Lock vault now (L)",
+      "lockNowNamed": "{state} — Lock vault now (L)",
       "settings": "Settings",
       "settingsDone": "Done"
     }
@@ -425,6 +426,8 @@
   "unlock": {
     "signedInAs": "Signed in · {email}",
     "signedInGeneric": "Signed in",
+    "recoveredNoticeTitle": "Recovery completed",
+    "recoveredNoticeBody": "Your new passphrase was saved. Unlock your vault with the new passphrase.",
     "title": "Unlock vault",
     "lead": "Item names and tags remain searchable while locked. Entry contents need your decryption key, and only this browser can open it.",
     "passphraseLabel": "Vault passphrase",
@@ -622,6 +625,10 @@
       "skip": "Skip (keep {remaining}/10)",
       "googleCaption": "Google re-authentication leaves the page: the vault locks again — unlock with the new passphrase (or a passkey) before replacement keys are generated.",
       "skipCaption": "You can skip this step and keep {remaining} active keys, or regenerate missing slots anytime in Settings › Security."
+    },
+    "wakeGate": {
+      "title": "Checking that your vault is still unlocked…",
+      "body": "Replacement keys and password fields stay hidden until this check finishes. Your recovery progress is kept."
     },
     "step4": {
       "unlockedBanner": "Vault unlocked. {remaining} of 10 recovery keys remain active (slots: {emptySlots}).",

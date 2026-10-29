@@ -49,6 +49,7 @@
       "logoLabel": "engram — Mục gần đây",
       "lockNow": "Khoá vault ngay (L)",
       "openAndLockNow": "Vault mở — Khoá vault ngay (L)",
+      "lockNowNamed": "{state} — Khoá vault ngay (L)",
       "settings": "Cài đặt",
       "settingsDone": "Xong"
     }
@@ -425,6 +426,8 @@
   "unlock": {
     "signedInAs": "Đã đăng nhập · {email}",
     "signedInGeneric": "Đã đăng nhập",
+    "recoveredNoticeTitle": "Đã hoàn tất khôi phục",
+    "recoveredNoticeBody": "Passphrase mới của bạn đã được lưu. Hãy mở khoá vault bằng passphrase mới.",
     "title": "Mở khoá vault",
     "lead": "Tên mục và tag vẫn tìm được khi khoá. Nội dung entry thì cần khoá giải mã, và khoá đó chỉ máy bạn mở được.",
     "passphraseLabel": "Passphrase của vault",
@@ -622,6 +625,10 @@
       "skip": "Bỏ qua (giữ {remaining}/10 key)",
       "googleCaption": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, mở bằng passphrase mới vừa đặt (hoặc passkey) rồi mới sinh key bù.",
       "skipCaption": "Bỏ qua cũng được — bạn vẫn còn {remaining} key. Có thể bù lại bất cứ lúc nào trong Cài đặt › Bảo mật."
+    },
+    "wakeGate": {
+      "title": "Đang kiểm tra vault vẫn đang mở…",
+      "body": "Recovery key mới và các ô mật khẩu được ẩn cho tới khi kiểm tra xong. Tiến trình khôi phục vẫn được giữ."
     },
     "step4": {
       "unlockedBanner": "Đã vào lại vault. Còn {remaining}/10 recovery key dùng được (vị trí trống: {emptySlots}).",
