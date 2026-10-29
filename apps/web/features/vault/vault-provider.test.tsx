@@ -3920,146 +3920,58 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     });
   });
 
-  it('BE2-5, BE2-8 & BE1-8: concurrent state-changing operations keep baseline/inFlight fences alive and reloadVaultMeta forces fresh network fetch with currentVaultKeyIdRef updated from server responses', async () => {
-    let vaultVersion = 1;
-    let currentVaultKeyId = 'vk:be2-8-initial';
-    let getVaultNetworkCalls = 0;
-    const userId = '11111111-1111-1111-1111-111111111111';
-    const me = makeMeFixture({ userId, vaultStatus: 'present', autoLockMinutes: 15 });
+  // ---------------------------------------------------------------------------
+  // review-2-delta-be BE2-2/5/6/7/8/9 + BE1-6 (V1) / BE1-8 regression tests.
+  // One scenario per test: each drives the real race (held request, sibling lock, aborted purge) and asserts the
+  // observable fail-closed outcome. Real timers are used unless a 5s deadline has to be crossed; the Worker shim
+  // runs on a real `MessageChannel`, so fake timers are only armed AFTER the held step has been reached.
+  // ---------------------------------------------------------------------------
+  const BE2_USER_ID = '11111111-1111-1111-1111-111111111111';
+  const BE2_KDF = {
+    alg: 'argon2id13',
+    ops: 3,
+    mem: 67108864,
+    parallelism: 1,
+    salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
+  };
 
-    vi.mocked(fetch).mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
-      if (u.endsWith('/auth/config')) {
-        return jsonResponse({
-          oauth_providers: [],
-          email_verification_required: false,
-          captcha_site_key: null,
-        });
-      }
-      if (u.endsWith('/auth/me')) return jsonResponse(me);
-      if (u.endsWith('/vault')) {
-        getVaultNetworkCalls += 1;
-        return jsonResponse({
-          vault_key_id: currentVaultKeyId,
-          version: vaultVersion,
-          kdf: {
-            alg: 'argon2id13',
-            ops: 3,
-            mem: 67108864,
-            parallelism: 1,
-            salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
-          },
-          vault_key_wrapped_by_kek: 'd3JhcHBlZC12aw',
-          x25519_public: 'eDI1NTE5LXB1Yg',
-          ed25519_public: 'ZWQyNTUxOS1wdWI',
-          private_keys_wrapped: 'd3JhcHBlZC1wcml2',
-          recovery_keys_remaining: 10,
-        });
-      }
-      return jsonResponse({});
-    });
+  function be2VaultBody(vaultKeyId: string, version: number) {
+    return {
+      vault_key_id: vaultKeyId,
+      version,
+      kdf: BE2_KDF,
+      vault_key_wrapped_by_kek: 'd3JhcHBlZC12aw',
+      x25519_public: 'eDI1NTE5LXB1Yg',
+      ed25519_public: 'ZWQyNTUxOS1wdWI',
+      private_keys_wrapped: 'd3JhcHBlZC1wcml2',
+      recovery_keys_remaining: 10,
+    };
+  }
 
-    const idbFactory = fakeIdb.createFactory();
-    const locksManager = fakeLocks.createLockManager();
-    const lockEpochEnv: LockEpochEnvironment = { idbFactory, locksManager };
-
-    let vaultCtx!: VaultContextValue;
-    const qc = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-          staleTime: 60_000, // Even with a 60s staleTime on QueryClient, reloadVaultMeta MUST force a fresh network GET /vault (BE1-8)
-        },
-      },
-    });
-    function Probe() {
-      vaultCtx = useVault();
-      return <output data-testid="be2-8-state">{vaultCtx.state}</output>;
-    }
-
-    render(
-      <QueryClientProvider client={qc}>
-        <SessionProvider>
-          <VaultProvider
-            createWorker={makeShimmedWorkerFactory()}
-            lockEpochEnv={lockEpochEnv}
-            deviceStoreEnv={{ idbFactory }}
-          >
-            <Probe />
-          </VaultProvider>
-        </SessionProvider>
-      </QueryClientProvider>,
+  function be2VaultAbsentResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        type: 'https://engram.zone17th.click/problems/vault_absent',
+        title: 'vault_absent',
+        status: 404,
+        code: 'vault_absent',
+      }),
+      { status: 404, headers: { 'content-type': 'application/problem+json' } },
     );
+  }
 
-    await waitFor(() => {
-      expect(screen.getByTestId('be2-8-state')).toHaveTextContent('locked');
-      expect(getVaultNetworkCalls).toBe(1);
-      expect(vaultCtx.vaultMeta?.version).toBe(1);
+  function sleepReal(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
     });
-    // BE1-8: Bump server version and call reloadVaultMeta() while cached query is still fresh under staleTime: 60_000.
-    // reloadVaultMeta MUST bypass stale cache and perform a fresh network GET /vault.
-    vaultVersion = 2;
-    let reloadedVersion: number | null = null;
-    await act(async () => {
-      const meta = await vaultCtx.reloadVaultMeta();
-      reloadedVersion = meta?.version ?? null;
-    });
-    expect(getVaultNetworkCalls).toBe(2);
-    expect(reloadedVersion).toBe(2);
+  }
 
-    // Seed DevKey for vk:be2-8-initial
-    const devkeysMap = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
-    devkeysMap.set(formatDevKeyRecordKey(userId, 'vk:be2-8-initial'), {
-      user_id: userId,
-      vault_key_id: 'vk:be2-8-initial',
-      wrapped_vk: new Uint8Array([1, 2, 3]),
-    });
-
-    // BE2-8: Reset vault on server -> vault_changed { version: null } purges once for vk:be2-8-initial.
-    // Then server creates a new vault ONLY observed via GET /vault (`reloadVaultMeta`) without calling notifyVaultChanged({ vault_key_id }).
-    // A subsequent vault_changed { version: null } for the new vault MUST NOT be suppressed by resetPurgedVaultKeyIdRef!
-    const remotePeer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
-    await act(async () => {
-      remotePeer.postMessage({ type: 'vault_changed', version: null });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    const metaAfterFirstReset = await readDeviceMetaRecord({ idbFactory });
-    const revAfterFirstReset = metaAfterFirstReset?.deviceRevision ?? 0;
-    expect(revAfterFirstReset).toBeGreaterThanOrEqual(1);
-
-    // New vault created on another tab; this tab learns the new vault_key_id via reloadVaultMeta() (GET /vault)
-    currentVaultKeyId = 'vk:be2-8-second-vault';
-    vaultVersion = 1;
-    await act(async () => {
-      await vaultCtx.reloadVaultMeta();
-    });
-    expect(vaultCtx.vaultMeta?.vault_key_id).toBe('vk:be2-8-second-vault');
-
-    // Second reset happens -> must purge again and bump deviceRevision (not suppressed by first vault's purge latch!)
-    await act(async () => {
-      remotePeer.postMessage({ type: 'vault_changed', version: null });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    const metaAfterSecondReset = await readDeviceMetaRecord({ idbFactory });
-    expect(metaAfterSecondReset?.deviceRevision).toBe(revAfterFirstReset + 1);
-    remotePeer.close();
-  });
-
-  it('BE2-2, BE2-5, BE2-6, BE2-7, BE2-8, BE1-6 (V1) & BE1-8 (out-of-order): wake works without Promise.withResolvers, replacement session wake is not swallowed by obsolete wake promise, rejected VAULT_RECOVERING preserves recovery baseline, stalled initial post-unlock verification times out at 5s, mid-op sibling VaultProvider.lock cancels recovery and wipes VK, failed reset purge retries on recovery, and out-of-order reloadVaultMeta is fenced', async () => {
-    const t0 = new Date('2026-10-29T10:00:00.000Z').getTime();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(t0);
-
-    const userId = '11111111-1111-1111-1111-111111111111';
-    const currentMe = makeMeFixture({ userId, vaultStatus: 'present', autoLockMinutes: 0 });
-    let holdWakeMe = false;
-    let resolveWakeMe: (() => void) | null = null;
-    const pendingVaultGets: Array<{ version: number; resolve: (res: Response) => void }> = [];
-    let holdVaultGets = false;
-
+  function mockBe2Fetch(
+    handlers: {
+      me?: () => Response | Promise<Response>;
+      vault?: () => Response | Promise<Response>;
+    } = {},
+  ) {
     vi.mocked(fetch).mockImplementation(async (url) => {
       const u = String(url);
       if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -4071,41 +3983,496 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         });
       }
       if (u.endsWith('/auth/me')) {
-        if (holdWakeMe) {
-          await new Promise<void>((resolve) => {
-            resolveWakeMe = resolve;
-          });
-        }
-        return jsonResponse(currentMe);
+        return handlers.me
+          ? handlers.me()
+          : jsonResponse(
+              makeMeFixture({ userId: BE2_USER_ID, vaultStatus: 'present', autoLockMinutes: 15 }),
+            );
       }
       if (u.endsWith('/vault')) {
-        if (holdVaultGets) {
-          return new Promise<Response>((resolve) => {
-            pendingVaultGets.push({ version: pendingVaultGets.length + 1, resolve });
-          });
-        }
-        return jsonResponse({
-          vault_key_id: 'vk:be2-comprehensive',
-          version: 1,
-          kdf: {
-            alg: 'argon2id13',
-            ops: 3,
-            mem: 67108864,
-            parallelism: 1,
-            salt: 'dGVzdC1zYWx0LTE2Ynl0ZXM',
-          },
-          vault_key_wrapped_by_kek: 'd3JhcHBlZC12aw',
-          x25519_public: 'eDI1NTE5LXB1Yg',
-          ed25519_public: 'ZWQyNTUxOS1wdWI',
-          private_keys_wrapped: 'd3JhcHBlZC1wcml2',
-          recovery_keys_remaining: 10,
-        });
+        return handlers.vault
+          ? handlers.vault()
+          : jsonResponse(be2VaultBody('vk:be2-default', 1));
       }
       return jsonResponse({});
     });
+  }
 
+  function renderBe2Provider(
+    testId: string,
+    lockEpochEnv: LockEpochEnvironment,
+    queryClient: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  ): { vault: () => VaultContextValue } {
+    const holder: { ctx: VaultContextValue | null } = { ctx: null };
+    function Probe() {
+      const ctx = useVault();
+      holder.ctx = ctx;
+      return (
+        <div>
+          <output data-testid={`${testId}-state`}>{ctx.state}</output>
+          <output data-testid={`${testId}-worker`}>{ctx.workerState}</output>
+        </div>
+      );
+    }
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={lockEpochEnv}
+            deviceStoreEnv={{ idbFactory: lockEpochEnv.idbFactory }}
+          >
+            <Probe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+    return {
+      vault: () => {
+        if (!holder.ctx) throw new Error('VaultProvider probe has not rendered yet');
+        return holder.ctx;
+      },
+    };
+  }
+
+  async function be2CreateVault(
+    getVault: () => VaultContextValue,
+    passphrase: string,
+  ): Promise<CreateVaultResult> {
+    const op = getVault().beginOp();
+    const out: { value: CreateVaultResult | null } = { value: null };
+    await act(async () => {
+      out.value = await getVault().createVault({ passphrase, opGeneration: op.opGeneration });
+    });
+    if (!out.value) throw new Error('createVault did not resolve');
+    return out.value;
+  }
+
+  function seedBe2DeviceMeta(deviceRevision: number) {
+    fakeIdb.ensureStore(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, {
+      key: DEVICE_META_RECORD_KEY,
+      incarnation: 'be2-initial-incarnation',
+      deviceRevision,
+    });
+  }
+
+  it('BE1-8: reloadVaultMeta performs a fresh network GET /vault even while the cached query is within staleTime and applies the new server version', async () => {
+    let vaultVersion = 1;
+    let getVaultNetworkCalls = 0;
+    mockBe2Fetch({
+      vault: () => {
+        getVaultNetworkCalls += 1;
+        return jsonResponse(be2VaultBody('vk:be2-reload', vaultVersion));
+      },
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+    });
+    const { vault } = renderBe2Provider(
+      'be18-reload',
+      { idbFactory, locksManager: fakeLocks.createLockManager() },
+      qc,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('be18-reload-state')).toHaveTextContent('locked');
+    });
+
+    // The provider never fetches GET /vault on mount: vault metadata is loaded by reloadVaultMeta or unlock flows.
+    const first: { value: Awaited<ReturnType<VaultContextValue['reloadVaultMeta']>> } = {
+      value: null,
+    };
+    await act(async () => {
+      first.value = await vault().reloadVaultMeta();
+    });
+    expect(getVaultNetworkCalls).toBe(1);
+    expect(first.value?.version).toBe(1);
+
+    vaultVersion = 2;
+    const second: { value: Awaited<ReturnType<VaultContextValue['reloadVaultMeta']>> } = {
+      value: null,
+    };
+    await act(async () => {
+      second.value = await vault().reloadVaultMeta();
+    });
+    expect(getVaultNetworkCalls).toBe(2);
+    expect(second.value?.version).toBe(2);
+    expect(vault().vaultMeta?.version).toBe(2);
+  }, 15_000);
+
+  it('BE2-8: a failed reset purge is never cached as committed; repeated reset discovery after storage recovers deletes the DevKey and advances the device fence exactly once', async () => {
+    const held: { release: ((res: Response) => void) | null } = { release: null };
+    let holdNextVaultGet = false;
+    let vaultPresent = true;
+    mockBe2Fetch({
+      vault: () => {
+        if (holdNextVaultGet) {
+          holdNextVaultGet = false;
+          return new Promise<Response>((resolve) => {
+            held.release = resolve;
+          });
+        }
+        return vaultPresent
+          ? jsonResponse(be2VaultBody('vk:be2-8-a', 1))
+          : be2VaultAbsentResponse();
+      },
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const { vault } = renderBe2Provider('be28-purge', {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be28-purge-state')).toHaveTextContent('locked');
+    });
+    await act(async () => {
+      await vault().reloadVaultMeta();
+    });
+    expect(vault().vaultMeta?.vault_key_id).toBe('vk:be2-8-a');
+
+    seedBe2DeviceMeta(10);
+    const devkeyRecordKey = formatDevKeyRecordKey(BE2_USER_ID, 'vk:be2-8-a');
+    const devkeys = fakeIdb.ensureStore(DEVKEY_STORE_NAME);
+    devkeys.set(devkeyRecordKey, {
+      user_id: BE2_USER_ID,
+      vault_key_id: 'vk:be2-8-a',
+      wrapped_vk: new Uint8Array([1, 2, 3]),
+    });
+
+    // Phase 1: the reset is discovered via broadcast while the purge transaction aborts before commit and the
+    // follow-up GET /vault is still in flight -> nothing is deleted and the failed attempt is not remembered.
+    holdNextVaultGet = true;
+    vaultPresent = false;
+    fakeIdb.options.abortBeforeCompleteOnStore = META_STORE_NAME;
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be2-8-a', version: null });
+      await sleepReal(50);
+    });
+    expect(held.release).not.toBeNull();
+    const metaAfterFailedPurge = await readDeviceMetaRecord({ idbFactory });
+    expect(metaAfterFailedPurge?.deviceRevision).toBe(10);
+    expect(devkeys.has(devkeyRecordKey)).toBe(true);
+
+    // Phase 2: storage recovers and the same reset is discovered again (404 on the held reload) -> the retry runs.
+    fakeIdb.options.abortBeforeCompleteOnStore = undefined;
+    await act(async () => {
+      held.release?.(be2VaultAbsentResponse());
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    expect(devkeys.has(devkeyRecordKey)).toBe(false);
+
+    // The successful attempt advanced the fence exactly once.
+    await sleepReal(50);
+    const metaAfterRetry = await readDeviceMetaRecord({ idbFactory });
+    expect(metaAfterRetry?.deviceRevision).toBe(11);
+    peer.close();
+  }, 15_000);
+
+  it('BE2-9: a purge receipt for reset vault A never suppresses the purge for vault B, while a duplicate reset of A is skipped', async () => {
+    let currentVaultKeyId = 'vk:be2-9-a';
+    mockBe2Fetch({ vault: () => jsonResponse(be2VaultBody(currentVaultKeyId, 1)) });
+    const idbFactory = fakeIdb.createFactory();
+    const { vault } = renderBe2Provider('be29-receipt', {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be29-receipt-state')).toHaveTextContent('locked');
+    });
+    await act(async () => {
+      await vault().reloadVaultMeta();
+    });
+    expect(vault().vaultMeta?.vault_key_id).toBe('vk:be2-9-a');
+    seedBe2DeviceMeta(10);
+
+    // Reset A already purged on this device (positive identity) -> a duplicate reset message for A must not purge again.
+    vault().markResetPurged('vk:be2-9-a');
+    currentVaultKeyId = 'vk:be2-9-b';
+    const peer = new HubBroadcastChannel(VAULT_BROADCAST_CHANNEL);
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be2-9-a', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(() => {
+      expect(vault().vaultMeta?.vault_key_id).toBe('vk:be2-9-b');
+    });
+    const metaAfterDuplicate = await readDeviceMetaRecord({ idbFactory });
+    expect(metaAfterDuplicate?.deviceRevision).toBe(10);
+
+    // Reset B is a different vault: A's receipt must not suppress its purge.
+    await act(async () => {
+      peer.postMessage({ type: 'vault_changed', vault_key_id: 'vk:be2-9-b', version: null });
+      await sleepReal(50);
+    });
+    await waitFor(async () => {
+      const meta = await readDeviceMetaRecord({ idbFactory });
+      expect(meta?.deviceRevision).toBe(11);
+    });
+    peer.close();
+  }, 15_000);
+
+  it('BE2-2: wake verification keeps a matching session and still locks fail-closed on a durable lockEpoch mismatch when Promise.withResolvers is unavailable', async () => {
+    mockBe2Fetch();
+    const idbFactory = fakeIdb.createFactory();
+    const lockEpochEnv: LockEpochEnvironment = {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    };
+    const { vault } = renderBe2Provider('be22-wake', lockEpochEnv);
+    await waitFor(() => {
+      expect(screen.getByTestId('be22-wake-state')).toHaveTextContent('locked');
+    });
+    await be2CreateVault(vault, 'be2-wake-passphrase-1234');
+    expect(screen.getByTestId('be22-wake-state')).toHaveTextContent('unlocked');
+
+    const origWithResolvers = Promise.withResolvers;
+    try {
+      // Simulate a runtime without Promise.withResolvers (Safari < 17.4, Chrome < 119)
+      (Promise as unknown as { withResolvers?: unknown }).withResolvers = undefined;
+
+      // Matching durable marker -> wake verification passes and the session stays unlocked
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('be22-wake-state')).toHaveTextContent('unlocked');
+      });
+
+      // A sibling tab advanced the durable lockEpoch and this tab missed the broadcast -> wake must lock
+      await act(async () => {
+        await recordLockEpochEvent(vault().tabKnownLockEpoch, lockEpochEnv);
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('be22-wake-state')).toHaveTextContent('locked');
+        expect(screen.getByTestId('be22-wake-worker')).toHaveTextContent('locked');
+      });
+    } finally {
+      Promise.withResolvers = origWithResolvers;
+    }
+  }, 15_000);
+
+  it('BE2-5: a replacement session wake is not swallowed by an obsolete wake promise that is still waiting on GET /auth/me', async () => {
+    const held: { releaseMe: (() => void) | null } = { releaseMe: null };
+    let holdWakeMe = false;
+    mockBe2Fetch({
+      me: async () => {
+        if (holdWakeMe) {
+          await new Promise<void>((resolve) => {
+            held.releaseMe = resolve;
+          });
+        }
+        return jsonResponse(
+          makeMeFixture({ userId: BE2_USER_ID, vaultStatus: 'present', autoLockMinutes: 15 }),
+        );
+      },
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const lockEpochEnv: LockEpochEnvironment = {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    };
+    const { vault } = renderBe2Provider('be25-wake', lockEpochEnv);
+    await waitFor(() => {
+      expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('locked');
+    });
+    const created = await be2CreateVault(vault, 'be2-replacement-passphrase-1234');
+    expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('unlocked');
+
+    // Old wake: its Me refresh is held, so plaintext stays gated.
+    holdWakeMe = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('unlocking');
+    await waitFor(() => {
+      expect(held.releaseMe).not.toBeNull();
+    });
+
+    // Lock and unlock a replacement session while the old wake is still waiting.
+    await act(async () => {
+      await vault().lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('locked');
+    });
+    const op2 = vault().beginOp();
+    await act(async () => {
+      await vault().unlockPassphrase({
+        passphrase: 'be2-replacement-passphrase-1234',
+        kdf: created.kdf,
+        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: op2.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('unlocked');
+
+    // A sibling advances the durable lockEpoch (missed broadcast) and the replacement session wakes while the old wake
+    // is still pending: the new wake must run its own verification and lock.
+    holdWakeMe = false;
+    await act(async () => {
+      await recordLockEpochEvent(vault().tabKnownLockEpoch, lockEpochEnv);
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be25-wake-worker')).toHaveTextContent('locked');
+    });
+
+    // Releasing the obsolete wake never revives or re-locks anything.
+    await act(async () => {
+      held.releaseMe?.();
+      await sleepReal(20);
+    });
+    expect(screen.getByTestId('be25-wake-state')).toHaveTextContent('locked');
+  }, 15_000);
+
+  it('BE2-6 & BE1-6 (V1): a rejected VAULT_RECOVERING unlock preserves the recovery baseline, and a real sibling VaultProvider.lock cancels recovery, wipes the VK and rejects confirmRecovery', async () => {
+    mockBe2Fetch();
+    const idbFactory = fakeIdb.createFactory();
+    const locksManager = fakeLocks.createLockManager();
+
+    const holder: { a: VaultContextValue | null; b: VaultContextValue | null } = {
+      a: null,
+      b: null,
+    };
+    function ProbeA() {
+      const ctx = useVault();
+      holder.a = ctx;
+      return (
+        <div>
+          <output data-testid="be26-state-a">{ctx.state}</output>
+          <output data-testid="be26-worker-a">{ctx.workerState}</output>
+        </div>
+      );
+    }
+    function ProbeB() {
+      const ctx = useVault();
+      holder.b = ctx;
+      return <output data-testid="be26-state-b">{ctx.state}</output>;
+    }
+    const qcA = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qcB = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <div>
+        <QueryClientProvider client={qcA}>
+          <SessionProvider>
+            <VaultProvider
+              createWorker={makeShimmedWorkerFactory()}
+              lockEpochEnv={{ idbFactory, locksManager }}
+              deviceStoreEnv={{ idbFactory }}
+            >
+              <ProbeA />
+            </VaultProvider>
+          </SessionProvider>
+        </QueryClientProvider>
+        <QueryClientProvider client={qcB}>
+          <SessionProvider>
+            <VaultProvider
+              createWorker={makeShimmedWorkerFactory()}
+              lockEpochEnv={{ idbFactory, locksManager }}
+              deviceStoreEnv={{ idbFactory }}
+            >
+              <ProbeB />
+            </VaultProvider>
+          </SessionProvider>
+        </QueryClientProvider>
+      </div>,
+    );
+    const vaultA = () => {
+      if (!holder.a) throw new Error('probe A has not rendered yet');
+      return holder.a;
+    };
+    const vaultB = () => {
+      if (!holder.b) throw new Error('probe B has not rendered yet');
+      return holder.b;
+    };
+    await waitFor(() => {
+      expect(screen.getByTestId('be26-state-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be26-state-b')).toHaveTextContent('locked');
+    });
+
+    const created = await be2CreateVault(vaultA, 'be2-recovery-passphrase-1234');
+    expect(screen.getByTestId('be26-state-a')).toHaveTextContent('unlocked');
+    await act(async () => {
+      await vaultA().lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be26-state-a')).toHaveTextContent('locked');
+    });
+
+    // Enter `recovering` with a captured baseline E1.
+    const rk0 = created.recovery_keys[0]!;
+    const opRec = vaultA().beginOp();
+    await act(async () => {
+      await vaultA().unlockRecovery({
+        recoveryKey: rk0.display,
+        opGeneration: opRec.opGeneration,
+      });
+      await vaultA().resumeRecovery({
+        wrap: rk0.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opRec.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('be26-state-a')).toHaveTextContent('recovering');
+    const baselineE1 = vaultA().unlockBaseline;
+    expect(baselineE1).not.toBeNull();
+
+    // A passphrase unlock while recovering is rejected and MUST NOT erase the recovery baseline (BE2-6).
+    const recoveringErr: { value: unknown } = { value: null };
+    await act(async () => {
+      try {
+        await vaultA().unlockPassphrase({
+          passphrase: 'be2-recovery-passphrase-1234',
+          kdf: created.kdf,
+          vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
+          privateKeysWrapped: created.private_keys_wrapped,
+          opGeneration: opRec.opGeneration,
+        });
+      } catch (err) {
+        recoveringErr.value = err;
+      }
+    });
+    expect(recoveringErr.value).toMatchObject({ code: 'VAULT_RECOVERING' });
+    expect(vaultA().unlockBaseline).toEqual(baselineE1);
+    expect(vaultA().workerState).toBe('recovering');
+
+    // A real sibling provider locks mid-recovery (durable lockEpoch increment + broadcast) -> A fails closed.
+    await act(async () => {
+      await vaultB().lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be26-state-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be26-worker-a')).toHaveTextContent('locked');
+    });
+    expect(vaultA().unlockBaseline).toBeNull();
+
+    // The cancelled recovery can no longer be confirmed.
+    const confirmErr: { value: unknown } = { value: null };
+    await act(async () => {
+      try {
+        await vaultA().confirmRecovery({ opGeneration: opRec.opGeneration });
+      } catch (err) {
+        confirmErr.value = err;
+      }
+    });
+    expect(confirmErr.value).toMatchObject({ code: 'STALE_GENERATION' });
+    expect(screen.getByTestId('be26-state-a')).toHaveTextContent('locked');
+  }, 20_000);
+
+  it('BE2-7: a post-unlock lockEpoch verification that never settles is cut off at the 5s deadline, the Worker locks and a late completion cannot revive the session', async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const held: { release: (() => void) | null } = { release: null };
     let holdPostUnlockVerify = false;
-    let releasePostUnlockVerify: (() => void) | null = null;
     const idbFactory = fakeIdb.createFactory();
     const baseLockManager = fakeLocks.createLockManager();
     const gatedLockManager: LockManager = {
@@ -4119,7 +4486,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         if (holdPostUnlockVerify) {
           holdPostUnlockVerify = false;
           return new Promise<void>((resolve) => {
-            releasePostUnlockVerify = resolve;
+            held.release = resolve;
           }).then(() => baseLockManager.request(name, { mode: 'exclusive' }, cb));
         }
         return baseLockManager.request(name, { mode: 'exclusive' }, cb);
@@ -4127,266 +4494,121 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       query: () => Promise.resolve({ held: [], pending: [] }),
     } as unknown as LockManager;
 
-    let vaultA!: VaultContextValue;
-    let vaultB!: VaultContextValue;
-    const qcA = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const qcB = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    function ProbeA() {
-      vaultA = useVault();
-      return (
-        <div>
-          <output data-testid="be2-comp-state-a">{vaultA.state}</output>
-          <output data-testid="be2-comp-worker-a">{vaultA.workerState}</output>
-        </div>
-      );
-    }
-    function ProbeB() {
-      vaultB = useVault();
-      return <output data-testid="be2-comp-state-b">{vaultB.state}</output>;
-    }
-
-    render(
-      <div>
-        <QueryClientProvider client={qcA}>
-          <SessionProvider>
-            <VaultProvider
-              createWorker={makeShimmedWorkerFactory()}
-              lockEpochEnv={{ idbFactory, locksManager: gatedLockManager }}
-              deviceStoreEnv={{ idbFactory }}
-            >
-              <ProbeA />
-            </VaultProvider>
-          </SessionProvider>
-        </QueryClientProvider>
-        <QueryClientProvider client={qcB}>
-          <SessionProvider>
-            <VaultProvider
-              createWorker={makeShimmedWorkerFactory()}
-              lockEpochEnv={{ idbFactory, locksManager: baseLockManager }}
-              deviceStoreEnv={{ idbFactory }}
-            >
-              <ProbeB />
-            </VaultProvider>
-          </SessionProvider>
-        </QueryClientProvider>
-      </div>,
-    );
-
+    mockBe2Fetch();
+    const { vault } = renderBe2Provider('be27-deadline', {
+      idbFactory,
+      locksManager: gatedLockManager,
+    });
     await waitFor(() => {
-      expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('locked');
-      expect(screen.getByTestId('be2-comp-state-b')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be27-deadline-state')).toHaveTextContent('locked');
     });
-
-    // 1. BE2-2: Remove `Promise.withResolvers` during wake -> wake verification still runs cleanly and verifies/locks without throwing!
-    const op1 = vaultA.beginOp();
-    let created!: CreateVaultResult;
+    const created = await be2CreateVault(vault, 'be2-deadline-passphrase-1234');
     await act(async () => {
-      created = await vaultA.createVault({
-        passphrase: 'be2-comp-passphrase-1234',
-        opGeneration: op1.opGeneration,
-      });
+      await vault().lockNow();
     });
-    expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('unlocked');
+    await waitFor(() => {
+      expect(screen.getByTestId('be27-deadline-state')).toHaveTextContent('locked');
+    });
 
-    const origWithResolvers = Promise.withResolvers;
+    // Only the timeouts are faked, and only now: everything before this point needs real timers.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      // Simulate older Safari/Chrome runtime without Promise.withResolvers
-      (Promise as unknown as { withResolvers?: unknown }).withResolvers = undefined;
-      await act(async () => {
-        window.dispatchEvent(new Event('focus'));
-      });
-      await waitFor(() => {
-        expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('unlocked');
-      });
-    } finally {
-      Promise.withResolvers = origWithResolvers;
-    }
-
-    // 2. BE2-5: Hold an old wake's Me request in flight, lock and re-unlock a replacement session before the old wake settles,
-    //    then change durable lockEpoch (or policy) and dispatch a new wake -> the replacement session's wake MUST NOT be swallowed!
-    holdWakeMe = true;
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('unlocking');
-
-    // Lock and re-unlock a replacement session while the old wake is still waiting on resolveWakeMe
-    await act(async () => {
-      await vaultA.lockNow();
-    });
-    expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('locked');
-
-    const op2 = vaultA.beginOp();
-    await act(async () => {
-      await vaultA.unlockPassphrase({
-        passphrase: 'be2-comp-passphrase-1234',
-        kdf: created.kdf,
-        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
-        privateKeysWrapped: created.private_keys_wrapped,
-        opGeneration: op2.opGeneration,
-      });
-    });
-    expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('unlocked');
-
-    // Advance durable lockEpoch (missed notification) and trigger wake on the replacement session while old wake is still pending!
-    holdWakeMe = false;
-    await act(async () => {
-      await recordLockEpochEvent(vaultA.tabKnownLockEpoch, {
-        idbFactory,
-        locksManager: baseLockManager,
-      });
-      window.dispatchEvent(new Event('focus'));
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('locked');
-      expect(screen.getByTestId('be2-comp-worker-a')).toHaveTextContent('locked');
-    });
-    const unblockWakeMe: (() => void) | null = resolveWakeMe;
-    if (unblockWakeMe !== null) {
-      (unblockWakeMe as () => void)();
-    }
-
-    // 3. BE2-6 & BE1-6 (V1): Enter `recovering` with baseline E1, call `vaultA.unlockPassphrase` which rejects with `VAULT_RECOVERING`,
-    //    verify `vaultA.unlockBaseline` is STILL E1 (not erased!), then drive a real sibling `vaultB.lockNow()` and verify
-    //    `confirmRecovery` rejects with `STALE_GENERATION`, both `state` and `workerState` settle `'locked'`, and Worker decrypt is refused!
-    const rk0 = created.recovery_keys[0]!;
-    const opRec = vaultA.beginOp();
-    await act(async () => {
-      await vaultA.unlockRecovery({
-        recoveryKey: rk0.display,
-        opGeneration: opRec.opGeneration,
-      });
-      await vaultA.resumeRecovery({
-        wrap: rk0.wrap,
-        privateKeysWrapped: created.private_keys_wrapped,
-        opGeneration: opRec.opGeneration,
-      });
-    });
-    expect(screen.getByTestId('be2-comp-state-a')).toHaveTextContent('recovering');
-    const baselineE1 = vaultA.unlockBaseline;
-    expect(baselineE1).not.toBeNull();
-
-    // Call unlockPassphrase while recovering -> rejects with VAULT_RECOVERING, and MUST preserve baselineE1!
-    let recoveringErr: unknown = null;
-    await act(async () => {
-      try {
-        await vaultA.unlockPassphrase({
-          passphrase: 'be2-comp-passphrase-1234',
+      const op = vault().beginOp();
+      const unlockErr: { value: unknown } = { value: null };
+      const unlockPromise = vault()
+        .unlockPassphrase({
+          passphrase: 'be2-deadline-passphrase-1234',
           kdf: created.kdf,
           vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
           privateKeysWrapped: created.private_keys_wrapped,
-          opGeneration: opRec.opGeneration,
+          opGeneration: op.opGeneration,
+          beforePostMessage: () => {
+            holdPostUnlockVerify = true;
+          },
+        })
+        .catch((err: unknown) => {
+          unlockErr.value = err;
         });
-      } catch (err) {
-        recoveringErr = err;
-      }
-    });
-    expect(recoveringErr).toMatchObject({ code: 'VAULT_RECOVERING' });
-    expect(vaultA.unlockBaseline).toEqual(baselineE1);
-    expect(vaultA.workerState).toBe('recovering');
 
-    // Now drive a real sibling `vaultB.lockNow()` (which increments durable lockEpoch and broadcasts lock)
-    await act(async () => {
-      await vaultB.lockNow();
-    });
-    expect(vaultA.state).toBe('locked');
-    expect(vaultA.workerState).toBe('locked');
-    expect(vaultA.unlockBaseline).toBeNull();
-
-    // Attempting confirmRecovery or Worker decrypt with the old recovery session MUST reject!
-    let confirmAfterSiblingLockErr: unknown = null;
-    await act(async () => {
-      try {
-        await vaultA.confirmRecovery({ opGeneration: opRec.opGeneration });
-      } catch (err) {
-        confirmAfterSiblingLockErr = err;
-      }
-    });
-    expect(confirmAfterSiblingLockErr).toMatchObject({ code: 'STALE_GENERATION' });
-
-    // 4. BE2-7: Hold initial post-unlock baseline verification beyond the 5-second deadline -> must fail closed and lock Worker!
-    vi.useRealTimers();
-    vi.useFakeTimers();
-    vi.setSystemTime(t0 + 50_000);
-    const opTimeout = vaultA.beginOp();
-    let postUnlockTimeoutErr: unknown = null;
-    const unlockTimeoutPromise = vaultA
-      .unlockPassphrase({
-        passphrase: 'be2-comp-passphrase-1234',
-        kdf: created.kdf,
-        vaultKeyWrappedByKek: created.vault_key_wrapped_by_kek,
-        privateKeysWrapped: created.private_keys_wrapped,
-        opGeneration: opTimeout.opGeneration,
-        beforePostMessage: () => {
-          holdPostUnlockVerify = true;
-        },
-      })
-      .catch((err: unknown) => {
-        postUnlockTimeoutErr = err;
+      // Wait (on real timers) until the post-unlock verification is parked; its 5s deadline timer already exists.
+      await act(async () => {
+        for (let i = 0; i < 400 && held.release === null; i += 1) {
+          await new Promise<void>((resolve) => {
+            realSetTimeout(resolve, 5);
+          });
+        }
       });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_200);
-      await unlockTimeoutPromise;
-    });
-    expect(postUnlockTimeoutErr).toMatchObject({ code: 'STALE_GENERATION' });
-    expect(vaultA.state).toBe('locked');
-    expect(vaultA.workerState).toBe('locked');
-    const releaseHeldPostUnlock: (() => void) | null = releasePostUnlockVerify;
-    if (releaseHeldPostUnlock !== null) {
-      (releaseHeldPostUnlock as () => void)();
+      expect(held.release).not.toBeNull();
+      expect(screen.getByTestId('be27-deadline-state')).not.toHaveTextContent('unlocked');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_200);
+      });
+      await act(async () => {
+        await unlockPromise;
+      });
+      expect(unlockErr.value).toMatchObject({ code: 'STALE_GENERATION' });
+    } finally {
+      vi.useRealTimers();
     }
+    await waitFor(() => {
+      expect(screen.getByTestId('be27-deadline-state')).toHaveTextContent('locked');
+      expect(screen.getByTestId('be27-deadline-worker')).toHaveTextContent('locked');
+    });
 
-    // 5. BE1-8 residual: Same-user out-of-order `reloadVaultMeta()` responses:
-    //    Start Request #1 (version 1) and Request #2 (version 5); resolve Request #2 FIRST, then resolve older Request #1.
-    //    Request #1 MUST be dropped by `vaultMetaRequestSeqRef` so `vaultMeta.version` stays 5!
-    vi.useRealTimers();
-    holdVaultGets = true;
-    let req1Result: unknown = undefined;
-    let req2Result: unknown = undefined;
+    // A late completion of the abandoned verification never revives the session.
     await act(async () => {
-      const p1 = vaultA.reloadVaultMeta().then((r) => {
-        req1Result = r;
+      held.release?.();
+      await sleepReal(30);
+    });
+    expect(screen.getByTestId('be27-deadline-state')).toHaveTextContent('locked');
+    expect(screen.getByTestId('be27-deadline-worker')).toHaveTextContent('locked');
+  }, 20_000);
+
+  it('BE1-8 (out-of-order): a stale same-user reloadVaultMeta response never overwrites a newer one', async () => {
+    const pendingVaultGets: Array<(res: Response) => void> = [];
+    mockBe2Fetch({
+      vault: () =>
+        new Promise<Response>((resolve) => {
+          pendingVaultGets.push(resolve);
+        }),
+    });
+    const idbFactory = fakeIdb.createFactory();
+    const { vault } = renderBe2Provider('be18-order', {
+      idbFactory,
+      locksManager: fakeLocks.createLockManager(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('be18-order-state')).toHaveTextContent('locked');
+    });
+
+    const results: {
+      req1: Awaited<ReturnType<VaultContextValue['reloadVaultMeta']>> | undefined;
+      req2: Awaited<ReturnType<VaultContextValue['reloadVaultMeta']>> | undefined;
+    } = { req1: undefined, req2: undefined };
+    const p1 = vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        results.req1 = r;
       });
-      const p2 = vaultA.reloadVaultMeta().then((r) => {
-        req2Result = r;
+    const p2 = vault()
+      .reloadVaultMeta()
+      .then((r) => {
+        results.req2 = r;
       });
-      await Promise.resolve();
+    await waitFor(() => {
       expect(pendingVaultGets).toHaveLength(2);
+    });
 
-      // Resolve newer Request #2 (version 5) FIRST
-      pendingVaultGets[1]!.resolve(
-        jsonResponse({
-          vault_key_id: 'vk:be2-comprehensive',
-          version: 5,
-          kdf: created.kdf,
-          vault_key_wrapped_by_kek: created.vault_key_wrapped_by_kek,
-          x25519_public: 'eDI1NTE5LXB1Yg',
-          ed25519_public: 'ZWQyNTUxOS1wdWI',
-          private_keys_wrapped: created.private_keys_wrapped,
-          recovery_keys_remaining: 10,
-        }),
-      );
+    await act(async () => {
+      // Resolve the newer request #2 (version 5) first, then the older request #1 (version 1).
+      pendingVaultGets[1]!(jsonResponse(be2VaultBody('vk:be2-order', 5)));
       await p2;
-
-      // Now resolve older Request #1 (version 1) -> must be ignored!
-      pendingVaultGets[0]!.resolve(
-        jsonResponse({
-          vault_key_id: 'vk:be2-comprehensive',
-          version: 1,
-          kdf: created.kdf,
-          vault_key_wrapped_by_kek: created.vault_key_wrapped_by_kek,
-          x25519_public: 'eDI1NTE5LXB1Yg',
-          ed25519_public: 'ZWQyNTUxOS1wdWI',
-          private_keys_wrapped: created.private_keys_wrapped,
-          recovery_keys_remaining: 10,
-        }),
-      );
+      pendingVaultGets[0]!(jsonResponse(be2VaultBody('vk:be2-order', 1)));
       await p1;
     });
-    expect((req2Result as { version?: number } | null)?.version).toBe(5);
-    expect(req1Result).toBeNull();
-    expect(vaultA.vaultMeta?.version).toBe(5);
-    holdVaultGets = false;
-  });
+    expect(results.req2?.version).toBe(5);
+    expect(results.req1).toBeNull();
+    expect(vault().vaultMeta?.version).toBe(5);
+  }, 15_000);
 });
