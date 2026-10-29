@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "gen:crypto-vectors": "vitest run lib/crypto/vectors.test.ts"
+    "verify:crypto-vectors": "vitest run lib/crypto/vectors.test.ts lib/crypto/recovery.test.ts",
+    "gen:crypto-vectors": "node -e \"process.env.GEN_CRYPTO_VECTORS='1';process.exit(require('node:child_process').spawnSync(process.execPath,['./node_modules/vitest/vitest.mjs','run','lib/crypto/vectors.test.ts','lib/crypto/recovery.test.ts'],{stdio:'inherit'}).status??1)\""
   },
   "dependencies": {
     "@engram/shared-types": "workspace:*",

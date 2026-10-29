@@ -80,12 +80,12 @@ describe('cấu trúc route (P01-A3)', () => {
     expect(layout).not.toContain('APP_LOCALE');
   });
 
-  it('dev-only /dev/crypto-bench bypasses next-intl only when NODE_ENV !== production while production and other paths go through next-intl', () => {
+  it('dev-only /dev/crypto-bench bypasses next-intl only for the exact pathname (query string allowed, near-misses rejected) when NODE_ENV !== production (FE1-29)', () => {
     intlCalls.length = 0;
-    const makeReq = (pathname: string) =>
+    const makeReq = (pathWithOptionalQuery: string) =>
       ({
-        url: `http://localhost:3040${pathname}`,
-        nextUrl: new URL(`http://localhost:3040${pathname}`),
+        url: `http://localhost:3040${pathWithOptionalQuery}`,
+        nextUrl: new URL(`http://localhost:3040${pathWithOptionalQuery}`),
       }) as unknown as Parameters<typeof middleware>[0];
 
     try {
@@ -94,33 +94,71 @@ describe('cấu trúc route (P01-A3)', () => {
       expect(devBenchRes.headers.get('x-middleware-rewrite')).toBeNull();
       expect(intlCalls).toEqual([]);
 
-      // Non-production other /dev/* and / still go through next-intl
+      // Query string on the exact pathname (/dev/crypto-bench?x=1 and ?mode=harness) ALSO bypasses next-intl
+      // because request.nextUrl.pathname excludes searchParams, allowing harness mode on the same route.
+      const devBenchQueryRes = middleware(makeReq('/dev/crypto-bench?x=1'));
+      expect(devBenchQueryRes.headers.get('x-middleware-rewrite')).toBeNull();
+      const devBenchHarnessRes = middleware(makeReq('/dev/crypto-bench?mode=harness'));
+      expect(devBenchHarnessRes.headers.get('x-middleware-rewrite')).toBeNull();
+      expect(intlCalls).toEqual([]);
+
+      // Near-miss pathnames (/dev/crypto-bench/x, /dev/crypto-benchmark) and other paths do NOT bypass
+      // (proving exact === rather than startsWith)
+      const devBenchSubpathRes = middleware(makeReq('/dev/crypto-bench/x'));
+      expect(devBenchSubpathRes.headers.get('x-middleware-rewrite')).toBe(
+        'http://localhost:3040/en/dev/crypto-bench/x',
+      );
+      const devBenchmarkPrefixRes = middleware(makeReq('/dev/crypto-benchmark'));
+      expect(devBenchmarkPrefixRes.headers.get('x-middleware-rewrite')).toBe(
+        'http://localhost:3040/en/dev/crypto-benchmark',
+      );
       const devOtherRes = middleware(makeReq('/dev/other'));
       expect(devOtherRes.headers.get('x-middleware-rewrite')).toBe(
         'http://localhost:3040/en/dev/other',
       );
       const rootRes = middleware(makeReq('/'));
       expect(rootRes.headers.get('x-middleware-rewrite')).toBe('http://localhost:3040/en');
-      expect(intlCalls).toEqual(['/dev/other', '/']);
+      expect(intlCalls).toEqual([
+        '/dev/crypto-bench/x',
+        '/dev/crypto-benchmark',
+        '/dev/other',
+        '/',
+      ]);
 
-      // Production /dev/crypto-bench goes through next-intl as before
+      // Production /dev/crypto-bench and /dev/crypto-bench?x=1 go through next-intl as before
       vi.stubEnv('NODE_ENV', 'production');
       const prodBenchRes = middleware(makeReq('/dev/crypto-bench'));
       expect(prodBenchRes.headers.get('x-middleware-rewrite')).toBe(
         'http://localhost:3040/en/dev/crypto-bench',
       );
-      expect(intlCalls).toEqual(['/dev/other', '/', '/dev/crypto-bench']);
+      const prodBenchQueryRes = middleware(makeReq('/dev/crypto-bench?x=1'));
+      expect(prodBenchQueryRes.headers.get('x-middleware-rewrite')).toBe(
+        'http://localhost:3040/en/dev/crypto-bench',
+      );
+      expect(intlCalls).toEqual([
+        '/dev/crypto-bench/x',
+        '/dev/crypto-benchmark',
+        '/dev/other',
+        '/',
+        '/dev/crypto-bench',
+        '/dev/crypto-bench',
+      ]);
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it('/dev/crypto-bench page calls notFound() when NODE_ENV === production (advisor-dec-013)', () => {
+  it('/dev/crypto-bench page calls notFound() when NODE_ENV === production and supports ?mode=harness in dev (advisor-dec-013, FE1-10)', async () => {
     expect(() => CryptoBenchPage()).not.toThrow();
+    const harnessRendered = await CryptoBenchPage({ searchParams: { mode: 'harness' } });
+    expect(harnessRendered).toBeTruthy();
 
     vi.stubEnv('NODE_ENV', 'production');
     try {
       expect(() => CryptoBenchPage()).toThrow(/NEXT_HTTP_ERROR_FALLBACK;404|NEXT_NOT_FOUND/);
+      expect(() => CryptoBenchPage({ searchParams: { mode: 'harness' } })).toThrow(
+        /NEXT_HTTP_ERROR_FALLBACK;404|NEXT_NOT_FOUND/,
+      );
     } finally {
       vi.unstubAllEnvs();
     }
