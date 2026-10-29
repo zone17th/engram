@@ -316,6 +316,7 @@ func (c *Config) EffectiveMailSinkDir() string {
 	}
 	return ""
 }
+
 func (c *Config) TrustedProxyContains(ip net.IP) bool {
 	for _, n := range c.TrustedProxyCIDRs {
 		if n.Contains(ip) {
