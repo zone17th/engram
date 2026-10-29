@@ -390,7 +390,7 @@
   },
   "vault": {
     "state": {
-      "noVault": "Chưa tạo kho",
+      "noVault": "Chưa tạo vault",
       "onboarding": "Đang tạo vault…",
       "locked": "Vault đang khoá",
       "unlocking": "Đang mở khoá vault…",
