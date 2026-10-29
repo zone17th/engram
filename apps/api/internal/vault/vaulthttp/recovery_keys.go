@@ -9,7 +9,7 @@ import (
 )
 
 // RecoveryKeysRegenerate xử lý `POST /api/v1/vault/recovery-keys/regenerate` (`vaultRecoveryKeysRegenerate`, plan Task 11, mục 3).
-// Chuỗi middleware trên route: S + C + K + I.Lookup + A("vault.recovery_keys_regenerate") + R("vault_sensitive") + M + I.Claim.
+// Chuỗi middleware trên route: S + C + I.Lookup + K + A("vault.recovery_keys_regenerate") + R("vault_sensitive") + M + I.Claim.
 func (a *API) RecoveryKeysRegenerate(w http.ResponseWriter, r *http.Request) {
 	p, ok := authctx.PrincipalFrom(r.Context())
 	if !ok {
@@ -45,7 +45,7 @@ func (a *API) RecoveryKeysRegenerate(w http.ResponseWriter, r *http.Request) {
 }
 
 // RecoveryKeysRotate xử lý `POST /api/v1/vault/recovery-keys/rotate` (`vaultRecoveryKeysRotate`, plan Task 11, mục 3).
-// Chuỗi middleware trên route: S + C + K + I.Lookup + A("vault.recovery_keys_rotate") + R("vault_sensitive") + M + I.Claim.
+// Chuỗi middleware trên route: S + C + I.Lookup + K + A("vault.recovery_keys_rotate") + R("vault_sensitive") + M + I.Claim.
 func (a *API) RecoveryKeysRotate(w http.ResponseWriter, r *http.Request) {
 	p, ok := authctx.PrincipalFrom(r.Context())
 	if !ok {

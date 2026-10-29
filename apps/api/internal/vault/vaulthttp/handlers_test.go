@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -165,6 +166,55 @@ func newHarness(t *testing.T, opts harnessOpts) *harness {
 		pool:     pool,
 		reg:      reg,
 		logs:     logBuf,
+	}
+}
+
+// withKillSwitch starts a sibling httptest.Server sharing the same Postgres pool, clock, mailer,
+// auth service, and APP_ORIGIN, with VAULT_KEY_MUTATIONS_DISABLED set to `disabled`.
+func (h *harness) withKillSwitch(disabled bool) *harness {
+	h.t.Helper()
+	cfg, err := config.Load()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	cfg.AppOrigin = h.origin
+	cfg.KeyMutationsDisabled = disabled
+	reg, metrics := obs.NewRegistry()
+	logger := slog.New(slog.NewJSONHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	_, _, authAPI, err := compose.NewAuth(cfg, h.pool, nil, h.clk, h.mail, nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	vaultSvc, vaultAPI, err := compose.NewVault(cfg, h.pool, nil, h.clk, h.mail, metrics, nil, logger)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	authn, csrfv, reauth := compose.Adapters(h.authSvc)
+	hnd := httpx.NewRouter(httpx.Deps{
+		Config:           cfg,
+		Logger:           logger,
+		Ready:            func(context.Context) error { return nil },
+		Metrics:          promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}),
+		MetricsCollector: metrics,
+		Authenticator:    authn,
+		CSRF:             csrfv,
+		Reauth:           reauth,
+		MountAPI:         compose.MountAll(authhttp.Mount(authAPI), vaulthttp.Mount(vaultAPI)),
+	})
+	srv := httptest.NewServer(hnd)
+	h.t.Cleanup(srv.Close)
+	return &harness{
+		t:        h.t,
+		srv:      srv,
+		origin:   h.origin,
+		clk:      h.clk,
+		mail:     h.mail,
+		authSvc:  h.authSvc,
+		vaultSvc: vaultSvc,
+		vaultAPI: vaultAPI,
+		pool:     h.pool,
+		reg:      reg,
+		logs:     h.logs,
 	}
 }
 
@@ -720,9 +770,10 @@ func assertNoStoreNoTransformNoETag(t *testing.T, route string, resp testRespons
 }
 
 // TestKillSwitchBlocksAllKRoutesWithoutConsumingRateLimitOrIdempotency covers Task 8 bullet:
-// "mỗi route trong danh sách kill switch trả 503 khi bật" (including T9-T12 stubs) and verifies
-// K sits before Idempotency and UserLimiter so no rate_event or idempotency_key is recorded,
-// while non-K routes (GETs and POST /vault/unlock/recovery) are not blocked by K.
+// "mỗi route trong danh sách kill switch trả 503 khi bật" and advisor-dec-022 (BE1-11):
+// Idempotency.Lookup runs before K, while K runs before RequireReauth, UserLimiter, RequireIfMatch
+// and Idempotency.Claim so fresh mutations on every K route return 503 without recording rate_event
+// or claiming idempotency_key, and non-K routes remain available.
 func TestKillSwitchBlocksAllKRoutesWithoutConsumingRateLimitOrIdempotency(t *testing.T) {
 	h := newHarness(t, harnessOpts{keyMutationsDisabled: true})
 	password := "correct-horse-battery-staple"
@@ -834,6 +885,296 @@ func TestKillSwitchBlocksAllKRoutesWithoutConsumingRateLimitOrIdempotency(t *tes
 	respGet, rawGet := h.doReq(jarA, http.MethodGet, "/api/v1/vault", "", reqOptions{})
 	if respGet.StatusCode != http.StatusNotFound || decodeProblem(t, rawGet).Code != "vault_absent" {
 		t.Fatalf("GET /vault when kill switch on = %d %s, want 404 vault_absent", respGet.StatusCode, rawGet)
+	}
+}
+
+// TestKillSwitchAllowsCommittedReplayPreservesStep2ConflictsAndBlocksStaleReclaim verifies
+// BE1-11 / advisor-dec-022:
+//  1. Committed mutations (create, rewrap, recover/complete, reset) replayed after restarting
+//     with VAULT_KEY_MUTATIONS_DISABLED=true return their stored responses (201/200/204) even
+//     when reauth grants have expired and If-Match is stale, with zero new rate_event, audit_log,
+//     user_notification, idempotency_key claims, RK deletions, or version changes.
+//  2. Step-2 409 responses (idempotency_conflict on mismatched body, idempotency_in_progress on
+//     live in_progress row <= 60s) remain 409 when K is on.
+//  3. A stale in_progress row (> 60s) that would be reclaimed for a new mutation is blocked by K
+//     with 503 vault_mutations_disabled before reauth/rate-limit/If-Match/claim, leaving the stale
+//     DB row untouched and recording no rate_event.
+func TestKillSwitchAllowsCommittedReplayPreservesStep2ConflictsAndBlocksStaleReclaim(t *testing.T) {
+	h := newHarness(t, harnessOpts{keyMutationsDisabled: false})
+	password := "correct-horse-battery-staple"
+	jarA, meA := h.signupUser("killswitch-replay@example.com", password)
+	ctx := context.Background()
+
+	// 1. Commit POST /vault (version 1).
+	createPayload := makeCreatePayload(t, 0x12)
+	createBody := mustJSON(t, createPayload)
+	createKey := "idem-ks-replay-create-0001"
+	respCreate, rawCreate := h.doReq(jarA, http.MethodPost, "/api/v1/vault", createBody, reqOptions{
+		idemKey: createKey,
+	})
+	if respCreate.StatusCode != http.StatusCreated {
+		t.Fatalf("initial POST /vault = %d %s", respCreate.StatusCode, rawCreate)
+	}
+	var created vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(rawCreate), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Commit PUT /vault/kek (version 1 -> 2).
+	rewrapGrant := h.reauthGrant(jarA, "vault.rewrap", password)
+	rewrapPayload := makeRewrapPayload(t, 3, 67108864, 0x22, 0x23)
+	rewrapBody := mustJSON(t, rewrapPayload)
+	rewrapKey := "idem-ks-replay-rewrap-0001"
+	ifMatchV1 := formatIfMatchTag(created.VaultKeyID, 1)
+	respRewrap, rawRewrap := h.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: rewrapKey,
+		ifMatch: ifMatchV1,
+		grant:   rewrapGrant,
+	})
+	if respRewrap.StatusCode != http.StatusOK {
+		t.Fatalf("initial PUT /vault/kek = %d %s", respRewrap.StatusCode, rawRewrap)
+	}
+
+	// 3. Commit POST /vault/recover/complete (version 2 -> 3, consumes slot 1 RK -> 9 remaining).
+	respLookup, rawLookup := h.doReq(jarA, http.MethodPost, "/api/v1/vault/unlock/recovery",
+		`{"lookup_hash":"`+createPayload.RecoveryKeys[0].LookupHash+`"}`, reqOptions{})
+	if respLookup.StatusCode != http.StatusOK {
+		t.Fatalf("lookup RK = %d %s", respLookup.StatusCode, rawLookup)
+	}
+	var lookupRes vault.RecoveryLookupResponse
+	if err := json.Unmarshal([]byte(rawLookup), &lookupRes); err != nil {
+		t.Fatal(err)
+	}
+	recoverGrant := h.reauthGrant(jarA, "vault.recover", password)
+	recoverPayload := makeRecoverCompletePayload(t, lookupRes.RecoveryKeyID, 0x33)
+	recoverBody := mustJSON(t, recoverPayload)
+	recoverKey := "idem-ks-replay-recover-0001"
+	ifMatchV2 := formatIfMatchTag(created.VaultKeyID, 2)
+	respRecover, rawRecover := h.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete", recoverBody, reqOptions{
+		idemKey: recoverKey,
+		ifMatch: ifMatchV2,
+		grant:   recoverGrant,
+	})
+	if respRecover.StatusCode != http.StatusOK {
+		t.Fatalf("initial POST /vault/recover/complete = %d %s", respRecover.StatusCode, rawRecover)
+	}
+
+	// Advance clock by 6 minutes so all previously issued 5m grants are expired while the 10m access token stays valid.
+	h.clk.Advance(6 * time.Minute)
+	now := h.clk.Now()
+
+	// Seed one live in_progress row (claimed 10s ago) and one stale in_progress row (claimed 65s ago)
+	// for PUT /api/v1/vault/kek.
+	liveKey := "idem-ks-live-inprog-0001"
+	staleKey := "idem-ks-stale-inprog-0001"
+	inProgBody := mustJSON(t, makeRewrapPayload(t, 3, 67108864, 0x44, 0x45))
+	inProgFP := httpx.ComputeIdempotencyFingerprint(http.MethodPut, "/api/v1/vault/kek", []byte(inProgBody))
+	liveOwner := uuid.New()
+	staleOwner := uuid.New()
+	staleClaimedAt := now.Add(-65 * time.Second)
+	q := gen.New(h.pool)
+	if _, err := q.ClaimIdempotencyKey(ctx, gen.ClaimIdempotencyKeyParams{
+		UserID:      meA.User.ID,
+		Key:         liveKey,
+		Method:      http.MethodPut,
+		Path:        "/api/v1/vault/kek",
+		RequestHash: inProgFP,
+		OwnerToken:  liveOwner,
+		Now:         pgtype.Timestamptz{Time: now.Add(-10 * time.Second), Valid: true},
+	}); err != nil {
+		t.Fatalf("seed live in_progress: %v", err)
+	}
+	if _, err := q.ClaimIdempotencyKey(ctx, gen.ClaimIdempotencyKeyParams{
+		UserID:      meA.User.ID,
+		Key:         staleKey,
+		Method:      http.MethodPut,
+		Path:        "/api/v1/vault/kek",
+		RequestHash: inProgFP,
+		OwnerToken:  staleOwner,
+		Now:         pgtype.Timestamptz{Time: staleClaimedAt, Valid: true},
+	}); err != nil {
+		t.Fatalf("seed stale in_progress: %v", err)
+	}
+
+	// Restart composition with kill switch ON.
+	hK := h.withKillSwitch(true)
+
+	snapshotCounts := func() (rateEvents, audits, notices, idemRows, rks int, version int32) {
+		t.Helper()
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE user_id = $1`, meA.User.ID).Scan(&rateEvents); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1`, meA.User.ID).Scan(&audits); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1`, meA.User.ID).Scan(&notices); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1`, meA.User.ID).Scan(&idemRows); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_recovery_key WHERE vault_id = $1`, meA.User.ID).Scan(&rks); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT version FROM vault WHERE user_id = $1`, meA.User.ID).Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	re0, au0, no0, id0, rk0, ver0 := snapshotCounts()
+
+	// Replay committed POST /vault under K=on -> 201 with original body.
+	repCreate, rawRepCreate := hK.doReq(jarA, http.MethodPost, "/api/v1/vault", createBody, reqOptions{
+		idemKey: createKey,
+	})
+	if repCreate.StatusCode != http.StatusCreated {
+		t.Fatalf("replay POST /vault with K on = %d %s, want 201", repCreate.StatusCode, rawRepCreate)
+	}
+	var repCreated vault.VaultCreatedResponse
+	if err := json.Unmarshal([]byte(rawRepCreate), &repCreated); err != nil {
+		t.Fatal(err)
+	}
+	if repCreated.VaultKeyID != created.VaultKeyID || repCreated.Version != 1 {
+		t.Fatalf("replay POST /vault response = %+v, want %+v", repCreated, created)
+	}
+
+	// Replay committed PUT /vault/kek under K=on (with expired grant and stale If-Match) -> 200 original body.
+	repRewrap, rawRepRewrap := hK.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", rewrapBody, reqOptions{
+		idemKey: rewrapKey,
+		ifMatch: ifMatchV1,
+		grant:   rewrapGrant,
+	})
+	if repRewrap.StatusCode != http.StatusOK {
+		t.Fatalf("replay PUT /vault/kek with K on = %d %s, want 200", repRewrap.StatusCode, rawRepRewrap)
+	}
+	var repRewrapRes vault.VaultVersionResponse
+	if err := json.Unmarshal([]byte(rawRepRewrap), &repRewrapRes); err != nil || repRewrapRes.Version != 2 {
+		t.Fatalf("replay PUT /vault/kek response = %+v (err=%v), want version=2", repRewrapRes, err)
+	}
+
+	// Replay committed POST /vault/recover/complete under K=on (expired grant, stale If-Match) -> 200 original body.
+	repRecover, rawRepRecover := hK.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete", recoverBody, reqOptions{
+		idemKey: recoverKey,
+		ifMatch: ifMatchV2,
+		grant:   recoverGrant,
+	})
+	if repRecover.StatusCode != http.StatusOK {
+		t.Fatalf("replay POST /vault/recover/complete with K on = %d %s, want 200", repRecover.StatusCode, rawRecover)
+	}
+	var repRecoverRes vault.VaultVersionResponse
+	if err := json.Unmarshal([]byte(rawRepRecover), &repRecoverRes); err != nil || repRecoverRes.Version != 3 {
+		t.Fatalf("replay POST /vault/recover/complete response = %+v (err=%v), want version=3", repRecoverRes, err)
+	}
+
+	// Step-2 409 checks with K on:
+	// (a) done row + different fingerprint -> 409 idempotency_conflict
+	respConflict, rawConflict := hK.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", inProgBody, reqOptions{
+		idemKey: rewrapKey,
+	})
+	if respConflict.StatusCode != http.StatusConflict || decodeProblem(t, rawConflict).Code != "idempotency_conflict" {
+		t.Fatalf("done key with different body under K on = %d %s, want 409 idempotency_conflict", respConflict.StatusCode, rawConflict)
+	}
+
+	// (b) live in_progress row (<= 60s) + same fingerprint -> 409 idempotency_in_progress with Retry-After: 1
+	respInProg, rawInProg := hK.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", inProgBody, reqOptions{
+		idemKey: liveKey,
+	})
+	if respInProg.StatusCode != http.StatusConflict || decodeProblem(t, rawInProg).Code != "idempotency_in_progress" || respInProg.Header.Get("Retry-After") != "1" {
+		t.Fatalf("live in_progress key under K on = %d %s (Retry-After=%q), want 409 idempotency_in_progress", respInProg.StatusCode, rawInProg, respInProg.Header.Get("Retry-After"))
+	}
+
+	// (c) stale in_progress row (> 60s) + same fingerprint -> passes Lookup, hits K -> 503 vault_mutations_disabled, row untouched.
+	respStaleReclaim, rawStaleReclaim := hK.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", inProgBody, reqOptions{
+		idemKey: staleKey,
+	})
+	if respStaleReclaim.StatusCode != http.StatusServiceUnavailable || decodeProblem(t, rawStaleReclaim).Code != "vault_mutations_disabled" {
+		t.Fatalf("stale in_progress reclaim under K on = %d %s, want 503 vault_mutations_disabled", respStaleReclaim.StatusCode, rawStaleReclaim)
+	}
+	staleRow, err := q.GetIdempotencyKey(ctx, gen.GetIdempotencyKeyParams{
+		UserID: meA.User.ID,
+		Key:    staleKey,
+		Now:    pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey staleKey: %v", err)
+	}
+	if staleRow.Status != "in_progress" || staleRow.OwnerToken != staleOwner || !staleRow.ClaimedAt.Time.Equal(staleClaimedAt) {
+		t.Fatalf("stale in_progress row modified under K on: %+v", staleRow)
+	}
+
+	// (d) fresh request under K on -> 503 vault_mutations_disabled with no side effects.
+	respFresh, rawFresh := hK.doReq(jarA, http.MethodPut, "/api/v1/vault/kek", inProgBody, reqOptions{
+		idemKey: "idem-ks-fresh-rewrap-blocked",
+	})
+	if respFresh.StatusCode != http.StatusServiceUnavailable || decodeProblem(t, rawFresh).Code != "vault_mutations_disabled" {
+		t.Fatalf("fresh PUT /vault/kek under K on = %d %s, want 503 vault_mutations_disabled", respFresh.StatusCode, rawFresh)
+	}
+
+	// Verify zero side effects across all replays, 409s, stale reclaim, and fresh 503.
+	re1, au1, no1, id1, rk1, ver1 := snapshotCounts()
+	if re1 != re0 || au1 != au0 || no1 != no0 || id1 != id0 || rk1 != rk0 || ver1 != ver0 {
+		t.Fatalf("side effects changed under K=on: before=(re=%d au=%d no=%d id=%d rk=%d ver=%d) after=(re=%d au=%d no=%d id=%d rk=%d ver=%d)",
+			re0, au0, no0, id0, rk0, ver0, re1, au1, no1, id1, rk1, ver1)
+	}
+
+	// 4. Commit DELETE /vault on h (K=off), then replay on hK (K=on) after grant expiry -> 204 empty, no new side effects.
+	resetGrant := h.reauthGrant(jarA, "vault.reset", password)
+	resetKey := "idem-ks-replay-reset-0001"
+	ifMatchV3 := formatIfMatchTag(created.VaultKeyID, 3)
+	respReset, rawReset := h.doReq(jarA, http.MethodDelete, "/api/v1/vault", "", reqOptions{
+		idemKey: resetKey,
+		ifMatch: ifMatchV3,
+		grant:   resetGrant,
+	})
+	if respReset.StatusCode != http.StatusNoContent || rawReset != "" {
+		t.Fatalf("initial DELETE /vault = %d %q, want 204 empty", respReset.StatusCode, rawReset)
+	}
+	h.clk.Advance(6 * time.Minute)
+	respRef, rawRef := h.doReq(jarA, http.MethodPost, "/api/v1/auth/refresh", "", reqOptions{})
+	if respRef.StatusCode != http.StatusNoContent {
+		t.Fatalf("refresh session = %d %s", respRef.StatusCode, rawRef)
+	}
+
+	var reBeforeResetReplay, auBeforeResetReplay, noBeforeResetReplay, idBeforeResetReplay int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE user_id = $1`, meA.User.ID).Scan(&reBeforeResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1`, meA.User.ID).Scan(&auBeforeResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1`, meA.User.ID).Scan(&noBeforeResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1`, meA.User.ID).Scan(&idBeforeResetReplay); err != nil {
+		t.Fatal(err)
+	}
+
+	repReset, rawRepReset := hK.doReq(jarA, http.MethodDelete, "/api/v1/vault", "", reqOptions{
+		idemKey: resetKey,
+		ifMatch: ifMatchV3,
+		grant:   resetGrant,
+	})
+	if repReset.StatusCode != http.StatusNoContent || rawRepReset != "" {
+		t.Fatalf("replay DELETE /vault with K on = %d %q, want 204 empty", repReset.StatusCode, rawRepReset)
+	}
+
+	var reAfterResetReplay, auAfterResetReplay, noAfterResetReplay, idAfterResetReplay int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE user_id = $1`, meA.User.ID).Scan(&reAfterResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1`, meA.User.ID).Scan(&auAfterResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1`, meA.User.ID).Scan(&noAfterResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1`, meA.User.ID).Scan(&idAfterResetReplay); err != nil {
+		t.Fatal(err)
+	}
+	if reAfterResetReplay != reBeforeResetReplay || auAfterResetReplay != auBeforeResetReplay ||
+		noAfterResetReplay != noBeforeResetReplay || idAfterResetReplay != idBeforeResetReplay {
+		t.Fatalf("side effects on DELETE /vault replay under K=on")
 	}
 }
 

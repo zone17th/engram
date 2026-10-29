@@ -13,21 +13,23 @@ import (
 // của plan mục 2.3 & mục 3:
 //
 //   - GET /vault (`vaultGet`): S
-//   - POST /vault (`vaultCreate`): S + C + K + I
-//   - PUT /vault/kek (`vaultRewrap`, T9): S + C + K + I.Lookup + A(`vault.rewrap`) + R(`vault_sensitive`) + M + I.Claim
-//   - DELETE /vault (`vaultReset`, T12): S + C(AllowEmptyDelete) + K + I.Lookup + A(`vault.reset`) + R(`vault_sensitive`) + M + I.Claim
+//   - POST /vault (`vaultCreate`): S + C + I.Lookup + K + I.Claim
+//   - PUT /vault/kek (`vaultRewrap`, T9): S + C + I.Lookup + K + A(`vault.rewrap`) + R(`vault_sensitive`) + M + I.Claim
+//   - DELETE /vault (`vaultReset`, T12): S + C(AllowEmptyDelete) + I.Lookup + K + A(`vault.reset`) + R(`vault_sensitive`) + M + I.Claim
 //   - GET /vault/recovery-keys (`vaultRecoveryKeysGet`): S
 //   - POST /vault/unlock/recovery (`vaultRecoveryLookup`, T10): S + C + R(`vault_recovery_lookup`)
-//   - POST /vault/recover/complete (`vaultRecoverComplete`, T10): S + C + K + I.Lookup + A(`vault.recover`) + R(`vault_recovery_complete`) + M + I.Claim
-//   - POST /vault/recovery-keys/regenerate (`vaultRecoveryKeysRegenerate`, T11): S + C + K + I.Lookup + A(`vault.recovery_keys_regenerate`) + R(`vault_sensitive`) + M + I.Claim
-//   - POST /vault/recovery-keys/rotate (`vaultRecoveryKeysRotate`, T11): S + C + K + I.Lookup + A(`vault.recovery_keys_rotate`) + R(`vault_sensitive`) + M + I.Claim
+//   - POST /vault/recover/complete (`vaultRecoverComplete`, T10): S + C + I.Lookup + K + A(`vault.recover`) + R(`vault_recovery_complete`) + M + I.Claim
+//   - POST /vault/recovery-keys/regenerate (`vaultRecoveryKeysRegenerate`, T11): S + C + I.Lookup + K + A(`vault.recovery_keys_regenerate`) + R(`vault_sensitive`) + M + I.Claim
+//   - POST /vault/recovery-keys/rotate (`vaultRecoveryKeysRotate`, T11): S + C + I.Lookup + K + A(`vault.recovery_keys_rotate`) + R(`vault_sensitive`) + M + I.Claim
 //   - GET /vault/passkeys (`vaultPasskeysList`): S
 //
-// Lưu ý về vị trí công tắc dừng K (`VAULT_KEY_MUTATIONS_DISABLED`):
-// K được đặt ngay sau bước 1 (`RequireOrigin -> RequireSession -> RequireCSRF -> RequireJSONContent`)
-// và TRƯỚC `Idempotency.Lookup`, `RequireReauth(action)`, `UserLimiter.Middleware(scope)`, `RequireIfMatch`
-// và `Idempotency.Claim`. Nhờ đó, khi công tắc bật (503 `vault_mutations_disabled`), request không tiêu tốn
-// sự kiện rate limit (`rate_event`) và không tạo bản ghi claim idempotency (`idempotency_key`).
+// Lưu ý về vị trí công tắc dừng K (`VAULT_KEY_MUTATIONS_DISABLED`, advisor-dec-022):
+// `Idempotency.Lookup` (plan mục 2.3 bước 2) chạy TRƯỚC K để replay của mutation đã commit (`done` + cùng
+// fingerprint) trả về response gốc và các phản hồi `409 idempotency_conflict` / `409 idempotency_in_progress`
+// giữ nguyên như bước 2. K được đặt ngay SAU `Idempotency.Lookup` và TRƯỚC `RequireReauth(action)`,
+// `UserLimiter.Middleware(scope)`, `RequireIfMatch` và `Idempotency.Claim`. Nhờ đó, mọi request thực hiện
+// mutation mới (chưa có hàng còn hạn, hoặc giành lại hàng `in_progress` quá 60 giây) nhận `503 vault_mutations_disabled`
+// mà không tiêu tốn `rate_event` và không tạo/cập nhật bản ghi claim `idempotency_key`.
 //
 // Lưu ý cho Task 13 (WebAuthn passkeys):
 // 5 operation WebAuthn (`POST /vault/passkeys/register/options`, `POST /vault/passkeys` [cột K],
@@ -153,8 +155,8 @@ type idempotentRouteSpec struct {
 // chainIdempotentMutation ghép chuỗi middleware cho route có Idempotency-Key theo đúng thứ tự
 // của plan mục 2.3 + công tắc dừng K (nếu `spec.killSwitch == true`):
 //  1. `RequireOrigin` -> `RequireSession` -> `RequireCSRF` -> `RequireJSONContent` (hoặc `RequireJSONContentExceptEmptyDelete`)
-//     1b. `KillSwitch` (`503 vault_mutations_disabled` khi bật — đặt trước Lookup/RateLimit/Claim để không ghi rate_event hay idempotency_key)
-//  2. `Idempotency.Lookup`
+//  2. `Idempotency.Lookup` (trả lại response đã commit hoặc 409 conflict/in_progress trước K)
+//     2b. `KillSwitch` (`503 vault_mutations_disabled` khi bật — đặt ngay sau Lookup và trước Reauth/RateLimit/If-Match/Claim)
 //  3. `RequireReauth(action)` (nếu `reauthAction != ""`)
 //  4. `UserLimiter.Middleware(scope)` (nếu `rateLimitScope != ""`)
 //  5. `RequireIfMatch` (nếu `requireIfMatch == true`)
@@ -172,10 +174,10 @@ func (a *API) chainIdempotentMutation(spec idempotentRouteSpec, handler http.Han
 	if spec.reauthAction != "" {
 		h = httpx.RequireReauth(spec.deps.Reauth, spec.reauthAction)(h)
 	}
-	h = a.idem.Lookup(h)
 	if spec.killSwitch && a.killSwitch != nil {
 		h = a.killSwitch(h)
 	}
+	h = a.idem.Lookup(h)
 	if spec.allowEmptyDelete {
 		h = httpx.RequireJSONContentExceptEmptyDelete(h)
 	} else {

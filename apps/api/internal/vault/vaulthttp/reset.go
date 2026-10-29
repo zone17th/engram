@@ -9,7 +9,7 @@ import (
 )
 
 // Reset xử lý `DELETE /api/v1/vault` (`vaultReset`, plan Task 12, mục 3).
-// Chuỗi middleware trên route: S + C(AllowEmptyDelete) + K + I.Lookup + A("vault.reset") + R("vault_sensitive") + M + I.Claim.
+// Chuỗi middleware trên route: S + C(AllowEmptyDelete) + I.Lookup + K + A("vault.reset") + R("vault_sensitive") + M + I.Claim.
 func (a *API) Reset(w http.ResponseWriter, r *http.Request) {
 	p, ok := authctx.PrincipalFrom(r.Context())
 	if !ok {

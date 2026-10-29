@@ -37,7 +37,7 @@ func (a *API) RecoveryLookup(w http.ResponseWriter, r *http.Request) {
 }
 
 // RecoverComplete xử lý `POST /api/v1/vault/recover/complete` (`vaultRecoverComplete`, plan Task 10, mục 3).
-// Chuỗi middleware trên route: S + C + K + I.Lookup + A("vault.recover") + R("vault_recovery_complete") + M + I.Claim.
+// Chuỗi middleware trên route: S + C + I.Lookup + K + A("vault.recover") + R("vault_recovery_complete") + M + I.Claim.
 func (a *API) RecoverComplete(w http.ResponseWriter, r *http.Request) {
 	p, ok := authctx.PrincipalFrom(r.Context())
 	if !ok {

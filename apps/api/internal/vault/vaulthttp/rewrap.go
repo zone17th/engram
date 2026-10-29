@@ -10,7 +10,7 @@ import (
 )
 
 // Rewrap xử lý `PUT /api/v1/vault/kek` (`vaultRewrap`, plan Task 9, mục 3).
-// Chuỗi middleware trên route: S + C + K + I.Lookup + A("vault.rewrap") + R("vault_sensitive") + M + I.Claim.
+// Chuỗi middleware trên route: S + C + I.Lookup + K + A("vault.rewrap") + R("vault_sensitive") + M + I.Claim.
 func (a *API) Rewrap(w http.ResponseWriter, r *http.Request) {
 	p, ok := authctx.PrincipalFrom(r.Context())
 	if !ok {

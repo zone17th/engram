@@ -17,9 +17,11 @@ import (
 //   - POST /vault/passkeys (sẽ gắn ở Task 13 thông qua hook trên router)
 //
 // Khi `disabled == true` (`VAULT_KEY_MUTATIONS_DISABLED=true`), middleware trả ngay
-// `503 vault_mutations_disabled`. Đặt ngay sau bước xác thực phiên + CSRF (S+C) và TRƯỚC
-// Idempotency.Lookup, RequireReauth, UserLimiter, RequireIfMatch và Idempotency.Claim
-// để không tiêu tốn rate-limit event và không claim khoá idempotency.
+// `503 vault_mutations_disabled`. Theo advisor-dec-022 (plan mục 2.3 bước 2), đặt ngay SAU
+// `Idempotency.Lookup` (để replay của mutation đã commit trả lại response đã lưu và các lỗi 409
+// ở bước 2 giữ nguyên) và TRƯỚC `RequireReauth`, `UserLimiter`, `RequireIfMatch` và `Idempotency.Claim`
+// để mọi request tạo mutation mới hoặc giành lại hàng `in_progress` quá hạn (> 60s) bị chặn với 503
+// mà không tiêu tốn rate-limit event và không claim khoá idempotency.
 func RequireKeyMutationsEnabled(disabled bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
