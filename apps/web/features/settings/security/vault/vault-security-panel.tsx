@@ -49,12 +49,20 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const refetchMeRef = useRef(refetchMe);
   refetchMeRef.current = refetchMe;
   const nullTransitionRef = useRef(false);
+  // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
   const suppressNextNullReloadRef = useRef(false);
 
   const handleBeforeResetCommit = useCallback(() => {
     suppressNextNullReloadRef.current = true;
   }, []);
 
+  // R4-4: Clear the suppress flag and surface the retry control if refetchMe fails after 204
+  // TODO(sync-vaultweb): drop onResetMeRefreshFailed/suppress once the provider owns the reset transition
+  const handleResetMeRefreshFailed = useCallback(() => {
+    suppressNextNullReloadRef.current = false;
+    nullTransitionRef.current = false;
+    setVaultMetaLoadFailed(true);
+  }, []);
   const handleRetryVaultMetaReload = useCallback(() => {
     nullTransitionRef.current = true;
     setVaultMetaLoadFailed(false);
@@ -77,11 +85,13 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
     if (!isVaultPresent || vault.vaultMeta !== null) {
       nullTransitionRef.current = false;
       if (!isVaultPresent) {
+        // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
         suppressNextNullReloadRef.current = false;
       }
       setVaultMetaLoadFailed(false);
       return;
     }
+    // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
     if (suppressNextNullReloadRef.current) return;
     if (nullTransitionRef.current) return;
     nullTransitionRef.current = true;
@@ -184,16 +194,18 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         </AuthStatus>
       )}
 
-      {/* 1. Change Passphrase Card */}
-      <div className="card mb-3 p-5" data-testid="vault-passphrase-card">
-        <div className="flex flex-wrap items-start gap-4">
-          <div className="min-w-0 flex-1 basis-[240px]">
-            <div className="mb-1 text-[15px] font-semibold text-body">
-              {t('passphrase.cardTitle')}
-            </div>
-            <p className="m-0 text-[13px] text-muted">{t('passphrase.cardBody')}</p>
-          </div>
-          <Button
+      {isVaultPresent && (
+        <>
+          {/* 1. Change Passphrase Card */}
+          <div className="card mb-3 p-5" data-testid="vault-passphrase-card">
+            <div className="flex flex-wrap items-start gap-4">
+              <div className="min-w-0 flex-1 basis-[240px]">
+                <div className="mb-1 text-[15px] font-semibold text-body">
+                  {t('passphrase.cardTitle')}
+                </div>
+                <p className="m-0 text-[13px] text-muted">{t('passphrase.cardBody')}</p>
+              </div>
+              <Button
             type="button"
             variant="tertiary"
             className="ml-auto"
@@ -381,7 +393,8 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           )}
         </div>
       </div>
-
+        </>
+      )}
       {toastMessage && (
         <Toast
           message={toastMessage}
@@ -414,7 +427,14 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
 
       <ResetVaultDialog
         open={resetDialogOpen}
-        onOpenChange={setResetDialogOpen}
+        onOpenChange={(nextOpen) => {
+          setResetDialogOpen(nextOpen);
+          if (!nextOpen && isVaultPresent && vault.vaultMeta === null) {
+            // R4-4: If the reset dialog closes while Me is still `present` and vaultMeta is null,
+            // ensure the suppress flag is cleared and the retry button is available.
+            handleResetMeRefreshFailed();
+          }
+        }}
         vaultMeta={vault.vaultMeta}
         remainingRecoveryKeys={remainingKeys}
         passkeysCount={passkeysCount}
@@ -422,6 +442,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
         onSuccessToast={setToastMessage}
         onBeforeResetCommit={handleBeforeResetCommit}
+        onResetMeRefreshFailed={handleResetMeRefreshFailed}
       />
     </div>
   );

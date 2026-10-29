@@ -447,11 +447,15 @@ export function RecoveryKeysDialog({
         if (!nextOpen) handleClose();
       }}
     >
-      <DialogContent id={dialogId} aria-labelledby={dialogTitleId}>
+      <DialogContent
+        id={dialogId}
+        aria-labelledby={dialogTitleId}
+        className={isRotate ? 'w-[min(620px,94vw)]' : 'w-[min(600px,94vw)]'}
+      >
         <div
           className="panel"
           style={{
-            width: isRotate ? 'min(620px, 94vw)' : 'min(600px, 94vw)',
+            width: '100%',
             maxHeight: '90vh',
             overflow: 'auto',
             padding: '28px',

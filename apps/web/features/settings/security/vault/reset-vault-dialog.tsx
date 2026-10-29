@@ -30,7 +30,10 @@ export interface ResetVaultDialogProps {
   canChangePassphraseNow: boolean;
   onSwitchToChangePassphrase?: () => void;
   onSuccessToast?: (message: string) => void;
+  // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
   onBeforeResetCommit?: () => void;
+  // TODO(sync-vaultweb): drop onResetMeRefreshFailed/suppress once the provider owns the reset transition
+  onResetMeRefreshFailed?: () => void;
 }
 
 type ResetStep =
@@ -57,6 +60,7 @@ export function ResetVaultDialog({
   onSwitchToChangePassphrase,
   onSuccessToast,
   onBeforeResetCommit,
+  onResetMeRefreshFailed,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth, refetchMe } = useSession();
@@ -238,13 +242,12 @@ export function ResetVaultDialog({
       // so `VaultProvider.reloadVaultMeta()` does not run a second 404 purge in the acting tab, and so
       // the purge executes reliably even if the panel unmounts mid-DELETE, `GET /vault` fails non-404,
       // or `refetchMe()` flips `me.vault.status` to `'absent'` first.
+      // TODO(sync-vaultweb): drop onBeforeResetCommit/suppress and re-check that the dialog purge is the only acting-tab purge once the provider owns it
       // R1-6: Wrap post-commit steps after 204 in try/catch so a transient failure after DELETE never leaves step 4 showing an error.
+      // R4-5: Start the purge transaction first, run local lock and broadcast immediately so the Worker
+      // drops VK and peer tabs hear about the reset without waiting on IDB, then await the purge before refetchMe.
       onBeforeResetCommit?.();
-      try {
-        await purgeDeviceKeysOnRevoked(me?.user.id);
-      } catch {
-        // Best-effort DevKey purge after 204
-      }
+      const purgePromise = purgeDeviceKeysOnRevoked(me?.user.id);
       try {
         await vault.lock({ broadcast: false, reason: 'vault_reset' });
       } catch {
@@ -260,13 +263,30 @@ export function ResetVaultDialog({
       reauth.clearGrant();
       setStep('s5_done');
       try {
+        await purgePromise;
+      } catch {
+        // Best-effort DevKey purge after 204
+      }
+      try {
         onSuccessToast?.(t('reset.toastDone'));
         await refetchMe();
       } catch {
-        // Best-effort Me refresh after 204
+        // R4-4: Clear the suppress flag and surface the retry control if refetchMe fails after 204
+        onResetMeRefreshFailed?.();
       }
     },
-    [clearInputs, me?.user.id, onBeforeResetCommit, onSuccessToast, reauth, refetchMe, t, vault, vaultMeta],
+    [
+      clearInputs,
+      me?.user.id,
+      onBeforeResetCommit,
+      onResetMeRefreshFailed,
+      onSuccessToast,
+      reauth,
+      refetchMe,
+      t,
+      vault,
+      vaultMeta,
+    ],
   );
 
   const handleConfirmReset = useCallback(async () => {
@@ -367,10 +387,10 @@ export function ResetVaultDialog({
         if (!nextOpen) handleClose();
       }}
     >
-      <DialogContent id="resetDlg" aria-labelledby="resetDlgTitle">
+      <DialogContent id="resetDlg" aria-labelledby="resetDlgTitle" className="w-[min(600px,94vw)]">
         <div
           className="panel"
-          style={{ width: 'min(600px, 94vw)', maxHeight: '90vh', overflow: 'auto', padding: '28px' }}
+          style={{ width: '100%', maxHeight: '90vh', overflow: 'auto', padding: '28px' }}
         >
           <DialogHeader
             title={<span id="resetDlgTitle">{t('reset.dialogTitle')}</span>}
@@ -459,13 +479,14 @@ export function ResetVaultDialog({
                 </div>
               </div>
 
-              <DialogFooter>
+              <DialogFooter className="min-w-0 flex-wrap">
                 <Button type="button" variant="tertiary" onClick={handleClose}>
                   {t('reset.step1Cancel')}
                 </Button>
                 <Button
                   type="button"
                   variant="secondary"
+                  className="min-w-0 whitespace-normal text-center"
                   onClick={() => setStep('s2_backup')}
                 >
                   {t('reset.step1Next')}
