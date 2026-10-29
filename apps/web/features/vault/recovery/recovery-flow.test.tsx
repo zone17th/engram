@@ -3193,4 +3193,56 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 30_000);
+
+  for (const locale of ['en', 'vi'] as const) {
+    it(`FE3-1 (${locale}): while the wake gate says password entry is paused the Step 4A password field is not editable, and it is editable again once access is verified`, async () => {
+      const shim = makeTestShim();
+      installRecoveryRaceFetchMock();
+      const { lockEpochEnv, wake } = makeHeldWakeLockEpochEnv();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale,
+        workerFactory: () => shim.port,
+        lockEpochEnv,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveRecoveryToStep4A(() => vaultCtx);
+      const passwordInput = screen.getByTestId('recovery-step4-reauth-password-input') as HTMLInputElement;
+      expect(passwordInput).not.toBeDisabled();
+
+      wake.hold = true;
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(vaultCtx.state).toBe('unlocking');
+
+      // The status promises that password entry is paused: the field is present but cannot be edited.
+      const status = screen.getByTestId('recovery-wake-gate-status');
+      const messages = locale === 'vi' ? viMessages : enMessages;
+      expect(status).toHaveTextContent(messages.recovery.wakeGate.title);
+      expect(status.textContent ?? '').toContain(
+        locale === 'vi' ? 'việc nhập mật khẩu tạm dừng' : 'password entry is paused',
+      );
+      expect(status.textContent ?? '').not.toMatch(/password fields stay hidden|các ô mật khẩu được ẩn/);
+      expect(passwordInput).toBeDisabled();
+      expect(screen.getByTestId('recovery-step4-reauth-password-submit')).toBeDisabled();
+
+      // Verified again: the status goes away and the same field accepts input.
+      await act(async () => {
+        wake.release?.();
+      });
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('unlocked');
+      });
+      expect(screen.queryByTestId('recovery-wake-gate-status')).not.toBeInTheDocument();
+      expect(passwordInput).not.toBeDisabled();
+      fireEvent.change(passwordInput, { target: { value: 'typed-after-verification' } });
+      expect(passwordInput.value).toBe('typed-after-verification');
+
+      shim.close();
+    }, 30_000);
+  }
 });

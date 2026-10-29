@@ -2493,7 +2493,7 @@ export function VaultRecoveryFlow() {
                     label={t('step4Reauth.passwordLabel')}
                     autoComplete="current-password"
                     value={step4ReauthPassword}
-                    disabled={reauth.submitting || generatingRegenKeys}
+                    disabled={reauth.submitting || generatingRegenKeys || regenWakeGated}
                     onChange={(e) => setStep4ReauthPassword(e.target.value)}
                     wrapperClassName="mb-3"
                     data-vault-secret="true"

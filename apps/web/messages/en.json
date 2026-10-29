@@ -628,7 +628,7 @@
     },
     "wakeGate": {
       "title": "Checking that your vault is still unlocked…",
-      "body": "Replacement keys and password fields stay hidden until this check finishes. Your recovery progress is kept."
+      "body": "Replacement keys stay hidden and password entry is paused until this check finishes. Your recovery progress is kept."
     },
     "committedRecheck": {
       "verifyingTitle": "Recovery completed — confirming your vault…",

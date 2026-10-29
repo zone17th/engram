@@ -628,7 +628,7 @@
     },
     "wakeGate": {
       "title": "Đang kiểm tra vault vẫn đang mở…",
-      "body": "Recovery key mới và các ô mật khẩu được ẩn cho tới khi kiểm tra xong. Tiến trình khôi phục vẫn được giữ."
+      "body": "Recovery key mới được ẩn và việc nhập mật khẩu tạm dừng cho tới khi kiểm tra xong. Tiến trình khôi phục vẫn được giữ."
     },
     "committedRecheck": {
       "verifyingTitle": "Đã hoàn tất khôi phục — đang xác nhận vault…",
