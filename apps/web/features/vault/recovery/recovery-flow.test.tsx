@@ -3194,6 +3194,128 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     shim.close();
   }, 30_000);
 
+  it('FE4-1: a successor B that completed while the old completion A was held keeps its route and prepared regeneration UI when A is released and its recheck GET fails', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    // Successor B (same account) starts while A's 200 is still held and completes through to its prepared replacement keys.
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
+    });
+    await submitRecoveryStep2();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    await waitFor(() => {
+      expect(fetchState.completeReleases).toHaveLength(2);
+    });
+    await act(async () => {
+      fetchState.completeReleases[1]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+    expect(vaultCtx.state).toBe('unlocked');
+    const publishedBeforeA = published.length;
+    routerMocks.replace.mockClear();
+
+    // The old completion A is released and the recheck GET it would start fails.
+    fetchState.vaultGetFailure = { status: 503, code: 'service_unavailable' };
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await settle();
+
+    // No obsolete notice or actions over B, and B's route, prepared keys and session are unchanged.
+    expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(published.slice(publishedBeforeA)).toEqual([]);
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    expect(vaultCtx.state).toBe('unlocked');
+
+    shim.close();
+  }, 30_000);
+
+  it('FE4-1: a vault B announced while the old recheck GET is held removes the verifying notice, and the failing GET never brings old Check again / Go to unlock controls back', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveToLockedCommittedRecovery(fetchState, () => vaultCtx);
+
+    fetchState.vaultGetHolds = 1;
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(fetchState.vaultGetReleases).toHaveLength(1);
+    });
+    expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+      'data-phase',
+      'verifying',
+    );
+
+    // While the recheck waits, a sibling announces the recreated vault B.
+    await act(async () => {
+      vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+    });
+    const publishedAfterTransition = published.length;
+    routerMocks.replace.mockClear();
+
+    // Then the stalled request fails: the old recovery's feedback is obsolete and must not turn into actions.
+    fetchState.vaultGetFailure = 'network';
+    await act(async () => {
+      fetchState.vaultGetReleases[0]?.();
+    });
+    await settle();
+    expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(published.slice(publishedAfterTransition)).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+
+    shim.close();
+  }, 30_000);
+
   for (const locale of ['en', 'vi'] as const) {
     it(`FE3-1 (${locale}): while the wake gate says password entry is paused the Step 4A password field is not editable, and it is editable again once access is verified`, async () => {
       const shim = makeTestShim();

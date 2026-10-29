@@ -248,6 +248,9 @@ export function VaultRecoveryFlow() {
   // BE4-1: counts the recovery attempts (lookup, completion, cancel, restart) that took over this flow. A committed-recovery
   // reconciliation captures it before its GET /vault and drops its effects when a successor attempt owns the UI by then.
   const recoveryAttemptEpochRef = useRef(0);
+  // Bumped only by attempts that begin a new recovery (RK lookup, complete POST); a cancel/restart does not take ownership of
+  // an earlier committed outcome (FE4-1).
+  const recoverySuccessorEpochRef = useRef(0);
   // FE1-4: async failures re-enable the form after it was disabled while pending; focus is restored afterwards.
   const refocusRecoveryKeyAfterErrorRef = useRef(false);
   const step4ErrorRef = useRef<HTMLDivElement>(null);
@@ -317,8 +320,11 @@ export function VaultRecoveryFlow() {
   ]);
 
   // A new attempt owns the flow: a reconciliation still waiting for its GET must not touch the successor's UI.
-  const startNewRecoveryAttempt = useCallback(() => {
+  const startNewRecoveryAttempt = useCallback((startsRecovery = false) => {
     recoveryAttemptEpochRef.current += 1;
+    if (startsRecovery) {
+      recoverySuccessorEpochRef.current += 1;
+    }
     setCommittedRecheck(null);
   }, []);
 
@@ -615,7 +621,7 @@ export function VaultRecoveryFlow() {
       // Clear RK input immediately right when unlockRecovery is invoked (Task 17A requirement #5).
       clearRecoveryKeyInputImmediate();
       const lookupToken = ++lookupBusyTokenRef.current;
-      startNewRecoveryAttempt();
+      startNewRecoveryAttempt(true);
       setLookingUpKey(true);
 
       const isStep2OpCurrent = () =>
@@ -761,15 +767,25 @@ export function VaultRecoveryFlow() {
   // nothing is published (no unverified `vault_changed`) and no secret surface is reopened.
   // BE4-5: the version published is the one just read from the server, never lower than the committed one.
   const reconcileCommittedRecovery = useCallback(
-    async (outcome: CommittedRecoveryOutcome, committedVersion: number) => {
+    async (
+      outcome: CommittedRecoveryOutcome,
+      committedVersion: number,
+      originSuccessorEpoch: number = recoverySuccessorEpochRef.current,
+    ) => {
       const isOriginAccount = () =>
         isMountedRef.current &&
         (outcome.userId === null || currentUserIdRef.current === outcome.userId);
       if (!isOriginAccount()) {
         return;
       }
+      // FE4-1: a successor recovery that began before this response arrived already owns the feedback and the flow.
+      const succeeded = () => recoverySuccessorEpochRef.current !== originSuccessorEpoch;
+      if (succeeded()) {
+        return;
+      }
       const attemptEpoch = recoveryAttemptEpochRef.current;
-      const ownsFlow = () => isOriginAccount() && recoveryAttemptEpochRef.current === attemptEpoch;
+      const ownsFlow = () =>
+        isOriginAccount() && !succeeded() && recoveryAttemptEpochRef.current === attemptEpoch;
       // A vault-identity change announced locally or by a sibling tab while the read is pending outdates its answer.
       let identityTransitioned = false;
       const unsubscribeTransitions = subscribeVaultBroadcast((message) => {
@@ -803,7 +819,11 @@ export function VaultRecoveryFlow() {
         return;
       }
       if (verificationFailed) {
-        setCommittedRecheck({ ...recheckBase, phase: 'recheck_needed' });
+        // FE4-1: the same ownership checks as a verified read; an obsolete notice is removed, never turned into actions.
+        const outdated =
+          identityTransitioned ||
+          SUCCESSOR_WORKER_STATES.includes(vaultRef.current.getClient().getState());
+        setCommittedRecheck(outdated ? null : { ...recheckBase, phase: 'recheck_needed' });
         return;
       }
       setCommittedRecheck(null);
@@ -850,7 +870,9 @@ export function VaultRecoveryFlow() {
       }
 
       const completeToken = ++completeBusyTokenRef.current;
-      startNewRecoveryAttempt();
+      startNewRecoveryAttempt(true);
+      // FE4-1: the attempt this completion belongs to; any later lookup/complete is a successor that owns the feedback.
+      const originSuccessorEpoch = recoverySuccessorEpochRef.current;
       setCompletingRecovery(true);
       setStep3Error(null);
       setStep3RateDeadline(null);
@@ -869,7 +891,7 @@ export function VaultRecoveryFlow() {
         if (!isBundleCurrent()) {
           // FE1-7: POST /vault/recover/complete succeeded on the server (rewrapping under the new passphrase
           // and consuming the RK) while this tab locked or the flow was replaced.
-          await reconcileCommittedRecovery(bundle, completeRes.version);
+          await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
           return;
         }
 
@@ -879,7 +901,7 @@ export function VaultRecoveryFlow() {
         });
 
         if (!isBundleCurrent()) {
-          await reconcileCommittedRecovery(bundle, completeRes.version);
+          await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
           return;
         }
 
@@ -896,7 +918,7 @@ export function VaultRecoveryFlow() {
         try {
           const rkStatus = await fetchRecoveryKeysStatus();
           if (!isBundleCurrent()) {
-            await reconcileCommittedRecovery(bundle, completeRes.version);
+            await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
             return;
           }
           setRemainingCount(rkStatus.remaining);
@@ -904,7 +926,7 @@ export function VaultRecoveryFlow() {
           setEmptySlots(sortedEmpty);
         } catch {
           if (!isBundleCurrent()) {
-            await reconcileCommittedRecovery(bundle, completeRes.version);
+            await reconcileCommittedRecovery(bundle, completeRes.version, originSuccessorEpoch);
             return;
           }
           setRemainingCount(9);
@@ -917,7 +939,7 @@ export function VaultRecoveryFlow() {
         if (!isBundleCurrent()) {
           if (committedVersion !== null) {
             // BE3-8: the lock was detected while confirming an already committed recovery; do not drop it silently.
-            await reconcileCommittedRecovery(bundle, committedVersion);
+            await reconcileCommittedRecovery(bundle, committedVersion, originSuccessorEpoch);
           }
           return;
         }
