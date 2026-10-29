@@ -208,7 +208,7 @@ export function normalizeRecoveryKey(input: string): string {
     }
 
     if (!CROCKFORD_CHAR_MAP[mapped]) {
-      throw new RecoveryKeyError(`Recovery key contains invalid character '${ch}'`);
+      throw new RecoveryKeyError('Recovery key contains an invalid character');
     }
     bodyChars.push(mapped);
   }
@@ -217,16 +217,11 @@ export function normalizeRecoveryKey(input: string): string {
 
   // Step 5: Length must be 26 and first char in '0'..'7'
   if (body.length !== RK_BODY_LENGTH) {
-    throw new RecoveryKeyError(
-      `Recovery key body length must be ${RK_BODY_LENGTH}, got ${body.length}`,
-    );
+    throw new RecoveryKeyError('Recovery key body length is invalid');
   }
   if (!FIRST_CHAR_MAP[body[0]!]) {
-    throw new RecoveryKeyError(
-      `Recovery key first character must be in 0..7, got '${body[0]!}'`,
-    );
+    throw new RecoveryKeyError('Recovery key first character is invalid');
   }
-
   return `rk${slotStr}_${body}`;
 }
 
@@ -240,22 +235,29 @@ export function generateRecoveryKey(
   rawEntropy16?: Uint8Array,
 ): GeneratedRecoveryKey {
   assertValidSlot(slot);
+  const ownsEntropy = !rawEntropy16;
   const entropy = rawEntropy16
     ? toLocalBytes(rawEntropy16)
     : sodium.randombytes_buf(RK_ENTROPY_BYTES);
-  if (entropy.byteLength !== RK_ENTROPY_BYTES) {
-    throw new RecoveryKeyError(`Recovery key entropy must be ${RK_ENTROPY_BYTES} bytes`);
+  try {
+    if (entropy.byteLength !== RK_ENTROPY_BYTES) {
+      throw new RecoveryKeyError(`Recovery key entropy must be ${RK_ENTROPY_BYTES} bytes`);
+    }
+
+    const body26 = encodeCrockford128LeftPad2(entropy);
+    const display = formatRecoveryKeyDisplay(slot, body26);
+    const normalized = normalizeRecoveryKey(display);
+
+    return {
+      slot,
+      display,
+      normalized,
+    };
+  } finally {
+    if (ownsEntropy) {
+      sodium.memzero(entropy);
+    }
   }
-
-  const body26 = encodeCrockford128LeftPad2(entropy);
-  const display = formatRecoveryKeyDisplay(slot, body26);
-  const normalized = normalizeRecoveryKey(display);
-
-  return {
-    slot,
-    display,
-    normalized,
-  };
 }
 
 function deriveDomainSeparatedBlake2b256(
@@ -267,10 +269,9 @@ function deriveDomainSeparatedBlake2b256(
   const rkNorm = normalizeRecoveryKey(normalizedOrRaw);
   const inputBytes = toLocalBytes(utf8Encoder.encode(`${domain}${rkNorm}`));
   try {
-    const hash = sodium.crypto_generichash(RK_HASH_BYTES, inputBytes, null, 'uint8array');
-    return new Uint8Array(hash);
+    return sodium.crypto_generichash(RK_HASH_BYTES, inputBytes, null, 'uint8array');
   } finally {
-    inputBytes.fill(0);
+    sodium.memzero(inputBytes);
   }
 }
 

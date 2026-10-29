@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { encodeBase64Url } from './b64url';
 import {
   CROCKFORD_ALPHABET,
@@ -224,7 +224,13 @@ const RAW_CASE_SPECS: RawCaseSpec[] = [
     valid: true,
     expectedNorm: 'rk9_7ZZZZZZZZZZZZZZZZZZZZZZZZZ',
   },
-
+  {
+    id: 'pos-nfkc-kelvin-sign-u212a',
+    description: 'Kelvin sign U+212A folds under NFKC in step 1 to ASCII K and is accepted as canonical K',
+    input: 'rk1_3F8\u212A-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4',
+    valid: true,
+    expectedNorm: REF_NORM_SLOT1,
+  },
   // --- Negative cases (all must be rejected with expected_error = "validation") ---
   {
     id: 'neg-missing-separator-after-prefix',
@@ -263,7 +269,7 @@ const RAW_CASE_SPECS: RawCaseSpec[] = [
     valid: false,
   },
   {
-    id: 'neg-non-ascii-after-nfkc-kelvin-sign',
+    id: 'neg-non-ascii-after-nfkc-turkish-dotted-i',
     description: 'Non-ASCII character remaining after NFKC: Turkish dotted capital I (U+0130 İ) rejected in step 2 before case folding',
     input: 'rk1_3F8K-9M2P-4Q7R-6T\u0130V-8W5X-2Y9Z-C4',
     valid: false,
@@ -524,6 +530,83 @@ describe('P03-T7 Recovery Key Primitives & Cross-Language Vectors (rk-v1.json)',
     expect(() => encodeCrockford128LeftPad2(new Uint8Array(15))).toThrow(RecoveryKeyError);
     expect(() => generateRecoveryKey(sodium, 0)).toThrow(RecoveryKeyError);
     expect(() => generateRecoveryKey(sodium, 11)).toThrow(RecoveryKeyError);
+    expect(() => formatRecoveryKeyDisplay(0, '0'.repeat(26))).toThrow(RecoveryKeyError);
     expect(() => formatRecoveryKeyDisplay(1, 'SHORT')).toThrow(RecoveryKeyError);
+  });
+
+  it('wipes internally generated CSPRNG entropy on success and failure, returns the BLAKE2b allocation directly without unwiped copies, and never echoes RK input characters in errors', async () => {
+    const sodium = await getSodium();
+
+    // 1. Internally generated 16-byte entropy must be zeroed before generateRecoveryKey returns (BE1-19, FE1-25)
+    const capturedEntropyBuffers: Uint8Array[] = [];
+    const origRandomBytes = sodium.randombytes_buf.bind(sodium);
+    sodium.randombytes_buf = ((len: number) => {
+      const buf = origRandomBytes(len);
+      if (len === RK_ENTROPY_BYTES) {
+        capturedEntropyBuffers.push(buf);
+      }
+      return buf;
+    }) as typeof sodium.randombytes_buf;
+
+    try {
+      const generated = generateRecoveryKey(sodium, 1);
+      expect(generated.display).toMatch(/^rk1_/);
+      expect(capturedEntropyBuffers).toHaveLength(1);
+      expect(capturedEntropyBuffers[0]!.every((b) => b === 0)).toBe(true);
+    } finally {
+      sodium.randombytes_buf = origRandomBytes;
+    }
+
+    // Caller-supplied fixed entropy for test vectors is NOT unexpectedly mutated
+    const callerEntropy = new Uint8Array(16).fill(0x5a);
+    generateRecoveryKey(sodium, 2, callerEntropy);
+    expect(callerEntropy.every((b) => b === 0x5a)).toBe(true);
+
+    // 2. deriveRecoveryWrapKey / deriveRecoveryLookupHash return the exact crypto_generichash output buffer
+    // so wiping the returned buffer wipes the sole allocation (BE1-7, BE1-18, BE1-29, FE1-25)
+    const capturedHashOutputs: Uint8Array[] = [];
+    const origGenericHash = sodium.crypto_generichash.bind(sodium);
+    const genericHashSpy = vi
+      .spyOn(sodium, 'crypto_generichash')
+      .mockImplementation(((
+        hashLength: number,
+        message: string | Uint8Array,
+        key?: string | Uint8Array | null,
+      ) => {
+        const out = origGenericHash(hashLength, message, key ?? null, 'uint8array');
+        capturedHashOutputs.push(out);
+        return out;
+      }) as typeof sodium.crypto_generichash);
+
+    try {
+      const validRk = 'rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4';
+      const wrapKey = deriveRecoveryWrapKey(sodium, validRk);
+      expect(capturedHashOutputs).toHaveLength(1);
+      expect(wrapKey).toBe(capturedHashOutputs[0]);
+      sodium.memzero(wrapKey);
+      expect(capturedHashOutputs[0]!.every((b) => b === 0)).toBe(true);
+    } finally {
+      genericHashSpy.mockRestore();
+    }
+
+    // 3. Error messages never echo recovery key characters or input lengths (FE1-5)
+    const badInputs = [
+      { input: 'rk1_9F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4', forbidden: ['9F8K', "'9'"] },
+      { input: 'rk1_3F8K-9M2P-4Q7R-6T1U-8W5X-2Y9Z-C4', forbidden: ["'U'", '6T1U'] },
+      { input: 'rk1_3F8K-9M2P-4Q7R-6T1$-8W5X-2Y9Z-C4', forbidden: ["'$'", '$'] },
+      { input: 'rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C', forbidden: ['25', '3F8K'] },
+    ];
+    for (const tc of badInputs) {
+      let caught: Error | null = null;
+      try {
+        normalizeRecoveryKey(tc.input);
+      } catch (err) {
+        caught = err as Error;
+      }
+      expect(caught).toBeInstanceOf(RecoveryKeyError);
+      for (const token of tc.forbidden) {
+        expect(caught!.message).not.toContain(token);
+      }
+    }
   });
 });

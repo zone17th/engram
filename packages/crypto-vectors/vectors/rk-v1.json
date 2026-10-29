@@ -255,6 +255,16 @@
       "expected_error": null
     },
     {
+      "id": "pos-nfkc-kelvin-sign-u212a",
+      "description": "Kelvin sign U+212A folds under NFKC in step 1 to ASCII K and is accepted as canonical K",
+      "input": "rk1_3F8\u212a-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
       "id": "neg-missing-separator-after-prefix",
       "description": "Missing _ or - separator between rk{n} and 26-char body",
       "input": "rk13F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
@@ -315,7 +325,7 @@
       "expected_error": "validation"
     },
     {
-      "id": "neg-non-ascii-after-nfkc-kelvin-sign",
+      "id": "neg-non-ascii-after-nfkc-turkish-dotted-i",
       "description": "Non-ASCII character remaining after NFKC: Turkish dotted capital I (U+0130 \u0130) rejected in step 2 before case folding",
       "input": "rk1_3F8K-9M2P-4Q7R-6T\u0130V-8W5X-2Y9Z-C4",
       "valid": false,
