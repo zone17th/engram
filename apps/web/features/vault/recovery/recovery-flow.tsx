@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { AuthStatus, Field } from '@/components/ui/field';
 import { useSession } from '@/features/auth/session-provider';
 import { RecoveryKeysSheet } from '@/features/vault/onboarding';
+import { rememberRecoveryCompletedNotice } from '@/features/vault/unlock/recovery-notice';
 import {
   checkPassphrasePolicy,
   type PassphrasePolicyReasonCode,
@@ -221,6 +222,17 @@ export function VaultRecoveryFlow() {
   const reauthGrantRef = useRef(reauth.grant);
   reauthGrantRef.current = reauth.grant;
   const regenCheckboxId = useId();
+  // BE3-10: busy flags are owned by the operation that raised them. A hard lock bumps every token, so a late finalizer
+  // of the cancelled operation can never release the busy state of its successor.
+  const lookupBusyTokenRef = useRef(0);
+  const completeBusyTokenRef = useRef(0);
+  const regenGenerateTokenRef = useRef(0);
+  const regenSaveTokenRef = useRef(0);
+  // FE1-4: async failures re-enable the form after it was disabled while pending; focus is restored afterwards.
+  const refocusRecoveryKeyAfterErrorRef = useRef(false);
+  const step4ErrorRef = useRef<HTMLDivElement>(null);
+  // FE2-2: keyboard position of a Step 4B that was hidden by a wake gate is restored once access is verified again.
+  const regenWakeGatedRef = useRef(false);
 
   const step2Countdown = useRetryCountdown(step2RateDeadline);
   const step3Countdown = useRetryCountdown(step3RateDeadline);
@@ -377,6 +389,10 @@ export function VaultRecoveryFlow() {
 
       clearAllSecrets();
       workerHoldsRecoveryStateRef.current = false;
+      lookupBusyTokenRef.current += 1;
+      completeBusyTokenRef.current += 1;
+      regenGenerateTokenRef.current += 1;
+      regenSaveTokenRef.current += 1;
       setLookingUpKey(false);
       setCompletingRecovery(false);
       setGeneratingRegenKeys(false);
@@ -385,8 +401,16 @@ export function VaultRecoveryFlow() {
       setRecoveryKeyId(null);
       if (
         !suppressResetStepTransitionRef.current &&
-        (stepRef.current === 'new-passphrase' ||
-          stepRef.current === 'regenerate-keys')
+        (stepRef.current === 'regenerate-reauth' || stepRef.current === 'regenerate-keys')
+      ) {
+        // FE2-1: the recovery already committed (its recovery key is consumed). A hard lock after that point replaces the
+        // regeneration form with the completed-while-locked notice instead of leaving an enabled form that silently no-ops
+        // or restarting a lookup with a consumed key.
+        setStep4Error(null);
+        setCompletedWhileLockedNotice(true);
+      } else if (
+        !suppressResetStepTransitionRef.current &&
+        stepRef.current === 'new-passphrase'
       ) {
         completedRecoveryRef.current = false;
         const currentGrant = reauthGrantRef.current;
@@ -563,6 +587,7 @@ export function VaultRecoveryFlow() {
       const rawRkSnapshot = recoveryKeyInput;
       // Clear RK input immediately right when unlockRecovery is invoked (Task 17A requirement #5).
       clearRecoveryKeyInputImmediate();
+      const lookupToken = ++lookupBusyTokenRef.current;
       setLookingUpKey(true);
 
       const isStep2OpCurrent = () =>
@@ -630,6 +655,7 @@ export function VaultRecoveryFlow() {
           const { status, code, retry_after } = err.problem;
           if (status === 401 && code === 'recovery_key_invalid') {
             await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_401' });
+            refocusRecoveryKeyAfterErrorRef.current = true;
             setStep2Error({ kind: 'invalid' });
             return;
           }
@@ -643,6 +669,7 @@ export function VaultRecoveryFlow() {
           }
           workerHoldsRecoveryStateRef.current = false;
           await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_error' });
+          refocusRecoveryKeyAfterErrorRef.current = true;
           setStep2Error({
             kind: 'network',
             detail: err.problem.detail ?? err.problem.title,
@@ -653,12 +680,14 @@ export function VaultRecoveryFlow() {
         const classified = classifyCryptoError(err);
         if (classified.kind === 'recovery_key_invalid') {
           workerHoldsRecoveryStateRef.current = false;
+          refocusRecoveryKeyAfterErrorRef.current = true;
           setStep2Error({ kind: 'invalid' });
           return;
         }
         if (classified.kind === 'wrong_passphrase' || classified.code === 'PRIVATE_KEYS_WRAP_INVALID') {
           // Local AEAD open of `wrap` failed after server lookup matched -> key NOT consumed
           workerHoldsRecoveryStateRef.current = false;
+          refocusRecoveryKeyAfterErrorRef.current = true;
           setStep2Error({ kind: 'aead_failed' });
           return;
         }
@@ -667,15 +696,17 @@ export function VaultRecoveryFlow() {
         }
         if (err instanceof CryptoClientError && err.code === 'SECRET_DETACHED_OR_EMPTY') {
           workerHoldsRecoveryStateRef.current = false;
+          refocusRecoveryKeyAfterErrorRef.current = true;
           setStep2Error({ kind: 'invalid' });
           return;
         }
+        refocusRecoveryKeyAfterErrorRef.current = true;
         setStep2Error({
           kind: 'network',
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && lookupBusyTokenRef.current === lookupToken) {
           setLookingUpKey(false);
         }
       }
@@ -688,6 +719,35 @@ export function VaultRecoveryFlow() {
       recoveryKeyInput,
       vault,
     ],
+  );
+
+  // BE3-2 / BE3-8: `POST /vault/recover/complete` already committed on the server (the new passphrase is saved and the RK is
+  // consumed) but this flow can no longer promote the Worker (lock, replacement session, failed confirmation). Surface the
+  // committed outcome and tell siblings, but only for the originating account and only when the authoritative current vault
+  // identity is still the one that recovered; never broadcast an obsolete identity into a replacement vault and never act
+  // through an unmounted flow.
+  const reconcileCommittedRecovery = useCallback(
+    async (bundle: PreparedCompleteBundle, version: number) => {
+      const isOriginAccount = () =>
+        isMountedRef.current &&
+        (bundle.userId === null || currentUserIdRef.current === bundle.userId);
+      if (!isOriginAccount()) {
+        return;
+      }
+      const live = await vaultRef.current.reloadVaultMeta().catch(() => null);
+      if (!isOriginAccount() || !live || live.vault_key_id !== bundle.vaultKeyId) {
+        return;
+      }
+      vaultRef.current.notifyVaultChanged({
+        vault_key_id: bundle.vaultKeyId,
+        version,
+      });
+      setPreparedCompleteBundle(null);
+      setCompletedWhileLockedNotice(true);
+      rememberRecoveryCompletedNotice(bundle.userId);
+      router.replace('/app/unlock');
+    },
+    [router],
   );
 
   // Helper to send (or replay) `POST /vault/recover/complete` + `confirmRecovery`
@@ -706,10 +766,13 @@ export function VaultRecoveryFlow() {
         return;
       }
 
+      const completeToken = ++completeBusyTokenRef.current;
       setCompletingRecovery(true);
       setStep3Error(null);
       setStep3RateDeadline(null);
 
+      // Set once the server answered 200: from then on the recovery is committed whatever happens locally (BE3-8).
+      let committedVersion: number | null = null;
       try {
         bundle.sentAtLeastOnce = true;
         const completeRes = await completeRecovery(bundle.requestBodyJson, {
@@ -717,25 +780,12 @@ export function VaultRecoveryFlow() {
           ifMatch: bundle.ifMatch,
           reauthToken: bundle.reauthToken,
         });
+        committedVersion = completeRes.version;
 
         if (!isBundleCurrent()) {
           // FE1-7: POST /vault/recover/complete succeeded on the server (rewrapping under the new passphrase
-          // and consuming the RK), so notifyVaultChanged even if this tab locked while the request was in flight.
-          if (
-            bundle.userId === null ||
-            currentUserIdRef.current === bundle.userId
-          ) {
-            vault.notifyVaultChanged({
-              vault_key_id: bundle.vaultKeyId,
-              version: completeRes.version,
-            });
-            if (isMountedRef.current) {
-              setPreparedCompleteBundle(null);
-              setCompletingRecovery(false);
-              setCompletedWhileLockedNotice(true);
-              router.replace('/app/unlock');
-            }
-          }
+          // and consuming the RK) while this tab locked or the flow was replaced.
+          await reconcileCommittedRecovery(bundle, completeRes.version);
           return;
         }
 
@@ -745,6 +795,7 @@ export function VaultRecoveryFlow() {
         });
 
         if (!isBundleCurrent()) {
+          await reconcileCommittedRecovery(bundle, completeRes.version);
           return;
         }
 
@@ -761,6 +812,7 @@ export function VaultRecoveryFlow() {
         try {
           const rkStatus = await fetchRecoveryKeysStatus();
           if (!isBundleCurrent()) {
+            await reconcileCommittedRecovery(bundle, completeRes.version);
             return;
           }
           setRemainingCount(rkStatus.remaining);
@@ -768,6 +820,7 @@ export function VaultRecoveryFlow() {
           setEmptySlots(sortedEmpty);
         } catch {
           if (!isBundleCurrent()) {
+            await reconcileCommittedRecovery(bundle, completeRes.version);
             return;
           }
           setRemainingCount(9);
@@ -778,6 +831,10 @@ export function VaultRecoveryFlow() {
       } catch (err) {
         // BE2-11: Fence late completion errors by originating bundle identity before any lock, grant, or state effect.
         if (!isBundleCurrent()) {
+          if (committedVersion !== null) {
+            // BE3-8: the lock was detected while confirming an already committed recovery; do not drop it silently.
+            await reconcileCommittedRecovery(bundle, committedVersion);
+          }
           return;
         }
         if (err instanceof ProblemError) {
@@ -848,12 +905,12 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && completeBusyTokenRef.current === completeToken) {
           setCompletingRecovery(false);
         }
       }
     },
-    [reauth, router, vault],
+    [reauth, reconcileCommittedRecovery, vault],
   );
 
   // Step 3 submit: validate policy -> check grant >= 60s before FIRST send -> rewrap (stays `recovering`) -> complete
@@ -916,6 +973,7 @@ export function VaultRecoveryFlow() {
       const passphraseSnapshot = newPassphrase;
       // Clear passphrase inputs before Worker call (ADR 0002 §11)
       clearPassphraseInputsImmediate();
+      const submitToken = ++completeBusyTokenRef.current;
       setCompletingRecovery(true);
 
       let bundle = preparedCompleteBundle;
@@ -1000,7 +1058,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && completeBusyTokenRef.current === submitToken) {
           setCompletingRecovery(false);
         }
       }
@@ -1113,6 +1171,7 @@ export function VaultRecoveryFlow() {
       if (!isVerifiedUnlockedAccess()) {
         return;
       }
+      const generateToken = ++regenGenerateTokenRef.current;
       setGeneratingRegenKeys(true);
       setStep4Error(null);
 
@@ -1129,6 +1188,12 @@ export function VaultRecoveryFlow() {
         ]);
 
         if (!freshMeta || !isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
+          return;
+        }
+
+        // BE3-3: a response without the documented shape fails closed with a visible, retryable error on this step.
+        if (!Array.isArray(rkStatus?.empty_slots) || typeof rkStatus.remaining !== 'number') {
+          setStep4Error({ kind: 'network' });
           return;
         }
 
@@ -1198,7 +1263,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && regenGenerateTokenRef.current === generateToken) {
           setGeneratingRegenKeys(false);
         }
       }
@@ -1284,6 +1349,7 @@ export function VaultRecoveryFlow() {
       return;
     }
 
+    const saveToken = ++regenSaveTokenRef.current;
     setSavingRegenKeys(true);
     setStep4Error(null);
     setStep4RateDeadline(null);
@@ -1364,7 +1430,7 @@ export function VaultRecoveryFlow() {
         detail: err instanceof Error ? err.message : undefined,
       });
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && regenSaveTokenRef.current === saveToken) {
         setSavingRegenKeys(false);
       }
     }
@@ -1386,6 +1452,53 @@ export function VaultRecoveryFlow() {
     router.replace('/app');
   }, [router]);
 
+  const regenBundleVisible = step === 'regenerate-keys' && preparedRegenBundle !== null;
+  // Wake verification (VS-R7-1 / BE2-4) hides every secret surface and disables the regeneration submit while the vault is
+  // not verified unlocked, but keeps progress. `completedWhileLockedNotice` means a hard lock already replaced this step.
+  const regenWakeGated =
+    (step === 'regenerate-reauth' || regenBundleVisible) &&
+    vault.state !== 'unlocked' &&
+    !completedWhileLockedNotice;
+
+  // FE1-4: after a failed lookup the field is enabled again; hand keyboard focus back to it.
+  const recoveryKeyFormUsable = !lookingUpKey && !vault.inFlight && !isStep2RateLimited;
+  useEffect(() => {
+    if (
+      !refocusRecoveryKeyAfterErrorRef.current ||
+      step !== 'enter-key' ||
+      step2Error === null ||
+      step2Error.kind === 'rate_limited' ||
+      !recoveryKeyFormUsable
+    ) {
+      return;
+    }
+    refocusRecoveryKeyAfterErrorRef.current = false;
+    rkInputRef.current?.focus();
+  }, [recoveryKeyFormUsable, step, step2Error]);
+
+  // FE1-4 / BE3-3: an asynchronous Step 4 failure moves focus to its alert so keyboard and screen-reader users notice it.
+  useEffect(() => {
+    if (step4Error !== null) {
+      step4ErrorRef.current?.focus();
+    }
+  }, [step4Error]);
+
+  // FE2-2: restore the keyboard position once a wake gate over Step 4B has verified access again.
+  useEffect(() => {
+    if (regenWakeGated && regenBundleVisible) {
+      regenWakeGatedRef.current = true;
+      return;
+    }
+    if (!regenBundleVisible) {
+      regenWakeGatedRef.current = false;
+      return;
+    }
+    if (regenWakeGatedRef.current) {
+      regenWakeGatedRef.current = false;
+      stepHeadingRef.current?.focus();
+    }
+  }, [regenBundleVisible, regenWakeGated]);
+
   const barWidth = strengthBarPercentage(policyScore, newPassphrase.length > 0);
   const barColor = strengthBarColor(policyScore, newPassphrase.length > 0);
 
@@ -1406,6 +1519,49 @@ export function VaultRecoveryFlow() {
     preparedRegenBundle ? preparedRegenBundle.emptySlots : emptySlots,
   );
   const isRegenStep = step === 'regenerate-reauth' || step === 'regenerate-keys';
+
+  const step4ErrorAlert = step4Error ? (
+    <div
+      ref={step4ErrorRef}
+      tabIndex={-1}
+      role="alert"
+      className="auth-alert mb-4 outline-none"
+      data-testid="recovery-step4-error"
+    >
+      <p className="m-0 mb-1 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+        {step4Error.kind === 'version_mismatch' && t('step4.errors.versionMismatchTitle')}
+        {step4Error.kind === 'slot_taken' && t('step4.errors.slotTakenTitle')}
+        {step4Error.kind === 'rate_limited' && t('step4.errors.rateLimitedTitle')}
+        {step4Error.kind === 'reauth_expired_password' &&
+          t('step4.errors.reauthExpiredPasswordTitle')}
+        {step4Error.kind === 'reauth_expired_oauth' && t('step4.errors.reauthExpiredOauthTitle')}
+        {step4Error.kind === 'network' && t('step4.errors.networkTitle')}
+      </p>
+      <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+        {step4Error.kind === 'version_mismatch' && t('step4.errors.versionMismatchBody')}
+        {step4Error.kind === 'slot_taken' && t('step4.errors.slotTakenBody')}
+        {step4Error.kind === 'rate_limited' &&
+          t('step4.errors.rateLimitedBody', {
+            clock: formatRetryClock(effectiveStep4RateSeconds),
+            seconds: effectiveStep4RateSeconds,
+          })}
+        {step4Error.kind === 'network' && (step4Error.detail ?? t('step4.errors.networkBody'))}
+      </p>
+    </div>
+  ) : null;
+
+  const wakeGateStatus = (
+    <div
+      role="status"
+      className="mb-5 rounded-md p-4"
+      style={{ background: 'var(--pale-orange)' }}
+      data-testid="recovery-wake-gate-status"
+    >
+      <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+        <strong>{t('wakeGate.title')}</strong> {t('wakeGate.body')}
+      </p>
+    </div>
+  );
 
   return (
     <>
@@ -1433,7 +1589,10 @@ export function VaultRecoveryFlow() {
             <Button
               type="button"
               variant="primary"
-              onClick={() => router.replace('/app/unlock')}
+              onClick={() => {
+                rememberRecoveryCompletedNotice(currentUserIdRef.current);
+                router.replace('/app/unlock');
+              }}
               data-testid="recovery-completed-while-locked-cta"
             >
               {t('step3.errors.completedWhileLockedCta')}
@@ -2150,8 +2309,9 @@ export function VaultRecoveryFlow() {
         ) : null}
 
         {/* STEP 4A — Re-auth for `vault.recovery_keys_regenerate` before generating replacement keys */}
-        {step === 'regenerate-reauth' ? (
+        {step === 'regenerate-reauth' && !completedWhileLockedNotice ? (
           <section data-view="s4-reauth" data-testid="recovery-step-regenerate-reauth">
+            {regenWakeGated ? wakeGateStatus : null}
             <div
               className="mb-5 rounded-md p-4"
               style={{ background: 'var(--pale-accent)' }}
@@ -2200,6 +2360,7 @@ export function VaultRecoveryFlow() {
                       {reauth.error}
                     </AuthStatus>
                   ) : null}
+                  {step4ErrorAlert}
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       type="submit"
@@ -2207,6 +2368,7 @@ export function VaultRecoveryFlow() {
                       disabled={
                         reauth.submitting ||
                         generatingRegenKeys ||
+                        regenWakeGated ||
                         step4ReauthPassword.length === 0
                       }
                       data-testid="recovery-step4-reauth-password-submit"
@@ -2220,7 +2382,7 @@ export function VaultRecoveryFlow() {
                         type="button"
                         variant="secondary"
                         onClick={() => void handleStep4GoogleReauth()}
-                        disabled={reauth.submitting || generatingRegenKeys}
+                        disabled={reauth.submitting || generatingRegenKeys || regenWakeGated}
                         data-testid="recovery-step4-reauth-google-button"
                       >
                         {t('step4Reauth.confirmGoogle')}
@@ -2239,12 +2401,13 @@ export function VaultRecoveryFlow() {
                 </form>
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
+                  {step4ErrorAlert}
                   {reauth.capabilities.oauthReauthProviders.includes('google') ? (
                     <Button
                       type="button"
                       variant="secondary"
                       onClick={() => void handleStep4GoogleReauth()}
-                      disabled={reauth.submitting || generatingRegenKeys}
+                      disabled={reauth.submitting || generatingRegenKeys || regenWakeGated}
                       data-testid="recovery-step4-reauth-google-button"
                     >
                       {t('step4Reauth.confirmGoogle')}
@@ -2273,6 +2436,13 @@ export function VaultRecoveryFlow() {
         ) : null}
 
         {/* STEP 4B — Replacement recovery keys for empty slots (reusing RecoveryKeysSheet) */}
+        {/* FE2-2: while a wake gate hides the replacement keys, keep a nonsecret status where they were. */}
+        {regenBundleVisible && vault.state !== 'unlocked' && !completedWhileLockedNotice ? (
+          <section data-view="s4-pending" data-testid="recovery-step-regenerate-pending">
+            {wakeGateStatus}
+          </section>
+        ) : null}
+
         {step === 'regenerate-keys' && preparedRegenBundle && vault.state === 'unlocked' ? (
           <section data-view="s4" data-testid="recovery-step-regenerate-keys">
             <div
@@ -2344,40 +2514,7 @@ export function VaultRecoveryFlow() {
               }}
             />
 
-            {step4Error ? (
-              <div
-                role="alert"
-                className="auth-alert mb-4"
-                data-testid="recovery-step4-error"
-              >
-                <p
-                  className="m-0 mb-1 text-[14px] font-semibold"
-                  style={{ color: 'var(--body)' }}
-                >
-                  {step4Error.kind === 'version_mismatch' &&
-                    t('step4.errors.versionMismatchTitle')}
-                  {step4Error.kind === 'slot_taken' && t('step4.errors.slotTakenTitle')}
-                  {step4Error.kind === 'rate_limited' && t('step4.errors.rateLimitedTitle')}
-                  {step4Error.kind === 'reauth_expired_password' &&
-                    t('step4.errors.reauthExpiredPasswordTitle')}
-                  {step4Error.kind === 'reauth_expired_oauth' &&
-                    t('step4.errors.reauthExpiredOauthTitle')}
-                  {step4Error.kind === 'network' && t('step4.errors.networkTitle')}
-                </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
-                  {step4Error.kind === 'version_mismatch' &&
-                    t('step4.errors.versionMismatchBody')}
-                  {step4Error.kind === 'slot_taken' && t('step4.errors.slotTakenBody')}
-                  {step4Error.kind === 'rate_limited' &&
-                    t('step4.errors.rateLimitedBody', {
-                      clock: formatRetryClock(effectiveStep4RateSeconds),
-                      seconds: effectiveStep4RateSeconds,
-                    })}
-                  {step4Error.kind === 'network' &&
-                    (step4Error.detail ?? t('step4.errors.networkBody'))}
-                </p>
-              </div>
-            ) : null}
+            {step4ErrorAlert}
 
             <div className="flex flex-wrap items-center gap-2">
               <Button

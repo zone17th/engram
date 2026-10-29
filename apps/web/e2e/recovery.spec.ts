@@ -426,11 +426,14 @@ test.describe('P03-T17A Vault Recovery by Recovery Key', () => {
     await page.getByTestId('recovery-key-input').fill('rk1_014D-2PF2-DBSQ-QG28-T5CY-4TQK-00');
     await page.getByTestId('recovery-key-submit').click();
     await expect(page.getByTestId('recovery-error-invalid-key')).toBeVisible();
+    // FE1-4: the field was disabled while the Worker checked the key; after the async failure it is focused again.
+    await expect(page.getByTestId('recovery-key-input')).toBeFocused();
     const localInvalidText = await page.getByTestId('recovery-error-invalid-key').textContent();
 
     await page.getByTestId('recovery-key-input').fill(TEST_VECTOR_RK_DISPLAY);
     await page.getByTestId('recovery-key-submit').click();
     await expect(page.getByTestId('recovery-error-invalid-key')).toBeVisible();
+    await expect(page.getByTestId('recovery-key-input')).toBeFocused();
     const serverInvalidText = await page.getByTestId('recovery-error-invalid-key').textContent();
     expect(serverInvalidText).toBe(localInvalidText);
 

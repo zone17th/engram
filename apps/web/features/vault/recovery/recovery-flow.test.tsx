@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import type { UseReauthReturn } from '@/features/auth/use-reauth';
-import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
+import { resetVaultBroadcastForTests, subscribeVaultBroadcast } from '@/features/vault/broadcast';
 import { recordLockEpochEvent, type LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { VaultRecoveryFlow } from '@/features/vault/recovery';
+import { hasRecoveryCompletedNotice } from '@/features/vault/unlock/recovery-notice';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
 import type { VaultState } from '@/lib/api/vault';
@@ -259,20 +261,41 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     window.sessionStorage.clear();
   });
 
+  const broadcastUnsubscribers: Array<() => void> = [];
+
   afterEach(() => {
     cleanup();
     while (activeShims.length > 0) {
       activeShims.pop()?.close();
     }
+    while (broadcastUnsubscribers.length > 0) {
+      broadcastUnsubscribers.pop()?.();
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
+
+  /** Every `vault_changed` the provider actually publishes (what sibling tabs would receive), not a spy on a precondition. */
+  function collectVaultChangedBroadcasts() {
+    const messages: Array<{ vault_key_id: string; version: number | null }> = [];
+    broadcastUnsubscribers.push(
+      subscribeVaultBroadcast((message) => {
+        if (message.type === 'vault_changed') {
+          messages.push({ vault_key_id: message.vault_key_id, version: message.version });
+        }
+      }),
+    );
+    return messages;
+  }
+
   function renderRecovery(options?: {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
     lockEpochEnv?: LockEpochEnvironment;
     onVaultProbe?: (ctx: VaultContextValue) => void;
     onReauthProbe?: (reauth: UseReauthReturn) => void;
+    /** Receives a setter that mounts / unmounts only the recovery flow (provider and session stay mounted). */
+    onFlowGate?: (setShowFlow: (show: boolean) => void) => void;
   }) {
     const locale = options?.locale ?? 'en';
     const messages = locale === 'vi' ? viMessages : enMessages;
@@ -293,6 +316,14 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       );
     }
 
+    function FlowGate() {
+      const [showFlow, setShowFlow] = useState(true);
+      useEffect(() => {
+        options?.onFlowGate?.(setShowFlow);
+      }, []);
+      return showFlow ? <VaultRecoveryFlow /> : null;
+    }
+
     const utils = render(
       <NextIntlClientProvider locale={locale} messages={messages}>
         <ThemeProvider>
@@ -303,7 +334,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
                 lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
-                <VaultRecoveryFlow />
+                <FlowGate />
               </VaultProvider>
             </SessionProvider>
           </QueryClientProvider>
@@ -581,8 +612,14 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     });
     const malformedAlertText = screen.getByRole('alert').textContent ?? '';
     expect(malformedAlertText).toContain('That recovery key is not valid.');
+    // FE1-4: the field was disabled while pending; after the async failure focus is restored to it.
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-input')).toHaveFocus();
+    });
 
     // 2. Valid format RK that is already used / unknown / belongs to another vault -> server 401 `recovery_key_invalid`
+    screen.getByTestId('recovery-key-input').blur();
+    expect(screen.getByTestId('recovery-key-input')).not.toHaveFocus();
     fireEvent.change(screen.getByTestId('recovery-key-input'), {
       target: { value: TEST_VECTOR_RK_DISPLAY },
     });
@@ -596,6 +633,9 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     const usedOrWrongAlertText = screen.getByRole('alert').textContent ?? '';
     // Identical message for wrong, used, or other-vault RK
     expect(usedOrWrongAlertText).toBe(malformedAlertText);
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-input')).toHaveFocus();
+    });
 
     // 3. CLIENT_BUSY or unexpected crypto error on Step 2 surfaces a visible error card instead of hanging silently
     vi.spyOn(vaultCtx, 'unlockRecovery').mockRejectedValueOnce(
@@ -1110,21 +1150,57 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
   // -------------------------------------------------------------------------
   interface RecoveryRaceFetchState {
     holdLookup: boolean;
+    /** Resolvers of every lookup POST that is currently held, oldest first (`holdLookup` holds each new call). */
+    lookupReleases: Array<() => void>;
     releaseLookup: (() => void) | null;
+    holdComplete: boolean;
+    completeReleases: Array<() => void>;
+    /** When set, the (held or immediate) complete POST answers this problem instead of 200. */
+    completeProblem: { status: number; code: string } | null;
+    holdRecoveryKeysStatus: boolean;
+    recoveryKeysStatusReleases: Array<() => void>;
+    /** Replaces the GET /vault/recovery-keys response (e.g. `{}` for the malformed-shape case) or fails it with `'reject'`. */
+    recoveryKeysStatusBody: unknown;
+    holdRegen: boolean;
+    regenReleases: Array<() => void>;
+    holdRegenReauth: boolean;
+    regenReauthReleases: Array<() => void>;
+    /** GET /vault answers this vault (a replacement vault B) instead of the recovered one. */
+    vaultMetaOverride: VaultState | null;
+    vaultGets: number;
     vaultVersion: number;
+    completeCalls: number;
     regenCalls: number;
     rkStatusFetches: number;
     regenReauthPosts: number;
+    lookupPosts: number;
   }
 
-  function installRecoveryRaceFetchMock(options: { holdLookup?: boolean } = {}): RecoveryRaceFetchState {
+  function installRecoveryRaceFetchMock(
+    options: { holdLookup?: boolean; holdComplete?: boolean; hasPassword?: boolean } = {},
+  ): RecoveryRaceFetchState {
     const state: RecoveryRaceFetchState = {
       holdLookup: options.holdLookup ?? false,
+      lookupReleases: [],
       releaseLookup: null,
+      holdComplete: options.holdComplete ?? false,
+      completeReleases: [],
+      completeProblem: null,
+      holdRecoveryKeysStatus: false,
+      recoveryKeysStatusReleases: [],
+      recoveryKeysStatusBody: { remaining: 9, empty_slots: [1] },
+      holdRegen: false,
+      regenReleases: [],
+      holdRegenReauth: false,
+      regenReauthReleases: [],
+      vaultMetaOverride: null,
+      vaultGets: 0,
       vaultVersion: 1,
+      completeCalls: 0,
       regenCalls: 0,
       rkStatusFetches: 0,
       regenReauthPosts: 0,
+      lookupPosts: 0,
     };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -1137,11 +1213,18 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/auth/me')) {
-        return jsonResponse(makeMeFixture({ hasPassword: true }));
+        return jsonResponse(makeMeFixture({ hasPassword: options.hasPassword ?? true }));
       }
       if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body ?? '{}')) as { action: string };
-        if (body.action === 'vault.recovery_keys_regenerate') state.regenReauthPosts += 1;
+        if (body.action === 'vault.recovery_keys_regenerate') {
+          state.regenReauthPosts += 1;
+          if (state.holdRegenReauth) {
+            await new Promise<void>((resolve) => {
+              state.regenReauthReleases.push(resolve);
+            });
+          }
+        }
         return jsonResponse({
           grant: `grant-${body.action}-token`,
           action: body.action,
@@ -1149,12 +1232,15 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
-        return jsonResponse(makeVaultMetaFixture(state.vaultVersion));
+        state.vaultGets += 1;
+        return jsonResponse(state.vaultMetaOverride ?? makeVaultMetaFixture(state.vaultVersion));
       }
       if (url.endsWith('/vault/unlock/recovery') && init?.method === 'POST') {
+        state.lookupPosts += 1;
         if (state.holdLookup) {
           await new Promise<void>((resolve) => {
             state.releaseLookup = resolve;
+            state.lookupReleases.push(resolve);
           });
         }
         return jsonResponse({
@@ -1164,6 +1250,15 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
         });
       }
       if (url.endsWith('/vault/recover/complete') && init?.method === 'POST') {
+        state.completeCalls += 1;
+        if (state.holdComplete) {
+          await new Promise<void>((resolve) => {
+            state.completeReleases.push(resolve);
+          });
+        }
+        if (state.completeProblem) {
+          return problemResponse(state.completeProblem.status, state.completeProblem.code);
+        }
         state.vaultVersion = 2;
         return jsonResponse({
           vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
@@ -1175,13 +1270,23 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       if (url.endsWith('/vault/recovery-keys') && (!init?.method || init.method === 'GET')) {
         // Step 4A reads the live empty slots before generating replacement keys (`fetchRecoveryKeysStatus`)
         state.rkStatusFetches += 1;
-        return jsonResponse({
-          remaining: 9,
-          empty_slots: [1],
-        });
+        if (state.holdRecoveryKeysStatus) {
+          await new Promise<void>((resolve) => {
+            state.recoveryKeysStatusReleases.push(resolve);
+          });
+        }
+        if (state.recoveryKeysStatusBody === 'reject') {
+          throw new TypeError('network down');
+        }
+        return jsonResponse(state.recoveryKeysStatusBody);
       }
       if (url.endsWith('/vault/recovery-keys/regenerate') && init?.method === 'POST') {
         state.regenCalls += 1;
+        if (state.holdRegen) {
+          await new Promise<void>((resolve) => {
+            state.regenReleases.push(resolve);
+          });
+        }
         state.vaultVersion = 3;
         return jsonResponse({
           version: 3,
@@ -1429,6 +1534,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     });
 
     // Saving after verification dispatches the regenerate POST and routes to /app.
+    const published = collectVaultChangedBroadcasts();
     fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
     await act(async () => {
       fireEvent.click(screen.getByTestId('recovery-step4-save-button'));
@@ -1437,6 +1543,8 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(fetchState.regenCalls).toBe(1);
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
     });
+    // BE2-12 matching-origin control: a current success is published exactly once.
+    expect(published).toEqual([{ vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 3 }]);
 
     shim.close();
   }, 25_000);
@@ -1538,7 +1646,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     );
 
     // Step 3: Submit new passphrase -> holds on POST /vault/recover/complete
-    const notifySpy = vi.spyOn(vaultCtx, 'notifyVaultChanged');
+    const published = collectVaultChangedBroadcasts();
     fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
       target: { value: STRONG_NEW_PASSPHRASE },
     });
@@ -1569,11 +1677,11 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     expect(screen.getByTestId('recovery-completed-while-locked-notice')).toHaveTextContent(
       /Recovery completed — unlock with your new passphrase/i,
     );
-    expect(notifySpy).toHaveBeenCalledWith({
-      vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
-      version: 2,
-    });
+    // Siblings really receive it, exactly once, for the vault that was recovered (BE3-2 same-origin control).
+    expect(published).toEqual([{ vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 2 }]);
     expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    // FE1-7: the notice outlives this component: the unlock route reads it from the non-secret tab store.
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(true);
 
     shim.close();
   }, 20_000);
@@ -1773,4 +1881,717 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 25_000);
+  // -------------------------------------------------------------------------
+  // review-3-delta-be / review-2-delta-fe (fix round 3): one race per test, each from a clean mount.
+  // -------------------------------------------------------------------------
+  const REPLACEMENT_VAULT_KEY_ID = 'vk:replacement-vault-b-0123';
+
+  /** Lets timers and microtasks queued by the released response run before asserting what did NOT happen. */
+  async function settle() {
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** Step 1-3 up to a held `POST /vault/recover/complete` (the server has not answered yet). */
+  async function driveRecoveryToHeldComplete(fetchState: RecoveryRaceFetchState) {
+    await completeRecoveryStep1();
+    await submitRecoveryStep2();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+      target: { value: STRONG_NEW_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+    await waitFor(() => {
+      expect(fetchState.completeReleases).toHaveLength(1);
+    });
+  }
+
+  async function unlockReplacementSession(getVault: () => VaultContextValue) {
+    const op = getVault().beginOp();
+    await act(async () => {
+      await getVault().createVault({
+        passphrase: STRONG_NEW_PASSPHRASE,
+        opGeneration: op.opGeneration,
+      });
+    });
+    expect(getVault().state).toBe('unlocked');
+    expect(getVault().workerState).toBe('unlocked');
+  }
+
+  it('BE3-2: a held, already committed recovery A that returns after the same user recreated and unlocked vault B publishes nothing, navigates nowhere and leaves B unlocked', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToHeldComplete(fetchState);
+
+    // Same user: lock, a sibling announces the recreated vault B, and B is unlocked here.
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    expect(vaultCtx.state).toBe('locked');
+    await act(async () => {
+      vaultCtx.notifyVaultChanged({ vault_key_id: REPLACEMENT_VAULT_KEY_ID, version: 1 });
+    });
+    fetchState.vaultMetaOverride = {
+      ...makeVaultMetaFixture(1),
+      vault_key_id: REPLACEMENT_VAULT_KEY_ID,
+    };
+    await unlockReplacementSession(() => vaultCtx);
+    const replacementGeneration = vaultCtx.getClient().getGeneration();
+    const publishedBeforeRelease = published.length;
+    const vaultGetsBeforeRelease = fetchState.vaultGets;
+    routerMocks.replace.mockClear();
+
+    // The old server success A returns now.
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    // The recovery flow reconciled against the authoritative current identity (GET /vault) ...
+    await waitFor(() => {
+      expect(fetchState.vaultGets).toBe(vaultGetsBeforeRelease + 1);
+    });
+    await settle();
+    // ... found vault B, and therefore never published A into B, navigated, or announced A's outcome.
+    expect(published.slice(publishedBeforeRelease)).toEqual([]);
+    expect(published.some((m) => m.vault_key_id === TEST_VECTOR_VAULT_KEY_ID)).toBe(false);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    expect(vaultCtx.state).toBe('unlocked');
+    expect(vaultCtx.workerState).toBe('unlocked');
+    expect(vaultCtx.getClient().getGeneration()).toBe(replacementGeneration);
+
+    shim.close();
+  }, 30_000);
+
+  it('BE3-2: a committed recovery whose flow unmounted (provider kept) never publishes, navigates or even reads GET /vault when the old success returns', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    let setShowFlow!: (show: boolean) => void;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+      onFlowGate: (setter) => {
+        setShowFlow = setter;
+      },
+    });
+    await driveRecoveryToHeldComplete(fetchState);
+
+    // Leave only the recovery route: it locks the pending recovery continuation; the provider outlives it.
+    await act(async () => {
+      setShowFlow(false);
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('locked');
+    });
+    await unlockReplacementSession(() => vaultCtx);
+    const vaultGetsBeforeRelease = fetchState.vaultGets;
+    routerMocks.replace.mockClear();
+
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await settle();
+    expect(published).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    expect(fetchState.vaultGets).toBe(vaultGetsBeforeRelease);
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+    expect(vaultCtx.state).toBe('unlocked');
+
+    shim.close();
+  }, 30_000);
+
+  it('BE3-8 & BE3-5 (flow side): a sibling lock that is missed while the complete POST is in flight and detected during confirmation still surfaces the committed recovery, stays locked and leaves no secrets', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+    const { baseLockEpochEnv } = makeHeldWakeLockEpochEnv();
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      lockEpochEnv: baseLockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToHeldComplete(fetchState);
+    expect(vaultCtx.workerState).toBe('recovering');
+
+    // A sibling tab locks and advances the durable lockEpoch; this tab never receives the notification.
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, baseLockEpochEnv);
+    });
+    expect(vaultCtx.workerState).toBe('recovering');
+
+    // The server commits and answers 200: generation and flow still look current, so only confirmRecovery's durable
+    // baseline check can detect the missed lock, and it does so after the mutation is already committed.
+    await act(async () => {
+      fetchState.completeReleases[0]?.();
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    });
+    expect(fetchState.completeCalls).toBe(1);
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+    expect(screen.getByTestId('recovery-completed-while-locked-notice')).toHaveTextContent(
+      /Recovery completed — unlock with your new passphrase/i,
+    );
+    expect(published).toEqual([{ vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 2 }]);
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(true);
+    // Never promoted to Step 4 and no secret surface is left behind.
+    expect(screen.queryByTestId('recovery-step-regenerate-reauth')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-new-passphrase-input')).not.toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain(STRONG_NEW_PASSPHRASE);
+
+    shim.close();
+  }, 30_000);
+
+  it('BE3-6: a regenerate success that returns after the session was replaced never publishes the obsolete identity, refreshes Me or navigates', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+    const published = collectVaultChangedBroadcasts();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+
+    // Hold the regenerate POST, then replace the session while it is in flight.
+    fetchState.holdRegen = true;
+    const publishedBeforeSave = published.length;
+    fireEvent.click(screen.getByTestId('recovery-step4-save-button'));
+    await waitFor(() => {
+      expect(fetchState.regenReleases).toHaveLength(1);
+    });
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    await unlockReplacementSession(() => vaultCtx);
+    const replacementGeneration = vaultCtx.getClient().getGeneration();
+    routerMocks.replace.mockClear();
+    const fetchesBeforeRelease = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls.length;
+
+    await act(async () => {
+      fetchState.holdRegen = false;
+      fetchState.regenReleases[0]?.();
+    });
+    await settle();
+
+    expect(published.slice(publishedBeforeSave)).toEqual([]);
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+    // No post-success Me refresh either: the late success is dropped before any follow-up request.
+    const urlsAfterRelease = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .slice(fetchesBeforeRelease)
+      .map((call) => String(call[0]));
+    expect(urlsAfterRelease.filter((url) => url.endsWith('/auth/me'))).toEqual([]);
+    expect(vaultCtx.state).toBe('unlocked');
+    expect(vaultCtx.workerState).toBe('unlocked');
+    expect(vaultCtx.getClient().getGeneration()).toBe(replacementGeneration);
+
+    shim.close();
+  }, 30_000);
+
+  for (const lateProblem of [
+    { status: 401, code: 'reauth_expired', badge: 'recovery-error-reauth-expired-password' },
+    { status: 503, code: 'vault_mutations_disabled', badge: 'recovery-error-mutations-disabled' },
+  ]) {
+    it(`BE2-11: a late ${lateProblem.status} ${lateProblem.code} from the complete POST never locks the replacement session, clears the grant or renders for the obsolete flow`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+      fetchState.completeProblem = { status: lateProblem.status, code: lateProblem.code };
+
+      let vaultCtx!: VaultContextValue;
+      let reauthCtx!: UseReauthReturn;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+        onReauthProbe: (r) => {
+          reauthCtx = r;
+        },
+      });
+      await driveRecoveryToHeldComplete(fetchState);
+
+      await act(async () => {
+        await vaultCtx.lockNow();
+      });
+      await unlockReplacementSession(() => vaultCtx);
+      const replacementGeneration = vaultCtx.getClient().getGeneration();
+      const grantBefore = reauthCtx.grant?.grant;
+      const pendingActionBefore = reauthCtx.pendingAction;
+      expect(grantBefore).toBeTruthy();
+
+      await act(async () => {
+        fetchState.completeReleases[0]?.();
+      });
+      await settle();
+
+      expect(fetchState.completeCalls).toBe(1);
+      expect(vaultCtx.state).toBe('unlocked');
+      expect(vaultCtx.workerState).toBe('unlocked');
+      expect(vaultCtx.getClient().getGeneration()).toBe(replacementGeneration);
+      // The late error neither cleared the grant (OAuth branch) nor started a new re-auth (password branch).
+      expect(reauthCtx.grant?.grant).toBe(grantBefore);
+      expect(reauthCtx.pendingAction).toBe(pendingActionBefore);
+      expect(screen.queryByTestId(lateProblem.badge)).not.toBeInTheDocument();
+
+      shim.close();
+    }, 30_000);
+  }
+
+  it('BE3-10: a cancelled lookup that settles while its successor lookup is still pending keeps the successor busy, so no third lookup can be launched', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock({ holdLookup: true });
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await completeRecoveryStep1();
+
+    // Lookup A is held in flight ...
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    await waitFor(() => {
+      expect(fetchState.lookupReleases).toHaveLength(1);
+    });
+
+    // ... a hard lock retires it and immediately frees the form, so lookup B can start and is held too.
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-key-submit')).not.toBeDisabled();
+    });
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    fireEvent.click(screen.getByTestId('recovery-key-submit'));
+    await waitFor(() => {
+      expect(fetchState.lookupReleases).toHaveLength(2);
+    });
+    expect(screen.getByTestId('recovery-key-submit')).toBeDisabled();
+
+    // The obsolete lookup A settles while B is pending: its finalizer must not release B's busy state.
+    await act(async () => {
+      fetchState.lookupReleases[0]?.();
+    });
+    await settle();
+    expect(screen.getByTestId('recovery-key-submit')).toBeDisabled();
+    expect(screen.getByTestId('recovery-key-input')).toBeDisabled();
+    // A forced submit (Enter key / form submit) while B is pending sends nothing.
+    const lookupPostsWhileBPending = fetchState.lookupPosts;
+    fireEvent.change(screen.getByTestId('recovery-key-input'), {
+      target: { value: TEST_VECTOR_RK_DISPLAY },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('recovery-key-input').closest('form')!);
+    });
+    expect(fetchState.lookupPosts).toBe(lookupPostsWhileBPending);
+
+    // Only B's own completion releases it and carries the flow to Step 3.
+    await act(async () => {
+      fetchState.lookupReleases[1]?.();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+    });
+    expect(vaultCtx.state).toBe('recovering');
+
+    shim.close();
+  }, 30_000);
+
+  it('BE2-4: a wake verification that starts while the Step 4A re-auth submission is in flight stops the submission from fetching slots or generating keys, and nothing appears late', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+    const { lockEpochEnv, wake } = makeHeldWakeLockEpochEnv();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+    const slotFetchesBeforeSubmit = fetchState.rkStatusFetches;
+
+    // Submit while verified unlocked: the re-auth POST is accepted and held in flight ...
+    fetchState.holdRegenReauth = true;
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    await waitFor(() => {
+      expect(fetchState.regenReauthReleases).toHaveLength(1);
+    });
+
+    // ... and only THEN the wake verification starts (held).
+    wake.hold = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(vaultCtx.state).toBe('unlocking');
+    // FE2-1 / FE2-2: the gated step says why it is withheld and its submit is disabled instead of silently doing nothing.
+    expect(screen.getByTestId('recovery-wake-gate-status')).toHaveAttribute('role', 'status');
+    expect(screen.getByTestId('recovery-step4-reauth-password-submit')).toBeDisabled();
+
+    await act(async () => {
+      fetchState.holdRegenReauth = false;
+      fetchState.regenReauthReleases[0]?.();
+    });
+    await settle();
+    // The in-flight submission is dropped at the verified-access check: no slot lookup, no keys, no regenerate request.
+    expect(fetchState.rkStatusFetches).toBe(slotFetchesBeforeSubmit);
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(fetchState.regenCalls).toBe(0);
+
+    // Verification succeeds: the dropped submission does not resume by itself.
+    await act(async () => {
+      wake.release?.();
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('unlocked');
+    });
+    await settle();
+    expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-wake-gate-status')).not.toBeInTheDocument();
+    expect(fetchState.rkStatusFetches).toBe(slotFetchesBeforeSubmit);
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+
+    shim.close();
+  }, 30_000);
+
+  it('BE2-4: a wake verification that starts while the empty-slot lookup is in flight keeps the replacement keys from ever being published, even after verification succeeds', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+    const { lockEpochEnv, wake } = makeHeldWakeLockEpochEnv();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+
+    // The re-auth succeeds and key preparation starts: GET /vault/recovery-keys is held in flight.
+    fetchState.holdRecoveryKeysStatus = true;
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    await waitFor(() => {
+      expect(fetchState.recoveryKeysStatusReleases).toHaveLength(1);
+    });
+
+    wake.hold = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(vaultCtx.state).toBe('unlocking');
+
+    // The slot lookup answers while access is unverified: the preparation must stop before generating or publishing keys.
+    await act(async () => {
+      fetchState.holdRecoveryKeysStatus = false;
+      fetchState.recoveryKeysStatusReleases[0]?.();
+    });
+    await settle();
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+    expect(fetchState.regenCalls).toBe(0);
+
+    await act(async () => {
+      wake.release?.();
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('unlocked');
+    });
+    await settle();
+    expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+
+    shim.close();
+  }, 30_000);
+
+  it('BE2-4 & FE2-1: a wake verification that FAILS over prepared replacement keys hides them for good, replaces the step with the completed notice and never reveals the keys again', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+    const { baseLockEpochEnv, lockEpochEnv, wake } = makeHeldWakeLockEpochEnv();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+    const replacementKeyText = screen.getByTestId('recovery-key-slot-1').textContent ?? '';
+    expect(replacementKeyText).toMatch(/^rk1_/);
+
+    // Wake with the verification held, and a sibling lock the verification will discover once it runs.
+    wake.hold = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(vaultCtx.state).toBe('unlocking');
+    expect(screen.queryByTestId('recovery-key-slot-1')).not.toBeInTheDocument();
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, baseLockEpochEnv);
+    });
+    await act(async () => {
+      wake.release?.();
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('locked');
+    });
+    expect(vaultCtx.workerState).toBe('locked');
+
+    // The keys are gone for good: no grid, no status placeholder, the committed notice replaces the step.
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-step-regenerate-pending')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain(replacementKeyText);
+    expect(screen.getByTestId('recovery-completed-while-locked-notice')).toBeInTheDocument();
+    expect(fetchState.regenCalls).toBe(0);
+
+    // A later wake cannot bring them back either.
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await settle();
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain(replacementKeyText);
+
+    shim.close();
+  }, 30_000);
+
+  it('FE2-1: a hard lock on Step 4A replaces the password form with the completed-recovery notice (no silent no-op) whose CTA hands the notice to the unlock page', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+
+    await act(async () => {
+      await vaultCtx.lockNow();
+    });
+    expect(vaultCtx.state).toBe('locked');
+
+    // No enabled form that silently ignores the submit: the step is replaced by the notice.
+    expect(screen.queryByTestId('recovery-step-regenerate-reauth')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-step4-reauth-password-submit')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recovery-completed-while-locked-notice')).toHaveTextContent(
+      /Recovery completed — unlock with your new passphrase/i,
+    );
+    expect(fetchState.regenReauthPosts).toBe(0);
+    expect(fetchState.regenCalls).toBe(0);
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+
+    routerMocks.replace.mockClear();
+    fireEvent.click(screen.getByTestId('recovery-completed-while-locked-cta'));
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app/unlock');
+    expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(true);
+
+    shim.close();
+  }, 30_000);
+
+  it('FE2-2: a wake verification over Step 4B shows a localized pending status where the keys were, then restores focus to the step heading with the same bundle saveable', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+    const { lockEpochEnv, wake } = makeHeldWakeLockEpochEnv();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+    fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+      target: { value: 'account-login-password-123' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+
+    // Keyboard focus sits on a control inside the replacement-key sheet.
+    const confirmCheckbox = screen.getByTestId('recovery-keys-confirm-checkbox');
+    confirmCheckbox.focus();
+    expect(confirmCheckbox).toHaveFocus();
+
+    wake.hold = true;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(vaultCtx.state).toBe('unlocking');
+    expect(screen.queryByTestId('recovery-key-slot-1')).not.toBeInTheDocument();
+    // The screen is not left empty: a nonsecret status explains the wait.
+    const status = screen.getByTestId('recovery-wake-gate-status');
+    expect(status).toHaveAttribute('role', 'status');
+    expect(status).toHaveTextContent(/Checking that your vault is still unlocked/i);
+    expect(status).toHaveTextContent(/Your recovery progress is kept/i);
+
+    await act(async () => {
+      wake.release?.();
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('unlocked');
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('recovery-wake-gate-status')).not.toBeInTheDocument();
+    // Focus is restored to the step heading instead of falling back to <body>.
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
+    });
+
+    // The same prepared bundle still saves.
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-step4-save-button'));
+    });
+    await waitFor(() => {
+      expect(fetchState.regenCalls).toBe(1);
+    });
+
+    shim.close();
+  }, 30_000);
+
+  it('BE3-3 & FE1-4: Step 4A preparation failures (network error, malformed recovery-key status) show a focused alert on the same step, create no keys, and a corrected retry succeeds', async () => {
+    const shim = makeTestShim();
+    const fetchState = installRecoveryRaceFetchMock();
+
+    let vaultCtx!: VaultContextValue;
+    renderRecovery({
+      locale: 'en',
+      workerFactory: () => shim.port,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await driveRecoveryToStep4A(() => vaultCtx);
+
+    async function submitStep4Password() {
+      fireEvent.change(screen.getByTestId('recovery-step4-reauth-password-input'), {
+        target: { value: 'account-login-password-123' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
+      });
+    }
+
+    // 1. The status GET fails at the network level.
+    fetchState.recoveryKeysStatusBody = 'reject';
+    await submitStep4Password();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step4-error')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    expect(screen.getByTestId('recovery-step4-error')).toHaveAttribute('role', 'alert');
+    expect(screen.getByTestId('recovery-step4-error')).toHaveFocus();
+    expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
+    expect(fetchState.regenCalls).toBe(0);
+
+    // 2. The server answers 200 with a malformed body (no `empty_slots`): fail closed, visible, no raw TypeError text.
+    fetchState.recoveryKeysStatusBody = {};
+    await submitStep4Password();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step4-error')).toHaveTextContent(
+        /Could not reach the server/i,
+      );
+    });
+    expect(screen.getByTestId('recovery-step4-error').textContent ?? '').not.toMatch(/iterable|undefined/i);
+    expect(screen.getByTestId('recovery-step-regenerate-reauth')).toBeInTheDocument();
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+    expect(fetchState.regenCalls).toBe(0);
+
+    // 3. A corrected response lets the same step retry and reach the replacement keys.
+    fetchState.recoveryKeysStatusBody = { remaining: 9, empty_slots: [1] };
+    await submitStep4Password();
+    await waitFor(() => {
+      expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('recovery-step4-error')).not.toBeInTheDocument();
+
+    shim.close();
+  }, 30_000);
 });
