@@ -7,9 +7,6 @@ import { decodeBase64UrlStrict, encodeBase64Url } from './b64url';
 import {
   buildEntryAad,
   canonicalizeEnvelopeJcs,
-  ENVELOPE_ALG,
-  ENVELOPE_CT_ENC,
-  ENVELOPE_VERSION,
   EnvelopeError,
   openEntryPayload,
   parseJsonRejectingDuplicateKeys,
@@ -946,7 +943,7 @@ export async function verifyVectorSuiteInTs(
   }
 }
 
-describe('P03-T6 Cross-Language Crypto Vectors (js-v1.json)', () => {
+describe('P03-T6 Cross-Language Crypto Vectors (js-v1.json & go-v1.json)', () => {
   it('generates (when GEN_CRYPTO_VECTORS=1) and verifies byte-identical packages/crypto-vectors/vectors/js-v1.json', async () => {
     const sodium = await getSodium();
     const suite = await buildJsCryptoVectorSuite(sodium);
@@ -971,6 +968,18 @@ describe('P03-T6 Cross-Language Crypto Vectors (js-v1.json)', () => {
     const suite = JSON.parse(committedText) as CryptoVectorSuiteV1;
     expect(suite.producer).toBe('js');
     await verifyVectorSuiteInTs(sodium, suite);
+    expect(decodeBase64UrlStrict(suite.inputs.x25519_public_b64u, 32).byteLength).toBe(32);
+    expect(decodeBase64UrlStrict(suite.inputs.ed25519_public_b64u, 32).byteLength).toBe(32);
+  }, 30_000);
+
+  it('opens and validates every positive and negative vector in committed go-v1.json (TS opens Go vectors)', async () => {
+    expect(existsSync(GO_VECTORS_PATH)).toBe(true);
+    const sodium = await getSodium();
+    const committedText = readFileSync(GO_VECTORS_PATH, 'utf8');
+    const suite = JSON.parse(committedText) as CryptoVectorSuiteV1;
+    expect(suite.producer).toBe('go');
+    await verifyVectorSuiteInTs(sodium, suite);
+
     expect(decodeBase64UrlStrict(suite.inputs.x25519_public_b64u, 32).byteLength).toBe(32);
     expect(decodeBase64UrlStrict(suite.inputs.ed25519_public_b64u, 32).byteLength).toBe(32);
   }, 30_000);
