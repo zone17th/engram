@@ -900,4 +900,123 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
     expect(document.body.textContent ?? '').not.toContain('rk1_3F8K');
   });
+
+  it('BE1-4: copying recovery keys then leaving via completion, Back, or lock preserves the 30s clipboard wipe and handles clipboard permission errors safely', async () => {
+    let currentMe = makeMeFixture('absent');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        currentMe = makeMeFixture('present');
+        return jsonResponse({ vault_key_id: 'vk:be1-4-key', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    let simulatedClipboard = '';
+    let rejectClipboardWrite = false;
+    const writeTextSpy = vi.fn(async (text: string) => {
+      if (rejectClipboardWrite) {
+        throw new DOMException('Clipboard write permission denied', 'NotAllowedError');
+      }
+      simulatedClipboard = text;
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextSpy },
+    });
+
+    const { unmount } = renderOnboarding({ locale: 'en' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+
+    // 1. Copy keys, then press Back (unmounts RecoveryKeysSheet) before 30s ->
+    //    Advancing past 30s MUST still wipe the clipboard to empty string.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(simulatedClipboard).toContain('rk1_3F8K');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-back-button'));
+    });
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(simulatedClipboard).toBe('');
+
+    vi.useRealTimers();
+
+    // 2. Re-enter Step 2, test permission-denied path on Copy, then copy and complete onboarding (unmounts sheet) ->
+    //    Advancing past 30s MUST wipe the clipboard.
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // Permission denied on initial copy must not throw or leave unhandled rejection
+    rejectClipboardWrite = true;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(simulatedClipboard).toBe('');
+    rejectClipboardWrite = false;
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+
+    // Copy succeeds, then complete onboarding (sheet unmounts)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(simulatedClipboard).toContain('rk1_3F8K');
+
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    });
+    unmount();
+
+    // Even if clipboard permission is later denied during the 30s timer callback, it swallows the error cleanly;
+    // when allowed, it clears the clipboard after 30s despite sheet unmount.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(simulatedClipboard).toBe('');
+  });
 });

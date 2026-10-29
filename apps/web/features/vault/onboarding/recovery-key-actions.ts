@@ -68,13 +68,21 @@ export function printRecoveryKeysSheet(): void {
   window.print();
 }
 
+function clearSystemClipboardBestEffort(): void {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText('').catch(() => undefined);
+  }
+}
+
 /**
  * Copies the 10 recovery keys to the system clipboard and schedules a best-effort clear after 30s.
- * Returns a cleanup function that cancels the timer.
+ * Never retains the key payload in a closure after the initial write.
+ * Returns a cleanup function that cancels any pending re-copy timer; when `options?.clearNow` is true,
+ * it also immediately clears the clipboard.
  */
 export async function copyRecoveryKeysToClipboard(
   keys: ReadonlyArray<Pick<RecoveryKeyItemResult, 'slot' | 'display'>>,
-): Promise<() => void> {
+): Promise<(options?: { clearNow?: boolean }) => void> {
   const payload = [...keys]
     .sort((a, b) => a.slot - b.slot)
     .map((k) => k.display)
@@ -84,13 +92,19 @@ export async function copyRecoveryKeysToClipboard(
     await navigator.clipboard.writeText(payload);
   }
 
+  let active = true;
   const timer = setTimeout(() => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText('').catch(() => undefined);
-    }
+    active = false;
+    clearSystemClipboardBestEffort();
   }, CLIPBOARD_CLEAR_DELAY_MS);
 
-  return () => {
-    clearTimeout(timer);
+  return (options?: { clearNow?: boolean }) => {
+    if (active) {
+      active = false;
+      clearTimeout(timer);
+    }
+    if (options?.clearNow) {
+      clearSystemClipboardBestEffort();
+    }
   };
 }
