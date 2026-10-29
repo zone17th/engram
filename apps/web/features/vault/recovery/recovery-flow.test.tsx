@@ -2594,4 +2594,83 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 30_000);
+  for (const lateProblem of [
+    { status: 401, code: 'reauth_expired' },
+    { status: 503, code: 'vault_mutations_disabled' },
+  ]) {
+    it(`BE2-11 (OAuth-only account): a late ${lateProblem.status} ${lateProblem.code} from the complete POST never clears the replacement's grant, locks it or changes its pending re-auth`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true, hasPassword: false });
+      fetchState.completeProblem = { status: lateProblem.status, code: lateProblem.code };
+
+      let vaultCtx!: VaultContextValue;
+      let reauthCtx!: UseReauthReturn;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+        onReauthProbe: (r) => {
+          reauthCtx = r;
+        },
+      });
+
+      // OAuth-only account: the `vault.recover` grant comes from the OAuth receipt (mocked grant, no real token), not a password.
+      await waitFor(() => {
+        expect(screen.getByTestId('test-recovery-probe')).toHaveTextContent(
+          'authenticated_with_vault|locked|locked|',
+        );
+        expect(reauthCtx.pendingAction).toBe('vault.recover');
+      });
+      expect(reauthCtx.capabilities.hasPassword).toBe(false);
+      await act(async () => {
+        await reauthCtx.consumeOauthReceipt('vault.recover', 'google');
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
+      });
+      await submitRecoveryStep2();
+      await waitFor(() => {
+        expect(screen.getByTestId('recovery-step-new-passphrase')).toBeInTheDocument();
+      });
+      fireEvent.change(screen.getByTestId('recovery-new-passphrase-input'), {
+        target: { value: STRONG_NEW_PASSPHRASE },
+      });
+      fireEvent.change(screen.getByTestId('recovery-confirm-passphrase-input'), {
+        target: { value: STRONG_NEW_PASSPHRASE },
+      });
+      fireEvent.click(screen.getByTestId('recovery-step3-submit'));
+      await waitFor(() => {
+        expect(fetchState.completeReleases).toHaveLength(1);
+      });
+
+      // Lock and unlock a replacement session while the old complete POST is still in flight.
+      await act(async () => {
+        await vaultCtx.lockNow();
+      });
+      await unlockReplacementSession(() => vaultCtx);
+      const replacementGeneration = vaultCtx.getClient().getGeneration();
+      const grantBefore = reauthCtx.grant?.grant;
+      const pendingActionBefore = reauthCtx.pendingAction;
+      expect(grantBefore).toBeTruthy();
+
+      await act(async () => {
+        fetchState.completeReleases[0]?.();
+      });
+      await settle();
+
+      expect(fetchState.completeCalls).toBe(1);
+      // The OAuth branch of the late error would clear the grant and lock: neither may touch the replacement.
+      expect(vaultCtx.state).toBe('unlocked');
+      expect(vaultCtx.workerState).toBe('unlocked');
+      expect(vaultCtx.getClient().getGeneration()).toBe(replacementGeneration);
+      expect(reauthCtx.grant?.grant).toBe(grantBefore);
+      expect(reauthCtx.pendingAction).toBe(pendingActionBefore);
+      expect(screen.queryByTestId('recovery-error-reauth-expired-oauth')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-error-mutations-disabled')).not.toBeInTheDocument();
+
+      shim.close();
+    }, 30_000);
+  }
 });
