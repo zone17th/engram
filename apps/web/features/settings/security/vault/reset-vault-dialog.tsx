@@ -58,7 +58,16 @@ export function ResetVaultDialog({
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth, refetchMe } = useSession();
-  const vault = useVault();
+  const {
+    inFlight,
+    vaultMeta: providerVaultMeta,
+    registerSecretFormReset,
+    reloadVaultMeta,
+    setActiveOperation,
+    markResetPurged,
+    lock,
+    notifyVaultChanged,
+  } = useVault();
 
   const [step, setStep] = useState<ResetStep>('s1_paths');
   const [loginPassword, setLoginPassword] = useState('');
@@ -95,11 +104,11 @@ export function ResetVaultDialog({
   }, [clearInputs]);
 
   useEffect(() => {
-    return vault.registerSecretFormReset(() => {
+    return registerSecretFormReset(() => {
       if (committedResetRef.current) return;
       resetDialogState();
     });
-  }, [resetDialogState, vault]);
+  }, [registerSecretFormReset, resetDialogState]);
 
   useEffect(() => {
     if (!open) {
@@ -144,7 +153,7 @@ export function ResetVaultDialog({
       switch (classified.kind) {
         case 'version_mismatch':
           setStep('mismatch');
-          void vault.reloadVaultMeta().catch(() => undefined);
+          void reloadVaultMeta().catch(() => undefined);
           return;
         case 'reauth_expired':
           setStep('reauth_expired');
@@ -178,7 +187,7 @@ export function ResetVaultDialog({
           setErrorMessage(t('errors.genericError'));
       }
     },
-    [t, vault],
+    [reloadVaultMeta, t],
   );
 
   const handleStep3ReauthSubmit = useCallback(async () => {
@@ -202,9 +211,9 @@ export function ResetVaultDialog({
 
   const executeResetDelete = useCallback(
     async (grantToken: string) => {
-      let currentMeta = vaultMeta ?? vault.vaultMeta;
+      let currentMeta = vaultMeta ?? providerVaultMeta;
       if (!currentMeta) {
-        currentMeta = await vault.reloadVaultMeta();
+        currentMeta = await reloadVaultMeta();
       }
       if (!currentMeta) {
         throw new Error('Missing vault metadata for If-Match');
@@ -215,7 +224,7 @@ export function ResetVaultDialog({
       }
       const ifMatch = formatVaultIfMatch(currentMeta.vault_key_id, currentMeta.version);
 
-      vault.setActiveOperation('resetting');
+      setActiveOperation('resetting');
       try {
         await resetVault({
           ifMatch,
@@ -223,7 +232,7 @@ export function ResetVaultDialog({
           reauthToken: grantToken,
         });
       } finally {
-        vault.setActiveOperation(null);
+        setActiveOperation(null);
       }
 
       // R2-1: Mark reset committed before calling vault.lock so registerSecretFormReset does not flash s1_paths,
@@ -241,13 +250,13 @@ export function ResetVaultDialog({
       // drops VK and peer tabs hear about the reset without waiting on IDB, then await the purge before refetchMe.
       const resetVaultKeyId = currentMeta.vault_key_id;
       const purgePromise = purgeDeviceKeysOnRevoked(me?.user.id);
-      vault.markResetPurged(resetVaultKeyId);
+      markResetPurged(resetVaultKeyId);
       try {
-        await vault.lock({ broadcast: false, reason: 'vault_reset' });
+        await lock({ broadcast: false, reason: 'vault_reset' });
       } catch {
         // Best-effort local lock after 204
       }
-      vault.notifyVaultChanged({
+      notifyVaultChanged({
         vault_key_id: resetVaultKeyId,
         version: null,
       });
@@ -270,12 +279,17 @@ export function ResetVaultDialog({
     },
     [
       clearInputs,
+      lock,
+      markResetPurged,
       me?.user.id,
+      notifyVaultChanged,
       onSuccessToast,
+      providerVaultMeta,
       reauth,
       refetchMe,
+      reloadVaultMeta,
+      setActiveOperation,
       t,
-      vault,
       vaultMeta,
     ],
   );
@@ -284,7 +298,7 @@ export function ResetVaultDialog({
     if (
       inFlightGuardRef.current ||
       submitting ||
-      vault.inFlight ||
+      inFlight ||
       !isResetConfirmationWordValid(confirmWord)
     ) {
       return;
@@ -319,7 +333,7 @@ export function ResetVaultDialog({
     handleError,
     reauth.grant,
     submitting,
-    vault.inFlight,
+    inFlight,
   ]);
 
   const handleInlineReauthAndReset = useCallback(async () => {
@@ -359,7 +373,7 @@ export function ResetVaultDialog({
   const handleReloadVault = useCallback(async () => {
     setReloadingVault(true);
     try {
-      await vault.reloadVaultMeta();
+      await reloadVaultMeta();
       onSuccessToast?.(t('common.vaultReloadedToast'));
       handleClose();
     } catch {
@@ -367,7 +381,7 @@ export function ResetVaultDialog({
     } finally {
       setReloadingVault(false);
     }
-  }, [handleClose, onSuccessToast, t, vault]);
+  }, [handleClose, onSuccessToast, reloadVaultMeta, t]);
 
   const confirmValid = isResetConfirmationWordValid(confirmWord);
 
@@ -615,7 +629,7 @@ export function ResetVaultDialog({
                   id="rstConfirmBtn"
                   type="button"
                   variant="danger"
-                  disabled={!confirmValid || submitting || vault.inFlight}
+                  disabled={!confirmValid || submitting || inFlight}
                   aria-busy={submitting}
                   onClick={() => void handleConfirmReset()}
                 >

@@ -48,7 +48,15 @@ export function ChangePassphraseDialog({
 }: ChangePassphraseDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth } = useSession();
-  const vault = useVault();
+  const {
+    inFlight,
+    vaultMeta: providerVaultMeta,
+    registerSecretFormReset,
+    beginOp,
+    rewrap,
+    notifyVaultChanged,
+    reloadVaultMeta,
+  } = useVault();
 
   const [step, setStep] = useState<ChangePassphraseStep>('form');
   const [loginPassword, setLoginPassword] = useState('');
@@ -99,10 +107,10 @@ export function ChangePassphraseDialog({
 
   // Register secret form reset on vault lock / logout (R1-7: also clear idempotencyKeyRef, pendingRewrapResultRef, and return to form step)
   useEffect(() => {
-    return vault.registerSecretFormReset(() => {
+    return registerSecretFormReset(() => {
       resetDialogState();
     });
-  }, [resetDialogState, vault]);
+  }, [registerSecretFormReset, resetDialogState]);
 
   // Obtain / begin re-auth (`vault.rewrap`) WHEN THE DIALOG OPENS, before any secret goes to the Worker (plan §1).
   useEffect(() => {
@@ -150,7 +158,7 @@ export function ChangePassphraseDialog({
 
   const executePutKek = useCallback(
     async (rewrapped: RewrapResult, grantToken: string) => {
-      const currentMeta = vaultMeta ?? vault.vaultMeta;
+      const currentMeta = vaultMeta ?? providerVaultMeta;
       if (!currentMeta) {
         throw new Error('Missing vault metadata for If-Match');
       }
@@ -170,12 +178,12 @@ export function ChangePassphraseDialog({
         },
       );
 
-      vault.notifyVaultChanged({
+      notifyVaultChanged({
         vault_key_id: currentMeta.vault_key_id,
         version: response.version,
       });
       // R1-2: reload GET /vault best-effort so the acting tab's cached `vaultMeta` reflects the new kdf.salt and wrap
-      await vault.reloadVaultMeta().catch(() => undefined);
+      await reloadVaultMeta().catch(() => undefined);
       wipeSecretState();
       idempotencyKeyRef.current = null;
       reauth.clearGrant();
@@ -183,7 +191,7 @@ export function ChangePassphraseDialog({
       // R1-8: route through the mockup's 'done' step (`data-view="pass-done"`) before closing
       setStep('done');
     },
-    [onSuccessToast, reauth, t, vault, vaultMeta, wipeSecretState],
+    [notifyVaultChanged, onSuccessToast, providerVaultMeta, reauth, reloadVaultMeta, t, vaultMeta, wipeSecretState],
   );
 
   const handleError = useCallback(
@@ -198,7 +206,7 @@ export function ChangePassphraseDialog({
       switch (classified.kind) {
         case 'version_mismatch':
           setStep('mismatch');
-          void vault.reloadVaultMeta().catch(() => undefined);
+          void reloadVaultMeta().catch(() => undefined);
           return;
         case 'insufficient_memory':
           setStep('oom');
@@ -246,11 +254,11 @@ export function ChangePassphraseDialog({
           setErrorMessage(t('errors.genericError'));
       }
     },
-    [t, vault],
+    [reloadVaultMeta, t],
   );
 
   const handleSubmitForm = useCallback(async () => {
-    if (inFlightGuardRef.current || submitting || vault.inFlight) return;
+    if (inFlightGuardRef.current || submitting || inFlight) return;
     // R1-4: set single-flight guard synchronously BEFORE the first await (`checkPassphrasePolicy`)
     inFlightGuardRef.current = true;
     setSubmitting(true);
@@ -288,7 +296,7 @@ export function ChangePassphraseDialog({
       }
 
       // 2. Capture immutable opGeneration BEFORE the first await of the operation (ADR 0002 §10.2)
-      const { opGeneration, isCurrent } = vault.beginOp();
+      const { opGeneration, isCurrent } = beginOp();
 
       // 3. Obtain re-auth grant (`vault.rewrap`) BEFORE sending passphrase to Worker (plan §1)
       const candidateGrant = activeGrantRef.current ?? reauth.grant;
@@ -326,7 +334,7 @@ export function ChangePassphraseDialog({
         return;
       }
 
-      const currentMeta = vaultMeta ?? vault.vaultMeta;
+      const currentMeta = vaultMeta ?? providerVaultMeta;
       if (!currentMeta) {
         setErrorMessage(t('errors.genericError'));
         return;
@@ -339,7 +347,7 @@ export function ChangePassphraseDialog({
         // Clear passphrase input strings immediately as we hand off to Worker
         setNewPassphrase('');
         setConfirmPassphrase('');
-        rewrapped = await vault.rewrap({
+        rewrapped = await rewrap({
           passphrase: passphraseToTransfer,
           currentKdf: currentMeta.kdf,
           opGeneration,
@@ -365,17 +373,20 @@ export function ChangePassphraseDialog({
       setSubmitting(false);
     }
   }, [
+    beginOp,
     confirmPassphrase,
     executePutKek,
     handleError,
     hasPassword,
+    inFlight,
     loginPassword,
     me?.user.email,
     newPassphrase,
+    providerVaultMeta,
     reauth,
+    rewrap,
     submitting,
     t,
-    vault,
     vaultMeta,
   ]);
 
@@ -421,7 +432,7 @@ export function ChangePassphraseDialog({
   const handleReloadVault = useCallback(async () => {
     setReloadingVault(true);
     try {
-      await vault.reloadVaultMeta();
+      await reloadVaultMeta();
       onSuccessToast?.(t('common.vaultReloadedToast'));
       handleClose();
     } catch {
@@ -429,7 +440,7 @@ export function ChangePassphraseDialog({
     } finally {
       setReloadingVault(false);
     }
-  }, [handleClose, onSuccessToast, t, vault]);
+  }, [handleClose, onSuccessToast, reloadVaultMeta, t]);
 
   const strengthPercent = policyResult ? Math.min(100, Math.round(((policyResult.score + 1) / 5) * 100)) : 0;
   const isStrong = Boolean(policyResult?.meetsMinScore && policyResult?.meetsMinLength);
@@ -631,7 +642,7 @@ export function ChangePassphraseDialog({
                   <Button
                     type="button"
                     variant="primary"
-                    disabled={submitting || vault.inFlight}
+                    disabled={submitting || inFlight}
                     aria-busy={submitting}
                     onClick={() => void handleSubmitForm()}
                   >

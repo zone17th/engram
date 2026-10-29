@@ -52,7 +52,14 @@ export function RecoveryKeysDialog({
 }: RecoveryKeysDialogsProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth } = useSession();
-  const vault = useVault();
+  const {
+    inFlight,
+    vaultMeta: providerVaultMeta,
+    registerSecretFormReset,
+    beginOp,
+    notifyVaultChanged,
+    reloadVaultMeta,
+  } = useVault();
 
   const open = mode !== null;
   const isRotate = mode === 'rotate';
@@ -106,10 +113,10 @@ export function RecoveryKeysDialog({
   // Register secret form reset so locking the vault immediately wipes displayed RK from DOM/state,
   // clears idempotencyKeyRef, and returns to the first step (R1-7).
   useEffect(() => {
-    return vault.registerSecretFormReset(() => {
+    return registerSecretFormReset(() => {
       resetDialogState();
     });
-  }, [resetDialogState, vault]);
+  }, [registerSecretFormReset, resetDialogState]);
 
   // Also wipe keys on component unmount
   useEffect(() => {
@@ -120,7 +127,7 @@ export function RecoveryKeysDialog({
 
   const generateKeysInWorker = useCallback(
     async (grant: ReauthGrant) => {
-      const { opGeneration, client, isCurrent } = vault.beginOp();
+      const { opGeneration, client, isCurrent } = beginOp();
       const slotsToGenerate = isRotate
         ? [...ALL_TEN_SLOTS]
         : [...emptySlots].sort((a, b) => a - b);
@@ -149,7 +156,7 @@ export function RecoveryKeysDialog({
       setAcknowledged(false);
       setStep('keys');
     },
-    [emptySlots, isRotate, vault],
+    [beginOp, emptySlots, isRotate],
   );
 
   // When dialog opens, begin re-auth at flow start before any Worker call (plan §1)
@@ -202,7 +209,7 @@ export function RecoveryKeysDialog({
           setGeneratedKeys([]);
           uploadPayloadRef.current = null;
           setStep('mismatch');
-          void vault.reloadVaultMeta().catch(() => undefined);
+          void reloadVaultMeta().catch(() => undefined);
           return;
         case 'rate_limited':
           setStep('ratelimit');
@@ -221,7 +228,7 @@ export function RecoveryKeysDialog({
           setGeneratedKeys([]);
           uploadPayloadRef.current = null;
           setErrorMessage(t('errors.recoveryKeySlotTaken'));
-          void vault.reloadVaultMeta().catch(() => undefined);
+          void reloadVaultMeta().catch(() => undefined);
           onStatusChanged?.();
           return;
         case 'recovery_key_conflict':
@@ -260,7 +267,7 @@ export function RecoveryKeysDialog({
           setErrorMessage(t('errors.genericError'));
       }
     },
-    [hasPassword, onStatusChanged, t, vault],
+    [hasPassword, onStatusChanged, reloadVaultMeta, t],
   );
 
   const handleStep1ReauthSubmit = useCallback(async () => {
@@ -290,7 +297,7 @@ export function RecoveryKeysDialog({
 
   const executeSaveKeys = useCallback(
     async (grantToken: string) => {
-      const currentMeta = vaultMeta ?? vault.vaultMeta;
+      const currentMeta = vaultMeta ?? providerVaultMeta;
       if (!currentMeta) {
         throw new Error('Missing vault metadata for If-Match');
       }
@@ -312,7 +319,7 @@ export function RecoveryKeysDialog({
             reauthToken: grantToken,
           },
         );
-        vault.notifyVaultChanged({
+        notifyVaultChanged({
           vault_key_id: currentMeta.vault_key_id,
           version: res.version,
         });
@@ -326,7 +333,7 @@ export function RecoveryKeysDialog({
             reauthToken: grantToken,
           },
         );
-        vault.notifyVaultChanged({
+        notifyVaultChanged({
           vault_key_id: currentMeta.vault_key_id,
           version: res.version,
         });
@@ -341,7 +348,7 @@ export function RecoveryKeysDialog({
       onStatusChanged?.();
       onClose();
     },
-    [isRotate, onClose, onStatusChanged, onSuccessToast, reauth, t, vault, vaultMeta, wipeKeysAndSecrets],
+    [isRotate, notifyVaultChanged, onClose, onStatusChanged, onSuccessToast, providerVaultMeta, reauth, t, vaultMeta, wipeKeysAndSecrets],
   );
 
   const handleConfirmSaveKeys = useCallback(async () => {
@@ -422,7 +429,7 @@ export function RecoveryKeysDialog({
   const handleReloadVault = useCallback(async () => {
     setReloadingVault(true);
     try {
-      await vault.reloadVaultMeta();
+      await reloadVaultMeta();
       onStatusChanged?.();
       onSuccessToast?.(t('common.vaultReloadedToast'));
       handleClose();
@@ -431,7 +438,7 @@ export function RecoveryKeysDialog({
     } finally {
       setReloadingVault(false);
     }
-  }, [handleClose, onStatusChanged, onSuccessToast, t, vault]);
+  }, [handleClose, onStatusChanged, onSuccessToast, reloadVaultMeta, t]);
 
   if (!open || !mode) return null;
 
@@ -605,7 +612,7 @@ export function RecoveryKeysDialog({
                   id={confirmBtnId}
                   type="button"
                   variant="primary"
-                  disabled={!acknowledged || submitting || vault.inFlight}
+                  disabled={!acknowledged || submitting || inFlight}
                   aria-busy={submitting}
                   onClick={() => void handleConfirmSaveKeys()}
                 >

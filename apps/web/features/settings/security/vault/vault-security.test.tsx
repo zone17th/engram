@@ -18,6 +18,7 @@ import {
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
+import * as vaultProviderModule from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
 import type { VaultRecoveryKeysStatus, VaultState } from '@/lib/api/vault';
 import { CryptoClientError } from '@/lib/crypto/client';
@@ -2106,5 +2107,90 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(step3LoginInput.value).toBe('');
     expect(within(dialog).queryByLabelText('Login password')).toBeNull();
     expect(within(dialog).getByText(/Step 1 of 5/i)).toBeInTheDocument();
+  });
+
+  it('mounts dialogs only while open and calls registerSecretFormReset exactly once per dialog open without re-registering on unrelated provider state changes (r14)', async () => {
+    const user = userEvent.setup();
+    const { getVaultCtx } = await renderSettingsHarness();
+
+    let registerCalls = 0;
+    let unregisterCalls = 0;
+    const origRegister = getVaultCtx().registerSecretFormReset;
+    const registerSpy = vi.fn((resetFn: () => void) => {
+      registerCalls += 1;
+      const cleanupFn = origRegister(resetFn);
+      return () => {
+        unregisterCalls += 1;
+        cleanupFn();
+      };
+    });
+    vi.spyOn(vaultProviderModule, 'useVault').mockImplementation(() => {
+      const ctx = getVaultCtx();
+      return {
+        ...ctx,
+        registerSecretFormReset: registerSpy,
+      };
+    });
+
+    // While all 3 dialogs are closed, zero registerSecretFormReset calls occur on provider updates
+    await act(async () => {
+      getVaultCtx().recordActivity(Date.now() + 5_000);
+      getVaultCtx().notifySettingsChanged({ auto_lock_minutes: 5 });
+    });
+    expect(registerCalls).toBe(0);
+    expect(unregisterCalls).toBe(0);
+
+    // 1. Open ChangePassphraseDialog -> registers exactly once; unrelated provider state changes do NOT re-register
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const passDlg = await screen.findByRole('dialog');
+    expect(registerCalls).toBe(1);
+    expect(unregisterCalls).toBe(0);
+
+    await act(async () => {
+      getVaultCtx().recordActivity(Date.now() + 10_000);
+      getVaultCtx().notifySettingsChanged({ auto_lock_minutes: 15 });
+      getVaultCtx().setActiveOperation('rewrapping');
+      getVaultCtx().setActiveOperation(null);
+    });
+    expect(registerCalls).toBe(1);
+    expect(unregisterCalls).toBe(0);
+
+    await user.click(within(passDlg).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(unregisterCalls).toBe(1);
+
+    // 2. Open RecoveryKeysDialog -> registers once (total 2); unrelated provider state changes do NOT re-register
+    await user.click(screen.getByRole('button', { name: 'Rotate all 10' }));
+    const rotDlg = await screen.findByRole('dialog');
+    expect(registerCalls).toBe(2);
+    expect(unregisterCalls).toBe(1);
+
+    await act(async () => {
+      getVaultCtx().recordActivity(Date.now() + 20_000);
+      getVaultCtx().notifySettingsChanged({ auto_lock_minutes: 60 });
+    });
+    expect(registerCalls).toBe(2);
+    expect(unregisterCalls).toBe(1);
+
+    await user.click(within(rotDlg).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(unregisterCalls).toBe(2);
+
+    // 3. Open ResetVaultDialog -> registers once (total 3); unrelated provider state changes do NOT re-register
+    await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+    const rstDlg = await screen.findByRole('dialog');
+    expect(registerCalls).toBe(3);
+    expect(unregisterCalls).toBe(2);
+
+    await act(async () => {
+      getVaultCtx().recordActivity(Date.now() + 30_000);
+      getVaultCtx().notifySettingsChanged({ auto_lock_minutes: 0 });
+    });
+    expect(registerCalls).toBe(3);
+    expect(unregisterCalls).toBe(2);
+
+    await user.click(within(rstDlg).getByRole('button', { name: 'Later' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(unregisterCalls).toBe(3);
   });
 });

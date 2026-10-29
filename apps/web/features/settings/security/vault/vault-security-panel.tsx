@@ -33,7 +33,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const t = useTranslations('settings.vaultSecurity');
   const queryClient = useQueryClient();
   const { me, sessionEpoch, refetchMe } = useSession();
-  const vault = useVault();
+  const { workerState, inFlight, vaultMeta, reloadVaultMeta } = useVault();
 
   const [passDialogOpen, setPassDialogOpen] = useState(false);
   const [rkDialogMode, setRkDialogMode] = useState<RecoveryKeysDialogMode | null>(null);
@@ -42,9 +42,9 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const [vaultMetaLoadFailed, setVaultMetaLoadFailed] = useState(false);
 
   const isVaultPresent = me?.vault.status === 'present';
-  const isVaultUnlocked = vault.workerState === 'unlocked';
-  const requiresUnlockedDisabled = !isVaultPresent || !isVaultUnlocked || vault.inFlight;
-  const resetDisabled = !isVaultPresent || vault.vaultMeta === null || vault.inFlight;
+  const isVaultUnlocked = workerState === 'unlocked';
+  const requiresUnlockedDisabled = !isVaultPresent || !isVaultUnlocked || inFlight;
+  const resetDisabled = !isVaultPresent || vaultMeta === null || inFlight;
 
   const refetchMeRef = useRef(refetchMe);
   refetchMeRef.current = refetchMe;
@@ -53,8 +53,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   const handleRetryVaultMetaReload = useCallback(() => {
     nullTransitionRef.current = true;
     setVaultMetaLoadFailed(false);
-    void vault
-      .reloadVaultMeta()
+    void reloadVaultMeta()
       .then((loaded) => {
         if (loaded === null) {
           void refetchMeRef.current().catch(() => undefined);
@@ -64,7 +63,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         nullTransitionRef.current = false;
         setVaultMetaLoadFailed(true);
       });
-  }, [vault]);
+  }, [reloadVaultMeta]);
 
   // Ensure `GET /vault` metadata is loaded whenever the vault is present so If-Match is ready.
   // Kept after the vaultweb sync: `VaultProvider` only runs `refetchMe()` on remote `vault_changed{version:null}`
@@ -72,7 +71,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
   // `nullTransitionRef` + `refetchMeRef.current()` bound 404 retries (R2-3) and reconcile `Me` in the acting tab if an
   // initial or post-reset `refetchMe()` fails and `reloadVaultMeta()` later observes `404 vault_absent` (R4-4 / R5-2).
   useEffect(() => {
-    if (!isVaultPresent || vault.vaultMeta !== null) {
+    if (!isVaultPresent || vaultMeta !== null) {
       nullTransitionRef.current = false;
       setVaultMetaLoadFailed(false);
       return;
@@ -80,8 +79,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
     if (nullTransitionRef.current) return;
     nullTransitionRef.current = true;
     setVaultMetaLoadFailed(false);
-    void vault
-      .reloadVaultMeta()
+    void reloadVaultMeta()
       .then((loaded) => {
         if (loaded === null) {
           void refetchMeRef.current().catch(() => undefined);
@@ -91,31 +89,30 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         nullTransitionRef.current = false;
         setVaultMetaLoadFailed(true);
       });
-  }, [isVaultPresent, vault]);
+  }, [isVaultPresent, reloadVaultMeta, vaultMeta]);
   // Fetch detailed RK slot status only while the vault is unlocked AND `vaultMeta` carries a numeric
   // `recovery_keys_remaining` from the real OpenAPI `GET /vault` schema (F2: regenerating/rotating RK
   // requires an unlocked vault, and avoids hitting unmocked `/api/v1/vault/recovery-keys` while locked
   // or in Worker-only CSP harness tests whose mock `GET /vault` uses a legacy nested object).
-  const hasOpenApiVaultMeta = typeof vault.vaultMeta?.recovery_keys_remaining === 'number';
+  const hasOpenApiVaultMeta = typeof vaultMeta?.recovery_keys_remaining === 'number';
   const isRkQueryGatedOff = Boolean(
-    vault.vaultMeta !== null && !hasOpenApiVaultMeta,
+    vaultMeta !== null && !hasOpenApiVaultMeta,
   );
   const rkStatusQuery = useQuery({
-    queryKey: ['vault', 'recovery-keys-status', sessionEpoch, vault.vaultMeta?.version ?? 0],
+    queryKey: ['vault', 'recovery-keys-status', sessionEpoch, vaultMeta?.version ?? 0],
     queryFn: () => fetchRecoveryKeysStatus(),
     enabled: Boolean(me && isVaultPresent && isVaultUnlocked && hasOpenApiVaultMeta),
     retry: false,
   });
   const remainingKeys =
     rkStatusQuery.data?.remaining ??
-    vault.vaultMeta?.recovery_keys_remaining ??
+    vaultMeta?.recovery_keys_remaining ??
     null;
   const totalSlots = rkStatusQuery.data?.slots ?? 10;
   const emptySlots = rkStatusQuery.data?.empty_slots ?? [];
   const emptySlotSet = new Set(emptySlots);
   const hasEmptySlots = Boolean(rkStatusQuery.data && emptySlots.length > 0);
-  const passkeysCount = vault.vaultMeta?.passkeys.length ?? 0;
-
+  const passkeysCount = vaultMeta?.passkeys.length ?? 0;
   const handleStatusChanged = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['vault', 'recovery-keys-status'] });
   }, [queryClient]);
@@ -170,7 +167,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         </div>
       )}
 
-      {vault.inFlight && (
+      {inFlight && (
         <AuthStatus tone="loading" className="mb-3">
           {t('stateBanner.inFlightBody')}
         </AuthStatus>
@@ -362,7 +359,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           >
             {t('reset.openButton')}
           </Button>
-          {isVaultPresent && vault.vaultMeta === null && vaultMetaLoadFailed && (
+          {isVaultPresent && vaultMeta === null && vaultMetaLoadFailed && (
             <Button
               type="button"
               variant="tertiary"
@@ -387,36 +384,42 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
         />
       )}
 
-      <ChangePassphraseDialog
-        open={passDialogOpen}
-        onOpenChange={setPassDialogOpen}
-        vaultMeta={vault.vaultMeta}
-        remainingRecoveryKeys={remainingKeys}
-        passkeysCount={passkeysCount}
-        onSuccessToast={setToastMessage}
-        onOpenSignOutOthers={onOpenRevokeSessionsDialog}
-      />
+      {passDialogOpen && (
+        <ChangePassphraseDialog
+          open={passDialogOpen}
+          onOpenChange={setPassDialogOpen}
+          vaultMeta={vaultMeta}
+          remainingRecoveryKeys={remainingKeys}
+          passkeysCount={passkeysCount}
+          onSuccessToast={setToastMessage}
+          onOpenSignOutOthers={onOpenRevokeSessionsDialog}
+        />
+      )}
 
-      <RecoveryKeysDialog
-        mode={rkDialogMode}
-        onClose={() => setRkDialogMode(null)}
-        vaultMeta={vault.vaultMeta}
-        emptySlots={emptySlots}
-        remainingRecoveryKeys={remainingKeys}
-        onSuccessToast={setToastMessage}
-        onStatusChanged={handleStatusChanged}
-      />
+      {rkDialogMode !== null && (
+        <RecoveryKeysDialog
+          mode={rkDialogMode}
+          onClose={() => setRkDialogMode(null)}
+          vaultMeta={vaultMeta}
+          emptySlots={emptySlots}
+          remainingRecoveryKeys={remainingKeys}
+          onSuccessToast={setToastMessage}
+          onStatusChanged={handleStatusChanged}
+        />
+      )}
 
-      <ResetVaultDialog
-        open={resetDialogOpen}
-        onOpenChange={setResetDialogOpen}
-        vaultMeta={vault.vaultMeta}
-        remainingRecoveryKeys={remainingKeys}
-        passkeysCount={passkeysCount}
-        canChangePassphraseNow={!requiresUnlockedDisabled}
-        onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
-        onSuccessToast={setToastMessage}
-      />
+      {resetDialogOpen && (
+        <ResetVaultDialog
+          open={resetDialogOpen}
+          onOpenChange={setResetDialogOpen}
+          vaultMeta={vaultMeta}
+          remainingRecoveryKeys={remainingKeys}
+          passkeysCount={passkeysCount}
+          canChangePassphraseNow={!requiresUnlockedDisabled}
+          onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
+          onSuccessToast={setToastMessage}
+        />
+      )}
     </div>
   );
 }
