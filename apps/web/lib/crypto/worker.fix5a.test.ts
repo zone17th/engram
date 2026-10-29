@@ -201,6 +201,54 @@ describe('P03-T5 r5 fix-5a regressions', () => {
       ).rejects.toMatchObject({ code: 'SECRET_DETACHED_OR_EMPTY' });
     });
 
+    it('T-r6-1 M5d: a secret input whose buffer access throws still gives a coded CLIENT_BUSY (no escaping exception) and every other input is still wiped', async () => {
+      const { w, first, release, calls } = busyClient();
+      const boom = (): never => {
+        throw new Error('hostile secret input');
+      };
+      const hostile: Array<[string, () => unknown]> = [
+        // a real view whose `.buffer` accessor throws (the classifier reads it for the view bounds)
+        [
+          'Uint8Array with a throwing buffer getter',
+          () => Object.defineProperty(new Uint8Array(LEN).fill(7), 'buffer', { get: boom }),
+        ],
+        // `instanceof ArrayBuffer` (prototype lookup) throws
+        ['Proxy with a throwing getPrototypeOf', () => new Proxy({}, { getPrototypeOf: boom })],
+        // the ArrayBuffer object-tag read throws
+        ['object with a throwing Symbol.toStringTag', () => ({ get [Symbol.toStringTag](): string { return boom(); } })],
+        ['Proxy with a throwing get trap', () => new Proxy({}, { get: boom, getPrototypeOf: boom })],
+      ];
+      for (const [callName, call] of Object.entries(calls)) {
+        for (const [hostileName, make] of hostile) {
+          let caught: unknown;
+          try {
+            await call(make());
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught, `${callName} / ${hostileName}`).toMatchObject({
+            name: 'CryptoClientError',
+            code: 'CLIENT_BUSY',
+          });
+          // the call after a hostile one still sees and wipes an ordinary secret
+          const { secret, check } = SECRET_FORMS[0]!.make();
+          await expect(call(secret), `${callName} after ${hostileName}`).rejects.toMatchObject({
+            code: 'CLIENT_BUSY',
+          });
+          expect(check(), `${callName} after ${hostileName}: bytes zeroed`).toBe(true);
+        }
+      }
+      expect(w.shim.clientPostMessageCalls).toHaveLength(0);
+      release();
+      expectOk(
+        await first.then(
+          (value) => ({ ok: true as const, value }),
+          (err: unknown) => ({ ok: false as const, code: (err as { code?: string }).code ?? 'UNCODED' }),
+        ),
+        'held unlockPrf',
+      );
+    });
+
     it('FE5-2: submitting the same transferable buffer twice before the first reply gives the second a coded CLIENT_BUSY and leaves the first call intact', async () => {
       const w = world('client');
       const client = new CryptoClient({ createWorker: () => w.shim.port });

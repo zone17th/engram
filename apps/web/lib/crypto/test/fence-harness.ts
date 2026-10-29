@@ -681,6 +681,9 @@ export function createWorld(shared: SharedArtifacts, level: 'client' | 'worker')
   const detRecovery = makeDeterministicRecoveryAdapter();
   const shim = createWorkerShim({
     deriveKek: async (s, pass, params) => {
+      // `pass` is the Worker-normalized passphrase (a distinct TextEncoder allocation, not the received buffer):
+      // retain it so a missing wipe on any command path is visible to the zeroing check (BE6-1, FE6-1).
+      tracker.track('kdf-input', pass);
       await derive.maybePark();
       const out = fastDeriveKek(s, pass, params);
       tracker.track('kek', out);
