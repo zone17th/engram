@@ -275,10 +275,17 @@ func evalPRF(credSecret, prfSalt []byte) []byte {
 }
 
 func encodeES256COSEKey(pub *ecdsa.PublicKey, overrideAlg int64) ([]byte, error) {
+	uncompressed, err := pub.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("webauthntest: encode ES256 public key: %w", err)
+	}
+	if len(uncompressed) != 1+32+32 || uncompressed[0] != 0x04 {
+		return nil, fmt.Errorf("webauthntest: unexpected uncompressed P-256 public key length %d", len(uncompressed))
+	}
 	xBytes := make([]byte, 32)
 	yBytes := make([]byte, 32)
-	pub.X.FillBytes(xBytes)
-	pub.Y.FillBytes(yBytes)
+	copy(xBytes, uncompressed[1:33])
+	copy(yBytes, uncompressed[33:65])
 
 	alg := int64(webauthncose.AlgES256)
 	if overrideAlg != 0 {
