@@ -1205,11 +1205,11 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     });
 
     // Step 1: Re-auth
-    fireEvent.change(screen.getByLabelText(/Account login password/i), {
+    fireEvent.change(screen.getByTestId('recovery-reauth-password-input'), {
       target: { value: 'account-login-password-123' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+      fireEvent.click(screen.getByTestId('recovery-reauth-password-submit'));
     });
     await waitFor(() => {
       expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
@@ -1281,7 +1281,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       target: { value: 'account-login-password-123' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
     });
     // Because vault.state was 'unlocking' (unverified), prepareRegenerateKeys refused to call Worker makeRecoveryKeys or advance to regenerate-keys
     expect(screen.queryByTestId('recovery-step-regenerate-keys')).not.toBeInTheDocument();
@@ -1299,7 +1299,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       target: { value: 'account-login-password-123' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+      fireEvent.click(screen.getByTestId('recovery-step4-reauth-password-submit'));
     });
     await waitFor(() => {
       expect(screen.getByTestId('recovery-step-regenerate-keys')).toBeInTheDocument();
@@ -1403,11 +1403,11 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     });
 
     // Step 1: Re-auth
-    fireEvent.change(screen.getByLabelText(/Account login password/i), {
+    fireEvent.change(screen.getByTestId('recovery-reauth-password-input'), {
       target: { value: 'account-login-password-123' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+      fireEvent.click(screen.getByTestId('recovery-reauth-password-submit'));
     });
     await waitFor(() => {
       expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();
@@ -1553,11 +1553,11 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     });
 
     // Step 1: Acquire a grant with only 30s remaining (< 60s preflight threshold for Step 3)
-    fireEvent.change(screen.getByLabelText(/Account login password/i), {
+    fireEvent.change(screen.getByTestId('recovery-reauth-password-input'), {
       target: { value: 'account-login-password-123' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('reauth-submit-button'));
+      fireEvent.click(screen.getByTestId('recovery-reauth-password-submit'));
     });
     await waitFor(() => {
       expect(screen.getByTestId('recovery-step-enter-key')).toBeInTheDocument();

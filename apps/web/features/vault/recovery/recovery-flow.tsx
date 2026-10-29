@@ -359,8 +359,29 @@ export function VaultRecoveryFlow() {
   useEffect(() => {
     const currentVault = vaultRef.current;
     return currentVault.registerSecretFormReset(() => {
+      const liveClient = currentVault.getClient();
+      const isHardLockOrError =
+        currentVault.workerState === 'locked' ||
+        currentVault.workerState === 'error' ||
+        liveClient.getState() === 'locked' ||
+        liveClient.getState() === 'error';
+
+      if (!isHardLockOrError) {
+        // Wake verification gate while Worker is still unlocked or recovering (VS-R7-1 / BE2-4):
+        // clear volatile DOM inputs and hide unverified Step 4B surface, but preserve Step 3/4 recovery progress
+        // so a normal wake verification does not abort an active recovery or regeneration flow.
+        clearRecoveryKeyInputImmediate();
+        clearPassphraseInputsImmediate();
+        clearReauthPasswordInputs();
+        return;
+      }
+
       clearAllSecrets();
       workerHoldsRecoveryStateRef.current = false;
+      setLookingUpKey(false);
+      setCompletingRecovery(false);
+      setGeneratingRegenKeys(false);
+      setSavingRegenKeys(false);
       setRecoveryOpGeneration(null);
       setRecoveryKeyId(null);
       if (
@@ -378,7 +399,12 @@ export function VaultRecoveryFlow() {
         setStep(stillHasRecoverGrant ? 'enter-key' : 'reauth');
       }
     });
-  }, [clearAllSecrets]);
+  }, [
+    clearAllSecrets,
+    clearPassphraseInputsImmediate,
+    clearReauthPasswordInputs,
+    clearRecoveryKeyInputImmediate,
+  ]);
 
   // Leaving the recovery route mid-way (after unlockRecovery started and before recovery completes)
   // MUST lock the client to wipe VK and pending continuation; never send an unnecessary lock when
@@ -650,7 +676,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current && recoveryFlowSeqRef.current === opFlowSeq) {
+        if (isMountedRef.current) {
           setLookingUpKey(false);
         }
       }
@@ -823,7 +849,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current && recoveryFlowSeqRef.current === bundle.flowSeq) {
+        if (isMountedRef.current) {
           setCompletingRecovery(false);
         }
       }
@@ -975,7 +1001,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current && recoveryFlowSeqRef.current === opFlowSeq) {
+        if (isMountedRef.current) {
           setCompletingRecovery(false);
         }
       }
@@ -1173,7 +1199,7 @@ export function VaultRecoveryFlow() {
           detail: err instanceof Error ? err.message : undefined,
         });
       } finally {
-        if (isMountedRef.current && recoveryFlowSeqRef.current === opFlowSeq) {
+        if (isMountedRef.current) {
           setGeneratingRegenKeys(false);
         }
       }
@@ -1339,7 +1365,7 @@ export function VaultRecoveryFlow() {
         detail: err instanceof Error ? err.message : undefined,
       });
     } finally {
-      if (isMountedRef.current && recoveryFlowSeqRef.current === submitRegenBundle.flowSeq) {
+      if (isMountedRef.current) {
         setSavingRegenKeys(false);
       }
     }
