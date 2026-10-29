@@ -136,8 +136,10 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
               </div>
               <p className="m-0 text-[13px] text-muted">{t('stateBanner.lockedBody')}</p>
             </div>
+            {/* prefetch off until the vaultweb T17A sync lands this route */}
             <Link
               href="/app/unlock?returnTo=%2Fapp%2Fsettings"
+              prefetch={false}
               className="btn btn-secondary btn-sm ml-auto no-underline"
             >
               {t('stateBanner.lockedCta')}

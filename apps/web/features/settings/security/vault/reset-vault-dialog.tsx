@@ -376,7 +376,12 @@ export function ResetVaultDialog({
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
                     {t('reset.path1Label', { passkeys: passkeysCount })}
                   </span>
-                  <Link href="/app/unlock" className="btn btn-tertiary btn-sm ml-auto no-underline">
+                  {/* prefetch off until the vaultweb T17A sync lands this route */}
+                  <Link
+                    href="/app/unlock"
+                    prefetch={false}
+                    className="btn btn-tertiary btn-sm ml-auto no-underline"
+                  >
                     {t('reset.path1Action')}
                   </Link>
                 </div>
@@ -388,7 +393,11 @@ export function ResetVaultDialog({
                       remaining: remainingRecoveryKeys ?? t('recoveryKeys.unknownRemaining'),
                     })}
                   </span>
-                  <Link href="/app/recovery" className="btn btn-tertiary btn-sm ml-auto no-underline">
+                  <Link
+                    href="/app/recovery"
+                    prefetch={false}
+                    className="btn btn-tertiary btn-sm ml-auto no-underline"
+                  >
                     {t('reset.path2Action')}
                   </Link>
                 </div>
@@ -398,7 +407,11 @@ export function ResetVaultDialog({
                   <span className="min-w-[180px] flex-1 text-[14px] text-body">
                     {t('reset.path3Label')}
                   </span>
-                  <Link href="/app/unlock" className="btn btn-tertiary btn-sm ml-auto no-underline">
+                  <Link
+                    href="/app/unlock"
+                    prefetch={false}
+                    className="btn btn-tertiary btn-sm ml-auto no-underline"
+                  >
                     {t('reset.path3Action')}
                   </Link>
                 </div>
@@ -422,7 +435,11 @@ export function ResetVaultDialog({
                       {t('reset.path4Action')}
                     </Button>
                   ) : (
-                    <Link href="/app/unlock" className="btn btn-tertiary btn-sm ml-auto no-underline">
+                    <Link
+                      href="/app/unlock"
+                      prefetch={false}
+                      className="btn btn-tertiary btn-sm ml-auto no-underline"
+                    >
                       {t('reset.path1Action')}
                     </Link>
                   )}
