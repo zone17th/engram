@@ -399,15 +399,15 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	results := make([]result, 2)
 	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
-	wg.Add(2)
+	barrierCtx, cancelBarrier := context.WithCancel(ctx)
 	cleanupBarrier := func() {
 		closeRelease()
+		cancelBarrier()
 		vault.SetRecoverCompleteTestHook(nil)
 		wg.Wait()
 	}
 	t.Cleanup(cleanupBarrier)
 	defer cleanupBarrier()
-
 	vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
 		if arrived.Add(1) == 1 {
 			winnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
@@ -420,6 +420,7 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	})
 
 	for i := range 2 {
+		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			salt := vault.EncodeBase64URL(seqBytes(16, byte(0x80+idx*7)))
@@ -442,6 +443,8 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 	case <-winnerLocked:
 	case idx := <-earlyDone:
 		t.Fatalf("worker %d finished before winner reached vault lock hook: %+v", idx, results[idx])
+	case <-barrierCtx.Done():
+		t.Fatalf("barrier context cancelled before winner reached vault lock hook: %v", barrierCtx.Err())
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for winner to acquire vault row lock in RecoverComplete")
 	}
@@ -512,7 +515,6 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 		subResults := make([]result, 2)
 		subEarly := make(chan int, 2)
 		var subWG sync.WaitGroup
-		subWG.Add(2)
 		subCtx, cancelSub := context.WithCancel(ctx)
 		cleanupSub := func() {
 			closeSubRelease()
@@ -522,7 +524,6 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 		}
 		t.Cleanup(cleanupSub)
 		defer cleanupSub()
-
 		vault.SetRecoverCompleteTestHook(func(hookCtx context.Context) {
 			if subArrived.Add(1) == 1 {
 				subWinnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
@@ -535,6 +536,7 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 		})
 
 		start := time.Now()
+		subWG.Add(1)
 		go func() {
 			defer subWG.Done()
 			salt := vault.EncodeBase64URL(seqBytes(16, 0x91))
@@ -551,9 +553,16 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 			subResults[0] = result{resp: resp, err: err, finishedAt: time.Now()}
 			subEarly <- 0
 		}()
+		subWG.Add(1)
 		go func() {
 			defer subWG.Done()
-			<-subLocked
+			select {
+			case <-subLocked:
+			case <-subRelease:
+				return
+			case <-subCtx.Done():
+				return
+			}
 			// Deliberately invalid If-Match (Version: 0 -> precondition_required before DB lock).
 			resp, err := svc.RecoverComplete(subCtx, p, vault.RecoverCompleteInput{
 				RecoveryKeyID:        lookup2.RecoveryKeyID,
@@ -567,6 +576,10 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 
 		select {
 		case <-subLocked:
+		case idx := <-subEarly:
+			t.Fatalf("subtest worker %d finished before winner acquired lock: err=%v", idx, subResults[idx].err)
+		case <-subCtx.Done():
+			t.Fatalf("subtest context cancelled before winner acquired lock: %v", subCtx.Err())
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for subtest winner to acquire lock")
 		}
@@ -584,6 +597,72 @@ func TestServiceRecoverCompleteBarrierConcurrentSameRK(t *testing.T) {
 		vault.SetRecoverCompleteTestHook(nil)
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("barrier early-failure + context-cancel cleanup took %v, want < 2s", elapsed)
+		}
+
+		// Also prove that if the designated winner fails BEFORE reaching the hook while the sibling
+		// is waiting on pre-hook lock arrival, cancellation/release unblocks and drains the sibling promptly.
+		winFailLocked := make(chan struct{})
+		winFailRelease := make(chan struct{})
+		var winFailOnce sync.Once
+		closeWinFailRelease := func() { winFailOnce.Do(func() { close(winFailRelease) }) }
+		winFailCtx, cancelWinFail := context.WithCancel(ctx)
+		var winFailWG sync.WaitGroup
+		cleanupWinFail := func() {
+			closeWinFailRelease()
+			cancelWinFail()
+			vault.SetRecoverCompleteTestHook(nil)
+			winFailWG.Wait()
+		}
+		t.Cleanup(cleanupWinFail)
+		defer cleanupWinFail()
+
+		winFailResults := make([]result, 2)
+		winFailEarly := make(chan int, 2)
+		siblingUnblocked := make(chan struct{})
+		winFailStart := time.Now()
+		winFailWG.Add(1)
+		go func() {
+			defer winFailWG.Done()
+			resp, err := svc.RecoverComplete(winFailCtx, p, vault.RecoverCompleteInput{
+				RecoveryKeyID:        lookup2.RecoveryKeyID,
+				KDFRaw:               json.RawMessage(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"` + vault.EncodeBase64URL(seqBytes(16, 0x93)) + `"}`),
+				VaultKeyWrappedByKEK: makeValidWrapB64U(t, vault.WrapKindKEK, 0x93),
+				IfMatch:              httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 0},
+			})
+			winFailResults[0] = result{resp: resp, err: err, finishedAt: time.Now()}
+			winFailEarly <- 0
+		}()
+		winFailWG.Add(1)
+		go func() {
+			defer winFailWG.Done()
+			defer close(siblingUnblocked)
+			select {
+			case <-winFailLocked:
+			case <-winFailRelease:
+				return
+			case <-winFailCtx.Done():
+				return
+			}
+		}()
+
+		select {
+		case <-winFailLocked:
+			t.Fatal("unexpected lock acquisition when designated winner had invalid If-Match")
+		case idx := <-winFailEarly:
+			if idx != 0 || winFailResults[0].err == nil || !strings.Contains(winFailResults[0].err.Error(), "precondition_required") {
+				t.Fatalf("winner early failure = idx %d (%+v), want worker 0 precondition_required", idx, winFailResults[0])
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for designated winner early failure")
+		}
+		cleanupWinFail()
+		select {
+		case <-siblingUnblocked:
+		default:
+			t.Fatal("sibling goroutine was not drained by cleanupWinFail")
+		}
+		if elapsed := time.Since(winFailStart); elapsed > 2*time.Second {
+			t.Fatalf("winner-before-hook failure cleanup took %v, want < 2s", elapsed)
 		}
 	})
 }

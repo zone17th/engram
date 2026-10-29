@@ -62,15 +62,15 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	results := make([]callResult, 2)
 	earlyDone := make(chan int, 2)
 	var wg sync.WaitGroup
-	wg.Add(2)
+	barrierCtx, cancelBarrier := context.WithCancel(context.Background())
 	cleanupBarrier := func() {
 		closeRelease()
+		cancelBarrier()
 		vault.SetRegenerateTestHook(nil)
 		wg.Wait()
 	}
 	t.Cleanup(cleanupBarrier)
 	defer cleanupBarrier()
-
 	vault.SetRegenerateTestHook(func(hookCtx context.Context) {
 		if arrived.Add(1) == 1 {
 			winnerPID.Store(vault.TestHookBackendPIDFrom(hookCtx))
@@ -84,6 +84,7 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 
 	idemKeys := []string{"idem-rk-conc-regen-key-1", "idem-rk-conc-regen-key-2"}
 	for i := range 2 {
+		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			localJar := cookieJar{}
@@ -113,6 +114,8 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 	case <-winnerLocked:
 	case idx := <-earlyDone:
 		t.Fatalf("HTTP worker %d finished before winner reached vault lock hook: %+v", idx, results[idx])
+	case <-barrierCtx.Done():
+		t.Fatalf("HTTP barrier context cancelled before winner reached vault lock hook: %v", barrierCtx.Err())
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for winner HTTP request to acquire vault row lock in Regenerate")
 	}
@@ -191,14 +194,29 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 		subResults := make([]callResult, 2)
 		subEarly := make(chan int, 2)
 		var subWG sync.WaitGroup
-		subWG.Add(2)
+		subCtx, cancelSub := context.WithCancel(ctx)
 		cleanupSub := func() {
 			closeSubRelease()
+			cancelSub()
 			vault.SetRegenerateTestHook(nil)
 			subWG.Wait()
 		}
 		t.Cleanup(cleanupSub)
 		defer cleanupSub()
+
+		// Determine which slot (1 or 2) is still empty after the first winner inserted its slot.
+		// Note: subWG.Add happens only when each worker goroutine is launched below, so a failure
+		// in this setup GET returns immediately without waiting on unlaunched workers.
+		respRK, rawRK := h.doReq(jarA, http.MethodGet, "/api/v1/vault/recovery-keys", "", reqOptions{})
+		if respRK.StatusCode != http.StatusOK {
+			t.Fatalf("GET /vault/recovery-keys = %d %s", respRK.StatusCode, rawRK)
+		}
+		var rkStatus vault.RecoveryKeysStatus
+		if err := json.Unmarshal([]byte(rawRK), &rkStatus); err != nil || len(rkStatus.EmptySlots) != 1 {
+			t.Fatalf("rkStatus = %+v, err = %v", rkStatus, err)
+		}
+		remainingSlot := rkStatus.EmptySlots[0]
+		ifMatchV2 := `"` + created.VaultKeyID + `:2"`
 
 		vault.SetRegenerateTestHook(func(hookCtx context.Context) {
 			if subArrived.Add(1) == 1 {
@@ -211,19 +229,8 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 			}
 		})
 
-		// Determine which slot (1 or 2) is still empty after the first winner inserted its slot.
-		respRK, rawRK := h.doReq(jarA, http.MethodGet, "/api/v1/vault/recovery-keys", "", reqOptions{})
-		if respRK.StatusCode != http.StatusOK {
-			t.Fatalf("GET /vault/recovery-keys = %d %s", respRK.StatusCode, rawRK)
-		}
-		var rkStatus vault.RecoveryKeysStatus
-		if err := json.Unmarshal([]byte(rawRK), &rkStatus); err != nil || len(rkStatus.EmptySlots) != 1 {
-			t.Fatalf("rkStatus = %+v, err = %v", rkStatus, err)
-		}
-		remainingSlot := rkStatus.EmptySlots[0]
-		ifMatchV2 := `"` + created.VaultKeyID + `:2"`
-
 		start := time.Now()
+		subWG.Add(1)
 		go func() {
 			defer subWG.Done()
 			localJar := cookieJar{}
@@ -245,9 +252,16 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 			subResults[0] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
 			subEarly <- 0
 		}()
+		subWG.Add(1)
 		go func() {
 			defer subWG.Done()
-			<-subLocked
+			select {
+			case <-subLocked:
+			case <-subRelease:
+				return
+			case <-subCtx.Done():
+				return
+			}
 			localJar := cookieJar{}
 			for k, v := range jarA {
 				localJar[k] = v
@@ -271,6 +285,10 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 
 		select {
 		case <-subLocked:
+		case idx := <-subEarly:
+			t.Fatalf("HTTP subtest worker %d finished before winner acquired lock: status=%d body=%s", idx, subResults[idx].status, subResults[idx].body)
+		case <-subCtx.Done():
+			t.Fatalf("HTTP subtest context cancelled before winner acquired lock: %v", subCtx.Err())
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for HTTP subtest winner to acquire lock")
 		}
@@ -282,10 +300,87 @@ func TestRecoveryKeysRegenerateConcurrentNeverExceedsTen(t *testing.T) {
 			t.Fatalf("pollHTTPBlockedBackendPID on early failing sibling = %v, want HTTP worker 1 precondition_required diagnostic", pollErr)
 		}
 		closeSubRelease()
+		cancelSub()
 		subWG.Wait()
 		vault.SetRegenerateTestHook(nil)
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("HTTP barrier early-failure cleanup took %v, want < 2s", elapsed)
+		}
+
+		// Also prove that if the designated winner fails BEFORE reaching the hook while the sibling
+		// is waiting on pre-hook lock arrival, cancellation/release unblocks and drains the sibling promptly.
+		winFailLocked := make(chan struct{})
+		winFailRelease := make(chan struct{})
+		var winFailOnce sync.Once
+		closeWinFailRelease := func() { winFailOnce.Do(func() { close(winFailRelease) }) }
+		winFailCtx, cancelWinFail := context.WithCancel(ctx)
+		var winFailWG sync.WaitGroup
+		cleanupWinFail := func() {
+			closeWinFailRelease()
+			cancelWinFail()
+			vault.SetRegenerateTestHook(nil)
+			winFailWG.Wait()
+		}
+		t.Cleanup(cleanupWinFail)
+		defer cleanupWinFail()
+
+		winFailResults := make([]callResult, 2)
+		winFailEarly := make(chan int, 2)
+		siblingUnblocked := make(chan struct{})
+		winFailStart := time.Now()
+		winFailWG.Add(1)
+		go func() {
+			defer winFailWG.Done()
+			localJar := cookieJar{}
+			for k, v := range jarA {
+				localJar[k] = v
+			}
+			items := []vault.RecoveryKeyUploadItem{
+				{
+					Slot:       remainingSlot,
+					LookupHash: vault.EncodeBase64URL(seqTestBytes(32, 0xA3)),
+					Wrap:       makeWrapB64U(t, vault.WrapKindRK, 0xA3),
+				},
+			}
+			r, raw := h.doReq(localJar, http.MethodPost, "/api/v1/vault/recovery-keys/regenerate", mustJSON(t, map[string]any{"recovery_keys": items}), reqOptions{
+				idemKey: "idem-rk-conc-winfail-0",
+				ifMatch: "",
+				grant:   grant,
+			})
+			winFailResults[0] = callResult{status: r.StatusCode, body: raw, finishedAt: time.Now()}
+			winFailEarly <- 0
+		}()
+		winFailWG.Add(1)
+		go func() {
+			defer winFailWG.Done()
+			defer close(siblingUnblocked)
+			select {
+			case <-winFailLocked:
+			case <-winFailRelease:
+				return
+			case <-winFailCtx.Done():
+				return
+			}
+		}()
+
+		select {
+		case <-winFailLocked:
+			t.Fatal("unexpected lock acquisition when designated winner had empty If-Match")
+		case idx := <-winFailEarly:
+			if idx != 0 || winFailResults[0].status != http.StatusPreconditionRequired {
+				t.Fatalf("winner early failure = idx %d (%+v), want worker 0 status 428", idx, winFailResults[0])
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for designated winner early failure")
+		}
+		cleanupWinFail()
+		select {
+		case <-siblingUnblocked:
+		default:
+			t.Fatal("sibling goroutine was not drained by cleanupWinFail")
+		}
+		if elapsed := time.Since(winFailStart); elapsed > 2*time.Second {
+			t.Fatalf("winner-before-hook failure cleanup took %v, want < 2s", elapsed)
 		}
 	})
 }
