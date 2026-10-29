@@ -21,6 +21,7 @@ import {
 import {
   createIdempotencyKey,
   createVault as postCreateVault,
+  fetchVault,
   type VaultCreateRequest,
 } from '@/lib/api/vault';
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
@@ -390,7 +391,7 @@ export function VaultOnboardingFlow() {
             prev ? { ...prev, idempotencyKey: createIdempotencyKey() } : null,
           );
           try {
-            const existingVault = await vault.reloadVaultMeta();
+            await fetchVault();
             if (
               postSubmitSeqRef.current !== submitSeq ||
               client.getGeneration() !== submitBundle.opGeneration ||
@@ -398,14 +399,21 @@ export function VaultOnboardingFlow() {
             ) {
               return;
             }
-            if (existingVault) {
-              clearRecoveryKeysAndSecrets();
-              await vault.lock({ broadcast: false, reason: 'vault_exists_after_conflict' });
-              setStep('vault-exists');
+            clearRecoveryKeysAndSecrets();
+            await vault.lock({ broadcast: false, reason: 'vault_exists_after_conflict' });
+            setStep('vault-exists');
+            return;
+          } catch (reconcileErr) {
+            if (
+              postSubmitSeqRef.current !== submitSeq ||
+              client.getGeneration() !== submitBundle.opGeneration ||
+              (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
+            ) {
               return;
             }
-          } catch {
-            // If GET /vault fails transiently, still surface the conflict alert with the retired key
+            // If GET /vault returns 404 vault_absent (or fails transiently), stay on Step 2
+            // with the retired Idempotency-Key so the user can retry without locking the prepared Worker key.
+            void reconcileErr;
           }
           setStep2Error({ kind: 'idempotency_conflict' });
           return;

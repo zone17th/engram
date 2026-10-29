@@ -3342,4 +3342,205 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(screen.getByTestId('vs-r1-11-server')).toHaveTextContent('absent');
     expect(screen.getByTestId('vs-r1-11-state')).toHaveTextContent('no_vault');
   });
+
+  it('first recovery on a device without marker succeeds and records a baseline', async () => {
+    const me = makeMeFixture({ vaultStatus: 'present', autoLockMinutes: 15 });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(me);
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    function FreshRecoveryProbe() {
+      vaultCtx = useVault();
+      return (
+        <div>
+          <output data-testid="fresh-rec-state">{vaultCtx.state}</output>
+          <output data-testid="fresh-rec-worker">{vaultCtx.workerState}</output>
+        </div>
+      );
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <VaultProvider
+            createWorker={makeShimmedWorkerFactory()}
+            lockEpochEnv={makeLockEpochEnv()}
+          >
+            <FreshRecoveryProbe />
+          </VaultProvider>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('fresh-rec-state')).toHaveTextContent('locked');
+    });
+
+    // Obtain a valid RK + wrapped private keys, then wipe __lock_epoch__ from IDB to simulate a fresh device
+    const opSetup = vaultCtx.beginOp();
+    let created!: CreateVaultResult;
+    await act(async () => {
+      created = await vaultCtx.createVault({
+        passphrase: 'fresh-device-recovery-setup-passphrase',
+        opGeneration: opSetup.opGeneration,
+      });
+      await vaultCtx.lockNow();
+    });
+    fakeIdb.ensureStore(LOCK_EPOCH_STORE_NAME).delete(LOCK_EPOCH_RECORD_KEY);
+    expect(fakeIdb.ensureStore(LOCK_EPOCH_STORE_NAME).has(LOCK_EPOCH_RECORD_KEY)).toBe(false);
+
+    const rk0 = created.recovery_keys[0]!;
+    const opRec = vaultCtx.beginOp();
+
+    // Step 1: unlockRecovery on fresh device with no marker -> initializes marker under Web Lock and records unlockBaseline
+    await act(async () => {
+      await vaultCtx.unlockRecovery({
+        recoveryKey: rk0.display,
+        opGeneration: opRec.opGeneration,
+      });
+    });
+    const baselineAfterUnlockRecovery = vaultCtx.unlockBaseline;
+    expect(baselineAfterUnlockRecovery).not.toBeNull();
+    expect(baselineAfterUnlockRecovery?.lockEpoch).toBeGreaterThanOrEqual(1);
+    expect(fakeIdb.ensureStore(LOCK_EPOCH_STORE_NAME).get(LOCK_EPOCH_RECORD_KEY)).toEqual(
+      baselineAfterUnlockRecovery,
+    );
+
+    // Step 2: resumeRecovery -> verifies the same baseline and transitions to 'recovering'
+    await act(async () => {
+      await vaultCtx.resumeRecovery({
+        wrap: rk0.wrap,
+        privateKeysWrapped: created.private_keys_wrapped,
+        opGeneration: opRec.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('fresh-rec-state')).toHaveTextContent('recovering');
+    expect(vaultCtx.unlockBaseline).toEqual(baselineAfterUnlockRecovery);
+
+    // Step 3: confirmRecovery -> verifies the same baseline and transitions to 'unlocked'
+    await act(async () => {
+      await vaultCtx.confirmRecovery({
+        opGeneration: opRec.opGeneration,
+      });
+    });
+    expect(screen.getByTestId('fresh-rec-state')).toHaveTextContent('unlocked');
+    expect(vaultCtx.unlockBaseline).toEqual(baselineAfterUnlockRecovery);
+  });
+
+  it('VS-R4-1: receiving vault_changed { version: null } purges DevKey records once (deviceRevision increases by exactly 1)', async () => {
+    let currentMe = makeMeFixture({
+      userId: '11111111-1111-1111-1111-111111111111',
+      vaultStatus: 'present',
+      autoLockMinutes: 15,
+    });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (u.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (u.endsWith('/auth/me')) return jsonResponse(currentMe);
+      if (u.endsWith('/vault')) {
+        return new Response(
+          JSON.stringify({
+            type: 'https://engram.zone17th.click/problems/vault_absent',
+            title: 'vault_absent',
+            status: 404,
+            code: 'vault_absent',
+          }),
+          { status: 404, headers: { 'content-type': 'application/problem+json' } },
+        );
+      }
+      return jsonResponse({});
+    });
+
+    // Seed initial DevKey meta record with deviceRevision = 10
+    fakeIdb.ensureStore(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, {
+      key: DEVICE_META_RECORD_KEY,
+      incarnation: 'initial-incarnation-vs-r4-1',
+      deviceRevision: 10,
+    });
+
+    let tabAVault!: VaultContextValue;
+    let tabBVault!: VaultContextValue;
+    function TabAProbe() {
+      tabAVault = useVault();
+      return <output data-testid="vs-r4-1-tab-a">{tabAVault.state}</output>;
+    }
+    function TabBProbe() {
+      tabBVault = useVault();
+      return <output data-testid="vs-r4-1-tab-b">{tabBVault.state}</output>;
+    }
+
+    const qcA = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qcB = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <div>
+        <QueryClientProvider client={qcA}>
+          <SessionProvider>
+            <VaultProvider
+              createWorker={makeShimmedWorkerFactory()}
+              lockEpochEnv={makeLockEpochEnv()}
+            >
+              <TabAProbe />
+            </VaultProvider>
+          </SessionProvider>
+        </QueryClientProvider>
+        <QueryClientProvider client={qcB}>
+          <SessionProvider>
+            <VaultProvider
+              createWorker={makeShimmedWorkerFactory()}
+              lockEpochEnv={makeLockEpochEnv()}
+            >
+              <TabBProbe />
+            </VaultProvider>
+          </SessionProvider>
+        </QueryClientProvider>
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vs-r4-1-tab-a')).toHaveTextContent('locked');
+      expect(screen.getByTestId('vs-r4-1-tab-b')).toHaveTextContent('locked');
+    });
+
+    const metaBefore = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaBefore?.deviceRevision).toBe(10);
+
+    // Tab A resets vault and broadcasts vault_changed { version: null } to Tab B
+    currentMe = makeMeFixture({
+      userId: '11111111-1111-1111-1111-111111111111',
+      vaultStatus: 'absent',
+      autoLockMinutes: 15,
+    });
+    await act(async () => {
+      tabAVault.notifyVaultChanged({
+        vault_key_id: 'vk:reset-target-vs-r4-1',
+        version: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vs-r4-1-tab-b')).toHaveTextContent('no_vault');
+    });
+
+    const metaAfter = await readDeviceMetaRecord({ idbFactory: fakeIdb.createFactory() });
+    expect(metaAfter?.deviceRevision).toBe(11);
+  });
 });

@@ -324,7 +324,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-
+    const workerFactory = options?.workerFactory ?? makeFastOnboardingWorkerFactory();
+    const lockEpochEnv = makeSimpleLockEpochEnv();
     function Probe() {
       const v = useVault();
       const s = useSession();
@@ -342,8 +343,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
           <QueryClientProvider client={qc}>
             <SessionProvider>
               <VaultProvider
-                createWorker={options?.workerFactory ?? makeFastOnboardingWorkerFactory()}
-                lockEpochEnv={makeSimpleLockEpochEnv()}
+                createWorker={workerFactory}
+                lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
                 <VaultOnboardingFlow />
@@ -1010,7 +1011,10 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app');
     unmount();
 
     // Even if clipboard permission is later denied during the 30s timer callback, it swallows the error cleanly;
@@ -1084,7 +1088,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     });
     expect(resolveHeldPost).not.toBeNull();
 
-    // User clicks Back to Step 1 and derives bundle B while POST A is still in flight
+    // User clicks Back to Step 1 while POST A is still in flight; then late POST A succeeds on the server ->
+    // It must NOT navigate to /app or leave any new Worker key active; instead it locks the Worker and redirects to /app/unlock.
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-back-button'));
     });
@@ -1092,6 +1097,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
     });
 
+    // User starts deriving bundle B in Step 1 before late POST A arrives
     fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
       target: { value: `${STRONG_PASSPHRASE}-B` },
     });
@@ -1103,6 +1109,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
     });
+    expect(vaultCtx.workerState).toBe('unlocked');
 
     // Now the late POST for bundle A succeeds on the server!
     // It must NOT navigate to /app with Worker key B unlocked; instead it locks the Worker and redirects to /app/unlock.

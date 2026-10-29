@@ -350,6 +350,7 @@ export function VaultProvider({
   const providerSenderIdRef = useRef<symbol>(Symbol('VaultProvider'));
   const clientRef = useRef<CryptoClient | null>(null);
   const workerStateRef = useRef<VaultClientState>('locked');
+  const inFlightStateOpRef = useRef<boolean>(false);
   const tabKnownLockEpochRef = useRef<number>(0);
   const unlockBaselineRef = useRef<LockEpochMarker | null>(null);
   const baselineVerifiedRef = useRef<boolean>(false);
@@ -425,10 +426,14 @@ export function VaultProvider({
             wakeVerificationSeqRef.current += 1;
             wakeVerifyingCountRef.current = 0;
             wakePreIdleAtRef.current = null;
-            unlockBaselineRef.current = null;
+            // Note: unlockRecovery leaves Worker in 'locked' while holding the pending continuation;
+            // only clear unlockBaseline when the client is not mid-operation (BE1-6) or on error/explicit lockLocalOnly.
+            if (nextState === 'error' || !inFlightStateOpRef.current) {
+              unlockBaselineRef.current = null;
+              setUnlockBaseline(null);
+            }
             baselineVerifiedRef.current = false;
             setWakeVerifyingCount(0);
-            setUnlockBaseline(null);
             setBaselineVerified(false);
             setActiveOperation(null);
             clearPlaintextAndFormsSync();
@@ -457,6 +462,7 @@ export function VaultProvider({
    * synchronously clears cache + forms and invokes `client.lock()` without re-writing `lockEpoch`.
    */
   const lockLocalOnly = useCallback((): Promise<LockResult> => {
+    inFlightStateOpRef.current = false;
     wakeVerificationSeqRef.current += 1;
     wakeVerifyingCountRef.current = 0;
     wakePreIdleAtRef.current = null;
@@ -670,6 +676,7 @@ export function VaultProvider({
     ): Promise<T> => {
       const client = getClient();
       setLastErrorCode(null);
+      inFlightStateOpRef.current = true;
       setInFlightCount((c) => c + 1);
       if (opKind) {
         setActiveOperation(opKind);
@@ -769,6 +776,7 @@ export function VaultProvider({
         setEpoch(client.getEpoch());
         throw err;
       } finally {
+        inFlightStateOpRef.current = false;
         setInFlightCount((c) => Math.max(0, c - 1));
         setActiveOperation((current) => (current === opKind ? null : current));
       }
@@ -1031,7 +1039,10 @@ export function VaultProvider({
             reason: message.version === null ? 'vault_reset_broadcast' : 'vault_key_id_changed_broadcast',
           });
           if (message.version === null) {
+            // VS-R1-11 & VS-R4-1: state is already cleared and DevKeys purged once above;
+            // refetch Me to transition serverVaultStatus to 'absent' without a second 404 purge in reloadVaultMeta().
             void refetchMe().catch(() => undefined);
+            return;
           }
           void reloadVaultMeta().catch(() => undefined);
           return;
