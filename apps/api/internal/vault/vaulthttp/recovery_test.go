@@ -557,6 +557,8 @@ func TestRecoverCompleteCrossUserStaleVersionAndIdempotentRetry(t *testing.T) {
 	// 2. Old/wrong version on User A -> 412 version_mismatch with current_version=1.
 	grantA := h.reauthGrant(jarA, "vault.recover", password)
 	completePayloadA := makeRecoverCompletePayload(t, lookupA.RecoveryKeyID, 0xA5)
+	completePayloadA.KDF.Ops = 4
+	completePayloadA.KDF.Mem = 134217728
 	completeBodyA := mustJSON(t, completePayloadA)
 	respStale, rawStale := h.doReq(jarA, http.MethodPost, "/api/v1/vault/recover/complete", completeBodyA, reqOptions{
 		idemKey: "idem-rec-comp-stale-ver",
@@ -590,6 +592,39 @@ func TestRecoverCompleteCrossUserStaleVersionAndIdempotentRetry(t *testing.T) {
 	var verResp vault.VaultVersionResponse
 	if err := json.Unmarshal([]byte(rawOK), &verResp); err != nil || verResp.Version != 2 {
 		t.Fatalf("verResp = %+v, want version=2", verResp)
+	}
+
+	// 3b. Verify GET /api/v1/vault reflects the persisted replacement KDF (every field),
+	// replacement vault_key_wrapped_by_kek, bumped version=2, and unchanged vault_key_id (BE1-13).
+	respGetAfter, rawGetAfter := h.doReq(jarA, http.MethodGet, "/api/v1/vault", "", reqOptions{})
+	if respGetAfter.StatusCode != http.StatusOK {
+		t.Fatalf("GET /vault after recover/complete = %d %s, want 200", respGetAfter.StatusCode, rawGetAfter)
+	}
+	var stateAfter vault.VaultState
+	if err := json.Unmarshal([]byte(rawGetAfter), &stateAfter); err != nil {
+		t.Fatalf("decode GET /vault after recover/complete: %v (%s)", err, rawGetAfter)
+	}
+	if stateAfter.VaultKeyID != createdA.VaultKeyID {
+		t.Fatalf("GET /vault vault_key_id after recover/complete = %q, want unchanged %q", stateAfter.VaultKeyID, createdA.VaultKeyID)
+	}
+	if stateAfter.Version != 2 {
+		t.Fatalf("GET /vault version after recover/complete = %d, want 2", stateAfter.Version)
+	}
+	if stateAfter.KDF.Alg != completePayloadA.KDF.Alg ||
+		stateAfter.KDF.Ops != completePayloadA.KDF.Ops ||
+		stateAfter.KDF.Mem != completePayloadA.KDF.Mem ||
+		stateAfter.KDF.Parallelism != completePayloadA.KDF.Parallelism ||
+		stateAfter.KDF.Salt != completePayloadA.KDF.Salt {
+		t.Fatalf("GET /vault KDF after recover/complete = %+v, want %+v", stateAfter.KDF, completePayloadA.KDF)
+	}
+	if stateAfter.VaultKeyWrappedByKEK != completePayloadA.VaultKeyWrappedByKEK {
+		t.Fatalf("GET /vault vault_key_wrapped_by_kek after recover/complete = %q, want %q", stateAfter.VaultKeyWrappedByKEK, completePayloadA.VaultKeyWrappedByKEK)
+	}
+	if stateAfter.X25519Public != payloadA.X25519Public ||
+		stateAfter.Ed25519Public != payloadA.Ed25519Public ||
+		stateAfter.PrivateKeysWrapped != payloadA.PrivateKeysWrapped ||
+		stateAfter.RecoveryKeysRemaining != 9 {
+		t.Fatalf("GET /vault preserved fields after recover/complete = %+v", stateAfter)
 	}
 
 	// 4. Attempting another complete with a new Idempotency-Key and the SAME (now consumed) RK at version 2 -> 401 recovery_key_invalid.
