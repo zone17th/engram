@@ -876,45 +876,150 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
     });
   });
 
-  it('R1-16: fake IDB queues readonly transactions behind earlier uncommitted readwrite transactions (never exposing intermediate writes before commit or rollback)', async () => {
+  it('R1-16 / R2-3: fake IDB queues readonly transactions behind earlier uncommitted readwrite transactions (never exposing intermediate writes before commit or rollback)', async () => {
     const db = await openSabkDeviceDb(env.idbFactory);
     const initialMeta: DeviceMetaRecord = { incarnation: '11111111111111111111111111111111', deviceRevision: 1 };
     idb.store(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, initialMeta);
 
-    // 1. Hold a readwrite tx after an uncommitted put, create a readonly reader while held, then abort the writer:
-    // the reader must observe the rolled-back initial state, never the intermediate uncommitted write.
+    // 1. Abort branch: hold a readwrite tx alive with chained own-IDB requests after an uncommitted put, create a
+    // readonly transaction synchronously on the already-open connection while the writer is still active, witness that
+    // the reader cannot execute or complete across multiple writer request callbacks before the writer settles, then
+    // abort the writer -> the reader runs only after rollback and observes `initialMeta`.
+    const events1: string[] = [];
     const writer1 = db.transaction([META_STORE_NAME], 'readwrite');
     const writer1Store = writer1.objectStore(META_STORE_NAME);
     const put1 = writer1Store.put(
       { incarnation: '22222222222222222222222222222222', deviceRevision: 2 },
       DEVICE_META_RECORD_KEY,
     );
-    let reader1Promise!: Promise<DeviceMetaRecord | null>;
+    let reader1CompletedBeforeWriter1Settled = false;
+    let writer1Settled = false;
+    let reader1Value: unknown = null;
     const writer1Aborted = new Promise<void>((resolve) => {
-      writer1.onabort = () => resolve();
+      writer1.onabort = () => {
+        writer1Settled = true;
+        events1.push('writer1:onabort');
+        resolve();
+      };
     });
+    let reader1Done!: Promise<void>;
     put1.onsuccess = () => {
-      // At this instant backing store has the uncommitted write; queue a readonly snapshot before aborting.
-      reader1Promise = readDeviceMetaRecord(env);
-      writer1.abort();
+      events1.push('writer1:put1.onsuccess');
+      // At this instant backing store holds the uncommitted write (revision 2). Create the readonly transaction
+      // synchronously on the already-open `db` while keeping `writer1` alive with pending own-IDB requests.
+      const reader1 = db.transaction([META_STORE_NAME], 'readonly');
+      const reader1Req = reader1.objectStore(META_STORE_NAME).get(DEVICE_META_RECORD_KEY);
+      reader1Req.onsuccess = () => {
+        events1.push('reader1:get.onsuccess');
+        reader1Value = reader1Req.result;
+        if (!writer1Settled) {
+          reader1CompletedBeforeWriter1Settled = true;
+        }
+      };
+      reader1Done = new Promise<void>((resolve, reject) => {
+        reader1.oncomplete = () => {
+          events1.push('reader1:oncomplete');
+          if (!writer1Settled) {
+            reader1CompletedBeforeWriter1Settled = true;
+          }
+          resolve();
+        };
+        reader1.onerror = () => reject(reader1.error ?? new Error('reader1 error'));
+        reader1.onabort = () => reject(reader1.error ?? new Error('reader1 abort'));
+      });
+      // Keep writer1 alive across two more own-IDB request ticks before aborting: if readonly txs bypassed the writer
+      // queue (`previous = mode === 'readwrite' ? self.tail : Promise.resolve()`), reader1 would start and complete
+      // during these ticks while writer1 is still uncommitted, observing revision 2 before writer1 aborts.
+      const hold1 = writer1Store.get(DEVICE_META_RECORD_KEY);
+      hold1.onsuccess = () => {
+        events1.push('writer1:hold1.onsuccess');
+        const hold2 = writer1Store.get(DEVICE_META_RECORD_KEY);
+        hold2.onsuccess = () => {
+          events1.push('writer1:hold2.onsuccess');
+          writer1.abort();
+        };
+      };
     };
     await writer1Aborted;
-    expect(await reader1Promise).toEqual(initialMeta);
+    await reader1Done;
+    expect(reader1CompletedBeforeWriter1Settled).toBe(false);
+    expect(events1).toEqual([
+      'writer1:put1.onsuccess',
+      'writer1:hold1.onsuccess',
+      'writer1:hold2.onsuccess',
+      'writer1:onabort',
+      'reader1:get.onsuccess',
+      'reader1:oncomplete',
+    ]);
+    expect(reader1Value).toEqual(initialMeta);
 
-    // 2. Same setup, but let the writer commit: the queued reader observes the committed state.
+    // 2. Commit branch: same synchronous overlap on the already-open connection while writer2 stays alive with
+    // chained own-IDB requests (putting an intermediate revision 20 first, then final revision 3 after reader2 is
+    // already created). Witness that reader2 cannot run before writer2 commits, and observes final revision 3.
+    const events2: string[] = [];
     const committedMeta: DeviceMetaRecord = { incarnation: '33333333333333333333333333333333', deviceRevision: 3 };
     const writer2 = db.transaction([META_STORE_NAME], 'readwrite');
     const writer2Store = writer2.objectStore(META_STORE_NAME);
-    const put2 = writer2Store.put(committedMeta, DEVICE_META_RECORD_KEY);
-    let reader2Promise!: Promise<DeviceMetaRecord | null>;
+    const put2a = writer2Store.put(
+      { incarnation: '20202020202020202020202020202020', deviceRevision: 20 },
+      DEVICE_META_RECORD_KEY,
+    );
+    let reader2CompletedBeforeWriter2Settled = false;
+    let writer2Settled = false;
+    let reader2Value: unknown = null;
     const writer2Completed = new Promise<void>((resolve) => {
-      writer2.oncomplete = () => resolve();
+      writer2.oncomplete = () => {
+        writer2Settled = true;
+        events2.push('writer2:oncomplete');
+        resolve();
+      };
     });
-    put2.onsuccess = () => {
-      reader2Promise = readDeviceMetaRecord(env);
+    let reader2Done!: Promise<void>;
+    put2a.onsuccess = () => {
+      events2.push('writer2:put2a.onsuccess');
+      // Create reader2 synchronously while writer2 is mid-transaction (currently holding intermediate revision 20)
+      // and keep writer2 alive with another chained request that overwrites with final `committedMeta` (revision 3).
+      const reader2 = db.transaction([META_STORE_NAME], 'readonly');
+      const reader2Req = reader2.objectStore(META_STORE_NAME).get(DEVICE_META_RECORD_KEY);
+      reader2Req.onsuccess = () => {
+        events2.push('reader2:get.onsuccess');
+        reader2Value = reader2Req.result;
+        if (!writer2Settled) {
+          reader2CompletedBeforeWriter2Settled = true;
+        }
+      };
+      reader2Done = new Promise<void>((resolve, reject) => {
+        reader2.oncomplete = () => {
+          events2.push('reader2:oncomplete');
+          if (!writer2Settled) {
+            reader2CompletedBeforeWriter2Settled = true;
+          }
+          resolve();
+        };
+        reader2.onerror = () => reject(reader2.error ?? new Error('reader2 error'));
+        reader2.onabort = () => reject(reader2.error ?? new Error('reader2 abort'));
+      });
+      const hold2a = writer2Store.get(DEVICE_META_RECORD_KEY);
+      hold2a.onsuccess = () => {
+        events2.push('writer2:hold2a.onsuccess');
+        const put2b = writer2Store.put(committedMeta, DEVICE_META_RECORD_KEY);
+        put2b.onsuccess = () => {
+          events2.push('writer2:put2b.onsuccess');
+        };
+      };
     };
     await writer2Completed;
-    expect(await reader2Promise).toEqual(committedMeta);
+    await reader2Done;
+    expect(reader2CompletedBeforeWriter2Settled).toBe(false);
+    expect(events2).toEqual([
+      'writer2:put2a.onsuccess',
+      'writer2:hold2a.onsuccess',
+      'writer2:put2b.onsuccess',
+      'writer2:oncomplete',
+      'reader2:get.onsuccess',
+      'reader2:oncomplete',
+    ]);
+    expect(reader2Value).toEqual(committedMeta);
     db.close();
   });
 });
