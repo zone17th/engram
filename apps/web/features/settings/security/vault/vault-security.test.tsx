@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NextIntlClientProvider } from 'next-intl';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionProvider, useSession, type SessionState } from '@/features/auth/session-provider';
 import type { UseReauthReturn } from '@/features/auth/use-reauth';
@@ -2124,12 +2124,12 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
         cleanupFn();
       };
     });
+    // Keep the real hook list (useContext + useSyncExternalStore + useMemo): swapping in a hook-free mock
+    // after the harness already rendered makes React see 0 hooks where it previously saw 3.
+    const realUseVault = vaultProviderModule.useVault;
     vi.spyOn(vaultProviderModule, 'useVault').mockImplementation(() => {
-      const ctx = getVaultCtx();
-      return {
-        ...ctx,
-        registerSecretFormReset: registerSpy,
-      };
+      const ctx = realUseVault();
+      return useMemo(() => ({ ...ctx, registerSecretFormReset: registerSpy }), [ctx]);
     });
 
     // While all 3 dialogs are closed, zero registerSecretFormReset calls occur on provider updates
