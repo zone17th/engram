@@ -524,10 +524,13 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
         <AutoLockCard />
       </NextIntlClientProvider>,
     );
-    expect(screen.getByTestId('settings-remember-device-notice')).toHaveTextContent(
-      enMessages.vault.device.notice.stateChanged,
-    );
-
+    const noticeEl = screen.getByTestId('settings-remember-device-notice');
+    expect(noticeEl).toHaveAttribute('role', 'status');
+    expect(noticeEl).toHaveTextContent(enMessages.vault.device.notice.stateChanged);
+    const dismissBtn = screen.getByTestId('settings-remember-device-notice-dismiss');
+    expect(dismissBtn).toHaveTextContent(enMessages.vault.b.settings.rememberDevice.dismiss);
+    fireEvent.click(dismissBtn);
+    expect(mocks.rememberDevice.dismissNotice).toHaveBeenCalledTimes(1);
     // 4. Unavailable state (IDB blocked / private mode) disables switch and shows unavailable copy
     mocks.rememberDevice.notice = null;
     mocks.rememberDevice.status = 'unavailable';

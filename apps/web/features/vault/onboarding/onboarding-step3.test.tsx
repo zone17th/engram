@@ -295,11 +295,14 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
   async function advanceToStep3(
     locale: 'en' | 'vi' = 'en',
-    options: { oauthOnly?: boolean } = {},
+    options: { oauthOnly?: boolean; vaultKeyIdHook?: (attempt: number) => string } = {},
   ) {
     let currentMe = makeMeFixture('absent', options);
     let vaultCtx!: VaultContextValue;
     const oauthReauthCalls: Array<{ url: string; body: string }> = [];
+    let getVaultCalls = 0;
+    let passkeyPosts = 0;
+    const savedPasskeys: Array<{ id: string; name: string; aaguid: string | null; created_at: string }> = [];
     const credentialsCreate = vi.fn();
     Object.defineProperty(navigator, 'credentials', {
       value: { create: credentialsCreate, get: vi.fn() },
@@ -321,9 +324,13 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
         return jsonResponse({ vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d', version: 1 }, 201);
       }
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        getVaultCalls += 1;
+        const vkId = options.vaultKeyIdHook
+          ? options.vaultKeyIdHook(getVaultCalls)
+          : 'vk:7f3a9b2c4d5e6f7a8b9c0d';
         return jsonResponse({
           version: 1,
-          vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d',
+          vault_key_id: vkId,
           kdf: {
             alg: 'argon2id13',
             ops: 3,
@@ -338,7 +345,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
           private_keys_wrapped:
             'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-',
           recovery_keys_remaining: 10,
-          passkeys: [],
+          passkeys: [...savedPasskeys],
         });
       }
       if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
@@ -352,15 +359,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
         return jsonResponse(registerOptionsResponse());
       }
       if (url.endsWith('/vault/passkeys') && init?.method === 'POST') {
-        return jsonResponse(
-          {
-            id: 'passkey-step3-1',
-            name: 'Onboarding laptop',
-            aaguid: null,
-            created_at: '2026-10-30T00:00:00Z',
-          },
-          201,
-        );
+        passkeyPosts += 1;
+        const item = {
+          id: `passkey-step3-${passkeyPosts}`,
+          name: 'Onboarding laptop',
+          aaguid: null,
+          created_at: '2026-10-30T00:00:00Z',
+        };
+        savedPasskeys.push(item);
+        return jsonResponse(item, 201);
       }
       if (url.includes('/auth/oauth/') && url.endsWith('/reauth') && init?.method === 'POST') {
         oauthReauthCalls.push({ url, body: String(init.body ?? '') });
@@ -422,7 +429,12 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
     });
 
-    return { credentialsCreate, getVault: () => vaultCtx, oauthReauthCalls };
+    return {
+      credentialsCreate,
+      getVault: () => vaultCtx,
+      oauthReauthCalls,
+      getVaultCallsCount: () => getVaultCalls,
+    };
   }
 
   it('16B: step 3 renders after RK confirm, remember-device toggle is default off, and Skip goes on to /app without remembering', async () => {
@@ -488,10 +500,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     idb.options.failOpen = true;
     await advanceToStep3('en');
 
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+
     const unavailableMsg = await screen.findByTestId('onboarding-remember-device-unavailable');
     expect(unavailableMsg).toHaveTextContent(enMessages.vault.device.unavailable);
-
-    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
     expect(rememberSwitch).toBeDisabled();
     expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
 
@@ -504,11 +521,22 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
   });
 
-  it('16B: step 3 add passkey success stays on step 3 showing addedStatus, allows setting Remember this device, and Finish goes on to /app', async () => {
-    const { credentialsCreate } = await advanceToStep3('en');
+  it('16B: step 3 add passkey success stays on step 3 showing addedStatus, refreshes vaultMeta.passkeys even when Remember was toggled on first (VB-R2-2), and Finish goes on to /app', async () => {
+    const { credentialsCreate, getVault, getVaultCallsCount } = await advanceToStep3('en');
     credentialsCreate.mockResolvedValue(
       fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
     );
+
+    // Toggle Remember this device ON first (loads GET /vault with passkeys: [])
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+    await waitFor(() => {
+      expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
+    });
+    expect(getVault().vaultMeta?.passkeys).toEqual([]);
+    const getVaultCallsBeforeAdd = getVaultCallsCount();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
     const pwdInput = await screen.findByLabelText('Login password');
@@ -529,13 +557,16 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
     expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
 
-    // User can still toggle Remember this device after adding a passkey
-    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
-    await act(async () => {
-      fireEvent.click(rememberSwitch);
-    });
     await waitFor(() => {
-      expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
+      expect(getVaultCallsCount()).toBeGreaterThan(getVaultCallsBeforeAdd);
+      expect(getVault().vaultMeta?.passkeys).toEqual([
+        {
+          id: 'passkey-step3-1',
+          name: 'Onboarding laptop',
+          aaguid: null,
+          created_at: '2026-10-30T00:00:00Z',
+        },
+      ]);
     });
 
     await act(async () => {
@@ -603,10 +634,12 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
   });
 
-  it('16B (VB-R1-1 / VB-R1-2): window focus / visibility wake on step 3 keeps onboarding-step-passkey mounted, while a real lock moves on', async () => {
+  it('16B (VB-R1-1 / VB-R1-2 / VB-R2-3): window focus / visibility wake on step 3 keeps onboarding-step-passkey and the Add passkey dialog mounted, while a real lock moves on', async () => {
     const { getVault } = await advanceToStep3('en');
 
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
 
     // Trigger provider wake events (window focus, pageshow, document visibilitychange)
     await act(async () => {
@@ -615,8 +648,9 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    // Step 3 remains mounted and no navigation happened
+    // Step 3 and the Add passkey dialog remain mounted and no navigation happened
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(routerMocks.replace).not.toHaveBeenCalled();
 
     // A real lock while on step 3 ends step 3
@@ -628,11 +662,37 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
   });
 
+  it('16B (VB-R2-4 / VB-R2-6): step 3 cross-tab remember-device change raises neutral stateChanged notice with role="status" and Dismiss clears it', async () => {
+    await advanceToStep3('en', {
+      vaultKeyIdHook: (attempt) =>
+        attempt === 1 ? 'vk:7f3a9b2c4d5e6f7a8b9c0d' : 'vk:other-tab-replaced-key',
+    });
+
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+
+    const notice = await screen.findByTestId('onboarding-remember-device-notice');
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(notice).toHaveTextContent(enMessages.vault.device.notice.stateChanged);
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+
+    const dismissBtn = screen.getByTestId('onboarding-remember-device-notice-dismiss');
+    expect(dismissBtn).toHaveTextContent(enMessages.vault.b.onboarding.rememberDevice.dismiss);
+    fireEvent.click(dismissBtn);
+    await waitFor(() => {
+      expect(screen.queryByTestId('onboarding-remember-device-notice')).not.toBeInTheDocument();
+    });
+  });
+
   it('16B (VB-R1-2): OAuth-only account on step 3 Add passkey invokes OAuth re-auth and claims no registration success', async () => {
     const { oauthReauthCalls } = await advanceToStep3('en', { oauthOnly: true });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
-    const googleBtn = await screen.findByRole('button', { name: /Continue with Google/i });
+    const googleBtn = await screen.findByRole('button', { name: enMessages.auth.reauth.google });
     await act(async () => {
       fireEvent.click(googleBtn);
     });

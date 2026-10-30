@@ -682,7 +682,10 @@
         "reauthNote": "Bấm Thêm passkey sẽ yêu cầu xác thực lại tài khoản (bằng mật khẩu đăng nhập hoặc Google OAuth) ở đầu luồng trước khi gọi WebAuthn (vault.passkey_register).",
         "addedStatus": "Đã thêm passkey vào vault.",
         "skip": "Bỏ qua",
-        "finish": "Vào engram"
+        "finish": "Vào engram",
+        "rememberDevice": {
+          "dismiss": "Ẩn"
+        }
       },
       "forgot": {
         "passkeyStep": "1",
@@ -737,6 +740,9 @@
           "optNever": "Không bao giờ",
           "saving": "Đang lưu tuỳ chọn tự khoá…",
           "saveError": "Không lưu được tuỳ chọn tự khoá. Đã khôi phục giá trị trước đó."
+        },
+        "rememberDevice": {
+          "dismiss": "Ẩn"
         }
       }
     }

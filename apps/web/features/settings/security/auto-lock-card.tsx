@@ -37,6 +37,7 @@ export interface AutoLockCardProps {
 
 export function RememberDeviceSection() {
   const tDevice = useTranslations('vault.device');
+  const tRemember = useTranslations('vault.b.settings.rememberDevice');
   const vault = useOptionalVault();
   const rememberDevice = useRememberDevice();
 
@@ -112,13 +113,21 @@ export function RememberDeviceSection() {
         </div>
       </div>
       {rememberDevice.notice === 'device_state_changed' ? (
-        <p
+        <div
           role="status"
-          className="m-0 mt-3 text-[12px] text-muted"
+          className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-muted"
           data-testid="settings-remember-device-notice"
         >
-          {tDevice('notice.stateChanged')}
-        </p>
+          <span>{tDevice('notice.stateChanged')}</span>
+          <button
+            type="button"
+            className="btn btn-tertiary btn-sm ml-auto"
+            onClick={() => rememberDevice.dismissNotice()}
+            data-testid="settings-remember-device-notice-dismiss"
+          >
+            {tRemember('dismiss')}
+          </button>
+        </div>
       ) : null}
       {isUnavailable ? (
         <p

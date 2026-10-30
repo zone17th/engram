@@ -977,6 +977,7 @@ export function VaultOnboardingFlow() {
                   returnPath="/app/onboarding"
                   onRegistered={() => {
                     setPasskeyAdded(true);
+                    void vault.reloadVaultMeta?.().catch(() => undefined);
                   }}
                 />
               </div>
@@ -1025,14 +1026,22 @@ export function VaultOnboardingFlow() {
                 />
               </div>
               {rememberDevice.notice === 'device_state_changed' ? (
-                <p
+                <div
                   role="status"
-                  className="m-0 mt-3 text-[12px]"
+                  className="mt-3 flex flex-wrap items-center gap-2 text-[12px]"
                   style={{ color: 'var(--muted)' }}
                   data-testid="onboarding-remember-device-notice"
                 >
-                  {tDevice('notice.stateChanged')}
-                </p>
+                  <span>{tDevice('notice.stateChanged')}</span>
+                  <button
+                    type="button"
+                    className="btn btn-tertiary btn-sm ml-auto"
+                    onClick={() => rememberDevice.dismissNotice()}
+                    data-testid="onboarding-remember-device-notice-dismiss"
+                  >
+                    {tStep3('rememberDevice.dismiss')}
+                  </button>
+                </div>
               ) : null}
               {rememberDevice.status === 'unavailable' ? (
                 <p

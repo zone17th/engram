@@ -682,7 +682,10 @@
         "reauthNote": "Clicking Add passkey prompts account re-authentication (login password or Google OAuth) at the start of the flow before calling WebAuthn (vault.passkey_register).",
         "addedStatus": "Passkey added to your vault.",
         "skip": "Skip",
-        "finish": "Go to engram"
+        "finish": "Go to engram",
+        "rememberDevice": {
+          "dismiss": "Dismiss"
+        }
       },
       "forgot": {
         "passkeyStep": "1",
@@ -737,6 +740,9 @@
           "optNever": "Never",
           "saving": "Saving auto-lock setting…",
           "saveError": "Could not save auto-lock setting. Reverted to the previous value."
+        },
+        "rememberDevice": {
+          "dismiss": "Dismiss"
         }
       }
     }
