@@ -630,6 +630,7 @@
         "reauthCancelled": "Confirmation was cancelled. The passkey was not added.",
         "reauthRestart": "Your confirmation expired before the passkey could be saved. Start again to add it.",
         "networkUnknown": "The connection dropped before we could confirm the passkey was saved. Check the passkey list in Settings before trying again.",
+        "unconfirmedNotice": "Could not confirm whether the passkey was saved; check your passkey list in Settings before removing anything from your device.",
         "orphanNotice": "The passkey was not saved to your vault. You can delete the extra credential in your device's passkey manager."
       },
       "add": {

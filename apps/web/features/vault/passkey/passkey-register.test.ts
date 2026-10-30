@@ -4,6 +4,7 @@ import type { ReauthGrant } from '@/lib/api/auth';
 import type { VaultPasskeyItem } from '@/lib/api/vault';
 import {
   GRANT_MIN_REMAINING_MS,
+  MAX_IN_PROGRESS_WAITS,
   MAX_NETWORK_REPLAYS,
   runPasskeyRegistration,
   type PasskeyGrantPort,
@@ -666,14 +667,102 @@ describe('T19 bullet 1 - POST failure and replay', () => {
     [409, 'passkey_exists'],
     [409, 'idempotency_conflict'],
     [503, 'vault_mutations_disabled'],
-  ])('PKW-R2-1, PKW-R1-2: lost response, then a post-lookup %i %s proves the first attempt uncommitted: orphan notice', async (status, code) => {
-    const h = makeHarness({ registerBehaviour: [problem(500, 'internal_error'), problem(status, code)] });
+  ])(
+    'PKW-R3-1, PKW-R2-1, PKW-R1-2: lost response, then a post-lookup %i %s on the replay stays network_unknown (orphan: false, identical key/body/token; advisor-dec-057)',
+    async (status, code) => {
+      const h = makeHarness({ registerBehaviour: [problem(500, 'internal_error'), problem(status, code)] });
+      const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+      expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
+      expect(h.posts).toHaveLength(2);
+      expect(h.posts[1]).toEqual(h.posts[0]);
+    },
+  );
+
+  it('PKW-R3-1: lost response, then replay 401 reauth_invalid is network_unknown (orphan: false, identical key/body/token)', async () => {
+    const h = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), problem(401, 'reauth_invalid')],
+    });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
-    expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
+    expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
     expect(h.posts).toHaveLength(2);
     expect(h.posts[1]).toEqual(h.posts[0]);
   });
 
+  it('PKW-R3-1: lost response, then replay 503 (vault_mutations_disabled or dependency_unavailable) is network_unknown (orphan: false, identical key/body/token)', async () => {
+    const killSwitch = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), problem(503, 'vault_mutations_disabled')],
+    });
+    expect(await runPasskeyRegistration(killSwitch.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'network_unknown',
+      orphan: false,
+    });
+    expect(killSwitch.posts).toHaveLength(2);
+    expect(killSwitch.posts[1]).toEqual(killSwitch.posts[0]);
+
+    const depDown = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), problem(503, 'dependency_unavailable')],
+    });
+    expect(await runPasskeyRegistration(depDown.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'network_unknown',
+      orphan: false,
+    });
+    expect(depDown.posts).toHaveLength(1 + MAX_NETWORK_REPLAYS);
+    expect(new Set(depDown.posts.map((p) => p.idempotencyKey)).size).toBe(1);
+    expect(new Set(depDown.posts.map((p) => p.body)).size).toBe(1);
+    expect(new Set(depDown.posts.map((p) => p.reauthToken)).size).toBe(1);
+  });
+
+  it('PKW-R3-1: lost response, then replay 409 (passkey_exists, idempotency_conflict, or idempotency_in_progress exhaustion) is network_unknown (orphan: false, identical key/body/token)', async () => {
+    for (const code of ['passkey_exists', 'idempotency_conflict'] as const) {
+      const h = makeHarness({
+        registerBehaviour: [new TypeError('Failed to fetch'), problem(409, code)],
+      });
+      expect(await runPasskeyRegistration(h.deps, { name: 'Work laptop' })).toEqual({
+        ok: false,
+        error: 'network_unknown',
+        orphan: false,
+      });
+      expect(h.posts).toHaveLength(2);
+      expect(h.posts[1]).toEqual(h.posts[0]);
+    }
+
+    const inProgressExhausted = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), problem(409, 'idempotency_in_progress', 1)],
+    });
+    expect(await runPasskeyRegistration(inProgressExhausted.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'network_unknown',
+      orphan: false,
+    });
+    expect(inProgressExhausted.posts).toHaveLength(2 + MAX_IN_PROGRESS_WAITS);
+    expect(new Set(inProgressExhausted.posts.map((p) => p.idempotencyKey)).size).toBe(1);
+    expect(new Set(inProgressExhausted.posts.map((p) => p.body)).size).toBe(1);
+    expect(new Set(inProgressExhausted.posts.map((p) => p.reauthToken)).size).toBe(1);
+  });
+
+  it('PKW-R3-1: lost response, then replay 400 (passkey_challenge_invalid) is network_unknown (orphan: false, identical key/body/token)', async () => {
+    const h = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), problem(400, 'passkey_challenge_invalid')],
+    });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
+    expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]).toEqual(h.posts[0]);
+  });
+
+  it('PKW-R3-1: lost response, then replay network failure is network_unknown (orphan: false, identical key/body/token)', async () => {
+    const h = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), new TypeError('NetworkError when attempting to fetch resource.')],
+    });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
+    expect(h.posts).toHaveLength(1 + MAX_NETWORK_REPLAYS);
+    expect(new Set(h.posts.map((p) => p.idempotencyKey)).size).toBe(1);
+    expect(new Set(h.posts.map((p) => p.body)).size).toBe(1);
+    expect(new Set(h.posts.map((p) => p.reauthToken)).size).toBe(1);
+  });
   it('PKW-R1-2: without any earlier unknown attempt a 401 session_invalid is a definite rejection', async () => {
     const h = makeHarness({ registerBehaviour: [problem(401, 'session_invalid')] });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });

@@ -36,7 +36,7 @@ function failureKey(error: PasskeyRegisterErrorCode, nameReason?: string): strin
     case 'reauth_restart_required':
       return 'register.reauthRestart';
     case 'network_unknown':
-      return 'register.networkUnknown';
+      return 'register.unconfirmedNotice';
     case 'stale':
       return null;
     default:

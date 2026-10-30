@@ -99,7 +99,13 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
         { name },
       );
       if (mountedRef.current) {
-        if (!outcome.ok && outcome.error !== 'stale') setFailure(outcome);
+        if (!outcome.ok && outcome.error !== 'stale') {
+          setFailure(outcome);
+          if (outcome.error === 'network_unknown') {
+            // advisor-dec-057: an unknown POST may have committed on the server; refresh the passkey list in place.
+            void vaultRef.current.reloadVaultMeta?.().catch(() => undefined);
+          }
+        }
         if (outcome.ok) optionsRef.current.onRegistered?.(outcome);
       }
       return outcome;

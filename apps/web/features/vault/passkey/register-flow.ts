@@ -95,45 +95,11 @@ type PostResult =
   | { kind: 'unknown' };
 
 /**
- * After an attempt of unknown outcome, only a rejection the server issues AFTER `Idempotency.Lookup` (plan §2.3 step 2,
- * `apps/api/internal/httpx/idempotency.go:256-315`) proves that the earlier attempt did not commit: a committed one is
- * answered from the stored 201 before kill-switch, re-auth, rate limit, `Idempotency.Claim` and domain checks run.
- *
- * Rejections that can be emitted BEFORE the DB lookup in step 2 — `RequireOrigin` / `RequireSession` / `RequireCSRF` /
- * `RequireJSONContent` (`401 unauthenticated` / `access_expired` / `session_invalid`, `403 csrf_invalid`, `415 invalid_request`),
- * `Idempotency.Lookup` header/body-read checks (`400 invalid_request`, `413 invalid_request`), and any proxy/IP
- * `429 rate_limited` — say nothing about whether the earlier attempt committed and must stay `unknown`.
- */
-function provesEarlierAttemptUncommitted(problem: { status: number; code: string }): boolean {
-  switch (problem.status) {
-    case 400:
-      return (
-        problem.code === 'passkey_name_invalid' ||
-        problem.code === 'vault_wrap_invalid' ||
-        problem.code === 'passkey_challenge_invalid' ||
-        problem.code === 'passkey_attestation_invalid'
-      );
-    case 401:
-      return problem.code === 'reauth_required' || problem.code === 'reauth_invalid';
-    case 403:
-      return problem.code === 'reauth_unsupported_provider';
-    case 404:
-      return problem.code === 'vault_absent';
-    case 409:
-      return problem.code === 'passkey_exists' || problem.code === 'idempotency_conflict';
-    case 503:
-      return problem.code === 'vault_mutations_disabled';
-    default:
-      return false;
-  }
-}
-
-/**
  * POST with ONE Idempotency-Key and ONE body string: a lost or unproven response (network error, 5xx other than the
  * deliberate kill-switch 503) is replayed byte-for-byte with the original `X-Reauth-Token` (the ≥ 60 s rule applies to
- * the first send only) before the credential may be declared orphaned (SPEC §3.13 step 5, ADR 0003 §5 branch 1). Once
- * any attempt had an unknown outcome, a later rejection only counts as definite when it proves that attempt did not
- * commit; otherwise the result stays unknown.
+ * the first send only) before the credential may be declared orphaned (SPEC §3.13 step 5, ADR 0003 §5 branch 1,
+ * advisor-dec-057). Only a definite rejection on the FIRST submission proves that nothing was stored; after any unknown
+ * outcome, only a stored `201` confirms a save and every other replay outcome stays `unknown`.
  */
 async function postWithReplay(
   deps: PasskeyRegisterDeps,
@@ -161,8 +127,7 @@ async function postWithReplay(
           continue;
         }
         if (!isAmbiguousServerFailure(problem)) {
-          if (!outcomeUnknown || provesEarlierAttemptUncommitted(problem)) return { kind: 'rejected' };
-          return { kind: 'unknown' };
+          return outcomeUnknown ? { kind: 'unknown' } : { kind: 'rejected' };
         }
       }
       outcomeUnknown = true;

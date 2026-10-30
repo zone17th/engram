@@ -630,6 +630,7 @@
         "reauthCancelled": "Đã huỷ xác nhận. Passkey chưa được thêm.",
         "reauthRestart": "Xác nhận đã hết hạn trước khi lưu được passkey. Hãy bắt đầu lại để thêm.",
         "networkUnknown": "Mất kết nối trước khi xác nhận được passkey đã lưu hay chưa. Hãy kiểm tra danh sách passkey trong Settings trước khi thử lại.",
+        "unconfirmedNotice": "Không thể xác nhận passkey đã lưu hay chưa; hãy kiểm tra danh sách passkey trong Settings trước khi xoá bất kỳ mục nào khỏi thiết bị của bạn.",
         "orphanNotice": "Passkey chưa được lưu vào vault. Bạn có thể xoá credential thừa trong trình quản lý passkey của thiết bị."
       },
       "add": {

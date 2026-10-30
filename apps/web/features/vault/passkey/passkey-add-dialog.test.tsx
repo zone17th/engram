@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
       },
     }),
     registerSecretFormReset: vi.fn(() => () => {}),
+    reloadVaultMeta: vi.fn(async () => null),
   },
   fetchPasskeyRegisterOptions: vi.fn(),
   registerPasskey: vi.fn(),
@@ -115,6 +116,7 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     mocks.fetchPasskeyRegisterOptions.mockReset();
     mocks.registerPasskey.mockReset();
     mocks.credentialsCreate.mockReset();
+    mocks.vault.reloadVaultMeta.mockClear();
     Object.defineProperty(navigator, 'credentials', {
       value: { create: mocks.credentialsCreate, get: vi.fn() },
       configurable: true,
@@ -215,6 +217,44 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not register this passkey. Try another authenticator.');
     expect(await screen.findByRole('status')).toHaveTextContent(/delete the extra credential/);
+  });
+
+  it('PKW-R3-1: a lost response followed by a non-201 replay shows the neutral unconfirmed notice (en+vi), never the orphan notice, and reloads the passkey list (advisor-dec-057)', async () => {
+    useValidGrant();
+    stubRegistration({ enabled: true, first: PRF_OUTPUT });
+    mocks.registerPasskey
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(problem(401, 'reauth_invalid'));
+    const onRegistered = vi.fn();
+    const onOpenChange = vi.fn();
+    renderDialog(onRegistered, onOpenChange, 'en');
+    fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByRole('alert', undefined, { timeout: 5_000 })).toHaveTextContent(
+      'Could not confirm whether the passkey was saved; check your passkey list in Settings before removing anything from your device.',
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(1);
+    expect(onRegistered).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(mocks.registerPasskey).toHaveBeenCalledTimes(2);
+    expect(mocks.registerPasskey.mock.calls[1]).toEqual(mocks.registerPasskey.mock.calls[0]);
+
+    cleanup();
+    mocks.vault.reloadVaultMeta.mockClear();
+    mocks.registerPasskey.mockReset();
+    mocks.registerPasskey
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(problem(503, 'vault_mutations_disabled'));
+    renderDialog(undefined, undefined, 'vi');
+    fireEvent.change(await screen.findByLabelText('Tên passkey'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Tiếp tục' }));
+    expect(await screen.findByRole('alert', undefined, { timeout: 5_000 })).toHaveTextContent(
+      'Không thể xác nhận passkey đã lưu hay chưa; hãy kiểm tra danh sách passkey trong Settings trước khi xoá bất kỳ mục nào khỏi thiết bị của bạn.',
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(1);
   });
 
   it('closing the dialog while the re-auth prompt is open cancels the re-auth', async () => {
