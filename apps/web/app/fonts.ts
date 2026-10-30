@@ -20,8 +20,8 @@ const sans = localFont({
   variable: '--font-inter',
   display: 'swap',
 });
-// Sometype Mono chỉ có bộ ký tự Latin (không có U+1E00–1EFF); tắt adjustFontFallback để
-// next/font/local không chèn mặt chữ fallback Arial vào trước ui-monospace trong --font-mono (AR1-1).
+// Sometype Mono contains only Latin glyphs (no U+1E00–1EFF); disable adjustFontFallback so
+// next/font/local does not inject an Arial fallback face ahead of ui-monospace in --font-mono (AR1-1).
 const mono = localFont({
   src: './fonts/SometypeMono-Variable.woff2',
   weight: '400 500',
