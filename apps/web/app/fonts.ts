@@ -1,9 +1,5 @@
 import localFont from 'next/font/local';
 
-// Cùng các file woff2 dưới tên font thật, cho những rule của tokens.css viết thẳng
-// 'Inter' / 'Plus Jakarta Sans' / 'Sometype Mono' (xem đầu families.css).
-import './fonts/families.css';
-
 // Font nằm sẵn trong repo (app/fonts/, nguồn và sha256 ở README.md cạnh đó) và
 // next/font phục vụ từ chính origin — bắt buộc để hợp CSP `default-src 'self'`
 // (SPEC §10.2). Không dùng next/font/google: bản build tải font từ Google lúc
