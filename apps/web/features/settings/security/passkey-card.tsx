@@ -132,7 +132,7 @@ function PasskeySecurityCardInner({
   const [editingValue, setEditingValue] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
   const [renamePendingId, setRenamePendingId] = useState<string | null>(null);
-
+  const [pendingFocusRenameId, setPendingFocusRenameId] = useState<string | null>(null);
   // Revoke state
   const revokeTrackerRef = useRef<Set<string> | null>(null);
   if (!revokeTrackerRef.current) {
@@ -140,6 +140,7 @@ function PasskeySecurityCardInner({
   }
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [revokeDialogTarget, setRevokeDialogTarget] = useState<VaultPasskeyItem | null>(null);
+  const [pendingFocusHeading, setPendingFocusHeading] = useState(false);
   const [reauthPassword, setReauthPassword] = useState('');
   const [oauthPending, setOauthPending] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
@@ -202,11 +203,25 @@ function PasskeySecurityCardInner({
     setEditingValue(item.name);
   };
 
+  useEffect(() => {
+    if (!pendingFocusRenameId || editingId === pendingFocusRenameId) return;
+    const btn = document.querySelector<HTMLElement>(
+      `[data-testid="settings-passkey-rename-${pendingFocusRenameId}"]`,
+    );
+    if (btn) {
+      btn.focus();
+      setPendingFocusRenameId(null);
+    }
+  }, [editingId, items, pendingFocusRenameId]);
+
+  useEffect(() => {
+    if (!pendingFocusHeading || revokeDialogTarget !== null) return;
+    cardHeadingRef.current?.focus();
+    setPendingFocusHeading(false);
+  }, [items, pendingFocusHeading, revokeDialogTarget]);
+
   const focusRenameButton = useCallback((id: string) => {
-    queueMicrotask(() => {
-      const btn = document.querySelector<HTMLElement>(`[data-testid="settings-passkey-rename-${id}"]`);
-      btn?.focus();
-    });
+    setPendingFocusRenameId(id);
   }, []);
 
   const cancelRename = () => {
@@ -283,9 +298,7 @@ function PasskeySecurityCardInner({
         }
         setItems((prev) => prev.filter((entry) => entry.id !== item.id));
         setStatusMessage(t('revoked'));
-        queueMicrotask(() => {
-          cardHeadingRef.current?.focus();
-        });
+        setPendingFocusHeading(true);
       } catch (err) {
         if (!mountedRef.current) return;
         if (
@@ -572,7 +585,15 @@ function PasskeySecurityCardInner({
 
       {revokeDialogTarget && (
         <Dialog open={Boolean(revokeDialogTarget)} onOpenChange={closeRevokeDialog}>
-          <DialogContent id="passkeyRevokeDlg">
+          <DialogContent
+            id="passkeyRevokeDlg"
+            onCloseAutoFocus={(event) => {
+              if (pendingFocusHeading) {
+                event.preventDefault();
+                cardHeadingRef.current?.focus();
+              }
+            }}
+          >
             <div className="panel p-7" style={{ width: 'min(520px, 94vw)', maxHeight: '90vh', overflow: 'auto' }}>
               <DialogHeader
                 title={tb('revokeDialogTitle')}
