@@ -43,7 +43,8 @@ export async function expectOnUnlockPage(page: Page) {
 
 /**
  * Header lock control: the desktop pill button from `sm` up, the round button below it. Settings is left through its
- * Done link first so the unlock screen is reached at plain /app/unlock (no returnTo) and unlocks land on /app.
+ * Done link first so locking lands on `/app`; under U5 (`advisor-dec-048`), `/app` stays on the locked list and
+ * reveals `vault-locked-banner`, whose `vault-locked-unlock-cta` opens plain `/app/unlock` (no `returnTo`).
  */
 export async function lockVault(page: Page) {
   if (/\/app\/settings$/.test(page.url())) {
@@ -51,6 +52,10 @@ export async function lockVault(page: Page) {
     await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
   }
   await page.locator('[data-testid^="vault-lock-button"]:visible').first().click();
+  await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+  await expectVaultShut(page);
+  await page.getByTestId('vault-locked-unlock-cta').click();
   await expectOnUnlockPage(page);
 }
 
@@ -298,8 +303,8 @@ export async function openAddPasskeyDialog(page: Page) {
 /**
  * Acquires a real `vault.passkey_register` grant via the OAuth re-auth flow for an OAuth-only user: opens the dialog,
  * clicks `Confirm with Google` (`auth.reauth.google`), completes the fake OAuth redirect (`status=reauth_ready` ->
- * `POST /auth/reauth`), unlocks the vault on `/app/unlock?returnTo=%2Fapp%2Fsettings`, and re-opens the Add-passkey
- * dialog at its name step.
+ * `POST /auth/reauth`), follows the Settings locked-state banner (`vault-security-locked-banner`) to unlock on
+ * `/app/unlock?returnTo=%2Fapp%2Fsettings`, and re-opens the Add-passkey dialog at its name step.
  */
 export async function acquireOauthPasskeyGrantAndOpenDialog(
   page: Page,
@@ -323,7 +328,13 @@ export async function acquireOauthPasskeyGrantAndOpenDialog(
   const expiresAtMs = Date.parse(grantBody.expires_at);
   expect(Number.isFinite(expiresAtMs)).toBe(true);
 
-  // The full-page OAuth redirect destroyed the Worker; RouteGuard sends /app/settings to /app/unlock?returnTo=%2Fapp%2Fsettings.
+  // The full-page OAuth redirect destroyed the Worker; RouteGuard allows /app/settings while locked and
+  // VaultSecurityPanel renders vault-security-locked-banner with its link to /app/unlock?returnTo=%2Fapp%2Fsettings.
+  await expect(page).toHaveURL(/\/app\/settings$/, { timeout: UI_WAIT_MS });
+  await expectVaultShut(page);
+  const lockedBanner = page.getByTestId('vault-security-locked-banner');
+  await expect(lockedBanner).toBeVisible({ timeout: UI_WAIT_MS });
+  await lockedBanner.getByRole('link').click();
   await expect(page).toHaveURL(/\/app\/unlock\?returnTo=%2Fapp%2Fsettings$/, { timeout: UI_WAIT_MS });
   await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
   await fillSecret(page.getByTestId('unlock-passphrase-input'), VAULT_PASSPHRASE, CRYPTO_WAIT_MS);
