@@ -850,14 +850,26 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     shims.splice(0).forEach((s) => s.close());
 
     // --- Variant B (R2-7): remembered device, automatic GET fails while manual GET is pending in same generation, automatic cleans up, sibling durable lock, release manual GET -> stale, locked, no plaintext ---
-    const rememberSetup = await openUnlockedTab();
+    // Unlock the EXISTING vault from Variant A (do not call createVault a second time, which would generate a different VK than `sealed`!).
+    const rememberSetup = renderTab();
+    await act(async () => {
+      await rememberSetup.vault().unlockPassphrase({
+        passphrase: PASSPHRASE,
+        kdf: created!.kdf,
+        vaultKeyWrappedByKek: created!.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created!.private_keys_wrapped,
+        opGeneration: rememberSetup.vault().captureOpGeneration(),
+      });
+      await rememberSetup.vault().reloadVaultMeta();
+    });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    await waitFor(() => expect(rememberSetup.remember().available).toBe(true));
     await act(async () => {
       await rememberSetup.remember().remember();
     });
     expect(devkeys().size).toBe(1);
     cleanup();
     shims.splice(0).forEach((s) => s.close());
-
     let callIndex = 0;
     let releaseAutoGetFail: (() => void) | null = null;
     let releaseManualGetB: (() => void) | null = null;
