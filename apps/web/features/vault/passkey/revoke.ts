@@ -1,5 +1,6 @@
 import { ProblemError } from '@engram/shared-types';
 import { revokePasskey } from '@/lib/api/vault';
+import { isAmbiguousServerFailure } from './ambiguous';
 
 export const REVOKE_RETRY_DELAY_MS = 1_000;
 
@@ -34,8 +35,11 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * `DELETE /vault/passkeys/{id}` with one automatic retry on a lost response. The grant (`vault.passkey_revoke`) is
- * taken by the caller when the flow starts. Any other API error propagates unchanged.
+ * `DELETE /vault/passkeys/{id}` with one automatic retry when the outcome is unknown: no HTTP response, or a server /
+ * gateway failure that may have been produced after the commit (500 from a failed COMMIT, 502, 504; see
+ * `isAmbiguousServerFailure`). The id is tracked so that a later `404 passkey_not_found` for it counts as revoked,
+ * including after a manual retry. The grant (`vault.passkey_revoke`) is taken by the caller when the flow starts.
+ * Definite API errors (auth, domain, 4xx) propagate unchanged and are never tracked.
  */
 export async function revokePasskeyIdempotent(
   deps: PasskeyRevokeDeps,
@@ -46,7 +50,7 @@ export async function revokePasskeyIdempotent(
   const send = deps.revoke ?? ((i: string, t: string) => revokePasskey(i, t));
   const sleep = deps.sleep ?? defaultSleep;
 
-  const attempt = async (viaRetry: boolean): Promise<PasskeyRevokeOutcome | 'lost'> => {
+  const attempt = async (viaRetry: boolean): Promise<PasskeyRevokeOutcome | { unconfirmed: unknown }> => {
     try {
       await send(id, reauthToken);
       tracker.delete(id);
@@ -57,18 +61,22 @@ export async function revokePasskeyIdempotent(
         tracker.delete(id);
         return own ? { status: 'revoked', viaRetry: true } : { status: 'not_found' };
       }
-      if (err instanceof ProblemError) throw err;
-      // No HTTP response: the DELETE may have committed.
+      if (err instanceof ProblemError && !isAmbiguousServerFailure(err.problem)) throw err;
+      // No HTTP answer, or one that proves nothing: the DELETE may have committed.
       tracker.add(id);
-      return 'lost';
+      return { unconfirmed: err };
     }
   };
 
   let outcome = await attempt(false);
-  if (outcome === 'lost') {
+  if ('unconfirmed' in outcome) {
     await sleep(REVOKE_RETRY_DELAY_MS);
     outcome = await attempt(true);
-    if (outcome === 'lost') throw new Error('Passkey revoke could not be confirmed');
+    if ('unconfirmed' in outcome) {
+      throw outcome.unconfirmed instanceof ProblemError
+        ? outcome.unconfirmed
+        : new Error('Passkey revoke could not be confirmed');
+    }
   }
   await deps.reloadList();
   return outcome;

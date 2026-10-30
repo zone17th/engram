@@ -480,4 +480,50 @@ describe('T19 bullet 1 - POST failure and replay', () => {
     expect(outcome.ok).toBe(true);
     expect(h.posts).toHaveLength(2);
   });
+
+  it('PKW-R1-1: a 500 internal_error is unproven; the replay finds the stored 201, no orphan notice', async () => {
+    const h = makeHarness({ registerBehaviour: [problem(500, 'internal_error'), 'ok'] });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: true, passkey: SAVED });
+    expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]).toEqual(h.posts[0]);
+  });
+
+  it('PKW-R1-1: a 500 that never resolves is network_unknown, never an orphan claim', async () => {
+    const h = makeHarness({ registerBehaviour: [problem(500, 'internal_error')] });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
+    expect(h.posts).toHaveLength(1 + MAX_NETWORK_REPLAYS);
+  });
+
+  it.each([
+    [401, 'session_invalid'],
+    [401, 'unauthenticated'],
+    [403, 'csrf_invalid'],
+    [429, 'rate_limited'],
+  ])('PKW-R1-2: lost response, then a pre-lookup %i %s on the replay is unknown, not an orphan', async (status, code) => {
+    const h = makeHarness({ registerBehaviour: [new TypeError('Failed to fetch'), problem(status, code)] });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
+    expect(h.posts).toHaveLength(2);
+  });
+
+  it.each([
+    [400, 'passkey_challenge_invalid'],
+    [409, 'passkey_exists'],
+    [401, 'reauth_required'],
+    [503, 'vault_mutations_disabled'],
+  ])('PKW-R1-2: lost response, then a post-lookup %i %s proves the first attempt uncommitted: orphan notice', async (status, code) => {
+    const h = makeHarness({ registerBehaviour: [problem(500, 'internal_error'), problem(status, code)] });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
+    expect(h.posts).toHaveLength(2);
+  });
+
+  it('PKW-R1-2: without any earlier unknown attempt a 401 session_invalid is a definite rejection', async () => {
+    const h = makeHarness({ registerBehaviour: [problem(401, 'session_invalid')] });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
+    expect(h.posts).toHaveLength(1);
+  });
 });

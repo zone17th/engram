@@ -6,6 +6,7 @@ import type {
   VaultPasskeyRegisterOptionsResponse,
 } from '@/lib/api/vault';
 import type { CryptoClient } from '@/lib/crypto/client';
+import { isAmbiguousServerFailure } from './ambiguous';
 import { validatePasskeyName, type PasskeyNameRejection } from './credential-name';
 import {
   decodeCreationOptions,
@@ -92,15 +93,34 @@ type PostResult =
   | { kind: 'rejected' }
   | { kind: 'unknown' };
 
-/** Gateway statuses where the response, not the request, may have been lost. */
-function isAmbiguousStatus(status: number): boolean {
-  return status === 502 || status === 504;
+/**
+ * After an attempt of unknown outcome, only a rejection the server issues AFTER the idempotency lookup proves that the
+ * attempt did not commit: a committed one is answered from the stored 201 before re-auth, rate limit and domain checks
+ * run (plan §2.3 steps 2-6). Session / CSRF / origin failures (steps 1) and the per-IP limiter are issued before the
+ * lookup and say nothing about the earlier attempt. 400 and 409 are deterministic for one key + body.
+ */
+function provesEarlierAttemptUncommitted(problem: { status: number; code: string }): boolean {
+  switch (problem.status) {
+    case 400:
+    case 409:
+      return true;
+    case 401:
+      return problem.code === 'reauth_required' || problem.code === 'reauth_invalid';
+    case 403:
+      return problem.code === 'reauth_unsupported_provider';
+    case 503:
+      return problem.code === 'vault_mutations_disabled';
+    default:
+      return false;
+  }
 }
 
 /**
- * POST with ONE Idempotency-Key and ONE body string: a lost response is replayed byte-for-byte with the original
- * `X-Reauth-Token` (the ≥ 60 s rule applies to the first send only) before the credential may be declared orphaned
- * (SPEC §3.13 step 5, ADR 0003 §5 branch 1).
+ * POST with ONE Idempotency-Key and ONE body string: a lost or unproven response (network error, 5xx other than the
+ * deliberate kill-switch 503) is replayed byte-for-byte with the original `X-Reauth-Token` (the ≥ 60 s rule applies to
+ * the first send only) before the credential may be declared orphaned (SPEC §3.13 step 5, ADR 0003 §5 branch 1). Once
+ * any attempt had an unknown outcome, a later rejection only counts as definite when it proves that attempt did not
+ * commit; otherwise the result stays unknown.
  */
 async function postWithReplay(
   deps: PasskeyRegisterDeps,
@@ -111,21 +131,28 @@ async function postWithReplay(
   const sleep = deps.sleep ?? defaultSleep;
   let networkReplays = 0;
   let inProgressWaits = 0;
+  let outcomeUnknown = false;
   for (;;) {
     try {
       const passkey = await deps.api.registerPasskey(body, { idempotencyKey, reauthToken });
       return { kind: 'saved', passkey };
     } catch (err) {
       if (err instanceof ProblemError) {
-        const { code, status, retry_after: retryAfter } = err.problem;
-        if (code === 'idempotency_in_progress') {
+        const { problem } = err;
+        if (problem.code === 'idempotency_in_progress') {
+          // The claim of an earlier attempt of ours is still held: that attempt's outcome is not known yet.
+          outcomeUnknown = true;
           inProgressWaits += 1;
           if (inProgressWaits > MAX_IN_PROGRESS_WAITS) return { kind: 'unknown' };
-          await sleep(Math.max(1, retryAfter ?? 1) * 1_000);
+          await sleep(Math.max(1, problem.retry_after ?? 1) * 1_000);
           continue;
         }
-        if (!isAmbiguousStatus(status)) return { kind: 'rejected' };
+        if (!isAmbiguousServerFailure(problem)) {
+          if (!outcomeUnknown || provesEarlierAttemptUncommitted(problem)) return { kind: 'rejected' };
+          return { kind: 'unknown' };
+        }
       }
+      outcomeUnknown = true;
       networkReplays += 1;
       if (networkReplays > MAX_NETWORK_REPLAYS) return { kind: 'unknown' };
       await sleep(NETWORK_REPLAY_DELAY_MS * networkReplays);
