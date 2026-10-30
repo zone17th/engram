@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VaultState } from '@/lib/api/vault';
@@ -123,6 +123,61 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
       'Không kiểm tra được danh sách passkey đã đăng ký.',
     );
     expect(screen.getByRole('button', { name: 'Thử lại' })).toBeEnabled();
+  });
+
+  it('PKW-R3-4: Retry keeps its busy control mounted and preserves keyboard focus across pending, repeated failure, and successful handoff', async () => {
+    mocks.vault.vaultMeta = null;
+    mocks.vault.reloadVaultMeta.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const view = renderButton();
+    const retryBtn = await screen.findByTestId('unlock-passkey-retry-button');
+    retryBtn.focus();
+    expect(document.activeElement).toBe(retryBtn);
+    expect(retryBtn).toHaveAttribute('aria-busy', 'false');
+
+    // 1. Deferred retry that fails again: control stays mounted (`aria-busy="true"`), ignores duplicate clicks, and keeps focus.
+    const firstRetry = Promise.withResolvers<VaultState>();
+    mocks.vault.reloadVaultMeta.mockReturnValueOnce(firstRetry.promise);
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => expect(retryBtn).toHaveAttribute('aria-busy', 'true'));
+    expect(retryBtn).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByTestId('unlock-passkey-load-error')).toBeInTheDocument();
+    expect(document.activeElement).toBe(retryBtn);
+
+    // Clicking while pending starts no second request.
+    fireEvent.click(retryBtn);
+    expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      firstRetry.reject(new TypeError('Still offline'));
+      await firstRetry.promise.catch(() => undefined);
+    });
+    expect(retryBtn).toHaveAttribute('aria-busy', 'false');
+    expect(retryBtn).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(retryBtn);
+
+    // 2. Deferred retry that succeeds and discovers passkeys: control stays mounted while pending, then hands focus to Unlock with passkey.
+    const secondRetry = Promise.withResolvers<VaultState>();
+    mocks.vault.reloadVaultMeta.mockReturnValueOnce(secondRetry.promise);
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => expect(retryBtn).toHaveAttribute('aria-busy', 'true'));
+    expect(document.activeElement).toBe(retryBtn);
+
+    await act(async () => {
+      setPasskeys(1);
+      secondRetry.resolve(mocks.vault.vaultMeta as unknown as VaultState);
+      await secondRetry.promise;
+    });
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PasskeyUnlockButton />
+      </NextIntlClientProvider>,
+    );
+    const unlockBtn = await screen.findByTestId('unlock-passkey-button');
+    expect(document.activeElement).toBe(unlockBtn);
+    expect(screen.queryByTestId('unlock-passkey-load-error')).toBeNull();
   });
 
   it('does not reload the vault metadata when the passkey list is already known', async () => {

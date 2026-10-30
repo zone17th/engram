@@ -76,9 +76,10 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
   const loadMeta = useCallback(async () => {
     if (metaLoadingRef.current) return;
     metaLoadingRef.current = true;
+    // PKW-R3-4: keep metaLoadFailed true while a user-initiated retry is pending so the status region and Retry
+    // button stay mounted (and expose aria-busy) instead of unmounting and losing keyboard focus.
     if (mountedRef.current) {
       setMetaLoading(true);
-      setMetaLoadFailed(false);
     }
     try {
       await vaultRef.current.reloadVaultMeta();

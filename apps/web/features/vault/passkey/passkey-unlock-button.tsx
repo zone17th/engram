@@ -23,6 +23,8 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
   const { available, metaLoadFailed, metaLoading, pending, inFlight, error, unlock, retryLoadMeta } =
     usePasskeyUnlock();
   const mountedRef = useRef(true);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const focusAfterRetryRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -31,10 +33,28 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
     };
   }, []);
 
+  // PKW-R3-4: after a user-initiated Retry settles, restore focus to the Retry button on repeated failure
+  // or hand focus to the newly discovered Unlock with passkey button on success.
+  useEffect(() => {
+    if (!focusAfterRetryRef.current || metaLoading) return;
+    if (available) {
+      focusAfterRetryRef.current = false;
+      rootRef.current?.querySelector<HTMLButtonElement>('[data-testid="unlock-passkey-button"]')?.focus();
+      return;
+    }
+    if (metaLoadFailed) {
+      focusAfterRetryRef.current = false;
+      rootRef.current?.querySelector<HTMLButtonElement>('[data-testid="unlock-passkey-retry-button"]')?.focus();
+      return;
+    }
+    focusAfterRetryRef.current = false;
+  }, [available, metaLoadFailed, metaLoading]);
+
   if (!available) {
     if (!metaLoadFailed) return null;
     return (
       <div
+        ref={rootRef}
         className={cn('card mb-4 p-4', className)}
         role="status"
         data-testid="unlock-passkey-load-error"
@@ -47,8 +67,12 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
             variant="tertiary"
             size="sm"
             className="ml-auto"
-            onClick={() => void retryLoadMeta()}
-            disabled={metaLoading || inFlight}
+            onClick={() => {
+              if (metaLoading || inFlight) return;
+              focusAfterRetryRef.current = true;
+              void retryLoadMeta();
+            }}
+            aria-disabled={metaLoading || inFlight || undefined}
             aria-busy={metaLoading}
             data-testid="unlock-passkey-retry-button"
           >
@@ -68,7 +92,7 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
   else if (error === 'recovering') message = tState('recoveringSwitchHint');
   else if (error && error !== 'stale' && error !== 'abandoned') message = t(error);
   return (
-    <div className={cn('card mb-4 p-6', className)} data-testid="unlock-passkey-section">
+    <div ref={rootRef} className={cn('card mb-4 p-6', className)} data-testid="unlock-passkey-section">
       <Button
         variant="primary"
         className="w-full !justify-center"
