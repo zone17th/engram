@@ -3,15 +3,19 @@
 import { ProblemError } from '@engram/shared-types';
 import { useQueryClient } from '@tanstack/react-query';
 import {
+  Suspense,
   createContext,
+  lazy,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import { useSession } from '@/features/auth/session-provider';
 import {
   ACTIVITY_BROADCAST_THROTTLE_MS,
@@ -36,6 +40,7 @@ import {
   type LockEpochEnvironment,
   type LockEpochMarker,
 } from '@/features/vault/lock-epoch';
+import type { VaultTestConsumerApi } from '@/features/vault/vault-test-consumer';
 import { fetchVault, type VaultState } from '@/lib/api/vault';
 import { fetchMe } from '@/lib/api/auth';
 import {
@@ -241,7 +246,17 @@ export interface VaultContextValue {
   rewrap: (params: RewrapClientParams) => Promise<RewrapResult>;
 }
 
-const VaultContext = createContext<VaultContextValue | null>(null);
+interface VaultStoreContextValue {
+  value: VaultContextValue;
+  subscribe: (listener: () => void) => () => void;
+  getStateSnapshot: () => VaultStateMachineMode;
+}
+
+const VaultContext = createContext<VaultStoreContextValue | null>(null);
+
+// Browser-test-only vault consumer (VS-R7-1 / BE3-4): a lazily loaded real React consumer that the e2e specs mount
+// into this provider's tree through `window.__engramMountVaultTestConsumer` (same gate as the test bridge).
+const VaultTestConsumer = lazy(() => import('@/features/vault/vault-test-consumer'));
 
 export interface VaultProviderProps {
   children: ReactNode;
@@ -273,16 +288,19 @@ function clearDomSecretInputs(): void {
   if (typeof document === 'undefined') return;
   try {
     const inputs = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-      'input[type="password"], input[data-vault-secret], textarea[data-vault-secret]',
+      'input[data-vault-secret], textarea[data-vault-secret]',
     );
     inputs.forEach((el) => {
       el.value = '';
+    });
+    const decryptedPreviews = document.querySelectorAll<HTMLElement>('[data-vault-decrypted]');
+    decryptedPreviews.forEach((el) => {
+      el.textContent = '[LOCKED]';
     });
   } catch {
     // Ignore DOM traversal errors
   }
 }
-
 export function deriveVaultStateMachineMode(input: {
   serverVaultStatus: 'absent' | 'present';
   workerState: VaultClientState;
@@ -344,7 +362,7 @@ export function VaultProvider({
   const [inFlightCount, setInFlightCount] = useState<number>(0);
   const [activeOperation, setActiveOperation] = useState<VaultActiveOperation>(null);
   const [lastErrorCode, setLastErrorCode] = useState<CryptoClientErrorCode | null>(null);
-  const [vaultMeta, setVaultMeta] = useState<VaultState | null>(null);
+  const [vaultMeta, setVaultMetaState] = useState<VaultState | null>(null);
   const [tabKnownLockEpoch, setTabKnownLockEpoch] = useState<number>(0);
   const [unlockBaseline, setUnlockBaseline] = useState<LockEpochMarker | null>(null);
   const [baselineVerified, setBaselineVerified] = useState<boolean>(false);
@@ -359,19 +377,56 @@ export function VaultProvider({
   const lockEpochEnvRef = useRef<VaultProviderProps['lockEpochEnv']>(lockEpochEnv);
   lockEpochEnvRef.current = lockEpochEnv;
   const workerStateRef = useRef<VaultClientState>('locked');
-  const inFlightStateOpRef = useRef<boolean>(false);
+  const inFlightStateOpCountRef = useRef<number>(0);
+  const activeOperationRef = useRef<VaultActiveOperation>(null);
   const tabKnownLockEpochRef = useRef<number>(0);
   const unlockBaselineRef = useRef<LockEpochMarker | null>(null);
+  const intentBaselinesRef = useRef<Map<number, Promise<LockEpochMarker | null>>>(new Map());
   const baselineVerifiedRef = useRef<boolean>(false);
   const wakeVerificationSeqRef = useRef<number>(0);
   const wakeVerifyingCountRef = useRef<number>(0);
   const wakePreIdleAtRef = useRef<number | null>(null);
   const settingsSyncSeqRef = useRef<number>(0);
   const vaultMetaSessionEpochRef = useRef<number>(0);
+  const vaultMetaRequestSeqRef = useRef<number>(0);
+  // Newest request whose authoritative outcome (present metadata or `404 vault_absent`) this provider has applied.
+  // Only an applied (verified) newer outcome may supersede an older response; a newer request that merely started,
+  // stalled or failed is not evidence about vault state (BE3-7 / BE3-9).
+  const vaultMetaAppliedRef = useRef<{
+    seq: number;
+    sessionEpoch: number;
+    meta: VaultState | null;
+  } | null>(null);
+  // `vault_key_id`s that stopped being current (replaced or reset). Keys are never reused, so a `GET /vault` response
+  // naming one is stale by key (BE4-1).
+  const retiredVaultKeyIdsRef = useRef<Set<string>>(new Set());
+  // Synchronous mirror of the committed `vaultMeta` state, so a stale response and `notifyVaultChanged` can compare
+  // versions without waiting for a render (BE4-5).
+  const liveVaultMetaRef = useRef<VaultState | null>(null);
   const currentVaultKeyIdRef = useRef<string | null>(null);
   const resetPurgedVaultKeyIdRef = useRef<string | null>(null);
+  const resetPurgeInFlightVaultKeyIdRef = useRef<string | null>(null);
+  // `vault_key_id`s of resets this provider itself observed (reload key change / 404, `vault_changed` reset,
+  // local `notifyVaultChanged`). `markResetPurged` only accepts such a token (BE2-9).
+  const observedResetKeyIdsRef = useRef<Set<string>>(new Set());
+  const setVaultMeta = useCallback((next: VaultState | null) => {
+    liveVaultMetaRef.current = next;
+    setVaultMetaState(next);
+  }, []);
+  const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
+  currentUserIdRef.current = me?.user.id ?? null;
   const previousUserIdRef = useRef<string | null>(null);
   const secretFormResettersRef = useRef<Set<() => void>>(new Set());
+  const storeListenersRef = useRef<Set<() => void>>(new Set());
+  const notifyStoreListeners = useCallback(() => {
+    for (const listener of [...storeListenersRef.current]) {
+      try {
+        listener();
+      } catch {
+        // Ignore listener errors
+      }
+    }
+  }, []);
   const lastActivityAtRef = useRef<number>(Date.now());
   const lastBroadcastedActivityAtRef = useRef<number>(0);
   const autoLockMinutesRef = useRef<number>(normalizeAutoLockMinutes(me?.settings.auto_lock_minutes));
@@ -438,22 +493,25 @@ export function VaultProvider({
             wakePreIdleAtRef.current = null;
             // Note: unlockRecovery leaves Worker in 'locked' while holding the pending continuation;
             // only clear unlockBaseline when the client is not mid-operation (BE1-6) or on error/explicit lockLocalOnly.
-            if (nextState === 'error' || !inFlightStateOpRef.current) {
+            if (nextState === 'error' || inFlightStateOpCountRef.current === 0) {
               unlockBaselineRef.current = null;
               setUnlockBaseline(null);
             }
             baselineVerifiedRef.current = false;
             setWakeVerifyingCount(0);
             setBaselineVerified(false);
+            activeOperationRef.current = null;
             setActiveOperation(null);
             clearPlaintextAndFormsSync();
+            notifyStoreListeners();
           }
+          notifyStoreListeners();
         },
       });
       clientRef.current = instance;
     }
     return clientRef.current;
-  }, [clearPlaintextAndFormsSync]);
+  }, [clearPlaintextAndFormsSync, notifyStoreListeners]);
 
   const envWithBroadcast = useMemo<LockEpochEnvironment>(
     () => ({
@@ -477,23 +535,26 @@ export function VaultProvider({
    * synchronously clears cache + forms and invokes `client.lock()` without re-writing `lockEpoch`.
    */
   const lockLocalOnly = useCallback((): Promise<LockResult> => {
-    inFlightStateOpRef.current = false;
+    inFlightStateOpCountRef.current = 0;
     wakeVerificationSeqRef.current += 1;
     wakeVerifyingCountRef.current = 0;
     wakePreIdleAtRef.current = null;
     unlockBaselineRef.current = null;
+    intentBaselinesRef.current.clear();
     baselineVerifiedRef.current = false;
+    activeOperationRef.current = null;
     setWakeVerifyingCount(0);
     setUnlockBaseline(null);
     setBaselineVerified(false);
     setActiveOperation(null);
     clearPlaintextAndFormsSync();
+    notifyStoreListeners();
     const client = getClient();
     const lockPromise = client.lock();
     setGeneration(client.getGeneration());
     setEpoch(client.getEpoch());
     return lockPromise;
-  }, [clearPlaintextAndFormsSync, getClient]);
+  }, [clearPlaintextAndFormsSync, getClient, notifyStoreListeners]);
 
   /**
    * Full lock operation:
@@ -547,54 +608,212 @@ export function VaultProvider({
   const beginOp = useCallback(() => {
     const client = getClient();
     const opGeneration = client.captureGeneration();
+    // Capture durable lockEpoch baseline at intent start (before any metadata GET or async work — BE2-1, ADR 0003 §8.4).
+    const baselinePromise = captureUnlockBaseline(
+      tabKnownLockEpochRef.current,
+      envWithBroadcast,
+    ).then(
+      (marker) => {
+        if (marker && client.getGeneration() === opGeneration) {
+          updateTabKnownLockEpoch(marker.lockEpoch);
+        }
+        return marker;
+      },
+      () => null,
+    );
+    intentBaselinesRef.current.set(opGeneration, baselinePromise);
     return {
       opGeneration,
       client,
       isCurrent: () => client.getGeneration() === opGeneration,
     };
-  }, [getClient]);
+  }, [envWithBroadcast, getClient, updateTabKnownLockEpoch]);
 
   const clearError = useCallback(() => {
     setLastErrorCode(null);
   }, []);
+  const rememberObservedReset = useCallback((vaultKeyId: string | null | undefined) => {
+    if (typeof vaultKeyId !== 'string' || vaultKeyId.length === 0) return;
+    const observed = observedResetKeyIdsRef.current;
+    observed.delete(vaultKeyId);
+    observed.add(vaultKeyId);
+    if (observed.size > 16) {
+      const oldest = observed.values().next().value;
+      if (oldest !== undefined) observed.delete(oldest);
+    }
+  }, []);
+
+  // BE4-3: an observed reset id is only a valid `markResetPurged` token while its transition is still the active one,
+  // i.e. before a replacement vault key became current. Once a replacement is established the historical ids are
+  // retired so a stale mark can never overwrite the replacement's purge receipt.
+  const retireObservedResets = useCallback(() => {
+    observedResetKeyIdsRef.current.clear();
+  }, []);
+
   const markResetPurged = useCallback((vaultKeyId?: string | null) => {
-    const token =
-      typeof vaultKeyId === 'string' && vaultKeyId.length > 0
-        ? vaultKeyId
-        : currentVaultKeyIdRef.current ?? '__absent__';
+    // BE2-9: Require a positive reset identity that this provider can tie to a reset it observed: the tab's own
+    // current `vault_key_id`, or the key of the still-active observed reset transition. An arbitrary or historical
+    // token is an assertion, not evidence, and would suppress a later purge for a vault whose reset was never seen
+    // here (or replace the valid receipt of the replacement vault, BE4-3).
+    const explicit = typeof vaultKeyId === 'string' && vaultKeyId.length > 0 ? vaultKeyId : null;
+    const token = explicit ?? currentVaultKeyIdRef.current;
+    if (typeof token !== 'string' || token.length === 0) return;
+    if (
+      explicit !== null &&
+      explicit !== currentVaultKeyIdRef.current &&
+      !observedResetKeyIdsRef.current.has(explicit)
+    ) {
+      return;
+    }
     resetPurgedVaultKeyIdRef.current = token;
   }, []);
 
+  const runIdempotentResetPurge = useCallback(
+    (userId: string | null | undefined, transitionKeyId: string | null) => {
+      // BE2-8 & BE2-9: Only skip when we have a positive transition vault_key_id that matches
+      // an already-committed (`ok: true`) or currently in-flight purge for that exact key ID.
+      if (
+        transitionKeyId !== null &&
+        (resetPurgedVaultKeyIdRef.current === transitionKeyId ||
+          resetPurgeInFlightVaultKeyIdRef.current === transitionKeyId)
+      ) {
+        return;
+      }
+      const purgeEpoch = vaultMetaSessionEpochRef.current;
+      if (transitionKeyId !== null) {
+        resetPurgeInFlightVaultKeyIdRef.current = transitionKeyId;
+      }
+      // A transition that cannot name its vault (unknown 404) skips its purge only when a receipt for a reset exists
+      // (an accepted `markResetPurged`, an observed reset or a committed purge) AND the purge transaction itself finds
+      // no DevKey for this user: the check and the skip happen inside the same readwrite transaction (`skipIfNoDevKeys`),
+      // so marked-but-not-purged and a DevKey written after the mark both purge, and a true duplicate costs nothing
+      // (BE2-9, BE7-2).
+      const skipIfNoDevKeys = transitionKeyId === null && resetPurgedVaultKeyIdRef.current !== null;
+      const run = purgeDeviceKeysOnRevoked(
+        userId,
+        effectiveDeviceStoreEnv,
+        skipIfNoDevKeys ? { skipIfNoDevKeys: true } : undefined,
+      ).then((res) => {
+        if (
+          res.ok &&
+          !res.skipped &&
+          transitionKeyId !== null &&
+          vaultMetaSessionEpochRef.current === purgeEpoch &&
+          currentVaultKeyIdRef.current === null
+        ) {
+          resetPurgedVaultKeyIdRef.current = transitionKeyId;
+        }
+      });
+      void run
+        .catch(() => undefined)
+        .finally(() => {
+          if (
+            transitionKeyId !== null &&
+            resetPurgeInFlightVaultKeyIdRef.current === transitionKeyId
+          ) {
+            resetPurgeInFlightVaultKeyIdRef.current = null;
+          }
+        });
+    },
+    [effectiveDeviceStoreEnv],
+  );
+
 
   /**
-   * Reloads `GET /vault` from the server.
-   * Per plan §2.6 and ADR 0003 §8:
-   * - If `404 vault_absent` or `vault_key_id` differs from the tab's known `vault_key_id`, locks immediately.
-   * - If `vault_key_id` matches and `version` increased, updates `vaultMeta` for future operations without
-   *   overwriting any in-flight mutation's captured `If-Match`.
+   * Reloads `GET /vault` (plan §2.6, ADR 0003 §8). After the session/account fence every response goes through ONE
+   * table keyed on `vault_key_id`; `issuedKey` is the current key when the request was sent:
+   *   0. A NEWER GET outcome was already applied -> apply nothing, return it (BE3-7, BE5-2).
+   *   1. 404 -> 1a lock, wipe, purge (BE5-1); 1b the current key differs from `issuedKey` and is not retired: lock,
+   *      no purge, ONE follow-up GET under it. The follow-up's own 404 is never 1b again (BE7-1): current still the
+   *      key it was sent under, null or retired -> 1a; moved to another non-retired key -> lock only, no purge, no GET.
+   *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
+   *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
+   *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
+   * Rows 1a and 4 purge USER-scoped device keys (`purgeDeviceKeysOnRevoked`); a key-scoped compare-and-delete is
+   * deferred to T18 (CF-T18-KEYSCOPED-PURGE).
+   * Other errors: supersession check, then rethrow. Local notifications never suppress or reorder a GET response.
    */
-  const reloadVaultMeta = useCallback(async (): Promise<VaultState | null> => {
+  const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null; followUp?: boolean }): Promise<VaultState | null> => {
+    // `resetKeyId` is set only by this provider's own follow-up GET after it observed that vault's reset, so a
+    // `404` that cannot name its vault is attributed to that observed reset and not to an unseen later one.
+    // `followUp` marks that same internal GET: its 404 never takes row 1b again (exactly ONE follow-up).
+    const followUpResetKeyId = opts?.resetKeyId ?? null;
+    const isFollowUp = opts?.followUp === true;
     const requestSessionEpoch = vaultMetaSessionEpochRef.current;
-    const requestUserId = me?.user.id ?? previousUserIdRef.current ?? null;
-    try {
-      const fresh = await fetchVault();
-      const currentUserId = me?.user.id ?? previousUserIdRef.current ?? null;
-      if (
+    const requestSeq = ++vaultMetaRequestSeqRef.current;
+    const issuedKey = currentVaultKeyIdRef.current;
+    const requestUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
+    // Session/user fences: a response from another session or account never has any effect.
+    const isForeignResponse = () => {
+      const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
+      return (
         vaultMetaSessionEpochRef.current !== requestSessionEpoch ||
         sessionStatus === 'signed_out' ||
-        (requestUserId !== null && currentUserId !== requestUserId)
-      ) {
+        (requestUserId !== null && liveUserId !== requestUserId)
+      );
+    };
+    // Live metadata, but only when it belongs to the vault that is current now: a replaced vault's metadata must never
+    // be handed back as if it described its replacement.
+    const currentLiveMeta = (): VaultState | null => {
+      const live = liveVaultMetaRef.current;
+      return live && live.vault_key_id === currentVaultKeyIdRef.current ? live : null;
+    };
+    // Ordering fence: only a NEWER request whose outcome was already applied supersedes this response. The
+    // superseding outcome is returned so callers see the authoritative state rather than a bare `null`
+    // (which would be indistinguishable from `vault_absent`, BE3-9).
+    const supersedingOutcome = (): { meta: VaultState | null } | null => {
+      const applied = vaultMetaAppliedRef.current;
+      if (applied && applied.sessionEpoch === requestSessionEpoch && applied.seq > requestSeq) {
+        // BE5-2: a local same-key update that landed after the saved outcome is newer than it; never hand back the older
+        // version (the live metadata only differs from the outcome for the same key, otherwise the outcome stands).
+        const live = liveVaultMetaRef.current;
+        const meta =
+          applied.meta && live && live.vault_key_id === applied.meta.vault_key_id && live.version > applied.meta.version
+            ? live
+            : applied.meta;
+        return { meta };
+      }
+      return null;
+    };
+    try {
+      const fresh = await fetchVault();
+      if (isForeignResponse()) {
         return null;
       }
+      const superseded = supersedingOutcome();
+      if (superseded) {
+        return superseded.meta;
+      }
+      if (retiredVaultKeyIdsRef.current.has(fresh.vault_key_id)) {
+        // Row 3: a replaced or reset key is stale by key. Apply nothing and report the live current metadata (BE4-1).
+        return currentLiveMeta();
+      }
+      const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
       const prevKeyId = currentVaultKeyIdRef.current;
+      // BE4-5: never lower the current same-key metadata version below a newer authoritative outcome (a local
+      // update that landed while this response was in flight). Captured in-flight mutation snapshots are untouched.
+      const liveMeta = liveVaultMetaRef.current;
+      const applied: VaultState =
+        liveMeta && liveMeta.vault_key_id === fresh.vault_key_id && liveMeta.version > fresh.version
+          ? liveMeta
+          : fresh;
+      vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: applied };
       if (prevKeyId && fresh.vault_key_id !== prevKeyId) {
+        // Row 4: the previous vault is replaced: its reset id is historical now and must not be markable (BE4-3).
+        retiredVaultKeyIdsRef.current.add(prevKeyId);
+        retireObservedResets();
         currentVaultKeyIdRef.current = fresh.vault_key_id;
         resetPurgedVaultKeyIdRef.current = null;
-        setVaultMeta(fresh);
-        queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
-        void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
+        resetPurgeInFlightVaultKeyIdRef.current = null;
+        setVaultMeta(applied);
+        queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, applied);
+        void purgeDeviceKeysOnRevoked(liveUserId, effectiveDeviceStoreEnv);
         void lock({ broadcast: true, reason: 'vault_key_id_changed' });
-        return fresh;
+        return applied;
+      }
+      if (prevKeyId !== fresh.vault_key_id) {
+        // A vault became current after an observed reset: that transition is over, retire its ids (BE4-3).
+        retireObservedResets();
       }
       currentVaultKeyIdRef.current = fresh.vault_key_id;
       if (
@@ -603,46 +822,80 @@ export function VaultProvider({
       ) {
         resetPurgedVaultKeyIdRef.current = null;
       }
-      setVaultMeta(fresh);
-      queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, fresh);
-      return fresh;
+      setVaultMeta(applied);
+      queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, applied);
+      return applied;
     } catch (err) {
-      const currentUserId = me?.user.id ?? previousUserIdRef.current ?? null;
-      if (
-        vaultMetaSessionEpochRef.current !== requestSessionEpoch ||
-        sessionStatus === 'signed_out' ||
-        (requestUserId !== null && currentUserId !== requestUserId)
-      ) {
+      if (isForeignResponse()) {
         return null;
       }
       if (
         err instanceof ProblemError &&
         (err.problem.status === 404 || err.problem.code === 'vault_absent')
       ) {
+        // Row 0, then row 1 (BE5-1): a local/broadcast transition never proves a 404 stale, so only an already-applied
+        // newer GET outcome may supersede it; otherwise it fails closed.
+        const superseded = supersedingOutcome();
+        if (superseded) {
+          // A newer request already delivered authoritative state (present or absent); apply nothing from the older 404.
+          return superseded.meta;
+        }
         const prevKeyId = currentVaultKeyIdRef.current;
-        const transitionToken = prevKeyId ?? resetPurgedVaultKeyIdRef.current ?? '__absent__';
-        const alreadyPurgedForTransition =
-          resetPurgedVaultKeyIdRef.current !== null &&
-          (resetPurgedVaultKeyIdRef.current === transitionToken || prevKeyId === null);
+        if (prevKeyId !== null && prevKeyId !== issuedKey && !retiredVaultKeyIdsRef.current.has(prevKeyId)) {
+          // Row 1b: `prevKeyId` became current after this request was sent (the purge is user-scoped and would wipe its
+          // device keys on ambiguous evidence). Lock, purge nothing, and let ONE follow-up GET (sent under `prevKeyId`,
+          // so never ambiguous) decide. A follow-up response is never itself ambiguous (advisor-dec-038a, BE7-1): if the
+          // key moved again while it was held, lock only; the new key's own GET or broadcast decides about it.
+          void lock({ broadcast: true, reason: 'vault_absent' });
+          if (!isFollowUp) {
+            void loadVaultMeta({ resetKeyId: prevKeyId, followUp: true }).catch(() => undefined);
+          }
+          return null;
+        }
+        const liveUserId = currentUserIdRef.current ?? previousUserIdRef.current ?? null;
+        vaultMetaAppliedRef.current = { seq: requestSeq, sessionEpoch: requestSessionEpoch, meta: null };
+        // BE2-9: never borrow an old purge receipt as the identity of an unnamed 404.
+        const transitionKeyId = prevKeyId ?? followUpResetKeyId;
+        rememberObservedReset(transitionKeyId);
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
-        if (!alreadyPurgedForTransition) {
-          resetPurgedVaultKeyIdRef.current = transitionToken;
-          void purgeDeviceKeysOnRevoked(currentUserId, effectiveDeviceStoreEnv);
-        }
+        runIdempotentResetPurge(liveUserId, transitionKeyId);
         void lock({ broadcast: true, reason: 'vault_absent' });
         return null;
       }
+      const supersededFailure = supersedingOutcome();
+      if (supersededFailure) {
+        // A failed older request is moot once a newer one has produced authoritative state.
+        return supersededFailure.meta;
+      }
       throw err;
     }
-  }, [effectiveDeviceStoreEnv, lock, me?.user.id, queryClient, sessionStatus]);
+  }, [
+    effectiveDeviceStoreEnv,
+    lock,
+    queryClient,
+    rememberObservedReset,
+    retireObservedResets,
+    runIdempotentResetPurge,
+    sessionStatus,
+    setVaultMeta,
+  ]);
+
+  const reloadVaultMeta = useCallback(() => loadVaultMeta(), [loadVaultMeta]);
 
   const notifyVaultChanged = useCallback(
     (payload: { vault_key_id: string; version: number | null }) => {
       if (payload.version === null) {
-        resetPurgedVaultKeyIdRef.current =
-          payload.vault_key_id || currentVaultKeyIdRef.current || '__absent__';
+        const resetKeyId =
+          (typeof payload.vault_key_id === 'string' && payload.vault_key_id.length > 0
+            ? payload.vault_key_id
+            : currentVaultKeyIdRef.current) ?? null;
+        if (resetKeyId) {
+          rememberObservedReset(resetKeyId);
+          retiredVaultKeyIdsRef.current.add(resetKeyId);
+          resetPurgedVaultKeyIdRef.current = resetKeyId;
+        }
         currentVaultKeyIdRef.current = null;
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
@@ -653,12 +906,18 @@ export function VaultProvider({
         ) {
           resetPurgedVaultKeyIdRef.current = null;
         }
+        if (currentVaultKeyIdRef.current !== payload.vault_key_id) {
+          // Another key becomes current: the previous key is retired (BE4-1) and the previous reset ids are
+          // historical (BE4-3).
+          if (currentVaultKeyIdRef.current) retiredVaultKeyIdsRef.current.add(currentVaultKeyIdRef.current);
+          retireObservedResets();
+        }
         currentVaultKeyIdRef.current = payload.vault_key_id;
-        setVaultMeta((prev) =>
-          prev && prev.vault_key_id === payload.vault_key_id
-            ? { ...prev, version: payload.version ?? prev.version }
-            : prev,
-        );
+        const prev = liveVaultMetaRef.current;
+        if (prev && prev.vault_key_id === payload.vault_key_id) {
+          // BE4-5: a notification never lowers the current same-key version.
+          setVaultMeta({ ...prev, version: Math.max(prev.version, payload.version) });
+        }
       }
       postVaultBroadcast(
         {
@@ -669,7 +928,7 @@ export function VaultProvider({
         providerSenderIdRef.current,
       );
     },
-    [queryClient],
+    [queryClient, rememberObservedReset, retireObservedResets, setVaultMeta],
   );
 
   const notifySettingsChanged = useCallback(
@@ -716,47 +975,67 @@ export function VaultProvider({
   const runStateChangingOp = useCallback(
     async <T,>(
       opKind: VaultActiveOperation,
-      baselineMode: 'none' | 'capture_fresh' | 'reuse_or_capture',
+      baselineMode: 'none' | 'capture_fresh' | 'require_existing',
       opGeneration: number,
       invoke: (client: CryptoClient, injectBeforePost?: () => Promise<void>) => Promise<T>,
     ): Promise<T> => {
       const client = getClient();
       setLastErrorCode(null);
-      inFlightStateOpRef.current = true;
+      inFlightStateOpCountRef.current += 1;
       setInFlightCount((c) => c + 1);
       if (opKind) {
+        activeOperationRef.current = opKind;
         setActiveOperation(opKind);
       }
 
       const requiresUnlockBaseline = baselineMode !== 'none';
       const existingBaseline =
-        baselineMode === 'reuse_or_capture' ? unlockBaselineRef.current : null;
+        baselineMode === 'require_existing' ? unlockBaselineRef.current : null;
 
-      if (requiresUnlockBaseline) {
-        // Invalidate any in-flight wake verification from an earlier unlock/recovering cycle
+      let capturedBaseline: LockEpochMarker | null = existingBaseline;
+      let verifyDeadlineTimer: number | null = null;
+      const clearVerifyDeadlineTimer = () => {
+        if (verifyDeadlineTimer !== null && typeof window !== 'undefined') {
+          window.clearTimeout(verifyDeadlineTimer);
+          verifyDeadlineTimer = null;
+        }
+      };
+
+      // BE3-1: only the operation that still owns the client's generation may destroy key material on failure. Once
+      // the generation moved on, the Worker was already locked by whoever bumped it and a replacement session
+      // (G+1) may now hold live keys that this obsolete wrapper must never lock.
+      const lockIfOwner = async () => {
+        if (client.getGeneration() === opGeneration) {
+          await lockLocalOnly();
+        }
+      };
+
+      const prepareBaseline = async () => {
+        if (!requiresUnlockBaseline) return;
+        // Invalidate any in-flight wake verification only once the operation is admitted (BE2-6)
         wakeVerificationSeqRef.current += 1;
         wakeVerifyingCountRef.current = 0;
         wakePreIdleAtRef.current = null;
         setWakeVerifyingCount(0);
-        if (!existingBaseline) {
-          unlockBaselineRef.current = null;
-          setUnlockBaseline(null);
-        }
         baselineVerifiedRef.current = false;
         setBaselineVerified(false);
-      }
-
-      let capturedBaseline: LockEpochMarker | null = existingBaseline;
-      const prepareBaseline = async () => {
-        if (!requiresUnlockBaseline) return;
-        if (existingBaseline) {
+        notifyStoreListeners();
+        if (baselineMode === 'require_existing') {
+          if (!existingBaseline) {
+            // BE2-6: confirmRecovery / resumeRecovery must NEVER recapture a fresh baseline when missing; fail closed
+            await lockIfOwner();
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Missing recovery lockEpoch baseline; failing closed',
+            );
+          }
           // Verify the baseline captured at recovery start has not changed before continuing (`resumeRecovery` / `confirmRecovery`)
           const preCheck = await verifyUnlockBaseline(existingBaseline, envWithBroadcast);
           if (preCheck.persistedMarker) {
             updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
           }
           if (!preCheck.matches || client.getGeneration() !== opGeneration) {
-            await lockLocalOnly();
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
               'Authoritative lockEpoch changed during recovery; failing closed',
@@ -765,13 +1044,42 @@ export function VaultProvider({
           capturedBaseline = existingBaseline;
           return;
         }
+
+        // baselineMode === 'capture_fresh':
+        // If beginOp() already captured an intent-start baseline for this opGeneration (BE2-1), reuse and verify it!
+        const intentBaselinePromise = intentBaselinesRef.current.get(opGeneration);
+        intentBaselinesRef.current.delete(opGeneration);
+        if (intentBaselinePromise) {
+          const intentBaseline = await intentBaselinePromise;
+          if (!intentBaseline || client.getGeneration() !== opGeneration) {
+            await lockIfOwner();
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Failed to capture intent-start lockEpoch baseline; failing closed',
+            );
+          }
+          const preCheck = await verifyUnlockBaseline(intentBaseline, envWithBroadcast);
+          if (preCheck.persistedMarker) {
+            updateTabKnownLockEpoch(preCheck.persistedMarker.lockEpoch);
+          }
+          if (!preCheck.matches || client.getGeneration() !== opGeneration) {
+            await lockIfOwner();
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Authoritative lockEpoch changed after unlock intent started; failing closed',
+            );
+          }
+          capturedBaseline = intentBaseline;
+          return;
+        }
+
         const baseline = await captureUnlockBaseline(
           tabKnownLockEpochRef.current,
           envWithBroadcast,
         );
-        if (!baseline) {
+        if (!baseline || client.getGeneration() !== opGeneration) {
           // Fail closed if IndexedDB or Web Locks is unreadable/blocked during unlock baseline capture
-          await lockLocalOnly();
+          await lockIfOwner();
           throw new CryptoClientError(
             'STALE_GENERATION',
             'Failed to capture authoritative lockEpoch baseline; failing closed',
@@ -780,20 +1088,50 @@ export function VaultProvider({
         capturedBaseline = baseline;
         updateTabKnownLockEpoch(baseline.lockEpoch);
       };
+
       try {
         const result = await invoke(client, prepareBaseline);
 
         if (requiresUnlockBaseline) {
-          const verification = await verifyUnlockBaseline(capturedBaseline, envWithBroadcast);
-          if (verification.persistedMarker) {
-            updateTabKnownLockEpoch(verification.persistedMarker.lockEpoch);
+          // BE2-7: Bound post-unlock Web Lock / IDB baseline verification with the 5s fail-closed deadline
+          // so a stalled verification never retains the unwrapped VK in Worker memory indefinitely.
+          let verifyTimedOut = false;
+          let resolveVerifyTimeout!: (val: 'timeout') => void;
+          const verifyTimeoutPromise = new Promise<'timeout'>((resolve) => {
+            resolveVerifyTimeout = resolve;
+          });
+          if (typeof window !== 'undefined') {
+            verifyDeadlineTimer = window.setTimeout(() => {
+              verifyTimedOut = true;
+              resolveVerifyTimeout('timeout');
+            }, WAKE_ME_REFRESH_DEADLINE_MS);
           }
-          if (!verification.matches || client.getGeneration() !== opGeneration || !capturedBaseline) {
-            await lockLocalOnly();
+          const verificationOrTimeout = await Promise.race([
+            verifyUnlockBaseline(capturedBaseline, envWithBroadcast),
+            verifyTimeoutPromise,
+          ]);
+          clearVerifyDeadlineTimer();
+          if (
+            verifyTimedOut ||
+            verificationOrTimeout === 'timeout' ||
+            !verificationOrTimeout.matches ||
+            client.getGeneration() !== opGeneration ||
+            !capturedBaseline
+          ) {
+            if (
+              verificationOrTimeout !== 'timeout' &&
+              verificationOrTimeout.persistedMarker
+            ) {
+              updateTabKnownLockEpoch(verificationOrTimeout.persistedMarker.lockEpoch);
+            }
+            await lockIfOwner();
             throw new CryptoClientError(
               'STALE_GENERATION',
-              'Authoritative lockEpoch changed during unlock; failing closed',
+              'Authoritative lockEpoch changed or timed out during unlock; failing closed',
             );
+          }
+          if (verificationOrTimeout.persistedMarker) {
+            updateTabKnownLockEpoch(verificationOrTimeout.persistedMarker.lockEpoch);
           }
           // Invalidate any wake verification started before this unlock baseline finished verifying
           wakeVerificationSeqRef.current += 1;
@@ -804,6 +1142,7 @@ export function VaultProvider({
           setWakeVerifyingCount(0);
           setUnlockBaseline(capturedBaseline);
           setBaselineVerified(true);
+          notifyStoreListeners();
           const unlockedAt = Date.now();
           lastActivityAtRef.current = Math.max(lastActivityAtRef.current, unlockedAt);
           setLastActivityAt(lastActivityAtRef.current);
@@ -814,6 +1153,7 @@ export function VaultProvider({
         setEpoch(client.getEpoch());
         return result;
       } catch (err) {
+        clearVerifyDeadlineTimer();
         const classified = classifyCryptoError(err);
         if (classified.code) {
           setLastErrorCode(classified.code);
@@ -822,12 +1162,17 @@ export function VaultProvider({
         setEpoch(client.getEpoch());
         throw err;
       } finally {
-        inFlightStateOpRef.current = false;
+        clearVerifyDeadlineTimer();
+        inFlightStateOpCountRef.current = Math.max(0, inFlightStateOpCountRef.current - 1);
         setInFlightCount((c) => Math.max(0, c - 1));
+        if (activeOperationRef.current === opKind) {
+          activeOperationRef.current = null;
+        }
         setActiveOperation((current) => (current === opKind ? null : current));
+        notifyStoreListeners();
       }
     },
-    [envWithBroadcast, getClient, lockLocalOnly, updateTabKnownLockEpoch],
+    [envWithBroadcast, getClient, lockLocalOnly, notifyStoreListeners, updateTabKnownLockEpoch],
   );
 
   const createVaultOp = useCallback(
@@ -893,7 +1238,7 @@ export function VaultProvider({
     (params: ResumeRecoveryClientParams): Promise<ResumeRecoveryResult> => {
       return runStateChangingOp(
         'unlocking',
-        'reuse_or_capture',
+        'require_existing',
         params.opGeneration,
         async (client, prepareBaseline) => {
           // Verify the recovery baseline BEFORE acquiring the CryptoClient single-flight slot so a fail-closed
@@ -913,7 +1258,7 @@ export function VaultProvider({
     (params: ConfirmRecoveryClientParams): Promise<ConfirmRecoveryResult> => {
       return runStateChangingOp(
         'rewrapping',
-        'reuse_or_capture',
+        'require_existing',
         params.opGeneration,
         async (client, prepareBaseline) => {
           await prepareBaseline?.();
@@ -987,9 +1332,13 @@ export function VaultProvider({
       ) {
         vaultMetaSessionEpochRef.current += 1;
         settingsSyncSeqRef.current += 1;
+        vaultMetaRequestSeqRef.current += 1;
         previousUserIdRef.current = null;
         currentVaultKeyIdRef.current = null;
         resetPurgedVaultKeyIdRef.current = null;
+        resetPurgeInFlightVaultKeyIdRef.current = null;
+        observedResetKeyIdsRef.current.clear();
+        retiredVaultKeyIdsRef.current.clear();
         setVaultMeta(null);
         queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
         void lock({ broadcast: true, reason: 'signed_out' });
@@ -1001,9 +1350,13 @@ export function VaultProvider({
       // Account switch in the same tab: wipe VK/plaintext + vault metadata immediately
       vaultMetaSessionEpochRef.current += 1;
       settingsSyncSeqRef.current += 1;
+      vaultMetaRequestSeqRef.current += 1;
       previousUserIdRef.current = nextUserId;
       currentVaultKeyIdRef.current = null;
       resetPurgedVaultKeyIdRef.current = null;
+      resetPurgeInFlightVaultKeyIdRef.current = null;
+      observedResetKeyIdsRef.current.clear();
+      retiredVaultKeyIdsRef.current.clear();
       setVaultMeta(null);
       queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
       void lock({ broadcast: true, reason: 'user_changed' });
@@ -1013,7 +1366,7 @@ export function VaultProvider({
     if (nextUserId) {
       previousUserIdRef.current = nextUserId;
     }
-  }, [lock, me?.user.id, queryClient, sessionStatus, vaultMeta]);
+  }, [lock, me?.user.id, queryClient, sessionStatus, setVaultMeta, vaultMeta]);
 
   // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
@@ -1078,35 +1431,48 @@ export function VaultProvider({
           (knownKeyId !== null && message.vault_key_id !== knownKeyId)
         ) {
           if (message.version === null) {
-            const transitionToken = message.vault_key_id || knownKeyId || '__absent__';
-            const alreadyPurged =
-              resetPurgedVaultKeyIdRef.current !== null &&
-              (resetPurgedVaultKeyIdRef.current === transitionToken || knownKeyId === null);
+            const incomingKeyId =
+              typeof message.vault_key_id === 'string' && message.vault_key_id.length > 0
+                ? message.vault_key_id
+                : null;
+            const transitionKeyId = incomingKeyId ?? knownKeyId ?? null;
+            if (incomingKeyId) retiredVaultKeyIdsRef.current.add(incomingKeyId);
+            if (knownKeyId) retiredVaultKeyIdsRef.current.add(knownKeyId);
+            rememberObservedReset(transitionKeyId);
             currentVaultKeyIdRef.current = null;
             setVaultMeta(null);
             queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
-            if (!alreadyPurged) {
-              resetPurgedVaultKeyIdRef.current = transitionToken;
-              void purgeDeviceKeysOnRevoked(
-                me?.user.id ?? previousUserIdRef.current,
-                effectiveDeviceStoreEnv,
-              );
-            }
+            runIdempotentResetPurge(
+              currentUserIdRef.current ?? previousUserIdRef.current,
+              transitionKeyId,
+            );
             void lock({ broadcast: true, reason: 'vault_reset_broadcast' });
             void refetchMe().catch(() => undefined);
-            void reloadVaultMeta().catch(() => undefined);
+            void loadVaultMeta({ resetKeyId: transitionKeyId }).catch(() => undefined);
             return;
           }
+          // Replacement by another key: the previous key is retired (BE4-1) and its reset id is historical (BE4-3).
+          if (knownKeyId) retiredVaultKeyIdsRef.current.add(knownKeyId);
+          retireObservedResets();
           resetPurgedVaultKeyIdRef.current = null;
+          resetPurgeInFlightVaultKeyIdRef.current = null;
           currentVaultKeyIdRef.current = message.vault_key_id;
           setVaultMeta(null);
           queryClient.removeQueries({ queryKey: VAULT_META_QUERY_KEY_PREFIX });
-          void purgeDeviceKeysOnRevoked(me?.user.id ?? previousUserIdRef.current, effectiveDeviceStoreEnv);
+          void purgeDeviceKeysOnRevoked(
+            currentUserIdRef.current ?? previousUserIdRef.current,
+            effectiveDeviceStoreEnv,
+          );
           void lock({ broadcast: true, reason: 'vault_key_id_changed_broadcast' });
-          void reloadVaultMeta().catch(() => undefined);
+          void loadVaultMeta().catch(() => undefined);
           return;
         }
-        void reloadVaultMeta().catch(() => undefined);
+        if (knownKeyId === null && !retiredVaultKeyIdsRef.current.has(message.vault_key_id)) {
+          // Learn another tab's new key so a held older 404 is treated as row 1b.
+          retireObservedResets();
+          currentVaultKeyIdRef.current = message.vault_key_id;
+        }
+        void loadVaultMeta().catch(() => undefined);
       }
     });
   }, [
@@ -1117,7 +1483,11 @@ export function VaultProvider({
     me?.user.id,
     queryClient,
     refetchMe,
-    reloadVaultMeta,
+    loadVaultMeta,
+    rememberObservedReset,
+    retireObservedResets,
+    runIdempotentResetPurge,
+    setVaultMeta,
     updateTabKnownLockEpoch,
   ]);
 
@@ -1216,7 +1586,12 @@ export function VaultProvider({
   // Wake / resume / visibilitychange / pageshow / focus / popstate fail-closed check (ADR 0003 §8.4, Task 15A #3/#6, Task 15B #1/#3/#5).
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
-    let wakeInFlightPromise: Promise<void> | null = null;
+    let wakeInFlight: {
+      promise: Promise<void>;
+      opGeneration: number;
+      sessionEpoch: number;
+      wakeSeq: number;
+    } | null = null;
 
     const verifyOnWake = (): Promise<void> => {
       const initialWorkerState = workerStateRef.current;
@@ -1246,49 +1621,76 @@ export function VaultProvider({
         return Promise.resolve();
       }
 
-      // Coalesce burst wake events (`resume` + `focus` + `visibilitychange` fired in the same wake cycle)
-      // so a second event cannot abort the in-flight Web Lock + IDB + Me verification before `lockLocalOnly()` runs.
-      if (wakeInFlightPromise) {
-        return wakeInFlightPromise;
-      }
-
       const client = getClient();
       const wakeOpGeneration = client.getGeneration();
       const wakeSessionEpoch = vaultMetaSessionEpochRef.current;
+
+      // BE2-5: Coalesce burst wake events ONLY when they belong to the exact same active generation,
+      // session epoch, and current wake sequence; never reuse an obsolete wake promise from an earlier session.
+      if (
+        wakeInFlight &&
+        wakeInFlight.opGeneration === wakeOpGeneration &&
+        wakeInFlight.sessionEpoch === wakeSessionEpoch &&
+        wakeInFlight.wakeSeq === wakeVerificationSeqRef.current
+      ) {
+        return wakeInFlight.promise;
+      }
+
       const wakeSeq = ++wakeVerificationSeqRef.current;
 
       const runWake = async () => {
-        // Gate plaintext access immediately while wake verification (Web Lock / IDB + Me) is pending
-      wakeVerifyingCountRef.current += 1;
-      setWakeVerifyingCount(wakeVerifyingCountRef.current);
-      if (initialWorkerState === 'unlocked') {
-        baselineVerifiedRef.current = false;
-        setBaselineVerified(false);
-      }
-      // Start bounded 5s fail-closed deadline BEFORE the first async wait (covers Web Lock + IDB + Me)
-      let deadlineTimer: number | null = null;
-      let timedOut = false;
-      const { promise: timeoutPromise, resolve: resolveTimeout } = Promise.withResolvers<'timeout'>();
-      deadlineTimer = window.setTimeout(() => {
-        timedOut = true;
-        if (
-          wakeVerificationSeqRef.current === wakeSeq &&
-          client.getGeneration() === wakeOpGeneration &&
-          (workerStateRef.current === 'unlocked' || workerStateRef.current === 'recovering')
-        ) {
-          void lock({ broadcast: true, reason: 'wake_me_deadline_exceeded' });
-        }
-        resolveTimeout('timeout');
-      }, WAKE_ME_REFRESH_DEADLINE_MS);
+        let deadlineTimer: number | null = null;
+        const clearDeadlineTimer = () => {
+          if (deadlineTimer !== null) {
+            window.clearTimeout(deadlineTimer);
+            deadlineTimer = null;
+          }
+        };
 
-      const clearDeadlineTimer = () => {
-        if (deadlineTimer !== null) {
-          window.clearTimeout(deadlineTimer);
-          deadlineTimer = null;
-        }
-      };
-
-      try {
+        try {
+          // VS-R7-1: Gate plaintext access synchronously on wake (before any async await or next paint):
+          // 1. Update ref-backed gate state and notify useSyncExternalStore subscribers.
+          // 2. Synchronously purge decrypted entry body cache (`['vault', 'body', ...]`), clear `[data-vault-secret]`
+          //    inputs and `[data-vault-decrypted]` nodes, and run registered secret form resetters so no decrypted
+          //    plaintext remains in the DOM even on a heavy page.
+          // 3. Flush state updates synchronously via flushSync when outside render.
+          wakeVerifyingCountRef.current += 1;
+          if (initialWorkerState === 'unlocked') {
+            baselineVerifiedRef.current = false;
+          }
+          clearPlaintextAndFormsSync();
+          notifyStoreListeners();
+          try {
+            flushSync(() => {
+              setWakeVerifyingCount(wakeVerifyingCountRef.current);
+              if (initialWorkerState === 'unlocked') {
+                setBaselineVerified(false);
+              }
+            });
+          } catch {
+            setWakeVerifyingCount(wakeVerifyingCountRef.current);
+            if (initialWorkerState === 'unlocked') {
+              setBaselineVerified(false);
+            }
+          }
+          // BE2-2: Use a standard Promise constructor (never Promise.withResolvers) inside the fail-closed try/finally
+          // so older Safari/Chrome runtimes or any setup error always enter catch/finally and lock fail-closed.
+          let timedOut = false;
+          let resolveTimeout!: (val: 'timeout') => void;
+          const timeoutPromise = new Promise<'timeout'>((resolve) => {
+            resolveTimeout = resolve;
+          });
+          deadlineTimer = window.setTimeout(() => {
+            timedOut = true;
+            if (
+              wakeVerificationSeqRef.current === wakeSeq &&
+              client.getGeneration() === wakeOpGeneration &&
+              (workerStateRef.current === 'unlocked' || workerStateRef.current === 'recovering')
+            ) {
+              void lock({ broadcast: true, reason: 'wake_me_deadline_exceeded' });
+            }
+            resolveTimeout('timeout');
+          }, WAKE_ME_REFRESH_DEADLINE_MS);
         // 2. Authoritative `lockEpoch` check in IndexedDB under Web Lock `'sabk.vault.lock'`
         if (initialWorkerState === 'unlocked' || initialWorkerState === 'recovering') {
           const baseline = unlockBaselineRef.current;
@@ -1372,7 +1774,7 @@ export function VaultProvider({
           baselineVerifiedRef.current = true;
           setBaselineVerified(true);
           setMinutesLeft(afterMeEval.minutesLeft);
-          // Now that wake verification succeeded, advance the idle watermark to the wake event time
+          notifyStoreListeners();
           const postWakeNow = Date.now();
           if (postWakeNow > lastActivityAtRef.current) {
             lastActivityAtRef.current = postWakeNow;
@@ -1393,16 +1795,24 @@ export function VaultProvider({
           wakeVerifyingCountRef.current = 0;
           wakePreIdleAtRef.current = null;
           setWakeVerifyingCount(0);
+          notifyStoreListeners();
         }
       }
       };
 
+      const entry = {
+        promise: Promise.resolve(),
+        opGeneration: wakeOpGeneration,
+        sessionEpoch: wakeSessionEpoch,
+        wakeSeq,
+      };
       const p = runWake().finally(() => {
-        if (wakeInFlightPromise === p) {
-          wakeInFlightPromise = null;
+        if (wakeInFlight === entry) {
+          wakeInFlight = null;
         }
       });
-      wakeInFlightPromise = p;
+      entry.promise = p;
+      wakeInFlight = entry;
       return p;
     };
     const onVisibilityChange = () => {
@@ -1451,6 +1861,7 @@ export function VaultProvider({
     getClient,
     lock,
     lockLocalOnly,
+    notifyStoreListeners,
     refetchMe,
     updateTabKnownLockEpoch,
   ]);
@@ -1493,6 +1904,8 @@ export function VaultProvider({
 
   const serverVaultStatus: 'absent' | 'present' =
     me?.vault.status === 'present' ? 'present' : 'absent';
+  const serverVaultStatusRef = useRef<'absent' | 'present'>(serverVaultStatus);
+  serverVaultStatusRef.current = serverVaultStatus;
 
   const state: VaultStateMachineMode = useMemo(
     () =>
@@ -1596,27 +2009,149 @@ export function VaultProvider({
       __engramVaultTestBridge?: VaultContextValue;
       __engramQueryClient?: typeof queryClient;
     };
-    win.__engramVaultTestBridge = value;
+    // Expose live ref-derived getters on the test bridge so synchronous wake/lock transitions
+    // are observable immediately on heavy pages before React's post-commit effect runs (VS-R7-1),
+    // while React context consumers re-render via state updates.
+    const bridge = Object.create(value) as VaultContextValue;
+    Object.defineProperties(bridge, {
+      state: {
+        enumerable: true,
+        get: () =>
+          deriveVaultStateMachineMode({
+            serverVaultStatus: serverVaultStatusRef.current,
+            workerState: workerStateRef.current,
+            activeOperation: activeOperationRef.current,
+            baselineVerified: baselineVerifiedRef.current,
+            wakeVerifying: wakeVerifyingCountRef.current > 0,
+          }),
+      },
+      workerState: {
+        enumerable: true,
+        get: () => workerStateRef.current,
+      },
+      unlockBaseline: {
+        enumerable: true,
+        get: () => unlockBaselineRef.current,
+      },
+      tabKnownLockEpoch: {
+        enumerable: true,
+        get: () => tabKnownLockEpochRef.current,
+      },
+    });
+    win.__engramVaultTestBridge = bridge;
     win.__engramQueryClient = queryClient;
     return () => {
-      if (win.__engramVaultTestBridge === value) {
+      if (win.__engramVaultTestBridge === bridge) {
         delete win.__engramVaultTestBridge;
       }
     };
   }, [queryClient, value]);
+  const [testConsumer, setTestConsumer] = useState<{
+    host: HTMLElement;
+    entryId: string;
+    rowCount: number;
+    onReady: (api: VaultTestConsumerApi) => void;
+  } | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isLoopback =
+      window.location?.hostname === '127.0.0.1' ||
+      window.location?.hostname === 'localhost';
+    if (process.env.NODE_ENV === 'production' && !isLoopback) return;
+    const win = window as unknown as {
+      __engramMountVaultTestConsumer?: (
+        host: HTMLElement,
+        options: { entryId: string; rowCount: number },
+      ) => Promise<VaultTestConsumerApi>;
+    };
+    const mount = (host: HTMLElement, options: { entryId: string; rowCount: number }) =>
+      new Promise<VaultTestConsumerApi>((resolve) => {
+        setTestConsumer({ host, entryId: options.entryId, rowCount: options.rowCount, onReady: resolve });
+      });
+    win.__engramMountVaultTestConsumer = mount;
+    return () => {
+      if (win.__engramMountVaultTestConsumer === mount) {
+        delete win.__engramMountVaultTestConsumer;
+      }
+    };
+  }, []);
 
-  return <VaultContext.Provider value={value}>{children}</VaultContext.Provider>;
+  const subscribeStore = useCallback((listener: () => void) => {
+    storeListenersRef.current.add(listener);
+    return () => {
+      storeListenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const getLiveStateSnapshot = useCallback(
+    (): VaultStateMachineMode =>
+      deriveVaultStateMachineMode({
+        serverVaultStatus: serverVaultStatusRef.current,
+        workerState: workerStateRef.current,
+        activeOperation: activeOperationRef.current,
+        baselineVerified: baselineVerifiedRef.current,
+        wakeVerifying: wakeVerifyingCountRef.current > 0,
+      }),
+    [],
+  );
+
+  const storeValue = useMemo(
+    () => ({
+      value,
+      subscribe: subscribeStore,
+      getStateSnapshot: getLiveStateSnapshot,
+    }),
+    [getLiveStateSnapshot, subscribeStore, value],
+  );
+
+  return (
+    <VaultContext.Provider value={storeValue}>
+      {children}
+      {testConsumer
+        ? createPortal(
+            <Suspense fallback={null}>
+              <VaultTestConsumer
+                entryId={testConsumer.entryId}
+                rowCount={testConsumer.rowCount}
+                onReady={testConsumer.onReady}
+              />
+            </Suspense>,
+            testConsumer.host,
+          )
+        : null}
+    </VaultContext.Provider>
+  );
 }
 
+const noopSubscribe = () => () => {};
+const defaultLockedSnapshot = (): VaultStateMachineMode => 'locked';
+
 export function useVault(): VaultContextValue {
-  const ctx = useContext(VaultContext);
-  if (!ctx) {
+  const store = useContext(VaultContext);
+  const liveState = useSyncExternalStore(
+    store ? store.subscribe : noopSubscribe,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+  );
+  if (!store) {
     throw new Error('useVault must be used within a VaultProvider');
   }
-  return ctx;
+  return useMemo(
+    () => (store.value.state === liveState ? store.value : { ...store.value, state: liveState }),
+    [liveState, store.value],
+  );
 }
 
 /** Optional hook for components that may render outside `VaultProvider` (e.g. standalone unit tests). */
 export function useOptionalVault(): VaultContextValue | null {
-  return useContext(VaultContext);
+  const store = useContext(VaultContext);
+  const liveState = useSyncExternalStore(
+    store ? store.subscribe : noopSubscribe,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+    store ? store.getStateSnapshot : defaultLockedSnapshot,
+  );
+  return useMemo(() => {
+    if (!store) return null;
+    return store.value.state === liveState ? store.value : { ...store.value, state: liveState };
+  }, [liveState, store]);
 }

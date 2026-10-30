@@ -44,7 +44,15 @@
     "recent": "Recent items",
     "semantic": "Similar meaning",
     "vaultOpen": "Vault open",
-    "vaultLocked": "Vault locked"
+    "vaultLocked": "Vault locked",
+    "header": {
+      "logoLabel": "engram — Recent items",
+      "lockNow": "Lock vault now (L)",
+      "openAndLockNow": "Vault open — Lock vault now (L)",
+      "lockNowNamed": "{state} — Lock vault now (L)",
+      "settings": "Settings",
+      "settingsDone": "Done"
+    }
   },
   "states": {
     "emptyTitle": "Nothing here yet",
@@ -89,7 +97,9 @@
       "rules": {
         "minLength": "At least 12 characters",
         "distinctFromLogin": "Do not reuse your login password or a password from another site",
-        "minScore": "Hard enough to guess (zxcvbn ≥ 3)"
+        "minScore": "Hard enough to guess (zxcvbn ≥ 3)",
+        "met": "Met:",
+        "notMet": "Not met:"
       },
       "warningBanner": "If you lose your passphrase without a recovery key, passkey, or remembered device, your entry contents cannot be recovered. The next step prepares 10 recovery keys for you.",
       "continue": "Continue",
@@ -587,19 +597,22 @@
       "lockedNoticeTitle": "Vault locked",
       "lockedNoticeBody": "Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view or edit entry contents.",
       "unlockCta": "Unlock vault"
+    },
+    "pill": {
+      "minutesLeft": "· {minutes} min"
     }
   },
   "unlock": {
     "signedInAs": "Signed in · {email}",
     "signedInGeneric": "Signed in",
+    "recoveredNoticeTitle": "Recovery completed",
+    "recoveredNoticeBody": "Your new passphrase was saved. Unlock your vault with the new passphrase.",
     "title": "Unlock vault",
     "lead": "Item names and tags remain searchable while locked. Entry contents need your decryption key, and only this browser can open it.",
     "passphraseLabel": "Vault passphrase",
     "passphraseHint": "Not your account login password.",
     "showPassphrase": "Show passphrase",
     "hidePassphrase": "Hide passphrase",
-    "rememberDeviceLabel": "Remember this device",
-    "rememberDeviceHint": "Opens automatically next time on this browser. Do not enable on a shared machine.",
     "submit": "Unlock",
     "submitting": "Deriving key… (Argon2id 64 MiB)",
     "caption": "Slow devices may take a few seconds. Key derivation runs entirely inside your browser.",
@@ -663,6 +676,8 @@
   "recovery": {
     "invalid": "That recovery key is not valid.",
     "need_new_passphrase": "Set a new passphrase to finish recovery.",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
     "stepperLabel": "Vault recovery steps",
     "steps": {
       "reauth": "1 · Confirm account",
@@ -771,7 +786,10 @@
         "rateLimitedBody": "Recovery completion is limited to 5 requests per 15 minutes (separate bucket from lookup). Please wait {clock} ({seconds}s · Retry-After: {seconds}) before retrying.",
         "networkTitle": "Could not reach the server",
         "networkBody": "Your connection dropped before the server confirmed completion. Retry safely — we reuse the exact same Idempotency-Key and request payload.",
-        "retryCta": "Retry completion"
+        "retryCta": "Retry completion",
+        "completedWhileLockedTitle": "Recovery completed — unlock with your new passphrase",
+        "completedWhileLockedBody": "Your new passphrase was saved on the server while this tab locked. Redirecting to unlock with your new passphrase…",
+        "completedWhileLockedCta": "Go to unlock"
       }
     },
     "step4Reauth": {
@@ -788,6 +806,18 @@
       "skip": "Skip (keep {remaining}/10)",
       "googleCaption": "Google re-authentication leaves the page: the vault locks again — unlock with the new passphrase (or a passkey) before replacement keys are generated.",
       "skipCaption": "You can skip this step and keep {remaining} active keys, or regenerate missing slots anytime in Settings › Security."
+    },
+    "wakeGate": {
+      "title": "Checking that your vault is still unlocked…",
+      "body": "Replacement keys stay hidden and password entry is paused until this check finishes. Your recovery progress is kept."
+    },
+    "committedRecheck": {
+      "verifyingTitle": "Recovery completed — confirming your vault…",
+      "verifyingBody": "Your new passphrase was saved on the server. We are confirming that your vault is still the one you recovered. Do not reuse the recovery key you just entered.",
+      "recheckTitle": "Recovery completed — we could not confirm it yet",
+      "recheckBody": "Your new passphrase was saved on the server and the recovery key you entered is used up, but we could not reach the server to confirm the current state of your vault. Check again, or unlock with your new passphrase.",
+      "retryCta": "Check again",
+      "unlockCta": "Go to unlock"
     },
     "step4": {
       "unlockedBanner": "Vault unlocked. {remaining} of 10 recovery keys remain active (slots: {emptySlots}).",

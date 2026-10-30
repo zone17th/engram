@@ -86,16 +86,17 @@ export function RecoveryKeysSheet({
   }, [labels.printedStatus]);
 
   const handleCopyAll = useCallback(async () => {
-    if (clipboardCleanupRef.current) {
-      clipboardCleanupRef.current();
-      clipboardCleanupRef.current = null;
-    }
     try {
+      // BE2-10: Do NOT cancel the existing 30s clipboard expiry before the new clipboard write succeeds,
+      // so a failed or denied re-copy never leaves previously copied recovery keys in the clipboard past 30s.
       const cleanup = await copyRecoveryKeysToClipboard(keys);
+      if (clipboardCleanupRef.current) {
+        clipboardCleanupRef.current();
+      }
       clipboardCleanupRef.current = cleanup;
       setActionStatus(labels.copiedStatus);
     } catch {
-      // Browser clipboard permission denied: fail gracefully without throwing or recording keys
+      // Browser clipboard permission denied: fail gracefully without throwing, recording keys, or cancelling prior expiry
     }
   }, [keys, labels.copiedStatus]);
 

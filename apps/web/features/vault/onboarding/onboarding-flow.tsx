@@ -96,6 +96,8 @@ export function VaultOnboardingFlow() {
 
   const passInputRef = useRef<HTMLInputElement>(null);
   const confirmInputRef = useRef<HTMLInputElement>(null);
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const prevStepForFocusRef = useRef<OnboardingStep>(step);
   const evalSeqRef = useRef(0);
   const stepRef = useRef<OnboardingStep>(step);
   stepRef.current = step;
@@ -103,6 +105,7 @@ export function VaultOnboardingFlow() {
   vaultRef.current = vault;
   const currentUserIdRef = useRef<string | null>(me?.user.id ?? null);
   currentUserIdRef.current = me?.user.id ?? null;
+  const isMountedRef = useRef(true);
   const postSubmitSeqRef = useRef(0);
   const confirmCheckboxId = useId();
   const gridHeadingId = useId();
@@ -145,12 +148,24 @@ export function VaultOnboardingFlow() {
     });
   }, [clearRecoveryKeysAndSecrets]);
 
-  // Wipe secrets and cancel clipboard timer when unmounting (leaving the onboarding route).
+  // Wipe secrets and mark unmounted when leaving the onboarding route (BE1-9).
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       clearRecoveryKeysAndSecrets();
     };
   }, [clearRecoveryKeysAndSecrets]);
+  // Focus management on step transitions so keyboard/screen-reader users land on the new step heading (FE1-4).
+  useEffect(() => {
+    if (prevStepForFocusRef.current === step) return;
+    prevStepForFocusRef.current = step;
+    if (step === 'passphrase') {
+      passInputRef.current?.focus();
+    } else if (step !== 'done') {
+      stepHeadingRef.current?.focus();
+    }
+  }, [step]);
 
   // Live NFC + lazy zxcvbn policy evaluation while typing in Step 1.
   useEffect(() => {
@@ -232,6 +247,13 @@ export function VaultOnboardingFlow() {
 
       if (!policy.valid) {
         setStep1Reason(policy.reason);
+        queueMicrotask(() => {
+          if (policy.reason === 'mismatch') {
+            confirmInputRef.current?.focus();
+          } else {
+            passInputRef.current?.focus();
+          }
+        });
         return;
       }
 
@@ -286,6 +308,9 @@ export function VaultOnboardingFlow() {
         setStep2Error(null);
         setStep('recovery-keys');
       } catch (err) {
+        if (client.getGeneration() !== opGeneration || currentUserIdRef.current !== opUserId) {
+          return;
+        }
         const classified = classifyCryptoError(err);
         if (classified.kind === 'insufficient_memory') {
           setStep('passphrase-oom');
@@ -293,12 +318,17 @@ export function VaultOnboardingFlow() {
         }
         if (classified.kind === 'passphrase_invalid') {
           setStep1Reason('invalid_unicode');
+          queueMicrotask(() => passInputRef.current?.focus());
           return;
         }
         if (classified.kind === 'recovering_locked_to_whitelist') {
           await vault.lock({ broadcast: false, reason: 'onboarding_switch_from_recovering' });
           return;
         }
+        setStep2Error({
+          kind: 'generic',
+          detail: err instanceof Error ? err.message : undefined,
+        });
       } finally {
         setDerivingKeys(false);
       }
@@ -342,16 +372,31 @@ export function VaultOnboardingFlow() {
       });
 
       if (
-        postSubmitSeqRef.current !== submitSeq ||
-        client.getGeneration() !== submitBundle.opGeneration ||
+        !isMountedRef.current ||
+        currentUserIdRef.current === null ||
         (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
       ) {
-        // Server committed vault A while the tab locked, went back, or started deriving vault B:
+        // BE1-9 residual: if the onboarding flow already unmounted or the tab switched to a different account,
+        // never lock or navigate the new user's session.
+        return;
+      }
+
+      if (
+        postSubmitSeqRef.current !== submitSeq ||
+        client.getGeneration() !== submitBundle.opGeneration
+      ) {
+        // Same-account stale POST /vault succeeded while the tab locked, went back, or started deriving vault B:
         // never pair vault A's server state with a newer Worker key; lock so the user unlocks vault A cleanly.
         clearRecoveryKeysAndSecrets();
         await vault.lock({ broadcast: false, reason: 'stale_onboarding_post_succeeded' });
         await refetchMe().catch(() => undefined);
-        router.replace('/app/unlock');
+        if (
+          isMountedRef.current &&
+          currentUserIdRef.current !== null &&
+          (submitBundle.userId === null || currentUserIdRef.current === submitBundle.userId)
+        ) {
+          router.replace('/app/unlock');
+        }
         return;
       }
 
@@ -365,11 +410,19 @@ export function VaultOnboardingFlow() {
       });
 
       await refetchMe();
-      router.replace('/app');
+      if (
+        isMountedRef.current &&
+        currentUserIdRef.current !== null &&
+        (submitBundle.userId === null || currentUserIdRef.current === submitBundle.userId)
+      ) {
+        router.replace('/app');
+      }
     } catch (err) {
       if (
+        !isMountedRef.current ||
         postSubmitSeqRef.current !== submitSeq ||
         client.getGeneration() !== submitBundle.opGeneration ||
+        currentUserIdRef.current === null ||
         (submitBundle.userId !== null && currentUserIdRef.current !== submitBundle.userId)
       ) {
         return;
@@ -572,6 +625,7 @@ export function VaultOnboardingFlow() {
                   </div>
                   <span
                     data-testid="passphrase-strength-label"
+                    aria-live="polite"
                     className="text-[12px]"
                     style={{ color: 'var(--body)' }}
                   >
@@ -592,7 +646,15 @@ export function VaultOnboardingFlow() {
                       show: t('step1.showPassphrase'),
                       hide: t('step1.hidePassphrase'),
                     }}
-                    error={step1Reason === 'mismatch' ? (step1ErrorText ?? undefined) : undefined}
+                    error={
+                      step1Reason === 'mismatch'
+                        ? (step1ErrorText ?? undefined)
+                        : passphrase.length > 0 &&
+                            confirmPassphrase.length > 0 &&
+                            passphrase.normalize('NFC') !== confirmPassphrase.normalize('NFC')
+                          ? t('step1.errors.mismatch')
+                          : undefined
+                    }
                     onChange={(e) => {
                       setConfirmPassphrase(e.target.value);
                       if (step1Reason) setStep1Reason(null);
@@ -601,24 +663,58 @@ export function VaultOnboardingFlow() {
                   />
                 </div>
 
+                {step2Error && step === 'passphrase' ? (
+                  <div
+                    role="alert"
+                    className="auth-alert mb-4"
+                    data-testid="onboarding-step1-error"
+                  >
+                    <p
+                      className="m-0 mb-1 text-[14px] font-semibold"
+                      style={{ color: 'var(--body)' }}
+                    >
+                      {t('errors.genericTitle')}
+                    </p>
+                    <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                      {step2Error.kind === 'generic'
+                        ? (step2Error.detail ?? t('errors.genericBody'))
+                        : t('errors.genericBody')}
+                    </p>
+                  </div>
+                ) : null}
+
                 <ul
                   className="m-0 flex list-none flex-col gap-1.5 p-0 text-[13px]"
                   style={{ color: 'var(--muted)' }}
                 >
                   <li data-testid="rule-min-length" data-satisfied={meetsMinLength}>
-                    <span style={{ color: meetsMinLength ? 'var(--success)' : 'var(--body)' }}>
-                      ✓
+                    <span
+                      aria-hidden="true"
+                      style={{ color: meetsMinLength ? 'var(--success)' : 'var(--body)' }}
+                    >
+                      {meetsMinLength ? '✓' : '·'}
                     </span>{' '}
+                    <span className="sr-only" data-testid="rule-min-length-status">
+                      {meetsMinLength ? t('step1.rules.met') : t('step1.rules.notMet')}{' '}
+                    </span>
                     {t('step1.rules.minLength')}
                   </li>
                   <li data-testid="rule-distinct-login">
-                    <span style={{ color: 'var(--body)' }}>✓</span>{' '}
+                    <span aria-hidden="true" style={{ color: 'var(--muted)' }}>
+                      ·
+                    </span>{' '}
                     {t('step1.rules.distinctFromLogin')}
                   </li>
                   <li data-testid="rule-min-score" data-satisfied={meetsMinScore}>
-                    <span style={{ color: meetsMinScore ? 'var(--success)' : 'var(--body)' }}>
-                      ✓
+                    <span
+                      aria-hidden="true"
+                      style={{ color: meetsMinScore ? 'var(--success)' : 'var(--body)' }}
+                    >
+                      {meetsMinScore ? '✓' : '·'}
                     </span>{' '}
+                    <span className="sr-only" data-testid="rule-min-score-status">
+                      {meetsMinScore ? t('step1.rules.met') : t('step1.rules.notMet')}{' '}
+                    </span>
                     {t('step1.rules.minScore')}
                   </li>
                 </ul>
@@ -653,7 +749,7 @@ export function VaultOnboardingFlow() {
         {/* STEP 1B — Insufficient memory (Argon2id 64 MiB OOM) */}
         {step === 'passphrase-oom' ? (
           <section data-view="pp-oom" id="onboard-oom" data-testid="onboarding-step-oom">
-            <h1 className="t-title-lg mb-2 text-ink">{t('step1.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step1.title')}</h1>
             <div className="card mb-4 p-5" style={{ borderColor: 'var(--error)' }}>
               <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
                 {t('step1.oom.badge')}
@@ -684,7 +780,7 @@ export function VaultOnboardingFlow() {
         {/* STEP 2 — 10 Recovery Keys Grid */}
         {step === 'recovery-keys' && preparedBundle ? (
           <section data-view="rk" data-testid="onboarding-step-recovery-keys">
-            <h1 id={gridHeadingId} className="t-title-lg mb-2 text-ink">
+            <h1 ref={stepHeadingRef} id={gridHeadingId} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">
               {t('step2.title')}
             </h1>
             <p className="t-body-lg mb-4 text-muted">{t('step2.lead')}</p>
@@ -782,7 +878,7 @@ export function VaultOnboardingFlow() {
             id="onboard-vault-exists"
             data-testid="onboarding-step-vault-exists"
           >
-            <h1 className="t-title-lg mb-4 text-ink">{t('vaultExists.title')}</h1>
+            <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-4 text-ink outline-none">{t('vaultExists.title')}</h1>
             <div className="card mb-4 p-5" style={{ borderColor: 'var(--error)' }}>
               <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
                 {t('vaultExists.badge')}

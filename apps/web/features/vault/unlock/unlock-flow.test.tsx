@@ -6,8 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
-import type { LockEpochEnvironment } from '@/features/vault/lock-epoch';
+import { recordLockEpochEvent, type LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { ForgotPassphraseView, VaultUnlockFlow } from '@/features/vault/unlock';
+import {
+  hasRecoveryCompletedNotice,
+  rememberRecoveryCompletedNotice,
+} from '@/features/vault/unlock/recovery-notice';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
 import type { VaultState } from '@/lib/api/vault';
@@ -357,6 +361,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
   function renderUnlock(options?: {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
+    lockEpochEnv?: LockEpochEnvironment;
     onVaultProbe?: (ctx: VaultContextValue) => void;
     view?: 'unlock' | 'forgot';
   }) {
@@ -365,7 +370,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const lockEpochEnv = makeSimpleLockEpochEnv();
+    const lockEpochEnv = options?.lockEpochEnv ?? makeSimpleLockEpochEnv();
     function Probe() {
       const v = useVault();
       const s = useSession();
@@ -829,9 +834,13 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
     const { unmount } = renderUnlock({ locale: 'en', view: 'unlock' });
 
+    // FE1-1 & FE1-3: English header pill/actions rendered, and non-operative Remember-device checkbox is hidden until T18
     await waitFor(() => {
       expect(screen.getByTestId('unlock-forgot-passphrase-link')).toBeInTheDocument();
+      expect(screen.getByText('Vault locked')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('unlock-remember-device-checkbox')).not.toBeInTheDocument();
+
     expect(screen.getByTestId('unlock-forgot-passphrase-link')).toHaveAttribute(
       'href',
       '/app/unlock/forgot',
@@ -847,16 +856,282 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('forgot-passphrase-page')).toBeInTheDocument();
+      expect(screen.getByText('Vault locked')).toBeInTheDocument();
     });
-
     const useRecoveryKeyLink = screen.getByTestId('forgot-use-recovery-key-cta');
     expect(useRecoveryKeyLink).toHaveAttribute('href', '/app/recovery');
 
     const resetVaultLink = screen.getByTestId('forgot-reset-vault-link');
     expect(resetVaultLink).toHaveAttribute('href', '/app/settings#baomat');
-
+    // FE1-2: uses AA-safe .auth-alert token class instead of hardcoded #B4232A inline style
+    expect(resetVaultLink).toHaveClass('auth-alert');
+    expect(resetVaultLink.getAttribute('style') ?? '').not.toContain('#B4232A');
     const backToUnlockLink = screen.getByTestId('forgot-bottom-back-link');
     expect(backToUnlockLink).toHaveAttribute('href', '/app/unlock');
     expect(screen.getByTestId('forgot-reauth-note')).toHaveTextContent(/vault\.recover/i);
   }, 15_000);
+
+  it('BE2-1 & BE2-13: sibling durable lock during in-flight GET /vault on unlock fails closed on baseline mismatch (never reaching unlocked), and route leave during GET /vault aborts unlock', async () => {
+    let holdGetVault = true;
+    let resolveGetVault: (() => void) | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('present'));
+      if (url.endsWith('/vault')) {
+        if (holdGetVault) {
+          await new Promise<void>((resolve) => {
+            resolveGetVault = resolve;
+          });
+        }
+        return jsonResponse(makeVaultMetaFixture());
+      }
+      return jsonResponse({});
+    });
+
+    const lockEpochEnv = makeSimpleLockEpochEnv();
+    let vaultCtx!: VaultContextValue;
+    const workerFactory = makeUnlockWorkerFactory();
+    const { rerender, queryClient } = renderUnlock({
+      locale: 'en',
+      workerFactory,
+      lockEpochEnv,
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-vault-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+    });
+
+    // 1. BE2-1: Submit unlock -> beginUnlockOp captures durable lockEpoch baseline BEFORE awaiting GET /vault.
+    // While GET /vault is in flight, a sibling tab writes a durable lockEpoch increment (missed BroadcastChannel).
+    const passInput = screen.getByTestId('unlock-passphrase-input') as HTMLInputElement;
+    fireEvent.change(passInput, { target: { value: TEST_VECTOR_PASSPHRASE } });
+    fireEvent.click(screen.getByTestId('unlock-submit-button'));
+
+    await waitFor(() => {
+      expect(resolveGetVault).not.toBeNull();
+    });
+
+    // Sibling tab locks and increments durable lockEpoch while GET /vault is still in flight!
+    await act(async () => {
+      await recordLockEpochEvent(vaultCtx.tabKnownLockEpoch, lockEpochEnv);
+    });
+
+    // Release GET /vault -> unlockPassphrase reuses the pre-GET baseline and MUST reject with STALE_GENERATION + lockLocalOnly (never reaching unlocked or navigating)
+    await act(async () => {
+      holdGetVault = false;
+      resolveGetVault?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-submit-button')).not.toBeDisabled();
+    });
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+
+    // 2. BE2-13: Submit unlock again while holding GET /vault, then unmount the unlock view before GET /vault settles.
+    // Unmounting MUST retire the unlock intent and never unlock the Worker or navigate when GET /vault later resolves.
+    resolveGetVault = null;
+    holdGetVault = true;
+    fireEvent.change(screen.getByTestId('unlock-passphrase-input'), {
+      target: { value: TEST_VECTOR_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('unlock-submit-button'));
+
+    await waitFor(() => {
+      expect(resolveGetVault).not.toBeNull();
+    });
+
+    // Leave only the VaultUnlockFlow route (switching to ForgotPassphraseView) while keeping VaultProvider mounted!
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={queryClient}>
+            <SessionProvider>
+              <VaultProvider createWorker={workerFactory} lockEpochEnv={lockEpochEnv}>
+                <ForgotPassphraseView />
+              </VaultProvider>
+            </SessionProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    // Release GET /vault after VaultUnlockFlow unmounted (with VaultProvider still alive) -> Worker stays locked and router.replace is never called
+    await act(async () => {
+      holdGetVault = false;
+      resolveGetVault?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(vaultCtx.state).toBe('locked');
+    expect(vaultCtx.workerState).toBe('locked');
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+  }, 15_000);
+  function installUnlockFetchMock() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('present'));
+      if (url.endsWith('/vault')) return jsonResponse(makeVaultMetaFixture());
+      return jsonResponse({});
+    });
+  }
+
+  for (const locale of ['en', 'vi'] as const) {
+    it(`FE1-1 (${locale}): the provider-backed open-vault header button's accessible name contains its visible pill text and still locks the vault`, async () => {
+      installUnlockFetchMock();
+      let vaultCtx!: VaultContextValue;
+      renderUnlock({
+        locale,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('test-vault-probe')).toHaveTextContent(
+          'authenticated_with_vault|locked|locked|',
+        );
+      });
+
+      // Unlock for real; the (mocked) router keeps this page mounted, so its header now renders the open pill button.
+      fireEvent.change(screen.getByTestId('unlock-passphrase-input'), {
+        target: { value: TEST_VECTOR_PASSPHRASE },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('unlock-submit-button'));
+      });
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('unlocked');
+        expect(screen.getByTestId('vault-lock-button')).toBeInTheDocument();
+      });
+
+      const lockButton = screen.getByTestId('vault-lock-button');
+      const visiblePillText = Array.from(
+        lockButton.querySelectorAll('.vault-pill > span:not([aria-hidden="true"])'),
+      )
+        .map((node) => (node.textContent ?? '').trim())
+        .join(' ');
+      expect(visiblePillText).toContain(locale === 'en' ? 'Vault open' : 'Vault mở');
+      const accessibleName = lockButton.getAttribute('aria-label') ?? '';
+      // WCAG 2.5.3 label in name: the visible words are inside the accessible name, which also says what the button does.
+      expect(accessibleName.startsWith(visiblePillText)).toBe(true);
+      expect(accessibleName).toContain(locale === 'en' ? 'Lock vault now (L)' : 'Khoá vault ngay (L)');
+      expect(lockButton).toHaveAccessibleName(accessibleName);
+      expect(lockButton).toHaveAttribute('aria-keyshortcuts', 'L');
+
+      await act(async () => {
+        fireEvent.click(lockButton);
+      });
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('locked');
+      });
+      expect(screen.queryByTestId('vault-lock-button')).not.toBeInTheDocument();
+    }, 20_000);
+  }
+
+  it('FE1-4: an asynchronous wrong-passphrase failure returns keyboard focus to the re-enabled passphrase field', async () => {
+    installUnlockFetchMock();
+    renderUnlock({ locale: 'en' });
+    await waitFor(() => {
+      expect(screen.getByTestId('test-vault-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+    });
+
+    const passInput = screen.getByTestId('unlock-passphrase-input') as HTMLInputElement;
+    fireEvent.change(passInput, { target: { value: 'wrong-passphrase-123456' } });
+    // Focus is on <body> (like after the field was disabled while pending); only the product may move it back.
+    expect(passInput).not.toHaveFocus();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unlock-submit-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-error-incorrect-passphrase')).toBeInTheDocument();
+    });
+    // The field was disabled while pending (focus would have fallen back to <body>); it must be focused again.
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-passphrase-input')).not.toBeDisabled();
+      expect(screen.getByTestId('unlock-passphrase-input')).toHaveFocus();
+    });
+  }, 15_000);
+
+  it('FE1-7: the recovery-completed notice handed over by the recovery flow is shown on the unlock page after a real route change, only to the same account, and clears once the vault unlocks', async () => {
+    installUnlockFetchMock();
+    // The recovery route wrote the notice for this account, then navigated: nothing else is shared between the pages.
+    rememberRecoveryCompletedNotice('user-unlock-test-1');
+    let vaultCtx!: VaultContextValue;
+    const first = renderUnlock({
+      locale: 'en',
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-recovered-notice')).toHaveTextContent(
+        /Recovery completed[\s\S]*unlock your vault with the new passphrase/i,
+      );
+    });
+    expect(screen.getByTestId('unlock-recovered-notice')).toHaveAttribute('role', 'status');
+    first.unmount();
+
+    // A notice written for another account is never shown to this one.
+    window.sessionStorage.clear();
+    rememberRecoveryCompletedNotice('another-user-id');
+    expect(hasRecoveryCompletedNotice('user-unlock-test-1')).toBe(false);
+    renderUnlock({ locale: 'en' });
+    await waitFor(() => {
+      expect(screen.getByTestId('test-vault-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+    });
+    expect(screen.queryByTestId('unlock-recovered-notice')).not.toBeInTheDocument();
+    cleanup();
+
+    // A reload of the unlock page keeps the notice until the user actually unlocks with the new passphrase.
+    window.sessionStorage.clear();
+    rememberRecoveryCompletedNotice('user-unlock-test-1');
+    renderUnlock({
+      locale: 'en',
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-recovered-notice')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('unlock-passphrase-input'), {
+      target: { value: TEST_VECTOR_PASSPHRASE },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unlock-submit-button'));
+    });
+    await waitFor(() => {
+      expect(vaultCtx.state).toBe('unlocked');
+    });
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    expect(hasRecoveryCompletedNotice('user-unlock-test-1')).toBe(false);
+    expect(window.sessionStorage.length).toBe(0);
+  }, 20_000);
 });

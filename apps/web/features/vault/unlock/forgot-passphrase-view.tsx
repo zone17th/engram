@@ -112,8 +112,7 @@ export function ForgotPassphraseView() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link
               href="/app/settings#baomat"
-              className="btn btn-danger no-underline"
-              style={{ color: '#B4232A' }}
+              className="btn btn-danger auth-alert no-underline"
               data-testid="forgot-reset-vault-link"
             >
               {t('lastResort.resetCta')}

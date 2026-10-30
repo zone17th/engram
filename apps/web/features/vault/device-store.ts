@@ -55,6 +55,11 @@ export interface PurgeDeviceKeysResult {
   ok: boolean;
   meta: DeviceMetaRecord | null;
   deletedCount: number;
+  /**
+   * `true` only when `skipIfNoDevKeys` was requested and the target had no DevKey records: nothing was committed
+   * (no rotation) and `meta` is the unchanged current record (`null` when none exists).
+   */
+  skipped?: boolean;
 }
 
 export function isValidDeviceMetaRecord(value: unknown): value is DeviceMetaRecord {
@@ -135,13 +140,19 @@ export function subscribeDevicePurge(
  * - Rotates `meta.__meta__` to `{ incarnation: freshIncarnation, deviceRevision: (cur?.deviceRevision ?? 0) + 1 }`.
  * - Awaits ONLY `IDBRequest`s belonging to this transaction.
  * - Never calls `indexedDB.deleteDatabase`.
+ * - With `skipIfNoDevKeys`: when this very transaction finds no DevKey record to delete it commits NOTHING (no
+ *   rotation) and resolves `skipped` with the current meta. The check and the skip live in the same transaction as
+ *   the delete/rotate, so there is no read-then-write gap: IndexedDB serialises readwrite transactions whose scopes
+ *   overlap, hence a concurrent DevKey write committed before this transaction is seen (and deleted), one created
+ *   after it commits after it.
  */
 function runSingleReadwritePurgeTx(
   db: IDBDatabase,
   userId: string | null,
   freshIncarnation: string,
-): Promise<{ meta: DeviceMetaRecord; deletedCount: number }> {
-  return new Promise<{ meta: DeviceMetaRecord; deletedCount: number }>((resolve, reject) => {
+  skipIfNoDevKeys = false,
+): Promise<{ meta: DeviceMetaRecord | null; deletedCount: number; skipped: boolean }> {
+  return new Promise<{ meta: DeviceMetaRecord | null; deletedCount: number; skipped: boolean }>((resolve, reject) => {
     let tx: IDBTransaction;
     try {
       tx = db.transaction([DEVKEY_STORE_NAME, META_STORE_NAME], 'readwrite');
@@ -151,6 +162,7 @@ function runSingleReadwritePurgeTx(
     }
 
     let committedMeta: DeviceMetaRecord | null = null;
+    let skippedMeta: { meta: DeviceMetaRecord | null } | null = null;
     let deletedCount = 0;
     let settled = false;
 
@@ -163,8 +175,10 @@ function runSingleReadwritePurgeTx(
     tx.oncomplete = () => {
       if (settled) return;
       settled = true;
-      if (committedMeta) {
-        resolve({ meta: committedMeta, deletedCount });
+      if (skippedMeta) {
+        resolve({ meta: skippedMeta.meta, deletedCount: 0, skipped: true });
+      } else if (committedMeta) {
+        resolve({ meta: committedMeta, deletedCount, skipped: false });
       } else {
         reject(new Error('Device purge transaction completed without updating meta'));
       }
@@ -182,6 +196,16 @@ function runSingleReadwritePurgeTx(
         } catch {
           // Ignore
         }
+      };
+
+      // No DevKey to delete and the caller asked to skip: read the current meta and write nothing.
+      const skipWithCurrentMeta = () => {
+        const metaGetReq = metaStore.get(DEVICE_META_RECORD_KEY);
+        metaGetReq.onerror = abortTx;
+        metaGetReq.onsuccess = () => {
+          const curRaw: unknown = metaGetReq.result;
+          skippedMeta = { meta: isValidDeviceMetaRecord(curRaw) ? curRaw : null };
+        };
       };
 
       const writeRotatedMeta = () => {
@@ -216,6 +240,10 @@ function runSingleReadwritePurgeTx(
           keysReq.onsuccess = () => {
             try {
               const keys = Array.isArray(keysReq.result) ? keysReq.result : [];
+              if (skipIfNoDevKeys && keys.length === 0) {
+                skipWithCurrentMeta();
+                return;
+              }
               deletedCount = keys.length;
               const clearReq = devkeysStore.clear();
               clearReq.onerror = abortTx;
@@ -242,14 +270,16 @@ function runSingleReadwritePurgeTx(
           try {
             const keys = Array.isArray(keysReq.result) ? keysReq.result : [];
             if (keys.length === 0) {
-              writeRotatedMeta();
+              if (skipIfNoDevKeys) skipWithCurrentMeta();
+              else writeRotatedMeta();
               return;
             }
 
             let inspected = 0;
             const inspectNext = () => {
               if (inspected === keys.length) {
-                writeRotatedMeta();
+                if (skipIfNoDevKeys && deletedCount === 0) skipWithCurrentMeta();
+                else writeRotatedMeta();
               }
             };
 
@@ -302,10 +332,14 @@ function runSingleReadwritePurgeTx(
  * - When `userId` is `null` or `undefined` (unknown user, e.g. just reloaded), deletes ALL users'
  *   `DevKey` records.
  * - Never calls `indexedDB.deleteDatabase`.
+ * - `options.skipIfNoDevKeys`: when the target has no DevKey record INSIDE the purge transaction, commit nothing (no
+ *   rotation, no purge notification) and return `{ ok: true, meta: <current meta>, deletedCount: 0, skipped: true }`.
+ *   Omitted, the behaviour is exactly the unconditional purge above.
  */
 export async function purgeDeviceKeysOnRevoked(
   userId?: string | null,
   env?: DeviceStoreEnvironment,
+  options?: { skipIfNoDevKeys?: boolean },
 ): Promise<PurgeDeviceKeysResult> {
   const effectiveUserId =
     userId !== undefined ? userId : lastKnownSessionUserId;
@@ -315,11 +349,15 @@ export async function purgeDeviceKeysOnRevoked(
   let db: IDBDatabase | null = null;
   try {
     db = await openSabkDeviceDb(effectiveEnv.idbFactory);
-    const { meta, deletedCount } = await runSingleReadwritePurgeTx(
+    const { meta, deletedCount, skipped } = await runSingleReadwritePurgeTx(
       db,
       effectiveUserId && effectiveUserId.length > 0 ? effectiveUserId : null,
       freshIncarnation,
+      options?.skipIfNoDevKeys === true,
     );
+    if (skipped) {
+      return { ok: true, meta, deletedCount: 0, skipped: true };
+    }
     const result: PurgeDeviceKeysResult = {
       ok: true,
       meta,

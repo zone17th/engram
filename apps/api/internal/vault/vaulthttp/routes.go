@@ -2,13 +2,14 @@ package vaulthttp
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 )
 
-// Mount đăng ký toàn bộ bảng route `/vault*` của P03 Task 8–12 (10 operations trên `/api/v1`)
+// Mount đăng ký toàn bộ bảng route `/vault*` của P03 Task 8–13 (15 operations trên `/api/v1`)
 // với đúng chuỗi middleware theo từng cột (S, C, I, A(action), R(scope), M, K) và đúng thứ tự
 // của plan mục 2.3 & mục 3:
 //
@@ -22,6 +23,11 @@ import (
 //   - POST /vault/recovery-keys/regenerate (`vaultRecoveryKeysRegenerate`, T11): S + C + I.Lookup + K + A(`vault.recovery_keys_regenerate`) + R(`vault_sensitive`) + M + I.Claim
 //   - POST /vault/recovery-keys/rotate (`vaultRecoveryKeysRotate`, T11): S + C + I.Lookup + K + A(`vault.recovery_keys_rotate`) + R(`vault_sensitive`) + M + I.Claim
 //   - GET /vault/passkeys (`vaultPasskeysList`): S
+//   - POST /vault/passkeys/register/options (`vaultPasskeyRegisterOptions`, T13): S + C + R(`vault_passkey_options`)
+//   - POST /vault/passkeys (`vaultPasskeyCreate`, T13): S + C + I.Lookup + K + A(`vault.passkey_register`) + R(`vault_sensitive`) + I.Claim
+//   - PATCH /vault/passkeys/{id} (`vaultPasskeyRename`, T13): S + C + R(`vault_sensitive`)
+//   - DELETE /vault/passkeys/{id} (`vaultPasskeyRevoke`, T13): S + C(AllowEmptyDelete) + A(`vault.passkey_revoke`) + R(`vault_sensitive`)
+//   - POST /vault/unlock/passkey/options (`vaultPasskeyUnlockOptions`, T13): S + C + R(`vault_passkey_options`)
 //
 // Lưu ý về vị trí công tắc dừng K (`VAULT_KEY_MUTATIONS_DISABLED`, advisor-dec-022):
 // `Idempotency.Lookup` (plan mục 2.3 bước 2) chạy TRƯỚC K để replay của mutation đã commit (`done` + cùng
@@ -31,11 +37,8 @@ import (
 // mutation mới (chưa có hàng còn hạn, hoặc giành lại hàng `in_progress` quá 60 giây) nhận `503 vault_mutations_disabled`
 // mà không tiêu tốn `rate_event` và không tạo/cập nhật bản ghi claim `idempotency_key`.
 //
-// Lưu ý cho Task 13 (WebAuthn passkeys):
-// 5 operation WebAuthn (`POST /vault/passkeys/register/options`, `POST /vault/passkeys` [cột K],
-// `PATCH /vault/passkeys/{id}`, `DELETE /vault/passkeys/{id}`, `POST /vault/unlock/passkey/options`)
-// thuộc Task 13; Task 13 đăng ký vào hàm `mountPasskeyRoutes` bên dưới và dùng `a.chainIdempotentMutation`
-// với `killSwitch: true` cho `POST /vault/passkeys`.
+// Trong các route passkey của Task 13, chỉ `POST /vault/passkeys` thuộc cột K (ghi bản wrap mới);
+// các route options, rename và revoke không nằm trong cột K.
 func Mount(api *API) func(v1 chi.Router, d httpx.Deps) {
 	return func(v1 chi.Router, d httpx.Deps) {
 		if api == nil || api.svc == nil {
@@ -189,8 +192,71 @@ func (a *API) chainIdempotentMutation(spec idempotentRouteSpec, handler http.Han
 	return h
 }
 
-// mountPasskeyRoutes là điểm nối rõ ràng cho Task 13 (WebAuthn passkey routes).
-// TODO(P03-T13): register POST /vault/passkeys/register/options, POST /vault/passkeys (with killSwitch: true in chainIdempotentMutation), PATCH /vault/passkeys/{id}, DELETE /vault/passkeys/{id}, POST /vault/unlock/passkey/options.
-func (a *API) mountPasskeyRoutes(_ chi.Router, _ string, _ httpx.Deps) {
-	// Pending Task 13: WebAuthn routes are out of scope for P03-A (Tasks 8-12).
+// mountPasskeyRoutes đăng ký 5 operation WebAuthn passkey của Task 13 (plan mục 2.3, 2.4, 2.5, 3):
+//   - POST /vault/passkeys/register/options (`vaultPasskeyRegisterOptions`): S + C + R(`vault_passkey_options`)
+//   - POST /vault/passkeys (`vaultPasskeyCreate`): S + C + I.Lookup + K + A(`vault.passkey_register`) + R(`vault_sensitive`) + I.Claim (không M)
+//   - PATCH /vault/passkeys/{id} (`vaultPasskeyRename`): S + C + R(`vault_sensitive`)
+//   - DELETE /vault/passkeys/{id} (`vaultPasskeyRevoke`): S + C(AllowEmptyDelete) + A(`vault.passkey_revoke`) + R(`vault_sensitive`)
+//   - POST /vault/unlock/passkey/options (`vaultPasskeyUnlockOptions`): S + C + R(`vault_passkey_options`)
+func (a *API) mountPasskeyRoutes(v1 chi.Router, origin string, d httpx.Deps) {
+	// POST /vault/passkeys/register/options & POST /vault/unlock/passkey/options:
+	// S + C + R("vault_passkey_options") (chung một bucket 20/phút/user; không I, không K, không M).
+	v1.Group(func(g chi.Router) {
+		g.Use(httpx.RequireOrigin(origin))
+		g.Use(httpx.RequireSession(d.Authenticator))
+		g.Use(httpx.RequireCSRF(d.CSRF))
+		g.Use(requireJSONContentOrEmptyBody)
+		g.Use(a.limiter.Middleware(httpx.ScopeVaultPasskeyOptions))
+		g.Post("/vault/passkeys/register/options", a.PasskeyRegisterOptions)
+		g.Post("/vault/unlock/passkey/options", a.PasskeyUnlockOptions)
+	})
+
+	// POST /vault/passkeys (vaultPasskeyCreate):
+	// S + C + I.Lookup + K + A("vault.passkey_register") + R("vault_sensitive") + I.Claim (không M).
+	v1.Method(http.MethodPost, "/vault/passkeys", a.chainIdempotentMutation(idempotentRouteSpec{
+		appOrigin:        origin,
+		deps:             d,
+		reauthAction:     "vault.passkey_register",
+		rateLimitScope:   httpx.ScopeVaultSensitive,
+		requireIfMatch:   false,
+		allowEmptyDelete: false,
+		killSwitch:       true,
+	}, http.HandlerFunc(a.PasskeyCreate)))
+
+	// PATCH /vault/passkeys/{id} (vaultPasskeyRename): S + C + R("vault_sensitive") (không A, không I, không K, không M).
+	v1.Group(func(g chi.Router) {
+		g.Use(httpx.RequireOrigin(origin))
+		g.Use(httpx.RequireSession(d.Authenticator))
+		g.Use(httpx.RequireCSRF(d.CSRF))
+		g.Use(httpx.RequireJSONContent)
+		g.Use(a.limiter.Middleware(httpx.ScopeVaultSensitive))
+		g.Patch("/vault/passkeys/{id}", a.PasskeyRename)
+	})
+
+	// DELETE /vault/passkeys/{id} (vaultPasskeyRevoke):
+	// S + C(AllowEmptyDelete) + A("vault.passkey_revoke") + R("vault_sensitive") (không I, không K, không M).
+	v1.Group(func(g chi.Router) {
+		g.Use(httpx.RequireOrigin(origin))
+		g.Use(httpx.RequireSession(d.Authenticator))
+		g.Use(httpx.RequireCSRF(d.CSRF))
+		g.Use(httpx.RequireJSONContentExceptEmptyDelete)
+		g.Use(httpx.RequireReauth(d.Reauth, "vault.passkey_revoke"))
+		g.Use(a.limiter.Middleware(httpx.ScopeVaultSensitive))
+		g.Delete("/vault/passkeys/{id}", a.PasskeyRevoke)
+	})
+}
+
+// requireJSONContentOrEmptyBody cho phép các route POST options không có requestBody trong OpenAPI
+// (`POST /vault/passkeys/register/options`, `POST /vault/unlock/passkey/options`) đi qua khi
+// cả body và `Content-Type` đều rỗng, đồng thời vẫn bắt buộc `application/json` nếu có body
+// hoặc có gửi `Content-Type` (chặn form-urlencoded CSRF).
+func requireJSONContentOrEmptyBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(r.Header.Get("Content-Type")) == "" &&
+			(r.ContentLength == 0 || r.Body == nil || r.Body == http.NoBody) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpx.RequireJSONContent(next).ServeHTTP(w, r)
+	})
 }

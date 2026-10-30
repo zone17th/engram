@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
-import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
+import { resetVaultBroadcastForTests, subscribeVaultBroadcast } from '@/features/vault/broadcast';
 import type { LockEpochEnvironment } from '@/features/vault/lock-epoch';
 import { VaultOnboardingFlow } from '@/features/vault/onboarding';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
@@ -318,6 +319,8 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     locale?: 'en' | 'vi';
     workerFactory?: () => CryptoWorkerPort;
     onVaultProbe?: (ctx: VaultContextValue) => void;
+    /** Receives a setter that mounts / unmounts only the onboarding flow (provider and session stay mounted). */
+    onFlowGate?: (setShowFlow: (show: boolean) => void) => void;
   }) {
     const locale = options?.locale ?? 'en';
     const messages = locale === 'vi' ? viMessages : enMessages;
@@ -337,6 +340,14 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       );
     }
 
+    function FlowGate() {
+      const [showFlow, setShowFlow] = useState(true);
+      useEffect(() => {
+        options?.onFlowGate?.(setShowFlow);
+      }, []);
+      return showFlow ? <VaultOnboardingFlow /> : null;
+    }
+
     const utils = render(
       <NextIntlClientProvider locale={locale} messages={messages}>
         <ThemeProvider>
@@ -347,7 +358,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
                 lockEpochEnv={lockEpochEnv}
               >
                 <Probe />
-                <VaultOnboardingFlow />
+                <FlowGate />
               </VaultProvider>
             </SessionProvider>
           </QueryClientProvider>
@@ -1220,4 +1231,291 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     });
     expect(postIdempotencyKeys[1]).not.toBe(postIdempotencyKeys[0]);
   });
+
+  it('FE1-1, FE1-4, FE1-5, FE1-6, FE1-7: renders English header pill/actions on en locale, shows neutral rule bullet, live mismatch error, focuses step heading on step swap, and surfaces non-OOM createVault errors visibly', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('absent'));
+      return jsonResponse({});
+    });
+
+    let vaultCtx!: VaultContextValue;
+    renderOnboarding({
+      locale: 'en',
+      onVaultProbe: (ctx) => {
+        vaultCtx = ctx;
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    // FE1-1: English locale renders English pill & header labels (no Vietnamese strings on en locale)
+    expect(screen.getByText('No vault yet')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/app/settings');
+    expect(screen.queryByText(/Chưa tạo/i)).not.toBeInTheDocument();
+
+    // FE1-5: strength label has aria-live="polite", distinctFromLogin rule uses neutral bullet · instead of ✓, and minLength/minScore expose sr-only met/not-met status
+    expect(screen.getByTestId('passphrase-strength-label')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByTestId('rule-distinct-login')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-length')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-length-status')).toHaveTextContent(/Not met:/i);
+    expect(screen.getByTestId('rule-min-score')).toHaveTextContent(/^·/);
+    expect(screen.getByTestId('rule-min-score-status')).toHaveTextContent(/Not met:/i);
+
+    const passInput = screen.getByLabelText(/^Passphrase$/i);
+    const confirmInput = screen.getByLabelText(/Confirm passphrase/i);
+
+    // FE1-6: live confirmation mismatch warning appears while typing before submit
+    fireEvent.change(passInput, { target: { value: STRONG_PASSPHRASE } });
+    fireEvent.change(confirmInput, { target: { value: `${STRONG_PASSPHRASE}-diff` } });
+    expect(screen.getByText(/Passphrases do not match/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('rule-min-length-status')).toHaveTextContent(/Met:/i);
+      expect(screen.getByTestId('rule-min-score-status')).toHaveTextContent(/Met:/i);
+    });
+    // FE1-4: validation error on submit moves focus to the invalid field
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    await waitFor(() => {
+      expect(confirmInput).toHaveFocus();
+    });
+
+    // Fix confirmation so they match -> live mismatch disappears
+    fireEvent.change(confirmInput, { target: { value: STRONG_PASSPHRASE } });
+    expect(screen.queryByText(/Passphrases do not match/i)).not.toBeInTheDocument();
+
+    // FE1-7: non-OOM / unexpected failure in createVault surfaces a visible error alert on Step 1
+    vi.spyOn(vaultCtx, 'createVault').mockRejectedValueOnce(new Error('Worker unexpected failure'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step1-error')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('onboarding-step1-error')).toHaveTextContent(/Worker unexpected failure/i);
+
+    // Re-enter passphrase and succeed -> FE1-4 focuses Step 2 heading on step transition
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+    const step2Heading = screen.getByRole('heading', { level: 1 });
+    expect(step2Heading).toHaveFocus();
+  });
+
+  it('BE2-10 & BE1-9: a failed second Copy all preserves the original 30-second clipboard expiry, and unmounting while POST /vault is in flight never navigates after completion', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let holdPostVault = true;
+    let resolvePostVault: (() => void) | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('absent'));
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPostVault) {
+          await new Promise<void>((resolve) => {
+            resolvePostVault = resolve;
+          });
+        }
+        return jsonResponse({ vault_key_id: 'vk:be2-10-created', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: writeTextSpy },
+      configurable: true,
+    });
+
+    const { unmount } = renderOnboarding({ locale: 'en' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    });
+
+    // 1. BE2-10: First Copy all succeeds -> schedules 30-second clipboard clear
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(writeTextSpy).toHaveBeenCalledTimes(1);
+    expect(writeTextSpy).toHaveBeenLastCalledWith(expect.stringContaining('rk1_3F8K'));
+
+    // Second Copy all rejects (e.g. clipboard permission denied or focus lost)
+    writeTextSpy.mockRejectedValueOnce(new Error('Clipboard write denied'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('recovery-keys-copy'));
+    });
+    expect(writeTextSpy).toHaveBeenCalledTimes(2);
+
+    // Advance 30 seconds -> the original 30s expiry timer MUST still fire and wipe the clipboard with ''!
+    writeTextSpy.mockResolvedValue(undefined);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(writeTextSpy).toHaveBeenCalledTimes(3);
+    expect(writeTextSpy).toHaveBeenLastCalledWith('');
+
+    // 2. BE1-9 residual: Submit POST /vault while held, then unmount onboarding before POST /vault resolves.
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+    await waitFor(() => {
+      expect(resolvePostVault).not.toBeNull();
+    });
+
+    unmount();
+
+    // Release POST /vault after unmount -> must not call router.replace('/app')
+    await act(async () => {
+      holdPostVault = false;
+      resolvePostVault?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+  });
+  it('BE1-9 (retained provider): a POST /vault success that returns after only the onboarding route was left never locks, refreshes Me, broadcasts or navigates the replacement session', async () => {
+    let holdPostVault = true;
+    let resolvePostVault: (() => void) | null = null;
+    let authMeFetches = 0;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) {
+        authMeFetches += 1;
+        return jsonResponse(makeMeFixture('absent'));
+      }
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPostVault) {
+          await new Promise<void>((resolve) => {
+            resolvePostVault = resolve;
+          });
+        }
+        return jsonResponse({ vault_key_id: 'vk:be1-9-retained-provider', version: 1 }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    const published: Array<{ vault_key_id: string; version: number | null }> = [];
+    const unsubscribe = subscribeVaultBroadcast((message) => {
+      if (message.type === 'vault_changed') {
+        published.push({ vault_key_id: message.vault_key_id, version: message.version });
+      }
+    });
+
+    let vaultCtx!: VaultContextValue;
+    let setShowFlow!: (show: boolean) => void;
+    try {
+      renderOnboarding({
+        locale: 'en',
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+        onFlowGate: (setter) => {
+          setShowFlow = setter;
+        },
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+        target: { value: STRONG_PASSPHRASE },
+      });
+      fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+        target: { value: STRONG_PASSPHRASE },
+      });
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+      });
+
+      // POST /vault for bundle A is accepted by the server but its response is held.
+      fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+      fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      await waitFor(() => {
+        expect(resolvePostVault).not.toBeNull();
+      });
+
+      // The user leaves the onboarding route; the persistent provider keeps running and a replacement session unlocks.
+      await act(async () => {
+        setShowFlow(false);
+      });
+      await act(async () => {
+        await vaultCtx.lockNow();
+      });
+      const replacementOp = vaultCtx.beginOp();
+      await act(async () => {
+        await vaultCtx.createVault({
+          passphrase: `${STRONG_PASSPHRASE}-replacement`,
+          opGeneration: replacementOp.opGeneration,
+        });
+      });
+      expect(vaultCtx.state).toBe('unlocked');
+      const replacementGeneration = vaultCtx.getClient().getGeneration();
+      const meFetchesBeforeRelease = authMeFetches;
+      routerMocks.replace.mockClear();
+      const publishedBeforeRelease = published.length;
+
+      // The old success returns: it must leave the replacement session completely untouched.
+      await act(async () => {
+        holdPostVault = false;
+        resolvePostVault?.();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(authMeFetches).toBe(meFetchesBeforeRelease);
+      expect(published.slice(publishedBeforeRelease)).toEqual([]);
+      expect(vaultCtx.state).toBe('unlocked');
+      expect(vaultCtx.workerState).toBe('unlocked');
+      expect(vaultCtx.getClient().getGeneration()).toBe(replacementGeneration);
+    } finally {
+      unsubscribe();
+    }
+  }, 20_000);
 });

@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it, vi } from 'vitest';
 import { BadgeType } from '../components/ui/badge-type';
 import { Button } from '../components/ui/button';
@@ -9,7 +10,7 @@ import { Panel } from '../components/ui/panel';
 import { Segmented } from '../components/ui/segmented';
 import { Switch } from '../components/ui/switch';
 import { VaultPill } from '../components/ui/vault-pill';
-
+import viMessages from '../messages/vi.json';
 describe('Button', () => {
   it('mặc định là primary theo class của mockup', () => {
     render(<Button>Lưu</Button>);
@@ -122,12 +123,20 @@ describe('Segmented', () => {
 
 describe('VaultPill', () => {
   it('trạng thái mở hiện thời gian còn lại', () => {
-    render(<VaultPill state="open" minutesLeft={15} />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <VaultPill state="open" minutesLeft={15} />
+      </NextIntlClientProvider>,
+    );
     expect(screen.getByText(/15 phút/)).toBeInTheDocument();
   });
 
   it('trạng thái khoá không hiện thời gian', () => {
-    render(<VaultPill state="locked" />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <VaultPill state="locked" />
+      </NextIntlClientProvider>,
+    );
     expect(screen.queryByText(/phút/)).not.toBeInTheDocument();
   });
 });

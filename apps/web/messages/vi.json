@@ -44,7 +44,15 @@
     "recent": "Mục gần đây",
     "semantic": "Gần nghĩa",
     "vaultOpen": "Vault mở",
-    "vaultLocked": "Vault đang khoá"
+    "vaultLocked": "Vault đang khoá",
+    "header": {
+      "logoLabel": "engram — Mục gần đây",
+      "lockNow": "Khoá vault ngay (L)",
+      "openAndLockNow": "Vault mở — Khoá vault ngay (L)",
+      "lockNowNamed": "{state} — Khoá vault ngay (L)",
+      "settings": "Cài đặt",
+      "settingsDone": "Xong"
+    }
   },
   "states": {
     "emptyTitle": "Chưa có gì ở đây",
@@ -89,7 +97,9 @@
       "rules": {
         "minLength": "Từ 12 ký tự trở lên",
         "distinctFromLogin": "Không dùng lại mật khẩu đăng nhập hay mật khẩu ở nơi khác",
-        "minScore": "Đủ khó đoán (zxcvbn ≥ 3)"
+        "minScore": "Đủ khó đoán (zxcvbn ≥ 3)",
+        "met": "Đạt:",
+        "notMet": "Chưa đạt:"
       },
       "warningBanner": "Mất passphrase mà không còn recovery key, passkey hay thiết bị đã nhớ thì nội dung entry không lấy lại được. Bước sau sẽ tạo sẵn 10 đường về cho bạn.",
       "continue": "Tiếp tục",
@@ -569,7 +579,7 @@
   },
   "vault": {
     "state": {
-      "noVault": "Chưa tạo kho",
+      "noVault": "Chưa tạo vault",
       "onboarding": "Đang tạo vault…",
       "locked": "Vault đang khoá",
       "unlocking": "Đang mở khoá vault…",
@@ -587,19 +597,22 @@
       "lockedNoticeTitle": "Vault đã khoá",
       "lockedNoticeBody": "Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem hoặc sửa nội dung entry.",
       "unlockCta": "Mở khoá lại"
+    },
+    "pill": {
+      "minutesLeft": "· {minutes} phút"
     }
   },
   "unlock": {
     "signedInAs": "Đã đăng nhập · {email}",
     "signedInGeneric": "Đã đăng nhập",
+    "recoveredNoticeTitle": "Đã hoàn tất khôi phục",
+    "recoveredNoticeBody": "Passphrase mới của bạn đã được lưu. Hãy mở khoá vault bằng passphrase mới.",
     "title": "Mở khoá vault",
     "lead": "Tên mục và tag vẫn tìm được khi khoá. Nội dung entry thì cần khoá giải mã, và khoá đó chỉ máy bạn mở được.",
     "passphraseLabel": "Passphrase của vault",
     "passphraseHint": "Không phải mật khẩu đăng nhập.",
     "showPassphrase": "Hiện passphrase",
     "hidePassphrase": "Ẩn passphrase",
-    "rememberDeviceLabel": "Nhớ thiết bị này",
-    "rememberDeviceHint": "Lần sau máy này tự mở, không cần gõ. Đừng bật trên máy dùng chung.",
     "submit": "Mở khoá",
     "submitting": "Đang tính khoá… (Argon2id 64 MiB)",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
@@ -663,6 +676,8 @@
   "recovery": {
     "invalid": "Recovery key không đúng hoặc đã dùng.",
     "need_new_passphrase": "Đặt passphrase mới để hoàn tất khôi phục.",
+    "showPassword": "Hiện mật khẩu",
+    "hidePassword": "Ẩn mật khẩu",
     "stepperLabel": "Các bước khôi phục vault",
     "steps": {
       "reauth": "1 · Xác thực tài khoản",
@@ -771,7 +786,10 @@
         "rateLimitedBody": "Yêu cầu hoàn tất khôi phục giới hạn 5 lần / 15 phút (bucket riêng với bước tra cứu). Thử lại sau {clock} ({seconds} giây · Retry-After: {seconds}).",
         "networkTitle": "Không kết nối được máy chủ",
         "networkBody": "Kết nối bị gián đoạn trước khi máy chủ xác nhận hoàn tất. Hãy bấm thử lại — ứng dụng dùng lại đúng Idempotency-Key và nội dung yêu cầu ban đầu.",
-        "retryCta": "Thử lại hoàn tất"
+        "retryCta": "Thử lại hoàn tất",
+        "completedWhileLockedTitle": "Đã hoàn tất khôi phục — mở khoá bằng passphrase mới",
+        "completedWhileLockedBody": "Passphrase mới của bạn đã được lưu trên máy chủ trong lúc tab này khoá lại. Đang chuyển tới trang mở khoá bằng passphrase mới…",
+        "completedWhileLockedCta": "Tới trang mở khoá"
       }
     },
     "step4Reauth": {
@@ -788,6 +806,18 @@
       "skip": "Bỏ qua (giữ {remaining}/10 key)",
       "googleCaption": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, mở bằng passphrase mới vừa đặt (hoặc passkey) rồi mới sinh key bù.",
       "skipCaption": "Bỏ qua cũng được — bạn vẫn còn {remaining} key. Có thể bù lại bất cứ lúc nào trong Cài đặt › Bảo mật."
+    },
+    "wakeGate": {
+      "title": "Đang kiểm tra vault vẫn đang mở…",
+      "body": "Recovery key mới được ẩn và việc nhập mật khẩu tạm dừng cho tới khi kiểm tra xong. Tiến trình khôi phục vẫn được giữ."
+    },
+    "committedRecheck": {
+      "verifyingTitle": "Đã hoàn tất khôi phục — đang xác nhận vault…",
+      "verifyingBody": "Passphrase mới đã được lưu trên máy chủ. Chúng tôi đang xác nhận vault vẫn là vault bạn vừa khôi phục. Đừng dùng lại recovery key vừa nhập.",
+      "recheckTitle": "Đã hoàn tất khôi phục — chưa xác nhận được",
+      "recheckBody": "Passphrase mới đã được lưu trên máy chủ và recovery key bạn vừa nhập đã được dùng hết, nhưng chúng tôi chưa kết nối được máy chủ để xác nhận trạng thái hiện tại của vault. Hãy kiểm tra lại, hoặc mở khoá bằng passphrase mới.",
+      "retryCta": "Kiểm tra lại",
+      "unlockCta": "Tới trang mở khoá"
     },
     "step4": {
       "unlockedBanner": "Đã vào lại vault. Còn {remaining}/10 recovery key dùng được (vị trí trống: {emptySlots}).",

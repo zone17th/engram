@@ -4,7 +4,7 @@ import { ProblemError } from '@engram/shared-types';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
@@ -18,6 +18,10 @@ import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
 import { CryptoClientError } from '@/lib/crypto/client';
 import { hasLoneSurrogate } from '@/lib/crypto/protocol';
+import {
+  clearRecoveryCompletedNotice,
+  hasRecoveryCompletedNotice,
+} from './recovery-notice';
 
 export type UnlockErrorState =
   | { kind: 'empty' }
@@ -39,13 +43,22 @@ export function VaultUnlockFlow() {
   const vault = useVault();
 
   const [passphrase, setPassphrase] = useState('');
-  const [rememberDevice, setRememberDevice] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<UnlockErrorState | null>(null);
   const [rateLimitDeadline, setRateLimitDeadline] = useState<number | null>(null);
+  // FE1-7: recovery that committed while its tab locked hands this notice over through sessionStorage (route change).
+  const [recoveredNotice, setRecoveredNotice] = useState(false);
+  const meUserId = me?.user.id ?? null;
 
   const passInputRef = useRef<HTMLInputElement>(null);
-  const rememberCheckboxId = useId();
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const isMountedRef = useRef(true);
+  const unlockIntentSeqRef = useRef(0);
+  const activeWorkerUnlockOpGenRef = useRef<number | null>(null);
+  const completedNavigationRef = useRef(false);
+  // FE1-4: an async failure re-enables the form after it had been disabled while pending; focus must come back to it.
+  const refocusPassphraseAfterErrorRef = useRef(false);
   const countdownSeconds = useRetryCountdown(rateLimitDeadline);
   const isRateLimitedActive =
     errorState?.kind === 'rate_limited' && rateLimitDeadline !== null && countdownSeconds > 0;
@@ -60,21 +73,34 @@ export function VaultUnlockFlow() {
     }
   }, []);
 
+  useEffect(() => {
+    setRecoveredNotice(hasRecoveryCompletedNotice(meUserId));
+  }, [meUserId]);
+
   // Register secret form reset with VaultProvider so any lock / logout / account switch wipes state synchronously.
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
       clearPassphraseField();
-      setRememberDevice(false);
     });
   }, [clearPassphraseField, vault]);
 
-  // Wipe passphrase input when leaving the unlock route.
+  // Wipe passphrase input and retire any pending unlock intent when leaving the unlock route (BE2-13).
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      unlockIntentSeqRef.current += 1;
       clearPassphraseField();
+      const pendingOpGen = activeWorkerUnlockOpGenRef.current;
+      activeWorkerUnlockOpGenRef.current = null;
+      if (pendingOpGen !== null && !completedNavigationRef.current) {
+        const client = vaultRef.current.getClient();
+        if (client.getGeneration() === pendingOpGen) {
+          void vaultRef.current.lock({ broadcast: false, reason: 'unlock_route_unmounted' });
+        }
+      }
     };
   }, [clearPassphraseField]);
-
   const handleUnlockSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
@@ -85,49 +111,70 @@ export function VaultUnlockFlow() {
 
       if (passphrase.length === 0) {
         setErrorState({ kind: 'empty' });
+        queueMicrotask(() => passInputRef.current?.focus());
         return;
       }
 
       if (hasLoneSurrogate(passphrase)) {
         clearPassphraseField();
         setErrorState({ kind: 'passphrase_invalid' });
+        queueMicrotask(() => passInputRef.current?.focus());
         return;
       }
 
-      // Capture immutable opGeneration BEFORE the first await (before GET /vault, ADR 0002 §10.2).
-      const client = vault.getClient();
-      const opGeneration = client.captureGeneration();
+      // Capture immutable opGeneration AND durable lockEpoch baseline at intent start BEFORE GET /vault (BE2-1, ADR 0003 §8.4).
+      const { opGeneration, client } = vault.beginOp();
+      const intentSeq = ++unlockIntentSeqRef.current;
 
-      const passphraseSnapshot = passphrase;
+      let passphraseSnapshot: string | null = passphrase;
       // Clear the passphrase input field immediately before async work (ADR 0002 §11).
       clearPassphraseField();
       setSubmitting(true);
 
       try {
         const meta = await vault.reloadVaultMeta();
-        if (!meta) {
-          // 404 vault_absent -> RouteGuard / Me refresh handles redirect to onboarding
+        if (
+          !meta ||
+          !isMountedRef.current ||
+          unlockIntentSeqRef.current !== intentSeq ||
+          client.getGeneration() !== opGeneration
+        ) {
+          passphraseSnapshot = null;
           return;
         }
 
-        if (client.getGeneration() !== opGeneration) {
-          return;
-        }
-
+        const passToUse = passphraseSnapshot;
+        passphraseSnapshot = null;
+        activeWorkerUnlockOpGenRef.current = opGeneration;
         await vault.unlockPassphrase({
-          passphrase: passphraseSnapshot,
+          passphrase: passToUse,
           kdf: meta.kdf,
           vaultKeyWrappedByKek: meta.vault_key_wrapped_by_kek,
           privateKeysWrapped: meta.private_keys_wrapped,
           opGeneration,
         });
 
-        if (client.getGeneration() !== opGeneration) {
+        if (
+          !isMountedRef.current ||
+          unlockIntentSeqRef.current !== intentSeq ||
+          client.getGeneration() !== opGeneration
+        ) {
+          if (client.getGeneration() === opGeneration) {
+            activeWorkerUnlockOpGenRef.current = null;
+            await vault.lock({ broadcast: false, reason: 'unlock_intent_abandoned' });
+          }
           return;
         }
 
+        completedNavigationRef.current = true;
+        activeWorkerUnlockOpGenRef.current = null;
+        clearRecoveryCompletedNotice();
         router.replace(destinationPath);
       } catch (err) {
+        passphraseSnapshot = null;
+        if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
+          return;
+        }
         if (err instanceof ProblemError) {
           const { status, code, retry_after } = err.problem;
           if (status === 429 || code === 'rate_limited') {
@@ -140,6 +187,7 @@ export function VaultUnlockFlow() {
             setErrorState({ kind: 'session_expired' });
             return;
           }
+          refocusPassphraseAfterErrorRef.current = true;
           setErrorState({
             kind: 'network',
             detail: err.problem.detail ?? err.problem.title,
@@ -149,22 +197,27 @@ export function VaultUnlockFlow() {
 
         const classified = classifyCryptoError(err);
         if (classified.code === 'PRIVATE_KEYS_WRAP_INVALID') {
+          refocusPassphraseAfterErrorRef.current = true;
           setErrorState({ kind: 'private_keys_wrap_invalid' });
           return;
         }
 
         switch (classified.kind) {
           case 'wrong_passphrase':
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'incorrect_passphrase' });
             return;
           case 'passphrase_invalid':
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'passphrase_invalid' });
             return;
           case 'insufficient_memory':
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'insufficient_memory' });
             return;
           case 'busy':
             // CLIENT_BUSY is NEVER shown as wrong passphrase.
+            refocusPassphraseAfterErrorRef.current = true;
             setErrorState({ kind: 'busy' });
             return;
           case 'recovering_locked_to_whitelist':
@@ -174,6 +227,7 @@ export function VaultUnlockFlow() {
           case 'stale_generation':
             return;
           default:
+            refocusPassphraseAfterErrorRef.current = true;
             if (err instanceof CryptoClientError) {
               setErrorState({ kind: 'network', detail: err.message });
               return;
@@ -181,7 +235,10 @@ export function VaultUnlockFlow() {
             setErrorState({ kind: 'network' });
         }
       } finally {
-        setSubmitting(false);
+        activeWorkerUnlockOpGenRef.current = null;
+        if (isMountedRef.current && unlockIntentSeqRef.current === intentSeq) {
+          setSubmitting(false);
+        }
       }
     },
     [
@@ -194,6 +251,14 @@ export function VaultUnlockFlow() {
       vault,
     ],
   );
+
+  // FE1-4: restore keyboard focus to the passphrase field once the pending state that disabled it has cleared.
+  const formUsable = !submitting && !vault.inFlight && !isRateLimitedActive;
+  useEffect(() => {
+    if (!refocusPassphraseAfterErrorRef.current || errorState === null || !formUsable) return;
+    refocusPassphraseAfterErrorRef.current = false;
+    passInputRef.current?.focus();
+  }, [errorState, formUsable]);
 
   const handleLockAndSwitchFromRecovering = useCallback(async () => {
     setErrorState(null);
@@ -212,6 +277,21 @@ export function VaultUnlockFlow() {
         className="mx-auto max-w-[560px] px-5 pt-10 pb-24"
         data-testid="vault-unlock-page"
       >
+        {recoveredNotice ? (
+          <div
+            role="status"
+            className="card mb-6 p-5"
+            style={{ borderColor: 'var(--success)' }}
+            data-testid="unlock-recovered-notice"
+          >
+            <p className="m-0 mb-1 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+              {t('recoveredNoticeTitle')}
+            </p>
+            <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+              {t('recoveredNoticeBody')}
+            </p>
+          </div>
+        ) : null}
         <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
           {me?.user.email
             ? t('signedInAs', { email: me.user.email })
@@ -250,31 +330,7 @@ export function VaultUnlockFlow() {
                   data-testid="unlock-passphrase-input"
                 />
               </div>
-
-              <label
-                htmlFor={rememberCheckboxId}
-                className="mb-5 flex cursor-pointer items-start gap-3"
-              >
-                <input
-                  id={rememberCheckboxId}
-                  type="checkbox"
-                  className="mt-1"
-                  checked={rememberDevice}
-                  disabled={submitting || vault.inFlight}
-                  onChange={(e) => setRememberDevice(e.target.checked)}
-                  data-testid="unlock-remember-device-checkbox"
-                />
-                <span className="text-[14px] text-body">
-                  {t('rememberDeviceLabel')}
-                  <span
-                    className="block text-[13px]"
-                    style={{ color: 'var(--muted)' }}
-                  >
-                    {t('rememberDeviceHint')}
-                  </span>
-                </span>
-              </label>
-
+              {/* FE1-3: "Remember this device" checkbox is hidden until T18 (WebAuthn PRF + DevKey) implements device persistence. */}
               <Button
                 type="submit"
                 variant="primary"
