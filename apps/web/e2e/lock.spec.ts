@@ -134,6 +134,14 @@ async function installAuthenticatedVaultApiMocks(context: BrowserContext) {
       }),
     });
   });
+
+  await context.route('**/api/v1/vault/passkeys', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [] }),
+    });
+  });
 }
 
 async function unlockPageViaRealWorkerAndSeedSecret(page: Page, secretId: string) {
