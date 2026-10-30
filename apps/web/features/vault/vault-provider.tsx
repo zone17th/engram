@@ -35,7 +35,11 @@ import {
 } from '@/features/vault/device-store';
 import { runSilentDeviceUnlock, type SilentUnlockResult } from '@/lib/crypto/device';
 import { SilentUnlockReturnTo } from '@/features/vault/device/silent-unlock-return-to';
-import { createDeviceTestBridge, type DeviceTestBridge } from '@/features/vault/device/test-bridge';
+import {
+  createDeviceTestBridge,
+  type DeviceTestBridge,
+  type IntentBaselineTraceEvent,
+} from '@/features/vault/device/test-bridge';
 import {
   captureUnlockBaseline,
   recordLockEpochEvent,
@@ -408,27 +412,12 @@ export function VaultProvider({
       }>
     >
   >(new Map());
-  const intentBaselineTraceRef = useRef<
-    Array<{
-      action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
-      generation: number;
-      id?: number;
-      kind?: 'manual' | 'owned';
-    }>
-  >([]);
-  const recordIntentBaselineTrace = useCallback(
-    (event: {
-      action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
-      generation: number;
-      id?: number;
-      kind?: 'manual' | 'owned';
-    }) => {
-      const trace = intentBaselineTraceRef.current;
-      if (trace.length >= 128) trace.shift();
-      trace.push(event);
-    },
-    [],
-  );
+  const intentBaselineTraceRef = useRef<IntentBaselineTraceEvent[]>([]);
+  const recordIntentBaselineTrace = useCallback((event: IntentBaselineTraceEvent) => {
+    const trace = intentBaselineTraceRef.current;
+    if (trace.length >= 128) trace.shift();
+    trace.push(event);
+  }, []);
   const nextIntentBaselineIdRef = useRef<number>(1);
   const baselineVerifiedRef = useRef<boolean>(false);
   const wakeVerificationSeqRef = useRef<number>(0);
@@ -1145,54 +1134,39 @@ export function VaultProvider({
         //   (never falling back to capture_fresh).
         // - A dispatch WITHOUT intentId consumes only `manual` entries of its generation (oldest-first) and NEVER
         //   consumes, shifts, overwrites, or deletes an `owned` entry.
-        let intentBaselinePromise: Promise<LockEpochMarker | null> | undefined;
         const list = intentBaselinesRef.current.get(opGeneration);
-        if (intentId !== undefined) {
-          if (list && list.length > 0) {
-            const idx = list.findIndex((item) => item.id === intentId && item.kind === 'owned');
-            if (idx !== -1) {
-              const entry = list.splice(idx, 1)[0];
-              intentBaselinePromise = entry?.promise;
-              recordIntentBaselineTrace({
-                action: 'consume',
-                generation: opGeneration,
-                id: entry?.id,
-                kind: 'owned',
-              });
-            }
-            if (list.length === 0) {
-              intentBaselinesRef.current.delete(opGeneration);
-            }
-          }
-          if (!intentBaselinePromise) {
-            recordIntentBaselineTrace({
-              action: 'missing_owned',
-              generation: opGeneration,
-              id: intentId,
-              kind: 'owned',
-            });
-            await lockIfOwner();
-            throw new CryptoClientError(
-              'STALE_GENERATION',
-              'Missing owned intent-start lockEpoch baseline; failing closed',
-            );
-          }
-        } else if (list && list.length > 0) {
-          const idx = list.findIndex((item) => item.kind === 'manual');
-          if (idx !== -1) {
-            const entry = list.splice(idx, 1)[0];
-            intentBaselinePromise = entry?.promise;
-            recordIntentBaselineTrace({
-              action: 'consume',
-              generation: opGeneration,
-              id: entry?.id,
-              kind: 'manual',
-            });
-          }
-          if (list.length === 0) {
-            intentBaselinesRef.current.delete(opGeneration);
-          }
+        const idx = list
+          ? list.findIndex((item) =>
+              intentId === undefined
+                ? item.kind === 'manual'
+                : item.kind === 'owned' && item.id === intentId,
+            )
+          : -1;
+        const entry = idx !== -1 && list ? list.splice(idx, 1)[0] : undefined;
+        if (list && list.length === 0) {
+          intentBaselinesRef.current.delete(opGeneration);
         }
+        if (entry) {
+          recordIntentBaselineTrace({
+            action: 'consume',
+            generation: opGeneration,
+            id: entry.id,
+            kind: entry.kind,
+          });
+        } else if (intentId !== undefined) {
+          recordIntentBaselineTrace({
+            action: 'missing_owned',
+            generation: opGeneration,
+            id: intentId,
+            kind: 'owned',
+          });
+          await lockIfOwner();
+          throw new CryptoClientError(
+            'STALE_GENERATION',
+            'Missing owned intent-start lockEpoch baseline; failing closed',
+          );
+        }
+        const intentBaselinePromise = entry?.promise;
         if (intentBaselinePromise) {
           const intentBaseline = await intentBaselinePromise;
           if (!intentBaseline || client.getGeneration() !== opGeneration) {
