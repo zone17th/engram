@@ -2507,15 +2507,15 @@ func TestGrantAdapter_VerifyGrantParityWithVerifyReauth(t *testing.T) {
 	}
 }
 
-// doReqErr executes an HTTP request against the harness server without calling t.Fatal inside
-// worker goroutines, returning any transport or body-read error so concurrent callers can always
-// publish a completion value (BR3-3).
-func (h *harness) doReqErr(j cookieJar, method, path, body string, opt reqOptions) (testResponse, string, error) {
+// doReqErr executes an HTTP request with a caller-supplied context against the harness server
+// without calling t.Fatal inside worker goroutines, returning any transport or body-read error
+// so concurrent callers can cancel in-flight requests and always publish completion (BR3-3, BR4-1).
+func (h *harness) doReqErr(ctx context.Context, j cookieJar, method, path, body string, opt reqOptions) (testResponse, string, error) {
 	var rdr io.Reader
 	if body != "" {
 		rdr = bytes.NewBufferString(body)
 	}
-	req, err := http.NewRequest(method, h.srv.URL+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, h.srv.URL+path, rdr)
 	if err != nil {
 		return testResponse{}, "", err
 	}
@@ -2556,7 +2556,7 @@ func (h *harness) doReqErr(j cookieJar, method, path, body string, opt reqOption
 	}, string(b), nil
 }
 
-// TestPasskeyCreate_BoundedSharedPoolNoWaitCycle verifies BR2-1, BR2-3, BR3-1, and BR3-3:
+// TestPasskeyCreate_BoundedSharedPoolNoWaitCycle verifies BR2-1, BR2-3, BR3-1, BR3-3, BR4-1, and BR4-2:
 //  1. Single-connection shared pool (MaxConns=1) shared by compose.NewAuth, compose.Adapters, and compose.NewVault:
 //     Transaction 2 holds the sole pool connection across GetVaultByUserForUpdate -> InsertPasskey ->
 //     EnsureLiveTx -> VerifyGrant -> FinishIdempotencyKey -> COMMIT with zero extra pool acquisitions.
@@ -2570,6 +2570,34 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	ctx := context.Background()
 	va := webauthntest.New()
 	const password = "correct-horse-battery-staple"
+
+	// assertReplayMatches decodes both the initial 201 JSON payload and the stored Postgres jsonb
+	// idempotent replay payload into vault.PasskeyItem and verifies semantic field equality (BR4-2).
+	assertReplayMatches := func(label, origRaw, wantName string, replayResp testResponse, replayRaw string) vault.PasskeyItem {
+		t.Helper()
+		if replayResp.StatusCode != http.StatusCreated {
+			t.Fatalf("%s: expected 201 Created on idempotent replay, got %d (%s)", label, replayResp.StatusCode, replayRaw)
+		}
+		var origItem, replayItem vault.PasskeyItem
+		if err := json.Unmarshal([]byte(origRaw), &origItem); err != nil {
+			t.Fatalf("%s: unmarshal initial PasskeyItem (%s): %v", label, origRaw, err)
+		}
+		if err := json.Unmarshal([]byte(replayRaw), &replayItem); err != nil {
+			t.Fatalf("%s: unmarshal replayed PasskeyItem (%s): %v", label, replayRaw, err)
+		}
+		if origItem.ID == uuid.Nil {
+			t.Fatalf("%s: expected non-nil PasskeyItem.ID in initial response (%s)", label, origRaw)
+		}
+		if origItem.Name != wantName {
+			t.Fatalf("%s: initial PasskeyItem.Name = %q, want %q", label, origItem.Name, wantName)
+		}
+		aaguidEqual := (origItem.AAGUID == nil) == (replayItem.AAGUID == nil) &&
+			(origItem.AAGUID == nil || *origItem.AAGUID == *replayItem.AAGUID)
+		if replayItem.ID != origItem.ID || replayItem.Name != origItem.Name || !aaguidEqual || !replayItem.CreatedAt.Equal(origItem.CreatedAt) {
+			t.Fatalf("%s: replay PasskeyItem = %+v (%s), want %+v (%s)", label, replayItem, replayRaw, origItem, origRaw)
+		}
+		return origItem
+	}
 
 	// --- Subcase 1: MaxConns=1 shared by auth and vault + zero extra pool acquisitions during Transaction 2 ---
 	tracer1 := &tx2ZeroAcquireTracer{}
@@ -2653,6 +2681,7 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		nil,
 	)
 	const idemKey1 = "idem-pk-bounded-pool-1conn-001"
+	grant1 := h1.reauthGrant(jar1, "vault.passkey_register", password)
 
 	// Reset tracer counters immediately before POST /api/v1/vault/passkeys so assertions measure
 	// only the passkey registration request on the MaxConns=1 shared pool.
@@ -2661,7 +2690,6 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	tracer1.sawTx2SessionLck.Store(false)
 	tracer1.nestedAcquires.Store(0)
 
-	grant1 := h1.reauthGrant(jar1, "vault.passkey_register", password)
 	resp1, raw1 := h1.doReq(jar1, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
 		idemKey: idemKey1,
 		grant:   grant1,
@@ -2684,14 +2712,13 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		idemKey: idemKey1,
 		grant:   grant1,
 	})
-	if replay1.StatusCode != http.StatusCreated || string(replayRaw1) != string(raw1) {
-		t.Fatalf("expected identical 201 replay on MaxConns=1 server, got %d (%s)", replay1.StatusCode, replayRaw1)
-	}
+	item1 := assertReplayMatches("MaxConns=1", raw1, "Bounded Pool 1 Conn Key", replay1, replayRaw1)
 	if got := tracer1.tx2Entries.Load(); got != 1 {
 		t.Fatalf("expected idempotent replay not to re-enter Transaction 2, tx2Entries=%d", got)
 	}
 	var pk1, aud1, not1 int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, me1.User.ID).Scan(&pk1); err != nil {
+	var storedID1 uuid.UUID
+	if err := h.pool.QueryRow(ctx, `SELECT count(*), coalesce(max(id::text), '00000000-0000-0000-0000-000000000000')::uuid FROM vault_passkey WHERE user_id = $1`, me1.User.ID).Scan(&pk1, &storedID1); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2 AND result = 'success'`, me1.User.ID, vault.EventPasskeyRegister).Scan(&aud1); err != nil {
@@ -2700,14 +2727,15 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, me1.User.ID).Scan(&not1); err != nil {
 		t.Fatal(err)
 	}
-	if pk1 != 1 || aud1 != 1 || not1 != 1 {
-		t.Fatalf("expected 1/1/1 durable effects for user 1, got passkeys=%d audits=%d notices=%d", pk1, aud1, not1)
+	if pk1 != 1 || storedID1 != item1.ID || aud1 != 1 || not1 != 1 {
+		t.Fatalf("expected 1/1/1 durable effects for user 1 with passkey id %s, got passkeys=%d (id=%s) audits=%d notices=%d", item1.ID, pk1, storedID1, aud1, not1)
 	}
 
 	// --- Subcase 2: MaxConns=2 shared by auth and vault, 2 concurrent users held at Transaction 2 final recheck ---
 	// Deterministic barrier inside Transaction 2 right after EnsureLiveTx + VerifyGrant (at FinishIdempotencyKey):
 	// both concurrent requests must hold all 2 connections of pool2 simultaneously before either commits.
 	var barrierArmed atomic.Bool
+	var inWorkerPhase atomic.Bool
 	var tx2Entered2 atomic.Int32
 	var atFinalCheck atomic.Int32
 	bothAtFinalCheck := make(chan struct{})
@@ -2717,13 +2745,17 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	}
 	t.Cleanup(releaseBarrier)
 
+	const workerJoinTimeout = 5 * time.Second
+	workerCtx, cancelWorkers := context.WithTimeout(ctx, workerJoinTimeout)
+	t.Cleanup(cancelWorkers)
+
 	barrierTracer := &lateBarrierTracer{
 		onEnterTx2: func() {
 			if barrierArmed.Load() {
 				tx2Entered2.Add(1)
 			}
 		},
-		onFinishIdempotency: func(ctx context.Context) {
+		onFinishIdempotency: func(qCtx context.Context) {
 			if !barrierArmed.Load() {
 				return
 			}
@@ -2732,7 +2764,8 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 			}
 			select {
 			case <-bothAtFinalCheck:
-			case <-ctx.Done():
+			case <-workerCtx.Done():
+			case <-qCtx.Done():
 			}
 		},
 	}
@@ -2766,13 +2799,28 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	}
 	vaultAPI2.SetPasskeyCreateTimeout(500 * time.Millisecond)
 	authn2, csrfv2, reauth2 := compose.Adapters(authSvc2)
-	srv2 := httptest.NewServer(httpx.NewRouter(httpx.Deps{
+	router2 := httpx.NewRouter(httpx.Deps{
 		Config:        cfg2,
 		Logger:        slog.Default(),
 		Authenticator: authn2,
 		CSRF:          csrfv2,
 		Reauth:        reauth2,
 		MountAPI:      compose.MountAll(authhttp.Mount(authAPI2), vaulthttp.Mount(vaultAPI2)),
+	})
+	// Bind active worker requests on srv2 to workerCtx so cancelling workerCtx also cancels
+	// pre-handler server operations (such as RequireSession pool acquisition before body read)
+	// and prevents srv2.Close from hanging on a stalled worker handler (BR4-1).
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inWorkerPhase.Load() {
+			reqCtx, cancelReq := context.WithCancel(r.Context())
+			stop := context.AfterFunc(workerCtx, cancelReq)
+			defer func() {
+				stop()
+				cancelReq()
+			}()
+			r = r.WithContext(reqCtx)
+		}
+		router2.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv2.Close)
 
@@ -2848,48 +2896,56 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		raw    string
 		err    error
 	}
-	done2A := make(chan regOutcome, 1)
-	done2B := make(chan regOutcome, 1)
-
-	const workerJoinTimeout = 5 * time.Second
-	var out2A, out2B regOutcome
-	var waitErr2A, waitErr2B error
-	var joinOnce sync.Once
-	joinWorkers := func() {
-		joinOnce.Do(func() {
-			joinCtx, cancel := context.WithTimeout(context.Background(), workerJoinTimeout)
-			defer cancel()
-			select {
-			case out2A = <-done2A:
-			case <-joinCtx.Done():
-				waitErr2A = fmt.Errorf("timed out waiting for worker 2A after %s: %w", workerJoinTimeout, joinCtx.Err())
-				releaseBarrier()
-			}
-			select {
-			case out2B = <-done2B:
-			case <-joinCtx.Done():
-				waitErr2B = fmt.Errorf("timed out waiting for worker 2B after %s: %w", workerJoinTimeout, joinCtx.Err())
-				releaseBarrier()
-			}
-		})
+	type workerSlot struct {
+		done chan struct{}
+		out  regOutcome
 	}
-	// Register joinWorkers after pool2 and srv2 so LIFO cleanup runs:
-	// releaseBarrier + joinWorkers -> srv2.Close -> pool2.Close.
+	w2A := &workerSlot{done: make(chan struct{})}
+	w2B := &workerSlot{done: make(chan struct{})}
+
+	awaitWorker := func(label string, w *workerSlot) error {
+		waitCtx, cancel := context.WithTimeout(context.Background(), workerJoinTimeout)
+		defer cancel()
+		select {
+		case <-w.done:
+			return nil
+		case <-waitCtx.Done():
+			releaseBarrier()
+			cancelWorkers()
+			postCancelCtx, postCancel := context.WithTimeout(context.Background(), workerJoinTimeout)
+			defer postCancel()
+			select {
+			case <-w.done:
+				return fmt.Errorf("timed out waiting for worker %s after %s (joined after cancel): %w", label, workerJoinTimeout, waitCtx.Err())
+			case <-postCancelCtx.Done():
+				return fmt.Errorf("timed out waiting for worker %s after %s (unjoined after cancel): %w", label, workerJoinTimeout, waitCtx.Err())
+			}
+		}
+	}
+	joinWorkers := func() (error, error) {
+		errA := awaitWorker("2A", w2A)
+		errB := awaitWorker("2B", w2B)
+		return errA, errB
+	}
+	// Register cleanup after pool2 and srv2 so LIFO order runs:
+	// releaseBarrier -> cancelWorkers -> unconditional bounded joinWorkers -> srv2.Close -> pool2.Close.
 	t.Cleanup(func() {
 		releaseBarrier()
-		joinWorkers()
+		cancelWorkers()
+		_, _ = joinWorkers()
 	})
 
-	runWorker := func(ch chan<- regOutcome, jar cookieJar, reqBody, idemKey, grant string) {
+	runWorker := func(w *workerSlot, jar cookieJar, reqBody, idemKey, grant string) {
 		var out regOutcome
 		defer func() {
 			if r := recover(); r != nil {
 				out.err = fmt.Errorf("worker panic: %v", r)
 				releaseBarrier()
 			}
-			ch <- out
+			w.out = out
+			close(w.done)
 		}()
-		resp, raw, reqErr := h2.doReqErr(jar, http.MethodPost, "/api/v1/vault/passkeys", reqBody, reqOptions{
+		resp, raw, reqErr := h2.doReqErr(workerCtx, jar, http.MethodPost, "/api/v1/vault/passkeys", reqBody, reqOptions{
 			idemKey: idemKey,
 			grant:   grant,
 		})
@@ -2899,16 +2955,19 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		}
 	}
 
-	go runWorker(done2A, jar2A, body2A, "idem-pk-bounded-pool-2a-001", grant2A)
-	go runWorker(done2B, jar2B, body2B, "idem-pk-bounded-pool-2b-001", grant2B)
+	inWorkerPhase.Store(true)
+	go runWorker(w2A, jar2A, body2A, "idem-pk-bounded-pool-2a-001", grant2A)
+	go runWorker(w2B, jar2B, body2B, "idem-pk-bounded-pool-2b-001", grant2B)
 
-	joinWorkers()
+	waitErr2A, waitErr2B := joinWorkers()
+	inWorkerPhase.Store(false)
 	if waitErr2A != nil {
 		t.Fatal(waitErr2A)
 	}
 	if waitErr2B != nil {
 		t.Fatal(waitErr2B)
 	}
+	out2A, out2B := w2A.out, w2B.out
 	if out2A.err != nil {
 		t.Fatalf("concurrent user 2A request error: %v", out2A.err)
 	}
@@ -2933,23 +2992,28 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		idemKey: "idem-pk-bounded-pool-2a-001",
 		grant:   grant2A,
 	})
-	if replay2A.StatusCode != http.StatusCreated || replayRaw2A != out2A.raw {
-		t.Fatalf("expected identical 201 replay for user 2A on MaxConns=2 server, got %d (%s)", replay2A.StatusCode, replayRaw2A)
-	}
+	item2A := assertReplayMatches("MaxConns=2 user 2A", out2A.raw, "Bounded Pool 2A Key", replay2A, replayRaw2A)
+
 	replay2B, replayRaw2B := h2.doReq(jar2B, http.MethodPost, "/api/v1/vault/passkeys", body2B, reqOptions{
 		idemKey: "idem-pk-bounded-pool-2b-001",
 		grant:   grant2B,
 	})
-	if replay2B.StatusCode != http.StatusCreated || replayRaw2B != out2B.raw {
-		t.Fatalf("expected identical 201 replay for user 2B on MaxConns=2 server, got %d (%s)", replay2B.StatusCode, replayRaw2B)
+	item2B := assertReplayMatches("MaxConns=2 user 2B", out2B.raw, "Bounded Pool 2B Key", replay2B, replayRaw2B)
+	if item2A.ID == item2B.ID {
+		t.Fatalf("expected distinct passkey IDs for users 2A and 2B, both got %s", item2A.ID)
 	}
 	if got := tx2Entered2.Load(); got != 2 {
 		t.Fatalf("expected idempotent replays not to re-enter Transaction 2 on MaxConns=2 pool, tx2Entered2=%d", got)
 	}
 
+	wantPasskeyByUser := map[uuid.UUID]uuid.UUID{
+		me2A.User.ID: item2A.ID,
+		me2B.User.ID: item2B.ID,
+	}
 	for _, u := range []uuid.UUID{me2A.User.ID, me2B.User.ID} {
 		var pk, aud, not int
-		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, u).Scan(&pk); err != nil {
+		var storedID uuid.UUID
+		if err := h.pool.QueryRow(ctx, `SELECT count(*), coalesce(max(id::text), '00000000-0000-0000-0000-000000000000')::uuid FROM vault_passkey WHERE user_id = $1`, u).Scan(&pk, &storedID); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2 AND result = 'success'`, u, vault.EventPasskeyRegister).Scan(&aud); err != nil {
@@ -2958,8 +3022,8 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, u).Scan(&not); err != nil {
 			t.Fatal(err)
 		}
-		if pk != 1 || aud != 1 || not != 1 {
-			t.Fatalf("user %s durable counts: passkeys=%d audits=%d notices=%d, want 1/1/1", u, pk, aud, not)
+		if pk != 1 || storedID != wantPasskeyByUser[u] || aud != 1 || not != 1 {
+			t.Fatalf("user %s durable counts: passkeys=%d (id=%s, want %s) audits=%d notices=%d, want 1/1/1", u, pk, storedID, wantPasskeyByUser[u], aud, not)
 		}
 	}
 }
