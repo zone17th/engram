@@ -42,8 +42,9 @@ Why these choices:
   config asked for latin + vietnamese, and latin-ext costs little. All 90 glyphs in U+1EA0–1EF9 are present, as
   are ă ơ ư Đ đ ₫.
 - Sometype Mono stays latin-only, as before. Upstream has no Vietnamese glyphs (2 of 90 in U+1EA0–1EF9), so the
-  browser keeps falling back to `ui-monospace` for those characters, as it did before. `fonts.ts` declares
-  weight `400 500`, matching the old `weight: ['400', '500']`.
+  browser keeps falling back to `ui-monospace` for those characters, as it did before (`adjustFontFallback: false`
+  on `mono` in `fonts.ts` prevents `next/font/local` from inserting a proportional Arial fallback ahead of
+  `ui-monospace` in `--font-mono`). `fonts.ts` declares weight `400 500`, matching the old `weight: ['400', '500']`.
 
 ## Rebuild
 
