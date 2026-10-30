@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Omnibox } from '@/components/app-shell/omnibox';
 import { VaultPill } from '@/components/ui/vault-pill';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
@@ -19,6 +20,7 @@ import {
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
+import { DEMO_ITEMS } from '@/lib/demo-fixtures';
 import type { Me } from '@/lib/api/auth';
 import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
@@ -213,6 +215,15 @@ function findLeaks(root: HTMLElement, fragments: readonly string[]): string[] {
   return leaks;
 }
 
+/** Keys of every `['vault','body',*]` query that currently holds data. Empty shells (`state.data === undefined`) do not count. */
+function bodyDataInCache(qc: QueryClient): unknown[] {
+  return qc
+    .getQueryCache()
+    .findAll({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })
+    .filter((query) => query.state.data !== undefined)
+    .map((query) => query.queryKey);
+}
+
 describe('P03-T21 Locked state U5', () => {
   const shims: Array<{ close: () => void }> = [];
 
@@ -355,14 +366,14 @@ describe('P03-T21 Locked state U5', () => {
 
   it('Task 21 bullets 1+3: unlock -> bodies show; lock -> bodies leave the DOM and the query cache; unlock again -> they show again', async () => {
     const h = await mountLockedWithFixture(renderListUi);
-    const cacheKeys = () => h.qc.getQueryCache().findAll({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX });
+    // Mounted-but-disabled observers keep empty Query shells under the namespace; the contract is "no decrypted data".
 
     // Locked from the first frame: metadata visible, bodies masked, nothing decrypted anywhere.
     expect(h.vault().state).toBe('locked');
     expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
     expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length);
     expect(h.opened).toEqual([]);
-    expect(cacheKeys()).toHaveLength(0);
+    expect(bodyDataInCache(h.qc)).toEqual([]);
 
     // 1st unlock: every body appears, comes from the Worker, and lives in the vault-namespaced cache.
     await h.unlock();
@@ -372,6 +383,8 @@ describe('P03-T21 Locked state U5', () => {
     }
     expect(screen.queryAllByTestId('entry-body-locked')).toHaveLength(0);
     expect(h.opened.slice().sort()).toEqual(FIXTURE_ITEMS.map((item) => item.id).sort());
+    // Unlocked: the helper really sees every decrypted body, so the empty results while locked are not vacuous.
+    expect(bodyDataInCache(h.qc)).toHaveLength(FIXTURE_ITEMS.length);
     expect(findLeaks(document.body, SECRET_FRAGMENTS).filter((leak) => leak.startsWith('text') || leak.startsWith('markup')).length).toBeGreaterThan(0);
     // Even unlocked, the plaintext is only ever a text node: no attribute and no dataset carries it.
     expect(findLeaks(document.body, SECRET_FRAGMENTS).filter((leak) => !leak.startsWith('text') && !leak.startsWith('markup'))).toEqual([]);
@@ -384,13 +397,14 @@ describe('P03-T21 Locked state U5', () => {
     for (const item of FIXTURE_ITEMS) {
       expect(h.qc.getQueryData(vaultBodyQueryKey(item.id))).toBeUndefined();
     }
+    expect(bodyDataInCache(h.qc)).toEqual([]);
     // Let the lock's durable lockEpoch write settle before the next unlock captures its baseline.
     await act(async () => {
       await lockPromise;
     });
     await waitFor(() => expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length));
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
-    expect(cacheKeys()).toHaveLength(0);
+    expect(bodyDataInCache(h.qc)).toEqual([]);
     expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
 
     // 2nd unlock: bodies are decrypted again (not served from a stale cache entry).
@@ -489,10 +503,67 @@ describe('P03-T21 Locked state U5', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
     expect(h.qc.getQueryData(vaultBodyQueryKey(FIXTURE_ITEMS[0].id))).toBeUndefined();
-    expect(h.qc.getQueryCache().findAll({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })).toHaveLength(0);
+    expect(bodyDataInCache(h.qc)).toEqual([]);
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
     expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
   }, 30_000);
+
+  describe('FE1-2: the Omnibox never shows or matches body previews unless the vault is unlocked', () => {
+    const D1 = DEMO_ITEMS[0]; // title "Cà phê sữa đá tỉ lệ 1:2"; its preview contains "phin" and nowhere else.
+    const DEMO_BODIES = DEMO_ITEMS.map((item) => item.preview);
+    const search = (value: string) => fireEvent.change(screen.getByRole('combobox'), { target: { value } });
+    const itemOptions = () => document.querySelectorAll('[data-search-option]');
+
+    it('locked: names and tags still match and list, no preview text anywhere, and a body-only query finds nothing', async () => {
+      await mountLockedWithFixture(() => <Omnibox />);
+
+      search('ca phe'); // name match
+      expect(await screen.findByRole('option', { name: new RegExp(D1.title) })).toHaveAttribute('href', `/app/items/${D1.id}`);
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+
+      search('cong-thuc'); // tag match: tag row plus the item carrying that tag
+      expect(screen.getByRole('option', { name: /công-thức/ })).toBeInTheDocument();
+      expect(itemOptions().length).toBeGreaterThan(0);
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+
+      search('phin'); // appears only in the d1 body
+      expect(itemOptions()).toHaveLength(0);
+      expect(screen.getByText('Không có mục mẫu phù hợp.')).toBeInTheDocument();
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+    }, 30_000);
+
+    it('unlocked: the same suggestions show the body preview and a body-only query matches', async () => {
+      const h = await mountLockedWithFixture(() => <Omnibox />);
+      await h.unlock();
+
+      search('ca phe');
+      expect(await screen.findByText(D1.preview)).toBeInTheDocument();
+
+      search('phin');
+      expect(itemOptions()).toHaveLength(1);
+      expect(screen.getByText(D1.preview)).toBeInTheDocument();
+    }, 30_000);
+
+    it('suggestions that are already open drop their previews the moment the vault locks, and stop matching bodies', async () => {
+      const h = await mountLockedWithFixture(() => <Omnibox />);
+      await h.unlock();
+
+      search('phin');
+      expect(await screen.findByText(D1.preview)).toBeInTheDocument();
+
+      await act(async () => {
+        await h.vault().lockNow();
+      });
+      await waitFor(() => expect(h.vault().state).toBe('locked'));
+      expect(screen.queryByText(D1.preview)).toBeNull();
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+      expect(itemOptions()).toHaveLength(0); // "phin" was a body-only match
+
+      search('ca phe'); // the name match survives, without its body
+      expect(screen.getByRole('option', { name: new RegExp(D1.title) })).toBeInTheDocument();
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+    }, 30_000);
+  });
 
   describe('route guard while locked (advisor-dec-048: U5 over plan 15A for /app and /app/items/** only)', () => {
     function renderGuardedList({ loadFixtureBody }: Pick<Harness, 'loadFixtureBody'>) {
