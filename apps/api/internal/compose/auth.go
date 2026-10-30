@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +18,7 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/notification"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
 )
 
 type Auth struct {
@@ -39,10 +39,7 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 		clk = clock.System{}
 	}
 	if mail == nil {
-		dir := cfg.MailSinkDir
-		if dir == "" && (cfg.Env == "development" || cfg.Env == "") {
-			dir = filepath.Join(".data", "mail-sink")
-		}
+		dir := cfg.EffectiveMailSinkDir()
 		if dir == "" {
 			return nil, nil, nil, fmt.Errorf("thiếu mail adapter")
 		}
@@ -66,7 +63,7 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 	if notes == nil {
 		return nil, nil, nil, fmt.Errorf("notification store nil")
 	}
-	svc, err := auth.NewService(cfg, pool, sessions, csrf, tokens, grants, lockout, clk, aud, notes, auth.ConfigProbe(cfg), mail, nil)
+	svc, err := auth.NewService(cfg, pool, sessions, csrf, tokens, grants, lockout, clk, aud, notes, auth.ConfigProbe(cfg), mail, vault.NewVaultStatus(pool))
 	if err != nil {
 		return nil, nil, nil, err
 	}

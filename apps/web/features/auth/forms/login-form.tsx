@@ -13,6 +13,7 @@ import { oauthLoginStartUrl } from '@/lib/api/auth';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
+import { useHydrated } from '@/lib/use-hydrated';
 
 function validateEmail(email: string): string | undefined {
   if (!email.trim()) return 'required';
@@ -57,6 +58,7 @@ export function LoginForm() {
   const [retryUntil, setRetryUntil] = useState<number | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const retrySeconds = useRetryCountdown(retryUntil);
+  const hydrated = useHydrated();
 
   const providers = config?.oauth_providers ?? [];
   const captchaSiteKey = config?.captcha_site_key ?? null;
@@ -196,7 +198,13 @@ export function LoginForm() {
       <h1 className="t-title-lg mb-2">{t('login.title')}</h1>
       <p className="t-body-lg mb-7 text-muted">{t('login.subtitle')}</p>
 
-      <form ref={formRef} onSubmit={onSubmit} className="card mb-4 p-6" noValidate>
+      <form
+        ref={formRef}
+        onSubmit={onSubmit}
+        className="card mb-4 p-6"
+        noValidate
+        data-hydrated={hydrated ? 'true' : 'false'}
+      >
         {providers.includes('google') && (
           <a
             href={oauthLoginStartUrl('google')}
@@ -229,7 +237,7 @@ export function LoginForm() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           error={fieldErrors.email}
-          disabled={submitting}
+          disabled={submitting || !hydrated}
           className="mb-4"
         />
         <Field
@@ -240,7 +248,7 @@ export function LoginForm() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           error={fieldErrors.password}
-          disabled={submitting}
+          disabled={submitting || !hydrated}
           wrapperClassName="mb-5"
         />
 
@@ -260,7 +268,7 @@ export function LoginForm() {
         <Button
           type="submit"
           className="w-full !justify-center"
-          disabled={submitting || retrySeconds > 0}
+          disabled={submitting || !hydrated || retrySeconds > 0}
           aria-busy={submitting}
         >
           {submitting ? t('login.submittingButton') : t('login.submit')}

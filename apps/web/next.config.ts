@@ -25,6 +25,11 @@ const nextConfig: NextConfig = {
     // chạy trong Web Worker ở P03; không thêm origin ngoài nào khác vì font đã
     // self-host qua next/font và CSS đã build sẵn.
     //
+    // `worker-src 'self' blob:` (advisor-dec-014): Next.js 15.5.25 Turbopack
+    // (cả dev lẫn production build) biên dịch `new Worker(new URL('./worker.ts', import.meta.url))`
+    // thành một blob: URL bootstrap gọi `importScripts(...)` tới các chunk same-origin
+    // dưới `/_next/static/chunks/`. Chỉ mở `blob:` ở `worker-src` (không thêm vào `script-src`).
+    //
     // EXCEPTION P01 — 'unsafe-inline' ở script-src và style-src:
     // Next nhúng script inline (`self.__next_f.push(...)` chở RSC payload) vào
     // chính HTML tĩnh. Cách đúng là nonce sinh trong middleware theo từng
@@ -42,6 +47,7 @@ const nextConfig: NextConfig = {
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
+      "worker-src 'self' blob:",
     ].join('; ');
 
     const turnstileCsp = [
@@ -56,6 +62,7 @@ const nextConfig: NextConfig = {
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
+      "worker-src 'self' blob:",
     ].join('; ');
 
     return [

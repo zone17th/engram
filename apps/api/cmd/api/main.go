@@ -24,6 +24,7 @@ import (
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
 )
 
 func main() {
@@ -108,6 +109,10 @@ func run() error {
 		return fmt.Errorf("compose auth: %w", err)
 	}
 	authn, csrfv, reauth := compose.Adapters(svc)
+	_, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, nil, nil, metrics, nil, logger)
+	if err != nil {
+		return fmt.Errorf("compose vault: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -120,7 +125,7 @@ func run() error {
 			Authenticator:    authn,
 			CSRF:             csrfv,
 			Reauth:           reauth,
-			MountAPI:         authhttp.Mount(api),
+			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI)),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

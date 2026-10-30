@@ -9,7 +9,10 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "matrix:list": "node scripts/matrix-list.mjs",
+    "verify:crypto-vectors": "vitest run lib/crypto/vectors.test.ts lib/crypto/recovery.test.ts",
+    "gen:crypto-vectors": "node -e \"process.env.GEN_CRYPTO_VECTORS='1';process.exit(require('node:child_process').spawnSync(process.execPath,['./node_modules/vitest/vitest.mjs','run','lib/crypto/vectors.test.ts','lib/crypto/recovery.test.ts'],{stdio:'inherit'}).status??1)\""
   },
   "dependencies": {
     "@engram/shared-types": "workspace:*",
@@ -17,7 +20,12 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@tanstack/react-query": "^5.102.8",
+    "@zxcvbn-ts/core": "4.2.0",
+    "@zxcvbn-ts/language-common": "4.1.3",
+    "@zxcvbn-ts/language-en": "4.1.1",
+    "canonicalize": "5.1.0",
     "clsx": "^2.1.1",
+    "libsodium-wrappers-sumo": "0.8.4",
     "next": "15.5.25",
     "next-intl": "^4.14.5",
     "react": "19.1.0",
