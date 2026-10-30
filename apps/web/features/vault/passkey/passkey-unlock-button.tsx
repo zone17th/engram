@@ -25,6 +25,7 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
   const mountedRef = useRef(true);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const focusAfterRetryRef = useRef(false);
+  const retryRetainedFocusRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -33,21 +34,29 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
     };
   }, []);
 
-  // PKW-R3-4: after a user-initiated Retry settles, restore focus to the Retry button on repeated failure
-  // or hand focus to the newly discovered Unlock with passkey button on success.
+  // PKW-R3-4, PKW-R4-1: after a user-initiated Retry settles, restore focus to Retry on repeated failure
+  // or hand focus to Unlock with passkey on success ONLY when focus stayed on the Retry control (or fell back
+  // to document.body during the DOM swap), never stealing focus the user moved to another live control.
   useEffect(() => {
     if (!focusAfterRetryRef.current || metaLoading) return;
+    focusAfterRetryRef.current = false;
+    const retryEl = rootRef.current?.querySelector<HTMLButtonElement>('[data-testid="unlock-passkey-retry-button"]');
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    const canHandOffFocus =
+      retryRetainedFocusRef.current &&
+      (activeEl === null ||
+        activeEl === document.body ||
+        activeEl === document.documentElement ||
+        (retryEl !== null && activeEl === retryEl));
+    retryRetainedFocusRef.current = false;
+    if (!canHandOffFocus) return;
     if (available) {
-      focusAfterRetryRef.current = false;
       rootRef.current?.querySelector<HTMLButtonElement>('[data-testid="unlock-passkey-button"]')?.focus();
       return;
     }
     if (metaLoadFailed) {
-      focusAfterRetryRef.current = false;
-      rootRef.current?.querySelector<HTMLButtonElement>('[data-testid="unlock-passkey-retry-button"]')?.focus();
-      return;
+      retryEl?.focus();
     }
-    focusAfterRetryRef.current = false;
   }, [available, metaLoadFailed, metaLoading]);
 
   if (!available) {
@@ -67,10 +76,22 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
             variant="tertiary"
             size="sm"
             className="ml-auto"
-            onClick={() => {
+            onClick={(e) => {
               if (metaLoading || inFlight) return;
+              const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
               focusAfterRetryRef.current = true;
+              retryRetainedFocusRef.current =
+                activeEl === e.currentTarget ||
+                activeEl === null ||
+                activeEl === document.body ||
+                activeEl === document.documentElement;
               void retryLoadMeta();
+            }}
+            onBlur={() => {
+              const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+              if (activeEl && activeEl !== document.body && activeEl !== document.documentElement) {
+                retryRetainedFocusRef.current = false;
+              }
             }}
             aria-disabled={metaLoading || inFlight || undefined}
             aria-busy={metaLoading}

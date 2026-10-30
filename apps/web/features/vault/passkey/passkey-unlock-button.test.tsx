@@ -180,6 +180,69 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     expect(screen.queryByTestId('unlock-passkey-load-error')).toBeNull();
   });
 
+  it('PKW-R4-1: Retry completion does not steal focus when the user moved focus to the passphrase field during a pending retry (failure and success)', async () => {
+    mocks.vault.vaultMeta = null;
+    mocks.vault.reloadVaultMeta.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const view = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PasskeyUnlockButton />
+        <input data-testid="unlock-passphrase-input" type="password" defaultValue="" />
+      </NextIntlClientProvider>,
+    );
+    const retryBtn = await screen.findByTestId('unlock-passkey-retry-button');
+    const passphraseInput = screen.getByTestId('unlock-passphrase-input') as HTMLInputElement;
+
+    // 1. Deferred failure after the user moves focus from Retry to the passphrase field: passphrase keeps focus.
+    retryBtn.focus();
+    expect(document.activeElement).toBe(retryBtn);
+    const failedRetry = Promise.withResolvers<VaultState>();
+    mocks.vault.reloadVaultMeta.mockReturnValueOnce(failedRetry.promise);
+    fireEvent.click(retryBtn);
+    await waitFor(() => expect(retryBtn).toHaveAttribute('aria-busy', 'true'));
+
+    passphraseInput.focus();
+    expect(document.activeElement).toBe(passphraseInput);
+    fireEvent.change(passphraseInput, { target: { value: 'partial-' } });
+
+    await act(async () => {
+      failedRetry.reject(new TypeError('Still offline'));
+      await failedRetry.promise.catch(() => undefined);
+    });
+    expect(retryBtn).toHaveAttribute('aria-busy', 'false');
+    expect(document.activeElement).toBe(passphraseInput);
+    fireEvent.change(passphraseInput, { target: { value: 'partial-passphrase' } });
+    expect(passphraseInput.value).toBe('partial-passphrase');
+
+    // 2. Deferred success after the user moves focus from Retry to the passphrase field: Unlock button renders without stealing focus.
+    retryBtn.focus();
+    expect(document.activeElement).toBe(retryBtn);
+    const succeededRetry = Promise.withResolvers<VaultState>();
+    mocks.vault.reloadVaultMeta.mockReturnValueOnce(succeededRetry.promise);
+    fireEvent.click(retryBtn);
+    await waitFor(() => expect(retryBtn).toHaveAttribute('aria-busy', 'true'));
+
+    passphraseInput.focus();
+    expect(document.activeElement).toBe(passphraseInput);
+
+    await act(async () => {
+      setPasskeys(1);
+      succeededRetry.resolve(mocks.vault.vaultMeta as unknown as VaultState);
+      await succeededRetry.promise;
+    });
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PasskeyUnlockButton />
+        <input data-testid="unlock-passphrase-input" type="password" defaultValue="" />
+      </NextIntlClientProvider>,
+    );
+    const unlockBtn = await screen.findByTestId('unlock-passkey-button');
+    expect(unlockBtn).toBeEnabled();
+    expect(document.activeElement).toBe(passphraseInput);
+    fireEvent.change(passphraseInput, { target: { value: 'partial-passphrase-complete' } });
+    expect(passphraseInput.value).toBe('partial-passphrase-complete');
+  });
+
   it('does not reload the vault metadata when the passkey list is already known', async () => {
     setPasskeys(1);
     renderButton();
