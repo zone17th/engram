@@ -1337,29 +1337,34 @@ export function VaultProvider({
   );
 
   const silentUnlock = useCallback(async (): Promise<SilentUnlockResult> => {
-    const client = getClient();
-    // opGeneration is captured BEFORE the first await (ADR 0002 §10.2).
-    const opGeneration = client.captureGeneration();
     const userId = currentUserIdRef.current;
     if (!userId) return { status: 'skipped', reason: 'no_user' };
     if (workerStateRef.current !== 'locked') return { status: 'skipped', reason: 'not_locked' };
     if (inFlightStateOpCountRef.current > 0) return { status: 'skipped', reason: 'busy' };
+    // Register durable lockEpoch baseline at silent intent start BEFORE device snapshot and GET /vault (R1-1 / R1-20, BE2-1, ADR 0003 §8.4).
+    const { opGeneration, client } = beginOp();
     const sessionEpoch = vaultMetaSessionEpochRef.current;
-    const result = await runSilentDeviceUnlock({
-      userId,
-      opGeneration,
-      env: effectiveDeviceStoreEnv,
-      isCurrent: () =>
-        client.captureGeneration() === opGeneration &&
-        vaultMetaSessionEpochRef.current === sessionEpoch &&
-        currentUserIdRef.current === userId,
-      loadVault: () => loadVaultMeta(),
-      unlock: (params) => unlockDevKeyOp(params),
-    });
-    // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.
-    if (result.status === 'fallback') setLastErrorCode(null);
-    return result;
-  }, [effectiveDeviceStoreEnv, getClient, loadVaultMeta, unlockDevKeyOp]);
+    try {
+      const result = await runSilentDeviceUnlock({
+        userId,
+        opGeneration,
+        env: effectiveDeviceStoreEnv,
+        isCurrent: () =>
+          client.captureGeneration() === opGeneration &&
+          vaultMetaSessionEpochRef.current === sessionEpoch &&
+          currentUserIdRef.current === userId,
+        loadVault: () => loadVaultMeta(),
+        unlock: (params) => unlockDevKeyOp(params),
+      });
+      // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.
+      if (result.status === 'fallback' || result.status === 'skipped') {
+        setLastErrorCode(null);
+      }
+      return result;
+    } finally {
+      intentBaselinesRef.current.delete(opGeneration);
+    }
+  }, [beginOp, effectiveDeviceStoreEnv, loadVaultMeta, unlockDevKeyOp]);
 
   const silentAttemptUserIdRef = useRef<string | null>(null);
   const silentUnlockUserId = me?.user.id ?? null;

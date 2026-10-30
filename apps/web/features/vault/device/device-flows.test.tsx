@@ -9,7 +9,7 @@ import {
   setDefaultDeviceStoreEnvironmentForTests,
   setKnownDeviceSessionUserId,
 } from '@/features/vault/device-store';
-import { DEVKEY_STORE_NAME } from '@/features/vault/lock-epoch';
+import { DEVKEY_STORE_NAME, recordLockEpochEvent } from '@/features/vault/lock-epoch';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
@@ -336,6 +336,71 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     });
     expect(stateText()).toBe('locked');
     expect(mocks.fetchVault).not.toHaveBeenCalled();
+  });
+
+  it('R1-1 / R1-20: silent unlock registers durable lockEpoch baseline at intent start BEFORE snapshot/GET; sibling durable lock with suppressed notification keeps the vault locked (and control without the lock unlocks)', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // 1. Held GET + sibling durable lock + suppressed notification (QuietBroadcastChannel drops all broadcasts) -> stays locked.
+    let holdGet = true;
+    let releaseGet: (() => void) | null = null;
+    mocks.fetchVault.mockImplementation(async () => {
+      if (holdGet) {
+        await new Promise<void>((resolve) => {
+          releaseGet = resolve;
+        });
+      }
+      if (serverKeyId === null) throw vaultAbsentError();
+      return vaultState(serverKeyId);
+    });
+
+    const tab = renderTab({ silentUnlockOnLoad: false });
+    let silentPromise!: Promise<unknown>;
+    act(() => {
+      silentPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseGet).not.toBeNull());
+
+    // Sibling tab commits a durable lockEpoch increment while GET /vault is held (BroadcastChannel is suppressed).
+    await act(async () => {
+      await recordLockEpochEvent(tab.vault().tabKnownLockEpoch, {
+        idbFactory: idb.createFactory(),
+        locksManager: locks.createLockManager(),
+      });
+    });
+
+    let silentResult: unknown;
+    await act(async () => {
+      holdGet = false;
+      releaseGet?.();
+      silentResult = await silentPromise;
+    });
+    expect(silentResult).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(stateText()).toBe('locked');
+    expect(tab.vault().workerState).toBe('locked');
+    expect(tab.vault().lastErrorCode).toBeNull();
+
+    // 2. Control without the sibling lock: held GET released without a lockEpoch change unlocks cleanly.
+    holdGet = true;
+    releaseGet = null;
+    let controlPromise!: Promise<unknown>;
+    act(() => {
+      controlPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseGet).not.toBeNull());
+    let controlResult: unknown;
+    await act(async () => {
+      holdGet = false;
+      releaseGet?.();
+      controlResult = await controlPromise;
+    });
+    expect(controlResult).toEqual({ status: 'unlocked' });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
   });
 
   it('reset elsewhere then reload here: the 404 purges the DevKey (user-scoped, unnamed), no silent unlock', async () => {
