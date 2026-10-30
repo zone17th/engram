@@ -271,6 +271,12 @@ function makeOnboardingStep3WorkerFactory(): () => CryptoWorkerPort {
   };
 }
 
+// Waits that follow a crypto step (KDF / vault creation in the worker, WebCrypto + IndexedDB for Remember,
+// passkey wrap) get an explicit generous timeout, like the 16A suite: Testing Library's default 1000 ms is
+// not enough on a cold CI worker (CI-41035830732 flake).
+const CRYPTO_WAIT = { timeout: 15_000 };
+const CRYPTO_TEST_TIMEOUT = 30_000;
+
 describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
   let idb: FakeDeviceIdb;
   let locks: FakeWebLocks;
@@ -409,7 +415,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     );
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
-    });
+    }, CRYPTO_WAIT);
     fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
       target: { value: STRONG_PASSPHRASE },
     });
@@ -421,7 +427,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
-    });
+    }, CRYPTO_WAIT);
 
     fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
     await act(async () => {
@@ -430,7 +436,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
-    });
+    }, CRYPTO_WAIT);
 
     return {
       credentialsCreate,
@@ -459,9 +465,9 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
-    });
+    }, CRYPTO_WAIT);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
-  });
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B: step 3 turning Remember this device on calls remember() and stores DevKey, and toggling off forgets it', async () => {
     await advanceToStep3('en');
@@ -474,7 +480,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
-    });
+    }, CRYPTO_WAIT);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(1);
 
     // Toggling off calls forget() and removes the record
@@ -483,7 +489,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
-    });
+    }, CRYPTO_WAIT);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
 
     // Turn back on and Finish -> goes to /app with the device remembered
@@ -492,15 +498,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
-    });
+    }, CRYPTO_WAIT);
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-finish-button'));
     });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
-    });
+    }, CRYPTO_WAIT);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(1);
-  });
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B: step 3 shows unavailable message when IndexedDB is blocked without blocking Skip or Finish', async () => {
     idb.options.failOpen = true;
@@ -513,7 +519,11 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       fireEvent.click(rememberSwitch);
     });
 
-    const unavailableMsg = await screen.findByTestId('onboarding-remember-device-unavailable');
+    const unavailableMsg = await screen.findByTestId(
+      'onboarding-remember-device-unavailable',
+      {},
+      CRYPTO_WAIT,
+    );
     expect(unavailableMsg).toHaveTextContent(enMessages.vault.device.unavailable);
     expect(rememberSwitch).toBeDisabled();
     expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
@@ -523,9 +533,9 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
-    });
+    }, CRYPTO_WAIT);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
-  });
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B: step 3 add passkey success stays on step 3 showing addedStatus, refreshes vaultMeta.passkeys even when Remember was toggled on first (VB-R2-2), and Finish goes on to /app', async () => {
     const { credentialsCreate, getVault, getVaultCallsCount } = await advanceToStep3('en');
@@ -540,7 +550,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
-    });
+    }, CRYPTO_WAIT);
     expect(getVault().vaultMeta?.passkeys).toEqual([]);
     const getVaultCallsBeforeAdd = getVaultCallsCount();
 
@@ -549,15 +559,19 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     fireEvent.change(pwdInput, { target: { value: 'correct-login-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
-    const continueBtn = await screen.findByRole('button', { name: 'Continue' });
-    await waitFor(() => expect(continueBtn).toBeEnabled());
+    const continueBtn = await screen.findByRole('button', { name: 'Continue' }, CRYPTO_WAIT);
+    await waitFor(() => expect(continueBtn).toBeEnabled(), CRYPTO_WAIT);
 
     fireEvent.change(screen.getByLabelText('Passkey name'), {
       target: { value: 'Onboarding laptop' },
     });
     fireEvent.click(continueBtn);
 
-    const addedStatus = await screen.findByTestId('onboarding-passkey-added-status');
+    const addedStatus = await screen.findByTestId(
+      'onboarding-passkey-added-status',
+      {},
+      CRYPTO_WAIT,
+    );
     expect(addedStatus).toHaveAttribute('role', 'status');
     expect(addedStatus).toHaveTextContent(enMessages.vault.b.onboarding.addedStatus);
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
@@ -573,15 +587,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
           created_at: '2026-10-30T00:00:00Z',
         },
       ]);
-    });
+    }, CRYPTO_WAIT);
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-finish-button'));
     });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
-    });
-  });
+    }, CRYPTO_WAIT);
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B: step 3 PRF-unsupported and cancel show §5.10 messages and still allow Skip to finish onboarding (en + vi)', async () => {
     const { credentialsCreate } = await advanceToStep3('en');
@@ -595,13 +609,13 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     fireEvent.change(pwdInput, { target: { value: 'correct-login-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
-    const continueBtn = await screen.findByRole('button', { name: 'Continue' });
-    await waitFor(() => expect(continueBtn).toBeEnabled());
+    const continueBtn = await screen.findByRole('button', { name: 'Continue' }, CRYPTO_WAIT);
+    await waitFor(() => expect(continueBtn).toBeEnabled(), CRYPTO_WAIT);
 
     fireEvent.change(screen.getByLabelText('Passkey name'), { target: { value: 'No PRF key' } });
     fireEvent.click(continueBtn);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByRole('alert', {}, CRYPTO_WAIT)).toHaveTextContent(
       enMessages.vault.passkey.prf_unsupported,
     );
 
@@ -619,7 +633,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
-    });
+    }, CRYPTO_WAIT);
 
     // Vietnamese parity check for Step 3 + Finish button
     cleanup();
@@ -637,8 +651,8 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
-    });
-  });
+    }, CRYPTO_WAIT);
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B (VB-R1-1 / VB-R1-2 / VB-R2-3): window focus / visibility wake on step 3 keeps onboarding-step-passkey and the Add passkey dialog mounted, while a real lock moves on', async () => {
     const { getVault } = await advanceToStep3('en');
@@ -665,8 +679,8 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(screen.queryByTestId('onboarding-step-passkey')).not.toBeInTheDocument();
-    });
-  });
+    }, CRYPTO_WAIT);
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B (VB-R2-4 / VB-R2-6): step 3 cross-tab remember-device change raises neutral stateChanged notice with role="status" and Dismiss clears it', async () => {
     const { setVaultGetHook } = await advanceToStep3('en');
@@ -695,7 +709,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       fireEvent.click(rememberSwitch);
     });
 
-    const notice = await screen.findByTestId('onboarding-remember-device-notice');
+    const notice = await screen.findByTestId('onboarding-remember-device-notice', {}, CRYPTO_WAIT);
     expect(notice).toHaveAttribute('role', 'status');
     expect(notice).toHaveTextContent(enMessages.vault.device.notice.stateChanged);
     expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
@@ -709,7 +723,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('onboarding-remember-device-notice')).not.toBeInTheDocument();
     });
-  });
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B (VB-R4-1): step 3 Remember whose in-lock vault GET returns another vault_key_id aborts with vault_mismatch, the store reconciliation reload locks the provider, step 3 ends and no DevKey is stored', async () => {
     const { getVault, setVaultGetHook } = await advanceToStep3('en');
@@ -721,7 +735,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     await waitFor(() => {
       expect(getVault().vaultMeta?.vault_key_id).toBe('vk:7f3a9b2c4d5e6f7a8b9c0d');
-    });
+    }, CRYPTO_WAIT);
     expect(getVault().workerState).toBe('unlocked');
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
 
@@ -740,17 +754,17 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
     await waitFor(() => {
       expect(getVault().workerState).toBe('locked');
-    });
+    }, CRYPTO_WAIT);
     await waitFor(() => {
       expect(getVault().getClient().getState()).toBe('locked');
-    });
+    }, CRYPTO_WAIT);
     await waitFor(() => {
       expect(screen.queryByTestId('onboarding-step-passkey')).not.toBeInTheDocument();
-    });
+    }, CRYPTO_WAIT);
     // Verification GET + the store's reconciliation reload: both saw the replacement key.
     expect(replacementServed).toBeGreaterThanOrEqual(2);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
-  });
+  }, CRYPTO_TEST_TIMEOUT);
 
   it('16B (VB-R1-2): OAuth-only account on step 3 Add passkey invokes OAuth re-auth and claims no registration success', async () => {
     const { oauthReauthCalls } = await advanceToStep3('en', { oauthOnly: true });
@@ -768,5 +782,5 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(JSON.parse(oauthReauthCalls[0]!.body)).toEqual({ action: 'vault.passkey_register' });
     expect(screen.queryByTestId('onboarding-passkey-added-status')).not.toBeInTheDocument();
     expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
-  });
+  }, CRYPTO_TEST_TIMEOUT);
 });
