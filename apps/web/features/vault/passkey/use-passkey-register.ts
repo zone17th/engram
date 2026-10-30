@@ -22,6 +22,8 @@ export interface UsePasskeyRegisterOptions {
 
 export interface UsePasskeyRegisterResult {
   pending: boolean;
+  /** True while the post-wrap grant renewal is waiting for the user's password in place (never a full-page OAuth redirect). */
+  renewing: boolean;
   /** Last failed outcome (`stale` is never surfaced), cleared when a new attempt starts. */
   failure: Extract<PasskeyRegisterOutcome, { ok: false }> | null;
   /** Presses "Add passkey": takes the grant first, then runs plan §2.5 steps 2-6. */
@@ -44,10 +46,10 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
   optionsRef.current = options;
 
   const [pending, setPending] = useState(false);
+  const [renewing, setRenewing] = useState(false);
   const [failure, setFailure] = useState<UsePasskeyRegisterResult['failure']>(null);
   const pendingRef = useRef(false);
   const mountedRef = useRef(true);
-
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -73,7 +75,12 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
       renewInPlace: async () => {
         // OAuth re-auth navigates the whole page and would destroy the Worker: only password users renew in place.
         if (!reauthRef.current.capabilities.hasPassword) return null;
-        return reauthRef.current.begin(REGISTER_ACTION, returnPath);
+        if (mountedRef.current) setRenewing(true);
+        try {
+          return await reauthRef.current.begin(REGISTER_ACTION, returnPath);
+        } finally {
+          if (mountedRef.current) setRenewing(false);
+        }
       },
     };
 
@@ -93,8 +100,8 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
       );
       if (mountedRef.current) {
         if (!outcome.ok && outcome.error !== 'stale') setFailure(outcome);
+        if (outcome.ok) optionsRef.current.onRegistered?.(outcome);
       }
-      if (outcome.ok) optionsRef.current.onRegistered?.(outcome);
       return outcome;
     } finally {
       pendingRef.current = false;
@@ -104,5 +111,5 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
 
   const clearFailure = useCallback(() => setFailure(null), []);
 
-  return { pending, failure, register, clearFailure };
+  return { pending, renewing, failure, register, clearFailure };
 }

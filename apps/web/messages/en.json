@@ -630,6 +630,10 @@
         "description": "Re-authenticate at the start, verify WebAuthn PRF support on your authenticator, and wrap the vault key.",
         "reauthStep": "Step 1 · Re-authenticate",
         "googleNote": "Google re-authentication leaves the page: the vault locks again, so unlock it before the flow continues.",
+        "oauthStartFailed": "Could not start Google re-authentication. Try again.",
+        "noReauthMethod": "No re-authentication method is available for this account.",
+        "showPassword": "Show password",
+        "hidePassword": "Hide password",
         "cancel": "Cancel",
         "continue": "Continue"
       },

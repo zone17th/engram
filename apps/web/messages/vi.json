@@ -630,6 +630,10 @@
         "description": "Xác thực lại ở đầu luồng, kiểm tra phần mở rộng PRF của WebAuthn trên khoá bảo mật rồi bọc khoá vault.",
         "reauthStep": "Bước 1 · Xác thực lại",
         "googleNote": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại vault trước khi luồng tiếp tục.",
+        "oauthStartFailed": "Không bắt đầu được xác thực lại bằng Google. Hãy thử lại.",
+        "noReauthMethod": "Tài khoản này chưa có phương thức xác thực lại.",
+        "showPassword": "Hiện mật khẩu",
+        "hidePassword": "Ẩn mật khẩu",
         "cancel": "Huỷ",
         "continue": "Tiếp tục"
       },

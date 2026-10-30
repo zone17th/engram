@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import enMessages from '@/messages/en.json';
-import { PasskeyAddDialog } from './passkey-add-dialog';
+import viMessages from '@/messages/vi.json';
+import { PasskeyAddDialog, PasskeyAddEntry } from './passkey-add-dialog';
 import {
   NEW_CREDENTIAL_ID,
   PRF_OUTPUT,
@@ -18,7 +19,11 @@ const mocks = vi.hoisted(() => ({
     pendingAction: null as string | null,
     error: null as string | null,
     submitting: false,
-    capabilities: { hasPassword: true, oauthReauthProviders: ['google'] as string[] },
+    capabilities: {
+      hasPassword: true,
+      oauthReauthProviders: ['google'] as string[],
+      passwordEnrollmentAvailable: false,
+    },
     begin: vi.fn((action: string, returnPath?: string) => {
       void action;
       void returnPath;
@@ -72,9 +77,13 @@ function useValidGrant() {
   mocks.reauth.hasUsableGrant.mockImplementation(() => true);
 }
 
-function renderDialog(onRegistered?: () => void, onOpenChange: (open: boolean) => void = () => {}) {
+function renderDialog(
+  onRegistered?: () => void,
+  onOpenChange: (open: boolean) => void = () => {},
+  locale: 'en' | 'vi' = 'en',
+) {
   return render(
-    <NextIntlClientProvider locale="en" messages={enMessages}>
+    <NextIntlClientProvider locale={locale} messages={locale === 'en' ? enMessages : viMessages}>
       <PasskeyAddDialog open onOpenChange={onOpenChange} returnPath="/app/settings" onRegistered={onRegistered} />
     </NextIntlClientProvider>,
   );
@@ -91,7 +100,11 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     mocks.reauth.pendingAction = null;
     mocks.reauth.error = null;
     mocks.reauth.submitting = false;
-    mocks.reauth.capabilities = { hasPassword: true, oauthReauthProviders: ['google'] };
+    mocks.reauth.capabilities = {
+      hasPassword: true,
+      oauthReauthProviders: ['google'],
+      passwordEnrollmentAvailable: false,
+    };
     mocks.reauth.begin.mockClear();
     mocks.reauth.cancel.mockClear();
     mocks.reauth.submitPassword.mockClear();
@@ -133,7 +146,11 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
 
   it('OAuth-only user sees Google re-auth and no password field', async () => {
     mocks.reauth.pendingAction = 'vault.passkey_register';
-    mocks.reauth.capabilities = { hasPassword: false, oauthReauthProviders: ['google'] };
+    mocks.reauth.capabilities = {
+      hasPassword: false,
+      oauthReauthProviders: ['google'],
+      passwordEnrollmentAvailable: false,
+    };
     renderDialog();
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm with Google' }));
     expect(mocks.reauth.startOauthReauth).toHaveBeenCalledWith('google', '/app/settings');
@@ -205,5 +222,160 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
     expect(mocks.reauth.cancel).toHaveBeenCalledTimes(1);
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('PKW-R1-24: cancelling the follow-up get() shows passkey.register_cancelled AND the orphan notice', async () => {
+    useValidGrant();
+    stubRegistration({ enabled: true });
+    const get = vi.fn().mockRejectedValue(domError('NotAllowedError'));
+    Object.defineProperty(navigator, 'credentials', {
+      value: { create: mocks.credentialsCreate, get },
+      configurable: true,
+    });
+    renderDialog();
+    fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Passkey registration was cancelled.');
+    expect(await screen.findByRole('status')).toHaveTextContent(/delete the extra credential/);
+  });
+
+  it('PKW-R1-9: unmounting while the POST is in flight suppresses onRegistered', async () => {
+    useValidGrant();
+    stubRegistration({ enabled: true, first: PRF_OUTPUT });
+    const { promise, resolve } = Promise.withResolvers<typeof SAVED>();
+    mocks.registerPasskey.mockReturnValue(promise);
+    const onRegistered = vi.fn();
+    const view = renderDialog(onRegistered);
+    fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(mocks.registerPasskey).toHaveBeenCalledTimes(1));
+    view.unmount();
+    resolve(SAVED);
+    await promise;
+    expect(onRegistered).not.toHaveBeenCalled();
+  });
+
+  it('PKW-R1-11: post-wrap renewal for a password+Google user shows only the password field, never the Google redirect', async () => {
+    mocks.reauth.grant = {
+      grant: 'grant-expiring-soon',
+      action: 'vault.passkey_register',
+      expires_at: new Date(Date.now() + 20_000).toISOString(),
+    };
+    mocks.reauth.hasUsableGrant.mockImplementation(() => true);
+    stubRegistration({ enabled: true, first: PRF_OUTPUT });
+    const { promise: renewedGrant, resolve: resolveRenewal } = Promise.withResolvers<{
+      grant: string;
+      action: string;
+      expires_at: string;
+    }>();
+    mocks.reauth.begin.mockImplementationOnce(() => {
+      mocks.reauth.pendingAction = 'vault.passkey_register';
+      mocks.reauth.hasUsableGrant.mockImplementation(() => false);
+      return renewedGrant as unknown as Promise<never>;
+    });
+    mocks.registerPasskey.mockResolvedValue(SAVED);
+
+    const view = renderDialog();
+    fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(mocks.reauth.begin).toHaveBeenCalledTimes(1));
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PasskeyAddDialog open onOpenChange={() => {}} returnPath="/app/settings" />
+      </NextIntlClientProvider>,
+    );
+    expect(await screen.findByLabelText('Login password')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm with Google' })).toBeNull();
+    resolveRenewal({
+      grant: 'grant-renewed',
+      action: 'vault.passkey_register',
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    });
+    await waitFor(() => expect(mocks.registerPasskey).toHaveBeenCalledTimes(1));
+  });
+
+  it('PKW-R1-16: a user with no password and no OAuth provider gets the password-enrollment link (or a clear status notice)', async () => {
+    mocks.reauth.pendingAction = 'vault.passkey_register';
+    mocks.reauth.capabilities = {
+      hasPassword: false,
+      oauthReauthProviders: [],
+      passwordEnrollmentAvailable: true,
+    };
+    const onOpenChange = vi.fn();
+    renderDialog(undefined, onOpenChange);
+    const link = await screen.findByRole('link', { name: 'Send password setup email' });
+    expect(link).toHaveAttribute('href', '/app/auth/password-enroll');
+    fireEvent.click(link);
+    expect(mocks.reauth.cancel).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    cleanup();
+    mocks.reauth.capabilities = {
+      hasPassword: false,
+      oauthReauthProviders: [],
+      passwordEnrollmentAvailable: false,
+    };
+    renderDialog();
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'No re-authentication method is available for this account.',
+    );
+  });
+
+  it('PKW-R1-17: a rejected Google re-auth start shows an error alert and re-enables the button after its pending state', async () => {
+    mocks.reauth.pendingAction = 'vault.passkey_register';
+    mocks.reauth.capabilities = {
+      hasPassword: false,
+      oauthReauthProviders: ['google'],
+      passwordEnrollmentAvailable: false,
+    };
+    const { promise, reject } = Promise.withResolvers<void>();
+    mocks.reauth.startOauthReauth.mockReturnValueOnce(promise);
+    renderDialog();
+    const googleBtn = await screen.findByRole('button', { name: 'Confirm with Google' });
+    fireEvent.click(googleBtn);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirming…' })).toBeDisabled());
+    reject(new TypeError('Failed to fetch'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not start Google re-authentication. Try again.');
+    expect(screen.getByRole('button', { name: 'Confirm with Google' })).toBeEnabled();
+  });
+
+  it('PKW-R1-18: Cancel and Escape return focus to the Add-passkey opener', async () => {
+    mocks.reauth.pendingAction = 'vault.passkey_register';
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PasskeyAddEntry returnPath="/app/settings" />
+      </NextIntlClientProvider>,
+    );
+    const opener = screen.getByRole('button', { name: 'Add passkey' });
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+    fireEvent.click(opener);
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    fireEvent.click(cancel);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(opener);
+
+    opener.focus();
+    fireEvent.click(opener);
+    const dlg = await screen.findByRole('dialog');
+    fireEvent.keyDown(dlg, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('PKW-R1-19: the password-visibility toggle uses English and Vietnamese labels from the locale', async () => {
+    mocks.reauth.pendingAction = 'vault.passkey_register';
+    renderDialog(undefined, undefined, 'en');
+    const enToggle = await screen.findByRole('button', { name: 'Show password' });
+    expect(enToggle).toHaveTextContent('Show password');
+    fireEvent.click(enToggle);
+    expect(screen.getByRole('button', { name: 'Hide password' })).toHaveTextContent('Hide password');
+
+    cleanup();
+    renderDialog(undefined, undefined, 'vi');
+    const viToggle = await screen.findByRole('button', { name: 'Hiện mật khẩu' });
+    expect(viToggle).toHaveTextContent('Hiện mật khẩu');
+    fireEvent.click(viToggle);
+    expect(screen.getByRole('button', { name: 'Ẩn mật khẩu' })).toHaveTextContent('Ẩn mật khẩu');
   });
 });

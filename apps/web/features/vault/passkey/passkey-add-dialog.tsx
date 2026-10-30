@@ -1,7 +1,9 @@
 'use client';
 
+import { ProblemError } from '@engram/shared-types';
 import { useTranslations } from 'next-intl';
-import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
@@ -21,6 +23,8 @@ export interface PasskeyAddDialogProps {
   returnPath: string;
   /** Called with the saved passkey; the dialog closes itself afterwards. */
   onRegistered?: (outcome: Extract<PasskeyRegisterOutcome, { ok: true }>) => void;
+  /** Opener button to return keyboard focus to on Cancel / Escape (`PasskeyAddEntry` sets this on press). */
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 function failureKey(error: PasskeyRegisterErrorCode, nameReason?: string): string | null {
@@ -45,15 +49,18 @@ function failureKey(error: PasskeyRegisterErrorCode, nameReason?: string): strin
  * the dialog opens (password in place, or Google which leaves the page), step 2 names the credential and runs plan
  * §2.5 steps 2-6. Self-contained: the host only mounts it (Settings is T20B, onboarding step 3 is T16B).
  */
-export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered }: PasskeyAddDialogProps) {
+export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered, returnFocusRef }: PasskeyAddDialogProps) {
   const t = useTranslations('vault.passkey');
   const tAuth = useTranslations('auth');
   const { reauth } = useSession();
   const vault = useVault();
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
+  const [oauthPending, setOauthPending] = useState(false);
+  const [oauthError, setOauthError] = useState<string | null>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
 
-  const { pending, failure, register, clearFailure } = usePasskeyRegister({
+  const { pending, renewing, failure, register, clearFailure } = usePasskeyRegister({
     returnPath,
     onRegistered: (outcome) => {
       onRegistered?.(outcome);
@@ -64,13 +71,24 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered 
 
   const reauthOpen = reauth.pendingAction === REGISTER_ACTION;
   const grantReady = reauth.hasUsableGrant(REGISTER_ACTION);
+  // Post-wrap renewal is in-place only: a full-page Google redirect would destroy the Worker and pending wrap.
+  const canUseGoogle = reauth.capabilities.oauthReauthProviders.includes('google') && !renewing;
+  const reauthBusy = reauth.submitting || oauthPending;
+
+  // Remember the element that held focus before the dialog opened so Cancel / Escape restores it even when the caller
+  // opened the dialog without a DialogTrigger.
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return;
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  }, [open]);
 
   // Step 1: the grant is taken when "Add passkey" is pressed, before anything else.
   useEffect(() => {
-    if (open && !grantReady && !reauthOpen) {
+    if (open && !grantReady && !reauthOpen && !pending) {
       void reauth.begin(REGISTER_ACTION, returnPath).catch(() => undefined);
     }
-  }, [grantReady, open, reauth, reauthOpen, returnPath]);
+  }, [grantReady, open, pending, reauth, reauthOpen, returnPath]);
 
   // Lock / logout wipes the re-auth password field synchronously.
   const { registerSecretFormReset } = vault;
@@ -83,6 +101,8 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered 
       if (reauthOpen) reauth.cancel();
       setPassword('');
       setName('');
+      setOauthPending(false);
+      setOauthError(null);
       clearFailure();
     }
     onOpenChange(next);
@@ -91,6 +111,7 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered 
   const confirmPassword = async () => {
     const typed = password;
     setPassword('');
+    setOauthError(null);
     try {
       await reauth.submitPassword(typed);
     } catch {
@@ -98,12 +119,38 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered 
     }
   };
 
+  const startGoogleReauth = async () => {
+    if (reauthBusy) return;
+    setOauthPending(true);
+    setOauthError(null);
+    try {
+      await reauth.startOauthReauth('google', returnPath);
+    } catch (err) {
+      const detail = err instanceof ProblemError ? err.problem.detail ?? err.problem.title : null;
+      setOauthError(detail || t('add.oauthStartFailed'));
+    } finally {
+      setOauthPending(false);
+    }
+  };
+
   const key = failure ? failureKey(failure.error, failure.nameReason) : null;
   const cancelledQuietly = failure?.error === 'register_cancelled';
+  const statusError = reauth.error ?? oauthError;
+  const noMethodAtAll =
+    !reauth.capabilities.hasPassword && !canUseGoogle && !reauth.capabilities.passwordEnrollmentAvailable;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent id="passkeyAddDlg">
+      <DialogContent
+        id="passkeyAddDlg"
+        onCloseAutoFocus={(event) => {
+          const opener = returnFocusRef?.current ?? openerRef.current;
+          if (opener && opener.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
+      >
         <div className="panel p-7" style={{ width: 'min(560px, 94vw)', maxHeight: '90vh', overflow: 'auto' }}>
           <DialogHeader title={t('add.title')} description={t('add.description')} />
 
@@ -124,38 +171,59 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered 
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') void confirmPassword();
                       }}
-                      disabled={reauth.submitting}
+                      disabled={reauthBusy}
+                      passwordToggleLabels={{ show: t('add.showPassword'), hide: t('add.hidePassword') }}
                       wrapperClassName="mb-3"
                       data-vault-secret="true"
                     />
-                    {reauth.error && (
-                      <AuthStatus tone="error" className="mb-3">
-                        {reauth.error}
-                      </AuthStatus>
-                    )}
                     <Button
                       className="w-full !justify-center mb-2"
                       onClick={() => void confirmPassword()}
-                      disabled={reauth.submitting || password.length === 0}
+                      disabled={reauthBusy || password.length === 0}
                     >
                       {reauth.submitting ? tAuth('reauth.submitting') : tAuth('reauth.confirm')}
                     </Button>
                   </>
                 )}
-                {reauth.capabilities.oauthReauthProviders.includes('google') && (
+                {!reauth.capabilities.hasPassword && reauth.capabilities.passwordEnrollmentAvailable && (
+                  <div className="mb-3">
+                    <p className="mb-3 text-[13px]" style={{ color: 'var(--body)' }}>
+                      {tAuth('reauth.oauthOnlyHint')}
+                    </p>
+                    <Link
+                      href="/app/auth/password-enroll"
+                      className="btn btn-secondary btn-sm no-underline"
+                      onClick={() => handleOpenChange(false)}
+                    >
+                      {tAuth('reauth.enrollCta')}
+                    </Link>
+                  </div>
+                )}
+                {canUseGoogle && (
                   <>
                     <Button
                       variant="secondary"
                       className="w-full !justify-center mb-2"
-                      onClick={() => void reauth.startOauthReauth('google', returnPath)}
-                      disabled={reauth.submitting}
+                      onClick={() => void startGoogleReauth()}
+                      disabled={reauthBusy}
+                      aria-busy={oauthPending}
                     >
-                      {tAuth('reauth.google')}
+                      {oauthPending ? tAuth('reauth.submitting') : tAuth('reauth.google')}
                     </Button>
                     <p className="text-[12px] m-0" style={{ color: 'var(--muted)' }}>
                       {t('add.googleNote')}
                     </p>
                   </>
+                )}
+                {noMethodAtAll && (
+                  <p role="status" className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                    {t('add.noReauthMethod')}
+                  </p>
+                )}
+                {statusError && (
+                  <AuthStatus tone="error" className="mt-3">
+                    {statusError}
+                  </AuthStatus>
                 )}
               </div>
             )}
@@ -219,12 +287,20 @@ export interface PasskeyAddEntryProps extends Omit<PasskeyAddDialogProps, 'open'
 export function PasskeyAddEntry({ className, ...dialogProps }: PasskeyAddEntryProps) {
   const t = useTranslations('vault.passkey');
   const [open, setOpen] = useState(false);
+  const openerRef = useRef<HTMLElement | null>(null);
   return (
     <>
-      <Button variant="tertiary" className={className} onClick={() => setOpen(true)}>
+      <Button
+        variant="tertiary"
+        className={className}
+        onClick={(e) => {
+          openerRef.current = e.currentTarget;
+          setOpen(true);
+        }}
+      >
         {t('add.button')}
       </Button>
-      <PasskeyAddDialog {...dialogProps} open={open} onOpenChange={setOpen} />
+      <PasskeyAddDialog {...dialogProps} open={open} onOpenChange={setOpen} returnFocusRef={openerRef} />
     </>
   );
 }
