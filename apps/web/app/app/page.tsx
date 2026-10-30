@@ -39,7 +39,7 @@ export default function AppPage() {
           }))}
         />
 
-        <section aria-labelledby="recent-heading" className="flex flex-col gap-4">
+        <section aria-labelledby="recent-heading" className="flex min-w-0 flex-col gap-4">
           <div>
             <h1 className="t-title-lg text-ink">Gõ để tìm. Gõ tiếp để lưu.</h1>
             <p className="t-body-lg mt-1 text-muted">Thử tìm trong các mục mẫu. Nội dung bạn gõ không được lưu.</p>

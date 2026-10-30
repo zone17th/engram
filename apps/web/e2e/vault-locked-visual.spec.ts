@@ -104,6 +104,11 @@ async function capture(page: Page, testInfo: TestInfo, state: string, theme: The
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       }),
   );
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
   const outputPath = testInfo.outputPath(`vault-web-${state}-${theme}-${width}.png`);
   mkdirSync(dirname(outputPath), { recursive: true });
   const buffer = await page.screenshot({
