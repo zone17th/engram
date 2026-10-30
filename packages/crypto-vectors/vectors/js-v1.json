@@ -1,0 +1,407 @@
+{
+  "schema": "engram-crypto-vectors-v1",
+  "producer": "js",
+  "inputs": {
+    "vk_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    "vk_b64u": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8",
+    "vault_key_id": "vk:7f3a9b2c4d5e6f7a8b9c0d",
+    "passphrase_utf8": "correct-horse-battery-staple-engram-js-v1",
+    "passphrase_hex": "636f72726563742d686f7273652d626174746572792d737461706c652d656e6772616d2d6a732d7631",
+    "kdf_salt_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+    "kdf_salt_b64u": "oKGio6SlpqeoqaqrrK2urw",
+    "kdf": {
+      "alg": "argon2id13",
+      "ops": 3,
+      "mem": 67108864,
+      "parallelism": 1,
+      "salt": "oKGio6SlpqeoqaqrrK2urw"
+    },
+    "rk_slot": 1,
+    "rk_entropy_hex": "0123456789abcdef0123456789abcdef",
+    "rk_display": "rk1_014D-2PF2-DBSQ-QG28-T5CY-4TQK-FF",
+    "rk_norm": "rk1_014D2PF2DBSQQG28T5CY4TQKFF",
+    "pwk_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+    "pwk_b64u": "MDEyMzQ1Njc4OTo7PD0-P0BBQkNERUZHSElKS0xNTk8",
+    "x25519_seed_hex": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+    "x25519_public_hex": "1084f97dcc3125bdd2c3ccbe57dc872fe246539a43565830f47e6e78257b3a72",
+    "x25519_public_b64u": "EIT5fcwxJb3Sw8y-V9yHL-JGU5pDVlgw9H5ueCV7OnI",
+    "ed25519_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "ed25519_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "ed25519_public_b64u": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+    "nonces": {
+      "kek_wrap_nonce_hex": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7",
+      "rk_wrap_nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+      "prf_wrap_nonce_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7",
+      "priv_wrap_nonce_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7"
+    },
+    "entries": {
+      "text": {
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "nonce_hex": "0102030405060708090a0b0c0d0e0f101112131415161718",
+        "nonce_b64u": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+        "plaintext_utf8": "wifi-office: WPA2-Enterprise secret_key_2026!",
+        "plaintext_hex": "776966692d6f66666963653a20575041322d456e7465727072697365207365637265745f6b65795f3230323621",
+        "envelope": {
+          "v": 1,
+          "alg": "xchacha20poly1305-ietf",
+          "key_id": "vk:7f3a9b2c4d5e6f7a8b9c0d",
+          "nonce": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "ct_enc": "utf8"
+        },
+        "reordered_envelope_raw_json": [
+          "{\"ct_enc\":\"utf8\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"alg\":\"xchacha20poly1305-ietf\",\"v\":1}",
+          "{\n  \"nonce\": \"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\n  \"v\": 1,\n  \"alg\": \"xchacha20poly1305-ietf\",\n  \"ct_enc\": \"utf8\",\n  \"key_id\": \"vk:7f3a9b2c4d5e6f7a8b9c0d\"\n}"
+        ]
+      },
+      "json": {
+        "entry_id": "8b4e2a10-9c3d-4e5f-a1b2-c3d4e5f60718",
+        "nonce_hex": "2122232425262728292a2b2c2d2e2f303132333435363738",
+        "nonce_b64u": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+        "plaintext_utf8": "{\"service\":\"postgres-prod\",\"port\":5432,\"big_id\":9007199254740993,\"tags\":[\"db\",\"primary\"]}",
+        "plaintext_hex": "7b2273657276696365223a22706f7374677265732d70726f64222c22706f7274223a353433322c226269675f6964223a393030373139393235343734303939332c2274616773223a5b226462222c227072696d617279225d7d",
+        "envelope": {
+          "v": 1,
+          "alg": "xchacha20poly1305-ietf",
+          "key_id": "vk:7f3a9b2c4d5e6f7a8b9c0d",
+          "nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+          "ct_enc": "utf8"
+        },
+        "reordered_envelope_raw_json": [
+          "{\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"v\":1,\"ct_enc\":\"utf8\",\"alg\":\"xchacha20poly1305-ietf\",\"nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4\"}",
+          "{\n  \"ct_enc\": \"utf8\",\n  \"key_id\": \"vk:7f3a9b2c4d5e6f7a8b9c0d\",\n  \"nonce\": \"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4\",\n  \"v\": 1,\n  \"alg\": \"xchacha20poly1305-ietf\"\n}"
+        ]
+      }
+    }
+  },
+  "derived": {
+    "kek_hex": "f4dedf977d4e5ed23024862d7ff40ec4860470372d029b4613ddf0ca8d124338",
+    "kek_b64u": "9N7fl31OXtIwJIYtf_QOxIYEcDctAptGE93wyo0SQzg",
+    "rk_lookup_hash_hex": "4e4d7796302ecf2ce755ede3287c2b8d592d4a688ee537dacdf6ed20d081df12",
+    "rk_lookup_hash_b64u": "Tk13ljAuzyznVe3jKHwrjVktSmiO5TfazfbtINCB3xI",
+    "rk_wrap_key_hex": "383f9fb2441247daebe6516ef6ab8cdf7fe2b1cfc87cb122bd135108dd434b88",
+    "rk_wrap_key_b64u": "OD-fskQSR9rr5lFu9quM33_isc_IfLEivRNRCN1DS4g",
+    "priv_plaintext_hex": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "wraps": {
+      "kek": {
+        "kind": "kek",
+        "label": "sabk.vk.kek.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e766b2e6b656b2e76310001",
+        "nonce_hex": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7",
+        "length_bytes": 73,
+        "wrap_hex": "01b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c727d87cdbfebee0d14ba8b7529e73ff00845f670bb75c5782e8ee63b7466bf7a2aefdb2e5041205790a47de4facafa294",
+        "wrap_b64u": "AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA"
+      },
+      "rk": {
+        "kind": "rk",
+        "label": "sabk.vk.rk.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e766b2e726b2e76310001",
+        "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+        "length_bytes": 73,
+        "wrap_hex": "01c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7c756037ce641700fb871e28f47de1eb94cde9554054866437ce8837a5db403d5477b25db190b1d4939aa4c4ed9bc1451",
+        "wrap_b64u": "AcDBwsPExcbHyMnKy8zNzs_Q0dLT1NXW18dWA3zmQXAPuHHij0feHrlM3pVUBUhmQ3zog3pdtAPVR3sl2xkLHUk5qkxO2bwUUQ"
+      },
+      "prf": {
+        "kind": "prf",
+        "label": "sabk.vk.prf.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e766b2e7072662e76310001",
+        "nonce_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7",
+        "length_bytes": 73,
+        "wrap_hex": "01d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e72b8208eda11170119b8a7f197667e76faf67939ab6fab260b141b01bed2ad96ec368845ad409b70bc68506834ef62dd3",
+        "wrap_b64u": "AdDR0tPU1dbX2Nna29zd3t_g4eLj5OXm5yuCCO2hEXARm4p_GXZn52-vZ5OatvqyYLFBsBvtKtluw2iEWtQJtwvGhQaDTvYt0w"
+      },
+      "priv": {
+        "kind": "priv",
+        "label": "sabk.priv.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e707269762e76310001",
+        "nonce_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7",
+        "length_bytes": 105,
+        "wrap_hex": "01e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7d23aca972e6cdafc39fcbc470b5013ede054f675713ac781e3b564ca3216438982acfb806ef9a1f6b8a877a34dd52bb2433486aa0f98a1feaedfd92d2a079f6047f4c17e4d41b2a2fa6efe9ba78fbbfe",
+        "wrap_b64u": "AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-"
+      }
+    },
+    "entries": {
+      "text": {
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "jcs_utf8": "{\"alg\":\"xchacha20poly1305-ietf\",\"ct_enc\":\"utf8\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"v\":1}",
+        "jcs_hex": "7b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a37663361396232633464356536663761386239633064222c226e6f6e6365223a2241514944424155474277674a4367734d44513450454245534578515646686359222c2276223a317d",
+        "aad_hex": "7361626b2e656e7472792e7631007b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a37663361396232633464356536663761386239633064222c226e6f6e6365223a2241514944424155474277674a4367734d44513450454245534578515646686359222c2276223a317d0033666138356636342d353731372d343536322d623366632d326339363366363661666136",
+        "ciphertext_hex": "fd7a850159c928084b3e0b3eaa83d9797cbe01ebcdd86e0058bf572502c1ee5091ac568a883e5baeec31f60c5b2d1ce8b030b11be68aacf500e7a05f4b",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw"
+      },
+      "json": {
+        "entry_id": "8b4e2a10-9c3d-4e5f-a1b2-c3d4e5f60718",
+        "jcs_utf8": "{\"alg\":\"xchacha20poly1305-ietf\",\"ct_enc\":\"utf8\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4\",\"v\":1}",
+        "jcs_hex": "7b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a37663361396232633464356536663761386239633064222c226e6f6e6365223a224953496a4a43556d4a7967704b6973734c5334764d4445794d7a51314e6a6334222c2276223a317d",
+        "aad_hex": "7361626b2e656e7472792e7631007b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a37663361396232633464356536663761386239633064222c226e6f6e6365223a224953496a4a43556d4a7967704b6973734c5334764d4445794d7a51314e6a6334222c2276223a317d0038623465326131302d396333642d346535662d613162322d633364346535663630373138",
+        "ciphertext_hex": "12f263d56bf7e3a6758a2b06e82a8f99efb425a450ca852ba7d205cc4ab99f59de931639636866fd24f2735b2f5251f96a28bb55584df025218b5b3d95f4457d1fce17501dde85457777f6f11d845c1275ada413246aca094629ea07a874114e2e89ffd8d0047cdb18",
+        "ciphertext_b64u": "EvJj1Wv346Z1iisG6CqPme-0JaRQyoUrp9IFzEq5n1nekxY5Y2hm_STyc1svUlH5aii7VVhN8CUhi1s9lfRFfR_OF1Ad3oVFd3f28R2EXBJ1raQTJGrKCUYp6geodBFOLon_2NAEfNsY"
+      }
+    }
+  },
+  "negative": {
+    "envelope": [
+      {
+        "id": "env_missing_ct_enc",
+        "description": "Missing required field ct_enc must be rejected (never auto-repaired)",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_duplicate_key_direct",
+        "description": "Direct duplicate key ct_enc in raw JSON must be rejected before map/jsonb",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_duplicate_key_unicode_escaped_underscore",
+        "description": "Unicode-escaped duplicate key (\"ct_enc\" and \"ct\\u005fenc\") must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\",\"ct\\u005fenc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_duplicate_key_unicode_escaped_c",
+        "description": "Unicode-escaped duplicate key (\"ct_enc\" and \"\\u0063t_enc\") must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\",\"\\u0063t_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_extra_field",
+        "description": "Extra field (\"type\":\"text\") in envelope must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\",\"type\":\"text\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_wrong_version_2",
+        "description": "Unsupported envelope version v=2 must be rejected",
+        "raw_json": "{\"v\":2,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_float_version",
+        "description": "Floating-point version v=1.0 in raw JSON must be rejected",
+        "raw_json": "{\"v\":1.0,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_wrong_alg",
+        "description": "Unsupported algorithm aes-256-gcm must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"aes-256-gcm\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_invalid_key_id",
+        "description": "Malformed key_id not matching ^(vk|sk):[A-Za-z0-9_-]{22}$ must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:too-short\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_nonce_wrong_length_16b",
+        "description": "Envelope nonce of 16 bytes instead of 24 bytes must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"oKGio6SlpqeoqaqrrK2urw\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_nonce_padded_base64",
+        "description": "Envelope nonce with = padding must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc=\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_wrong_ct_enc",
+        "description": "Unsupported ct_enc=\"gzip\" must be rejected",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"gzip\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_invalid_entry_id_uppercase",
+        "description": "Uppercase UUID entry_id must be rejected by validator",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3FA85F64-5717-4562-B3FC-2C963F66AFA6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "validation"
+      },
+      {
+        "id": "env_tampered_entry_id_aead",
+        "description": "Different valid UUID entry_id causes AAD mismatch and AEAD failure",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "00000000-0000-4000-8000-000000000001",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "aead"
+      },
+      {
+        "id": "env_tampered_key_id_aead",
+        "description": "Different valid key_id in envelope causes JCS AAD mismatch and AEAD failure",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:0000000000000000000000\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "aead"
+      },
+      {
+        "id": "env_tampered_nonce_aead",
+        "description": "Different valid 24-byte nonce in envelope causes AEAD failure",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:7f3a9b2c4d5e6f7a8b9c0d\",\"nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "ciphertext_b64u": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
+        "expected_error": "aead"
+      }
+    ],
+    "wrap": [
+      {
+        "id": "wrap_kek_version_mutated_0x02",
+        "description": "Mutating leading version byte to 0x02 fails validator (validation) and fails openWrap (aead via AAD binding)",
+        "kind": "kek",
+        "wrap_b64u": "ArCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA",
+        "key_hex": "f4dedf977d4e5ed23024862d7ff40ec4860470372d029b4613ddf0ca8d124338",
+        "validator_error": "validation",
+        "open_error": "aead"
+      },
+      {
+        "id": "wrap_priv_version_mutated_0x00",
+        "description": "Mutating leading version byte of priv wrap to 0x00 fails validator (validation) and fails openWrap (aead)",
+        "kind": "priv",
+        "wrap_b64u": "AODh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-",
+        "key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+        "validator_error": "validation",
+        "open_error": "aead"
+      },
+      {
+        "id": "wrap_kek_tampered_tag",
+        "description": "Tampered Poly1305 tag passes structural validator but fails openWrap with aead",
+        "kind": "kek",
+        "wrap_b64u": "AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-iaw",
+        "key_hex": "f4dedf977d4e5ed23024862d7ff40ec4860470372d029b4613ddf0ca8d124338",
+        "validator_error": null,
+        "open_error": "aead"
+      },
+      {
+        "id": "wrap_wrong_domain_rk_as_prf",
+        "description": "Opening an RK wrap under PRF kind (wrong AAD label) passes validator but fails openWrap with aead",
+        "kind": "prf",
+        "wrap_b64u": "AcDBwsPExcbHyMnKy8zNzs_Q0dLT1NXW18dWA3zmQXAPuHHij0feHrlM3pVUBUhmQ3zog3pdtAPVR3sl2xkLHUk5qkxO2bwUUQ",
+        "key_hex": "383f9fb2441247daebe6516ef6ab8cdf7fe2b1cfc87cb122bd135108dd434b88",
+        "validator_error": null,
+        "open_error": "aead"
+      },
+      {
+        "id": "wrap_kek_short_72b",
+        "description": "72-byte VK wrap (1 byte short) fails both validator and openWrap with validation",
+        "kind": "kek",
+        "wrap_b64u": "AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-i",
+        "key_hex": "f4dedf977d4e5ed23024862d7ff40ec4860470372d029b4613ddf0ca8d124338",
+        "validator_error": "validation",
+        "open_error": "validation"
+      },
+      {
+        "id": "wrap_kek_long_74b",
+        "description": "74-byte VK wrap (1 byte long) fails both validator and openWrap with validation",
+        "kind": "kek",
+        "wrap_b64u": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+        "key_hex": "f4dedf977d4e5ed23024862d7ff40ec4860470372d029b4613ddf0ca8d124338",
+        "validator_error": "validation",
+        "open_error": "validation"
+      },
+      {
+        "id": "wrap_priv_wrong_len_73b",
+        "description": "73-byte blob passed as priv wrap (expected 105 B) fails with validation",
+        "kind": "priv",
+        "wrap_b64u": "AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA",
+        "key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+        "validator_error": "validation",
+        "open_error": "validation"
+      },
+      {
+        "id": "wrap_kek_base64url_padding",
+        "description": "Base64url string with = padding character fails strict decoder with validation",
+        "kind": "kek",
+        "wrap_b64u": "AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA=",
+        "key_hex": "f4dedf977d4e5ed23024862d7ff40ec4860470372d029b4613ddf0ca8d124338",
+        "validator_error": "validation",
+        "open_error": "validation"
+      }
+    ],
+    "kdf": [
+      {
+        "id": "kdf_ops_below_min_2",
+        "description": "Argon2id ops=2 (< 3) must be rejected before allocation",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":2,\"mem\":67108864,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_ops_above_max_11",
+        "description": "Argon2id ops=11 (> 10) must be rejected before allocation",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":11,\"mem\":67108864,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_mem_below_64mib",
+        "description": "Argon2id mem=67108863 (64 MiB - 1) must be rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":67108863,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_mem_above_256mib",
+        "description": "Argon2id mem=268435457 (256 MiB + 1) must be rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":268435457,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_parallelism_not_1",
+        "description": "Argon2id parallelism=2 (!== 1) must be rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":67108864,\"parallelism\":2,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_wrong_alg",
+        "description": "Unsupported KDF alg=\"argon2i13\" must be rejected",
+        "raw_json": "{\"alg\":\"argon2i13\",\"ops\":3,\"mem\":67108864,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_salt_wrong_len_15b",
+        "description": "KDF salt of 15 bytes instead of 16 bytes must be rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":67108864,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2u\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_extra_field",
+        "description": "KDF object with extra field must be rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":67108864,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\",\"extra\":1}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "kdf_duplicate_key",
+        "description": "KDF raw JSON with duplicate key ops must be rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"ops\":3,\"mem\":67108864,\"parallelism\":1,\"salt\":\"oKGio6SlpqeoqaqrrK2urw\"}",
+        "expected_error": "kdf_params"
+      }
+    ]
+  }
+}
