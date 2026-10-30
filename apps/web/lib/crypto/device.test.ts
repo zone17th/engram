@@ -19,6 +19,7 @@ import { authFetch } from '@/lib/api/auth-fetch';
 import { CryptoClient, CryptoClientError } from './client';
 import {
   DEVKEY_WRAPPED_VK_BYTES,
+  REMEMBER_VAULT_VERIFY_TIMEOUT_MS,
   forgetDevice,
   readDeviceRememberedState,
   readDeviceSnapshot,
@@ -448,6 +449,44 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
     expect(after?.incarnation).not.toBe(before!.incarnation);
   });
 
+  it('R1-9: stale mismatch cleanup deletes only the stale vault_key_ids observed in the snapshot, never an unobserved newer key K2 remembered before cleanup', async () => {
+    const tabA = await openTab();
+    const tabB = await openTab();
+    await remember(tabA, { vaultKeyId: VAULT_K });
+    devkeys().set(formatDevKeyRecordKey(USER_B, VAULT_K), {
+      user_id: USER_B,
+      vault_key_id: VAULT_K,
+      wrapped_vk: new Uint8Array(60),
+    });
+    await tabA.client.lock();
+
+    // Tab A reads its snapshot (containing only VAULT_K), then loadVault returns K1 while Tab B remembers a newer K2
+    // before Tab A's mismatch cleanup runs.
+    const VAULT_K1 = 'vk:1111111111111111111111';
+    const silent = silentUnlock(tabA, {
+      loadVault: async () => {
+        // While Tab A's GET is in flight, Tab B creates/remembers a newer vault VAULT_K2!
+        serverVaultKeyId = VAULT_K2;
+        const bRes = await remember(tabB, { vaultKeyId: VAULT_K2 });
+        expect(bRes.status).toBe('remembered');
+        // Tab A's older GET resolves with VAULT_K1 (which was not in Tab A's snapshot).
+        return { vault_key_id: VAULT_K1, private_keys_wrapped: tabA.created.private_keys_wrapped };
+      },
+    });
+    const beforeCleanupMeta = (await metaNow())!;
+    expect(await silent.run).toEqual({ status: 'fallback', reason: 'vault_mismatch' });
+    expect(silent.unlock).not.toHaveBeenCalled();
+    expect(tabA.client.getState()).toBe('locked');
+
+    // Observed stale VAULT_K is deleted; unobserved newer VAULT_K2 and USER_B's record survive; meta rotated atomically.
+    expect([...devkeys().keys()].sort()).toEqual(
+      [formatDevKeyRecordKey(USER_A, VAULT_K2), formatDevKeyRecordKey(USER_B, VAULT_K)].sort(),
+    );
+    const afterCleanupMeta = (await metaNow())!;
+    expect(afterCleanupMeta.deviceRevision).toBe(beforeCleanupMeta.deviceRevision + 1);
+    expect(afterCleanupMeta.incarnation).not.toBe(beforeCleanupMeta.incarnation);
+  });
+
   it('GET /vault 404 vault_absent never silently unlocks', async () => {
     const tab = await openTab();
     await remember(tab);
@@ -713,6 +752,53 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
       expect(result).toEqual({ status: 'aborted', reason: 'vault_unverifiable' });
       expect(devkeys().size).toBe(0);
       expect(locks.isHeld()).toBe(false);
+    });
+
+    it('R1-21: bounds the whole in-lock GET verification (including a stalled auth refresh that ignores AbortSignal) with the 10s timeout, releases the lock, and ignores late results', async () => {
+      const tab = await openTab();
+      vi.useFakeTimers();
+      try {
+        let releaseRefresh!: () => void;
+        let getEnteredLock!: () => void;
+        const getEnteredLockP = new Promise<void>((r) => {
+          getEnteredLock = r;
+        });
+        const stalledRefresh = new Promise<void>((r) => {
+          releaseRefresh = r;
+        });
+
+        const pending = rememberDevice({
+          client: tab.client,
+          opGeneration: tab.client.captureGeneration(),
+          userId: USER_A,
+          vaultKeyId: VAULT_K,
+          env,
+          fetchVault: async () => {
+            getEnteredLock();
+            // Simulates an access_expired auto-refresh that ignores opts.signal and stalls past 10s.
+            await stalledRefresh;
+            return { vault_key_id: VAULT_K };
+          },
+        });
+
+        await getEnteredLockP;
+        expect(locks.isHeld()).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(REMEMBER_VAULT_VERIFY_TIMEOUT_MS + 10);
+        const result = await pending;
+        expect(result).toEqual({ status: 'aborted', reason: 'vault_unverifiable' });
+        expect(locks.isHeld()).toBe(false);
+        expect(devkeys().size).toBe(0);
+
+        // Release the stalled refresh after timeout: late continuation must be ignored and write nothing.
+        releaseRefresh();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(devkeys().size).toBe(0);
+        expect(locks.isHeld()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('the vault is verified INSIDE the lock, before the final tx, and the lock is not held across the WebCrypto wait', async () => {

@@ -490,12 +490,26 @@ async function verifyVaultInsideLock(
   fetchVaultFn: NonNullable<RememberDeviceParams['fetchVault']>,
 ): Promise<VaultVerification> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REMEMBER_VAULT_VERIFY_TIMEOUT_MS);
+  let timedOut = false;
+  let resolveTimeout!: (val: 'timeout') => void;
+  const timeoutPromise = new Promise<'timeout'>((resolve) => {
+    resolveTimeout = resolve;
+  });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+    resolveTimeout('timeout');
+  }, REMEMBER_VAULT_VERIFY_TIMEOUT_MS);
   try {
-    const vault = await fetchVaultFn({ signal: controller.signal });
-    return vault.vault_key_id === expectedVaultKeyId ? 'ok' : 'vault_mismatch';
-  } catch (err) {
-    return isVaultAbsentError(err) ? 'vault_absent' : 'vault_unverifiable';
+    const fetchOutcome = fetchVaultFn({ signal: controller.signal }).then(
+      (vault): VaultVerification => (vault.vault_key_id === expectedVaultKeyId ? 'ok' : 'vault_mismatch'),
+      (err): VaultVerification => (isVaultAbsentError(err) ? 'vault_absent' : 'vault_unverifiable'),
+    );
+    const raced = await Promise.race([fetchOutcome, timeoutPromise]);
+    if (timedOut || raced === 'timeout') {
+      return 'vault_unverifiable';
+    }
+    return raced;
   } finally {
     clearTimeout(timer);
   }
@@ -712,12 +726,19 @@ export async function runSilentDeviceUnlock(params: SilentUnlockParams): Promise
 
   const own = snapshot.entries.find((e) => e.vaultKeyId === vault.vault_key_id)?.record ?? null;
   if (own === null) {
-    const purge =
-      params.purgeStale ?? ((scope: DeviceKeyScope) => purgeDeviceKeysOnRevoked(userId, env, { keyScope: scope }));
-    try {
-      await purge({ except: vault.vault_key_id });
-    } catch {
-      // Best effort: the passphrase fallback is unaffected.
+    // R1-9: delete only the stale vault_key_ids this attempt actually observed in its initial snapshot,
+    // never an unobserved newer vault key remembered by another tab while loadVault() was in flight.
+    const observedStaleKeys = snapshot.entries
+      .map((e) => e.vaultKeyId)
+      .filter((keyId) => keyId !== vault.vault_key_id);
+    if (observedStaleKeys.length > 0) {
+      const purge =
+        params.purgeStale ?? ((scope: DeviceKeyScope) => purgeDeviceKeysOnRevoked(userId, env, { keyScope: scope }));
+      try {
+        await purge({ only: observedStaleKeys });
+      } catch {
+        // Best effort: the passphrase fallback is unaffected.
+      }
     }
     return { status: 'fallback', reason: 'vault_mismatch' };
   }
