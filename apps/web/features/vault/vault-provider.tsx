@@ -1355,6 +1355,7 @@ export function VaultProvider({
           currentUserIdRef.current === userId,
         loadVault: () => loadVaultMeta(),
         unlock: (params) => unlockDevKeyOp(params),
+        lockOnInvalidate: () => lock({ broadcast: false, reason: 'device_invalidated' }),
       });
       // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.
       if (result.status === 'fallback' || result.status === 'skipped') {
@@ -1364,7 +1365,7 @@ export function VaultProvider({
     } finally {
       intentBaselinesRef.current.delete(opGeneration);
     }
-  }, [beginOp, effectiveDeviceStoreEnv, loadVaultMeta, unlockDevKeyOp]);
+  }, [beginOp, effectiveDeviceStoreEnv, loadVaultMeta, lock, unlockDevKeyOp]);
 
   const silentAttemptUserIdRef = useRef<string | null>(null);
   const silentUnlockUserId = me?.user.id ?? null;

@@ -145,6 +145,7 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
   function silentUnlock(tab: Tab, over: Partial<SilentUnlockParams> = {}, vault?: { id: string | null }) {
     const opGeneration = tab.client.captureGeneration();
     const unlock = vi.fn((params: Parameters<CryptoClient['unlockDevKey']>[0]) => tab.client.unlockDevKey(params));
+    const lockOnInvalidate = vi.fn(() => tab.client.lock());
     const loadVault = vi.fn(async () => {
       const id = vault ? vault.id : serverVaultKeyId;
       return id === null ? null : { vault_key_id: id, private_keys_wrapped: tab.created.private_keys_wrapped };
@@ -155,10 +156,11 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
       isCurrent: () => tab.client.captureGeneration() === opGeneration,
       loadVault,
       unlock,
+      lockOnInvalidate,
       env,
       ...over,
     });
-    return { run, unlock, loadVault };
+    return { run, unlock, loadVault, lockOnInvalidate };
   }
 
   // -------------------------------------------------------------------------------------------------------------
@@ -250,6 +252,126 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
     const { run, unlock } = silentUnlock(tab, { loadVault: lockDuringGet });
     expect(await run).toEqual({ status: 'skipped', reason: 'stale' });
     expect(unlock).not.toHaveBeenCalled();
+    expect(tab.client.getState()).toBe('locked');
+  });
+
+  it('R1-8 / R1-19: Forget or cross-tab meta change while silent unlock GET /vault is held invalidates the cached DevKey (no unlockDevKey dispatch, store empty, stays locked)', async () => {
+    const tab = await openTab();
+    await remember(tab);
+    await tab.client.lock();
+
+    // 1. Held GET, Forget completes, same-key GET released -> no unlockDevKey dispatch, store empty, still locked.
+    let releaseGet!: () => void;
+    let getStarted!: () => void;
+    const getStartedP = new Promise<void>((r) => {
+      getStarted = r;
+    });
+    const getGate = new Promise<void>((r) => {
+      releaseGet = r;
+    });
+    const forgetDuringGet = silentUnlock(tab, {
+      loadVault: async () => {
+        getStarted();
+        await getGate;
+        return { vault_key_id: VAULT_K, private_keys_wrapped: tab.created.private_keys_wrapped };
+      },
+    });
+    await getStartedP;
+    expect(await forgetDevice(USER_A, env)).toMatchObject({ status: 'forgotten', deletedCount: 1 });
+    releaseGet();
+    expect(await forgetDuringGet.run).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(forgetDuringGet.unlock).not.toHaveBeenCalled();
+    expect(devkeys().size).toBe(0);
+    expect(tab.client.getState()).toBe('locked');
+
+    // 2. Cross-tab meta-change variant (e.g., another tab re-remembered or rotated meta while GET was held).
+    await tab.client.unlockPassphrase({
+      passphrase: PASSPHRASE,
+      kdf: tab.created.kdf,
+      vaultKeyWrappedByKek: tab.created.vault_key_wrapped_by_kek,
+      privateKeysWrapped: tab.created.private_keys_wrapped,
+      opGeneration: tab.client.captureGeneration(),
+    });
+    await remember(tab);
+    await tab.client.lock();
+
+    let releaseGet2!: () => void;
+    let getStarted2!: () => void;
+    const getStartedP2 = new Promise<void>((r) => {
+      getStarted2 = r;
+    });
+    const getGate2 = new Promise<void>((r) => {
+      releaseGet2 = r;
+    });
+    const metaChangedDuringGet = silentUnlock(tab, {
+      loadVault: async () => {
+        getStarted2();
+        await getGate2;
+        return { vault_key_id: VAULT_K, private_keys_wrapped: tab.created.private_keys_wrapped };
+      },
+    });
+    await getStartedP2;
+    // Another tab purges / rotates device meta for another user (keeps USER_A record, bumps meta revision/incarnation).
+    await purgeDeviceKeysOnRevoked(USER_B, env);
+    releaseGet2();
+    expect(await metaChangedDuringGet.run).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(metaChangedDuringGet.unlock).not.toHaveBeenCalled();
+    expect(tab.client.getState()).toBe('locked');
+
+    // 3. No-Forget control: without Forget or meta change, held GET unlocks normally.
+    let releaseGet3!: () => void;
+    let getStarted3!: () => void;
+    const getStartedP3 = new Promise<void>((r) => {
+      getStarted3 = r;
+    });
+    const getGate3 = new Promise<void>((r) => {
+      releaseGet3 = r;
+    });
+    const control = silentUnlock(tab, {
+      loadVault: async () => {
+        getStarted3();
+        await getGate3;
+        return { vault_key_id: VAULT_K, private_keys_wrapped: tab.created.private_keys_wrapped };
+      },
+    });
+    await getStartedP3;
+    releaseGet3();
+    expect(await control.run).toEqual({ status: 'unlocked' });
+    expect(control.unlock).toHaveBeenCalledTimes(1);
+    expect(tab.client.getState()).toBe('unlocked');
+  });
+
+  it('R1-8 / R1-19 (advisor-dec-054 post-dispatch window): Forget landing while unlockDevKey is in flight locks and wipes the Worker and reports stale (not unlocked)', async () => {
+    const tab = await openTab();
+    await remember(tab);
+    await tab.client.lock();
+
+    let releasePostUnlock!: () => void;
+    let unlockDispatched!: () => void;
+    const unlockDispatchedP = new Promise<void>((r) => {
+      unlockDispatched = r;
+    });
+    const postUnlockGate = new Promise<void>((r) => {
+      releasePostUnlock = r;
+    });
+
+    const inFlightAttempt = silentUnlock(tab, {
+      unlock: async (params) => {
+        const res = await tab.client.unlockDevKey(params);
+        unlockDispatched();
+        await postUnlockGate;
+        return res;
+      },
+    });
+
+    await unlockDispatchedP;
+    // Forget completes while unlockDevKey is in flight (after beforePostMessage already passed).
+    expect(await forgetDevice(USER_A, env)).toMatchObject({ status: 'forgotten', deletedCount: 1 });
+    releasePostUnlock();
+
+    expect(await inFlightAttempt.run).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(inFlightAttempt.lockOnInvalidate).toHaveBeenCalledTimes(1);
+    expect(devkeys().size).toBe(0);
     expect(tab.client.getState()).toBe('locked');
   });
 
@@ -489,6 +611,42 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
       await tab.client.lock();
       expect(await remember(tab, { opGeneration: stale })).toEqual({ status: 'aborted', reason: 'generation_changed' });
       expect(idb.transactions).toHaveLength(0);
+    });
+
+    it('R1-2 / R1-7 / R1-18: generation advanced between metaReq.onsuccess and keysReq.onsuccess aborts before any delete/put and rolls back', async () => {
+      const tab = await openTab();
+      // Seed an older key record for USER_A to prove no delete/put survives when aborted in keysReq.onsuccess.
+      const oldKey = formatDevKeyRecordKey(USER_A, VAULT_K2);
+      devkeys().set(oldKey, { user_id: USER_A, vault_key_id: VAULT_K2, wrapped_vk: new Uint8Array(60) });
+
+      let lockFiredInKeyListCallback = false;
+      const res = await remember(tab, {
+        testHooks: {
+          onKeyListSuccess: () => {
+            lockFiredInKeyListCallback = true;
+            // Synchronous generation bump (CryptoClient.lock increments generation synchronously before Worker message).
+            void tab.client.lock();
+          },
+        },
+      });
+      expect(lockFiredInKeyListCallback).toBe(true);
+      expect(res).toEqual({ status: 'aborted', reason: 'generation_changed' });
+      expect([...devkeys().keys()]).toEqual([oldKey]);
+      expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(false);
+      expect((await metaNow())?.deviceRevision).toBe(1);
+
+      // Control without lock in callback succeeds and replaces the old record.
+      await tab.client.unlockPassphrase({
+        passphrase: PASSPHRASE,
+        kdf: tab.created.kdf,
+        vaultKeyWrappedByKek: tab.created.vault_key_wrapped_by_kek,
+        privateKeysWrapped: tab.created.private_keys_wrapped,
+        opGeneration: tab.client.captureGeneration(),
+      });
+      const controlRes = await remember(tab);
+      expect(controlRes.status).toBe('remembered');
+      expect([...devkeys().keys()]).toEqual([formatDevKeyRecordKey(USER_A, VAULT_K)]);
+      expect((await metaNow())?.deviceRevision).toBe(2);
     });
   });
 

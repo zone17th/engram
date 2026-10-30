@@ -62,6 +62,8 @@ export interface RememberTestHooks {
   afterWebCrypto?: () => Promise<void> | void;
   /** Awaited INSIDE the Web Lock after the vault was verified and before the final tx (never inside the tx). */
   afterVaultVerified?: () => Promise<void> | void;
+  /** Called synchronously at the start of the final key-list callback (after `metaReq.onsuccess` ran). */
+  onKeyListSuccess?: () => void;
 }
 
 function testHooksAllowed(): boolean {
@@ -182,6 +184,7 @@ function commitRememberTx(
     devKey: CryptoKey;
     wrappedVk: Uint8Array;
     isGenerationCurrent: () => boolean;
+    onKeyListSuccess?: () => void;
   },
 ): Promise<RememberCommitOutcome> {
   return new Promise<RememberCommitOutcome>((resolve, reject) => {
@@ -250,6 +253,23 @@ function commitRememberTx(
           keysReq.onerror = () => abortWith(null);
           keysReq.onsuccess = () => {
             try {
+              params.onKeyListSuccess?.();
+              const latestMeta: unknown = metaReq.result;
+              if (!isValidDeviceMetaRecord(latestMeta)) {
+                abortWith('meta_missing');
+                return;
+              }
+              if (
+                latestMeta.incarnation !== params.start.incarnation ||
+                latestMeta.deviceRevision !== params.start.deviceRevision
+              ) {
+                abortWith('meta_changed');
+                return;
+              }
+              if (!params.isGenerationCurrent()) {
+                abortWith('generation_changed');
+                return;
+              }
               const keys = Array.isArray(keysReq.result) ? keysReq.result : [];
               for (const key of keys) {
                 if (key !== ownKey && parseDevKeyRecordUserId(key, undefined) === params.userId) {
@@ -273,6 +293,10 @@ function commitRememberTx(
               const putMeta = meta.put(next, DEVICE_META_RECORD_KEY);
               putMeta.onerror = () => abortWith(null);
               putMeta.onsuccess = () => {
+                if (!params.isGenerationCurrent()) {
+                  abortWith('generation_changed');
+                  return;
+                }
                 committed = next;
               };
             } catch {
@@ -553,6 +577,7 @@ export async function rememberDevice(params: RememberDeviceParams): Promise<Reme
             devKey: sealedKey,
             wrappedVk: sealedVk,
             isGenerationCurrent,
+            onKeyListSuccess: hooks?.onKeyListSuccess,
           }),
         );
         return { kind: 'commit', outcome };
@@ -618,6 +643,8 @@ export interface SilentUnlockParams {
   /** Authoritative `GET /vault`: the vault, or `null` for `404 vault_absent` (the loader already purged). Rejects otherwise. */
   loadVault: () => Promise<LoadedDeviceVault | null>;
   unlock: (params: UnlockDevKeyClientParams) => Promise<{ unlocked: true }>;
+  /** Called when post-dispatch verification detects that Forget or a device meta change occurred while `unlockDevKey` was in flight (advisor-dec-054). */
+  lockOnInvalidate?: () => Promise<unknown>;
   env?: DeviceEnvironment;
   /** Overridable for tests; defaults to the key-scoped purge. */
   purgeStale?: (scope: DeviceKeyScope) => Promise<unknown>;
@@ -641,6 +668,39 @@ export async function runSilentDeviceUnlock(params: SilentUnlockParams): Promise
   if (snapshot.entries.length === 0) return { status: 'skipped', reason: 'not_remembered' };
   if (!isCurrent()) return { status: 'skipped', reason: 'stale' };
 
+  const startMeta = snapshot.meta;
+  const areBytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
+    if (a.byteLength !== b.byteLength) return false;
+    for (let i = 0; i < a.byteLength; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  };
+  const isSnapshotRecordStillCurrent = (
+    latest: DeviceSnapshot,
+    vaultKeyId: string,
+    expectedRecord: StoredDevKeyRecord,
+  ): boolean => {
+    if (startMeta !== null) {
+      if (
+        latest.meta === null ||
+        latest.meta.incarnation !== startMeta.incarnation ||
+        latest.meta.deviceRevision !== startMeta.deviceRevision
+      ) {
+        return false;
+      }
+    } else if (latest.meta !== null) {
+      return false;
+    }
+    const latestRecord = latest.entries.find((e) => e.vaultKeyId === vaultKeyId)?.record ?? null;
+    if (latestRecord === null) return false;
+    return (
+      latestRecord.user_id === expectedRecord.user_id &&
+      latestRecord.vault_key_id === expectedRecord.vault_key_id &&
+      areBytesEqual(latestRecord.wrapped_vk, expectedRecord.wrapped_vk)
+    );
+  };
+
   let vault: LoadedDeviceVault | null;
   try {
     vault = await params.loadVault();
@@ -662,6 +722,18 @@ export async function runSilentDeviceUnlock(params: SilentUnlockParams): Promise
     return { status: 'fallback', reason: 'vault_mismatch' };
   }
 
+  // Revalidate captured device (incarnation, deviceRevision) + record after loadVault() and immediately before unlockDevKey.
+  let postVaultSnapshot: DeviceSnapshot;
+  try {
+    postVaultSnapshot = await readDeviceSnapshot(userId, env);
+  } catch {
+    return { status: 'fallback', reason: 'idb_error' };
+  }
+  if (!isCurrent()) return { status: 'skipped', reason: 'stale' };
+  if (!isSnapshotRecordStillCurrent(postVaultSnapshot, vault.vault_key_id, own)) {
+    return { status: 'skipped', reason: 'stale' };
+  }
+
   try {
     await params.unlock({
       devKey: own.dev_key as CryptoKey,
@@ -670,7 +742,33 @@ export async function runSilentDeviceUnlock(params: SilentUnlockParams): Promise
       vaultKeyId: vault.vault_key_id,
       privateKeysWrapped: vault.private_keys_wrapped,
       opGeneration,
+      beforePostMessage: async () => {
+        if (!isCurrent()) {
+          throw new CryptoClientError('STALE_GENERATION', 'Silent unlock superseded before Worker dispatch');
+        }
+        let finalSnapshot: DeviceSnapshot;
+        try {
+          finalSnapshot = await readDeviceSnapshot(userId, env);
+        } catch {
+          throw new CryptoClientError('STALE_GENERATION', 'Failed to reverify device record before Worker dispatch');
+        }
+        if (!isCurrent() || !isSnapshotRecordStillCurrent(finalSnapshot, vault.vault_key_id, own)) {
+          throw new CryptoClientError('STALE_GENERATION', 'Device state or Forget invalidated pending silent unlock');
+        }
+      },
     });
+    let postUnlockSnapshot: DeviceSnapshot;
+    try {
+      postUnlockSnapshot = await readDeviceSnapshot(userId, env);
+    } catch {
+      if (isCurrent()) await params.lockOnInvalidate?.();
+      return { status: 'skipped', reason: 'stale' };
+    }
+    if (!isCurrent()) return { status: 'skipped', reason: 'stale' };
+    if (!isSnapshotRecordStillCurrent(postUnlockSnapshot, vault.vault_key_id, own)) {
+      await params.lockOnInvalidate?.();
+      return { status: 'skipped', reason: 'stale' };
+    }
     return { status: 'unlocked' };
   } catch (err) {
     if (err instanceof CryptoClientError && err.code === 'STALE_GENERATION') {
