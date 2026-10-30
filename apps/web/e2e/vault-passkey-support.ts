@@ -1,5 +1,5 @@
 import { expect, type BrowserContext, type CDPSession, type Locator, type Page, type Response } from '@playwright/test';
-import { PASSWORD, signupViaUi } from './helpers';
+import { PASSWORD, isolateRateLimit, waitForAuthPageReady } from './helpers';
 import { fillSecret } from './vault-settings-secret';
 
 // Shared helpers of the passkey (P03-T19) real-API specs: vault-passkey.spec.ts and vault-passkey-visual.spec.ts.
@@ -54,10 +54,45 @@ export async function unlockWithPassphrase(page: Page) {
   await expectVaultOpen(page);
 }
 
+async function assertNotRateLimited(page: Page) {
+  const alert = page.getByTestId('auth-error-card');
+  if (!(await alert.isVisible().catch(() => false))) return;
+  const text = await alert.innerText();
+  if (/too many attempts|thử quá nhiều|rate_limited/i.test(text)) {
+    throw new Error(`rate-limited during auth helper: ${text}`);
+  }
+}
+
+/**
+ * Real UI signup that fills the login password via `fillSecret` (never `locator.fill`), so an actionability timeout
+ * can never echo the password into the public CI list-reporter log (PKW-R2-2, advisor-dec-045).
+ */
+export async function signupViaUiSecret(page: Page, email: string, password = PASSWORD) {
+  await isolateRateLimit(page);
+  await page.goto('/app/auth/signup');
+  await waitForAuthPageReady(page);
+  await page.getByLabel('Email').fill(email);
+  await fillSecret(page.getByLabel(/Login password|Mật khẩu đăng nhập/), password, UI_WAIT_MS);
+  await page.getByRole('checkbox', { name: /agree|terms|điều khoản/i }).check();
+  await page.getByRole('button', { name: /Create account|Tạo tài khoản/ }).click();
+  const outcome = await Promise.race([
+    page.waitForURL(/\/app\/(onboarding|auth\/verify-email)/, { timeout: UI_WAIT_MS }).then(() => 'ok' as const),
+    page.getByTestId('auth-error-card').waitFor({ state: 'visible', timeout: UI_WAIT_MS }).then(() => 'err' as const),
+  ]).catch(() => 'timeout' as const);
+  await assertNotRateLimited(page);
+  if (outcome === 'err') {
+    const text = await page.getByTestId('auth-error-card').innerText();
+    throw new Error(`signup failed: ${text}`);
+  }
+  if (outcome !== 'ok') {
+    throw new Error('signup did not reach onboarding or verify-email');
+  }
+}
+
 /** Real signup, then onboarding creates a real vault (POST /vault). Ends unlocked on /app. */
 export async function signupAndCreateVault(page: Page, emailPrefix: string, uniqueEmail: (prefix: string) => string) {
   const email = uniqueEmail(emailPrefix);
-  await signupViaUi(page, email, PASSWORD);
+  await signupViaUiSecret(page, email, PASSWORD);
   await expect(page).toHaveURL(/\/app\/onboarding$/, { timeout: UI_WAIT_MS });
   await expect(page.getByTestId('onboarding-step-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
 

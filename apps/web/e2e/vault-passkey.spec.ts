@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { uniqueEmail } from './helpers';
+import { PASSWORD, uniqueEmail } from './helpers';
+import { fillSecret } from './vault-settings-secret';
 import {
   CRYPTO_WAIT_MS,
   FLOW_TIMEOUT_MS,
@@ -58,8 +59,15 @@ test.describe('passkey against the real API', () => {
 
     await test.step('1. real signup and onboarding create a vault; the vault is open', async () => {
       await signupAndCreateVault(page, 'vault-passkey', uniqueEmail);
+      // PKW-R2-2: an actionability timeout on a secret field must never include the secret value in the Playwright call log.
+      let actionabilityFailureMessage = '';
+      try {
+        await fillSecret(page.getByTestId('nonexistent-secret-input-pkw-r2-2'), PASSWORD, 50);
+      } catch (err) {
+        actionabilityFailureMessage = err instanceof Error ? err.message : String(err);
+      }
+      expect(actionabilityFailureMessage.length > 0 && !actionabilityFailureMessage.includes(PASSWORD)).toBe(true);
     });
-
     await test.step('2. PRF matrix: an authenticator without PRF -> passkey.prf_unsupported, nothing saved', async () => {
       const noPrf = await addAuthenticator(cdp, { hasPrf: false });
       await gotoSettings(page);
