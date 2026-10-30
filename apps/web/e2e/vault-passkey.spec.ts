@@ -113,7 +113,7 @@ test.describe('passkey against the real API', () => {
     // (kCtap2ErrUvBlocked), and WebAuthn.setUserVerified does not reset uv_retries: replace with a fresh verified
     // authenticator before registering (PKW-R2-5).
     await removeAuthenticator(cdp, unverifiedAuth);
-    const authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
+    let authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
 
     await test.step('5. PRF matrix: register with PRF; the flow follows whichever PRF path Chrome takes', async () => {
       const before = await readProbe(page);
@@ -129,13 +129,47 @@ test.describe('passkey against the real API', () => {
       if (created?.prfFirst) {
         // PRF output directly at create(): no follow-up get().
         expect(followUpGets).toHaveLength(0);
+        console.log('prf-path: direct');
         test.info().annotations.push({ type: 'prf-path', description: 'output directly at create()' });
       } else {
         // prf.enabled at create() without output: exactly one follow-up get() returns the output.
         expect(followUpGets).toHaveLength(1);
         expect(followUpGets[0]?.error).toBeNull();
         expect(followUpGets[0]?.prfFirst).toBe(true);
+        console.log('prf-path: enabled-then-get');
         test.info().annotations.push({ type: 'prf-path', description: 'enabled at create(), then get()' });
+
+        // advisor-dec-059: when Chrome's virtual authenticator takes the enabled-then-get branch, also exercise
+        // cancel at the registration follow-up get() (user verification off for that get(), no tampering) and assert
+        // passkey.register_cancelled + orphan notice.
+        const onCredentialAdded = () => {
+          void setUserVerified(cdp, authenticatorA, false);
+        };
+        cdp.on('WebAuthn.credentialAdded', onCredentialAdded);
+        try {
+          const cancelDialog = await openAddPasskeyDialog(page);
+          await submitPasskeyName(page, 'Cancel follow-up get key');
+          await expect(cancelDialog.getByRole('alert')).toHaveText(COPY.registerCancelled, {
+            timeout: CRYPTO_WAIT_MS,
+          });
+          await expect(cancelDialog.getByText(COPY.orphanNotice)).toBeVisible();
+          const cancelProbe = await readProbe(page);
+          expect(cancelProbe.creates.at(-1)?.error).toBeNull();
+          expect(cancelProbe.creates.at(-1)?.prfEnabled).toBe(true);
+          expect(cancelProbe.creates.at(-1)?.prfFirst).toBe(false);
+          expect(cancelProbe.gets.at(-1)?.error).toBe('NotAllowedError');
+          await cancelDialog.getByRole('button', { name: 'Cancel' }).click();
+          await expect(cancelDialog).toBeHidden({ timeout: UI_WAIT_MS });
+        } finally {
+          cdp.off('WebAuthn.credentialAdded', onCredentialAdded);
+        }
+        // authenticatorA's uv_retries were exhausted by the cancelled follow-up get(): replace it with a fresh
+        // verified authenticator and register E2E passkey A before the unlock steps below (step 9 then adds the 2nd).
+        await removeAuthenticator(cdp, authenticatorA);
+        authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
+        await openAddPasskeyDialog(page);
+        await submitPasskeyName(page, 'E2E passkey A');
+        await expectPasskeyAdded(page);
       }
     });
 
@@ -193,10 +227,11 @@ test.describe('passkey against the real API', () => {
       await passkeyButton.click();
       const options: { credentials?: Array<{ prf_salt?: string }> } = await (await optionsResponse).json();
       const salts = (options.credentials ?? []).map((c) => c.prf_salt);
-      expect(salts).toHaveLength(2);
+      expect(salts.length).toBeGreaterThanOrEqual(2);
       // Booleans on purpose: a failing toEqual would print the salts into the CI log.
-      expect(new Set(salts).size === 2 && salts.every((s) => typeof s === 'string' && s.length > 0)).toBe(true);
-
+      expect(new Set(salts).size === salts.length && salts.every((s) => typeof s === 'string' && s.length > 0)).toBe(
+        true,
+      );
       await expect(page).toHaveURL(/\/app$/, { timeout: CRYPTO_WAIT_MS });
       await expectVaultOpen(page);
     });
