@@ -21,7 +21,7 @@ import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/cryp
 import type { Sodium } from '@/lib/crypto/sodium';
 import { FakeDeviceIdb, FakeWebLocks } from '@/lib/crypto/test/fake-device-idb';
 import { createWorkerShim, type ShimmedWorkerInstance } from '@/lib/crypto/test/worker-shim';
-import { createRememberDeviceStore } from './remember-store';
+import { createRememberDeviceStore, type RememberDeviceState } from './remember-store';
 import { useRememberDevice, type UseRememberDeviceResult } from './use-remember-device';
 
 // Plan Task 18 at the provider / hook level: silent unlock after reload, reset elsewhere then reload, key-scoped purges
@@ -272,6 +272,188 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     expect(tab.remember().status).toBe('unavailable');
     expect(tab.remember().remembered).toBe(false);
     expect(stateText()).toBe('unlocked');
+  });
+
+  it('R1-12: remember() and forget() resolve with the settled final state (busy: false) matching getState() on success, abort, and storage failure', async () => {
+    let releaseAbort!: () => void;
+    let reachedAbort!: () => void;
+    let pauseOnNextRemember = false;
+    const tab = await openUnlockedTab({
+      testHooks: {
+        afterWebCrypto: async () => {
+          if (!pauseOnNextRemember) return;
+          reachedAbort();
+          await new Promise<void>((r) => {
+            releaseAbort = r;
+          });
+        },
+      },
+    });
+
+    // 1. Success for remember() and forget()
+    let remSuccess!: RememberDeviceState;
+    await act(async () => {
+      remSuccess = await tab.remember().remember();
+    });
+    expect(remSuccess.busy).toBe(false);
+    expect(remSuccess.remembered).toBe(true);
+    expect(remSuccess.status).toBe('ready');
+    expect(tab.remember().busy).toBe(false);
+
+    let fgtSuccess!: RememberDeviceState;
+    await act(async () => {
+      fgtSuccess = await tab.remember().forget();
+    });
+    expect(fgtSuccess.busy).toBe(false);
+    expect(fgtSuccess.remembered).toBe(false);
+    expect(fgtSuccess.status).toBe('ready');
+    expect(tab.remember().busy).toBe(false);
+
+    // 2. Abort for remember()
+    pauseOnNextRemember = true;
+    const reachedP = new Promise<void>((r) => {
+      reachedAbort = r;
+    });
+    let remAbortPromise!: Promise<RememberDeviceState>;
+    act(() => {
+      remAbortPromise = tab.remember().remember();
+    });
+    await reachedP;
+    await act(async () => {
+      await purgeDeviceKeysOnRevoked(null, env);
+    });
+    let remAborted!: RememberDeviceState;
+    await act(async () => {
+      releaseAbort();
+      remAborted = await remAbortPromise;
+    });
+    pauseOnNextRemember = false;
+    expect(remAborted.busy).toBe(false);
+    expect(remAborted.lastAbortReason).toBe('meta_changed');
+    expect(tab.remember().busy).toBe(false);
+
+    // 3. Storage failure for remember() and forget()
+    idb.options = { blockOpen: true };
+    let remUnavailable!: RememberDeviceState;
+    await act(async () => {
+      remUnavailable = await tab.remember().remember();
+    });
+    expect(remUnavailable.busy).toBe(false);
+    expect(remUnavailable.status).toBe('unavailable');
+    expect(tab.remember().busy).toBe(false);
+
+    let fgtUnavailable!: RememberDeviceState;
+    await act(async () => {
+      fgtUnavailable = await tab.remember().forget();
+    });
+    expect(fgtUnavailable.busy).toBe(false);
+    expect(fgtUnavailable.status).toBe('unavailable');
+    expect(tab.remember().busy).toBe(false);
+  });
+
+  it('R1-13: initial and wake refresh keep storage failure as unavailable (never erasing unavailable to ready/off while IDB is broken), and storage recovery returns ready while passphrase stays usable', async () => {
+    idb.options = { failOpen: true };
+    const tab = await openUnlockedTab();
+    await waitFor(() => expect(tab.remember().status).toBe('unavailable'));
+    expect(tab.remember().remembered).toBe(false);
+
+    // Wake events while storage is still broken must keep status: 'unavailable', not overwrite with 'ready'.
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('pageshow'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await act(async () => {
+      await tab.remember().refresh();
+    });
+    expect(tab.remember().status).toBe('unavailable');
+    expect(tab.remember().remembered).toBe(false);
+
+    // Passphrase operations remain usable while sabk.device is unavailable.
+    await act(async () => {
+      await tab.vault().lock({ broadcast: false, reason: 'manual' });
+    });
+    expect(stateText()).toBe('locked');
+    await act(async () => {
+      await tab.vault().unlockPassphrase({
+        passphrase: PASSPHRASE,
+        kdf: created!.kdf,
+        vaultKeyWrappedByKek: created!.vault_key_wrapped_by_kek,
+        privateKeysWrapped: created!.private_keys_wrapped,
+        opGeneration: tab.vault().captureOpGeneration(),
+      });
+    });
+    expect(stateText()).toBe('unlocked');
+
+    // Storage recovery: wake / refresh returns status to 'ready'.
+    idb.options = {};
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await tab.remember().refresh();
+    });
+    await waitFor(() => expect(tab.remember().status).toBe('ready'));
+    expect(tab.remember().remembered).toBe(false);
+  });
+
+  it('R1-11 / R1-24: account switch A->B while A\u2019s Remember is parked fences A\u2019s aborted continuation so it never overwrites B\u2019s ready/off hook state', async () => {
+    let releaseParkedA!: () => void;
+    let reachedParkedA!: () => void;
+    const reachedP = new Promise<void>((r) => {
+      reachedParkedA = r;
+    });
+    const parkedGate = new Promise<void>((r) => {
+      releaseParkedA = r;
+    });
+
+    const tab = await openUnlockedTab({
+      testHooks: {
+        afterWebCrypto: async () => {
+          reachedParkedA();
+          await parkedGate;
+        },
+      },
+    });
+
+    // Seed an existing valid record for USER_A so A's post-abort DB read would see remembered: true if unfenced.
+    await act(async () => {
+      idb.store(DEVKEY_STORE_NAME).set(formatDevKeyRecordKey(USER_A, VAULT_K), {
+        user_id: USER_A,
+        vault_key_id: VAULT_K,
+        dev_key: {},
+        wrapped_vk: new Uint8Array(60),
+        created_at: '2026-01-01T00:00:00Z',
+      });
+    });
+
+    let pendingA!: Promise<unknown>;
+    act(() => {
+      pendingA = tab.remember().remember();
+    });
+    await reachedP;
+
+    // Switch session to USER_B while A's Remember is parked, and load B's vault metadata (VAULT_K2).
+    serverKeyId = VAULT_K2;
+    mocks.session.me = makeMe(USER_B);
+    await act(async () => {
+      await tab.vault().reloadVaultMeta();
+    });
+    await act(async () => {
+      await tab.remember().refresh();
+    });
+    await waitFor(() => expect(tab.remember().status).toBe('ready'));
+    expect(tab.remember().remembered).toBe(false);
+    expect(tab.remember().busy).toBe(false);
+
+    // Now release A's parked Remember: it aborts (generation moved on account switch) and must NOT publish A's state over B.
+    await act(async () => {
+      releaseParkedA();
+      await pendingA;
+    });
+    expect(tab.remember().status).toBe('ready');
+    expect(tab.remember().remembered).toBe(false);
+    expect(tab.remember().busy).toBe(false);
+    expect(tab.remember().notice).toBeNull();
+    expect(tab.remember().lastAbortReason).toBeNull();
   });
 
   // ------------------------------------------------------------------------------------------------------------

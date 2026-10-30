@@ -13,7 +13,7 @@ import {
 } from '@/features/vault/device-store';
 import {
   forgetDevice,
-  readDeviceRememberedState,
+  readDeviceSnapshot,
   rememberDevice,
   subscribeDeviceStateChange,
   type DeviceEnvironment,
@@ -86,6 +86,8 @@ export function createRememberDeviceStore(options: RememberDeviceStoreOptions): 
   let state: RememberDeviceState = INITIAL_STATE;
   const listeners = new Set<() => void>();
   let readSeq = 0;
+  let opSeq = 0;
+  let activeOpContext: { userId: string; vaultKeyId: string | null } | null = null;
 
   const setState = (patch: Partial<RememberDeviceState>) => {
     state = { ...state, ...patch };
@@ -98,86 +100,183 @@ export function createRememberDeviceStore(options: RememberDeviceStoreOptions): 
     }
   };
 
+  const isContextStillOwned = (
+    capturedUserId: string,
+    capturedVaultKeyId: string | null,
+  ): boolean => {
+    const live = options.getContext();
+    if (!live || live.userId !== capturedUserId) return false;
+    if (capturedVaultKeyId !== null && live.vaultKeyId !== null && live.vaultKeyId !== capturedVaultKeyId) {
+      return false;
+    }
+    return true;
+  };
+
   const refresh = async (): Promise<void> => {
     const ctx = options.getContext();
     if (!ctx || !ctx.vaultKeyId) return;
+    const capturedUserId = ctx.userId;
+    const capturedVaultKeyId = ctx.vaultKeyId;
     const seq = ++readSeq;
-    const read = await readDeviceRememberedState(ctx.userId, ctx.vaultKeyId, options.env);
-    // A newer read (or a context change) supersedes this one.
-    if (seq !== readSeq) return;
-    setState({ status: 'ready', remembered: read.remembered, meta: read.meta });
+    if (
+      activeOpContext &&
+      !isContextStillOwned(activeOpContext.userId, activeOpContext.vaultKeyId)
+    ) {
+      opSeq += 1;
+      activeOpContext = null;
+      setState({ busy: false, notice: null, lastAbortReason: null });
+    }
+    try {
+      const snapshot = await readDeviceSnapshot(capturedUserId, options.env);
+      if (seq !== readSeq || !isContextStillOwned(capturedUserId, capturedVaultKeyId)) return;
+      const own = snapshot.entries.find((e) => e.vaultKeyId === capturedVaultKeyId);
+      setState({
+        status: 'ready',
+        remembered: own?.record != null,
+        meta: snapshot.meta,
+      });
+    } catch {
+      if (seq !== readSeq || !isContextStillOwned(capturedUserId, capturedVaultKeyId)) return;
+      setState({
+        status: 'unavailable',
+        remembered: false,
+        meta: null,
+      });
+    }
   };
 
   const remember = async (): Promise<RememberDeviceState> => {
     const ctx = options.getContext();
-    if (!ctx || state.busy) return state;
+    if (!ctx) return state;
+    if (
+      state.busy &&
+      activeOpContext &&
+      isContextStillOwned(activeOpContext.userId, activeOpContext.vaultKeyId)
+    ) {
+      return state;
+    }
+    const capturedUserId = ctx.userId;
+    const initialVaultKeyId = ctx.vaultKeyId;
+    const currentOpSeq = ++opSeq;
+    activeOpContext = { userId: capturedUserId, vaultKeyId: initialVaultKeyId };
+    readSeq += 1;
     // opGeneration is captured synchronously, before the first await of this flow.
     const { opGeneration, client } = ctx.captureOp();
     setState({ busy: true, notice: null, lastAbortReason: null });
     try {
-      let vaultKeyId = ctx.vaultKeyId;
+      let vaultKeyId = initialVaultKeyId;
       if (!vaultKeyId) {
         const loaded = await ctx.reloadVaultMeta();
-        vaultKeyId = loaded?.vault_key_id ?? null;
+        if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, initialVaultKeyId)) {
+          vaultKeyId = loaded?.vault_key_id ?? null;
+          activeOpContext = { userId: capturedUserId, vaultKeyId };
+        }
       }
-      if (!vaultKeyId) {
-        await refresh();
-        setState({ lastAbortReason: 'vault_absent' });
-        return state;
+      if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, vaultKeyId)) {
+        if (!vaultKeyId) {
+          await refresh();
+          if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, null)) {
+            setState({ lastAbortReason: 'vault_absent' });
+          }
+        } else {
+          const res = await rememberDevice({
+            client,
+            opGeneration,
+            userId: capturedUserId,
+            vaultKeyId,
+            env: options.env,
+            testHooks: options.testHooks,
+          });
+          if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, vaultKeyId)) {
+            if (res.status === 'remembered') {
+              readSeq += 1;
+              setState({ status: 'ready', remembered: true, meta: res.meta, lastAbortReason: null });
+            } else if (res.status === 'unavailable') {
+              // Private mode / blocked storage / no Web Locks: no crash, the passphrase path keeps working.
+              readSeq += 1;
+              setState({ status: 'unavailable', remembered: false, meta: null, lastAbortReason: 'unavailable' });
+            } else {
+              // Aborted: reset the toggle to the DB truth, never to what the user clicked.
+              try {
+                const snapshot = await readDeviceSnapshot(capturedUserId, options.env);
+                if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, vaultKeyId)) {
+                  const own = snapshot.entries.find((e) => e.vaultKeyId === vaultKeyId);
+                  readSeq += 1;
+                  setState({
+                    status: 'ready',
+                    remembered: own?.record != null,
+                    meta: snapshot.meta,
+                    lastAbortReason: res.reason,
+                    notice: NOTICE_ABORT_REASONS[res.reason] ? 'device_state_changed' : null,
+                  });
+                }
+              } catch {
+                if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, vaultKeyId)) {
+                  readSeq += 1;
+                  setState({
+                    status: 'unavailable',
+                    remembered: false,
+                    meta: null,
+                    lastAbortReason: res.reason,
+                    notice: NOTICE_ABORT_REASONS[res.reason] ? 'device_state_changed' : null,
+                  });
+                }
+              }
+              if (
+                (res.reason === 'vault_absent' || res.reason === 'vault_mismatch') &&
+                currentOpSeq === opSeq &&
+                isContextStillOwned(capturedUserId, vaultKeyId)
+              ) {
+                // Let the provider reconcile (lock + key-scoped purge) now that the device lock is released.
+                await ctx.reloadVaultMeta().catch(() => undefined);
+              }
+            }
+          }
+        }
       }
-      const res = await rememberDevice({
-        client,
-        opGeneration,
-        userId: ctx.userId,
-        vaultKeyId,
-        env: options.env,
-        testHooks: options.testHooks,
-      });
-      if (res.status === 'remembered') {
-        setState({ status: 'ready', remembered: true, meta: res.meta, lastAbortReason: null });
-        return state;
-      }
-      if (res.status === 'unavailable') {
-        // Private mode / blocked storage / no Web Locks: no crash, the passphrase path keeps working.
-        setState({ status: 'unavailable', remembered: false, lastAbortReason: 'unavailable' });
-        return state;
-      }
-      // Aborted: reset the toggle to the DB truth, never to what the user clicked.
-      const read = await readDeviceRememberedState(ctx.userId, vaultKeyId, options.env);
-      setState({
-        status: 'ready',
-        remembered: read.remembered,
-        meta: read.meta,
-        lastAbortReason: res.reason,
-        notice: NOTICE_ABORT_REASONS[res.reason] ? 'device_state_changed' : null,
-      });
-      if (res.reason === 'vault_absent' || res.reason === 'vault_mismatch') {
-        // Let the provider reconcile (lock + key-scoped purge) now that the device lock is released.
-        await ctx.reloadVaultMeta().catch(() => undefined);
-      }
-      return state;
     } finally {
-      setState({ busy: false });
+      if (currentOpSeq === opSeq) {
+        activeOpContext = null;
+        setState({ busy: false });
+      }
     }
+    return state;
   };
 
   const forget = async (): Promise<RememberDeviceState> => {
     const ctx = options.getContext();
-    if (!ctx || state.busy) return state;
+    if (!ctx) return state;
+    if (
+      state.busy &&
+      activeOpContext &&
+      isContextStillOwned(activeOpContext.userId, activeOpContext.vaultKeyId)
+    ) {
+      return state;
+    }
+    const capturedUserId = ctx.userId;
+    const capturedVaultKeyId = ctx.vaultKeyId;
+    const currentOpSeq = ++opSeq;
+    activeOpContext = { userId: capturedUserId, vaultKeyId: capturedVaultKeyId };
+    readSeq += 1;
     setState({ busy: true, notice: null });
     try {
-      const res = await forgetDevice(ctx.userId, options.env);
-      if (res.status === 'unavailable') {
-        setState({ status: 'unavailable' });
-        return state;
+      const res = await forgetDevice(capturedUserId, options.env);
+      if (currentOpSeq === opSeq && isContextStillOwned(capturedUserId, capturedVaultKeyId)) {
+        if (res.status === 'unavailable') {
+          readSeq += 1;
+          setState({ status: 'unavailable', remembered: false, meta: null });
+        } else {
+          await refresh();
+        }
       }
-      await refresh();
-      return state;
     } finally {
-      setState({ busy: false });
+      if (currentOpSeq === opSeq) {
+        activeOpContext = null;
+        setState({ busy: false });
+      }
     }
+    return state;
   };
-
   const start = (): (() => void) => {
     const reread = () => {
       void refresh();
