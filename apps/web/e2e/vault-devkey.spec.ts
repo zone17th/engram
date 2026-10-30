@@ -52,7 +52,17 @@ interface DeviceBridge {
     userRecordCount: number;
     allRecordCount: number;
     meta: { incarnation: string; deviceRevision: number } | null;
+    workerInitialized: boolean;
+    workerEpoch: number;
+    workerGeneration: number;
+    workerState: string;
   }>;
+  workerWitness: () => {
+    workerInitialized: boolean;
+    workerEpoch: number;
+    workerGeneration: number;
+    workerState: string;
+  };
 }
 
 interface VaultBridge {
@@ -62,12 +72,21 @@ interface VaultBridge {
   reloadVaultMeta: () => Promise<unknown>;
 }
 
+interface R13Witness {
+  intercepted: boolean;
+  storeNames: string[];
+  devkeysPutSucceeded: boolean;
+  metaPutSucceeded: boolean;
+  abortEvents: number;
+}
+
 /** The gated test globals the vault provider installs on loopback / non-production builds. */
 type DeviceWindow = Window & {
   __engramDeviceTestBridge?: DeviceBridge;
   __engramVaultTestBridge?: VaultBridge;
+  __r13Witness?: R13Witness;
+  __r13OrigPut?: typeof IDBObjectStore.prototype.put;
 };
-
 async function installAuthenticatedVaultApiMocks(context: BrowserContext) {
   await context.route('**/api/v1/auth/csrf', async (route) => {
     await route.fulfill({
@@ -230,8 +249,26 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
       const pageB = await context.newPage();
       await pageA.goto('/app/settings');
       await pageB.goto('/app/settings');
-      await waitForBridges(pageA);
+      // R1-25: Initialize and exercise a real CryptoWorker in BOTH Tab A and Tab B, and witness both independent Workers.
+      await unlockViaRealWorker(pageA);
       await unlockViaRealWorker(pageB);
+      const witnessA = await pageA.evaluate(() => {
+        const w: DeviceWindow = window;
+        return w.__engramDeviceTestBridge!.workerWitness();
+      });
+      const witnessB = await pageB.evaluate(() => {
+        const w: DeviceWindow = window;
+        return w.__engramDeviceTestBridge!.workerWitness();
+      });
+      expect(witnessA.workerInitialized).toBe(true);
+      expect(witnessA.workerEpoch).toBeGreaterThanOrEqual(0);
+      expect(witnessA.workerState).toBe('unlocked');
+      expect(witnessB.workerInitialized).toBe(true);
+      expect(witnessB.workerEpoch).toBeGreaterThanOrEqual(0);
+      expect(witnessB.workerState).toBe('unlocked');
+      // Clear sabk.device (unlockPassphrase's lockEpoch baseline capture created the DB without device meta) so Tab B's
+      // Remember still exercises the first-time-meta initialization path (deviceRevision === 1) while both Workers stay live.
+      await deleteDeviceDatabase(pageA);
 
       // Tab B starts Remember on a device that has never stored anything (first-time meta init) and parks.
       await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.startPausedRemember());
@@ -239,7 +276,7 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
       const startSnapshot = await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
       expect(startSnapshot.meta?.deviceRevision).toBe(1);
       expect(startSnapshot.allRecordCount).toBe(0);
-
+      expect(startSnapshot.workerInitialized).toBe(true);
       // Tab A (another Worker, same real IndexedDB) changes the device state.
       if (scenario.name.startsWith('Forget')) {
         const res = await pageA.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.forget());
@@ -280,9 +317,19 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     const pageB = await context.newPage();
     await pageA.goto('/app/settings');
     await pageB.goto('/app/settings');
-    await waitForBridges(pageA);
+    await unlockViaRealWorker(pageA);
     await unlockViaRealWorker(pageB);
-
+    const controlWitnessA = await pageA.evaluate(() => {
+      const w: DeviceWindow = window;
+      return w.__engramDeviceTestBridge!.workerWitness();
+    });
+    const controlWitnessB = await pageB.evaluate(() => {
+      const w: DeviceWindow = window;
+      return w.__engramDeviceTestBridge!.workerWitness();
+    });
+    expect(controlWitnessA.workerInitialized).toBe(true);
+    expect(controlWitnessB.workerInitialized).toBe(true);
+    await deleteDeviceDatabase(pageA);
     await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.startPausedRemember());
     await pageB.waitForFunction(() => (window as DeviceWindow).__engramDeviceTestBridge!.isPausedAtWebCrypto());
     await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.release());
@@ -294,5 +341,106 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     // Tab A (not even unlocked) reads the same toggle state from the shared DB.
     const inA = await pageA.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.refresh());
     expect(inA.remembered).toBe(true);
+  });
+
+  test('R1-3: post-write abort in Remember (both puts succeed, then final readwrite tx aborts before commit) rolls back both stores, reports unavailable, keeps toggle off and busy:false', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await installAuthenticatedVaultApiMocks(context);
+    const page = await context.newPage();
+    await page.goto('/app/settings');
+    await unlockViaRealWorker(page);
+
+    // Seed an existing record + meta via a normal Remember first so we can assert both stores stay unchanged on rollback.
+    const initial = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.remember());
+    expect(initial.status).toBe('ready');
+    expect(initial.remembered).toBe(true);
+    expect(initial.busy).toBe(false);
+    const beforeSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(beforeSnap.userRecordCount).toBe(1);
+    expect(beforeSnap.meta?.deviceRevision).toBe(2);
+
+    // Intercept IDBObjectStore.prototype.put on the final ['devkeys', 'meta'] readwrite tx so both puts succeed,
+    // then tx.abort() runs before commit (reusing the lock-epoch.spec.ts:930-969 pattern).
+    await page.evaluate(() => {
+      const win: DeviceWindow = window;
+      const witness: R13Witness = {
+        intercepted: false,
+        storeNames: [],
+        devkeysPutSucceeded: false,
+        metaPutSucceeded: false,
+        abortEvents: 0,
+      };
+      win.__r13Witness = witness;
+      const origPut = IDBObjectStore.prototype.put;
+      win.__r13OrigPut = origPut;
+      let armed = true;
+      IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        const req = origPut.call(this, value, key);
+        const tx = this.transaction;
+        const names = Array.from(tx.objectStoreNames).sort();
+        if (names.length === 2 && names[0] === 'devkeys' && names[1] === 'meta') {
+          if (this.name === 'devkeys') {
+            req.addEventListener('success', () => {
+              witness.devkeysPutSucceeded = true;
+            });
+          }
+          if (armed && this.name === 'meta' && key === '__meta__') {
+            armed = false;
+            witness.intercepted = true;
+            witness.storeNames = names;
+            tx.addEventListener('abort', () => {
+              witness.abortEvents += 1;
+            });
+            req.addEventListener('success', () => {
+              witness.metaPutSucceeded = true;
+              tx.abort();
+            });
+          }
+        }
+        return req;
+      };
+    });
+
+    const abortedRemember = await page.evaluate(async () => {
+      const win: DeviceWindow = window;
+      try {
+        return await win.__engramDeviceTestBridge!.remember();
+      } finally {
+        if (win.__r13OrigPut) {
+          IDBObjectStore.prototype.put = win.__r13OrigPut;
+        }
+      }
+    });
+
+    const witness = await page.evaluate(() => {
+      const win: DeviceWindow = window;
+      return win.__r13Witness;
+    });
+    expect(witness).toEqual({
+      intercepted: true,
+      storeNames: ['devkeys', 'meta'],
+      devkeysPutSucceeded: true,
+      metaPutSucceeded: true,
+      abortEvents: 1,
+    });
+
+    // Consumer-visible state: unavailable, remembered: false (toggle off), busy: false.
+    expect(abortedRemember.status).toBe('unavailable');
+    expect(abortedRemember.remembered).toBe(false);
+    expect(abortedRemember.busy).toBe(false);
+    expect(abortedRemember.lastAbortReason).toBe('unavailable');
+
+    const bridgeState = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.state());
+    expect(bridgeState.status).toBe('unavailable');
+    expect(bridgeState.remembered).toBe(false);
+    expect(bridgeState.busy).toBe(false);
+
+    // Both stores in IndexedDB rolled back and remain unchanged from before the aborted Remember.
+    const afterSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(afterSnap.userRecordCount).toBe(beforeSnap.userRecordCount);
+    expect(afterSnap.allRecordCount).toBe(beforeSnap.allRecordCount);
+    expect(afterSnap.meta).toEqual(beforeSnap.meta);
   });
 });

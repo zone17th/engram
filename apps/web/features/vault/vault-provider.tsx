@@ -2162,6 +2162,16 @@ export function VaultProvider({
           reloadVaultMeta: () => valueRef.current.reloadVaultMeta(),
         };
       },
+      getWorkerWitness: () => {
+        const client = valueRef.current.getClient();
+        const workerEpoch = client.getEpoch();
+        return {
+          workerInitialized: workerEpoch >= 0,
+          workerEpoch,
+          workerGeneration: client.getGeneration(),
+          workerState: client.getState(),
+        };
+      },
       env: effectiveDeviceStoreEnv,
     });
     win.__engramDeviceTestBridge = deviceBridge;

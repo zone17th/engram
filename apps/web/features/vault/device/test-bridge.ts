@@ -17,12 +17,27 @@ import {
   type RememberDeviceState,
 } from './remember-store';
 
+export interface DeviceWorkerWitness {
+  /** `true` once the tab's real CryptoWorker has been spawned and exercised at least one command (`epoch >= 0`). */
+  workerInitialized: boolean;
+  /** Authoritative Worker epoch (`-1` before the first Worker command settles). */
+  workerEpoch: number;
+  /** Monotonic CryptoClient generation of this tab. */
+  workerGeneration: number;
+  /** Authoritative Worker state (`locked` | `unlocked` | `recovering` | `error`). */
+  workerState: string;
+}
+
 export interface DeviceTestSnapshot {
   /** Number of well-formed or malformed DevKey records of the signed-in user. */
   userRecordCount: number;
   /** Number of DevKey records of every user in the DB. */
   allRecordCount: number;
   meta: DeviceMetaRecord | null;
+  workerInitialized: boolean;
+  workerEpoch: number;
+  workerGeneration: number;
+  workerState: string;
 }
 
 export interface DeviceTestBridge {
@@ -41,10 +56,12 @@ export interface DeviceTestBridge {
   state: () => RememberDeviceState;
   refresh: () => Promise<RememberDeviceState>;
   snapshot: () => Promise<DeviceTestSnapshot>;
+  workerWitness: () => DeviceWorkerWitness;
 }
 
 export function createDeviceTestBridge(options: {
   getContext: () => RememberDeviceContext | null;
+  getWorkerWitness?: () => DeviceWorkerWitness;
   env?: DeviceEnvironment;
 }): DeviceTestBridge {
   let paused = false;
@@ -92,8 +109,26 @@ export function createDeviceTestBridge(options: {
     snapshot: async () => {
       const ctx = options.getContext();
       const snap = await readDeviceSnapshot(ctx?.userId ?? '', options.env);
-      return { userRecordCount: snap.entries.length, allRecordCount: await countAll(options.env), meta: snap.meta };
+      const witness = options.getWorkerWitness?.() ?? {
+        workerInitialized: false,
+        workerEpoch: -1,
+        workerGeneration: 0,
+        workerState: 'locked',
+      };
+      return {
+        userRecordCount: snap.entries.length,
+        allRecordCount: await countAll(options.env),
+        meta: snap.meta,
+        ...witness,
+      };
     },
+    workerWitness: () =>
+      options.getWorkerWitness?.() ?? {
+        workerInitialized: false,
+        workerEpoch: -1,
+        workerGeneration: 0,
+        workerState: 'locked',
+      },
   };
 }
 
