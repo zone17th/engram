@@ -21,8 +21,9 @@ export type PasskeyUnlockErrorCode =
   /** The Worker is `recovering`; only the recovery whitelist is allowed until `lock()`. */
   | 'recovering'
   /** Lock/logout/user change while the flow ran; nothing is shown. */
-  | 'stale';
-
+  | 'stale'
+  /** The caller left the unlock screen before the flow settled; it locks again and never navigates. */
+  | 'abandoned';
 export type PasskeyUnlockOutcome = { ok: true } | { ok: false; error: PasskeyUnlockErrorCode };
 
 export interface PasskeyUnlockDeps {

@@ -6,6 +6,8 @@ import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 import { PasskeyUnlockButton } from './passkey-unlock-button';
 import { CRED_A, PRF_OUTPUT, domError, fakeCredential, problem, unlockOptionsResponse } from './test-helpers';
+import type { PasskeyUnlockOutcome } from './unlock-flow';
+import { usePasskeyUnlock } from './use-passkey-unlock';
 
 const mocks = vi.hoisted(() => ({
   vault: {
@@ -179,7 +181,7 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('leaving the screen while the prompt is open locks the vault again once the unlock lands', async () => {
+  it('PKW-R1-12..15: leaving the screen while the prompt is open stops before Worker admission, locks, reports abandoned and never calls onUnlocked', async () => {
     setPasskeys(1);
     let release: (value: unknown) => void = () => {};
     mocks.fetchPasskeyUnlockOptions.mockImplementation(
@@ -188,12 +190,58 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     mocks.credentialsGet.mockResolvedValue(
       fakeCredential({ rawId: CRED_A.id, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
     );
-    const view = renderButton();
+    const onUnlocked = vi.fn();
+    const view = renderButton(onUnlocked);
     fireEvent.click(await screen.findByRole('button', { name: 'Unlock with passkey' }));
     await waitFor(() => expect(mocks.fetchPasskeyUnlockOptions).toHaveBeenCalledTimes(1));
     view.unmount();
     release(unlockOptionsResponse());
     await waitFor(() => expect(mocks.vault.lock).toHaveBeenCalledTimes(1));
     expect(mocks.vault.lock).toHaveBeenCalledWith({ broadcast: false, reason: 'passkey_unlock_abandoned' });
+    expect(mocks.vault.unlockPrf).not.toHaveBeenCalled();
+    expect(onUnlocked).not.toHaveBeenCalled();
+  });
+
+  it('PKW-R1-12..15: leaving the screen while unlockPrf is already in flight locks, resolves abandoned and never calls onUnlocked', async () => {
+    setPasskeys(1);
+    mocks.fetchPasskeyUnlockOptions.mockResolvedValue(unlockOptionsResponse());
+    mocks.credentialsGet.mockResolvedValue(
+      fakeCredential({ rawId: CRED_A.id, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+    );
+    let finishWorker: (value: { unlocked: true }) => void = () => {};
+    mocks.vault.unlockPrf.mockImplementationOnce(
+      () => new Promise((resolve) => (finishWorker = resolve)),
+    );
+
+    let resolved: PasskeyUnlockOutcome | null = null;
+    const onUnlocked = vi.fn();
+    function Probe() {
+      const { unlock } = usePasskeyUnlock();
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void unlock().then((outcome) => {
+              resolved = outcome;
+              if (outcome.ok) onUnlocked();
+            });
+          }}
+        >
+          Probe unlock
+        </button>
+      );
+    }
+    const view = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <Probe />
+      </NextIntlClientProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Probe unlock' }));
+    await waitFor(() => expect(mocks.vault.unlockPrf).toHaveBeenCalledTimes(1));
+    view.unmount();
+    finishWorker({ unlocked: true });
+    await waitFor(() => expect(resolved).toEqual({ ok: false, error: 'abandoned' }));
+    expect(mocks.vault.lock).toHaveBeenCalledWith({ broadcast: false, reason: 'passkey_unlock_abandoned' });
+    expect(onUnlocked).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
@@ -20,19 +21,26 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
   const t = useTranslations('vault.passkey');
   const tState = useTranslations('vault.state');
   const { available, pending, inFlight, error, unlock } = usePasskeyUnlock();
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   if (!available) return null;
 
   const run = async () => {
     const outcome: PasskeyUnlockOutcome = await unlock();
-    if (outcome.ok) onUnlocked?.();
+    if (outcome.ok && mountedRef.current) onUnlocked?.();
   };
 
   let message: string | null = null;
   if (error === 'busy') message = tState('busy');
   else if (error === 'recovering') message = tState('recoveringSwitchHint');
-  else if (error) message = t(error);
-
+  else if (error && error !== 'stale' && error !== 'abandoned') message = t(error);
   return (
     <div className={cn('card mb-4 p-6', className)} data-testid="unlock-passkey-section">
       <Button

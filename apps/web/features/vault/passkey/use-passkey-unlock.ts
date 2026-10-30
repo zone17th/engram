@@ -74,27 +74,36 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
     setPending(true);
     setError(null);
     const v = vaultRef.current;
+    let opGeneration: number | null = null;
     try {
       const outcome = await runPasskeyUnlock({
         // beginOp() captures opGeneration and the lockEpoch baseline synchronously (ADR 0002 §10.2, ADR 0003 §8.4).
         client: {
-          captureGeneration: () => v.beginOp().opGeneration,
+          captureGeneration: () => {
+            opGeneration = v.beginOp().opGeneration;
+            return opGeneration;
+          },
           getGeneration: () => v.getClient().getGeneration(),
         },
         api: { fetchUnlockOptions: () => fetchPasskeyUnlockOptions() },
         loadVaultMeta: () => v.reloadVaultMeta(),
-        unlockPrf: (params) => v.unlockPrf(params),
+        unlockPrf: (params) => {
+          // Stop before admitting a Worker unlock when the screen is already gone; the PWK is wiped in finally.
+          if (!mountedRef.current) return Promise.reject({ code: 'STALE_GENERATION' });
+          return v.unlockPrf(params);
+        },
         credentials: navigator.credentials,
         isBusy: () => v.inFlight,
       });
-      if (mountedRef.current) {
-        if (!outcome.ok && outcome.error === 'none_registered') setNoPasskey(true);
-        if (!outcome.ok && outcome.error !== 'stale') setError(outcome.error);
-      } else if (outcome.ok) {
-        // The user left the unlock screen while the prompt was open: do not leave the vault unlocked behind them
-        // (same rule as the passphrase flow's unmount cleanup).
-        void v.lock({ broadcast: false, reason: 'passkey_unlock_abandoned' });
+      if (!mountedRef.current) {
+        // Only clean up when this abandoned intent still owns the generation: never clobber a newer flow's state.
+        if (opGeneration !== null && v.getClient().getGeneration() === opGeneration) {
+          void v.lock({ broadcast: false, reason: 'passkey_unlock_abandoned' });
+        }
+        return { ok: false, error: 'abandoned' };
       }
+      if (!outcome.ok && outcome.error === 'none_registered') setNoPasskey(true);
+      if (!outcome.ok && outcome.error !== 'stale' && outcome.error !== 'abandoned') setError(outcome.error);
       return outcome;
     } finally {
       pendingRef.current = false;
