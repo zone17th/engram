@@ -609,6 +609,20 @@
     "pill": {
       "minutesLeft": "· {minutes} min"
     },
+    "device": {
+      "remember": {
+        "label": "Remember this device",
+        "description": "Opens your vault on this browser without typing the passphrase. Anyone who can use this browser profile can open it. Turn on only on a personal device with a screen lock.",
+        "forget": "Forget this device",
+        "forgetDescription": "Removes the saved key from this browser. The vault stays open until you lock it; the next unlock asks for your passphrase or passkey.",
+        "on": "On — this browser opens the vault by itself",
+        "off": "Off — ask for the passphrase on this browser"
+      },
+      "notice": {
+        "stateChanged": "The device setting changed in another tab. Showing the current setting."
+      },
+      "unavailable": "This browser cannot store a device key right now (private mode or blocked storage). Use your passphrase instead."
+    },
     "passkey": {
       "prf_unsupported": "This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.",
       "register_cancelled": "Passkey registration was cancelled.",

@@ -33,6 +33,9 @@ import {
   purgeDeviceKeysOnRevoked,
   type DeviceStoreEnvironment,
 } from '@/features/vault/device-store';
+import { runSilentDeviceUnlock, type SilentUnlockResult } from '@/lib/crypto/device';
+import { SilentUnlockReturnTo } from '@/features/vault/device/silent-unlock-return-to';
+import { createDeviceTestBridge, type DeviceTestBridge } from '@/features/vault/device/test-bridge';
 import {
   captureUnlockBaseline,
   recordLockEpochEvent,
@@ -243,6 +246,14 @@ export interface VaultContextValue {
   confirmRecovery: (params: ConfirmRecoveryClientParams) => Promise<ConfirmRecoveryResult>;
   unlockPrf: (params: UnlockPrfClientParams) => Promise<{ unlocked: true }>;
   unlockDevKey: (params: UnlockDevKeyClientParams) => Promise<{ unlocked: true }>;
+  /**
+   * Silent unlock with the remembered DevKey (plan Task 18, ADR 0003 §6.2). Captures `opGeneration` before its first
+   * `await`, touches the network only when this device holds a DevKey record for the user, then `GET /vault` (through the
+   * provider's authoritative reload, so a 404 / other `vault_key_id` purges and locks exactly as everywhere else) and
+   * unlocks only when the stored record is namespaced under that vault's `vault_key_id`. Never throws; every failure
+   * resolves `skipped` / `fallback` and leaves the vault locked for the passphrase / passkey paths.
+   */
+  silentUnlock: () => Promise<SilentUnlockResult>;
   rewrap: (params: RewrapClientParams) => Promise<RewrapResult>;
 }
 
@@ -266,6 +277,11 @@ export interface VaultProviderProps {
   lockEpochEnv?: LockEpochEnvironment;
   /** Optional custom IndexedDB environment for `sabk.device` DevKey / purge tests. */
   deviceStoreEnv?: DeviceStoreEnvironment;
+  /**
+   * Opt-in (default `false`): once per signed-in user per provider mount (reload, re-login) while locked, attempt
+   * `silentUnlock()`. A manual lock or auto-lock in the same mount never re-opens by itself.
+   */
+  silentUnlockOnLoad?: boolean;
 }
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -353,6 +369,7 @@ export function VaultProvider({
   createWorker,
   lockEpochEnv,
   deviceStoreEnv,
+  silentUnlockOnLoad = false,
 }: VaultProviderProps) {
   const queryClient = useQueryClient();
   const { me, status: sessionStatus, refetchMe } = useSession();
@@ -381,7 +398,38 @@ export function VaultProvider({
   const activeOperationRef = useRef<VaultActiveOperation>(null);
   const tabKnownLockEpochRef = useRef<number>(0);
   const unlockBaselineRef = useRef<LockEpochMarker | null>(null);
-  const intentBaselinesRef = useRef<Map<number, Promise<LockEpochMarker | null>>>(new Map());
+  const intentBaselinesRef = useRef<
+    Map<
+      number,
+      Array<{
+        id: number;
+        kind: 'manual' | 'owned';
+        promise: Promise<LockEpochMarker | null>;
+      }>
+    >
+  >(new Map());
+  const intentBaselineTraceRef = useRef<
+    Array<{
+      action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
+      generation: number;
+      id?: number;
+      kind?: 'manual' | 'owned';
+    }>
+  >([]);
+  const recordIntentBaselineTrace = useCallback(
+    (event: {
+      action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
+      generation: number;
+      id?: number;
+      kind?: 'manual' | 'owned';
+    }) => {
+      const trace = intentBaselineTraceRef.current;
+      if (trace.length >= 128) trace.shift();
+      trace.push(event);
+    },
+    [],
+  );
+  const nextIntentBaselineIdRef = useRef<number>(1);
   const baselineVerifiedRef = useRef<boolean>(false);
   const wakeVerificationSeqRef = useRef<number>(0);
   const wakeVerifyingCountRef = useRef<number>(0);
@@ -605,29 +653,63 @@ export function VaultProvider({
     return getClient().captureGeneration();
   }, [getClient]);
 
-  const beginOp = useCallback(() => {
-    const client = getClient();
-    const opGeneration = client.captureGeneration();
-    // Capture durable lockEpoch baseline at intent start (before any metadata GET or async work — BE2-1, ADR 0003 §8.4).
-    const baselinePromise = captureUnlockBaseline(
-      tabKnownLockEpochRef.current,
-      envWithBroadcast,
-    ).then(
-      (marker) => {
-        if (marker && client.getGeneration() === opGeneration) {
-          updateTabKnownLockEpoch(marker.lockEpoch);
+  const beginIntentOp = useCallback(
+    (kind: 'manual' | 'owned') => {
+      const client = getClient();
+      const opGeneration = client.captureGeneration();
+      const intentId = nextIntentBaselineIdRef.current++;
+      // Capture durable lockEpoch baseline at intent start (before any metadata GET or async work — BE2-1, ADR 0003 §8.4).
+      const baselinePromise = captureUnlockBaseline(
+        tabKnownLockEpochRef.current,
+        envWithBroadcast,
+      ).then(
+        (marker) => {
+          if (marker && client.getGeneration() === opGeneration) {
+            updateTabKnownLockEpoch(marker.lockEpoch);
+          }
+          return marker;
+        },
+        () => null,
+      );
+      const list = intentBaselinesRef.current.get(opGeneration) ?? [];
+      list.push({ id: intentId, kind, promise: baselinePromise });
+      intentBaselinesRef.current.set(opGeneration, list);
+      recordIntentBaselineTrace({
+        action: 'register',
+        generation: opGeneration,
+        id: intentId,
+        kind,
+      });
+      const releaseBaseline = () => {
+        const cur = intentBaselinesRef.current.get(opGeneration);
+        if (!cur) return;
+        const idx = cur.findIndex((item) => item.id === intentId);
+        if (idx !== -1) {
+          cur.splice(idx, 1);
+          recordIntentBaselineTrace({
+            action: 'release',
+            generation: opGeneration,
+            id: intentId,
+            kind,
+          });
         }
-        return marker;
-      },
-      () => null,
-    );
-    intentBaselinesRef.current.set(opGeneration, baselinePromise);
-    return {
-      opGeneration,
-      client,
-      isCurrent: () => client.getGeneration() === opGeneration,
-    };
-  }, [envWithBroadcast, getClient, updateTabKnownLockEpoch]);
+        if (cur.length === 0) intentBaselinesRef.current.delete(opGeneration);
+      };
+      return {
+        opGeneration,
+        intentId,
+        releaseBaseline,
+        client,
+        isCurrent: () => client.getGeneration() === opGeneration,
+      };
+    },
+    [envWithBroadcast, getClient, recordIntentBaselineTrace, updateTabKnownLockEpoch],
+  );
+
+  const beginOp = useCallback(() => {
+    const { opGeneration, client, isCurrent } = beginIntentOp('manual');
+    return { opGeneration, client, isCurrent };
+  }, [beginIntentOp]);
 
   const clearError = useCallback(() => {
     setLastErrorCode(null);
@@ -689,10 +771,18 @@ export function VaultProvider({
       // so marked-but-not-purged and a DevKey written after the mark both purge, and a true duplicate costs nothing
       // (BE2-9, BE7-2).
       const skipIfNoDevKeys = transitionKeyId === null && resetPurgedVaultKeyIdRef.current !== null;
+      // CF-T18-KEYSCOPED-PURGE (advisor-dec-039): a 404 that names its vault deletes only that key's and the retired
+      // keys' records, never a key that became current later. An unnamed 404 cannot name its vault: user-scoped.
+      const keyScope =
+        transitionKeyId !== null
+          ? { only: [transitionKeyId, ...retiredVaultKeyIdsRef.current] }
+          : undefined;
       const run = purgeDeviceKeysOnRevoked(
         userId,
         effectiveDeviceStoreEnv,
-        skipIfNoDevKeys ? { skipIfNoDevKeys: true } : undefined,
+        skipIfNoDevKeys || keyScope
+          ? { ...(skipIfNoDevKeys ? { skipIfNoDevKeys: true } : {}), ...(keyScope ? { keyScope } : {}) }
+          : undefined,
       ).then((res) => {
         if (
           res.ok &&
@@ -729,8 +819,8 @@ export function VaultProvider({
    *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
    *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
    *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
-   * Rows 1a and 4 purge USER-scoped device keys (`purgeDeviceKeysOnRevoked`); a key-scoped compare-and-delete is
-   * deferred to T18 (CF-T18-KEYSCOPED-PURGE).
+   * Rows 1a (named 404: key-scoped to the issued/retired keys) and 4 (replacement: everything but the new key) purge
+   * with `keyScope` (CF-T18-KEYSCOPED-PURGE); an unnamed 404 stays user-scoped.
    * Other errors: supersession check, then rethrow. Local notifications never suppress or reorder a GET response.
    */
   const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null; followUp?: boolean }): Promise<VaultState | null> => {
@@ -807,7 +897,9 @@ export function VaultProvider({
         resetPurgeInFlightVaultKeyIdRef.current = null;
         setVaultMeta(applied);
         queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, applied);
-        void purgeDeviceKeysOnRevoked(liveUserId, effectiveDeviceStoreEnv);
+        void purgeDeviceKeysOnRevoked(liveUserId, effectiveDeviceStoreEnv, {
+          keyScope: { except: fresh.vault_key_id },
+        });
         void lock({ broadcast: true, reason: 'vault_key_id_changed' });
         return applied;
       }
@@ -978,6 +1070,7 @@ export function VaultProvider({
       baselineMode: 'none' | 'capture_fresh' | 'require_existing',
       opGeneration: number,
       invoke: (client: CryptoClient, injectBeforePost?: () => Promise<void>) => Promise<T>,
+      intentId?: number,
     ): Promise<T> => {
       const client = getClient();
       setLastErrorCode(null);
@@ -1046,9 +1139,60 @@ export function VaultProvider({
         }
 
         // baselineMode === 'capture_fresh':
-        // If beginOp() already captured an intent-start baseline for this opGeneration (BE2-1), reuse and verify it!
-        const intentBaselinePromise = intentBaselinesRef.current.get(opGeneration);
-        intentBaselinesRef.current.delete(opGeneration);
+        // If beginOp() or an internal ID-carrying intent already captured an intent-start baseline for this
+        // opGeneration (BE2-1, R2-1 / R2-7, R3-1 / R3-2, advisor-dec-060), reuse and verify it:
+        // - A dispatch WITH intentId consumes only its own `owned` entry and FAILS CLOSED if missing/already consumed
+        //   (never falling back to capture_fresh).
+        // - A dispatch WITHOUT intentId consumes only `manual` entries of its generation (oldest-first) and NEVER
+        //   consumes, shifts, overwrites, or deletes an `owned` entry.
+        let intentBaselinePromise: Promise<LockEpochMarker | null> | undefined;
+        const list = intentBaselinesRef.current.get(opGeneration);
+        if (intentId !== undefined) {
+          if (list && list.length > 0) {
+            const idx = list.findIndex((item) => item.id === intentId && item.kind === 'owned');
+            if (idx !== -1) {
+              const entry = list.splice(idx, 1)[0];
+              intentBaselinePromise = entry?.promise;
+              recordIntentBaselineTrace({
+                action: 'consume',
+                generation: opGeneration,
+                id: entry?.id,
+                kind: 'owned',
+              });
+            }
+            if (list.length === 0) {
+              intentBaselinesRef.current.delete(opGeneration);
+            }
+          }
+          if (!intentBaselinePromise) {
+            recordIntentBaselineTrace({
+              action: 'missing_owned',
+              generation: opGeneration,
+              id: intentId,
+              kind: 'owned',
+            });
+            await lockIfOwner();
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Missing owned intent-start lockEpoch baseline; failing closed',
+            );
+          }
+        } else if (list && list.length > 0) {
+          const idx = list.findIndex((item) => item.kind === 'manual');
+          if (idx !== -1) {
+            const entry = list.splice(idx, 1)[0];
+            intentBaselinePromise = entry?.promise;
+            recordIntentBaselineTrace({
+              action: 'consume',
+              generation: opGeneration,
+              id: entry?.id,
+              kind: 'manual',
+            });
+          }
+          if (list.length === 0) {
+            intentBaselinesRef.current.delete(opGeneration);
+          }
+        }
         if (intentBaselinePromise) {
           const intentBaseline = await intentBaselinePromise;
           if (!intentBaseline || client.getGeneration() !== opGeneration) {
@@ -1073,6 +1217,10 @@ export function VaultProvider({
           return;
         }
 
+        recordIntentBaselineTrace({
+          action: 'capture_fresh',
+          generation: opGeneration,
+        });
         const baseline = await captureUnlockBaseline(
           tabKnownLockEpochRef.current,
           envWithBroadcast,
@@ -1172,7 +1320,14 @@ export function VaultProvider({
         notifyStoreListeners();
       }
     },
-    [envWithBroadcast, getClient, lockLocalOnly, notifyStoreListeners, updateTabKnownLockEpoch],
+    [
+      envWithBroadcast,
+      getClient,
+      lockLocalOnly,
+      notifyStoreListeners,
+      recordIntentBaselineTrace,
+      updateTabKnownLockEpoch,
+    ],
   );
 
   const createVaultOp = useCallback(
@@ -1291,8 +1446,8 @@ export function VaultProvider({
     [runStateChangingOp],
   );
 
-  const unlockDevKeyOp = useCallback(
-    (params: UnlockDevKeyClientParams): Promise<{ unlocked: true }> => {
+  const runUnlockDevKeyWithIntent = useCallback(
+    (params: UnlockDevKeyClientParams, intentId?: number): Promise<{ unlocked: true }> => {
       return runStateChangingOp(
         'unlocking',
         'capture_fresh',
@@ -1305,10 +1460,61 @@ export function VaultProvider({
               await params.beforePostMessage?.();
             },
           }),
+        intentId,
       );
     },
     [runStateChangingOp],
   );
+
+  const unlockDevKeyOp = useCallback(
+    (params: UnlockDevKeyClientParams): Promise<{ unlocked: true }> => {
+      return runUnlockDevKeyWithIntent(params);
+    },
+    [runUnlockDevKeyWithIntent],
+  );
+
+  const silentUnlock = useCallback(async (): Promise<SilentUnlockResult> => {
+    const userId = currentUserIdRef.current;
+    if (!userId) return { status: 'skipped', reason: 'no_user' };
+    if (workerStateRef.current !== 'locked') return { status: 'skipped', reason: 'not_locked' };
+    if (inFlightStateOpCountRef.current > 0) return { status: 'skipped', reason: 'busy' };
+    // Register owned durable lockEpoch baseline at silent intent start BEFORE device snapshot and GET /vault (R1-1 / R1-20, R2-1 / R2-7, R3-1 / R3-2, BE2-1, ADR 0003 §8.4).
+    const { opGeneration, intentId, releaseBaseline, client } = beginIntentOp('owned');
+    const sessionEpoch = vaultMetaSessionEpochRef.current;
+    try {
+      const result = await runSilentDeviceUnlock({
+        userId,
+        opGeneration,
+        env: effectiveDeviceStoreEnv,
+        isCurrent: () =>
+          client.captureGeneration() === opGeneration &&
+          vaultMetaSessionEpochRef.current === sessionEpoch &&
+          currentUserIdRef.current === userId,
+        loadVault: () => loadVaultMeta(),
+        unlock: (params) => {
+          if (workerStateRef.current !== 'locked' || client.getState() !== 'locked') {
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Silent unlock superseded: vault is no longer locked',
+            );
+          }
+          return runUnlockDevKeyWithIntent(params, intentId);
+        },
+        lockOnInvalidate: () => lock({ broadcast: false, reason: 'device_invalidated' }),
+      });
+      // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.
+      if (result.status === 'fallback' || result.status === 'skipped') {
+        setLastErrorCode(null);
+      }
+      return result;
+    } finally {
+      releaseBaseline();
+    }
+  }, [beginIntentOp, effectiveDeviceStoreEnv, loadVaultMeta, lock, runUnlockDevKeyWithIntent]);
+
+  const silentAttemptUserIdRef = useRef<string | null>(null);
+  const [autoSilentUnlockedCount, setAutoSilentUnlockedCount] = useState<number>(0);
+  const silentUnlockUserId = me?.user.id ?? null;
 
   const rewrapOp = useCallback(
     (params: RewrapClientParams): Promise<RewrapResult> => {
@@ -1368,6 +1574,33 @@ export function VaultProvider({
     }
   }, [lock, me?.user.id, queryClient, sessionStatus, setVaultMeta, vaultMeta]);
 
+  // R1-22: Run after session/account reconciliation so a direct A->B switch reconciles and locks A first,
+  // and consume the one-shot automatic attempt only when an eligible locked intent actually starts for the reconciled user.
+  useEffect(() => {
+    if (!silentUnlockOnLoad) return;
+    if (sessionStatus === 'signed_out' || !silentUnlockUserId) {
+      silentAttemptUserIdRef.current = null;
+      return;
+    }
+    if (previousUserIdRef.current !== silentUnlockUserId) return;
+    // At most one automatic attempt per signed-in user per mount: a later manual lock / auto-lock never re-opens.
+    if (silentAttemptUserIdRef.current === silentUnlockUserId) return;
+    if (
+      workerState !== 'locked' ||
+      workerStateRef.current !== 'locked' ||
+      inFlightStateOpCountRef.current > 0
+    ) {
+      return;
+    }
+    silentAttemptUserIdRef.current = silentUnlockUserId;
+    void silentUnlock()
+      .then((res) => {
+        if (res.status === 'unlocked') {
+          setAutoSilentUnlockedCount((c) => c + 1);
+        }
+      })
+      .catch(() => undefined);
+  }, [sessionStatus, silentUnlock, silentUnlockOnLoad, silentUnlockUserId, workerState]);
   // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
     return subscribeVaultBroadcast((message: VaultBroadcastMessage, origin, senderId) => {
@@ -1462,6 +1695,7 @@ export function VaultProvider({
           void purgeDeviceKeysOnRevoked(
             currentUserIdRef.current ?? previousUserIdRef.current,
             effectiveDeviceStoreEnv,
+            { keyScope: { except: message.vault_key_id } },
           );
           void lock({ broadcast: true, reason: 'vault_key_id_changed_broadcast' });
           void loadVaultMeta().catch(() => undefined);
@@ -1959,6 +2193,7 @@ export function VaultProvider({
       confirmRecovery: confirmRecoveryOp,
       unlockPrf: unlockPrfOp,
       unlockDevKey: unlockDevKeyOp,
+      silentUnlock,
       rewrap: rewrapOp,
     }),
     [
@@ -1996,6 +2231,7 @@ export function VaultProvider({
       confirmRecoveryOp,
       unlockPrfOp,
       unlockDevKeyOp,
+      silentUnlock,
       rewrapOp,
     ],
   );
@@ -2046,6 +2282,70 @@ export function VaultProvider({
       }
     };
   }, [queryClient, value]);
+  // Browser-test-only Remember / Forget / purge driver (same gate as the bridge above); see device/test-bridge.ts.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isLoopback =
+      window.location?.hostname === '127.0.0.1' ||
+      window.location?.hostname === 'localhost';
+    if (process.env.NODE_ENV === 'production' && !isLoopback) return;
+    const win = window as unknown as { __engramDeviceTestBridge?: DeviceTestBridge };
+    const deviceBridge = createDeviceTestBridge({
+      getContext: () => {
+        const userId = currentUserIdRef.current;
+        if (!userId) return null;
+        return {
+          userId,
+          vaultKeyId: currentVaultKeyIdRef.current,
+          captureOp: () => {
+            const client = valueRef.current.getClient();
+            return { opGeneration: client.captureGeneration(), client };
+          },
+          reloadVaultMeta: () => valueRef.current.reloadVaultMeta(),
+        };
+      },
+      getWorkerWitness: () => {
+        const client = valueRef.current.getClient();
+        const workerEpoch = client.getEpoch();
+        return {
+          workerInitialized: workerEpoch >= 0,
+          workerEpoch,
+          workerGeneration: client.getGeneration(),
+          workerState: client.getState(),
+        };
+      },
+      getIntentBaselineWitness: () => {
+        const pending: Array<{ generation: number; id: number; kind: 'manual' | 'owned' }> = [];
+        for (const [generation, entries] of intentBaselinesRef.current.entries()) {
+          for (const entry of entries) {
+            pending.push({ generation, id: entry.id, kind: entry.kind });
+          }
+        }
+        return {
+          pending,
+          trace: [...intentBaselineTraceRef.current],
+          removeEntry: (generation: number, id: number) => {
+            const list = intentBaselinesRef.current.get(generation);
+            if (!list) return false;
+            const idx = list.findIndex((item) => item.id === id);
+            if (idx === -1) return false;
+            list.splice(idx, 1);
+            if (list.length === 0) intentBaselinesRef.current.delete(generation);
+            return true;
+          },
+        };
+      },
+      env: effectiveDeviceStoreEnv,
+    });
+    win.__engramDeviceTestBridge = deviceBridge;
+    return () => {
+      if (win.__engramDeviceTestBridge === deviceBridge) {
+        delete win.__engramDeviceTestBridge;
+      }
+    };
+  }, [effectiveDeviceStoreEnv]);
   const [testConsumer, setTestConsumer] = useState<{
     host: HTMLElement;
     entryId: string;
@@ -2107,6 +2407,7 @@ export function VaultProvider({
   return (
     <VaultContext.Provider value={storeValue}>
       {children}
+      {silentUnlockOnLoad ? <SilentUnlockReturnTo unlockedCount={autoSilentUnlockedCount} /> : null}
       {testConsumer
         ? createPortal(
             <Suspense fallback={null}>

@@ -26,11 +26,13 @@ export {
   getKnownDeviceSessionUserId,
   isValidDeviceMetaRecord,
   parseDevKeyRecordUserId,
+  parseDevKeyRecordVaultKeyId,
   purgeDeviceKeysOnRevoked,
   readDeviceMetaRecord,
   setDefaultDeviceStoreEnvironmentForTests,
   setKnownDeviceSessionUserId,
   subscribeDevicePurge,
+  type DeviceKeyScope,
   type DeviceMetaRecord,
   type DeviceStoreEnvironment,
   type PurgeDeviceKeysResult,
@@ -74,3 +76,17 @@ export {
   type VaultStateMachineMode,
   type VaultUiErrorKind,
 } from './vault-provider';
+
+export {
+  createRememberDeviceStore,
+  type RememberDeviceContext,
+  type RememberDeviceNotice,
+  type RememberDeviceState,
+  type RememberDeviceStore,
+} from './device/remember-store';
+
+export {
+  useRememberDevice,
+  type UseRememberDeviceOptions,
+  type UseRememberDeviceResult,
+} from './device/use-remember-device';
