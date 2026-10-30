@@ -85,9 +85,10 @@ async function capture(
   options: {
     fullPage?: boolean;
     scrollTarget?: Locator;
+    target?: Locator;
   } = {},
 ) {
-  await settleForCapture(page, theme, options.scrollTarget);
+  await settleForCapture(page, theme, options.scrollTarget ?? options.target);
   await page.evaluate(() => {
     for (const input of document.querySelectorAll<HTMLInputElement>('input')) {
       if (input.type === 'checkbox' || input.type === 'radio' || input.type === 'hidden') continue;
@@ -100,14 +101,22 @@ async function capture(
   });
   const outputPath = testInfo.outputPath(`vault-b-${state}-${theme}-${width}.png`);
   mkdirSync(dirname(outputPath), { recursive: true });
-  const buffer = await page.screenshot({
-    path: outputPath,
-    timeout: UI_WAIT_MS,
-    fullPage: options.fullPage ?? false,
-    animations: 'disabled',
-    caret: 'hide',
-    mask: [page.locator('[data-visual-mask]')],
-  });
+  const buffer = options.target
+    ? await options.target.screenshot({
+        path: outputPath,
+        timeout: UI_WAIT_MS,
+        animations: 'disabled',
+        caret: 'hide',
+        mask: [page.locator('[data-visual-mask]')],
+      })
+    : await page.screenshot({
+        path: outputPath,
+        timeout: UI_WAIT_MS,
+        fullPage: options.fullPage ?? false,
+        animations: 'disabled',
+        caret: 'hide',
+        mask: [page.locator('[data-visual-mask]')],
+      });
   expect(buffer.byteLength).toBeGreaterThan(0);
 }
 
@@ -224,30 +233,26 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
         await page.evaluate(() => {
           for (const el of document.querySelectorAll<HTMLElement>('[data-testid="settings-passkey-list"] .mono')) {
             const text = el.textContent?.trim() ?? '';
-            if (/^(Added|Đã thêm)\s/.test(text)) {
-              el.textContent = text.startsWith('Đã thêm') ? 'Đã thêm 12/02/2026' : 'Added 02/12/2026';
+            if (/^(added|thêm)\s/i.test(text)) {
+              el.textContent = /^thêm/i.test(text) ? 'thêm 12/02/2026' : 'added 02/12/2026';
             }
           }
         });
 
         await capture(page, testInfo, 'settings-passkeys', theme, desktop.width, {
-          fullPage: false,
-          scrollTarget: passkeyCard,
+          target: passkeyCard,
         });
         await capture(page, testInfo, 'settings-autolock', theme, desktop.width, {
-          fullPage: false,
-          scrollTarget: autoLockCard,
+          target: autoLockCard,
         });
 
         await setViewport(page, mobile);
         await expect(passkeyList).toBeVisible({ timeout: UI_WAIT_MS });
         await capture(page, testInfo, 'settings-passkeys', theme, mobile.width, {
-          fullPage: false,
-          scrollTarget: passkeyCard,
+          target: passkeyCard,
         });
         await capture(page, testInfo, 'settings-autolock', theme, mobile.width, {
-          fullPage: false,
-          scrollTarget: autoLockCard,
+          target: autoLockCard,
         });
 
         // 2b. Settings remember-device toggled on (`settings-device`)
@@ -264,16 +269,14 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
           timeout: UI_WAIT_MS,
         });
         await capture(page, testInfo, 'settings-device', theme, desktop.width, {
-          fullPage: false,
-          scrollTarget: autoLockCard,
+          target: autoLockCard,
         });
         await setViewport(page, mobile);
         await expect(page.getByTestId('settings-forget-device-button')).toBeVisible({
           timeout: UI_WAIT_MS,
         });
         await capture(page, testInfo, 'settings-device', theme, mobile.width, {
-          fullPage: false,
-          scrollTarget: autoLockCard,
+          target: autoLockCard,
         });
         // Forget before locking so Unlock U4 renders normally
         await page.getByTestId('settings-forget-device-button').click();
