@@ -49,6 +49,14 @@ async function expectVaultOpen(page: Page) {
   await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
 }
 
+async function expectLockedListOnApp(page: Page) {
+  await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+  await expect(page.locator('.vault-pill')).toHaveAttribute('data-vault-state', 'locked', { timeout: UI_WAIT_MS });
+  await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('entry-body')).toHaveCount(0);
+}
+
 async function expectOnUnlockPage(page: Page) {
   await expect(page).toHaveURL(/\/app\/unlock$/, { timeout: UI_WAIT_MS });
   await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
@@ -179,9 +187,10 @@ test.describe('Remember device against the real API', () => {
 
     await test.step('4. a manual lock is not silently re-opened by the remembered device', async () => {
       await page.getByTestId('vault-lock-button').click();
-      await expectOnUnlockPage(page);
+      // Under advisor-dec-048 (P03-T21), locking on `/app` stays on `/app` and renders the locked U5 state.
+      await expectLockedListOnApp(page);
       await page.waitForTimeout(1500);
-      await expectOnUnlockPage(page);
+      await expectLockedListOnApp(page);
     });
 
     await test.step('5. Forget deletes the record; the next reload asks for the passphrase', async () => {
@@ -192,6 +201,13 @@ test.describe('Remember device against the real API', () => {
       expect(snapshot.allRecordCount).toBe(0);
 
       await page.reload();
+      await expectLockedListOnApp(page);
+      await page.waitForTimeout(1500);
+      await expectLockedListOnApp(page);
+      const afterReloadSnapshot = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+      expect(afterReloadSnapshot.allRecordCount).toBe(0);
+
+      await page.getByTestId('vault-locked-unlock-cta').click();
       await expectOnUnlockPage(page);
       await fillSecret(page.getByTestId('unlock-passphrase-input'), PASSPHRASE);
       await page.getByTestId('unlock-submit-button').click();
