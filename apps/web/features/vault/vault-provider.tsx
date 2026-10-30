@@ -33,6 +33,8 @@ import {
   purgeDeviceKeysOnRevoked,
   type DeviceStoreEnvironment,
 } from '@/features/vault/device-store';
+import { runSilentDeviceUnlock, type SilentUnlockResult } from '@/lib/crypto/device';
+import { createDeviceTestBridge, type DeviceTestBridge } from '@/features/vault/device/test-bridge';
 import {
   captureUnlockBaseline,
   recordLockEpochEvent,
@@ -243,6 +245,14 @@ export interface VaultContextValue {
   confirmRecovery: (params: ConfirmRecoveryClientParams) => Promise<ConfirmRecoveryResult>;
   unlockPrf: (params: UnlockPrfClientParams) => Promise<{ unlocked: true }>;
   unlockDevKey: (params: UnlockDevKeyClientParams) => Promise<{ unlocked: true }>;
+  /**
+   * Silent unlock with the remembered DevKey (plan Task 18, ADR 0003 §6.2). Captures `opGeneration` before its first
+   * `await`, touches the network only when this device holds a DevKey record for the user, then `GET /vault` (through the
+   * provider's authoritative reload, so a 404 / other `vault_key_id` purges and locks exactly as everywhere else) and
+   * unlocks only when the stored record is namespaced under that vault's `vault_key_id`. Never throws; every failure
+   * resolves `skipped` / `fallback` and leaves the vault locked for the passphrase / passkey paths.
+   */
+  silentUnlock: () => Promise<SilentUnlockResult>;
   rewrap: (params: RewrapClientParams) => Promise<RewrapResult>;
 }
 
@@ -266,6 +276,11 @@ export interface VaultProviderProps {
   lockEpochEnv?: LockEpochEnvironment;
   /** Optional custom IndexedDB environment for `sabk.device` DevKey / purge tests. */
   deviceStoreEnv?: DeviceStoreEnvironment;
+  /**
+   * Opt-in (default `false`): once per signed-in user per provider mount (reload, re-login) while locked, attempt
+   * `silentUnlock()`. A manual lock or auto-lock in the same mount never re-opens by itself.
+   */
+  silentUnlockOnLoad?: boolean;
 }
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -353,6 +368,7 @@ export function VaultProvider({
   createWorker,
   lockEpochEnv,
   deviceStoreEnv,
+  silentUnlockOnLoad = false,
 }: VaultProviderProps) {
   const queryClient = useQueryClient();
   const { me, status: sessionStatus, refetchMe } = useSession();
@@ -689,10 +705,18 @@ export function VaultProvider({
       // so marked-but-not-purged and a DevKey written after the mark both purge, and a true duplicate costs nothing
       // (BE2-9, BE7-2).
       const skipIfNoDevKeys = transitionKeyId === null && resetPurgedVaultKeyIdRef.current !== null;
+      // CF-T18-KEYSCOPED-PURGE (advisor-dec-039): a 404 that names its vault deletes only that key's and the retired
+      // keys' records, never a key that became current later. An unnamed 404 cannot name its vault: user-scoped.
+      const keyScope =
+        transitionKeyId !== null
+          ? { only: [transitionKeyId, ...retiredVaultKeyIdsRef.current] }
+          : undefined;
       const run = purgeDeviceKeysOnRevoked(
         userId,
         effectiveDeviceStoreEnv,
-        skipIfNoDevKeys ? { skipIfNoDevKeys: true } : undefined,
+        skipIfNoDevKeys || keyScope
+          ? { ...(skipIfNoDevKeys ? { skipIfNoDevKeys: true } : {}), ...(keyScope ? { keyScope } : {}) }
+          : undefined,
       ).then((res) => {
         if (
           res.ok &&
@@ -729,8 +753,8 @@ export function VaultProvider({
    *   2. Present, key == current -> apply with version = max(live, fresh), even across a local transition (BE6-1).
    *   3. Present, key retired -> stale by key: apply nothing, return the live current metadata (BE4-1).
    *   4. Present, key new -> genuine replacement: retire current, purge, lock, install.
-   * Rows 1a and 4 purge USER-scoped device keys (`purgeDeviceKeysOnRevoked`); a key-scoped compare-and-delete is
-   * deferred to T18 (CF-T18-KEYSCOPED-PURGE).
+   * Rows 1a (named 404: key-scoped to the issued/retired keys) and 4 (replacement: everything but the new key) purge
+   * with `keyScope` (CF-T18-KEYSCOPED-PURGE); an unnamed 404 stays user-scoped.
    * Other errors: supersession check, then rethrow. Local notifications never suppress or reorder a GET response.
    */
   const loadVaultMeta = useCallback(async (opts?: { resetKeyId?: string | null; followUp?: boolean }): Promise<VaultState | null> => {
@@ -807,7 +831,9 @@ export function VaultProvider({
         resetPurgeInFlightVaultKeyIdRef.current = null;
         setVaultMeta(applied);
         queryClient.setQueryData(VAULT_META_QUERY_KEY_PREFIX, applied);
-        void purgeDeviceKeysOnRevoked(liveUserId, effectiveDeviceStoreEnv);
+        void purgeDeviceKeysOnRevoked(liveUserId, effectiveDeviceStoreEnv, {
+          keyScope: { except: fresh.vault_key_id },
+        });
         void lock({ broadcast: true, reason: 'vault_key_id_changed' });
         return applied;
       }
@@ -1310,6 +1336,46 @@ export function VaultProvider({
     [runStateChangingOp],
   );
 
+  const silentUnlock = useCallback(async (): Promise<SilentUnlockResult> => {
+    const client = getClient();
+    // opGeneration is captured BEFORE the first await (ADR 0002 §10.2).
+    const opGeneration = client.captureGeneration();
+    const userId = currentUserIdRef.current;
+    if (!userId) return { status: 'skipped', reason: 'no_user' };
+    if (workerStateRef.current !== 'locked') return { status: 'skipped', reason: 'not_locked' };
+    if (inFlightStateOpCountRef.current > 0) return { status: 'skipped', reason: 'busy' };
+    const sessionEpoch = vaultMetaSessionEpochRef.current;
+    const result = await runSilentDeviceUnlock({
+      userId,
+      opGeneration,
+      env: effectiveDeviceStoreEnv,
+      isCurrent: () =>
+        client.captureGeneration() === opGeneration &&
+        vaultMetaSessionEpochRef.current === sessionEpoch &&
+        currentUserIdRef.current === userId,
+      loadVault: () => loadVaultMeta(),
+      unlock: (params) => unlockDevKeyOp(params),
+    });
+    // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.
+    if (result.status === 'fallback') setLastErrorCode(null);
+    return result;
+  }, [effectiveDeviceStoreEnv, getClient, loadVaultMeta, unlockDevKeyOp]);
+
+  const silentAttemptUserIdRef = useRef<string | null>(null);
+  const silentUnlockUserId = me?.user.id ?? null;
+  useEffect(() => {
+    if (!silentUnlockOnLoad) return;
+    if (sessionStatus === 'signed_out' || !silentUnlockUserId) {
+      silentAttemptUserIdRef.current = null;
+      return;
+    }
+    // At most one automatic attempt per signed-in user per mount: a later manual lock / auto-lock never re-opens.
+    if (silentAttemptUserIdRef.current === silentUnlockUserId) return;
+    silentAttemptUserIdRef.current = silentUnlockUserId;
+    if (workerState !== 'locked') return;
+    void silentUnlock().catch(() => undefined);
+  }, [sessionStatus, silentUnlock, silentUnlockOnLoad, silentUnlockUserId, workerState]);
+
   const rewrapOp = useCallback(
     (params: RewrapClientParams): Promise<RewrapResult> => {
       return runStateChangingOp('rewrapping', 'none', params.opGeneration, (client) =>
@@ -1462,6 +1528,7 @@ export function VaultProvider({
           void purgeDeviceKeysOnRevoked(
             currentUserIdRef.current ?? previousUserIdRef.current,
             effectiveDeviceStoreEnv,
+            { keyScope: { except: message.vault_key_id } },
           );
           void lock({ broadcast: true, reason: 'vault_key_id_changed_broadcast' });
           void loadVaultMeta().catch(() => undefined);
@@ -1959,6 +2026,7 @@ export function VaultProvider({
       confirmRecovery: confirmRecoveryOp,
       unlockPrf: unlockPrfOp,
       unlockDevKey: unlockDevKeyOp,
+      silentUnlock,
       rewrap: rewrapOp,
     }),
     [
@@ -1996,6 +2064,7 @@ export function VaultProvider({
       confirmRecoveryOp,
       unlockPrfOp,
       unlockDevKeyOp,
+      silentUnlock,
       rewrapOp,
     ],
   );
@@ -2046,6 +2115,39 @@ export function VaultProvider({
       }
     };
   }, [queryClient, value]);
+  // Browser-test-only Remember / Forget / purge driver (same gate as the bridge above); see device/test-bridge.ts.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isLoopback =
+      window.location?.hostname === '127.0.0.1' ||
+      window.location?.hostname === 'localhost';
+    if (process.env.NODE_ENV === 'production' && !isLoopback) return;
+    const win = window as unknown as { __engramDeviceTestBridge?: DeviceTestBridge };
+    const deviceBridge = createDeviceTestBridge({
+      getContext: () => {
+        const userId = currentUserIdRef.current;
+        if (!userId) return null;
+        return {
+          userId,
+          vaultKeyId: currentVaultKeyIdRef.current,
+          captureOp: () => {
+            const client = valueRef.current.getClient();
+            return { opGeneration: client.captureGeneration(), client };
+          },
+          reloadVaultMeta: () => valueRef.current.reloadVaultMeta(),
+        };
+      },
+      env: effectiveDeviceStoreEnv,
+    });
+    win.__engramDeviceTestBridge = deviceBridge;
+    return () => {
+      if (win.__engramDeviceTestBridge === deviceBridge) {
+        delete win.__engramDeviceTestBridge;
+      }
+    };
+  }, [effectiveDeviceStoreEnv]);
   const [testConsumer, setTestConsumer] = useState<{
     host: HTMLElement;
     entryId: string;

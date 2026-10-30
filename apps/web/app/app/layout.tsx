@@ -37,7 +37,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <ThemeProvider initialTheme={themePref} initialLocale={locale}>
             <QueryProvider>
               <SessionProvider>
-                <VaultProvider>
+                <VaultProvider silentUnlockOnLoad>
                   <LocaleThemeSync />
                   <RouteGuard>{children}</RouteGuard>
                 </VaultProvider>
