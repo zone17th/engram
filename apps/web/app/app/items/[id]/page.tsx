@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { PreviewNotice } from '@/components/app-shell/preview-notice';
 import { BadgeType } from '@/components/ui/badge-type';
+import { ItemArticle } from '@/features/items/item-article';
+import { LockedBanner } from '@/features/items/locked-banner';
 import { DEMO_ITEMS } from '@/lib/demo-fixtures';
 
 export default async function ItemPreviewPage({ params }: { params: Promise<{ id: string }> }) {
@@ -13,6 +15,7 @@ export default async function ItemPreviewPage({ params }: { params: Promise<{ id
   return (
     <>
       <AppHeader vault={{ state: 'locked' }} showSearch />
+      <LockedBanner />
       <main className="mx-auto max-w-container px-5 pb-28 pt-8">
         <nav aria-label="Đường dẫn" className="mb-5 text-[13px] text-muted">
           <Link href="/app" className="no-underline">
@@ -34,7 +37,7 @@ export default async function ItemPreviewPage({ params }: { params: Promise<{ id
           </div>
         </div>
 
-        <div className="mb-8 flex flex-wrap items-center gap-2">
+        <div className="mb-8 flex flex-wrap items-center gap-2" data-testid="item-tags">
           {item.tags.map((tag) => (
             <span key={tag} className="chip cursor-default">
               #{tag}
@@ -44,20 +47,13 @@ export default async function ItemPreviewPage({ params }: { params: Promise<{ id
         </div>
 
         <div className="grid items-start gap-10 lg:grid-cols-[minmax(0,1fr)_248px]">
-          <article className="card overflow-hidden">
-            <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-4 py-3">
-              <BadgeType kind={item.kind} />
-              <span className="text-[15px] font-semibold">Nội dung mẫu</span>
-            </header>
-            <div className="p-5">
-              {item.kind === 'json' ? (
-                <pre className="json-raw overflow-x-auto rounded-md">{item.preview}</pre>
-              ) : (
-                <p className="m-0 text-[15px] leading-relaxed text-body">{item.preview}</p>
-              )}
-            </div>
-            <footer className="border-t border-line px-4 py-2 text-[12px] text-muted">Chỉ đọc · dữ liệu công khai</footer>
-          </article>
+          <ItemArticle
+            entryId={item.id}
+            title={item.title}
+            kind={item.kind}
+            headerLabel="Nội dung mẫu"
+            footerLabel="Chỉ đọc · dữ liệu công khai"
+          />
 
           <aside className="panel-agent p-5">
             <h2 className="t-title-sm mb-2 text-ink">Giới hạn bản xem trước</h2>

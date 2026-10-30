@@ -1,0 +1,76 @@
+export {
+  VAULT_BROADCAST_CHANNEL,
+  VAULT_LOCK_EPOCH_STORAGE_KEY,
+  notifyLockEpochViaLocalStorage,
+  postVaultBroadcast,
+  resetVaultBroadcastForTests,
+  subscribeVaultBroadcast,
+  type VaultBroadcastHandler,
+  type VaultBroadcastMessage,
+  type VaultBroadcastOrigin,
+} from './broadcast';
+
+export {
+  ACTIVITY_BROADCAST_THROTTLE_MS,
+  CLOCK_ROLLBACK_TOLERANCE_MS,
+  DEFAULT_AUTO_LOCK_MINUTES,
+  MIN_POSITIVE_AUTO_LOCK_MINUTES,
+  WAKE_ME_REFRESH_DEADLINE_MS,
+  evaluateAutoLockAt,
+  normalizeAutoLockMinutes,
+  type AutoLockEvaluation,
+} from './auto-lock';
+
+export {
+  formatDevKeyRecordKey,
+  getKnownDeviceSessionUserId,
+  isValidDeviceMetaRecord,
+  parseDevKeyRecordUserId,
+  purgeDeviceKeysOnRevoked,
+  readDeviceMetaRecord,
+  setDefaultDeviceStoreEnvironmentForTests,
+  setKnownDeviceSessionUserId,
+  subscribeDevicePurge,
+  type DeviceMetaRecord,
+  type DeviceStoreEnvironment,
+  type PurgeDeviceKeysResult,
+  type StoredDevKeyRecord,
+} from './device-store';
+
+export {
+  DEVKEY_STORE_NAME,
+  DEVICE_META_RECORD_KEY,
+  LOCK_EPOCH_RECORD_KEY,
+  LOCK_EPOCH_STORE_NAME,
+  META_STORE_NAME,
+  SABK_DEVICE_DB_NAME,
+  SABK_DEVICE_DB_VERSION,
+  SABK_VAULT_WEB_LOCK_NAME,
+  captureUnlockBaseline,
+  generateIncarnationToken,
+  isValidLockEpochMarker,
+  openSabkDeviceDb,
+  recordLockEpochEvent,
+  verifyUnlockBaseline,
+  withVaultWebLock,
+  type LockEpochEnvironment,
+  type LockEpochMarker,
+  type RecordLockEventResult,
+  type VerifyUnlockBaselineResult,
+} from './lock-epoch';
+
+export {
+  VAULT_BODY_QUERY_KEY_PREFIX,
+  VAULT_META_QUERY_KEY_PREFIX,
+  VaultProvider,
+  classifyCryptoError,
+  deriveVaultStateMachineMode,
+  useOptionalVault,
+  useVault,
+  vaultBodyQueryKey,
+  type VaultActiveOperation,
+  type VaultContextValue,
+  type VaultProviderProps,
+  type VaultStateMachineMode,
+  type VaultUiErrorKind,
+} from './vault-provider';

@@ -3,6 +3,7 @@ package config_test
 import (
 	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.GoogleReauthEnabled {
 		t.Error("AUTH_GOOGLE_REAUTH_ENABLED mặc định phải false")
 	}
+	if cfg.KeyMutationsDisabled {
+		t.Error("VAULT_KEY_MUTATIONS_DISABLED mặc định phải false")
+	}
 	if cfg.AuditRetentionDays != 90 {
 		t.Errorf("AuditRetentionDays = %d", cfg.AuditRetentionDays)
 	}
@@ -64,6 +68,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if !cfg.EphemeralSecrets {
 		t.Error("env trống ở development phải đánh dấu ephemeral")
+	}
+	if cfg.WebAuthnRPID != "localhost" {
+		t.Errorf("WebAuthnRPID = %q, muốn localhost", cfg.WebAuthnRPID)
+	}
+	if cfg.WebAuthnRPOrigin != "http://localhost:3000" {
+		t.Errorf("WebAuthnRPOrigin = %q, muốn http://localhost:3000", cfg.WebAuthnRPOrigin)
 	}
 }
 
@@ -137,6 +147,12 @@ func TestProductionAcceptsHTTPSAndDistinctSecrets(t *testing.T) {
 	}
 	if cfg.EphemeralSecrets {
 		t.Error("không được sinh ephemeral ở production")
+	}
+	if cfg.WebAuthnRPID != "key.zone17th.click" {
+		t.Errorf("WebAuthnRPID = %q, muốn key.zone17th.click", cfg.WebAuthnRPID)
+	}
+	if cfg.WebAuthnRPOrigin != "https://key.zone17th.click" {
+		t.Errorf("WebAuthnRPOrigin = %q, muốn https://key.zone17th.click", cfg.WebAuthnRPOrigin)
 	}
 }
 
@@ -225,6 +241,257 @@ func TestOAuthCallbackUsesAppOrigin(t *testing.T) {
 	got := cfg.OAuthCallbackURL("google")
 	if got != "http://localhost:3000/api/v1/auth/oauth/google/callback" {
 		t.Fatalf("callback = %q", got)
+	}
+}
+
+func TestLoadKeyMutationsDisabledParse(t *testing.T) {
+	setEnv(t, map[string]string{
+		"VAULT_KEY_MUTATIONS_DISABLED": "true",
+	})
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.KeyMutationsDisabled {
+		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED=true phải parse thành true")
+	}
+	if got, ok := cfg.Redacted()["vault_key_mutations_disabled"].(bool); !ok || !got {
+		t.Fatalf("Redacted()[vault_key_mutations_disabled] = %v, muốn true", cfg.Redacted()["vault_key_mutations_disabled"])
+	}
+
+	setEnv(t, map[string]string{
+		"VAULT_KEY_MUTATIONS_DISABLED": "not-a-bool",
+	})
+	if _, err := config.Load(); err == nil {
+		t.Fatal("VAULT_KEY_MUTATIONS_DISABLED không hợp lệ phải báo lỗi lúc boot")
+	}
+}
+
+func TestEffectiveMailSinkDir(t *testing.T) {
+	defaultSink := filepath.Join(".data", "mail-sink")
+	customSink := filepath.Join("custom", "sink-dir")
+	cases := []struct {
+		name string
+		env  string
+		dir  string
+		want string
+	}{
+		{
+			name: "development + empty MailSinkDir uses default .data/mail-sink",
+			env:  "development",
+			dir:  "",
+			want: defaultSink,
+		},
+		{
+			name: "empty Env + empty MailSinkDir uses default .data/mail-sink",
+			env:  "",
+			dir:  "",
+			want: defaultSink,
+		},
+		{
+			name: "development + explicit MailSinkDir preserves explicit dir",
+			env:  "development",
+			dir:  customSink,
+			want: customSink,
+		},
+		{
+			name: "production + empty MailSinkDir returns empty",
+			env:  "production",
+			dir:  "",
+			want: "",
+		},
+		{
+			name: "staging + empty MailSinkDir returns empty",
+			env:  "staging",
+			dir:  "",
+			want: "",
+		},
+		{
+			name: "production + explicit MailSinkDir preserves explicit dir",
+			env:  "production",
+			dir:  customSink,
+			want: customSink,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Env:         tc.env,
+				MailSinkDir: tc.dir,
+			}
+			if got := cfg.EffectiveMailSinkDir(); got != tc.want {
+				t.Fatalf("EffectiveMailSinkDir() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWebAuthnRPBootValidation(t *testing.T) {
+	prodSecrets := map[string]string{
+		"APP_ENV":            "production",
+		"APP_ORIGIN":         "https://key.zone17th.click",
+		"AUTH_JWT_SECRET":    b64(32),
+		"AUTH_CSRF_SECRET":   b64(33),
+		"AUTH_REAUTH_SECRET": b64(34),
+		"AUTH_IP_PEPPER":     b64(35),
+		"AUTH_EMAIL_PEPPER":  b64(36),
+	}
+
+	t.Run("production explicit key.zone17th.click and https://key.zone17th.click accepted", func(t *testing.T) {
+		env := make(map[string]string, len(prodSecrets)+2)
+		for k, v := range prodSecrets {
+			env[k] = v
+		}
+		env["WEBAUTHN_RP_ID"] = "key.zone17th.click"
+		env["WEBAUTHN_RP_ORIGIN"] = "https://key.zone17th.click"
+		setEnv(t, env)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.WebAuthnRPID != "key.zone17th.click" || cfg.WebAuthnRPOrigin != "https://key.zone17th.click" {
+			t.Fatalf("got rpID=%q rpOrigin=%q", cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
+		}
+	})
+
+	t.Run("production registrable suffix zone17th.click accepted", func(t *testing.T) {
+		env := make(map[string]string, len(prodSecrets)+1)
+		for k, v := range prodSecrets {
+			env[k] = v
+		}
+		env["WEBAUTHN_RP_ID"] = "zone17th.click"
+		setEnv(t, env)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.WebAuthnRPID != "zone17th.click" {
+			t.Fatalf("got rpID=%q, want zone17th.click", cfg.WebAuthnRPID)
+		}
+	})
+
+	t.Run("development custom port preserves exact APP_ORIGIN and localhost RP ID", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"APP_ENV":    "development",
+			"APP_ORIGIN": "http://localhost:18070",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.WebAuthnRPID != "localhost" || cfg.WebAuthnRPOrigin != "http://localhost:18070" {
+			t.Fatalf("got rpID=%q rpOrigin=%q", cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
+		}
+	})
+
+	rejectCases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "dev origin port mismatch rejected",
+			env: map[string]string{
+				"APP_ENV":            "development",
+				"APP_ORIGIN":         "http://localhost:3000",
+				"WEBAUTHN_RP_ORIGIN": "http://localhost:3001",
+			},
+		},
+		{
+			name: "dev origin missing port rejected when APP_ORIGIN has port",
+			env: map[string]string{
+				"APP_ENV":            "development",
+				"APP_ORIGIN":         "http://localhost:3000",
+				"WEBAUTHN_RP_ORIGIN": "http://localhost",
+			},
+		},
+		{
+			name: "dev RP ID mismatch rejected",
+			env: map[string]string{
+				"APP_ENV":        "development",
+				"APP_ORIGIN":     "http://localhost:3000",
+				"WEBAUTHN_RP_ID": "key.zone17th.click",
+			},
+		},
+		{
+			name: "dev RP ID containing port rejected",
+			env: map[string]string{
+				"APP_ENV":        "development",
+				"APP_ORIGIN":     "http://localhost:3000",
+				"WEBAUTHN_RP_ID": "localhost:3000",
+			},
+		},
+		{
+			name: "dev RP ID containing scheme rejected",
+			env: map[string]string{
+				"APP_ENV":        "development",
+				"APP_ORIGIN":     "http://localhost:3000",
+				"WEBAUTHN_RP_ID": "http://localhost",
+			},
+		},
+		{
+			name: "prod RP ID bare TLD rejected",
+			env: func() map[string]string {
+				m := make(map[string]string, len(prodSecrets)+1)
+				for k, v := range prodSecrets {
+					m[k] = v
+				}
+				m["WEBAUTHN_RP_ID"] = "click"
+				return m
+			}(),
+		},
+		{
+			name: "prod RP ID unrelated domain rejected",
+			env: func() map[string]string {
+				m := make(map[string]string, len(prodSecrets)+1)
+				for k, v := range prodSecrets {
+					m[k] = v
+				}
+				m["WEBAUTHN_RP_ID"] = "evil.example.com"
+				return m
+			}(),
+		},
+		{
+			name: "prod RP ID child subdomain of APP_ORIGIN rejected",
+			env: func() map[string]string {
+				m := make(map[string]string, len(prodSecrets)+1)
+				for k, v := range prodSecrets {
+					m[k] = v
+				}
+				m["WEBAUTHN_RP_ID"] = "sub.key.zone17th.click"
+				return m
+			}(),
+		},
+		{
+			name: "prod RP origin mismatch with port rejected",
+			env: func() map[string]string {
+				m := make(map[string]string, len(prodSecrets)+1)
+				for k, v := range prodSecrets {
+					m[k] = v
+				}
+				m["WEBAUTHN_RP_ORIGIN"] = "https://key.zone17th.click:8443"
+				return m
+			}(),
+		},
+		{
+			name: "prod localhost APP_ORIGIN rejected",
+			env: func() map[string]string {
+				m := make(map[string]string, len(prodSecrets))
+				for k, v := range prodSecrets {
+					m[k] = v
+				}
+				m["APP_ORIGIN"] = "https://localhost:3000"
+				return m
+			}(),
+		},
+	}
+
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, tc.env)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load() muốn lỗi cho %s, nhận nil", tc.name)
+			}
+		})
 	}
 }
 

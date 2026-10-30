@@ -1,0 +1,298 @@
+{
+  "schema": "engram-crypto-vectors-v1",
+  "producer": "go",
+  "inputs": {
+    "vk_hex": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "vk_b64u": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+    "vault_key_id": "vk:UVJTVFVWV1hZWltcXV5fYA",
+    "passphrase_utf8": "engram-go-vector-passphrase-2026!",
+    "passphrase_hex": "656e6772616d2d676f2d766563746f722d706173737068726173652d3230323621",
+    "kdf_salt_hex": "6162636465666768696a6b6c6d6e6f70",
+    "kdf_salt_b64u": "YWJjZGVmZ2hpamtsbW5vcA",
+    "kdf": {
+      "alg": "argon2id13",
+      "ops": 3,
+      "mem": 67108864,
+      "parallelism": 1,
+      "salt": "YWJjZGVmZ2hpamtsbW5vcA"
+    },
+    "rk_slot": 3,
+    "rk_entropy_hex": "7172737475767778797a7b7c7d7e7f80",
+    "rk_display": "rk3_3HE9-SQ8X-BPEX-W7JY-KVFH-YQWZ-W0",
+    "rk_norm": "rk3_3HE9SQ8XBPEXW7JYKVFHYQWZW0",
+    "pwk_hex": "8182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0",
+    "pwk_b64u": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+    "x25519_seed_hex": "9192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0",
+    "x25519_public_hex": "3feafe0da24fa4583d0ccea14fa6ca960f69817e94add87a9c2aaf2f85558851",
+    "x25519_public_b64u": "P-r-DaJPpFg9DM6hT6bKlg9pgX6Urdh6nCqvL4VViFE",
+    "ed25519_seed_hex": "b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0",
+    "ed25519_public_hex": "d6eed8963f8bc1e22d4b30966298ab87d0402efb8599cd1c20eb87d1d891969a",
+    "ed25519_public_b64u": "1u7Ylj-LweItSzCWYpirh9BALvuFmc0cIOuH0diRlpo",
+    "nonces": {
+      "kek_wrap_nonce_hex": "1112131415161718191a1b1c1d1e1f202122232425262728",
+      "rk_wrap_nonce_hex": "22232425262728292a2b2c2d2e2f30313233343536373839",
+      "prf_wrap_nonce_hex": "333435363738393a3b3c3d3e3f404142434445464748494a",
+      "priv_wrap_nonce_hex": "4445464748494a4b4c4d4e4f505152535455565758595a5b"
+    },
+    "entries": {
+      "text": {
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "nonce_hex": "55565758595a5b5c5d5e5f606162636465666768696a6b6c",
+        "nonce_b64u": "VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts",
+        "plaintext_utf8": "Ghi chú mật mã tiếng Việt từ Go vector generator — dòng 1\nDòng 2: 100% E2E",
+        "plaintext_hex": "476869206368c3ba206de1baad74206dc3a3207469e1babf6e67205669e1bb87742074e1bbab20476f20766563746f722067656e657261746f7220e280942064c3b26e6720310a44c3b26e6720323a203130302520453245",
+        "envelope": {
+          "v": 1,
+          "alg": "xchacha20poly1305-ietf",
+          "key_id": "vk:UVJTVFVWV1hZWltcXV5fYA",
+          "nonce": "VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts",
+          "ct_enc": "utf8"
+        },
+        "reordered_envelope_raw_json": [
+          "{\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"alg\":\"xchacha20poly1305-ietf\",\"v\":1}",
+          "{\n  \"v\": 1,\n  \"key_id\": \"vk:UVJTVFVWV1hZWltcXV5fYA\",\n  \"nonce\": \"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\n  \"alg\": \"xchacha20poly1305-ietf\",\n  \"ct_enc\": \"utf8\"\n}"
+        ]
+      },
+      "json": {
+        "entry_id": "c23d5f71-9b0c-4d2e-8f3a-4b5c6d7e8f90",
+        "nonce_hex": "666768696a6b6c6d6e6f707172737475767778797a7b7c7d",
+        "nonce_b64u": "ZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9",
+        "plaintext_utf8": "{\n  \"service\": \"postgres-primary\",\n  \"port\": 5432,\n  \"tags\": [\"db\", \"prod\"]\n}",
+        "plaintext_hex": "7b0a20202273657276696365223a2022706f7374677265732d7072696d617279222c0a202022706f7274223a20353433322c0a20202274616773223a205b226462222c202270726f64225d0a7d",
+        "envelope": {
+          "v": 1,
+          "alg": "xchacha20poly1305-ietf",
+          "key_id": "vk:UVJTVFVWV1hZWltcXV5fYA",
+          "nonce": "ZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9",
+          "ct_enc": "utf8"
+        },
+        "reordered_envelope_raw_json": [
+          "{\"ct_enc\":\"utf8\",\"v\":1,\"nonce\":\"ZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9\",\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\"}",
+          "{\t\"alg\" : \"xchacha20poly1305-ietf\" , \"ct_enc\" : \"utf8\" , \"key_id\" : \"vk:UVJTVFVWV1hZWltcXV5fYA\" , \"nonce\" : \"ZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9\" , \"v\" : 1 }"
+        ]
+      }
+    }
+  },
+  "derived": {
+    "kek_hex": "d06b4b97a5d45f234b52f94a44b72589d405d7c4e51c4f89d9a9cd3dbf07e7e5",
+    "kek_b64u": "0GtLl6XUXyNLUvlKRLclidQF18TlHE-J2anNPb8H5-U",
+    "rk_lookup_hash_hex": "64f87f4c3f0966f35b9d69298adc12501e9d0dbe0327442dd858194b516c42b9",
+    "rk_lookup_hash_b64u": "ZPh_TD8JZvNbnWkpitwSUB6dDb4DJ0Qt2FgZS1FsQrk",
+    "rk_wrap_key_hex": "f79bdc4e8c5a89fba177da9079188d8e2e13493cc2ec3ca36aeeeda83bc046c3",
+    "rk_wrap_key_b64u": "95vcToxaifuhd9qQeRiNji4TSTzC7Dyjau7tqDvARsM",
+    "priv_plaintext_hex": "9192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0",
+    "wraps": {
+      "kek": {
+        "kind": "kek",
+        "label": "sabk.vk.kek.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e766b2e6b656b2e76310001",
+        "nonce_hex": "1112131415161718191a1b1c1d1e1f202122232425262728",
+        "length_bytes": 73,
+        "wrap_hex": "011112131415161718191a1b1c1d1e1f202122232425262728c4c2f6b54953c30ab7d69b4874a0c81d287c16485856c27f1ea1d74007e3dfcc514109a63829627d5ca01df1dc8642d7",
+        "wrap_b64u": "ARESExQVFhcYGRobHB0eHyAhIiMkJSYnKMTC9rVJU8MKt9abSHSgyB0ofBZIWFbCfx6h10AH49_MUUEJpjgpYn1coB3x3IZC1w"
+      },
+      "rk": {
+        "kind": "rk",
+        "label": "sabk.vk.rk.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e766b2e726b2e76310001",
+        "nonce_hex": "22232425262728292a2b2c2d2e2f30313233343536373839",
+        "length_bytes": 73,
+        "wrap_hex": "0122232425262728292a2b2c2d2e2f30313233343536373839cb9ee4da95a9a6a0bc177526d8bd2b023706e1df7f87adaf1fa1c2951d236837c3cbfe3c7377f68de857d7f015c3d6cb",
+        "wrap_b64u": "ASIjJCUmJygpKissLS4vMDEyMzQ1Njc4Ocue5NqVqaagvBd1Jti9KwI3BuHff4etrx-hwpUdI2g3w8v-PHN39o3oV9fwFcPWyw"
+      },
+      "prf": {
+        "kind": "prf",
+        "label": "sabk.vk.prf.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e766b2e7072662e76310001",
+        "nonce_hex": "333435363738393a3b3c3d3e3f404142434445464748494a",
+        "length_bytes": 73,
+        "wrap_hex": "01333435363738393a3b3c3d3e3f404142434445464748494a1483f4f8ebe7bd4bbfdf12cb58ba929dae5ecf6e84ed2cf245b591d13122acdc7fba360c3ca606ab9beabb0582037c4b",
+        "wrap_b64u": "ATM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJShSD9Pjr571Lv98Sy1i6kp2uXs9uhO0s8kW1kdExIqzcf7o2DDymBqub6rsFggN8Sw"
+      },
+      "priv": {
+        "kind": "priv",
+        "label": "sabk.priv.v1",
+        "version": 1,
+        "aad_hex": "7361626b2e707269762e76310001",
+        "nonce_hex": "4445464748494a4b4c4d4e4f505152535455565758595a5b",
+        "length_bytes": 105,
+        "wrap_hex": "014445464748494a4b4c4d4e4f505152535455565758595a5b00010d21162e95fdb5cf08465efb29cb3726ffede0142f4d9a159153348c4d118dfdf70fdfe4dd63014d21d30791103cdc739e6029cfbf001605892060eb87322d2bce14658ad6b7a8fbd2b951c33abe",
+        "wrap_b64u": "AURFRkdISUpLTE1OT1BRUlNUVVZXWFlaWwABDSEWLpX9tc8IRl77Kcs3Jv_t4BQvTZoVkVM0jE0Rjf33D9_k3WMBTSHTB5EQPNxznmApz78AFgWJIGDrhzItK84UZYrWt6j70rlRwzq-"
+      }
+    },
+    "entries": {
+      "text": {
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "jcs_utf8": "{\"alg\":\"xchacha20poly1305-ietf\",\"ct_enc\":\"utf8\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"v\":1}",
+        "jcs_hex": "7b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a55564a54564656575631685a576c7463585635665941222c226e6f6e6365223a2256565a5857466c6157317864586c396759574a6a5a47566d5a326870616d7473222c2276223a317d",
+        "aad_hex": "7361626b2e656e7472792e7631007b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a55564a54564656575631685a576c7463585635665941222c226e6f6e6365223a2256565a5857466c6157317864586c396759574a6a5a47566d5a326870616d7473222c2276223a317d0062313263346536302d386139622d346331642d396532662d336134623563366437653866",
+        "ciphertext_hex": "a3c3721b0aa53b900db0dfd66a4a8b74ef8228723282c793d4c4a0389a166cdd82ae735304b4e443f5f3507126173b1455cf958f6cb064ad94eb47b40851bb038909d948e217352ed6c8a6200b222e724762284028b6f0afc02e4223c41a4d6f0229cb23c71acef7",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc"
+      },
+      "json": {
+        "entry_id": "c23d5f71-9b0c-4d2e-8f3a-4b5c6d7e8f90",
+        "jcs_utf8": "{\"alg\":\"xchacha20poly1305-ietf\",\"ct_enc\":\"utf8\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"ZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9\",\"v\":1}",
+        "jcs_hex": "7b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a55564a54564656575631685a576c7463585635665941222c226e6f6e6365223a225a6d646f615770726247317562334278636e4e3064585a3365486c3665337839222c2276223a317d",
+        "aad_hex": "7361626b2e656e7472792e7631007b22616c67223a22786368616368613230706f6c79313330352d69657466222c2263745f656e63223a2275746638222c226b65795f6964223a22766b3a55564a54564656575631685a576c7463585635665941222c226e6f6e6365223a225a6d646f615770726247317562334278636e4e3064585a3365486c3665337839222c2276223a317d0063323364356637312d396230632d346432652d386633612d346235633664376538663930",
+        "ciphertext_hex": "6150557a89e67042c671ac231bd41e5aa7b6761463182786f6b425876e9849bfd492a223133a9cb4486a70b2d29ac692c3b6c03a963824ab828bbadd6244a182c5744c197f464e8bd886bdab17e00a710326df5c72ea0c028bbbb42a53",
+        "ciphertext_b64u": "YVBVeonmcELGcawjG9QeWqe2dhRjGCeG9rQlh26YSb_UkqIjEzqctEhqcLLSmsaSw7bAOpY4JKuCi7rdYkShgsV0TBl_Rk6L2Ia9qxfgCnEDJt9ccuoMAou7tCpT"
+      }
+    }
+  },
+  "negative": {
+    "envelope": [
+      {
+        "id": "go-env-missing-ct-enc",
+        "description": "Missing required field ct_enc must be rejected without auto-filling",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "validation"
+      },
+      {
+        "id": "go-env-duplicate-key-direct",
+        "description": "Duplicate key ct_enc in raw JSON",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "validation"
+      },
+      {
+        "id": "go-env-duplicate-key-unicode-escaped",
+        "description": "Unicode-escaped duplicate key ct\\u005fenc alongside ct_enc",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\",\"ct\\u005fenc\":\"utf8\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "validation"
+      },
+      {
+        "id": "go-env-duplicate-key-escaped-first-char",
+        "description": "Unicode-escaped duplicate key \\u0063t_enc alongside ct_enc",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\",\"\\u0063t_enc\":\"utf8\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "validation"
+      },
+      {
+        "id": "go-env-extra-field",
+        "description": "Extra field type in envelope object",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\",\"type\":\"text\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "validation"
+      },
+      {
+        "id": "go-env-float-version",
+        "description": "Floating-point version v=1.0 rejected",
+        "raw_json": "{\"v\":1.0,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "validation"
+      },
+      {
+        "id": "go-env-tampered-entry-id",
+        "description": "Valid envelope but tampered entry_id causes AEAD authentication failure",
+        "raw_json": "{\"alg\":\"xchacha20poly1305-ietf\",\"ct_enc\":\"utf8\",\"key_id\":\"vk:UVJTVFVWV1hZWltcXV5fYA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"v\":1}",
+        "entry_id": "00000000-0000-4000-8000-000000000099",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "aead"
+      },
+      {
+        "id": "go-env-tampered-key-id",
+        "description": "Valid envelope format with different key_id causes AEAD authentication failure",
+        "raw_json": "{\"v\":1,\"alg\":\"xchacha20poly1305-ietf\",\"key_id\":\"vk:AAAAAAAAAAAAAAAAAAAAAA\",\"nonce\":\"VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamts\",\"ct_enc\":\"utf8\"}",
+        "entry_id": "b12c4e60-8a9b-4c1d-9e2f-3a4b5c6d7e8f",
+        "ciphertext_b64u": "o8NyGwqlO5ANsN_WakqLdO-CKHIygseT1MSgOJoWbN2CrnNTBLTkQ_XzUHEmFzsUVc-Vj2ywZK2U60e0CFG7A4kJ2UjiFzUu1simIAsiLnJHYihAKLbwr8AuQiPEGk1vAinLI8cazvc",
+        "expected_error": "aead"
+      }
+    ],
+    "wrap": [
+      {
+        "id": "go-wrap-version-byte-0x02",
+        "description": "Leading version byte changed from 0x01 to 0x02 fails validator with validation and openWrap with aead",
+        "kind": "kek",
+        "wrap_b64u": "AhESExQVFhcYGRobHB0eHyAhIiMkJSYnKMTC9rVJU8MKt9abSHSgyB0ofBZIWFbCfx6h10AH49_MUUEJpjgpYn1coB3x3IZC1w",
+        "key_hex": "d06b4b97a5d45f234b52f94a44b72589d405d7c4e51c4f89d9a9cd3dbf07e7e5",
+        "validator_error": "validation",
+        "open_error": "aead"
+      },
+      {
+        "id": "go-wrap-tampered-tag",
+        "description": "Valid 73-byte header but flipped last tag bit fails AEAD",
+        "kind": "kek",
+        "wrap_b64u": "ARESExQVFhcYGRobHB0eHyAhIiMkJSYnKMTC9rVJU8MKt9abSHSgyB0ofBZIWFbCfx6h10AH49_MUUEJpjgpYn1coB3x3IZC1g",
+        "key_hex": "d06b4b97a5d45f234b52f94a44b72589d405d7c4e51c4f89d9a9cd3dbf07e7e5",
+        "validator_error": null,
+        "open_error": "aead"
+      },
+      {
+        "id": "go-wrap-wrong-label-rk-as-prf",
+        "description": "Opening an RK wrap under PRF kind/label fails AEAD due to AAD domain separation",
+        "kind": "prf",
+        "wrap_b64u": "ASIjJCUmJygpKissLS4vMDEyMzQ1Njc4Ocue5NqVqaagvBd1Jti9KwI3BuHff4etrx-hwpUdI2g3w8v-PHN39o3oV9fwFcPWyw",
+        "key_hex": "f79bdc4e8c5a89fba177da9079188d8e2e13493cc2ec3ca36aeeeda83bc046c3",
+        "validator_error": null,
+        "open_error": "aead"
+      },
+      {
+        "id": "go-wrap-wrong-length-72",
+        "description": "72-byte wrap rejected for 73-byte KEK wrap kind",
+        "kind": "kek",
+        "wrap_b64u": "ARESExQVFhcYGRobHB0eHyAhIiMkJSYnKMTC9rVJU8MKt9abSHSgyB0ofBZIWFbCfx6h10AH49_MUUEJpjgpYn1coB3x3IZC",
+        "key_hex": "d06b4b97a5d45f234b52f94a44b72589d405d7c4e51c4f89d9a9cd3dbf07e7e5",
+        "validator_error": "validation",
+        "open_error": "validation"
+      },
+      {
+        "id": "go-wrap-base64url-padding",
+        "description": "Base64url string with '=' padding rejected",
+        "kind": "kek",
+        "wrap_b64u": "ARESExQVFhcYGRobHB0eHyAhIiMkJSYnKMTC9rVJU8MKt9abSHSgyB0ofBZIWFbCfx6h10AH49_MUUEJpjgpYn1coB3x3IZC1w=",
+        "key_hex": "d06b4b97a5d45f234b52f94a44b72589d405d7c4e51c4f89d9a9cd3dbf07e7e5",
+        "validator_error": "validation",
+        "open_error": "validation"
+      }
+    ],
+    "kdf": [
+      {
+        "id": "go-kdf-ops-below-min",
+        "description": "ops=2 below minimum 3",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":2,\"mem\":67108864,\"parallelism\":1,\"salt\":\"YWJjZGVmZ2hpamtsbW5vcA\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "go-kdf-ops-above-max",
+        "description": "ops=11 above maximum 10",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":11,\"mem\":67108864,\"parallelism\":1,\"salt\":\"YWJjZGVmZ2hpamtsbW5vcA\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "go-kdf-mem-below-64mib",
+        "description": "mem=67108863 below 64 MiB floor",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":67108863,\"parallelism\":1,\"salt\":\"YWJjZGVmZ2hpamtsbW5vcA\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "go-kdf-mem-above-256mib",
+        "description": "mem=268435457 above 256 MiB cap",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":268435457,\"parallelism\":1,\"salt\":\"YWJjZGVmZ2hpamtsbW5vcA\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "go-kdf-parallelism-not-1",
+        "description": "parallelism=2 rejected",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"mem\":67108864,\"parallelism\":2,\"salt\":\"YWJjZGVmZ2hpamtsbW5vcA\"}",
+        "expected_error": "kdf_params"
+      },
+      {
+        "id": "go-kdf-duplicate-key-escaped",
+        "description": "Duplicate key ops vs \\u006fps in vault.kdf JSON",
+        "raw_json": "{\"alg\":\"argon2id13\",\"ops\":3,\"\\u006fps\":3,\"mem\":67108864,\"parallelism\":1,\"salt\":\"YWJjZGVmZ2hpamtsbW5vcA\"}",
+        "expected_error": "kdf_params"
+      }
+    ]
+  }
+}

@@ -106,7 +106,23 @@ test.describe('P02 auth (real API)', () => {
       await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
       await page.getByLabel(/Login password|Mật khẩu đăng nhập/).fill(password);
       await page.getByRole('button', { name: /Sign in|Đăng nhập/ }).click();
-      await expect(card).toBeVisible();
+      try {
+        await expect(card).toBeVisible();
+      } catch (err) {
+        // Diagnostics for VW-AUTH-E2E: say whether the form was hydrated and what React kept.
+        const form = page.locator('form').first();
+        console.log(
+          'VW-AUTH-E2E diag',
+          JSON.stringify({
+            url: page.url(),
+            hydrated: await form.getAttribute('data-hydrated').catch(() => null),
+            emailLen: await page.getByRole('textbox', { name: 'Email', exact: true }).inputValue().then((v) => v.length).catch(() => -1),
+            passwordLen: await page.getByLabel(/Login password|Mật khẩu đăng nhập/).inputValue().then((v) => v.length).catch(() => -1),
+            formText: await form.innerText().then((t) => t.replace(/\s+/g, ' ').slice(0, 300)).catch(() => null),
+          }),
+        );
+        throw err;
+      }
       await expect(card).toContainText(/incorrect|không đúng/i);
       await expect(card).not.toContainText(/does not exist|không tồn tại/i);
       await expect(card).not.toContainText(/turnstile|additional verification|xác minh bổ sung|temporarily locked|tạm khóa|tạm khoá|too many attempts|thử quá nhiều/i);

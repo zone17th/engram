@@ -67,6 +67,44 @@ export default defineConfig({
       testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
+    {
+      name: 'vault',
+      testMatch:
+        /(?:^|[\\/])(?:lock|lock-epoch|vault-onboarding|vault-unlock|vault-web-visual|vault-real-api|recovery|vault-settings|vault-settings-visual|vault-locked(?:-visual)?|vault-passkey|vault-passkey-visual)\.spec\.ts$/,
+      fullyParallel: false,
+      timeout: 90_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 900 },
+        trace: 'off',
+        video: 'off',
+        screenshot: 'off',
+      },
+    },
+    ...(process.env.E2E_VAULT_PROD === '1'
+      ? [
+          {
+            name: 'vault-prod',
+            testMatch: /(?:^|[\\/])(?:lock|lock-epoch)\.spec\.ts$/,
+            fullyParallel: false,
+            timeout: 90_000,
+            use: {
+              ...devices['Desktop Chrome'],
+              baseURL: process.env.BASE_URL ?? 'http://127.0.0.1:3060',
+              viewport: { width: 1440, height: 900 },
+            },
+          },
+        ]
+      : []),
+    ...(process.env.E2E_CRYPTO_DEV === '1'
+      ? [
+          {
+            name: 'crypto-dev',
+            testMatch: /crypto-worker\.dev\.spec\.ts/,
+            use: { ...devices['Desktop Chrome'] },
+          },
+        ]
+      : []),
   ],
   webServer: externalServer
     ? undefined
