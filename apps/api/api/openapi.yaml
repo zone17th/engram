@@ -1280,6 +1280,10 @@ paths:
         Yêu cầu grant re-auth (vault.passkey_register) và Idempotency-Key; không dùng If-Match và không tăng vault.version.
         Server consume challenge theo challenge_hash, verify attestation (UP+UV, RP ID, origin) và tự trích xuất cred_id, pubkey, aaguid
         (bỏ qua nếu client gửi kèm các trường này). Server không bao giờ nhận PWK.
+        Handler áp ngân sách xử lý 30 giây (`503 dependency_unavailable` khi quá hạn) và xác minh lại thẩm quyền (session dưới khoá hàng `FOR UPDATE` + grant `vault.passkey_register` bằng cùng bộ xác minh của route) trong transaction mutation cuối cùng ngay trước `FinishIdempotencyKey` / `COMMIT` (advisor-dec-057, advisor-dec-071): một request có grant hoặc session không còn hợp lệ tại thời điểm kiểm tra cuối này tuyệt đối không bao giờ commit.
+        Timeout hoặc lỗi trước `COMMIT` hoàn tác transaction mutation và giải phóng claim `in_progress` (nhưng `challenge_id` đã tiêu thụ ở transaction trước vẫn bị đốt — khi bắt đầu lượt đăng ký mới phải gọi lại `POST /vault/passkeys/register/options`).
+        Timeout xảy ra đúng lúc `COMMIT` giữ nguyên claim ở trạng thái không xác định (ambiguous): `503 dependency_unavailable` và `409 idempotency_in_progress` là kết quả chưa xác định (unknown outcome), client phải replay lại đúng request với cùng `Idempotency-Key`.
+        Không hứa hẹn huỷ chéo giữa các request hoặc giữa các replica khác cấu hình (BR1-1), cũng như cửa sổ đang bay giữa bước kiểm tra thẩm quyền cuối cùng và `COMMIT` (BR1-2).
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -1321,7 +1325,7 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
-          description: Công tắc dừng thay đổi khoá đang bật (vault_mutations_disabled, dependency_unavailable)
+          description: Công tắc dừng thay đổi khoá đang bật hoặc quá hạn xử lý 30 giây / phụ thuộc tạm thời không sẵn sàng (vault_mutations_disabled, dependency_unavailable)
           $ref: '#/components/responses/Problem'
 
   /vault/passkeys/{id}:
