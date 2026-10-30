@@ -254,7 +254,7 @@ test.describe('P03-T20B Settings passkey list and auto-lock E2E (real API)', () 
         timeout: UI_WAIT_MS,
       });
       await expect(pageA.getByTestId('settings-passkey-status')).toHaveText('Passkey renamed.');
-
+      await expect(pageA.getByTestId(`settings-passkey-rename-${passkeyIdA}`)).toBeFocused();
       // User B in a separate context and session tries to rename and DELETE user A's passkey id through the real API
       const pageB = await ctxB.newPage();
       await signupAndOpenUnlockedSettings(pageB, 't20b-user-b');
@@ -397,6 +397,7 @@ test.describe('P03-T20B Settings passkey list and auto-lock E2E (real API)', () 
     await expect(page.getByTestId('settings-passkey-empty')).toBeVisible({ timeout: UI_WAIT_MS });
     await expect(page.getByTestId('settings-passkey-error')).toHaveCount(0);
     await expect(page.getByTestId('settings-passkey-status')).toHaveText('Passkey removed.');
+    await expect(page.getByTestId('settings-passkey-heading')).toBeFocused();
   });
 
   test('20B: auto-lock change propagates to other tabs', async ({ browser }) => {
