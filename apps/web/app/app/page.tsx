@@ -1,14 +1,14 @@
 'use client';
 
-import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { type ReadyResponse, apiFetch } from '@engram/shared-types';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { EmptyState } from '@/components/app-shell/empty-state';
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { Rail } from '@/components/app-shell/rail';
-import { BadgeType } from '@/components/ui/badge-type';
 import { useSession } from '@/features/auth/session-provider';
+import { ItemList } from '@/features/items/item-list';
+import { LockedBanner } from '@/features/items/locked-banner';
 import { DEMO_ITEMS, DEMO_TAGS } from '@/lib/demo-fixtures';
 
 export default function AppPage() {
@@ -27,6 +27,7 @@ export default function AppPage() {
   return (
     <>
       <AppHeader vault={{ state: vaultState }} showLogout />
+      <LockedBanner />
 
       <main className="mx-auto grid max-w-container gap-8 px-5 py-8 lg:grid-cols-[236px_minmax(0,1fr)]">
         <Rail
@@ -58,22 +59,7 @@ export default function AppPage() {
           {DEMO_ITEMS.length === 0 ? (
             <EmptyState title="Chưa có mục mẫu ở đây" body="Bản xem trước không có dữ liệu để hiển thị." />
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              {DEMO_ITEMS.map((item) => (
-                <Link
-                  key={item.id}
-                  href={`/app/items/${item.id}`}
-                  className="card flex flex-col gap-2 p-5 no-underline !text-body"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="font-display font-bold text-ink">{item.title}</h2>
-                    <BadgeType kind={item.kind} />
-                  </div>
-                  <p className="t-legal text-muted">{item.preview}</p>
-                  <span className="t-caption mt-auto text-link">Xem bản xem trước →</span>
-                </Link>
-              ))}
-            </div>
+            <ItemList items={DEMO_ITEMS} openLabel="Xem bản xem trước →" />
           )}
         </section>
       </main>

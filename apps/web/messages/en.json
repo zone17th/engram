@@ -412,6 +412,14 @@
       "busy": "Another vault operation is already in progress. Wait for it to finish or lock first.",
       "recoveringSwitchHint": "Finish setting a new passphrase or lock the vault first to switch flows."
     },
+    "locked": {
+      "bannerTitle": "Vault locked",
+      "bannerBody": "Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view entry contents.",
+      "unlockCta": "Unlock vault",
+      "maskLabel": "Entry content is locked. Unlock the vault to view it.",
+      "bodyLoading": "Decrypting entry content…",
+      "bodyError": "This entry could not be decrypted."
+    },
     "lock": {
       "button": "Lock now",
       "shortcutHint": "Press L to lock immediately",
