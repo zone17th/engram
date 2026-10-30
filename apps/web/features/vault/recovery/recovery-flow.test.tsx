@@ -3442,10 +3442,8 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       const publishedAfterTransition = published.length;
       routerMocks.replace.mockClear();
 
-      // The user's retry also fails.
-      await act(async () => {
-        fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
-      });
+      // FE7-1: the idle retry is withdrawn when B is announced, so there is nothing left to click.
+      expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
       await settle();
       await settle();
 
@@ -3496,9 +3494,8 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     await settle();
     const publishedAfterTransition = published.length;
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
-    });
+    // FE7-1: the idle retry is withdrawn when B is announced, so there is nothing left to click.
+    expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
     await settle();
     await settle();
     expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
@@ -3536,9 +3533,8 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     const publishedAfterTransition = published.length;
 
     fetchState.vaultGetFailure = null;
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
-    });
+    // FE7-1: the idle retry is withdrawn when B is announced, so there is nothing left to click.
+    expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
     await settle();
     await settle();
     expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
@@ -3550,6 +3546,119 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
 
     shim.close();
   }, 30_000);
+
+  // FE7-1: a vault identity change (another vault B, or a reset of A) announced while the failed-recheck notice is idle withdraws
+  // the notice and both actions at transition time, and an action captured before that does nothing.
+  const IDLE_IDENTITY_CHANGES = [
+    'local notifyVaultChanged (vault B)',
+    'sibling-tab broadcast (vault B)',
+    'local notifyVaultChanged (reset of A)',
+    'sibling-tab broadcast (reset of A)',
+  ] as const;
+
+  async function announceIdleIdentityChange(
+    announce: (typeof IDLE_IDENTITY_CHANGES)[number],
+    vaultCtx: VaultContextValue,
+  ) {
+    const isReset = announce.includes('reset of A');
+    const payload = {
+      vault_key_id: isReset ? TEST_VECTOR_VAULT_KEY_ID : REPLACEMENT_VAULT_KEY_ID,
+      version: isReset ? null : 1,
+    };
+    await act(async () => {
+      if (announce.startsWith('local')) {
+        vaultCtx.notifyVaultChanged(payload);
+      } else {
+        postVaultBroadcast({ type: 'vault_changed', ...payload });
+      }
+    });
+    await settle();
+  }
+
+  // The React `onClick` a rendered button holds right now; it stays callable after the button leaves the DOM.
+  function capturedOnClick(element: HTMLElement): () => void {
+    const propsKey = Object.keys(element).find((key) => key.startsWith('__reactProps$'));
+    const props = propsKey
+      ? (element as unknown as Record<string, { onClick?: () => void }>)[propsKey]
+      : undefined;
+    if (!props?.onClick) throw new Error('no React onClick on the element');
+    return props.onClick;
+  }
+
+  for (const announce of IDLE_IDENTITY_CHANGES) {
+    it(`FE7-1: ${announce} announced while A's failed-recheck notice is idle withdraws the notice, Check again and Go to unlock before any click`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+      const published = collectVaultChangedBroadcasts();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveToFailedRecheck(fetchState, () => vaultCtx);
+      expect(screen.getByTestId('recovery-committed-recheck-retry')).toBeInTheDocument();
+      expect(screen.getByTestId('recovery-committed-recheck-unlock')).toBeInTheDocument();
+      const publishedBefore = published.length;
+      routerMocks.replace.mockClear();
+
+      await announceIdleIdentityChange(announce, vaultCtx);
+
+      // Nothing was clicked: the obsolete guidance and both actions are already gone.
+      expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-committed-recheck-retry')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-committed-recheck-unlock')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+      expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(published.slice(publishedBefore)).toEqual([]);
+      expect(vaultCtx.workerState).toBe('locked');
+
+      shim.close();
+    }, 30_000);
+
+    it(`FE7-1: an old Go to unlock / Check again callback captured before ${announce} does nothing when it fires after it`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+      const published = collectVaultChangedBroadcasts();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveToFailedRecheck(fetchState, () => vaultCtx);
+      const oldUnlock = capturedOnClick(screen.getByTestId('recovery-committed-recheck-unlock'));
+      const oldRetry = capturedOnClick(screen.getByTestId('recovery-committed-recheck-retry'));
+      routerMocks.replace.mockClear();
+
+      await announceIdleIdentityChange(announce, vaultCtx);
+      const publishedAfterTransition = published.length;
+      fetchState.vaultGetFailure = null;
+
+      await act(async () => {
+        oldUnlock();
+        oldRetry();
+      });
+      await settle();
+      await settle();
+
+      expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(published.slice(publishedAfterTransition)).toEqual([]);
+      expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
+      expect(vaultCtx.workerState).toBe('locked');
+
+      shim.close();
+    }, 30_000);
+  }
 
   it('BE5-2 (consumer boundary): a newly prepared regeneration bundle sends the live vault version, not the lower completion version', async () => {
     const shim = makeTestShim();

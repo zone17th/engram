@@ -123,19 +123,33 @@ const SUCCESSOR_WORKER_STATES: ReadonlyArray<string> = ['unlocked', 'recovering'
 interface VaultIdentityTransitionObserver {
   transitioned: () => boolean;
   release: () => void;
+  /** FE7-1: runs once when the first transition is seen (a parked observer withdraws the idle notice); `null` detaches it. */
+  onTransition: (listener: (() => void) | null) => void;
 }
 
 function observeVaultIdentityTransitions(vaultKeyId: string): VaultIdentityTransitionObserver {
   let transitioned = false;
-  const release = subscribeVaultBroadcast((message) => {
+  let listener: (() => void) | null = null;
+  const unsubscribe = subscribeVaultBroadcast((message) => {
     if (
       message.type === 'vault_changed' &&
       (message.version === null || message.vault_key_id !== vaultKeyId)
     ) {
+      const first = !transitioned;
       transitioned = true;
+      if (first) listener?.();
     }
   });
-  return { transitioned: () => transitioned, release };
+  return {
+    transitioned: () => transitioned,
+    release: () => {
+      listener = null;
+      unsubscribe();
+    },
+    onTransition: (next) => {
+      listener = next;
+    },
+  };
 }
 
 function isGrantFreshForFirstAttempt(grant: ReauthGrant | null, action: ReauthAction): boolean {
@@ -833,6 +847,8 @@ export function VaultRecoveryFlow() {
         originTransitions ??
         (parked?.vaultKeyId === outcome.vaultKeyId ? parked.observer : null) ??
         observeVaultIdentityTransitions(outcome.vaultKeyId);
+      // FE7-1: while this read runs it handles a transition itself; the parking listener applies to idle only.
+      transitions.onTransition(null);
       // The reconciliation's own observer is released on every path except a failed read that parks it again.
       const releaseOwnObserver = () => {
         if (ownsObserver) transitions.release();
@@ -877,10 +893,22 @@ export function VaultRecoveryFlow() {
         }
         // FE6-1: the identity observation survives the failed read until a read succeeds or a newer attempt replaces it.
         // An origin observer is released by its sender, so the retry gets a fresh one (no await between check and subscribe).
-        pendingTransitionsRef.current = {
-          vaultKeyId: outcome.vaultKeyId,
-          observer: ownsObserver ? transitions : observeVaultIdentityTransitions(outcome.vaultKeyId),
-        };
+        const parkedObserver = ownsObserver
+          ? transitions
+          : observeVaultIdentityTransitions(outcome.vaultKeyId);
+        // FE7-1: a vault announced while the notice is idle withdraws it (and its actions) at once; the observation itself
+        // stays until the authorized boundary so a later retry still knows.
+        parkedObserver.onTransition(() =>
+          setCommittedRecheck((current) =>
+            current !== null &&
+            current.phase === 'recheck_needed' &&
+            current.userId === outcome.userId &&
+            current.vaultKeyId === outcome.vaultKeyId
+              ? null
+              : current,
+          ),
+        );
+        pendingTransitionsRef.current = { vaultKeyId: outcome.vaultKeyId, observer: parkedObserver };
         setCommittedRecheck({ ...recheckBase, phase: 'recheck_needed' });
         return;
       }
@@ -907,10 +935,25 @@ export function VaultRecoveryFlow() {
     [router],
   );
 
+  // FE7-1: a vault announced since the notice went idle is already known by the parked observer; an action that was captured
+  // or fired before React withdrew the notice does nothing but drop the stale feedback.
+  const dropIfIdleTransitionObserved = useCallback((): boolean => {
+    if (pendingTransitionsRef.current?.observer.transitioned() !== true) return false;
+    setCommittedRecheck(null);
+    return true;
+  }, []);
+
   const handleRecheckCommittedRecovery = useCallback(() => {
     if (!committedRecheck || committedRecheck.phase !== 'recheck_needed') return;
+    if (dropIfIdleTransitionObserved()) return;
     void reconcileCommittedRecovery(committedRecheck, committedRecheck.version);
-  }, [committedRecheck, reconcileCommittedRecovery]);
+  }, [committedRecheck, dropIfIdleTransitionObserved, reconcileCommittedRecovery]);
+
+  const handleCommittedRecheckUnlock = useCallback(() => {
+    if (dropIfIdleTransitionObserved()) return;
+    rememberRecoveryCompletedNotice(currentUserIdRef.current);
+    router.replace('/app/unlock');
+  }, [dropIfIdleTransitionObserved, router]);
 
   // Helper to send (or replay) `POST /vault/recover/complete` + `confirmRecovery`
   const executeCompleteRequest = useCallback(
@@ -1840,10 +1883,7 @@ export function VaultRecoveryFlow() {
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => {
-                    rememberRecoveryCompletedNotice(currentUserIdRef.current);
-                    router.replace('/app/unlock');
-                  }}
+                  onClick={handleCommittedRecheckUnlock}
                   data-testid="recovery-committed-recheck-unlock"
                 >
                   {t('committedRecheck.unlockCta')}
