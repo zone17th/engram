@@ -24,8 +24,11 @@ export interface DemoSearchResult {
   query: string;
 }
 
-/** searchDemo lọc fixture trong bộ nhớ. Không I/O, không mạng, không lưu gì. */
-export function searchDemo(query: string): DemoSearchResult {
+/**
+ * searchDemo lọc fixture trong bộ nhớ. Không I/O, không mạng, không lưu gì.
+ * `matchBodies: false` (vault chưa mở khoá) chỉ khớp tên và tag, không khớp nội dung preview.
+ */
+export function searchDemo(query: string, { matchBodies = true }: { matchBodies?: boolean } = {}): DemoSearchResult {
   const needle = fold(query.trim());
   if (needle === '') {
     return { tags: DEMO_TAGS.map((t) => t.name), items: DEMO_ITEMS, query };
@@ -33,7 +36,7 @@ export function searchDemo(query: string): DemoSearchResult {
 
   const tags = DEMO_TAGS.filter((t) => fold(t.name).includes(needle)).map((t) => t.name);
   const items = DEMO_ITEMS.filter((item) => {
-    const haystack = [item.title, item.preview, ...item.tags].map(fold);
+    const haystack = [item.title, ...(matchBodies ? [item.preview] : []), ...item.tags].map(fold);
     return haystack.some((text) => text.includes(needle));
   });
 

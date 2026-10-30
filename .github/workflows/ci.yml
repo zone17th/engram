@@ -222,6 +222,28 @@ jobs:
           echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
           exit "$status"
 
+
+      - name: Run real Crypto Worker production CSP checks (CF T-5, FE2-11e)
+        env:
+          BASE_URL: http://127.0.0.1:3000
+          E2E_STACK: '1'
+          E2E_VAULT_PROD: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . infra/image-pins.env
+          set +a
+          docker run --rm --network host \
+            --env BASE_URL \
+            --env APP_ORIGIN \
+            --env E2E_STACK \
+            --env E2E_VAULT_PROD \
+            --env CI \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$PLAYWRIGHT_IMAGE" \
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project=vault-prod --output=test-results-vault-prod e2e/lock.spec.ts e2e/lock-epoch.spec.ts
       - name: Stage sanitized browser artifacts
         if: always()
         run: node scripts/sanitize-e2e-artifacts.mjs

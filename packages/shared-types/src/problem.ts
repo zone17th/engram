@@ -28,6 +28,24 @@ export const ERROR_CODES = [
   'password_weak',
   'semantic_unavailable',
   'mail_delivery_unavailable',
+  'vault_exists',
+  'vault_absent',
+  'vault_kdf_invalid',
+  'vault_wrap_invalid',
+  'vault_mutations_disabled',
+  'recovery_keys_count',
+  'recovery_key_slot_taken',
+  'recovery_key_invalid',
+  'recovery_key_conflict',
+  'precondition_required',
+  'version_mismatch',
+  'idempotency_conflict',
+  'idempotency_in_progress',
+  'passkey_challenge_invalid',
+  'passkey_attestation_invalid',
+  'passkey_name_invalid',
+  'passkey_exists',
+  'passkey_not_found',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -49,6 +67,8 @@ export interface ProblemDetails {
   /** Chỉ khi code = session_invalid; token lạ dùng invalid. */
   reason?: SessionInvalidReason;
   captcha_required?: boolean;
+  /** Phiên bản hiện tại của vault khi code = version_mismatch (412). */
+  current_version?: number;
 }
 
 export function isProblemDetails(value: unknown): value is ProblemDetails {
