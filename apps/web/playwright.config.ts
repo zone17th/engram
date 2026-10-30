@@ -70,7 +70,7 @@ export default defineConfig({
     {
       name: 'vault',
       testMatch:
-        /(?:^|[\\/])(?:lock|lock-epoch|vault-onboarding|vault-unlock|vault-web-visual|vault-real-api|recovery)\.spec\.ts$/,
+        /(?:^|[\\/])(?:lock|lock-epoch|vault-onboarding|vault-unlock|vault-web-visual|vault-real-api|vault-devkey|vault-devkey-real-api|recovery)\.spec\.ts$/,
       fullyParallel: false,
       timeout: 90_000,
       use: {
