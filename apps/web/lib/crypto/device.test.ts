@@ -1022,4 +1022,54 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
     expect(reader2Value).toEqual(committedMeta);
     db.close();
   });
+
+  it('FE1-24: WRAP_INVALID from an invalid stored DevKey shape (extractable / AES-128 / wrong usage / non-AES) or NUL id surfaces as passphrase fallback without purging sabk.device', async () => {
+    const tab = await openTab();
+    await remember(tab);
+    const initialMeta = (await metaNow())!;
+    const validRecord = (await readDeviceSnapshot(USER_A, env)).entries[0]!.record!;
+    await tab.client.lock();
+
+    const badKeys: CryptoKey[] = [
+      await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']),
+      await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt', 'decrypt']),
+      await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt']),
+      await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign', 'verify']),
+    ];
+
+    for (const badKey of badKeys) {
+      devkeys().set(formatDevKeyRecordKey(USER_A, VAULT_K), {
+        ...validRecord,
+        dev_key: badKey,
+      });
+      const purgeSpy = vi.fn();
+      const silent = silentUnlock(tab, { purgeStale: purgeSpy });
+      expect(await silent.run).toEqual({
+        status: 'fallback',
+        reason: 'unlock_failed',
+        code: 'WRAP_INVALID',
+      });
+      expect(purgeSpy).not.toHaveBeenCalled();
+      expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
+      expect(await metaNow()).toEqual(initialMeta);
+      expect(tab.client.getState()).toBe('locked');
+    }
+
+    // Restore valid record -> silent unlock succeeds
+    devkeys().set(formatDevKeyRecordKey(USER_A, VAULT_K), validRecord);
+    expect(await silentUnlock(tab).run).toEqual({ status: 'unlocked' });
+    expect(tab.client.getState()).toBe('unlocked');
+
+    // Remember with NUL in userId or vaultKeyId surfaces WRAP_INVALID as unavailable worker_error and writes nothing
+    expect(await remember(tab, { userId: 'user\u0000id' })).toEqual({
+      status: 'unavailable',
+      reason: 'worker_error',
+      code: 'WRAP_INVALID',
+    });
+    expect(await remember(tab, { vaultKeyId: 'vk:\u0000id' })).toEqual({
+      status: 'unavailable',
+      reason: 'worker_error',
+      code: 'WRAP_INVALID',
+    });
+  });
 });

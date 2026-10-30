@@ -79,6 +79,9 @@ export function buildDevKeyAad(userId: string, vaultKeyId: string): Uint8Array {
   if (!userId || !vaultKeyId) {
     throw new WrapError('WRAP_INVALID', 'user_id and vault_key_id are required for DevKey AAD');
   }
+  if (userId.includes('\u0000') || vaultKeyId.includes('\u0000')) {
+    throw new WrapError('WRAP_INVALID', 'user_id and vault_key_id must not contain NUL bytes');
+  }
   const prefix = toLocalBytes(utf8Encoder.encode(DEVKEY_LABEL));
   const userBytes = toLocalBytes(utf8Encoder.encode(userId));
   const vkIdBytes = toLocalBytes(utf8Encoder.encode(vaultKeyId));
@@ -289,6 +292,42 @@ export function unpackPrivateKeySeeds(combined: Uint8Array): {
  * Wraps a 32-byte VK under a WebCrypto AES-GCM-256 `CryptoKey` (`DevKey`):
  * `iv(12) || ciphertext_and_tag(48)` (60 B total), AAD `sabk.devkey.v1 || 0x00 || user_id || 0x00 || vault_key_id`.
  */
+function validateDevKey(devKey: unknown, requiredUsages: readonly ('encrypt' | 'decrypt')[]): asserts devKey is CryptoKey {
+  if (typeof devKey !== 'object' || devKey === null) {
+    throw new WrapError('WRAP_INVALID', 'DevKey must be a CryptoKey');
+  }
+  if (!('type' in devKey) || devKey.type !== 'secret' || !('extractable' in devKey) || devKey.extractable !== false) {
+    throw new WrapError('WRAP_INVALID', 'DevKey must be a non-extractable secret CryptoKey');
+  }
+  const alg = 'algorithm' in devKey ? devKey.algorithm : null;
+  if (
+    typeof alg !== 'object' ||
+    alg === null ||
+    !('name' in alg) ||
+    alg.name !== 'AES-GCM' ||
+    !('length' in alg) ||
+    alg.length !== 256
+  ) {
+    throw new WrapError('WRAP_INVALID', 'DevKey must be an AES-GCM-256 CryptoKey');
+  }
+  const usages = 'usages' in devKey ? devKey.usages : null;
+  if (!Array.isArray(usages) || !requiredUsages.every((u) => usages.includes(u))) {
+    throw new WrapError(
+      'WRAP_INVALID',
+      `DevKey usages must include ${requiredUsages.join(' and ')}`,
+    );
+  }
+}
+
+function isInvalidAccessError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'name' in err &&
+    err.name === 'InvalidAccessError'
+  );
+}
+
 export async function sealDevKeyWrap(
   sodium: Sodium,
   vk: Uint8Array,
@@ -300,21 +339,32 @@ export async function sealDevKeyWrap(
   if (vk.byteLength !== VK_BYTES) {
     throw new WrapError('WRAP_INVALID', 'VK must be 32 bytes');
   }
+  validateDevKey(devKey, ['encrypt', 'decrypt']);
   const ivBytes = iv ?? sodium.randombytes_buf(DEVKEY_IV_BYTES);
   if (ivBytes.byteLength !== DEVKEY_IV_BYTES) {
     throw new WrapError('WRAP_INVALID', 'DevKey IV must be 12 bytes');
   }
   const aad = buildDevKeyAad(userId, vaultKeyId);
-  const ctBuffer = await crypto.subtle.encrypt(
-    {
-      name: 'AES-GCM',
-      iv: ivBytes as Uint8Array<ArrayBuffer>,
-      additionalData: aad as Uint8Array<ArrayBuffer>,
-      tagLength: 128,
-    },
-    devKey,
-    vk as Uint8Array<ArrayBuffer>,
-  );
+  let ctBuffer: ArrayBuffer;
+  try {
+    ctBuffer = await crypto.subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv: ivBytes as Uint8Array<ArrayBuffer>,
+        additionalData: aad as Uint8Array<ArrayBuffer>,
+        tagLength: 128,
+      },
+      devKey,
+      vk as Uint8Array<ArrayBuffer>,
+    );
+  } catch (err) {
+    if (isInvalidAccessError(err)) {
+      throw new WrapError('WRAP_INVALID', 'DevKey invalid access during AES-GCM encryption', {
+        cause: err,
+      });
+    }
+    throw err;
+  }
   const ctBytes = new Uint8Array(ctBuffer);
   const out = new Uint8Array(DEVKEY_IV_BYTES + ctBytes.byteLength);
   out.set(ivBytes, 0);
@@ -351,6 +401,7 @@ export async function openDevKeyWrap(
     throw new WrapError('WRAP_INVALID', 'DevKey wrap input must be Uint8Array or base64url string');
   }
 
+  validateDevKey(devKey, ['decrypt']);
   const iv = wrapBytes.slice(0, DEVKEY_IV_BYTES);
   const ctAndTag = wrapBytes.slice(DEVKEY_IV_BYTES);
   const aad = buildDevKeyAad(userId, vaultKeyId);
@@ -368,6 +419,11 @@ export async function openDevKeyWrap(
     );
     return new Uint8Array(ptBuffer);
   } catch (err) {
+    if (isInvalidAccessError(err)) {
+      throw new WrapError('WRAP_INVALID', 'DevKey invalid access during AES-GCM decryption', {
+        cause: err,
+      });
+    }
     throw new WrapError('AEAD_DECRYPT_FAILED', 'DevKey AES-GCM decryption failed', { cause: err });
   }
 }

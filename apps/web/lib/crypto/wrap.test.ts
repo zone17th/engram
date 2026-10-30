@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { decodeBase64UrlStrict, encodeBase64Url } from './b64url';
 import { getSodium, toLocalBytes } from './sodium';
 import {
+  buildDevKeyAad,
+  DEVKEY_WRAP_BYTES,
+  openDevKeyWrap,
+  sealDevKeyWrap,
   buildWrapAad,
    openWrap,
   packPrivateKeySeeds,
@@ -161,5 +165,176 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
     // Verify round-trip via base64url
     const xPubB64 = encodeBase64Url(x25519Kp.publicKey);
     expect(decodeBase64UrlStrict(xPubB64, 32)).toEqual(x25519Kp.publicKey);
+  });
+
+  describe('FE1-24 DevKey key-shape validation, AAD NUL checks, and InvalidAccessError mapping', () => {
+    const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const vaultKeyId = 'vk:0123456789abcdefghijkl';
+
+    it('positive control: seals and opens with a non-extractable AES-GCM-256 key generated like device.ts:549', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const devKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+
+      const wrapped = await sealDevKeyWrap(sodium, vk, devKey, userId, vaultKeyId);
+      expect(wrapped.byteLength).toBe(DEVKEY_WRAP_BYTES);
+
+      const opened = await openDevKeyWrap(wrapped, devKey, userId, vaultKeyId);
+      expect(opened).toEqual(vk);
+    });
+
+    it('rejects extractable key with WRAP_INVALID before any WebCrypto call', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const extractableKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+      const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
+
+      await expect(
+        sealDevKeyWrap(sodium, vk, extractableKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        openDevKeyWrap(dummyWrap, extractableKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+    });
+
+    it('rejects AES-GCM-128 key with WRAP_INVALID before any WebCrypto call', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const aes128Key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 128 },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+      const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
+
+      await expect(
+        sealDevKeyWrap(sodium, vk, aes128Key, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        openDevKeyWrap(dummyWrap, aes128Key, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+    });
+
+    it('rejects wrong usages (decrypt-only for sealDevKeyWrap, encrypt-only for openDevKeyWrap) with WRAP_INVALID', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const decryptOnlyKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['decrypt'],
+      );
+      const encryptOnlyKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt'],
+      );
+      const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
+
+      await expect(
+        sealDevKeyWrap(sodium, vk, decryptOnlyKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        sealDevKeyWrap(sodium, vk, encryptOnlyKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        openDevKeyWrap(dummyWrap, encryptOnlyKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+    });
+
+    it('rejects non-AES key (HMAC) with WRAP_INVALID before any WebCrypto call', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const hmacKey = await crypto.subtle.generateKey(
+        { name: 'HMAC', hash: 'SHA-256', length: 256 },
+        false,
+        ['sign', 'verify'],
+      );
+      const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
+
+      await expect(
+        sealDevKeyWrap(sodium, vk, hmacKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        openDevKeyWrap(dummyWrap, hmacKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+    });
+
+    it('rejects NUL in userId or vaultKeyId in buildDevKeyAad, sealDevKeyWrap, and openDevKeyWrap with WRAP_INVALID', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const devKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+      const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
+
+      expect(() => buildDevKeyAad('user\u0000id', vaultKeyId)).toThrowError(
+        expect.objectContaining({ code: 'WRAP_INVALID' }),
+      );
+      expect(() => buildDevKeyAad(userId, 'vk:\u0000id')).toThrowError(
+        expect.objectContaining({ code: 'WRAP_INVALID' }),
+      );
+
+      await expect(
+        sealDevKeyWrap(sodium, vk, devKey, 'user\u0000id', vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        sealDevKeyWrap(sodium, vk, devKey, userId, 'vk:\u0000id'),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        openDevKeyWrap(dummyWrap, devKey, 'user\u0000id', vaultKeyId),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      await expect(
+        openDevKeyWrap(dummyWrap, devKey, userId, 'vk:\u0000id'),
+      ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+    });
+
+    it('maps WebCrypto DOMException InvalidAccessError to WRAP_INVALID while keeping OperationError as AEAD_DECRYPT_FAILED', async () => {
+      const sodium = await getSodium();
+      const vk = new Uint8Array(VK_BYTES).fill(0x42);
+      const devKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+      const validWrap = await sealDevKeyWrap(sodium, vk, devKey, userId, vaultKeyId);
+
+      // Real OperationError (tampered authentication tag) -> AEAD_DECRYPT_FAILED
+      const tamperedWrap = new Uint8Array(validWrap);
+      tamperedWrap[tamperedWrap.byteLength - 1] ^= 0xff;
+      await expect(
+        openDevKeyWrap(tamperedWrap, devKey, userId, vaultKeyId),
+      ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+
+      // InvalidAccessError from subtle.encrypt / subtle.decrypt -> WRAP_INVALID
+      const origEncrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+      const origDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+      crypto.subtle.encrypt = async () => {
+        throw new DOMException('Key cannot be used for this operation', 'InvalidAccessError');
+      };
+      crypto.subtle.decrypt = async () => {
+        throw new DOMException('Key cannot be used for this operation', 'InvalidAccessError');
+      };
+      try {
+        await expect(
+          sealDevKeyWrap(sodium, vk, devKey, userId, vaultKeyId),
+        ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+        await expect(
+          openDevKeyWrap(validWrap, devKey, userId, vaultKeyId),
+        ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      } finally {
+        crypto.subtle.encrypt = origEncrypt;
+        crypto.subtle.decrypt = origDecrypt;
+      }
+    });
   });
 });
