@@ -297,8 +297,9 @@ export async function openAddPasskeyDialog(page: Page) {
 
 /**
  * Acquires a real `vault.passkey_register` grant via the OAuth re-auth flow for an OAuth-only user: opens the dialog,
- * clicks `Continue with Google`, completes the fake OAuth redirect (`status=reauth_ready` -> `POST /auth/reauth`),
- * unlocks the vault on `/app/unlock?returnTo=%2Fapp%2Fsettings`, and re-opens the Add-passkey dialog at its name step.
+ * clicks `Confirm with Google` (`auth.reauth.google`), completes the fake OAuth redirect (`status=reauth_ready` ->
+ * `POST /auth/reauth`), unlocks the vault on `/app/unlock?returnTo=%2Fapp%2Fsettings`, and re-opens the Add-passkey
+ * dialog at its name step.
  */
 export async function acquireOauthPasskeyGrantAndOpenDialog(
   page: Page,
@@ -308,7 +309,7 @@ export async function acquireOauthPasskeyGrantAndOpenDialog(
   await page.getByTestId('settings-passkey-card').getByRole('button', { name: 'Add passkey' }).click();
   const dialog = addDialog(page);
   await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
-  const googleButton = dialog.getByRole('button', { name: /Continue with Google|Tiếp tục với Google/ });
+  const googleButton = dialog.getByRole('button', { name: /Confirm with Google|Xác nhận bằng Google/ });
   await expect(googleButton).toBeVisible({ timeout: UI_WAIT_MS });
 
   const reauthResponsePromise = page.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
@@ -334,7 +335,7 @@ export async function acquireOauthPasskeyGrantAndOpenDialog(
   await page.getByTestId('settings-passkey-card').getByRole('button', { name: 'Add passkey' }).click();
   await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
   await expect(dialog.getByLabel('Login password')).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: /Continue with Google|Tiếp tục với Google/ })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: /Confirm with Google|Xác nhận bằng Google/ })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Continue' })).toBeEnabled({ timeout: UI_WAIT_MS });
   return { dialog, expiresAtMs };
 }

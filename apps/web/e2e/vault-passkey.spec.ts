@@ -228,72 +228,88 @@ test.describe('passkey against the real API', () => {
           oauthSignupAndCreateVault(oauthPage, 'passkey-exp-oauth', uniqueEmail),
         ]);
 
-        await gotoSettings(pwdPage);
-        const pwdReauthPromise = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
-          timeout: UI_WAIT_MS,
-        });
-        await openAddPasskeyDialog(pwdPage);
-        const pwdGrantBody = (await (await pwdReauthPromise).json()) as { expires_at: string };
-        pwdExpiresAtMs = Date.parse(pwdGrantBody.expires_at);
-        expect(Number.isFinite(pwdExpiresAtMs)).toBe(true);
+        const acquirePasswordGrant = async () => {
+          await gotoSettings(pwdPage);
+          const pwdReauthPromise = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
+            timeout: UI_WAIT_MS,
+          });
+          await openAddPasskeyDialog(pwdPage);
+          const pwdGrantBody = (await (await pwdReauthPromise).json()) as { expires_at: string };
+          const expiresAtMs = Date.parse(pwdGrantBody.expires_at);
+          expect(Number.isFinite(expiresAtMs)).toBe(true);
+          return expiresAtMs;
+        };
 
-        const oauthAcquired = await acquireOauthPasskeyGrantAndOpenDialog(oauthPage, oauthIdentity);
+        const [pwdExp, oauthAcquired] = await Promise.all([
+          acquirePasswordGrant(),
+          acquireOauthPasskeyGrantAndOpenDialog(oauthPage, oauthIdentity),
+        ]);
+        pwdExpiresAtMs = pwdExp;
         oauthExpiresAtMs = oauthAcquired.expiresAtMs;
       });
 
-      await test.step('2. wait once until both real 5-minute grants have < 60 s remaining (~45 s left)', async () => {
-        const latestExpiresAtMs = Math.max(pwdExpiresAtMs, oauthExpiresAtMs);
-        const targetNowMs = latestExpiresAtMs - 45_000;
-        const waitMs = Math.max(0, targetNowMs - Date.now());
-        if (waitMs > 0) {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setTimeout(resolve, waitMs);
-          await promise;
-        }
-        expect(pwdExpiresAtMs - Date.now()).toBeLessThan(60_000);
-        expect(pwdExpiresAtMs - Date.now()).toBeGreaterThan(5_000);
-        expect(oauthExpiresAtMs - Date.now()).toBeLessThan(60_000);
-        expect(oauthExpiresAtMs - Date.now()).toBeGreaterThan(5_000);
-      });
-
-      await test.step('3. row 1 (password user): grant < 60 s triggers in-place password re-auth after wrap, then POST /vault/passkeys succeeds', async () => {
-        const dialog = addDialog(pwdPage);
-        await submitPasskeyName(pwdPage, 'Renewed in place key');
-        const passwordField = dialog.getByLabel('Login password');
-        await expect(passwordField).toBeVisible({ timeout: CRYPTO_WAIT_MS });
-        // PKW-R1-11: post-wrap renewal never offers a full-page Google redirect.
-        await expect(dialog.getByRole('button', { name: /Continue with Google|Tiếp tục với Google/ })).toHaveCount(0);
-
-        const renewedResponse = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
-          timeout: UI_WAIT_MS,
-        });
-        const createdResponse = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/vault/passkeys'), {
-          timeout: CRYPTO_WAIT_MS,
-        });
-        await fillSecret(passwordField, PASSWORD);
-        await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
-        expect((await renewedResponse).ok()).toBe(true);
-        expect((await createdResponse).status()).toBe(201);
-        await expectPasskeyAdded(pwdPage);
-      });
-
-      await test.step('4. row 2 (OAuth-only user): grant < 60 s cannot renew in place -> told to restart + orphan notice, no POST /vault/passkeys', async () => {
-        let postCount = 0;
-        const onRequest = (req: { method: () => string; url: () => string }) => {
-          if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/v1/vault/passkeys') {
-            postCount += 1;
+      await test.step('2. wait until each user grant enters its < 60 s (> 0 s) boundary and run both terminal checks concurrently', async () => {
+        const waitUntilNearExpiry = async (expiresAtMs: number) => {
+          const targetNowMs = expiresAtMs - 45_000;
+          const waitMs = Math.max(0, targetNowMs - Date.now());
+          if (waitMs > 0) {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            setTimeout(resolve, waitMs);
+            await promise;
           }
+          const remainingAtStartMs = expiresAtMs - Date.now();
+          expect(remainingAtStartMs).toBeLessThan(60_000);
+          expect(remainingAtStartMs).toBeGreaterThan(5_000);
         };
-        oauthPage.on('request', onRequest);
-        try {
-          const dialog = addDialog(oauthPage);
-          await submitPasskeyName(oauthPage, 'OAuth near-expiry key');
-          await expect(dialog.getByRole('alert')).toHaveText(COPY.reauthRestart, { timeout: CRYPTO_WAIT_MS });
-          await expect(dialog.getByText(COPY.orphanNotice)).toBeVisible();
-          expect(postCount).toBe(0);
-        } finally {
-          oauthPage.off('request', onRequest);
-        }
+
+        const runPasswordRow = async () => {
+          await waitUntilNearExpiry(pwdExpiresAtMs);
+          await test.step('3. row 1 (password user): grant < 60 s triggers in-place password re-auth after wrap, then POST /vault/passkeys succeeds', async () => {
+            const dialog = addDialog(pwdPage);
+            await submitPasskeyName(pwdPage, 'Renewed in place key');
+            const passwordField = dialog.getByLabel('Login password');
+            await expect(passwordField).toBeVisible({ timeout: CRYPTO_WAIT_MS });
+            // PKW-R1-11, PKW-R3-2: post-wrap renewal never offers a full-page Google redirect (`auth.reauth.google`).
+            await expect(dialog.getByRole('button', { name: /Confirm with Google|Xác nhận bằng Google/ })).toHaveCount(0);
+
+            const renewedResponse = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
+              timeout: UI_WAIT_MS,
+            });
+            const createdResponse = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/vault/passkeys'), {
+              timeout: CRYPTO_WAIT_MS,
+            });
+            await fillSecret(passwordField, PASSWORD);
+            await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+            expect((await renewedResponse).ok()).toBe(true);
+            expect((await createdResponse).status()).toBe(201);
+            await expectPasskeyAdded(pwdPage);
+          });
+        };
+
+        const runOauthRow = async () => {
+          await waitUntilNearExpiry(oauthExpiresAtMs);
+          await test.step('4. row 2 (OAuth-only user): grant < 60 s cannot renew in place -> told to restart + orphan notice, no POST /vault/passkeys', async () => {
+            let postCount = 0;
+            const onRequest = (req: { method: () => string; url: () => string }) => {
+              if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/v1/vault/passkeys') {
+                postCount += 1;
+              }
+            };
+            oauthPage.on('request', onRequest);
+            try {
+              const dialog = addDialog(oauthPage);
+              await submitPasskeyName(oauthPage, 'OAuth near-expiry key');
+              await expect(dialog.getByRole('alert')).toHaveText(COPY.reauthRestart, { timeout: CRYPTO_WAIT_MS });
+              await expect(dialog.getByText(COPY.orphanNotice)).toBeVisible();
+              await expect(oauthPage).toHaveURL(/\/app\/settings$/);
+              expect(postCount).toBe(0);
+            } finally {
+              oauthPage.off('request', onRequest);
+            }
+          });
+        };
+
+        await Promise.all([runPasswordRow(), runOauthRow()]);
       });
     } finally {
       await pwdContext.close();
