@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 import { PasskeyAddDialog, PasskeyAddEntry } from './passkey-add-dialog';
+import type { PasskeyRegisterOutcome } from './register-flow';
 import {
   NEW_CREDENTIAL_ID,
   PRF_OUTPUT,
@@ -12,6 +13,7 @@ import {
   problem,
   registerOptionsResponse,
 } from './test-helpers';
+import { usePasskeyRegister } from './use-passkey-register';
 
 const mocks = vi.hoisted(() => ({
   reauth: {
@@ -239,20 +241,64 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     expect(await screen.findByRole('status')).toHaveTextContent(/delete the extra credential/);
   });
 
-  it('PKW-R1-9: unmounting while the POST is in flight suppresses onRegistered', async () => {
+  it('PKW-R2-3, PKW-R1-9: unmounting while the POST is in flight suppresses onRegistered and onOpenChange after the operation settles', async () => {
     useValidGrant();
     stubRegistration({ enabled: true, first: PRF_OUTPUT });
-    const { promise, resolve } = Promise.withResolvers<typeof SAVED>();
-    mocks.registerPasskey.mockReturnValue(promise);
+
+    // 1. Hook-level proof: awaits the outer register() promise that invokes onRegistered before asserting.
+    const postHook = Promise.withResolvers<typeof SAVED>();
+    mocks.registerPasskey.mockReturnValueOnce(postHook.promise);
+    const onHookRegistered = vi.fn();
+    let registerTask: Promise<PasskeyRegisterOutcome> | null = null;
+    function RegisterProbe() {
+      const { register } = usePasskeyRegister({
+        returnPath: '/app/settings',
+        onRegistered: onHookRegistered,
+      });
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            registerTask = register('Key');
+          }}
+        >
+          Start register
+        </button>
+      );
+    }
+    const probeView = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <RegisterProbe />
+      </NextIntlClientProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Start register' }));
+    await waitFor(() => expect(mocks.registerPasskey).toHaveBeenCalledTimes(1));
+    probeView.unmount();
+    let outcome: PasskeyRegisterOutcome | null = null;
+    await act(async () => {
+      postHook.resolve(SAVED);
+      outcome = await registerTask!;
+    });
+    expect(outcome).toEqual({ ok: true, passkey: SAVED });
+    expect(onHookRegistered).not.toHaveBeenCalled();
+
+    // 2. Dialog-level proof: drains the full continuation inside async act() after POST resolves.
+    const postDialog = Promise.withResolvers<typeof SAVED>();
+    mocks.registerPasskey.mockReturnValueOnce(postDialog.promise);
     const onRegistered = vi.fn();
-    const view = renderDialog(onRegistered);
+    const onOpenChange = vi.fn();
+    const view = renderDialog(onRegistered, onOpenChange);
     fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    await waitFor(() => expect(mocks.registerPasskey).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.registerPasskey).toHaveBeenCalledTimes(2));
     view.unmount();
-    resolve(SAVED);
-    await promise;
+    await act(async () => {
+      postDialog.resolve(SAVED);
+      await postDialog.promise;
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
     expect(onRegistered).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 
   it('PKW-R1-11: post-wrap renewal for a password+Google user shows only the password field, never the Google redirect', async () => {
