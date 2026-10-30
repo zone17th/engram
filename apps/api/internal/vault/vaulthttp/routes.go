@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
 )
 
 // Mount đăng ký toàn bộ bảng route `/vault*` của P03 Task 8–13 (15 operations trên `/api/v1`)
@@ -50,7 +51,11 @@ func Mount(api *API) func(v1 chi.Router, d httpx.Deps) {
 		if d.Authenticator == nil || d.CSRF == nil || d.Reauth == nil {
 			panic("vault routes yêu cầu Authenticator, CSRF và Reauth thật — không mount verifier rỗng")
 		}
-		api.svc.SetReauthVerifier(d.Reauth)
+		gv, ok := d.Reauth.(vault.GrantVerifier)
+		if !ok || gv == nil {
+			panic("vault routes require d.Reauth to implement vault.GrantVerifier — fail closed")
+		}
+		api.svc.SetGrantVerifier(gv)
 
 		origin := ""
 		if d.Config != nil {

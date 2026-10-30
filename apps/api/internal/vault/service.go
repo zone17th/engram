@@ -68,7 +68,7 @@ type Service struct {
 	q               *gen.Queries
 	clk             clock.Clock
 	grants          *auth.Grants
-	reauth          httpx.ReauthVerifier
+	grantVerifier   GrantVerifier
 	sessions        *auth.SessionStore
 	audit           Auditor
 	notify          Notifier
@@ -186,22 +186,28 @@ func (s *Service) PasskeyAttestationVerifier() PasskeyAttestationVerifier {
 	return s.passkeyVerifier
 }
 
-// SetReauthVerifier gắn bộ xác minh re-auth grant (`httpx.ReauthVerifier`) dùng chung với
-// middleware `httpx.RequireReauth` trên router (BR1-6). Khi được cấu hình (ví dụ qua `vaulthttp.Mount`),
-// bước kiểm tra cuối transaction của `RegisterPasskey` dùng chính thẩm quyền này thay vì `s.grants` mặc định.
-func (s *Service) SetReauthVerifier(v httpx.ReauthVerifier) {
+// GrantVerifier verifies a re-authentication grant token (HMAC, principal binding, action, and TTL)
+// without acquiring a database connection.
+type GrantVerifier interface {
+	VerifyGrant(principal authctx.Principal, action, token string) error
+}
+
+// SetGrantVerifier attaches the shared route grant verifier (e.g. from httpx.Deps.Reauth in vaulthttp.Mount)
+// so the final check inside RegisterPasskey Transaction 2 uses the exact route grant authority without
+// acquiring a second pool connection (BR1-6, BR2-1).
+func (s *Service) SetGrantVerifier(v GrantVerifier) {
 	if s == nil {
 		return
 	}
-	s.reauth = v
+	s.grantVerifier = v
 }
 
-// ReauthVerifier trả về `httpx.ReauthVerifier` đã gắn với Service (nếu có).
-func (s *Service) ReauthVerifier() httpx.ReauthVerifier {
+// GrantVerifier returns the route GrantVerifier attached to Service, if any.
+func (s *Service) GrantVerifier() GrantVerifier {
 	if s == nil {
 		return nil
 	}
-	return s.reauth
+	return s.grantVerifier
 }
 
 // BeginMutationTx mở một `pgx.Tx` trên pool với `lock_timeout = '30s'` và `statement_timeout = '30s'`

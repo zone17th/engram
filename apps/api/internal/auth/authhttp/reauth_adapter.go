@@ -22,3 +22,12 @@ func (a GrantAdapter) VerifyReauth(ctx context.Context, p authctx.Principal, act
 	}
 	return mapDomainError(a.Grants.Verify(p, action, token))
 }
+
+// VerifyGrant verifies the re-authentication grant HMAC, principal binding, action, and TTL
+// using the same Grants authority as VerifyReauth without performing a database session query.
+func (a GrantAdapter) VerifyGrant(p authctx.Principal, action, token string) error {
+	if a.Grants == nil {
+		return mapInternal{}
+	}
+	return mapDomainError(a.Grants.Verify(p, action, token))
+}

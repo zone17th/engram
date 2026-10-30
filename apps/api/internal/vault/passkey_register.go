@@ -381,22 +381,24 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 		return PasskeyItem{}, err
 	}
 
-	// F-API-PASSKEY-DEADLINE (advisor-dec-057): Khi gọi qua HTTP (có IdempotencyClaim trong context)
-	// hoặc khi caller truyền ReauthToken, kiểm tra lại session còn sống (EnsureLiveTx FOR UPDATE)
-	// và re-auth grant `vault.passkey_register` vẫn còn hạn ngay cuối transaction mutation
-	// (sau Claim và mọi bước ghi trong tx, ngay trước FinishIdempotencyTx / COMMIT).
-	// Nếu một replay đã bị từ chối ở RequireReauth (do grant hết hạn hoặc session bị thu hồi/hết hạn),
-	// bước kiểm tra này trả lỗi và defer tx.Rollback sẽ hoàn tác toàn bộ InsertPasskey, audit, notice và job mail.
+	// F-API-PASSKEY-DEADLINE (advisor-dec-057, advisor-dec-071, advisor-dec-072):
+	// When invoked via HTTP (with an IdempotencyClaim in context) or when ReauthToken is supplied,
+	// re-verify session liveness (EnsureLiveTx FOR UPDATE on Transaction 2) and the `vault.passkey_register`
+	// re-authentication grant via the route's pure-HMAC GrantVerifier (0 extra pool connections)
+	// immediately before FinishIdempotencyKey / COMMIT. If the session or grant is invalid at this
+	// final check point, defer tx.Rollback aborts InsertPasskey, audit, security notice, and River mail job.
 	if _, hasClaim := httpx.IdempotencyClaimFrom(ctx); hasClaim || in.ReauthToken != "" {
 		if s.sessions != nil {
 			if err := s.sessions.EnsureLiveTx(ctx, q, p); err != nil {
 				return PasskeyItem{}, err
 			}
 		}
-		if v := s.ReauthVerifier(); v != nil {
-			if err := v.VerifyReauth(ctx, p, "vault.passkey_register", in.ReauthToken); err != nil {
+		if v := s.GrantVerifier(); v != nil {
+			if err := v.VerifyGrant(p, "vault.passkey_register", in.ReauthToken); err != nil {
 				return PasskeyItem{}, err
 			}
+		} else if hasClaim {
+			return PasskeyItem{}, errors.New("vault passkey register missing route GrantVerifier")
 		} else if s.grants != nil {
 			if err := s.grants.Verify(p, "vault.passkey_register", in.ReauthToken); err != nil {
 				return PasskeyItem{}, err
