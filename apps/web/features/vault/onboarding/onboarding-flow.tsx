@@ -18,6 +18,7 @@ import {
   classifyCryptoError,
   useVault,
 } from '@/features/vault/vault-provider';
+import { useRememberDevice } from '@/features/vault/device/use-remember-device';
 import { PasskeyAddEntry } from '@/features/vault/passkey';
 import {
   createIdempotencyKey,
@@ -83,9 +84,11 @@ function strengthBarColor(score: PassphraseScore, hasInput: boolean): string {
 export function VaultOnboardingFlow() {
   const t = useTranslations('onboarding');
   const tStep3 = useTranslations('vault.b.onboarding');
+  const tDevice = useTranslations('vault.device');
   const router = useRouter();
   const { me, refetchMe } = useSession();
   const vault = useVault();
+  const rememberDevice = useRememberDevice();
 
   const [step, setStep] = useState<OnboardingStep>('passphrase');
   const [passphrase, setPassphrase] = useState('');
@@ -512,6 +515,21 @@ export function VaultOnboardingFlow() {
     submittingVault,
     vault,
   ]);
+  const handleToggleRememberDevice = useCallback(async () => {
+    if (
+      rememberDevice.busy ||
+      rememberDevice.status === 'unavailable' ||
+      vault.workerState !== 'unlocked'
+    ) {
+      return;
+    }
+    if (rememberDevice.remembered) {
+      await rememberDevice.forget();
+    } else {
+      await rememberDevice.remember();
+    }
+  }, [rememberDevice, vault.workerState]);
+
   const handleFinishStep3 = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
     setStep('done');
@@ -960,8 +978,59 @@ export function VaultOnboardingFlow() {
               </div>
             </div>
 
-            {/* Part D placeholder slot: "Remember this device" toggle (default off) is wired after T18 sync; hidden in Part P. */}
-
+            <div className="card mb-7 p-5" data-testid="onboarding-remember-device-card">
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="min-w-0 flex-1 basis-[240px]">
+                  <div className="mb-1 text-[15px] font-semibold text-body">
+                    {tDevice('remember.label')}
+                  </div>
+                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                    {tDevice('remember.description')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`switch ml-auto${
+                    rememberDevice.busy ||
+                    rememberDevice.status === 'unavailable' ||
+                    vault.workerState !== 'unlocked'
+                      ? ' cursor-not-allowed opacity-40'
+                      : ''
+                  }`}
+                  role="switch"
+                  aria-checked={rememberDevice.remembered}
+                  aria-busy={rememberDevice.busy || undefined}
+                  aria-label={tDevice('remember.label')}
+                  disabled={
+                    rememberDevice.busy ||
+                    rememberDevice.status === 'unavailable' ||
+                    vault.workerState !== 'unlocked'
+                  }
+                  onClick={() => void handleToggleRememberDevice()}
+                  data-testid="onboarding-remember-device-switch"
+                />
+              </div>
+              {rememberDevice.notice === 'device_state_changed' ? (
+                <p
+                  role="status"
+                  className="m-0 mt-3 text-[12px]"
+                  style={{ color: 'var(--muted)' }}
+                  data-testid="onboarding-remember-device-notice"
+                >
+                  {tDevice('notice.stateChanged')}
+                </p>
+              ) : null}
+              {rememberDevice.status === 'unavailable' ? (
+                <p
+                  role="status"
+                  className="m-0 mt-3 text-[12px]"
+                  style={{ color: 'var(--muted)' }}
+                  data-testid="onboarding-remember-device-unavailable"
+                >
+                  {tDevice('unavailable')}
+                </p>
+              ) : null}
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"

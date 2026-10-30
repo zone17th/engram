@@ -1567,7 +1567,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     }
   }, 20_000);
 
-  describe('16B: onboarding step 3 (optional add passkey + skip + remember-device placeholder)', () => {
+  describe('16B: onboarding step 3 (optional add passkey + skip + remember-device toggle)', () => {
     async function advanceToStep3(locale: 'en' | 'vi' = 'en') {
       let currentMe = makeMeFixture('absent');
       const credentialsCreate = vi.fn();
@@ -1646,7 +1646,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       return { credentialsCreate, fetchSpy };
     }
 
-    it('16B: step 3 renders after RK confirm, remember-device slot is not rendered, and Skip goes on to /app', async () => {
+    it('16B: step 3 renders after RK confirm, remember-device toggle is default off, and Skip goes on to /app', async () => {
       await advanceToStep3('en');
 
       // Step 3 renders and RKs are gone from the DOM
@@ -1659,11 +1659,9 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       expect(screen.getByRole('button', { name: /3 · Passkey/i })).toHaveAttribute('aria-current', 'step');
       expect(screen.getByRole('button', { name: /3 · Passkey/i })).toHaveAttribute('aria-pressed', 'true');
 
-      // Remember-this-device toggle slot is hidden in Part P (not rendered)
-      expect(screen.queryByRole('switch')).not.toBeInTheDocument();
-      expect(screen.queryByText(/Remember this device/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Nhớ thiết bị này/i)).not.toBeInTheDocument();
-
+      // Remember-this-device toggle is rendered and default off
+      const rememberSwitch = screen.getByRole('switch', { name: /Remember this device/i });
+      expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
       // Skip goes on to /app
       expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
       await act(async () => {
@@ -1748,7 +1746,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
         viMessages.vault.b.onboarding.title,
       );
-      expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+      expect(screen.getByRole('switch', { name: /Nhớ thiết bị này/i })).toHaveAttribute('aria-checked', 'false');
       await act(async () => {
         fireEvent.click(screen.getByTestId('onboarding-finish-button'));
       });

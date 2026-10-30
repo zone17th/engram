@@ -6,6 +6,7 @@ import { AuthStatus } from '@/components/ui/field';
 import { Segmented } from '@/components/ui/segmented';
 import { useSession } from '@/features/auth/session-provider';
 import { DEFAULT_AUTO_LOCK_MINUTES, normalizeAutoLockMinutes } from '@/features/vault/auto-lock';
+import { useRememberDevice } from '@/features/vault/device/use-remember-device';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import { patchSettings } from '@/lib/api/auth';
 
@@ -28,10 +29,108 @@ function resolveCurrentAutoLockMinutes(
 
 export interface AutoLockCardProps {
   /**
-   * Part D placeholder slot for the "Remember this device" section (`mockups/settings.html` lines 216-227).
-   * Hidden (not rendered) in Part P until T18 is wired.
+   * Optional override slot for the "Remember this device" section (`mockups/settings.html` lines 216-227).
+   * Defaults to the built-in T18/T20B `RememberDeviceSection`.
    */
   rememberDeviceSlot?: ReactNode;
+}
+
+export function RememberDeviceSection() {
+  const tDevice = useTranslations('vault.device');
+  const vault = useOptionalVault();
+  const rememberDevice = useRememberDevice();
+
+  if (!vault) return null;
+
+  const isVaultUnlocked = vault.workerState === 'unlocked';
+  const isUnavailable = rememberDevice.status === 'unavailable';
+  const canToggle =
+    !rememberDevice.busy &&
+    !isUnavailable &&
+    (rememberDevice.remembered || isVaultUnlocked);
+
+  const handleToggle = async () => {
+    if (!canToggle) return;
+    if (rememberDevice.remembered) {
+      await rememberDevice.forget();
+    } else if (isVaultUnlocked) {
+      await rememberDevice.remember();
+    }
+  };
+
+  return (
+    <div data-testid="settings-remember-device-section">
+      <hr className="rule my-5" />
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="min-w-0 flex-1 basis-[240px]">
+          <div className="mb-1 text-[15px] font-semibold text-body">
+            {tDevice('remember.label')}
+          </div>
+          <p className="m-0 text-[13px] text-muted">
+            {tDevice('remember.description')}
+          </p>
+          <p
+            className="m-0 mt-1 text-[12px] text-muted"
+            data-testid="settings-remember-device-state"
+          >
+            {rememberDevice.remembered
+              ? tDevice('remember.on')
+              : tDevice('remember.off')}
+          </p>
+          {rememberDevice.remembered ? (
+            <p
+              className="m-0 mt-1 text-[12px] text-muted"
+              data-testid="settings-remember-device-forget-description"
+            >
+              {tDevice('remember.forgetDescription')}
+            </p>
+          ) : null}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          {rememberDevice.remembered ? (
+            <button
+              type="button"
+              className="btn btn-tertiary btn-sm"
+              disabled={rememberDevice.busy || isUnavailable}
+              onClick={() => void rememberDevice.forget()}
+              data-testid="settings-forget-device-button"
+            >
+              {tDevice('remember.forget')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={`switch${!canToggle ? ' cursor-not-allowed opacity-40' : ''}`}
+            role="switch"
+            aria-checked={rememberDevice.remembered}
+            aria-busy={rememberDevice.busy || undefined}
+            aria-label={tDevice('remember.label')}
+            disabled={!canToggle}
+            onClick={() => void handleToggle()}
+            data-testid="settings-remember-device-switch"
+          />
+        </div>
+      </div>
+      {rememberDevice.notice === 'device_state_changed' ? (
+        <p
+          role="status"
+          className="m-0 mt-3 text-[12px] text-muted"
+          data-testid="settings-remember-device-notice"
+        >
+          {tDevice('notice.stateChanged')}
+        </p>
+      ) : null}
+      {isUnavailable ? (
+        <p
+          role="status"
+          className="m-0 mt-3 text-[12px] text-muted"
+          data-testid="settings-remember-device-unavailable"
+        >
+          {tDevice('unavailable')}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 export function AutoLockCard({ rememberDeviceSlot }: AutoLockCardProps = {}) {
@@ -101,12 +200,9 @@ export function AutoLockCard({ rememberDeviceSlot }: AutoLockCardProps = {}) {
           {errorMessage}
         </AuthStatus>
       )}
-      {/* Part D placeholder slot for "Remember this device" — hidden (not rendered) until T18 is wired */}
-      {rememberDeviceSlot ? (
-        <div data-testid="settings-remember-device-slot">{rememberDeviceSlot}</div>
-      ) : (
-        <div hidden aria-hidden="true" data-testid="settings-remember-device-placeholder" />
-      )}
+      <div data-testid="settings-remember-device-slot">
+        {rememberDeviceSlot ?? <RememberDeviceSection />}
+      </div>
     </div>
   );
 }

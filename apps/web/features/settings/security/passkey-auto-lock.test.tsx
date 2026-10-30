@@ -10,7 +10,10 @@ import { PasskeySecurityCard } from './passkey-card';
 interface MockVaultState {
   workerState: string;
   autoLockMinutes?: number;
-  vaultMeta?: { passkeys: Array<{ id: string; name: string; aaguid: string | null; created_at: string }> } | null;
+  vaultMeta?: {
+    vault_key_id?: string;
+    passkeys: Array<{ id: string; name: string; aaguid: string | null; created_at: string }>;
+  } | null;
   reloadVaultMeta: () => Promise<unknown>;
   notifySettingsChanged: (payload: { auto_lock_minutes: number }) => void;
   registerSecretFormReset: (fn: () => void) => () => void;
@@ -18,6 +21,19 @@ interface MockVaultState {
 
 const mocks = vi.hoisted(() => ({
   optionalVault: null as MockVaultState | null,
+  rememberDevice: {
+    status: 'ready' as 'loading' | 'ready' | 'unavailable',
+    remembered: false,
+    busy: false,
+    notice: null as 'device_state_changed' | null,
+    lastAbortReason: null as string | null,
+    meta: null as { incarnation: string; deviceRevision: number } | null,
+    available: true,
+    remember: vi.fn(),
+    forget: vi.fn(),
+    refresh: vi.fn(async () => undefined),
+    dismissNotice: vi.fn(),
+  },
   me: {
     user: { id: 'u1', email: 'user@example.test', email_verified: true, created_at: '2026-10-01T00:00:00Z' },
     vault: { status: 'present' as 'present' | 'absent' },
@@ -53,9 +69,15 @@ const mocks = vi.hoisted(() => ({
   patchSettings: vi.fn(),
 }));
 
+vi.mock('@/features/vault/device/use-remember-device', () => ({
+  useRememberDevice: () => mocks.rememberDevice,
+}));
+
 vi.mock('@/features/vault/vault-provider', () => ({
   useOptionalVault: () => mocks.optionalVault,
   useVault: () => ({
+    workerState: mocks.optionalVault?.workerState ?? 'unlocked',
+    vaultMeta: mocks.optionalVault?.vaultMeta ?? { vault_key_id: 'vk:test-settings-1', passkeys: [] },
     getClient: () => ({
       captureGeneration: () => 1,
       getGeneration: () => 1,
@@ -162,6 +184,33 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
   beforeEach(() => {
     vi.clearAllMocks();
     setupUnlockedVault(15);
+    mocks.rememberDevice = {
+      status: 'ready',
+      remembered: false,
+      busy: false,
+      notice: null,
+      lastAbortReason: null,
+      meta: null,
+      available: true,
+      remember: vi.fn(async () => ({
+        status: 'ready' as const,
+        remembered: true,
+        busy: false,
+        notice: null,
+        lastAbortReason: null,
+        meta: { incarnation: 'inc-1', deviceRevision: 1 },
+      })),
+      forget: vi.fn(async () => ({
+        status: 'ready' as const,
+        remembered: false,
+        busy: false,
+        notice: null,
+        lastAbortReason: null,
+        meta: { incarnation: 'inc-2', deviceRevision: 2 },
+      })),
+      refresh: vi.fn(async () => undefined),
+      dismissNotice: vi.fn(),
+    };
     mocks.me = {
       user: { id: 'u1', email: 'user@example.test', email_verified: true, created_at: '2026-10-01T00:00:00Z' },
       vault: { status: 'present' },
@@ -354,11 +403,9 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
     const card = screen.getByTestId('settings-auto-lock-card');
     expect(within(card).getByRole('radio', { name: '15 min' })).toHaveAttribute('data-state', 'on');
 
-    // Part D placeholder slot is hidden (not rendered visibly)
-    const placeholder = screen.getByTestId('settings-remember-device-placeholder');
-    expect(placeholder).toHaveAttribute('hidden');
-    expect(screen.queryByRole('switch')).toBeNull();
-
+    // Part D remember-device section is rendered inside the auto-lock card and defaults to off
+    const rememberSwitch = within(card).getByRole('switch', { name: 'Remember this device' });
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
     // Change to 5 min
     mocks.patchSettings.mockImplementationOnce(async (patch: { auto_lock_minutes: number }) => ({
       ...(mocks.me as Record<string, unknown>),
@@ -384,5 +431,96 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
       'Could not save auto-lock setting. Reverted to the previous value.',
     );
     expect(within(card).getByRole('radio', { name: '15 min' })).toHaveAttribute('data-state', 'on');
+  });
+
+  it('20B: remember / forget device in Settings shows on/off state, calls remember() when unlocked, forget() with forgetDescription, cross-tab notice, and unavailable state (en + vi)', async () => {
+    const { rerender } = renderAutoLockCard('en');
+
+    // 1. Default off state
+    const rememberSwitch = screen.getByTestId('settings-remember-device-switch');
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+    expect(rememberSwitch).toBeEnabled();
+    expect(screen.getByTestId('settings-remember-device-state')).toHaveTextContent(
+      enMessages.vault.device.remember.off,
+    );
+    expect(screen.queryByTestId('settings-forget-device-button')).toBeNull();
+    expect(screen.queryByTestId('settings-remember-device-forget-description')).toBeNull();
+
+    // Clicking switch when off + unlocked calls remember()
+    fireEvent.click(rememberSwitch);
+    await waitFor(() => expect(mocks.rememberDevice.remember).toHaveBeenCalledTimes(1));
+
+    // 2. Remembered (on) state -> shows On copy, forgetDescription, and Forget button
+    mocks.rememberDevice.remembered = true;
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutoLockCard />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('settings-remember-device-switch')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('settings-remember-device-state')).toHaveTextContent(
+      enMessages.vault.device.remember.on,
+    );
+    expect(screen.getByTestId('settings-remember-device-forget-description')).toHaveTextContent(
+      enMessages.vault.device.remember.forgetDescription,
+    );
+    const forgetBtn = screen.getByTestId('settings-forget-device-button');
+    expect(forgetBtn).toHaveTextContent(enMessages.vault.device.remember.forget);
+    fireEvent.click(forgetBtn);
+    await waitFor(() => expect(mocks.rememberDevice.forget).toHaveBeenCalledTimes(1));
+
+    // Clicking switch when remembered also calls forget()
+    fireEvent.click(screen.getByTestId('settings-remember-device-switch'));
+    await waitFor(() => expect(mocks.rememberDevice.forget).toHaveBeenCalledTimes(2));
+
+    // 3. Cross-tab notice shown when notice === 'device_state_changed'
+    mocks.rememberDevice.remembered = false;
+    mocks.rememberDevice.notice = 'device_state_changed';
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutoLockCard />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('settings-remember-device-notice')).toHaveTextContent(
+      enMessages.vault.device.notice.stateChanged,
+    );
+
+    // 4. Unavailable state (IDB blocked / private mode) disables switch and shows unavailable copy
+    mocks.rememberDevice.notice = null;
+    mocks.rememberDevice.status = 'unavailable';
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutoLockCard />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('settings-remember-device-switch')).toBeDisabled();
+    expect(screen.getByTestId('settings-remember-device-unavailable')).toHaveTextContent(
+      enMessages.vault.device.unavailable,
+    );
+
+    // 5. Locked vault disables turning on Remember when off, but allows Forget when already remembered (vi parity)
+    mocks.rememberDevice.status = 'ready';
+    mocks.rememberDevice.remembered = false;
+    mocks.optionalVault!.workerState = 'locked';
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <AutoLockCard />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('settings-remember-device-switch')).toBeDisabled();
+    expect(screen.getByTestId('settings-remember-device-state')).toHaveTextContent(
+      viMessages.vault.device.remember.off,
+    );
+
+    mocks.rememberDevice.remembered = true;
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <AutoLockCard />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('settings-remember-device-switch')).toBeEnabled();
+    expect(screen.getByTestId('settings-forget-device-button')).toHaveTextContent(
+      viMessages.vault.device.remember.forget,
+    );
   });
 });

@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider } from '@/features/auth/session-provider';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
-import type { LockEpochEnvironment } from '@/features/vault/lock-epoch';
+import {
+  DEVKEY_STORE_NAME,
+  type LockEpochEnvironment,
+} from '@/features/vault/lock-epoch';
+import { setDefaultDeviceStoreEnvironmentForTests } from '@/features/vault/device-store';
 import {
   NEW_CREDENTIAL_ID,
   PRF_OUTPUT,
@@ -17,9 +21,10 @@ import { VaultOnboardingFlow } from '@/features/vault/onboarding';
 import { VaultProvider } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
 import type { CreateVaultResult, CryptoWorkerPort } from '@/lib/crypto/client';
+import { DEVKEY_WRAPPED_VK_BYTES } from '@/lib/crypto/device';
+import { FakeDeviceIdb, FakeWebLocks } from '@/lib/crypto/test/fake-device-idb';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
-
 const STRONG_PASSPHRASE = 'Tr\u00e0m-H\u01b0\u01a1ng-94!K\u1ef7-V\u1eadt-Xanh';
 
 const routerMocks = vi.hoisted(() => ({
@@ -237,6 +242,19 @@ function makeOnboardingStep3WorkerFactory(): () => CryptoWorkerPort {
             } as MessageEvent);
             return;
           }
+
+          if (message.type === 'wrapForDevice') {
+            onMessage?.({
+              data: {
+                id: message.id,
+                generation,
+                ok: true,
+                state: { mode, generation, epoch },
+                result: { wrapped_vk: new Uint8Array(DEVKEY_WRAPPED_VK_BYTES).fill(0x42) },
+              },
+            } as MessageEvent);
+            return;
+          }
         });
       },
       terminate() {
@@ -247,6 +265,9 @@ function makeOnboardingStep3WorkerFactory(): () => CryptoWorkerPort {
 }
 
 describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
+  let idb: FakeDeviceIdb;
+  let locks: FakeWebLocks;
+
   beforeEach(() => {
     routerMocks.pathname = '/app/onboarding';
     routerMocks.replace.mockReset();
@@ -254,11 +275,17 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     resetVaultBroadcastForTests();
     window.localStorage.clear();
     window.sessionStorage.clear();
+    locks = new FakeWebLocks();
+    idb = new FakeDeviceIdb(locks);
+    vi.stubGlobal('indexedDB', idb.createFactory());
+    vi.stubGlobal('navigator', { ...navigator, locks: locks.createLockManager() });
+    setDefaultDeviceStoreEnvironmentForTests({ idbFactory: idb.createFactory() });
   });
 
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   async function advanceToStep3(locale: 'en' | 'vi' = 'en') {
@@ -268,7 +295,6 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       value: { create: credentialsCreate, get: vi.fn() },
       configurable: true,
     });
-
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -283,6 +309,27 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       if (url.endsWith('/vault') && init?.method === 'POST') {
         currentMe = makeMeFixture('present');
         return jsonResponse({ vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d', version: 1 }, 201);
+      }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse({
+          version: 1,
+          vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d',
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67_108_864,
+            parallelism: 1,
+            salt: 'oKGio6SlpqeoqaqrrK2urw',
+          },
+          vault_key_wrapped_by_kek:
+            'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA',
+          x25519_public: '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff',
+          ed25519_public: 'ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211',
+          private_keys_wrapped:
+            'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-',
+          recovery_keys_remaining: 10,
+          passkeys: [],
+        });
       }
       if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
         return jsonResponse({
@@ -357,15 +404,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     return { credentialsCreate };
   }
 
-  it('16B: step 3 renders after RK confirm, remember-device slot is not rendered, and Skip goes on to /app', async () => {
+  it('16B: step 3 renders after RK confirm, remember-device toggle is default off, and Skip goes on to /app without remembering', async () => {
     await advanceToStep3('en');
 
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
     expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
     expect(document.body.textContent ?? '').not.toContain('rk1_3F8K');
 
-    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Remember this device/i)).not.toBeInTheDocument();
+    const rememberSwitch = screen.getByRole('switch', { name: 'Remember this device' });
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
 
     expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
     await act(async () => {
@@ -374,6 +421,66 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
     });
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
+  });
+
+  it('16B: step 3 turning Remember this device on calls remember() and stores DevKey, and toggling off forgets it', async () => {
+    await advanceToStep3('en');
+
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+    await waitFor(() => {
+      expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
+    });
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(1);
+
+    // Toggling off calls forget() and removes the record
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+    await waitFor(() => {
+      expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+    });
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
+
+    // Turn back on and Finish -> goes to /app with the device remembered
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+    await waitFor(() => {
+      expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-finish-button'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    });
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(1);
+  });
+
+  it('16B: step 3 shows unavailable message when IndexedDB is blocked without blocking Skip or Finish', async () => {
+    idb.options.failOpen = true;
+    await advanceToStep3('en');
+
+    const unavailableMsg = await screen.findByTestId('onboarding-remember-device-unavailable');
+    expect(unavailableMsg).toHaveTextContent(enMessages.vault.device.unavailable);
+
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    expect(rememberSwitch).toBeDisabled();
+    expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    });
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
   });
 
   it('16B: step 3 add passkey success goes on to /app', async () => {
