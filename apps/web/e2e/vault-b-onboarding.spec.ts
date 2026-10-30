@@ -95,10 +95,13 @@ test.describe('P03-T16B onboarding step 3 against the real API', () => {
       await continueBtn.click();
       expect((await passkeySaved).ok()).toBe(true);
 
-      // Adding the passkey completes onboarding and navigates to /app unlocked
+      // Adding the passkey shows addedStatus on step 3; Finish navigates to /app unlocked
+      await expect(page.getByTestId('onboarding-passkey-added-status')).toBeVisible({
+        timeout: UI_WAIT_MS,
+      });
+      await page.getByTestId('onboarding-finish-button').click();
       await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
       await expectVaultOpen(page);
-
       // Lock the vault (stays on /app per advisor-dec-048, open /app/unlock via banner CTA), then unlock with the passkey
       await lockVault(page);
       const passkeyUnlockBtn = page.getByTestId('unlock-passkey-button');

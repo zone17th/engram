@@ -104,6 +104,7 @@ export function VaultOnboardingFlow() {
   const [confirmedSaved, setConfirmedSaved] = useState(false);
   const [submittingVault, setSubmittingVault] = useState(false);
   const [step2Error, setStep2Error] = useState<Step2ErrorAlert | null>(null);
+  const [passkeyAdded, setPasskeyAdded] = useState(false);
 
   const passInputRef = useRef<HTMLInputElement>(null);
   const confirmInputRef = useRef<HTMLInputElement>(null);
@@ -155,7 +156,10 @@ export function VaultOnboardingFlow() {
       clearRecoveryKeysAndSecrets();
       if (stepRef.current === 'recovery-keys') {
         setStep('passphrase');
-      } else if (stepRef.current === 'passkey') {
+      } else if (
+        stepRef.current === 'passkey' &&
+        vaultRef.current.getClient().getState() !== 'unlocked'
+      ) {
         setStep('done');
         void refetchMe().catch(() => undefined);
       }
@@ -416,6 +420,7 @@ export function VaultOnboardingFlow() {
 
       // Immediately wipe the 10 display RKs from React state and DOM once POST /vault succeeds.
       clearRecoveryKeysAndSecrets();
+      setPasskeyAdded(false);
       setStep('passkey');
 
       vault.notifyVaultChanged({
@@ -972,10 +977,20 @@ export function VaultOnboardingFlow() {
                   className="ml-auto"
                   returnPath="/app/onboarding"
                   onRegistered={() => {
-                    void handleFinishStep3();
+                    setPasskeyAdded(true);
                   }}
                 />
               </div>
+              {passkeyAdded ? (
+                <p
+                  role="status"
+                  className="m-0 mt-3 text-[13px] font-semibold"
+                  style={{ color: 'var(--success)' }}
+                  data-testid="onboarding-passkey-added-status"
+                >
+                  {tStep3('addedStatus')}
+                </p>
+              ) : null}
             </div>
 
             <div className="card mb-7 p-5" data-testid="onboarding-remember-device-card">

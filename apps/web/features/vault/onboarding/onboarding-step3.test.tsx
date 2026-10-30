@@ -18,7 +18,7 @@ import {
   registerOptionsResponse,
 } from '@/features/vault/passkey/test-helpers';
 import { VaultOnboardingFlow } from '@/features/vault/onboarding';
-import { VaultProvider } from '@/features/vault/vault-provider';
+import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
 import type { CreateVaultResult, CryptoWorkerPort } from '@/lib/crypto/client';
 import { DEVKEY_WRAPPED_VK_BYTES } from '@/lib/crypto/device';
@@ -46,7 +46,10 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function makeMeFixture(vaultStatus: 'absent' | 'present' = 'absent'): Me {
+function makeMeFixture(
+  vaultStatus: 'absent' | 'present' = 'absent',
+  options: { oauthOnly?: boolean } = {},
+): Me {
   return {
     user: {
       id: 'user-onboarding-step3-test-1',
@@ -60,12 +63,14 @@ function makeMeFixture(vaultStatus: 'absent' | 'present' = 'absent'): Me {
       auto_lock_minutes: 15,
       semantic_suggest: true,
     },
-    identities: [{ provider: 'password', linked_at: '2026-10-30T00:00:00Z' }],
+    identities: options.oauthOnly
+      ? [{ provider: 'google', linked_at: '2026-10-30T00:00:00Z' }]
+      : [{ provider: 'password', linked_at: '2026-10-30T00:00:00Z' }],
     features: {
       semantic_available: true,
       email_verification_required: false,
-      oauth_providers: [],
-      oauth_reauth_providers: [],
+      oauth_providers: options.oauthOnly ? ['google'] : [],
+      oauth_reauth_providers: options.oauthOnly ? ['google'] : [],
       password_enrollment_available: false,
       captcha_site_key: null,
     },
@@ -288,8 +293,13 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     vi.unstubAllGlobals();
   });
 
-  async function advanceToStep3(locale: 'en' | 'vi' = 'en') {
-    let currentMe = makeMeFixture('absent');
+  async function advanceToStep3(
+    locale: 'en' | 'vi' = 'en',
+    options: { oauthOnly?: boolean } = {},
+  ) {
+    let currentMe = makeMeFixture('absent', options);
+    let vaultCtx!: VaultContextValue;
+    const oauthReauthCalls: Array<{ url: string; body: string }> = [];
     const credentialsCreate = vi.fn();
     Object.defineProperty(navigator, 'credentials', {
       value: { create: credentialsCreate, get: vi.fn() },
@@ -300,14 +310,14 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
       if (url.endsWith('/auth/config')) {
         return jsonResponse({
-          oauth_providers: [],
+          oauth_providers: options.oauthOnly ? ['google'] : [],
           email_verification_required: false,
           captcha_site_key: null,
         });
       }
       if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
       if (url.endsWith('/vault') && init?.method === 'POST') {
-        currentMe = makeMeFixture('present');
+        currentMe = makeMeFixture('present', options);
         return jsonResponse({ vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d', version: 1 }, 201);
       }
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
@@ -352,8 +362,19 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
           201,
         );
       }
+      if (url.includes('/auth/oauth/') && url.endsWith('/reauth') && init?.method === 'POST') {
+        oauthReauthCalls.push({ url, body: String(init.body ?? '') });
+        return jsonResponse({
+          authorization_url: 'https://accounts.google.com/o/oauth2/v2/auth?state=step3-test',
+        });
+      }
       return jsonResponse({});
     });
+
+    function VaultProbe() {
+      vaultCtx = useVault();
+      return null;
+    }
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -368,6 +389,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
                 createWorker={makeOnboardingStep3WorkerFactory()}
                 lockEpochEnv={makeSimpleLockEpochEnv()}
               >
+                <VaultProbe />
                 <VaultOnboardingFlow />
               </VaultProvider>
             </SessionProvider>
@@ -375,7 +397,6 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
         </ThemeProvider>
       </NextIntlClientProvider>,
     );
-
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
     });
@@ -401,7 +422,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
     });
 
-    return { credentialsCreate };
+    return { credentialsCreate, getVault: () => vaultCtx, oauthReauthCalls };
   }
 
   it('16B: step 3 renders after RK confirm, remember-device toggle is default off, and Skip goes on to /app without remembering', async () => {
@@ -483,7 +504,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
   });
 
-  it('16B: step 3 add passkey success goes on to /app', async () => {
+  it('16B: step 3 add passkey success stays on step 3 showing addedStatus, allows setting Remember this device, and Finish goes on to /app', async () => {
     const { credentialsCreate } = await advanceToStep3('en');
     credentialsCreate.mockResolvedValue(
       fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
@@ -502,12 +523,30 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
     fireEvent.click(continueBtn);
 
+    const addedStatus = await screen.findByTestId('onboarding-passkey-added-status');
+    expect(addedStatus).toHaveAttribute('role', 'status');
+    expect(addedStatus).toHaveTextContent(enMessages.vault.b.onboarding.addedStatus);
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+
+    // User can still toggle Remember this device after adding a passkey
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+    await waitFor(() => {
+      expect(rememberSwitch).toHaveAttribute('aria-checked', 'true');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-finish-button'));
+    });
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
     });
   });
 
-  it('16B: step 3 PRF-unsupported and cancel show §5.10 messages and still allow Skip', async () => {
+  it('16B: step 3 PRF-unsupported and cancel show §5.10 messages and still allow Skip to finish onboarding (en + vi)', async () => {
     const { credentialsCreate } = await advanceToStep3('en');
 
     credentialsCreate.mockResolvedValueOnce(
@@ -544,5 +583,66 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     await waitFor(() => {
       expect(routerMocks.replace).toHaveBeenCalledWith('/app');
     });
+
+    // Vietnamese parity check for Step 3 + Finish button
+    cleanup();
+    routerMocks.replace.mockReset();
+    await advanceToStep3('vi');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      viMessages.vault.b.onboarding.title,
+    );
+    expect(screen.getByRole('switch', { name: /Nhớ thiết bị này/i })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-finish-button'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    });
+  });
+
+  it('16B (VB-R1-1 / VB-R1-2): window focus / visibility wake on step 3 keeps onboarding-step-passkey mounted, while a real lock moves on', async () => {
+    const { getVault } = await advanceToStep3('en');
+
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+
+    // Trigger provider wake events (window focus, pageshow, document visibilitychange)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('pageshow'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // Step 3 remains mounted and no navigation happened
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+
+    // A real lock while on step 3 ends step 3
+    await act(async () => {
+      await getVault().lock({ broadcast: false, reason: 'step3_test_lock' });
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('onboarding-step-passkey')).not.toBeInTheDocument();
+    });
+  });
+
+  it('16B (VB-R1-2): OAuth-only account on step 3 Add passkey invokes OAuth re-auth and claims no registration success', async () => {
+    const { oauthReauthCalls } = await advanceToStep3('en', { oauthOnly: true });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    const googleBtn = await screen.findByRole('button', { name: /Continue with Google/i });
+    await act(async () => {
+      fireEvent.click(googleBtn);
+    });
+
+    await waitFor(() => {
+      expect(oauthReauthCalls).toHaveLength(1);
+    });
+    expect(oauthReauthCalls[0]!.url).toContain('/auth/oauth/google/reauth');
+    expect(JSON.parse(oauthReauthCalls[0]!.body)).toEqual({ action: 'vault.passkey_register' });
+    expect(screen.queryByTestId('onboarding-passkey-added-status')).not.toBeInTheDocument();
+    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
   });
 });
