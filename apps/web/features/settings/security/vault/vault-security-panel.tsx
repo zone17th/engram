@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { AuthStatus } from '@/components/ui/field';
 import { Toast } from '@/components/ui/toast';
@@ -19,17 +19,19 @@ const ALL_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 export interface VaultSecurityPanelProps {
   onOpenRevokeSessionsDialog?: () => void;
+  /** Rendered between the recovery-keys card and the reset card (mockups/settings.html order); the passkey card. */
+  passkeySlot?: ReactNode;
 }
 
-export function VaultSecurityPanel({ onOpenRevokeSessionsDialog }: VaultSecurityPanelProps) {
+export function VaultSecurityPanel({ onOpenRevokeSessionsDialog, passkeySlot }: VaultSecurityPanelProps) {
   const vaultCtx = useOptionalVault();
   if (!vaultCtx) {
     return null;
   }
-  return <VaultSecurityPanelInner onOpenRevokeSessionsDialog={onOpenRevokeSessionsDialog} />;
+  return <VaultSecurityPanelInner onOpenRevokeSessionsDialog={onOpenRevokeSessionsDialog} passkeySlot={passkeySlot} />;
 }
 
-function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPanelProps) {
+function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog, passkeySlot }: VaultSecurityPanelProps) {
   const t = useTranslations('settings.vaultSecurity');
   const queryClient = useQueryClient();
   const { me, sessionEpoch, refetchMe } = useSession();
@@ -334,6 +336,8 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog }: VaultSecurityPa
           {t('recoveryKeys.noViewNotice')}
         </div>
       </div>
+
+      {passkeySlot}
 
       {/* 3. Reset Vault Card (danger card) */}
       <div

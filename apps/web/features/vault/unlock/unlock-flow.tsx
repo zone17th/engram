@@ -22,6 +22,7 @@ import {
   clearRecoveryCompletedNotice,
   hasRecoveryCompletedNotice,
 } from './recovery-notice';
+import { PasskeyUnlockButton } from '@/features/vault/passkey/passkey-unlock-button';
 
 export type UnlockErrorState =
   | { kind: 'empty' }
@@ -301,6 +302,15 @@ export function VaultUnlockFlow() {
         <p className="t-body-lg mb-7" style={{ color: 'var(--muted)' }}>
           {t('lead')}
         </p>
+
+        {/* P03-T19: passkey card first (mockups/unlock.html view B); renders nothing when the user has no passkey. */}
+        <PasskeyUnlockButton
+          onUnlocked={() => {
+            completedNavigationRef.current = true;
+            clearRecoveryCompletedNotice();
+            router.replace(destinationPath);
+          }}
+        />
 
         <section data-view="new" data-testid="unlock-passphrase-section">
           <form onSubmit={handleUnlockSubmit} noValidate>

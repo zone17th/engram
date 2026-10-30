@@ -102,6 +102,14 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-web-locked-item-light-1440.png',
   'vault-web-locked-item-dark-390.png',
   'vault-web-locked-item-dark-1440.png',
+  'vault-passkey-unlock-card-light-390.png',
+  'vault-passkey-unlock-card-light-1440.png',
+  'vault-passkey-unlock-card-dark-390.png',
+  'vault-passkey-unlock-card-dark-1440.png',
+  'vault-passkey-add-dialog-light-390.png',
+  'vault-passkey-add-dialog-light-1440.png',
+  'vault-passkey-add-dialog-dark-390.png',
+  'vault-passkey-add-dialog-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440']);
 

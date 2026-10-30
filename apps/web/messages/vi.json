@@ -622,6 +622,56 @@
         "stateChanged": "Trạng thái thiết bị đã thay đổi ở tab khác. Đang hiển thị cài đặt hiện tại."
       },
       "unavailable": "Trình duyệt này hiện không lưu được khoá thiết bị (chế độ riêng tư hoặc bộ nhớ bị chặn). Hãy dùng passphrase."
+    },
+    "passkey": {
+      "prf_unsupported": "Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key.",
+      "register_cancelled": "Đã huỷ đăng ký passkey.",
+      "register_failed": "Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.",
+      "unlock_cancelled": "Đã huỷ mở khoá bằng passkey.",
+      "unlock_failed": "Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.",
+      "unlock_prf_missing": "Authenticator không trả PRF. Không mở vault bằng passkey.",
+      "none_registered": "Chưa có passkey. Thêm trong Settings sau khi mở vault.",
+      "revoked": "Đã gỡ passkey.",
+      "register": {
+        "nameLabel": "Tên passkey",
+        "nameHint": "Từ 1 đến {max} ký tự. Khoá bảo mật có thể hỏi chạm lần thứ hai để lấy đầu ra PRF.",
+        "pending": "Đang chờ khoá bảo mật của bạn…",
+        "name": {
+          "empty": "Hãy nhập tên cho passkey này.",
+          "too_long": "Tên passkey quá dài.",
+          "forbidden_chars": "Tên passkey chứa ký tự không được phép."
+        },
+        "reauthCancelled": "Đã huỷ xác nhận. Passkey chưa được thêm.",
+        "reauthRestart": "Xác nhận đã hết hạn trước khi lưu được passkey. Hãy bắt đầu lại để thêm.",
+        "networkUnknown": "Mất kết nối trước khi xác nhận được passkey đã lưu hay chưa. Hãy kiểm tra danh sách passkey trong Settings trước khi thử lại.",
+        "unconfirmedNotice": "Không thể xác nhận passkey đã lưu hay chưa; hãy kiểm tra danh sách passkey trong Settings trước khi xoá bất kỳ mục nào khỏi thiết bị của bạn.",
+        "orphanNotice": "Passkey chưa được lưu vào vault. Bạn có thể xoá credential thừa trong trình quản lý passkey của thiết bị."
+      },
+      "add": {
+        "button": "Thêm passkey",
+        "title": "Thêm passkey",
+        "description": "Xác thực lại ở đầu luồng, kiểm tra phần mở rộng PRF của WebAuthn trên khoá bảo mật rồi bọc khoá vault.",
+        "reauthStep": "Bước 1 · Xác thực lại",
+        "googleNote": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại vault trước khi luồng tiếp tục.",
+        "oauthStartFailed": "Không bắt đầu được xác thực lại bằng Google. Hãy thử lại.",
+        "noReauthMethod": "Tài khoản này chưa có phương thức xác thực lại.",
+        "showPassword": "Hiện mật khẩu",
+        "hidePassword": "Ẩn mật khẩu",
+        "cancel": "Huỷ",
+        "continue": "Tiếp tục"
+      },
+      "unlock": {
+        "button": "Mở khoá bằng passkey",
+        "pending": "Đang chờ khoá bảo mật của bạn…",
+        "caption": "Hoặc nhập passphrase bên dưới.",
+        "loadFailed": "Không kiểm tra được danh sách passkey đã đăng ký.",
+        "retryLoad": "Thử lại"
+      },
+      "settings": {
+        "title": "Passkey",
+        "body": "Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật. Cần trình duyệt và thiết bị hỗ trợ phần mở rộng PRF của WebAuthn; chúng tôi kiểm tra ngay khi đăng ký.",
+        "added": "Đã thêm passkey."
+      }
     }
   },
   "unlock": {
