@@ -70,6 +70,7 @@ interface VaultBridge {
   beginOp: () => { opGeneration: number };
   unlockPassphrase: (params: Record<string, unknown>) => Promise<{ unlocked: true }>;
   reloadVaultMeta: () => Promise<unknown>;
+  lock: (options?: { broadcast?: boolean; reason?: string }) => Promise<unknown>;
 }
 
 interface R13Witness {
@@ -78,6 +79,8 @@ interface R13Witness {
   devkeysPutSucceeded: boolean;
   metaPutSucceeded: boolean;
   abortEvents: number;
+  generationBeforeLock?: number;
+  generationAfterLock?: number;
 }
 
 /** The gated test globals the vault provider installs on loopback / non-production builds. */
@@ -442,5 +445,119 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     expect(afterSnap.userRecordCount).toBe(beforeSnap.userRecordCount);
     expect(afterSnap.allRecordCount).toBe(beforeSnap.allRecordCount);
     expect(afterSnap.meta).toEqual(beforeSnap.meta);
+  });
+
+  test('R2-2: real-IDB late-write generation change after devkeys.put success but before putMeta.onsuccess aborts with generation_changed, rolls back stores + meta unchanged, not remembered, settled off and busy:false (plus success control)', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await installAuthenticatedVaultApiMocks(context);
+    const page = await context.newPage();
+    await page.goto('/app/settings');
+    await unlockViaRealWorker(page);
+
+    // First-time Remember initializes meta (deviceRevision: 1) before WebCrypto, so when the final readwrite tx runs,
+    // sabk.device contains 0 DevKey records and meta.deviceRevision === 1.
+    const beforeSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(beforeSnap.userRecordCount).toBe(0);
+    expect(beforeSnap.allRecordCount).toBe(0);
+
+    // Intercept IDBObjectStore.prototype.put on the final ['devkeys', 'meta'] readwrite tx:
+    // let devkeys.put succeed, then advance the real CryptoClient generation via __engramVaultTestBridge.lock()
+    // in devkeys.put's success listener BEFORE putMeta.onsuccess runs. Do NOT call tx.abort() in the test:
+    // production putMeta.onsuccess must detect !isGenerationCurrent() and abort with 'generation_changed'.
+    await page.evaluate(() => {
+      const win: DeviceWindow = window;
+      const witness: R13Witness = {
+        intercepted: false,
+        storeNames: [],
+        devkeysPutSucceeded: false,
+        metaPutSucceeded: false,
+        abortEvents: 0,
+      };
+      win.__r13Witness = witness;
+      const origPut = IDBObjectStore.prototype.put;
+      win.__r13OrigPut = origPut;
+      let armed = true;
+      IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        const req = origPut.call(this, value, key);
+        const tx = this.transaction;
+        const names = Array.from(tx.objectStoreNames).sort();
+        if (names.length === 2 && names[0] === 'devkeys' && names[1] === 'meta') {
+          if (armed && this.name === 'devkeys') {
+            armed = false;
+            witness.intercepted = true;
+            witness.storeNames = names;
+            tx.addEventListener('abort', () => {
+              witness.abortEvents += 1;
+            });
+            req.addEventListener('success', () => {
+              witness.devkeysPutSucceeded = true;
+              witness.generationBeforeLock = win.__engramDeviceTestBridge!.workerWitness().workerGeneration;
+              void win.__engramVaultTestBridge!.lock({ broadcast: false, reason: 'r2_2_late_write_cancel' });
+              witness.generationAfterLock = win.__engramDeviceTestBridge!.workerWitness().workerGeneration;
+            });
+          } else if (witness.intercepted && this.name === 'meta' && key === '__meta__') {
+            req.addEventListener('success', () => {
+              witness.metaPutSucceeded = true;
+            });
+          }
+        }
+        return req;
+      };
+    });
+
+    const cancelledRemember = await page.evaluate(async () => {
+      const win: DeviceWindow = window;
+      try {
+        return await win.__engramDeviceTestBridge!.remember();
+      } finally {
+        if (win.__r13OrigPut) {
+          IDBObjectStore.prototype.put = win.__r13OrigPut;
+        }
+      }
+    });
+
+    const witness = await page.evaluate(() => (window as DeviceWindow).__r13Witness);
+    expect(witness).toMatchObject({
+      intercepted: true,
+      storeNames: ['devkeys', 'meta'],
+      devkeysPutSucceeded: true,
+      metaPutSucceeded: true,
+      abortEvents: 1,
+    });
+    expect(witness?.generationAfterLock).toBe((witness?.generationBeforeLock ?? 0) + 1);
+
+    // Consumer-visible outcome: aborted with 'generation_changed', not remembered (off), busy: false, neutral notice null.
+    expect(cancelledRemember.status).toBe('ready');
+    expect(cancelledRemember.remembered).toBe(false);
+    expect(cancelledRemember.busy).toBe(false);
+    expect(cancelledRemember.lastAbortReason).toBe('generation_changed');
+    expect(cancelledRemember.notice).toBeNull();
+
+    const bridgeState = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.state());
+    expect(bridgeState.status).toBe('ready');
+    expect(bridgeState.remembered).toBe(false);
+    expect(bridgeState.busy).toBe(false);
+    expect(bridgeState.lastAbortReason).toBe('generation_changed');
+
+    // Both stores in real IndexedDB rolled back: 0 DevKey records and meta stays at first-time init deviceRevision === 1.
+    const afterCancelSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(afterCancelSnap.userRecordCount).toBe(0);
+    expect(afterCancelSnap.allRecordCount).toBe(0);
+    expect(afterCancelSnap.meta?.deviceRevision).toBe(1);
+
+    // Success control: re-unlock and run Remember without late-write generation cancellation -> commits record and increments revision to 2.
+    await unlockViaRealWorker(page);
+    const controlRemember = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.remember());
+    expect(controlRemember.status).toBe('ready');
+    expect(controlRemember.remembered).toBe(true);
+    expect(controlRemember.busy).toBe(false);
+    expect(controlRemember.lastAbortReason).toBeNull();
+    const afterControlSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(afterControlSnap.userRecordCount).toBe(1);
+    expect(afterControlSnap.allRecordCount).toBe(1);
+    expect(afterControlSnap.meta?.deviceRevision).toBe(2);
+    expect(afterControlSnap.meta?.incarnation).toBe(afterCancelSnap.meta?.incarnation);
   });
 });
