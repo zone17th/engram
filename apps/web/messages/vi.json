@@ -684,9 +684,6 @@
         "skip": "Bỏ qua",
         "finish": "Vào engram"
       },
-      "unlock": {
-        "passkeySectionLabel": "Mở khoá bằng passkey"
-      },
       "forgot": {
         "passkeyStep": "1",
         "passkeyTitle": "Passkey",
@@ -698,8 +695,8 @@
         "deviceCta": "Thử",
         "unlockedTabStep": "3",
         "unlockedTabTitle": "Tab đang mở khoá",
-        "unlockedTabBody": "Nếu còn một tab hoặc thiết bị đang mở khoá vault, vào Cài đặt › Bảo mật -> Đổi passphrase (bọc lại khoá không cần passphrase cũ).",
-        "unlockedTabCta": "Đổi passphrase",
+        "unlockedTabBody": "Nếu còn một tab hoặc thiết bị đang mở khoá vault, vào Cài đặt › Bảo mật › Đổi passphrase (bọc lại khoá không cần passphrase cũ).",
+        "unlockedTabCta": "Mở Cài đặt",
         "recoveryKeyStep": "4"
       },
       "settings": {
@@ -794,14 +791,9 @@
     "title": "Quên passphrase",
     "lead": "Máy chủ không đọc được nội dung của bạn nên không có nút \"gửi lại mật khẩu\". Bù lại, bạn có các đường về dựng sẵn từ lúc đăng ký. Thử theo thứ tự này.",
     "paths": {
-      "recoveryKeyStep": "1",
       "recoveryKeyTitle": "Recovery key",
       "recoveryKeyBody": "Dùng một key chưa dùng trong bộ 10 key đã lưu lúc tạo vault.",
-      "recoveryKeyCta": "Dùng key",
-      "passkeyStep": "2",
-      "passkeyTitle": "Passkey hoặc thiết bị đã nhớ (mốc P03-B)",
-      "passkeyBody": "Nếu còn passkey hoặc một máy đã nhớ đang mở được, hãy mở ở đó rồi đặt passphrase mới không cần passphrase cũ.",
-      "passkeyCta": "Quay lại mở khoá"
+      "recoveryKeyCta": "Dùng key"
     },
     "reauthNote": {
       "badge": "Re-auth ở đầu luồng · action: vault.recover",

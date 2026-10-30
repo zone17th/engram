@@ -331,7 +331,7 @@ describe('P03-T17B — Unlock U4 Passkey, Forgot Passphrase 17B Paths & CF Email
     });
   });
 
-  it('17B: ForgotPassphraseView lists passkey, remembered-device, unlocked-tab -> Settings change passphrase (rewrap), plus recovery key and reset', async () => {
+  it('17B: ForgotPassphraseView lists passkey, remembered-device, unlocked-tab -> Settings change passphrase (rewrap), plus recovery key and reset (en + vi)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
@@ -361,6 +361,12 @@ describe('P03-T17B — Unlock U4 Passkey, Forgot Passphrase 17B Paths & CF Email
     expect(screen.getByTestId('forgot-path-unlocked-tab')).toHaveTextContent(
       enMessages.vault.b.forgot.unlockedTabTitle,
     );
+    expect(screen.getByTestId('forgot-path-unlocked-tab')).toHaveTextContent(
+      enMessages.vault.b.forgot.unlockedTabBody,
+    );
+    expect(screen.getByTestId('forgot-unlocked-tab-settings-cta')).toHaveTextContent(
+      enMessages.vault.b.forgot.unlockedTabCta,
+    );
     expect(screen.getByTestId('forgot-unlocked-tab-settings-cta')).toHaveAttribute(
       'href',
       '/app/settings#baomat',
@@ -369,6 +375,24 @@ describe('P03-T17B — Unlock U4 Passkey, Forgot Passphrase 17B Paths & CF Email
     expect(screen.getByTestId('forgot-reset-vault-link')).toHaveAttribute(
       'href',
       '/app/settings#baomat',
+    );
+
+    cleanup();
+    renderView('forgot', 'vi');
+    await waitFor(() => {
+      expect(screen.getByTestId('forgot-passphrase-page')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('forgot-path-passkey')).toHaveTextContent(
+      viMessages.vault.b.forgot.passkeyTitle,
+    );
+    expect(screen.getByTestId('forgot-path-remembered-device')).toHaveTextContent(
+      viMessages.vault.b.forgot.deviceTitle,
+    );
+    expect(screen.getByTestId('forgot-path-unlocked-tab')).toHaveTextContent(
+      viMessages.vault.b.forgot.unlockedTabTitle,
+    );
+    expect(screen.getByTestId('forgot-unlocked-tab-settings-cta')).toHaveTextContent(
+      viMessages.vault.b.forgot.unlockedTabCta,
     );
   });
 

@@ -684,9 +684,6 @@
         "skip": "Skip",
         "finish": "Go to engram"
       },
-      "unlock": {
-        "passkeySectionLabel": "Unlock with passkey"
-      },
       "forgot": {
         "passkeyStep": "1",
         "passkeyTitle": "Passkey",
@@ -698,8 +695,8 @@
         "deviceCta": "Try",
         "unlockedTabStep": "3",
         "unlockedTabTitle": "A tab that is still unlocked",
-        "unlockedTabBody": "If another tab or device still has this vault unlocked, open Settings › Security -> Change passphrase (rewraps without the old passphrase).",
-        "unlockedTabCta": "Change passphrase",
+        "unlockedTabBody": "If another tab or device still has this vault unlocked, open Settings › Security › Change passphrase (rewraps without the old passphrase).",
+        "unlockedTabCta": "Open Settings",
         "recoveryKeyStep": "4"
       },
       "settings": {
@@ -794,14 +791,9 @@
     "title": "Forgot passphrase",
     "lead": "The server cannot read your entry contents, so there is no \"reset passphrase by email\" link. Instead, use one of the recovery paths you set up.",
     "paths": {
-      "recoveryKeyStep": "1",
       "recoveryKeyTitle": "Recovery key",
       "recoveryKeyBody": "Use one unused key from the 10-key set you saved when creating your vault.",
-      "recoveryKeyCta": "Use a recovery key",
-      "passkeyStep": "2",
-      "passkeyTitle": "Passkey or remembered device (arrives in P03-B)",
-      "passkeyBody": "If you have an active passkey or a remembered device, unlock there and set a new passphrase without the old one.",
-      "passkeyCta": "Back to unlock"
+      "recoveryKeyCta": "Use a recovery key"
     },
     "reauthNote": {
       "badge": "Re-auth at start of flow · action: vault.recover",
