@@ -25,7 +25,7 @@ import type { Me } from '@/lib/api/auth';
 import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
-import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
+import { createWorkerShim, type ShimmedWorkerInstance } from '@/lib/crypto/test/worker-shim';
 import en from '@/messages/en.json';
 
 /**
@@ -259,6 +259,8 @@ describe('P03-T21 Locked state U5', () => {
     opened: string[];
     loadFixtureBody: EntryBodyLoader;
     unlock: () => Promise<void>;
+    holdNextKdf: () => { entered: Promise<void>; release: () => void };
+    crashWorker: () => void;
   }
 
   /**
@@ -292,6 +294,8 @@ describe('P03-T21 Locked state U5', () => {
       return <output data-testid="probe">{vaultCtx.state}</output>;
     }
 
+    let kdfGate: { notifyEntered: () => void; waitRelease: Promise<void> } | null = null;
+    let activeShim: ShimmedWorkerInstance | null = null;
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <NextIntlClientProvider locale="en" messages={en}>
@@ -299,7 +303,18 @@ describe('P03-T21 Locked state U5', () => {
           <SessionProvider>
             <VaultProvider
               createWorker={() => {
-                const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+                const shim = createWorkerShim({
+                  deriveKek: async (sodium, passphrase, params) => {
+                    if (kdfGate) {
+                      const gate = kdfGate;
+                      kdfGate = null;
+                      gate.notifyEntered();
+                      await gate.waitRelease;
+                    }
+                    return fastTestDeriveKek(sodium, passphrase, params);
+                  },
+                });
+                activeShim = shim;
                 shims.push(shim);
                 return shim.port;
               }}
@@ -351,7 +366,28 @@ describe('P03-T21 Locked state U5', () => {
       await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
     };
 
-    return { qc, vault: () => vaultCtx, created, sealed, opened, loadFixtureBody, unlock };
+    const holdNextKdf = () => {
+      const { promise: entered, resolve: notifyEntered } = Promise.withResolvers<void>();
+      const { promise: waitRelease, resolve: release } = Promise.withResolvers<void>();
+      kdfGate = { notifyEntered, waitRelease };
+      return { entered, release };
+    };
+    const crashWorker = () => {
+      if (!activeShim) throw new Error('worker_not_created');
+      activeShim.simulateCrash();
+    };
+
+    return {
+      qc,
+      vault: () => vaultCtx,
+      created,
+      sealed,
+      opened,
+      loadFixtureBody,
+      unlock,
+      holdNextKdf,
+      crashWorker,
+    };
   }
 
   function renderListUi({ loadFixtureBody }: Pick<Harness, 'loadFixtureBody'>) {
@@ -592,6 +628,105 @@ describe('P03-T21 Locked state U5', () => {
       for (const body of DEMO_BODIES) expect(everyCachedValue(h.qc)).not.toContain(JSON.stringify(body).slice(1, -1));
       expect(h.opened).toEqual([]);
     }, 30_000);
+
+    it('FE2-1: while unlock is held in flight (unlocking) and after it fails (error), Omnibox, ItemList and EntryBody fail closed', async () => {
+      const nonCryptoLoader = vi.fn<EntryBodyLoader>(async (entryId) => {
+        const item = FIXTURE_ITEMS.find((candidate) => candidate.id === entryId);
+        if (!item) throw new Error('fixture_missing');
+        return item.secret;
+      });
+      const h = await mountLockedWithFixture(() => (
+        <>
+          <Omnibox />
+          <ItemList items={FIXTURE_ITEMS} load={nonCryptoLoader} openLabel="Open" />
+        </>
+      ));
+      nonCryptoLoader.mockClear();
+
+      const assertAllSurfacesMasked = async () => {
+        search('ca phe');
+        expect(await screen.findByRole('option', { name: new RegExp(D1.title) })).toHaveAttribute(
+          'href',
+          `/app/items/${D1.id}`,
+        );
+        expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+
+        search('phin');
+        expect(itemOptions()).toHaveLength(0);
+        expect(screen.getByText('Không có mục mẫu phù hợp.')).toBeInTheDocument();
+        expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+
+        expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
+        expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length);
+        expect(screen.queryAllByTestId('entry-body')).toHaveLength(0);
+        expect(nonCryptoLoader).not.toHaveBeenCalled();
+        expect(bodyDataInCache(h.qc)).toEqual([]);
+        expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
+      };
+
+      const gate = h.holdNextKdf();
+      const op = h.vault().beginOp();
+      let unlockPromise!: Promise<{ unlocked: true }>;
+      act(() => {
+        unlockPromise = h.vault().unlockPassphrase({
+          passphrase: PASSPHRASE,
+          kdf: h.created.kdf,
+          vaultKeyWrappedByKek: h.created.vault_key_wrapped_by_kek,
+          privateKeysWrapped: h.created.private_keys_wrapped,
+          opGeneration: op.opGeneration,
+        });
+        unlockPromise.catch(() => undefined);
+      });
+      await act(async () => {
+        await gate.entered;
+      });
+      expect(h.vault().state).toBe('unlocking');
+      await assertAllSurfacesMasked();
+
+      await act(async () => {
+        h.crashWorker();
+        gate.release();
+        await expect(unlockPromise).rejects.toMatchObject({ code: 'WORKER_CRASHED' });
+      });
+      expect(h.vault().state).toBe('error');
+      await assertAllSurfacesMasked();
+    }, 30_000);
+
+    it('FE2-1: without a VaultProvider, Omnibox, ItemList and EntryBody fail closed', async () => {
+      const nonCryptoLoader = vi.fn<EntryBodyLoader>(async (entryId) => {
+        const item = FIXTURE_ITEMS.find((candidate) => candidate.id === entryId);
+        if (!item) throw new Error('fixture_missing');
+        return item.secret;
+      });
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <NextIntlClientProvider locale="en" messages={en}>
+          <QueryClientProvider client={qc}>
+            <Omnibox />
+            <ItemList items={FIXTURE_ITEMS} load={nonCryptoLoader} openLabel="Open" />
+          </QueryClientProvider>
+        </NextIntlClientProvider>,
+      );
+
+      search('ca phe');
+      expect(await screen.findByRole('option', { name: new RegExp(D1.title) })).toHaveAttribute(
+        'href',
+        `/app/items/${D1.id}`,
+      );
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+
+      search('phin');
+      expect(itemOptions()).toHaveLength(0);
+      expect(screen.getByText('Không có mục mẫu phù hợp.')).toBeInTheDocument();
+      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+
+      expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
+      expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length);
+      expect(screen.queryAllByTestId('entry-body')).toHaveLength(0);
+      expect(nonCryptoLoader).not.toHaveBeenCalled();
+      expect(bodyDataInCache(qc)).toEqual([]);
+      expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
+    });
   });
 
   describe('route guard while locked (advisor-dec-048: U5 over plan 15A for /app and /app/items/** only)', () => {
