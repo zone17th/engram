@@ -433,8 +433,7 @@
       "revoked": "Đã gỡ passkey.",
       "register": {
         "nameLabel": "Tên passkey",
-        "nameHint": "Từ 1 đến {max} ký tự, ví dụ \"Laptop công việc\".",
-        "button": "Thêm passkey",
+        "nameHint": "Từ 1 đến {max} ký tự. Khoá bảo mật có thể hỏi chạm lần thứ hai để lấy đầu ra PRF.",
         "pending": "Đang chờ khoá bảo mật của bạn…",
         "name": {
           "empty": "Hãy nhập tên cho passkey này.",
@@ -446,9 +445,19 @@
         "networkUnknown": "Mất kết nối trước khi xác nhận được passkey đã lưu hay chưa. Hãy kiểm tra danh sách passkey trong Settings trước khi thử lại.",
         "orphanNotice": "Passkey chưa được lưu vào vault. Bạn có thể xoá credential thừa trong trình quản lý passkey của thiết bị."
       },
+      "add": {
+        "button": "Thêm passkey",
+        "title": "Thêm passkey",
+        "description": "Xác thực lại ở đầu luồng, kiểm tra phần mở rộng PRF của WebAuthn trên khoá bảo mật rồi bọc khoá vault.",
+        "reauthStep": "Bước 1 · Xác thực lại",
+        "googleNote": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại vault trước khi luồng tiếp tục.",
+        "cancel": "Huỷ",
+        "continue": "Tiếp tục"
+      },
       "unlock": {
         "button": "Mở khoá bằng passkey",
-        "pending": "Đang chờ khoá bảo mật của bạn…"
+        "pending": "Đang chờ khoá bảo mật của bạn…",
+        "caption": "Hoặc nhập passphrase bên dưới."
       }
     }
   },

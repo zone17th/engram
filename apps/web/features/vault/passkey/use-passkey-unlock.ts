@@ -12,7 +12,10 @@ import {
 export interface UsePasskeyUnlockResult {
   /** True only when the browser supports WebAuthn and the user has at least one passkey (else render no button). */
   available: boolean;
+  /** This hook's own unlock is running (authenticator prompt or Worker unlock). */
   pending: boolean;
+  /** Another state-changing vault operation (passphrase unlock, rewrap, ...) is in flight: do not start. */
+  inFlight: boolean;
   /** Last failure; `stale` (lock/logout mid-flow) is never surfaced. */
   error: PasskeyUnlockErrorCode | null;
   unlock: () => Promise<PasskeyUnlockOutcome>;
@@ -29,8 +32,8 @@ function browserSupportsWebAuthn(): boolean {
 }
 
 /**
- * Passkey unlock for the unlock screen (placement is owned by T17B). `404 passkey_not_found` flips the hook to the
- * "no passkey" state, which hides the button until the passkey list changes.
+ * Passkey unlock for the unlock screen. `404 passkey_not_found` flips the hook to the "no passkey" state, which
+ * hides the button until the passkey list changes.
  */
 export function usePasskeyUnlock(): UsePasskeyUnlockResult {
   const vault = useVault();
@@ -52,7 +55,7 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
     };
   }, []);
 
-  const listedCount = vault.vaultMeta?.passkeys.length ?? 0;
+  const listedCount = vault.vaultMeta?.passkeys?.length ?? 0;
   useEffect(() => {
     setNoPasskey(false);
   }, [listedCount]);
@@ -79,6 +82,10 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
       if (mountedRef.current) {
         if (!outcome.ok && outcome.error === 'none_registered') setNoPasskey(true);
         if (!outcome.ok && outcome.error !== 'stale') setError(outcome.error);
+      } else if (outcome.ok) {
+        // The user left the unlock screen while the prompt was open: do not leave the vault unlocked behind them
+        // (same rule as the passphrase flow's unmount cleanup).
+        void v.lock({ broadcast: false, reason: 'passkey_unlock_abandoned' });
       }
       return outcome;
     } finally {
@@ -92,6 +99,7 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
   return {
     available: supported && !noPasskey && listedCount > 0,
     pending,
+    inFlight: vault.inFlight,
     error,
     unlock,
     clearError,

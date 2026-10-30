@@ -1,5 +1,15 @@
-export { PASSKEY_NAME_MAX_RUNES, validatePasskeyName, type PasskeyNameRejection, type PasskeyNameResult } from './credential-name';
-export { PasskeyRegisterForm, type PasskeyRegisterFormProps } from './passkey-register-form';
+export {
+  PASSKEY_NAME_MAX_RUNES,
+  validatePasskeyName,
+  type PasskeyNameRejection,
+  type PasskeyNameResult,
+} from './credential-name';
+export {
+  PasskeyAddDialog,
+  PasskeyAddEntry,
+  type PasskeyAddDialogProps,
+  type PasskeyAddEntryProps,
+} from './passkey-add-dialog';
 export { PasskeyUnlockButton, type PasskeyUnlockButtonProps } from './passkey-unlock-button';
 export {
   GRANT_MIN_REMAINING_MS,
@@ -22,5 +32,9 @@ export {
   type PasskeyUnlockErrorCode,
   type PasskeyUnlockOutcome,
 } from './unlock-flow';
-export { usePasskeyRegister, type UsePasskeyRegisterOptions, type UsePasskeyRegisterResult } from './use-passkey-register';
+export {
+  usePasskeyRegister,
+  type UsePasskeyRegisterOptions,
+  type UsePasskeyRegisterResult,
+} from './use-passkey-register';
 export { usePasskeyUnlock, type UsePasskeyUnlockResult } from './use-passkey-unlock';

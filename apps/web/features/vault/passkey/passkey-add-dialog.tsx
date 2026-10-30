@@ -1,0 +1,230 @@
+'use client';
+
+import { useTranslations } from 'next-intl';
+import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
+import { AuthStatus, Field } from '@/components/ui/field';
+import { useSession } from '@/features/auth/session-provider';
+import { useVault } from '@/features/vault/vault-provider';
+import type { ReauthAction } from '@/lib/api/auth';
+import { PASSKEY_NAME_MAX_RUNES } from './credential-name';
+import type { PasskeyRegisterErrorCode, PasskeyRegisterOutcome } from './register-flow';
+import { usePasskeyRegister } from './use-passkey-register';
+
+const REGISTER_ACTION: ReauthAction = 'vault.passkey_register';
+
+export interface PasskeyAddDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Where an OAuth re-auth returns to (it navigates the whole page, which drops the Worker and the VK). */
+  returnPath: string;
+  /** Called with the saved passkey; the dialog closes itself afterwards. */
+  onRegistered?: (outcome: Extract<PasskeyRegisterOutcome, { ok: true }>) => void;
+}
+
+function failureKey(error: PasskeyRegisterErrorCode, nameReason?: string): string | null {
+  switch (error) {
+    case 'name_invalid':
+      return `register.name.${nameReason ?? 'forbidden_chars'}`;
+    case 'reauth_cancelled':
+      return 'register.reauthCancelled';
+    case 'reauth_restart_required':
+      return 'register.reauthRestart';
+    case 'network_unknown':
+      return 'register.networkUnknown';
+    case 'stale':
+      return null;
+    default:
+      return error;
+  }
+}
+
+/**
+ * Naming dialog of mockups/settings.html `#passkeyAddDlg`. Step 1 takes the `vault.passkey_register` grant the moment
+ * the dialog opens (password in place, or Google which leaves the page), step 2 names the credential and runs plan
+ * §2.5 steps 2-6. Self-contained: the host only mounts it (Settings is T20B, onboarding step 3 is T16B).
+ */
+export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered }: PasskeyAddDialogProps) {
+  const t = useTranslations('vault.passkey');
+  const tAuth = useTranslations('auth');
+  const { reauth } = useSession();
+  const vault = useVault();
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+
+  const { pending, failure, register, clearFailure } = usePasskeyRegister({
+    returnPath,
+    onRegistered: (outcome) => {
+      onRegistered?.(outcome);
+      setName('');
+      onOpenChange(false);
+    },
+  });
+
+  const reauthOpen = reauth.pendingAction === REGISTER_ACTION;
+  const grantReady = reauth.hasUsableGrant(REGISTER_ACTION);
+
+  // Step 1: the grant is taken when "Add passkey" is pressed, before anything else.
+  useEffect(() => {
+    if (open && !grantReady && !reauthOpen) {
+      void reauth.begin(REGISTER_ACTION, returnPath).catch(() => undefined);
+    }
+  }, [grantReady, open, reauth, reauthOpen, returnPath]);
+
+  // Lock / logout wipes the re-auth password field synchronously.
+  const { registerSecretFormReset } = vault;
+  useEffect(() => registerSecretFormReset(() => setPassword('')), [registerSecretFormReset]);
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      // An authenticator prompt cannot be withdrawn; an in-place re-auth prompt can.
+      if (pending && !reauthOpen) return;
+      if (reauthOpen) reauth.cancel();
+      setPassword('');
+      setName('');
+      clearFailure();
+    }
+    onOpenChange(next);
+  };
+
+  const confirmPassword = async () => {
+    const typed = password;
+    setPassword('');
+    try {
+      await reauth.submitPassword(typed);
+    } catch {
+      /* the failure is shown through reauth.error and the prompt stays open */
+    }
+  };
+
+  const key = failure ? failureKey(failure.error, failure.nameReason) : null;
+  const cancelledQuietly = failure?.error === 'register_cancelled';
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent id="passkeyAddDlg">
+        <div className="panel p-7" style={{ width: 'min(560px, 94vw)', maxHeight: '90vh', overflow: 'auto' }}>
+          <DialogHeader title={t('add.title')} description={t('add.description')} />
+
+          <div className="card p-5 my-5">
+            {reauthOpen && (
+              <div className="mb-4">
+                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+                  {t('add.reauthStep')}
+                </p>
+                {reauth.capabilities.hasPassword && (
+                  <>
+                    <Field
+                      label={tAuth('fields.password')}
+                      type="password"
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void confirmPassword();
+                      }}
+                      disabled={reauth.submitting}
+                      wrapperClassName="mb-3"
+                      data-vault-secret="true"
+                    />
+                    {reauth.error && (
+                      <AuthStatus tone="error" className="mb-3">
+                        {reauth.error}
+                      </AuthStatus>
+                    )}
+                    <Button
+                      className="w-full !justify-center mb-2"
+                      onClick={() => void confirmPassword()}
+                      disabled={reauth.submitting || password.length === 0}
+                    >
+                      {reauth.submitting ? tAuth('reauth.submitting') : tAuth('reauth.confirm')}
+                    </Button>
+                  </>
+                )}
+                {reauth.capabilities.oauthReauthProviders.includes('google') && (
+                  <>
+                    <Button
+                      variant="secondary"
+                      className="w-full !justify-center mb-2"
+                      onClick={() => void reauth.startOauthReauth('google', returnPath)}
+                      disabled={reauth.submitting}
+                    >
+                      {tAuth('reauth.google')}
+                    </Button>
+                    <p className="text-[12px] m-0" style={{ color: 'var(--muted)' }}>
+                      {t('add.googleNote')}
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+            <Field
+              label={t('register.nameLabel')}
+              hint={t('register.nameHint', { max: PASSKEY_NAME_MAX_RUNES })}
+              value={name}
+              maxLength={PASSKEY_NAME_MAX_RUNES * 2}
+              autoComplete="off"
+              onChange={(e) => {
+                setName(e.target.value);
+                if (failure?.error === 'name_invalid') clearFailure();
+              }}
+              disabled={pending}
+              wrapperClassName="mb-0"
+            />
+          </div>
+
+          {key && (
+            <div
+              role="alert"
+              className="card p-4 mb-4"
+              style={cancelledQuietly ? undefined : { borderColor: 'var(--error)' }}
+            >
+              <p className="m-0 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+                {t(key)}
+              </p>
+            </div>
+          )}
+          {failure?.orphan && (
+            <div role="status" className="card p-4 mb-4">
+              <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                {t('register.orphanNotice')}
+              </p>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="tertiary" onClick={() => handleOpenChange(false)} disabled={pending && !reauthOpen}>
+              {t('add.cancel')}
+            </Button>
+            <Button
+              onClick={() => void register(name)}
+              disabled={pending || reauthOpen || !grantReady}
+              aria-busy={pending}
+            >
+              {pending ? t('register.pending') : t('add.continue')}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export interface PasskeyAddEntryProps extends Omit<PasskeyAddDialogProps, 'open' | 'onOpenChange'> {
+  className?: string;
+}
+
+/** "Add passkey" button + its naming dialog; the host places it (Settings passkey card, onboarding step 3). */
+export function PasskeyAddEntry({ className, ...dialogProps }: PasskeyAddEntryProps) {
+  const t = useTranslations('vault.passkey');
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button variant="tertiary" className={className} onClick={() => setOpen(true)}>
+        {t('add.button')}
+      </Button>
+      <PasskeyAddDialog {...dialogProps} open={open} onOpenChange={setOpen} />
+    </>
+  );
+}

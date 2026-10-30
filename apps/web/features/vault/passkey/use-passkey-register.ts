@@ -30,8 +30,8 @@ export interface UsePasskeyRegisterResult {
 }
 
 /**
- * "Add passkey" logic (UI placement belongs to T20B / T16B). The re-auth prompt itself is the session's `reauth`
- * state (`pendingAction === 'vault.passkey_register'`), rendered by `PasskeyRegisterForm` or the host dialog.
+ * "Add passkey" logic behind `PasskeyAddDialog` (placement belongs to T20B / T16B). The re-auth prompt itself is the
+ * session's `reauth` state (`pendingAction === 'vault.passkey_register'`), rendered by the dialog.
  */
 export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePasskeyRegisterResult {
   const vault = useVault();

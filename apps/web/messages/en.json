@@ -433,8 +433,7 @@
       "revoked": "Passkey removed.",
       "register": {
         "nameLabel": "Passkey name",
-        "nameHint": "1 to {max} characters, for example \"Work laptop\".",
-        "button": "Add passkey",
+        "nameHint": "1 to {max} characters. Your authenticator may prompt a second time to evaluate PRF.",
         "pending": "Waiting for your authenticator…",
         "name": {
           "empty": "Enter a name for this passkey.",
@@ -446,9 +445,19 @@
         "networkUnknown": "The connection dropped before we could confirm the passkey was saved. Check the passkey list in Settings before trying again.",
         "orphanNotice": "The passkey was not saved to your vault. You can delete the extra credential in your device's passkey manager."
       },
+      "add": {
+        "button": "Add passkey",
+        "title": "Add a passkey",
+        "description": "Re-authenticate at the start, verify WebAuthn PRF support on your authenticator, and wrap the vault key.",
+        "reauthStep": "Step 1 · Re-authenticate",
+        "googleNote": "Google re-authentication leaves the page: the vault locks again, so unlock it before the flow continues.",
+        "cancel": "Cancel",
+        "continue": "Continue"
+      },
       "unlock": {
         "button": "Unlock with passkey",
-        "pending": "Waiting for your authenticator…"
+        "pending": "Waiting for your authenticator…",
+        "caption": "Or enter your passphrase below."
       }
     }
   },
