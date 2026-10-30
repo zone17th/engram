@@ -711,19 +711,44 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
   });
 
-  it('16B (VB-R3-1): step 3 Remember that finds another vault_key_id (vault_mismatch) reconciles by locking and ends step 3 without storing a DevKey', async () => {
-    const { setVaultGetHook } = await advanceToStep3('en');
+  it('16B (VB-R4-1): step 3 Remember whose in-lock vault GET returns another vault_key_id aborts with vault_mismatch, the store reconciliation reload locks the provider, step 3 ends and no DevKey is stored', async () => {
+    const { getVault, setVaultGetHook } = await advanceToStep3('en');
+
+    // Load the ORIGINAL vault metadata first (advanceToStep3 leaves `vaultMeta` null): with a non-null key,
+    // Remember skips its preliminary reload and its only GETs are the in-lock verification and the reconciliation.
+    await act(async () => {
+      await getVault().reloadVaultMeta();
+    });
+    await waitFor(() => {
+      expect(getVault().vaultMeta?.vault_key_id).toBe('vk:7f3a9b2c4d5e6f7a8b9c0d');
+    });
+    expect(getVault().workerState).toBe('unlocked');
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+
+    // Only now another tab "replaces" the vault: Remember's in-lock verification GET (and the reload that follows
+    // the abort) sees the replacement key.
+    let replacementServed = 0;
+    setVaultGetHook(() => {
+      replacementServed += 1;
+      return 'vk:other-tab-replaced-key';
+    });
 
     const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
-    setVaultGetHook(() => 'vk:other-tab-replaced-key');
-
     await act(async () => {
       fireEvent.click(rememberSwitch);
     });
 
     await waitFor(() => {
+      expect(getVault().workerState).toBe('locked');
+    });
+    await waitFor(() => {
+      expect(getVault().getClient().getState()).toBe('locked');
+    });
+    await waitFor(() => {
       expect(screen.queryByTestId('onboarding-step-passkey')).not.toBeInTheDocument();
     });
+    // Verification GET + the store's reconciliation reload: both saw the replacement key.
+    expect(replacementServed).toBeGreaterThanOrEqual(2);
     expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
   });
 
