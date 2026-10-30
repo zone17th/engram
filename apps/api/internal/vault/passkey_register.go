@@ -328,6 +328,9 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 		challengeB64,
 	)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return PasskeyItem{}, ctxErr
+		}
 		return PasskeyItem{}, ErrPasskeyAttestationInvalid
 	}
 	if err := ctx.Err(); err != nil {
@@ -390,7 +393,11 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 				return PasskeyItem{}, err
 			}
 		}
-		if s.grants != nil {
+		if v := s.ReauthVerifier(); v != nil {
+			if err := v.VerifyReauth(ctx, p, "vault.passkey_register", in.ReauthToken); err != nil {
+				return PasskeyItem{}, err
+			}
+		} else if s.grants != nil {
 			if err := s.grants.Verify(p, "vault.passkey_register", in.ReauthToken); err != nil {
 				return PasskeyItem{}, err
 			}

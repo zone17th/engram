@@ -68,6 +68,7 @@ type Service struct {
 	q               *gen.Queries
 	clk             clock.Clock
 	grants          *auth.Grants
+	reauth          httpx.ReauthVerifier
 	sessions        *auth.SessionStore
 	audit           Auditor
 	notify          Notifier
@@ -183,6 +184,24 @@ func (s *Service) PasskeyAttestationVerifier() PasskeyAttestationVerifier {
 		return VerifyRegistrationAttestation
 	}
 	return s.passkeyVerifier
+}
+
+// SetReauthVerifier gắn bộ xác minh re-auth grant (`httpx.ReauthVerifier`) dùng chung với
+// middleware `httpx.RequireReauth` trên router (BR1-6). Khi được cấu hình (ví dụ qua `vaulthttp.Mount`),
+// bước kiểm tra cuối transaction của `RegisterPasskey` dùng chính thẩm quyền này thay vì `s.grants` mặc định.
+func (s *Service) SetReauthVerifier(v httpx.ReauthVerifier) {
+	if s == nil {
+		return
+	}
+	s.reauth = v
+}
+
+// ReauthVerifier trả về `httpx.ReauthVerifier` đã gắn với Service (nếu có).
+func (s *Service) ReauthVerifier() httpx.ReauthVerifier {
+	if s == nil {
+		return nil
+	}
+	return s.reauth
 }
 
 // BeginMutationTx mở một `pgx.Tx` trên pool với `lock_timeout = '30s'` và `statement_timeout = '30s'`

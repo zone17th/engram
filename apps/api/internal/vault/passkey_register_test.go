@@ -725,6 +725,44 @@ func TestServiceRegisterPasskey_DeadlineAndGrantRecheck(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
 	}
+	// 3. Context deadline exceeded AND verifier returns an error (BR1-14/BR1-19):
+	// ctx.Err() takes precedence over ErrPasskeyAttestationInvalid.
+	opts3, err := svc.RegisterPasskeyOptions(ctx, pA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg3, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         "localhost",
+		Origin:       "http://localhost:3000",
+		ChallengeB64: opts3.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dlCtx2, dlCancel2 := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer dlCancel2()
+	svc.SetPasskeyAttestationVerifier(func(
+		_ vault.WebAuthnRPConfig,
+		_ string,
+		_ string,
+		_ string,
+	) (vault.VerifiedAttestation, error) {
+		<-dlCtx2.Done()
+		return vault.VerifiedAttestation{}, errors.New("simulated verifier failure after deadline")
+	})
+
+	_, err = svc.RegisterPasskey(dlCtx2, pA, vault.RegisterPasskeyInput{
+		ChallengeID:       opts3.ChallengeID,
+		ClientDataJSON:    reg3.ClientDataJSONB64,
+		AttestationObject: reg3.AttestationObjectB64,
+		PRFSalt:           opts3.PRFSalt,
+		VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x63),
+		Name:              "Deadline Plus Verifier Error",
+		ReauthToken:       grant2.Grant,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded when deadline and verifier error coincide, got %v", err)
+	}
 
 	var pkCount, auditCount, noticeCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, userA.ID).Scan(&pkCount); err != nil {

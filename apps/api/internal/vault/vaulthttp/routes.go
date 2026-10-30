@@ -50,6 +50,7 @@ func Mount(api *API) func(v1 chi.Router, d httpx.Deps) {
 		if d.Authenticator == nil || d.CSRF == nil || d.Reauth == nil {
 			panic("vault routes yêu cầu Authenticator, CSRF và Reauth thật — không mount verifier rỗng")
 		}
+		api.svc.SetReauthVerifier(d.Reauth)
 
 		origin := ""
 		if d.Config != nil {
