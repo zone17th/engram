@@ -1,5 +1,12 @@
 import { expect, type BrowserContext, type CDPSession, type Locator, type Page, type Response } from '@playwright/test';
-import { PASSWORD, isolateRateLimit, waitForAuthPageReady } from './helpers';
+import {
+  PASSWORD,
+  completeFakeOAuth,
+  expectSignedIn,
+  isolateRateLimit,
+  waitForOAuthProviders,
+  waitForAuthPageReady,
+} from './helpers';
 import { fillSecret } from './vault-settings-secret';
 
 // Shared helpers of the passkey (P03-T19) real-API specs: vault-passkey.spec.ts and vault-passkey-visual.spec.ts.
@@ -89,10 +96,7 @@ export async function signupViaUiSecret(page: Page, email: string, password = PA
   }
 }
 
-/** Real signup, then onboarding creates a real vault (POST /vault). Ends unlocked on /app. */
-export async function signupAndCreateVault(page: Page, emailPrefix: string, uniqueEmail: (prefix: string) => string) {
-  const email = uniqueEmail(emailPrefix);
-  await signupViaUiSecret(page, email, PASSWORD);
+async function completeOnboardingCreateVault(page: Page) {
   await expect(page).toHaveURL(/\/app\/onboarding$/, { timeout: UI_WAIT_MS });
   await expect(page.getByTestId('onboarding-step-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
 
@@ -106,7 +110,36 @@ export async function signupAndCreateVault(page: Page, emailPrefix: string, uniq
   expect((await created).ok()).toBe(true);
   await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
   await expectVaultOpen(page);
+}
+
+/** Real signup, then onboarding creates a real vault (POST /vault). Ends unlocked on /app. */
+export async function signupAndCreateVault(page: Page, emailPrefix: string, uniqueEmail: (prefix: string) => string) {
+  const email = uniqueEmail(emailPrefix);
+  await signupViaUiSecret(page, email, PASSWORD);
+  await completeOnboardingCreateVault(page);
   return email;
+}
+
+/**
+ * Real OAuth-only signup via the compose stack's fake Google provider (`AUTH_FAKE_OAUTH=true`), then onboarding
+ * creates a real vault (`POST /vault`). Ends unlocked on `/app`.
+ */
+export async function oauthSignupAndCreateVault(
+  page: Page,
+  emailPrefix: string,
+  uniqueEmail: (prefix: string) => string,
+): Promise<{ email: string; subject: string }> {
+  const email = uniqueEmail(emailPrefix);
+  const subject = `sub-${email}`;
+  await isolateRateLimit(page);
+  await page.goto('/app/auth/login');
+  await waitForOAuthProviders(page);
+  await page.getByRole('link', { name: /Continue with Google|Tiếp tục với Google/ }).click();
+  await completeFakeOAuth(page, { email, subject });
+  await page.waitForURL(/\/app\/(onboarding|auth\/callback)/, { timeout: UI_WAIT_MS });
+  await expectSignedIn(page);
+  await completeOnboardingCreateVault(page);
+  return { email, subject };
 }
 
 // ---- Chrome virtual authenticator (CDP WebAuthn domain) ----------------------------------------------------------
@@ -260,6 +293,50 @@ export async function openAddPasskeyDialog(page: Page) {
   }
   await expect(continueButton).toBeEnabled({ timeout: UI_WAIT_MS });
   return dialog;
+}
+
+/**
+ * Acquires a real `vault.passkey_register` grant via the OAuth re-auth flow for an OAuth-only user: opens the dialog,
+ * clicks `Continue with Google`, completes the fake OAuth redirect (`status=reauth_ready` -> `POST /auth/reauth`),
+ * unlocks the vault on `/app/unlock?returnTo=%2Fapp%2Fsettings`, and re-opens the Add-passkey dialog at its name step.
+ */
+export async function acquireOauthPasskeyGrantAndOpenDialog(
+  page: Page,
+  identity: { email: string; subject: string },
+): Promise<{ dialog: Locator; expiresAtMs: number }> {
+  await gotoSettings(page);
+  await page.getByTestId('settings-passkey-card').getByRole('button', { name: 'Add passkey' }).click();
+  const dialog = addDialog(page);
+  await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
+  const googleButton = dialog.getByRole('button', { name: /Continue with Google|Tiếp tục với Google/ });
+  await expect(googleButton).toBeVisible({ timeout: UI_WAIT_MS });
+
+  const reauthResponsePromise = page.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
+    timeout: UI_WAIT_MS,
+  });
+  await googleButton.click();
+  await completeFakeOAuth(page, { email: identity.email, subject: identity.subject });
+  const reauthResponse = await reauthResponsePromise;
+  expect(reauthResponse.ok()).toBe(true);
+  const grantBody = (await reauthResponse.json()) as { expires_at: string };
+  const expiresAtMs = Date.parse(grantBody.expires_at);
+  expect(Number.isFinite(expiresAtMs)).toBe(true);
+
+  // The full-page OAuth redirect destroyed the Worker; RouteGuard sends /app/settings to /app/unlock?returnTo=%2Fapp%2Fsettings.
+  await expect(page).toHaveURL(/\/app\/unlock\?returnTo=%2Fapp%2Fsettings$/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
+  await fillSecret(page.getByTestId('unlock-passphrase-input'), VAULT_PASSPHRASE, CRYPTO_WAIT_MS);
+  await page.getByTestId('unlock-submit-button').click();
+  await expect(page).toHaveURL(/\/app\/settings$/, { timeout: CRYPTO_WAIT_MS });
+  await expectVaultOpen(page);
+  await expect(page.getByTestId('settings-passkey-card')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
+
+  await page.getByTestId('settings-passkey-card').getByRole('button', { name: 'Add passkey' }).click();
+  await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
+  await expect(dialog.getByLabel('Login password')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: /Continue with Google|Tiếp tục với Google/ })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Continue' })).toBeEnabled({ timeout: UI_WAIT_MS });
+  return { dialog, expiresAtMs };
 }
 
 /** Names the credential and presses Continue; the outcome is asserted by the caller. */

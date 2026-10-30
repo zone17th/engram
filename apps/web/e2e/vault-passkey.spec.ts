@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { PASSWORD, uniqueEmail } from './helpers';
+import { PASSWORD, newContext, uniqueEmail } from './helpers';
 import { fillSecret } from './vault-settings-secret';
 import {
   CRYPTO_WAIT_MS,
   FLOW_TIMEOUT_MS,
   UI_WAIT_MS,
+  acquireOauthPasskeyGrantAndOpenDialog,
   addAuthenticator,
   addDialog,
   enableWebAuthn,
@@ -16,6 +17,7 @@ import {
   isApiGet,
   isApiPost,
   lockVault,
+  oauthSignupAndCreateVault,
   openAddPasskeyDialog,
   readProbe,
   removeAuthenticator,
@@ -40,6 +42,7 @@ const COPY = {
   prfUnsupported:
     'This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.',
   registerCancelled: 'Passkey registration was cancelled.',
+  reauthRestart: 'Your confirmation expired before the passkey could be saved. Start again to add it.',
   unlockCancelled: 'Passkey prompt was cancelled.',
   orphanNotice: /The passkey was not saved to your vault\./,
 } as const;
@@ -197,5 +200,104 @@ test.describe('passkey against the real API', () => {
       await expect(page).toHaveURL(/\/app$/, { timeout: CRYPTO_WAIT_MS });
       await expectVaultOpen(page);
     });
+  });
+
+  test('PRF matrix grant near expiry (< 60 s remaining before POST, real 5 min GrantTTL): password user re-auths in place and POST succeeds; OAuth-only user is told to restart (PKW-R2-6, advisor-dec-053)', async ({
+    browser,
+  }) => {
+    // Real GrantTTL is 5 minutes (apps/api/internal/auth/reauth.go:20). Both contexts acquire their grants first and
+    // share one ~4m02s wait so the grant has < 60 s remaining when Continue is pressed.
+    test.setTimeout(420_000);
+
+    const pwdContext = await newContext(browser);
+    const oauthContext = await newContext(browser);
+    try {
+      const pwdPage = await pwdContext.newPage();
+      const oauthPage = await oauthContext.newPage();
+      const pwdCdp = await enableWebAuthn(pwdPage);
+      const oauthCdp = await enableWebAuthn(oauthPage);
+      await addAuthenticator(pwdCdp, { hasPrf: true, isUserVerified: true });
+      await addAuthenticator(oauthCdp, { hasPrf: true, isUserVerified: true });
+
+      let pwdExpiresAtMs = 0;
+      let oauthExpiresAtMs = 0;
+
+      await test.step('1. set up password user and OAuth-only user in parallel contexts and acquire real grants', async () => {
+        const [, oauthIdentity] = await Promise.all([
+          signupAndCreateVault(pwdPage, 'passkey-exp-pwd', uniqueEmail),
+          oauthSignupAndCreateVault(oauthPage, 'passkey-exp-oauth', uniqueEmail),
+        ]);
+
+        await gotoSettings(pwdPage);
+        const pwdReauthPromise = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
+          timeout: UI_WAIT_MS,
+        });
+        await openAddPasskeyDialog(pwdPage);
+        const pwdGrantBody = (await (await pwdReauthPromise).json()) as { expires_at: string };
+        pwdExpiresAtMs = Date.parse(pwdGrantBody.expires_at);
+        expect(Number.isFinite(pwdExpiresAtMs)).toBe(true);
+
+        const oauthAcquired = await acquireOauthPasskeyGrantAndOpenDialog(oauthPage, oauthIdentity);
+        oauthExpiresAtMs = oauthAcquired.expiresAtMs;
+      });
+
+      await test.step('2. wait once until both real 5-minute grants have < 60 s remaining (~45 s left)', async () => {
+        const latestExpiresAtMs = Math.max(pwdExpiresAtMs, oauthExpiresAtMs);
+        const targetNowMs = latestExpiresAtMs - 45_000;
+        const waitMs = Math.max(0, targetNowMs - Date.now());
+        if (waitMs > 0) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, waitMs);
+          await promise;
+        }
+        expect(pwdExpiresAtMs - Date.now()).toBeLessThan(60_000);
+        expect(pwdExpiresAtMs - Date.now()).toBeGreaterThan(5_000);
+        expect(oauthExpiresAtMs - Date.now()).toBeLessThan(60_000);
+        expect(oauthExpiresAtMs - Date.now()).toBeGreaterThan(5_000);
+      });
+
+      await test.step('3. row 1 (password user): grant < 60 s triggers in-place password re-auth after wrap, then POST /vault/passkeys succeeds', async () => {
+        const dialog = addDialog(pwdPage);
+        await submitPasskeyName(pwdPage, 'Renewed in place key');
+        const passwordField = dialog.getByLabel('Login password');
+        await expect(passwordField).toBeVisible({ timeout: CRYPTO_WAIT_MS });
+        // PKW-R1-11: post-wrap renewal never offers a full-page Google redirect.
+        await expect(dialog.getByRole('button', { name: /Continue with Google|Tiếp tục với Google/ })).toHaveCount(0);
+
+        const renewedResponse = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
+          timeout: UI_WAIT_MS,
+        });
+        const createdResponse = pwdPage.waitForResponse((r) => isApiPost(r, '/api/v1/vault/passkeys'), {
+          timeout: CRYPTO_WAIT_MS,
+        });
+        await fillSecret(passwordField, PASSWORD);
+        await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+        expect((await renewedResponse).ok()).toBe(true);
+        expect((await createdResponse).status()).toBe(201);
+        await expectPasskeyAdded(pwdPage);
+      });
+
+      await test.step('4. row 2 (OAuth-only user): grant < 60 s cannot renew in place -> told to restart + orphan notice, no POST /vault/passkeys', async () => {
+        let postCount = 0;
+        const onRequest = (req: { method: () => string; url: () => string }) => {
+          if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/v1/vault/passkeys') {
+            postCount += 1;
+          }
+        };
+        oauthPage.on('request', onRequest);
+        try {
+          const dialog = addDialog(oauthPage);
+          await submitPasskeyName(oauthPage, 'OAuth near-expiry key');
+          await expect(dialog.getByRole('alert')).toHaveText(COPY.reauthRestart, { timeout: CRYPTO_WAIT_MS });
+          await expect(dialog.getByText(COPY.orphanNotice)).toBeVisible();
+          expect(postCount).toBe(0);
+        } finally {
+          oauthPage.off('request', onRequest);
+        }
+      });
+    } finally {
+      await pwdContext.close();
+      await oauthContext.close();
+    }
   });
 });
