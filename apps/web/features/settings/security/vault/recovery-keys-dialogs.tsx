@@ -112,11 +112,18 @@ export function RecoveryKeysDialog({
 
   // Register secret form reset so locking the vault immediately wipes displayed RK from DOM/state,
   // clears idempotencyKeyRef, and returns to the first step (R1-7).
+  // R9-4: while an operation is in flight (provider wake wipe) only secret material (plaintext keys, ack,
+  // password fields, upload payload) is wiped; the step, loading state, close guard, Idempotency-Key and
+  // grant stay until the operation's own settlement path (`finally`) clears them.
   useEffect(() => {
     return registerSecretFormReset(() => {
+      if (inFlightGuardRef.current) {
+        wipeKeysAndSecrets();
+        return;
+      }
       resetDialogState();
     });
-  }, [registerSecretFormReset, resetDialogState]);
+  }, [registerSecretFormReset, resetDialogState, wipeKeysAndSecrets]);
 
   // Also wipe keys on component unmount
   useEffect(() => {

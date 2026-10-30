@@ -105,10 +105,14 @@ export function ResetVaultDialog({
 
   useEffect(() => {
     return registerSecretFormReset(() => {
-      if (committedResetRef.current) return;
+      // Secret material is always wiped synchronously, even mid-operation.
+      clearInputs();
+      // R9-4: a provider wake wipe must not tear down an in-flight reset (step, loading state, close
+      // guard, Idempotency-Key, grant). The operation's own settlement path clears those.
+      if (inFlightGuardRef.current || committedResetRef.current) return;
       resetDialogState();
     });
-  }, [registerSecretFormReset, resetDialogState]);
+  }, [clearInputs, registerSecretFormReset, resetDialogState]);
 
   useEffect(() => {
     if (!open) {

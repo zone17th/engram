@@ -85,15 +85,20 @@ export function ChangePassphraseDialog({
       hasGrantMinRemainingTtl(reauth.grant.expires_at, 1_000),
   );
 
-  const wipeSecretState = useCallback(() => {
+  // Input-only wipe: clears every secret field (and the derived policy result) but keeps operation identity.
+  const wipeSecretInputs = useCallback(() => {
     setLoginPassword('');
     setInlineReauthPassword('');
     setNewPassphrase('');
     setConfirmPassphrase('');
     setPolicyResult(null);
+  }, []);
+
+  const wipeSecretState = useCallback(() => {
+    wipeSecretInputs();
     pendingRewrapResultRef.current = null;
     activeGrantRef.current = null;
-  }, []);
+  }, [wipeSecretInputs]);
 
   const resetDialogState = useCallback(() => {
     wipeSecretState();
@@ -106,11 +111,18 @@ export function ChangePassphraseDialog({
   }, [wipeSecretState]);
 
   // Register secret form reset on vault lock / logout (R1-7: also clear idempotencyKeyRef, pendingRewrapResultRef, and return to form step)
+  // R9-4: while an operation is in flight (provider wake / lock wipe) only the secret inputs are wiped; the
+  // step, loading state, close guard, Idempotency-Key, derived rewrap result and grant stay until the
+  // operation's own settlement path (`finally`) clears them.
   useEffect(() => {
     return registerSecretFormReset(() => {
+      if (inFlightGuardRef.current) {
+        wipeSecretInputs();
+        return;
+      }
       resetDialogState();
     });
-  }, [registerSecretFormReset, resetDialogState]);
+  }, [registerSecretFormReset, resetDialogState, wipeSecretInputs]);
 
   // Obtain / begin re-auth (`vault.rewrap`) WHEN THE DIALOG OPENS, before any secret goes to the Worker (plan §1).
   useEffect(() => {
