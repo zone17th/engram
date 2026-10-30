@@ -3820,4 +3820,44 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       shim.close();
     }, 30_000);
   }
+
+  for (const locale of ['en', 'vi'] as const) {
+    it(`V-2 (${locale}): the login-password show toggle on the Step 1 and Step 4A re-auth fields uses the ${locale} locale string, not the Field default`, async () => {
+      const shim = makeTestShim();
+      installRecoveryRaceFetchMock();
+      const messages = locale === 'vi' ? viMessages : enMessages;
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale,
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+
+      const toggleOf = (testId: string) =>
+        screen.getByTestId(testId).closest('.field')?.querySelector('button.field-toggle') ?? null;
+
+      await waitFor(() => {
+        expect(screen.getByTestId('recovery-reauth-password-input')).toBeInTheDocument();
+      });
+      const step1Toggle = toggleOf('recovery-reauth-password-input');
+      expect(step1Toggle).toHaveTextContent(messages.recovery.showPassword);
+      expect(step1Toggle).toHaveAttribute('aria-label', messages.recovery.showPassword);
+      fireEvent.click(step1Toggle as Element);
+      expect(step1Toggle).toHaveTextContent(messages.recovery.hidePassword);
+
+      await driveRecoveryToStep4A(() => vaultCtx);
+      const step4Toggle = toggleOf('recovery-step4-reauth-password-input');
+      expect(step4Toggle).toHaveTextContent(messages.recovery.showPassword);
+      expect(step4Toggle).toHaveAttribute('aria-label', messages.recovery.showPassword);
+      if (locale === 'en') {
+        expect(step1Toggle?.textContent).not.toBe('Hiện');
+        expect(step4Toggle?.textContent).toBe('Show password');
+      }
+
+      shim.close();
+    }, 30_000);
+  }
 });

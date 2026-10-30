@@ -497,6 +497,8 @@
   "recovery": {
     "invalid": "That recovery key is not valid.",
     "need_new_passphrase": "Set a new passphrase to finish recovery.",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
     "stepperLabel": "Vault recovery steps",
     "steps": {
       "reauth": "1 · Confirm account",

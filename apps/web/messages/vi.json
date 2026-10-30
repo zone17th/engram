@@ -497,6 +497,8 @@
   "recovery": {
     "invalid": "Recovery key không đúng hoặc đã dùng.",
     "need_new_passphrase": "Đặt passphrase mới để hoàn tất khôi phục.",
+    "showPassword": "Hiện mật khẩu",
+    "hidePassword": "Ẩn mật khẩu",
     "stepperLabel": "Các bước khôi phục vault",
     "steps": {
       "reauth": "1 · Xác thực tài khoản",

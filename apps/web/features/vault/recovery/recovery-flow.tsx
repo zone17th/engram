@@ -1949,6 +1949,7 @@ export function VaultRecoveryFlow() {
                     ref={step1PassInputRef}
                     id="recovery-step1-password"
                     type="password"
+                    passwordToggleLabels={{ show: t('showPassword'), hide: t('hidePassword') }}
                     label={t('step1.passwordLabel')}
                     autoComplete="current-password"
                     value={step1Password}
@@ -2356,6 +2357,7 @@ export function VaultRecoveryFlow() {
                     ref={step3ReauthPassInputRef}
                     id="s3-reauth-password"
                     type="password"
+                    passwordToggleLabels={{ show: t('showPassword'), hide: t('hidePassword') }}
                     label={t('step3.errors.reauthExpiredPasswordLabel')}
                     autoComplete="current-password"
                     value={step3ReauthPassword}
@@ -2639,6 +2641,7 @@ export function VaultRecoveryFlow() {
                     ref={step4ReauthPassInputRef}
                     id="s4-reauth-pwd"
                     type="password"
+                    passwordToggleLabels={{ show: t('showPassword'), hide: t('hidePassword') }}
                     label={t('step4Reauth.passwordLabel')}
                     autoComplete="current-password"
                     value={step4ReauthPassword}
