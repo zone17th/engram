@@ -42,10 +42,12 @@ type Theme = (typeof THEMES)[number];
 type ViewportWidth = (typeof WIDTHS)[number]['width'];
 type CaptureState =
   | 'onboarding-step3'
+  | 'onboarding-step3-remember'
   | 'forgot'
   | 'unlock-long-email'
   | 'settings-passkeys'
-  | 'settings-autolock';
+  | 'settings-autolock'
+  | 'settings-device';
 
 async function settleForCapture(page: Page, theme: Theme, scrollTarget?: Locator) {
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme, { timeout: UI_WAIT_MS });
@@ -168,10 +170,36 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
         // 1. Onboarding step 3 (`onboarding-step-passkey`) — RK cells are already wiped from DOM
         await expect(page.getByTestId('onboarding-step-passkey')).toBeVisible({ timeout: UI_WAIT_MS });
         await expect(page.getByTestId('recovery-keys-grid')).toHaveCount(0);
+        const onboardingRememberSwitch = page.getByTestId('onboarding-remember-device-switch');
+        await expect(onboardingRememberSwitch).toHaveAttribute('aria-checked', 'false', {
+          timeout: UI_WAIT_MS,
+        });
         await capture(page, testInfo, 'onboarding-step3', theme, desktop.width, { fullPage: true });
         await setViewport(page, mobile);
         await expect(page.getByTestId('onboarding-step-passkey')).toBeVisible({ timeout: UI_WAIT_MS });
         await capture(page, testInfo, 'onboarding-step3', theme, mobile.width, { fullPage: true });
+
+        // 1b. Onboarding step 3 with "Remember this device" toggled on (`onboarding-step3-remember`)
+        await setViewport(page, desktop);
+        await onboardingRememberSwitch.click();
+        await expect(onboardingRememberSwitch).toHaveAttribute('aria-checked', 'true', {
+          timeout: CRYPTO_WAIT_MS,
+        });
+        await capture(page, testInfo, 'onboarding-step3-remember', theme, desktop.width, {
+          fullPage: true,
+        });
+        await setViewport(page, mobile);
+        await expect(onboardingRememberSwitch).toHaveAttribute('aria-checked', 'true', {
+          timeout: UI_WAIT_MS,
+        });
+        await capture(page, testInfo, 'onboarding-step3-remember', theme, mobile.width, {
+          fullPage: true,
+        });
+        // Toggle back off so Skip leaves the device unremembered before Settings
+        await onboardingRememberSwitch.click();
+        await expect(onboardingRememberSwitch).toHaveAttribute('aria-checked', 'false', {
+          timeout: UI_WAIT_MS,
+        });
 
         // Finish onboarding via Skip -> /app unlocked
         await page.getByTestId('onboarding-skip-passkey-button').click({ timeout: UI_WAIT_MS });
@@ -222,6 +250,36 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
           scrollTarget: autoLockCard,
         });
 
+        // 2b. Settings remember-device toggled on (`settings-device`)
+        await setViewport(page, desktop);
+        const settingsRememberSwitch = page.getByTestId('settings-remember-device-switch');
+        await expect(settingsRememberSwitch).toHaveAttribute('aria-checked', 'false', {
+          timeout: UI_WAIT_MS,
+        });
+        await settingsRememberSwitch.click();
+        await expect(settingsRememberSwitch).toHaveAttribute('aria-checked', 'true', {
+          timeout: CRYPTO_WAIT_MS,
+        });
+        await expect(page.getByTestId('settings-forget-device-button')).toBeVisible({
+          timeout: UI_WAIT_MS,
+        });
+        await capture(page, testInfo, 'settings-device', theme, desktop.width, {
+          fullPage: false,
+          scrollTarget: autoLockCard,
+        });
+        await setViewport(page, mobile);
+        await expect(page.getByTestId('settings-forget-device-button')).toBeVisible({
+          timeout: UI_WAIT_MS,
+        });
+        await capture(page, testInfo, 'settings-device', theme, mobile.width, {
+          fullPage: false,
+          scrollTarget: autoLockCard,
+        });
+        // Forget before locking so Unlock U4 renders normally
+        await page.getByTestId('settings-forget-device-button').click();
+        await expect(settingsRememberSwitch).toHaveAttribute('aria-checked', 'false', {
+          timeout: UI_WAIT_MS,
+        });
         // 3. Unlock U4 with long email (CF-T17B-UNLOCK-EMAIL-WRAP visible) + passkey unlock card
         await lockVault(page);
         const signedInLine = page.getByTestId('unlock-signed-in-line');

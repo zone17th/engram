@@ -130,6 +130,14 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-b-settings-autolock-light-1440.png',
   'vault-b-settings-autolock-dark-390.png',
   'vault-b-settings-autolock-dark-1440.png',
+  'vault-b-onboarding-step3-remember-light-390.png',
+  'vault-b-onboarding-step3-remember-light-1440.png',
+  'vault-b-onboarding-step3-remember-dark-390.png',
+  'vault-b-onboarding-step3-remember-dark-1440.png',
+  'vault-b-settings-device-light-390.png',
+  'vault-b-settings-device-light-1440.png',
+  'vault-b-settings-device-dark-390.png',
+  'vault-b-settings-device-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440']);
 

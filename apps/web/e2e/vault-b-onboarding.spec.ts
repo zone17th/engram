@@ -57,12 +57,14 @@ test.describe('P03-T16B onboarding step 3 against the real API', () => {
       await page.getByTestId('onboarding-create-vault-button').click();
       expect((await created).ok()).toBe(true);
 
-      // Step 3 renders after RK confirm; remember-device toggle slot is hidden in Part P
+      // Step 3 renders after RK confirm with Remember this device toggle default off
       await expect(page.getByTestId('onboarding-step-passkey')).toBeVisible({
         timeout: UI_WAIT_MS,
       });
-      await expect(page.getByRole('switch')).toHaveCount(0);
-
+      await expect(page.getByTestId('onboarding-remember-device-switch')).toHaveAttribute(
+        'aria-checked',
+        'false',
+      );
       // Add a passkey on Step 3 using PasskeyAddEntry / PasskeyAddDialog
       await page
         .getByTestId('onboarding-passkey-card')
@@ -138,10 +140,12 @@ test.describe('P03-T16B onboarding step 3 against the real API', () => {
     await page.getByTestId('onboarding-create-vault-button').click();
     expect((await created).ok()).toBe(true);
 
-    // Step 3 renders; clicking Skip goes on to /app with the vault unlocked
+    // Step 3 renders with Remember this device default off; clicking Skip goes on to /app with the vault unlocked
     await expect(page.getByTestId('onboarding-step-passkey')).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(page.getByRole('switch')).toHaveCount(0);
-
+    await expect(page.getByTestId('onboarding-remember-device-switch')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
     await page.getByTestId('onboarding-skip-passkey-button').click();
     await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
     await expectVaultOpen(page);
