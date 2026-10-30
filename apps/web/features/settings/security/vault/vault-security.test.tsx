@@ -2109,6 +2109,253 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(within(dialog).getByText(/Step 1 of 5/i)).toBeInTheDocument();
   });
 
+  // R9-4: a provider wake (window `focus` while the Worker is unlocked and the baseline is verified) runs every
+  // registered secret-form resetter synchronously. An operation already dispatched to the server must survive it.
+  async function wakeProvider(callLog: string[]) {
+    const before = callLog.filter((entry) => entry === 'GET /auth/me').length;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    // The wake verification refreshes GET /auth/me; seeing it proves the wake path (and its sync wipe) ran.
+    await waitFor(() => {
+      expect(callLog.filter((entry) => entry === 'GET /auth/me').length).toBeGreaterThan(before);
+    });
+    await act(async () => {
+      await delayMs(30);
+    });
+  }
+
+  it('keeps an in-flight Change Passphrase PUT /vault/kek (loading state, close guard, Idempotency-Key) across a provider wake wipe (R9-4)', async () => {
+    const user = userEvent.setup();
+    const putGate = Promise.withResolvers<void>();
+    const { callLog, requestsByPath } = await renderSettingsHarness({
+      customFetch: async (url, init) => {
+        if (url.endsWith('/api/v1/vault/kek') && init?.method?.toUpperCase() === 'PUT') {
+          await putGate.promise;
+        }
+        return undefined as unknown as Response;
+      },
+    });
+    const putRequests = () =>
+      requestsByPath.filter((r) => r.method === 'PUT' && r.path.endsWith('/api/v1/vault/kek'));
+
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.type(within(dialog).getByLabelText('New vault passphrase'), STRONG_PASSPHRASE);
+    await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
+    await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
+
+    await waitFor(() => expect(putRequests()).toHaveLength(1));
+    const firstKey = putRequests()[0]!.headers.get('Idempotency-Key');
+    expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(within(dialog).getByRole('button', { name: 'Updating passphrase…' })).toBeDisabled();
+
+    await wakeProvider(callLog);
+
+    // Still the submitting step: loading button, Cancel blocked, Escape does not dismiss the dialog.
+    expect(within(dialog).getByRole('button', { name: 'Updating passphrase…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(within(dialog).getByRole('button', { name: 'Updating passphrase…' })).toBeDisabled();
+    // Secret inputs are empty.
+    expect(within(dialog).getByLabelText('New vault passphrase')).toHaveValue('');
+    expect(within(dialog).getByLabelText('Confirm new passphrase')).toHaveValue('');
+    const loginInput = within(dialog).queryByLabelText('Login password');
+    if (loginInput) expect(loginInput).toHaveValue('');
+
+    putGate.resolve();
+    await waitFor(() => {
+      expect(within(dialog).getByText('Vault passphrase updated')).toBeInTheDocument();
+    });
+    // No second request: the operation settled with the very first Idempotency-Key.
+    expect(putRequests()).toHaveLength(1);
+    expect(putRequests()[0]!.headers.get('Idempotency-Key')).toBe(firstKey);
+  });
+
+  it.each([
+    {
+      mode: 'regenerate',
+      openName: 'Regenerate new keys',
+      confirmName: 'Done',
+      endpoint: '/api/v1/vault/recovery-keys/regenerate',
+      logEntry: 'POST /vault/recovery-keys/regenerate',
+      keyPattern: /rk9_[0-7]/,
+    },
+    {
+      mode: 'rotate',
+      openName: 'Rotate all 10',
+      confirmName: 'Rotate all 10',
+      endpoint: '/api/v1/vault/recovery-keys/rotate',
+      logEntry: 'POST /vault/recovery-keys/rotate',
+      keyPattern: /rk1_[0-7]/,
+    },
+  ])(
+    'keeps an in-flight Recovery Keys $mode save (loading state, close guard, Idempotency-Key) across a provider wake wipe while wiping the plaintext keys (R9-4)',
+    async ({ openName, confirmName, endpoint, logEntry, keyPattern }) => {
+      const user = userEvent.setup();
+      const postGate = Promise.withResolvers<void>();
+      const { callLog, requestsByPath } = await renderSettingsHarness({
+        rkStatus: makeRkStatus(8, [9, 10]),
+        customFetch: async (url, init) => {
+          if (url.endsWith(endpoint) && init?.method?.toUpperCase() === 'POST') {
+            await postGate.promise;
+          }
+          return undefined as unknown as Response;
+        },
+      });
+      const postRequests = () =>
+        requestsByPath.filter((r) => r.method === 'POST' && r.path.endsWith(endpoint));
+
+      await user.click(screen.getByRole('button', { name: openName }));
+      const dialog = await screen.findByRole('dialog');
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+      await within(dialog).findByTestId('recovery-keys-grid');
+      expect(dialog.textContent).toMatch(keyPattern);
+      await user.click(within(dialog).getByRole('checkbox'));
+      await user.click(within(dialog).getByRole('button', { name: confirmName }));
+
+      await waitFor(() => expect(postRequests()).toHaveLength(1));
+      const firstKey = postRequests()[0]!.headers.get('Idempotency-Key');
+      expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
+
+      await wakeProvider(callLog);
+
+      // Plaintext keys are wiped, but the dialog stays on the submitting step and cannot be dismissed.
+      expect(within(dialog).queryByTestId('recovery-keys-grid')).toBeNull();
+      expect(document.body.textContent).not.toMatch(keyPattern);
+      expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+      await user.keyboard('{Escape}');
+      expect(screen.getByRole('dialog')).toBe(dialog);
+      expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
+
+      postGate.resolve();
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(postRequests()).toHaveLength(1);
+      expect(postRequests()[0]!.headers.get('Idempotency-Key')).toBe(firstKey);
+      expect(callLog.filter((entry) => entry === logEntry)).toHaveLength(1);
+    },
+  );
+
+  it('keeps an in-flight Reset Vault DELETE /vault (loading state, close guard, Idempotency-Key, purge-once) across a provider wake wipe (R9-4)', async () => {
+    const user = userEvent.setup();
+    const userId = '11111111-1111-1111-1111-111111111111';
+    fakeIdb.ensureStore('devkeys').set(formatDevKeyRecordKey(userId, VAULT_KEY_ID), {
+      user_id: userId,
+      vault_key_id: VAULT_KEY_ID,
+      dev_key: { type: 'secret' },
+      wrapped_vk: new Uint8Array([1, 2, 3, 4]),
+      created_at: '2026-10-29T00:00:00Z',
+    });
+    fakeIdb.ensureStore('meta').set('__meta__', {
+      incarnation: '00112233445566778899aabbccddeeff',
+      deviceRevision: 2,
+    });
+    let purgeCount = 0;
+    const unsubscribePurge = subscribeDevicePurge(() => {
+      purgeCount += 1;
+    });
+
+    try {
+      const deleteGate = Promise.withResolvers<void>();
+      const { getVaultCtx, callLog, requestsByPath } = await renderSettingsHarness({
+        customFetch: async (url, init) => {
+          if (url.endsWith('/api/v1/vault') && init?.method?.toUpperCase() === 'DELETE') {
+            await deleteGate.promise;
+          }
+          return undefined as unknown as Response;
+        },
+      });
+      const deleteRequests = () =>
+        requestsByPath.filter((r) => r.method === 'DELETE' && r.path.endsWith('/api/v1/vault'));
+
+      await user.click(screen.getByRole('button', { name: 'Reset vault' }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Checked backups' }));
+      await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
+      const confirmInput = await within(dialog).findByLabelText(/Type ĐẶT LẠI or RESET/i);
+      await user.type(confirmInput, 'RESET');
+      await user.click(within(dialog).getByRole('button', { name: 'Reset vault' }));
+
+      await waitFor(() => expect(deleteRequests()).toHaveLength(1));
+      const firstKey = deleteRequests()[0]!.headers.get('Idempotency-Key');
+      expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(within(dialog).getByRole('button', { name: 'Resetting vault…' })).toBeDisabled();
+
+      await wakeProvider(callLog);
+
+      // Still step 4 with the loading button: not dropped back to step 1, and no "Later" to dismiss it with.
+      expect(within(dialog).getByText(/Step 4 of 5/i)).toBeInTheDocument();
+      expect(within(dialog).queryByText(/Step 1 of 5/i)).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Later' })).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Resetting vault…' })).toBeDisabled();
+      expect(within(dialog).getByRole('button', { name: 'Back' })).toBeDisabled();
+      await user.keyboard('{Escape}');
+      expect(screen.getByRole('dialog')).toBe(dialog);
+      expect(within(dialog).getByText(/Step 4 of 5/i)).toBeInTheDocument();
+      // The typed confirmation is wiped.
+      expect(within(dialog).getByLabelText(/Type ĐẶT LẠI or RESET/i)).toHaveValue('');
+
+      deleteGate.resolve();
+      await waitFor(() => {
+        expect(within(dialog).getByText('Vault has been reset')).toBeInTheDocument();
+        expect(getVaultCtx().state).toBe('no_vault');
+      });
+      await delayMs(50);
+      // No second DELETE: the operation settled with the very first Idempotency-Key, and purged exactly once.
+      expect(deleteRequests()).toHaveLength(1);
+      expect(deleteRequests()[0]!.headers.get('Idempotency-Key')).toBe(firstKey);
+      expect(purgeCount).toBe(1);
+    } finally {
+      unsubscribePurge();
+    }
+  });
+
+  it('still fully resets Change Passphrase (inputs, error, step) on a provider wake when no operation is in flight (R9-4 control)', async () => {
+    const user = userEvent.setup();
+    let putAttempt = 0;
+    const { callLog } = await renderSettingsHarness({
+      customFetch: (url, init) => {
+        if (url.endsWith('/api/v1/vault/kek') && init?.method?.toUpperCase() === 'PUT') {
+          putAttempt += 1;
+          if (putAttempt === 1) {
+            throw new TypeError('Failed to fetch: network error');
+          }
+        }
+        return undefined as unknown as Response;
+      },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Change passphrase' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Login password'), 'my-login-password');
+    await user.type(within(dialog).getByLabelText('New vault passphrase'), STRONG_PASSPHRASE);
+    await user.type(within(dialog).getByLabelText('Confirm new passphrase'), STRONG_PASSPHRASE);
+    await user.click(within(dialog).getByRole('button', { name: 'Change passphrase' }));
+    await waitFor(() => {
+      expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not reach the server');
+    });
+    expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+
+    // Operation settled (error), so nothing is in flight; type a fresh secret and wake.
+    const newPpInput = within(dialog).getByLabelText('New vault passphrase');
+    await user.type(newPpInput, 'partial-secret-text');
+    expect(newPpInput).toHaveValue('partial-secret-text');
+
+    await wakeProvider(callLog);
+
+    expect(within(dialog).getByLabelText('New vault passphrase')).toHaveValue('');
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Change passphrase' })).toBeInTheDocument();
+  });
+
   it('mounts dialogs only while open and calls registerSecretFormReset exactly once per dialog open without re-registering on unrelated provider state changes (r14)', async () => {
     const user = userEvent.setup();
     const { getVaultCtx } = await renderSettingsHarness();
