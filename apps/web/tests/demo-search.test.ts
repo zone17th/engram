@@ -41,6 +41,14 @@ describe('searchDemo', () => {
   it('trả lại query đã nhập để UI hiển thị', () => {
     expect(searchDemo('ghi chú').query).toBe('ghi chú');
   });
+
+  it('matchBodies:false chỉ khớp tên và tag, không khớp nội dung preview', () => {
+    const item = DEMO_ITEMS[0];
+    expect(searchDemo('phin').items.map((i) => i.id)).toContain(item.id);
+    expect(searchDemo('phin', { matchBodies: false }).items).toEqual([]);
+    expect(searchDemo('ca phe', { matchBodies: false }).items.map((i) => i.id)).toContain(item.id);
+    expect(searchDemo(item.tags[0], { matchBodies: false }).items.map((i) => i.id)).toContain(item.id);
+  });
 });
 
 describe('markPrefix', () => {

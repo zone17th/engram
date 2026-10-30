@@ -125,7 +125,13 @@ export function resolveGuardRedirect(input: {
   if (vaultState !== undefined) {
     const isVaultUnlocked = vaultState === 'unlocked' || vaultState === 'rewrapping';
     if (!isVaultUnlocked) {
+      // U5 (advisor-dec-048, SPEC §7 U5 over plan 15A): a locked/unlocking/error vault still renders the item list and
+      // item pages with masked bodies; every other app route keeps redirecting to unlock, and `recovering` is unchanged.
+      const browseWhileLocked =
+        (vaultState === 'locked' || vaultState === 'unlocking' || vaultState === 'error') &&
+        (pathname === '/app' || pathname.startsWith('/app/items/'));
       const allowedWhileLocked =
+        browseWhileLocked ||
         unlock ||
         recoveryOrForgot ||
         settings ||
