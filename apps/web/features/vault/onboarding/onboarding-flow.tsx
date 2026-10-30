@@ -538,12 +538,11 @@ export function VaultOnboardingFlow() {
   const handleFinishStep3 = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
     setStep('done');
-    void vault.reloadVaultMeta?.().catch(() => undefined);
     await refetchMe().catch(() => undefined);
     if (isMountedRef.current && currentUserIdRef.current !== null) {
       router.replace('/app');
     }
-  }, [clearRecoveryKeysAndSecrets, refetchMe, router, vault]);
+  }, [clearRecoveryKeysAndSecrets, refetchMe, router]);
 
   const handleGoToUnlock = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
