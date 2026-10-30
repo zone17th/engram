@@ -103,6 +103,49 @@ export function parseDevKeyRecordUserId(
   return null;
 }
 
+/**
+ * Restricts a KNOWN-user purge to some of that user's DevKey records (CF-T18-KEYSCOPED-PURGE, advisor-dec-039):
+ * - `{ only }`: delete only records whose `vault_key_id` is listed (a 404 for issued key K deletes K's and the retired
+ *   keys' records, never a K' that became current after the request was sent).
+ * - `{ except }`: delete every record of the user whose `vault_key_id` is NOT `except` (the vault now present is
+ *   `except`; everything else for this user is stale).
+ * The scope is evaluated per record inside the purge transaction. It never applies to the unknown-user branch, which
+ * always deletes every DevKey record.
+ */
+export type DeviceKeyScope =
+  | { readonly only: readonly string[] }
+  | { readonly except: string };
+
+/** `vault_key_id` of a stored record: the value's field, else the part of the `<user_id>:<vault_key_id>` key after the first colon. */
+export function parseDevKeyRecordVaultKeyId(key: IDBValidKey, value: unknown): string | null {
+  if (typeof value === 'object' && value !== null) {
+    const rec = value as Record<string, unknown>;
+    if (typeof rec.vault_key_id === 'string' && rec.vault_key_id.length > 0) {
+      return rec.vault_key_id;
+    }
+  }
+  if (typeof key === 'string') {
+    const colonIdx = key.indexOf(':');
+    if (colonIdx > 0 && colonIdx < key.length - 1) {
+      return key.slice(colonIdx + 1);
+    }
+  }
+  return null;
+}
+
+function isInDeviceKeyScope(
+  scope: DeviceKeyScope | undefined,
+  key: IDBValidKey,
+  value: unknown,
+): boolean {
+  if (!scope) return true;
+  const recordKeyId = parseDevKeyRecordVaultKeyId(key, value);
+  if ('only' in scope) {
+    return recordKeyId !== null && scope.only.includes(recordKeyId);
+  }
+  return recordKeyId !== scope.except;
+}
+
 let defaultDeviceStoreEnv: DeviceStoreEnvironment = {};
 let lastKnownSessionUserId: string | null = null;
 const purgeListeners = new Set<(result: PurgeDeviceKeysResult) => void>();
@@ -151,6 +194,7 @@ function runSingleReadwritePurgeTx(
   userId: string | null,
   freshIncarnation: string,
   skipIfNoDevKeys = false,
+  keyScope?: DeviceKeyScope,
 ): Promise<{ meta: DeviceMetaRecord | null; deletedCount: number; skipped: boolean }> {
   return new Promise<{ meta: DeviceMetaRecord | null; deletedCount: number; skipped: boolean }>((resolve, reject) => {
     let tx: IDBTransaction;
@@ -263,7 +307,8 @@ function runSingleReadwritePurgeTx(
           };
         }
       } else {
-        // Known user: delete only records matching `userId`, leaving other users' DevKey records intact.
+        // Known user: delete only records matching `userId` (and `keyScope` when given), leaving other users' DevKey
+        // records and out-of-scope keys of this user intact.
         const keysReq = devkeysStore.getAllKeys();
         keysReq.onerror = abortTx;
         keysReq.onsuccess = () => {
@@ -289,7 +334,7 @@ function runSingleReadwritePurgeTx(
               valReq.onsuccess = () => {
                 try {
                   const recUserId = parseDevKeyRecordUserId(key, valReq.result);
-                  if (recUserId === userId) {
+                  if (recUserId === userId && isInDeviceKeyScope(keyScope, key, valReq.result)) {
                     const delReq = devkeysStore.delete(key);
                     delReq.onerror = abortTx;
                     delReq.onsuccess = () => {
@@ -335,11 +380,14 @@ function runSingleReadwritePurgeTx(
  * - `options.skipIfNoDevKeys`: when the target has no DevKey record INSIDE the purge transaction, commit nothing (no
  *   rotation, no purge notification) and return `{ ok: true, meta: <current meta>, deletedCount: 0, skipped: true }`.
  *   Omitted, the behaviour is exactly the unconditional purge above.
+ * - `options.keyScope` (known user only): compare-and-delete by `vault_key_id` inside the same transaction, see
+ *   `DeviceKeyScope`. The meta rotation is unchanged (an in-flight Remember always aborts). `skipIfNoDevKeys` then means
+ *   "no in-scope record".
  */
 export async function purgeDeviceKeysOnRevoked(
   userId?: string | null,
   env?: DeviceStoreEnvironment,
-  options?: { skipIfNoDevKeys?: boolean },
+  options?: { skipIfNoDevKeys?: boolean; keyScope?: DeviceKeyScope },
 ): Promise<PurgeDeviceKeysResult> {
   const effectiveUserId =
     userId !== undefined ? userId : lastKnownSessionUserId;
@@ -354,6 +402,7 @@ export async function purgeDeviceKeysOnRevoked(
       effectiveUserId && effectiveUserId.length > 0 ? effectiveUserId : null,
       freshIncarnation,
       options?.skipIfNoDevKeys === true,
+      options?.keyScope,
     );
     if (skipped) {
       return { ok: true, meta, deletedCount: 0, skipped: true };
