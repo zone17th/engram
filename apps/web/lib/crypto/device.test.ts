@@ -463,22 +463,23 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
     // Tab A reads its snapshot (containing only VAULT_K), then loadVault returns K1 while Tab B remembers a newer K2
     // before Tab A's mismatch cleanup runs.
     const VAULT_K1 = 'vk:1111111111111111111111';
+    let beforeCleanupMeta!: DeviceMetaRecord;
     const silent = silentUnlock(tabA, {
       loadVault: async () => {
         // While Tab A's GET is in flight, Tab B creates/remembers a newer vault VAULT_K2!
         serverVaultKeyId = VAULT_K2;
         const bRes = await remember(tabB, { vaultKeyId: VAULT_K2 });
         expect(bRes.status).toBe('remembered');
+        beforeCleanupMeta = (await metaNow())!;
         // Tab A's older GET resolves with VAULT_K1 (which was not in Tab A's snapshot).
         return { vault_key_id: VAULT_K1, private_keys_wrapped: tabA.created.private_keys_wrapped };
       },
     });
-    const beforeCleanupMeta = (await metaNow())!;
     expect(await silent.run).toEqual({ status: 'fallback', reason: 'vault_mismatch' });
     expect(silent.unlock).not.toHaveBeenCalled();
     expect(tabA.client.getState()).toBe('locked');
 
-    // Observed stale VAULT_K is deleted; unobserved newer VAULT_K2 and USER_B's record survive; meta rotated atomically.
+    // Observed stale VAULT_K is deleted; unobserved newer VAULT_K2 and USER_B's record survive; meta rotated atomically once (+1 after B's Remember).
     expect([...devkeys().keys()].sort()).toEqual(
       [formatDevKeyRecordKey(USER_A, VAULT_K2), formatDevKeyRecordKey(USER_B, VAULT_K)].sort(),
     );

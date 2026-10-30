@@ -181,7 +181,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       handle.remember = remember;
       return <div data-testid="vault-state">{vault.state}</div>;
     }
-    const element = (
+    const rendered = render(
       <QueryClientProvider client={queryClient}>
         <VaultProvider
           createWorker={() => shim.port}
@@ -191,13 +191,24 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
         >
           <Probe />
         </VaultProvider>
-      </QueryClientProvider>
+      </QueryClientProvider>,
     );
-    const rendered = render(element);
     return {
       vault: () => handle.vault!,
       remember: () => handle.remember!,
-      rerender: () => rendered.rerender(element),
+      rerender: () =>
+        rendered.rerender(
+          <QueryClientProvider client={queryClient}>
+            <VaultProvider
+              createWorker={() => shim.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={options.silentUnlockOnLoad}
+            >
+              <Probe />
+            </VaultProvider>
+          </QueryClientProvider>,
+        ),
     };
   }
 
@@ -374,7 +385,12 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
   });
 
   it('R1-13: initial and wake refresh keep storage failure as unavailable (never erasing unavailable to ready/off while IDB is broken), and storage recovery returns ready while passphrase stays usable', async () => {
-    idb.options = { failOpen: true };
+    // Separate device IDB for the remember hook so we can fault its initial/wake reads without breaking
+    // VaultProvider's fail-closed lockEpoch baseline check on createVault / unlockPassphrase.
+    const hookIdb = new FakeDeviceIdb(locks);
+    hookIdb.options = { failOpen: true };
+    env = { idbFactory: hookIdb.createFactory(), locksManager: locks.createLockManager() };
+
     const tab = await openUnlockedTab();
     await waitFor(() => expect(tab.remember().status).toBe('unavailable'));
     expect(tab.remember().remembered).toBe(false);
@@ -391,7 +407,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     expect(tab.remember().status).toBe('unavailable');
     expect(tab.remember().remembered).toBe(false);
 
-    // Passphrase operations remain usable while sabk.device is unavailable.
+    // Passphrase operations remain usable while the hook's device storage is unavailable.
     await act(async () => {
       await tab.vault().lock({ broadcast: false, reason: 'manual' });
     });
@@ -408,7 +424,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     expect(stateText()).toBe('unlocked');
 
     // Storage recovery: wake / refresh returns status to 'ready'.
-    idb.options = {};
+    hookIdb.options = {};
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
       await tab.remember().refresh();
