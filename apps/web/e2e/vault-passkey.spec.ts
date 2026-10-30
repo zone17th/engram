@@ -94,7 +94,7 @@ test.describe('passkey against the real API', () => {
       await unlockWithPassphrase(page);
     });
 
-    const authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: false });
+    const unverifiedAuth = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: false });
 
     await test.step('4. PRF matrix: cancel at create() (user verification fails) -> passkey.register_cancelled, no orphan', async () => {
       await gotoSettings(page);
@@ -106,8 +106,13 @@ test.describe('passkey against the real API', () => {
       expect(probe.creates.at(-1)?.error).toBe('NotAllowedError');
     });
 
+    // Chromium's AuthTokenRequester retries internal UV until VirtualCtap2Device::State::uv_retries reaches 0
+    // (kCtap2ErrUvBlocked), and WebAuthn.setUserVerified does not reset uv_retries: replace with a fresh verified
+    // authenticator before registering (PKW-R2-5).
+    await removeAuthenticator(cdp, unverifiedAuth);
+    const authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
+
     await test.step('5. PRF matrix: register with PRF; the flow follows whichever PRF path Chrome takes', async () => {
-      await setUserVerified(cdp, authenticatorA, true);
       const before = await readProbe(page);
       const dialog = addDialog(page);
       await dialog.getByRole('button', { name: 'Continue' }).click();
@@ -140,24 +145,7 @@ test.describe('passkey against the real API', () => {
       await expectVaultOpen(page);
     });
 
-    await test.step('7. PRF matrix: cancel at get() -> passkey.unlock_cancelled, vault stays locked, retry unlocks', async () => {
-      await lockVault(page);
-      await expect(passkeyButton).toBeVisible({ timeout: UI_WAIT_MS });
-      await setUserVerified(cdp, authenticatorA, false);
-      await passkeyButton.click();
-      await expect(page.getByTestId('unlock-passkey-error')).toHaveText(COPY.unlockCancelled, {
-        timeout: CRYPTO_WAIT_MS,
-      });
-      await expect(page).toHaveURL(/\/app\/unlock$/);
-      await expectVaultShut(page);
-
-      await setUserVerified(cdp, authenticatorA, true);
-      await passkeyButton.click();
-      await expect(page).toHaveURL(/\/app$/, { timeout: CRYPTO_WAIT_MS });
-      await expectVaultOpen(page);
-    });
-
-    await test.step('8. fresh page load on /app/unlock loads the passkey list and unlocks with the passkey', async () => {
+    await test.step('7. fresh page load on /app/unlock loads the passkey list and unlocks with the passkey', async () => {
       await lockVault(page);
       const metaLoaded = page.waitForResponse((r) => isApiGet(r, '/api/v1/vault'), { timeout: UI_WAIT_MS });
       await page.reload();
@@ -168,9 +156,25 @@ test.describe('passkey against the real API', () => {
       await expectVaultOpen(page);
     });
 
+    await test.step('8. PRF matrix: cancel at get() (user verification fails) -> passkey.unlock_cancelled, vault stays locked', async () => {
+      await lockVault(page);
+      await expect(passkeyButton).toBeVisible({ timeout: UI_WAIT_MS });
+      await setUserVerified(cdp, authenticatorA, false);
+      await passkeyButton.click();
+      await expect(page.getByTestId('unlock-passkey-error')).toHaveText(COPY.unlockCancelled, {
+        timeout: CRYPTO_WAIT_MS,
+      });
+      await expect(page).toHaveURL(/\/app\/unlock$/);
+      await expectVaultShut(page);
+      const probe = await readProbe(page);
+      expect(probe.gets.at(-1)?.error).toBe('NotAllowedError');
+      await unlockWithPassphrase(page);
+    });
+
     await test.step('9. two credentials: the second passkey unlocks with its own salt while both are listed', async () => {
       // Chrome refuses a second registration on an authenticator that already holds a credential listed in
-      // excludeCredentials, so the second credential lives on a second authenticator and the first one is detached.
+      // excludeCredentials (and authenticatorA's uv_retries were exhausted by step 8), so the second credential lives
+      // on a fresh verified authenticator and the first one is detached.
       await removeAuthenticator(cdp, authenticatorA);
       await addAuthenticator(cdp, { hasPrf: true });
       await gotoSettings(page);

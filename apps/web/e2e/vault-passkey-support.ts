@@ -271,6 +271,26 @@ export async function submitPasskeyName(page: Page, name: string) {
 }
 
 export async function expectPasskeyAdded(page: Page) {
-  await expect(addDialog(page)).toBeHidden({ timeout: CRYPTO_WAIT_MS });
+  const dialog = addDialog(page);
+  const alert = dialog.getByRole('alert');
+  const outcome = await Promise.race([
+    dialog.waitFor({ state: 'hidden', timeout: CRYPTO_WAIT_MS }).then(() => 'hidden' as const),
+    alert.waitFor({ state: 'visible', timeout: CRYPTO_WAIT_MS }).then(() => 'alert' as const),
+  ]).catch(() => 'timeout' as const);
+
+  if (outcome !== 'hidden') {
+    const alertText = (await alert.isVisible().catch(() => false))
+      ? (await alert.innerText().catch(() => '')).trim()
+      : '';
+    const statusText = (await dialog.getByRole('status').isVisible().catch(() => false))
+      ? (await dialog.getByRole('status').innerText().catch(() => '')).trim()
+      : '';
+    const probe = await readProbe(page).catch(() => ({ creates: [], gets: [] }));
+    throw new Error(
+      `expectPasskeyAdded failed (${outcome}): alert=${JSON.stringify(alertText)} status=${JSON.stringify(statusText)} probe=${JSON.stringify(probe)}`,
+    );
+  }
+
+  await expect(dialog).toBeHidden({ timeout: UI_WAIT_MS });
   await expect(page.getByTestId('settings-passkey-added')).toBeVisible({ timeout: UI_WAIT_MS });
 }
