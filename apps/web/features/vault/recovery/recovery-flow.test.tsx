@@ -3573,6 +3573,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       }
     });
     await settle();
+    return payload;
   }
 
   // The React `onClick` a rendered button holds right now; it stays callable after the button leaves the DOM.
@@ -3604,9 +3605,9 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(screen.getByTestId('recovery-committed-recheck-unlock')).toBeInTheDocument();
       routerMocks.replace.mockClear();
 
-      await announceIdleIdentityChange(announce, vaultCtx);
-      // The spy sees every `vault_changed` on the channel, the announcement itself included: only what follows it counts.
-      const publishedAfterTransition = published.length;
+      // The spy sees every `vault_changed` on the channel, the announcement itself included.
+      const publishedBeforeAnnouncement = published.length;
+      const stimulus = await announceIdleIdentityChange(announce, vaultCtx);
       await settle();
 
       // Nothing was clicked: the obsolete guidance and both actions are already gone.
@@ -3616,7 +3617,8 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
       expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
       expect(routerMocks.replace).not.toHaveBeenCalled();
-      expect(published.slice(publishedAfterTransition)).toEqual([]);
+      // Across the whole interval the channel carries exactly the one announced stimulus: any extra publication by the flow fails.
+      expect(published.slice(publishedBeforeAnnouncement)).toEqual([stimulus]);
       expect(vaultCtx.workerState).toBe('locked');
 
       shim.close();
