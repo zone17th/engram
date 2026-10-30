@@ -13,10 +13,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -2102,6 +2104,190 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 	}
 	if finalPasskeys != 1 || finalAudits != 1 {
 		t.Fatalf("after positive control + replay: passkeys=%d audits=%d, want 1/1", finalPasskeys, finalAudits)
+	}
+}
+
+type commitTimeDeadlineTracer struct {
+	sawFinishUpdate atomic.Bool
+	armedOnCommit   atomic.Bool
+}
+
+func (t *commitTimeDeadlineTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	upper := strings.ToUpper(strings.TrimSpace(d.SQL))
+	if strings.Contains(d.SQL, "UPDATE idempotency_key") && strings.Contains(d.SQL, "status = 'done'") {
+		t.sawFinishUpdate.Store(true)
+		return ctx
+	}
+	if upper == "COMMIT" && t.sawFinishUpdate.Load() && t.armedOnCommit.CompareAndSwap(false, true) {
+		<-ctx.Done()
+	}
+	return ctx
+}
+
+func (t *commitTimeDeadlineTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+}
+
+// TestPasskeyCreate_DeadlineDuringCommitRetainsAmbiguousClaim covers BR1-17:
+// proves that when the handler deadline expires DURING the final mutation transaction COMMIT
+// (after FinishIdempotencyKey / MarkCommitAmbiguous, unlike a pre-commit timeout in attestation
+// verification which releases the in_progress claim):
+//  1. POST /api/v1/vault/passkeys returns 503 dependency_unavailable;
+//  2. ShouldReleaseOnExit retains the idempotency_key row (because MarkCommitAmbiguous was set
+//     before tx.Commit);
+//  3. No duplicate passkey, audit, notification, or River mail job effects are created;
+//  4. A client replay with the same Idempotency-Key either returns the stored 201 Created
+//     (if COMMIT landed) or 409 idempotency_in_progress with Retry-After: 1 (if COMMIT aborted
+//     before reaching PostgreSQL), never re-running the mutation while the claim is live and
+//     differing directly from the pre-commit timeout (which deletes the in_progress row).
+func TestPasskeyCreate_DeadlineDuringCommitRetainsAmbiguousClaim(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	ctx := context.Background()
+	va := webauthntest.New()
+
+	password := "correcthorsebattery"
+	email := "pk-commit-deadline@example.com"
+	jarA, meA := h.signupUser(email, password)
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatalf("verify email: %v", err)
+	}
+	h.createPasskeyTestVault(jarA, "idem-pk-commit-dl-create-vault", 0x10)
+
+	opts := h.registerPasskeyOptions(jarA)
+	reg, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	grant := h.reauthGrant(jarA, "vault.passkey_register", password)
+	body := makePasskeyCreateBody(
+		t,
+		opts.ChallengeID,
+		reg.ClientDataJSONB64,
+		reg.AttestationObjectB64,
+		opts.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x95),
+		"Commit Boundary Timeout Key",
+		nil,
+	)
+	const idemKeyCommitDl = "idem-pk-commit-dl-ambig-001"
+
+	tracer := &commitTimeDeadlineTracer{}
+	pcfg := h.pool.Config()
+	pcfg.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AppOrigin = h.origin
+	riverInsert, err := river.NewClient(riverpgxv5.New(tracedPool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, authAPI, err := compose.NewAuth(cfg, tracedPool, riverInsert, h.clk, h.mail, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultSvc, vaultAPI, err := compose.NewVault(cfg, tracedPool, riverInsert, h.clk, h.mail, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultAPI.SetPasskeyCreateTimeout(80 * time.Millisecond)
+	authn, csrfv, reauth := compose.Adapters(h.authSvc)
+	srv := httptest.NewServer(httpx.NewRouter(httpx.Deps{
+		Config:        cfg,
+		Logger:        slog.Default(),
+		Authenticator: authn,
+		CSRF:          csrfv,
+		Reauth:        reauth,
+		MountAPI:      compose.MountAll(authhttp.Mount(authAPI), vaulthttp.Mount(vaultAPI)),
+	}))
+	t.Cleanup(srv.Close)
+
+	tracedHarness := &harness{
+		t:        t,
+		srv:      srv,
+		origin:   h.origin,
+		clk:      h.clk,
+		mail:     h.mail,
+		authSvc:  h.authSvc,
+		vaultSvc: vaultSvc,
+		vaultAPI: vaultAPI,
+		pool:     tracedPool,
+		logs:     h.logs,
+	}
+
+	resp1, raw1 := tracedHarness.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body, reqOptions{
+		idemKey: idemKeyCommitDl,
+		grant:   grant,
+	})
+	if !tracer.armedOnCommit.Load() {
+		t.Fatalf("commitTimeDeadlineTracer was never triggered on COMMIT (status=%d body=%s)", resp1.StatusCode, raw1)
+	}
+	assertPasskeyProblem(t, resp1, raw1, http.StatusServiceUnavailable, "dependency_unavailable")
+
+	// Unlike pre-commit timeout (which deletes the in_progress row), COMMIT-time timeout MUST retain
+	// the idempotency_key row because MarkCommitAmbiguous() was set before tx.Commit(ctx).
+	idemRow, err := gen.New(h.pool).GetIdempotencyKey(ctx, gen.GetIdempotencyKeyParams{
+		UserID: meA.User.ID,
+		Key:    idemKeyCommitDl,
+		Now:    pgtype.Timestamptz{Time: h.clk.Now(), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("expected idempotency_key row to be retained on COMMIT-time deadline (not released), got err: %v", err)
+	}
+	if idemRow.Status != "in_progress" && idemRow.Status != "done" {
+		t.Fatalf("unexpected retained idempotency_key status = %q", idemRow.Status)
+	}
+
+	// Replay with the same Idempotency-Key and body:
+	// - If COMMIT did not land (status == 'in_progress'), Lookup returns 409 idempotency_in_progress
+	//   with Retry-After: 1 and does not execute the mutation a second time;
+	// - If COMMIT landed (status == 'done'), Lookup replays the stored 201 Created.
+	replayResp, replayRaw := tracedHarness.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body, reqOptions{
+		idemKey: idemKeyCommitDl,
+		grant:   grant,
+	})
+	var passkeys, audits, notices, jobs int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, meA.User.ID).Scan(&passkeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2 AND result = 'success'`, meA.User.ID, vault.EventPasskeyRegister).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, meA.User.ID).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+
+	switch idemRow.Status {
+	case "in_progress":
+		assertPasskeyProblem(t, replayResp, replayRaw, http.StatusConflict, "idempotency_in_progress")
+		if replayResp.Header.Get("Retry-After") != "1" {
+			t.Fatalf("expected Retry-After: 1 on 409 idempotency_in_progress, got %q", replayResp.Header.Get("Retry-After"))
+		}
+		if passkeys != 0 || audits != 0 || notices != 0 || jobs != 0 {
+			t.Fatalf("uncommitted ambiguous COMMIT must leave 0 durable effects, got passkeys=%d audits=%d notices=%d jobs=%d",
+				passkeys, audits, notices, jobs)
+		}
+	case "done":
+		if replayResp.StatusCode != http.StatusCreated {
+			t.Fatalf("expected replay of committed row to return 201 Created, got %d (%s)", replayResp.StatusCode, replayRaw)
+		}
+		if passkeys != 1 || audits != 1 || notices != 1 || jobs != 1 {
+			t.Fatalf("committed ambiguous COMMIT must leave exactly 1 durable effect without duplicates, got passkeys=%d audits=%d notices=%d jobs=%d",
+				passkeys, audits, notices, jobs)
+		}
 	}
 }
 
