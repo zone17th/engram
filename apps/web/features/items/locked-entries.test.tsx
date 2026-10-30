@@ -4,10 +4,12 @@ import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VaultPill } from '@/components/ui/vault-pill';
+import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
 import { EntryBody, LOCK_MASK_TEXT, type EntryBodyLoader } from '@/features/items/entry-body';
 import { ItemList, type ItemListEntry } from '@/features/items/item-list';
 import { LockedBanner } from '@/features/items/locked-banner';
+import { ItemArticle } from '@/features/items/item-article';
 import {
   VAULT_BODY_QUERY_KEY_PREFIX,
   VaultProvider,
@@ -34,9 +36,15 @@ import en from '@/messages/en.json';
  * written anywhere except as the expected value of the assertions below.
  */
 
+const routerMocks = vi.hoisted(() => {
+  const replace = vi.fn();
+  const push = vi.fn();
+  return { pathname: '/app', replace, push, router: { replace, push } };
+});
+
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/app',
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  usePathname: () => routerMocks.pathname,
+  useRouter: () => routerMocks.router,
   useSearchParams: () => new URLSearchParams(),
 }));
 
@@ -210,6 +218,9 @@ describe('P03-T21 Locked state U5', () => {
 
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
+    routerMocks.pathname = '/app';
+    routerMocks.replace.mockReset();
+    routerMocks.push.mockReset();
     resetVaultBroadcastForTests();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -482,6 +493,78 @@ describe('P03-T21 Locked state U5', () => {
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
     expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
   }, 30_000);
+
+  describe('route guard while locked (advisor-dec-048: U5 over plan 15A for /app and /app/items/** only)', () => {
+    function renderGuardedList({ loadFixtureBody }: Pick<Harness, 'loadFixtureBody'>) {
+      return (
+        <RouteGuard>
+          <LockedBanner />
+          <ItemList items={FIXTURE_ITEMS} load={loadFixtureBody} openLabel="Open" />
+        </RouteGuard>
+      );
+    }
+
+    it('cold start on /app while locked lands on the U5 list with an unlock action, not on /app/unlock', async () => {
+      routerMocks.pathname = '/app';
+      await mountLockedWithFixture(renderGuardedList);
+
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(screen.getByTestId('vault-locked-banner')).toBeInTheDocument();
+      expect(screen.getByTestId('vault-locked-unlock-cta')).toHaveAttribute('href', '/app/unlock');
+      expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
+      expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length);
+      expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
+    }, 30_000);
+
+    it('a locked deep link /app/items/<id> is not redirected and renders its article with a masked body (no body reachable)', async () => {
+      const item = FIXTURE_ITEMS[0];
+      routerMocks.pathname = `/app/items/${item.id}`;
+      const h = await mountLockedWithFixture(({ loadFixtureBody }) => (
+        <RouteGuard>
+          <LockedBanner />
+          <ItemArticle
+            entryId={item.id}
+            title={item.title}
+            kind={item.kind}
+            load={loadFixtureBody}
+            headerLabel="Sample content"
+            footerLabel="Read-only"
+          />
+        </RouteGuard>
+      ));
+
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(screen.getByTestId('item-article')).toHaveAttribute('aria-label', item.title);
+      expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
+      expect(screen.queryByTestId('entry-body')).toBeNull();
+      expect(screen.getByTestId('vault-locked-unlock-cta')).toHaveAttribute(
+        'href',
+        `/app/unlock?returnTo=${encodeURIComponent(routerMocks.pathname)}`,
+      );
+      expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
+
+      // Unlocking in place shows the body without any navigation; the page never left the item.
+      await h.unlock();
+      expect(await screen.findByText(item.secret)).toBeInTheDocument();
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+    }, 30_000);
+
+    it('/app/settings stays reachable while locked', async () => {
+      routerMocks.pathname = '/app/settings';
+      await mountLockedWithFixture(renderGuardedList);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+    }, 30_000);
+
+    it.each(['/app/tags/home', '/app/items-archive'])(
+      'every other app route (%s) still redirects to /app/unlock with returnTo while locked',
+      async (pathname) => {
+        routerMocks.pathname = pathname;
+        await mountLockedWithFixture(renderGuardedList);
+        expect(routerMocks.replace).toHaveBeenCalledWith(`/app/unlock?returnTo=${encodeURIComponent(pathname)}`);
+      },
+      30_000,
+    );
+  });
 
   it('outside any VaultProvider a body is masked and the loader is never called', () => {
     const load = vi.fn<EntryBodyLoader>(async () => FIXTURE_ITEMS[0].secret);

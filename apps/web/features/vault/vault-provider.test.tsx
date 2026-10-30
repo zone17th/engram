@@ -1501,7 +1501,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     expect(qc.getQueryData(vaultBodyQueryKey(VAULT_BODY_QUERY_KEY_PREFIX[0]))).toBeUndefined();
   });
 
-  it('redirects present + locked vault to /app/unlock with returnTo preserved, while allowing unlock, forgot, recovery, and settings', () => {
+  it('keeps a present + locked vault on /app and /app/items/** (U5, advisor-dec-048) and redirects other app routes to /app/unlock with returnTo preserved, while allowing unlock, forgot, recovery, and settings', () => {
     const me = makeMeFixture({ vaultStatus: 'present' });
     expect(
       resolveGuardRedirect({
@@ -1510,7 +1510,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         me,
         vaultState: 'locked',
       }),
-    ).toBe('/app/unlock');
+    ).toBeNull();
     expect(
       resolveGuardRedirect({
         status: 'authenticated_with_vault',
@@ -1518,7 +1518,15 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         me,
         vaultState: 'locked',
       }),
-    ).toBe('/app/unlock?returnTo=%2Fapp%2Fitems%2Fitem-42');
+    ).toBeNull();
+    expect(
+      resolveGuardRedirect({
+        status: 'authenticated_with_vault',
+        pathname: '/app/tags/home',
+        me,
+        vaultState: 'locked',
+      }),
+    ).toBe('/app/unlock?returnTo=%2Fapp%2Ftags%2Fhome');
     expect(
       resolveGuardRedirect({
         status: 'authenticated_with_vault',
