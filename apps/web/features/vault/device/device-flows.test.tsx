@@ -35,12 +35,23 @@ const mocks = vi.hoisted(() => ({
     refetchMe: async () => undefined,
   },
   fetchVault: vi.fn(),
+  router: {
+    pathname: '/app',
+    searchParams: new URLSearchParams(),
+    replace: vi.fn(),
+    push: vi.fn(),
+  },
+}));
+
+vi.mock('next/navigation', () => ({
+  usePathname: () => mocks.router.pathname,
+  useRouter: () => ({ replace: mocks.router.replace, push: mocks.router.push }),
+  useSearchParams: () => mocks.router.searchParams,
 }));
 
 vi.mock('@/features/auth/session-provider', () => ({
   useSession: () => mocks.session,
 }));
-
 vi.mock('@/lib/api/vault', async (importOriginal) => ({
   ...(await importOriginal<typeof VaultApi>()),
   fetchVault: (...args: unknown[]) => mocks.fetchVault(...args),
@@ -127,6 +138,10 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     serverKeyId = VAULT_K;
     mocks.session.me = makeMe(USER_A);
     mocks.session.status = 'authenticated_with_vault';
+    mocks.router.pathname = '/app';
+    mocks.router.searchParams = new URLSearchParams();
+    mocks.router.replace.mockReset();
+    mocks.router.push.mockReset();
     mocks.fetchVault.mockReset();
     mocks.fetchVault.mockImplementation(async () => {
       if (serverKeyId === null) throw vaultAbsentError();
@@ -480,6 +495,41 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     renderTab({ silentUnlockOnLoad: true });
     await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
     expect(mocks.fetchVault).toHaveBeenCalledTimes(1);
+  });
+
+  it('R1-4 / R1-23: automatic silentUnlockOnLoad on /app/unlock redirects to sanitized returnTo and rejects unsafe returnTo', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // 1. Valid returnTo=%2Fapp%2Fsettings -> replaces to /app/settings (and re-applies if RouteGuard replaced to /app first).
+    mocks.router.pathname = '/app/unlock';
+    mocks.router.searchParams = new URLSearchParams('returnTo=%2Fapp%2Fsettings');
+    mocks.router.replace.mockReset();
+    const tab1 = renderTab({ silentUnlockOnLoad: true });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app/settings'));
+
+    // Simulate RouteGuard replacing to /app right before SilentUnlockReturnTo's effect or concurrently:
+    mocks.router.pathname = '/app';
+    await act(async () => {
+      tab1.rerender();
+    });
+    expect(mocks.router.replace).toHaveBeenLastCalledWith('/app/settings');
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // 2. Unsafe returnTo -> rejected, replaces to /app.
+    mocks.router.pathname = '/app/unlock';
+    mocks.router.searchParams = new URLSearchParams('returnTo=https%3A%2F%2Fevil.example%2Fphish');
+    mocks.router.replace.mockReset();
+    renderTab({ silentUnlockOnLoad: true });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'));
+    expect(mocks.router.replace).not.toHaveBeenCalledWith(expect.stringContaining('evil.example'));
   });
 
   it('without the opt-in a remembered device does not unlock by itself, but silentUnlock() does on demand', async () => {

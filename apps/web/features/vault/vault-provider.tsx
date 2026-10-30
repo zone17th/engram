@@ -34,6 +34,7 @@ import {
   type DeviceStoreEnvironment,
 } from '@/features/vault/device-store';
 import { runSilentDeviceUnlock, type SilentUnlockResult } from '@/lib/crypto/device';
+import { SilentUnlockReturnTo } from '@/features/vault/device/silent-unlock-return-to';
 import { createDeviceTestBridge, type DeviceTestBridge } from '@/features/vault/device/test-bridge';
 import {
   captureUnlockBaseline,
@@ -1368,6 +1369,7 @@ export function VaultProvider({
   }, [beginOp, effectiveDeviceStoreEnv, loadVaultMeta, lock, unlockDevKeyOp]);
 
   const silentAttemptUserIdRef = useRef<string | null>(null);
+  const [autoSilentUnlockedCount, setAutoSilentUnlockedCount] = useState<number>(0);
   const silentUnlockUserId = me?.user.id ?? null;
 
   const rewrapOp = useCallback(
@@ -1447,7 +1449,13 @@ export function VaultProvider({
       return;
     }
     silentAttemptUserIdRef.current = silentUnlockUserId;
-    void silentUnlock().catch(() => undefined);
+    void silentUnlock()
+      .then((res) => {
+        if (res.status === 'unlocked') {
+          setAutoSilentUnlockedCount((c) => c + 1);
+        }
+      })
+      .catch(() => undefined);
   }, [sessionStatus, silentUnlock, silentUnlockOnLoad, silentUnlockUserId, workerState]);
   // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
@@ -2224,6 +2232,7 @@ export function VaultProvider({
   return (
     <VaultContext.Provider value={storeValue}>
       {children}
+      {silentUnlockOnLoad ? <SilentUnlockReturnTo unlockedCount={autoSilentUnlockedCount} /> : null}
       {testConsumer
         ? createPortal(
             <Suspense fallback={null}>

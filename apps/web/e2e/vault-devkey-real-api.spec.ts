@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page, type Response } from '@playwright/test';
-import { PASSWORD, signupViaUi, uniqueEmail } from './helpers';
+import { PASSWORD, isolateRateLimit, uniqueEmail, waitForAuthPageReady } from './helpers';
 
 // LANE-AC real-API spec for Remember device (plan Task 18, silent unlock after reload). The browser talks to the compose
 // stack's real API and database: no page.route / context.route for /api/v1/vault* or /api/v1/auth* lives in this file
@@ -71,6 +71,27 @@ async function fillSecret(input: Locator, value: string) {
   }, value);
 }
 
+async function quietSignupViaUi(page: Page, email: string, password = PASSWORD) {
+  await isolateRateLimit(page);
+  await page.goto('/app/auth/signup');
+  await waitForAuthPageReady(page);
+  await page.getByLabel('Email').fill(email);
+  await fillSecret(page.getByLabel(/Login password|Mật khẩu đăng nhập/), password);
+  await page.getByRole('checkbox', { name: /agree|terms|điều khoản/i }).check();
+  await page.getByRole('button', { name: /Create account|Tạo tài khoản/ }).click();
+  const outcome = await Promise.race([
+    page.waitForURL(/\/app\/(onboarding|auth\/verify-email)/, { timeout: UI_WAIT_MS }).then(() => 'ok' as const),
+    page.getByTestId('auth-error-card').waitFor({ state: 'visible', timeout: UI_WAIT_MS }).then(() => 'err' as const),
+  ]).catch(() => 'timeout' as const);
+  if (outcome === 'err') {
+    const text = await page.getByTestId('auth-error-card').innerText();
+    throw new Error(`signup failed: ${text}`);
+  }
+  if (outcome !== 'ok') {
+    throw new Error('signup did not reach onboarding or verify-email');
+  }
+}
+
 async function waitForDeviceBridge(page: Page) {
   await page.waitForFunction(() => {
     const testWindow: DeviceWindow = window;
@@ -98,7 +119,7 @@ test.describe('Remember device against the real API', () => {
     const email = uniqueEmail('vault-devkey');
 
     await test.step('1. real signup, onboarding creates the vault with a real POST /vault', async () => {
-      await signupViaUi(page, email, PASSWORD);
+      await quietSignupViaUi(page, email, PASSWORD);
       await expect(page).toHaveURL(/\/app\/onboarding$/, { timeout: UI_WAIT_MS });
       await expect(page.getByTestId('onboarding-step-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
       await fillSecret(page.getByLabel('Passphrase', { exact: true }), PASSPHRASE);
@@ -127,10 +148,30 @@ test.describe('Remember device against the real API', () => {
       expect(after.userRecordCount).toBe(1);
     });
 
-    await test.step('3. reload: the real GET /vault is read, then the vault opens WITHOUT a passphrase', async () => {
+    await test.step('3. reload (and /app/unlock?returnTo): the real GET /vault is read, then the vault opens WITHOUT a passphrase, honoring sanitized returnTo and rejecting unsafe returnTo', async () => {
       const vaultRead = page.waitForResponse((r) => isApiGet(r, '/api/v1/vault') && r.ok(), { timeout: CRYPTO_WAIT_MS });
       await page.reload();
       expect(await vaultRead).toBeTruthy();
+      await expectVaultOpen(page);
+      await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('unlock-passphrase-input')).toHaveCount(0);
+
+      // R1-4 / R1-23: reload `/app/unlock?returnTo=%2Fapp%2Fsettings` -> automatic silent unlock ends at `/app/settings`.
+      const settingsVaultRead = page.waitForResponse((r) => isApiGet(r, '/api/v1/vault') && r.ok(), {
+        timeout: CRYPTO_WAIT_MS,
+      });
+      await page.goto('/app/unlock?returnTo=%2Fapp%2Fsettings');
+      expect(await settingsVaultRead).toBeTruthy();
+      await expectVaultOpen(page);
+      await expect(page).toHaveURL(/\/app\/settings$/, { timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('unlock-passphrase-input')).toHaveCount(0);
+
+      // Unsafe returnTo (e.g. external URL or protocol-relative URL) is rejected -> falls back to `/app`.
+      const unsafeVaultRead = page.waitForResponse((r) => isApiGet(r, '/api/v1/vault') && r.ok(), {
+        timeout: CRYPTO_WAIT_MS,
+      });
+      await page.goto('/app/unlock?returnTo=https%3A%2F%2Fevil.example%2Fphish');
+      expect(await unsafeVaultRead).toBeTruthy();
       await expectVaultOpen(page);
       await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
       await expect(page.getByTestId('unlock-passphrase-input')).toHaveCount(0);
