@@ -16,6 +16,7 @@ import {
   sanitizeAuditMeta,
 } from '@/lib/auth/audit-catalog';
 import { useSession } from '@/features/auth/session-provider';
+import { VaultSecurityPanel } from '@/features/settings/security/vault/vault-security-panel';
 
 function formatRelative(iso: string, locale: string): string {
   try {
@@ -259,16 +260,10 @@ export function SecuritySection({ onOpenRevokeDialog }: { onOpenRevokeDialog: ()
       </h2>
       <p className="t-body mb-6 text-muted">{t('security.subtitle')}</p>
 
+      <VaultSecurityPanel onOpenRevokeSessionsDialog={onOpenRevokeDialog} />
       <SessionsPanel onOpenRevokeDialog={onOpenRevokeDialog} />
       <AuditFeedPanel />
       <NotificationFeedPanel />
-
-      <div className="card p-5 control-disabled" aria-disabled="true">
-        <div className="mb-1 text-[15px] font-semibold">
-          {t('security.vaultPlaceholder')} <span className="phase-badge">P03</span>
-        </div>
-        <p className="m-0 text-[13px] text-muted">{t('security.vaultPlaceholderBody')}</p>
-      </div>
     </section>
   );
 }
