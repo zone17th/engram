@@ -398,7 +398,8 @@ export function VaultProvider({
   const activeOperationRef = useRef<VaultActiveOperation>(null);
   const tabKnownLockEpochRef = useRef<number>(0);
   const unlockBaselineRef = useRef<LockEpochMarker | null>(null);
-  const intentBaselinesRef = useRef<Map<number, Promise<LockEpochMarker | null>>>(new Map());
+  const intentBaselinesRef = useRef<Map<number, Array<{ id: number; promise: Promise<LockEpochMarker | null> }>>>(new Map());
+  const nextIntentBaselineIdRef = useRef<number>(1);
   const baselineVerifiedRef = useRef<boolean>(false);
   const wakeVerificationSeqRef = useRef<number>(0);
   const wakeVerifyingCountRef = useRef<number>(0);
@@ -622,9 +623,10 @@ export function VaultProvider({
     return getClient().captureGeneration();
   }, [getClient]);
 
-  const beginOp = useCallback(() => {
+  const beginIntentOp = useCallback(() => {
     const client = getClient();
     const opGeneration = client.captureGeneration();
+    const intentId = nextIntentBaselineIdRef.current++;
     // Capture durable lockEpoch baseline at intent start (before any metadata GET or async work — BE2-1, ADR 0003 §8.4).
     const baselinePromise = captureUnlockBaseline(
       tabKnownLockEpochRef.current,
@@ -638,13 +640,29 @@ export function VaultProvider({
       },
       () => null,
     );
-    intentBaselinesRef.current.set(opGeneration, baselinePromise);
+    const list = intentBaselinesRef.current.get(opGeneration) ?? [];
+    list.push({ id: intentId, promise: baselinePromise });
+    intentBaselinesRef.current.set(opGeneration, list);
+    const releaseBaseline = () => {
+      const cur = intentBaselinesRef.current.get(opGeneration);
+      if (!cur) return;
+      const idx = cur.findIndex((item) => item.id === intentId);
+      if (idx !== -1) cur.splice(idx, 1);
+      if (cur.length === 0) intentBaselinesRef.current.delete(opGeneration);
+    };
     return {
       opGeneration,
+      intentId,
+      releaseBaseline,
       client,
       isCurrent: () => client.getGeneration() === opGeneration,
     };
   }, [envWithBroadcast, getClient, updateTabKnownLockEpoch]);
+
+  const beginOp = useCallback(() => {
+    const { opGeneration, client, isCurrent } = beginIntentOp();
+    return { opGeneration, client, isCurrent };
+  }, [beginIntentOp]);
 
   const clearError = useCallback(() => {
     setLastErrorCode(null);
@@ -1005,6 +1023,7 @@ export function VaultProvider({
       baselineMode: 'none' | 'capture_fresh' | 'require_existing',
       opGeneration: number,
       invoke: (client: CryptoClient, injectBeforePost?: () => Promise<void>) => Promise<T>,
+      intentId?: number,
     ): Promise<T> => {
       const client = getClient();
       setLastErrorCode(null);
@@ -1074,8 +1093,24 @@ export function VaultProvider({
 
         // baselineMode === 'capture_fresh':
         // If beginOp() already captured an intent-start baseline for this opGeneration (BE2-1), reuse and verify it!
-        const intentBaselinePromise = intentBaselinesRef.current.get(opGeneration);
-        intentBaselinesRef.current.delete(opGeneration);
+        // Per-intent ownership (R2-1 / R2-7): an explicit intentId consumes only its own baseline; otherwise consume
+        // the oldest unconsumed baseline for this generation so a later same-generation beginOp() never overwrites an
+        // earlier pending intent's marker.
+        let intentBaselinePromise: Promise<LockEpochMarker | null> | undefined;
+        const list = intentBaselinesRef.current.get(opGeneration);
+        if (list && list.length > 0) {
+          if (intentId !== undefined) {
+            const idx = list.findIndex((item) => item.id === intentId);
+            if (idx !== -1) {
+              intentBaselinePromise = list.splice(idx, 1)[0]?.promise;
+            }
+          } else {
+            intentBaselinePromise = list.shift()?.promise;
+          }
+          if (list.length === 0) {
+            intentBaselinesRef.current.delete(opGeneration);
+          }
+        }
         if (intentBaselinePromise) {
           const intentBaseline = await intentBaselinePromise;
           if (!intentBaseline || client.getGeneration() !== opGeneration) {
@@ -1318,8 +1353,8 @@ export function VaultProvider({
     [runStateChangingOp],
   );
 
-  const unlockDevKeyOp = useCallback(
-    (params: UnlockDevKeyClientParams): Promise<{ unlocked: true }> => {
+  const runUnlockDevKeyWithIntent = useCallback(
+    (params: UnlockDevKeyClientParams, intentId?: number): Promise<{ unlocked: true }> => {
       return runStateChangingOp(
         'unlocking',
         'capture_fresh',
@@ -1332,9 +1367,17 @@ export function VaultProvider({
               await params.beforePostMessage?.();
             },
           }),
+        intentId,
       );
     },
     [runStateChangingOp],
+  );
+
+  const unlockDevKeyOp = useCallback(
+    (params: UnlockDevKeyClientParams): Promise<{ unlocked: true }> => {
+      return runUnlockDevKeyWithIntent(params);
+    },
+    [runUnlockDevKeyWithIntent],
   );
 
   const silentUnlock = useCallback(async (): Promise<SilentUnlockResult> => {
@@ -1342,8 +1385,8 @@ export function VaultProvider({
     if (!userId) return { status: 'skipped', reason: 'no_user' };
     if (workerStateRef.current !== 'locked') return { status: 'skipped', reason: 'not_locked' };
     if (inFlightStateOpCountRef.current > 0) return { status: 'skipped', reason: 'busy' };
-    // Register durable lockEpoch baseline at silent intent start BEFORE device snapshot and GET /vault (R1-1 / R1-20, BE2-1, ADR 0003 §8.4).
-    const { opGeneration, client } = beginOp();
+    // Register durable lockEpoch baseline at silent intent start BEFORE device snapshot and GET /vault (R1-1 / R1-20, R2-1 / R2-7, BE2-1, ADR 0003 §8.4).
+    const { opGeneration, intentId, releaseBaseline, client } = beginIntentOp();
     const sessionEpoch = vaultMetaSessionEpochRef.current;
     try {
       const result = await runSilentDeviceUnlock({
@@ -1355,7 +1398,7 @@ export function VaultProvider({
           vaultMetaSessionEpochRef.current === sessionEpoch &&
           currentUserIdRef.current === userId,
         loadVault: () => loadVaultMeta(),
-        unlock: (params) => unlockDevKeyOp(params),
+        unlock: (params) => runUnlockDevKeyWithIntent(params, intentId),
         lockOnInvalidate: () => lock({ broadcast: false, reason: 'device_invalidated' }),
       });
       // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.
@@ -1364,9 +1407,9 @@ export function VaultProvider({
       }
       return result;
     } finally {
-      intentBaselinesRef.current.delete(opGeneration);
+      releaseBaseline();
     }
-  }, [beginOp, effectiveDeviceStoreEnv, loadVaultMeta, lock, unlockDevKeyOp]);
+  }, [beginIntentOp, effectiveDeviceStoreEnv, loadVaultMeta, lock, runUnlockDevKeyWithIntent]);
 
   const silentAttemptUserIdRef = useRef<string | null>(null);
   const [autoSilentUnlockedCount, setAutoSilentUnlockedCount] = useState<number>(0);

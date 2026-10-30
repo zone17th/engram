@@ -3,13 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  type DeviceStoreEnvironment,
   formatDevKeyRecordKey,
   purgeDeviceKeysOnRevoked,
   readDeviceMetaRecord,
   setDefaultDeviceStoreEnvironmentForTests,
   setKnownDeviceSessionUserId,
 } from '@/features/vault/device-store';
-import { DEVKEY_STORE_NAME, recordLockEpochEvent } from '@/features/vault/lock-epoch';
+import { DEVKEY_STORE_NAME, type LockEpochEnvironment, recordLockEpochEvent } from '@/features/vault/lock-epoch';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
 import { VaultProvider, useVault, type VaultContextValue } from '@/features/vault/vault-provider';
 import type { Me } from '@/lib/api/auth';
@@ -168,12 +169,20 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
   }
 
   function renderTab(
-    options: { silentUnlockOnLoad?: boolean; testHooks?: RememberTestHooks } = {},
+    options: {
+      silentUnlockOnLoad?: boolean;
+      testHooks?: RememberTestHooks;
+      deviceStoreEnv?: DeviceStoreEnvironment;
+      lockEpochEnv?: LockEpochEnvironment;
+    } = {},
   ): TabHandle {
     const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
     shims.push(shim);
     const handle: { vault?: VaultContextValue; remember?: UseRememberDeviceResult } = {};
     const queryClient = new QueryClient();
+    const effectiveLockEpochEnv =
+      options.lockEpochEnv ?? { idbFactory: idb.createFactory(), locksManager: locks.createLockManager() };
+    const effectiveDeviceStoreEnv = options.deviceStoreEnv ?? { idbFactory: idb.createFactory() };
     function Probe() {
       const vault = useVault();
       const remember = useRememberDevice({ env, testHooks: options.testHooks });
@@ -185,8 +194,8 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       <QueryClientProvider client={queryClient}>
         <VaultProvider
           createWorker={() => shim.port}
-          lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
-          deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+          lockEpochEnv={effectiveLockEpochEnv}
+          deviceStoreEnv={effectiveDeviceStoreEnv}
           silentUnlockOnLoad={options.silentUnlockOnLoad}
         >
           <Probe />
@@ -201,8 +210,8 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
           <QueryClientProvider client={queryClient}>
             <VaultProvider
               createWorker={() => shim.port}
-              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
-              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              lockEpochEnv={effectiveLockEpochEnv}
+              deviceStoreEnv={effectiveDeviceStoreEnv}
               silentUnlockOnLoad={options.silentUnlockOnLoad}
             >
               <Probe />
@@ -656,6 +665,390 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     });
     expect(controlResult).toEqual({ status: 'unlocked' });
     await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+  });
+
+  it('R2-1 / R2-7: per-intent baseline ownership keeps a manual unlock baseline intact when an overlapping automatic silent attempt skips (parked snapshot) or fails GET and cleans up across a missed sibling durable lock', async () => {
+    // Create the vault so `created` holds valid KDF + wrapped VK + wrapped private keys, and seal an entry to verify no plaintext can be opened while locked.
+    const first = await openUnlockedTab();
+    const sealed = await first.vault().getClient().sealEntryNow({
+      entryId: '11111111-1111-4111-8111-111111111111',
+      keyId: VAULT_K,
+      plaintext: new TextEncoder().encode('r2-1-secret-entry-plaintext'),
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // --- Variant A (R2-1): unremembered device, park automatic silent snapshot, begin manual GET, automatic cleans up, sibling durable lock, release manual GET -> stale, locked, no plaintext ---
+    expect(devkeys().size).toBe(0);
+    const baseFactoryA = idb.createFactory();
+    let holdAutoSnapshot = true;
+    let releaseAutoSnapshot: (() => void) | null = null;
+    const gatedDeviceFactoryA: IDBFactory = {
+      ...baseFactoryA,
+      open: ((...args: Parameters<IDBFactory['open']>) => {
+        if (!holdAutoSnapshot) {
+          return baseFactoryA.open(...args);
+        }
+        const outerReq: Record<string, unknown> = {
+          result: null,
+          error: null,
+          onsuccess: null,
+          onerror: null,
+          onupgradeneeded: null,
+          onblocked: null,
+        };
+        releaseAutoSnapshot = () => {
+          const inner = baseFactoryA.open(...args);
+          inner.onupgradeneeded = (ev) => {
+            outerReq.result = inner.result;
+            (outerReq.onupgradeneeded as ((e: IDBVersionChangeEvent) => void) | null)?.(ev);
+          };
+          inner.onsuccess = (ev) => {
+            outerReq.result = inner.result;
+            (outerReq.onsuccess as ((e: Event) => void) | null)?.(ev);
+          };
+          inner.onerror = (ev) => {
+            outerReq.error = inner.error;
+            (outerReq.onerror as ((e: Event) => void) | null)?.(ev);
+          };
+          inner.onblocked = (ev) => {
+            (outerReq.onblocked as ((e: IDBVersionChangeEvent) => void) | null)?.(ev);
+          };
+        };
+        return outerReq as unknown as IDBOpenDBRequest;
+      }) as IDBFactory['open'],
+    };
+
+    let holdManualGet = true;
+    let releaseManualGet: (() => void) | null = null;
+    mocks.fetchVault.mockImplementation(async () => {
+      if (holdManualGet) {
+        await new Promise<void>((resolve) => {
+          releaseManualGet = resolve;
+        });
+      }
+      return vaultState(VAULT_K);
+    });
+
+    const tabA = renderTab({
+      silentUnlockOnLoad: true,
+      deviceStoreEnv: { idbFactory: gatedDeviceFactoryA },
+    });
+    await waitFor(() => expect(releaseAutoSnapshot).not.toBeNull());
+
+    // Begin manual passphrase unlock in the same generation while automatic silent snapshot is parked:
+    const manualOpA = tabA.vault().beginOp();
+    let manualMetaPromiseA!: Promise<VaultState | null>;
+    act(() => {
+      manualMetaPromiseA = tabA.vault().reloadVaultMeta();
+    });
+    await waitFor(() => expect(releaseManualGet).not.toBeNull());
+
+    // Let automatic silent snapshot finish (no records -> skipped -> finally cleans up ONLY its own baseline):
+    await act(async () => {
+      holdAutoSnapshot = false;
+      releaseAutoSnapshot?.();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    // Sibling tab commits a durable lockEpoch increment with BroadcastChannel notifications suppressed:
+    await act(async () => {
+      await recordLockEpochEvent(tabA.vault().tabKnownLockEpoch, {
+        idbFactory: idb.createFactory(),
+        locksManager: locks.createLockManager(),
+      });
+    });
+
+    // Release manual GET and run unlockPassphrase: MUST verify manualOpA's original baseline and reject STALE_GENERATION!
+    let manualMetaA: VaultState | null = null;
+    await act(async () => {
+      holdManualGet = false;
+      releaseManualGet?.();
+      manualMetaA = await manualMetaPromiseA;
+    });
+    expect(manualMetaA).not.toBeNull();
+    let manualErrA: unknown = null;
+    await act(async () => {
+      try {
+        await tabA.vault().unlockPassphrase({
+          passphrase: PASSPHRASE,
+          kdf: manualMetaA!.kdf,
+          vaultKeyWrappedByKek: manualMetaA!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: manualMetaA!.private_keys_wrapped,
+          opGeneration: manualOpA.opGeneration,
+        });
+      } catch (err) {
+        manualErrA = err;
+      }
+    });
+    expect(manualErrA).toMatchObject({ code: 'STALE_GENERATION' });
+    expect(stateText()).toBe('locked');
+    expect(tabA.vault().workerState).toBe('locked');
+    await expect(
+      tabA.vault().getClient().openEntryNow({
+        entryId: '11111111-1111-4111-8111-111111111111',
+        envelope: sealed.envelope,
+        ciphertext: sealed.ciphertext,
+      }),
+    ).rejects.toMatchObject({ code: 'VAULT_LOCKED' });
+
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // --- Variant B (R2-7): remembered device, automatic GET fails while manual GET is pending in same generation, automatic cleans up, sibling durable lock, release manual GET -> stale, locked, no plaintext ---
+    const rememberSetup = await openUnlockedTab();
+    await act(async () => {
+      await rememberSetup.remember().remember();
+    });
+    expect(devkeys().size).toBe(1);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    let callIndex = 0;
+    let releaseAutoGetFail: (() => void) | null = null;
+    let releaseManualGetB: (() => void) | null = null;
+    mocks.fetchVault.mockImplementation(async () => {
+      callIndex += 1;
+      const myCall = callIndex;
+      if (myCall === 1) {
+        await new Promise<void>((resolve) => {
+          releaseAutoGetFail = resolve;
+        });
+        throw new TypeError('simulated transient network error during automatic silent GET');
+      }
+      if (myCall === 2) {
+        await new Promise<void>((resolve) => {
+          releaseManualGetB = resolve;
+        });
+      }
+      return vaultState(VAULT_K);
+    });
+
+    const tabB = renderTab({ silentUnlockOnLoad: true });
+    await waitFor(() => expect(releaseAutoGetFail).not.toBeNull());
+
+    // Begin manual unlock in the same generation while automatic GET #1 is held:
+    const manualOpB = tabB.vault().beginOp();
+    let manualMetaPromiseB!: Promise<VaultState | null>;
+    act(() => {
+      manualMetaPromiseB = tabB.vault().reloadVaultMeta();
+    });
+    await waitFor(() => expect(releaseManualGetB).not.toBeNull());
+
+    // Also exercise a second same-generation beginOp() before manualOpB dispatches to prove it cannot overwrite manualOpB's earlier marker:
+    await act(async () => {
+      await recordLockEpochEvent(tabB.vault().tabKnownLockEpoch, {
+        idbFactory: idb.createFactory(),
+        locksManager: locks.createLockManager(),
+      });
+    });
+    // A later same-generation beginOp() captures the post-lock marker E2, while manualOpB still owns E1:
+    tabB.vault().beginOp();
+
+    // Release automatic GET #1 so it fails with network error and runs its `finally` cleanup:
+    await act(async () => {
+      releaseAutoGetFail?.();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    // Release manual GET #2 and dispatch manualOpB: MUST verify manualOpB's pre-lock baseline E1 and reject STALE_GENERATION!
+    let manualMetaB: VaultState | null = null;
+    await act(async () => {
+      releaseManualGetB?.();
+      manualMetaB = await manualMetaPromiseB;
+    });
+    expect(manualMetaB).not.toBeNull();
+    let manualErrB: unknown = null;
+    await act(async () => {
+      try {
+        await tabB.vault().unlockPassphrase({
+          passphrase: PASSPHRASE,
+          kdf: manualMetaB!.kdf,
+          vaultKeyWrappedByKek: manualMetaB!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: manualMetaB!.private_keys_wrapped,
+          opGeneration: manualOpB.opGeneration,
+        });
+      } catch (err) {
+        manualErrB = err;
+      }
+    });
+    expect(manualErrB).toMatchObject({ code: 'STALE_GENERATION' });
+    expect(stateText()).toBe('locked');
+    expect(tabB.vault().workerState).toBe('locked');
+    await expect(
+      tabB.vault().getClient().openEntryNow({
+        entryId: '11111111-1111-4111-8111-111111111111',
+        envelope: sealed.envelope,
+        ciphertext: sealed.ciphertext,
+      }),
+    ).rejects.toMatchObject({ code: 'VAULT_LOCKED' });
+
+    // --- Control: same overlapping sequence WITHOUT a sibling durable lock opens cleanly and decrypts ---
+    callIndex = 0;
+    releaseAutoGetFail = null;
+    releaseManualGetB = null;
+    let manualOnlyPromise!: Promise<VaultState | null>;
+    mocks.fetchVault.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        releaseManualGetB = resolve;
+      });
+      return vaultState(VAULT_K);
+    });
+    const controlOp = tabB.vault().beginOp();
+    act(() => {
+      manualOnlyPromise = tabB.vault().reloadVaultMeta();
+    });
+    await waitFor(() => expect(releaseManualGetB).not.toBeNull());
+    let controlMeta: VaultState | null = null;
+    await act(async () => {
+      releaseManualGetB?.();
+      controlMeta = await manualOnlyPromise;
+    });
+    await act(async () => {
+      await tabB.vault().unlockPassphrase({
+        passphrase: PASSPHRASE,
+        kdf: controlMeta!.kdf,
+        vaultKeyWrappedByKek: controlMeta!.vault_key_wrapped_by_kek,
+        privateKeysWrapped: controlMeta!.private_keys_wrapped,
+        opGeneration: controlOp.opGeneration,
+      });
+    });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    expect(tabB.vault().workerState).toBe('unlocked');
+    const opened = await tabB.vault().getClient().openEntryNow({
+      entryId: '11111111-1111-4111-8111-111111111111',
+      envelope: sealed.envelope,
+      ciphertext: sealed.ciphertext,
+    });
+    expect(opened.plaintext).toBe('r2-1-secret-entry-plaintext');
+  });
+
+  it('R2-4 (advisor-dec-054 / user-dec-010 pre-dispatch window): Forget completing while provider prepareBaseline is parked after post-GET reread prevents any unlockDevKey Worker command, returns stale, and keeps Worker locked (with no-change control)', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    expect(devkeys().size).toBe(1);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // Gate the 2nd `sabk.vault.lock` request on the provider's lockEpochEnv:
+    // Request #1 is `beginIntentOp -> captureUnlockBaseline`; Request #2 is `prepareBaseline -> verifyUnlockBaseline`,
+    // which runs inside `unlockDevKey.beforePostMessage` AFTER initial snapshot, GET /vault, and post-GET reread all pass.
+    const baseLocksManager = locks.createLockManager();
+    let lockRequestCount = 0;
+    let holdPrepareBaseline = true;
+    let reachedPrepareBaseline: (() => void) | null = null;
+    let releasePrepareBaseline: (() => void) | null = null;
+    const gatedLocksManager: LockManager = {
+      ...baseLocksManager,
+      request: (async (name: string, optionsOrCallback: unknown, maybeCallback?: unknown) => {
+        lockRequestCount += 1;
+        if (holdPrepareBaseline && lockRequestCount === 2) {
+          reachedPrepareBaseline?.();
+          await new Promise<void>((resolve) => {
+            releasePrepareBaseline = resolve;
+          });
+        }
+        return (baseLocksManager.request as (...a: unknown[]) => Promise<unknown>)(
+          name,
+          optionsOrCallback,
+          maybeCallback,
+        );
+      }) as LockManager['request'],
+    };
+
+    const tab = renderTab({
+      silentUnlockOnLoad: false,
+      lockEpochEnv: { idbFactory: idb.createFactory(), locksManager: gatedLocksManager },
+    });
+    const activeShim = shims[shims.length - 1]!;
+    const unlockedDevKeyCommands = () =>
+      activeShim.workerReceivedRequests.filter((cmd) => cmd.type === 'unlockDevKey');
+
+    const reachedP = new Promise<void>((resolve) => {
+      reachedPrepareBaseline = resolve;
+    });
+    let silentPromise!: Promise<unknown>;
+    act(() => {
+      silentPromise = tab.vault().silentUnlock();
+    });
+    await reachedP;
+    expect(releasePrepareBaseline).not.toBeNull();
+    // At this exact point: snapshot #1, GET /vault, and post-GET snapshot #2 all passed; Worker has received NO unlockDevKey yet.
+    expect(unlockedDevKeyCommands()).toHaveLength(0);
+
+    // Another context completes Forget while `prepareBaseline` is parked:
+    const siblingRememberStore = createRememberDeviceStore({
+      env,
+      getContext: () => ({
+        userId: USER_A,
+        vaultKeyId: VAULT_K,
+        captureOp: () => {
+          throw new Error('unused');
+        },
+        reloadVaultMeta: async () => null,
+      }),
+    });
+    await act(async () => {
+      const forgotten = await siblingRememberStore.forget();
+      expect(forgotten.remembered).toBe(false);
+    });
+    expect(devkeys().size).toBe(0);
+
+    // Release `prepareBaseline`: `device.ts`'s `beforePostMessage` reread runs immediately after `prepareBaseline` and MUST abort before posting `unlockDevKey`.
+    let silentResult: unknown;
+    await act(async () => {
+      holdPrepareBaseline = false;
+      releasePrepareBaseline?.();
+      silentResult = await silentPromise;
+    });
+    expect(silentResult).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(unlockedDevKeyCommands()).toHaveLength(0);
+    expect(devkeys().size).toBe(0);
+    expect(stateText()).toBe('locked');
+    expect(tab.vault().workerState).toBe('locked');
+
+    // No-change control: re-seed the legitimate DevKey record, park at the same `prepareBaseline` gate without Forget, then release -> dispatches `unlockDevKey` and opens.
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+    const reseed = await openUnlockedTab();
+    await act(async () => {
+      await reseed.remember().remember();
+    });
+    expect(devkeys().size).toBe(1);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    lockRequestCount = 0;
+    holdPrepareBaseline = true;
+    reachedPrepareBaseline = null;
+    releasePrepareBaseline = null;
+    const controlTab = renderTab({
+      silentUnlockOnLoad: false,
+      lockEpochEnv: { idbFactory: idb.createFactory(), locksManager: gatedLocksManager },
+    });
+    const controlShim = shims[shims.length - 1]!;
+    const controlReachedP = new Promise<void>((resolve) => {
+      reachedPrepareBaseline = resolve;
+    });
+    let controlPromise!: Promise<unknown>;
+    act(() => {
+      controlPromise = controlTab.vault().silentUnlock();
+    });
+    await controlReachedP;
+    expect(controlShim.workerReceivedRequests.filter((cmd) => cmd.type === 'unlockDevKey')).toHaveLength(0);
+
+    let controlResult: unknown;
+    await act(async () => {
+      holdPrepareBaseline = false;
+      releasePrepareBaseline?.();
+      controlResult = await controlPromise;
+    });
+    expect(controlResult).toEqual({ status: 'unlocked' });
+    expect(controlShim.workerReceivedRequests.filter((cmd) => cmd.type === 'unlockDevKey')).toHaveLength(1);
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    expect(controlTab.vault().workerState).toBe('unlocked');
   });
 
   it('reset elsewhere then reload here: the 404 purges the DevKey (user-scoped, unnamed), no silent unlock', async () => {
