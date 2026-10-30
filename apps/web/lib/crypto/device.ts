@@ -312,6 +312,14 @@ export interface DeviceSnapshot {
   entries: DeviceRecordEntry[];
 }
 
+/**
+ * Realm-independent `Uint8Array` check: bytes that crossed a MessageChannel / structured clone (Worker response, IndexedDB
+ * read) may come from another realm (jsdom vs Node, iframe), where `instanceof Uint8Array` is false.
+ */
+function isUint8ArrayLike(value: unknown): value is Uint8Array {
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
+}
+
 export function isWellFormedDevKeyRecord(
   value: unknown,
   userId: string,
@@ -324,7 +332,7 @@ export function isWellFormedDevKeyRecord(
     v.vault_key_id === vaultKeyId &&
     typeof v.dev_key === 'object' &&
     v.dev_key !== null &&
-    v.wrapped_vk instanceof Uint8Array &&
+    isUint8ArrayLike(v.wrapped_vk) &&
     v.wrapped_vk.byteLength === DEVKEY_WRAPPED_VK_BYTES
   );
 }
