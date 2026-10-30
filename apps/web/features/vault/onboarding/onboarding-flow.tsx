@@ -18,6 +18,7 @@ import {
   classifyCryptoError,
   useVault,
 } from '@/features/vault/vault-provider';
+import { PasskeyAddEntry } from '@/features/vault/passkey';
 import {
   createIdempotencyKey,
   createVault as postCreateVault,
@@ -27,7 +28,13 @@ import {
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { RecoveryKeysSheet } from './recovery-keys-sheet';
 
-export type OnboardingStep = 'passphrase' | 'passphrase-oom' | 'recovery-keys' | 'vault-exists' | 'done';
+export type OnboardingStep =
+  | 'passphrase'
+  | 'passphrase-oom'
+  | 'recovery-keys'
+  | 'vault-exists'
+  | 'passkey'
+  | 'done';
 
 interface PreparedOnboardingBundle {
   /** Generation captured before `createVault` so any intervening lock invalidates the bundle. */
@@ -75,6 +82,7 @@ function strengthBarColor(score: PassphraseScore, hasInput: boolean): string {
 
 export function VaultOnboardingFlow() {
   const t = useTranslations('onboarding');
+  const tStep3 = useTranslations('vault.b.onboarding');
   const router = useRouter();
   const { me, refetchMe } = useSession();
   const vault = useVault();
@@ -144,9 +152,12 @@ export function VaultOnboardingFlow() {
       clearRecoveryKeysAndSecrets();
       if (stepRef.current === 'recovery-keys') {
         setStep('passphrase');
+      } else if (stepRef.current === 'passkey') {
+        setStep('done');
+        void refetchMe().catch(() => undefined);
       }
     });
-  }, [clearRecoveryKeysAndSecrets]);
+  }, [clearRecoveryKeysAndSecrets, refetchMe]);
 
   // Wipe secrets and mark unmounted when leaving the onboarding route (BE1-9).
   useEffect(() => {
@@ -402,21 +413,12 @@ export function VaultOnboardingFlow() {
 
       // Immediately wipe the 10 display RKs from React state and DOM once POST /vault succeeds.
       clearRecoveryKeysAndSecrets();
-      setStep('done');
+      setStep('passkey');
 
       vault.notifyVaultChanged({
         vault_key_id: response.vault_key_id,
         version: response.version,
       });
-
-      await refetchMe();
-      if (
-        isMountedRef.current &&
-        currentUserIdRef.current !== null &&
-        (submitBundle.userId === null || currentUserIdRef.current === submitBundle.userId)
-      ) {
-        router.replace('/app');
-      }
     } catch (err) {
       if (
         !isMountedRef.current ||
@@ -510,6 +512,16 @@ export function VaultOnboardingFlow() {
     submittingVault,
     vault,
   ]);
+  const handleFinishStep3 = useCallback(async () => {
+    clearRecoveryKeysAndSecrets();
+    setStep('done');
+    void vault.reloadVaultMeta?.().catch(() => undefined);
+    await refetchMe().catch(() => undefined);
+    if (isMountedRef.current && currentUserIdRef.current !== null) {
+      router.replace('/app');
+    }
+  }, [clearRecoveryKeysAndSecrets, refetchMe, router, vault]);
+
   const handleGoToUnlock = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
     await refetchMe().catch(() => undefined);
@@ -518,9 +530,9 @@ export function VaultOnboardingFlow() {
 
   const isStep1Active = step === 'passphrase' || step === 'passphrase-oom';
   const isStep2Active = step === 'recovery-keys' || step === 'vault-exists';
+  const isStep3Active = step === 'passkey';
   const barWidth = strengthBarPercentage(policyScore, passphrase.length > 0);
   const barColor = strengthBarColor(policyScore, passphrase.length > 0);
-
   return (
     <>
       <AppHeader vault={{ state: 'absent' }} showLogout />
@@ -546,7 +558,8 @@ export function VaultOnboardingFlow() {
             </button>
             <button
               type="button"
-              aria-pressed={false}
+              aria-current={isStep3Active ? 'step' : undefined}
+              aria-pressed={isStep3Active}
               disabled
             >
               {t('steps.passkey')}
@@ -906,6 +919,67 @@ export function VaultOnboardingFlow() {
                   {t('vaultExists.goToUnlock')}
                 </Button>
               </div>
+            </div>
+          </section>
+        ) : null}
+
+        {/* STEP 3 — Optional Passkey (T16B) */}
+        {step === 'passkey' ? (
+          <section data-view="pk" data-testid="onboarding-step-passkey">
+            <h1
+              ref={stepHeadingRef}
+              tabIndex={-1}
+              className="t-title-lg mb-2 text-ink outline-none"
+            >
+              {tStep3('title')}
+            </h1>
+            <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
+              {tStep3('lead')}
+            </p>
+
+            <div className="card mb-4 p-6" data-testid="onboarding-passkey-card">
+              <div className="flex flex-wrap items-start gap-4">
+                <div className="min-w-0 flex-1 basis-[240px]">
+                  <div className="mb-1 text-[15px] font-semibold text-body">
+                    {tStep3('cardTitle')}
+                  </div>
+                  <p className="m-0 mb-2 text-[13px]" style={{ color: 'var(--muted)' }}>
+                    {tStep3('cardBody')}
+                  </p>
+                  <p className="m-0 text-[12px]" style={{ color: 'var(--muted)' }}>
+                    {tStep3('reauthNote')}
+                  </p>
+                </div>
+                <PasskeyAddEntry
+                  className="ml-auto"
+                  returnPath="/app/onboarding"
+                  onRegistered={() => {
+                    void handleFinishStep3();
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Part D placeholder slot: "Remember this device" toggle (default off) is wired after T18 sync; hidden in Part P. */}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="tertiary"
+                onClick={() => void handleFinishStep3()}
+                data-testid="onboarding-skip-passkey-button"
+              >
+                {tStep3('skip')}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                className="ml-auto"
+                onClick={() => void handleFinishStep3()}
+                data-testid="onboarding-finish-button"
+              >
+                {tStep3('finish')}
+              </Button>
             </div>
           </section>
         ) : null}

@@ -17,6 +17,13 @@ import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 
+import {
+  NEW_CREDENTIAL_ID,
+  PRF_OUTPUT,
+  domError,
+  fakeCredential,
+  registerOptionsResponse,
+} from '@/features/vault/passkey/test-helpers';
 
 const fastTestDeriveKek: DeriveKekFn = (
   sodium: Sodium,
@@ -208,6 +215,34 @@ function makeFastOnboardingWorkerFactory(options?: {
                 result: fakeResult,
               },
             } as MessageEvent);
+          }
+
+          if (message.type === 'wrapForPasskey') {
+            if ('pwkBuffer' in message && message.pwkBuffer) {
+              new Uint8Array(message.pwkBuffer).fill(0);
+            }
+            if (message.generation !== generation || mode !== 'unlocked') {
+              onMessage?.({
+                data: {
+                  id: message.id,
+                  generation,
+                  ok: false,
+                  state: { mode, generation, epoch },
+                  error: { code: 'STALE_GENERATION', message: 'Stale generation' },
+                },
+              } as MessageEvent);
+              return;
+            }
+            onMessage?.({
+              data: {
+                id: message.id,
+                generation,
+                ok: true,
+                state: { mode, generation, epoch },
+                result: { vk_wrap: 'vk-wrap-passkey-test-opaque-b64url' },
+              },
+            } as MessageEvent);
+            return;
           }
         });
       },
@@ -539,10 +574,16 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     expect(parsedBody.recovery_keys).toHaveLength(10);
     expect(/rk(?:10|[1-9])_/.test(sentCall.body)).toBe(false);
 
-    // After leaving Step 2, RKs are completely gone from the DOM and provider moves to unlocked
+    // After leaving Step 2, RKs are completely gone from the DOM, Step 3 renders, and Skip navigates to /app
     await waitFor(() => {
       expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
       expect(document.body.textContent ?? '').not.toContain('rk1_3F8K');
+      expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+    await waitFor(() => {
       expect(vaultCtx.state).toBe('unlocked');
     });
     expect(routerMocks.replace).toHaveBeenCalledWith('/app');
@@ -1022,6 +1063,13 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1518,4 +1566,195 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       unsubscribe();
     }
   }, 20_000);
+
+  describe('16B: onboarding step 3 (optional add passkey + skip + remember-device placeholder)', () => {
+    async function advanceToStep3(locale: 'en' | 'vi' = 'en') {
+      let currentMe = makeMeFixture('absent');
+      const credentialsCreate = vi.fn();
+      Object.defineProperty(navigator, 'credentials', {
+        value: { create: credentialsCreate, get: vi.fn() },
+        configurable: true,
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+        if (url.endsWith('/auth/config')) {
+          return jsonResponse({
+            oauth_providers: [],
+            email_verification_required: false,
+            captcha_site_key: null,
+          });
+        }
+        if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
+        if (url.endsWith('/vault') && init?.method === 'POST') {
+          currentMe = makeMeFixture('present');
+          return jsonResponse({ vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d', version: 1 }, 201);
+        }
+        if (url.endsWith('/auth/reauth') && init?.method === 'POST') {
+          return jsonResponse({
+            grant: 'grant-passkey-register-token',
+            action: 'vault.passkey_register',
+            expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+          });
+        }
+        if (url.endsWith('/vault/passkeys/register/options') && init?.method === 'POST') {
+          return jsonResponse(registerOptionsResponse());
+        }
+        if (url.endsWith('/vault/passkeys') && init?.method === 'POST') {
+          return jsonResponse(
+            {
+              id: 'passkey-step3-1',
+              name: 'Onboarding laptop',
+              aaguid: null,
+              created_at: '2026-10-30T00:00:00Z',
+            },
+            201,
+          );
+        }
+        return jsonResponse({});
+      });
+
+      renderOnboarding({ locale });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+      });
+      fireEvent.change(
+        screen.getByLabelText(locale === 'en' ? /^Passphrase$/i : /^Passphrase$/i),
+        { target: { value: STRONG_PASSPHRASE } },
+      );
+      fireEvent.change(
+        screen.getByLabelText(locale === 'en' ? /Confirm passphrase/i : /Gõ lại passphrase/i),
+        { target: { value: STRONG_PASSPHRASE } },
+      );
+      fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+      });
+
+      return { credentialsCreate, fetchSpy };
+    }
+
+    it('16B: step 3 renders after RK confirm, remember-device slot is not rendered, and Skip goes on to /app', async () => {
+      await advanceToStep3('en');
+
+      // Step 3 renders and RKs are gone from the DOM
+      const step3Section = screen.getByTestId('onboarding-step-passkey');
+      expect(step3Section).toBeInTheDocument();
+      expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+      expect(document.body.textContent ?? '').not.toContain('rk1_3F8K');
+
+      // Stepper marks step 3 active
+      expect(screen.getByRole('button', { name: /3 · Passkey/i })).toHaveAttribute('aria-current', 'step');
+      expect(screen.getByRole('button', { name: /3 · Passkey/i })).toHaveAttribute('aria-pressed', 'true');
+
+      // Remember-this-device toggle slot is hidden in Part P (not rendered)
+      expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Remember this device/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Nhớ thiết bị này/i)).not.toBeInTheDocument();
+
+      // Skip goes on to /app
+      expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+      });
+      await waitFor(() => {
+        expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+      });
+    });
+
+    it('16B: step 3 add passkey success goes on to /app', async () => {
+      const { credentialsCreate } = await advanceToStep3('en');
+      credentialsCreate.mockResolvedValue(
+        fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+      // Re-authenticate in place inside PasskeyAddDialog
+      const pwdInput = await screen.findByLabelText('Login password');
+      fireEvent.change(pwdInput, { target: { value: 'correct-login-password' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+      const continueBtn = await screen.findByRole('button', { name: 'Continue' });
+      await waitFor(() => expect(continueBtn).toBeEnabled());
+
+      fireEvent.change(screen.getByLabelText('Passkey name'), {
+        target: { value: 'Onboarding laptop' },
+      });
+      fireEvent.click(continueBtn);
+
+      await waitFor(() => {
+        expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+      });
+    });
+
+    it('16B: step 3 PRF-unsupported and cancel show §5.10 messages and still allow Skip to finish onboarding (en + vi)', async () => {
+      const { credentialsCreate } = await advanceToStep3('en');
+
+      // 1. PRF unsupported -> shows exact §5.10 passkey.prf_unsupported message
+      credentialsCreate.mockResolvedValueOnce(
+        fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: false } }).credential,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+      const pwdInput = await screen.findByLabelText('Login password');
+      fireEvent.change(pwdInput, { target: { value: 'correct-login-password' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+      const continueBtn = await screen.findByRole('button', { name: 'Continue' });
+      await waitFor(() => expect(continueBtn).toBeEnabled());
+
+      fireEvent.change(screen.getByLabelText('Passkey name'), { target: { value: 'No PRF key' } });
+      fireEvent.click(continueBtn);
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        enMessages.vault.passkey.prf_unsupported,
+      );
+
+      // 2. Cancel at create() -> shows exact §5.10 passkey.register_cancelled message
+      credentialsCreate.mockRejectedValueOnce(domError('NotAllowedError'));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          enMessages.vault.passkey.register_cancelled,
+        );
+      });
+
+      // Close dialog and Skip -> finishes onboarding to /app
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+      });
+      await waitFor(() => {
+        expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+      });
+
+      // Vietnamese parity check for Step 3 + Finish button
+      cleanup();
+      routerMocks.replace.mockReset();
+      await advanceToStep3('vi');
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+        viMessages.vault.b.onboarding.title,
+      );
+      expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('onboarding-finish-button'));
+      });
+      await waitFor(() => {
+        expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+      });
+    });
+  });
 });

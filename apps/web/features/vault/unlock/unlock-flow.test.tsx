@@ -1134,4 +1134,89 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     expect(hasRecoveryCompletedNotice('user-unlock-test-1')).toBe(false);
     expect(window.sessionStorage.length).toBe(0);
   }, 20_000);
+
+  it('17B: ForgotPassphraseView lists passkey, remembered-device, and unlocked-tab -> Settings change passphrase (rewrap) paths alongside recovery key and reset (en + vi)', async () => {
+    installUnlockFetchMock();
+    renderUnlock({ locale: 'en', view: 'forgot' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('forgot-passphrase-page')).toBeInTheDocument();
+    });
+
+    // 1. Passkey path -> /app/unlock
+    const passkeyCard = screen.getByTestId('forgot-path-passkey');
+    expect(passkeyCard).toHaveTextContent(enMessages.vault.b.forgot.passkeyTitle);
+    expect(passkeyCard).toHaveTextContent(enMessages.vault.b.forgot.passkeyBody);
+    expect(screen.getByTestId('forgot-back-to-unlock-cta')).toHaveAttribute('href', '/app/unlock');
+
+    // 2. Remembered device path -> /app/unlock
+    const deviceCard = screen.getByTestId('forgot-path-remembered-device');
+    expect(deviceCard).toHaveTextContent(enMessages.vault.b.forgot.deviceTitle);
+    expect(deviceCard).toHaveTextContent(enMessages.vault.b.forgot.deviceBody);
+    expect(screen.getByTestId('forgot-try-device-cta')).toHaveAttribute('href', '/app/unlock');
+
+    // 3. Unlocked tab path -> /app/settings#baomat (rewrap without old passphrase)
+    const unlockedTabCard = screen.getByTestId('forgot-path-unlocked-tab');
+    expect(unlockedTabCard).toHaveTextContent(enMessages.vault.b.forgot.unlockedTabTitle);
+    expect(unlockedTabCard).toHaveTextContent(/rewrap/i);
+    expect(screen.getByTestId('forgot-unlocked-tab-settings-cta')).toHaveAttribute(
+      'href',
+      '/app/settings#baomat',
+    );
+
+    // 4. Recovery key + Reset paths remain intact
+    expect(screen.getByTestId('forgot-path-recovery-key')).toHaveTextContent(/Recovery key/i);
+    expect(screen.getByTestId('forgot-use-recovery-key-cta')).toHaveAttribute('href', '/app/recovery');
+    expect(screen.getByTestId('forgot-reset-vault-link')).toHaveAttribute('href', '/app/settings#baomat');
+
+    cleanup();
+    renderUnlock({ locale: 'vi', view: 'forgot' });
+    await waitFor(() => {
+      expect(screen.getByTestId('forgot-passphrase-page')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('forgot-path-passkey')).toHaveTextContent(
+      viMessages.vault.b.forgot.passkeyTitle,
+    );
+    expect(screen.getByTestId('forgot-path-remembered-device')).toHaveTextContent(
+      viMessages.vault.b.forgot.deviceTitle,
+    );
+    expect(screen.getByTestId('forgot-path-unlocked-tab')).toHaveTextContent(
+      viMessages.vault.b.forgot.unlockedTabTitle,
+    );
+  });
+
+  it('CF-T17B-UNLOCK-EMAIL-WRAP: Signed in · {email} line on VaultUnlockFlow carries overflow-wrap:anywhere and break-words for long emails', async () => {
+    const longEmail =
+      'extremely-long-enterprise-identity-recipient-address-for-mobile-390px-viewport-check@subdomain.engram-security-test.zone17th.click';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) {
+        const me = makeMeFixture('present');
+        return jsonResponse({
+          ...me,
+          user: { ...me.user, email: longEmail },
+        });
+      }
+      if (url.endsWith('/vault')) return jsonResponse(makeVaultMetaFixture());
+      return jsonResponse({});
+    });
+
+    renderUnlock({ locale: 'en', view: 'unlock' });
+
+    const signedInLine = await screen.findByTestId('unlock-signed-in-line');
+    await waitFor(() => {
+      expect(signedInLine).toHaveTextContent(`Signed in · ${longEmail}`);
+    });
+    expect(signedInLine).toHaveClass('min-w-0');
+    expect(signedInLine).toHaveClass('break-words');
+    expect(signedInLine).toHaveStyle({ overflowWrap: 'anywhere' });
+  });
 });
