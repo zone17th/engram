@@ -422,9 +422,9 @@ function PasskeySecurityCardInner({
       )}
 
       {actionError && (
-        <AuthStatus tone="error" className="mb-3" data-testid="settings-passkey-error">
-          {actionError}
-        </AuthStatus>
+        <div className="mb-3" data-testid="settings-passkey-error">
+          <AuthStatus tone="error">{actionError}</AuthStatus>
+        </div>
       )}
 
       {loadError && items.length === 0 ? (

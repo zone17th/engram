@@ -197,9 +197,9 @@ export function AutoLockCard({ rememberDeviceSlot }: AutoLockCardProps = {}) {
         </p>
       )}
       {errorMessage && (
-        <AuthStatus tone="error" className="mt-3" data-testid="settings-auto-lock-error">
-          {errorMessage}
-        </AuthStatus>
+        <div className="mt-3" data-testid="settings-auto-lock-error">
+          <AuthStatus tone="error">{errorMessage}</AuthStatus>
+        </div>
       )}
       <div data-testid="settings-remember-device-slot">
         {rememberDeviceSlot ?? <RememberDeviceSection />}
