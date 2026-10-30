@@ -3602,10 +3602,12 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       await driveToFailedRecheck(fetchState, () => vaultCtx);
       expect(screen.getByTestId('recovery-committed-recheck-retry')).toBeInTheDocument();
       expect(screen.getByTestId('recovery-committed-recheck-unlock')).toBeInTheDocument();
-      const publishedBefore = published.length;
       routerMocks.replace.mockClear();
 
       await announceIdleIdentityChange(announce, vaultCtx);
+      // The spy sees every `vault_changed` on the channel, the announcement itself included: only what follows it counts.
+      const publishedAfterTransition = published.length;
+      await settle();
 
       // Nothing was clicked: the obsolete guidance and both actions are already gone.
       expect(screen.queryByTestId('recovery-committed-recheck-notice')).not.toBeInTheDocument();
@@ -3614,7 +3616,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(screen.queryByTestId('recovery-completed-while-locked-notice')).not.toBeInTheDocument();
       expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
       expect(routerMocks.replace).not.toHaveBeenCalled();
-      expect(published.slice(publishedBefore)).toEqual([]);
+      expect(published.slice(publishedAfterTransition)).toEqual([]);
       expect(vaultCtx.workerState).toBe('locked');
 
       shim.close();
