@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -2297,6 +2298,7 @@ func TestPasskeyCreate_DeadlineDuringCommitRetainsAmbiguousClaim(t *testing.T) {
 // while Transaction 2 holds its connection (BR2-1, BR2-3).
 type tx2ZeroAcquireTracer struct {
 	inTx2            atomic.Bool
+	tx2Entries       atomic.Int32
 	sawTx2SessionLck atomic.Bool
 	nestedAcquires   atomic.Int32
 }
@@ -2315,6 +2317,7 @@ func (t *tx2ZeroAcquireTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn,
 	// GetVaultByUserForUpdate marks the start of RegisterPasskey Transaction 2.
 	if strings.Contains(data.SQL, "FROM vault") && strings.Contains(data.SQL, "FOR UPDATE") {
 		t.inTx2.Store(true)
+		t.tx2Entries.Add(1)
 	}
 	// EnsureLiveTx locks the session row inside Transaction 2 right before VerifyGrant.
 	if t.inTx2.Load() && strings.Contains(data.SQL, "FROM session") && strings.Contains(data.SQL, "FOR UPDATE") {
@@ -2360,42 +2363,54 @@ func TestMount_PanicsWhenReauthLacksGrantVerifier(t *testing.T) {
 
 // TestGrantAdapter_VerifyGrantParityWithVerifyReauth verifies advisor-dec-072 condition (1):
 // GrantAdapter.VerifyGrant accepts valid grants and rejects expired, wrong-action, wrong-user,
-// wrong-session, empty, and tampered tokens with the exact same error code (reauth_invalid)
-// as GrantAdapter.VerifyReauth.
+// wrong-session (against a second live session owned by the same user), empty, and tampered tokens
+// with the exact same error code (reauth_invalid) as GrantAdapter.VerifyReauth, while preserving
+// VerifyReauth's session-liveness precedence (session_invalid) for an invalid/cross-user session principal.
 func TestGrantAdapter_VerifyGrantParityWithVerifyReauth(t *testing.T) {
 	h := newHarness(t, harnessOpts{})
 	ctx := context.Background()
 
+	const emailA = "grant-parity-a@example.com"
+	const emailB = "grant-parity-b@example.com"
 	const password = "correct-horse-battery-staple"
-	_, meA := h.signupUser("grant-parity-a@example.com", password)
-	_, meB := h.signupUser("grant-parity-b@example.com", password)
+	_, meA := h.signupUser(emailA, password)
+	_, meB := h.signupUser(emailB, password)
 
-	var sessA, sessB uuid.UUID
-	if err := h.pool.QueryRow(ctx, `SELECT id FROM session WHERE user_id = $1 LIMIT 1`, meA.User.ID).Scan(&sessA); err != nil {
-		t.Fatalf("query session A: %v", err)
+	var sessA1, sessB uuid.UUID
+	if err := h.pool.QueryRow(ctx, `SELECT id FROM session WHERE user_id = $1 LIMIT 1`, meA.User.ID).Scan(&sessA1); err != nil {
+		t.Fatalf("query session A1: %v", err)
 	}
 	if err := h.pool.QueryRow(ctx, `SELECT id FROM session WHERE user_id = $1 LIMIT 1`, meB.User.ID).Scan(&sessB); err != nil {
 		t.Fatalf("query session B: %v", err)
 	}
 
-	pA := authctx.Principal{UserID: meA.User.ID, SessionID: sessA}
+	// Create a second valid live session owned by user A so EnsureLive succeeds and both
+	// VerifyGrant and VerifyReauth reach grant session-binding verification.
+	_ = h.loginPasskeyTestUser(emailA, password)
+	var sessA2 uuid.UUID
+	if err := h.pool.QueryRow(ctx, `SELECT id FROM session WHERE user_id = $1 AND id <> $2 LIMIT 1`, meA.User.ID, sessA1).Scan(&sessA2); err != nil {
+		t.Fatalf("query session A2: %v", err)
+	}
+
+	pA1 := authctx.Principal{UserID: meA.User.ID, SessionID: sessA1}
+	pA2 := authctx.Principal{UserID: meA.User.ID, SessionID: sessA2}
 	pB := authctx.Principal{UserID: meB.User.ID, SessionID: sessB}
-	pWrongSession := authctx.Principal{UserID: meA.User.ID, SessionID: sessB}
+	pInvalidCrossSession := authctx.Principal{UserID: meA.User.ID, SessionID: sessB}
 
 	adapter := authhttp.GrantAdapter{
 		Grants:   h.authSvc.Grants(),
 		Sessions: h.authSvc.Sessions(),
 	}
-	issued, err := h.authSvc.Grants().Issue(pA, "vault.passkey_register")
+	issued, err := h.authSvc.Grants().Issue(pA1, "vault.passkey_register")
 	if err != nil {
 		t.Fatalf("Issue grant: %v", err)
 	}
 
 	// Positive control: valid token succeeds in both VerifyGrant and VerifyReauth.
-	if err := adapter.VerifyGrant(pA, "vault.passkey_register", issued.Grant); err != nil {
+	if err := adapter.VerifyGrant(pA1, "vault.passkey_register", issued.Grant); err != nil {
 		t.Fatalf("VerifyGrant on valid token failed: %v", err)
 	}
-	if err := adapter.VerifyReauth(ctx, pA, "vault.passkey_register", issued.Grant); err != nil {
+	if err := adapter.VerifyReauth(ctx, pA1, "vault.passkey_register", issued.Grant); err != nil {
 		t.Fatalf("VerifyReauth on valid token failed: %v", err)
 	}
 
@@ -2405,48 +2420,70 @@ func TestGrantAdapter_VerifyGrantParityWithVerifyReauth(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		principal authctx.Principal
-		action    string
-		token     string
-		advance   time.Duration
+		name           string
+		principal      authctx.Principal
+		action         string
+		token          string
+		advance        time.Duration
+		wantGrantCode  string
+		wantReauthCode string
 	}{
 		{
-			name:      "wrong_action",
-			principal: pA,
-			action:    "vault.rewrap",
-			token:     issued.Grant,
+			name:           "wrong_action",
+			principal:      pA1,
+			action:         "vault.rewrap",
+			token:          issued.Grant,
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "reauth_invalid",
 		},
 		{
-			name:      "wrong_user",
-			principal: pB,
-			action:    "vault.passkey_register",
-			token:     issued.Grant,
+			name:           "wrong_user",
+			principal:      pB,
+			action:         "vault.passkey_register",
+			token:          issued.Grant,
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "reauth_invalid",
 		},
 		{
-			name:      "wrong_session",
-			principal: pWrongSession,
-			action:    "vault.passkey_register",
-			token:     issued.Grant,
+			name:           "wrong_session",
+			principal:      pA2,
+			action:         "vault.passkey_register",
+			token:          issued.Grant,
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "reauth_invalid",
 		},
 		{
-			name:      "tampered_mac",
-			principal: pA,
-			action:    "vault.passkey_register",
-			token:     tampered,
+			name:           "invalid_session_principal",
+			principal:      pInvalidCrossSession,
+			action:         "vault.passkey_register",
+			token:          issued.Grant,
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "session_invalid",
 		},
 		{
-			name:      "empty_token",
-			principal: pA,
-			action:    "vault.passkey_register",
-			token:     "",
+			name:           "tampered_mac",
+			principal:      pA1,
+			action:         "vault.passkey_register",
+			token:          tampered,
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "reauth_invalid",
 		},
 		{
-			name:      "expired_token",
-			principal: pA,
-			action:    "vault.passkey_register",
-			token:     issued.Grant,
-			advance:   auth.GrantTTL + time.Second,
+			name:           "empty_token",
+			principal:      pA1,
+			action:         "vault.passkey_register",
+			token:          "",
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "reauth_invalid",
+		},
+		{
+			name:           "expired_token",
+			principal:      pA1,
+			action:         "vault.passkey_register",
+			token:          issued.Grant,
+			advance:        auth.GrantTTL + time.Second,
+			wantGrantCode:  "reauth_invalid",
+			wantReauthCode: "reauth_invalid",
 		},
 	}
 
@@ -2458,19 +2495,68 @@ func TestGrantAdapter_VerifyGrantParityWithVerifyReauth(t *testing.T) {
 		errReauth := adapter.VerifyReauth(ctx, tc.principal, tc.action, tc.token)
 
 		var aeGrant, aeReauth *httpx.AuthError
-		if !errors.As(errGrant, &aeGrant) || aeGrant.Code != "reauth_invalid" {
-			t.Fatalf("%s: VerifyGrant error = %v (type %T), want *httpx.AuthError{Code: \"reauth_invalid\"}", tc.name, errGrant, errGrant)
+		if !errors.As(errGrant, &aeGrant) || aeGrant.Code != tc.wantGrantCode {
+			t.Fatalf("%s: VerifyGrant error = %v (type %T), want *httpx.AuthError{Code: %q}", tc.name, errGrant, errGrant, tc.wantGrantCode)
 		}
-		if !errors.As(errReauth, &aeReauth) || aeReauth.Code != "reauth_invalid" {
-			t.Fatalf("%s: VerifyReauth error = %v (type %T), want *httpx.AuthError{Code: \"reauth_invalid\"}", tc.name, errReauth, errReauth)
+		if !errors.As(errReauth, &aeReauth) || aeReauth.Code != tc.wantReauthCode {
+			t.Fatalf("%s: VerifyReauth error = %v (type %T), want *httpx.AuthError{Code: %q}", tc.name, errReauth, errReauth, tc.wantReauthCode)
 		}
-		if aeGrant.Code != aeReauth.Code || aeGrant.Reason != aeReauth.Reason {
+		if tc.wantGrantCode == tc.wantReauthCode && (aeGrant.Code != aeReauth.Code || aeGrant.Reason != aeReauth.Reason) {
 			t.Fatalf("%s: VerifyGrant (%+v) != VerifyReauth (%+v)", tc.name, aeGrant, aeReauth)
 		}
 	}
 }
 
-// TestPasskeyCreate_BoundedSharedPoolNoWaitCycle verifies BR2-1 and BR2-3:
+// doReqErr executes an HTTP request against the harness server without calling t.Fatal inside
+// worker goroutines, returning any transport or body-read error so concurrent callers can always
+// publish a completion value (BR3-3).
+func (h *harness) doReqErr(j cookieJar, method, path, body string, opt reqOptions) (testResponse, string, error) {
+	var rdr io.Reader
+	if body != "" {
+		rdr = bytes.NewBufferString(body)
+	}
+	req, err := http.NewRequest(method, h.srv.URL+path, rdr)
+	if err != nil {
+		return testResponse{}, "", err
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		if body != "" || method != http.MethodDelete {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Origin", h.origin)
+	}
+	j.apply(req)
+	if !opt.noCSRF {
+		if c := j[authhttp.CookieCSRF]; c != nil {
+			req.Header.Set(authhttp.HeaderCSRF, c.Value)
+		}
+	}
+	if opt.idemKey != "" {
+		req.Header.Set(httpx.HeaderIdempotencyKey, opt.idemKey)
+	}
+	if opt.ifMatch != "" {
+		req.Header.Set(httpx.HeaderIfMatch, opt.ifMatch)
+	}
+	if opt.grant != "" {
+		req.Header.Set(authhttp.HeaderReauth, opt.grant)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return testResponse{}, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	j.capture(resp)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return testResponse{}, "", err
+	}
+	return testResponse{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header,
+	}, string(b), nil
+}
+
+// TestPasskeyCreate_BoundedSharedPoolNoWaitCycle verifies BR2-1, BR2-3, BR3-1, and BR3-3:
 //  1. Single-connection shared pool (MaxConns=1) shared by compose.NewAuth, compose.Adapters, and compose.NewVault:
 //     Transaction 2 holds the sole pool connection across GetVaultByUserForUpdate -> InsertPasskey ->
 //     EnsureLiveTx -> VerifyGrant -> FinishIdempotencyKey -> COMMIT with zero extra pool acquisitions.
@@ -2483,36 +2569,9 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	h := newHarness(t, harnessOpts{})
 	ctx := context.Background()
 	va := webauthntest.New()
+	const password = "correct-horse-battery-staple"
 
 	// --- Subcase 1: MaxConns=1 shared by auth and vault + zero extra pool acquisitions during Transaction 2 ---
-	const email1 = "passkey-bounded-pool-1@example.com"
-	const password = "correct-horse-battery-staple"
-	jar1, me1 := h.signupUser(email1, password)
-	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, me1.User.ID); err != nil {
-		t.Fatalf("verify email 1: %v", err)
-	}
-	h.createPasskeyTestVault(jar1, "idem-pk-pool1-init", 0x81)
-	opts1 := h.registerPasskeyOptions(jar1)
-	reg1, err := va.CreateCredential(webauthntest.RegistrationOptions{
-		RPID:         h.vaultSvc.WebAuthnRPID(),
-		Origin:       h.origin,
-		ChallengeB64: opts1.PublicKey.Challenge,
-	})
-	if err != nil {
-		t.Fatalf("CreateCredential 1: %v", err)
-	}
-	body1 := makePasskeyCreateBody(
-		t,
-		opts1.ChallengeID,
-		reg1.ClientDataJSONB64,
-		reg1.AttestationObjectB64,
-		opts1.PRFSalt,
-		makeWrapB64U(t, vault.WrapKindPRF, 0x96),
-		"Bounded Pool 1 Conn Key",
-		nil,
-	)
-	const idemKey1 = "idem-pk-bounded-pool-1conn-001"
-
 	tracer1 := &tx2ZeroAcquireTracer{}
 	pcfg1 := h.pool.Config()
 	pcfg1.MaxConns = 1
@@ -2565,6 +2624,43 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		pool:     pool1,
 		logs:     h.logs,
 	}
+
+	// Authenticate, create vault, request WebAuthn options, and obtain reauth grant THROUGH h1
+	// so cookies, CSRF tokens, and grants are issued and verified by the same bounded-pool server.
+	const email1 = "passkey-bounded-pool-1@example.com"
+	jar1, me1 := h1.signupUser(email1, password)
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, me1.User.ID); err != nil {
+		t.Fatalf("verify email 1: %v", err)
+	}
+	h1.createPasskeyTestVault(jar1, "idem-pk-pool1-init", 0x81)
+	opts1 := h1.registerPasskeyOptions(jar1)
+	reg1, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h1.vaultSvc.WebAuthnRPID(),
+		Origin:       h1.origin,
+		ChallengeB64: opts1.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 1: %v", err)
+	}
+	body1 := makePasskeyCreateBody(
+		t,
+		opts1.ChallengeID,
+		reg1.ClientDataJSONB64,
+		reg1.AttestationObjectB64,
+		opts1.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x96),
+		"Bounded Pool 1 Conn Key",
+		nil,
+	)
+	const idemKey1 = "idem-pk-bounded-pool-1conn-001"
+
+	// Reset tracer counters immediately before POST /api/v1/vault/passkeys so assertions measure
+	// only the passkey registration request on the MaxConns=1 shared pool.
+	tracer1.inTx2.Store(false)
+	tracer1.tx2Entries.Store(0)
+	tracer1.sawTx2SessionLck.Store(false)
+	tracer1.nestedAcquires.Store(0)
+
 	grant1 := h1.reauthGrant(jar1, "vault.passkey_register", password)
 	resp1, raw1 := h1.doReq(jar1, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
 		idemKey: idemKey1,
@@ -2572,6 +2668,9 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	})
 	if resp1.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created on MaxConns=1 shared auth/vault pool, got %d (%s)", resp1.StatusCode, raw1)
+	}
+	if got := tracer1.tx2Entries.Load(); got != 1 {
+		t.Fatalf("expected RegisterPasskey Transaction 2 to be entered exactly once on MaxConns=1 pool, got %d", got)
 	}
 	if !tracer1.sawTx2SessionLck.Load() {
 		t.Fatal("expected EnsureLiveTx (SELECT ... FROM session ... FOR UPDATE) to execute inside Transaction 2")
@@ -2588,6 +2687,9 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	if replay1.StatusCode != http.StatusCreated || string(replayRaw1) != string(raw1) {
 		t.Fatalf("expected identical 201 replay on MaxConns=1 server, got %d (%s)", replay1.StatusCode, replayRaw1)
 	}
+	if got := tracer1.tx2Entries.Load(); got != 1 {
+		t.Fatalf("expected idempotent replay not to re-enter Transaction 2, tx2Entries=%d", got)
+	}
 	var pk1, aud1, not1 int
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, me1.User.ID).Scan(&pk1); err != nil {
 		t.Fatal(err)
@@ -2603,58 +2705,10 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	}
 
 	// --- Subcase 2: MaxConns=2 shared by auth and vault, 2 concurrent users held at Transaction 2 final recheck ---
-	const email2A = "passkey-bounded-pool-2a@example.com"
-	const email2B = "passkey-bounded-pool-2b@example.com"
-	jar2A, me2A := h.signupUser(email2A, password)
-	jar2B, me2B := h.signupUser(email2B, password)
-	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id IN ($1, $2)`, me2A.User.ID, me2B.User.ID); err != nil {
-		t.Fatalf("verify emails 2A/2B: %v", err)
-	}
-	h.createPasskeyTestVault(jar2A, "idem-pk-pool2a-init", 0x82)
-	h.createPasskeyTestVault(jar2B, "idem-pk-pool2b-init", 0x83)
-
-	opts2A := h.registerPasskeyOptions(jar2A)
-	reg2A, err := va.CreateCredential(webauthntest.RegistrationOptions{
-		RPID:         h.vaultSvc.WebAuthnRPID(),
-		Origin:       h.origin,
-		ChallengeB64: opts2A.PublicKey.Challenge,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body2A := makePasskeyCreateBody(
-		t,
-		opts2A.ChallengeID,
-		reg2A.ClientDataJSONB64,
-		reg2A.AttestationObjectB64,
-		opts2A.PRFSalt,
-		makeWrapB64U(t, vault.WrapKindPRF, 0x97),
-		"Bounded Pool 2A Key",
-		nil,
-	)
-
-	opts2B := h.registerPasskeyOptions(jar2B)
-	reg2B, err := va.CreateCredential(webauthntest.RegistrationOptions{
-		RPID:         h.vaultSvc.WebAuthnRPID(),
-		Origin:       h.origin,
-		ChallengeB64: opts2B.PublicKey.Challenge,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body2B := makePasskeyCreateBody(
-		t,
-		opts2B.ChallengeID,
-		reg2B.ClientDataJSONB64,
-		reg2B.AttestationObjectB64,
-		opts2B.PRFSalt,
-		makeWrapB64U(t, vault.WrapKindPRF, 0x98),
-		"Bounded Pool 2B Key",
-		nil,
-	)
-
 	// Deterministic barrier inside Transaction 2 right after EnsureLiveTx + VerifyGrant (at FinishIdempotencyKey):
 	// both concurrent requests must hold all 2 connections of pool2 simultaneously before either commits.
+	var barrierArmed atomic.Bool
+	var tx2Entered2 atomic.Int32
 	var atFinalCheck atomic.Int32
 	bothAtFinalCheck := make(chan struct{})
 	var releaseBarrierOnce sync.Once
@@ -2664,7 +2718,15 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	t.Cleanup(releaseBarrier)
 
 	barrierTracer := &lateBarrierTracer{
+		onEnterTx2: func() {
+			if barrierArmed.Load() {
+				tx2Entered2.Add(1)
+			}
+		},
 		onFinishIdempotency: func(ctx context.Context) {
+			if !barrierArmed.Load() {
+				return
+			}
 			if atFinalCheck.Add(1) == 2 {
 				releaseBarrier()
 			}
@@ -2726,53 +2788,163 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		pool:     pool2,
 		logs:     h.logs,
 	}
+
+	const email2A = "passkey-bounded-pool-2a@example.com"
+	const email2B = "passkey-bounded-pool-2b@example.com"
+	jar2A, me2A := h2.signupUser(email2A, password)
+	jar2B, me2B := h2.signupUser(email2B, password)
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id IN ($1, $2)`, me2A.User.ID, me2B.User.ID); err != nil {
+		t.Fatalf("verify emails 2A/2B: %v", err)
+	}
+	h2.createPasskeyTestVault(jar2A, "idem-pk-pool2a-init", 0x82)
+	h2.createPasskeyTestVault(jar2B, "idem-pk-pool2b-init", 0x83)
+
+	opts2A := h2.registerPasskeyOptions(jar2A)
+	reg2A, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h2.vaultSvc.WebAuthnRPID(),
+		Origin:       h2.origin,
+		ChallengeB64: opts2A.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2A := makePasskeyCreateBody(
+		t,
+		opts2A.ChallengeID,
+		reg2A.ClientDataJSONB64,
+		reg2A.AttestationObjectB64,
+		opts2A.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x97),
+		"Bounded Pool 2A Key",
+		nil,
+	)
+
+	opts2B := h2.registerPasskeyOptions(jar2B)
+	reg2B, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h2.vaultSvc.WebAuthnRPID(),
+		Origin:       h2.origin,
+		ChallengeB64: opts2B.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2B := makePasskeyCreateBody(
+		t,
+		opts2B.ChallengeID,
+		reg2B.ClientDataJSONB64,
+		reg2B.AttestationObjectB64,
+		opts2B.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x98),
+		"Bounded Pool 2B Key",
+		nil,
+	)
+
 	grant2A := h2.reauthGrant(jar2A, "vault.passkey_register", password)
 	grant2B := h2.reauthGrant(jar2B, "vault.passkey_register", password)
+	barrierArmed.Store(true)
 
 	type regOutcome struct {
 		status int
 		raw    string
+		err    error
 	}
 	done2A := make(chan regOutcome, 1)
 	done2B := make(chan regOutcome, 1)
 
+	const workerJoinTimeout = 5 * time.Second
+	var out2A, out2B regOutcome
+	var waitErr2A, waitErr2B error
 	var joinOnce sync.Once
 	joinWorkers := func() {
 		joinOnce.Do(func() {
-			releaseBarrier()
-			<-done2A
-			<-done2B
+			joinCtx, cancel := context.WithTimeout(context.Background(), workerJoinTimeout)
+			defer cancel()
+			select {
+			case out2A = <-done2A:
+			case <-joinCtx.Done():
+				waitErr2A = fmt.Errorf("timed out waiting for worker 2A after %s: %w", workerJoinTimeout, joinCtx.Err())
+				releaseBarrier()
+			}
+			select {
+			case out2B = <-done2B:
+			case <-joinCtx.Done():
+				waitErr2B = fmt.Errorf("timed out waiting for worker 2B after %s: %w", workerJoinTimeout, joinCtx.Err())
+				releaseBarrier()
+			}
 		})
 	}
-	t.Cleanup(joinWorkers)
+	// Register joinWorkers after pool2 and srv2 so LIFO cleanup runs:
+	// releaseBarrier + joinWorkers -> srv2.Close -> pool2.Close.
+	t.Cleanup(func() {
+		releaseBarrier()
+		joinWorkers()
+	})
 
-	go func() {
-		r, b := h2.doReq(jar2A, http.MethodPost, "/api/v1/vault/passkeys", body2A, reqOptions{
-			idemKey: "idem-pk-bounded-pool-2a-001",
-			grant:   grant2A,
+	runWorker := func(ch chan<- regOutcome, jar cookieJar, reqBody, idemKey, grant string) {
+		var out regOutcome
+		defer func() {
+			if r := recover(); r != nil {
+				out.err = fmt.Errorf("worker panic: %v", r)
+				releaseBarrier()
+			}
+			ch <- out
+		}()
+		resp, raw, reqErr := h2.doReqErr(jar, http.MethodPost, "/api/v1/vault/passkeys", reqBody, reqOptions{
+			idemKey: idemKey,
+			grant:   grant,
 		})
-		done2A <- regOutcome{status: r.StatusCode, raw: b}
-	}()
-	go func() {
-		r, b := h2.doReq(jar2B, http.MethodPost, "/api/v1/vault/passkeys", body2B, reqOptions{
-			idemKey: "idem-pk-bounded-pool-2b-001",
-			grant:   grant2B,
-		})
-		done2B <- regOutcome{status: r.StatusCode, raw: b}
-	}()
+		out = regOutcome{status: resp.StatusCode, raw: raw, err: reqErr}
+		if reqErr != nil || resp.StatusCode != http.StatusCreated {
+			releaseBarrier()
+		}
+	}
 
-	out2A := <-done2A
-	out2B := <-done2B
-	joinOnce.Do(func() {})
+	go runWorker(done2A, jar2A, body2A, "idem-pk-bounded-pool-2a-001", grant2A)
+	go runWorker(done2B, jar2B, body2B, "idem-pk-bounded-pool-2b-001", grant2B)
 
+	joinWorkers()
+	if waitErr2A != nil {
+		t.Fatal(waitErr2A)
+	}
+	if waitErr2B != nil {
+		t.Fatal(waitErr2B)
+	}
+	if out2A.err != nil {
+		t.Fatalf("concurrent user 2A request error: %v", out2A.err)
+	}
+	if out2B.err != nil {
+		t.Fatalf("concurrent user 2B request error: %v", out2B.err)
+	}
 	if out2A.status != http.StatusCreated {
 		t.Fatalf("expected 201 Created for concurrent user 2A on saturated MaxConns=2 pool, got %d (%s)", out2A.status, out2A.raw)
 	}
 	if out2B.status != http.StatusCreated {
 		t.Fatalf("expected 201 Created for concurrent user 2B on saturated MaxConns=2 pool, got %d (%s)", out2B.status, out2B.raw)
 	}
+	if got := tx2Entered2.Load(); got != 2 {
+		t.Fatalf("expected both concurrent registrations to enter RegisterPasskey Transaction 2 on MaxConns=2 pool, got %d", got)
+	}
 	if got := atFinalCheck.Load(); got != 2 {
 		t.Fatalf("expected both concurrent registrations to reach FinishIdempotencyKey while holding all 2 pool connections, got %d", got)
+	}
+
+	// Idempotent replay on the MaxConns=2 server returns the stored 201 Created without re-entering Transaction 2.
+	replay2A, replayRaw2A := h2.doReq(jar2A, http.MethodPost, "/api/v1/vault/passkeys", body2A, reqOptions{
+		idemKey: "idem-pk-bounded-pool-2a-001",
+		grant:   grant2A,
+	})
+	if replay2A.StatusCode != http.StatusCreated || replayRaw2A != out2A.raw {
+		t.Fatalf("expected identical 201 replay for user 2A on MaxConns=2 server, got %d (%s)", replay2A.StatusCode, replayRaw2A)
+	}
+	replay2B, replayRaw2B := h2.doReq(jar2B, http.MethodPost, "/api/v1/vault/passkeys", body2B, reqOptions{
+		idemKey: "idem-pk-bounded-pool-2b-001",
+		grant:   grant2B,
+	})
+	if replay2B.StatusCode != http.StatusCreated || replayRaw2B != out2B.raw {
+		t.Fatalf("expected identical 201 replay for user 2B on MaxConns=2 server, got %d (%s)", replay2B.StatusCode, replayRaw2B)
+	}
+	if got := tx2Entered2.Load(); got != 2 {
+		t.Fatalf("expected idempotent replays not to re-enter Transaction 2 on MaxConns=2 pool, tx2Entered2=%d", got)
 	}
 
 	for _, u := range []uuid.UUID{me2A.User.ID, me2B.User.ID} {
@@ -2793,10 +2965,16 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 }
 
 type lateBarrierTracer struct {
+	onEnterTx2          func()
 	onFinishIdempotency func(ctx context.Context)
 }
 
 func (t *lateBarrierTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "FROM vault") && strings.Contains(data.SQL, "FOR UPDATE") {
+		if t.onEnterTx2 != nil {
+			t.onEnterTx2()
+		}
+	}
 	if strings.Contains(data.SQL, "UPDATE idempotency_key") && strings.Contains(data.SQL, "status = 'done'") {
 		if t.onFinishIdempotency != nil {
 			t.onFinishIdempotency(ctx)
