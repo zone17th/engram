@@ -12,6 +12,7 @@ import {
   verifyRequired,
   waitForMail,
 } from './helpers';
+import { fillSecret } from './vault-settings-secret';
 
 const INITIAL_VAULT_PASSPHRASE = 'correct-horse-battery-staple-gn-v1';
 const UPDATED_VAULT_PASSPHRASE = 'correct-horse-battery-staple-gn-v2';
@@ -421,14 +422,18 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           logStep(testLabel, 'capture:passphrase-done');
           const passLoginInput = passDialog.locator('#pass-login-pwd');
           if ((await passLoginInput.count()) > 0) {
-            await passLoginInput.fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await fillSecret(passLoginInput, PASSWORD, STEP_TIMEOUT);
           }
-          await passDialog.locator('#pass-new-pp').fill(UPDATED_VAULT_PASSPHRASE, {
-            timeout: STEP_TIMEOUT,
-          });
-          await passDialog.locator('#pass-confirm-pp').fill(UPDATED_VAULT_PASSPHRASE, {
-            timeout: STEP_TIMEOUT,
-          });
+          await fillSecret(
+            passDialog.locator('#pass-new-pp'),
+            UPDATED_VAULT_PASSPHRASE,
+            STEP_TIMEOUT,
+          );
+          await fillSecret(
+            passDialog.locator('#pass-confirm-pp'),
+            UPDATED_VAULT_PASSPHRASE,
+            STEP_TIMEOUT,
+          );
           await passDialog
             .getByRole('button', { name: /Change passphrase|Đổi passphrase/ })
             .click({ timeout: STEP_TIMEOUT });
@@ -453,7 +458,7 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           const rkStage = rkDialog.locator('[data-view="rot-reauth"], [data-view="rot-keys"]');
           await expect(rkStage).toBeVisible({ timeout: STEP_TIMEOUT });
           if ((await rkStage.getAttribute('data-view')) === 'rot-reauth') {
-            await rkDialog.locator('#rot-reauth-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await fillSecret(rkDialog.locator('#rot-reauth-pwd'), PASSWORD, STEP_TIMEOUT);
             await rkDialog
               .getByRole('button', { name: /Continue|Tiếp tục/ })
               .click({ timeout: STEP_TIMEOUT });
@@ -526,7 +531,7 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           const rstStage = resetDialog.locator('[data-view="rst-s3"], [data-view="rst-s4"]');
           await expect(rstStage).toBeVisible({ timeout: STEP_TIMEOUT });
           if ((await rstStage.getAttribute('data-view')) === 'rst-s3') {
-            await resetDialog.locator('#rst-reauth-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await fillSecret(resetDialog.locator('#rst-reauth-pwd'), PASSWORD, STEP_TIMEOUT);
             await resetDialog
               .getByRole('button', { name: /Continue|Tiếp tục/ })
               .click({ timeout: STEP_TIMEOUT });
@@ -587,9 +592,11 @@ test.describe('P03-T20A Vault Security Settings Visual Captures (AC VISUAL)', ()
           );
           await expect(rstAbsentStage).toBeVisible({ timeout: STEP_TIMEOUT });
           if ((await rstAbsentStage.getAttribute('data-view')) === 'rst-s3') {
-            await resetDlgForAbsent
-              .locator('#rst-reauth-pwd')
-              .fill(PASSWORD, { timeout: STEP_TIMEOUT });
+            await fillSecret(
+              resetDlgForAbsent.locator('#rst-reauth-pwd'),
+              PASSWORD,
+              STEP_TIMEOUT,
+            );
             await resetDlgForAbsent
               .getByRole('button', { name: /Continue|Tiếp tục/ })
               .click({ timeout: STEP_TIMEOUT });

@@ -8,6 +8,7 @@ import {
   verifyRequired,
   waitForMail,
 } from './helpers';
+import { fillSecret } from './vault-settings-secret';
 
 const INITIAL_VAULT_PASSPHRASE = 'correct-horse-battery-staple-gn-v1';
 const UPDATED_VAULT_PASSPHRASE = 'updated-horse-battery-staple-gn-v2!';
@@ -350,13 +351,13 @@ test.describe('P03-T20A Vault Security Settings E2E (Change Passphrase, Recovery
       await expect(passDialog).toBeVisible({ timeout: STEP_TIMEOUT });
       await expect(passDialog.getByLabel(/Old passphrase|Passphrase cũ/i)).toHaveCount(0);
 
-      await passDialog.locator('#pass-login-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
-      await passDialog.locator('#pass-new-pp').fill(UPDATED_VAULT_PASSPHRASE, {
-        timeout: STEP_TIMEOUT,
-      });
-      await passDialog.locator('#pass-confirm-pp').fill(UPDATED_VAULT_PASSPHRASE, {
-        timeout: STEP_TIMEOUT,
-      });
+      await fillSecret(passDialog.locator('#pass-login-pwd'), PASSWORD, STEP_TIMEOUT);
+      await fillSecret(passDialog.locator('#pass-new-pp'), UPDATED_VAULT_PASSPHRASE, STEP_TIMEOUT);
+      await fillSecret(
+        passDialog.locator('#pass-confirm-pp'),
+        UPDATED_VAULT_PASSPHRASE,
+        STEP_TIMEOUT,
+      );
       await passDialog
         .getByRole('button', { name: /Change passphrase|Đổi passphrase/ })
         .click({ timeout: STEP_TIMEOUT });
@@ -455,7 +456,7 @@ test.describe('P03-T20A Vault Security Settings E2E (Change Passphrase, Recovery
       const rkDialog = pageA.getByRole('dialog');
       await expect(rkDialog).toBeVisible({ timeout: STEP_TIMEOUT });
 
-      await rkDialog.locator('#rot-reauth-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
+      await fillSecret(rkDialog.locator('#rot-reauth-pwd'), PASSWORD, STEP_TIMEOUT);
       await rkDialog
         .getByRole('button', { name: /Continue|Tiếp tục/ })
         .click({ timeout: STEP_TIMEOUT });
@@ -561,7 +562,7 @@ test.describe('P03-T20A Vault Security Settings E2E (Change Passphrase, Recovery
         .click({ timeout: STEP_TIMEOUT });
 
       logStep(testLabel, 'pageA-reset-reauth');
-      await resetDialog.locator('#rst-reauth-pwd').fill(PASSWORD, { timeout: STEP_TIMEOUT });
+      await fillSecret(resetDialog.locator('#rst-reauth-pwd'), PASSWORD, STEP_TIMEOUT);
       await resetDialog
         .getByRole('button', { name: /Continue|Tiếp tục/ })
         .click({ timeout: STEP_TIMEOUT });
