@@ -11,6 +11,7 @@ import { useSession } from '@/features/auth/session-provider';
 import { oauthLoginStartUrl } from '@/lib/api/auth';
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
+import { useHydrated } from '@/lib/use-hydrated';
 
 function validateEmail(email: string): string | undefined {
   if (!email.trim()) return 'required';
@@ -44,6 +45,7 @@ export function SignupForm() {
   const [retryUntil, setRetryUntil] = useState<number | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const retrySeconds = useRetryCountdown(retryUntil);
+  const hydrated = useHydrated();
 
   const providers = config?.oauth_providers ?? [];
   const verifyRequired = config?.email_verification_required ?? false;
@@ -109,7 +111,13 @@ export function SignupForm() {
       <h1 className="t-title-lg mb-2">{t('signup.title')}</h1>
       <p className="t-body-lg mb-7 text-muted">{t('signup.subtitle')}</p>
 
-      <form ref={formRef} onSubmit={onSubmit} className="card mb-4 p-6" noValidate>
+      <form
+        ref={formRef}
+        onSubmit={onSubmit}
+        className="card mb-4 p-6"
+        noValidate
+        data-hydrated={hydrated ? 'true' : 'false'}
+      >
         {providers.includes('google') && (
           <a
             href={oauthLoginStartUrl('google')}
@@ -142,7 +150,7 @@ export function SignupForm() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           error={fieldErrors.email}
-          disabled={submitting}
+          disabled={submitting || !hydrated}
           className="mb-4"
         />
         <Field
@@ -154,7 +162,7 @@ export function SignupForm() {
           onChange={(e) => setPassword(e.target.value)}
           error={fieldErrors.password}
           hint={!fieldErrors.password ? t('validation.password.hint') : undefined}
-          disabled={submitting}
+          disabled={submitting || !hydrated}
           wrapperClassName="mb-4"
         />
 
@@ -164,7 +172,7 @@ export function SignupForm() {
             className="mt-1"
             checked={accepted}
             onChange={(e) => setAccepted(e.target.checked)}
-            disabled={submitting}
+            disabled={submitting || !hydrated}
           />
           <span className="text-[14px]">{t('signup.terms')}</span>
         </label>
@@ -198,7 +206,7 @@ export function SignupForm() {
         <Button
           type="submit"
           className="mt-4 w-full !justify-center"
-          disabled={submitting || retrySeconds > 0}
+          disabled={submitting || !hydrated || retrySeconds > 0}
           aria-busy={submitting}
         >
           {submitting ? t('signup.submitting') : t('signup.submit')}
