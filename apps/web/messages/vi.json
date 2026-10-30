@@ -421,6 +421,20 @@
     },
     "pill": {
       "minutesLeft": "· {minutes} phút"
+    },
+    "device": {
+      "remember": {
+        "label": "Nhớ thiết bị này",
+        "description": "Mở vault trên trình duyệt này mà không cần gõ passphrase. Ai dùng được hồ sơ trình duyệt này đều mở được vault. Chỉ bật trên máy cá nhân có khoá màn hình.",
+        "forget": "Quên thiết bị này",
+        "forgetDescription": "Xoá khoá đã lưu khỏi trình duyệt này. Vault vẫn mở cho tới khi bạn khoá; lần mở khoá sau sẽ hỏi passphrase hoặc passkey.",
+        "on": "Bật — trình duyệt này tự mở vault",
+        "off": "Tắt — hỏi passphrase trên trình duyệt này"
+      },
+      "notice": {
+        "stateChanged": "Trạng thái thiết bị đã thay đổi ở tab khác. Đang hiển thị cài đặt hiện tại."
+      },
+      "unavailable": "Trình duyệt này hiện không lưu được khoá thiết bị (chế độ riêng tư hoặc bộ nhớ bị chặn). Hãy dùng passphrase."
     }
   },
   "unlock": {
