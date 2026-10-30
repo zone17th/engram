@@ -421,6 +421,35 @@
     },
     "pill": {
       "minutesLeft": "· {minutes} phút"
+    },
+    "passkey": {
+      "prf_unsupported": "Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key.",
+      "register_cancelled": "Đã huỷ đăng ký passkey.",
+      "register_failed": "Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.",
+      "unlock_cancelled": "Đã huỷ mở khoá bằng passkey.",
+      "unlock_failed": "Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.",
+      "unlock_prf_missing": "Authenticator không trả PRF. Không mở vault bằng passkey.",
+      "none_registered": "Chưa có passkey. Thêm trong Settings sau khi mở vault.",
+      "revoked": "Đã gỡ passkey.",
+      "register": {
+        "nameLabel": "Tên passkey",
+        "nameHint": "Từ 1 đến {max} ký tự, ví dụ \"Laptop công việc\".",
+        "button": "Thêm passkey",
+        "pending": "Đang chờ khoá bảo mật của bạn…",
+        "name": {
+          "empty": "Hãy nhập tên cho passkey này.",
+          "too_long": "Tên passkey quá dài.",
+          "forbidden_chars": "Tên passkey chứa ký tự không được phép."
+        },
+        "reauthCancelled": "Đã huỷ xác nhận. Passkey chưa được thêm.",
+        "reauthRestart": "Xác nhận đã hết hạn trước khi lưu được passkey. Hãy bắt đầu lại để thêm.",
+        "networkUnknown": "Mất kết nối trước khi xác nhận được passkey đã lưu hay chưa. Hãy kiểm tra danh sách passkey trong Settings trước khi thử lại.",
+        "orphanNotice": "Passkey chưa được lưu vào vault. Bạn có thể xoá credential thừa trong trình quản lý passkey của thiết bị."
+      },
+      "unlock": {
+        "button": "Mở khoá bằng passkey",
+        "pending": "Đang chờ khoá bảo mật của bạn…"
+      }
     }
   },
   "unlock": {

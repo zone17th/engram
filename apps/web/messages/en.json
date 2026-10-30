@@ -421,6 +421,35 @@
     },
     "pill": {
       "minutesLeft": "· {minutes} min"
+    },
+    "passkey": {
+      "prf_unsupported": "This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.",
+      "register_cancelled": "Passkey registration was cancelled.",
+      "register_failed": "Could not register this passkey. Try another authenticator.",
+      "unlock_cancelled": "Passkey prompt was cancelled.",
+      "unlock_failed": "Could not unlock with this passkey. Use your passphrase or a recovery key.",
+      "unlock_prf_missing": "Authenticator did not return PRF. Cannot unlock with passkey.",
+      "none_registered": "No passkeys yet. Add one in Settings after unlock.",
+      "revoked": "Passkey removed.",
+      "register": {
+        "nameLabel": "Passkey name",
+        "nameHint": "1 to {max} characters, for example \"Work laptop\".",
+        "button": "Add passkey",
+        "pending": "Waiting for your authenticator…",
+        "name": {
+          "empty": "Enter a name for this passkey.",
+          "too_long": "The passkey name is too long.",
+          "forbidden_chars": "The passkey name contains characters that are not allowed."
+        },
+        "reauthCancelled": "Confirmation was cancelled. The passkey was not added.",
+        "reauthRestart": "Your confirmation expired before the passkey could be saved. Start again to add it.",
+        "networkUnknown": "The connection dropped before we could confirm the passkey was saved. Check the passkey list in Settings before trying again.",
+        "orphanNotice": "The passkey was not saved to your vault. You can delete the extra credential in your device's passkey manager."
+      },
+      "unlock": {
+        "button": "Unlock with passkey",
+        "pending": "Waiting for your authenticator…"
+      }
     }
   },
   "unlock": {
