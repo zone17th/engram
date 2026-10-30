@@ -368,8 +368,8 @@ func TestBackupSemanticsLimitByDesign_ConsumedAndRotatedRKAndRevokedPasskeyUnwra
 			t.Fatal("rotated-out RK old wrap + old RK secret did not unwrap to expected VK")
 		}
 
-		// Both the snapshot entry and any new entry created after consume/rotate under the unchanged
-		// `vault_key_id` are decryptable with the VK recovered from the old RK wrap (threat-model N-2(b)).
+		// The pre-mutation snapshot entry encrypted under the unchanged `vault_key_id`
+		// is decryptable with the VK recovered from the old RK wrap (threat-model N-2(b)).
 		_, openedSnapshotPlain, err := OpenEntry(snapshotEnvJSON, snapshotEntryID, snapshotCiphertext, unwrappedVKFromConsumedRK)
 		if err != nil || !bytes.Equal(openedSnapshotPlain, snapshotPlaintext) {
 			t.Fatalf("OpenEntry(snapshot via consumed RK VK) failed: err=%v", err)
@@ -394,7 +394,13 @@ func TestBackupSemanticsLimitByDesign_ConsumedAndRotatedRKAndRevokedPasskeyUnwra
 		copiedVKWrapBeforeRevoke := copiedCred.VKWrap
 		copiedPRFSaltBeforeRevoke := copiedCred.PRFSalt
 
-		// 2. Revoke the passkey on the live server (`DELETE /vault/passkeys/{id}` -> `svc.RevokePasskey`).
+		// 2. Capture the current vault version, then revoke the passkey on the live server
+		//    (`DELETE /vault/passkeys/{id}` -> `svc.RevokePasskey`). Capturing before revoke keeps
+		//    PartB independent whether run after PartA (version 3) or isolated via `-run .../PartB_` (version 1).
+		vaultStateBeforeRevoke, err := svc.Get(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("svc.Get before revoke: %v", err)
+		}
 		if err := svc.RevokePasskey(ctx, principal, RevokePasskeyInput{
 			PasskeyID: createdPasskey.ID,
 			IP:        "127.0.0.1",
@@ -404,7 +410,7 @@ func TestBackupSemanticsLimitByDesign_ConsumedAndRotatedRKAndRevokedPasskeyUnwra
 		}
 
 		// Live server enforcement: the passkey row is deleted from `vault_passkey`, `GET /vault` and
-		// `GET /vault/passkeys` list 0 passkeys, `vault.version` is unchanged (still 3), and
+		// `GET /vault/passkeys` list 0 passkeys, `vault.version` is unchanged from before revoke, and
 		// `POST /vault/unlock/passkey/options` now rejects with `ErrPasskeyNotFound`.
 		if _, err := svc.PasskeyUnlockOptions(ctx, principal); !errors.Is(err, ErrPasskeyNotFound) {
 			t.Fatalf("live PasskeyUnlockOptions after revoke = %v, want ErrPasskeyNotFound", err)
@@ -420,9 +426,9 @@ func TestBackupSemanticsLimitByDesign_ConsumedAndRotatedRKAndRevokedPasskeyUnwra
 		if err != nil {
 			t.Fatalf("svc.Get after revoke: %v", err)
 		}
-		if vaultStateAfterRevoke.Version != 3 || vaultStateAfterRevoke.VaultKeyID != createdVault.VaultKeyID {
-			t.Fatalf("vault state after revoke = (key_id=%s, version=%d), want (%s, 3)",
-				vaultStateAfterRevoke.VaultKeyID, vaultStateAfterRevoke.Version, createdVault.VaultKeyID)
+		if vaultStateAfterRevoke.Version != vaultStateBeforeRevoke.Version || vaultStateAfterRevoke.VaultKeyID != createdVault.VaultKeyID {
+			t.Fatalf("vault state after revoke = (key_id=%s, version=%d), want (%s, %d)",
+				vaultStateAfterRevoke.VaultKeyID, vaultStateAfterRevoke.Version, createdVault.VaultKeyID, vaultStateBeforeRevoke.Version)
 		}
 
 		// SPEC §3.15 & §5.9 limit by design (revoked passkey): server revocation deletes the row on
@@ -447,16 +453,16 @@ func TestBackupSemanticsLimitByDesign_ConsumedAndRotatedRKAndRevokedPasskeyUnwra
 		}
 
 		// Confirm that the VK recovered via the revoked passkey's old wrap also opens `private_keys_wrapped`
-		// and decrypts both the pre-revocation snapshot entry and a post-revocation entry encrypted under
-		// the same `vault_key_id` (proving why eliminating an exposed VK requires Vault Reset in MVP or
-		// Rotate VK in P07, per SPEC §5.6 / §5.9 / threat-model N-2(b)).
+		// and decrypts a post-revocation entry encrypted under the same `vault_key_id` (proving why
+		// eliminating an exposed VK requires Vault Reset in MVP or Rotate VK in P07, per SPEC §5.6 /
+		// §5.9 / threat-model N-2(b)).
 		unwrappedPrivSeeds, err := OpenWrapBase64URL(WrapKindPriv, vaultStateAfterRevoke.PrivateKeysWrapped, unwrappedVKFromRevokedPasskey)
 		if err != nil || !bytes.Equal(unwrappedPrivSeeds, privSeeds) {
 			t.Fatalf("OpenWrapBase64URL(PrivateKeysWrapped via revoked passkey VK) failed: err=%v", err)
 		}
 
 		const postRevokeEntryID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
-		postRevokePlaintext := []byte("entry-body-created-after-rk-consume-and-passkey-revoke")
+		postRevokePlaintext := []byte("entry-body-created-after-passkey-revoke")
 		postRevokeEnv, postRevokeCiphertext, err := SealEntry(
 			postRevokeEntryID,
 			vaultStateAfterRevoke.VaultKeyID,
