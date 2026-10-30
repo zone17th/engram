@@ -6,9 +6,9 @@ import { PASSWORD, signupViaUi, uniqueEmail } from './helpers';
 // auth routing is helpers.isolateRateLimit, which forwards cred-limited auth calls to the real API with a
 // per-context client IP so the 5/min bucket is not shared (it never fulfills anything itself).
 //
-// Secrets: the recovery key and the passphrases live only in local variables. Nothing here screenshots,
-// attaches, logs or puts them in an assertion message (assertions on secret text compare booleans, and the RK is
-// written into the field via evaluate(), whose argument is not echoed in a Playwright call log).
+// Secrets: the recovery key, the passphrases and the login password live only in local variables. Nothing here
+// screenshots, attaches, logs or puts them in an assertion message (assertions on secret text compare booleans, and
+// every secret field is written via fillSecret(), whose evaluate() argument is not echoed in a Playwright call log).
 
 const INITIAL_PASSPHRASE = 'Tràm-Hương-94!Kỷ-Vật-Xanh';
 const WRONG_PASSPHRASE = 'wrong-passphrase-real-api-e2e-0';
@@ -38,12 +38,17 @@ async function expectOnUnlockPage(page: Page) {
 }
 
 async function submitUnlock(page: Page, passphrase: string) {
-  await page.getByTestId('unlock-passphrase-input').fill(passphrase);
+  await fillSecret(page.getByTestId('unlock-passphrase-input'), passphrase);
   await page.getByTestId('unlock-submit-button').click();
 }
 
-/** Sets a controlled React input without the value appearing in a Playwright call log. */
-async function setInputValueQuietly(input: Locator, value: string) {
+/**
+ * Types a secret into a controlled React input without the value appearing in a Playwright call log: pinned
+ * Playwright progress-logs the argument of fill(), which the list reporter prints on an actionability timeout
+ * into the public CI log. The field is waited for first (visible, enabled, editable) so a failure still diagnoses.
+ */
+async function fillSecret(input: Locator, value: string) {
+  await expect(input).toBeEditable({ timeout: CRYPTO_WAIT_MS });
   await input.evaluate((element, next) => {
     const field = element as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -72,8 +77,8 @@ test.describe('vault web against the real API', () => {
     });
 
     await test.step('2. onboarding through the UI creates the vault with a real POST /vault', async () => {
-      await page.getByLabel('Passphrase', { exact: true }).fill(INITIAL_PASSPHRASE);
-      await page.getByLabel('Confirm passphrase').fill(INITIAL_PASSPHRASE);
+      await fillSecret(page.getByLabel('Passphrase', { exact: true }), INITIAL_PASSPHRASE);
+      await fillSecret(page.getByLabel('Confirm passphrase'), INITIAL_PASSPHRASE);
       await page.getByTestId('onboarding-continue-button').click();
       await expect(page.getByTestId('onboarding-step-recovery-keys')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
 
@@ -121,7 +126,7 @@ test.describe('vault web against the real API', () => {
 
       await expect(page.getByTestId('recovery-step-reauth')).toBeVisible({ timeout: UI_WAIT_MS });
       const reauthed = page.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), { timeout: UI_WAIT_MS });
-      await page.getByTestId('recovery-reauth-password-input').fill(PASSWORD);
+      await fillSecret(page.getByTestId('recovery-reauth-password-input'), PASSWORD);
       await page.getByTestId('recovery-reauth-password-submit').click();
       expect((await reauthed).ok()).toBe(true);
 
@@ -129,13 +134,13 @@ test.describe('vault web against the real API', () => {
       const lookedUp = page.waitForResponse((r) => isApiPost(r, '/api/v1/vault/unlock/recovery'), {
         timeout: CRYPTO_WAIT_MS,
       });
-      await setInputValueQuietly(page.getByTestId('recovery-key-input'), recoveryKey);
+      await fillSecret(page.getByTestId('recovery-key-input'), recoveryKey);
       await page.getByTestId('recovery-key-submit').click();
       expect((await lookedUp).ok()).toBe(true);
 
       await expect(page.getByTestId('recovery-step-new-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
-      await page.getByTestId('recovery-new-passphrase-input').fill(NEW_PASSPHRASE);
-      await page.getByTestId('recovery-confirm-passphrase-input').fill(NEW_PASSPHRASE);
+      await fillSecret(page.getByTestId('recovery-new-passphrase-input'), NEW_PASSPHRASE);
+      await fillSecret(page.getByTestId('recovery-confirm-passphrase-input'), NEW_PASSPHRASE);
       const completed = page.waitForResponse((r) => isApiPost(r, '/api/v1/vault/recover/complete'), {
         timeout: CRYPTO_WAIT_MS,
       });
