@@ -37,7 +37,7 @@ export default async function ItemPreviewPage({ params }: { params: Promise<{ id
           </div>
         </div>
 
-        <div className="mb-8 flex flex-wrap items-center gap-2">
+        <div className="mb-8 flex flex-wrap items-center gap-2" data-testid="item-tags">
           {item.tags.map((tag) => (
             <span key={tag} className="chip cursor-default">
               #{tag}

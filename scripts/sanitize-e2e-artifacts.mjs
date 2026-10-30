@@ -50,6 +50,14 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-web-recovery-regenerate-keys-light-1440.png',
   'vault-web-recovery-regenerate-keys-dark-390.png',
   'vault-web-recovery-regenerate-keys-dark-1440.png',
+  'vault-web-locked-list-light-390.png',
+  'vault-web-locked-list-light-1440.png',
+  'vault-web-locked-list-dark-390.png',
+  'vault-web-locked-list-dark-1440.png',
+  'vault-web-locked-item-light-390.png',
+  'vault-web-locked-item-light-1440.png',
+  'vault-web-locked-item-dark-390.png',
+  'vault-web-locked-item-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440']);
 
