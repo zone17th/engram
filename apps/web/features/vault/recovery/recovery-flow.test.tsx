@@ -3664,6 +3664,74 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     }, 30_000);
   }
 
+  // FE8-2 negative control: a same-key announcement carrying a numeric version is not an identity change (only another vault key
+  // or a reset, `version: null`, is), so it must NOT withdraw A's idle failed-recheck notice or its actions.
+  for (const announce of ['local notifyVaultChanged', 'sibling-tab broadcast'] as const) {
+    it(`FE8-2: an idle same-key numeric-version vault_changed (${announce}) keeps A's failed-recheck notice, Check again and Go to unlock, and the retry still drives a read`, async () => {
+      const shim = makeTestShim();
+      const fetchState = installRecoveryRaceFetchMock({ holdComplete: true });
+      const published = collectVaultChangedBroadcasts();
+
+      let vaultCtx!: VaultContextValue;
+      renderRecovery({
+        locale: 'en',
+        workerFactory: () => shim.port,
+        onVaultProbe: (ctx) => {
+          vaultCtx = ctx;
+        },
+      });
+      await driveToFailedRecheck(fetchState, () => vaultCtx);
+      routerMocks.replace.mockClear();
+
+      const stimulus = { vault_key_id: TEST_VECTOR_VAULT_KEY_ID, version: 3 };
+      const publishedBeforeAnnouncement = published.length;
+      await act(async () => {
+        if (announce === 'local notifyVaultChanged') {
+          vaultCtx.notifyVaultChanged(stimulus);
+        } else {
+          postVaultBroadcast({ type: 'vault_changed', ...stimulus });
+        }
+      });
+      await settle();
+      await settle();
+
+      // The notice and both actions survive the announcement.
+      expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+        'data-phase',
+        'recheck_needed',
+      );
+      expect(screen.getByTestId('recovery-committed-recheck-retry')).toBeInTheDocument();
+      expect(screen.getByTestId('recovery-committed-recheck-unlock')).toBeInTheDocument();
+      expect(published.slice(publishedBeforeAnnouncement)).toEqual([stimulus]);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+      expect(vaultCtx.workerState).toBe('locked');
+
+      // The retry is not a no-op: it reads GET /vault again and (still failing) keeps the truthful re-check feedback.
+      const getsBeforeRetry = fetchState.vaultGets;
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('recovery-committed-recheck-retry'));
+      });
+      await waitFor(() => {
+        expect(fetchState.vaultGets).toBeGreaterThan(getsBeforeRetry);
+      });
+      await settle();
+      await waitFor(() => {
+        expect(screen.getByTestId('recovery-committed-recheck-notice')).toHaveAttribute(
+          'data-phase',
+          'recheck_needed',
+        );
+      });
+      expect(screen.getByTestId('recovery-committed-recheck-retry')).toBeInTheDocument();
+      expect(screen.getByTestId('recovery-committed-recheck-unlock')).toBeInTheDocument();
+      expect(published.slice(publishedBeforeAnnouncement)).toEqual([stimulus]);
+      expect(routerMocks.replace).not.toHaveBeenCalled();
+      expect(hasRecoveryCompletedNotice('user-recovery-test-1')).toBe(false);
+
+      shim.close();
+    }, 30_000);
+  }
+
   it('BE5-2 (consumer boundary): a newly prepared regeneration bundle sends the live vault version, not the lower completion version', async () => {
     const shim = makeTestShim();
     const fetchState = installRecoveryRaceFetchMock();
