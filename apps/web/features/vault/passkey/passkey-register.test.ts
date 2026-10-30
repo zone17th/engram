@@ -10,12 +10,15 @@ import {
   type PasskeyRegisterDeps,
 } from './register-flow';
 import {
+  CREATION_ATTESTATION_OBJECT,
+  CREATION_CLIENT_DATA_JSON,
   NEW_CREDENTIAL_ID,
   NOW,
   PRF_OUTPUT,
   REGISTER_CHALLENGE,
   REGISTER_SALT,
   domError,
+  fakeAssertion,
   fakeCredential,
   filled,
   isAllZero,
@@ -54,7 +57,7 @@ function makeHarness(opts: HarnessOptions = {}) {
     rawId: NEW_CREDENTIAL_ID,
     prf: opts.createPrf === undefined ? { enabled: true, first: PRF_OUTPUT } : opts.createPrf,
   });
-  const assertion = fakeCredential({
+  const assertion = fakeAssertion({
     rawId: NEW_CREDENTIAL_ID,
     prf: opts.getPrf === undefined ? { enabled: true, first: PRF_OUTPUT } : opts.getPrf,
   });
@@ -218,16 +221,87 @@ describe('T19 bullet 1 - register flow (plan 2.5 steps 1-6)', () => {
     expect(failing.posts).toHaveLength(0);
   });
 
-  it('a stale generation (lock/logout during create()) ends silently: no wrap, no POST', async () => {
-    const h = makeHarness();
-    h.credentials.create.mockImplementationOnce(async () => {
-      h.state.generation += 1;
-      return h.created.credential as Credential;
+  it('PKW-R1-3, PKW-R1-5: a stale generation during create() or the follow-up get() wipes the PRF buffer: no wrap, no POST', async () => {
+    const atCreate = makeHarness();
+    atCreate.credentials.create.mockImplementationOnce(async () => {
+      atCreate.state.generation += 1;
+      return atCreate.created.credential as Credential;
     });
-    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
-    expect(outcome).toEqual({ ok: false, error: 'stale', orphan: true });
-    expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
-    expect(h.posts).toHaveLength(0);
+    expect(await runPasskeyRegistration(atCreate.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'stale',
+      orphan: true,
+    });
+    expect(isAllZero(atCreate.created.prfSource!)).toBe(true);
+    expect(atCreate.client.wrapForPasskey).not.toHaveBeenCalled();
+    expect(atCreate.posts).toHaveLength(0);
+
+    const atGet = makeHarness({ createPrf: { enabled: true }, getPrf: { enabled: true, first: PRF_OUTPUT } });
+    atGet.credentials.get.mockImplementationOnce(async () => {
+      atGet.state.generation += 1;
+      return atGet.assertion.credential as Credential;
+    });
+    expect(await runPasskeyRegistration(atGet.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'stale',
+      orphan: true,
+    });
+    expect(isAllZero(atGet.assertion.prfSource!)).toBe(true);
+    expect(atGet.client.wrapForPasskey).not.toHaveBeenCalled();
+    expect(atGet.posts).toHaveLength(0);
+  });
+
+  it('PKW-R1-6: a lock during the grant or options await stops before create() and leaves no local credential', async () => {
+    const atGrant = makeHarness();
+    atGrant.grants.acquire.mockImplementationOnce(async () => {
+      atGrant.state.generation += 1;
+      return makeGrant('g1', 5 * 60_000);
+    });
+    expect(await runPasskeyRegistration(atGrant.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'stale',
+      orphan: false,
+    });
+    expect(atGrant.api.fetchRegisterOptions).not.toHaveBeenCalled();
+    expect(atGrant.credentials.create).not.toHaveBeenCalled();
+
+    const atOptions = makeHarness();
+    atOptions.api.fetchRegisterOptions.mockImplementationOnce(async () => {
+      atOptions.state.generation += 1;
+      return registerOptionsResponse();
+    });
+    expect(await runPasskeyRegistration(atOptions.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'stale',
+      orphan: false,
+    });
+    expect(atOptions.credentials.create).not.toHaveBeenCalled();
+    expect(atOptions.posts).toHaveLength(0);
+  });
+
+  it('PKW-R1-9: a lock while the POST is in flight returns stale (orphan: false when the server saved it)', async () => {
+    const saved = makeHarness();
+    saved.api.registerPasskey.mockImplementationOnce(async (body, o) => {
+      saved.posts.push({ body, ...o });
+      saved.state.generation += 1;
+      return SAVED;
+    });
+    expect(await runPasskeyRegistration(saved.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'stale',
+      orphan: false,
+    });
+
+    const rejected = makeHarness();
+    rejected.api.registerPasskey.mockImplementationOnce(async () => {
+      rejected.state.generation += 1;
+      throw problem(400, 'passkey_challenge_invalid');
+    });
+    expect(await runPasskeyRegistration(rejected.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'stale',
+      orphan: true,
+    });
   });
 
   it('a Worker STALE_GENERATION is reported as stale, not as a register failure', async () => {
@@ -298,8 +372,13 @@ describe('T19 bullet 4 - PRF matrix at registration', () => {
     expect(h.wrapped[0]?.bytes).toEqual(Array.from(getOutput));
     expect(h.wrapped[0]?.opGeneration).toBe(12);
     expect(h.client.captureGeneration).toHaveBeenCalledTimes(1);
-    // The assertion is local only: the POST carries the create() attestation, never the get() response.
+    // PKW-R1-20: the assertion has no attestationObject; the POST carries the create() attestation.
     expect(h.posts).toHaveLength(1);
+    expect(JSON.parse(h.posts[0]!.body).attestation).toEqual({
+      client_data_json: encodeBase64Url(CREATION_CLIENT_DATA_JSON),
+      attestation_object: encodeBase64Url(CREATION_ATTESTATION_OBJECT),
+    });
+    expect(isAllZero(h.assertion.prfSource!)).toBe(true);
   });
 
   it('two follow-up get() challenges are fresh random values', async () => {
@@ -325,10 +404,11 @@ describe('T19 bullet 4 - PRF matrix at registration', () => {
     }
   });
 
-  it('unsupported even when results.first is present but enabled is not true', async () => {
+  it('unsupported even when results.first is present but enabled is not true, and the PRF buffer is wiped', async () => {
     const h = makeHarness({ createPrf: { enabled: false, first: PRF_OUTPUT } });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
     expect(outcome).toMatchObject({ ok: false, error: 'prf_unsupported' });
+    expect(isAllZero(h.created.prfSource!)).toBe(true);
     expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
   });
 
@@ -346,12 +426,22 @@ describe('T19 bullet 4 - PRF matrix at registration', () => {
     expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: false });
   });
 
-  it('cancel at get(): register error (retryable), credential is an orphan, no wrap, no POST', async () => {
-    const h = makeHarness({ createPrf: { enabled: true }, getError: domError('NotAllowedError') });
-    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
-    expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
-    expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
-    expect(h.posts).toHaveLength(0);
+  it('PKW-R1-24: cancel at the follow-up get() is passkey.register_cancelled with orphan: true; other get() errors stay register_failed', async () => {
+    const cancelled = makeHarness({ createPrf: { enabled: true }, getError: domError('NotAllowedError') });
+    expect(await runPasskeyRegistration(cancelled.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'register_cancelled',
+      orphan: true,
+    });
+    expect(cancelled.client.wrapForPasskey).not.toHaveBeenCalled();
+    expect(cancelled.posts).toHaveLength(0);
+
+    const failed = makeHarness({ createPrf: { enabled: true }, getError: domError('SecurityError') });
+    expect(await runPasskeyRegistration(failed.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'register_failed',
+      orphan: true,
+    });
   });
 
   it('get() without results.first: register error, orphan, no wrap, no POST', async () => {
@@ -410,6 +500,38 @@ describe('T19 bullet 4 - PRF matrix at registration', () => {
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
     expect(outcome).toEqual({ ok: false, error: 'reauth_cancelled', orphan: true });
     expect(h.posts).toHaveLength(0);
+  });
+
+  it('PKW-R1-7, PKW-R1-8: a lock during the in-place grant renewal aborts before the POST and returns stale', async () => {
+    const h = makeHarness({ grant: makeGrant('grant-near-expiry', 5_000) });
+    h.grants.renewInPlace.mockImplementationOnce(async () => {
+      h.log.push('grant.renew');
+      h.state.generation += 1;
+      return makeGrant('grant-renewed', 5 * 60_000);
+    });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'stale', orphan: true });
+    expect(h.posts).toHaveLength(0);
+  });
+
+  it('PKW-R1-10: a renewed grant must also have >= 60 s remaining; 59 s is refused before the POST, 60 s is accepted', async () => {
+    const tooShort = makeHarness({
+      grant: makeGrant('grant-near-expiry', 5_000),
+      renewed: makeGrant('renewed-short', 59_000),
+    });
+    expect(await runPasskeyRegistration(tooShort.deps, { name: 'Work laptop' })).toEqual({
+      ok: false,
+      error: 'reauth_restart_required',
+      orphan: true,
+    });
+    expect(tooShort.posts).toHaveLength(0);
+
+    const exact = makeHarness({
+      grant: makeGrant('grant-near-expiry', 5_000),
+      renewed: makeGrant('renewed-60', GRANT_MIN_REMAINING_MS),
+    });
+    expect((await runPasskeyRegistration(exact.deps, { name: 'Work laptop' })).ok).toBe(true);
+    expect(exact.posts[0]?.reauthToken).toBe('renewed-60');
   });
 });
 

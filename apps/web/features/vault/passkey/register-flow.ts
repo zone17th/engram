@@ -16,6 +16,7 @@ import {
   randomClientChallenge,
   readPrfResult,
   zeroize,
+  type PrfExtensionResult,
 } from './webauthn';
 
 /** Client-side minimum grant lifetime before the first POST (plan §1, SPEC §3.13 step 5). */
@@ -194,16 +195,19 @@ export async function runPasskeyRegistration(
     try {
       grant = await deps.grants.acquire();
     } catch {
-      return fail('reauth_cancelled');
+      return fail(isCurrent() ? 'reauth_cancelled' : 'stale');
     }
+    if (!isCurrent()) return fail('stale');
 
     // Step 2: register options.
     let registerOptions: VaultPasskeyRegisterOptionsResponse;
     try {
       registerOptions = await deps.api.fetchRegisterOptions();
     } catch {
-      return fail('register_failed');
+      return fail(isCurrent() ? 'register_failed' : 'stale');
     }
+    // No authenticator prompt for a vault that was locked while the grant / options were pending.
+    if (!isCurrent()) return fail('stale');
     const { options, prfSalt } = decodeCreationOptions(registerOptions);
 
     // Step 3: create(). PRF enabled !== true stops here; results.first is used as-is.
@@ -216,14 +220,19 @@ export async function runPasskeyRegistration(
       return fail(isWebAuthnCancellation(err) ? 'register_cancelled' : 'register_failed');
     }
     credentialCreated = true;
-    if (!isCurrent()) return fail('stale');
 
-    const created = readPrfResult(credential);
-    if (!created.enabled) {
-      zeroize(created.first);
-      return fail('prf_unsupported');
+    // The browser-owned PRF buffer is read (copied) and wiped BEFORE any early return: a stale result must not leave
+    // it alive. `pwk` then belongs to the finalizer below.
+    let created: PrfExtensionResult | null = null;
+    try {
+      created = readPrfResult(credential);
+    } catch {
+      /* malformed length: the source buffer was wiped before the throw */
     }
-    pwk = created.first;
+    pwk = created?.first ?? null;
+    if (!isCurrent()) return fail('stale');
+    if (!created) return fail('register_failed');
+    if (!created.enabled) return fail('prf_unsupported');
 
     if (!pwk) {
       // enabled=true without output: follow-up get() on the new credential, same opGeneration, client-made challenge
@@ -242,12 +251,18 @@ export async function runPasskeyRegistration(
         });
         if (!got) return fail('register_failed');
         assertion = got as PublicKeyCredential;
+      } catch (err) {
+        // The credential exists already, so `fail` still reports it as an orphan.
+        return fail(isWebAuthnCancellation(err) ? 'register_cancelled' : 'register_failed');
+      }
+      let readFailed = false;
+      try {
+        pwk = readPrfResult(assertion).first;
       } catch {
-        return fail('register_failed');
+        readFailed = true;
       }
       if (!isCurrent()) return fail('stale');
-      pwk = readPrfResult(assertion).first;
-      if (!pwk) return fail('register_failed');
+      if (readFailed || !pwk) return fail('register_failed');
     }
 
     // Step 4: the Worker seals VK with PWK (transferable) and re-opens it; the PWK is wiped client-side as well.
@@ -271,19 +286,26 @@ export async function runPasskeyRegistration(
     };
     const body = JSON.stringify(request);
 
-    // Step 5: grant must still have >= 60 s before the first POST.
+    // Step 5: the grant must still have >= 60 s before the first POST, and so must a renewed one.
     if (!grantHasMargin(grant, now())) {
       let renewed: ReauthGrant | null;
       try {
         renewed = await deps.grants.renewInPlace();
       } catch {
-        return fail('reauth_cancelled');
+        return fail(isCurrent() ? 'reauth_cancelled' : 'stale');
       }
-      if (!renewed) return fail('reauth_restart_required');
+      // Same generation as the wrap: a lock during the renewal must not persist the pre-lock VK wrap.
+      if (!isCurrent()) return fail('stale');
+      if (!renewed || !grantHasMargin(renewed, now())) return fail('reauth_restart_required');
       grant = renewed;
     }
+    if (!isCurrent()) return fail('stale');
 
     const result = await postWithReplay(deps, body, deps.createIdempotencyKey(), grant.grant);
+    if (!isCurrent()) {
+      // Obsolete completion: nothing reaches the UI. A confirmed saved credential is not an orphan.
+      return result.kind === 'saved' ? { ok: false, error: 'stale', orphan: false } : fail('stale');
+    }
     if (result.kind === 'saved') return { ok: true, passkey: result.passkey };
     if (result.kind === 'unknown') return fail('network_unknown');
     return fail('register_failed');
