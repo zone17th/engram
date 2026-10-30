@@ -658,6 +658,76 @@
         "body": "Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật. Cần trình duyệt và thiết bị hỗ trợ phần mở rộng PRF của WebAuthn; chúng tôi kiểm tra ngay khi đăng ký.",
         "added": "Đã thêm passkey."
       }
+    },
+    "b": {
+      "onboarding": {
+        "title": "Thêm passkey (tuỳ chọn)",
+        "lead": "Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật, không phải gõ passphrase mỗi lần. Bỏ qua cũng được — passphrase và 10 recovery key đã đủ để dùng.",
+        "cardTitle": "Passkey trên thiết bị này",
+        "cardBody": "Cần khoá bảo mật hỗ trợ PRF. Chúng tôi kiểm tra ngay lúc đăng ký; không hỗ trợ thì báo luôn, không lưu nửa vời.",
+        "reauthNote": "Bấm Thêm passkey sẽ yêu cầu xác thực lại tài khoản (bằng mật khẩu đăng nhập hoặc Google OAuth) ở đầu luồng trước khi gọi WebAuthn (vault.passkey_register).",
+        "addedStatus": "Đã thêm passkey vào vault.",
+        "skip": "Bỏ qua",
+        "finish": "Vào engram"
+      },
+      "unlock": {
+        "passkeySectionLabel": "Mở khoá bằng passkey"
+      },
+      "forgot": {
+        "passkeyStep": "1",
+        "passkeyTitle": "Passkey",
+        "passkeyBody": "Mở khoá bằng passkey đã đăng ký ở màn mở khoá, rồi vào Cài đặt › Bảo mật để đặt passphrase mới qua rewrap không cần passphrase cũ.",
+        "passkeyCta": "Thử",
+        "deviceStep": "2",
+        "deviceTitle": "Thiết bị đã nhớ",
+        "deviceBody": "Một trình duyệt hoặc máy khác của bạn đang nhớ vault có thể tự mở được để bạn đặt passphrase mới trong Cài đặt.",
+        "deviceCta": "Thử",
+        "unlockedTabStep": "3",
+        "unlockedTabTitle": "Tab đang mở khoá",
+        "unlockedTabBody": "Nếu còn một tab hoặc thiết bị đang mở khoá vault, vào Cài đặt › Bảo mật -> Đổi passphrase (bọc lại khoá không cần passphrase cũ).",
+        "unlockedTabCta": "Đổi passphrase",
+        "recoveryKeyStep": "4"
+      },
+      "settings": {
+        "passkeys": {
+          "listAria": "Danh sách passkey đã đăng ký",
+          "loading": "Đang tải danh sách passkey…",
+          "loadError": "Không tải được danh sách passkey đã đăng ký.",
+          "retry": "Thử lại",
+          "addedOn": "thêm {date}",
+          "prfBadge": "prf",
+          "rename": "Đổi tên",
+          "renameAria": "Đổi tên {name}",
+          "renameInputLabel": "Tên passkey cho {name}",
+          "renameSave": "Lưu",
+          "renameSaving": "Đang lưu…",
+          "renameCancel": "Huỷ",
+          "renamed": "Đã đổi tên passkey.",
+          "renameFailed": "Không đổi được tên passkey này. Hãy thử lại.",
+          "revoke": "Gỡ",
+          "revokeAria": "Gỡ {name}",
+          "revoking": "Đang gỡ…",
+          "revokeDialogTitle": "Gỡ passkey",
+          "revokeDialogDescription": "Xác thực lại tài khoản để gỡ {name} khỏi máy chủ.",
+          "revokeConfirm": "Gỡ passkey",
+          "revokeCancel": "Huỷ",
+          "revokeNotFoundError": "Không gỡ được passkey này vì không tìm thấy trên máy chủ.",
+          "revokeFailed": "Không gỡ được passkey này. Hãy thử lại.",
+          "revokeNoteStrong": "Gỡ passkey",
+          "revokeNoteBody": "(cần xác thực lại tài khoản) xoá credential và bản bọc khoá trên máy chủ live. Thao tác này không xoá credential khỏi thiết bị của bạn và không thu hồi các bản sao dữ liệu bọc khoá hoặc backup cũ nếu thiết bị vẫn tính được PRF."
+        },
+        "autoLock": {
+          "title": "Tự khoá",
+          "body": "Vault khoá lại sau khoảng thời gian không thao tác trên mọi tab. Mặc định 15 phút; bạn cũng có thể bấm L để khoá ngay.",
+          "selectorAria": "Thời gian tự khoá",
+          "opt5": "5 phút",
+          "opt15": "15 phút",
+          "opt60": "1 giờ",
+          "optNever": "Không bao giờ",
+          "saving": "Đang lưu tuỳ chọn tự khoá…",
+          "saveError": "Không lưu được tuỳ chọn tự khoá. Đã khôi phục giá trị trước đó."
+        }
+      }
     }
   },
   "unlock": {
