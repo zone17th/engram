@@ -37,6 +37,18 @@ async function expectOnUnlockPage(page: Page) {
   await expectVaultShut(page);
 }
 
+/**
+ * After a lock from /app the route guard keeps the user on the U5 list (advisor-dec-048): the banner offers the way to
+ * the unlock page, which is then reached through the user's own click.
+ */
+async function expectLockedListThenOpenUnlock(page: Page) {
+  await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+  await expectVaultShut(page);
+  await page.getByTestId('vault-locked-unlock-cta').click();
+  await expectOnUnlockPage(page);
+}
+
 async function submitUnlock(page: Page, passphrase: string) {
   await fillSecret(page.getByTestId('unlock-passphrase-input'), passphrase);
   await page.getByTestId('unlock-submit-button').click();
@@ -100,7 +112,7 @@ test.describe('vault web against the real API', () => {
 
     await test.step('3. the lock button locks the vault', async () => {
       await page.getByTestId('vault-lock-button').click();
-      await expectOnUnlockPage(page);
+      await expectLockedListThenOpenUnlock(page);
     });
 
     await test.step('4. a wrong passphrase is rejected locally, the right one unlocks', async () => {
@@ -116,7 +128,7 @@ test.describe('vault web against the real API', () => {
 
     await test.step('5. forgot passphrase -> real re-auth -> recovery key lookup -> new passphrase -> unlocked', async () => {
       await page.getByTestId('vault-lock-button').click();
-      await expectOnUnlockPage(page);
+      await expectLockedListThenOpenUnlock(page);
 
       await page.getByTestId('unlock-forgot-passphrase-link').click();
       await expect(page).toHaveURL(/\/app\/unlock\/forgot$/, { timeout: UI_WAIT_MS });
@@ -160,7 +172,7 @@ test.describe('vault web against the real API', () => {
       await expect(page.getByTestId('vault-lock-button')).toBeVisible({ timeout: UI_WAIT_MS });
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.keyboard.press('L');
-      await expectOnUnlockPage(page);
+      await expectLockedListThenOpenUnlock(page);
 
       await submitUnlock(page, INITIAL_PASSPHRASE);
       await expect(page.getByTestId('unlock-error-incorrect-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });

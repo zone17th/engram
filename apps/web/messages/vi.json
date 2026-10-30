@@ -591,6 +591,14 @@
       "busy": "Đang thực hiện một thao tác vault khác. Hãy chờ hoàn tất hoặc khoá vault trước.",
       "recoveringSwitchHint": "Hoàn tất đặt passphrase mới hoặc khoá vault trước để chuyển sang luồng khác."
     },
+    "locked": {
+      "bannerTitle": "Vault đã khoá",
+      "bannerBody": "Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem nội dung entry.",
+      "unlockCta": "Mở khoá vault",
+      "maskLabel": "Nội dung entry đang bị khoá. Mở khoá vault để xem.",
+      "bodyLoading": "Đang giải mã nội dung entry…",
+      "bodyError": "Không giải mã được entry này."
+    },
     "lock": {
       "button": "Khoá ngay",
       "shortcutHint": "Nhấn L để khoá ngay",

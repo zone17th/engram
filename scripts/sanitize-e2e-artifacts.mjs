@@ -94,6 +94,14 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-settings-absent-banner-light-1440.png',
   'vault-settings-absent-banner-dark-390.png',
   'vault-settings-absent-banner-dark-1440.png',
+  'vault-web-locked-list-light-390.png',
+  'vault-web-locked-list-light-1440.png',
+  'vault-web-locked-list-dark-390.png',
+  'vault-web-locked-list-dark-1440.png',
+  'vault-web-locked-item-light-390.png',
+  'vault-web-locked-item-light-1440.png',
+  'vault-web-locked-item-dark-390.png',
+  'vault-web-locked-item-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440']);
 
