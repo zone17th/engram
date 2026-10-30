@@ -1491,7 +1491,15 @@ export function VaultProvider({
           vaultMetaSessionEpochRef.current === sessionEpoch &&
           currentUserIdRef.current === userId,
         loadVault: () => loadVaultMeta(),
-        unlock: (params) => runUnlockDevKeyWithIntent(params, intentId),
+        unlock: (params) => {
+          if (workerStateRef.current !== 'locked' || client.getState() !== 'locked') {
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Silent unlock superseded: vault is no longer locked',
+            );
+          }
+          return runUnlockDevKeyWithIntent(params, intentId);
+        },
         lockOnInvalidate: () => lock({ broadcast: false, reason: 'device_invalidated' }),
       });
       // A failed silent attempt is not a user-facing error: the unlock page keeps its passphrase / passkey paths.

@@ -1579,6 +1579,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
 
       // pair === 'silent+auto-silent':
       // Auto-silent starts on mount and parks on GET #1; explicit silentUnlock() starts second and parks on GET #2.
+      const activeShim = shims[shims.length - 1]!;
       await waitFor(() => expect(releaseGet1).not.toBeNull());
       let explicitSilentPromise!: Promise<unknown>;
       act(() => {
@@ -1593,7 +1594,6 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       expect(explicitEntry!.kind).toBe('owned');
       expect(autoEntry!.id).not.toBe(explicitEntry!.id);
 
-      // Sibling durable lock so the first finishing silent intent fails closed without unlocking, while we also verify neither owned intent consumes the other's entry:
       // First, release explicit silent (2nd entry) while auto-silent (1st entry) is still parked at GET #1!
       let explicitRes: unknown;
       await act(async () => {
@@ -1601,6 +1601,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
         explicitRes = await explicitSilentPromise;
       });
       expect(explicitRes).toEqual({ status: 'unlocked' });
+      expect(activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey')).toHaveLength(1);
       const wAfterExplicit = deviceBridge().intentBaselineWitness();
       // Explicit silent consumed ONLY `explicitEntry.id` (even though `autoEntry.id` was earlier in the list!), leaving `autoEntry` untouched until auto-silent finishes:
       expect(wAfterExplicit.trace.filter((e) => e.action === 'consume')).toEqual([
@@ -1608,13 +1609,17 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       ]);
       expect(wAfterExplicit.pending).toEqual([autoEntry]);
 
-      // Release auto-silent GET #1 -> its `isCurrent` or post-GET check sees the completed unlock / cleans up its own `autoEntry` in `finally`:
+      // Release auto-silent GET #1 -> vault is already unlocked in its generation, so it MUST NOT dispatch a second unlockDevKey Worker command and releases its own `autoEntry` in `finally`:
       await act(async () => {
         releaseGet1?.();
         await new Promise((r) => setTimeout(r, 20));
       });
+      expect(activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey')).toHaveLength(1);
       const wFinal = deviceBridge().intentBaselineWitness();
       expect(wFinal.pending).toHaveLength(0);
+      expect(wFinal.trace.filter((e) => e.action === 'consume')).toEqual([
+        { action: 'consume', generation: explicitEntry!.generation, id: explicitEntry!.id, kind: 'owned' },
+      ]);
       expect(wFinal.trace).toContainEqual({
         action: 'release',
         generation: autoEntry!.generation,
