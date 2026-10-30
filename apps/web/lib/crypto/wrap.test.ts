@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodeBase64UrlStrict, encodeBase64Url } from './b64url';
 import { getSodium, toLocalBytes } from './sodium';
 import {
@@ -171,6 +171,10 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
     const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const vaultKeyId = 'vk:0123456789abcdefghijkl';
 
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it('positive control: seals and opens with a non-extractable AES-GCM-256 key generated like device.ts:549', async () => {
       const sodium = await getSodium();
       const vk = new Uint8Array(VK_BYTES).fill(0x42);
@@ -180,11 +184,19 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
         ['encrypt', 'decrypt'],
       );
 
+      const encryptSpy = vi.spyOn(crypto.subtle, 'encrypt');
+      const decryptSpy = vi.spyOn(crypto.subtle, 'decrypt');
+
       const wrapped = await sealDevKeyWrap(sodium, vk, devKey, userId, vaultKeyId);
       expect(wrapped.byteLength).toBe(DEVKEY_WRAP_BYTES);
+      expect(encryptSpy).toHaveBeenCalledTimes(1);
 
       const opened = await openDevKeyWrap(wrapped, devKey, userId, vaultKeyId);
       expect(opened).toEqual(vk);
+      expect(decryptSpy).toHaveBeenCalledTimes(1);
+
+      encryptSpy.mockRestore();
+      decryptSpy.mockRestore();
     });
 
     it('rejects extractable key with WRAP_INVALID before any WebCrypto call', async () => {
@@ -197,12 +209,20 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
       );
       const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
 
+      const encryptSpy = vi.spyOn(crypto.subtle, 'encrypt');
+      const decryptSpy = vi.spyOn(crypto.subtle, 'decrypt');
+
       await expect(
         sealDevKeyWrap(sodium, vk, extractableKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         openDevKeyWrap(dummyWrap, extractableKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(decryptSpy).toHaveBeenCalledTimes(0);
+
+      encryptSpy.mockRestore();
+      decryptSpy.mockRestore();
     });
 
     it('rejects AES-GCM-128 key with WRAP_INVALID before any WebCrypto call', async () => {
@@ -215,12 +235,20 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
       );
       const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
 
+      const encryptSpy = vi.spyOn(crypto.subtle, 'encrypt');
+      const decryptSpy = vi.spyOn(crypto.subtle, 'decrypt');
+
       await expect(
         sealDevKeyWrap(sodium, vk, aes128Key, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         openDevKeyWrap(dummyWrap, aes128Key, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(decryptSpy).toHaveBeenCalledTimes(0);
+
+      encryptSpy.mockRestore();
+      decryptSpy.mockRestore();
     });
 
     it('rejects wrong usages (decrypt-only for sealDevKeyWrap, encrypt-only for openDevKeyWrap) with WRAP_INVALID', async () => {
@@ -238,15 +266,24 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
       );
       const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
 
+      const encryptSpy = vi.spyOn(crypto.subtle, 'encrypt');
+      const decryptSpy = vi.spyOn(crypto.subtle, 'decrypt');
+
       await expect(
         sealDevKeyWrap(sodium, vk, decryptOnlyKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         sealDevKeyWrap(sodium, vk, encryptOnlyKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         openDevKeyWrap(dummyWrap, encryptOnlyKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(decryptSpy).toHaveBeenCalledTimes(0);
+
+      encryptSpy.mockRestore();
+      decryptSpy.mockRestore();
     });
 
     it('rejects non-AES key (HMAC) with WRAP_INVALID before any WebCrypto call', async () => {
@@ -259,12 +296,20 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
       );
       const dummyWrap = new Uint8Array(DEVKEY_WRAP_BYTES);
 
+      const encryptSpy = vi.spyOn(crypto.subtle, 'encrypt');
+      const decryptSpy = vi.spyOn(crypto.subtle, 'decrypt');
+
       await expect(
         sealDevKeyWrap(sodium, vk, hmacKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         openDevKeyWrap(dummyWrap, hmacKey, userId, vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(decryptSpy).toHaveBeenCalledTimes(0);
+
+      encryptSpy.mockRestore();
+      decryptSpy.mockRestore();
     });
 
     it('rejects NUL in userId or vaultKeyId in buildDevKeyAad, sealDevKeyWrap, and openDevKeyWrap with WRAP_INVALID', async () => {
@@ -284,18 +329,28 @@ describe('P03-T6 Wrap Layout, Validator, AAD, and Seed -> Public Key Derivation'
         expect.objectContaining({ code: 'WRAP_INVALID' }),
       );
 
+      const encryptSpy = vi.spyOn(crypto.subtle, 'encrypt');
+      const decryptSpy = vi.spyOn(crypto.subtle, 'decrypt');
+
       await expect(
         sealDevKeyWrap(sodium, vk, devKey, 'user\u0000id', vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         sealDevKeyWrap(sodium, vk, devKey, userId, 'vk:\u0000id'),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(encryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         openDevKeyWrap(dummyWrap, devKey, 'user\u0000id', vaultKeyId),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(decryptSpy).toHaveBeenCalledTimes(0);
       await expect(
         openDevKeyWrap(dummyWrap, devKey, userId, 'vk:\u0000id'),
       ).rejects.toMatchObject({ code: 'WRAP_INVALID' });
+      expect(decryptSpy).toHaveBeenCalledTimes(0);
+
+      encryptSpy.mockRestore();
+      decryptSpy.mockRestore();
     });
 
     it('maps WebCrypto DOMException InvalidAccessError to WRAP_INVALID while keeping OperationError as AEAD_DECRYPT_FAILED', async () => {
