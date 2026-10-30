@@ -563,6 +563,35 @@ describe('P03-T21 Locked state U5', () => {
       expect(screen.getByRole('option', { name: new RegExp(D1.title) })).toBeInTheDocument();
       expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
     }, 30_000);
+
+    it('while locked no entry body reaches any surface: omnibox, results, list, attributes, query cache', async () => {
+      const everyCachedValue = (qc: QueryClient) =>
+        JSON.stringify(
+          qc
+            .getQueryCache()
+            .getAll()
+            .map((query) => query.state.data ?? null),
+        );
+      const h = await mountLockedWithFixture(({ loadFixtureBody }) => (
+        <>
+          <Omnibox />
+          <ItemList items={DEMO_ITEMS} load={loadFixtureBody} openLabel="Open" />
+        </>
+      ));
+
+      for (const value of ['ca phe', 'cong-thuc', 'ghi', 'phin', 'localhost']) {
+        search(value);
+        fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' }); // sets aria-activedescendant
+        // findLeaks covers text, markup, every attribute (aria-label, title, alt, href, ...) and dataset.
+        expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
+      }
+      expect(screen.getAllByTestId('item-card')).toHaveLength(DEMO_ITEMS.length); // the list is up, with masked bodies
+      expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(DEMO_ITEMS.length);
+      expect(bodyDataInCache(h.qc)).toEqual([]);
+      // JSON.stringify escapes quotes, so compare against the escaped form of each body.
+      for (const body of DEMO_BODIES) expect(everyCachedValue(h.qc)).not.toContain(JSON.stringify(body).slice(1, -1));
+      expect(h.opened).toEqual([]);
+    }, 30_000);
   });
 
   describe('route guard while locked (advisor-dec-048: U5 over plan 15A for /app and /app/items/** only)', () => {
