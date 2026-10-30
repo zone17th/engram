@@ -139,11 +139,16 @@ test.describe('passkey against the real API', () => {
         console.log('prf-path: enabled-then-get');
         test.info().annotations.push({ type: 'prf-path', description: 'enabled at create(), then get()' });
 
-        // advisor-dec-059: when Chrome's virtual authenticator takes the enabled-then-get branch, also exercise
-        // cancel at the registration follow-up get() (user verification off for that get(), no tampering) and assert
-        // passkey.register_cancelled + orphan notice.
+        // advisor-dec-059, PKW-R5-1: when Chrome's virtual authenticator takes the enabled-then-get branch, also
+        // exercise cancel at the registration follow-up get() (user verification off for that get(), no tampering) and
+        // assert passkey.register_cancelled + orphan notice. Because register/options sends excludeCredentials with
+        // saved credential A (passkey_register.go:173-179,218), detach authenticatorA while running the cancel
+        // attempt on a fresh verified authenticator, then re-attach a fresh authenticator holding saved credential A
+        // for the downstream unlock steps.
+        await removeAuthenticator(cdp, authenticatorA);
+        const cancelAuth = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
         const onCredentialAdded = () => {
-          void setUserVerified(cdp, authenticatorA, false);
+          void setUserVerified(cdp, cancelAuth, false);
         };
         cdp.on('WebAuthn.credentialAdded', onCredentialAdded);
         try {
@@ -162,10 +167,10 @@ test.describe('passkey against the real API', () => {
           await expect(cancelDialog).toBeHidden({ timeout: UI_WAIT_MS });
         } finally {
           cdp.off('WebAuthn.credentialAdded', onCredentialAdded);
+          await removeAuthenticator(cdp, cancelAuth);
         }
-        // authenticatorA's uv_retries were exhausted by the cancelled follow-up get(): replace it with a fresh
-        // verified authenticator and register E2E passkey A before the unlock steps below (step 9 then adds the 2nd).
-        await removeAuthenticator(cdp, authenticatorA);
+        // Re-create a fresh verified authenticator and register E2E passkey A for the unlock steps below (step 9 then
+        // adds the 2nd).
         authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
         await openAddPasskeyDialog(page);
         await submitPasskeyName(page, 'E2E passkey A');
