@@ -69,6 +69,11 @@ jobs:
       - name: Run integration tests
         run: go test ./... -race -count=1 -timeout 10m
 
+      # TEMPORARY (lane lockedbackup, advisor-dec-051): named PASS lines for the
+      # P03-T22 fixture. Reverted in the next lane commit.
+      - name: Run T22 backup semantics fixture (verbose, temporary)
+        run: go test ./internal/vault -race -count=1 -v -run 'TestBackupSemanticsLimitByDesign'
+
   api-migration:
     name: Compose migration
     runs-on: ubuntu-latest
