@@ -142,8 +142,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      BASE_URL: http://127.0.0.1:3000
-      APP_ORIGIN: http://127.0.0.1:3000
+      # WebAuthn RP ID = host of APP_ORIGIN; Chrome rejects an IP address, so this job uses a hostname (advisor-dec-050).
+      BASE_URL: http://localhost:3000
+      APP_ORIGIN: http://localhost:3000
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -195,7 +196,7 @@ jobs:
       # stay reproducible across CI runs and future visual review.
       - name: Run browser checks in pinned Playwright image
         env:
-          BASE_URL: http://127.0.0.1:3000
+          BASE_URL: http://localhost:3000
           E2E_STACK: '1'
           E2E_VERIFY: 'false'
           MAIL_SINK_DIR: /work/.data/mail-sink
@@ -225,7 +226,7 @@ jobs:
 
       - name: Run real Crypto Worker production CSP checks (CF T-5, FE2-11e)
         env:
-          BASE_URL: http://127.0.0.1:3000
+          BASE_URL: http://localhost:3000
           E2E_STACK: '1'
           E2E_VAULT_PROD: '1'
         shell: bash
