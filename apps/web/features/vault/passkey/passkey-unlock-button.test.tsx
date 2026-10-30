@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
     vaultMeta: null as unknown,
     beginOp: () => ({ opGeneration: 1 }),
     getClient: () => ({ getGeneration: () => 1 }),
-    reloadVaultMeta: async () => ({ private_keys_wrapped: 'PRIV-WRAP-OPAQUE' }) as unknown as VaultState,
+    reloadVaultMeta: vi.fn(async () => ({ private_keys_wrapped: 'PRIV-WRAP-OPAQUE' }) as unknown as VaultState),
     unlockPrf: vi.fn(async (params: unknown) => {
       void params;
       return { unlocked: true as const };
@@ -56,6 +56,7 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     mocks.credentialsGet.mockReset();
     mocks.vault.unlockPrf.mockClear();
     mocks.vault.lock.mockClear();
+    mocks.vault.reloadVaultMeta.mockClear();
     mocks.vault.inFlight = false;
     Object.defineProperty(window, 'PublicKeyCredential', { value: class {}, configurable: true, writable: true });
     Object.defineProperty(navigator, 'credentials', {
@@ -79,6 +80,27 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     mocks.vault.vaultMeta = null;
     const { container } = renderButton();
     await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it('loads the vault metadata once when the unlock screen has none (fresh page load)', async () => {
+    mocks.vault.vaultMeta = null;
+    renderButton();
+    await waitFor(() => expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not reload the vault metadata when the passkey list is already known', async () => {
+    setPasskeys(1);
+    renderButton();
+    expect(await screen.findByRole('button', { name: 'Unlock with passkey' })).toBeEnabled();
+    expect(mocks.vault.reloadVaultMeta).not.toHaveBeenCalled();
+  });
+
+  it('does not load the vault metadata in a browser without WebAuthn', async () => {
+    mocks.vault.vaultMeta = null;
+    Reflect.deleteProperty(window, 'PublicKeyCredential');
+    const { container } = renderButton();
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    expect(mocks.vault.reloadVaultMeta).not.toHaveBeenCalled();
   });
 
   it('renders nothing when the browser has no WebAuthn', async () => {

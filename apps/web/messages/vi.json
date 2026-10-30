@@ -637,6 +637,11 @@
         "button": "Mở khoá bằng passkey",
         "pending": "Đang chờ khoá bảo mật của bạn…",
         "caption": "Hoặc nhập passphrase bên dưới."
+      },
+      "settings": {
+        "title": "Passkey",
+        "body": "Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật. Cần trình duyệt và thiết bị hỗ trợ phần mở rộng PRF của WebAuthn; chúng tôi kiểm tra ngay khi đăng ký.",
+        "added": "Đã thêm passkey."
       }
     }
   },

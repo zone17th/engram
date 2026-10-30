@@ -637,6 +637,11 @@
         "button": "Unlock with passkey",
         "pending": "Waiting for your authenticator…",
         "caption": "Or enter your passphrase below."
+      },
+      "settings": {
+        "title": "Passkey",
+        "body": "Unlock your vault with biometrics or a security key. Requires WebAuthn PRF support, checked during registration.",
+        "added": "Passkey added."
       }
     }
   },

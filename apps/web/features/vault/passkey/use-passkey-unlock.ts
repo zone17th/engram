@@ -60,6 +60,14 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
     setNoPasskey(false);
   }, [listedCount]);
 
+  // A fresh page load on /app/unlock has no vault metadata (only the passphrase submit used to fetch it), so the
+  // passkey list is unknown and the button would never show. Load it once; a failure leaves the button hidden.
+  const metaMissing = vault.vaultMeta === null;
+  useEffect(() => {
+    if (!supported || !metaMissing) return;
+    void vaultRef.current.reloadVaultMeta().catch(() => undefined);
+  }, [supported, metaMissing]);
+
   const unlock = useCallback(async (): Promise<PasskeyUnlockOutcome> => {
     if (pendingRef.current) return { ok: false, error: 'busy' };
     pendingRef.current = true;
