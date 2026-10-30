@@ -51,11 +51,16 @@ Why these choices:
 ## Rebuild
 
 Tools: Python 3.12, `fonttools==4.68.0` and `brotli==1.2.1` in a throwaway venv. Neither is a project dependency.
-With the three upstream TTFs in `$IN`, the following script reproduces the sha256 values above byte for byte.
-It was run twice to confirm that:
+The following script downloads the three upstream TTFs under short names and reproduces the sha256 values above
+byte for byte. It was run twice to confirm that:
 
 ```bash
 set -euo pipefail
+IN=./upstream; OUT=./out; mkdir -p "$IN" "$OUT"
+B=https://raw.githubusercontent.com/google/fonts/6157dfaa640ca5738b4d1a7070fe389c3036d7fc/ofl
+curl -fsSL -o "$IN/Inter.ttf" "$B/inter/Inter%5Bopsz,wght%5D.ttf"
+curl -fsSL -o "$IN/PlusJakartaSans.ttf" "$B/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf"
+curl -fsSL -o "$IN/SometypeMono.ttf" "$B/sometypemono/SometypeMono%5Bwght%5D.ttf"
 # google/fonts 6157dfa commit time; fixes head.modified so the output is deterministic
 export SOURCE_DATE_EPOCH=1793286481
 LATIN='U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD'
