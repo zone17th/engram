@@ -149,6 +149,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
   interface TabHandle {
     vault: () => VaultContextValue;
     remember: () => UseRememberDeviceResult;
+    rerender: () => void;
   }
 
   function renderTab(
@@ -157,6 +158,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
     shims.push(shim);
     const handle: { vault?: VaultContextValue; remember?: UseRememberDeviceResult } = {};
+    const queryClient = new QueryClient();
     function Probe() {
       const vault = useVault();
       const remember = useRememberDevice({ env, testHooks: options.testHooks });
@@ -164,8 +166,8 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       handle.remember = remember;
       return <div data-testid="vault-state">{vault.state}</div>;
     }
-    render(
-      <QueryClientProvider client={new QueryClient()}>
+    const element = (
+      <QueryClientProvider client={queryClient}>
         <VaultProvider
           createWorker={() => shim.port}
           lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
@@ -174,9 +176,14 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
         >
           <Probe />
         </VaultProvider>
-      </QueryClientProvider>,
+      </QueryClientProvider>
     );
-    return { vault: () => handle.vault!, remember: () => handle.remember! };
+    const rendered = render(element);
+    return {
+      vault: () => handle.vault!,
+      remember: () => handle.remember!,
+      rerender: () => rendered.rerender(element),
+    };
   }
 
   const stateText = () => screen.getByTestId('vault-state').textContent;
@@ -635,6 +642,55 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     expect(stateText()).toBe('locked');
     expect(mocks.fetchVault).not.toHaveBeenCalled();
     expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
+  });
+
+  it('R1-22: same-provider A->B switch reconciles and locks A before consuming B\u2019s automatic silent unlock attempt, opening B once after its own authoritative GET and keeping subsequent manual lock locked', async () => {
+    // 1. Setup: remember both USER_A (VAULT_K) and USER_B (VAULT_K2) with legitimate separate records.
+    mocks.session.me = makeMe(USER_B);
+    serverKeyId = VAULT_K2;
+    const setupB = await openUnlockedTab();
+    const createdB = created!;
+    await act(async () => {
+      await setupB.remember().remember();
+    });
+    expect(devkeys().has(formatDevKeyRecordKey(USER_B, VAULT_K2))).toBe(true);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    mocks.session.me = makeMe(USER_A);
+    serverKeyId = VAULT_K;
+    const tab = await openUnlockedTab({ silentUnlockOnLoad: true });
+    await act(async () => {
+      await tab.remember().remember();
+    });
+    expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
+    expect(stateText()).toBe('unlocked');
+
+    // 2. Switch directly from unlocked USER_A to remembered USER_B on the same mounted VaultProvider.
+    created = createdB;
+    serverKeyId = VAULT_K2;
+    mocks.session.me = makeMe(USER_B);
+    mocks.fetchVault.mockClear();
+    await act(async () => {
+      tab.rerender();
+    });
+
+    // Reconciliation locks A first, then B's one-shot automatic attempt runs after reconciliation and unlocks B.
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    expect(mocks.fetchVault).toHaveBeenCalledTimes(1);
+    expect(tab.vault().vaultMeta?.vault_key_id).toBe(VAULT_K2);
+
+    // 3. Subsequent manual lock for B remains locked (one-shot attempt already consumed).
+    await act(async () => {
+      await tab.vault().lock({ broadcast: false, reason: 'manual' });
+    });
+    await waitFor(() => expect(stateText()).toBe('locked'));
+    mocks.fetchVault.mockClear();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(stateText()).toBe('locked');
+    expect(mocks.fetchVault).not.toHaveBeenCalled();
   });
 
   // ------------------------------------------------------------------------------------------------------------

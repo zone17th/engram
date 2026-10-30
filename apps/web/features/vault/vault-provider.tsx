@@ -1369,18 +1369,6 @@ export function VaultProvider({
 
   const silentAttemptUserIdRef = useRef<string | null>(null);
   const silentUnlockUserId = me?.user.id ?? null;
-  useEffect(() => {
-    if (!silentUnlockOnLoad) return;
-    if (sessionStatus === 'signed_out' || !silentUnlockUserId) {
-      silentAttemptUserIdRef.current = null;
-      return;
-    }
-    // At most one automatic attempt per signed-in user per mount: a later manual lock / auto-lock never re-opens.
-    if (silentAttemptUserIdRef.current === silentUnlockUserId) return;
-    silentAttemptUserIdRef.current = silentUnlockUserId;
-    if (workerState !== 'locked') return;
-    void silentUnlock().catch(() => undefined);
-  }, [sessionStatus, silentUnlock, silentUnlockOnLoad, silentUnlockUserId, workerState]);
 
   const rewrapOp = useCallback(
     (params: RewrapClientParams): Promise<RewrapResult> => {
@@ -1440,6 +1428,27 @@ export function VaultProvider({
     }
   }, [lock, me?.user.id, queryClient, sessionStatus, setVaultMeta, vaultMeta]);
 
+  // R1-22: Run after session/account reconciliation so a direct A->B switch reconciles and locks A first,
+  // and consume the one-shot automatic attempt only when an eligible locked intent actually starts for the reconciled user.
+  useEffect(() => {
+    if (!silentUnlockOnLoad) return;
+    if (sessionStatus === 'signed_out' || !silentUnlockUserId) {
+      silentAttemptUserIdRef.current = null;
+      return;
+    }
+    if (previousUserIdRef.current !== silentUnlockUserId) return;
+    // At most one automatic attempt per signed-in user per mount: a later manual lock / auto-lock never re-opens.
+    if (silentAttemptUserIdRef.current === silentUnlockUserId) return;
+    if (
+      workerState !== 'locked' ||
+      workerStateRef.current !== 'locked' ||
+      inFlightStateOpCountRef.current > 0
+    ) {
+      return;
+    }
+    silentAttemptUserIdRef.current = silentUnlockUserId;
+    void silentUnlock().catch(() => undefined);
+  }, [sessionStatus, silentUnlock, silentUnlockOnLoad, silentUnlockUserId, workerState]);
   // Subscribe to BroadcastChannel('sabk.vault') for `lock`, `vault_changed`, `activity`, and `settings_changed` (Task 15A #5 & Task 15B #1).
   useEffect(() => {
     return subscribeVaultBroadcast((message: VaultBroadcastMessage, origin, senderId) => {
