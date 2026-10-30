@@ -375,7 +375,9 @@ test.describe('P03-T20B Settings passkey list and auto-lock E2E (real API)', () 
     await expect(revokeDialog).toBeVisible({ timeout: UI_WAIT_MS });
 
     const pwdField = revokeDialog.getByLabel('Login password');
-    if (await pwdField.isVisible().catch(() => false)) {
+    const confirmBtn = revokeDialog.getByTestId('settings-passkey-revoke-confirm');
+    await expect(pwdField.or(confirmBtn).first()).toBeVisible({ timeout: UI_WAIT_MS });
+    if (await pwdField.isVisible()) {
       await fillSecret(pwdField, PASSWORD, UI_WAIT_MS);
     }
 

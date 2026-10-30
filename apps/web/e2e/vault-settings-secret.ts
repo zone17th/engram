@@ -6,8 +6,7 @@ import { expect, type Locator } from '@playwright/test';
 // actionability timeout into the PUBLIC CI log. Every vault passphrase / login password written by the
 // vault-settings specs therefore goes through fillSecret(), whose evaluate() argument is not echoed in a call log.
 //
-// TODO(dedupe): this is a copy of fillSecret in vault-real-api.spec.ts (vaultweb-owned). Dedupe with that one when a
-// shared helper exists.
+// Deferred dedupe with vault-real-api.spec.ts (vaultweb-owned) until post-merge shared helper extraction.
 
 const DEFAULT_EDITABLE_TIMEOUT_MS = 30_000;
 

@@ -189,10 +189,12 @@ test.describe('P03-T17B unlock, recovery passkey persistence, passkey rewrap & e
         await expect(passDialog.getByLabel(/Old passphrase|Passphrase cũ/i)).toHaveCount(0);
 
         const loginPwdField = passDialog.locator('#pass-login-pwd');
+        const newPpField = passDialog.locator('#pass-new-pp');
+        await expect(loginPwdField.or(newPpField).first()).toBeVisible({ timeout: UI_WAIT_MS });
         if (await loginPwdField.isVisible()) {
           await fillSecret(loginPwdField, PASSWORD, UI_WAIT_MS);
         }
-        await fillSecret(passDialog.locator('#pass-new-pp'), REWRAPPED_PASSPHRASE, UI_WAIT_MS);
+        await fillSecret(newPpField, REWRAPPED_PASSPHRASE, UI_WAIT_MS);
         await fillSecret(passDialog.locator('#pass-confirm-pp'), REWRAPPED_PASSPHRASE, UI_WAIT_MS);
         await passDialog
           .getByRole('button', { name: /Change passphrase|Đổi passphrase/ })
