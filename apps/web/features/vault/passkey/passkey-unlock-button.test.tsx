@@ -90,6 +90,41 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     await waitFor(() => expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(1));
   });
 
+  it('PKW-R2-4: a transient bootstrap GET /vault failure shows a localized retry state and reveals the passkey button on retry', async () => {
+    mocks.vault.vaultMeta = null;
+    mocks.vault.reloadVaultMeta.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const view = renderButton();
+    const status = await screen.findByTestId('unlock-passkey-load-error');
+    expect(status).toHaveTextContent('Could not check your registered passkeys.');
+    expect(screen.queryByTestId('unlock-passkey-button')).toBeNull();
+    expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(1);
+
+    mocks.vault.reloadVaultMeta.mockImplementationOnce(async () => {
+      setPasskeys(1);
+      return mocks.vault.vaultMeta as unknown as VaultState;
+    });
+    fireEvent.click(screen.getByTestId('unlock-passkey-retry-button'));
+    await waitFor(() => expect(mocks.vault.reloadVaultMeta).toHaveBeenCalledTimes(2));
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PasskeyUnlockButton />
+      </NextIntlClientProvider>,
+    );
+    expect(await screen.findByRole('button', { name: 'Unlock with passkey' })).toBeEnabled();
+    expect(screen.queryByTestId('unlock-passkey-load-error')).toBeNull();
+
+    // Vietnamese copy parity for the failed-load state.
+    cleanup();
+    mocks.vault.vaultMeta = null;
+    mocks.vault.reloadVaultMeta.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    renderButton(undefined, 'vi');
+    expect(await screen.findByTestId('unlock-passkey-load-error')).toHaveTextContent(
+      'Không kiểm tra được danh sách passkey đã đăng ký.',
+    );
+    expect(screen.getByRole('button', { name: 'Thử lại' })).toBeEnabled();
+  });
+
   it('does not reload the vault metadata when the passkey list is already known', async () => {
     setPasskeys(1);
     renderButton();

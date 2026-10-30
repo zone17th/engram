@@ -640,7 +640,9 @@
       "unlock": {
         "button": "Mở khoá bằng passkey",
         "pending": "Đang chờ khoá bảo mật của bạn…",
-        "caption": "Hoặc nhập passphrase bên dưới."
+        "caption": "Hoặc nhập passphrase bên dưới.",
+        "loadFailed": "Không kiểm tra được danh sách passkey đã đăng ký.",
+        "retryLoad": "Thử lại"
       },
       "settings": {
         "title": "Passkey",

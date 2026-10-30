@@ -12,6 +12,10 @@ import {
 export interface UsePasskeyUnlockResult {
   /** True only when the browser supports WebAuthn and the user has at least one passkey (else render no button). */
   available: boolean;
+  /** True when the initial bootstrap `GET /vault` failed so the passkey list could not be determined yet. */
+  metaLoadFailed: boolean;
+  /** True while the bootstrap `GET /vault` retry is in flight. */
+  metaLoading: boolean;
   /** This hook's own unlock is running (authenticator prompt or Worker unlock). */
   pending: boolean;
   /** Another state-changing vault operation (passphrase unlock, rewrap, ...) is in flight: do not start. */
@@ -19,6 +23,7 @@ export interface UsePasskeyUnlockResult {
   /** Last failure; `stale` (lock/logout mid-flow) is never surfaced. */
   error: PasskeyUnlockErrorCode | null;
   unlock: () => Promise<PasskeyUnlockOutcome>;
+  retryLoadMeta: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -42,9 +47,12 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
 
   const [supported, setSupported] = useState(false);
   const [noPasskey, setNoPasskey] = useState(false);
+  const [metaLoadFailed, setMetaLoadFailed] = useState(false);
+  const [metaLoading, setMetaLoading] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<PasskeyUnlockErrorCode | null>(null);
   const pendingRef = useRef(false);
+  const metaLoadingRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -60,13 +68,36 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
     setNoPasskey(false);
   }, [listedCount]);
 
-  // A fresh page load on /app/unlock has no vault metadata (only the passphrase submit used to fetch it), so the
-  // passkey list is unknown and the button would never show. Load it once; a failure leaves the button hidden.
   const metaMissing = vault.vaultMeta === null;
   useEffect(() => {
+    if (!metaMissing) setMetaLoadFailed(false);
+  }, [metaMissing]);
+
+  const loadMeta = useCallback(async () => {
+    if (metaLoadingRef.current) return;
+    metaLoadingRef.current = true;
+    if (mountedRef.current) {
+      setMetaLoading(true);
+      setMetaLoadFailed(false);
+    }
+    try {
+      await vaultRef.current.reloadVaultMeta();
+      if (mountedRef.current) setMetaLoadFailed(false);
+    } catch {
+      if (mountedRef.current) setMetaLoadFailed(true);
+    } finally {
+      metaLoadingRef.current = false;
+      if (mountedRef.current) setMetaLoading(false);
+    }
+  }, []);
+
+  // A fresh page load on /app/unlock has no vault metadata (only the passphrase submit used to fetch it), so the
+  // passkey list is unknown and the button would never show. Load it once; a transient failure exposes a retryable
+  // state instead of silently pretending the user has no passkeys (PKW-R2-4).
+  useEffect(() => {
     if (!supported || !metaMissing) return;
-    void vaultRef.current.reloadVaultMeta().catch(() => undefined);
-  }, [supported, metaMissing]);
+    void loadMeta();
+  }, [loadMeta, supported, metaMissing]);
 
   const unlock = useCallback(async (): Promise<PasskeyUnlockOutcome> => {
     if (pendingRef.current) return { ok: false, error: 'busy' };
@@ -115,10 +146,13 @@ export function usePasskeyUnlock(): UsePasskeyUnlockResult {
 
   return {
     available: supported && !noPasskey && listedCount > 0,
+    metaLoadFailed: supported && !noPasskey && metaMissing && metaLoadFailed,
+    metaLoading,
     pending,
     inFlight: vault.inFlight,
     error,
     unlock,
+    retryLoadMeta: loadMeta,
     clearError,
   };
 }

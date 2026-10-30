@@ -20,7 +20,8 @@ export interface PasskeyUnlockButtonProps {
 export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButtonProps) {
   const t = useTranslations('vault.passkey');
   const tState = useTranslations('vault.state');
-  const { available, pending, inFlight, error, unlock } = usePasskeyUnlock();
+  const { available, metaLoadFailed, metaLoading, pending, inFlight, error, unlock, retryLoadMeta } =
+    usePasskeyUnlock();
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -30,8 +31,33 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
     };
   }, []);
 
-  if (!available) return null;
-
+  if (!available) {
+    if (!metaLoadFailed) return null;
+    return (
+      <div
+        className={cn('card mb-4 p-4', className)}
+        role="status"
+        data-testid="unlock-passkey-load-error"
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="m-0 flex-1 text-[13px]" style={{ color: 'var(--body)' }}>
+            {t('unlock.loadFailed')}
+          </p>
+          <Button
+            variant="tertiary"
+            size="sm"
+            className="ml-auto"
+            onClick={() => void retryLoadMeta()}
+            disabled={metaLoading || inFlight}
+            aria-busy={metaLoading}
+            data-testid="unlock-passkey-retry-button"
+          >
+            {t('unlock.retryLoad')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   const run = async () => {
     const outcome: PasskeyUnlockOutcome = await unlock();
     if (outcome.ok && mountedRef.current) onUnlocked?.();

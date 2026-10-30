@@ -640,7 +640,9 @@
       "unlock": {
         "button": "Unlock with passkey",
         "pending": "Waiting for your authenticator…",
-        "caption": "Or enter your passphrase below."
+        "caption": "Or enter your passphrase below.",
+        "loadFailed": "Could not check your registered passkeys.",
+        "retryLoad": "Retry"
       },
       "settings": {
         "title": "Passkey",
