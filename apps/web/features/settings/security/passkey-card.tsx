@@ -205,6 +205,9 @@ function PasskeySecurityCardInner({
 
   useEffect(() => {
     if (!pendingFocusRenameId || editingId === pendingFocusRenameId) return;
+    // The row's Rename / Remove buttons stay disabled while a rename or revoke request (incl. the post-save list refresh)
+    // is in flight, and a disabled button cannot take focus: wait until the request settled, then focus.
+    if (renamePendingId !== null || revokingId !== null) return;
     const btn = document.querySelector<HTMLElement>(
       `[data-testid="settings-passkey-rename-${pendingFocusRenameId}"]`,
     );
@@ -212,13 +215,13 @@ function PasskeySecurityCardInner({
       btn.focus();
       setPendingFocusRenameId(null);
     }
-  }, [editingId, items, pendingFocusRenameId]);
+  }, [editingId, items, pendingFocusRenameId, renamePendingId, revokingId]);
 
   useEffect(() => {
-    if (!pendingFocusHeading || revokeDialogTarget !== null) return;
+    if (!pendingFocusHeading || revokeDialogTarget !== null || revokingId !== null) return;
     cardHeadingRef.current?.focus();
     setPendingFocusHeading(false);
-  }, [items, pendingFocusHeading, revokeDialogTarget]);
+  }, [items, pendingFocusHeading, revokeDialogTarget, revokingId]);
 
   const focusRenameButton = useCallback((id: string) => {
     setPendingFocusRenameId(id);

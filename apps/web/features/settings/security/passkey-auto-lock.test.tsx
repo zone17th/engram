@@ -369,6 +369,76 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
     });
   });
 
+  it('20B (VB-R1-5, CI-41031049276): rename focus lands on the row Rename button only after the post-save list refresh settled (browser order)', async () => {
+    const { reloadVaultMeta } = setupUnlockedVault();
+    let listCalls = 0;
+    const refresh = Promise.withResolvers<{ items: Array<typeof PASSKEY_A> }>();
+    const resolveRefresh = refresh.resolve;
+    mocks.fetchPasskeysList.mockImplementation(() => {
+      listCalls += 1;
+      if (listCalls === 1) return Promise.resolve({ items: [PASSKEY_A, PASSKEY_B] });
+      return refresh.promise;
+    });
+    const renamed = { ...PASSKEY_A, name: 'Studio Mac' };
+    mocks.renamePasskey.mockResolvedValue(renamed);
+
+    renderPasskeyCard('en');
+    await screen.findByTestId('settings-passkey-list');
+
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-${PASSKEY_A.id}`));
+    fireEvent.change(screen.getByTestId(`settings-passkey-rename-input-${PASSKEY_A.id}`), {
+      target: { value: 'Studio Mac' },
+    });
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-save-${PASSKEY_A.id}`));
+
+    // The save committed and the row left edit mode while the list refresh is still pending: the Rename button is
+    // disabled (rename request still in flight) and cannot hold focus yet.
+    expect(await screen.findByTestId('settings-passkey-status')).toHaveTextContent('Passkey renamed.');
+    await waitFor(() => expect(listCalls).toBe(2));
+    const renameBtn = await screen.findByTestId(`settings-passkey-rename-${PASSKEY_A.id}`);
+    expect(renameBtn).toBeDisabled();
+    expect(document.activeElement).not.toBe(renameBtn);
+
+    resolveRefresh({ items: [renamed, PASSKEY_B] });
+
+    await waitFor(() => {
+      const btn = screen.getByTestId(`settings-passkey-rename-${PASSKEY_A.id}`);
+      expect(btn).toBeEnabled();
+      expect(document.activeElement).toBe(btn);
+    });
+    expect(screen.getByTestId(`settings-passkey-name-${PASSKEY_A.id}`)).toHaveTextContent('Studio Mac');
+    expect(reloadVaultMeta).toHaveBeenCalled();
+  });
+
+  it('20B (VB-R1-5, CI-41031049276): revoke focus lands on the card heading after a slow post-revoke list refresh settles', async () => {
+    setupUnlockedVault();
+    useValidRevokeGrant('grant-revoke-slow-refresh');
+    let listCalls = 0;
+    const refresh = Promise.withResolvers<{ items: Array<typeof PASSKEY_A> }>();
+    const resolveRefresh = refresh.resolve;
+    mocks.fetchPasskeysList.mockImplementation(() => {
+      listCalls += 1;
+      if (listCalls === 1) return Promise.resolve({ items: [PASSKEY_A, PASSKEY_B] });
+      return refresh.promise;
+    });
+    mocks.revokePasskey.mockResolvedValue(undefined);
+
+    renderPasskeyCard('en');
+    await screen.findByTestId('settings-passkey-list');
+
+    fireEvent.click(screen.getByTestId(`settings-passkey-revoke-${PASSKEY_A.id}`));
+    await waitFor(() => expect(listCalls).toBe(2));
+    expect(screen.getByTestId('settings-passkey-heading')).not.toBe(document.activeElement);
+
+    resolveRefresh({ items: [PASSKEY_B] });
+
+    await waitFor(() => expect(screen.queryByTestId(`settings-passkey-row-${PASSKEY_A.id}`)).toBeNull());
+    expect(screen.getByTestId('settings-passkey-status')).toHaveTextContent('Passkey removed.');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('settings-passkey-heading'));
+    });
+  });
+
   it('20B: revoke lost response then retry does not report an error', async () => {
     const { reloadVaultMeta } = setupUnlockedVault();
     useValidRevokeGrant('grant-revoke-retry');
