@@ -241,6 +241,7 @@ test.describe('P03-T16A Vault Onboarding U3 (Steps 1–2)', () => {
 
     await createBtn.click();
 
+    await page.getByTestId('onboarding-skip-passkey-button').click();
     // Navigates to /app, RKs are wiped from DOM and storage, and vault state is unlocked
     await expect(page).toHaveURL(/\/app$/);
     expect(serverState.postVaultCalls).toHaveLength(1);
