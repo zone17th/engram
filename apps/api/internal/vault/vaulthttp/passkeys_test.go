@@ -1720,6 +1720,361 @@ func TestPasskeyRegister_RollbackOnAuditNoticeAndOwnerTokenMismatch(t *testing.T
 	}
 }
 
+// TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck covers F-API-PASSKEY-DEADLINE (advisor-dec-057):
+//  1. Race: first request is held after Claim (via SetPasskeyAttestationVerifier), clock advances past
+//     grant expiry (and >60s in_progress window), client replay with the same Idempotency-Key and original
+//     X-Reauth-Token is rejected (401 reauth_invalid), then the first request resumes -> the post-Claim
+//     grant re-check inside the mutation transaction aborts with 401 reauth_invalid and rolls back:
+//     0 passkey rows, 0 passkey.register audit rows, 0 security notices, 0 River mail jobs, and the
+//     in_progress idempotency claim is released.
+//  2. Deadline: first request stalled past the handler deadline (SetPasskeyCreateTimeout) -> aborts with
+//     503 dependency_unavailable, 0 passkey rows, 0 audit rows, 0 notices, and idempotency claim released.
+//  3. Positive control: normal create returns 201 Created, and an idempotent replay of the committed
+//     request (even after the grant expires) returns the stored 201 without creating a second row.
+func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	ctx := context.Background()
+	va := webauthntest.New()
+
+	password := "correcthorsebattery"
+	email := "pk-deadline-race@example.com"
+	jarA, meA := h.signupUser(email, password)
+	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, meA.User.ID); err != nil {
+		t.Fatalf("verify email: %v", err)
+	}
+	h.createPasskeyTestVault(jarA, "idem-pk-dl-create-vault", 0x10)
+
+	assertNoPasskeySideEffects := func(step string) {
+		t.Helper()
+		var passkeys, audits, notices, jobs int
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, meA.User.ID).Scan(&passkeys); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2 AND result = 'success'`, meA.User.ID, vault.EventPasskeyRegister).Scan(&audits); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, meA.User.ID).Scan(&notices); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&jobs); err != nil {
+			t.Fatal(err)
+		}
+		if passkeys != 0 || audits != 0 || notices != 0 || jobs != 0 {
+			t.Fatalf("%s: unexpected side effects: passkeys=%d audits=%d notices=%d jobs=%d, want 0/0/0/0",
+				step, passkeys, audits, notices, jobs)
+		}
+	}
+
+	// --- Subcase 1: Stalled first request held after Claim -> replay rejected (401 reauth_invalid) -> first resumes -> MUST NOT commit ---
+	opts1 := h.registerPasskeyOptions(jarA)
+	reg1, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts1.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 1: %v", err)
+	}
+	grant1 := h.reauthGrant(jarA, "vault.passkey_register", password)
+	body1 := makePasskeyCreateBody(
+		t,
+		opts1.ChallengeID,
+		reg1.ClientDataJSONB64,
+		reg1.AttestationObjectB64,
+		opts1.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x91),
+		"Stalled Race Key",
+		nil,
+	)
+	const idemKeyRace = "idem-pk-dl-race-000001"
+
+	enteredVerifier := make(chan struct{})
+	releaseVerifier := make(chan struct{})
+	var verifierOnce sync.Once
+	h.vaultSvc.SetPasskeyAttestationVerifier(func(
+		rp vault.WebAuthnRPConfig,
+		clientDataJSONB64 string,
+		attestationObjectB64 string,
+		storedChallengeB64 string,
+	) (vault.VerifiedAttestation, error) {
+		verifierOnce.Do(func() {
+			close(enteredVerifier)
+			<-releaseVerifier
+		})
+		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
+	})
+	t.Cleanup(func() {
+		h.vaultSvc.SetPasskeyAttestationVerifier(nil)
+		h.vaultAPI.SetPasskeyCreateTimeout(vaulthttp.DefaultPasskeyCreateTimeout)
+	})
+
+	type reqResult struct {
+		resp testResponse
+		raw  string
+	}
+	firstDone := make(chan reqResult, 1)
+	go func() {
+		r, raw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
+			idemKey: idemKeyRace,
+			grant:   grant1,
+		})
+		firstDone <- reqResult{resp: r, raw: raw}
+	}()
+
+	select {
+	case <-enteredVerifier:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first request to enter attestation verifier after Claim")
+	}
+
+	// Confirm the first request has claimed the idempotency key as 'in_progress'.
+	var claimedCount int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2 AND status = 'in_progress'`, meA.User.ID, idemKeyRace).Scan(&claimedCount); err != nil {
+		t.Fatal(err)
+	}
+	if claimedCount != 1 {
+		t.Fatalf("expected 1 in_progress idempotency_key row while first request is held, got %d", claimedCount)
+	}
+
+	// Advance clock past the 5m re-auth grant TTL (and >60s in_progress window) so the client's replay
+	// with the same Idempotency-Key and original grant passes Lookup and gets rejected at RequireReauth (401 reauth_invalid).
+	// Issue a fresh session cookie by advancing in steps < 10m access JWT TTL (5m + 1s).
+	h.clk.Advance(auth.GrantTTL + time.Second)
+
+	replayResp, replayRaw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
+		idemKey: idemKeyRace,
+		grant:   grant1,
+	})
+	assertPasskeyProblem(t, replayResp, replayRaw, http.StatusUnauthorized, "reauth_invalid")
+
+	// Now resume the held first request: its post-Claim grant re-check inside the mutation tx must fail
+	// with 401 reauth_invalid and roll back all writes.
+	close(releaseVerifier)
+
+	var firstRes reqResult
+	select {
+	case firstRes = <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first request to finish after release")
+	}
+	assertPasskeyProblem(t, firstRes.resp, firstRes.raw, http.StatusUnauthorized, "reauth_invalid")
+	assertNoPasskeySideEffects("stalled first request after replay rejection")
+
+	var leftoverRaceIdem int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, idemKeyRace).Scan(&leftoverRaceIdem); err != nil {
+		t.Fatal(err)
+	}
+	if leftoverRaceIdem != 0 {
+		t.Fatalf("expected in_progress idempotency claim to be released after pre-commit 401 rollback, got %d rows", leftoverRaceIdem)
+	}
+
+	// --- Subcase 1b: Stalled first request held after Claim -> session revoked while grant still in TTL -> replay rejected (401 session_invalid) -> first resumes -> MUST NOT commit ---
+	jarA = h.loginPasskeyTestUser(email, password)
+	meCurrent := h.getMe(jarA)
+	opts1b := h.registerPasskeyOptions(jarA)
+	reg1b, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts1b.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 1b: %v", err)
+	}
+	grant1b := h.reauthGrantXFF(jarA, "vault.passkey_register", password, "198.51.100.76")
+	body1b := makePasskeyCreateBody(
+		t,
+		opts1b.ChallengeID,
+		reg1b.ClientDataJSONB64,
+		reg1b.AttestationObjectB64,
+		opts1b.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x94),
+		"Stalled Session Revoked Key",
+		nil,
+	)
+	const idemKeySessRevoked = "idem-pk-dl-sess-rev-001"
+
+	enteredVerifier1b := make(chan struct{})
+	releaseVerifier1b := make(chan struct{})
+	var verifierOnce1b sync.Once
+	h.vaultSvc.SetPasskeyAttestationVerifier(func(
+		rp vault.WebAuthnRPConfig,
+		clientDataJSONB64 string,
+		attestationObjectB64 string,
+		storedChallengeB64 string,
+	) (vault.VerifiedAttestation, error) {
+		verifierOnce1b.Do(func() {
+			close(enteredVerifier1b)
+			<-releaseVerifier1b
+		})
+		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
+	})
+
+	firstDone1b := make(chan reqResult, 1)
+	go func() {
+		r, raw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1b, reqOptions{
+			idemKey: idemKeySessRevoked,
+			grant:   grant1b,
+		})
+		firstDone1b <- reqResult{resp: r, raw: raw}
+	}()
+
+	select {
+	case <-enteredVerifier1b:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first request (1b) to enter attestation verifier after Claim")
+	}
+
+	// Advance >60s (still well within 5m grant TTL) and revoke the session in DB.
+	h.clk.Advance(65 * time.Second)
+	if _, err := h.pool.Exec(ctx, `UPDATE session SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`, meCurrent.User.ID, h.clk.Now()); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+
+	// Replay with the same Idempotency-Key is rejected with 401 session_invalid.
+	replayResp1b, replayRaw1b := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1b, reqOptions{
+		idemKey: idemKeySessRevoked,
+		grant:   grant1b,
+	})
+	assertPasskeyProblem(t, replayResp1b, replayRaw1b, http.StatusUnauthorized, "session_invalid")
+
+	// Resume held first request: EnsureLiveTx inside the mutation tx rejects with 401 session_invalid and rolls back.
+	close(releaseVerifier1b)
+	var firstRes1b reqResult
+	select {
+	case firstRes1b = <-firstDone1b:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first request (1b) to finish after release")
+	}
+	assertPasskeyProblem(t, firstRes1b.resp, firstRes1b.raw, http.StatusUnauthorized, "session_invalid")
+	assertNoPasskeySideEffects("stalled first request after session revocation")
+
+	var leftoverSessRevIdem int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, idemKeySessRevoked).Scan(&leftoverSessRevIdem); err != nil {
+		t.Fatal(err)
+	}
+	if leftoverSessRevIdem != 0 {
+		t.Fatalf("expected in_progress idempotency claim to be released after session_invalid rollback, got %d rows", leftoverSessRevIdem)
+	}
+
+	// --- Subcase 2: First request stalls past handler deadline -> 503 dependency_unavailable, no passkey row, claim released ---
+	// Re-login so the session is fresh after revocation.
+	jarA = h.loginPasskeyTestUser(email, password)
+	opts2 := h.registerPasskeyOptions(jarA)
+	reg2, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts2.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 2: %v", err)
+	}
+	grant2 := h.reauthGrantXFF(jarA, "vault.passkey_register", password, "198.51.100.77")
+	body2 := makePasskeyCreateBody(
+		t,
+		opts2.ChallengeID,
+		reg2.ClientDataJSONB64,
+		reg2.AttestationObjectB64,
+		opts2.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x92),
+		"Deadline Exceeded Key",
+		nil,
+	)
+	const idemKeyDeadline = "idem-pk-dl-timeout-0002"
+
+	h.vaultAPI.SetPasskeyCreateTimeout(50 * time.Millisecond)
+	h.vaultSvc.SetPasskeyAttestationVerifier(func(
+		rp vault.WebAuthnRPConfig,
+		clientDataJSONB64 string,
+		attestationObjectB64 string,
+		storedChallengeB64 string,
+	) (vault.VerifiedAttestation, error) {
+		time.Sleep(150 * time.Millisecond)
+		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
+	})
+
+	dlResp, dlRaw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body2, reqOptions{
+		idemKey: idemKeyDeadline,
+		grant:   grant2,
+	})
+	assertPasskeyProblem(t, dlResp, dlRaw, http.StatusServiceUnavailable, "dependency_unavailable")
+	assertNoPasskeySideEffects("handler deadline exceeded")
+
+	var leftoverDlIdem int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, idemKeyDeadline).Scan(&leftoverDlIdem); err != nil {
+		t.Fatal(err)
+	}
+	if leftoverDlIdem != 0 {
+		t.Fatalf("expected in_progress idempotency claim to be released after deadline exceeded, got %d rows", leftoverDlIdem)
+	}
+
+	// Restore normal verifier and default 30s timeout.
+	h.vaultSvc.SetPasskeyAttestationVerifier(nil)
+	h.vaultAPI.SetPasskeyCreateTimeout(vaulthttp.DefaultPasskeyCreateTimeout)
+	// --- Subcase 3: Positive control — normal create returns 201 and replay of committed request returns stored 201 ---
+	opts3 := h.registerPasskeyOptions(jarA)
+	reg3, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         h.vaultSvc.WebAuthnRPID(),
+		Origin:       h.origin,
+		ChallengeB64: opts3.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential 3: %v", err)
+	}
+	body3 := makePasskeyCreateBody(
+		t,
+		opts3.ChallengeID,
+		reg3.ClientDataJSONB64,
+		reg3.AttestationObjectB64,
+		opts3.PRFSalt,
+		makeWrapB64U(t, vault.WrapKindPRF, 0x93),
+		"Positive Control Key",
+		nil,
+	)
+	const idemKeyPos = "idem-pk-dl-positive-003"
+	posResp, posRaw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body3, reqOptions{
+		idemKey: idemKeyPos,
+		grant:   grant2,
+	})
+	if posResp.StatusCode != http.StatusCreated {
+		t.Fatalf("positive control POST /vault/passkeys = %d %s", posResp.StatusCode, posRaw)
+	}
+	var createdItem vault.PasskeyItem
+	if err := json.Unmarshal([]byte(posRaw), &createdItem); err != nil {
+		t.Fatalf("unmarshal PasskeyItem: %v", err)
+	}
+	if createdItem.Name != "Positive Control Key" {
+		t.Fatalf("createdItem.Name = %q, want 'Positive Control Key'", createdItem.Name)
+	}
+
+	// Advance past grant expiry and replay with the same Idempotency-Key -> stored 201 returned by Lookup.
+	h.clk.Advance(auth.GrantTTL + time.Second)
+	posReplayResp, posReplayRaw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body3, reqOptions{
+		idemKey: idemKeyPos,
+		grant:   grant2,
+	})
+	if posReplayResp.StatusCode != http.StatusCreated {
+		t.Fatalf("positive control replay = %d, want 201 (%s)", posReplayResp.StatusCode, posReplayRaw)
+	}
+	var replayedItem vault.PasskeyItem
+	if err := json.Unmarshal([]byte(posReplayRaw), &replayedItem); err != nil {
+		t.Fatalf("unmarshal replayed PasskeyItem: %v", err)
+	}
+	if replayedItem.ID != createdItem.ID {
+		t.Fatalf("replayedItem.ID = %s, want %s", replayedItem.ID, createdItem.ID)
+	}
+
+	var finalPasskeys, finalAudits int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, meA.User.ID).Scan(&finalPasskeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2 AND result = 'success'`, meA.User.ID, vault.EventPasskeyRegister).Scan(&finalAudits); err != nil {
+		t.Fatal(err)
+	}
+	if finalPasskeys != 1 || finalAudits != 1 {
+		t.Fatalf("after positive control + replay: passkeys=%d audits=%d, want 1/1", finalPasskeys, finalAudits)
+	}
+}
+
 func init() {
 	var b [1]byte
 	_, _ = rand.Read(b[:])

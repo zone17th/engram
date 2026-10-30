@@ -41,6 +41,7 @@ var (
 	ErrVaultKDFInvalid           = errCode("vault_kdf_invalid")
 	ErrVaultWrapInvalid          = errCode("vault_wrap_invalid")
 	ErrVaultMutationsDisabled    = errCode("vault_mutations_disabled")
+	ErrDependencyUnavailable     = errCode("dependency_unavailable")
 	ErrRecoveryKeysCount         = errCode("recovery_keys_count")
 	ErrRecoveryKeySlotTaken      = errCode("recovery_key_slot_taken")
 	ErrRecoveryKeyConflict       = errCode("recovery_key_conflict")

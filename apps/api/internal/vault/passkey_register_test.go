@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/audit"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
@@ -583,5 +584,159 @@ func TestServiceRegisterPasskey_ConcurrentChallengeConsumeAndRollback(t *testing
 		}); !errors.Is(err, vault.ErrPasskeyChallengeInvalid) {
 			t.Fatalf("after %s rollback, retry with burned challenge = %v, want ErrPasskeyChallengeInvalid", table, err)
 		}
+	}
+}
+
+// TestServiceRegisterPasskey_DeadlineAndGrantRecheck covers F-API-PASSKEY-DEADLINE at the service level:
+//  1. Stalled RegisterPasskey call held in PasskeyAttestationVerifier while the re-auth grant expires ->
+//     when resumed, the post-Claim grant re-check inside the mutation transaction aborts with auth.ErrReauthInvalid
+//     and rolls back InsertPasskey, audit_log, and user_notification.
+//  2. RegisterPasskey call whose context deadline expires during attestation verification -> aborts with
+//     context.DeadlineExceeded and writes no passkey, audit, or notification row.
+func TestServiceRegisterPasskey_DeadlineAndGrantRecheck(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	clk := clock.NewFixed(time.Date(2026, 10, 29, 14, 0, 0, 0, time.UTC))
+
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://localhost:3000")
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	aud := audit.NewStore(pool)
+	notes := notification.NewStore(pool, nil)
+	svc, err := vault.NewService(cfg, pool, clk, aud, notes, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	grants := auth.NewGrants(cfg.AuthReauthSecret, clk)
+
+	ctx := context.Background()
+	q := gen.New(pool)
+	userA, err := q.InsertUser(ctx, gen.InsertUserParams{
+		Email:  "passkey-svc-deadline@example.com",
+		Locale: "en",
+	})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+	sessA, err := q.InsertSession(ctx, gen.InsertSessionParams{
+		UserID:           userA.ID,
+		RefreshTokenHash: seqBytes(32, 0x41),
+		IpHash:           seqBytes(32, 0x42),
+		ExpiresAt:        pgtype.Timestamptz{Time: clk.Now().Add(24 * time.Hour), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	pA := authctx.Principal{
+		UserID:    userA.ID,
+		SessionID: sessA.ID,
+	}
+	if _, err := svc.Create(ctx, pA, makeValidCreateInput(t, 0x30)); err != nil {
+		t.Fatalf("svc.Create: %v", err)
+	}
+	va := webauthntest.New()
+
+	// 1. Grant expires while held in verifier -> ErrReauthInvalid, 0 passkey/audit/notice rows.
+	opts1, err := svc.RegisterPasskeyOptions(ctx, pA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg1, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         "localhost",
+		Origin:       "http://localhost:3000",
+		ChallengeB64: opts1.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant1, err := grants.Issue(pA, "vault.passkey_register")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetPasskeyAttestationVerifier(func(
+		rp vault.WebAuthnRPConfig,
+		clientDataJSONB64 string,
+		attestationObjectB64 string,
+		storedChallengeB64 string,
+	) (vault.VerifiedAttestation, error) {
+		clk.Advance(auth.GrantTTL + time.Second)
+		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
+	})
+	t.Cleanup(func() { svc.SetPasskeyAttestationVerifier(nil) })
+
+	_, err = svc.RegisterPasskey(ctx, pA, vault.RegisterPasskeyInput{
+		ChallengeID:       opts1.ChallengeID,
+		ClientDataJSON:    reg1.ClientDataJSONB64,
+		AttestationObject: reg1.AttestationObjectB64,
+		PRFSalt:           opts1.PRFSalt,
+		VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x61),
+		Name:              "Grant Expired In Verifier",
+		ReauthToken:       grant1.Grant,
+	})
+	if !errors.Is(err, auth.ErrReauthInvalid) {
+		t.Fatalf("expected ErrReauthInvalid when grant expires before mutation tx, got %v", err)
+	}
+
+	// 2. Context deadline exceeded during verifier -> context.DeadlineExceeded, 0 passkey/audit/notice rows.
+	opts2, err := svc.RegisterPasskeyOptions(ctx, pA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg2, err := va.CreateCredential(webauthntest.RegistrationOptions{
+		RPID:         "localhost",
+		Origin:       "http://localhost:3000",
+		ChallengeB64: opts2.PublicKey.Challenge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant2, err := grants.Issue(pA, "vault.passkey_register")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dlCtx, dlCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer dlCancel()
+	svc.SetPasskeyAttestationVerifier(func(
+		rp vault.WebAuthnRPConfig,
+		clientDataJSONB64 string,
+		attestationObjectB64 string,
+		storedChallengeB64 string,
+	) (vault.VerifiedAttestation, error) {
+		<-dlCtx.Done()
+		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
+	})
+
+	_, err = svc.RegisterPasskey(dlCtx, pA, vault.RegisterPasskeyInput{
+		ChallengeID:       opts2.ChallengeID,
+		ClientDataJSON:    reg2.ClientDataJSONB64,
+		AttestationObject: reg2.AttestationObjectB64,
+		PRFSalt:           opts2.PRFSalt,
+		VKWrap:            makeValidWrapB64U(t, vault.WrapKindPRF, 0x62),
+		Name:              "Deadline Expired In Verifier",
+		ReauthToken:       grant2.Grant,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	var pkCount, auditCount, noticeCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM vault_passkey WHERE user_id = $1`, userA.ID).Scan(&pkCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2`, userA.ID, vault.EventPasskeyRegister).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userA.ID).Scan(&noticeCount); err != nil {
+		t.Fatal(err)
+	}
+	if pkCount != 0 || auditCount != 0 || noticeCount != 0 {
+		t.Fatalf("side effects after grant expiry + deadline: passkeys=%d audits=%d notices=%d, want 0/0/0", pkCount, auditCount, noticeCount)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
@@ -19,6 +20,11 @@ import (
 // VaultJSONLimit là giới hạn kích thước JSON body cho các route `/vault*` (64 KiB, khớp IdempotencyMaxBodyBytes).
 const VaultJSONLimit = 64 * 1024
 
+// DefaultPasskeyCreateTimeout là thời hạn xử lý tối đa cho handler `POST /api/v1/vault/passkeys`
+// (F-API-PASSKEY-DEADLINE, advisor-dec-057), đồng nhất với `lock_timeout = 30s` và `statement_timeout = 30s`
+// trong `httpx.ConfigureMutationTxTimeouts` (plan mục 2.3 bước 7).
+const DefaultPasskeyCreateTimeout = 30 * time.Second
+
 // PasskeyRoutesHook là điểm mở rộng dành cho Task 13 (WebAuthn passkey routes:
 // POST /vault/passkeys/register/options, POST /vault/passkeys [cột K kill switch],
 // PATCH /vault/passkeys/{id}, DELETE /vault/passkeys/{id}, POST /vault/unlock/passkey/options).
@@ -26,11 +32,12 @@ type PasskeyRoutesHook func(v1Router interface{}, d httpx.Deps)
 
 // API gom các dependency HTTP của nhóm route `/vault*`.
 type API struct {
-	svc        *vault.Service
-	idem       *httpx.Idempotency
-	limiter    *httpx.UserLimiter
-	trusted    func(net.IP) bool
-	killSwitch func(http.Handler) http.Handler
+	svc                  *vault.Service
+	idem                 *httpx.Idempotency
+	limiter              *httpx.UserLimiter
+	trusted              func(net.IP) bool
+	killSwitch           func(http.Handler) http.Handler
+	passkeyCreateTimeout time.Duration
 }
 
 // NewAPI khởi tạo `*API` cho các route `/vault*`.
@@ -51,11 +58,12 @@ func NewAPI(
 	}
 	disabled := svc != nil && svc.KeyMutationsDisabled()
 	return &API{
-		svc:        svc,
-		idem:       idem,
-		limiter:    limiter,
-		trusted:    trusted,
-		killSwitch: vault.RequireKeyMutationsEnabled(disabled),
+		svc:                  svc,
+		idem:                 idem,
+		limiter:              limiter,
+		trusted:              trusted,
+		killSwitch:           vault.RequireKeyMutationsEnabled(disabled),
+		passkeyCreateTimeout: DefaultPasskeyCreateTimeout,
 	}
 }
 
@@ -72,6 +80,24 @@ func (a *API) UserLimiter() *httpx.UserLimiter { return a.limiter }
 // Exported để Task 13 gắn vào `POST /vault/passkeys`.
 func (a *API) KillSwitchMiddleware() func(http.Handler) http.Handler {
 	return a.killSwitch
+}
+
+// SetPasskeyCreateTimeout đặt thời hạn xử lý của handler `POST /api/v1/vault/passkeys`
+// (nếu `d <= 0` sẽ quay về `DefaultPasskeyCreateTimeout` = 30s).
+func (a *API) SetPasskeyCreateTimeout(d time.Duration) {
+	if d <= 0 {
+		a.passkeyCreateTimeout = DefaultPasskeyCreateTimeout
+		return
+	}
+	a.passkeyCreateTimeout = d
+}
+
+// PasskeyCreateTimeout trả về thời hạn xử lý hiện hành của handler `POST /api/v1/vault/passkeys`.
+func (a *API) PasskeyCreateTimeout() time.Duration {
+	if a == nil || a.passkeyCreateTimeout <= 0 {
+		return DefaultPasskeyCreateTimeout
+	}
+	return a.passkeyCreateTimeout
 }
 
 func (a *API) ip(r *http.Request) string {

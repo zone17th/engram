@@ -54,17 +54,28 @@ type Mailer interface {
 // Service thực thi nghiệp vụ cho các endpoint `/vault*` (P03 Task 8–12).
 // Server chỉ xử lý các bản wrap AEAD opaque, `lookup_hash`, KDF công khai và public key;
 // tuyệt đối không bao giờ nhận hoặc ghi log passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap.
+// PasskeyAttestationVerifier là hàm xác minh dữ liệu đăng ký WebAuthn; mặc định là `VerifyRegistrationAttestation`.
+type PasskeyAttestationVerifier func(
+	rp WebAuthnRPConfig,
+	clientDataJSONB64 string,
+	attestationObjectB64 string,
+	storedChallengeB64 string,
+) (VerifiedAttestation, error)
+
 type Service struct {
-	cfg       *config.Config
-	pool      *pgxpool.Pool
-	q         *gen.Queries
-	clk       clock.Clock
-	audit     Auditor
-	notify    Notifier
-	metrics   *Metrics
-	resetHook ResetHook
-	logger    *slog.Logger
-	ipPepper  []byte
+	cfg             *config.Config
+	pool            *pgxpool.Pool
+	q               *gen.Queries
+	clk             clock.Clock
+	grants          *auth.Grants
+	sessions        *auth.SessionStore
+	audit           Auditor
+	notify          Notifier
+	metrics         *Metrics
+	resetHook       ResetHook
+	passkeyVerifier PasskeyAttestationVerifier
+	logger          *slog.Logger
+	ipPepper        []byte
 }
 
 // NewService khởi tạo `*Service` cho vault.
@@ -94,16 +105,19 @@ func NewService(
 		metrics = NewMetrics(nil)
 	}
 	return &Service{
-		cfg:       cfg,
-		pool:      pool,
-		q:         gen.New(pool),
-		clk:       clk,
-		audit:     audit,
-		notify:    notify,
-		metrics:   metrics,
-		resetHook: resetHook,
-		logger:    logger,
-		ipPepper:  cfg.AuthIPPepper,
+		cfg:             cfg,
+		pool:            pool,
+		q:               gen.New(pool),
+		clk:             clk,
+		grants:          auth.NewGrants(cfg.AuthReauthSecret, clk),
+		sessions:        auth.NewSessionStore(pool, nil, clk),
+		audit:           audit,
+		notify:          notify,
+		metrics:         metrics,
+		resetHook:       resetHook,
+		passkeyVerifier: VerifyRegistrationAttestation,
+		logger:          logger,
+		ipPepper:        cfg.AuthIPPepper,
 	}, nil
 }
 
@@ -152,6 +166,23 @@ func (s *Service) ResetHook() ResetHook {
 		return NoopResetHook
 	}
 	return s.resetHook
+}
+
+// SetPasskeyAttestationVerifier cho phép cấu hình hàm verify attestation đăng ký passkey (dùng trong test F-API-PASSKEY-DEADLINE).
+func (s *Service) SetPasskeyAttestationVerifier(fn PasskeyAttestationVerifier) {
+	if fn == nil {
+		s.passkeyVerifier = VerifyRegistrationAttestation
+		return
+	}
+	s.passkeyVerifier = fn
+}
+
+// PasskeyAttestationVerifier trả về hàm verify attestation đăng ký passkey hiện hành.
+func (s *Service) PasskeyAttestationVerifier() PasskeyAttestationVerifier {
+	if s == nil || s.passkeyVerifier == nil {
+		return VerifyRegistrationAttestation
+	}
+	return s.passkeyVerifier
 }
 
 // BeginMutationTx mở một `pgx.Tx` trên pool với `lock_timeout = '30s'` và `statement_timeout = '30s'`

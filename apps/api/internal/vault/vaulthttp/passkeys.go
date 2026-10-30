@@ -2,6 +2,7 @@ package vaulthttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -73,17 +74,25 @@ func (a *API) PasskeyCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.svc.RegisterPasskey(r.Context(), p, vault.RegisterPasskeyInput{
+	ctx, cancel := context.WithTimeout(r.Context(), a.PasskeyCreateTimeout())
+	defer cancel()
+
+	res, err := a.svc.RegisterPasskey(ctx, p, vault.RegisterPasskeyInput{
 		ChallengeID:       challengeID,
 		ClientDataJSON:    req.Attestation.ClientDataJSON,
 		AttestationObject: req.Attestation.AttestationObject,
 		PRFSalt:           req.PRFSalt,
 		VKWrap:            req.VKWrap,
 		Name:              req.Name,
+		ReauthToken:       r.Header.Get("X-Reauth-Token"),
 		IP:                a.ip(r),
 		UA:                r.UserAgent(),
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			WriteDomainError(w, r, vault.ErrDependencyUnavailable)
+			return
+		}
 		WriteDomainError(w, r, err)
 		return
 	}

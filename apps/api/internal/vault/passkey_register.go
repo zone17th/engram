@@ -13,6 +13,7 @@ import (
 
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
+	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
 	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
 )
 
@@ -98,6 +99,7 @@ type RegisterPasskeyInput struct {
 	PRFSalt           string
 	VKWrap            string
 	Name              string
+	ReauthToken       string
 	IP                string
 	UA                string
 }
@@ -251,8 +253,9 @@ func (s *Service) RegisterPasskeyOptions(ctx context.Context, p authctx.Principa
 //     Mở `BeginMutationTx` (`lock_timeout = 30s`, `statement_timeout = 30s`), khoá và kiểm tra lại
 //     `vault` vẫn tồn tại với cùng `vault_key_id`, `InsertPasskey` (trùng `cred_id` -> `409 passkey_exists`),
 //     ghi audit `passkey.register` + in-app security notice (+ job mail River `security_notice_mail`
-//     nếu email đã xác minh) và cập nhật `idempotency_key` `status = 'done'` kèm `owner_token`
-//     trước khi `COMMIT`. Không tăng `vault.version`.
+//     nếu email đã xác minh), kiểm tra lại session còn sống và re-auth grant `vault.passkey_register`
+//     vẫn còn hạn ngay trước khi cập nhật `idempotency_key` `status = 'done'` kèm `owner_token` và `COMMIT`
+//     (F-API-PASSKEY-DEADLINE, advisor-dec-057). Không tăng `vault.version`.
 func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in RegisterPasskeyInput) (PasskeyItem, error) {
 	if s.KeyMutationsDisabled() {
 		return PasskeyItem{}, ErrVaultMutationsDisabled
@@ -318,7 +321,7 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 	}
 
 	// Bước Verify attestation chạy sau khi challenge đã được burn thành công.
-	verified, err := VerifyRegistrationAttestation(
+	verified, err := s.PasskeyAttestationVerifier()(
 		s.WebAuthnConfig(),
 		in.ClientDataJSON,
 		in.AttestationObject,
@@ -326,6 +329,9 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 	)
 	if err != nil {
 		return PasskeyItem{}, ErrPasskeyAttestationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return PasskeyItem{}, err
 	}
 
 	// Transaction 2: Ghi bản ghi `vault_passkey`, audit `passkey.register`, security notice (+ job mail River)
@@ -347,7 +353,6 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 	if lockedVault.VaultKeyID != curVault.VaultKeyID {
 		return PasskeyItem{}, ErrPasskeyChallengeInvalid
 	}
-
 	passkeyRow, err := q.InsertPasskey(ctx, gen.InsertPasskeyParams{
 		UserID:  p.UserID,
 		CredID:  verified.CredID,
@@ -371,6 +376,25 @@ func (s *Service) RegisterPasskey(ctx context.Context, p authctx.Principal, in R
 	}
 	if err := s.RecordSecurityNoticeTx(ctx, tx, p.UserID, secevent.Meta{}); err != nil {
 		return PasskeyItem{}, err
+	}
+
+	// F-API-PASSKEY-DEADLINE (advisor-dec-057): Khi gọi qua HTTP (có IdempotencyClaim trong context)
+	// hoặc khi caller truyền ReauthToken, kiểm tra lại session còn sống (EnsureLiveTx FOR UPDATE)
+	// và re-auth grant `vault.passkey_register` vẫn còn hạn ngay cuối transaction mutation
+	// (sau Claim và mọi bước ghi trong tx, ngay trước FinishIdempotencyTx / COMMIT).
+	// Nếu một replay đã bị từ chối ở RequireReauth (do grant hết hạn hoặc session bị thu hồi/hết hạn),
+	// bước kiểm tra này trả lỗi và defer tx.Rollback sẽ hoàn tác toàn bộ InsertPasskey, audit, notice và job mail.
+	if _, hasClaim := httpx.IdempotencyClaimFrom(ctx); hasClaim || in.ReauthToken != "" {
+		if s.sessions != nil {
+			if err := s.sessions.EnsureLiveTx(ctx, q, p); err != nil {
+				return PasskeyItem{}, err
+			}
+		}
+		if s.grants != nil {
+			if err := s.grants.Verify(p, "vault.passkey_register", in.ReauthToken); err != nil {
+				return PasskeyItem{}, err
+			}
+		}
 	}
 
 	resp := FormatPasskeyItem(passkeyRow)
