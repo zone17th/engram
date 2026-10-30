@@ -66,6 +66,7 @@ export class FakeDeviceIdb {
   /** Called synchronously when a transaction is created (e.g. to assert a lock is held). */
   onTransaction?: (info: FakeDeviceTransactionInfo) => void;
   private tail: Promise<void> = Promise.resolve();
+  private upgraded = false;
 
   constructor(private readonly locks?: FakeWebLocks) {}
 
@@ -81,6 +82,7 @@ export class FakeDeviceIdb {
   /** The DB was deleted behind the app's back (browser data clearing, corruption): everything incl. meta is gone. */
   wipe(): void {
     this.stores.clear();
+    this.upgraded = false;
   }
 
   createFactory(): IDBFactory {
@@ -107,7 +109,12 @@ export class FakeDeviceIdb {
             return;
           }
           req.result = self.createDb();
-          if (self.stores.size === 0) (req.onupgradeneeded as (() => void) | null)?.();
+          // Real IndexedDB runs `upgradeneeded` once for a new (version 0) database, even when a test seeded one store
+          // directly through `store()` beforehand; the handler creates the stores and keeps any seeded data.
+          if (!self.upgraded) {
+            self.upgraded = true;
+            (req.onupgradeneeded as (() => void) | null)?.();
+          }
           (req.onsuccess as (() => void) | null)?.();
         });
         return req as unknown as IDBOpenDBRequest;
