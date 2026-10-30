@@ -557,6 +557,60 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     expect(mocks.router.replace).not.toHaveBeenCalledWith(expect.stringContaining('evil.example'));
   });
 
+  it('R2-5 / R2-8: navigating away from /app/unlock (to /app/unlock/forgot or /app/auth/reauth) while automatic silent GET is held retires the captured returnTo so completion stays on the chosen route', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    for (const intentionalRoute of ['/app/unlock/forgot', '/app/auth/reauth'] as const) {
+      let holdGet = true;
+      let releaseGet: (() => void) | null = null;
+      mocks.fetchVault.mockImplementation(async () => {
+        if (holdGet) {
+          await new Promise<void>((resolve) => {
+            releaseGet = resolve;
+          });
+        }
+        return vaultState(VAULT_K);
+      });
+
+      mocks.router.pathname = '/app/unlock';
+      mocks.router.searchParams = new URLSearchParams('returnTo=%2Fapp%2Fsettings');
+      mocks.router.replace.mockReset();
+      const tab = renderTab({ silentUnlockOnLoad: true });
+      await waitFor(() => expect(releaseGet).not.toBeNull());
+
+      // User intentionally navigates away (e.g. clicks "Forgot passphrase" -> /app/unlock/forgot, or /app/auth/reauth) while GET is held:
+      mocks.router.pathname = intentionalRoute;
+      mocks.router.searchParams = new URLSearchParams();
+      await act(async () => {
+        tab.rerender();
+      });
+
+      // Release automatic silent GET -> vault unlocks, but SilentUnlockReturnTo MUST NOT redirect to /app/settings or /app!
+      await act(async () => {
+        holdGet = false;
+        releaseGet?.();
+      });
+      await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+      expect(mocks.router.pathname).toBe(intentionalRoute);
+      expect(mocks.router.replace).not.toHaveBeenCalled();
+
+      // Even if the user later visits /app after having retired the capture on the intentional route, the retired capture must not resurface:
+      mocks.router.pathname = '/app';
+      await act(async () => {
+        tab.rerender();
+      });
+      expect(mocks.router.replace).not.toHaveBeenCalled();
+
+      cleanup();
+      shims.splice(0).forEach((s) => s.close());
+    }
+  });
+
   it('without the opt-in a remembered device does not unlock by itself, but silentUnlock() does on demand', async () => {
     const first = await openUnlockedTab();
     await act(async () => {

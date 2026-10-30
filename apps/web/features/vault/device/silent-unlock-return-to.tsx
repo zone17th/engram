@@ -55,9 +55,15 @@ function SilentUnlockReturnToInner({ unlockedCount }: { unlockedCount: number })
   const handledCountRef = useRef<number>(0);
 
   // While on `/app/unlock` before unlock completes, remember the sanitized destination from `returnTo`.
+  // R2-5 / R2-8: reuse the captured destination ONLY while still on `/app/unlock` or its `/app` guard fallback;
+  // retire the capture and any pending redirect as soon as the user navigates elsewhere (e.g. `/app/unlock/forgot`
+  // or `/app/auth/reauth`).
   const returnToParam = searchParams.get('returnTo');
   if (pathname === UNLOCK_PATH) {
     capturedDestinationRef.current = resolveUnlockDestination(returnToParam);
+  } else if (pathname !== '/app') {
+    capturedDestinationRef.current = null;
+    pendingRedirectRef.current = null;
   }
 
   useEffect(() => {
@@ -69,9 +75,15 @@ function SilentUnlockReturnToInner({ unlockedCount }: { unlockedCount: number })
       const destination =
         pathname === UNLOCK_PATH
           ? resolveUnlockDestination(returnToParam)
-          : capturedDestinationRef.current;
+          : pathname === '/app'
+            ? capturedDestinationRef.current
+            : null;
       handledCountRef.current = unlockedCount;
       capturedDestinationRef.current = null;
+      if (pathname !== UNLOCK_PATH && pathname !== '/app') {
+        pendingRedirectRef.current = null;
+        return;
+      }
       if (!destination || destination === '/app') {
         if (pathname === UNLOCK_PATH) {
           router.replace('/app');
@@ -90,6 +102,8 @@ function SilentUnlockReturnToInner({ unlockedCount }: { unlockedCount: number })
       } else if (pathname === '/app' || pathname === UNLOCK_PATH) {
         pendingRedirectRef.current = null;
         router.replace(pending.destination);
+      } else {
+        pendingRedirectRef.current = null;
       }
     }
   }, [pathname, returnToParam, router, unlockedCount, vault.state]);
