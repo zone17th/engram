@@ -418,21 +418,21 @@ test.describe('P03-T20B Settings passkey list and auto-lock E2E (real API)', () 
       await expect(cardB).toBeVisible({ timeout: UI_WAIT_MS });
 
       // Both pages start at default 15 min
-      await expect(cardA.getByRole('radio', { name: '15 min' })).toHaveAttribute('data-state', 'on');
-      await expect(cardB.getByRole('radio', { name: '15 min' })).toHaveAttribute('data-state', 'on');
+      await expect(cardA.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on');
+      await expect(cardB.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on');
 
       // Change to 5 min in page A -> page B's selector and Me update
       const patch5 = pageA.waitForResponse(
         (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
         { timeout: UI_WAIT_MS },
       );
-      await cardA.getByRole('radio', { name: '5 min' }).click();
+      await cardA.getByRole('radio', { name: '5 min', exact: true }).click();
       expect((await patch5).status()).toBe(200);
 
-      await expect(cardA.getByRole('radio', { name: '5 min' })).toHaveAttribute('data-state', 'on', {
+      await expect(cardA.getByRole('radio', { name: '5 min', exact: true })).toHaveAttribute('data-state', 'on', {
         timeout: UI_WAIT_MS,
       });
-      await expect(cardB.getByRole('radio', { name: '5 min' })).toHaveAttribute('data-state', 'on', {
+      await expect(cardB.getByRole('radio', { name: '5 min', exact: true })).toHaveAttribute('data-state', 'on', {
         timeout: UI_WAIT_MS,
       });
 
@@ -444,16 +444,15 @@ test.describe('P03-T20B Settings passkey list and auto-lock E2E (real API)', () 
         (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
         { timeout: UI_WAIT_MS },
       );
-      await cardA.getByRole('radio', { name: 'Never' }).click();
+      await cardA.getByRole('radio', { name: 'Never', exact: true }).click();
       expect((await patchNever).status()).toBe(200);
 
-      await expect(cardA.getByRole('radio', { name: 'Never' })).toHaveAttribute('data-state', 'on', {
+      await expect(cardA.getByRole('radio', { name: 'Never', exact: true })).toHaveAttribute('data-state', 'on', {
         timeout: UI_WAIT_MS,
       });
-      await expect(cardB.getByRole('radio', { name: 'Never' })).toHaveAttribute('data-state', 'on', {
+      await expect(cardB.getByRole('radio', { name: 'Never', exact: true })).toHaveAttribute('data-state', 'on', {
         timeout: UI_WAIT_MS,
       });
-
       const meAfterNever = (await fetchMeViaPage(pageB)).body as { settings?: { auto_lock_minutes?: number } };
       expect(meAfterNever.settings?.auto_lock_minutes).toBe(0);
     } finally {
