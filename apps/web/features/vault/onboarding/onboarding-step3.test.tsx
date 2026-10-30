@@ -6,7 +6,9 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider } from '@/features/auth/session-provider';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
 import {
+  DEVICE_META_RECORD_KEY,
   DEVKEY_STORE_NAME,
+  META_STORE_NAME,
   type LockEpochEnvironment,
 } from '@/features/vault/lock-epoch';
 import { setDefaultDeviceStoreEnvironmentForTests } from '@/features/vault/device-store';
@@ -295,12 +297,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
   async function advanceToStep3(
     locale: 'en' | 'vi' = 'en',
-    options: { oauthOnly?: boolean; vaultKeyIdHook?: (attempt: number) => string } = {},
+    options: { oauthOnly?: boolean } = {},
   ) {
     let currentMe = makeMeFixture('absent', options);
     let vaultCtx!: VaultContextValue;
     const oauthReauthCalls: Array<{ url: string; body: string }> = [];
     let getVaultCalls = 0;
+    // Armed by a test AFTER step 3 rendered: runs on every later GET /vault (the in-lock Remember verification and any
+    // provider reload) and may return a different vault_key_id to simulate another tab replacing the vault.
+    let vaultGetHook: (() => string | undefined) | null = null;
     let passkeyPosts = 0;
     const savedPasskeys: Array<{ id: string; name: string; aaguid: string | null; created_at: string }> = [];
     const credentialsCreate = vi.fn();
@@ -325,9 +330,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       }
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
         getVaultCalls += 1;
-        const vkId = options.vaultKeyIdHook
-          ? options.vaultKeyIdHook(getVaultCalls)
-          : 'vk:7f3a9b2c4d5e6f7a8b9c0d';
+        const vkId = vaultGetHook?.() ?? 'vk:7f3a9b2c4d5e6f7a8b9c0d';
         return jsonResponse({
           version: 1,
           vault_key_id: vkId,
@@ -434,6 +437,9 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       getVault: () => vaultCtx,
       oauthReauthCalls,
       getVaultCallsCount: () => getVaultCalls,
+      setVaultGetHook: (hook: (() => string | undefined) | null) => {
+        vaultGetHook = hook;
+      },
     };
   }
 
@@ -663,13 +669,27 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
   });
 
   it('16B (VB-R2-4 / VB-R2-6): step 3 cross-tab remember-device change raises neutral stateChanged notice with role="status" and Dismiss clears it', async () => {
-    await advanceToStep3('en', {
-      vaultKeyIdHook: (attempt) =>
-        attempt === 1 ? 'vk:7f3a9b2c4d5e6f7a8b9c0d' : 'vk:other-tab-replaced-key',
-    });
+    const { setVaultGetHook } = await advanceToStep3('en');
 
     const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
     expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+
+    // Another tab bumps the device meta revision while this tab's Remember is verifying the vault inside the Web Lock:
+    // start (incarnation, revision) was captured before WebCrypto, so the final tx aborts with `meta_changed`, which
+    // raises the neutral notice WITHOUT the provider locking (only vault_absent / vault_mismatch reload and reconcile).
+    setVaultGetHook(() => {
+      const metaStore = idb.store(META_STORE_NAME);
+      const cur = metaStore.get(DEVICE_META_RECORD_KEY) as
+        | { incarnation: string; deviceRevision: number }
+        | undefined;
+      if (cur) {
+        metaStore.set(DEVICE_META_RECORD_KEY, {
+          incarnation: cur.incarnation,
+          deviceRevision: cur.deviceRevision + 1,
+        });
+      }
+      return undefined;
+    });
 
     await act(async () => {
       fireEvent.click(rememberSwitch);
@@ -679,6 +699,9 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(notice).toHaveAttribute('role', 'status');
     expect(notice).toHaveTextContent(enMessages.vault.device.notice.stateChanged);
     expect(rememberSwitch).toHaveAttribute('aria-checked', 'false');
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
+    // No lock: step 3 stays mounted.
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
 
     const dismissBtn = screen.getByTestId('onboarding-remember-device-notice-dismiss');
     expect(dismissBtn).toHaveTextContent(enMessages.vault.b.onboarding.rememberDevice.dismiss);
@@ -686,6 +709,22 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('onboarding-remember-device-notice')).not.toBeInTheDocument();
     });
+  });
+
+  it('16B (VB-R3-1): step 3 Remember that finds another vault_key_id (vault_mismatch) reconciles by locking and ends step 3 without storing a DevKey', async () => {
+    const { setVaultGetHook } = await advanceToStep3('en');
+
+    const rememberSwitch = screen.getByTestId('onboarding-remember-device-switch');
+    setVaultGetHook(() => 'vk:other-tab-replaced-key');
+
+    await act(async () => {
+      fireEvent.click(rememberSwitch);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('onboarding-step-passkey')).not.toBeInTheDocument();
+    });
+    expect(idb.store(DEVKEY_STORE_NAME).size).toBe(0);
   });
 
   it('16B (VB-R1-2): OAuth-only account on step 3 Add passkey invokes OAuth re-auth and claims no registration success', async () => {
