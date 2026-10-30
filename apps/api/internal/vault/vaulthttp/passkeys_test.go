@@ -1788,9 +1788,36 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 	)
 	const idemKeyRace = "idem-pk-dl-race-000001"
 
+	type reqResult struct {
+		resp testResponse
+		raw  string
+	}
+
 	enteredVerifier := make(chan struct{})
 	releaseVerifier := make(chan struct{})
 	var verifierOnce sync.Once
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(func() { close(releaseVerifier) }) }
+	firstDone := make(chan reqResult, 1)
+	var joinOnce sync.Once
+	var firstRes reqResult
+	var firstJoined bool
+	joinFirst := func() (reqResult, bool) {
+		joinOnce.Do(func() {
+			select {
+			case firstRes = <-firstDone:
+				firstJoined = true
+			case <-time.After(5 * time.Second):
+			}
+		})
+		return firstRes, firstJoined
+	}
+	t.Cleanup(func() {
+		h.vaultSvc.SetPasskeyAttestationVerifier(nil)
+		h.vaultAPI.SetPasskeyCreateTimeout(vaulthttp.DefaultPasskeyCreateTimeout)
+		releaseGate()
+		_, _ = joinFirst()
+	})
 	h.vaultSvc.SetPasskeyAttestationVerifier(func(
 		rp vault.WebAuthnRPConfig,
 		clientDataJSONB64 string,
@@ -1803,16 +1830,7 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 		})
 		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
 	})
-	t.Cleanup(func() {
-		h.vaultSvc.SetPasskeyAttestationVerifier(nil)
-		h.vaultAPI.SetPasskeyCreateTimeout(vaulthttp.DefaultPasskeyCreateTimeout)
-	})
 
-	type reqResult struct {
-		resp testResponse
-		raw  string
-	}
-	firstDone := make(chan reqResult, 1)
 	go func() {
 		r, raw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1, reqOptions{
 			idemKey: idemKeyRace,
@@ -1820,7 +1838,6 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 		})
 		firstDone <- reqResult{resp: r, raw: raw}
 	}()
-
 	select {
 	case <-enteredVerifier:
 	case <-time.After(5 * time.Second):
@@ -1849,12 +1866,9 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 
 	// Now resume the held first request: its post-Claim grant re-check inside the mutation tx must fail
 	// with 401 reauth_invalid and roll back all writes.
-	close(releaseVerifier)
+	releaseGate()
 
-	var firstRes reqResult
-	select {
-	case firstRes = <-firstDone:
-	case <-time.After(5 * time.Second):
+	if _, ok := joinFirst(); !ok {
 		t.Fatal("timeout waiting for first request to finish after release")
 	}
 	assertPasskeyProblem(t, firstRes.resp, firstRes.raw, http.StatusUnauthorized, "reauth_invalid")
@@ -1896,6 +1910,26 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 	enteredVerifier1b := make(chan struct{})
 	releaseVerifier1b := make(chan struct{})
 	var verifierOnce1b sync.Once
+	var releaseOnce1b sync.Once
+	releaseGate1b := func() { releaseOnce1b.Do(func() { close(releaseVerifier1b) }) }
+	firstDone1b := make(chan reqResult, 1)
+	var joinOnce1b sync.Once
+	var firstRes1b reqResult
+	var firstJoined1b bool
+	joinFirst1b := func() (reqResult, bool) {
+		joinOnce1b.Do(func() {
+			select {
+			case firstRes1b = <-firstDone1b:
+				firstJoined1b = true
+			case <-time.After(5 * time.Second):
+			}
+		})
+		return firstRes1b, firstJoined1b
+	}
+	t.Cleanup(func() {
+		releaseGate1b()
+		_, _ = joinFirst1b()
+	})
 	h.vaultSvc.SetPasskeyAttestationVerifier(func(
 		rp vault.WebAuthnRPConfig,
 		clientDataJSONB64 string,
@@ -1909,7 +1943,6 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 		return vault.VerifyRegistrationAttestation(rp, clientDataJSONB64, attestationObjectB64, storedChallengeB64)
 	})
 
-	firstDone1b := make(chan reqResult, 1)
 	go func() {
 		r, raw := h.doReq(jarA, http.MethodPost, "/api/v1/vault/passkeys", body1b, reqOptions{
 			idemKey: idemKeySessRevoked,
@@ -1938,11 +1971,8 @@ func TestPasskeyCreate_DeadlineAndPostClaimGrantRecheck(t *testing.T) {
 	assertPasskeyProblem(t, replayResp1b, replayRaw1b, http.StatusUnauthorized, "session_invalid")
 
 	// Resume held first request: EnsureLiveTx inside the mutation tx rejects with 401 session_invalid and rolls back.
-	close(releaseVerifier1b)
-	var firstRes1b reqResult
-	select {
-	case firstRes1b = <-firstDone1b:
-	case <-time.After(5 * time.Second):
+	releaseGate1b()
+	if _, ok := joinFirst1b(); !ok {
 		t.Fatal("timeout waiting for first request (1b) to finish after release")
 	}
 	assertPasskeyProblem(t, firstRes1b.resp, firstRes1b.raw, http.StatusUnauthorized, "session_invalid")
