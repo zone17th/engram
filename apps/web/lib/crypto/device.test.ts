@@ -13,6 +13,7 @@ import {
   DEVICE_META_RECORD_KEY,
   DEVKEY_STORE_NAME,
   META_STORE_NAME,
+  openSabkDeviceDb,
 } from '@/features/vault/lock-epoch';
 import { authFetch } from '@/lib/api/auth-fetch';
 import { CryptoClient, CryptoClientError } from './client';
@@ -786,5 +787,47 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
       expect(keys()).toHaveLength(3);
       expect((await metaNow())?.deviceRevision).toBe(5);
     });
+  });
+
+  it('R1-16: fake IDB queues readonly transactions behind earlier uncommitted readwrite transactions (never exposing intermediate writes before commit or rollback)', async () => {
+    const db = await openSabkDeviceDb(env.idbFactory);
+    const initialMeta: DeviceMetaRecord = { incarnation: '11111111111111111111111111111111', deviceRevision: 1 };
+    idb.store(META_STORE_NAME).set(DEVICE_META_RECORD_KEY, initialMeta);
+
+    // 1. Hold a readwrite tx after an uncommitted put, create a readonly reader while held, then abort the writer:
+    // the reader must observe the rolled-back initial state, never the intermediate uncommitted write.
+    const writer1 = db.transaction([META_STORE_NAME], 'readwrite');
+    const writer1Store = writer1.objectStore(META_STORE_NAME);
+    const put1 = writer1Store.put(
+      { incarnation: '22222222222222222222222222222222', deviceRevision: 2 },
+      DEVICE_META_RECORD_KEY,
+    );
+    let reader1Promise!: Promise<DeviceMetaRecord | null>;
+    const writer1Aborted = new Promise<void>((resolve) => {
+      writer1.onabort = () => resolve();
+    });
+    put1.onsuccess = () => {
+      // At this instant backing store has the uncommitted write; queue a readonly snapshot before aborting.
+      reader1Promise = readDeviceMetaRecord(env);
+      writer1.abort();
+    };
+    await writer1Aborted;
+    expect(await reader1Promise).toEqual(initialMeta);
+
+    // 2. Same setup, but let the writer commit: the queued reader observes the committed state.
+    const committedMeta: DeviceMetaRecord = { incarnation: '33333333333333333333333333333333', deviceRevision: 3 };
+    const writer2 = db.transaction([META_STORE_NAME], 'readwrite');
+    const writer2Store = writer2.objectStore(META_STORE_NAME);
+    const put2 = writer2Store.put(committedMeta, DEVICE_META_RECORD_KEY);
+    let reader2Promise!: Promise<DeviceMetaRecord | null>;
+    const writer2Completed = new Promise<void>((resolve) => {
+      writer2.oncomplete = () => resolve();
+    });
+    put2.onsuccess = () => {
+      reader2Promise = readDeviceMetaRecord(env);
+    };
+    await writer2Completed;
+    expect(await reader2Promise).toEqual(committedMeta);
+    db.close();
   });
 });

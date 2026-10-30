@@ -2,8 +2,8 @@
  * Test doubles for `sabk.device` (IndexedDB) and Web Locks, shared by the Task 18 Vitest suites. No new dependency.
  *
  * Fidelity points the DevKey protocol depends on:
- * - `readwrite` transactions run strictly one after the other (creation order) like real IndexedDB for overlapping scopes,
- *   so a purge committed before a Remember's final tx is always seen by it.
+ * - All transactions (both `readwrite` and `readonly`) run strictly one after the other in creation order, queuing
+ *   overlapping readers behind earlier writers so a reader never observes uncommitted writes before commit or rollback.
  * - A transaction auto-commits once no request is pending, and placing a request after that (or from a foreign
  *   `await`, i.e. outside the creation task / a request callback) throws `TransactionInactiveError`: a protocol that
  *   awaits WebCrypto / fetch / Worker messages inside a tx fails here.
@@ -162,14 +162,11 @@ export class FakeDeviceIdb {
     self.onTransaction?.(info);
 
     let releaseTurn: () => void = () => undefined;
-    let turn: Promise<void> = Promise.resolve();
-    if (mode === 'readwrite') {
-      const previous = self.tail;
-      self.tail = new Promise<void>((resolve) => {
-        releaseTurn = resolve;
-      });
-      turn = previous;
-    }
+    const previous = self.tail;
+    self.tail = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const turn: Promise<void> = previous;
 
     let started = false;
     let finished = false;
