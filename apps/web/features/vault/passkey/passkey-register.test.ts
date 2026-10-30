@@ -544,13 +544,22 @@ describe('T19 bullet 1 - POST failure and replay', () => {
   });
 
   it.each([
+    [400, 'passkey_challenge_invalid'],
+    [400, 'passkey_attestation_invalid'],
+    [400, 'passkey_name_invalid'],
+    [400, 'vault_wrap_invalid'],
+    [400, 'invalid_request'],
+    [401, 'reauth_required'],
+    [401, 'reauth_invalid'],
+    [403, 'reauth_unsupported_provider'],
+    [404, 'vault_absent'],
     [409, 'passkey_exists'],
     [503, 'vault_mutations_disabled'],
     [429, 'rate_limited'],
-  ])('a %i %s rejection is definite (orphan notice, one POST)', async (status, code) => {
+  ])('PKW-R2-1: a first-submission %i %s rejection is definite (orphan notice, one POST)', async (status, code) => {
     const h = makeHarness({ registerBehaviour: [problem(status, code)] });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
-    expect(outcome).toMatchObject({ ok: false, error: 'register_failed', orphan: true });
+    expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
     expect(h.posts).toHaveLength(1);
   });
 
@@ -618,28 +627,51 @@ describe('T19 bullet 1 - POST failure and replay', () => {
     expect(h.posts).toHaveLength(1 + MAX_NETWORK_REPLAYS);
   });
 
+  it('PKW-R2-1, PKW-R1-2: lost first response, then pre-lookup 400 invalid_request on replay is network_unknown (orphan: false, identical key/body/token)', async () => {
+    const h = makeHarness({
+      registerBehaviour: [new TypeError('Failed to fetch'), problem(400, 'invalid_request')],
+    });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
+    expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]).toEqual(h.posts[0]);
+  });
+
   it.each([
+    [400, 'invalid_request'],
+    [413, 'invalid_request'],
+    [415, 'invalid_request'],
     [401, 'session_invalid'],
     [401, 'unauthenticated'],
+    [401, 'access_expired'],
     [403, 'csrf_invalid'],
     [429, 'rate_limited'],
-  ])('PKW-R1-2: lost response, then a pre-lookup %i %s on the replay is unknown, not an orphan', async (status, code) => {
+  ])('PKW-R2-1, PKW-R1-2: lost response, then a pre-lookup %i %s on the replay is unknown, not an orphan', async (status, code) => {
     const h = makeHarness({ registerBehaviour: [new TypeError('Failed to fetch'), problem(status, code)] });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
     expect(outcome).toEqual({ ok: false, error: 'network_unknown', orphan: false });
     expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]).toEqual(h.posts[0]);
   });
 
   it.each([
     [400, 'passkey_challenge_invalid'],
-    [409, 'passkey_exists'],
+    [400, 'passkey_attestation_invalid'],
+    [400, 'passkey_name_invalid'],
+    [400, 'vault_wrap_invalid'],
     [401, 'reauth_required'],
+    [401, 'reauth_invalid'],
+    [403, 'reauth_unsupported_provider'],
+    [404, 'vault_absent'],
+    [409, 'passkey_exists'],
+    [409, 'idempotency_conflict'],
     [503, 'vault_mutations_disabled'],
-  ])('PKW-R1-2: lost response, then a post-lookup %i %s proves the first attempt uncommitted: orphan notice', async (status, code) => {
+  ])('PKW-R2-1, PKW-R1-2: lost response, then a post-lookup %i %s proves the first attempt uncommitted: orphan notice', async (status, code) => {
     const h = makeHarness({ registerBehaviour: [problem(500, 'internal_error'), problem(status, code)] });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
     expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
     expect(h.posts).toHaveLength(2);
+    expect(h.posts[1]).toEqual(h.posts[0]);
   });
 
   it('PKW-R1-2: without any earlier unknown attempt a 401 session_invalid is a definite rejection', async () => {
