@@ -14,10 +14,13 @@ const mocks = vi.hoisted(() => ({
     beginOp: () => ({ opGeneration: 1 }),
     getClient: () => ({ getGeneration: () => 1 }),
     reloadVaultMeta: async () => ({ private_keys_wrapped: 'PRIV-WRAP-OPAQUE' }) as unknown as VaultState,
-    unlockPrf: async (params: unknown) => {
+    unlockPrf: vi.fn(async (params: unknown) => {
       void params;
       return { unlocked: true as const };
-    },
+    }),
+    lock: vi.fn(async (options: unknown) => {
+      void options;
+    }),
   },
   fetchPasskeyUnlockOptions: vi.fn(),
   credentialsGet: vi.fn(),
@@ -40,10 +43,19 @@ function renderButton(onUnlocked?: () => void, locale: 'en' | 'vi' = 'en') {
   );
 }
 
+function stubAssertion() {
+  mocks.fetchPasskeyUnlockOptions.mockResolvedValue(unlockOptionsResponse());
+  mocks.credentialsGet.mockResolvedValue(
+    fakeCredential({ rawId: CRED_A.id, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+  );
+}
+
 describe('T19 bullet 2 - PasskeyUnlockButton', () => {
   beforeEach(() => {
     mocks.fetchPasskeyUnlockOptions.mockReset();
     mocks.credentialsGet.mockReset();
+    mocks.vault.unlockPrf.mockClear();
+    mocks.vault.lock.mockClear();
     mocks.vault.inFlight = false;
     Object.defineProperty(window, 'PublicKeyCredential', { value: class {}, configurable: true, writable: true });
     Object.defineProperty(navigator, 'credentials', {
@@ -63,6 +75,12 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
+  it('renders nothing when the vault metadata has no passkey list yet', async () => {
+    mocks.vault.vaultMeta = null;
+    const { container } = renderButton();
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
   it('renders nothing when the browser has no WebAuthn', async () => {
     setPasskeys(2);
     Reflect.deleteProperty(window, 'PublicKeyCredential');
@@ -73,7 +91,7 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
   it('shows the button (en and vi copy) when passkeys exist', async () => {
     setPasskeys(1);
     renderButton();
-    expect(await screen.findByRole('button', { name: 'Unlock with passkey' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Unlock with passkey' })).toBeEnabled();
     cleanup();
     renderButton(undefined, 'vi');
     expect(await screen.findByRole('button', { name: 'Mở khoá bằng passkey' })).toBeInTheDocument();
@@ -87,7 +105,27 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Unlock with passkey' })).toBeNull());
   });
 
-  it('a cancelled prompt shows the exact passkey.unlock_cancelled copy and keeps the button', async () => {
+  it('is disabled while another unlock or vault operation is in flight, and starts nothing', async () => {
+    setPasskeys(1);
+    mocks.vault.inFlight = true;
+    renderButton();
+    const button = await screen.findByRole('button', { name: 'Unlock with passkey' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(mocks.fetchPasskeyUnlockOptions).not.toHaveBeenCalled();
+    expect(mocks.credentialsGet).not.toHaveBeenCalled();
+  });
+
+  it('CLIENT_BUSY raised by the Worker slot shows the busy copy, never a wrong-key message', async () => {
+    setPasskeys(1);
+    stubAssertion();
+    mocks.vault.unlockPrf.mockRejectedValueOnce({ code: 'CLIENT_BUSY' });
+    renderButton();
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock with passkey' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/another vault operation/i);
+  });
+
+  it('a cancelled prompt shows the exact passkey.unlock_cancelled copy and keeps the button usable', async () => {
     setPasskeys(1);
     mocks.fetchPasskeyUnlockOptions.mockResolvedValue(unlockOptionsResponse());
     mocks.credentialsGet.mockRejectedValue(domError('NotAllowedError'));
@@ -97,26 +135,43 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     expect(screen.getByRole('button', { name: 'Unlock with passkey' })).toBeEnabled();
   });
 
+  it('an authenticator that returns no PRF shows passkey.unlock_prf_missing', async () => {
+    setPasskeys(1);
+    mocks.fetchPasskeyUnlockOptions.mockResolvedValue(unlockOptionsResponse());
+    mocks.credentialsGet.mockResolvedValue(fakeCredential({ rawId: CRED_A.id, prf: { enabled: true } }).credential);
+    renderButton();
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock with passkey' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Authenticator did not return PRF. Cannot unlock with passkey.',
+    );
+  });
+
   it('a successful assertion unlocks and calls onUnlocked', async () => {
     setPasskeys(2);
     const onUnlocked = vi.fn();
-    mocks.fetchPasskeyUnlockOptions.mockResolvedValue(unlockOptionsResponse());
-    mocks.credentialsGet.mockResolvedValue(
-      fakeCredential({ rawId: CRED_A.id, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
-    );
+    stubAssertion();
     renderButton(onUnlocked);
     fireEvent.click(await screen.findByRole('button', { name: 'Unlock with passkey' }));
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1));
+    expect(mocks.vault.unlockPrf).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('refuses while another vault operation is in flight (CLIENT_BUSY copy), without a prompt', async () => {
+  it('leaving the screen while the prompt is open locks the vault again once the unlock lands', async () => {
     setPasskeys(1);
-    mocks.vault.inFlight = true;
-    renderButton();
+    let release: (value: unknown) => void = () => {};
+    mocks.fetchPasskeyUnlockOptions.mockImplementation(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    mocks.credentialsGet.mockResolvedValue(
+      fakeCredential({ rawId: CRED_A.id, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+    );
+    const view = renderButton();
     fireEvent.click(await screen.findByRole('button', { name: 'Unlock with passkey' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/another vault operation/i);
-    expect(mocks.fetchPasskeyUnlockOptions).not.toHaveBeenCalled();
-    expect(mocks.credentialsGet).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.fetchPasskeyUnlockOptions).toHaveBeenCalledTimes(1));
+    view.unmount();
+    release(unlockOptionsResponse());
+    await waitFor(() => expect(mocks.vault.lock).toHaveBeenCalledTimes(1));
+    expect(mocks.vault.lock).toHaveBeenCalledWith({ broadcast: false, reason: 'passkey_unlock_abandoned' });
   });
 });
