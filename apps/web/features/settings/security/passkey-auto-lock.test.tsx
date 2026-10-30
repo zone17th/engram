@@ -2,6 +2,12 @@ import { ProblemError } from '@engram/shared-types';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  NEW_CREDENTIAL_ID,
+  PRF_OUTPUT,
+  fakeCredential,
+  registerOptionsResponse,
+} from '@/features/vault/passkey/test-helpers';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 import { AutoLockCard } from './auto-lock-card';
@@ -64,6 +70,8 @@ const mocks = vi.hoisted(() => ({
     hasUsableGrant: vi.fn(() => false),
   },
   fetchPasskeysList: vi.fn(),
+  fetchPasskeyRegisterOptions: vi.fn(),
+  registerPasskey: vi.fn(),
   renamePasskey: vi.fn(),
   revokePasskey: vi.fn(),
   patchSettings: vi.fn(),
@@ -101,6 +109,8 @@ vi.mock('@/lib/api/vault', async (importOriginal) => {
   return {
     ...actual,
     fetchPasskeysList: (...args: unknown[]) => mocks.fetchPasskeysList(...args),
+    fetchPasskeyRegisterOptions: (...args: unknown[]) => mocks.fetchPasskeyRegisterOptions(...args),
+    registerPasskey: (...args: unknown[]) => mocks.registerPasskey(...args),
     renamePasskey: (...args: unknown[]) => mocks.renamePasskey(...args),
     revokePasskey: (...args: unknown[]) => mocks.revokePasskey(...args),
   };
@@ -310,6 +320,20 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
     );
     expect(screen.getByTestId('settings-passkey-status')).toHaveTextContent('Passkey renamed.');
     expect(reloadVaultMeta).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByTestId(`settings-passkey-rename-${PASSKEY_A.id}`),
+      );
+    });
+
+    // Cancel rename restores focus to the row's Rename button (VB-R1-5)
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-${PASSKEY_B.id}`));
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-cancel-${PASSKEY_B.id}`));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByTestId(`settings-passkey-rename-${PASSKEY_B.id}`),
+      );
+    });
   });
 
   it('20B: revoke passkey acquires vault.passkey_revoke grant when needed, deletes on server, and reloads list + vaultMeta', async () => {
@@ -340,6 +364,9 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
     await waitFor(() => expect(screen.queryByTestId(`settings-passkey-row-${PASSKEY_A.id}`)).toBeNull());
     expect(screen.getByTestId('settings-passkey-status')).toHaveTextContent('Passkey removed.');
     expect(reloadVaultMeta).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('settings-passkey-heading'));
+    });
   });
 
   it('20B: revoke lost response then retry does not report an error', async () => {
@@ -412,8 +439,12 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
       settings: { locale: 'en', theme: 'light', auto_lock_minutes: patch.auto_lock_minutes, semantic_suggest: true },
     }));
     fireEvent.click(within(card).getByRole('radio', { name: '5 min' }));
+    const fiveMinRadio = within(card).getByRole('radio', { name: '5 min' });
+    fiveMinRadio.focus();
+    expect(document.activeElement).toBe(fiveMinRadio);
     await waitFor(() => expect(mocks.patchSettings).toHaveBeenCalledWith({ auto_lock_minutes: 5 }));
     expect(notifySettingsChanged).toHaveBeenCalledWith({ auto_lock_minutes: 5 });
+    expect(document.activeElement).toBe(fiveMinRadio);
 
     // Change to Never (0)
     mocks.patchSettings.mockImplementationOnce(async (patch: { auto_lock_minutes: number }) => ({
@@ -431,6 +462,18 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
       'Could not save auto-lock setting. Reverted to the previous value.',
     );
     expect(within(card).getByRole('radio', { name: '15 min' })).toHaveAttribute('data-state', 'on');
+
+    // Vietnamese parity check (VB-R1-9)
+    cleanup();
+    renderAutoLockCard('vi');
+    const viCard = screen.getByTestId('settings-auto-lock-card');
+    expect(within(viCard).getByRole('radio', { name: '15 phút' })).toHaveAttribute('data-state', 'on');
+    mocks.patchSettings.mockImplementationOnce(async (patch: { auto_lock_minutes: number }) => ({
+      ...(mocks.me as Record<string, unknown>),
+      settings: { locale: 'vi', theme: 'light', auto_lock_minutes: patch.auto_lock_minutes, semantic_suggest: true },
+    }));
+    fireEvent.click(within(viCard).getByRole('radio', { name: '5 phút' }));
+    await waitFor(() => expect(mocks.patchSettings).toHaveBeenLastCalledWith({ auto_lock_minutes: 5 }));
   });
 
   it('20B: remember / forget device in Settings shows on/off state, calls remember() when unlocked, forget() with forgetDescription, cross-tab notice, and unavailable state (en + vi)', async () => {
@@ -521,6 +564,111 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
     expect(screen.getByTestId('settings-remember-device-switch')).toBeEnabled();
     expect(screen.getByTestId('settings-forget-device-button')).toHaveTextContent(
       viMessages.vault.device.remember.forget,
+    );
+  });
+
+  it('20B (VB-R1-9 / VB-R1-10): grant with < 60s left opens re-auth instead of DELETE, DELETE reauth_required clears grant + reopens dialog, rename passkey_not_found reloads list, Add refreshes list, and failed background refresh keeps rendered list', async () => {
+    const { reloadVaultMeta } = setupUnlockedVault();
+    let currentItems = [PASSKEY_A, PASSKEY_B];
+    mocks.fetchPasskeysList.mockImplementation(async () => ({ items: currentItems }));
+
+    renderPasskeyCard('en');
+    await screen.findByTestId('settings-passkey-list');
+
+    // 1. Grant with < 60 s left (30s) opens re-auth dialog instead of calling DELETE
+    mocks.reauth.grant = {
+      grant: 'short-lived-grant',
+      action: 'vault.passkey_revoke',
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+    };
+    mocks.reauth.hasUsableGrant.mockImplementation((action?: string) => action === 'vault.passkey_revoke');
+
+    fireEvent.click(screen.getByTestId(`settings-passkey-revoke-${PASSKEY_A.id}`));
+    expect(mocks.revokePasskey).not.toHaveBeenCalled();
+    expect(mocks.reauth.begin).toHaveBeenCalledWith('vault.passkey_revoke', '/app/settings');
+    const revokeDialog = await screen.findByRole('dialog');
+    fireEvent.click(within(revokeDialog).getByRole('button', { name: 'Cancel' }));
+
+    // 2. DELETE returning reauth_required clears grant and reopens the re-auth dialog
+    useValidRevokeGrant('expired-on-server-grant');
+    mocks.revokePasskey.mockRejectedValueOnce(problem(401, 'reauth_required'));
+    fireEvent.click(screen.getByTestId(`settings-passkey-revoke-${PASSKEY_A.id}`));
+    await waitFor(() => expect(mocks.revokePasskey).toHaveBeenCalledWith(PASSKEY_A.id, 'expired-on-server-grant'));
+    expect(mocks.reauth.clearGrant).toHaveBeenCalled();
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Remove passkey');
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+
+    // 3. Rename returning 404 passkey_not_found shows error and reloads list + vaultMeta
+    mocks.renamePasskey.mockRejectedValueOnce(problem(404, 'passkey_not_found'));
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-${PASSKEY_A.id}`));
+    const renameInput = screen.getByTestId(`settings-passkey-rename-input-${PASSKEY_A.id}`);
+    fireEvent.change(renameInput, { target: { value: 'Missing key name' } });
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-save-${PASSKEY_A.id}`));
+    expect(await screen.findByTestId('settings-passkey-rename-error')).toHaveTextContent(
+      'Could not remove this passkey because it was not found on the server.',
+    );
+    await waitFor(() => expect(reloadVaultMeta).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-cancel-${PASSKEY_A.id}`));
+
+    // 4. Failed background refresh after a successful rename keeps the rendered list and shows status
+    mocks.renamePasskey.mockImplementationOnce(async (id: string, body: { name: string }) => ({
+      ...PASSKEY_B,
+      id,
+      name: body.name,
+    }));
+    mocks.fetchPasskeysList.mockRejectedValueOnce(new TypeError('background refresh failed'));
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-${PASSKEY_B.id}`));
+    fireEvent.change(screen.getByTestId(`settings-passkey-rename-input-${PASSKEY_B.id}`), {
+      target: { value: 'YubiKey 5C Backup' },
+    });
+    fireEvent.click(screen.getByTestId(`settings-passkey-rename-save-${PASSKEY_B.id}`));
+    expect(await screen.findByTestId(`settings-passkey-name-${PASSKEY_B.id}`)).toHaveTextContent(
+      'YubiKey 5C Backup',
+    );
+    expect(screen.getByTestId('settings-passkey-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-passkey-load-error')).toBeNull();
+    expect(screen.getByTestId('settings-passkey-status')).toHaveTextContent(
+      'Could not load your registered passkeys.',
+    );
+
+    // 5. Successful Add passkey refreshes the list and vaultMeta
+    const PASSKEY_C = {
+      id: 'pk-3333-cccc',
+      name: 'Added From Settings',
+      aaguid: 'ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4',
+      created_at: '2026-10-30T00:00:00Z',
+    };
+    const credentialsCreate = vi.fn().mockResolvedValue(
+      fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+    );
+    Object.defineProperty(navigator, 'credentials', {
+      value: { create: credentialsCreate, get: vi.fn() },
+      configurable: true,
+    });
+    const registerGrant = {
+      grant: 'register-grant-token-1',
+      action: 'vault.passkey_register',
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    };
+    mocks.reauth.grant = registerGrant;
+    mocks.reauth.hasUsableGrant.mockImplementation((action?: string) => action === 'vault.passkey_register');
+    mocks.fetchPasskeyRegisterOptions.mockResolvedValue(registerOptionsResponse());
+    mocks.registerPasskey.mockImplementation(async () => {
+      currentItems = [PASSKEY_A, PASSKEY_B, PASSKEY_C];
+      return PASSKEY_C;
+    });
+    mocks.fetchPasskeysList.mockImplementation(async () => ({ items: currentItems }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    const addDialog = await screen.findByRole('dialog');
+    fireEvent.change(within(addDialog).getByLabelText('Passkey name'), {
+      target: { value: 'Added From Settings' },
+    });
+    fireEvent.click(within(addDialog).getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByTestId('settings-passkey-added')).toHaveTextContent('Passkey added.');
+    expect(await screen.findByTestId(`settings-passkey-name-${PASSKEY_C.id}`)).toHaveTextContent(
+      'Added From Settings',
     );
   });
 });

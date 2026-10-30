@@ -117,9 +117,12 @@ function PasskeySecurityCardInner({
   const reauth = session?.reauth;
 
   const [items, setItems] = useState<VaultPasskeyItem[]>(() => initialPasskeys ?? []);
+  const itemsRef = useRef<VaultPasskeyItem[]>(items);
+  itemsRef.current = items;
   const [loading, setLoading] = useState<boolean>(() => initialPasskeys === undefined);
   const [loadError, setLoadError] = useState(false);
-
+  const loadSeqRef = useRef(0);
+  const cardHeadingRef = useRef<HTMLDivElement>(null);
   const [added, setAdded] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -157,23 +160,28 @@ function PasskeySecurityCardInner({
   }, [registerSecretFormReset]);
 
   const loadPasskeys = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoadError(false);
     setLoading(true);
     try {
       const response = await fetchPasskeysList();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== loadSeqRef.current) return;
       if (response && Array.isArray(response.items)) {
         setItems(response.items);
       }
     } catch {
-      if (!mountedRef.current) return;
-      setLoadError(true);
+      if (!mountedRef.current || seq !== loadSeqRef.current) return;
+      if (itemsRef.current.length === 0) {
+        setLoadError(true);
+      } else {
+        setStatusMessage(tb('loadError'));
+      }
     } finally {
-      if (mountedRef.current) {
+      if (mountedRef.current && seq === loadSeqRef.current) {
         setLoading(false);
       }
     }
-  }, []);
+  }, [tb]);
 
   useEffect(() => {
     void loadPasskeys();
@@ -194,11 +202,20 @@ function PasskeySecurityCardInner({
     setEditingValue(item.name);
   };
 
+  const focusRenameButton = useCallback((id: string) => {
+    queueMicrotask(() => {
+      const btn = document.querySelector<HTMLElement>(`[data-testid="settings-passkey-rename-${id}"]`);
+      btn?.focus();
+    });
+  }, []);
+
   const cancelRename = () => {
     if (renamePendingId) return;
+    const prevId = editingId;
     setEditingId(null);
     setEditingValue('');
     setRenameError(null);
+    if (prevId) focusRenameButton(prevId);
   };
 
   const submitRename = async (item: VaultPasskeyItem) => {
@@ -223,6 +240,7 @@ function PasskeySecurityCardInner({
       setEditingId(null);
       setEditingValue('');
       setStatusMessage(tb('renamed'));
+      focusRenameButton(item.id);
       await refreshListAndVaultMeta();
     } catch (err) {
       if (!mountedRef.current) return;
@@ -265,6 +283,9 @@ function PasskeySecurityCardInner({
         }
         setItems((prev) => prev.filter((entry) => entry.id !== item.id));
         setStatusMessage(t('revoked'));
+        queueMicrotask(() => {
+          cardHeadingRef.current?.focus();
+        });
       } catch (err) {
         if (!mountedRef.current) return;
         if (
@@ -366,7 +387,14 @@ function PasskeySecurityCardInner({
     <div className="card mb-3 p-5" data-testid="settings-passkey-card">
       <div className="mb-4 flex flex-wrap items-start gap-4">
         <div className="min-w-0 flex-1 basis-[240px]">
-          <div className="mb-1 text-[15px] font-semibold text-body">{t('settings.title')}</div>
+          <div
+            ref={cardHeadingRef}
+            tabIndex={-1}
+            className="mb-1 text-[15px] font-semibold text-body outline-none"
+            data-testid="settings-passkey-heading"
+          >
+            {t('settings.title')}
+          </div>
           <p className="m-0 text-[13px] text-muted">{t('settings.body')}</p>
         </div>
         <PasskeyAddEntry
@@ -399,7 +427,7 @@ function PasskeySecurityCardInner({
         </AuthStatus>
       )}
 
-      {loadError ? (
+      {loadError && items.length === 0 ? (
         <div
           className="mb-3 flex flex-wrap items-center gap-3 rounded-md bg-surface p-3 text-[13px] text-muted"
           role="alert"

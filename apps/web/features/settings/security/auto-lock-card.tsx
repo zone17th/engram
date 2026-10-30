@@ -177,19 +177,20 @@ export function AutoLockCard({ rememberDeviceSlot }: AutoLockCardProps = {}) {
     <div className="card mb-3 p-5" data-testid="settings-auto-lock-card">
       <div className="mb-1 text-[15px] font-semibold text-body">{t('title')}</div>
       <p className="mb-4 text-[13px] text-muted">{t('body')}</p>
-      <Segmented
-        className="max-w-full flex-wrap"
-        ariaLabel={t('selectorAria')}
-        value={String(displayedValue)}
-        disabled={saving}
-        onChange={(v) => void handleSelect(v)}
-        options={[
-          { value: '5', label: t('opt5') },
-          { value: '15', label: t('opt15') },
-          { value: '60', label: t('opt60') },
-          { value: '0', label: t('optNever') },
-        ]}
-      />
+      <div aria-busy={saving || undefined}>
+        <Segmented
+          className="max-w-full flex-wrap"
+          ariaLabel={t('selectorAria')}
+          value={String(displayedValue)}
+          onChange={(v) => void handleSelect(v)}
+          options={[
+            { value: '5', label: t('opt5') },
+            { value: '15', label: t('opt15') },
+            { value: '60', label: t('opt60') },
+            { value: '0', label: t('optNever') },
+          ]}
+        />
+      </div>
       {saving && (
         <p role="status" className="m-0 mt-3 text-[12px] text-muted" data-testid="settings-auto-lock-saving">
           {t('saving')}
