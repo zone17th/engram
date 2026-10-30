@@ -75,18 +75,21 @@ export async function runPasskeyUnlock(deps: PasskeyUnlockDeps): Promise<Passkey
     } catch (err) {
       return fail(isWebAuthnCancellation(err) ? 'unlock_cancelled' : 'unlock_failed');
     }
+
+    // Read (copy) and wipe the browser-owned PRF buffer BEFORE any early return: a stale result or an unknown
+    // credential must not leave it alive. `pwk` then belongs to the finalizer below.
+    let prfUnreadable = false;
+    try {
+      pwk = readPrfResult(assertion).first;
+    } catch {
+      prfUnreadable = true;
+    }
     if (!isCurrent()) return fail('stale');
 
     // The wrap and salt of the credential the assertion was actually made with, never another one's.
     const used = credentials.get(credentialIdB64(assertion));
     if (!used) return fail('unlock_failed');
-
-    try {
-      pwk = readPrfResult(assertion).first;
-    } catch {
-      return fail('unlock_prf_missing');
-    }
-    if (!pwk) return fail('unlock_prf_missing');
+    if (prfUnreadable || !pwk) return fail('unlock_prf_missing');
 
     try {
       await deps.unlockPrf({

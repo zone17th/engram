@@ -56,25 +56,55 @@ export interface FakeCredential {
   prfSource: ArrayBuffer | null;
 }
 
-/** A `PublicKeyCredential` double; `prf: null` = no `prf` entry at all in the extension results. */
+export const CREATION_CLIENT_DATA_JSON = filled(10, 0x31);
+export const CREATION_ATTESTATION_OBJECT = filled(12, 0x41);
+export const ASSERTION_CLIENT_DATA_JSON = filled(10, 0x52);
+
+function extensionResultsOf(prf: FakePrfOutput | null | undefined, prfSource: ArrayBuffer | null) {
+  if (!prf) return {};
+  return {
+    prf: {
+      enabled: prf.enabled,
+      ...(prfSource ? { results: { first: prfSource } } : {}),
+    },
+  };
+}
+
+/** A `navigator.credentials.create()` double (`AuthenticatorAttestationResponse`); `prf: null` = no `prf` entry. */
 export function fakeCredential(opts: {
   rawId: Uint8Array;
   prf?: FakePrfOutput | null;
 }): FakeCredential {
   const prfSource = opts.prf?.first ? toArrayBuffer(opts.prf.first) : null;
-  const extensionResults = opts.prf
-    ? {
-        prf: {
-          enabled: opts.prf.enabled,
-          ...(prfSource ? { results: { first: prfSource } } : {}),
-        },
-      }
-    : {};
+  const extensionResults = extensionResultsOf(opts.prf, prfSource);
   const credential = {
     rawId: toArrayBuffer(opts.rawId),
     response: {
-      clientDataJSON: toArrayBuffer(filled(10, 0x31)),
-      attestationObject: toArrayBuffer(filled(12, 0x41)),
+      clientDataJSON: toArrayBuffer(CREATION_CLIENT_DATA_JSON),
+      attestationObject: toArrayBuffer(CREATION_ATTESTATION_OBJECT),
+    },
+    getClientExtensionResults: () => extensionResults,
+  } as unknown as PublicKeyCredential;
+  return { credential, prfSource };
+}
+
+/**
+ * A `navigator.credentials.get()` double (`AuthenticatorAssertionResponse`): distinct `clientDataJSON`, no
+ * `attestationObject`, so a bug that encodes the assertion instead of the creation credential fails.
+ */
+export function fakeAssertion(opts: {
+  rawId: Uint8Array;
+  prf?: FakePrfOutput | null;
+}): FakeCredential {
+  const prfSource = opts.prf?.first ? toArrayBuffer(opts.prf.first) : null;
+  const extensionResults = extensionResultsOf(opts.prf, prfSource);
+  const credential = {
+    rawId: toArrayBuffer(opts.rawId),
+    response: {
+      clientDataJSON: toArrayBuffer(ASSERTION_CLIENT_DATA_JSON),
+      authenticatorData: toArrayBuffer(filled(37, 0x61)),
+      signature: toArrayBuffer(filled(64, 0x71)),
+      userHandle: null,
     },
     getClientExtensionResults: () => extensionResults,
   } as unknown as PublicKeyCredential;

@@ -128,10 +128,11 @@ describe('T19 bullet 2 - unlock with passkey (evalByCredential)', () => {
     expect(h.credentials.get).not.toHaveBeenCalled();
   });
 
-  it('an assertion from a credential that is not in the options is unlock_failed and never reaches the Worker', async () => {
+  it('PKW-R1-4: an assertion from a credential not in the options is unlock_failed, wipes the PRF buffer and never reaches the Worker', async () => {
     const h = makeUnlockHarness({ usedId: filled(16, 0xcc) });
     const outcome = await runPasskeyUnlock(h.deps);
     expect(outcome).toEqual({ ok: false, error: 'unlock_failed' });
+    expect(isAllZero(h.assertion.prfSource!)).toBe(true);
     expect(h.unlockPrf).not.toHaveBeenCalled();
   });
 
@@ -160,13 +161,14 @@ describe('T19 bullet 2 - unlock with passkey (evalByCredential)', () => {
     expect(await runPasskeyUnlock(h.deps)).toEqual({ ok: false, error: 'stale' });
   });
 
-  it('lock/logout during the authenticator prompt: stale, nothing is handed to the Worker', async () => {
+  it('PKW-R1-4, PKW-R1-5: lock/logout during the authenticator prompt wipes the PRF buffer and hands nothing to the Worker', async () => {
     const h = makeUnlockHarness();
     h.credentials.get.mockImplementationOnce(async () => {
       h.state.generation += 1;
       return h.assertion.credential as Credential;
     });
     expect(await runPasskeyUnlock(h.deps)).toEqual({ ok: false, error: 'stale' });
+    expect(isAllZero(h.assertion.prfSource!)).toBe(true);
     expect(h.unlockPrf).not.toHaveBeenCalled();
   });
 
