@@ -223,7 +223,10 @@ class FakeIDBStorage {
 }
 
 class FakeWebLocks {
-  private queue: Promise<unknown> = Promise.resolve();
+  // Real Web Locks serialize requests per lock NAME: `sabk.vault.lock` (lockEpoch) and `sabk.auth.session`
+  // (`authMutate`) never contend with each other. One queue per name keeps that, so a mutation held open under
+  // the session lock cannot starve the provider's lockEpoch verification.
+  private readonly queuesByName = new Map<string, Promise<unknown>>();
   createLockManager(): LockManager {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
@@ -235,8 +238,9 @@ class FakeWebLocks {
       ): Promise<unknown> {
         const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
         const run = async () => cb({ name, mode: 'exclusive' } as Lock);
-        const next = self.queue.then(run, run);
-        self.queue = next.catch(() => undefined);
+        const prev = self.queuesByName.get(name) ?? Promise.resolve();
+        const next = prev.then(run, run);
+        self.queuesByName.set(name, next.catch(() => undefined));
         return next;
       },
       query: async () => ({ held: [], pending: [] }),
@@ -2111,24 +2115,34 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
 
   // R9-4: a provider wake (window `focus` while the Worker is unlocked and the baseline is verified) runs every
   // registered secret-form resetter synchronously. An operation already dispatched to the server must survive it.
-  async function wakeProvider(callLog: string[]) {
-    const before = callLog.filter((entry) => entry === 'GET /auth/me').length;
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    // The wake verification refreshes GET /auth/me; seeing it proves the wake path (and its sync wipe) ran.
-    await waitFor(() => {
-      expect(callLog.filter((entry) => entry === 'GET /auth/me').length).toBeGreaterThan(before);
-    });
-    await act(async () => {
-      await delayMs(30);
-    });
+  // The proof that the wake wipe ran is the wipe itself: a probe resetter registered next to the dialog's own
+  // `registerSecretFormReset` callback is invoked exactly once by `clearPlaintextAndFormsSync`, which `runWake`
+  // calls synchronously (before its first await) once `verifyOnWake` has not returned early. The probe is never
+  // invoked by the test. `GET /auth/me` (step 3 of the wake) is only awaited afterwards to let the wake settle.
+  async function wakeProvider(getVaultCtx: () => VaultContextValue, callLog: string[]) {
+    const wipeProbe = vi.fn();
+    const unregisterProbe = getVaultCtx().registerSecretFormReset(wipeProbe);
+    try {
+      const before = callLog.filter((entry) => entry === 'GET /auth/me').length;
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(wipeProbe).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(callLog.filter((entry) => entry === 'GET /auth/me').length).toBeGreaterThan(before);
+      });
+      await act(async () => {
+        await delayMs(30);
+      });
+    } finally {
+      unregisterProbe();
+    }
   }
 
   it('keeps an in-flight Change Passphrase PUT /vault/kek (loading state, close guard, Idempotency-Key) across a provider wake wipe (R9-4)', async () => {
     const user = userEvent.setup();
     const putGate = Promise.withResolvers<void>();
-    const { callLog, requestsByPath } = await renderSettingsHarness({
+    const { getVaultCtx, callLog, requestsByPath } = await renderSettingsHarness({
       customFetch: async (url, init) => {
         if (url.endsWith('/api/v1/vault/kek') && init?.method?.toUpperCase() === 'PUT') {
           await putGate.promise;
@@ -2151,7 +2165,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
     expect(within(dialog).getByRole('button', { name: 'Updating passphrase…' })).toBeDisabled();
 
-    await wakeProvider(callLog);
+    await wakeProvider(getVaultCtx, callLog);
 
     // Still the submitting step: loading button, Cancel blocked, Escape does not dismiss the dialog.
     expect(within(dialog).getByRole('button', { name: 'Updating passphrase…' })).toBeDisabled();
@@ -2196,7 +2210,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     async ({ openName, confirmName, endpoint, logEntry, keyPattern }) => {
       const user = userEvent.setup();
       const postGate = Promise.withResolvers<void>();
-      const { callLog, requestsByPath } = await renderSettingsHarness({
+      const { getVaultCtx, callLog, requestsByPath } = await renderSettingsHarness({
         rkStatus: makeRkStatus(8, [9, 10]),
         customFetch: async (url, init) => {
           if (url.endsWith(endpoint) && init?.method?.toUpperCase() === 'POST') {
@@ -2222,7 +2236,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
       expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
 
-      await wakeProvider(callLog);
+      await wakeProvider(getVaultCtx, callLog);
 
       // Plaintext keys are wiped, but the dialog stays on the submitting step and cannot be dismissed.
       expect(within(dialog).queryByTestId('recovery-keys-grid')).toBeNull();
@@ -2288,7 +2302,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       expect(firstKey).toMatch(/^[0-9a-f-]{36}$/i);
       expect(within(dialog).getByRole('button', { name: 'Resetting vault…' })).toBeDisabled();
 
-      await wakeProvider(callLog);
+      await wakeProvider(getVaultCtx, callLog);
 
       // Still step 4 with the loading button: not dropped back to step 1, and no "Later" to dismiss it with.
       expect(within(dialog).getByText(/Step 4 of 5/i)).toBeInTheDocument();
@@ -2320,7 +2334,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
   it('still fully resets Change Passphrase (inputs, error, step) on a provider wake when no operation is in flight (R9-4 control)', async () => {
     const user = userEvent.setup();
     let putAttempt = 0;
-    const { callLog } = await renderSettingsHarness({
+    const { getVaultCtx, callLog } = await renderSettingsHarness({
       customFetch: (url, init) => {
         if (url.endsWith('/api/v1/vault/kek') && init?.method?.toUpperCase() === 'PUT') {
           putAttempt += 1;
@@ -2348,7 +2362,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.type(newPpInput, 'partial-secret-text');
     expect(newPpInput).toHaveValue('partial-secret-text');
 
-    await wakeProvider(callLog);
+    await wakeProvider(getVaultCtx, callLog);
 
     expect(within(dialog).getByLabelText('New vault passphrase')).toHaveValue('');
     expect(within(dialog).queryByRole('alert')).toBeNull();
