@@ -23,7 +23,17 @@ import type { Sodium } from '@/lib/crypto/sodium';
 import { FakeDeviceIdb, FakeWebLocks } from '@/lib/crypto/test/fake-device-idb';
 import { createWorkerShim, type ShimmedWorkerInstance } from '@/lib/crypto/test/worker-shim';
 import { createRememberDeviceStore, type RememberDeviceState } from './remember-store';
+import type { DeviceTestBridge } from './test-bridge';
 import { useRememberDevice, type UseRememberDeviceResult } from './use-remember-device';
+
+function getDeviceTestBridge(): DeviceTestBridge {
+  const win = window as unknown as Record<string, unknown>;
+  const bridge = win['__engramDeviceTestBridge'];
+  if (!bridge || typeof bridge !== 'object') {
+    throw new Error('Missing __engramDeviceTestBridge');
+  }
+  return bridge as DeviceTestBridge;
+}
 
 // Plan Task 18 at the provider / hook level: silent unlock after reload, reset elsewhere then reload, key-scoped purges
 // through the provider's 404 / replacement rows, the toggle's DB re-read + neutral notice. The session layer and the
@@ -988,6 +998,631 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     });
     expect(opened.plaintext).toBe('r2-1-secret-entry-plaintext');
   });
+
+  it('R3-1: silent intent registers owned baseline and parks; manual beginOp + wrong-passphrase dispatch fails without consuming silent entry; sibling durable lock + release silent fails closed (and control without lock opens)', async () => {
+    const first = await openUnlockedTab();
+    const sealed = await first.vault().getClient().sealEntryNow({
+      entryId: '11111111-1111-4111-8111-111111111111',
+      keyId: VAULT_K,
+      plaintext: new TextEncoder().encode('r3-1-secret-entry-plaintext'),
+    });
+    await act(async () => {
+      await first.remember().remember();
+    });
+    expect(devkeys().size).toBe(1);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    let callIndex = 0;
+    let releaseSilentGet: (() => void) | null = null;
+    mocks.fetchVault.mockImplementation(async () => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        await new Promise<void>((resolve) => {
+          releaseSilentGet = resolve;
+        });
+      }
+      return vaultState(VAULT_K);
+    });
+
+    const tab = renderTab({ silentUnlockOnLoad: false });
+    const activeShim = shims[shims.length - 1]!;
+    const deviceBridge = getDeviceTestBridge;
+
+    // 1. Silent intent starts first, registers its `owned` baseline entry, and parks on GET /vault #1:
+    let silentPromise!: Promise<unknown>;
+    act(() => {
+      silentPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseSilentGet).not.toBeNull());
+    const afterSilentStart = deviceBridge().intentBaselineWitness();
+    expect(afterSilentStart.pending).toHaveLength(1);
+    const silentEntry = afterSilentStart.pending[0]!;
+    expect(silentEntry.kind).toBe('owned');
+    const genBefore = tab.vault().getClient().getGeneration();
+
+    // 2. Manual beginOp() registers a `manual` baseline entry, fetches GET /vault #2, and dispatches with a WRONG passphrase:
+    const manualOp = tab.vault().beginOp();
+    expect(manualOp.opGeneration).toBe(genBefore);
+    const afterManualBegin = deviceBridge().intentBaselineWitness();
+    expect(afterManualBegin.pending).toEqual([
+      { generation: genBefore, id: silentEntry.id, kind: 'owned' },
+      { generation: genBefore, id: silentEntry.id + 1, kind: 'manual' },
+    ]);
+    let manualMeta: VaultState | null = null;
+    await act(async () => {
+      manualMeta = await tab.vault().reloadVaultMeta();
+    });
+    expect(manualMeta).not.toBeNull();
+    let manualErr: unknown = null;
+    await act(async () => {
+      try {
+        await tab.vault().unlockPassphrase({
+          passphrase: 'wrong-passphrase-for-r3-1',
+          kdf: manualMeta!.kdf,
+          vaultKeyWrappedByKek: manualMeta!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: manualMeta!.private_keys_wrapped,
+          opGeneration: manualOp.opGeneration,
+        });
+      } catch (err) {
+        manualErr = err;
+      }
+    });
+    expect(manualErr).toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+    // Generation is unchanged and Worker stays locked; manual dispatch consumed ONLY its own `manual` entry, leaving silent's `owned` entry intact!
+    expect(tab.vault().getClient().getGeneration()).toBe(genBefore);
+    expect(tab.vault().workerState).toBe('locked');
+    const afterManualFail = deviceBridge().intentBaselineWitness();
+    expect(afterManualFail.pending).toEqual([
+      { generation: genBefore, id: silentEntry.id, kind: 'owned' },
+    ]);
+    expect(afterManualFail.trace).toContainEqual({
+      action: 'consume',
+      generation: genBefore,
+      id: silentEntry.id + 1,
+      kind: 'manual',
+    });
+
+    // 3. Sibling tab commits a durable lockEpoch increment with BroadcastChannel notifications suppressed:
+    await act(async () => {
+      await recordLockEpochEvent(tab.vault().tabKnownLockEpoch, {
+        idbFactory: idb.createFactory(),
+        locksManager: locks.createLockManager(),
+      });
+    });
+
+    // 4. Release parked silent GET #1 -> silent consumes its own `owned` baseline (pre-lock E1), sees mismatch against E2, and FAILS CLOSED:
+    const devKeyCmdsBefore = activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey').length;
+    let silentResult: unknown;
+    await act(async () => {
+      releaseSilentGet?.();
+      silentResult = await silentPromise;
+    });
+    expect(silentResult).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey')).toHaveLength(devKeyCmdsBefore);
+    expect(stateText()).toBe('locked');
+    expect(tab.vault().workerState).toBe('locked');
+    const afterSilentDone = deviceBridge().intentBaselineWitness();
+    expect(afterSilentDone.pending).toHaveLength(0);
+    expect(afterSilentDone.trace).toContainEqual({
+      action: 'consume',
+      generation: genBefore,
+      id: silentEntry.id,
+      kind: 'owned',
+    });
+    expect(afterSilentDone.trace.some((e) => e.action === 'capture_fresh')).toBe(false);
+    await expect(
+      tab.vault().getClient().openEntryNow({
+        entryId: '11111111-1111-4111-8111-111111111111',
+        envelope: sealed.envelope,
+        ciphertext: sealed.ciphertext,
+      }),
+    ).rejects.toMatchObject({ code: 'VAULT_LOCKED' });
+
+    // 5. Control without the sibling lock: silent parked + manual wrong passphrase -> release silent opens cleanly and decrypts!
+    callIndex = 0;
+    releaseSilentGet = null;
+    let controlSilentPromise!: Promise<unknown>;
+    act(() => {
+      controlSilentPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseSilentGet).not.toBeNull());
+    const controlManualOp = tab.vault().beginOp();
+    let controlManualMeta: VaultState | null = null;
+    await act(async () => {
+      controlManualMeta = await tab.vault().reloadVaultMeta();
+    });
+    await act(async () => {
+      await expect(
+        tab.vault().unlockPassphrase({
+          passphrase: 'wrong-passphrase-for-r3-1-control',
+          kdf: controlManualMeta!.kdf,
+          vaultKeyWrappedByKek: controlManualMeta!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: controlManualMeta!.private_keys_wrapped,
+          opGeneration: controlManualOp.opGeneration,
+        }),
+      ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+    });
+    expect(tab.vault().workerState).toBe('locked');
+    let controlSilentResult: unknown;
+    await act(async () => {
+      releaseSilentGet?.();
+      controlSilentResult = await controlSilentPromise;
+    });
+    expect(controlSilentResult).toEqual({ status: 'unlocked' });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    expect(tab.vault().workerState).toBe('unlocked');
+    const opened = await tab.vault().getClient().openEntryNow({
+      entryId: '11111111-1111-4111-8111-111111111111',
+      envelope: sealed.envelope,
+      ciphertext: sealed.ciphertext,
+    });
+    expect(opened.plaintext).toBe('r3-1-secret-entry-plaintext');
+  });
+
+  it('R3-2: reverse registration order (manual beginOp + parked GET first, silent intent second, then manual wrong-passphrase dispatch, sibling durable lock, release silent) fails closed; control opens', async () => {
+    const first = await openUnlockedTab();
+    const sealed = await first.vault().getClient().sealEntryNow({
+      entryId: '11111111-1111-4111-8111-111111111111',
+      keyId: VAULT_K,
+      plaintext: new TextEncoder().encode('r3-2-secret-entry-plaintext'),
+    });
+    await act(async () => {
+      await first.remember().remember();
+    });
+    expect(devkeys().size).toBe(1);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    let callIndex = 0;
+    let releaseManualGet: (() => void) | null = null;
+    let releaseSilentGet: (() => void) | null = null;
+    mocks.fetchVault.mockImplementation(async () => {
+      callIndex += 1;
+      const myCall = callIndex;
+      if (myCall === 1) {
+        await new Promise<void>((resolve) => {
+          releaseManualGet = resolve;
+        });
+      } else if (myCall === 2) {
+        await new Promise<void>((resolve) => {
+          releaseSilentGet = resolve;
+        });
+      }
+      return vaultState(VAULT_K);
+    });
+
+    const tab = renderTab({ silentUnlockOnLoad: false });
+    const activeShim = shims[shims.length - 1]!;
+    const deviceBridge = getDeviceTestBridge;
+
+    // 1. Manual intent starts FIRST (`manual` entry #1) and parks on GET /vault #1:
+    const manualOp = tab.vault().beginOp();
+    let manualMetaPromise!: Promise<VaultState | null>;
+    act(() => {
+      manualMetaPromise = tab.vault().reloadVaultMeta();
+    });
+    await waitFor(() => expect(releaseManualGet).not.toBeNull());
+
+    // 2. Silent intent starts SECOND (`owned` entry #2) and parks on GET /vault #2:
+    let silentPromise!: Promise<unknown>;
+    act(() => {
+      silentPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseSilentGet).not.toBeNull());
+
+    const witnessBefore = deviceBridge().intentBaselineWitness();
+    expect(witnessBefore.pending).toHaveLength(2);
+    expect(witnessBefore.pending[0]!.kind).toBe('manual');
+    expect(witnessBefore.pending[1]!.kind).toBe('owned');
+    const manualEntryId = witnessBefore.pending[0]!.id;
+    const silentEntryId = witnessBefore.pending[1]!.id;
+
+    // 3. Release manual GET #1 and dispatch with WRONG passphrase -> consumes `manualEntryId`, leaves `silentEntryId` untouched:
+    let manualMeta: VaultState | null = null;
+    await act(async () => {
+      releaseManualGet?.();
+      manualMeta = await manualMetaPromise;
+    });
+    await act(async () => {
+      await expect(
+        tab.vault().unlockPassphrase({
+          passphrase: 'wrong-passphrase-for-r3-2',
+          kdf: manualMeta!.kdf,
+          vaultKeyWrappedByKek: manualMeta!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: manualMeta!.private_keys_wrapped,
+          opGeneration: manualOp.opGeneration,
+        }),
+      ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+    });
+    expect(tab.vault().workerState).toBe('locked');
+    expect(deviceBridge().intentBaselineWitness().pending).toEqual([
+      { generation: manualOp.opGeneration, id: silentEntryId, kind: 'owned' },
+    ]);
+    expect(deviceBridge().intentBaselineWitness().trace).toContainEqual({
+      action: 'consume',
+      generation: manualOp.opGeneration,
+      id: manualEntryId,
+      kind: 'manual',
+    });
+
+    // 4. Sibling tab commits a durable lockEpoch increment with BroadcastChannel notifications suppressed:
+    await act(async () => {
+      await recordLockEpochEvent(tab.vault().tabKnownLockEpoch, {
+        idbFactory: idb.createFactory(),
+        locksManager: locks.createLockManager(),
+      });
+    });
+
+    // 5. Release silent GET #2 -> consumes `silentEntryId` (pre-lock baseline), detects lockEpoch mismatch, fails closed:
+    const devKeyCmdsBefore = activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey').length;
+    let silentResult: unknown;
+    await act(async () => {
+      releaseSilentGet?.();
+      silentResult = await silentPromise;
+    });
+    expect(silentResult).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey')).toHaveLength(devKeyCmdsBefore);
+    expect(stateText()).toBe('locked');
+    expect(tab.vault().workerState).toBe('locked');
+    expect(deviceBridge().intentBaselineWitness().pending).toHaveLength(0);
+    await expect(
+      tab.vault().getClient().openEntryNow({
+        entryId: '11111111-1111-4111-8111-111111111111',
+        envelope: sealed.envelope,
+        ciphertext: sealed.ciphertext,
+      }),
+    ).rejects.toMatchObject({ code: 'VAULT_LOCKED' });
+
+    // 6. Control without the sibling lock: manual first + silent second -> manual wrong passphrase -> release silent opens cleanly!
+    callIndex = 0;
+    releaseManualGet = null;
+    releaseSilentGet = null;
+    const controlManualOp = tab.vault().beginOp();
+    let controlManualMetaPromise!: Promise<VaultState | null>;
+    act(() => {
+      controlManualMetaPromise = tab.vault().reloadVaultMeta();
+    });
+    await waitFor(() => expect(releaseManualGet).not.toBeNull());
+    let controlSilentPromise!: Promise<unknown>;
+    act(() => {
+      controlSilentPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseSilentGet).not.toBeNull());
+    let controlManualMeta: VaultState | null = null;
+    await act(async () => {
+      releaseManualGet?.();
+      controlManualMeta = await controlManualMetaPromise;
+    });
+    await act(async () => {
+      await expect(
+        tab.vault().unlockPassphrase({
+          passphrase: 'wrong-passphrase-for-r3-2-control',
+          kdf: controlManualMeta!.kdf,
+          vaultKeyWrappedByKek: controlManualMeta!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: controlManualMeta!.private_keys_wrapped,
+          opGeneration: controlManualOp.opGeneration,
+        }),
+      ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+    });
+    let controlSilentResult: unknown;
+    await act(async () => {
+      releaseSilentGet?.();
+      controlSilentResult = await controlSilentPromise;
+    });
+    expect(controlSilentResult).toEqual({ status: 'unlocked' });
+    await waitFor(() => expect(stateText()).toBe('unlocked'), { timeout: 10_000 });
+    expect(tab.vault().workerState).toBe('unlocked');
+    const opened = await tab.vault().getClient().openEntryNow({
+      entryId: '11111111-1111-4111-8111-111111111111',
+      envelope: sealed.envelope,
+      ciphertext: sealed.ciphertext,
+    });
+    expect(opened.plaintext).toBe('r3-2-secret-entry-plaintext');
+  });
+
+  it('missing-own-entry: an ID-carrying dispatch whose owned baseline entry was removed fails closed without capture_fresh fallback', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    expect(devkeys().size).toBe(1);
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    let holdGet = true;
+    let releaseGet: (() => void) | null = null;
+    mocks.fetchVault.mockImplementation(async () => {
+      if (holdGet) {
+        await new Promise<void>((resolve) => {
+          releaseGet = resolve;
+        });
+      }
+      return vaultState(VAULT_K);
+    });
+
+    const tab = renderTab({ silentUnlockOnLoad: false });
+    const activeShim = shims[shims.length - 1]!;
+    const deviceBridge = getDeviceTestBridge;
+
+    let silentPromise!: Promise<unknown>;
+    act(() => {
+      silentPromise = tab.vault().silentUnlock();
+    });
+    await waitFor(() => expect(releaseGet).not.toBeNull());
+
+    // Verify the owned baseline entry exists, then remove it before dispatch:
+    const witness = deviceBridge().intentBaselineWitness();
+    expect(witness.pending).toHaveLength(1);
+    const ownedEntry = witness.pending[0]!;
+    expect(ownedEntry.kind).toBe('owned');
+    expect(witness.removeEntry(ownedEntry.generation, ownedEntry.id)).toBe(true);
+    expect(deviceBridge().intentBaselineWitness().pending).toHaveLength(0);
+
+    // Also register a `manual` entry in the same generation to prove the ID-carrying dispatch never steals a manual entry either:
+    tab.vault().beginOp();
+    expect(deviceBridge().intentBaselineWitness().pending).toHaveLength(1);
+    expect(deviceBridge().intentBaselineWitness().pending[0]!.kind).toBe('manual');
+
+    // Release GET -> silent dispatch reaches prepareBaseline with its intentId, sees its own entry missing, and FAILS CLOSED (no capture_fresh, no unlockDevKey command):
+    let silentResult: unknown;
+    await act(async () => {
+      holdGet = false;
+      releaseGet?.();
+      silentResult = await silentPromise;
+    });
+    expect(silentResult).toEqual({ status: 'skipped', reason: 'stale' });
+    expect(activeShim.workerReceivedRequests.filter((c) => c.type === 'unlockDevKey')).toHaveLength(0);
+    expect(stateText()).toBe('locked');
+    expect(tab.vault().workerState).toBe('locked');
+    const finalWitness = deviceBridge().intentBaselineWitness();
+    expect(finalWitness.trace).toContainEqual({
+      action: 'missing_owned',
+      generation: ownedEntry.generation,
+      id: ownedEntry.id,
+      kind: 'owned',
+    });
+    expect(finalWitness.trace.some((e) => e.action === 'capture_fresh')).toBe(false);
+  });
+
+  it.each([
+    { pair: 'manual+manual' as const },
+    { pair: 'manual+silent' as const },
+    { pair: 'silent+manual' as const },
+    { pair: 'silent+auto-silent' as const },
+  ])(
+    'intent-kind pair table ($pair): no intent ever consumes or deletes another intent’s baseline entry',
+    async ({ pair }) => {
+      const first = await openUnlockedTab();
+      await act(async () => {
+        await first.remember().remember();
+      });
+      expect(devkeys().size).toBe(1);
+      cleanup();
+      shims.splice(0).forEach((s) => s.close());
+
+      let releaseGet1: (() => void) | null = null;
+      let releaseGet2: (() => void) | null = null;
+      let callIndex = 0;
+      mocks.fetchVault.mockImplementation(async () => {
+        callIndex += 1;
+        if (callIndex === 1) {
+          await new Promise<void>((resolve) => {
+            releaseGet1 = resolve;
+          });
+        } else if (callIndex === 2) {
+          await new Promise<void>((resolve) => {
+            releaseGet2 = resolve;
+          });
+        }
+        return vaultState(VAULT_K);
+      });
+
+      const isAutoSilent = pair === 'silent+auto-silent';
+      const tab = renderTab({ silentUnlockOnLoad: isAutoSilent });
+      const deviceBridge = getDeviceTestBridge;
+
+      if (pair === 'manual+manual') {
+        const op1 = tab.vault().beginOp();
+        // Sibling durable lock between op1 and op2 in the same generation: op1 has pre-lock E1, op2 has post-lock E2.
+        await act(async () => {
+          await recordLockEpochEvent(tab.vault().tabKnownLockEpoch, {
+            idbFactory: idb.createFactory(),
+            locksManager: locks.createLockManager(),
+          });
+        });
+        const op2 = tab.vault().beginOp();
+        const w0 = deviceBridge().intentBaselineWitness();
+        expect(w0.pending).toHaveLength(2);
+        const [e1, e2] = w0.pending;
+        expect(e1!.kind).toBe('manual');
+        expect(e2!.kind).toBe('manual');
+
+        // First manual dispatch consumes oldest manual entry (e1, pre-lock) and fails closed with STALE_GENERATION, bumping generation and clearing remaining stale-generation entries:
+        await act(async () => {
+          await expect(
+            tab.vault().unlockPassphrase({
+              passphrase: PASSPHRASE,
+              kdf: created!.kdf,
+              vaultKeyWrappedByKek: created!.vault_key_wrapped_by_kek,
+              privateKeysWrapped: created!.private_keys_wrapped,
+              opGeneration: op1.opGeneration,
+            }),
+          ).rejects.toMatchObject({ code: 'STALE_GENERATION' });
+        });
+        const w1 = deviceBridge().intentBaselineWitness();
+        expect(w1.trace).toContainEqual({
+          action: 'consume',
+          generation: op1.opGeneration,
+          id: e1!.id,
+          kind: 'manual',
+        });
+        expect(w1.trace).not.toContainEqual({
+          action: 'consume',
+          generation: op2.opGeneration,
+          id: e2!.id,
+          kind: 'manual',
+        });
+        expect(stateText()).toBe('locked');
+        return;
+      }
+
+      if (pair === 'manual+silent') {
+        const manualOp = tab.vault().beginOp();
+        let manualMetaPromise!: Promise<VaultState | null>;
+        act(() => {
+          manualMetaPromise = tab.vault().reloadVaultMeta();
+        });
+        await waitFor(() => expect(releaseGet1).not.toBeNull());
+
+        let silentPromise!: Promise<unknown>;
+        act(() => {
+          silentPromise = tab.vault().silentUnlock();
+        });
+        await waitFor(() => expect(releaseGet2).not.toBeNull());
+
+        const w0 = deviceBridge().intentBaselineWitness();
+        expect(w0.pending).toHaveLength(2);
+        const [manualEntry, silentEntry] = w0.pending;
+        expect(manualEntry!.kind).toBe('manual');
+        expect(silentEntry!.kind).toBe('owned');
+
+        // Release manual first (wrong passphrase) -> consumes manualEntry, silentEntry stays pending:
+        let manualMeta: VaultState | null = null;
+        await act(async () => {
+          releaseGet1?.();
+          manualMeta = await manualMetaPromise;
+        });
+        await act(async () => {
+          await expect(
+            tab.vault().unlockPassphrase({
+              passphrase: 'wrong-passphrase',
+              kdf: manualMeta!.kdf,
+              vaultKeyWrappedByKek: manualMeta!.vault_key_wrapped_by_kek,
+              privateKeysWrapped: manualMeta!.private_keys_wrapped,
+              opGeneration: manualOp.opGeneration,
+            }),
+          ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+        });
+        expect(deviceBridge().intentBaselineWitness().pending).toEqual([silentEntry]);
+
+        // Release silent second -> consumes silentEntry and unlocks:
+        let silentRes: unknown;
+        await act(async () => {
+          releaseGet2?.();
+          silentRes = await silentPromise;
+        });
+        expect(silentRes).toEqual({ status: 'unlocked' });
+        const wFinal = deviceBridge().intentBaselineWitness();
+        expect(wFinal.pending).toHaveLength(0);
+        expect(wFinal.trace.filter((e) => e.action === 'consume')).toEqual([
+          { action: 'consume', generation: manualEntry!.generation, id: manualEntry!.id, kind: 'manual' },
+          { action: 'consume', generation: silentEntry!.generation, id: silentEntry!.id, kind: 'owned' },
+        ]);
+        return;
+      }
+
+      if (pair === 'silent+manual') {
+        let silentPromise!: Promise<unknown>;
+        act(() => {
+          silentPromise = tab.vault().silentUnlock();
+        });
+        await waitFor(() => expect(releaseGet1).not.toBeNull());
+
+        const manualOp = tab.vault().beginOp();
+        let manualMetaPromise!: Promise<VaultState | null>;
+        act(() => {
+          manualMetaPromise = tab.vault().reloadVaultMeta();
+        });
+        await waitFor(() => expect(releaseGet2).not.toBeNull());
+
+        const w0 = deviceBridge().intentBaselineWitness();
+        expect(w0.pending).toHaveLength(2);
+        const [silentEntry, manualEntry] = w0.pending;
+        expect(silentEntry!.kind).toBe('owned');
+        expect(manualEntry!.kind).toBe('manual');
+
+        // Manual dispatches first while silent is still parked -> skips owned silentEntry and consumes manualEntry!
+        let manualMeta: VaultState | null = null;
+        await act(async () => {
+          releaseGet2?.();
+          manualMeta = await manualMetaPromise;
+        });
+        await act(async () => {
+          await expect(
+            tab.vault().unlockPassphrase({
+              passphrase: 'wrong-passphrase',
+              kdf: manualMeta!.kdf,
+              vaultKeyWrappedByKek: manualMeta!.vault_key_wrapped_by_kek,
+              privateKeysWrapped: manualMeta!.private_keys_wrapped,
+              opGeneration: manualOp.opGeneration,
+            }),
+          ).rejects.toMatchObject({ code: 'AEAD_DECRYPT_FAILED' });
+        });
+        expect(deviceBridge().intentBaselineWitness().pending).toEqual([silentEntry]);
+
+        // Silent dispatches second -> consumes its own silentEntry and unlocks:
+        let silentRes: unknown;
+        await act(async () => {
+          releaseGet1?.();
+          silentRes = await silentPromise;
+        });
+        expect(silentRes).toEqual({ status: 'unlocked' });
+        const wFinal = deviceBridge().intentBaselineWitness();
+        expect(wFinal.pending).toHaveLength(0);
+        expect(wFinal.trace.filter((e) => e.action === 'consume')).toEqual([
+          { action: 'consume', generation: manualEntry!.generation, id: manualEntry!.id, kind: 'manual' },
+          { action: 'consume', generation: silentEntry!.generation, id: silentEntry!.id, kind: 'owned' },
+        ]);
+        return;
+      }
+
+      // pair === 'silent+auto-silent':
+      // Auto-silent starts on mount and parks on GET #1; explicit silentUnlock() starts second and parks on GET #2.
+      await waitFor(() => expect(releaseGet1).not.toBeNull());
+      let explicitSilentPromise!: Promise<unknown>;
+      act(() => {
+        explicitSilentPromise = tab.vault().silentUnlock();
+      });
+      await waitFor(() => expect(releaseGet2).not.toBeNull());
+
+      const w0 = deviceBridge().intentBaselineWitness();
+      expect(w0.pending).toHaveLength(2);
+      const [autoEntry, explicitEntry] = w0.pending;
+      expect(autoEntry!.kind).toBe('owned');
+      expect(explicitEntry!.kind).toBe('owned');
+      expect(autoEntry!.id).not.toBe(explicitEntry!.id);
+
+      // Sibling durable lock so the first finishing silent intent fails closed without unlocking, while we also verify neither owned intent consumes the other's entry:
+      // First, release explicit silent (2nd entry) while auto-silent (1st entry) is still parked at GET #1!
+      let explicitRes: unknown;
+      await act(async () => {
+        releaseGet2?.();
+        explicitRes = await explicitSilentPromise;
+      });
+      expect(explicitRes).toEqual({ status: 'unlocked' });
+      const wAfterExplicit = deviceBridge().intentBaselineWitness();
+      // Explicit silent consumed ONLY `explicitEntry.id` (even though `autoEntry.id` was earlier in the list!), leaving `autoEntry` untouched until auto-silent finishes:
+      expect(wAfterExplicit.trace.filter((e) => e.action === 'consume')).toEqual([
+        { action: 'consume', generation: explicitEntry!.generation, id: explicitEntry!.id, kind: 'owned' },
+      ]);
+      expect(wAfterExplicit.pending).toEqual([autoEntry]);
+
+      // Release auto-silent GET #1 -> its `isCurrent` or post-GET check sees the completed unlock / cleans up its own `autoEntry` in `finally`:
+      await act(async () => {
+        releaseGet1?.();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      const wFinal = deviceBridge().intentBaselineWitness();
+      expect(wFinal.pending).toHaveLength(0);
+      expect(wFinal.trace).toContainEqual({
+        action: 'release',
+        generation: autoEntry!.generation,
+        id: autoEntry!.id,
+        kind: 'owned',
+      });
+    },
+  );
 
   it('R2-4 (advisor-dec-054 / user-dec-010 pre-dispatch window): Forget completing while provider prepareBaseline is parked after post-GET reread prevents any unlockDevKey Worker command, returns stale, and keeps Worker locked (with no-change control)', async () => {
     const first = await openUnlockedTab();

@@ -28,6 +28,13 @@ export interface DeviceWorkerWitness {
   workerState: string;
 }
 
+export interface IntentBaselineTraceEvent {
+  action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
+  generation: number;
+  id?: number;
+  kind?: 'manual' | 'owned';
+}
+
 export interface DeviceTestSnapshot {
   /** Number of well-formed or malformed DevKey records of the signed-in user. */
   userRecordCount: number;
@@ -57,11 +64,21 @@ export interface DeviceTestBridge {
   refresh: () => Promise<RememberDeviceState>;
   snapshot: () => Promise<DeviceTestSnapshot>;
   workerWitness: () => DeviceWorkerWitness;
+  intentBaselineWitness: () => {
+    pending: Array<{ generation: number; id: number; kind: 'manual' | 'owned' }>;
+    trace: IntentBaselineTraceEvent[];
+    removeEntry: (generation: number, id: number) => boolean;
+  };
 }
 
 export function createDeviceTestBridge(options: {
   getContext: () => RememberDeviceContext | null;
   getWorkerWitness?: () => DeviceWorkerWitness;
+  getIntentBaselineWitness?: () => {
+    pending: Array<{ generation: number; id: number; kind: 'manual' | 'owned' }>;
+    trace: IntentBaselineTraceEvent[];
+    removeEntry: (generation: number, id: number) => boolean;
+  };
   env?: DeviceEnvironment;
 }): DeviceTestBridge {
   let paused = false;
@@ -128,6 +145,12 @@ export function createDeviceTestBridge(options: {
         workerEpoch: -1,
         workerGeneration: 0,
         workerState: 'locked',
+      },
+    intentBaselineWitness: () =>
+      options.getIntentBaselineWitness?.() ?? {
+        pending: [],
+        trace: [],
+        removeEntry: () => false,
       },
   };
 }

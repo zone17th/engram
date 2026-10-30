@@ -398,7 +398,37 @@ export function VaultProvider({
   const activeOperationRef = useRef<VaultActiveOperation>(null);
   const tabKnownLockEpochRef = useRef<number>(0);
   const unlockBaselineRef = useRef<LockEpochMarker | null>(null);
-  const intentBaselinesRef = useRef<Map<number, Array<{ id: number; promise: Promise<LockEpochMarker | null> }>>>(new Map());
+  const intentBaselinesRef = useRef<
+    Map<
+      number,
+      Array<{
+        id: number;
+        kind: 'manual' | 'owned';
+        promise: Promise<LockEpochMarker | null>;
+      }>
+    >
+  >(new Map());
+  const intentBaselineTraceRef = useRef<
+    Array<{
+      action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
+      generation: number;
+      id?: number;
+      kind?: 'manual' | 'owned';
+    }>
+  >([]);
+  const recordIntentBaselineTrace = useCallback(
+    (event: {
+      action: 'register' | 'consume' | 'release' | 'missing_owned' | 'capture_fresh';
+      generation: number;
+      id?: number;
+      kind?: 'manual' | 'owned';
+    }) => {
+      const trace = intentBaselineTraceRef.current;
+      if (trace.length >= 128) trace.shift();
+      trace.push(event);
+    },
+    [],
+  );
   const nextIntentBaselineIdRef = useRef<number>(1);
   const baselineVerifiedRef = useRef<boolean>(false);
   const wakeVerificationSeqRef = useRef<number>(0);
@@ -623,44 +653,61 @@ export function VaultProvider({
     return getClient().captureGeneration();
   }, [getClient]);
 
-  const beginIntentOp = useCallback(() => {
-    const client = getClient();
-    const opGeneration = client.captureGeneration();
-    const intentId = nextIntentBaselineIdRef.current++;
-    // Capture durable lockEpoch baseline at intent start (before any metadata GET or async work — BE2-1, ADR 0003 §8.4).
-    const baselinePromise = captureUnlockBaseline(
-      tabKnownLockEpochRef.current,
-      envWithBroadcast,
-    ).then(
-      (marker) => {
-        if (marker && client.getGeneration() === opGeneration) {
-          updateTabKnownLockEpoch(marker.lockEpoch);
+  const beginIntentOp = useCallback(
+    (kind: 'manual' | 'owned') => {
+      const client = getClient();
+      const opGeneration = client.captureGeneration();
+      const intentId = nextIntentBaselineIdRef.current++;
+      // Capture durable lockEpoch baseline at intent start (before any metadata GET or async work — BE2-1, ADR 0003 §8.4).
+      const baselinePromise = captureUnlockBaseline(
+        tabKnownLockEpochRef.current,
+        envWithBroadcast,
+      ).then(
+        (marker) => {
+          if (marker && client.getGeneration() === opGeneration) {
+            updateTabKnownLockEpoch(marker.lockEpoch);
+          }
+          return marker;
+        },
+        () => null,
+      );
+      const list = intentBaselinesRef.current.get(opGeneration) ?? [];
+      list.push({ id: intentId, kind, promise: baselinePromise });
+      intentBaselinesRef.current.set(opGeneration, list);
+      recordIntentBaselineTrace({
+        action: 'register',
+        generation: opGeneration,
+        id: intentId,
+        kind,
+      });
+      const releaseBaseline = () => {
+        const cur = intentBaselinesRef.current.get(opGeneration);
+        if (!cur) return;
+        const idx = cur.findIndex((item) => item.id === intentId);
+        if (idx !== -1) {
+          cur.splice(idx, 1);
+          recordIntentBaselineTrace({
+            action: 'release',
+            generation: opGeneration,
+            id: intentId,
+            kind,
+          });
         }
-        return marker;
-      },
-      () => null,
-    );
-    const list = intentBaselinesRef.current.get(opGeneration) ?? [];
-    list.push({ id: intentId, promise: baselinePromise });
-    intentBaselinesRef.current.set(opGeneration, list);
-    const releaseBaseline = () => {
-      const cur = intentBaselinesRef.current.get(opGeneration);
-      if (!cur) return;
-      const idx = cur.findIndex((item) => item.id === intentId);
-      if (idx !== -1) cur.splice(idx, 1);
-      if (cur.length === 0) intentBaselinesRef.current.delete(opGeneration);
-    };
-    return {
-      opGeneration,
-      intentId,
-      releaseBaseline,
-      client,
-      isCurrent: () => client.getGeneration() === opGeneration,
-    };
-  }, [envWithBroadcast, getClient, updateTabKnownLockEpoch]);
+        if (cur.length === 0) intentBaselinesRef.current.delete(opGeneration);
+      };
+      return {
+        opGeneration,
+        intentId,
+        releaseBaseline,
+        client,
+        isCurrent: () => client.getGeneration() === opGeneration,
+      };
+    },
+    [envWithBroadcast, getClient, recordIntentBaselineTrace, updateTabKnownLockEpoch],
+  );
 
   const beginOp = useCallback(() => {
-    const { opGeneration, client, isCurrent } = beginIntentOp();
+    const { opGeneration, client, isCurrent } = beginIntentOp('manual');
     return { opGeneration, client, isCurrent };
   }, [beginIntentOp]);
 
@@ -1092,20 +1139,55 @@ export function VaultProvider({
         }
 
         // baselineMode === 'capture_fresh':
-        // If beginOp() already captured an intent-start baseline for this opGeneration (BE2-1), reuse and verify it!
-        // Per-intent ownership (R2-1 / R2-7): an explicit intentId consumes only its own baseline; otherwise consume
-        // the oldest unconsumed baseline for this generation so a later same-generation beginOp() never overwrites an
-        // earlier pending intent's marker.
+        // If beginOp() or an internal ID-carrying intent already captured an intent-start baseline for this
+        // opGeneration (BE2-1, R2-1 / R2-7, R3-1 / R3-2, advisor-dec-060), reuse and verify it:
+        // - A dispatch WITH intentId consumes only its own `owned` entry and FAILS CLOSED if missing/already consumed
+        //   (never falling back to capture_fresh).
+        // - A dispatch WITHOUT intentId consumes only `manual` entries of its generation (oldest-first) and NEVER
+        //   consumes, shifts, overwrites, or deletes an `owned` entry.
         let intentBaselinePromise: Promise<LockEpochMarker | null> | undefined;
         const list = intentBaselinesRef.current.get(opGeneration);
-        if (list && list.length > 0) {
-          if (intentId !== undefined) {
-            const idx = list.findIndex((item) => item.id === intentId);
+        if (intentId !== undefined) {
+          if (list && list.length > 0) {
+            const idx = list.findIndex((item) => item.id === intentId && item.kind === 'owned');
             if (idx !== -1) {
-              intentBaselinePromise = list.splice(idx, 1)[0]?.promise;
+              const entry = list.splice(idx, 1)[0];
+              intentBaselinePromise = entry?.promise;
+              recordIntentBaselineTrace({
+                action: 'consume',
+                generation: opGeneration,
+                id: entry?.id,
+                kind: 'owned',
+              });
             }
-          } else {
-            intentBaselinePromise = list.shift()?.promise;
+            if (list.length === 0) {
+              intentBaselinesRef.current.delete(opGeneration);
+            }
+          }
+          if (!intentBaselinePromise) {
+            recordIntentBaselineTrace({
+              action: 'missing_owned',
+              generation: opGeneration,
+              id: intentId,
+              kind: 'owned',
+            });
+            await lockIfOwner();
+            throw new CryptoClientError(
+              'STALE_GENERATION',
+              'Missing owned intent-start lockEpoch baseline; failing closed',
+            );
+          }
+        } else if (list && list.length > 0) {
+          const idx = list.findIndex((item) => item.kind === 'manual');
+          if (idx !== -1) {
+            const entry = list.splice(idx, 1)[0];
+            intentBaselinePromise = entry?.promise;
+            recordIntentBaselineTrace({
+              action: 'consume',
+              generation: opGeneration,
+              id: entry?.id,
+              kind: 'manual',
+            });
           }
           if (list.length === 0) {
             intentBaselinesRef.current.delete(opGeneration);
@@ -1135,6 +1217,10 @@ export function VaultProvider({
           return;
         }
 
+        recordIntentBaselineTrace({
+          action: 'capture_fresh',
+          generation: opGeneration,
+        });
         const baseline = await captureUnlockBaseline(
           tabKnownLockEpochRef.current,
           envWithBroadcast,
@@ -1234,7 +1320,14 @@ export function VaultProvider({
         notifyStoreListeners();
       }
     },
-    [envWithBroadcast, getClient, lockLocalOnly, notifyStoreListeners, updateTabKnownLockEpoch],
+    [
+      envWithBroadcast,
+      getClient,
+      lockLocalOnly,
+      notifyStoreListeners,
+      recordIntentBaselineTrace,
+      updateTabKnownLockEpoch,
+    ],
   );
 
   const createVaultOp = useCallback(
@@ -1385,8 +1478,8 @@ export function VaultProvider({
     if (!userId) return { status: 'skipped', reason: 'no_user' };
     if (workerStateRef.current !== 'locked') return { status: 'skipped', reason: 'not_locked' };
     if (inFlightStateOpCountRef.current > 0) return { status: 'skipped', reason: 'busy' };
-    // Register durable lockEpoch baseline at silent intent start BEFORE device snapshot and GET /vault (R1-1 / R1-20, R2-1 / R2-7, BE2-1, ADR 0003 §8.4).
-    const { opGeneration, intentId, releaseBaseline, client } = beginIntentOp();
+    // Register owned durable lockEpoch baseline at silent intent start BEFORE device snapshot and GET /vault (R1-1 / R1-20, R2-1 / R2-7, R3-1 / R3-2, BE2-1, ADR 0003 §8.4).
+    const { opGeneration, intentId, releaseBaseline, client } = beginIntentOp('owned');
     const sessionEpoch = vaultMetaSessionEpochRef.current;
     try {
       const result = await runSilentDeviceUnlock({
@@ -2213,6 +2306,27 @@ export function VaultProvider({
           workerEpoch,
           workerGeneration: client.getGeneration(),
           workerState: client.getState(),
+        };
+      },
+      getIntentBaselineWitness: () => {
+        const pending: Array<{ generation: number; id: number; kind: 'manual' | 'owned' }> = [];
+        for (const [generation, entries] of intentBaselinesRef.current.entries()) {
+          for (const entry of entries) {
+            pending.push({ generation, id: entry.id, kind: entry.kind });
+          }
+        }
+        return {
+          pending,
+          trace: [...intentBaselineTraceRef.current],
+          removeEntry: (generation: number, id: number) => {
+            const list = intentBaselinesRef.current.get(generation);
+            if (!list) return false;
+            const idx = list.findIndex((item) => item.id === id);
+            if (idx === -1) return false;
+            list.splice(idx, 1);
+            if (list.length === 0) intentBaselinesRef.current.delete(generation);
+            return true;
+          },
         };
       },
       env: effectiveDeviceStoreEnv,
