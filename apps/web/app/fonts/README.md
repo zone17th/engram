@@ -5,6 +5,13 @@
 `fonts.gstatic.com/l/font?kit=...` URL). The exported variables (`--font-plus-jakarta`, `--font-inter`,
 `--font-sometype`) and `display: swap` are unchanged, so `styles/tokens.css` and every consumer stay as they were.
 
+`families.css` (imported by `fonts.ts`) declares the same files a second time under the real family names
+(`'Inter'`, `'Plus Jakarta Sans'`, `'Sometype Mono'`). The rules in `styles/tokens.css` that name a font literally
+need those names: Turbopack's `next/font/google` registered fonts under them, but `next/font/local` names each
+family after the JS constant (advisor-dec-055). The bundler emits each woff2 under two URLs, so a page that uses both
+the variable-based and the literal-name rules downloads that file twice (at most ~210 KB, same-origin). Follow-up
+F-FONT-DEDUPE.
+
 All three families are licensed under the SIL Open Font License 1.1; each license is copied unchanged next to
 its font (`OFL-<Family>.txt`).
 
