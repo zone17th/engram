@@ -2052,6 +2052,8 @@ export function VaultRecoveryFlow() {
                     disabled={lookingUpKey || vault.inFlight || isStep2RateLimited}
                     className="field-input mono w-full text-[14px] sm:text-[15px]"
                     style={{
+                      fontFamily: "'Sometype Mono', ui-monospace, monospace",
+                      letterSpacing: 0,
                       borderRadius: 'var(--r-md)',
                       padding: '11px 12px',
                       background: 'var(--canvas)',
