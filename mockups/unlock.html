@@ -40,10 +40,11 @@
 
   <!-- các biến thể của cùng một màn, để review được từng trạng thái -->
   <div class="seg mb-6 flex-wrap" data-seg>
-    <button data-target="new"   aria-pressed="true">Thiết bị mới</button>
-    <button data-target="pk"    aria-pressed="false">Có passkey</button>
-    <button data-target="known" aria-pressed="false">Đã nhớ máy</button>
-    <button data-target="err"   aria-pressed="false">Lỗi</button>
+    <button data-target="new"    aria-pressed="true">Thiết bị mới</button>
+    <button data-target="pk"     aria-pressed="false">Có passkey</button>
+    <button data-target="known"  aria-pressed="false">Đã nhớ máy</button>
+    <button data-target="err"    aria-pressed="false">Lỗi mở khoá</button>
+    <button data-target="err-pk" aria-pressed="false">Lỗi passkey</button>
   </div>
 
   <!-- ============================================================= -->
@@ -97,6 +98,18 @@
       </label>
       <button class="btn btn-secondary w-full !justify-center">Mở khoá</button>
     </div>
+
+    <!-- trạng thái 404 passkey_not_found: ẩn nút passkey, rơi về form passphrase -->
+    <div class="rounded-md p-4 mb-4" id="unlock-passkey-not-found" style="background:var(--surface)">
+      <p class="t-label mb-1" style="color:var(--muted)">404 passkey_not_found · passkey.none_registered</p>
+      <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+        Khi tài khoản chưa đăng ký passkey (hoặc <span class="mono">POST /vault/unlock/passkey/options</span> trả <span class="mono">404 passkey_not_found</span>), nút <strong>Mở bằng passkey</strong> tự ẩn — người dùng chỉ thấy màn nhập passphrase (như tab Thiết bị mới). Chưa có passkey; thêm trong Settings sau khi mở vault.
+      </p>
+      <p class="text-[13px] m-0" lang="en" style="color:var(--muted)">
+        No passkeys yet. Add one in Settings after unlock. (When <span class="mono">404 passkey_not_found</span> is returned, the passkey unlock button is hidden.)
+      </p>
+    </div>
+
     <a href="recovery.html" class="text-[14px]" style="color:var(--link)">Tôi quên passphrase</a>
   </section>
 
@@ -123,57 +136,132 @@
   <!-- ============================================================= -->
   <!-- D — các lỗi của bước mở khoá                                    -->
   <!-- ============================================================= -->
+  <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
   <section data-view="err" hidden class="flex flex-col gap-3">
-
-    <div class="card p-5" style="border-color:var(--error)">
-      <div class="flex items-center gap-2 mb-1">
-        <span class="badge-type" style="background:var(--pale-orange);color:var(--error)">passphrase sai</span>
+    <div class="card p-5" id="err-passphrase-aead" style="border-color:var(--error)">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="badge-type" style="background:var(--pale-orange);color:var(--error)">passphrase sai · AEAD fail</span>
       </div>
-      <p class="text-[14px] font-semibold m-0 mb-1">Passphrase không đúng</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Không có gợi ý và không có số lần còn lại — máy chủ không biết passphrase đúng là gì.
-        Còn passkey, thiết bị đã nhớ hoặc recovery key thì dùng đường đó.
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Passphrase không đúng · <span lang="en" class="font-normal" style="color:var(--muted)">Incorrect passphrase</span></p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Không có gợi ý và không có số lần thử còn lại — việc kiểm tra diễn ra trên máy bạn, máy chủ không biết passphrase đúng là gì.
+          Còn passkey, thiết bị đã nhớ hoặc recovery key thì dùng đường đó.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        <strong style="color:var(--body)">Incorrect passphrase.</strong> There is no hint and no remaining-attempts counter — the server never knows your passphrase. Use a passkey, a remembered device, or a recovery key if needed.
       </p>
     </div>
 
-    <div class="card p-5" style="border-color:var(--warning)">
-      <p class="text-[14px] font-semibold m-0 mb-1">
-        <span class="mono text-[12px]" style="color:var(--muted)">passkey.prf_unsupported</span>
-      </p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Khoá bảo mật này không tạo được khoá giải mã. Dùng passphrase, hoặc thêm một passkey khác sau khi vault mở.
-      </p>
-    </div>
-
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Bạn đã huỷ ở bước xác thực</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">Chưa có gì thay đổi. Thử lại hoặc gõ passphrase.</p>
-      <button class="btn btn-tertiary btn-sm mt-3">Thử lại passkey</button>
-    </div>
-
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Không giải mã được khoá vault</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Bản wrap trên máy chủ không khớp với khoá vừa lấy được. Đừng đặt lại vault vội — thử passphrase,
-        recovery key hoặc một passkey khác trước, và báo cho chúng tôi nếu mọi đường đều hỏng.
+    <div class="card p-5" id="err-insufficient-memory" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · derive failed</p>
+      <div role="alert" class="auth-alert mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để mở vault</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ trong Web Worker để dẫn xuất khoá từ passphrase.
+          <strong>Đây không phải lỗi sai passphrase.</strong> Hãy mở bằng passkey hoặc thiết bị đã nhớ, đóng bớt tab, hoặc chuyển sang thiết bị khác.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        <strong style="color:var(--body)">Not enough memory to unlock your vault.</strong> This device could not allocate 64 MiB in a Web Worker to derive the passphrase key — this does not mean your passphrase is wrong. Unlock with a passkey or remembered device, close other tabs, or try another device.
       </p>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Thử quá nhiều lần</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Đường mở khoá và recovery bị giới hạn 5 lần mỗi 15 phút cho mỗi tài khoản. Đợi rồi thử lại.
+    <div class="card p-5" id="err-session-expired">
+      <p class="t-label mb-2" style="color:var(--muted)">401 session_invalid</p>
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Phiên đăng nhập đã hết hạn · <span lang="en" class="font-normal" style="color:var(--muted)">Session expired</span></p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Mở vault cần một phiên tài khoản còn hiệu lực. Đăng nhập lại rồi quay về đúng màn này.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        Your sign-in session has expired. Sign in again to return to this unlock screen.
+      </p>
+      <a href="auth.html" class="btn btn-primary no-underline">Đăng nhập lại · <span lang="en">Sign in again</span></a>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- E — các lỗi của bước mở bằng passkey                            -->
+  <!-- ============================================================= -->
+  <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
+  <section data-view="err-pk" hidden class="flex flex-col gap-3">
+    <div class="card p-5" id="err-prf-unsupported" style="border-color:var(--warning)">
+      <p class="t-label mb-2" style="color:var(--muted)">passkey.unlock_failed · passkey.prf_unsupported</p>
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.</p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Trình duyệt hoặc khoá bảo mật hiện tại không hỗ trợ phần mở rộng PRF của WebAuthn để mở khoá vault. Hãy tiếp tục dùng passphrase hoặc recovery key.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        <strong style="color:var(--body)">Could not unlock with this passkey. Use your passphrase or a recovery key.</strong> This browser or authenticator does not support the WebAuthn PRF extension needed to unlock the vault.
       </p>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Phiên đăng nhập đã hết hạn</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Mở vault cần một phiên còn hiệu lực. Đăng nhập lại rồi quay về đúng màn này.
+    <div class="card p-5" id="err-pk-cancelled">
+      <p class="t-label mb-2" style="color:var(--muted)">passkey.unlock_cancelled</p>
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Đã huỷ mở khoá bằng passkey</p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">Chưa có gì thay đổi. Thử lại hoặc gõ passphrase.</p>
+      </div>
+      <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        Passkey prompt was cancelled. Nothing changed — try again or enter your passphrase.
       </p>
-      <a href="auth.html" class="btn btn-primary btn-sm mt-3 no-underline">Đăng nhập lại</a>
+      <button type="button" class="btn btn-tertiary">Thử lại passkey · <span lang="en">Try passkey again</span></button>
     </div>
 
+    <div class="card p-5" id="err-prf-missing" style="border-color:var(--warning)">
+      <p class="t-label mb-2" style="color:var(--muted)">passkey.unlock_prf_missing</p>
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Authenticator không trả PRF. Không mở vault bằng passkey.</p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Khoá bảo mật đã xác thực nhưng không trả đầu ra PRF để giải mã khoá vault. Hãy thử lại, dùng một passkey khác, hoặc nhập passphrase.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        Authenticator did not return PRF. Cannot unlock with passkey. Use your passphrase or another passkey.
+      </p>
+    </div>
+
+    <div class="card p-5" id="err-pk-aead" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">passkey.unlock_failed · AEAD wrap fail</p>
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.</p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Bản wrap trên máy chủ không giải mã được bằng khoá dẫn xuất từ passkey này. Đừng đặt lại vault vội — hãy dùng passphrase, recovery key hoặc một passkey khác.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        <strong style="color:var(--body)">Could not unlock with this passkey. Use your passphrase or a recovery key.</strong>
+      </p>
+    </div>
+
+    <div class="card p-5" id="err-rate-limited" style="border-color:var(--warning)">
+      <p class="t-label mb-2" style="color:var(--muted)">429 rate_limited · vault_passkey_options (20 / min) · Retry-After: 42</p>
+      <div role="alert" class="mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1">Yêu cầu passkey quá nhanh — vui lòng đợi</p>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Lấy tuỳ chọn mở khoá bằng passkey giới hạn <span class="mono">20 lần / phút</span> cho mỗi tài khoản. Vui lòng đợi <span class="mono">42 giây</span> (<span class="mono">Retry-After: 42</span>) rồi thử lại, hoặc nhập passphrase để mở ngay.
+        </p>
+      </div>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        <strong style="color:var(--body)">Too many passkey requests.</strong> Passkey unlock options are limited to <span class="mono">20 requests per minute</span>. Please wait <span class="mono">42</span> seconds (<span class="mono">Retry-After: 42</span>) before trying again, or enter your vault passphrase.
+      </p>
+    </div>
+
+    <div class="card p-5" id="err-pk-not-found">
+      <p class="t-label mb-2" style="color:var(--muted)">404 passkey_not_found · passkey.none_registered</p>
+      <p class="text-[14px] font-semibold m-0 mb-1">Chưa có passkey — ẩn nút mở bằng passkey · <span lang="en" class="font-normal" style="color:var(--muted)">No passkeys yet — passkey button hidden</span></p>
+      <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">
+        Khi chưa có passkey trên tài khoản (<span class="mono">404 passkey_not_found</span>), nút mở bằng passkey bị ẩn; người dùng mở bằng passphrase rồi thêm passkey trong Cài đặt.
+      </p>
+      <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+        No passkeys yet. Add one in Settings after unlock. (Passkey button is hidden when <span class="mono">404 passkey_not_found</span> is returned.)
+      </p>
+    </div>
   </section>
 
 </main>

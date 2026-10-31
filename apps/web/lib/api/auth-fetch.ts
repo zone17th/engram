@@ -3,6 +3,7 @@ import { readCsrfToken } from '@/lib/api/csrf';
 import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import { retryAfterFromHeader } from '@/lib/auth/retry-after';
 import { hasWebLocks, type SessionLockToken, withSessionLock } from '@/lib/auth/session-lock';
+import { purgeDeviceKeysOnRevoked } from '@/features/vault/device-store';
 
 const API_PREFIX = '/api/v1';
 
@@ -86,7 +87,11 @@ function shouldAttemptRefresh(problem: ProblemDetails): boolean {
 
 function broadcastTerminalSession(problem: ProblemDetails): void {
   if (problem.code !== 'session_invalid') return;
-  postSessionBroadcast({ type: 'signed_out', reason: problem.reason ?? 'invalid' });
+  const reason = problem.reason ?? 'invalid';
+  if (reason === 'revoked') {
+    void purgeDeviceKeysOnRevoked();
+  }
+  postSessionBroadcast({ type: 'signed_out', reason });
 }
 
 function withRetryAfter(problem: ProblemDetails, res: Response): ProblemDetails {

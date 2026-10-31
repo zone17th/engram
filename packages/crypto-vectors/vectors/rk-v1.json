@@ -1,0 +1,418 @@
+{
+  "schema": "engram-rk-vectors-v1",
+  "producer": "js",
+  "generation": [
+    {
+      "id": "gen-slot-1-zeros",
+      "slot": 1,
+      "entropy_hex": "00000000000000000000000000000000",
+      "display": "rk1_0000-0000-0000-0000-0000-0000-00",
+      "rk_norm": "rk1_00000000000000000000000000",
+      "lookup_hash_hex": "0f83915841585d3fc614f23c9b5fb5626dedb3bfb8c369a2d462996c45008746",
+      "lookup_hash_b64u": "D4ORWEFYXT_GFPI8m1-1Ym3ts7-4w2mi1GKZbEUAh0Y",
+      "wrap_key_hex": "c2f3234c504bcf30311db61d3b2b1a68005adf8f29449c33eabb80a30dc3da61",
+      "wrap_key_b64u": "wvMjTFBLzzAxHbYdOysaaABa348pRJwz6ruAow3D2mE"
+    },
+    {
+      "id": "gen-slot-2-ones",
+      "slot": 2,
+      "entropy_hex": "ffffffffffffffffffffffffffffffff",
+      "display": "rk2_7ZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZ",
+      "rk_norm": "rk2_7ZZZZZZZZZZZZZZZZZZZZZZZZZ",
+      "lookup_hash_hex": "68bad40ed3d57790457581e6aadf14113d6c7b6b21e155003b9e20e0c3afa34d",
+      "lookup_hash_b64u": "aLrUDtPVd5BFdYHmqt8UET1se2sh4VUAO54g4MOvo00",
+      "wrap_key_hex": "7b3160ee3d5c448fa4e4586dfee47d4ae668fd2db17412519f8f282e934daebc",
+      "wrap_key_b64u": "ezFg7j1cRI-k5Fht_uR9SuZo_S2xdBJRn48oLpNNrrw"
+    },
+    {
+      "id": "gen-slot-3-seq",
+      "slot": 3,
+      "entropy_hex": "0123456789abcdef0123456789abcdef",
+      "display": "rk3_014D-2PF2-DBSQ-QG28-T5CY-4TQK-FF",
+      "rk_norm": "rk3_014D2PF2DBSQQG28T5CY4TQKFF",
+      "lookup_hash_hex": "f3c1abe748fc32e137752f657a8d9bd32fd0fac2e23178884a57e02e7d9c46f7",
+      "lookup_hash_b64u": "88Gr50j8MuE3dS9leo2b0y_Q-sLiMXiISlfgLn2cRvc",
+      "wrap_key_hex": "e431d5587a5f3aee29c84ed9fb003d4ef4163df521efa4cb740acf938405cf3b",
+      "wrap_key_b64u": "5DHVWHpfOu4pyE7Z-wA9TvQWPfUh76TLdArPk4QFzzs"
+    },
+    {
+      "id": "gen-slot-4-alt",
+      "slot": 4,
+      "entropy_hex": "deadbeefcafebabe0011223344556677",
+      "display": "rk4_6YNP-ZEZJ-QYQA-Z004-926D-25AS-KQ",
+      "rk_norm": "rk4_6YNPZEZJQYQAZ004926D25ASKQ",
+      "lookup_hash_hex": "c3c22392a43ee49f583bce016d0bb8aedc971e61b14dcba413c64ca4d69dd210",
+      "lookup_hash_b64u": "w8IjkqQ-5J9YO84BbQu4rtyXHmGxTcukE8ZMpNad0hA",
+      "wrap_key_hex": "f69716e096b3ea8a8703ece49f6154563a4278b9748d89f4e3143bd6a74392be",
+      "wrap_key_b64u": "9pcW4Jaz6oqHA-zkn2FUVjpCeLl0jYn04xQ71qdDkr4"
+    },
+    {
+      "id": "gen-slot-5-highbit",
+      "slot": 5,
+      "entropy_hex": "80000000000000000000000000000001",
+      "display": "rk5_4000-0000-0000-0000-0000-0000-01",
+      "rk_norm": "rk5_40000000000000000000000001",
+      "lookup_hash_hex": "e901ea170824402f012ed5124160babc9440c0812d711bf1e2c0868f87664884",
+      "lookup_hash_b64u": "6QHqFwgkQC8BLtUSQWC6vJRAwIEtcRvx4sCGj4dmSIQ",
+      "wrap_key_hex": "1d2042be1e50d67e9129b1ef7ed9fe3ffe42d05a9ea080efef7b61ac1de6d8ab",
+      "wrap_key_b64u": "HSBCvh5Q1n6RKbHvftn-P_5C0FqeoIDv73thrB3m2Ks"
+    },
+    {
+      "id": "gen-slot-6-mid",
+      "slot": 6,
+      "entropy_hex": "55aa55aa55aa55aa55aa55aa55aa55aa",
+      "display": "rk6_2NN9-ATMN-DAAP-N5BA-JNN9-ATMN-DA",
+      "rk_norm": "rk6_2NN9ATMNDAAPN5BAJNN9ATMNDA",
+      "lookup_hash_hex": "7f995d34a464235dafa3b34c77d643d734ef92e86dc47462d880fcf444f4c24d",
+      "lookup_hash_b64u": "f5ldNKRkI12vo7NMd9ZD1zTvkuhtxHRi2ID89ET0wk0",
+      "wrap_key_hex": "8c7579f6936138dc668905a46173f9d9bc9590c80bce50e8d12b8518e68b3ce5",
+      "wrap_key_b64u": "jHV59pNhONxmiQWkYXP52byVkMgLzlDo0SuFGOaLPOU"
+    },
+    {
+      "id": "gen-slot-7-p03",
+      "slot": 7,
+      "entropy_hex": "13579bdf2468ace013579bdf2468ace0",
+      "display": "rk7_0KAY-DXY9-38NK-G16N-WVVW-J6HB-70",
+      "rk_norm": "rk7_0KAYDXY938NKG16NWVVWJ6HB70",
+      "lookup_hash_hex": "146fff37dfa8d84ad53aec733768917171f9296a92bbc8a9cb8e98b2de361a1a",
+      "lookup_hash_b64u": "FG__N9-o2ErVOuxzN2iRcXH5KWqSu8ipy46Yst42Gho",
+      "wrap_key_hex": "eab0368241350dcc48b5bc55c1b6742113483d07fba39bf36f3d1824a298b7b5",
+      "wrap_key_b64u": "6rA2gkE1DcxItbxVwbZ0IRNIPQf7o5vzbz0YJKKYt7U"
+    },
+    {
+      "id": "gen-slot-8-msb7",
+      "slot": 8,
+      "entropy_hex": "f00dfacedeadc0de1122334455667788",
+      "display": "rk8_7G1Q-XCXQ-NDR3-F128-HK8H-APCX-W8",
+      "rk_norm": "rk8_7G1QXCXQNDR3F128HK8HAPCXW8",
+      "lookup_hash_hex": "992550bea30389368cebd4bf01f91b81209ec0e986416ba3da28ded5f20f30aa",
+      "lookup_hash_b64u": "mSVQvqMDiTaM69S_AfkbgSCewOmGQWuj2ije1fIPMKo",
+      "wrap_key_hex": "b83bcaaaa93ddb747c4b1afaeef1d98ba6bda01a393a7902741958fd105d5cd8",
+      "wrap_key_b64u": "uDvKqqk923R8Sxr67vHZi6a9oBo5OnkCdBlY_RBdXNg"
+    },
+    {
+      "id": "gen-slot-9-low",
+      "slot": 9,
+      "entropy_hex": "0000000000000000000000000000002a",
+      "display": "rk9_0000-0000-0000-0000-0000-0000-1A",
+      "rk_norm": "rk9_0000000000000000000000001A",
+      "lookup_hash_hex": "cb9bfabf017a767bf3ec96e2cad9766b81466b26a6e8f1d5d782a83741e7c5d7",
+      "lookup_hash_b64u": "y5v6vwF6dnvz7Jbiytl2a4FGayam6PHV14KoN0Hnxdc",
+      "wrap_key_hex": "de0e53947fb0331f4ba96d8e59404ed298244894a081340d17cef450e8c898cb",
+      "wrap_key_b64u": "3g5TlH-wMx9LqW2OWUBO0pgkSJSggTQNF870UOjImMs"
+    },
+    {
+      "id": "gen-slot-10-maxslot",
+      "slot": 10,
+      "entropy_hex": "a5a5a5a55a5a5a5ac3c3c3c33c3c3c3c",
+      "display": "rk10_55MP-JTAP-JTB9-DC7G-Y3RC-Y3RF-1W",
+      "rk_norm": "rk10_55MPJTAPJTB9DC7GY3RCY3RF1W",
+      "lookup_hash_hex": "82e34c3361f20fd80787722add463cb2f01ce3c2e1d2f293d4e8344e43eb25ab",
+      "lookup_hash_b64u": "guNMM2HyD9gHh3Iq3UY8svAc48Lh0vKT1Og0TkPrJas",
+      "wrap_key_hex": "95e0b5e2dfe340503d1ac771a5a815b40527fdca15a6dfe09756d42784e458b5",
+      "wrap_key_b64u": "leC14t_jQFA9GsdxpagVtAUn_coVpt_gl1bUJ4TkWLU"
+    }
+  ],
+  "cases": [
+    {
+      "id": "pos-canonical-display-with-hyphens",
+      "description": "Canonical onboarding display string with hyphens (slot 1)",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-without-hyphens",
+      "description": "Valid recovery key without any hyphens in the 26-char body",
+      "input": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-lowercase-prefix-and-body",
+      "description": "Lowercase prefix and lowercase Crockford body with hyphens",
+      "input": "rk1_3f8k-9m2p-4q7r-6t1v-8w5x-2y9z-c4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-uppercase-prefix-and-mixed-case",
+      "description": "Uppercase RK prefix (RK1_, Rk1_, rK1_) with mixed-case body",
+      "input": "RK1_3f8K-9M2p-4q7R-6T1v-8w5X-2y9Z-c4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-hyphen-separator-after-prefix",
+      "description": "Hyphen separator (-) instead of underscore (_) after rk{n} prefix",
+      "input": "rk1-3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-slot-10-with-hyphen-separator",
+      "description": "Slot 10 (two-digit max slot) with uppercase prefix and hyphen separator",
+      "input": "RK10-3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk10_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "122814ebeee0fff5c7bffb27ca2536a06b062b1a0aa9ded43206dc88a00bebff",
+      "wrap_key_hex": "63395066aaa3d1d14cd6f6457a22ebe9c7043058b4ea4d1fecee5049efbcef7a",
+      "expected_error": null
+    },
+    {
+      "id": "pos-crockford-aliases-O-I-L-upper-and-lower",
+      "description": "Crockford aliases O/o -> 0 and I/i/L/l -> 1 mapped to canonical 0 and 1",
+      "input": "rk2_OI8K-9M2P-4Q7R-6TlV-8W5X-2Y9Z-oi",
+      "valid": true,
+      "rk_norm": "rk2_018K9M2P4Q7R6T1V8W5X2Y9Z01",
+      "lookup_hash_hex": "556d716cfcd208df0517e93519e01c0cdd6814c367d02612f89c1d1a1c8fe93b",
+      "wrap_key_hex": "6548ab1f249855ad2030e8adfa7b828070d50b3d4dc79a620606d9a87034e3db",
+      "expected_error": null
+    },
+    {
+      "id": "pos-ascii-whitespace-spaces-tabs-newlines",
+      "description": "Normal ASCII spaces, tabs, CR/LF around and inside the key stripped in step 1",
+      "input": "  \t\n rk1_ 3F8K - 9M2P - 4Q7R - 6T1V\r\n - 8W5X - 2Y9Z - C4 \t ",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-unicode-nbsp-and-whitespace",
+      "description": "Unicode White_Space including NBSP (U+00A0), ideographic space (U+3000), and thin space (U+2009)",
+      "input": "\u00a0rk1_3F8K\u00a09M2P\u20094Q7R\u30006T1V-8W5X-2Y9Z-C4\u00a0",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-unicode-cf-zero-width-and-bom",
+      "description": "Unicode format chars (Cf): ZWSP (U+200B), ZWNJ (U+200C), ZWJ (U+200D), WJ (U+2060), BOM (U+FEFF)",
+      "input": "\ufeffrk1_\u200b3F8K-\u200c9M2P-\u200d4Q7R-\u20606T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-unicode-soft-hyphen",
+      "description": "Soft hyphen U+00AD (category Cf) stripped across prefix and body",
+      "input": "r\u00adk1_3F\u00ad8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-unicode-dashes-u2010-u2015-and-minus-u2212",
+      "description": "Unicode hyphens/dashes U+2010..U+2015 (incl. U+2011 non-breaking hyphen) and minus U+2212 converted to - (incl. prefix separator)",
+      "input": "rk1\u20113F8K\u20109M2P\u20114Q7R\u20126T1V\u20138W5X\u20142Y9Z\u2212C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-fullwidth-nfkc-normalization",
+      "description": "Full-width ASCII characters (NFKC maps full-width letters, digits, underscore, and hyphen-minus to ASCII)",
+      "input": "\uff52\uff4b\uff11\uff3f\uff13\uff26\uff18\uff2b\uff0d9M2P-4Q7R-6T1V-8W5X-2Y9Z-\uff43\uff14",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "pos-boundary-first-char-0-and-7",
+      "description": "First body character at upper valid padding boundary 7",
+      "input": "rk9_7ZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZ",
+      "valid": true,
+      "rk_norm": "rk9_7ZZZZZZZZZZZZZZZZZZZZZZZZZ",
+      "lookup_hash_hex": "d2131a14d0d0a711bf8eeb24e227aee205258f63feaeb0b12014b55d3b3ab926",
+      "wrap_key_hex": "b141c50ff6688bc57c1ef25c76a8ad9a86adadd23a9115f83fcddd3270ca2df0",
+      "expected_error": null
+    },
+    {
+      "id": "pos-nfkc-kelvin-sign-u212a",
+      "description": "Kelvin sign U+212A folds under NFKC in step 1 to ASCII K and is accepted as canonical K",
+      "input": "rk1_3F8\u212a-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": true,
+      "rk_norm": "rk1_3F8K9M2P4Q7R6T1V8W5X2Y9ZC4",
+      "lookup_hash_hex": "163399e93cf667ef678e15c4c2e072dc910586c3938de998886938432038d08b",
+      "wrap_key_hex": "e29c45bb7f843af511c54f52bea511b3509a4324902363b10297cea5b96a9b82",
+      "expected_error": null
+    },
+    {
+      "id": "neg-missing-separator-after-prefix",
+      "description": "Missing _ or - separator between rk{n} and 26-char body",
+      "input": "rk13F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-leading-zero-slot-rk01",
+      "description": "Leading zero in slot number (rk01_ is forbidden)",
+      "input": "rk01_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-slot-zero-rk0",
+      "description": "Slot n=0 is outside valid range 1..10",
+      "input": "rk0_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-slot-eleven-rk11",
+      "description": "Slot n=11 is outside valid range 1..10",
+      "input": "rk11_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-non-ascii-after-nfkc-dotless-i",
+      "description": "Non-ASCII character remaining after NFKC: Turkish dotless i (U+0131 \u0131) must be rejected in step 2",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T\u0131V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-non-ascii-after-nfkc-eszett",
+      "description": "Non-ASCII character remaining after NFKC: German sharp s (U+00DF \u00df) must be rejected in step 2",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T\u00dfV-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-non-ascii-after-nfkc-turkish-dotted-i",
+      "description": "Non-ASCII character remaining after NFKC: Turkish dotted capital I (U+0130 \u0130) rejected in step 2 before case folding",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T\u0130V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-body-length-25",
+      "description": "Body length 25 (one character too short)",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-body-length-27",
+      "description": "Body length 27 (one character too long)",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C45",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-crockford-forbidden-char-U-upper",
+      "description": "Character U (uppercase) is excluded from Crockford Base32 and must be rejected (not stripped)",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T1U-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-crockford-forbidden-char-u-lower",
+      "description": "Character u (lowercase) is excluded from Crockford Base32 and must be rejected",
+      "input": "rk1_3F8K-9M2P-4Q7R-6T1u-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-non-crockford-punctuation-in-body",
+      "description": "Underscore or punctuation inside the body after prefix is rejected",
+      "input": "rk1_3F8K_9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-first-char-outside-0-7-digit-8",
+      "description": "First character of 26-char body is 8 (outside 0..7 because top 2 padding bits must be 00)",
+      "input": "rk1_8F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-first-char-outside-0-7-letter-A",
+      "description": "First character of 26-char body is A (outside 0..7)",
+      "input": "rk1_AF8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    },
+    {
+      "id": "neg-wrong-prefix-name",
+      "description": "Prefix does not start with rk",
+      "input": "vk1_3F8K-9M2P-4Q7R-6T1V-8W5X-2Y9Z-C4",
+      "valid": false,
+      "rk_norm": null,
+      "lookup_hash_hex": null,
+      "wrap_key_hex": null,
+      "expected_error": "validation"
+    }
+  ]
+}

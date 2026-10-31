@@ -114,6 +114,21 @@ type EmailVerification struct {
 	CreatedAt            pgtype.Timestamptz
 }
 
+type IdempotencyKey struct {
+	UserID      uuid.UUID
+	Key         string
+	Method      string
+	Path        string
+	RequestHash []byte
+	Status      string
+	OwnerToken  uuid.UUID
+	ClaimedAt   pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+	StatusCode  *int32
+	Response    []byte
+	CreatedAt   pgtype.Timestamptz
+}
+
 type OauthReauthReceipt struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID
@@ -156,6 +171,13 @@ type PgExtension struct {
 	Extnamespace   pgtype.Uint32
 	Extrelocatable *bool
 	Extversion     *string
+}
+
+type RateEvent struct {
+	ID     int64
+	Scope  string
+	UserID uuid.UUID
+	At     pgtype.Timestamptz
 }
 
 type RiverClient struct {
@@ -246,4 +268,50 @@ type UserNotification struct {
 	EmailTargets []string
 	ReadAt       pgtype.Timestamptz
 	CreatedAt    pgtype.Timestamptz
+}
+
+type Vault struct {
+	UserID               uuid.UUID
+	Version              int32
+	Kdf                  []byte
+	VaultKeyID           string
+	VaultKeyWrappedByKek []byte
+	X25519Public         []byte
+	Ed25519Public        []byte
+	PrivateKeysWrapped   []byte
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+}
+
+type VaultPasskey struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	CredID    []byte
+	Pubkey    []byte
+	PrfSalt   []byte
+	VkWrap    []byte
+	Aaguid    []byte
+	Name      string
+	CreatedAt pgtype.Timestamptz
+}
+
+type VaultRecoveryKey struct {
+	ID         uuid.UUID
+	VaultID    uuid.UUID
+	Slot       int32
+	LookupHash []byte
+	Wrap       []byte
+	CreatedAt  pgtype.Timestamptz
+}
+
+type WebauthnChallenge struct {
+	ID            uuid.UUID
+	UserID        uuid.UUID
+	SessionID     uuid.UUID
+	VaultKeyID    string
+	ChallengeHash []byte
+	PrfSalt       []byte
+	ExpiresAt     pgtype.Timestamptz
+	ConsumedAt    pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
 }
