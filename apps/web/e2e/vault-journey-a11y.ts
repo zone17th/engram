@@ -4,8 +4,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fillSecret } from './vault-settings-secret';
 
-// Helpers of e2e/vault-a11y.spec.ts (P03-T23 Part 2, bullet 2): axe + overflow + sanitized screenshot per screen state and
-// viewport, plus the once-per-screen keyboard, focus-trap and reduced-motion assertions.
+// Helpers of e2e/vault-a11y-sweep.spec.ts (P03-T23 Part 2, bullet 2): axe + overflow + sanitized screenshot per screen
+// state and viewport, plus the once-per-screen keyboard, focus-trap and reduced-motion assertions.
 //
 // Secrets: nothing here reads, logs or asserts on a secret. Secret fields are written with fillSecret() and checked with
 // boolean evaluate()s only; axe failures print rule id, impact and CSS selectors (never node HTML); every screenshot masks
@@ -22,12 +22,12 @@ export const A11Y_WIDTHS = [
 
 // One entry per screen state. The names are the middle part of `vault-a11y-<screen>-<lang>-<theme>-<w>.png`; the
 // allowlist block in scripts/sanitize-e2e-artifacts.mjs lists exactly these names x lang x theme x width.
-// TODO(J2): onboarding step 3, passkey list, remember device, auto-lock card and the forgot-page additions are stage J2.
 export const A11Y_SCREENS = [
   // U3 onboarding
   'onboarding-step1',
   'onboarding-rk-sheet',
   'onboarding-confirm',
+  'onboarding-step3',
   // U5 locked state on /app
   'locked-list',
   // U4 unlock, forgot passphrase, recovery
@@ -37,7 +37,7 @@ export const A11Y_SCREENS = [
   'recovery-reauth',
   'recovery-enter-key',
   'recovery-new-passphrase',
-  // U7 Settings vault security section and its dialogs
+  // U7 Settings vault security section and its dialogs / J2 controls
   'settings-section',
   'settings-passphrase-dialog',
   'settings-rk-regenerate-reauth',
@@ -47,6 +47,11 @@ export const A11Y_SCREENS = [
   'settings-reset-reauth',
   'settings-passkey-reauth',
   'settings-passkey-name',
+  'settings-passkey-list',
+  'settings-passkey-rename',
+  'settings-passkey-revoke',
+  'settings-auto-lock',
+  'settings-remember-device',
 ] as const;
 
 export type A11yLang = (typeof A11Y_LANGS)[number];
@@ -74,6 +79,16 @@ export interface StateSpec {
   fullPage: boolean;
 }
 
+export interface KeyboardWalkOptions {
+  /** Dialog focus trap: Tab from last wraps to first and Shift+Tab from first wraps to last. */
+  trap?: boolean;
+  /**
+   * Optional selector (relative to the scope root) of the primary action for this screen state. When given, the walk
+   * ends by Tab-traversing onto that control so the caller can activate it via `page.keyboard.press` without `locator.press`.
+   */
+  leaveFocusedSelector?: string;
+}
+
 const UI_TIMEOUT_MS = 30_000;
 const SHOT_TIMEOUT_MS = 30_000;
 const MAX_DURATION_SECONDS = 0.001;
@@ -94,12 +109,88 @@ export async function fillSecretVerified(input: Locator, value: string, timeout 
   }).toPass({ timeout });
 }
 
-/** Keyboard group: focus the control and press the key; other groups: a plain click. */
-export async function activate(ctx: A11yContext, target: Locator, key: 'Enter' | 'Space' = 'Enter') {
-  if (ctx.keyboard) {
-    await target.press(key);
-  } else {
+/**
+ * Keyboard group: activates the control from focus reached by sequential Tab traversal (`page.keyboard.press(key)`),
+ * never calling `locator.press()` (which would focus its target independently of Tab reachability, JR1-7). If a prior
+ * `keyboardWalk(..., { leaveFocusedSelector })` already parked focus on `target`, presses `key` immediately; otherwise
+ * Tab-traverses within `scopeSelector` until `document.activeElement` is `target` (asserting containment on each step,
+ * JR1-8) and then presses `key`. Non-keyboard groups use a plain click.
+ */
+export async function activate(
+  ctx: A11yContext,
+  target: Locator,
+  key: 'Enter' | 'Space' = 'Enter',
+  scopeSelector = 'body',
+) {
+  if (!ctx.keyboard) {
     await target.click();
+    return;
+  }
+  const alreadyFocused = await target.evaluate((el) => document.activeElement === el);
+  if (!alreadyFocused) {
+    await tabToTargetInScope(ctx.page, scopeSelector, target);
+  }
+  await expect(target).toBeFocused({ timeout: UI_TIMEOUT_MS });
+  await ctx.page.keyboard.press(key);
+}
+
+/**
+ * Sequential Tab traversal inside `scopeSelector` until `document.activeElement === target`, asserting on every Tab step
+ * that focus remains inside `scopeSelector` (JR1-7, JR1-8).
+ */
+export async function tabToTargetInScope(page: Page, scopeSelector: string, target: Locator) {
+  const inScope = await page.evaluate((selector) => {
+    const root = document.querySelector<HTMLElement>(selector);
+    if (!root) return false;
+    const active = document.activeElement;
+    return Boolean(active && active !== document.body && root.contains(active));
+  }, scopeSelector);
+
+  let hadTabindex: string | null = null;
+  let mutatedRoot = false;
+  if (!inScope) {
+    mutatedRoot = true;
+    hadTabindex = await page.evaluate((selector) => {
+      const root = document.querySelector<HTMLElement>(selector);
+      if (!root) return null;
+      const prev = root.getAttribute('tabindex');
+      root.setAttribute('tabindex', '-1');
+      root.focus();
+      return prev;
+    }, scopeSelector);
+  }
+
+  try {
+    const maxSteps = 80;
+    for (let step = 0; step < maxSteps; step += 1) {
+      if (await target.evaluate((el) => document.activeElement === el)) {
+        return;
+      }
+      await page.keyboard.press('Tab');
+      const contained = await page.evaluate((selector) => {
+        const root = document.querySelector(selector);
+        const active = document.activeElement;
+        return Boolean(root && active && active !== document.body && root.contains(active));
+      }, scopeSelector);
+      expect(contained, `tabToTargetInScope(${scopeSelector}): activeElement escaped scope on step ${step + 1}`).toBe(
+        true,
+      );
+    }
+    expect(await target.evaluate((el) => document.activeElement === el), `target reached by Tab in ${scopeSelector}`).toBe(
+      true,
+    );
+  } finally {
+    if (mutatedRoot) {
+      await page.evaluate(
+        ({ selector, previous }) => {
+          const root = document.querySelector<HTMLElement>(selector);
+          if (!root) return;
+          if (previous === null) root.removeAttribute('tabindex');
+          else root.setAttribute('tabindex', previous);
+        },
+        { selector: scopeSelector, previous: hadTabindex },
+      );
+    }
   }
 }
 
@@ -174,7 +265,10 @@ async function expectNoHorizontalOverflow(ctx: A11yContext, spec: StateSpec, wid
     innerWidth: window.innerWidth,
   }));
   expect
-    .soft(scrollWidth, `horizontal overflow ${spec.screen} ${ctx.lang} ${ctx.theme} ${width}: scrollWidth ${scrollWidth} > innerWidth ${innerWidth}`)
+    .soft(
+      scrollWidth,
+      `horizontal overflow ${spec.screen} ${ctx.lang} ${ctx.theme} ${width}: scrollWidth ${scrollWidth} > innerWidth ${innerWidth}`,
+    )
     .toBeLessThanOrEqual(innerWidth);
 }
 
@@ -197,10 +291,13 @@ export async function expectReducedMotion(page: Page, rootsSelector: string, lab
           for (const pseudo of [null, '::before', '::after']) {
             const style = getComputedStyle(element, pseudo);
             const tag = `${element.tagName.toLowerCase()}${pseudo ?? ''}`;
-            if (toSeconds(style.transitionDuration).some((s) => s > max)) found.push(`${tag} transition ${style.transitionDuration}`);
-            if (toSeconds(style.animationDuration).some((s) => s > max)) found.push(`${tag} animation ${style.animationDuration}`);
+            if (toSeconds(style.transitionDuration).some((s) => s > max))
+              found.push(`${tag} transition ${style.transitionDuration}`);
+            if (toSeconds(style.animationDuration).some((s) => s > max))
+              found.push(`${tag} animation ${style.animationDuration}`);
           }
-          if (getComputedStyle(element).scrollBehavior === 'smooth') found.push(`${element.tagName.toLowerCase()} scroll-behavior smooth`);
+          if (getComputedStyle(element).scrollBehavior === 'smooth')
+            found.push(`${element.tagName.toLowerCase()} scroll-behavior smooth`);
         }
       }
       return { roots: roots.length, found: found.slice(0, 8) };
@@ -244,59 +341,168 @@ interface Tabbable {
   label: string;
   centerY: number;
   left: number;
+  unfocusedOutlineStyle: string;
+  unfocusedOutlineWidth: number;
+  unfocusedOutlineColor: string;
+  unfocusedBoxShadow: string;
 }
 
-/** Numbers every tabbable control under the scope in DOM order (data-a11y-tab) and returns its geometry. */
+/**
+ * Numbers every required enabled control under `scopeSelector` in DOM order (`data-a11y-tab`) and records its geometry
+ * and unfocused style baseline.
+ *
+ * JR1-7: required controls are defined independently of their current `tabIndex` (every visible, enabled interactive
+ * control `a[href], button, input, select, textarea, summary` plus intended keyboard stops `code[data-testid^="recovery-key-slot-"]`,
+ * excluding only Radix roving-tabindex inactive items `[role="radio"][data-radix-collection-item][tabindex="-1"]` whose
+ * group tab stop is the active radio). If an enabled control accidentally has `tabIndex < 0`, it stays in the required
+ * sequence and the Tab traversal fails when Tab skips over it.
+ *
+ * JR1-8: clears all previous `data-a11y-tab` markers across the entire `document` first so background markers from an
+ * earlier screen or underlying Settings section can never alias a dialog or current scope index.
+ *
+ * JR1-9: blurs any currently focused element inside `root` before sampling each control's unfocused outline and
+ * `box-shadow` baseline.
+ */
 async function markTabbables(page: Page, scopeSelector: string): Promise<Tabbable[]> {
   return page.evaluate((selector) => {
-    const root = document.querySelector(selector);
+    for (const stale of Array.from(document.querySelectorAll('[data-a11y-tab]'))) {
+      stale.removeAttribute('data-a11y-tab');
+    }
+    const root = document.querySelector<HTMLElement>(selector);
     if (!root) return [];
-    const found: { index: number; label: string; centerY: number; left: number }[] = [];
-    for (const element of Array.from(root.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, summary, [tabindex]'))) {
-      element.removeAttribute('data-a11y-tab');
+    if (document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+    const candidates = Array.from(
+      root.querySelectorAll<HTMLElement>(
+        'a[href], button, input, select, textarea, summary, code[data-testid^="recovery-key-slot-"]',
+      ),
+    );
+    const found: {
+      index: number;
+      label: string;
+      centerY: number;
+      left: number;
+      unfocusedOutlineStyle: string;
+      unfocusedOutlineWidth: number;
+      unfocusedOutlineColor: string;
+      unfocusedBoxShadow: string;
+    }[] = [];
+    for (const element of candidates) {
       if ((element as HTMLButtonElement).disabled) continue;
+      if (element.getAttribute('aria-disabled') === 'true') continue;
       if (element instanceof HTMLInputElement && element.type === 'hidden') continue;
-      if (element.tabIndex < 0) continue;
+      if (
+        element.getAttribute('role') === 'radio' &&
+        element.hasAttribute('data-radix-collection-item') &&
+        element.tabIndex < 0
+      ) {
+        continue;
+      }
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue;
       if (element.closest('[inert], [aria-hidden="true"]')) continue;
       const index = found.length;
       element.setAttribute('data-a11y-tab', String(index));
-      const label = element.getAttribute('data-testid') ?? (element.id || element.tagName.toLowerCase());
-      found.push({ index, label, centerY: rect.top + rect.height / 2, left: rect.left });
+      const label =
+        element.getAttribute('data-testid') ??
+        element.getAttribute('aria-label') ??
+        (element.id || element.tagName.toLowerCase());
+      found.push({
+        index,
+        label,
+        centerY: rect.top + rect.height / 2,
+        left: rect.left,
+        unfocusedOutlineStyle: style.outlineStyle,
+        unfocusedOutlineWidth: Number.parseFloat(style.outlineWidth) || 0,
+        unfocusedOutlineColor: style.outlineColor,
+        unfocusedBoxShadow: style.boxShadow,
+      });
     }
     return found;
   }, scopeSelector);
 }
 
-async function activeTabIndex(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
-    const value = document.activeElement?.getAttribute('data-a11y-tab');
-    return value === null || value === undefined ? null : Number(value);
-  });
-}
-
-async function activeHasVisibleFocus(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+/**
+ * JR1-8: returns whether `document.activeElement` is contained inside `scopeSelector` and, only when contained, its
+ * `data-a11y-tab` index.
+ */
+async function activeTabState(
+  page: Page,
+  scopeSelector: string,
+): Promise<{ contained: boolean; index: number | null }> {
+  return page.evaluate((selector) => {
+    const root = document.querySelector(selector);
     const active = document.activeElement;
-    if (!active || active === document.body) return false;
-    const style = getComputedStyle(active);
-    const outline =
-      style.outlineStyle !== 'none' && (style.outlineStyle === 'auto' || Number.parseFloat(style.outlineWidth) > 0);
-    return outline || style.boxShadow !== 'none';
-  });
+    if (!root || !active || active === document.body || !root.contains(active)) {
+      return { contained: false, index: null };
+    }
+    const value = active.getAttribute('data-a11y-tab');
+    return {
+      contained: true,
+      index: value === null || value === undefined ? null : Number(value),
+    };
+  }, scopeSelector);
 }
 
 /**
- * Keyboard path of one screen state: every tabbable control under the scope is reached by Tab, in DOM order, that order
- * matches the visual reading order (rows top to bottom, left to right within a row), and each focused control shows a
- * focus indicator. With `trap` (dialogs) Tab past the last control wraps to the first and Shift+Tab from the first
- * wraps to the last, so focus never leaves the scope.
+ * JR1-9: visible focus requires a focus-specific visible change compared against the same element's unfocused baseline:
+ * either a non-transparent outline (`outlineStyle !== 'none'`, `outlineWidth > 0`, alpha > 0) that differs from the
+ * unfocused outline, or a visible `box-shadow` (`!== 'none'`, non-transparent) that differs from `unfocusedBoxShadow`.
+ * Transparent outlines and unchanged decorative shadows fail.
  */
-export async function keyboardWalk(page: Page, scopeSelector: string, label: string, options: { trap?: boolean } = {}) {
+async function activeHasVisibleFocus(page: Page, baseline: Tabbable): Promise<boolean> {
+  return page.evaluate((base) => {
+    const active = document.activeElement;
+    if (!active || active === document.body) return false;
+    const isVisibleColor = (color: string): boolean => {
+      const normalized = color.trim().toLowerCase();
+      if (!normalized || normalized === 'transparent') return false;
+      const rgba = normalized.match(/^rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
+      if (rgba) {
+        return rgba[1] === undefined ? true : Number.parseFloat(rgba[1]) > 0;
+      }
+      const srgb = normalized.match(/^color\([^)]*\/\s*([\d.]+)\s*\)$/);
+      if (srgb) {
+        return Number.parseFloat(srgb[1]) > 0;
+      }
+      return true;
+    };
+    const style = getComputedStyle(active);
+    const outlineWidth = Number.parseFloat(style.outlineWidth) || 0;
+    const hasVisibleOutline =
+      style.outlineStyle !== 'none' && outlineWidth > 0 && isVisibleColor(style.outlineColor);
+    const outlineChanged =
+      style.outlineStyle !== base.unfocusedOutlineStyle ||
+      outlineWidth !== base.unfocusedOutlineWidth ||
+      style.outlineColor !== base.unfocusedOutlineColor;
+    const shadow = style.boxShadow;
+    const hasVisibleShadow =
+      shadow !== 'none' &&
+      shadow.trim() !== '' &&
+      !/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)/.test(shadow.trim());
+    const shadowChanged = shadow !== base.unfocusedBoxShadow;
+    return (hasVisibleOutline && outlineChanged) || (hasVisibleShadow && shadowChanged);
+  }, baseline);
+}
+
+/**
+ * Keyboard path of one screen state: every required enabled control under the scope is reached by Tab, in DOM order,
+ * that order matches the visual reading order (rows top to bottom, left to right within a row), and each focused control
+ * shows a focus-specific visible focus indicator versus its unfocused baseline (JR1-7, JR1-8, JR1-9). With `trap`
+ * (dialogs) Tab past the last control wraps to the first and Shift+Tab from the first wraps to the last, so focus never
+ * leaves the scope. When `leaveFocusedSelector` is provided, Tab-walks from the current position onto that target so
+ * the caller can activate it directly via `page.keyboard.press`.
+ */
+export async function keyboardWalk(
+  page: Page,
+  scopeSelector: string,
+  label: string,
+  options: KeyboardWalkOptions = {},
+) {
   const tabbables = await markTabbables(page, scopeSelector);
-  expect(tabbables.length, `keyboard ${label}: tabbable controls under ${scopeSelector}`).toBeGreaterThan(0);
+  expect(tabbables.length, `keyboard ${label}: required controls under ${scopeSelector}`).toBeGreaterThan(0);
 
   for (let k = 1; k < tabbables.length; k += 1) {
     const prev = tabbables[k - 1];
@@ -318,17 +524,53 @@ export async function keyboardWalk(page: Page, scopeSelector: string, label: str
 
   const press = async (key: 'Tab' | 'Shift+Tab', expected: number, what: string) => {
     await page.keyboard.press(key);
-    expect.soft(await activeTabIndex(page), `keyboard ${label}: ${what}`).toBe(expected);
+    const state = await activeTabState(page, scopeSelector);
+    expect.soft(state.contained, `keyboard ${label}: ${what} (activeElement escaped ${scopeSelector})`).toBe(true);
+    expect.soft(state.index, `keyboard ${label}: ${what}`).toBe(expected);
   };
 
   await press('Tab', 0, `first Tab reaches ${tabbables[0].label}`);
   for (let k = 0; k < tabbables.length; k += 1) {
     if (k > 0) await press('Tab', k, `Tab reaches ${tabbables[k].label}`);
-    expect.soft(await activeHasVisibleFocus(page), `keyboard ${label}: no visible focus on ${tabbables[k].label}`).toBe(true);
+    expect
+      .soft(
+        await activeHasVisibleFocus(page, tabbables[k]),
+        `keyboard ${label}: no visible focus change on ${tabbables[k].label}`,
+      )
+      .toBe(true);
   }
   if (options.trap) {
     await press('Tab', 0, `Tab after the last control wraps to ${tabbables[0].label}`);
-    await press('Shift+Tab', tabbables.length - 1, `Shift+Tab from the first wraps to ${tabbables[tabbables.length - 1].label}`);
+    await press(
+      'Shift+Tab',
+      tabbables.length - 1,
+      `Shift+Tab from the first wraps to ${tabbables[tabbables.length - 1].label}`,
+    );
+  }
+
+  if (options.leaveFocusedSelector) {
+    const targetIndex = await page.evaluate(
+      ({ scope, targetSel }) => {
+        const root = document.querySelector(scope);
+        const target = root?.querySelector<HTMLElement>(targetSel);
+        const raw = target?.getAttribute('data-a11y-tab');
+        return raw === null || raw === undefined ? null : Number(raw);
+      },
+      { scope: scopeSelector, targetSel: options.leaveFocusedSelector },
+    );
+    expect(
+      targetIndex,
+      `keyboard ${label}: leaveFocusedSelector ${options.leaveFocusedSelector} not among required controls`,
+    ).not.toBeNull();
+    if (targetIndex !== null) {
+      let current = (await activeTabState(page, scopeSelector)).index ?? -1;
+      for (let guard = 0; guard < tabbables.length + 2 && current !== targetIndex; guard += 1) {
+        const nextExpected = (current + 1) % tabbables.length;
+        await press('Tab', nextExpected, `Tab toward primary action ${tabbables[nextExpected].label}`);
+        current = nextExpected;
+      }
+      expect(current, `keyboard ${label}: parked focus on ${options.leaveFocusedSelector}`).toBe(targetIndex);
+    }
   }
 
   await page.evaluate(
