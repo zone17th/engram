@@ -324,7 +324,7 @@ test.describe('vault journey against the real API', () => {
         await unlockFromLockedList(pageB, passphrase);
       });
 
-      await journeyStep('11. auto-lock via Settings UI: 15 -> 60 -> 5 min (cross-tab + clock deadline locks both) -> Never (no lock after same clock advance)', async () => {
+      await journeyStep('11. auto-lock via Settings UI: 15 -> 60 -> 15 -> 5 min (cross-tab + clock deadline locks both) -> Never (no lock after same clock advance)', async () => {
         // A fresh context whose clock is installed before any page loads, so both tabs' idle timers run on fake time.
         const contextC = await newContext(browser);
         contexts.push(contextC);
@@ -368,6 +368,31 @@ test.describe('vault journey against the real API', () => {
         await expect(cardB.getByRole('radio', { name: '1 hour', exact: true })).toHaveAttribute('data-state', 'on', {
           timeout: UI_WAIT_MS,
         });
+
+        // JR2-2: select 15 min FROM another policy (60), so a handler that ignores an incoming 15 cannot pass on the default.
+        const patch15 = tabA.waitForResponse(
+          (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
+          { timeout: UI_WAIT_MS },
+        );
+        await cardA.getByRole('radio', { name: '15 min', exact: true }).click();
+        const patch15Res = await patch15;
+        expect(patch15Res.status()).toBe(200);
+        expect(autoLockMinutesOf(await patch15Res.json().catch(() => null))).toBe(15);
+        await expect(cardA.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on', {
+          timeout: UI_WAIT_MS,
+        });
+        await expect(cardB.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on', {
+          timeout: UI_WAIT_MS,
+        });
+        await expect(cardB.getByRole('radio', { name: '1 hour', exact: true })).toHaveAttribute('data-state', 'off', {
+          timeout: UI_WAIT_MS,
+        });
+        await expect
+          .poll(async () => (await readVaultObservables(tabA)).autoLockMinutes, { timeout: UI_WAIT_MS })
+          .toBe(15);
+        await expect
+          .poll(async () => (await readVaultObservables(tabB)).autoLockMinutes, { timeout: UI_WAIT_MS })
+          .toBe(15);
 
         // Select 5 min in tab A -> propagates to tab B and updates provider autoLockMinutes in both tabs.
         const patch5 = tabA.waitForResponse(
