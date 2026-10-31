@@ -683,12 +683,16 @@ export async function expectRadioGroupKeyboard(
           color !== 'transparent' &&
           !/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)$/.test(color);
       }
+      const busy =
+        Boolean(group?.closest('[aria-busy="true"]')) ||
+        radios.some((r) => (r as HTMLButtonElement).disabled || r.getAttribute('aria-disabled') === 'true');
       return {
         count: radios.length,
         contained: Boolean(group && active && group.contains(active)),
         focusedIndex,
         checkedIndices,
         hasVisibleOutline,
+        busy,
       };
     }, groupSelector);
 
@@ -704,6 +708,7 @@ export async function expectRadioGroupKeyboard(
         focusedIndex: expectedFocus,
         checkedIndices: [expectedChecked],
         hasVisibleOutline: true,
+        busy: false,
       });
   };
 
