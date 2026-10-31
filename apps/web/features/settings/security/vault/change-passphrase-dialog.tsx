@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
@@ -33,6 +33,7 @@ export interface ChangePassphraseDialogProps {
   passkeysCount: number;
   onSuccessToast?: (message: string) => void;
   onOpenSignOutOthers?: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 type ChangePassphraseStep = 'form' | 'reauth_expired' | 'mismatch' | 'oom' | 'ratelimit' | 'done';
@@ -45,6 +46,7 @@ export function ChangePassphraseDialog({
   passkeysCount,
   onSuccessToast,
   onOpenSignOutOthers,
+  returnFocusRef,
 }: ChangePassphraseDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth } = useSession();
@@ -468,7 +470,17 @@ export function ChangePassphraseDialog({
         if (!nextOpen) handleClose();
       }}
     >
-      <DialogContent id="passDlg" aria-labelledby="passDlgTitle">
+      <DialogContent
+        id="passDlg"
+        aria-labelledby="passDlgTitle"
+        onCloseAutoFocus={(event) => {
+          const opener = returnFocusRef?.current;
+          if (opener && opener.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
+      >
         <div
           className="panel"
           style={{ width: 'min(560px, 94vw)', maxHeight: '90vh', overflow: 'auto', padding: '28px' }}
