@@ -454,6 +454,10 @@ function VaultSecurityPanelInner({
           passkeysCount={passkeysCount}
           canChangePassphraseNow={!requiresUnlockedDisabled}
           onSwitchToChangePassphrase={() => {
+            // The change-passphrase dialog opens from inside the reset dialog, so the panel has no click of its own
+            // to record: hand the user's origin (the Reset vault button) to it as the focus-return target and
+            // release the reset dialog's own return so it cannot steal focus from the dialog that replaces it.
+            passOpenerRef.current = resetOpenerRef.current;
             resetOpenerRef.current = null;
             setPassDialogOpen(true);
           }}

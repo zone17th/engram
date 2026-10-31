@@ -2458,4 +2458,23 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     expect(unregisterCalls).toBe(3);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Reset vault' })).toHaveFocus());
   });
+
+  it('returns focus to the Reset vault opener when Change passphrase, opened from the reset dialog, closes (JR3-a)', async () => {
+    const user = userEvent.setup();
+    await renderSettingsHarness();
+
+    const resetOpener = screen.getByRole('button', { name: 'Reset vault' });
+    await user.click(resetOpener);
+    const resetDlg = await screen.findByRole('dialog');
+    await user.click(within(resetDlg).getByRole('button', { name: 'Change passphrase' }));
+    await waitFor(() => {
+      expect(document.getElementById('resetDlg')).toBeNull();
+      expect(document.getElementById('passDlg')).not.toBeNull();
+    });
+
+    const passDlg = await screen.findByRole('dialog');
+    await user.click(within(passDlg).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(resetOpener).toHaveFocus());
+  });
 });
