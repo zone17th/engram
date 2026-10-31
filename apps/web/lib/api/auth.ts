@@ -1,5 +1,5 @@
 import type { components } from '@engram/shared-types';
-import { authFetch, authMutate, bootstrapCsrf } from '@/lib/api/auth-fetch';
+import { authFetch, authMutate, bootstrapCsrf, ensureCsrf } from '@/lib/api/auth-fetch';
 
 export type Me = components['schemas']['Me'];
 export type AuthConfig = components['schemas']['AuthConfig'];
@@ -26,11 +26,13 @@ export function fetchMe(): Promise<Me> {
   return authFetch<Me>('/auth/me', { requireSession: true });
 }
 
-export function signup(body: components['schemas']['SignupRequest']): Promise<Me> {
+export async function signup(body: components['schemas']['SignupRequest']): Promise<Me> {
+  await ensureCsrf();
   return authMutate<Me>('/auth/signup', { method: 'POST', json: body, requireSession: false });
 }
 
-export function login(body: components['schemas']['LoginRequest']): Promise<Me> {
+export async function login(body: components['schemas']['LoginRequest']): Promise<Me> {
+  await ensureCsrf();
   return authMutate<Me>('/auth/login', { method: 'POST', json: body, requireSession: false });
 }
 

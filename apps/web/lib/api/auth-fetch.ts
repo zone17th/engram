@@ -276,12 +276,29 @@ export async function bootstrapCsrf(): Promise<void> {
   await rawFetch<void>('/auth/csrf');
 }
 
+/**
+ * Anonymous credential POSTs (login, signup) need the anonymous CSRF pair. POST /auth/logout
+ * clears it and the anonymous cookie also expires on its own, while SessionProvider bootstraps
+ * only once per page load. Re-issue it when the cookie is gone instead of failing csrf_invalid.
+ */
+export async function ensureCsrf(): Promise<void> {
+  if (readCsrfToken()) return;
+  await bootstrapCsrf();
+}
+
 export async function signOut(reason: SessionEndReason = 'logout'): Promise<void> {
   await withSessionLock(async () => {
     try {
       await rawFetch<void>('/auth/logout', { method: 'POST' });
     } catch {
       // Clear client state even if server unreachable.
+    }
+    try {
+      // Logout clears sabk_csrf and sabk_anon. Issue a fresh anonymous pair now so a sign-in
+      // in this tab without a reload carries a valid token.
+      await bootstrapCsrf();
+    } catch {
+      // ensureCsrf() before login/signup retries the bootstrap.
     }
     resetSessionEpoch();
     postSessionBroadcast({ type: 'signed_out', reason });
