@@ -368,6 +368,7 @@ test.describe('vault journey against the real API', () => {
         await expect(cardB.getByRole('radio', { name: '1 hour', exact: true })).toHaveAttribute('data-state', 'on', {
           timeout: UI_WAIT_MS,
         });
+        await expect(cardA.getByTestId('settings-auto-lock-saving')).toBeHidden({ timeout: UI_WAIT_MS });
 
         // JR2-2: select 15 min FROM another policy (60), so a handler that ignores an incoming 15 cannot pass on the default.
         const patch15 = tabA.waitForResponse(
@@ -393,6 +394,7 @@ test.describe('vault journey against the real API', () => {
         await expect
           .poll(async () => (await readVaultObservables(tabB)).autoLockMinutes, { timeout: UI_WAIT_MS })
           .toBe(15);
+        await expect(cardA.getByTestId('settings-auto-lock-saving')).toBeHidden({ timeout: UI_WAIT_MS });
 
         // Select 5 min in tab A -> propagates to tab B and updates provider autoLockMinutes in both tabs.
         const patch5 = tabA.waitForResponse(
