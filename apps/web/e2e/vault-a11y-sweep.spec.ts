@@ -113,20 +113,27 @@ async function openDialog(ctx: A11yContext, opener: Locator, scopeSelector = 'bo
   return dialog;
 }
 
-/** Keyboard group: focus must land on the opener after the dialog closes (Radix returns it; the passkey dialog does it by hand). */
-async function expectClosed(ctx: A11yContext, dialog: Locator, opener: Locator) {
+/**
+ * Keyboard group: focus must land on the opener after the dialog closes. Soft assertion so a focus-return failure on
+ * one close path or dialog is recorded without aborting the remaining dialogs in the sweep (advisor-dec-079 / -080).
+ */
+async function expectClosed(ctx: A11yContext, dialog: Locator, opener: Locator, via: string) {
   await expect(dialog).toBeHidden({ timeout: FOCUS_WAIT_MS });
-  if (ctx.keyboard) await expect(opener).toBeFocused({ timeout: FOCUS_WAIT_MS });
+  if (ctx.keyboard) {
+    await expect
+      .soft(opener, `focus must return to dialog opener after ${via}`)
+      .toBeFocused({ timeout: FOCUS_WAIT_MS });
+  }
 }
 
 async function closeByEscape(ctx: A11yContext, dialog: Locator, opener: Locator) {
   await ctx.page.keyboard.press('Escape');
-  await expectClosed(ctx, dialog, opener);
+  await expectClosed(ctx, dialog, opener, 'Escape');
 }
 
 async function closeByButton(ctx: A11yContext, dialog: Locator, opener: Locator, name: RegExp) {
   await activate(ctx, dialog.getByRole('button', { name }), 'Space', '[role="dialog"]');
-  await expectClosed(ctx, dialog, opener);
+  await expectClosed(ctx, dialog, opener, `button ${String(name)}`);
 }
 
 /** Closes through `first`; the keyboard group then reopens the dialog and closes it through the other path. */
@@ -499,7 +506,11 @@ async function runGroup(browser: Browser, testInfo: TestInfo, lang: A11yLang, th
       '[data-testid="settings-passkey-card"]',
     );
     await expect(renameInput).toHaveCount(0, { timeout: UI_WAIT_MS });
-    if (ctx.keyboard) await expect(renameOpener).toBeFocused({ timeout: FOCUS_WAIT_MS });
+    if (ctx.keyboard) {
+      await expect
+        .soft(renameOpener, 'focus must return to rename opener after cancel')
+        .toBeFocused({ timeout: FOCUS_WAIT_MS });
+    }
 
     log('settings passkey revoke dialog');
     const revokeOpener = page.locator('[data-testid^="settings-passkey-revoke-"]').first();
