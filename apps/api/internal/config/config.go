@@ -63,7 +63,7 @@ type Config struct {
 	rawReauth string `ignored:"true"`
 	rawIP     string `ignored:"true"`
 	rawEmail  string `ignored:"true"`
-	rawCIDRs  string `envconfig:"AUTH_TRUSTED_PROXY_CIDRS"`
+	rawCIDRs  string `ignored:"true"`
 }
 
 type secretEnv struct {
@@ -72,6 +72,12 @@ type secretEnv struct {
 	AuthReauthSecret string `envconfig:"AUTH_REAUTH_SECRET"`
 	AuthIPPepper     string `envconfig:"AUTH_IP_PEPPER"`
 	AuthEmailPepper  string `envconfig:"AUTH_EMAIL_PEPPER"`
+}
+
+// proxyEnv đọc AUTH_TRUSTED_PROXY_CIDRS qua field exported: envconfig bỏ qua field
+// unexported, nên tag trên Config.rawCIDRs trước đây không bao giờ được nạp.
+type proxyEnv struct {
+	TrustedProxyCIDRs string `envconfig:"AUTH_TRUSTED_PROXY_CIDRS"`
 }
 
 // Load đọc env, áp default rồi validate. Lỗi cấu hình phải làm process chết ngay
@@ -94,6 +100,12 @@ func Load() (*Config, error) {
 	cfg.rawReauth = secrets.AuthReauthSecret
 	cfg.rawIP = secrets.AuthIPPepper
 	cfg.rawEmail = secrets.AuthEmailPepper
+
+	var proxies proxyEnv
+	if err := envconfig.Process("", &proxies); err != nil {
+		return nil, fmt.Errorf("đọc proxy env: %w", err)
+	}
+	cfg.rawCIDRs = proxies.TrustedProxyCIDRs
 
 	if err := cfg.loadSecrets(); err != nil {
 		return nil, err
