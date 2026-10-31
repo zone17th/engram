@@ -261,8 +261,12 @@ export async function authFetch<T>(path: string, opts: AuthFetchOptions = {}): P
 
 /** Mutation thay cookie session — luôn dưới Web Lock khi có. */
 export async function authMutate<T>(path: string, opts: AuthFetchOptions = {}): Promise<T> {
+  const anonymous = opts.requireSession === false;
   const requestOpts = { ...opts, requireSession: opts.requireSession ?? true };
   const run = async (lock?: SessionLockToken): Promise<T> => {
+    // Anonymous POSTs (login, signup, OAuth complete) need the anonymous CSRF pair. Checking it
+    // under the session lock serialises the bootstrap with signOut and refresh.
+    if (anonymous) await ensureCsrf();
     const result = await authFetchWithLock<T>(path, requestOpts, lock);
     // Password rotation revokes the old session and installs a replacement.
     if (path === '/me/password') markSessionChanged();
@@ -276,6 +280,30 @@ export async function bootstrapCsrf(): Promise<void> {
   await rawFetch<void>('/auth/csrf');
 }
 
+/**
+ * Makes sure an anonymous-kind CSRF cookie is present. SessionProvider bootstraps only once per
+ * page load, but POST /auth/logout clears the pair, the anonymous cookie expires on its own, and a
+ * session that ends through session_invalid (revoked, expired) leaves a session-kind cookie the
+ * anonymous check rejects. In each case GET /auth/csrf issues a fresh anonymous pair.
+ */
+export async function ensureCsrf(): Promise<void> {
+  let token: string | null = null;
+  try {
+    token = readCsrfToken();
+  } catch {
+    token = null;
+  }
+  if (token && !hasSessionCsrfEvidence()) return;
+  await bootstrapCsrf();
+}
+
+const SIGN_OUT_CSRF_TIMEOUT_MS = 5_000;
+
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return undefined;
+  return AbortSignal.timeout(ms);
+}
+
 export async function signOut(reason: SessionEndReason = 'logout'): Promise<void> {
   await withSessionLock(async () => {
     try {
@@ -285,5 +313,13 @@ export async function signOut(reason: SessionEndReason = 'logout'): Promise<void
     }
     resetSessionEpoch();
     postSessionBroadcast({ type: 'signed_out', reason });
+    try {
+      // Logout clears sabk_csrf and sabk_anon. Re-issue the anonymous pair while still holding the
+      // lock, so a sign-in in this tab without a reload carries a valid token. Local sign-out
+      // effects already ran above and do not wait on this request.
+      await rawFetch<void>('/auth/csrf', { signal: timeoutSignal(SIGN_OUT_CSRF_TIMEOUT_MS) });
+    } catch {
+      // ensureCsrf() before the next anonymous mutation retries the bootstrap.
+    }
   });
 }
