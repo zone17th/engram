@@ -232,6 +232,23 @@ async function tagFilledInputs(page: Page) {
 async function saveScreenshot(ctx: A11yContext, spec: StateSpec, width: number) {
   const { page, testInfo, lang, theme } = ctx;
   await tagFilledInputs(page);
+  if (spec.fullPage) {
+    // V1-1: prior clicks or keyboard walks scroll lower Settings cards into view; resetting scroll to the top and
+    // blurring before a fullPage capture keeps sticky headers/sidebars at y=0 instead of mid-page over the cards.
+    await page.evaluate(async () => {
+      if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+        document.activeElement.blur();
+      }
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      const frames = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+      const bound = Promise.withResolvers<void>();
+      setTimeout(bound.resolve, 1_000);
+      await Promise.race([frames.promise, bound.promise]);
+    });
+  }
   const outputPath = testInfo.outputPath(a11yScreenshotName(spec.screen, lang, theme, width));
   mkdirSync(dirname(outputPath), { recursive: true });
   const buffer = await page.screenshot({
