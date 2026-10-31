@@ -13,6 +13,7 @@ import {
 import {
   CRYPTO_WAIT_MS,
   UI_WAIT_MS,
+  addDialog,
   expectOnUnlockPage,
   expectVaultOpen,
   expectVaultShut,
@@ -22,9 +23,9 @@ import {
 } from './vault-passkey-support';
 import { fillSecret } from './vault-settings-secret';
 
-// Helpers of the P03-T23 vault journey (vault-journey.spec.ts, stage J1). Nothing here stubs /api/**: every request goes
-// to the compose stack's real API, through the same-origin Next proxy. Copies of patterns from the accepted specs live
-// here on purpose (the originals are owned by closed lanes); each copy names its source.
+// Helpers of the P03-T23 vault journey (vault-journey.spec.ts, stage J1 + J2). Nothing here stubs /api/**: every request
+// goes to the compose stack's real API, through the same-origin Next proxy. Copies of patterns from the accepted specs
+// live here on purpose (the originals are owned by closed lanes); each copy names its source.
 //
 // Secrets: the vault passphrases, the login password, the recovery keys, the grant token and the DevKey never leave a
 // local variable. Every secret field is written with fillSecret() (never locator.fill()); recovery keys are only
@@ -57,8 +58,12 @@ export async function freshRateBucket(page: Page) {
 
 /**
  * Under AUTH_REQUIRE_EMAIL_VERIFICATION=true signup lands on /app/auth/verify-email: resend the mail, read it from the
- * mail sink and confirm the token (copied from auth.spec.ts 'verification flag true still allows account settings').
- * A no-op when verification is not required. The token only lives in a local variable and in the page URL hash.
+ * mail sink and confirm the token. A no-op when verification is not required.
+ *
+ * JR1-5/JR1-6: the token never enters a `page.goto()` URL or a `toHaveURL` matcher (which would echo the token-bearing
+ * URL into the public CI log on failure). We load the token-free route, set `window.location.hash` inside
+ * `page.evaluate()` via an argument, and poll a boolean (`!window.location.hash.includes('token=')`) for fragment
+ * removal by `VerifyEmailForm`'s layout effect (`features/auth/forms/verify-email-form.tsx:41-55`).
  */
 export async function confirmEmailIfRequired(page: Page, email: string) {
   if (!verifyRequired()) return;
@@ -67,8 +72,14 @@ export async function confirmEmailIfRequired(page: Page, email: string) {
   await page.getByRole('button', { name: /Resend|Gửi lại/ }).click();
   const mail = await waitForMail(email, 'signup');
   const token = tokenFromLink(mail.link);
-  await page.goto(`/app/auth/verify-email#token=${token}`);
-  await expect(page).not.toHaveURL(/token=/);
+  await page.evaluate((rawToken) => {
+    window.location.hash = `token=${encodeURIComponent(rawToken)}`;
+  }, token);
+  await expect
+    .poll(() => page.evaluate(() => window.location.hash.includes('token=')), {
+      timeout: UI_WAIT_MS,
+    })
+    .toBe(false);
   const confirmation = page.waitForResponse(
     (response) => response.request().method() === 'POST' && response.url().endsWith('/api/v1/auth/verify-email/confirm'),
     { timeout: UI_WAIT_MS },
@@ -138,11 +149,19 @@ export async function readRecoveryKeySlot(page: Page, slot: number): Promise<str
   return text;
 }
 
+export type OnboardingStep3Choice = { kind: 'skip' } | { kind: 'add-passkey'; passkeyName: string };
+
 /**
- * Onboarding as accepted code ships it on 23e3970 (passphrase -> recovery-key sheet -> POST /vault). Reads two keys
- * from the sheet into local variables. TODO(J2): onboarding step 3 (skip / add passkey) lands with lane vaultb.
+ * Onboarding (step 1 passphrase -> step 2 10-slot recovery-key sheet -> POST /vault -> step 3 passkey/device). Reads two
+ * recovery keys from step 2 into local variables, asserts step 3 renders with Remember this device default off, and
+ * completes step 3 via either the SKIP path (`onboarding-skip-passkey-button`) or the ADD-PASSKEY path (`PasskeyAddEntry`
+ * + `onboarding-finish-button`, pattern of `vault-b-onboarding.spec.ts`).
  */
-export async function createVaultViaOnboarding(page: Page, passphrase: string): Promise<OnboardingKeys> {
+export async function createVaultViaOnboarding(
+  page: Page,
+  passphrase: string,
+  step3: OnboardingStep3Choice = { kind: 'skip' },
+): Promise<OnboardingKeys> {
   await expect(page).toHaveURL(/\/app\/onboarding$/, { timeout: UI_WAIT_MS });
   await expect(page.getByTestId('onboarding-step-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
   await fillSecret(page.getByLabel('Passphrase', { exact: true }), passphrase, CRYPTO_WAIT_MS);
@@ -161,9 +180,52 @@ export async function createVaultViaOnboarding(page: Page, passphrase: string): 
   const created = page.waitForResponse((r) => isApiPost(r, '/api/v1/vault'), { timeout: CRYPTO_WAIT_MS });
   await page.getByTestId('onboarding-create-vault-button').click();
   expect((await created).status()).toBe(201);
+
+  // Step 3 (T16B): optional passkey + Remember this device toggle (default off).
+  await expect(page.getByTestId('onboarding-step-passkey')).toBeVisible({ timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('onboarding-remember-device-switch')).toHaveAttribute('aria-checked', 'false');
+  // Recovery keys are wiped from the DOM immediately upon leaving step 2 (boolean check so no RK is ever printed).
+  const step3BodyText = await page.locator('body').innerText();
+  expect(step3BodyText.includes(keys.slot1) || step3BodyText.includes(keys.slot2)).toBe(false);
+
+  if (step3.kind === 'skip') {
+    await page.getByTestId('onboarding-skip-passkey-button').click();
+  } else {
+    await page
+      .getByTestId('onboarding-passkey-card')
+      .getByRole('button', { name: /Add passkey|Thêm passkey/ })
+      .click();
+    const dialog = addDialog(page);
+    await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
+
+    const passwordField = dialog.getByLabel(/Login password|Mật khẩu đăng nhập/);
+    const continueBtn = dialog.getByRole('button', { name: /Continue|Tiếp tục/ });
+    await expect(passwordField.or(continueBtn.and(page.locator(':enabled'))).first()).toBeVisible({
+      timeout: UI_WAIT_MS,
+    });
+    if (await passwordField.isVisible()) {
+      const reauthed = page.waitForResponse((r) => isApiPost(r, '/api/v1/auth/reauth'), {
+        timeout: UI_WAIT_MS,
+      });
+      await fillSecret(passwordField, PASSWORD, UI_WAIT_MS);
+      await dialog.getByRole('button', { name: /Confirm|Xác nhận/, exact: true }).click();
+      expect((await reauthed).ok()).toBe(true);
+    }
+    await expect(continueBtn).toBeEnabled({ timeout: UI_WAIT_MS });
+
+    const passkeySaved = page.waitForResponse((r) => isApiPost(r, '/api/v1/vault/passkeys'), {
+      timeout: CRYPTO_WAIT_MS,
+    });
+    await dialog.getByLabel(/Passkey name|Tên passkey/).fill(step3.passkeyName);
+    await continueBtn.click();
+    expect((await passkeySaved).ok()).toBe(true);
+
+    await expect(page.getByTestId('onboarding-passkey-added-status')).toBeVisible({ timeout: UI_WAIT_MS });
+    await page.getByTestId('onboarding-finish-button').click();
+  }
+
   await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
   await expectVaultOpen(page);
-  // Booleans on purpose (see readRecoveryKeySlot).
   const bodyText = await page.locator('body').innerText();
   expect(bodyText.includes(keys.slot1) || bodyText.includes(keys.slot2)).toBe(false);
   return keys;
@@ -318,20 +380,13 @@ export function isRecoveryKeyShape(value: string): boolean {
   return RECOVERY_KEY_SHAPE.test(value);
 }
 
-// ---- Remember device (DevKey) --------------------------------------------------------------------------------------
-// Approach of vault-devkey-real-api.spec.ts: Remember / Forget are driven through the gated test bridge (no toggle UI
-// exists before lane vaultb); everything it does is the production code path (real Worker, WebCrypto, IndexedDB, Web
-// Lock). The bridge only exposes booleans, counts and revisions: never DevKey material, VK or wraps.
-// TODO(J2): drive Remember device through the Settings toggle once T20B lands.
-
-export interface RememberState {
-  status: string;
-  remembered: boolean;
-  notice: string | null;
-}
+// ---- Remember device (DevKey) and Vault observables ----------------------------------------------------------------
+// In J2, Remember / Forget device is driven through the Settings UI (`settings-remember-device-switch` and
+// `settings-forget-device-button`). The read-only bridges below inspect the IndexedDB record count (`snapshot()`) and
+// the provider's idle timeout / state observables (`__engramVaultTestBridge`); they never expose DevKey material, VK
+// or wraps.
 
 interface DeviceBridge {
-  remember: () => Promise<RememberState>;
   snapshot: () => Promise<{ userRecordCount: number; allRecordCount: number }>;
 }
 
@@ -353,17 +408,6 @@ export async function waitForDeviceBridge(page: Page) {
     return Boolean(bridgeWindow.__engramDeviceTestBridge && bridgeWindow.__engramVaultTestBridge);
   });
 }
-
-export async function rememberViaBridge(page: Page): Promise<RememberState> {
-  await waitForDeviceBridge(page);
-  return page.evaluate(async () => {
-    const bridgeWindow: BridgeWindow = window;
-    // Make the provider learn the current vault_key_id from the real GET /vault (as any page that read the vault does).
-    await bridgeWindow.__engramVaultTestBridge!.reloadVaultMeta();
-    return bridgeWindow.__engramDeviceTestBridge!.remember();
-  });
-}
-
 export async function deviceRecordCount(page: Page): Promise<{ userRecordCount: number; allRecordCount: number }> {
   await waitForDeviceBridge(page);
   return page.evaluate(() => (window as BridgeWindow).__engramDeviceTestBridge!.snapshot());

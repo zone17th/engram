@@ -426,6 +426,7 @@ jobs:
           E2E_STACK: '1'
           E2E_VERIFY: 'true'
           MAIL_SINK_DIR: /work/.data/mail-sink
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
         shell: bash
         run: |
           set -euo pipefail
@@ -439,6 +440,7 @@ jobs:
             --env E2E_STACK \
             --env E2E_VERIFY \
             --env MAIL_SINK_DIR \
+            --env PLAYWRIGHT_NO_COPY_PROMPT \
             --env CI \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \

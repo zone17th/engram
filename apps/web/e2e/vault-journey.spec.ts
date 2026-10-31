@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { PASSWORD, newContext, patchSettingsViaPage, uniqueEmail } from './helpers';
+import { PASSWORD, fetchMeViaPage, newContext, uniqueEmail } from './helpers';
 import { fillSecret } from './vault-settings-secret';
 import {
   CRYPTO_WAIT_MS,
@@ -7,6 +7,7 @@ import {
   VAULT_PASSPHRASE,
   addAuthenticator,
   enableWebAuthn,
+  expectOnUnlockPage,
   expectPasskeyAdded,
   expectVaultOpen,
   expectVaultShut,
@@ -16,12 +17,14 @@ import {
   lockVault,
   openAddPasskeyDialog,
   readProbe,
+  removeAuthenticator,
   submitPasskeyName,
 } from './vault-passkey-support';
 import {
   RECOVERED_PASSPHRASE,
   REWRAPPED_PASSPHRASE,
   acquireGrantViaPage,
+  autoLockMinutesOf,
   completeRecoveryWithNewPassphrase,
   createVaultViaOnboarding,
   deleteVaultViaPage,
@@ -31,18 +34,16 @@ import {
   expectPassphraseRejected,
   expectUnlockedOnApp,
   fetchVaultMetaViaPage,
-  autoLockMinutesOf,
-  jsonField,
-  type OnboardingKeys,
   freshRateBucket,
   isRecoveryKeyShape,
   journeyStep,
+  jsonField,
   loginViaUiSecret,
+  type OnboardingKeys,
   openRecoveryFromUnlock,
   openUnlockFromLockedList,
   readRecoveryKeySlot,
   readVaultObservables,
-  rememberViaBridge,
   reloadUnlockPage,
   signupOauthUser,
   signupPasswordUser,
@@ -51,7 +52,12 @@ import {
   unlockFromLockedList,
 } from './vault-journey-support';
 
-// P03-T23 Part 2, stage J1: the vault journey of plan Task 23 bullet 1 against the compose stack's real API and
+// JR1-4: Disable Playwright's automatic error-context DOM snapshot (`_snapshotForAI` -> `error-context.md` at
+// `node_modules/.pnpm/playwright@1.56.0/node_modules/playwright/lib/index.js:578-579,616-631`) in this worker before
+// any test runs, so a failure while a recovery-key sheet is mounted can never serialize plaintext recovery keys to disk.
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+
+// P03-T23 Part 2, stage J1 + J2: the vault journey of plan Task 23 bullet 1 against the compose stack's real API and
 // database (E2E_STACK), in the `vault` Playwright project. The compose web service is the production build (`next
 // build` + `next start`), so every request below already goes through the production Next proxy.
 //
@@ -66,13 +72,14 @@ import {
 // Runs under both AUTH_REQUIRE_EMAIL_VERIFICATION values: `e2e-browser` (false) through the vault project, and the
 // `Vault journey e2e (email verification required)` job (true), where signup goes through the mail-sink confirmation.
 
-// Argon2id runs in the real crypto Worker on a shared CI runner. The journey has ~15 derive-bound steps (onboarding,
-// 2 unlocks, rewrap, 3 rejected/accepted unlocks, recovery lookup + new passphrase, regenerate, rotate, passkey, auto-lock
-// unlock) at <= 90 s each in the worst case; the expected total is a few minutes, so 10 min is the ceiling, not the plan.
+// Argon2id runs in the real crypto Worker on a shared CI runner. The journey has ~17 derive-bound steps (onboarding,
+// new-context unlock, rewrap, rejected/accepted unlocks, recovery lookup + new passphrase, regenerate, rotate, passkey,
+// forget-device unlock, auto-lock two-page unlocks) at <= 90 s each in the worst case; expected total is ~3.5-5 min, so
+// 10 min is the ceiling, not the plan.
 const JOURNEY_TIMEOUT_MS = 600_000;
+const ONBOARDING_ADD_PASSKEY_TIMEOUT_MS = 240_000;
 const OAUTH_TIMEOUT_MS = 300_000;
 const AUTO_LOCK_MINUTES = 5;
-
 async function closeAll(contexts: BrowserContext[]) {
   for (const context of contexts) {
     await context.close().catch(() => undefined);
@@ -104,8 +111,8 @@ test.describe('vault journey against the real API', () => {
         await expect(pageA.locator('.vault-pill').first()).toContainText('No vault yet');
       });
 
-      await journeyStep('2. onboarding: passphrase + recovery-key sheet creates the vault (real POST /vault)', async () => {
-        keys = await createVaultViaOnboarding(pageA, passphrase);
+      await journeyStep('2. onboarding: passphrase + recovery-key sheet + step 3 skip creates the vault (real POST /vault)', async () => {
+        keys = await createVaultViaOnboarding(pageA, passphrase, { kind: 'skip' });
       });
 
       await journeyStep('3. reload: the vault is locked and the unlock prompt is offered (advisor-dec-048)', async () => {
@@ -123,6 +130,10 @@ test.describe('vault journey against the real API', () => {
 
       await journeyStep('4. unlock in a NEW browser context (same user, login)', async () => {
         await loginViaUiSecret(pageB, email);
+        // JR1-1: fresh-context login from /app/auth/login lands on /app/unlock (features/auth/guard-redirect.ts:124-143);
+        // assert the accepted unlock page, then navigate deliberately to /app to verify the dec-048 locked list before unlocking.
+        await expectOnUnlockPage(pageB);
+        await pageB.goto('/app');
         await expectLockedListOnApp(pageB);
         await unlockFromLockedList(pageB, passphrase);
         // Context A is done: the journey continues in B, the context a returning user would have opened.
@@ -232,11 +243,12 @@ test.describe('vault journey against the real API', () => {
         await expectUnlockedOnApp(pageB);
       });
 
-      await journeyStep('9. passkey: register (virtual authenticator with PRF) and unlock with it', async () => {
+      await journeyStep('9. passkey: register (virtual authenticator with PRF), verify Settings passkey list row, and unlock with it', async () => {
         await freshRateBucket(pageB);
         const cdp = await enableWebAuthn(pageB);
         await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
         await gotoSettings(pageB);
+        await expect(pageB.getByTestId('settings-passkey-empty')).toBeVisible({ timeout: UI_WAIT_MS });
         await openAddPasskeyDialog(pageB);
         const before = await readProbe(pageB);
         await submitPasskeyName(pageB, 'Journey passkey');
@@ -259,7 +271,12 @@ test.describe('vault journey against the real API', () => {
           console.log('prf-path: enabled-then-get');
           test.info().annotations.push({ type: 'prf-path', description: 'enabled at create(), then get()' });
         }
-        // TODO(J2): assert the new row in the Settings passkey list once T20B ships it.
+
+        // J2 item 4: after registration the Settings passkey list shows the new row (name).
+        const passkeyList = pageB.getByTestId('settings-passkey-list');
+        await expect(passkeyList).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(passkeyList).toContainText('Journey passkey');
+        await expect(passkeyList.locator('[data-testid^="settings-passkey-row-"]')).toHaveCount(1);
 
         await lockVault(pageB);
         const passkeyButton = pageB.getByTestId('unlock-passkey-button');
@@ -268,13 +285,20 @@ test.describe('vault journey against the real API', () => {
         await expectUnlockedOnApp(pageB);
       });
 
-      await journeyStep('10. DevKey: Remember device, reload -> silent unlock without a passphrase', async () => {
-        const state = await rememberViaBridge(pageB);
-        expect(state.status).toBe('ready');
-        expect(state.remembered).toBe(true);
-        expect(state.notice).toBeNull();
+      await journeyStep('10. DevKey: Remember / forget device via Settings UI (remember -> reload -> silent unlock; forget -> reload -> passphrase required)', async () => {
+        await gotoSettings(pageB);
+        const settingsSwitch = pageB.getByTestId('settings-remember-device-switch');
+        await expect(settingsSwitch).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(settingsSwitch).toHaveAttribute('aria-checked', 'false');
+
+        await settingsSwitch.click();
+        await expect(settingsSwitch).toHaveAttribute('aria-checked', 'true', { timeout: CRYPTO_WAIT_MS });
+        await expect(pageB.getByTestId('settings-forget-device-button')).toBeVisible({ timeout: UI_WAIT_MS });
         expect((await deviceRecordCount(pageB)).userRecordCount).toBe(1);
 
+        // Remember -> reload -> silent unlock without typing a passphrase.
+        await pageB.goto('/app');
+        await expectVaultOpen(pageB);
         const vaultRead = pageB.waitForResponse((r) => isApiGet(r, '/api/v1/vault') && r.ok(), {
           timeout: CRYPTO_WAIT_MS,
         });
@@ -283,43 +307,147 @@ test.describe('vault journey against the real API', () => {
         await expectVaultOpen(pageB);
         await expect(pageB).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
         await expect(pageB.getByTestId('unlock-passphrase-input')).toHaveCount(0);
+
+        // Forget -> reload -> stays locked and requires passphrase.
+        await gotoSettings(pageB);
+        const forgetBtn = pageB.getByTestId('settings-forget-device-button');
+        await expect(forgetBtn).toBeVisible({ timeout: UI_WAIT_MS });
+        await forgetBtn.click();
+        await expect(pageB.getByTestId('settings-remember-device-switch')).toHaveAttribute('aria-checked', 'false', {
+          timeout: UI_WAIT_MS,
+        });
+        expect((await deviceRecordCount(pageB)).userRecordCount).toBe(0);
+
+        await pageB.goto('/app');
+        await pageB.reload();
+        await expectLockedListOnApp(pageB);
+        await unlockFromLockedList(pageB, passphrase);
       });
 
-      await journeyStep(`11. auto-lock: auto_lock_minutes=${AUTO_LOCK_MINUTES} through PATCH /me/settings, the clock passes the idle deadline, the vault locks`, async () => {
-        // A fresh context whose clock is installed before any page loads, so the app's idle timer runs on fake time.
-        // TODO(J2): set the timeout through the Settings auto-lock card instead of PATCH /me/settings.
+      await journeyStep('11. auto-lock via Settings UI: 15 -> 60 -> 5 min (cross-tab + clock deadline locks both) -> Never (no lock after same clock advance)', async () => {
+        // A fresh context whose clock is installed before any page loads, so both tabs' idle timers run on fake time.
         const contextC = await newContext(browser);
         contexts.push(contextC);
         await contextC.clock.install();
-        const pageC = await contextC.newPage();
+        const tabA = await contextC.newPage();
 
-        await loginViaUiSecret(pageC, email);
-        await expectLockedListOnApp(pageC);
-        const patched = await patchSettingsViaPage(pageC, { auto_lock_minutes: AUTO_LOCK_MINUTES });
-        expect(patched.status).toBe(200);
-        expect(autoLockMinutesOf(patched.body)).toBe(AUTO_LOCK_MINUTES);
+        await loginViaUiSecret(tabA, email);
+        // JR1-1: fresh-context login lands on /app/unlock; unlock directly on the accepted unlock page.
+        await expectOnUnlockPage(tabA);
+        await submitUnlock(tabA, passphrase);
+        await expectUnlockedOnApp(tabA);
+        await gotoSettings(tabA);
 
-        // The provider reads the server's value at page load: reload, then unlock.
-        await pageC.reload();
-        await expectLockedListOnApp(pageC);
-        await unlockFromLockedList(pageC, passphrase);
+        // Open second tab in the same context, navigate to /app/unlock, unlock, and open Settings.
+        const tabB = await contextC.newPage();
+        await tabB.goto('/app/unlock');
+        await expectOnUnlockPage(tabB);
+        await submitUnlock(tabB, passphrase);
+        await expectUnlockedOnApp(tabB);
+        await gotoSettings(tabB);
+
+        const cardA = tabA.getByTestId('settings-auto-lock-card');
+        const cardB = tabB.getByTestId('settings-auto-lock-card');
+        await expect(cardA).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(cardB).toBeVisible({ timeout: UI_WAIT_MS });
+
+        // Both tabs start at default 15 min (5 / 15 / 60 / Never options rendered).
+        await expect(cardA.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on');
+        await expect(cardB.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on');
+
+        // Select 60 min in tab A -> propagates to tab B.
+        const patch60 = tabA.waitForResponse(
+          (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
+          { timeout: UI_WAIT_MS },
+        );
+        await cardA.getByRole('radio', { name: '60 min', exact: true }).click();
+        expect((await patch60).status()).toBe(200);
+        await expect(cardA.getByRole('radio', { name: '60 min', exact: true })).toHaveAttribute('data-state', 'on', {
+          timeout: UI_WAIT_MS,
+        });
+        await expect(cardB.getByRole('radio', { name: '60 min', exact: true })).toHaveAttribute('data-state', 'on', {
+          timeout: UI_WAIT_MS,
+        });
+
+        // Select 5 min in tab A -> propagates to tab B and updates provider autoLockMinutes in both tabs.
+        const patch5 = tabA.waitForResponse(
+          (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
+          { timeout: UI_WAIT_MS },
+        );
+        await cardA.getByRole('radio', { name: '5 min', exact: true }).click();
+        const patch5Res = await patch5;
+        expect(patch5Res.status()).toBe(200);
+        expect(autoLockMinutesOf(await patch5Res.json().catch(() => null))).toBe(AUTO_LOCK_MINUTES);
+        await expect(cardA.getByRole('radio', { name: '5 min', exact: true })).toHaveAttribute('data-state', 'on', {
+          timeout: UI_WAIT_MS,
+        });
+        await expect(cardB.getByRole('radio', { name: '5 min', exact: true })).toHaveAttribute('data-state', 'on', {
+          timeout: UI_WAIT_MS,
+        });
         await expect
-          .poll(async () => (await readVaultObservables(pageC)).autoLockMinutes, { timeout: UI_WAIT_MS })
+          .poll(async () => (await readVaultObservables(tabA)).autoLockMinutes, { timeout: UI_WAIT_MS })
+          .toBe(AUTO_LOCK_MINUTES);
+        await expect
+          .poll(async () => (await readVaultObservables(tabB)).autoLockMinutes, { timeout: UI_WAIT_MS })
           .toBe(AUTO_LOCK_MINUTES);
 
-        // Past the idle deadline (no input since unlock), the shared timer fires on fake time.
+        // Clock passes the 5-minute idle deadline -> the vault locks in both tabs.
         await contextC.clock.fastForward(AUTO_LOCK_MINUTES * 60_000 + 30_000);
+        for (const tab of [tabA, tabB]) {
+          await expect
+            .poll(
+              async () => {
+                const observed = await readVaultObservables(tab);
+                return { state: observed.state, workerState: observed.workerState };
+              },
+              { timeout: UI_WAIT_MS },
+            )
+            .toEqual({ state: 'locked', workerState: 'locked' });
+          await expectVaultShut(tab);
+        }
+
+        // Unlock tab A and tab B again, then set Never (0) via Settings UI and verify no lock after the same clock advance.
+        await tabA.goto('/app/unlock');
+        await expectOnUnlockPage(tabA);
+        await submitUnlock(tabA, passphrase);
+        await expectUnlockedOnApp(tabA);
+        await gotoSettings(tabA);
+
+        await tabB.goto('/app/unlock');
+        await expectOnUnlockPage(tabB);
+        await submitUnlock(tabB, passphrase);
+        await expectUnlockedOnApp(tabB);
+        await gotoSettings(tabB);
+
+        const patchNever = tabA.waitForResponse(
+          (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
+          { timeout: UI_WAIT_MS },
+        );
+        await tabA.getByTestId('settings-auto-lock-card').getByRole('radio', { name: 'Never', exact: true }).click();
+        expect((await patchNever).status()).toBe(200);
+        await expect(
+          tabA.getByTestId('settings-auto-lock-card').getByRole('radio', { name: 'Never', exact: true }),
+        ).toHaveAttribute('data-state', 'on', { timeout: UI_WAIT_MS });
+        await expect(
+          tabB.getByTestId('settings-auto-lock-card').getByRole('radio', { name: 'Never', exact: true }),
+        ).toHaveAttribute('data-state', 'on', { timeout: UI_WAIT_MS });
+        expect(autoLockMinutesOf((await fetchMeViaPage(tabB)).body)).toBe(0);
         await expect
-          .poll(
-            async () => {
-              const observed = await readVaultObservables(pageC);
-              return { state: observed.state, workerState: observed.workerState };
-            },
-            { timeout: UI_WAIT_MS },
-          )
-          .toEqual({ state: 'locked', workerState: 'locked' });
-        await expectVaultShut(pageC);
-        await expect(pageC.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+          .poll(async () => (await readVaultObservables(tabA)).autoLockMinutes, { timeout: UI_WAIT_MS })
+          .toBe(0);
+        await expect
+          .poll(async () => (await readVaultObservables(tabB)).autoLockMinutes, { timeout: UI_WAIT_MS })
+          .toBe(0);
+
+        await contextC.clock.fastForward(AUTO_LOCK_MINUTES * 60_000 + 30_000);
+        for (const tab of [tabA, tabB]) {
+          expect(await readVaultObservables(tab)).toEqual({
+            autoLockMinutes: 0,
+            state: 'unlocked',
+            workerState: 'unlocked',
+          });
+          await expectVaultOpen(tab);
+        }
         await contextC.close();
       });
 
@@ -388,6 +516,53 @@ test.describe('vault journey against the real API', () => {
       });
     } finally {
       await closeAll(contexts);
+    }
+  });
+
+  test('onboarding step 3 add-passkey variant: register a passkey at step 3 with a fresh PRF virtual authenticator and unlock with it', async ({
+    browser,
+  }) => {
+    test.setTimeout(ONBOARDING_ADD_PASSKEY_TIMEOUT_MS);
+    const email = uniqueEmail('vault-journey-step3-add');
+    const context = await newContext(browser);
+    try {
+      await installPasskeyProbe(context);
+      const page = await context.newPage();
+      const cdp = await enableWebAuthn(page);
+      const authenticatorId = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
+
+      try {
+        await journeyStep('Step3Add-1. signup and onboarding step 3 add-passkey creates the vault and registers a PRF passkey', async () => {
+          await signupPasswordUser(page, email);
+          const keys = await createVaultViaOnboarding(page, VAULT_PASSPHRASE, {
+            kind: 'add-passkey',
+            passkeyName: 'Onboarding step 3 passkey',
+          });
+          expect(isRecoveryKeyShape(keys.slot1)).toBe(true);
+
+          const probe = await readProbe(page);
+          const created = probe.creates.at(-1);
+          expect(created?.error).toBeNull();
+          expect(created?.prfEnabled).toBe(true);
+        });
+
+        await journeyStep('Step3Add-2. lock the vault and unlock with the step-3 passkey', async () => {
+          await lockVault(page);
+          const passkeyUnlockBtn = page.getByTestId('unlock-passkey-button');
+          await expect(passkeyUnlockBtn).toBeVisible({ timeout: UI_WAIT_MS });
+          await passkeyUnlockBtn.click();
+          await expectUnlockedOnApp(page);
+
+          await gotoSettings(page);
+          const passkeyList = page.getByTestId('settings-passkey-list');
+          await expect(passkeyList).toBeVisible({ timeout: UI_WAIT_MS });
+          await expect(passkeyList).toContainText('Onboarding step 3 passkey');
+        });
+      } finally {
+        await removeAuthenticator(cdp, authenticatorId).catch(() => undefined);
+      }
+    } finally {
+      await context.close().catch(() => undefined);
     }
   });
 
