@@ -174,7 +174,7 @@ async function installRecoveryApiMocks(
         status: 401,
         contentType: 'application/problem+json',
         body: JSON.stringify({
-          type: 'https://engram.zone17th.click/problems/recovery_key_invalid',
+          type: 'https://engram.zone17.click/problems/recovery_key_invalid',
           title: 'recovery_key_invalid',
           status: 401,
           code: 'recovery_key_invalid',
@@ -189,7 +189,7 @@ async function installRecoveryApiMocks(
         contentType: 'application/problem+json',
         headers: { 'Retry-After': '15' },
         body: JSON.stringify({
-          type: 'https://engram.zone17th.click/problems/rate_limited',
+          type: 'https://engram.zone17.click/problems/rate_limited',
           title: 'rate_limited',
           status: 429,
           code: 'rate_limited',
@@ -227,7 +227,7 @@ async function installRecoveryApiMocks(
         status: 412,
         contentType: 'application/problem+json',
         body: JSON.stringify({
-          type: 'https://engram.zone17th.click/problems/version_mismatch',
+          type: 'https://engram.zone17.click/problems/version_mismatch',
           title: 'version_mismatch',
           status: 412,
           code: 'version_mismatch',
@@ -243,7 +243,7 @@ async function installRecoveryApiMocks(
         contentType: 'application/problem+json',
         headers: { 'Retry-After': '12' },
         body: JSON.stringify({
-          type: 'https://engram.zone17th.click/problems/rate_limited',
+          type: 'https://engram.zone17.click/problems/rate_limited',
           title: 'rate_limited',
           status: 429,
           code: 'rate_limited',

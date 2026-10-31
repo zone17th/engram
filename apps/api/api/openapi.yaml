@@ -1617,7 +1617,7 @@ components:
         type:
           type: string
           format: uri
-          examples: ['https://key.zone17th.click/problems/dependency_unavailable']
+          examples: ['https://engram.zone17.click/problems/dependency_unavailable']
         title: { type: string }
         status: { type: integer }
         detail: { type: string }

@@ -95,7 +95,7 @@ async function installOnboardingApiMocks(
         status: 404,
         contentType: 'application/problem+json',
         body: JSON.stringify({
-          type: 'https://key.zone17th.click/problems/vault_absent',
+          type: 'https://engram.zone17.click/problems/vault_absent',
           title: 'vault_absent',
           status: 404,
           code: 'vault_absent',
@@ -119,7 +119,7 @@ async function installOnboardingApiMocks(
         status: 409,
         contentType: 'application/problem+json',
         body: JSON.stringify({
-          type: 'https://key.zone17th.click/problems/vault_exists',
+          type: 'https://engram.zone17.click/problems/vault_exists',
           title: 'vault_exists',
           status: 409,
           code: 'vault_exists',

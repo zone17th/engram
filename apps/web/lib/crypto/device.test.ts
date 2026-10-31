@@ -56,7 +56,7 @@ const fastTestDeriveKek: DeriveKekFn = (sodium: Sodium, passphrase: Uint8Array, 
 
 function vaultAbsentError(): ProblemError {
   return new ProblemError({
-    type: 'https://key.zone17th.click/problems/vault_absent',
+    type: 'https://engram.zone17.click/problems/vault_absent',
     title: 'Vault absent',
     status: 404,
     code: 'vault_absent',
@@ -566,7 +566,7 @@ describe('P03-T18 DevKey: lib/crypto/device.ts + sabk.device', () => {
       vi.fn().mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            type: 'https://key.zone17th.click/problems/session_invalid',
+            type: 'https://engram.zone17.click/problems/session_invalid',
             title: 'Session invalid',
             status: 401,
             code: 'session_invalid',

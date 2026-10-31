@@ -9,7 +9,7 @@ import (
 )
 
 // ProblemBase là namespace của các type URI theo RFC 9457.
-const ProblemBase = "https://key.zone17th.click/problems/"
+const ProblemBase = "https://engram.zone17.click/problems/"
 
 // Problem là body lỗi thống nhất của toàn bộ API (SPEC §5.5 / §9.1).
 // Detail luôn là câu do server soạn sẵn — không bao giờ phản chiếu input người dùng.

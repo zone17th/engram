@@ -26,7 +26,7 @@ func TestWriteProblemShape(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
 		t.Fatalf("body không phải JSON hợp lệ: %v", err)
 	}
-	if p.Type != "https://key.zone17th.click/problems/dependency_unavailable" {
+	if p.Type != "https://engram.zone17.click/problems/dependency_unavailable" {
 		t.Errorf("type = %q", p.Type)
 	}
 	if p.Code != "dependency_unavailable" {

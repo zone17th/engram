@@ -1,5 +1,5 @@
 /** Namespace type URI theo RFC 9457 — phải khớp httpx.ProblemBase bên Go. */
-export const PROBLEM_BASE = 'https://key.zone17th.click/problems/' as const;
+export const PROBLEM_BASE = 'https://engram.zone17.click/problems/' as const;
 
 /** Danh sách code lỗi ổn định. Thêm code mới ở cả Go lẫn đây trong cùng một PR. */
 export const ERROR_CODES = [

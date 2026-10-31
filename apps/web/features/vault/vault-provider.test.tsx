@@ -989,7 +989,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         if (serverVaultResponse === '404') {
           return new Response(
             JSON.stringify({
-              type: 'https://key.zone17th.click/problems/vault_absent',
+              type: 'https://engram.zone17.click/problems/vault_absent',
               title: 'Vault absent',
               status: 404,
               code: 'vault_absent',
@@ -1239,7 +1239,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         if (!activeMe) {
           return new Response(
             JSON.stringify({
-              type: 'https://key.zone17th.click/problems/unauthenticated',
+              type: 'https://engram.zone17.click/problems/unauthenticated',
               title: 'Unauthenticated',
               status: 401,
               code: 'unauthenticated',
@@ -1877,7 +1877,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         if (meResponseMode === '401') {
           return new Response(
             JSON.stringify({
-              type: 'https://key.zone17th.click/problems/unauthenticated',
+              type: 'https://engram.zone17.click/problems/unauthenticated',
               title: 'Unauthenticated',
               status: 401,
               code: 'unauthenticated',
@@ -2102,7 +2102,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          type: 'https://key.zone17th.click/problems/session_invalid',
+          type: 'https://engram.zone17.click/problems/session_invalid',
           title: 'Session invalid',
           status: 401,
           code: 'session_invalid',
@@ -3415,7 +3415,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
       if (u.endsWith('/vault')) {
         return new Response(
           JSON.stringify({
-            type: 'https://engram.zone17th.click/problems/vault_absent',
+            type: 'https://engram.zone17.click/problems/vault_absent',
             title: 'vault_absent',
             status: 404,
             code: 'vault_absent',
@@ -3630,7 +3630,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
         }
         return new Response(
           JSON.stringify({
-            type: 'https://engram.zone17th.click/problems/vault_absent',
+            type: 'https://engram.zone17.click/problems/vault_absent',
             title: 'vault_absent',
             status: 404,
             code: 'vault_absent',
@@ -4092,7 +4092,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
   function be2VaultAbsentResponse(): Response {
     return new Response(
       JSON.stringify({
-        type: 'https://engram.zone17th.click/problems/vault_absent',
+        type: 'https://engram.zone17.click/problems/vault_absent',
         title: 'vault_absent',
         status: 404,
         code: 'vault_absent',
@@ -4762,7 +4762,7 @@ describe('Task 15A — VaultProvider, state machine, lock, BroadcastChannel, and
   // ---------------------------------------------------------------------------
   function be3ProblemResponse(status: number, code: string): Response {
     return new Response(
-      JSON.stringify({ type: `https://engram.zone17th.click/problems/${code}`, title: code, status, code }),
+      JSON.stringify({ type: `https://engram.zone17.click/problems/${code}`, title: code, status, code }),
       { status, headers: { 'content-type': 'application/problem+json' } },
     );
   }

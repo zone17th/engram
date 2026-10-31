@@ -45,7 +45,7 @@ let tokenCallback: ((token: string) => void) | undefined;
 
 function problem(code: string, overrides: Partial<ProblemDetails> = {}): ProblemError {
   return new ProblemError({
-    type: `https://key.zone17th.click/problems/${code}`,
+    type: `https://engram.zone17.click/problems/${code}`,
     title: 'Request failed',
     status: 400,
     code,

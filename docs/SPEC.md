@@ -532,7 +532,7 @@ Import backup UI ở P07: không chép lại các RK/passkey wrap từ snapshot 
 ### 3.13 Flow: Đăng ký passkey (sau khi vault unlock)
 
 1. Onboarding bước 3 hoặc Settings › Passkeys › "Add a passkey". Nhiều credential: laptop Hello, điện thoại, YubiKey. Ngay khi bắt đầu luồng (khi bấm "Thêm passkey", trước khi gọi `register/options` hay `navigator.credentials`), client lấy re-auth grant `vault.passkey_register` (`X-Reauth-Token`; nếu OAuth chuyển trang toàn bộ thì khi quay về kèm grant, client khởi tạo lại Worker mới và mở khoá lại vault để nạp `VK` trước khi tiếp tục — [ADR 0002](adr/0002-vault-crypto-layout.md), [ADR 0003](adr/0003-webauthn-prf-va-devkey.md)).
-2. Chụp `opGeneration = currentGeneration` trước bước bất đồng bộ đầu tiên; gọi `POST /vault/passkeys/register/options` → trả `{challenge_id, public_key: CreationOptions, prf_salt}` (trong đó `rp.id` = `key.zone17th.click` hoặc `localhost` ở dev; `excludeCredentials` chứa mọi `cred_id` hiện có của user; extension **`prf`** với `eval.first = prf_salt` ngẫu nhiên 32 B; `userVerification: "required"`; `residentKey: "preferred"` — server lưu `challenge_hash = SHA-256(challenge)`, `prf_salt` và `vault_key_id` hiện tại vào `webauthn_challenge` với TTL 5 phút).
+2. Chụp `opGeneration = currentGeneration` trước bước bất đồng bộ đầu tiên; gọi `POST /vault/passkeys/register/options` → trả `{challenge_id, public_key: CreationOptions, prf_salt}` (trong đó `rp.id` = `engram.zone17.click` hoặc `localhost` ở dev; `excludeCredentials` chứa mọi `cred_id` hiện có của user; extension **`prf`** với `eval.first = prf_salt` ngẫu nhiên 32 B; `userVerification: "required"`; `residentKey: "preferred"` — server lưu `challenge_hash = SHA-256(challenge)`, `prf_salt` và `vault_key_id` hiện tại vào `webauthn_challenge` với TTL 5 phút).
 3. Gọi `navigator.credentials.create()` và kiểm tra `opGeneration === currentGeneration` ngay khi hoàn tất. Đọc `getClientExtensionResults().prf`: `enabled !== true` → lỗi `passkey.prf_unsupported`, dừng; `enabled === true` kèm `results.first` (32 B) thì dùng luôn; nếu chỉ có `enabled === true` mà chưa có `results.first`, client gọi ngay `navigator.credentials.get()` với `allowCredentials: [{type: "public-key", id: cred.rawId}]`, `userVerification: "required"`, `prf.eval.first = prf_salt` và **challenge ngẫu nhiên 32 B do chính client tự sinh** (assertion của bước `get()` này chỉ trích xuất PRF cục bộ, không gửi lên server và không dùng để xác thực — điểm lệch gate 3, **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**, xem [ADR 0003](adr/0003-webauthn-prf-va-devkey.md)). Cancel/thiếu output ở bước `get()` → lỗi đăng ký, có thể thử lại; không fallback largeBlob/server-held secret.
 4. Chuyển `PWK = results.first` (32 B) qua transferable `ArrayBuffer` kèm `opGeneration` vào Worker; Worker kiểm tra `cmd.generation === workerGeneration`, bọc `vk_wrap = seal(VK, PWK)` (73 B: `0x01 ‖ nonce(24) ‖ ciphertext(32) ‖ tag(16)`) với AAD `UTF8("sabk.vk.prf.v1") ‖ 0x00 ‖ 0x01` ([ADR 0002](adr/0002-vault-crypto-layout.md)), tự mở thử lại kiểm tra khớp đúng `VK` rồi xoá sạch `PWK` (`sodium.memzero`); `PWK` không bao giờ lưu trữ hay gửi lên server.
 5. Kiểm tra grant `vault.passkey_register` còn hạn ≥ 60 giây trước lần gửi đầu tiên, rồi gọi `POST /vault/passkeys` `{challenge_id, attestation: {client_data_json, attestation_object}, prf_salt, vk_wrap, name}` + `X-Reauth-Token` + `Idempotency-Key` (không dùng `If-Match` và không tăng `vault.version`). Server áp ngân sách xử lý 30 giây cho handler (`503 dependency_unavailable` khi quá hạn), consume nguyên tử `challenge_id` theo `challenge_hash`, verify attestation (`UP`+`UV`, chấp nhận định dạng `"none"`), **tự trích xuất** `cred_id`, `pubkey`, `aaguid` từ `AttData` (nếu client gửi kèm các trường rời `cred_id`/`pubkey`/`aaguid` bên ngoài `attestation_object` thì server bỏ qua hoàn toàn) và xác minh lại thẩm quyền (session dưới khoá hàng `FOR UPDATE` + grant `vault.passkey_register` bằng cùng bộ xác minh của route) trong transaction mutation cuối cùng ngay trước `FinishIdempotencyKey` / `COMMIT` (advisor-dec-057, advisor-dec-071): một request có grant hoặc session không còn hợp lệ tại điểm kiểm tra cuối này không bao giờ commit. Lỗi hoặc timeout trước `COMMIT` hoàn tác transaction mutation và giải phóng claim `in_progress` (nhưng `challenge_id` một lần đã bị đốt, lượt đăng ký mới phải xin `register/options` mới); timeout ngay lúc `COMMIT` giữ nguyên claim ở trạng thái chưa xác định. Không hứa hẹn huỷ chéo giữa các request/replica (BR1-1) hoặc cửa sổ đang bay giữa bước kiểm tra cuối cùng và `COMMIT` (BR1-2); `409 idempotency_in_progress` và `503` vẫn là kết quả chưa xác định (unknown outcome) — nếu mất phản hồi mạng hoặc nhận `409 idempotency_in_progress` / `503` sau khi gửi POST, client replay lại đúng request với cùng `Idempotency-Key` trước khi kết luận credential mồ côi ([ADR 0003](adr/0003-webauthn-prf-va-devkey.md)). Ghi audit `passkey.register`, tạo thông báo bảo mật và gửi email cảnh báo.
@@ -587,7 +587,7 @@ flowchart LR
         TEI[TEI tự host, tuỳ chọn<br/>BAAI/bge-m3 · 1024 dims]
     end
 
-    NG[nginx reverse proxy<br/>key.zone17th.click · TLS] --> Edge
+    NG[nginx reverse proxy<br/>engram.zone17.click · TLS] --> Edge
     NG --> API
     UI -- HTTPS JSON --> NG
     MK -.-> UI
@@ -609,7 +609,7 @@ Với `openai_compat`, chỉ `item.name` (+ hint), `tag.display` và query seman
 | Landing + docs (không có trang pricing) | Next.js SSR/SSG | SEO, `hreflang` en/vi, sitemap |
 | App shell (`/app/*`) | Next.js, `noindex`, client components | Không SSR dữ liệu user (không có VK) |
 | **Toàn bộ crypto** | Browser (Web Worker) | Server không nhận passphrase, KEK, VK, plaintext RK, plaintext body |
-| **WebAuthn + PRF** | Browser (main thread → authenticator) | Unlock/register passkey; PWK không lên server. RP ID `key.zone17th.click` |
+| **WebAuthn + PRF** | Browser (main thread → authenticator) | Unlock/register passkey; PWK không lên server. RP ID `engram.zone17.click` |
 | JSON parse / bảng lồng / import file | Browser | Server không thấy JSON |
 | Auth, sessions | Go API | Cookie HttpOnly, SameSite=Lax, refresh rotation |
 | Item / Tag CRUD, suggest, search | Go API + Postgres | Lexical (pg_trgm, prefix) + vector (pgvector) trên **hai** bảng |
@@ -617,7 +617,7 @@ Với `openai_compat`, chỉ `item.name` (+ hint), `tag.display` và query seman
 | Embedding (index) | Go worker (River) → provider | Async; `openai_compat` (mặc định) hoặc TEI compose profile `semantic` |
 | Embedding (query) | Go API → provider | Sync khi suggest, budget `EMBEDDING_QUERY_TIMEOUT`; LRU + circuit breaker (§6.6) |
 | Rate limit / cache suggest | Go in-memory (MVP) → Redis khi scale ngang | |
-| Reverse proxy / TLS | nginx trước Next.js + Go API | Domain tạm `key.zone17th.click`; cấu hình khi deploy (§11.5) |
+| Reverse proxy / TLS | nginx trước Next.js + Go API | Domain `engram.zone17.click`; cấu hình khi deploy (§11.5) |
 
 ### 4.2 Backend stack (Go)
 
@@ -818,7 +818,7 @@ Passkey là **phương thức mở vault** ở MVP, ngang hàng passphrase — *
 | PRF | Bắt buộc (`prf` / CTAP2 `hmac-secret`). `create()` có thể chỉ trả `enabled=true`; gọi `get()` tiếp với challenge ngẫu nhiên 32 B do client tự sinh để lấy output khi cần (assertion `get()` cục bộ chỉ để lấy PRF, không gửi server, không dùng để xác thực; điểm lệch gate 3 — **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**). 32 B → `PWK` → wrap `VK` (73 B, AAD `UTF8("sabk.vk.prf.v1") ‖ 0x00 ‖ 0x01` theo [ADR 0002](adr/0002-vault-crypto-layout.md)). Salt ngẫu nhiên 32 B / credential lưu `prf_salt`; nhiều credential dùng `evalByCredential` |
 | Không PRF | **Từ chối** đăng ký. Không fallback server-held secret, không largeBlob (non-goal) |
 | Nhiều máy | N credential / user (Hello, điện thoại, YubiKey) |
-| Origin / RP ID | Production origin `https://key.zone17th.click`, RP ID `key.zone17th.click`. Dev: `http://localhost` / `localhost` |
+| Origin / RP ID | Production origin `https://engram.zone17.click`, RP ID `engram.zone17.click`. Dev: `http://localhost` / `localhost` |
 | Thu hồi | Re-auth tài khoản; Settings xoá wrap + `cred_id` trên live server. Bản wrap đã copy vẫn dùng được nếu credential còn PRF; không tương đương rotate VK |
 | Đổi passphrase / recover RK | Passkey **còn hạn** (VK không đổi) |
 | Auto-lock | Prompt WebAuthn để mở lại; DevKey vẫn thắng trên máy đã nhớ |
@@ -1862,7 +1862,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 {"lookup_hash": "base64url_32B_hash"}
 ```
 
-→ `200 {"recovery_key_id":"3b241101-e2bb-4255-8caf-4136c566a962","wrap":"base64url_73B_wrap"}` · `401 {"type":"https://key.zone17th.click/problems/recovery_key_invalid","title":"Khoá khôi phục không hợp lệ","status":401,"code":"recovery_key_invalid"}`
+→ `200 {"recovery_key_id":"3b241101-e2bb-4255-8caf-4136c566a962","wrap":"base64url_73B_wrap"}` · `401 {"type":"https://engram.zone17.click/problems/recovery_key_invalid","title":"Khoá khôi phục không hợp lệ","status":401,"code":"recovery_key_invalid"}`
 
 **`POST /api/v1/vault/passkeys`** (`X-Reauth-Token`, `Idempotency-Key`, `X-CSRF-Token`)
 
@@ -1919,7 +1919,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 - [ ] Secrets qua env; `.env.example`; không secret trong repo.
 - [ ] Không log `q`, không log body; access log = path pattern + status + latency.
 - [ ] Pentest / review crypto trước GA.
-- [ ] WebAuthn: RP ID `key.zone17th.click`, origin `https://key.zone17th.click` (dev origin đúng port web); UV required; hỗ trợ `create enabled=true` → `get` PRF output, nhiều credential dùng `evalByCredential`; không lưu PWK; `cred_id` unique.
+- [ ] WebAuthn: RP ID `engram.zone17.click`, origin `https://engram.zone17.click` (dev origin đúng port web); UV required; hỗ trợ `create enabled=true` → `get` PRF output, nhiều credential dùng `evalByCredential`; không lưu PWK; `cred_id` unique.
 - [ ] Recovery key: không log / không persist plaintext; `lookup_hash` unique; rate-limit; consume atomic + idempotent trên live server; regenerate/rotate cùng policy re-auth với rewrap; `POST /vault` yêu cầu đúng 10 wrap. Kiểm thử request cạnh tranh, version stale, backup cũ và giới hạn revoke wrap.
 - [ ] Giữ VK đủ quyền rewrap KEK; passkey/DevKey recovery không đòi passphrase cũ. Server kiểm tra re-auth grant, session và CSRF; audit + thông báo không chứa bí mật.
 - [ ] Permissions-Policy cho phép `publickey-credentials-get` / `create` trên origin app.
@@ -1982,7 +1982,7 @@ save-all-by-keyword/
 ├─ infra/
 │  ├─ docker-compose.yml        # postgres pg16+pgvector, api, worker, web
 │  │                           # tei: profile "semantic"
-│  └─ nginx/                    # key.zone17th.click — cấu hình khi deploy
+│  └─ nginx/                    # engram.zone17.click — cấu hình khi deploy
 ├─ .github/workflows/{web.yml,api.yml,e2e.yml}
 ├─ Makefile  ·  Taskfile.yml
 ├─ pnpm-workspace.yaml  ·  turbo.json
@@ -2052,7 +2052,7 @@ Acceptance/regression bắt buộc cho các contract v0.5:
 
 ### 11.5 Domain & proxy
 
-Domain tạm: **`key.zone17th.click`**. nginx (TLS) terminate rồi proxy `/` → Next.js, `/api` → Go. Chi tiết vhost làm sau khi có deploy; không chặn MVP local (`localhost:3000` / `:8080`).
+Domain production: **`engram.zone17.click`** (quyết định 2026-11-01, thay domain tạm cũ). nginx (TLS) terminate rồi proxy `/` → Next.js, `/api` → Go. Chi tiết vhost làm sau khi có deploy; không chặn MVP local (`localhost:3000` / `:8080`).
 
 ---
 
@@ -2114,7 +2114,7 @@ Mỗi file phase có phạm vi trong/ngoài, dependencies, API/schema cần đó
 
 ## 13. Câu hỏi mở còn lại
 
-Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = P07** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `key.zone17th.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
+Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = P07** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `engram.zone17.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
 
 **Chốt v0.6:** tên sản phẩm là `engram`, viết thường, repo giữ `save-all-by-keyword`; domain và nhãn hiệu **chưa tra**. `mockups/` là tiêu chuẩn thiết kế ràng buộc cho §7 — mockup thắng về thị giác, spec thắng về hành vi và dữ liệu (§7.0). Tầng token chức năng giữ nguyên ClickUp, chỉ tầng thương hiệu là của engram.
 
@@ -2160,7 +2160,7 @@ Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyw
 | **Passkey** | WebAuthn credential; MVP = **unlock vault** (PRF), không thay login |
 | **PRF / hmac-secret** | Extension WebAuthn/CTAP; 32 B PWK bọc VK. Thiếu PRF → từ chối đăng ký |
 | **PWK** | Passkey wrap key — output PRF, không lưu, không lên server |
-| **RP ID** | `key.zone17th.click` (prod); `localhost` (dev) |
+| **RP ID** | `engram.zone17.click` (prod); `localhost` (dev) |
 | **DevKey** | WebCrypto non-extractable trên thiết bị đã "nhớ"; không có trên server |
 | **Wrap / seal** | AEAD một key bằng key khác |
 | **BLAKE2b** | Hash keyed/domain-separated: lookup RK + derive wrap-key từ RK |

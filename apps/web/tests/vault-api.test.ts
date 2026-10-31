@@ -206,7 +206,7 @@ describe('lib/api/vault', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          type: 'https://key.zone17th.click/problems/version_mismatch',
+          type: 'https://engram.zone17.click/problems/version_mismatch',
           title: 'Version mismatch',
           status: 412,
           code: 'version_mismatch',

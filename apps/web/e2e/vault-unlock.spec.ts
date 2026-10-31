@@ -111,7 +111,7 @@ async function installUnlockApiMocks(
         contentType: 'application/problem+json',
         headers: { 'Retry-After': '15' },
         body: JSON.stringify({
-          type: 'https://engram.zone17th.click/problems/rate_limited',
+          type: 'https://engram.zone17.click/problems/rate_limited',
           title: 'rate_limited',
           status: 429,
           code: 'rate_limited',

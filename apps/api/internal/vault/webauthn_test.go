@@ -13,8 +13,8 @@ import (
 func TestExtractClientDataChallengeAndVerifyRegistrationAttestation(t *testing.T) {
 	va := webauthntest.New()
 	rp := vault.WebAuthnRPConfig{
-		RPID:     "key.zone17th.click",
-		RPOrigin: "https://key.zone17th.click",
+		RPID:     "engram.zone17.click",
+		RPOrigin: "https://engram.zone17.click",
 		RPName:   "engram",
 	}
 
