@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '@/components/theme-provider';
-import { SessionProvider } from '@/features/auth/session-provider';
+import { SessionProvider, useSession, type SessionState } from '@/features/auth/session-provider';
 import { resetVaultBroadcastForTests } from '@/features/vault/broadcast';
 import {
   DEVICE_META_RECORD_KEY,
@@ -307,6 +307,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
   ) {
     let currentMe = makeMeFixture('absent', options);
     let vaultCtx!: VaultContextValue;
+    let sessionCtx!: Pick<SessionState, 'status' | 'me'>;
     const oauthReauthCalls: Array<{ url: string; body: string }> = [];
     let getVaultCalls = 0;
     // Armed by a test AFTER step 3 rendered: runs on every later GET /vault (the in-lock Remember verification and any
@@ -389,6 +390,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
     function VaultProbe() {
       vaultCtx = useVault();
+      sessionCtx = useSession();
       return null;
     }
 
@@ -413,21 +415,55 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
         </ThemeProvider>
       </NextIntlClientProvider>,
     );
+    // Readiness gates (CI-41036636607). The app mounts the flow behind RouteGuard, so `me` is always loaded there; this
+    // harness has no guard, and `onboarding-step-passphrase` renders before GET /auth/me resolves. handleStep1Submit
+    // captures `opUserId` (null until /me) + `opGeneration` before its first await and silently discards the createVault
+    // result when either changed, so submit only once the session and the provider's initial state have settled.
     await waitFor(() => {
+      expect(sessionCtx.status).toBe('authenticated_without_vault');
+      expect(sessionCtx.me?.user.id).toBeTruthy();
+      expect(vaultCtx.state).toBe('no_vault');
+      expect(vaultCtx.workerState).toBe('locked');
+      expect(vaultCtx.inFlight).toBe(false);
       expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
     }, CRYPTO_WAIT);
-    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
-      target: { value: STRONG_PASSPHRASE },
-    });
-    fireEvent.change(
-      screen.getByLabelText(locale === 'en' ? /Confirm passphrase/i : /Gõ lại passphrase/i),
-      { target: { value: STRONG_PASSPHRASE } },
+    const passInput = screen.getByLabelText(/^Passphrase$/i);
+    const confirmInput = screen.getByLabelText(
+      locale === 'en' ? /Confirm passphrase/i : /Gõ lại passphrase/i,
     );
+    fireEvent.change(passInput, { target: { value: STRONG_PASSPHRASE } });
+    fireEvent.change(confirmInput, { target: { value: STRONG_PASSPHRASE } });
+    // zxcvbn is lazy-loaded: wait until the live policy evaluation accepted the passphrase before submitting.
+    await waitFor(() => {
+      expect(screen.getByTestId('rule-min-length')).toHaveAttribute('data-satisfied', 'true');
+      expect(screen.getByTestId('rule-min-score')).toHaveAttribute('data-satisfied', 'true');
+    }, CRYPTO_WAIT);
+    const userIdAtSubmit = sessionCtx.me?.user.id;
+    const generationAtSubmit = vaultCtx.generation;
     fireEvent.click(screen.getByTestId('onboarding-continue-button'));
 
+    // The submit started: handleStep1Submit clears both inputs right before the KDF (or the flow already moved on).
     await waitFor(() => {
-      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+      if (screen.queryByTestId('onboarding-step-passphrase') === null) return;
+      expect(passInput).toHaveValue('');
+      expect(confirmInput).toHaveValue('');
     }, CRYPTO_WAIT);
+
+    try {
+      await waitFor(() => {
+        expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+      }, CRYPTO_WAIT);
+    } catch (error) {
+      // A cleared step 1 that never advanced means createVault's result was discarded (generation or user id moved).
+      throw new Error(
+        `step 1 submitted but never reached the recovery-keys step: user id changed=${String(
+          sessionCtx.me?.user.id !== userIdAtSubmit,
+        )}, generation ${String(generationAtSubmit)} -> ${String(vaultCtx.generation)}, session=${
+          sessionCtx.status
+        }, vault=${vaultCtx.state}/${vaultCtx.workerState}`,
+        { cause: error },
+      );
+    }
 
     fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
     await act(async () => {
