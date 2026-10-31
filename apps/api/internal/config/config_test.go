@@ -3,6 +3,7 @@ package config_test
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -504,4 +505,74 @@ func fmtMap(m map[string]any) string {
 		b.WriteByte(';')
 	}
 	return b.String()
+}
+
+// AUTH_TRUSTED_PROXY_CIDRS phải được nạp thật (trước đây field unexported nên envconfig bỏ qua,
+// development luôn rơi về default còn production luôn trống).
+func TestTrustedProxyCIDRsLoaded(t *testing.T) {
+	prod := map[string]string{
+		"APP_ENV":            "production",
+		"APP_ORIGIN":         "https://engram.zone17.click",
+		"AUTH_JWT_SECRET":    b64(32),
+		"AUTH_CSRF_SECRET":   b64(33),
+		"AUTH_REAUTH_SECRET": b64(34),
+		"AUTH_IP_PEPPER":     b64(35),
+		"AUTH_EMAIL_PEPPER":  b64(36),
+	}
+	dev := map[string]string{"APP_ENV": "development"}
+	with := func(base map[string]string, cidrs string) map[string]string {
+		m := make(map[string]string, len(base)+1)
+		for k, v := range base {
+			m[k] = v
+		}
+		m["AUTH_TRUSTED_PROXY_CIDRS"] = cidrs
+		return m
+	}
+	cases := []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{"development explicit", with(dev, "172.18.0.0/16, 172.30.17.0/24"), []string{"172.18.0.0/16", "172.30.17.0/24"}},
+		{"production explicit", with(prod, "172.18.0.0/16,172.30.17.0/24"), []string{"172.18.0.0/16", "172.30.17.0/24"}},
+		{"development empty keeps default", with(dev, ""), []string{"127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}},
+		{"production empty trusts none", with(prod, ""), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, tc.env)
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			got := make([]string, 0, len(cfg.TrustedProxyCIDRs))
+			for _, n := range cfg.TrustedProxyCIDRs {
+				got = append(got, n.String())
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("TrustedProxyCIDRs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("explicit list replaces the development default", func(t *testing.T) {
+		setEnv(t, with(dev, "172.18.0.0/16"))
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if !cfg.TrustedProxyContains(net.ParseIP("172.18.0.254")) {
+			t.Fatal("172.18.0.254 must be trusted")
+		}
+		if cfg.TrustedProxyContains(net.ParseIP("192.168.1.10")) {
+			t.Fatal("192.168.1.10 must not be trusted when an explicit list is set")
+		}
+	})
+
+	t.Run("invalid CIDR rejected", func(t *testing.T) {
+		setEnv(t, with(dev, "not-a-cidr"))
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() error = nil, want invalid AUTH_TRUSTED_PROXY_CIDRS error")
+		}
+	})
 }
