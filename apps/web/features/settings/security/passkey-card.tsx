@@ -638,7 +638,11 @@ function PasskeySecurityCardInner({
                       <Link
                         href="/app/auth/password-enroll"
                         className="btn btn-secondary btn-sm no-underline"
-                        onClick={() => closeRevokeDialog(false)}
+                        onClick={() => {
+                          // Navigating to password enrollment on purpose: do not return focus to the Remove button.
+                          revokeOpenerRef.current = null;
+                          closeRevokeDialog(false);
+                        }}
                       >
                         {tAuth('reauth.enrollCta')}
                       </Link>

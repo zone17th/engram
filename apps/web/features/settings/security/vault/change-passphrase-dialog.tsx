@@ -59,6 +59,7 @@ export function ChangePassphraseDialog({
     notifyVaultChanged,
     reloadVaultMeta,
   } = useVault();
+  const skipFocusReturnRef = useRef(false);
 
   const [step, setStep] = useState<ChangePassphraseStep>('form');
   const [loginPassword, setLoginPassword] = useState('');
@@ -474,6 +475,7 @@ export function ChangePassphraseDialog({
         id="passDlg"
         aria-labelledby="passDlgTitle"
         onCloseAutoFocus={(event) => {
+          if (skipFocusReturnRef.current) return;
           const opener = returnFocusRef?.current;
           if (opener && opener.isConnected) {
             event.preventDefault();
@@ -845,6 +847,8 @@ export function ChangePassphraseDialog({
                     variant="secondary"
                     size="sm"
                     onClick={() => {
+                      // Another dialog takes focus on purpose: do not return focus to the opener.
+                      skipFocusReturnRef.current = true;
                       handleClose();
                       onOpenSignOutOthers();
                     }}

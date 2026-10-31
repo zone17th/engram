@@ -70,6 +70,7 @@ export function ResetVaultDialog({
     lock,
     notifyVaultChanged,
   } = useVault();
+  const skipFocusReturnRef = useRef(false);
 
   const [step, setStep] = useState<ResetStep>('s1_paths');
   const [loginPassword, setLoginPassword] = useState('');
@@ -403,6 +404,7 @@ export function ResetVaultDialog({
         aria-labelledby="resetDlgTitle"
         className="w-[min(600px,94vw)]"
         onCloseAutoFocus={(event) => {
+          if (skipFocusReturnRef.current) return;
           const opener = returnFocusRef?.current;
           if (opener && opener.isConnected) {
             event.preventDefault();
@@ -520,7 +522,11 @@ export function ResetVaultDialog({
                 <a
                   href="#dulieu"
                   className="btn btn-tertiary btn-sm no-underline"
-                  onClick={() => handleClose()}
+                  onClick={() => {
+                    // The link moves focus/scroll to #dulieu on purpose: do not return focus to the opener.
+                    skipFocusReturnRef.current = true;
+                    handleClose();
+                  }}
                 >
                   {t('reset.step2ExportLink')}
                 </a>

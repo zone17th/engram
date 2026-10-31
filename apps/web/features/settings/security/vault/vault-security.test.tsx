@@ -2477,4 +2477,27 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(resetOpener).toHaveFocus());
   });
+
+  it('does not pull focus back to the Reset vault opener when the backup link closes the reset dialog (JR3-b)', async () => {
+    const user = userEvent.setup();
+    await renderSettingsHarness();
+
+    const resetOpener = screen.getByRole('button', { name: 'Reset vault' });
+    await user.click(resetOpener);
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+    const focusSpy = vi.spyOn(resetOpener, 'focus');
+
+    await user.click(within(dialog).getByRole('link', { name: 'Go to Data / Export' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Radix FocusScope runs its unmount auto-focus in a zero-delay timeout scheduled when the dialog unmounted;
+    // one later macrotask is therefore enough to observe whether the opener was refocused.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(resetOpener).not.toHaveFocus();
+  });
 });
