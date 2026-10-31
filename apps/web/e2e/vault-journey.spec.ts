@@ -485,10 +485,10 @@ test.describe('vault journey against the real API', () => {
         await pageB.locator('[data-open-dialog="resetDlg"]').click();
         const dialog = pageB.getByRole('dialog');
         await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
-        await dialog.getByRole('button', { name: /None of these work|Không đường nào dùng được/ }).click();
-        await dialog.getByRole('button', { name: /Checked backups|Đã kiểm tra backup/ }).click();
+        await dialog.getByRole('button', { name: /^(None of these work|Không đường nào dùng được)$/ }).click();
+        await dialog.getByRole('button', { name: /^(Checked backups|Đã kiểm tra backup)$/ }).click();
         await fillSecret(dialog.locator('#rst-reauth-pwd'), PASSWORD, UI_WAIT_MS);
-        await dialog.getByRole('button', { name: /Continue|Tiếp tục/ }).click();
+        await dialog.getByRole('button', { name: /^(Continue|Tiếp tục)$/ }).click();
         await dialog.locator('#rst-confirm-word').fill('RESET');
         await expect(dialog.locator('#rstConfirmBtn')).toBeEnabled({ timeout: UI_WAIT_MS });
         const resetResponse = pageB.waitForResponse(
@@ -510,7 +510,7 @@ test.describe('vault journey against the real API', () => {
         expect(gone.status).toBe(404);
         expect(gone.code).toBe('vault_absent');
         // Onboarding is offered again.
-        await dialog.getByRole('link', { name: /Create new vault|Tạo vault mới/ }).click();
+        await dialog.getByRole('link', { name: /^(Create new vault|Tạo vault mới)$/ }).click();
         await expect(pageB).toHaveURL(/\/app\/onboarding$/, { timeout: UI_WAIT_MS });
         await expect(pageB.getByTestId('onboarding-step-passphrase')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
       });

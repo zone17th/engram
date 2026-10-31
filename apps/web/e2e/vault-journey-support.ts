@@ -199,7 +199,7 @@ export async function createVaultViaOnboarding(
     await expect(dialog).toBeVisible({ timeout: UI_WAIT_MS });
 
     const passwordField = dialog.getByLabel(/Login password|Mật khẩu đăng nhập/);
-    const continueBtn = dialog.getByRole('button', { name: /Continue|Tiếp tục/ });
+    const continueBtn = dialog.getByRole('button', { name: /^(Continue|Tiếp tục)$/ });
     await expect(passwordField.or(continueBtn.and(page.locator(':enabled'))).first()).toBeVisible({
       timeout: UI_WAIT_MS,
     });
