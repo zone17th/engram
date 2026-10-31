@@ -31,7 +31,7 @@ Nguyên tắc xuyên suốt từ SPEC §5.2 và plan mục 1: **server không ba
 Ở MVP (P03), passkey chỉ dùng để bọc và mở khoá `VK` tại client thông qua phần mở rộng PRF; passkey **không** tạo phiên đăng nhập (login-with-passkey thuộc P07).
 
 - **Cấu hình Relying Party (RP):** Lấy từ config ứng dụng và kiểm tra lúc khởi động:
-  - Production: `RPID = key.zone17th.click`, `Origin = https://key.zone17th.click`.
+  - Production: `RPID = engram.zone17.click`, `Origin = https://engram.zone17.click`.
   - Development: `RPID = localhost`, `Origin` khớp chính xác `APP_ORIGIN` (bao gồm cả cổng, ví dụ `http://localhost:3000`).
 - **Bảng `webauthn_challenge` chỉ dùng cho đăng ký (`POST /vault/passkeys/register/options` → `POST /vault/passkeys`):**
   - Lược đồ bảng gồm các cột: `id` (UUID), `user_id` (UUID), `session_id` (UUID), `vault_key_id` (text), `challenge_hash` (bytea, UNIQUE), `prf_salt` (bytea, 32 B), `expires_at` (timestamptz, TTL 5 phút), `consumed_at` (timestamptz, nullable).
@@ -62,7 +62,7 @@ Quy trình xác minh khi nhận `POST /vault/passkeys` với body `{challenge_id
 3. **Truyền chuỗi challenge vào API xác minh cấp thấp của thư viện:**
    - Sau khi xác nhận `candidate_hash` khớp với `challenge_hash` trong DB, chuỗi `challenge` (base64url) lấy từ `clientDataJSON` đã được chứng minh là chính challenge do server phát hành.
    - Server dựng đối tượng đã parse (`protocol.ParsedCredentialCreationData` từ `client_data_json` và `attestation_object`) rồi truyền chính chuỗi `challenge` đó vào hàm xác minh cấp thấp `ParsedCredentialCreationData.Verify` của thư viện `github.com/go-webauthn/webauthn/protocol` cùng với:
-     - `relyingPartyID` = RP ID từ config (`key.zone17th.click` hoặc `localhost`);
+     - `relyingPartyID` = RP ID từ config (`engram.zone17.click` hoặc `localhost`);
      - `rpOrigins` = `[config.AppOrigin]`;
      - `verifyUser = true` (bắt buộc cờ `UV` — User Verified) và `verifyUserPresence = true` (bắt buộc cờ `UP` — User Present);
      - Danh sách thuật toán COSE cho phép (`credParams`).
@@ -101,7 +101,7 @@ Theo đặc tả WebAuthn PRF extension (và CTAP2 `hmac-secret`), khi trình du
 
 ### 5. Xử lý credential mồ côi (orphan credentials)
 
-Vì WebAuthn không có API cho phép Relying Party tự xoá một credential đã ghi vào bộ nhớ của authenticator từ phía server (ngoại trừ cơ chế tín hiệu gợi ý mới trên một số trình duyệt, không đảm bảo thực thi), sẽ phát sinh trường hợp **credential mồ côi** — authenticator giữ một passkey cho RP `key.zone17th.click` (hoặc `localhost`) nhưng server không có bản ghi tương ứng trong `vault_passkey`:
+Vì WebAuthn không có API cho phép Relying Party tự xoá một credential đã ghi vào bộ nhớ của authenticator từ phía server (ngoại trừ cơ chế tín hiệu gợi ý mới trên một số trình duyệt, không đảm bảo thực thi), sẽ phát sinh trường hợp **credential mồ côi** — authenticator giữ một passkey cho RP `engram.zone17.click` (hoặc `localhost`) nhưng server không có bản ghi tương ứng trong `vault_passkey`:
 
 - **Nguyên nhân phát sinh:**
   1. Người dùng hoàn tất `navigator.credentials.create()` (credential đã được ghi vào Windows Hello / iCloud Keychain / Google Password Manager / YubiKey), nhưng sau đó huỷ ở bước `get()` nối tiếp, hoặc `get()` không trả `results.first`, hoặc grant re-auth hết hạn không gia hạn được, hoặc `POST /vault/passkeys` bị server từ chối dứt khoát (`400` / `409` / `503`), hoặc mất kết nối mạng trước khi commit được xác nhận.

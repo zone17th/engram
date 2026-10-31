@@ -25,7 +25,7 @@ function readOpenApiProblemCodes(): string[] {
 
 describe('problem', () => {
   it('giữ đúng namespace type URI của spec', () => {
-    expect(PROBLEM_BASE).toBe('https://key.zone17th.click/problems/');
+    expect(PROBLEM_BASE).toBe('https://engram.zone17.click/problems/');
   });
 
   it('nhận diện body problem hợp lệ', () => {

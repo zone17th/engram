@@ -38,7 +38,7 @@ Endpoint owner: `POST /exports`, `GET /exports/{id}`, download/cancel semantics 
 
 ## Vận hành và bảo mật
 
-- Production domain tạm `key.zone17th.click`, TLS nginx `/` → web, `/api` → Go. Chốt RP/origin/WebAuthn và cookie cùng domain. Dev/local không được quảng cáo như bản production đã deploy.
+- Production domain `engram.zone17.click`, TLS nginx `/` → web, `/api` → Go. Chốt RP/origin/WebAuthn và cookie cùng domain. Dev/local không được quảng cáo như bản production đã deploy.
 - TEI/DB/metrics chỉ nội bộ hoặc endpoint vận hành có access control; proxy log không raw q/body. CSP/nonce/WASM/worker/fonts/connect-src và OAuth/CAPTCHA config chạy được thực tế, không copy CSP mẫu khiến luồng auth hỏng.
 - Error telemetry chỉ metadata đã scrub; thử nội dung canary bí mật để kiểm tra network/log/Sentry không có body/RK/passphrase. Export download URL và token không xuất hiện trong log.
 - Backup WAL/base hàng ngày/PITR 7 ngày, encrypted at rest. RPO ≤15 phút, RTO ≤2 giờ là mục tiêu phải đo qua rehearsal trên môi trường tương đương.

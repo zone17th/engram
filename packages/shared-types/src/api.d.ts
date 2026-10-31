@@ -806,7 +806,7 @@ export interface components {
         Problem: {
             /**
              * Format: uri
-             * @example https://key.zone17th.click/problems/dependency_unavailable
+             * @example https://engram.zone17.click/problems/dependency_unavailable
              */
             type: string;
             title: string;

@@ -464,7 +464,7 @@ async function installHeldWakeMe(context: BrowserContext) {
         status: 503,
         contentType: 'application/problem+json',
         body: JSON.stringify({
-          type: 'https://engram.zone17th.click/problems/service_unavailable',
+          type: 'https://engram.zone17.click/problems/service_unavailable',
           title: 'service_unavailable',
           status: 503,
           code: 'service_unavailable',

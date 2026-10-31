@@ -103,7 +103,7 @@ function problemResponse(
 ) {
   return new Response(
     JSON.stringify({
-      type: `https://engram.zone17th.click/problems/${code}`,
+      type: `https://engram.zone17.click/problems/${code}`,
       title: code,
       status,
       code,
@@ -1760,7 +1760,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
           });
           return new Response(
             JSON.stringify({
-              type: 'https://engram.zone17th.click/problems/rate_limited',
+              type: 'https://engram.zone17.click/problems/rate_limited',
               title: 'rate_limited',
               status: 429,
               code: 'rate_limited',

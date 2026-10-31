@@ -1,6 +1,6 @@
 # Mockup UI — engram
 
-Bộ mockup tĩnh cho **engram** (`key.zone17th.click`). HTML thuần + Tailwind Play CDN, không build, không backend.
+Bộ mockup tĩnh cho **engram** (`engram.zone17.click`). HTML thuần + Tailwind Play CDN, không build, không backend.
 Dữ liệu là giả và **không có mã hoá thật** — mọi thứ "khoá/mở khoá" ở đây chỉ là trạng thái UI.
 
 Đây là **tiêu chuẩn thiết kế ràng buộc** cho §7 của [spec](../docs/SPEC.md#70-tiêu-chuẩn-thiết-kế--mockups), không phải bản demo

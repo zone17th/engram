@@ -331,7 +331,7 @@ function problemResponse(
 ) {
   return new Response(
     JSON.stringify({
-      type: `https://key.zone17th.click/problems/${code}`,
+      type: `https://engram.zone17.click/problems/${code}`,
       title: code,
       status,
       code,
@@ -1217,7 +1217,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     const errorsToCheck: Array<{ err: unknown; expectedSubstring: string }> = [
       {
         err: new ProblemError({
-          type: 'https://key.zone17th.click/problems/precondition_required',
+          type: 'https://engram.zone17.click/problems/precondition_required',
           title: 'Precondition Required',
           status: 428,
           code: 'precondition_required',
@@ -1226,7 +1226,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       },
       {
         err: new ProblemError({
-          type: 'https://key.zone17th.click/problems/idempotency_conflict',
+          type: 'https://engram.zone17.click/problems/idempotency_conflict',
           title: 'Conflict',
           status: 409,
           code: 'idempotency_conflict',
@@ -1235,7 +1235,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
       },
       {
         err: new ProblemError({
-          type: 'https://key.zone17th.click/problems/vault_mutations_disabled',
+          type: 'https://engram.zone17.click/problems/vault_mutations_disabled',
           title: 'Service Unavailable',
           status: 503,
           code: 'vault_mutations_disabled',

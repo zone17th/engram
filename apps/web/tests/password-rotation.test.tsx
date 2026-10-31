@@ -20,7 +20,7 @@ function emptyResponse(status = 204) {
 function problemResponse(code: string, status = 401, extra = {}) {
   return new Response(
     JSON.stringify({
-      type: `https://key.zone17th.click/problems/${code}`,
+      type: `https://engram.zone17.click/problems/${code}`,
       title: code,
       status,
       code,

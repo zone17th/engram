@@ -134,7 +134,7 @@ func TestProductionRejectsMissingSecretsAndHTTP(t *testing.T) {
 func TestProductionAcceptsHTTPSAndDistinctSecrets(t *testing.T) {
 	setEnv(t, map[string]string{
 		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://key.zone17th.click",
+		"APP_ORIGIN":         "https://engram.zone17.click",
 		"AUTH_JWT_SECRET":    b64(32),
 		"AUTH_CSRF_SECRET":   b64(33),
 		"AUTH_REAUTH_SECRET": b64(34),
@@ -148,11 +148,11 @@ func TestProductionAcceptsHTTPSAndDistinctSecrets(t *testing.T) {
 	if cfg.EphemeralSecrets {
 		t.Error("không được sinh ephemeral ở production")
 	}
-	if cfg.WebAuthnRPID != "key.zone17th.click" {
-		t.Errorf("WebAuthnRPID = %q, muốn key.zone17th.click", cfg.WebAuthnRPID)
+	if cfg.WebAuthnRPID != "engram.zone17.click" {
+		t.Errorf("WebAuthnRPID = %q, muốn engram.zone17.click", cfg.WebAuthnRPID)
 	}
-	if cfg.WebAuthnRPOrigin != "https://key.zone17th.click" {
-		t.Errorf("WebAuthnRPOrigin = %q, muốn https://key.zone17th.click", cfg.WebAuthnRPOrigin)
+	if cfg.WebAuthnRPOrigin != "https://engram.zone17.click" {
+		t.Errorf("WebAuthnRPOrigin = %q, muốn https://engram.zone17.click", cfg.WebAuthnRPOrigin)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestRejectsSharedSecrets(t *testing.T) {
 func TestFakeOAuthRejectedInProduction(t *testing.T) {
 	setEnv(t, map[string]string{
 		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://key.zone17th.click",
+		"APP_ORIGIN":         "https://engram.zone17.click",
 		"AUTH_FAKE_OAUTH":    "true",
 		"AUTH_JWT_SECRET":    b64(32),
 		"AUTH_CSRF_SECRET":   b64(33),
@@ -329,7 +329,7 @@ func TestEffectiveMailSinkDir(t *testing.T) {
 func TestWebAuthnRPBootValidation(t *testing.T) {
 	prodSecrets := map[string]string{
 		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://key.zone17th.click",
+		"APP_ORIGIN":         "https://engram.zone17.click",
 		"AUTH_JWT_SECRET":    b64(32),
 		"AUTH_CSRF_SECRET":   b64(33),
 		"AUTH_REAUTH_SECRET": b64(34),
@@ -337,36 +337,36 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 		"AUTH_EMAIL_PEPPER":  b64(36),
 	}
 
-	t.Run("production explicit key.zone17th.click and https://key.zone17th.click accepted", func(t *testing.T) {
+	t.Run("production explicit engram.zone17.click and https://engram.zone17.click accepted", func(t *testing.T) {
 		env := make(map[string]string, len(prodSecrets)+2)
 		for k, v := range prodSecrets {
 			env[k] = v
 		}
-		env["WEBAUTHN_RP_ID"] = "key.zone17th.click"
-		env["WEBAUTHN_RP_ORIGIN"] = "https://key.zone17th.click"
+		env["WEBAUTHN_RP_ID"] = "engram.zone17.click"
+		env["WEBAUTHN_RP_ORIGIN"] = "https://engram.zone17.click"
 		setEnv(t, env)
 		cfg, err := config.Load()
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if cfg.WebAuthnRPID != "key.zone17th.click" || cfg.WebAuthnRPOrigin != "https://key.zone17th.click" {
+		if cfg.WebAuthnRPID != "engram.zone17.click" || cfg.WebAuthnRPOrigin != "https://engram.zone17.click" {
 			t.Fatalf("got rpID=%q rpOrigin=%q", cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
 		}
 	})
 
-	t.Run("production registrable suffix zone17th.click accepted", func(t *testing.T) {
+	t.Run("production registrable suffix zone17.click accepted", func(t *testing.T) {
 		env := make(map[string]string, len(prodSecrets)+1)
 		for k, v := range prodSecrets {
 			env[k] = v
 		}
-		env["WEBAUTHN_RP_ID"] = "zone17th.click"
+		env["WEBAUTHN_RP_ID"] = "zone17.click"
 		setEnv(t, env)
 		cfg, err := config.Load()
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if cfg.WebAuthnRPID != "zone17th.click" {
-			t.Fatalf("got rpID=%q, want zone17th.click", cfg.WebAuthnRPID)
+		if cfg.WebAuthnRPID != "zone17.click" {
+			t.Fatalf("got rpID=%q, want zone17.click", cfg.WebAuthnRPID)
 		}
 	})
 
@@ -409,7 +409,7 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 			env: map[string]string{
 				"APP_ENV":        "development",
 				"APP_ORIGIN":     "http://localhost:3000",
-				"WEBAUTHN_RP_ID": "key.zone17th.click",
+				"WEBAUTHN_RP_ID": "engram.zone17.click",
 			},
 		},
 		{
@@ -457,7 +457,7 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 				for k, v := range prodSecrets {
 					m[k] = v
 				}
-				m["WEBAUTHN_RP_ID"] = "sub.key.zone17th.click"
+				m["WEBAUTHN_RP_ID"] = "sub.engram.zone17.click"
 				return m
 			}(),
 		},
@@ -468,7 +468,7 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 				for k, v := range prodSecrets {
 					m[k] = v
 				}
-				m["WEBAUTHN_RP_ORIGIN"] = "https://key.zone17th.click:8443"
+				m["WEBAUTHN_RP_ORIGIN"] = "https://engram.zone17.click:8443"
 				return m
 			}(),
 		},

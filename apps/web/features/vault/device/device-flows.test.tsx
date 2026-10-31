@@ -111,7 +111,7 @@ function makeMe(userId: string): Me {
 
 function vaultAbsentError(): ProblemError {
   return new ProblemError({
-    type: 'https://key.zone17th.click/problems/vault_absent',
+    type: 'https://engram.zone17.click/problems/vault_absent',
     title: 'Vault absent',
     status: 404,
     code: 'vault_absent',

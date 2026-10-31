@@ -29,7 +29,7 @@ describe('apiFetch', () => {
     stubFetch(
       new Response(
         JSON.stringify({
-          type: 'https://key.zone17th.click/problems/dependency_unavailable',
+          type: 'https://engram.zone17.click/problems/dependency_unavailable',
           title: 'Phụ thuộc chưa sẵn sàng',
           status: 503,
           code: 'dependency_unavailable',
@@ -116,7 +116,7 @@ describe('apiFetch', () => {
     stubFetch(
       new Response(
         JSON.stringify({
-          type: 'https://key.zone17th.click/problems/dependency_unavailable',
+          type: 'https://engram.zone17.click/problems/dependency_unavailable',
           title: 'Phụ thuộc chưa sẵn sàng',
           status: 503,
           code: 'dependency_unavailable',
