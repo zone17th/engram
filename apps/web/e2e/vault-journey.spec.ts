@@ -355,17 +355,17 @@ test.describe('vault journey against the real API', () => {
         await expect(cardA.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on');
         await expect(cardB.getByRole('radio', { name: '15 min', exact: true })).toHaveAttribute('data-state', 'on');
 
-        // Select 60 min in tab A -> propagates to tab B.
+        // Select 1 hour (60 min) in tab A -> propagates to tab B.
         const patch60 = tabA.waitForResponse(
           (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
           { timeout: UI_WAIT_MS },
         );
-        await cardA.getByRole('radio', { name: '60 min', exact: true }).click();
+        await cardA.getByRole('radio', { name: '1 hour', exact: true }).click();
         expect((await patch60).status()).toBe(200);
-        await expect(cardA.getByRole('radio', { name: '60 min', exact: true })).toHaveAttribute('data-state', 'on', {
+        await expect(cardA.getByRole('radio', { name: '1 hour', exact: true })).toHaveAttribute('data-state', 'on', {
           timeout: UI_WAIT_MS,
         });
-        await expect(cardB.getByRole('radio', { name: '60 min', exact: true })).toHaveAttribute('data-state', 'on', {
+        await expect(cardB.getByRole('radio', { name: '1 hour', exact: true })).toHaveAttribute('data-state', 'on', {
           timeout: UI_WAIT_MS,
         });
 

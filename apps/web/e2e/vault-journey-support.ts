@@ -208,7 +208,7 @@ export async function createVaultViaOnboarding(
         timeout: UI_WAIT_MS,
       });
       await fillSecret(passwordField, PASSWORD, UI_WAIT_MS);
-      await dialog.getByRole('button', { name: /Confirm|Xác nhận/, exact: true }).click();
+      await dialog.getByRole('button', { name: /^(Confirm|Xác nhận)$/, exact: true }).click();
       expect((await reauthed).ok()).toBe(true);
     }
     await expect(continueBtn).toBeEnabled({ timeout: UI_WAIT_MS });
