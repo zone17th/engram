@@ -366,78 +366,85 @@ interface Tabbable {
  * and unfocused style baseline.
  *
  * JR1-7: required controls are defined independently of their current `tabIndex` (every visible, enabled interactive
- * control `a[href], button, input, select, textarea, summary` plus intended keyboard stops `code[data-testid^="recovery-key-slot-"]`,
- * excluding only Radix roving-tabindex inactive items `[role="radio"][data-radix-collection-item][tabindex="-1"]` whose
- * group tab stop is the active radio). If an enabled control accidentally has `tabIndex < 0`, it stays in the required
- * sequence and the Tab traversal fails when Tab skips over it.
+ * control `a[href], button, input, select, textarea, summary` plus intended keyboard stops `code[data-testid^="recovery-key-slot-"]`).
+ * If an enabled control accidentally has `tabIndex < 0`, it stays in the required sequence and the Tab traversal fails
+ * when Tab skips over it.
+ *
+ * JR2-5: the one exception is a Radix roving radio group (`[role="radio"][data-radix-collection-item]`). Such a group is
+ * ONE Tab stop, so it contributes exactly one required control, chosen independently of how far the group has
+ * initialised: the item whose `tabindex` is 0, else the checked item, else the first enabled item. A fresh Radix 1.1.19
+ * group has no tab stop yet (every item is `tabindex=-1`, the group root forwards entry focus to the checked item), so
+ * filtering on `tabindex` alone would drop the whole group. The inactive alternatives are covered by the Arrow-key check
+ * (`expectRadioGroupKeyboard`).
  *
  * JR1-8: clears all previous `data-a11y-tab` markers across the entire `document` first so background markers from an
  * earlier screen or underlying Settings section can never alias a dialog or current scope index.
  *
  * JR1-9: blurs any currently focused element inside `root` before sampling each control's unfocused outline and
  * `box-shadow` baseline.
+ *
+ * Exported and self-contained (no closure over module scope) so `page.evaluate` can run it in the browser and a DOM
+ * fixture can run it in node.
  */
-async function markTabbables(page: Page, scopeSelector: string): Promise<Tabbable[]> {
-  return page.evaluate((selector) => {
-    for (const stale of Array.from(document.querySelectorAll('[data-a11y-tab]'))) {
-      stale.removeAttribute('data-a11y-tab');
+export function markTabbablesInDocument(selector: string): Tabbable[] {
+  for (const stale of Array.from(document.querySelectorAll('[data-a11y-tab]'))) {
+    stale.removeAttribute('data-a11y-tab');
+  }
+  const root = document.querySelector<HTMLElement>(selector);
+  if (!root) return [];
+  if (document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) {
+    document.activeElement.blur();
+  }
+  const isEnabled = (element: HTMLElement): boolean =>
+    !(element as HTMLButtonElement).disabled && element.getAttribute('aria-disabled') !== 'true';
+  const rovingRadio = '[role="radio"][data-radix-collection-item]';
+  const representatives = new Map<Element, HTMLElement | undefined>();
+  const representativeOf = (radio: HTMLElement): HTMLElement | undefined => {
+    const group = radio.closest('[role="radiogroup"]') ?? radio.parentElement ?? radio;
+    if (!representatives.has(group)) {
+      const items = Array.from(group.querySelectorAll<HTMLElement>(rovingRadio)).filter(isEnabled);
+      representatives.set(
+        group,
+        items.find((item) => item.tabIndex === 0) ??
+          items.find((item) => item.getAttribute('aria-checked') === 'true') ??
+          items[0],
+      );
     }
-    const root = document.querySelector<HTMLElement>(selector);
-    if (!root) return [];
-    if (document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) {
-      document.activeElement.blur();
-    }
-    const candidates = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'a[href], button, input, select, textarea, summary, code[data-testid^="recovery-key-slot-"]',
-      ),
-    );
-    const found: {
-      index: number;
-      label: string;
-      centerY: number;
-      left: number;
-      unfocusedOutlineStyle: string;
-      unfocusedOutlineWidth: number;
-      unfocusedOutlineColor: string;
-      unfocusedBoxShadow: string;
-      unfocusedBorderTopColor: string;
-    }[] = [];
-    for (const element of candidates) {
-      if ((element as HTMLButtonElement).disabled) continue;
-      if (element.getAttribute('aria-disabled') === 'true') continue;
-      if (element instanceof HTMLInputElement && element.type === 'hidden') continue;
-      if (
-        element.getAttribute('role') === 'radio' &&
-        element.hasAttribute('data-radix-collection-item') &&
-        element.tabIndex < 0
-      ) {
-        continue;
-      }
-      const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue;
-      if (element.closest('[inert], [aria-hidden="true"]')) continue;
-      const index = found.length;
-      element.setAttribute('data-a11y-tab', String(index));
-      const label =
-        element.getAttribute('data-testid') ??
-        element.getAttribute('aria-label') ??
-        (element.id || element.tagName.toLowerCase());
-      found.push({
-        index,
-        label,
-        centerY: rect.top + rect.height / 2,
-        left: rect.left,
-        unfocusedOutlineStyle: style.outlineStyle,
-        unfocusedOutlineWidth: Number.parseFloat(style.outlineWidth) || 0,
-        unfocusedOutlineColor: style.outlineColor,
-        unfocusedBoxShadow: style.boxShadow,
-        unfocusedBorderTopColor: style.borderTopColor,
-      });
-    }
-    return found;
-  }, scopeSelector);
+    return representatives.get(group);
+  };
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'a[href], button, input, select, textarea, summary, code[data-testid^="recovery-key-slot-"]',
+    ),
+  );
+  const found: Tabbable[] = [];
+  for (const element of candidates) {
+    if (!isEnabled(element)) continue;
+    if (element instanceof HTMLInputElement && element.type === 'hidden') continue;
+    if (element.matches(rovingRadio) && representativeOf(element) !== element) continue;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue;
+    if (element.closest('[inert], [aria-hidden="true"]')) continue;
+    const index = found.length;
+    element.setAttribute('data-a11y-tab', String(index));
+    const label =
+      element.getAttribute('data-testid') ??
+      element.getAttribute('aria-label') ??
+      (element.id || element.tagName.toLowerCase());
+    found.push({
+      index,
+      label,
+      centerY: rect.top + rect.height / 2,
+      left: rect.left,
+      unfocusedOutlineStyle: style.outlineStyle,
+      unfocusedOutlineWidth: Number.parseFloat(style.outlineWidth) || 0,
+      unfocusedOutlineColor: style.outlineColor,
+      unfocusedBoxShadow: style.boxShadow,
+      unfocusedBorderTopColor: style.borderTopColor,
+    });
+  }
+  return found;
 }
 
 /**
@@ -528,7 +535,7 @@ export async function keyboardWalk(
   label: string,
   options: KeyboardWalkOptions = {},
 ) {
-  const tabbables = await markTabbables(page, scopeSelector);
+  const tabbables = await page.evaluate(markTabbablesInDocument, scopeSelector);
   expect(tabbables.length, `keyboard ${label}: required controls under ${scopeSelector}`).toBeGreaterThan(0);
 
   for (let k = 1; k < tabbables.length; k += 1) {
@@ -638,6 +645,122 @@ export async function keyboardWalk(
       { selector: scopeSelector, previous: hadTabindex },
     );
   }
+}
+
+/**
+ * JR2-3: exercises keyboard access to the non-representative alternatives of a Radix roving `[role="radiogroup"]`.
+ * Expects focus on the control right after the group (here `settings-remember-device-switch`, parked by `keyboardWalk`),
+ * reaches the group's active radio via `Shift+Tab`, walks every alternative and wrap-around with `ArrowRight` /
+ * `ArrowLeft` (asserting containment, focused index, visible `:focus-visible` outline and single-checked invariant at
+ * each step), activates a non-default option with `Space` and restores the default with `Enter` (asserting the real
+ * PATCH `/api/v1/me/settings` response, `aria-checked="true"` and `data-state="on"` on each commit), then returns focus
+ * to the following control via `Tab`.
+ */
+export async function expectRadioGroupKeyboard(
+  page: Page,
+  groupSelector: string,
+  nextControlSelector: string,
+  label: string,
+) {
+  const readGroupState = () =>
+    page.evaluate((sel) => {
+      const group = document.querySelector<HTMLElement>(sel);
+      const radios = group ? Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]')) : [];
+      const active = document.activeElement;
+      const focusedIndex = active instanceof HTMLElement ? radios.indexOf(active) : -1;
+      const checkedIndices = radios.flatMap((r, idx) =>
+        r.getAttribute('aria-checked') === 'true' && r.getAttribute('data-state') === 'on' ? [idx] : [],
+      );
+      let hasVisibleOutline = false;
+      if (focusedIndex >= 0 && active instanceof HTMLElement) {
+        const style = getComputedStyle(active);
+        const width = Number.parseFloat(style.outlineWidth) || 0;
+        const color = style.outlineColor.trim().toLowerCase();
+        hasVisibleOutline =
+          style.outlineStyle !== 'none' &&
+          (style.outlineStyle === 'auto' || width > 0) &&
+          color !== '' &&
+          color !== 'transparent' &&
+          !/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)$/.test(color);
+      }
+      return {
+        count: radios.length,
+        contained: Boolean(group && active && group.contains(active)),
+        focusedIndex,
+        checkedIndices,
+        hasVisibleOutline,
+      };
+    }, groupSelector);
+
+  const expectFocusedRadio = async (expectedFocus: number, expectedChecked: number, step: string) => {
+    await expect
+      .poll(readGroupState, {
+        timeout: FOCUS_TIMEOUT_MS,
+        message: `keyboard ${label}: ${step}`,
+      })
+      .toEqual({
+        count: 4,
+        contained: true,
+        focusedIndex: expectedFocus,
+        checkedIndices: [expectedChecked],
+        hasVisibleOutline: true,
+      });
+  };
+
+  // Enter the group by Shift+Tab from the control after it: lands on the current tab-stop (checked 15 min, index 1).
+  await page.keyboard.press('Shift+Tab');
+  await expectFocusedRadio(1, 1, 'Shift+Tab enters radiogroup on checked option (index 1)');
+
+  // ArrowRight walks 1 -> 2 (60m) -> 3 (Never) -> wraps to 0 (5m); Radix ToggleGroup moves roving focus on Arrow and
+  // commits selection on Space/Enter, so checked stays at 1 until activated.
+  await page.keyboard.press('ArrowRight');
+  await expectFocusedRadio(2, 1, 'ArrowRight moves focus to index 2');
+  await page.keyboard.press('ArrowRight');
+  await expectFocusedRadio(3, 1, 'ArrowRight moves focus to index 3');
+  await page.keyboard.press('ArrowRight');
+  await expectFocusedRadio(0, 1, 'ArrowRight wraps focus to index 0');
+
+  // ArrowLeft wraps back 0 -> 3 -> 2 (60m).
+  await page.keyboard.press('ArrowLeft');
+  await expectFocusedRadio(3, 1, 'ArrowLeft wraps focus to index 3');
+  await page.keyboard.press('ArrowLeft');
+  await expectFocusedRadio(2, 1, 'ArrowLeft moves focus to index 2');
+
+  // Activate index 2 (60 min) with Space: real PATCH commits 60 and moves aria-checked / data-state="on" to index 2.
+  const patchTo60 = page.waitForResponse(
+    (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
+    { timeout: UI_TIMEOUT_MS },
+  );
+  await page.keyboard.press('Space');
+  const res60 = await patchTo60;
+  expect(res60.status(), `keyboard ${label}: Space PATCH status`).toBe(200);
+  expect(
+    ((await res60.json().catch(() => null)) as { settings?: { auto_lock_minutes?: number } } | null)?.settings
+      ?.auto_lock_minutes,
+    `keyboard ${label}: Space commits 60 min`,
+  ).toBe(60);
+  await expectFocusedRadio(2, 2, 'Space selects index 2 and keeps focus inside group');
+
+  // ArrowLeft to index 1 (15 min) and activate with Enter: restores default 15 min via real PATCH.
+  await page.keyboard.press('ArrowLeft');
+  await expectFocusedRadio(1, 2, 'ArrowLeft moves focus back to index 1');
+  const patchTo15 = page.waitForResponse(
+    (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === '/api/v1/me/settings',
+    { timeout: UI_TIMEOUT_MS },
+  );
+  await page.keyboard.press('Enter');
+  const res15 = await patchTo15;
+  expect(res15.status(), `keyboard ${label}: Enter PATCH status`).toBe(200);
+  expect(
+    ((await res15.json().catch(() => null)) as { settings?: { auto_lock_minutes?: number } } | null)?.settings
+      ?.auto_lock_minutes,
+    `keyboard ${label}: Enter restores 15 min`,
+  ).toBe(15);
+  await expectFocusedRadio(1, 1, 'Enter selects index 1 and keeps focus inside group');
+
+  // Single Tab exits the group directly to the following control (the group is a single Tab stop).
+  await page.keyboard.press('Tab');
+  await expect(page.locator(nextControlSelector)).toBeFocused({ timeout: FOCUS_TIMEOUT_MS });
 }
 
 /**

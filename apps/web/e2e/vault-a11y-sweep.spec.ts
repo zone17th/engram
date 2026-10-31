@@ -27,6 +27,7 @@ import {
   activate,
   checkState,
   expectAppAnimatesWithoutPreference,
+  expectRadioGroupKeyboard,
   fillSecretVerified,
   keyboardWalk,
   type A11yContext,
@@ -518,6 +519,14 @@ async function runGroup(browser: Browser, testInfo: TestInfo, lang: A11yLang, th
       '[data-testid="settings-auto-lock-card"]',
       { leaveFocusedSelector: '[data-testid="settings-remember-device-switch"]' },
     );
+    if (ctx.keyboard) {
+      await expectRadioGroupKeyboard(
+        page,
+        '[data-testid="settings-auto-lock-card"] [role="radiogroup"]',
+        '[data-testid="settings-remember-device-switch"]',
+        'settings-auto-lock',
+      );
+    }
 
     await activate(ctx, settingsRememberSwitch, 'Space', '[data-testid="settings-auto-lock-card"]');
     await expect(settingsRememberSwitch).toHaveAttribute('aria-checked', 'true', { timeout: CRYPTO_WAIT_MS });
