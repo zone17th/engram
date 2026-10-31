@@ -12,11 +12,18 @@ import {
 } from '@/features/settings/account/account-dialogs';
 import { SecuritySection } from '@/features/settings/security/sessions-panel';
 import { useSession } from '@/features/auth/session-provider';
+import { useOptionalVault } from '@/features/vault/vault-provider';
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
   const { me, reauth } = useSession();
-  const vaultState = me?.vault.status === 'present' ? 'locked' : 'absent';
+  const vault = useOptionalVault();
+  const vaultState =
+    vault?.state === 'unlocked' || vault?.state === 'rewrapping'
+      ? 'open'
+      : me?.vault.status === 'present'
+        ? 'locked'
+        : 'absent';
   const dialogs = useAccountDialogs();
   const [notice, setNotice] = useState<AccountNotice | null>(null);
 

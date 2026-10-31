@@ -163,6 +163,13 @@ export async function waitForAuthPageReady(page: Page) {
       { timeout: 45_000 },
     )
     .not.toBe('');
+  // The SSR form is visible (and fillable) before React hydrates; hydration resets
+  // controlled inputs to empty state, so a fill/click in that window is lost and no
+  // login/signup request is ever sent. The forms flag hydration on the <form>.
+  const gated = page.locator('form[data-hydrated]');
+  if ((await gated.count()) > 0) {
+    await expect(gated.first()).toHaveAttribute('data-hydrated', 'true', { timeout: 45_000 });
+  }
 }
 
 export async function waitForOAuthProviders(page: Page) {

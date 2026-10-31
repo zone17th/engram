@@ -71,6 +71,49 @@ describe('CSP (SPEC §10.2 + exception P01)', () => {
     expect(csp).not.toContain('fonts.gstatic.com');
     expect(csp).not.toContain('cdn.tailwindcss.com');
   });
+
+  it('pin chính xác từng byte chuỗi CSP chuẩn (gồm worker-src self blob: cho Turbopack theo advisor-dec-014) và chỉ cho phép blob: trong worker-src', async () => {
+    const csp = await cspFor('/');
+    const authCsp = await cspFor('/app/auth/login');
+
+    expect(csp).toBe(
+      [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "worker-src 'self' blob:",
+      ].join('; '),
+    );
+    expect(authCsp).toBe(
+      [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://challenges.cloudflare.com",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "connect-src 'self' https://challenges.cloudflare.com",
+        "frame-src https://challenges.cloudflare.com",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "worker-src 'self' blob:",
+      ].join('; '),
+    );
+
+    for (const policy of [csp, authCsp]) {
+      const directives = policy.split('; ');
+      const blobDirectives = directives.filter((d) => d.includes('blob:'));
+      expect(blobDirectives).toEqual(["worker-src 'self' blob:"]);
+    }
+  });
 });
 
 describe('header bảo mật khác', () => {

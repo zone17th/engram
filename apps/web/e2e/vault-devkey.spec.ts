@@ -1,0 +1,563 @@
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+
+/**
+ * ADR 0003 "Hệ quả" two-page / two-Worker test for Remember (plan Task 18, FE R3-5).
+ *
+ * Tab B (its own real crypto Worker, unlocked with the committed js-v1 test vector) starts Remember through the gated
+ * `window.__engramDeviceTestBridge`, captures `(startIncarnation, startRevision)` (first-time meta init included) and is
+ * PARKED right after WebCrypto. Tab A (same browser context, so the same real IndexedDB `sabk.device`) then runs Forget /
+ * reset / revoked purge (known and unknown user_id) / a deleted-and-re-created DB. When B resumes, its final readwrite tx
+ * must abort: no DevKey record exists in `sabk.device`, and B's toggle re-reads off with the neutral notice.
+ *
+ * `/api/v1/auth` and `/api/v1/vault` are stubbed here on purpose (the real-API spec is vault-devkey-real-api.spec.ts).
+ * Only booleans, counts and revisions leave the pages: no DevKey material, VK or wrap is read, logged or attached.
+ */
+
+const TEST_VECTOR_PASSPHRASE = 'correct-horse-battery-staple-engram-js-v1';
+const TEST_VECTOR_KDF = {
+  alg: 'argon2id13' as const,
+  ops: 3,
+  mem: 67_108_864,
+  parallelism: 1,
+  salt: 'oKGio6SlpqeoqaqrrK2urw',
+};
+const TEST_VECTOR_WRAPPED_VK =
+  'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA';
+const TEST_VECTOR_WRAPPED_PRIV =
+  'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-';
+const TEST_VECTOR_VAULT_KEY_ID = 'vk:7f3a9b2c4d5e6f7a8b9c0d';
+const USER_ID = '11111111-1111-4111-8111-111111111111';
+const CRYPTO_WAIT_MS = 60_000;
+
+interface RememberState {
+  status: string;
+  remembered: boolean;
+  busy: boolean;
+  notice: string | null;
+  lastAbortReason: string | null;
+  meta: { incarnation: string; deviceRevision: number } | null;
+}
+
+interface DeviceBridge {
+  startPausedRemember: () => void;
+  isPausedAtWebCrypto: () => boolean;
+  release: () => void;
+  awaitRemember: () => Promise<RememberState>;
+  remember: () => Promise<RememberState>;
+  forget: () => Promise<RememberState>;
+  purge: (scope: 'known' | 'unknown_user') => Promise<{ ok: boolean }>;
+  state: () => RememberState;
+  refresh: () => Promise<RememberState>;
+  snapshot: () => Promise<{
+    userRecordCount: number;
+    allRecordCount: number;
+    meta: { incarnation: string; deviceRevision: number } | null;
+    workerInitialized: boolean;
+    workerEpoch: number;
+    workerGeneration: number;
+    workerState: string;
+  }>;
+  workerWitness: () => {
+    workerInitialized: boolean;
+    workerEpoch: number;
+    workerGeneration: number;
+    workerState: string;
+  };
+}
+
+interface VaultBridge {
+  serverVaultStatus: string;
+  beginOp: () => { opGeneration: number };
+  unlockPassphrase: (params: Record<string, unknown>) => Promise<{ unlocked: true }>;
+  reloadVaultMeta: () => Promise<unknown>;
+  lock: (options?: { broadcast?: boolean; reason?: string }) => Promise<unknown>;
+}
+
+interface R13Witness {
+  intercepted: boolean;
+  storeNames: string[];
+  devkeysPutSucceeded: boolean;
+  metaPutSucceeded: boolean;
+  abortEvents: number;
+  generationBeforeLock?: number;
+  generationAfterLock?: number;
+}
+
+/** The gated test globals the vault provider installs on loopback / non-production builds. */
+type DeviceWindow = Window & {
+  __engramDeviceTestBridge?: DeviceBridge;
+  __engramVaultTestBridge?: VaultBridge;
+  __r13Witness?: R13Witness;
+  __r13OrigPut?: typeof IDBObjectStore.prototype.put;
+};
+async function installAuthenticatedVaultApiMocks(context: BrowserContext) {
+  await context.route('**/api/v1/auth/csrf', async (route) => {
+    await route.fulfill({
+      status: 204,
+      headers: { 'set-cookie': 'sabk_csrf=v1.sess.e2e-devkey-csrf.sig.extra; Path=/; SameSite=Lax' },
+    });
+  });
+  await context.route('**/api/v1/auth/config', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ oauth_providers: [], email_verification_required: false, captcha_site_key: null }),
+    });
+  });
+  await context.route('**/api/v1/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        user: { id: USER_ID, email: 'devkey-e2e@example.test', email_verified: true, created_at: '2026-10-28T00:00:00Z' },
+        settings: { locale: 'vi', theme: 'light', auto_lock_minutes: 0, semantic_suggest: false },
+        identities: [{ provider: 'password', linked_at: '2026-10-28T00:00:00Z' }],
+        features: {
+          semantic_available: false,
+          email_verification_required: false,
+          oauth_providers: [],
+          oauth_reauth_providers: [],
+          password_enrollment_available: false,
+          captcha_site_key: null,
+        },
+        vault: { status: 'present' },
+      }),
+    });
+  });
+  for (const [pattern, body] of [
+    ['**/api/v1/auth/sessions', { items: [] }],
+    ['**/api/v1/auth/audit*', { items: [] }],
+    ['**/api/v1/me/notifications*', { items: [], unread_count: 0 }],
+    ['**/api/v1/readyz', { status: 'ok', semantic_available: false }],
+  ] as const) {
+    await context.route(pattern, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    });
+  }
+  await context.route('**/api/v1/vault', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version: 1,
+        vault_key_id: TEST_VECTOR_VAULT_KEY_ID,
+        kdf: TEST_VECTOR_KDF,
+        vault_key_wrapped_by_kek: TEST_VECTOR_WRAPPED_VK,
+        private_keys_wrapped: TEST_VECTOR_WRAPPED_PRIV,
+        public_keys: {
+          x25519: 'EIT5fcwxJb3Sw8y-V9yHL-JGU5pDVlgw9H5ueCV7OnI',
+          ed25519: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        },
+        recovery_keys: { total: 10, remaining: 10, used_slots: [], low_warning: false },
+        passkeys: [],
+      }),
+    });
+  });
+}
+
+async function waitForBridges(page: Page) {
+  await page.waitForFunction(() => {
+    const testWindow: DeviceWindow = window;
+    // `serverVaultStatus` comes from `Me`: once it reads 'present' the signed-in user is known to the provider.
+    return (
+      testWindow.__engramVaultTestBridge?.serverVaultStatus === 'present' &&
+      Boolean(testWindow.__engramDeviceTestBridge)
+    );
+  });
+}
+
+async function unlockViaRealWorker(page: Page) {
+  await waitForBridges(page);
+  await page.evaluate(
+    async ({ passphrase, kdf, wrappedVk, wrappedPriv }) => {
+      const testWindow: DeviceWindow = window;
+      const bridge = testWindow.__engramVaultTestBridge;
+      if (!bridge) throw new Error('vault test bridge is not installed');
+      const { opGeneration } = bridge.beginOp();
+      await bridge.unlockPassphrase({
+        passphrase,
+        kdf,
+        vaultKeyWrappedByKek: wrappedVk,
+        privateKeysWrapped: wrappedPriv,
+        opGeneration,
+      });
+      // The provider learns the current vault_key_id from the (stubbed) GET /vault, as after any real load.
+      await bridge.reloadVaultMeta();
+    },
+    {
+      passphrase: TEST_VECTOR_PASSPHRASE,
+      kdf: TEST_VECTOR_KDF,
+      wrappedVk: TEST_VECTOR_WRAPPED_VK,
+      wrappedPriv: TEST_VECTOR_WRAPPED_PRIV,
+    },
+  );
+  await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+}
+
+/** Independent of the app code path: counts DevKey records straight from the real IndexedDB (never creates the DB). */
+async function rawDevKeyCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        const req = indexedDB.open('sabk.device', 1);
+        req.onsuccess = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('devkeys')) {
+            db.close();
+            resolve(-1);
+            return;
+          }
+          const keys = db.transaction('devkeys', 'readonly').objectStore('devkeys').getAllKeys();
+          keys.onsuccess = () => {
+            db.close();
+            resolve(keys.result.length);
+          };
+          keys.onerror = () => {
+            db.close();
+            resolve(-2);
+          };
+        };
+        req.onerror = () => resolve(-3);
+      }),
+  );
+}
+
+async function deleteDeviceDatabase(page: Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('sabk.device');
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error ?? new Error('deleteDatabase failed'));
+        // `blocked` is not terminal: the deletion proceeds once the other connections close (onversionchange).
+      }),
+  );
+}
+
+const SCENARIOS = [
+  { name: 'Forget in tab A', reason: 'meta_changed' },
+  { name: 'reset (known-user purge) in tab A', reason: 'meta_changed' },
+  { name: 'revoked purge with an unknown user_id in tab A', reason: 'meta_changed' },
+  { name: 'the sabk.device database deleted and re-created behind both tabs', reason: 'meta_missing' },
+] as const;
+
+test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoked purge (ADR 0003 Hệ quả, FE R3-5)', () => {
+  for (const scenario of SCENARIOS) {
+    test(`Tab B Remember parked at WebCrypto, ${scenario.name} -> B's final tx aborts, NO DevKey record, toggle re-reads off with the neutral notice`, async ({
+      context,
+    }) => {
+      test.setTimeout(120_000);
+      await installAuthenticatedVaultApiMocks(context);
+      const pageA = await context.newPage();
+      const pageB = await context.newPage();
+      await pageA.goto('/app/settings');
+      await pageB.goto('/app/settings');
+      // R1-25: Initialize and exercise a real CryptoWorker in BOTH Tab A and Tab B, and witness both independent Workers.
+      await unlockViaRealWorker(pageA);
+      await unlockViaRealWorker(pageB);
+      const witnessA = await pageA.evaluate(() => {
+        const w: DeviceWindow = window;
+        return w.__engramDeviceTestBridge!.workerWitness();
+      });
+      const witnessB = await pageB.evaluate(() => {
+        const w: DeviceWindow = window;
+        return w.__engramDeviceTestBridge!.workerWitness();
+      });
+      expect(witnessA.workerInitialized).toBe(true);
+      expect(witnessA.workerEpoch).toBeGreaterThanOrEqual(0);
+      expect(witnessA.workerState).toBe('unlocked');
+      expect(witnessB.workerInitialized).toBe(true);
+      expect(witnessB.workerEpoch).toBeGreaterThanOrEqual(0);
+      expect(witnessB.workerState).toBe('unlocked');
+      // Clear sabk.device (unlockPassphrase's lockEpoch baseline capture created the DB without device meta) so Tab B's
+      // Remember still exercises the first-time-meta initialization path (deviceRevision === 1) while both Workers stay live.
+      await deleteDeviceDatabase(pageA);
+
+      // Tab B starts Remember on a device that has never stored anything (first-time meta init) and parks.
+      await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.startPausedRemember());
+      await pageB.waitForFunction(() => (window as DeviceWindow).__engramDeviceTestBridge!.isPausedAtWebCrypto());
+      const startSnapshot = await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+      expect(startSnapshot.meta?.deviceRevision).toBe(1);
+      expect(startSnapshot.allRecordCount).toBe(0);
+      expect(startSnapshot.workerInitialized).toBe(true);
+      // Tab A (another Worker, same real IndexedDB) changes the device state.
+      if (scenario.name.startsWith('Forget')) {
+        const res = await pageA.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.forget());
+        expect(res.status).toBe('ready');
+      } else if (scenario.name.startsWith('reset')) {
+        const res = await pageA.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.purge('known'));
+        expect(res.ok).toBe(true);
+      } else if (scenario.name.startsWith('revoked')) {
+        const res = await pageA.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.purge('unknown_user'));
+        expect(res.ok).toBe(true);
+      } else {
+        await deleteDeviceDatabase(pageA);
+      }
+
+      // B resumes: its final readwrite tx must abort.
+      await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.release());
+      const state = await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.awaitRemember());
+
+      expect(state.remembered).toBe(false);
+      expect(state.lastAbortReason).toBe(scenario.reason);
+      expect(state.notice).toBe('device_state_changed');
+      expect(await rawDevKeyCount(pageB)).toBe(0);
+      expect(await rawDevKeyCount(pageA)).toBe(0);
+      // The toggle really re-reads the DB (not a cached "off"): a fresh read still says off.
+      const reread = await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.refresh());
+      expect(reread.remembered).toBe(false);
+      // The open VK in B is untouched by an aborted Remember.
+      await expect(pageB.locator('.vault-pill')).toHaveClass(/vault-open/);
+    });
+  }
+
+  test('control: with no concurrent change the same Remember in tab B commits exactly one DevKey record and the toggle reads on in both tabs', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await installAuthenticatedVaultApiMocks(context);
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await pageA.goto('/app/settings');
+    await pageB.goto('/app/settings');
+    await unlockViaRealWorker(pageA);
+    await unlockViaRealWorker(pageB);
+    const controlWitnessA = await pageA.evaluate(() => {
+      const w: DeviceWindow = window;
+      return w.__engramDeviceTestBridge!.workerWitness();
+    });
+    const controlWitnessB = await pageB.evaluate(() => {
+      const w: DeviceWindow = window;
+      return w.__engramDeviceTestBridge!.workerWitness();
+    });
+    expect(controlWitnessA.workerInitialized).toBe(true);
+    expect(controlWitnessB.workerInitialized).toBe(true);
+    await deleteDeviceDatabase(pageA);
+    await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.startPausedRemember());
+    await pageB.waitForFunction(() => (window as DeviceWindow).__engramDeviceTestBridge!.isPausedAtWebCrypto());
+    await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.release());
+    const state = await pageB.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.awaitRemember());
+    expect(state.remembered).toBe(true);
+    expect(state.notice).toBeNull();
+    expect(await rawDevKeyCount(pageB)).toBe(1);
+
+    // Tab A (not even unlocked) reads the same toggle state from the shared DB.
+    const inA = await pageA.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.refresh());
+    expect(inA.remembered).toBe(true);
+  });
+
+  test('R1-3: post-write abort in Remember (both puts succeed, then final readwrite tx aborts before commit) rolls back both stores, reports unavailable, keeps toggle off and busy:false', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await installAuthenticatedVaultApiMocks(context);
+    const page = await context.newPage();
+    await page.goto('/app/settings');
+    await unlockViaRealWorker(page);
+
+    // Seed an existing record + meta via a normal Remember first so we can assert both stores stay unchanged on rollback.
+    const initial = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.remember());
+    expect(initial.status).toBe('ready');
+    expect(initial.remembered).toBe(true);
+    expect(initial.busy).toBe(false);
+    const beforeSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(beforeSnap.userRecordCount).toBe(1);
+    expect(beforeSnap.meta?.deviceRevision).toBe(2);
+
+    // Intercept IDBObjectStore.prototype.put on the final ['devkeys', 'meta'] readwrite tx so both puts succeed,
+    // then tx.abort() runs before commit (reusing the lock-epoch.spec.ts:930-969 pattern).
+    await page.evaluate(() => {
+      const win: DeviceWindow = window;
+      const witness: R13Witness = {
+        intercepted: false,
+        storeNames: [],
+        devkeysPutSucceeded: false,
+        metaPutSucceeded: false,
+        abortEvents: 0,
+      };
+      win.__r13Witness = witness;
+      const origPut = IDBObjectStore.prototype.put;
+      win.__r13OrigPut = origPut;
+      let armed = true;
+      IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        const req = origPut.call(this, value, key);
+        const tx = this.transaction;
+        const names = Array.from(tx.objectStoreNames).sort();
+        if (names.length === 2 && names[0] === 'devkeys' && names[1] === 'meta') {
+          if (this.name === 'devkeys') {
+            req.addEventListener('success', () => {
+              witness.devkeysPutSucceeded = true;
+            });
+          }
+          if (armed && this.name === 'meta' && key === '__meta__') {
+            armed = false;
+            witness.intercepted = true;
+            witness.storeNames = names;
+            tx.addEventListener('abort', () => {
+              witness.abortEvents += 1;
+            });
+            req.addEventListener('success', () => {
+              witness.metaPutSucceeded = true;
+              tx.abort();
+            });
+          }
+        }
+        return req;
+      };
+    });
+
+    const abortedRemember = await page.evaluate(async () => {
+      const win: DeviceWindow = window;
+      try {
+        return await win.__engramDeviceTestBridge!.remember();
+      } finally {
+        if (win.__r13OrigPut) {
+          IDBObjectStore.prototype.put = win.__r13OrigPut;
+        }
+      }
+    });
+
+    const witness = await page.evaluate(() => {
+      const win: DeviceWindow = window;
+      return win.__r13Witness;
+    });
+    expect(witness).toEqual({
+      intercepted: true,
+      storeNames: ['devkeys', 'meta'],
+      devkeysPutSucceeded: true,
+      metaPutSucceeded: true,
+      abortEvents: 1,
+    });
+
+    // Consumer-visible state: unavailable, remembered: false (toggle off), busy: false.
+    expect(abortedRemember.status).toBe('unavailable');
+    expect(abortedRemember.remembered).toBe(false);
+    expect(abortedRemember.busy).toBe(false);
+    expect(abortedRemember.lastAbortReason).toBe('unavailable');
+
+    const bridgeState = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.state());
+    expect(bridgeState.status).toBe('unavailable');
+    expect(bridgeState.remembered).toBe(false);
+    expect(bridgeState.busy).toBe(false);
+
+    // Both stores in IndexedDB rolled back and remain unchanged from before the aborted Remember.
+    const afterSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(afterSnap.userRecordCount).toBe(beforeSnap.userRecordCount);
+    expect(afterSnap.allRecordCount).toBe(beforeSnap.allRecordCount);
+    expect(afterSnap.meta).toEqual(beforeSnap.meta);
+  });
+
+  test('R2-2: real-IDB late-write generation change after devkeys.put success but before putMeta.onsuccess aborts with generation_changed, rolls back stores + meta unchanged, not remembered, settled off and busy:false (plus success control)', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await installAuthenticatedVaultApiMocks(context);
+    const page = await context.newPage();
+    await page.goto('/app/settings');
+    await unlockViaRealWorker(page);
+
+    // First-time Remember initializes meta (deviceRevision: 1) before WebCrypto, so when the final readwrite tx runs,
+    // sabk.device contains 0 DevKey records and meta.deviceRevision === 1.
+    const beforeSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(beforeSnap.userRecordCount).toBe(0);
+    expect(beforeSnap.allRecordCount).toBe(0);
+
+    // Intercept IDBObjectStore.prototype.put on the final ['devkeys', 'meta'] readwrite tx:
+    // let devkeys.put succeed, then advance the real CryptoClient generation via __engramVaultTestBridge.lock()
+    // in devkeys.put's success listener BEFORE putMeta.onsuccess runs. Do NOT call tx.abort() in the test:
+    // production putMeta.onsuccess must detect !isGenerationCurrent() and abort with 'generation_changed'.
+    await page.evaluate(() => {
+      const win: DeviceWindow = window;
+      const witness: R13Witness = {
+        intercepted: false,
+        storeNames: [],
+        devkeysPutSucceeded: false,
+        metaPutSucceeded: false,
+        abortEvents: 0,
+      };
+      win.__r13Witness = witness;
+      const origPut = IDBObjectStore.prototype.put;
+      win.__r13OrigPut = origPut;
+      let armed = true;
+      IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        const req = origPut.call(this, value, key);
+        const tx = this.transaction;
+        const names = Array.from(tx.objectStoreNames).sort();
+        if (names.length === 2 && names[0] === 'devkeys' && names[1] === 'meta') {
+          if (armed && this.name === 'devkeys') {
+            armed = false;
+            witness.intercepted = true;
+            witness.storeNames = names;
+            tx.addEventListener('abort', () => {
+              witness.abortEvents += 1;
+            });
+            req.addEventListener('success', () => {
+              witness.devkeysPutSucceeded = true;
+              witness.generationBeforeLock = win.__engramDeviceTestBridge!.workerWitness().workerGeneration;
+              void win.__engramVaultTestBridge!.lock({ broadcast: false, reason: 'r2_2_late_write_cancel' });
+              witness.generationAfterLock = win.__engramDeviceTestBridge!.workerWitness().workerGeneration;
+            });
+          } else if (witness.intercepted && this.name === 'meta' && key === '__meta__') {
+            req.addEventListener('success', () => {
+              witness.metaPutSucceeded = true;
+            });
+          }
+        }
+        return req;
+      };
+    });
+
+    const cancelledRemember = await page.evaluate(async () => {
+      const win: DeviceWindow = window;
+      try {
+        return await win.__engramDeviceTestBridge!.remember();
+      } finally {
+        if (win.__r13OrigPut) {
+          IDBObjectStore.prototype.put = win.__r13OrigPut;
+        }
+      }
+    });
+
+    const witness = await page.evaluate(() => (window as DeviceWindow).__r13Witness);
+    expect(witness).toMatchObject({
+      intercepted: true,
+      storeNames: ['devkeys', 'meta'],
+      devkeysPutSucceeded: true,
+      metaPutSucceeded: true,
+      abortEvents: 1,
+    });
+    expect(witness?.generationAfterLock).toBe((witness?.generationBeforeLock ?? 0) + 1);
+
+    // Consumer-visible outcome: aborted with 'generation_changed', not remembered (off), busy: false, neutral notice null.
+    expect(cancelledRemember.status).toBe('ready');
+    expect(cancelledRemember.remembered).toBe(false);
+    expect(cancelledRemember.busy).toBe(false);
+    expect(cancelledRemember.lastAbortReason).toBe('generation_changed');
+    expect(cancelledRemember.notice).toBeNull();
+
+    const bridgeState = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.state());
+    expect(bridgeState.status).toBe('ready');
+    expect(bridgeState.remembered).toBe(false);
+    expect(bridgeState.busy).toBe(false);
+    expect(bridgeState.lastAbortReason).toBe('generation_changed');
+
+    // Both stores in real IndexedDB rolled back: 0 DevKey records and meta stays at first-time init deviceRevision === 1.
+    const afterCancelSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(afterCancelSnap.userRecordCount).toBe(0);
+    expect(afterCancelSnap.allRecordCount).toBe(0);
+    expect(afterCancelSnap.meta?.deviceRevision).toBe(1);
+
+    // Success control: re-unlock and run Remember without late-write generation cancellation -> commits record and increments revision to 2.
+    await unlockViaRealWorker(page);
+    const controlRemember = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.remember());
+    expect(controlRemember.status).toBe('ready');
+    expect(controlRemember.remembered).toBe(true);
+    expect(controlRemember.busy).toBe(false);
+    expect(controlRemember.lastAbortReason).toBeNull();
+    const afterControlSnap = await page.evaluate(() => (window as DeviceWindow).__engramDeviceTestBridge!.snapshot());
+    expect(afterControlSnap.userRecordCount).toBe(1);
+    expect(afterControlSnap.allRecordCount).toBe(1);
+    expect(afterControlSnap.meta?.deviceRevision).toBe(2);
+    expect(afterControlSnap.meta?.incarnation).toBe(afterCancelSnap.meta?.incarnation);
+  });
+});

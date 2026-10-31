@@ -3,6 +3,7 @@
 import { type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Kbd } from '@/components/ui/kbd';
+import { useOptionalVault } from '@/features/vault/vault-provider';
 import { cn } from '@/lib/cn';
 import { markPrefix, searchDemo, type DemoSearchResult } from '@/lib/demo-search';
 
@@ -55,7 +56,9 @@ export function Omnibox({ compact = false, className }: { compact?: boolean; cla
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const result = useMemo(() => searchDemo(query), [query]);
+  // Same predicate as `useEntryBody`: without a provider, or in any state but `unlocked`, body text is not shown or matched.
+  const unlocked = useOptionalVault()?.state === 'unlocked';
+  const result = useMemo(() => searchDemo(query, { matchBodies: unlocked }), [query, unlocked]);
   const options = useMemo(() => makeOptions(result), [result]);
   const listId = 'app-shell-search-results';
   const closeSuggestions = useCallback(() => {
@@ -228,7 +231,7 @@ export function Omnibox({ compact = false, className }: { compact?: boolean; cla
                   <span className="block">
                     <MarkedText text={item.title} query={query} />
                   </span>
-                  <span className="t-caption text-muted">{item.preview}</span>
+                  {unlocked ? <span className="t-caption text-muted">{item.preview}</span> : null}
                 </span>
                 <span className="sugg-meta">mục</span>
               </Link>
