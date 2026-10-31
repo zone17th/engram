@@ -672,6 +672,79 @@
         "body": "Unlock your vault with biometrics or a security key. Requires WebAuthn PRF support, checked during registration.",
         "added": "Passkey added."
       }
+    },
+    "b": {
+      "onboarding": {
+        "title": "Add a passkey (optional)",
+        "lead": "Unlock your vault with fingerprint, face, or a security key instead of typing your passphrase every time. Skipping is fine — your passphrase and 10 recovery keys are already enough.",
+        "cardTitle": "Passkey on this device",
+        "cardBody": "Requires a PRF-capable authenticator. We verify PRF support during registration; if unsupported, nothing is saved.",
+        "reauthNote": "Clicking Add passkey prompts account re-authentication (login password or Google OAuth) at the start of the flow before calling WebAuthn (vault.passkey_register).",
+        "addedStatus": "Passkey added to your vault.",
+        "skip": "Skip",
+        "finish": "Go to engram",
+        "rememberDevice": {
+          "dismiss": "Dismiss"
+        }
+      },
+      "forgot": {
+        "passkeyStep": "1",
+        "passkeyTitle": "Passkey",
+        "passkeyBody": "Unlock with a registered passkey on the unlock screen, then go to Settings › Security to set a new passphrase via rewrap without the old one.",
+        "passkeyCta": "Try",
+        "deviceStep": "2",
+        "deviceTitle": "Remembered device",
+        "deviceBody": "Another browser or machine that remembers this vault may still open silently so you can set a new passphrase in Settings.",
+        "deviceCta": "Try",
+        "unlockedTabStep": "3",
+        "unlockedTabTitle": "A tab that is still unlocked",
+        "unlockedTabBody": "If another tab or device still has this vault unlocked, open Settings › Security › Change passphrase (rewraps without the old passphrase).",
+        "unlockedTabCta": "Open Settings",
+        "recoveryKeyStep": "4"
+      },
+      "settings": {
+        "passkeys": {
+          "listAria": "Registered passkeys",
+          "loading": "Loading passkeys…",
+          "loadError": "Could not load your registered passkeys.",
+          "retry": "Retry",
+          "addedOn": "added {date}",
+          "prfBadge": "prf",
+          "rename": "Rename",
+          "renameAria": "Rename {name}",
+          "renameInputLabel": "Passkey name for {name}",
+          "renameSave": "Save",
+          "renameSaving": "Saving…",
+          "renameCancel": "Cancel",
+          "renamed": "Passkey renamed.",
+          "renameFailed": "Could not rename this passkey. Try again.",
+          "revoke": "Remove",
+          "revokeAria": "Remove {name}",
+          "revoking": "Removing…",
+          "revokeDialogTitle": "Remove passkey",
+          "revokeDialogDescription": "Re-authenticate your account to remove {name} from the server.",
+          "revokeConfirm": "Remove passkey",
+          "revokeCancel": "Cancel",
+          "revokeNotFoundError": "Could not remove this passkey because it was not found on the server.",
+          "revokeFailed": "Could not remove this passkey. Try again.",
+          "revokeNoteStrong": "Remove passkey",
+          "revokeNoteBody": "(requires account re-auth) deletes the credential and wrapped key on the live server. It does not remove the credential from your authenticator or stop previously copied wraps or backups from being opened if the authenticator can still evaluate PRF."
+        },
+        "autoLock": {
+          "title": "Auto-lock",
+          "body": "Locks the vault after inactivity across all tabs. Default is 15 minutes; press L to lock immediately.",
+          "selectorAria": "Auto-lock timeout",
+          "opt5": "5 min",
+          "opt15": "15 min",
+          "opt60": "1 hour",
+          "optNever": "Never",
+          "saving": "Saving auto-lock setting…",
+          "saveError": "Could not save auto-lock setting. Reverted to the previous value."
+        },
+        "rememberDevice": {
+          "dismiss": "Dismiss"
+        }
+      }
     }
   },
   "unlock": {
@@ -724,14 +797,9 @@
     "title": "Forgot passphrase",
     "lead": "The server cannot read your entry contents, so there is no \"reset passphrase by email\" link. Instead, use one of the recovery paths you set up.",
     "paths": {
-      "recoveryKeyStep": "1",
       "recoveryKeyTitle": "Recovery key",
       "recoveryKeyBody": "Use one unused key from the 10-key set you saved when creating your vault.",
-      "recoveryKeyCta": "Use a recovery key",
-      "passkeyStep": "2",
-      "passkeyTitle": "Passkey or remembered device (arrives in P03-B)",
-      "passkeyBody": "If you have an active passkey or a remembered device, unlock there and set a new passphrase without the old one.",
-      "passkeyCta": "Back to unlock"
+      "recoveryKeyCta": "Use a recovery key"
     },
     "reauthNote": {
       "badge": "Re-auth at start of flow · action: vault.recover",

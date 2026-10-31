@@ -17,7 +17,6 @@ import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 
-
 const fastTestDeriveKek: DeriveKekFn = (
   sodium: Sodium,
   passphrase: Uint8Array,
@@ -208,6 +207,34 @@ function makeFastOnboardingWorkerFactory(options?: {
                 result: fakeResult,
               },
             } as MessageEvent);
+          }
+
+          if (message.type === 'wrapForPasskey') {
+            if ('pwkBuffer' in message && message.pwkBuffer) {
+              new Uint8Array(message.pwkBuffer).fill(0);
+            }
+            if (message.generation !== generation || mode !== 'unlocked') {
+              onMessage?.({
+                data: {
+                  id: message.id,
+                  generation,
+                  ok: false,
+                  state: { mode, generation, epoch },
+                  error: { code: 'STALE_GENERATION', message: 'Stale generation' },
+                },
+              } as MessageEvent);
+              return;
+            }
+            onMessage?.({
+              data: {
+                id: message.id,
+                generation,
+                ok: true,
+                state: { mode, generation, epoch },
+                result: { vk_wrap: 'vk-wrap-passkey-test-opaque-b64url' },
+              },
+            } as MessageEvent);
+            return;
           }
         });
       },
@@ -539,10 +566,16 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     expect(parsedBody.recovery_keys).toHaveLength(10);
     expect(/rk(?:10|[1-9])_/.test(sentCall.body)).toBe(false);
 
-    // After leaving Step 2, RKs are completely gone from the DOM and provider moves to unlocked
+    // After leaving Step 2, RKs are completely gone from the DOM, Step 3 renders, and Skip navigates to /app
     await waitFor(() => {
       expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
       expect(document.body.textContent ?? '').not.toContain('rk1_3F8K');
+      expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+    await waitFor(() => {
       expect(vaultCtx.state).toBe('unlocked');
     });
     expect(routerMocks.replace).toHaveBeenCalledWith('/app');
@@ -1022,6 +1055,13 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('recovery-keys-grid')).not.toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
       await Promise.resolve();
       await Promise.resolve();
     });

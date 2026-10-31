@@ -1134,4 +1134,5 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     expect(hasRecoveryCompletedNotice('user-unlock-test-1')).toBe(false);
     expect(window.sessionStorage.length).toBe(0);
   }, 20_000);
+
 });

@@ -293,7 +293,11 @@ export function VaultUnlockFlow() {
             </p>
           </div>
         ) : null}
-        <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+        <p
+          className="t-label mb-2 min-w-0 max-w-full break-words [overflow-wrap:anywhere]"
+          style={{ color: 'var(--muted)', overflowWrap: 'anywhere' }}
+          data-testid="unlock-signed-in-line"
+        >
           {me?.user.email
             ? t('signedInAs', { email: me.user.email })
             : t('signedInGeneric')}

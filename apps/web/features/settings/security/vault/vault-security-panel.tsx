@@ -21,17 +21,33 @@ export interface VaultSecurityPanelProps {
   onOpenRevokeSessionsDialog?: () => void;
   /** Rendered between the recovery-keys card and the reset card (mockups/settings.html order); the passkey card. */
   passkeySlot?: ReactNode;
+  /** Rendered after the passkey card and before the reset card (mockups/settings.html order); the auto-lock + device card. */
+  autoLockSlot?: ReactNode;
 }
 
-export function VaultSecurityPanel({ onOpenRevokeSessionsDialog, passkeySlot }: VaultSecurityPanelProps) {
+export function VaultSecurityPanel({
+  onOpenRevokeSessionsDialog,
+  passkeySlot,
+  autoLockSlot,
+}: VaultSecurityPanelProps) {
   const vaultCtx = useOptionalVault();
   if (!vaultCtx) {
     return null;
   }
-  return <VaultSecurityPanelInner onOpenRevokeSessionsDialog={onOpenRevokeSessionsDialog} passkeySlot={passkeySlot} />;
+  return (
+    <VaultSecurityPanelInner
+      onOpenRevokeSessionsDialog={onOpenRevokeSessionsDialog}
+      passkeySlot={passkeySlot}
+      autoLockSlot={autoLockSlot}
+    />
+  );
 }
 
-function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog, passkeySlot }: VaultSecurityPanelProps) {
+function VaultSecurityPanelInner({
+  onOpenRevokeSessionsDialog,
+  passkeySlot,
+  autoLockSlot,
+}: VaultSecurityPanelProps) {
   const t = useTranslations('settings.vaultSecurity');
   const queryClient = useQueryClient();
   const { me, sessionEpoch, refetchMe } = useSession();
@@ -338,7 +354,7 @@ function VaultSecurityPanelInner({ onOpenRevokeSessionsDialog, passkeySlot }: Va
       </div>
 
       {passkeySlot}
-
+      {autoLockSlot}
       {/* 3. Reset Vault Card (danger card) */}
       <div
         className="card mb-3 border-error p-5"

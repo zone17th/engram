@@ -18,6 +18,8 @@ import {
   classifyCryptoError,
   useVault,
 } from '@/features/vault/vault-provider';
+import { useRememberDevice } from '@/features/vault/device/use-remember-device';
+import { PasskeyAddEntry } from '@/features/vault/passkey';
 import {
   createIdempotencyKey,
   createVault as postCreateVault,
@@ -27,7 +29,13 @@ import {
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { RecoveryKeysSheet } from './recovery-keys-sheet';
 
-export type OnboardingStep = 'passphrase' | 'passphrase-oom' | 'recovery-keys' | 'vault-exists' | 'done';
+export type OnboardingStep =
+  | 'passphrase'
+  | 'passphrase-oom'
+  | 'recovery-keys'
+  | 'vault-exists'
+  | 'passkey'
+  | 'done';
 
 interface PreparedOnboardingBundle {
   /** Generation captured before `createVault` so any intervening lock invalidates the bundle. */
@@ -75,9 +83,12 @@ function strengthBarColor(score: PassphraseScore, hasInput: boolean): string {
 
 export function VaultOnboardingFlow() {
   const t = useTranslations('onboarding');
+  const tStep3 = useTranslations('vault.b.onboarding');
+  const tDevice = useTranslations('vault.device');
   const router = useRouter();
   const { me, refetchMe } = useSession();
   const vault = useVault();
+  const rememberDevice = useRememberDevice();
 
   const [step, setStep] = useState<OnboardingStep>('passphrase');
   const [passphrase, setPassphrase] = useState('');
@@ -93,6 +104,7 @@ export function VaultOnboardingFlow() {
   const [confirmedSaved, setConfirmedSaved] = useState(false);
   const [submittingVault, setSubmittingVault] = useState(false);
   const [step2Error, setStep2Error] = useState<Step2ErrorAlert | null>(null);
+  const [passkeyAdded, setPasskeyAdded] = useState(false);
 
   const passInputRef = useRef<HTMLInputElement>(null);
   const confirmInputRef = useRef<HTMLInputElement>(null);
@@ -144,9 +156,15 @@ export function VaultOnboardingFlow() {
       clearRecoveryKeysAndSecrets();
       if (stepRef.current === 'recovery-keys') {
         setStep('passphrase');
+      } else if (
+        stepRef.current === 'passkey' &&
+        vaultRef.current.getClient().getState() !== 'unlocked'
+      ) {
+        setStep('done');
+        void refetchMe().catch(() => undefined);
       }
     });
-  }, [clearRecoveryKeysAndSecrets]);
+  }, [clearRecoveryKeysAndSecrets, refetchMe]);
 
   // Wipe secrets and mark unmounted when leaving the onboarding route (BE1-9).
   useEffect(() => {
@@ -402,21 +420,13 @@ export function VaultOnboardingFlow() {
 
       // Immediately wipe the 10 display RKs from React state and DOM once POST /vault succeeds.
       clearRecoveryKeysAndSecrets();
-      setStep('done');
+      setPasskeyAdded(false);
+      setStep('passkey');
 
       vault.notifyVaultChanged({
         vault_key_id: response.vault_key_id,
         version: response.version,
       });
-
-      await refetchMe();
-      if (
-        isMountedRef.current &&
-        currentUserIdRef.current !== null &&
-        (submitBundle.userId === null || currentUserIdRef.current === submitBundle.userId)
-      ) {
-        router.replace('/app');
-      }
     } catch (err) {
       if (
         !isMountedRef.current ||
@@ -510,6 +520,30 @@ export function VaultOnboardingFlow() {
     submittingVault,
     vault,
   ]);
+  const handleToggleRememberDevice = useCallback(async () => {
+    if (
+      rememberDevice.busy ||
+      rememberDevice.status === 'unavailable' ||
+      vault.workerState !== 'unlocked'
+    ) {
+      return;
+    }
+    if (rememberDevice.remembered) {
+      await rememberDevice.forget();
+    } else {
+      await rememberDevice.remember();
+    }
+  }, [rememberDevice, vault.workerState]);
+
+  const handleFinishStep3 = useCallback(async () => {
+    clearRecoveryKeysAndSecrets();
+    setStep('done');
+    await refetchMe().catch(() => undefined);
+    if (isMountedRef.current && currentUserIdRef.current !== null) {
+      router.replace('/app');
+    }
+  }, [clearRecoveryKeysAndSecrets, refetchMe, router]);
+
   const handleGoToUnlock = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
     await refetchMe().catch(() => undefined);
@@ -518,9 +552,9 @@ export function VaultOnboardingFlow() {
 
   const isStep1Active = step === 'passphrase' || step === 'passphrase-oom';
   const isStep2Active = step === 'recovery-keys' || step === 'vault-exists';
+  const isStep3Active = step === 'passkey';
   const barWidth = strengthBarPercentage(policyScore, passphrase.length > 0);
   const barColor = strengthBarColor(policyScore, passphrase.length > 0);
-
   return (
     <>
       <AppHeader vault={{ state: 'absent' }} showLogout />
@@ -546,7 +580,8 @@ export function VaultOnboardingFlow() {
             </button>
             <button
               type="button"
-              aria-pressed={false}
+              aria-current={isStep3Active ? 'step' : undefined}
+              aria-pressed={isStep3Active}
               disabled
             >
               {t('steps.passkey')}
@@ -906,6 +941,137 @@ export function VaultOnboardingFlow() {
                   {t('vaultExists.goToUnlock')}
                 </Button>
               </div>
+            </div>
+          </section>
+        ) : null}
+
+        {/* STEP 3 — Optional Passkey (T16B) */}
+        {step === 'passkey' ? (
+          <section data-view="pk" data-testid="onboarding-step-passkey">
+            <h1
+              ref={stepHeadingRef}
+              tabIndex={-1}
+              className="t-title-lg mb-2 text-ink outline-none"
+            >
+              {tStep3('title')}
+            </h1>
+            <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
+              {tStep3('lead')}
+            </p>
+
+            <div className="card mb-4 p-6" data-testid="onboarding-passkey-card">
+              <div className="flex flex-wrap items-start gap-4">
+                <div className="min-w-0 flex-1 basis-[240px]">
+                  <div className="mb-1 text-[15px] font-semibold text-body">
+                    {tStep3('cardTitle')}
+                  </div>
+                  <p className="m-0 mb-2 text-[13px]" style={{ color: 'var(--muted)' }}>
+                    {tStep3('cardBody')}
+                  </p>
+                  <p className="m-0 text-[12px]" style={{ color: 'var(--muted)' }}>
+                    {tStep3('reauthNote')}
+                  </p>
+                </div>
+                <PasskeyAddEntry
+                  className="ml-auto"
+                  returnPath="/app/onboarding"
+                  onRegistered={() => {
+                    setPasskeyAdded(true);
+                    void vault.reloadVaultMeta?.().catch(() => undefined);
+                  }}
+                />
+              </div>
+              {passkeyAdded ? (
+                <p
+                  role="status"
+                  className="m-0 mt-3 text-[13px] font-semibold"
+                  style={{ color: 'var(--success)' }}
+                  data-testid="onboarding-passkey-added-status"
+                >
+                  {tStep3('addedStatus')}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="card mb-7 p-5" data-testid="onboarding-remember-device-card">
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="min-w-0 flex-1 basis-[240px]">
+                  <div className="mb-1 text-[15px] font-semibold text-body">
+                    {tDevice('remember.label')}
+                  </div>
+                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                    {tDevice('remember.description')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`switch ml-auto${
+                    rememberDevice.busy ||
+                    rememberDevice.status === 'unavailable' ||
+                    vault.workerState !== 'unlocked'
+                      ? ' cursor-not-allowed opacity-40'
+                      : ''
+                  }`}
+                  role="switch"
+                  aria-checked={rememberDevice.remembered}
+                  aria-busy={rememberDevice.busy || undefined}
+                  aria-label={tDevice('remember.label')}
+                  disabled={
+                    rememberDevice.busy ||
+                    rememberDevice.status === 'unavailable' ||
+                    vault.workerState !== 'unlocked'
+                  }
+                  onClick={() => void handleToggleRememberDevice()}
+                  data-testid="onboarding-remember-device-switch"
+                />
+              </div>
+              {rememberDevice.notice === 'device_state_changed' ? (
+                <div
+                  role="status"
+                  className="mt-3 flex flex-wrap items-center gap-2 text-[12px]"
+                  style={{ color: 'var(--muted)' }}
+                  data-testid="onboarding-remember-device-notice"
+                >
+                  <span>{tDevice('notice.stateChanged')}</span>
+                  <button
+                    type="button"
+                    className="btn btn-tertiary btn-sm ml-auto"
+                    onClick={() => rememberDevice.dismissNotice()}
+                    data-testid="onboarding-remember-device-notice-dismiss"
+                  >
+                    {tStep3('rememberDevice.dismiss')}
+                  </button>
+                </div>
+              ) : null}
+              {rememberDevice.status === 'unavailable' ? (
+                <p
+                  role="status"
+                  className="m-0 mt-3 text-[12px]"
+                  style={{ color: 'var(--muted)' }}
+                  data-testid="onboarding-remember-device-unavailable"
+                >
+                  {tDevice('unavailable')}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="tertiary"
+                onClick={() => void handleFinishStep3()}
+                data-testid="onboarding-skip-passkey-button"
+              >
+                {tStep3('skip')}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                className="ml-auto"
+                onClick={() => void handleFinishStep3()}
+                data-testid="onboarding-finish-button"
+              >
+                {tStep3('finish')}
+              </Button>
             </div>
           </section>
         ) : null}

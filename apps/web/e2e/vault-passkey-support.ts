@@ -113,6 +113,7 @@ async function completeOnboardingCreateVault(page: Page) {
   const created = page.waitForResponse((r) => isApiPost(r, '/api/v1/vault'), { timeout: CRYPTO_WAIT_MS });
   await page.getByTestId('onboarding-create-vault-button').click();
   expect((await created).ok()).toBe(true);
+  await page.getByTestId('onboarding-skip-passkey-button').click({ timeout: UI_WAIT_MS });
   await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
   await expectVaultOpen(page);
 }
