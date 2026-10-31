@@ -8,6 +8,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { LocaleThemeSync } from '@/features/auth/locale-sync';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
+import { VaultProvider } from '@/features/vault/vault-provider';
 import { resolveAppLocale } from '@/i18n/app-locale';
 import { THEME_COOKIE, resolveInitialTheme, themeToDataAttribute } from '@/lib/preferences/cookies';
 import '@/app/globals.css';
@@ -36,8 +37,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <ThemeProvider initialTheme={themePref} initialLocale={locale}>
             <QueryProvider>
               <SessionProvider>
-                <LocaleThemeSync />
-                <RouteGuard>{children}</RouteGuard>
+                <VaultProvider silentUnlockOnLoad>
+                  <LocaleThemeSync />
+                  <RouteGuard>{children}</RouteGuard>
+                </VaultProvider>
               </SessionProvider>
             </QueryProvider>
           </ThemeProvider>

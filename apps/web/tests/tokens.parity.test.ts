@@ -23,10 +23,9 @@ function readVars(css: string, selector: string): Map<string, string> {
 }
 
 /**
- * Ba biến font là khác biệt DUY NHẤT được phép giữa mockup và web: mockup nạp
- * font qua CDN, web self-host qua next/font để hợp CSP. Chúng được loại khỏi cả
- * phép "không thêm biến lạ" lẫn phép "giữ nguyên giá trị"; bù lại có test riêng
- * bên dưới bắt buộc chúng phải trỏ vào biến của next/font.
+ * Ba biến font và các khai báo `font-family` dùng `var(--font-*)` thay cho tên họ
+ * font viết thẳng của mockup là khác biệt DUY NHẤT được phép giữa mockup và web
+ * (advisor-dec-067): mockup nạp font qua CDN, web self-host qua next/font để hợp CSP.
  */
 const WEB_ONLY = new Set(['--font-display', '--font-sans', '--font-mono']);
 
@@ -79,6 +78,42 @@ describe('font self-host', () => {
       const firstFamily = mockupValue.split(',')[0].trim();
       expect(root.get(token)).toContain(firstFamily);
     }
+  });
+
+  it('mọi rule font-family của web khớp mockup sau khi chuẩn hoá literal <-> var(--font-*)', () => {
+    const LITERAL_TO_VAR: Record<string, string> = {
+      "'Plus Jakarta Sans', 'Inter', sans-serif": 'var(--font-display)',
+      "'Inter', 'Plus Jakarta Sans', sans-serif": 'var(--font-sans)',
+      "'Inter', sans-serif": 'var(--font-sans)',
+      "'Sometype Mono', ui-monospace, monospace": 'var(--font-mono)',
+      "'Sometype Mono', monospace": 'var(--font-mono)',
+    };
+    const extractFontRules = (css: string): Map<string, string> => {
+      const stripped = css
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/@import\s+[^;]+;/g, '');
+      const rules = new Map<string, string>();
+      for (const match of stripped.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
+        const selector = match[1].trim().replace(/\s+/g, ' ');
+        if (selector === ':root' || selector === "[data-theme='dark']") continue;
+        for (const decl of match[2].split(';')) {
+          const m = /^\s*font-family\s*:\s*(.+?)\s*$/.exec(decl);
+          if (m) rules.set(selector, m[1].replace(/\s+/g, ' '));
+        }
+      }
+      return rules;
+    };
+    const mockupRules = extractFontRules(mockupCss);
+    const webRules = extractFontRules(webCss);
+    expect([...webRules.keys()]).toEqual([...mockupRules.keys()]);
+    for (const [selector, mockupFamily] of mockupRules) {
+      const expectedVar = LITERAL_TO_VAR[mockupFamily];
+      expect(expectedVar, `unmapped mockup font-family on ${selector}: ${mockupFamily}`).toBeDefined();
+      expect(webRules.get(selector), `mismatch on ${selector}`).toBe(expectedVar);
+    }
+    expect(
+      webCss.replace(/\/\*[\s\S]*?\*\//g, '').replace(/:root\s*\{[\s\S]*?\}/, ''),
+    ).not.toMatch(/Plus Jakarta Sans|Inter|Sometype Mono/);
   });
 });
 

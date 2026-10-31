@@ -43,6 +43,46 @@ func TestMetricsLabelsContainNoUserData(t *testing.T) {
 	}
 }
 
+func TestRegistryRegistersVaultCountersWithoutUserLabels(t *testing.T) {
+	reg, m := obs.NewRegistry()
+
+	m.VaultRecoverTotal.Inc()
+	m.VaultUnlockFailuresTotal.WithLabelValues("recovery").Inc()
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	var hasRecover, hasUnlockFailures bool
+	for _, f := range families {
+		switch f.GetName() {
+		case "vault_recover_total":
+			hasRecover = true
+			for _, metric := range f.GetMetric() {
+				if len(metric.GetLabel()) != 0 {
+					t.Errorf("vault_recover_total không được có label: %+v", metric.GetLabel())
+				}
+			}
+		case "vault_unlock_failures_total":
+			hasUnlockFailures = true
+			for _, metric := range f.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() != "method" {
+						t.Errorf("vault_unlock_failures_total có label lạ %q", label.GetName())
+					}
+				}
+			}
+		}
+	}
+	if !hasRecover {
+		t.Fatal("thiếu metric vault_recover_total")
+	}
+	if !hasUnlockFailures {
+		t.Fatal("thiếu metric vault_unlock_failures_total")
+	}
+}
+
 func TestRegistryHasGoAndProcessCollectors(t *testing.T) {
 	reg, _ := obs.NewRegistry()
 	families, err := reg.Gather()
