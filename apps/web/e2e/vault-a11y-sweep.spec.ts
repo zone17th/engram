@@ -65,6 +65,7 @@ const RECOVERY_KEY_SHAPE = /^rk\d{1,2}_[0-7][0-9A-TV-Z]{3}(?:-[0-9A-TV-Z]{4}){5}
 const CANCEL_BUTTON = /^(Cancel|Huỷ)$/;
 const LATER_BUTTON = /^(Later|Để sau)$/;
 const MOTION_ROOTS = 'body';
+const FOCUS_WAIT_MS = 10_000;
 
 function spec(screen: StateSpec['screen'], overrides: Partial<StateSpec> = {}): StateSpec {
   return { screen, motionRoots: MOTION_ROOTS, fullPage: true, ...overrides };
@@ -105,7 +106,7 @@ async function openDialog(ctx: A11yContext, opener: Locator, scopeSelector = 'bo
           const active = document.activeElement;
           return Boolean(active && active !== document.body && el.contains(active));
         }),
-      { timeout: UI_WAIT_MS, message: 'initial focus must transfer inside newly opened dialog' },
+      { timeout: FOCUS_WAIT_MS, message: 'initial focus must transfer inside newly opened dialog' },
     )
     .toBe(true);
   return dialog;
@@ -113,8 +114,8 @@ async function openDialog(ctx: A11yContext, opener: Locator, scopeSelector = 'bo
 
 /** Keyboard group: focus must land on the opener after the dialog closes (Radix returns it; the passkey dialog does it by hand). */
 async function expectClosed(ctx: A11yContext, dialog: Locator, opener: Locator) {
-  await expect(dialog).toBeHidden({ timeout: UI_WAIT_MS });
-  if (ctx.keyboard) await expect(opener).toBeFocused({ timeout: UI_WAIT_MS });
+  await expect(dialog).toBeHidden({ timeout: FOCUS_WAIT_MS });
+  if (ctx.keyboard) await expect(opener).toBeFocused({ timeout: FOCUS_WAIT_MS });
 }
 
 async function closeByEscape(ctx: A11yContext, dialog: Locator, opener: Locator) {
@@ -497,7 +498,7 @@ async function runGroup(browser: Browser, testInfo: TestInfo, lang: A11yLang, th
       '[data-testid="settings-passkey-card"]',
     );
     await expect(renameInput).toHaveCount(0, { timeout: UI_WAIT_MS });
-    if (ctx.keyboard) await expect(renameOpener).toBeFocused({ timeout: UI_WAIT_MS });
+    if (ctx.keyboard) await expect(renameOpener).toBeFocused({ timeout: FOCUS_WAIT_MS });
 
     log('settings passkey revoke dialog');
     const revokeOpener = page.locator('[data-testid^="settings-passkey-revoke-"]').first();

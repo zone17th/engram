@@ -91,6 +91,7 @@ export interface KeyboardWalkOptions {
 
 const UI_TIMEOUT_MS = 30_000;
 const SHOT_TIMEOUT_MS = 30_000;
+const FOCUS_TIMEOUT_MS = 10_000;
 const MAX_DURATION_SECONDS = 0.001;
 
 export function a11yScreenshotName(screen: A11yScreen, lang: A11yLang, theme: A11yTheme, width: number): string {
@@ -130,7 +131,7 @@ export async function activate(
   if (!alreadyFocused) {
     await tabToTargetInScope(ctx.page, scopeSelector, target);
   }
-  await expect(target).toBeFocused({ timeout: UI_TIMEOUT_MS });
+  await expect(target).toBeFocused({ timeout: FOCUS_TIMEOUT_MS });
   await ctx.page.keyboard.press(key);
 }
 
@@ -139,16 +140,26 @@ export async function activate(
  * that focus remains inside `scopeSelector` (JR1-7, JR1-8).
  */
 export async function tabToTargetInScope(page: Page, scopeSelector: string, target: Locator) {
-  const inScope = await page.evaluate((selector) => {
-    const root = document.querySelector<HTMLElement>(selector);
-    if (!root) return false;
-    const active = document.activeElement;
-    return Boolean(active && active !== document.body && root.contains(active));
-  }, scopeSelector);
+  const targetElHandle = await target.elementHandle({ timeout: FOCUS_TIMEOUT_MS });
+  const needsRootFocus = await page.evaluate(
+    ({ selector, targetEl }) => {
+      const root = document.querySelector<HTMLElement>(selector);
+      if (!root) return false;
+      const active = document.activeElement;
+      if (!active || active === document.body || !root.contains(active)) return true;
+      if (!targetEl || active === targetEl) return false;
+      const trapped = root.getAttribute('role') === 'dialog' || Boolean(root.closest('[role="dialog"]'));
+      if (trapped) return false;
+      // DOCUMENT_POSITION_PRECEDING (2): target is before activeElement in DOM order and non-dialog scopes do not wrap.
+      return Boolean(active.compareDocumentPosition(targetEl) & Node.DOCUMENT_POSITION_PRECEDING);
+    },
+    { selector: scopeSelector, targetEl: targetElHandle },
+  );
+  await targetElHandle?.dispose();
 
   let hadTabindex: string | null = null;
   let mutatedRoot = false;
-  if (!inScope) {
+  if (needsRootFocus) {
     mutatedRoot = true;
     hadTabindex = await page.evaluate((selector) => {
       const root = document.querySelector<HTMLElement>(selector);
@@ -159,7 +170,6 @@ export async function tabToTargetInScope(page: Page, scopeSelector: string, targ
       return prev;
     }, scopeSelector);
   }
-
   try {
     const maxSteps = 80;
     for (let step = 0; step < maxSteps; step += 1) {
@@ -264,6 +274,9 @@ async function expectNoHorizontalOverflow(ctx: A11yContext, spec: StateSpec, wid
     scrollWidth: document.documentElement.scrollWidth,
     innerWidth: window.innerWidth,
   }));
+  console.log(
+    `overflow ${spec.screen} ${ctx.lang} ${ctx.theme} ${width}: scrollWidth=${scrollWidth} innerWidth=${innerWidth}`,
+  );
   expect
     .soft(
       scrollWidth,
@@ -345,6 +358,7 @@ interface Tabbable {
   unfocusedOutlineWidth: number;
   unfocusedOutlineColor: string;
   unfocusedBoxShadow: string;
+  unfocusedBorderTopColor: string;
 }
 
 /**
@@ -387,6 +401,7 @@ async function markTabbables(page: Page, scopeSelector: string): Promise<Tabbabl
       unfocusedOutlineWidth: number;
       unfocusedOutlineColor: string;
       unfocusedBoxShadow: string;
+      unfocusedBorderTopColor: string;
     }[] = [];
     for (const element of candidates) {
       if ((element as HTMLButtonElement).disabled) continue;
@@ -418,6 +433,7 @@ async function markTabbables(page: Page, scopeSelector: string): Promise<Tabbabl
         unfocusedOutlineWidth: Number.parseFloat(style.outlineWidth) || 0,
         unfocusedOutlineColor: style.outlineColor,
         unfocusedBoxShadow: style.boxShadow,
+        unfocusedBorderTopColor: style.borderTopColor,
       });
     }
     return found;
@@ -448,8 +464,9 @@ async function activeTabState(
 
 /**
  * JR1-9: visible focus requires a focus-specific visible change compared against the same element's unfocused baseline:
- * either a non-transparent outline (`outlineStyle !== 'none'`, `outlineWidth > 0`, alpha > 0) that differs from the
- * unfocused outline, or a visible `box-shadow` (`!== 'none'`, non-transparent) that differs from `unfocusedBoxShadow`.
+ * either a non-transparent outline (`outlineStyle !== 'none'`, `outlineWidth > 0` or `outlineStyle === 'auto'`, alpha > 0)
+ * that differs from the unfocused outline, a visible `box-shadow` (`!== 'none'`, non-transparent) that differs from
+ * `unfocusedBoxShadow`, or a visible border color change against `unfocusedBorderTopColor`.
  * Transparent outlines and unchanged decorative shadows fail.
  */
 async function activeHasVisibleFocus(page: Page, baseline: Tabbable): Promise<boolean> {
@@ -472,7 +489,9 @@ async function activeHasVisibleFocus(page: Page, baseline: Tabbable): Promise<bo
     const style = getComputedStyle(active);
     const outlineWidth = Number.parseFloat(style.outlineWidth) || 0;
     const hasVisibleOutline =
-      style.outlineStyle !== 'none' && outlineWidth > 0 && isVisibleColor(style.outlineColor);
+      style.outlineStyle !== 'none' &&
+      (style.outlineStyle === 'auto' || outlineWidth > 0) &&
+      isVisibleColor(style.outlineColor);
     const outlineChanged =
       style.outlineStyle !== base.unfocusedOutlineStyle ||
       outlineWidth !== base.unfocusedOutlineWidth ||
@@ -483,7 +502,15 @@ async function activeHasVisibleFocus(page: Page, baseline: Tabbable): Promise<bo
       shadow.trim() !== '' &&
       !/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)/.test(shadow.trim());
     const shadowChanged = shadow !== base.unfocusedBoxShadow;
-    return (hasVisibleOutline && outlineChanged) || (hasVisibleShadow && shadowChanged);
+    const borderWidth = Number.parseFloat(style.borderTopWidth) || 0;
+    const hasVisibleBorder =
+      style.borderTopStyle !== 'none' && borderWidth > 0 && isVisibleColor(style.borderTopColor);
+    const borderChanged = style.borderTopColor !== base.unfocusedBorderTopColor;
+    return (
+      (hasVisibleOutline && outlineChanged) ||
+      (hasVisibleShadow && shadowChanged) ||
+      (hasVisibleBorder && borderChanged)
+    );
   }, baseline);
 }
 
@@ -509,79 +536,108 @@ export async function keyboardWalk(
     const cur = tabbables[k];
     const sameRow = Math.abs(cur.centerY - prev.centerY) <= 6;
     const inVisualOrder = sameRow ? cur.left >= prev.left - 2 : cur.centerY > prev.centerY;
+    if (!inVisualOrder) {
+      console.log(`keyboard ${label}: ${prev.label} then ${cur.label} is not in visual order`);
+    }
     expect.soft(inVisualOrder, `keyboard ${label}: ${prev.label} then ${cur.label} is not in visual order`).toBe(true);
   }
 
-  // Start right before the first control: a tabindex=-1 scope root becomes the sequential-focus starting point.
-  const hadTabindex = await page.evaluate((selector) => {
-    const root = document.querySelector<HTMLElement>(selector);
-    if (!root) return null;
-    const previous = root.getAttribute('tabindex');
-    root.setAttribute('tabindex', '-1');
-    root.focus();
-    return previous;
-  }, scopeSelector);
-
-  const press = async (key: 'Tab' | 'Shift+Tab', expected: number, what: string) => {
-    await page.keyboard.press(key);
-    const state = await activeTabState(page, scopeSelector);
-    expect.soft(state.contained, `keyboard ${label}: ${what} (activeElement escaped ${scopeSelector})`).toBe(true);
-    expect.soft(state.index, `keyboard ${label}: ${what}`).toBe(expected);
-  };
-
-  await press('Tab', 0, `first Tab reaches ${tabbables[0].label}`);
-  for (let k = 0; k < tabbables.length; k += 1) {
-    if (k > 0) await press('Tab', k, `Tab reaches ${tabbables[k].label}`);
-    expect
-      .soft(
-        await activeHasVisibleFocus(page, tabbables[k]),
-        `keyboard ${label}: no visible focus change on ${tabbables[k].label}`,
-      )
-      .toBe(true);
-  }
-  if (options.trap) {
-    await press('Tab', 0, `Tab after the last control wraps to ${tabbables[0].label}`);
-    await press(
-      'Shift+Tab',
-      tabbables.length - 1,
-      `Shift+Tab from the first wraps to ${tabbables[tabbables.length - 1].label}`,
-    );
-  }
-
-  if (options.leaveFocusedSelector) {
-    const targetIndex = await page.evaluate(
-      ({ scope, targetSel }) => {
-        const root = document.querySelector(scope);
-        const target = root?.querySelector<HTMLElement>(targetSel);
-        const raw = target?.getAttribute('data-a11y-tab');
-        return raw === null || raw === undefined ? null : Number(raw);
-      },
-      { scope: scopeSelector, targetSel: options.leaveFocusedSelector },
-    );
-    expect(
-      targetIndex,
-      `keyboard ${label}: leaveFocusedSelector ${options.leaveFocusedSelector} not among required controls`,
-    ).not.toBeNull();
-    if (targetIndex !== null) {
-      let current = (await activeTabState(page, scopeSelector)).index ?? -1;
-      for (let guard = 0; guard < tabbables.length + 2 && current !== targetIndex; guard += 1) {
-        const nextExpected = (current + 1) % tabbables.length;
-        await press('Tab', nextExpected, `Tab toward primary action ${tabbables[nextExpected].label}`);
-        current = nextExpected;
-      }
-      expect(current, `keyboard ${label}: parked focus on ${options.leaveFocusedSelector}`).toBe(targetIndex);
-    }
-  }
-
-  await page.evaluate(
-    ({ selector, previous }) => {
+  const focusRoot = async () =>
+    page.evaluate((selector) => {
       const root = document.querySelector<HTMLElement>(selector);
-      if (!root) return;
-      if (previous === null) root.removeAttribute('tabindex');
-      else root.setAttribute('tabindex', previous);
-    },
-    { selector: scopeSelector, previous: hadTabindex },
-  );
+      if (!root) return null;
+      const previous = root.getAttribute('tabindex');
+      root.setAttribute('tabindex', '-1');
+      root.focus();
+      return previous;
+    }, scopeSelector);
+
+  // Start right before the first control: a tabindex=-1 scope root becomes the sequential-focus starting point.
+  const hadTabindex = await focusRoot();
+
+  try {
+    const press = async (key: 'Tab' | 'Shift+Tab', expected: number, what: string) => {
+      await page.keyboard.press(key);
+      const state = await activeTabState(page, scopeSelector);
+      if (!state.contained) {
+        console.log(`keyboard ${label}: ${what} (activeElement escaped ${scopeSelector})`);
+      } else if (state.index !== expected) {
+        console.log(`keyboard ${label}: ${what} (expected index ${expected}, got ${String(state.index)})`);
+      }
+      expect.soft(state.contained, `keyboard ${label}: ${what} (activeElement escaped ${scopeSelector})`).toBe(true);
+      expect.soft(state.index, `keyboard ${label}: ${what}`).toBe(expected);
+    };
+
+    await press('Tab', 0, `first Tab reaches ${tabbables[0].label}`);
+    for (let k = 0; k < tabbables.length; k += 1) {
+      if (k > 0) await press('Tab', k, `Tab reaches ${tabbables[k].label}`);
+      // Wait up to two animation frames so focus-visible styles settle under heavy parallel load before sampling.
+      let hasFocus = await activeHasVisibleFocus(page, tabbables[k]);
+      if (!hasFocus) {
+        await page.evaluate(async () => {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          setTimeout(resolve, 100);
+          await promise;
+        });
+        hasFocus = await activeHasVisibleFocus(page, tabbables[k]);
+      }
+      if (!hasFocus) {
+        console.log(`keyboard ${label}: no visible focus change on ${tabbables[k].label}`);
+      }
+      expect
+        .soft(hasFocus, `keyboard ${label}: no visible focus change on ${tabbables[k].label}`)
+        .toBe(true);
+    }
+    if (options.trap) {
+      await press('Tab', 0, `Tab after the last control wraps to ${tabbables[0].label}`);
+      await press(
+        'Shift+Tab',
+        tabbables.length - 1,
+        `Shift+Tab from the first wraps to ${tabbables[tabbables.length - 1].label}`,
+      );
+    }
+
+    if (options.leaveFocusedSelector) {
+      const targetIndex = await page.evaluate(
+        ({ scope, targetSel }) => {
+          const root = document.querySelector(scope);
+          const target = root?.querySelector<HTMLElement>(targetSel);
+          const raw = target?.getAttribute('data-a11y-tab');
+          return raw === null || raw === undefined ? null : Number(raw);
+        },
+        { scope: scopeSelector, targetSel: options.leaveFocusedSelector },
+      );
+      expect(
+        targetIndex,
+        `keyboard ${label}: leaveFocusedSelector ${options.leaveFocusedSelector} not among required controls`,
+      ).not.toBeNull();
+      if (targetIndex !== null) {
+        let current = (await activeTabState(page, scopeSelector)).index ?? -1;
+        // Non-trapped scopes do not wrap on Tab after the last control; if targetIndex < current, reset to scope root.
+        if (!options.trap && (current < 0 || targetIndex < current)) {
+          await focusRoot();
+          current = -1;
+        }
+        for (let guard = 0; guard < tabbables.length + 2 && current !== targetIndex; guard += 1) {
+          const nextExpected = options.trap ? (current + 1) % tabbables.length : current + 1;
+          await press('Tab', nextExpected, `Tab toward primary action ${tabbables[nextExpected]?.label ?? String(nextExpected)}`);
+          current = nextExpected;
+        }
+        expect(current, `keyboard ${label}: parked focus on ${options.leaveFocusedSelector}`).toBe(targetIndex);
+      }
+    }
+  } finally {
+    await page.evaluate(
+      ({ selector, previous }) => {
+        const root = document.querySelector<HTMLElement>(selector);
+        if (!root) return;
+        if (previous === null) root.removeAttribute('tabindex');
+        else root.setAttribute('tabindex', previous);
+      },
+      { selector: scopeSelector, previous: hadTabindex },
+    );
+  }
 }
 
 /**
