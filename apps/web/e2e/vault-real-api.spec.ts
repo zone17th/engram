@@ -104,6 +104,7 @@ test.describe('vault web against the real API', () => {
       await page.getByTestId('onboarding-create-vault-button').click();
       expect((await created).ok()).toBe(true);
 
+      await page.getByTestId('onboarding-skip-passkey-button').click({ timeout: UI_WAIT_MS });
       await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
       await expectVaultOpen(page);
       const bodyText = await page.locator('body').innerText();

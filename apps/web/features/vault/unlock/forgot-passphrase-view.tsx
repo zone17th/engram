@@ -6,6 +6,7 @@ import { AppHeader } from '@/components/app-shell/app-header';
 
 export function ForgotPassphraseView() {
   const t = useTranslations('forgotPassphrase');
+  const tForgotB = useTranslations('vault.b.forgot');
 
   return (
     <>
@@ -23,6 +24,87 @@ export function ForgotPassphraseView() {
           <div className="mb-6 flex flex-col gap-2">
             <div
               className="card flex flex-wrap items-center gap-3 p-4"
+              data-testid="forgot-path-passkey"
+            >
+              <span
+                className="mono w-6 text-center"
+                style={{ color: 'var(--muted)' }}
+              >
+                {tForgotB('passkeyStep')}
+              </span>
+              <div className="min-w-0 flex-1 basis-[200px]">
+                <div className="text-[14px] font-semibold text-body">
+                  {tForgotB('passkeyTitle')}
+                </div>
+                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                  {tForgotB('passkeyBody')}
+                </div>
+              </div>
+              <Link
+                href="/app/unlock"
+                className="btn btn-secondary btn-sm no-underline"
+                data-testid="forgot-back-to-unlock-cta"
+              >
+                {tForgotB('passkeyCta')}
+              </Link>
+            </div>
+
+            <div
+              className="card flex flex-wrap items-center gap-3 p-4"
+              data-testid="forgot-path-remembered-device"
+            >
+              <span
+                className="mono w-6 text-center"
+                style={{ color: 'var(--muted)' }}
+              >
+                {tForgotB('deviceStep')}
+              </span>
+              <div className="min-w-0 flex-1 basis-[200px]">
+                <div className="text-[14px] font-semibold text-body">
+                  {tForgotB('deviceTitle')}
+                </div>
+                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                  {tForgotB('deviceBody')}
+                </div>
+              </div>
+              <Link
+                href="/app/unlock"
+                className="btn btn-tertiary btn-sm no-underline"
+                data-testid="forgot-try-device-cta"
+              >
+                {tForgotB('deviceCta')}
+              </Link>
+            </div>
+
+            <div
+              className="card flex flex-wrap items-center gap-3 p-4"
+              data-testid="forgot-path-unlocked-tab"
+            >
+              <span
+                className="mono w-6 text-center"
+                style={{ color: 'var(--muted)' }}
+              >
+                {tForgotB('unlockedTabStep')}
+              </span>
+              <div className="min-w-0 flex-1 basis-[200px]">
+                <div className="text-[14px] font-semibold text-body">
+                  {tForgotB('unlockedTabTitle')}
+                </div>
+                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                  {tForgotB('unlockedTabBody')}
+                </div>
+              </div>
+              <Link
+                href="/app/settings#baomat"
+                className="btn btn-tertiary btn-sm no-underline"
+                data-testid="forgot-unlocked-tab-settings-cta"
+              >
+                {tForgotB('unlockedTabCta')}
+              </Link>
+            </div>
+
+            <div
+              className="card flex flex-wrap items-center gap-3 p-4"
               style={{ borderColor: 'var(--accent)' }}
               data-testid="forgot-path-recovery-key"
             >
@@ -30,7 +112,7 @@ export function ForgotPassphraseView() {
                 className="mono w-6 text-center"
                 style={{ color: 'var(--accent)' }}
               >
-                {t('paths.recoveryKeyStep')}
+                {tForgotB('recoveryKeyStep')}
               </span>
               <div className="min-w-0 flex-1 basis-[200px]">
                 <div className="text-[14px] font-semibold text-body">
@@ -46,33 +128,6 @@ export function ForgotPassphraseView() {
                 data-testid="forgot-use-recovery-key-cta"
               >
                 {t('paths.recoveryKeyCta')}
-              </Link>
-            </div>
-
-            <div
-              className="card flex flex-wrap items-center gap-3 p-4"
-              data-testid="forgot-path-passkey-device"
-            >
-              <span
-                className="mono w-6 text-center"
-                style={{ color: 'var(--muted)' }}
-              >
-                {t('paths.passkeyStep')}
-              </span>
-              <div className="min-w-0 flex-1 basis-[200px]">
-                <div className="text-[14px] font-semibold text-body">
-                  {t('paths.passkeyTitle')}
-                </div>
-                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
-                  {t('paths.passkeyBody')}
-                </div>
-              </div>
-              <Link
-                href="/app/unlock"
-                className="btn btn-secondary btn-sm no-underline"
-                data-testid="forgot-back-to-unlock-cta"
-              >
-                {t('paths.passkeyCta')}
               </Link>
             </div>
           </div>

@@ -17,6 +17,7 @@ import {
 } from '@/lib/auth/audit-catalog';
 import { useSession } from '@/features/auth/session-provider';
 import { VaultSecurityPanel } from '@/features/settings/security/vault/vault-security-panel';
+import { AutoLockCard } from '@/features/settings/security/auto-lock-card';
 import { PasskeySecurityCard } from '@/features/settings/security/passkey-card';
 
 function formatRelative(iso: string, locale: string): string {
@@ -264,6 +265,7 @@ export function SecuritySection({ onOpenRevokeDialog }: { onOpenRevokeDialog: ()
       <VaultSecurityPanel
         onOpenRevokeSessionsDialog={onOpenRevokeDialog}
         passkeySlot={<PasskeySecurityCard />}
+        autoLockSlot={<AutoLockCard />}
       />
       <SessionsPanel onOpenRevokeDialog={onOpenRevokeDialog} />
       <AuditFeedPanel />
