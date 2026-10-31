@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -198,6 +199,37 @@ func TestFakeOAuthListsProvidersWithoutProductionCredentials(t *testing.T) {
 	}
 	if got := cfg.OAuthReauthProviders(); len(got) != 1 || got[0] != "google" {
 		t.Fatalf("reauth providers = %v", got)
+	}
+}
+
+// HOTFIX-OAUTH-NULL: with OAuth off both lists must be non-nil so they serialise to [] and never null.
+func TestOAuthProviderListsAreEmptyNotNilWhenOAuthOff(t *testing.T) {
+	setEnv(t, map[string]string{
+		"AUTH_FAKE_OAUTH":            "false",
+		"AUTH_GOOGLE_REAUTH_ENABLED": "false",
+		"OAUTH_GOOGLE_CLIENT_ID":     "",
+		"OAUTH_GOOGLE_CLIENT_SECRET": "",
+		"OAUTH_GITHUB_CLIENT_ID":     "",
+		"OAUTH_GITHUB_CLIENT_SECRET": "",
+	})
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string][]string{
+		"OAuthProviders":       cfg.OAuthProviders(),
+		"OAuthReauthProviders": cfg.OAuthReauthProviders(),
+	} {
+		if got == nil {
+			t.Fatalf("%s() returned nil", name)
+		}
+		raw, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != "[]" {
+			t.Fatalf("%s() marshals to %s, want []", name, raw)
+		}
 	}
 }
 

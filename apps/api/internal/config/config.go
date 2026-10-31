@@ -383,11 +383,13 @@ func (c *Config) GitHubLoginEnabled() bool {
 	return strings.TrimSpace(c.OAuthGitHubClientID) != ""
 }
 
+// OAuthProviders always returns a non-nil slice: OpenAPI marks oauth_providers as a required,
+// non-nullable array, and a nil slice would serialise to JSON null.
 func (c *Config) OAuthProviders() []string {
 	if c.FakeOAuth {
 		return []string{"google", "github"}
 	}
-	var out []string
+	out := []string{}
 	if c.GoogleLoginEnabled() {
 		out = append(out, "google")
 	}
@@ -397,6 +399,7 @@ func (c *Config) OAuthProviders() []string {
 	return out
 }
 
+// OAuthReauthProviders always returns a non-nil slice for the same reason as OAuthProviders.
 func (c *Config) OAuthReauthProviders() []string {
 	if c.FakeOAuth {
 		return []string{"google"}
@@ -404,7 +407,7 @@ func (c *Config) OAuthReauthProviders() []string {
 	if c.GoogleReauthEnabled && c.GoogleLoginEnabled() {
 		return []string{"google"}
 	}
-	return nil
+	return []string{}
 }
 
 func (c *Config) TurnstileEnabled() bool {
