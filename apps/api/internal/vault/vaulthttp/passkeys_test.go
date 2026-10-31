@@ -2746,7 +2746,11 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 	t.Cleanup(releaseBarrier)
 
 	const workerJoinTimeout = 5 * time.Second
-	workerCtx, cancelWorkers := context.WithTimeout(ctx, workerJoinTimeout)
+	// workerCtx is cancel-only: it carries the BR4-1 wiring (srv2 handler AfterFunc, tracer select)
+	// and is safe to cancel from cleanup at any time, including a failure during fixture setup.
+	// The 5s worker deadline is derived from it right before the workers launch (BR5-1), so
+	// fixture time (signups, vaults, WebAuthn registrations, reauths) cannot consume it.
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	t.Cleanup(cancelWorkers)
 
 	barrierTracer := &lateBarrierTracer{
@@ -2935,7 +2939,7 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		_, _ = joinWorkers()
 	})
 
-	runWorker := func(w *workerSlot, jar cookieJar, reqBody, idemKey, grant string) {
+	runWorker := func(reqCtx context.Context, w *workerSlot, jar cookieJar, reqBody, idemKey, grant string) {
 		var out regOutcome
 		defer func() {
 			if r := recover(); r != nil {
@@ -2945,7 +2949,7 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 			w.out = out
 			close(w.done)
 		}()
-		resp, raw, reqErr := h2.doReqErr(workerCtx, jar, http.MethodPost, "/api/v1/vault/passkeys", reqBody, reqOptions{
+		resp, raw, reqErr := h2.doReqErr(reqCtx, jar, http.MethodPost, "/api/v1/vault/passkeys", reqBody, reqOptions{
 			idemKey: idemKey,
 			grant:   grant,
 		})
@@ -2955,9 +2959,17 @@ func TestPasskeyCreate_BoundedSharedPoolNoWaitCycle(t *testing.T) {
 		}
 	}
 
+	// Start the bounded worker deadline only now, after all fixture setup (BR5-1). When it
+	// expires it also cancels workerCtx so the srv2 handler AfterFunc and the tracer select
+	// unblock exactly as they did when the deadline lived on workerCtx itself.
+	workerReqCtx, cancelWorkerReq := context.WithTimeout(workerCtx, workerJoinTimeout)
+	defer cancelWorkerReq()
+	stopDeadlineCancel := context.AfterFunc(workerReqCtx, cancelWorkers)
+	defer stopDeadlineCancel()
+
 	inWorkerPhase.Store(true)
-	go runWorker(w2A, jar2A, body2A, "idem-pk-bounded-pool-2a-001", grant2A)
-	go runWorker(w2B, jar2B, body2B, "idem-pk-bounded-pool-2b-001", grant2B)
+	go runWorker(workerReqCtx, w2A, jar2A, body2A, "idem-pk-bounded-pool-2a-001", grant2A)
+	go runWorker(workerReqCtx, w2B, jar2B, body2B, "idem-pk-bounded-pool-2b-001", grant2B)
 
 	waitErr2A, waitErr2B := joinWorkers()
 	inWorkerPhase.Store(false)
