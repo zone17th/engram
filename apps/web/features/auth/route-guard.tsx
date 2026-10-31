@@ -7,7 +7,7 @@ import { AuthStatus } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/features/auth/session-provider';
 import { isAuthRoute, keepAuthFormMountedWhileLoading, resolveGuardRedirect } from '@/features/auth/guard-redirect';
-
+import { useOptionalVault } from '@/features/vault/vault-provider';
 function AuthLoadingFrame({ label }: { label: string }) {
   return (
     <div className="mx-auto flex min-h-[50vh] max-w-container items-center justify-center px-5">
@@ -44,17 +44,18 @@ function UnavailableFrame({
 
 export function RouteGuard({ children }: { children: ReactNode }) {
   const { status, me, refetchMe } = useSession();
+  const vault = useOptionalVault();
+  const vaultState = vault?.state;
   const pathname = usePathname() ?? '/app';
   const router = useRouter();
   const t = useTranslations('auth.guard');
 
   useEffect(() => {
-    const next = resolveGuardRedirect({ status, pathname, me });
+    const next = resolveGuardRedirect({ status, pathname, me, vaultState });
     if (next && next !== pathname) {
       router.replace(next);
     }
-  }, [status, me, pathname, router]);
-
+  }, [status, me, pathname, router, vaultState]);
   // `me` is still in hand when a session-epoch bump re-keys the query (password
   // replacement, silent refresh). Swapping the tree for the loading frame there
   // unmounts the page and drops transient state such as the account success
@@ -96,9 +97,17 @@ export function RouteGuard({ children }: { children: ReactNode }) {
 
 export function AppShellLogoutButton() {
   const { signOut } = useSession();
+  const vault = useOptionalVault();
   const t = useTranslations('auth.common');
   return (
-    <Button variant="tertiary" size="sm" onClick={() => void signOut()}>
+    <Button
+      variant="tertiary"
+      size="sm"
+      onClick={() => {
+        void vault?.lock({ broadcast: true, reason: 'logout' });
+        void signOut();
+      }}
+    >
       {t('logout')}
     </Button>
   );

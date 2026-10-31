@@ -172,3 +172,40 @@ describe('resolveGuardRedirect', () => {
     );
   });
 });
+
+describe('resolveGuardRedirect while the vault holds no key (U5, advisor-dec-048)', () => {
+  const me = fixture({ vault: { status: 'present' } });
+  const guard = (pathname: string, vaultState: Parameters<typeof resolveGuardRedirect>[0]['vaultState']) =>
+    resolveGuardRedirect({ status: 'authenticated_with_vault', pathname, me, vaultState });
+
+  it.each(['locked', 'unlocking', 'error'] as const)(
+    'keeps %s users on the item list and item pages (masked bodies, no redirect)',
+    (state) => {
+      expect(guard('/app', state)).toBeNull();
+      expect(guard('/app/items/d1', state)).toBeNull();
+    },
+  );
+
+  it('still sends every other app route to unlock with returnTo, and does not widen the item prefix', () => {
+    expect(guard('/app/tags/home', 'locked')).toBe('/app/unlock?returnTo=%2Fapp%2Ftags%2Fhome');
+    expect(guard('/app/items-archive', 'locked')).toBe('/app/unlock?returnTo=%2Fapp%2Fitems-archive');
+    expect(guard('/app/settings', 'locked')).toBeNull();
+    expect(guard('/app/unlock', 'locked')).toBeNull();
+  });
+
+  it('leaves the recovering rules unchanged: no list while a recovery is pending', () => {
+    expect(guard('/app', 'recovering')).toBe('/app/unlock');
+    expect(guard('/app/items/d1', 'recovering')).toBe('/app/unlock?returnTo=%2Fapp%2Fitems%2Fd1');
+    expect(guard('/app/recovery', 'recovering')).toBeNull();
+  });
+
+  it('does not open the list for a vault being reset', () => {
+    expect(guard('/app', 'resetting')).toBe('/app/unlock');
+  });
+
+  it('unlocked users are unchanged: app routes stay, the unlock page leaves for /app', () => {
+    expect(guard('/app', 'unlocked')).toBeNull();
+    expect(guard('/app/items/d1', 'unlocked')).toBeNull();
+    expect(guard('/app/unlock', 'unlocked')).toBe('/app');
+  });
+});

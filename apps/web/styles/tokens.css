@@ -1,6 +1,7 @@
 /* Port 1:1 từ mockups/tokens.css — nguồn sự thật thị giác (SPEC §7.0).
    Đổi giá trị ở đây mà không đổi bên mockup sẽ làm tests/tokens.parity.test.ts đỏ.
-   Khác biệt duy nhất được phép: ba biến --font-* lấy từ next/font thay vì CDN. */
+   Khác biệt duy nhất được phép: ba biến --font-* lấy từ next/font thay vì CDN, và
+   các rule dùng var(--font-*) ở nơi mockup viết thẳng tên họ font (advisor-dec-067). */
 
 /* ------------------------------------------------------------------
    engram — design tokens
@@ -115,7 +116,7 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--body);
-  font-family: 'Inter', 'Plus Jakarta Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 16px;
   line-height: 1.375;
   letter-spacing: -.02em;
@@ -126,7 +127,7 @@ body {
 
 .t-display, .t-hero, .t-headline-lg, .t-headline-md,
 .t-title-lg, .t-title-md, .t-title-sm {
-  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  font-family: var(--font-display);
   margin: 0;
   color: var(--ink);
 }
@@ -147,10 +148,10 @@ body {
 /* Mono = product taxonomy. Ở đây: entry type, key_id, recovery key,
    phím tắt, JSON thô — đúng vai "nhãn phân loại sản phẩm". */
 .t-label {
-  font-family: 'Sometype Mono', ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 16px; font-weight: 500; line-height: 1.25; letter-spacing: 0;
 }
-.mono { font-family: 'Sometype Mono', ui-monospace, monospace; letter-spacing: 0; }
+.mono { font-family: var(--font-mono); letter-spacing: 0; }
 
 @media (max-width: 900px) {
   .t-display    { font-size: 52px; }
@@ -165,7 +166,7 @@ body {
 /* ---------- buttons ---------- */
 
 .btn {
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 15px; font-weight: 800; line-height: 1.2; letter-spacing: -.01em;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   border: 1px solid transparent; cursor: pointer; white-space: nowrap;
@@ -224,7 +225,7 @@ body {
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--surface); color: var(--body);
-  font-family: 'Sometype Mono', monospace; font-size: 14px; font-weight: 500;
+  font-family: var(--font-mono); font-size: 14px; font-weight: 500;
   border: 1px solid var(--border); border-radius: var(--r-pill);
   padding: 6px 12px; text-decoration: none; cursor: pointer;
   transition: background-color .15s ease, border-color .15s ease;
@@ -237,7 +238,7 @@ body {
 
 /* Badge kiểu entry — taxonomy, nên dùng mono */
 .badge-type {
-  font-family: 'Sometype Mono', monospace; font-size: 12px; font-weight: 500;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 500;
   border-radius: var(--r-sm); padding: 3px 8px; letter-spacing: 0;
 }
 .badge-text { background: var(--pale-blue); color: var(--app-navy); }
@@ -263,7 +264,7 @@ body {
 
 .omnibox-input {
   flex: 1; border: 0; outline: 0; background: transparent;
-  font-family: 'Inter', sans-serif; font-size: 18px; letter-spacing: -.02em;
+  font-family: var(--font-sans); font-size: 18px; letter-spacing: -.02em;
   color: var(--body); min-width: 0;
 }
 .omnibox-input::placeholder { color: var(--muted); }
@@ -279,7 +280,7 @@ body {
 /* Nhóm kết quả: Tags → Items → Gần nghĩa.
    Tách nhóm để bật/tắt ≈ không xáo trộn thứ tự lexical (SPEC §6.4). */
 .sugg-group {
-  font-family: 'Sometype Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 12px; font-weight: 500; color: var(--muted);
   padding: 10px 16px 6px; background: var(--surface);
   border-top: 1px solid var(--border);
@@ -290,7 +291,7 @@ body {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; cursor: pointer; border: 0; width: 100%;
   background: transparent; text-align: left; color: var(--body);
-  font-family: 'Inter', sans-serif; font-size: 15px;
+  font-family: var(--font-sans); font-size: 15px;
 }
 .sugg-row:hover { background: var(--surface); }
 .sugg-row[aria-selected='true'] {
@@ -307,7 +308,7 @@ body {
 }
 
 .kbd {
-  font-family: 'Sometype Mono', monospace; font-size: 11px; color: var(--muted);
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
   border: 1px solid var(--border); border-bottom-width: 2px;
   border-radius: var(--r-sm); padding: 2px 6px; background: var(--canvas);
   white-space: nowrap;
@@ -317,7 +318,7 @@ body {
 
 .json-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .json-table th {
-  text-align: left; font-family: 'Sometype Mono', monospace;
+  text-align: left; font-family: var(--font-mono);
   font-size: 12px; font-weight: 500; color: var(--muted);
   padding: 8px 12px; background: var(--surface);
   border-bottom: 1px solid var(--border); white-space: nowrap;
@@ -327,20 +328,20 @@ body {
   vertical-align: top; color: var(--body);
 }
 .json-table tr:last-child td { border-bottom: 0; }
-.json-table .k { font-family: 'Sometype Mono', monospace; color: var(--muted); white-space: nowrap; }
-.json-table .v-num { font-family: 'Sometype Mono', monospace; color: var(--accent); }
-.json-table .v-bool { font-family: 'Sometype Mono', monospace; color: var(--product-teal); }
-.json-table .v-null { font-family: 'Sometype Mono', monospace; color: var(--muted); font-style: italic; }
+.json-table .k { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
+.json-table .v-num { font-family: var(--font-mono); color: var(--accent); }
+.json-table .v-bool { font-family: var(--font-mono); color: var(--product-teal); }
+.json-table .v-null { font-family: var(--font-mono); color: var(--muted); font-style: italic; }
 .json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
 .json-toggle {
   display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
   background: transparent; border: 0; padding: 0; color: var(--body);
-  font-family: 'Sometype Mono', monospace; font-size: 13px;
+  font-family: var(--font-mono); font-size: 13px;
 }
 .json-toggle .caret { transition: transform .15s ease; display: inline-block; color: var(--muted); }
 .json-toggle[aria-expanded='true'] .caret { transform: rotate(90deg); }
 .json-raw {
-  font-family: 'Sometype Mono', monospace; font-size: 13px; line-height: 1.6;
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
   white-space: pre; overflow-x: auto; padding: 16px;
   background: var(--surface); color: var(--body); margin: 0;
 }
@@ -350,7 +351,7 @@ body {
 .rule { height: 1px; background: var(--border); border: 0; margin: 0; }
 
 .lock-veil {
-  font-family: 'Sometype Mono', monospace; color: var(--muted);
+  font-family: var(--font-mono); color: var(--muted);
   background: var(--surface-alt); border-radius: var(--r-md);
   padding: 12px 14px; letter-spacing: .12em;
 }
@@ -358,7 +359,7 @@ body {
 .seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
 .seg button {
   border: 0; background: transparent; cursor: pointer; border-radius: var(--r-sm);
-  padding: 5px 12px; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+  padding: 5px 12px; font-family: var(--font-sans); font-size: 13px; font-weight: 600;
   color: var(--muted);
 }
 .seg button[aria-selected='true'],
@@ -384,7 +385,7 @@ body {
   display: inline-flex; align-items: center; gap: 7px;
   border-radius: var(--r-pill); padding: 6px 12px; cursor: pointer;
   border: 1px solid transparent; font-size: 13px; font-weight: 600;
-  font-family: 'Inter', sans-serif; white-space: nowrap;
+  font-family: var(--font-sans); white-space: nowrap;
 }
 .vault-open { background: rgba(48,164,108,.12); color: #117A4B; }
 .vault-shut { background: rgba(229,72,77,.10); color: #B4232A; }
@@ -439,7 +440,7 @@ body {
 
 .field-input {
   width: 100%;
-  font-family: var(--font-sans), 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.375;
   letter-spacing: -.02em;
@@ -534,7 +535,7 @@ body {
 .phase-badge {
   display: inline-flex;
   align-items: center;
-  font-family: 'Sometype Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 500;
   color: var(--muted);

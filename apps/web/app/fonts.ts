@@ -1,12 +1,33 @@
-import { Inter, Plus_Jakarta_Sans, Sometype_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
 
-// next/font tải font lúc build và phục vụ từ chính origin — bắt buộc để hợp CSP
-// `default-src 'self'` (SPEC §10.2). Giao diện giữ nguyên như mockup.
+// Font nằm sẵn trong repo (app/fonts/, nguồn và sha256 ở README.md cạnh đó) và
+// next/font phục vụ từ chính origin — bắt buộc để hợp CSP `default-src 'self'`
+// (SPEC §10.2). Không dùng next/font/google: bản build tải font từ Google lúc
+// build và thỉnh thoảng hỏng khi Google trả URL động (advisor-dec-052).
+// Giao diện giữ nguyên như mockup.
 //
 // File này tồn tại vì có HAI root layout (marketing và /app) cùng cần font.
 // Gọi next/font ở hai nơi sẽ tải hai bản, mỗi bản một class hash khác nhau.
-const display = Plus_Jakarta_Sans({ subsets: ['latin', 'vietnamese'], variable: '--font-plus-jakarta', display: 'swap' });
-const sans = Inter({ subsets: ['latin', 'vietnamese'], variable: '--font-inter', display: 'swap' });
-const mono = Sometype_Mono({ subsets: ['latin'], weight: ['400', '500'], variable: '--font-sometype', display: 'swap' });
+const display = localFont({
+  src: './fonts/PlusJakartaSans-Variable.woff2',
+  weight: '200 800',
+  variable: '--font-plus-jakarta',
+  display: 'swap',
+});
+const sans = localFont({
+  src: './fonts/Inter-Variable.woff2',
+  weight: '100 900',
+  variable: '--font-inter',
+  display: 'swap',
+});
+// Sometype Mono contains only Latin glyphs (no U+1E00–1EFF); disable adjustFontFallback so
+// next/font/local does not inject an Arial fallback face ahead of ui-monospace in --font-mono (AR1-1).
+const mono = localFont({
+  src: './fonts/SometypeMono-Variable.woff2',
+  weight: '400 500',
+  variable: '--font-sometype',
+  display: 'swap',
+  adjustFontFallback: false,
+});
 
 export const fontVariables = `${display.variable} ${sans.variable} ${mono.variable}`;

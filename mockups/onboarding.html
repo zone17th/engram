@@ -34,10 +34,12 @@
 
   <!-- ===== stepper: cũng là nút xem từng bước khi review mockup ===== -->
   <div class="flex items-center gap-3 mb-8">
-    <div class="seg" data-seg>
-      <button data-target="pp"   aria-pressed="true">1 · Passphrase</button>
-      <button data-target="rk"   aria-pressed="false">2 · Recovery key</button>
-      <button data-target="pk"   aria-pressed="false">3 · Passkey</button>
+    <div class="seg flex-wrap" data-seg>
+      <button data-target="pp"        aria-pressed="true">1 · Passphrase</button>
+      <button data-target="pp-oom"    aria-pressed="false">1b · Thiếu bộ nhớ</button>
+      <button data-target="rk"        aria-pressed="false">2 · Recovery key</button>
+      <button data-target="rk-exists" aria-pressed="false">2b · Đã tạo ở nơi khác (409)</button>
+      <button data-target="pk"        aria-pressed="false">3 · Passkey</button>
     </div>
   </div>
 
@@ -46,9 +48,12 @@
   <!-- ============================================================= -->
   <section data-view="pp">
     <h1 class="t-title-lg mb-2">Đặt passphrase cho vault</h1>
-    <p class="t-body-lg mb-7" style="color:var(--muted)">
-      Đây là bí mật khoá nội dung entry, khác với mật khẩu đăng nhập. Chúng tôi không giữ bản sao —
-      gõ sai thì không ai mở hộ được.
+    <p class="t-body-lg mb-2" style="color:var(--muted)">
+      Đây là <strong>passphrase mã hoá vault</strong> (khoá nội dung entry), hoàn toàn tách biệt với <strong>mật khẩu đăng nhập</strong> tài khoản.
+      Máy chủ không giữ bản sao — gõ sai thì không ai mở hộ được.
+    </p>
+    <p class="text-[13px] mt-0 mb-6" lang="en" style="color:var(--muted)">
+      This <strong>vault passphrase</strong> encrypts entry contents and is separate from your account <strong>login password</strong>. We never receive or store a copy.
     </p>
 
     <div class="card p-6 mb-4">
@@ -61,7 +66,7 @@
         <div style="height:4px;flex:1;border-radius:var(--r-pill);background:var(--border)">
           <div style="height:4px;width:78%;border-radius:var(--r-pill);background:var(--success)"></div>
         </div>
-        <span class="text-[12px]" style="color:var(--success)">mạnh</span>
+        <span class="text-[12px]" style="color:var(--body)">mạnh</span>
       </div>
       <label class="block mb-5">
         <span class="text-[14px] font-semibold block mb-1.5">Gõ lại passphrase</span>
@@ -70,9 +75,9 @@
       </label>
 
       <ul class="flex flex-col gap-1.5 text-[13px] m-0 p-0 list-none" style="color:var(--muted)">
-        <li><span style="color:var(--success)">✓</span> Từ 12 ký tự trở lên</li>
-        <li><span style="color:var(--success)">✓</span> Không dùng lại mật khẩu ở nơi khác</li>
-        <li><span style="color:var(--success)">✓</span> Đủ khó đoán (zxcvbn ≥ 3)</li>
+        <li><span style="color:var(--body)">✓</span> Từ 12 ký tự trở lên</li>
+        <li><span style="color:var(--body)">✓</span> Không dùng lại mật khẩu đăng nhập hay mật khẩu ở nơi khác</li>
+        <li><span style="color:var(--body)">✓</span> Đủ khó đoán (zxcvbn ≥ 3)</li>
       </ul>
     </div>
 
@@ -90,14 +95,44 @@
   </section>
 
   <!-- ============================================================= -->
+  <!-- BƯỚC 1B — thiếu bộ nhớ khi derive Argon2id 64 MiB trong Worker  -->
+  <!-- ============================================================= -->
+  <section data-view="pp-oom" id="onboard-oom" hidden>
+    <h1 class="t-title-lg mb-2">Đặt passphrase cho vault · <span lang="en" class="text-[22px] font-normal" style="color:var(--muted)">Set your vault passphrase</span></h1>
+    <p class="t-body-lg mb-2" style="color:var(--muted)">
+      Trạng thái lỗi khi thiết bị không cấp phát đủ bộ nhớ cho Argon2id 64 MiB trong Web Worker lúc tạo vault.
+    </p>
+    <p class="text-[13px] mt-0 mb-6" lang="en" style="color:var(--muted)">
+      Error state when this device cannot allocate 64 MiB for Argon2id in the Web Worker while creating a vault.
+    </p>
+
+    <div class="card p-5 mb-4" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · Worker OOM</p>
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để tạo vault</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Trình duyệt không cấp phát đủ 64 MiB trong Web Worker để dẫn xuất khoá mã hoá (Argon2id).
+          Thiết bị này không thể tạo vault tại đây — hãy thử trên trình duyệt hoặc thiết bị khác. Chưa có gì được gửi lên máy chủ.
+        </p>
+      </div>
+      <div class="rounded-md p-3 text-[13px]" lang="en" style="background:var(--surface);color:var(--muted)">
+        <strong style="color:var(--body)">Not enough memory to create your vault.</strong>
+        This device cannot allocate 64 MiB in a Web Worker for Argon2id key derivation. Try another browser or device — nothing was sent to the server.
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
   <!-- BƯỚC 2 — lưới 10 recovery key                                  -->
   <!-- ============================================================= -->
   <section data-view="rk" hidden>
     <h1 class="t-title-lg mb-2">10 recovery key của bạn</h1>
-    <p class="t-body-lg mb-4" style="color:var(--muted)">
-      Mỗi key mở được vault một mình, không cần passphrase. Dùng xong thì key đó ngừng hoạt động trên máy chủ.
+    <p class="t-body-lg mb-2" style="color:var(--muted)">
+      Mỗi key mở được vault một mình, không cần passphrase. Dùng xong thì key đó bị xoá trên máy chủ.
     </p>
-
+    <p class="text-[13px] mt-0 mb-4" lang="en" style="color:var(--muted)">
+      Each key unlocks your vault on its own without your passphrase. Consuming a key deletes it on the live server.
+    </p>
     <div class="rounded-md p-4 mb-5" style="background:var(--pale-orange)">
       <p class="text-[13px] m-0" style="color:var(--body)">
         <strong>Chỉ hiện đúng lần này.</strong> Ảnh chụp màn hình hoặc người đứng sau lưng đều lấy được key.
@@ -107,19 +142,19 @@
 
     <div class="card p-4 sm:p-5 mb-4">
       <div class="grid gap-1.5 sm:grid-cols-2">
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk1_7QK4 M2XD 9FRA T1VB 60HN ZE83 XQ</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk2_H3ND 5YTP Q8ZB 2CVK 7MRA 6FJW 1S</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk3_ZC9X 4KDB 1HQT 8NVM 3GYE 5PRJ 7A</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk4_5VBN 2QZR 7MKD 4XTC 9HJF 6SAG 3E</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk5_D8TQ 3JGM 6BZX 1NKV 5YRP 2WHC 4F</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk6_9MRA 7CKW 4EZQ 2BVT 8XND 3FGH 5J</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk7_2XKV 6NBD 8QTR 5MZC 1HJA 9WGF 4P</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk8_6BZT 9QHM 3KXR 7VND 2CJG 5YPW 8A</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk9_4NCX 8VKQ 1ZBM 9TRD 6GHJ 3WFA 7P</code>
-        <code class="mono text-[13px] px-3 py-2.5 rounded-md" style="background:var(--surface)">rk10_1JQD 5MZK 9XVB 3NRT 7CGH 2AWF 6P</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk1_0FAK-E7QK-4M2X-D9FR-AT1V-B60H-NZ</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk2_0FAK-EH3N-D5YT-PQ8Z-B2CV-K7MR-A6</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk3_0FAK-EZC9-X4KD-B1HQ-T8NV-M3GY-E5</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk4_0FAK-E5VB-N2QZ-R7MK-D4XT-C9HJ-F6</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk5_0FAK-ED8T-Q3JG-M6BZ-X1NK-V5YR-P2</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk6_0FAK-E9MR-A7CK-W4EZ-Q2BV-T8XN-D3</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk7_0FAK-E2XK-V6NB-D8QT-R5MZ-C1HJ-A9</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk8_0FAK-E6BZ-T9QH-M3KX-R7VN-D2CJ-G5</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk9_0FAK-E4NC-X8VK-Q1ZB-M9TR-D6GH-J3</code>
+        <code class="mono text-[11px] px-2 py-2 rounded-md" style="background:var(--surface)">rk10_0FAK-E1JQ-D5MZ-K9XV-B3NR-T7CG-H2</code>
       </div>
       <p class="t-caption mt-3 mb-0" style="color:var(--muted)">
-        Dữ liệu giả trong mockup. Bản thật là 16 byte ngẫu nhiên mỗi key, mã Crockford Base32.
+        Dữ liệu giả trong mockup (<span class="mono">0FAK-E…</span>). Bản thật là 16 byte ngẫu nhiên mỗi key, mã Crockford Base32 (26 ký tự).
       </p>
     </div>
 
@@ -147,41 +182,129 @@
   </section>
 
   <!-- ============================================================= -->
+  <!-- BƯỚC 2B — 409 vault_exists (lưới RK bị ẩn hẳn)                  -->
+  <!-- ============================================================= -->
+  <section data-view="rk-exists" id="onboard-vault-exists" hidden>
+    <h1 class="t-title-lg mb-2">Vault đã được tạo ở nơi khác · <span lang="en" class="text-[22px] font-normal" style="color:var(--muted)">Vault already created elsewhere</span></h1>
+    <p class="t-body-lg mb-2" style="color:var(--muted)">
+      Khi bấm <strong>Tạo vault</strong> mà máy chủ trả <span class="mono">409 vault_exists</span>, lưới 10 recovery key lập tức bị ẩn khỏi màn hình.
+    </p>
+    <p class="text-[13px] mt-0 mb-6" lang="en" style="color:var(--muted)">
+      When <span class="mono">409 vault_exists</span> is returned on create, the 10-key recovery grid is immediately hidden from the screen.
+    </p>
+
+    <div class="card p-5 mb-4" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">409 vault_exists</p>
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Vault đã được tạo ở tab hoặc thiết bị khác</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Tài khoản này đã có vault trước khi yêu cầu tạo tại đây hoàn tất. <strong>10 recovery key vừa hiển thị không thuộc về bất kỳ vault nào — hãy huỷ bỏ ngay</strong> (không giữ lại, không in hay dùng bộ key đó).
+        </p>
+      </div>
+      <div class="rounded-md p-3 mb-4 text-[13px]" lang="en" style="background:var(--surface);color:var(--muted)">
+        <strong style="color:var(--body)">Vault already created elsewhere.</strong>
+        A vault was created for this account in another tab or device. The 10 recovery keys shown here belong to nothing and must be discarded — do not keep or print them.
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <a href="unlock.html" class="btn btn-primary no-underline">Đi tới mở khoá vault · <span lang="en">Go to unlock</span></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
   <!-- BƯỚC 3 — passkey tuỳ chọn + nhớ thiết bị                        -->
   <!-- ============================================================= -->
   <section data-view="pk" hidden>
     <h1 class="t-title-lg mb-2">Thêm passkey (tuỳ chọn)</h1>
-    <p class="t-body-lg mb-7" style="color:var(--muted)">
+    <p class="t-body-lg mb-5" style="color:var(--muted)">
       Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật, không phải gõ passphrase mỗi lần.
       Bỏ qua cũng được — passphrase và 10 recovery key đã đủ để dùng.
     </p>
 
-    <div class="card p-6 mb-3">
+    <div class="card p-6 mb-4">
       <div class="flex items-start gap-4 flex-wrap">
         <div class="min-w-0 flex-1 basis-[240px]">
           <div class="text-[15px] font-semibold mb-1">Passkey trên thiết bị này</div>
-          <p class="text-[13px] m-0" style="color:var(--muted)">
+          <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">
             Cần khoá bảo mật hỗ trợ PRF. Chúng tôi kiểm tra ngay lúc đăng ký; không hỗ trợ thì báo luôn, không lưu nửa vời.
+          </p>
+          <p class="text-[12px] m-0" style="color:var(--muted)">
+            Bấm <strong>Thêm passkey</strong> sẽ yêu cầu xác thực lại tài khoản (bằng <strong>mật khẩu đăng nhập</strong> hoặc OAuth/Google) ở đầu luồng trước khi gọi WebAuthn (<span class="mono">vault.passkey_register</span>).
+            <span lang="en" class="block mt-0.5">Clicking “Add passkey” prompts account re-authentication (login password or OAuth/Google) at the start of the flow before starting WebAuthn.</span>
           </p>
         </div>
         <button class="btn btn-secondary" onclick="SAK.toast('Chạm vào khoá bảo mật để đăng ký…')">Thêm passkey</button>
       </div>
     </div>
 
-    <!-- trạng thái lỗi PRF: onboarding vẫn hoàn tất được -->
-    <div class="card p-4 mb-3" style="border-color:var(--warning)">
-      <p class="text-[13px] m-0" style="color:var(--body)">
-        <span class="badge-type" style="background:var(--pale-orange);color:var(--body)">prf_unsupported</span>
-        Thiết bị này không tạo được khoá PRF nên chưa thêm passkey được. Vault vẫn tạo xong bằng passphrase và recovery key.
-      </p>
-    </div>
+    <!-- Các trạng thái của bước thêm passkey (onboarding vẫn hoàn tất được) -->
+    <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
+    <div class="flex flex-col gap-3 mb-4">
+      <!-- 1. PRF unsupported -->
+      <div id="pk-prf-unsupported" class="card p-4" style="border-color:var(--warning)">
+        <p class="t-label mb-2" style="color:var(--muted)">passkey.prf_unsupported</p>
+        <div role="alert" class="mb-2">
+          <p class="text-[14px] font-semibold m-0 mb-1">Thiết bị không hỗ trợ PRF — từ chối đăng ký passkey</p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key (bỏ qua bước này vẫn hoàn tất tạo vault).
+          </p>
+        </div>
+        <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+          This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.
+        </p>
+      </div>
 
+      <!-- 2. User cancelled -->
+      <div id="pk-cancelled" class="card p-4">
+        <p class="t-label mb-2" style="color:var(--muted)">passkey.register_cancelled</p>
+        <div role="alert" class="mb-2">
+          <p class="text-[14px] font-semibold m-0 mb-1">Đã huỷ đăng ký passkey</p>
+          <p class="text-[13px] m-0" style="color:var(--muted)">
+            Chưa có gì thay đổi. Bạn có thể thử lại hoặc bỏ qua để vào engram.
+          </p>
+        </div>
+        <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+          Passkey registration was cancelled. Nothing changed — retry or skip this step.
+        </p>
+        <button type="button" class="btn btn-tertiary">Thử lại · <span lang="en">Try again</span></button>
+      </div>
+
+      <!-- 3. PRF output missing after follow-up get() -->
+      <div id="pk-prf-missing" class="card p-4" style="border-color:var(--warning)">
+        <p class="t-label mb-2" style="color:var(--muted)">passkey.register_failed · follow-up get()</p>
+        <div role="alert" class="mb-2">
+          <p class="text-[14px] font-semibold m-0 mb-1">Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.</p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            Khoá báo <span class="mono">prf.enabled = true</span> khi tạo nhưng bước xác nhận tiếp theo (<span class="mono">get()</span>) không trả về đầu ra PRF (<span class="mono">results.first</span>). Không thể bọc khoá vault nên chưa lưu gì lên máy chủ.
+          </p>
+        </div>
+        <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+          <strong style="color:var(--body)">Could not register this passkey. Try another authenticator.</strong> Authenticator did not return PRF output after the follow-up <span class="mono">get()</span> assertion, so nothing was saved on the server.
+        </p>
+        <button type="button" class="btn btn-tertiary">Thử thiết bị khác · <span lang="en">Try another</span></button>
+      </div>
+
+      <!-- 4. Orphan credential after failed POST -->
+      <div id="pk-orphan" class="card p-4" style="border-color:var(--error)">
+        <p class="t-label mb-2" style="color:var(--muted)">passkey.register_failed · orphan credential</p>
+        <div role="alert" class="auth-alert mb-2">
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Tạo passkey trên thiết bị xong nhưng lưu lên máy chủ thất bại</p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            Chưa có gì được lưu trên máy chủ engram. Khoá bảo mật hoặc trình quản lý passkey của thiết bị có thể đã giữ một mục thừa — bạn có thể xoá credential đó trong phần cài đặt passkey của thiết bị rồi thử lại.
+          </p>
+        </div>
+        <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
+          Could not save this passkey to the server after creating it on your authenticator. Nothing was stored on the server; you may delete the leftover credential in your device’s passkey manager and try again.
+        </p>
+        <button type="button" class="btn btn-tertiary">Thử lại · <span lang="en">Try again</span></button>
+      </div>
+    </div>
     <div class="card p-5 mb-7">
       <div class="flex items-center gap-4 flex-wrap">
         <div class="min-w-0 flex-1 basis-[240px]">
           <div class="text-[15px] font-semibold mb-1">Nhớ thiết bị này</div>
           <p class="text-[13px] m-0" style="color:var(--muted)">
-            Giữ một khoá riêng trong trình duyệt để lần sau mở vault không cần gõ lại. Mặc định tắt; chỉ bật trên máy của bạn.
+            Giữ một khoá riêng trong trình duyệt để lần sau mở vault không cần gõ lại. Mặc định tắt; chỉ bật trên máy cá nhân, đừng bật trên máy dùng chung.
           </p>
         </div>
         <button class="switch" role="switch" aria-checked="false" aria-label="Nhớ thiết bị này"
