@@ -189,19 +189,12 @@ func (s *Service) BuildMe(ctx context.Context, userID uuid.UUID) (Me, error) {
 			SemanticAvailable:           s.probe.Available(ctx),
 			EmailVerificationRequired:   s.cfg.RequireEmailVerification,
 			OAuthProviders:              s.cfg.OAuthProviders(),
-			OAuthReauthProviders:        orEmpty(s.cfg.OAuthReauthProviders()),
+			OAuthReauthProviders:        s.cfg.OAuthReauthProviders(),
 			PasswordEnrollmentAvailable: !hasPassword && verified,
 			CaptchaSiteKey:              s.cfg.CaptchaSiteKey(),
 		},
 		Vault: MeVault{Status: st},
 	}, nil
-}
-
-func orEmpty(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
 }
 
 type SignupInput struct {
