@@ -140,6 +140,7 @@ function PasskeySecurityCardInner({
   }
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [revokeDialogTarget, setRevokeDialogTarget] = useState<VaultPasskeyItem | null>(null);
+  const revokeOpenerRef = useRef<HTMLButtonElement | null>(null);
   const [pendingFocusHeading, setPendingFocusHeading] = useState(false);
   const [reauthPassword, setReauthPassword] = useState('');
   const [oauthPending, setOauthPending] = useState(false);
@@ -325,10 +326,11 @@ function PasskeySecurityCardInner({
     [reauth, refreshListAndVaultMeta, revokeSleep, t, tb],
   );
 
-  const handleRevokeClick = (item: VaultPasskeyItem) => {
+  const handleRevokeClick = (item: VaultPasskeyItem, opener: HTMLButtonElement) => {
     if (revokingId) return;
     setActionError(null);
     setStatusMessage(null);
+    revokeOpenerRef.current = opener;
     const usableToken = hasUsableRevokeGrant(reauth);
     if (usableToken) {
       void executeRevokeWithToken(item, usableToken);
@@ -569,7 +571,7 @@ function PasskeySecurityCardInner({
                       size="sm"
                       disabled={Boolean(revokingId || renamePendingId)}
                       aria-label={tb('revokeAria', { name: item.name })}
-                      onClick={() => handleRevokeClick(item)}
+                      onClick={(e) => handleRevokeClick(item, e.currentTarget)}
                       data-testid={`settings-passkey-revoke-${item.id}`}
                     >
                       {isRevoking ? tb('revoking') : tb('revoke')}
@@ -594,6 +596,12 @@ function PasskeySecurityCardInner({
               if (pendingFocusHeading) {
                 event.preventDefault();
                 cardHeadingRef.current?.focus();
+                return;
+              }
+              const opener = revokeOpenerRef.current;
+              if (opener && opener.isConnected && !opener.disabled) {
+                event.preventDefault();
+                opener.focus();
               }
             }}
           >
@@ -630,7 +638,11 @@ function PasskeySecurityCardInner({
                       <Link
                         href="/app/auth/password-enroll"
                         className="btn btn-secondary btn-sm no-underline"
-                        onClick={() => closeRevokeDialog(false)}
+                        onClick={() => {
+                          // Navigating to password enrollment on purpose: do not return focus to the Remove button.
+                          revokeOpenerRef.current = null;
+                          closeRevokeDialog(false);
+                        }}
                       >
                         {tAuth('reauth.enrollCta')}
                       </Link>

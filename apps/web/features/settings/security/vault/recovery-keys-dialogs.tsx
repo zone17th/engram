@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
@@ -35,6 +35,7 @@ export interface RecoveryKeysDialogsProps {
   remainingRecoveryKeys: number | null;
   onSuccessToast?: (message: string) => void;
   onStatusChanged?: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 type RkDialogStep = 'reauth' | 'keys' | 'reauth_expired' | 'mismatch' | 'ratelimit' | 'done';
@@ -49,6 +50,7 @@ export function RecoveryKeysDialog({
   remainingRecoveryKeys,
   onSuccessToast,
   onStatusChanged,
+  returnFocusRef,
 }: RecoveryKeysDialogsProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth } = useSession();
@@ -465,6 +467,13 @@ export function RecoveryKeysDialog({
         id={dialogId}
         aria-labelledby={dialogTitleId}
         className={isRotate ? 'w-[min(620px,94vw)]' : 'w-[min(600px,94vw)]'}
+        onCloseAutoFocus={(event) => {
+          const opener = returnFocusRef?.current;
+          if (opener && opener.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
       >
         <div
           className="panel"

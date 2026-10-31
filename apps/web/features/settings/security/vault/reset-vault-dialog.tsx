@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
 import { AuthStatus, Field } from '@/components/ui/field';
@@ -30,6 +30,7 @@ export interface ResetVaultDialogProps {
   canChangePassphraseNow: boolean;
   onSwitchToChangePassphrase?: () => void;
   onSuccessToast?: (message: string) => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 type ResetStep =
@@ -55,6 +56,7 @@ export function ResetVaultDialog({
   canChangePassphraseNow,
   onSwitchToChangePassphrase,
   onSuccessToast,
+  returnFocusRef,
 }: ResetVaultDialogProps) {
   const t = useTranslations('settings.vaultSecurity');
   const { me, reauth, refetchMe } = useSession();
@@ -68,6 +70,7 @@ export function ResetVaultDialog({
     lock,
     notifyVaultChanged,
   } = useVault();
+  const skipFocusReturnRef = useRef(false);
 
   const [step, setStep] = useState<ResetStep>('s1_paths');
   const [loginPassword, setLoginPassword] = useState('');
@@ -396,7 +399,19 @@ export function ResetVaultDialog({
         if (!nextOpen) handleClose();
       }}
     >
-      <DialogContent id="resetDlg" aria-labelledby="resetDlgTitle" className="w-[min(600px,94vw)]">
+      <DialogContent
+        id="resetDlg"
+        aria-labelledby="resetDlgTitle"
+        className="w-[min(600px,94vw)]"
+        onCloseAutoFocus={(event) => {
+          if (skipFocusReturnRef.current) return;
+          const opener = returnFocusRef?.current;
+          if (opener && opener.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
+      >
         <div
           className="panel"
           style={{ width: '100%', maxHeight: '90vh', overflow: 'auto', padding: '28px' }}
@@ -507,7 +522,11 @@ export function ResetVaultDialog({
                 <a
                   href="#dulieu"
                   className="btn btn-tertiary btn-sm no-underline"
-                  onClick={() => handleClose()}
+                  onClick={() => {
+                    // The link moves focus/scroll to #dulieu on purpose: do not return focus to the opener.
+                    skipFocusReturnRef.current = true;
+                    handleClose();
+                  }}
                 >
                   {t('reset.step2ExportLink')}
                 </a>

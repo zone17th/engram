@@ -58,6 +58,9 @@ function VaultSecurityPanelInner({
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [vaultMetaLoadFailed, setVaultMetaLoadFailed] = useState(false);
+  const passOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const rkOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const resetOpenerRef = useRef<HTMLButtonElement | null>(null);
 
   const isVaultPresent = me?.vault.status === 'present';
   const isVaultUnlocked = workerState === 'unlocked';
@@ -208,7 +211,10 @@ function VaultSecurityPanelInner({
             className="ml-auto"
             disabled={requiresUnlockedDisabled}
             data-open-dialog="passDlg"
-            onClick={() => setPassDialogOpen(true)}
+            onClick={(e) => {
+              passOpenerRef.current = e.currentTarget;
+              setPassDialogOpen(true);
+            }}
           >
             {t('passphrase.openButton')}
           </Button>
@@ -252,7 +258,10 @@ function VaultSecurityPanelInner({
               variant="tertiary"
               disabled={requiresUnlockedDisabled || !hasEmptySlots}
               data-open-dialog="rkDlg"
-              onClick={() => setRkDialogMode('regenerate')}
+              onClick={(e) => {
+                rkOpenerRef.current = e.currentTarget;
+                setRkDialogMode('regenerate');
+              }}
             >
               {t('recoveryKeys.regenerateButton')}
             </Button>
@@ -261,7 +270,10 @@ function VaultSecurityPanelInner({
               variant="secondary"
               disabled={requiresUnlockedDisabled}
               data-open-dialog="rotateDlg"
-              onClick={() => setRkDialogMode('rotate')}
+              onClick={(e) => {
+                rkOpenerRef.current = e.currentTarget;
+                setRkDialogMode('rotate');
+              }}
             >
               {t('recoveryKeys.rotateButton')}
             </Button>
@@ -375,7 +387,10 @@ function VaultSecurityPanelInner({
             variant="danger"
             disabled={resetDisabled}
             data-open-dialog="resetDlg"
-            onClick={() => setResetDialogOpen(true)}
+            onClick={(e) => {
+              resetOpenerRef.current = e.currentTarget;
+              setResetDialogOpen(true);
+            }}
           >
             {t('reset.openButton')}
           </Button>
@@ -413,6 +428,7 @@ function VaultSecurityPanelInner({
           passkeysCount={passkeysCount}
           onSuccessToast={setToastMessage}
           onOpenSignOutOthers={onOpenRevokeSessionsDialog}
+          returnFocusRef={passOpenerRef}
         />
       )}
 
@@ -425,6 +441,7 @@ function VaultSecurityPanelInner({
           remainingRecoveryKeys={remainingKeys}
           onSuccessToast={setToastMessage}
           onStatusChanged={handleStatusChanged}
+          returnFocusRef={rkOpenerRef}
         />
       )}
 
@@ -436,8 +453,16 @@ function VaultSecurityPanelInner({
           remainingRecoveryKeys={remainingKeys}
           passkeysCount={passkeysCount}
           canChangePassphraseNow={!requiresUnlockedDisabled}
-          onSwitchToChangePassphrase={() => setPassDialogOpen(true)}
+          onSwitchToChangePassphrase={() => {
+            // The change-passphrase dialog opens from inside the reset dialog, so the panel has no click of its own
+            // to record: hand the user's origin (the Reset vault button) to it as the focus-return target and
+            // release the reset dialog's own return so it cannot steal focus from the dialog that replaces it.
+            passOpenerRef.current = resetOpenerRef.current;
+            resetOpenerRef.current = null;
+            setPassDialogOpen(true);
+          }}
           onSuccessToast={setToastMessage}
+          returnFocusRef={resetOpenerRef}
         />
       )}
     </div>

@@ -2050,14 +2050,14 @@ export function VaultRecoveryFlow() {
                     autoComplete="off"
                     spellCheck={false}
                     disabled={lookingUpKey || vault.inFlight || isStep2RateLimited}
-                    className="mono w-full text-[14px] sm:text-[15px]"
+                    className="field-input mono w-full text-[14px] sm:text-[15px]"
                     style={{
-                      border: '1px solid var(--border)',
+                      fontFamily: "'Sometype Mono', ui-monospace, monospace",
+                      letterSpacing: 0,
                       borderRadius: 'var(--r-md)',
                       padding: '11px 12px',
                       background: 'var(--canvas)',
                       color: 'var(--body)',
-                      outline: 'none',
                     }}
                     data-vault-secret="true"
                     data-testid="recovery-key-input"

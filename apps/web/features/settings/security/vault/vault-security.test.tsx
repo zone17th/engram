@@ -2420,6 +2420,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.click(within(passDlg).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(unregisterCalls).toBe(1);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Change passphrase' })).toHaveFocus());
 
     // 2. Open RecoveryKeysDialog -> registers once (total 2); unrelated provider state changes do NOT re-register
     await user.click(screen.getByRole('button', { name: 'Rotate all 10' }));
@@ -2437,6 +2438,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.click(within(rotDlg).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(unregisterCalls).toBe(2);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate all 10' })).toHaveFocus());
 
     // 3. Open ResetVaultDialog -> registers once (total 3); unrelated provider state changes do NOT re-register
     await user.click(screen.getByRole('button', { name: 'Reset vault' }));
@@ -2454,5 +2456,48 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.click(within(rstDlg).getByRole('button', { name: 'Later' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(unregisterCalls).toBe(3);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reset vault' })).toHaveFocus());
+  });
+
+  it('returns focus to the Reset vault opener when Change passphrase, opened from the reset dialog, closes (JR3-a)', async () => {
+    const user = userEvent.setup();
+    await renderSettingsHarness();
+
+    const resetOpener = screen.getByRole('button', { name: 'Reset vault' });
+    await user.click(resetOpener);
+    const resetDlg = await screen.findByRole('dialog');
+    await user.click(within(resetDlg).getByRole('button', { name: 'Change passphrase' }));
+    await waitFor(() => {
+      expect(document.getElementById('resetDlg')).toBeNull();
+      expect(document.getElementById('passDlg')).not.toBeNull();
+    });
+
+    const passDlg = await screen.findByRole('dialog');
+    await user.click(within(passDlg).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(resetOpener).toHaveFocus());
+  });
+
+  it('does not pull focus back to the Reset vault opener when the backup link closes the reset dialog (JR3-b)', async () => {
+    const user = userEvent.setup();
+    await renderSettingsHarness();
+
+    const resetOpener = screen.getByRole('button', { name: 'Reset vault' });
+    await user.click(resetOpener);
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+    const focusSpy = vi.spyOn(resetOpener, 'focus');
+
+    await user.click(within(dialog).getByRole('link', { name: 'Go to Data / Export' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Radix FocusScope runs its unmount auto-focus in a zero-delay timeout scheduled when the dialog unmounted;
+    // one later macrotask is therefore enough to observe whether the opener was refocused.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(resetOpener).not.toHaveFocus();
   });
 });
