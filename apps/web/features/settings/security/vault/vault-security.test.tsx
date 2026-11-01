@@ -1222,7 +1222,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
           status: 428,
           code: 'precondition_required',
         }),
-        expectedSubstring: 'precondition was missing or invalid (428)',
+        expectedSubstring: 'vault state was missing or out of date',
       },
       {
         err: new ProblemError({
@@ -1231,7 +1231,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
           status: 409,
           code: 'idempotency_conflict',
         }),
-        expectedSubstring: 'conflicted with another request (409)',
+        expectedSubstring: 'conflicted with another request',
       },
       {
         err: new ProblemError({
@@ -1240,7 +1240,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
           status: 503,
           code: 'vault_mutations_disabled',
         }),
-        expectedSubstring: 'temporarily disabled on the server (503)',
+        expectedSubstring: 'temporarily paused on the server',
       },
       {
         err: new CryptoClientError('CLIENT_BUSY', 'Busy'),

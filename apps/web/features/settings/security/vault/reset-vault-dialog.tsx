@@ -748,7 +748,7 @@ export function ResetVaultDialog({
             <section data-view="rst-mismatch">
               <div className="card mb-5 border-error p-5">
                 <p className="t-label mb-2 text-muted">
-                  <span className="mono">412 version_mismatch</span>
+                  {t('errors.versionMismatchBadge')}
                 </p>
                 <AuthStatus tone="error" className="mb-0">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
