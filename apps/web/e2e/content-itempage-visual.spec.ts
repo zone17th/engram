@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type BrowserContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { LOCKED_ITEM_FIXTURE, installItemPageContentMocks } from './content-itempage-support';
@@ -9,7 +9,6 @@ import {
   WIDTHS,
   gotoLocked,
   installApiMocks,
-  installVisualApiMocks,
   prepare,
   unlockFromBanner,
   type Theme,
@@ -36,6 +35,48 @@ const ENTRIES = LOCKED_ITEM_FIXTURE.entries;
 const JSON_RECORD = ENTRIES.find((entry) => entry.meta.type === 'json')!;
 
 type JsonVisualState = 'table' | 'raw' | 'error';
+
+/**
+ * Layers the theme-specific parts of `installVisualApiMocks` (`sabk_theme` cookie,
+ * `accept-language` header, and `/api/v1/auth/me` with `settings.theme = theme`) on top
+ * of `installApiMocks` WITHOUT registering a second `/api/v1/` catch-all that would
+ * shadow `installApiMocks`'s `GET /api/v1/vault` route during `unlockFromBanner`.
+ */
+async function applyThemeMocks(context: BrowserContext, theme: Theme): Promise<void> {
+  const origin = new URL(process.env.BASE_URL ?? 'http://127.0.0.1:3000').origin;
+  await context.setExtraHTTPHeaders({ 'accept-language': 'en-US,en;q=0.9' });
+  await context.addCookies([
+    { name: 'sabk_locale', value: 'en', url: `${origin}/` },
+    { name: 'sabk_theme', value: theme, url: `${origin}/` },
+    { name: 'sabk_csrf', value: 'test-csrf-token', url: `${origin}/` },
+  ]);
+
+  await context.route('**/api/v1/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        user: {
+          id: '22222222-2222-4222-8222-222222222222',
+          email: 'vault-locked@example.test',
+          email_verified: true,
+          created_at: '2026-10-30T00:00:00Z',
+        },
+        settings: { locale: 'en', theme, auto_lock_minutes: 15, semantic_suggest: false },
+        identities: [{ provider: 'password', linked_at: '2026-10-30T00:00:00Z' }],
+        features: {
+          semantic_available: false,
+          email_verification_required: false,
+          oauth_providers: [],
+          oauth_reauth_providers: [],
+          password_enrollment_available: false,
+          captcha_site_key: null,
+        },
+        vault: { status: 'present' },
+      }),
+    });
+  });
+}
 
 /**
  * Writes a value into a `<textarea>` without the string appearing in Playwright's `fill()` call logs.
@@ -99,11 +140,11 @@ test.describe('P04-T16 Unlocked JSON card U13 visual captures (CI artifacts only
       test(`unlocked JSON card table, raw, and error (${label})`, async ({ context, page }, testInfo) => {
         test.setTimeout(180_000);
 
-        // `installApiMocks` registers `GET /api/v1/vault` with the test-vector envelope;
-        // `installVisualApiMocks` layers theme-specific `/api/v1/auth/me` and cookies on top;
-        // `installItemPageContentMocks` layers the item & entry endpoints on top.
+        // `installApiMocks` registers the catch-all and `GET /api/v1/vault` (test-vector envelope);
+        // `applyThemeMocks` layers theme cookies + `/api/v1/auth/me` (`settings.theme = theme`) without a catch-all;
+        // `installItemPageContentMocks` layers `/items/{id}`, `/items/{id}/entries`, `/entries/{id}`, and `/tags`.
         await installApiMocks(context);
-        await installVisualApiMocks(context, theme);
+        await applyThemeMocks(context, theme);
         await installItemPageContentMocks(context);
 
         await prepare(page, theme, viewport.width, viewport.height);
