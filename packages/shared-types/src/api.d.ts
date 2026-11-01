@@ -359,6 +359,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/password/forgot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Yêu cầu đặt lại mật khẩu tài khoản qua email
+         * @description Chống dò tài khoản (anti-enumeration, ADR 0006): mọi email hợp lệ cú pháp đều nhận
+         *     cùng response 202 (body rỗng, cùng lớp thời gian phản hồi, gửi mail bất đồng bộ).
+         *     Khi dịch vụ gửi thư tắt, trả 503 mail_delivery_unavailable cho mọi email để UI không
+         *     hứa hẹn kiểm tra hộp thư (advisor-dec-086). Tài khoản OAuth-only không sinh reset token
+         *     (chỉ gửi mail nhắc dùng US1b). Không mở khoá hay đụng tới vault (user-dec-016).
+         */
+        post: operations["authPasswordForgot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Đặt lại mật khẩu tài khoản bằng token từ email
+         * @description Tiêu thụ token một lần (TTL 30 phút, gắn với user_id, target_email và SHA-256 của
+         *     password_hash hiện tại), cập nhật password_hash mới, thu hồi toàn bộ session và refresh
+         *     token, ghi secevent auth.password.reset và gửi notice mail (ADR 0006). Không tự động
+         *     đăng nhập (trả 204 và xoá cookie auth hiện tại nếu có). Tuyệt đối không mở khoá,
+         *     re-key hay reset vault (user-dec-016). Mọi lỗi token (không tồn tại, đã dùng, hết hạn,
+         *     lệch trạng thái) đều trả 400 reset_token_invalid.
+         */
+        post: operations["authPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/sessions": {
         parameters: {
             query?: never;
@@ -1171,7 +1220,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired";
+        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired" | "reset_token_invalid";
         Problem: {
             /**
              * Format: uri
@@ -1299,6 +1348,17 @@ export interface components {
         } | {
             new_password: string;
             enrollment_token: string;
+        };
+        PasswordForgotRequest: {
+            /** Format: email */
+            email: string;
+            captcha_token?: string;
+        };
+        PasswordResetRequest: {
+            /** @description Token 32 byte CSPRNG mã hoá base64url không padding đọc từ URL fragment (#token=...). */
+            token: string;
+            /** @description Không trim/normalize. Tối thiểu 12 ký tự Unicode; tối đa 1024 byte UTF-8. */
+            new_password: string;
         };
         SessionList: {
             items: components["schemas"]["SessionItem"][];
@@ -2403,6 +2463,59 @@ export interface operations {
             403: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["Problem"];
+        };
+    };
+    authPasswordForgot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordForgotRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã tiếp nhận yêu cầu (nếu tài khoản tồn tại, hướng dẫn sẽ được gửi qua email) */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    authPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã đặt lại mật khẩu tài khoản và thu hồi mọi phiên đăng nhập; người dùng đăng nhập lại */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
         };
     };
     authSessionsList: {
