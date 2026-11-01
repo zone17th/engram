@@ -117,6 +117,48 @@ describe('font self-host', () => {
   });
 });
 
+describe('component rules (advisor-dec-129, P04 UIA-11)', () => {
+  const selectors = (css: string): Set<string> =>
+    new Set(
+      [
+        ...css
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/@import[^\n]*\n/g, '')
+          .matchAll(/([^{}]+)\{/g),
+      ].map((m) => m[1].trim().replace(/\s+/g, ' ')),
+    );
+
+  /** Mockup selectors the web writes differently on purpose; the reason sits next to the rule in styles/tokens.css. */
+  const WEB_DIFFERENT: Record<string, string> = {
+    ".seg button[aria-pressed='true'], .seg button[data-state='on']":
+      ".seg button[aria-selected='true'], .seg button[aria-pressed='true'], .seg button[data-state='on']",
+    a: ':where(a)',
+    '.sr-only': '', // Tailwind ships the identical utility
+    '.border-line': '', // would override the Tailwind `border-line` colour utility with a full border
+    '.border-top-line': '', // same family as .border-line
+  };
+
+  const mockupSelectors = selectors(mockupCss);
+  const webSelectors = selectors(webCss);
+
+  it('web has every mockup selector, except the documented differences', () => {
+    const missing = [...mockupSelectors].filter((s) => !webSelectors.has(s) && !(s in WEB_DIFFERENT));
+    expect(missing).toEqual([]);
+  });
+
+  it('each documented difference has its web replacement (or is a documented skip)', () => {
+    for (const [mockupSelector, webSelector] of Object.entries(WEB_DIFFERENT)) {
+      expect(mockupSelectors.has(mockupSelector), `stale entry ${mockupSelector}`).toBe(true);
+      if (webSelector) expect(webSelectors.has(webSelector), `missing ${webSelector}`).toBe(true);
+    }
+  });
+
+  it('keeps the omnibox shell ring as the only focus ring on the input (UIA-8)', () => {
+    expect(webCss).toMatch(/\.omnibox-input:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
+    expect(webCss).toMatch(/\.omnibox-shell:focus-within\s*\{[^}]*border-color:\s*var\(--accent\)/);
+  });
+});
+
 describe('token thương hiệu', () => {
   const root = readVars(webCss, ':root');
   it.each([

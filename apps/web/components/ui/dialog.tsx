@@ -58,7 +58,7 @@ export function DialogHeader({
     <header className={className}>
       <DialogPrimitive.Title className="t-title-sm mb-1">{title}</DialogPrimitive.Title>
       {description != null && (
-        <DialogPrimitive.Description className="t-body mb-0" style={{ color: 'var(--muted)' }}>
+        <DialogPrimitive.Description className="t-body mb-0 text-muted">
           {description}
         </DialogPrimitive.Description>
       )}
