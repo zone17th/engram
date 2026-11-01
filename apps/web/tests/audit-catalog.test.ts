@@ -10,8 +10,8 @@ import {
   resultMessageKey,
   sanitizeAuditMeta,
 } from '@/lib/auth/audit-catalog';
-import en from '../messages/en.json';
-import vi from '../messages/vi.json';
+import enMessages from '../messages/en.json';
+import viMessages from '../messages/vi.json';
 
 describe('audit catalog', () => {
   it('maps known events and unknown leftovers to i18n keys', () => {
@@ -39,8 +39,8 @@ describe('audit catalog', () => {
       const key = eventMessageKey(event);
       expect(key).toBe(`audit.events.${event.replace(/\./g, '_')}`);
       const leaf = key.replace('audit.events.', '');
-      expect((en.settings.audit.events as Record<string, string>)[leaf]).toBeTruthy();
-      expect((vi.settings.audit.events as Record<string, string>)[leaf]).toBeTruthy();
+      expect((enMessages.settings.audit.events as Record<string, string>)[leaf]).toBeTruthy();
+      expect((viMessages.settings.audit.events as Record<string, string>)[leaf]).toBeTruthy();
     }
   });
 
