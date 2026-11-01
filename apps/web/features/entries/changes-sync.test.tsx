@@ -1389,9 +1389,6 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
     // 2b. Also verify with active observer on focus wake when vault transitions from present (unlocked) to absent:
     //     state transitions to no_vault, old ENTRY_ID_1 is purged, and active observer refetches [] after reset
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    h.setActiveVaultKeyId('vk:44556677889900112233cc');
-    await h.refetchMeSession();
     await h.unlock();
     await h.setObserveEntriesQuery(true);
     populateCachesAndSyncState();
