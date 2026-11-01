@@ -237,7 +237,7 @@ describe('Rail', () => {
     expect(alert).toHaveAttribute('role', 'alert');
     expect(alert).toHaveTextContent(viMessages.content.errors.internal_error);
 
-    // 2. Delete a tag and fail Undo -> restoreErrorCode (tag_conflict) takes precedence over loadMoreErrorCode
+    // 2. Delete a tag (which resets loadMoreError via resetExtraPages) and fail Undo -> restoreErrorCode (tag_conflict)
     fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAGS[0].id}`));
     fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${SAMPLE_TAGS[0].id}`));
 
@@ -250,7 +250,15 @@ describe('Rail', () => {
       );
     });
 
-    // 3. Selecting a chip clears restoreErrorCode, falling back to loadMoreErrorCode
+    // 3. Trigger loadMore failure while restoreErrorCode is still set -> restoreErrorCode (tag_conflict) takes precedence
+    fireEvent.click(screen.getByTestId('rail-tags-load-more'));
+    await waitFor(() => {
+      expect(screen.getByTestId('rail-tags-error')).toHaveTextContent(
+        viMessages.content.errors.tag_conflict,
+      );
+    });
+
+    // 4. Selecting a chip clears restoreErrorCode, falling back to loadMoreErrorCode (internal_error)
     fireEvent.click(screen.getByTestId(`rail-tag-filter-${SAMPLE_TAGS[1].id}`));
     expect(screen.getByTestId('rail-tags-error')).toHaveTextContent(
       viMessages.content.errors.internal_error,

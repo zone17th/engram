@@ -82,12 +82,21 @@ function TagsListProbe() {
 }
 
 function PaginatedTagsProbe() {
-  const { tags, hasMore, loadMore } = usePaginatedTagsList({ sort: 'recent' });
+  const { tags, hasMore, loadMore, resetExtraPages } = usePaginatedTagsList({ sort: 'recent' });
   return (
     <div>
       <ul>
         {tags.map((t) => (
-          <li key={t.id}>{t.display}</li>
+          <li key={t.id}>
+            <span>{t.display}</span>
+            <RailTagChip
+              tag={t}
+              selected={false}
+              onSelect={() => undefined}
+              onTagMutated={resetExtraPages}
+              onRestoreError={() => undefined}
+            />
+          </li>
         ))}
       </ul>
       {hasMore ? (
@@ -142,7 +151,7 @@ describe('features/tags', () => {
     });
   });
 
-  it('usePaginatedTagsList keeps extra pages across refocus/refetch with equal first-page data and merges deduped updates', async () => {
+  it('usePaginatedTagsList keeps extra pages across refocus/refetch with equal first-page data and resets when first page changes', async () => {
     let firstPageItems: Tag[] = [SAMPLE_TAG];
     const spy = vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
       if (params?.cursor === 'cursor-tags-2') {
@@ -165,12 +174,80 @@ describe('features/tags', () => {
     expect(screen.getByText('ops')).toBeInTheDocument();
     expect(screen.getByText('cloud')).toBeInTheDocument();
 
-    // Refetch where first page changes (e.g. SECOND_TAG promoted to page 1 with updated display) merges & dedupes by id with first page winning.
+    // Refetch where first page changes resets extra pages instead of merging against stale ones.
     firstPageItems = [SAMPLE_TAG, { ...SECOND_TAG, display: 'ops-renamed' }];
     await queryClient.refetchQueries({ queryKey: contentQueryKeys.tags({ sort: 'recent' }) });
     expect(await screen.findByText('ops-renamed')).toBeInTheDocument();
     expect(screen.queryByText('ops')).not.toBeInTheDocument();
-    expect(screen.getByText('cloud')).toBeInTheDocument();
+    expect(screen.queryByText('cloud')).not.toBeInTheDocument();
+    expect(screen.getByTestId('probe-load-more')).toBeInTheDocument();
+  });
+
+  it('usePaginatedTagsList resets extra pages when a tag on an extra page is deleted or renamed', async () => {
+    let extraPageItems: Tag[] = [SECOND_TAG, THIRD_TAG];
+    vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
+      if (params?.cursor === 'cursor-tags-2') {
+        return { items: extraPageItems.map((tag) => ({ ...tag })), next_cursor: null };
+      }
+      return { items: [{ ...SAMPLE_TAG }], next_cursor: 'cursor-tags-2' };
+    });
+    const deleteSpy = vi.spyOn(contentApi, 'tagDelete').mockImplementation(async (id) => {
+      extraPageItems = extraPageItems.filter((tag) => tag.id !== id);
+    });
+    const renameSpy = vi.spyOn(contentApi, 'tagRename').mockImplementation(async (id, body) => {
+      extraPageItems = extraPageItems.map((tag) =>
+        tag.id === id ? { ...tag, display: body.display } : tag,
+      );
+      return { ...THIRD_TAG, display: body.display };
+    });
+
+    renderWithProviders(<PaginatedTagsProbe />);
+    expect(await screen.findByText('nhà')).toBeInTheDocument();
+
+    // (a) Load extra page, delete a tag on it -> chip is gone even though page 1 is unchanged.
+    fireEvent.click(screen.getByTestId('probe-load-more'));
+    expect(await screen.findByTestId(`rail-tag-filter-${SECOND_TAG.id}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`rail-tag-filter-${THIRD_TAG.id}`)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SECOND_TAG.id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${SECOND_TAG.id}`));
+
+    await waitFor(() => {
+      expect(deleteSpy).toHaveBeenCalledWith(
+        SECOND_TAG.id,
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId(`rail-tag-filter-${SECOND_TAG.id}`)).not.toBeInTheDocument();
+    });
+
+    // (b) Load extra page again, rename a tag on it -> no stale display remains.
+    fireEvent.click(screen.getByTestId('probe-load-more'));
+    expect(await screen.findByTestId(`rail-tag-filter-${THIRD_TAG.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`rail-tag-filter-${SECOND_TAG.id}`)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${THIRD_TAG.id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-rename-action-${THIRD_TAG.id}`));
+    fireEvent.change(screen.getByTestId(`rail-tag-rename-input-${THIRD_TAG.id}`), {
+      target: { value: 'cloud-v2' },
+    });
+    fireEvent.click(screen.getByTestId(`rail-tag-rename-save-${THIRD_TAG.id}`));
+
+    await waitFor(() => {
+      expect(renameSpy).toHaveBeenCalledWith(
+        THIRD_TAG.id,
+        { display: 'cloud-v2' },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('cloud')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('probe-load-more'));
+    expect(await screen.findByText('cloud-v2')).toBeInTheDocument();
+    expect(screen.queryByText('cloud')).not.toBeInTheDocument();
   });
 
   it('RailTagChip renames a tag via PATCH /tags/{id}, invalidates queries, and focuses the chip filter button', async () => {
