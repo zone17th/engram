@@ -1615,3 +1615,97 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		t.Logf("mode=ineffective_release_cleanup fatal=%q elapsed=%s bound=%s", fatalMsg, elapsed, cleanupBound)
 	})
 }
+
+func TestAssertJSONEqualRejectsTrailingDataAndAcceptsTrailingWhitespace(t *testing.T) {
+	runAssertJSONEqual := func(want, got string) (bool, string) {
+		ft := &fakeBarrierTB{TB: t}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			contenttest.AssertJSONEqual(ft, want, got)
+		}()
+		<-done
+		return ft.status()
+	}
+
+	t.Run("accepts_valid_json_with_trailing_whitespace_and_reordered_keys", func(t *testing.T) {
+		failed, msg := runAssertJSONEqual(
+			"{\"id\":\"00000000-0000-0000-0000-000000000001\",\"name\":\"Item 1\",\"version\":1,\"entry_count\":0}",
+			"  { \"version\": 1, \"entry_count\": 0, \"name\": \"Item 1\", \"id\": \"00000000-0000-0000-0000-000000000001\" } \t\r\n  ",
+		)
+		if failed {
+			t.Fatalf("expected valid JSON with trailing whitespace to be accepted, got fatal=%q", msg)
+		}
+	})
+
+	rejectCases := []struct {
+		name          string
+		want          string
+		got           string
+		wantSubstring string
+	}{
+		{
+			name:          "trailing_closing_brace_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":1}}`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "trailing_closing_brace_in_want",
+			want:          `{"a":1}}`,
+			got:           `{"a":1}`,
+			wantSubstring: "AssertJSONEqual trailing data in want",
+		},
+		{
+			name:          "trailing_closing_bracket_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":1}]`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "trailing_closing_bracket_after_array",
+			want:          `[1,2]`,
+			got:           `[1,2]]`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "second_json_value_in_got",
+			want:          `{"a":1}`,
+			got:           "{\"a\":1}\n{\"b\":2}",
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "second_scalar_value_in_want",
+			want:          `{"a":1} 42`,
+			got:           `{"a":1}`,
+			wantSubstring: "AssertJSONEqual trailing data in want",
+		},
+		{
+			name:          "trailing_garbage_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":1} garbage`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "invalid_json_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":`,
+			wantSubstring: "AssertJSONEqual decode got",
+		},
+		{
+			name:          "value_mismatch",
+			want:          `{"a":1}`,
+			got:           `{"a":2}`,
+			wantSubstring: "AssertJSONEqual mismatch",
+		},
+	}
+
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			failed, msg := runAssertJSONEqual(tc.want, tc.got)
+			if !failed || !strings.Contains(msg, tc.wantSubstring) {
+				t.Fatalf("want Fatal containing %q, got failed=%v msg=%q", tc.wantSubstring, failed, msg)
+			}
+		})
+	}
+}
