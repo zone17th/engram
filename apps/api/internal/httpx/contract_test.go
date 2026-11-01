@@ -471,8 +471,10 @@ func TestOpenAPIP04PerOperationContract(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"itemRestore", "tagRestore", "entryRestore"} {
-		if !strings.Contains(openAPIOperation(t, spec, id), "$ref: '#/components/schemas/EmptyObject'") {
-			t.Errorf("%s: requestBody phải là EmptyObject (gửi {} với Content-Type JSON)", id)
+		op := openAPIOperation(t, spec, id)
+		if !strings.Contains(op, "$ref: '#/components/schemas/EmptyObject'") ||
+			!strings.Contains(op, "\n      requestBody:\n        required: true\n") {
+			t.Errorf("%s: requestBody phải required là EmptyObject (gửi {} với Content-Type JSON, CFE2-2)", id)
 		}
 	}
 	if !strings.Contains(openAPIOperation(t, spec, "tagUpsert"), "\n        '201':") ||

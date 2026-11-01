@@ -1702,7 +1702,7 @@ paths:
       description: |
         Khôi phục mục và **chỉ** entry có `deleted_via='item'` cùng `delete_batch` của lần xoá mục; entry user đã xoá riêng trước đó
         vẫn xoá. `item_count + 1` cho mọi tag gắn với mục. Số tag sống của mục sau restore > 20 → `409 item_tag_limit`, không restore gì.
-        Mục đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
+        Mục đang sống → `200` không đổi gì. Client gửi `{}` với `Content-Type: application/json` như mọi POST (thiếu header → `415 invalid_request`); server vẫn nhận body rỗng.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -1710,7 +1710,7 @@ paths:
         - $ref: '#/components/parameters/ItemId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -2258,7 +2258,7 @@ paths:
       summary: Khôi phục tag đã xoá mềm
       description: |
         `normalized` đã bị tag sống khác chiếm → `409 tag_conflict`; một mục sống gắn tag đã có 20 tag sống → `409 item_tag_limit`
-        và không restore gì. Tag đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
+        và không restore gì. Tag đang sống → `200` không đổi gì. Client gửi `{}` với `Content-Type: application/json` như mọi POST (thiếu header → `415 invalid_request`); server vẫn nhận body rỗng.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -2266,7 +2266,7 @@ paths:
         - $ref: '#/components/parameters/TagId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -2319,6 +2319,7 @@ paths:
         buộc refetch nguồn chuẩn (overlap chỉ là heuristic, ADR 0005). `since` cũ hơn `now() − 29 ngày` → `410 changes_window_expired`.
         Client mới (thiết bị mới, storage trống, sau `410`) gọi không có `since` để lấy watermark đầu tiên, không phụ thuộc đồng hồ
         client. Client lưu `watermark` nguyên chuỗi; khi trừ 120 giây thì làm tròn xuống (lệch về phía sớm hơn là an toàn).
+        Thứ tự bootstrap: lấy watermark trước, rồi refetch nguồn chuẩn; chỉ lưu watermark sau khi refetch xong (thay đổi chen giữa hai bước nằm sau watermark nên lần feed kế tiếp thấy).
         Không có envelope/ciphertext trong feed.
       security:
         - sessionCookie: []
@@ -2490,7 +2491,7 @@ paths:
       description: |
         Entry phải `deleted_via='entry'` (`'item'` → `409 entry_restore_via_item`: restore mục thay vì entry); mục phải sống
         (`409 item_deleted`); `entry_count < 200` (`409 item_entry_limit`). Giữ nguyên `position` cũ; không tăng `version`.
-        Entry đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
+        Entry đang sống → `200` không đổi gì. Client gửi `{}` với `Content-Type: application/json` như mọi POST (thiếu header → `415 invalid_request`); server vẫn nhận body rỗng.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -2498,7 +2499,7 @@ paths:
         - $ref: '#/components/parameters/EntryId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:

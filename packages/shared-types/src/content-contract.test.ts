@@ -32,6 +32,10 @@ describe('P04 content contract types', () => {
     expectTypeOf<ItemUpdateHeader>().toHaveProperty('Idempotency-Key');
     type ChangesQuery = NonNullable<paths['/entries/changes']['get']['parameters']['query']>;
     expectTypeOf<ChangesQuery['since']>().toEqualTypeOf<string | undefined>();
+    // Restore bắt buộc body `{}` để client luôn gửi Content-Type JSON (CFE2-2).
+    expectTypeOf<paths['/items/{id}/restore']['post']['requestBody']>().toEqualTypeOf<{
+      content: { 'application/json': S['EmptyObject'] };
+    }>();
     type TagUpsert = paths['/tags']['post']['responses'];
     expectTypeOf<TagUpsert>().toHaveProperty(200);
     expectTypeOf<TagUpsert>().toHaveProperty(201);
