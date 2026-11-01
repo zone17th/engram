@@ -1,0 +1,6 @@
+{
+  "multilineLf": "line1\nline2\nline3",
+  "withCrlf": "win1\r\nwin2",
+  "withTab": "col1\tcol2",
+  "plain": "hello"
+}
