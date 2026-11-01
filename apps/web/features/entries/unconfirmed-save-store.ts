@@ -23,6 +23,7 @@ export interface UnconfirmedSaveRecord {
 
 let records: UnconfirmedSaveRecord[] = [];
 let lastSeenUserId: string | null = null;
+let clearGeneration = 0;
 const listeners = new Set<() => void>();
 let broadcastUnsubscribe: (() => void) | null = null;
 let userChangedUnsubscribe: (() => void) | null = null;
@@ -75,9 +76,17 @@ export function subscribeUnconfirmedSaves(listener: () => void): () => void {
 export function getUnconfirmedSavesSnapshot(): readonly UnconfirmedSaveRecord[] {
   return records;
 }
+export function captureUnconfirmedSaveClearGeneration(): number {
+  ensureSessionBroadcastSubscription();
+  return clearGeneration;
+}
+
 export const __testing = {
   peekUnconfirmedSavesForTests(): readonly UnconfirmedSaveRecord[] {
     return records;
+  },
+  getClearGenerationForTests(): number {
+    return clearGeneration;
   },
 };
 export function recordUnconfirmedSave(record: {
@@ -85,9 +94,16 @@ export function recordUnconfirmedSave(record: {
   readonly itemId: string;
   readonly itemName: string;
   readonly source?: 'entry' | 'omnibox';
+  readonly clearGeneration?: number;
 }): void {
   if (!record.userId || !record.itemId) return;
   ensureSessionBroadcastSubscription();
+  if (
+    record.clearGeneration !== undefined &&
+    record.clearGeneration !== clearGeneration
+  ) {
+    return;
+  }
   reconcileUnconfirmedSavesUser(record.userId);
   const filtered = records.filter(
     (existing) =>
@@ -123,6 +139,7 @@ export function dismissUnconfirmedSave(params: {
 }
 
 export function clearAllUnconfirmedSaves(): void {
+  clearGeneration += 1;
   lastSeenUserId = null;
   if (records.length > 0) {
     records = [];
@@ -136,6 +153,7 @@ export function reconcileUnconfirmedSavesUser(activeUserId: string | null | unde
     return;
   }
   if (lastSeenUserId !== null && lastSeenUserId !== activeUserId) {
+    clearGeneration += 1;
     lastSeenUserId = activeUserId;
     if (records.length > 0) {
       records = [];

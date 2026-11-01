@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
@@ -1170,9 +1171,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       );
     });
 
-    // + Text exists, + JSON / table and Import JSON are hidden until Milestone C
-    expect(screen.getByTestId('btn-add-text')).toBeInTheDocument();
-    expect(screen.queryByText(/JSON \/ bảng|JSON \/ table/i)).toBeNull();
+    // + Text and + JSON / table exist in Milestone C (Task 16); Import JSON stays hidden until Task 17
+    const actionBar = screen.getByTestId('entry-composer');
+    expect(within(actionBar).getByTestId('btn-add-text')).toBeInTheDocument();
+    expect(within(actionBar).getByTestId('btn-add-json')).toHaveTextContent(
+      viMessages.content.json.addJsonCta,
+    );
+    expect(within(actionBar).queryByText(/Import JSON/i)).toBeNull();
     expect(screen.queryByText(/Import JSON/i)).toBeNull();
   });
 
@@ -4778,4 +4783,106 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         : '';
     expect(getRenderedEntryCardIds(h.container)).toEqual([ENTRY_ID_2, rescuedEntryId]);
   });
+
+  it('IP15-R8-1: late terminal session_invalid from a held PUT after explicit signOut() or User A->B switch does not re-add saveUnconfirmed (pure snapshot [])', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    // 1. Explicit signOut() while PUT is held in flight -> release PUT with 401 session_invalid -> pure snapshot stays []
+    const { promise: putLogoutGate, resolve: releasePutLogout } = createDeferred();
+    const { promise: putLogoutEntered, resolve: notifyPutLogoutEntered } = createDeferred();
+    let holdPutForLogout = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdPutForLogout) {
+        notifyPutLogoutEntered();
+        await putLogoutGate;
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    const genBeforeLogout = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Draft held across explicit signOut' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await putLogoutEntered;
+
+    // Explicit logout while PUT is still in flight
+    await h.signOutSession();
+    expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(genBeforeLogout);
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+    // Release the held PUT with 401 session_invalid -> stale clearGeneration drops the record
+    holdPutForLogout = false;
+    releasePutLogout();
+    const logoutSettle = Promise.withResolvers<void>();
+    setTimeout(logoutSettle.resolve, 25);
+    await logoutSettle.promise;
+
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+    // Wait for VaultProvider to settle after signOut, then log User A back in and unlock
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+    });
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlock();
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+
+    // 2. User switch A -> B committed while User A's PUT is held in flight -> release PUT with 401 session_invalid -> pure snapshot stays []
+    const { promise: putSwitchGate, resolve: releasePutSwitch } = createDeferred();
+    const { promise: putSwitchEntered, resolve: notifyPutSwitchEntered } = createDeferred();
+    let holdPutForSwitch = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdPutForSwitch) {
+        notifyPutSwitchEntered();
+        await putSwitchGate;
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    const genBeforeSwitch = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Draft held across user switch A->B' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await putSwitchEntered;
+
+    // Commit User B before User A's late 401 arrives
+    h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+    await h.loginSession('b@example.test', 'pw');
+    expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(genBeforeSwitch);
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+    // Release User A's late 401 session_invalid -> stale clearGeneration drops User A's record
+    holdPutForSwitch = false;
+    releasePutSwitch();
+    const switchSettle = Promise.withResolvers<void>();
+    setTimeout(switchSettle.resolve, 25);
+    await switchSettle.promise;
+
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+  }, 30_000);
 });

@@ -65,6 +65,7 @@ export {
 } from '@/features/entries/secret-input-props';
 
 export {
+  captureUnconfirmedSaveClearGeneration,
   clearAllUnconfirmedSaves,
   dismissUnconfirmedSave,
   getUnconfirmedSavesSnapshot,

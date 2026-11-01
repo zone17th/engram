@@ -16,6 +16,7 @@ import {
   ENTRY_MAX_PLAINTEXT_BYTES,
   ENTRY_NEAR_CAP_BYTES,
   captureEntrySaveOpGuard,
+  captureUnconfirmedSaveClearGeneration,
   copyEntryPlaintextToClipboard,
   loadRealEntryBody,
   mutateSealedEntryCreate,
@@ -690,6 +691,7 @@ export function JsonEntryCard({
       setSavingInFlight(true);
       setSaveError(null);
       onAnnounce?.(tEntry('saving'));
+      const capturedClearGeneration = captureUnconfirmedSaveClearGeneration();
 
       try {
         const { meta, applied } = await mutateSealedEntryUpdate(
@@ -748,14 +750,6 @@ export function JsonEntryCard({
           queryKey: vaultBodyQueryKey(entry.id, meta.version),
         });
       } catch (err) {
-        if (saveOwnerIdRef.current !== ownerId) {
-          return;
-        }
-        releaseSaveGuardIfOwner(ownerId);
-        if (!sealed.isCurrent()) {
-          return;
-        }
-
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
@@ -767,12 +761,22 @@ export function JsonEntryCard({
               itemId,
               itemName: itemName || itemId,
               source: 'entry',
+              clearGeneration: capturedClearGeneration,
             });
           }
+          releaseSaveGuardIfOwner(ownerId);
           clearEditorPlaintextHolderSync();
           setMode('table');
           setUnconfirmedSave(null);
           setConflictState(null);
+          return;
+        }
+
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        releaseSaveGuardIfOwner(ownerId);
+        if (!sealed.isCurrent()) {
           return;
         }
 

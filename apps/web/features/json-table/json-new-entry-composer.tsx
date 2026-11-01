@@ -13,6 +13,7 @@ import {
 import { useSession } from '@/features/auth/session-provider';
 import {
   ENTRY_MAX_PLAINTEXT_BYTES,
+  captureUnconfirmedSaveClearGeneration,
   mutateSealedEntryCreate,
   recordUnconfirmedSave,
   sealNewEntry,
@@ -271,6 +272,7 @@ export function NewJsonEntryComposer({
       setSavingInFlight(true);
       setSaveError(null);
       onAnnounce?.(tEntry('saving'));
+      const capturedClearGeneration = captureUnconfirmedSaveClearGeneration();
 
       try {
         const { meta, applied } = await mutateSealedEntryCreate(
@@ -295,16 +297,6 @@ export function NewJsonEntryComposer({
         onAnnounce?.(tEntry('savedAnnounce'));
         onSaved(meta);
       } catch (err) {
-        if (saveOwnerIdRef.current !== ownerId) {
-          return;
-        }
-        saveOwnerIdRef.current = 0;
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        if (!sealed.isCurrent()) {
-          return;
-        }
-
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
@@ -316,11 +308,27 @@ export function NewJsonEntryComposer({
               itemId,
               itemName: itemName || itemId,
               source: 'entry',
+              clearGeneration: capturedClearGeneration,
             });
+          }
+          if (saveOwnerIdRef.current === ownerId) {
+            saveOwnerIdRef.current = 0;
+            saveLockRef.current = false;
+            setSavingInFlight(false);
           }
           composerHolderRef.current.candidateSource = '';
           setUnconfirmedCreate(null);
           onCancel();
+          return;
+        }
+
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        saveOwnerIdRef.current = 0;
+        saveLockRef.current = false;
+        setSavingInFlight(false);
+        if (!sealed.isCurrent()) {
           return;
         }
 

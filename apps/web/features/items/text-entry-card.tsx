@@ -16,6 +16,7 @@ import {
   ENTRY_NEAR_CAP_BYTES,
   VAULT_SECRET_INPUT_PROPS,
   captureEntrySaveOpGuard,
+  captureUnconfirmedSaveClearGeneration,
   copyEntryPlaintextToClipboard,
   loadRealEntryBody,
   mutateSealedEntryCreate,
@@ -451,6 +452,7 @@ export function TextEntryCard({
       setSavingInFlight(true);
       setSaveError(null);
       onAnnounce?.(tEntry('saving'));
+      const capturedClearGeneration = captureUnconfirmedSaveClearGeneration();
 
       try {
         const { meta, applied } = await mutateSealedEntryUpdate(
@@ -515,6 +517,7 @@ export function TextEntryCard({
               itemId,
               itemName: itemName || itemId,
               source: 'entry',
+              clearGeneration: capturedClearGeneration,
             });
           }
           releaseSaveGuardIfOwner(ownerId);
@@ -1670,6 +1673,7 @@ export function NewTextEntryComposer({
       setSavingInFlight(true);
       setSaveError(null);
       onAnnounce?.(tEntry('saving'));
+      const capturedClearGeneration = captureUnconfirmedSaveClearGeneration();
 
       try {
         const { meta, applied } = await mutateSealedEntryCreate(
@@ -1711,6 +1715,7 @@ export function NewTextEntryComposer({
               itemId,
               itemName: itemName || itemId,
               source: 'entry',
+              clearGeneration: capturedClearGeneration,
             });
           }
           if (saveOwnerIdRef.current === ownerId) {
