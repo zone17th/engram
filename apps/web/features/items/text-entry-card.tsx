@@ -472,12 +472,15 @@ export function TextEntryCard({
           }),
         );
 
-        // P4BE2-1 / IP15-BE2-4: Never update state or release a successor's guard if stale or not owner
-        if (!applied || !sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        // P4BE2-1 / IP15-BE2-4 / FE3-8: Never update state or release a successor's guard if stale or not owner;
+        // if ownerId still matches, release our own guard before returning.
+        if (saveOwnerIdRef.current !== ownerId) {
           return;
         }
-
         releaseSaveGuardIfOwner(ownerId);
+        if (!applied || !sealed.isCurrent()) {
+          return;
+        }
         setUnconfirmedSave(null);
         setConflictState(null);
         setDeletedRemotely(false);
@@ -507,11 +510,13 @@ export function TextEntryCard({
           queryKey: vaultBodyQueryKey(entry.id, meta.version),
         });
       } catch (err) {
-        if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        if (saveOwnerIdRef.current !== ownerId) {
           return;
         }
-
         releaseSaveGuardIfOwner(ownerId);
+        if (!sealed.isCurrent()) {
+          return;
+        }
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
