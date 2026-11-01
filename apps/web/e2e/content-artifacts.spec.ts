@@ -6,6 +6,7 @@ import {
   createRequestPlaintextMonitor,
   expectInputEmptyBool,
   inspectSsrHtml,
+  saveAndVerifyItemHintPersisted,
   scanDirectoriesForSecretsAndStorageState,
   setQuietInputValue,
   timedJourneyStep,
@@ -18,9 +19,8 @@ import {
 } from './vault-journey-support';
 import { VAULT_PASSPHRASE } from './vault-passkey-support';
 
-// Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs,
-// so a failure while a recovery-key sheet or decrypted entry is mounted never serializes secrets to disk.
-process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+// Note: `noCopyPrompt: true` in `playwright.config.ts` and `PLAYWRIGHT_NO_COPY_PROMPT: "1"` in `ci.yml`
+// disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 const ARTIFACTS_TIMEOUT_MS = 300_000;
 
@@ -33,11 +33,11 @@ interface LookupResult {
   readonly total: number;
 }
 
-test.describe('P04-T21a SSR HTML leak checks (A4) and in-run disk artifact checks', () => {
+test.describe('P04-T21a SSR HTML leak checks (A4) and earlier test output disk scan', () => {
   test.describe.configure({ mode: 'serial' });
   test.skip(!process.env.E2E_STACK, 'needs the compose stack (E2E_STACK=1): real API, real database');
 
-  test('(a) A4 SSR HTML of /app and /app/items/<A id> contains no body text of A, no filled data-vault-decrypted node, and for B no name/hint/tag of A; (b) no secret or storageState on disk in testInfo.outputDir or test-results', async ({
+  test('(a) A4 SSR HTML of /app and /app/items/<A id> contains no body text of A, no filled data-vault-decrypted node, and for B no name/hint/tag of A (with positive & negative controls); (b) no storageState file name and no constant passphrase in earlier test output', async ({
     browser,
   }, testInfo) => {
     test.setTimeout(ARTIFACTS_TIMEOUT_MS);
@@ -110,11 +110,7 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and in-run disk artifact check
         await expect(pageA).toHaveURL(new RegExp(`/app/items/${userAItemId}$`), {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-        const hintInput = pageA.getByTestId('item-hint-input');
-        await expect(hintInput).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
-        await hintInput.fill(userAItemHint);
-        await hintInput.press('Enter');
-        await expect(hintInput).toHaveValue(userAItemHint);
+        await saveAndVerifyItemHintPersisted(pageA, userAItemId, userAItemHint);
 
         await pageA.getByTestId('btn-add-json').click();
         const composer = pageA.getByTestId('new-json-entry-composer');
@@ -146,7 +142,7 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and in-run disk artifact check
         monitor.assertNoLeaks();
       });
 
-      await timedJourneyStep('3. (a) A4 SSR HTML check: fetch raw SSR HTML of /app and /app/items/<A id> with A cookies and with B cookies', async () => {
+      await timedJourneyStep('3. (a) A4 SSR HTML check: fetch raw SSR HTML of /app and /app/items/<A id> with A cookies and with B cookies (plus positive shell markers and unauthenticated negative control)', async () => {
         const forbiddenInASsr = [
           { label: 'userATextBody', value: userATextBody },
           { label: 'userAJsonToken', value: userAJsonToken },
@@ -164,22 +160,30 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and in-run disk artifact check
           { label: 'userBRecoverySlot2', value: userBRecoverySlot2 },
         ] as const;
 
+        const expectedItemPathname = `/app/items/${userAItemId}`;
+
         // 1. User A's own SSR HTML for `/app` and `/app/items/<A's id>`
         const resAApp = await contextA.request.get('/app', {
           headers: { accept: 'text/html' },
         });
         expect(resAApp.status()).toBe(200);
+        expect(new URL(resAApp.url()).pathname).toBe('/app');
         const htmlAApp = await resAApp.text();
         const inspectAApp = inspectSsrHtml(htmlAApp, forbiddenInASsr);
+        expect(inspectAApp.hasHtmlRootAndTheme).toBe(true);
+        expect(inspectAApp.hasAuthLoginShellMarker).toBe(false);
         expect(inspectAApp.matchedLabels).toEqual([]);
         expect(inspectAApp.nonEmptyDecryptedNodes).toBe(0);
 
-        const resAItem = await contextA.request.get(`/app/items/${userAItemId}`, {
+        const resAItem = await contextA.request.get(expectedItemPathname, {
           headers: { accept: 'text/html' },
         });
         expect(resAItem.status()).toBe(200);
+        expect(new URL(resAItem.url()).pathname).toBe(expectedItemPathname);
         const htmlAItem = await resAItem.text();
         const inspectAItem = inspectSsrHtml(htmlAItem, forbiddenInASsr);
+        expect(inspectAItem.hasHtmlRootAndTheme).toBe(true);
+        expect(inspectAItem.hasAuthLoginShellMarker).toBe(false);
         expect(inspectAItem.matchedLabels).toEqual([]);
         expect(inspectAItem.nonEmptyDecryptedNodes).toBe(0);
 
@@ -188,26 +192,57 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and in-run disk artifact check
           headers: { accept: 'text/html' },
         });
         expect(resBApp.status()).toBe(200);
+        expect(new URL(resBApp.url()).pathname).toBe('/app');
         const htmlBApp = await resBApp.text();
         const inspectBApp = inspectSsrHtml(htmlBApp, forbiddenInBSsr);
+        expect(inspectBApp.hasHtmlRootAndTheme).toBe(true);
+        expect(inspectBApp.hasAuthLoginShellMarker).toBe(false);
         expect(inspectBApp.matchedLabels).toEqual([]);
         expect(inspectBApp.nonEmptyDecryptedNodes).toBe(0);
 
-        const resBItem = await contextB.request.get(`/app/items/${userAItemId}`, {
+        const resBItem = await contextB.request.get(expectedItemPathname, {
           headers: { accept: 'text/html' },
         });
         expect(resBItem.status()).toBe(200);
+        expect(new URL(resBItem.url()).pathname).toBe(expectedItemPathname);
         const htmlBItem = await resBItem.text();
         const inspectBItem = inspectSsrHtml(htmlBItem, forbiddenInBSsr);
+        expect(inspectBItem.hasHtmlRootAndTheme).toBe(true);
+        expect(inspectBItem.hasAuthLoginShellMarker).toBe(false);
         expect(inspectBItem.matchedLabels).toEqual([]);
         expect(inspectBItem.nonEmptyDecryptedNodes).toBe(0);
+
+        // 3. Negative controls (ACC-FE1-3):
+        // (i) SSR HTML of `/app/auth/login` DOES contain the login shell marker (`hasAuthLoginShellMarker === true`),
+        //     proving the positive marker check above actually distinguishes `/app` from `/app/auth/login`.
+        // (ii) An unauthenticated browser context receives 401 on the item API and is redirected to `/app/auth/login`
+        //      when navigating to `/app/items/<A's id>`.
+        const contextUnauth = await newContextWithRateLimit(browser);
+        contexts.push(contextUnauth);
+        const resLoginSsr = await contextUnauth.request.get('/app/auth/login', {
+          headers: { accept: 'text/html' },
+        });
+        expect(resLoginSsr.status()).toBe(200);
+        expect(new URL(resLoginSsr.url()).pathname).toBe('/app/auth/login');
+        const inspectLoginSsr = inspectSsrHtml(await resLoginSsr.text(), forbiddenInBSsr);
+        expect(inspectLoginSsr.hasHtmlRootAndTheme).toBe(true);
+        expect(inspectLoginSsr.hasAuthLoginShellMarker).toBe(true);
+
+        const unauthItemApi = await contextUnauth.request.get(`/api/v1/items/${userAItemId}`);
+        expect(unauthItemApi.status()).not.toBe(200);
+
+        const pageUnauth = await contextUnauth.newPage();
+        await pageUnauth.goto(expectedItemPathname);
+        await expect(pageUnauth).toHaveURL(/\/app\/auth\/login/, {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
       });
 
-      await timedJourneyStep('4. (b) Disk artifact scan: testInfo.outputDir and project test-results contain zero secrets (bodies, passphrase, recovery keys) and no *storageState* / *.auth.json files', async () => {
+      await timedJourneyStep('4. (b) In-run check: no storageState file name and no constant passphrase in earlier test output (real post-run scan runs after Playwright exits)', async () => {
         const allSecretsToScan = [
+          { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
           { label: 'userATextBody', value: userATextBody },
           { label: 'userAJsonToken', value: userAJsonToken },
-          { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
           { label: 'userARecoverySlot1', value: userARecoverySlot1 },
           { label: 'userARecoverySlot2', value: userARecoverySlot2 },
           { label: 'userBRecoverySlot1', value: userBRecoverySlot1 },

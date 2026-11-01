@@ -1,11 +1,14 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
 import en from '../messages/en.json';
 import {
-  expectOnUnlockPageAllowingReturnTo,
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
   expectInputEmptyBool,
-  findLabeledDomBodyLeaks,
+  expectInputValueEqualsBool,
+  expectNoDomOrStorageBodyLeaks,
+  expectOnUnlockPageAllowingReturnTo,
+  expectTextEqualsBool,
+  saveAndVerifyItemHintPersisted,
   setQuietInputValue,
   timedJourneyStep,
 } from './content-acceptance-support';
@@ -17,6 +20,7 @@ import {
   createVaultViaOnboarding,
   expectLockedListOnApp,
   expectUnlockedOnApp,
+  fetchVaultMetaViaPage,
   freshRateBucket,
   loginViaUiSecret,
   openRecoveryFromUnlock,
@@ -35,9 +39,8 @@ import {
   lockVault,
 } from './vault-passkey-support';
 
-// Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs,
-// so a failure while a recovery-key sheet or decrypted entry is mounted never serializes secrets to disk.
-process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+// Note: `noCopyPrompt: true` in `playwright.config.ts` and `PLAYWRIGHT_NO_COPY_PROMPT: "1"` in `ci.yml`
+// disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 const P03_REAL_ENTRIES_TIMEOUT_MS = 480_000;
 const AUTO_LOCK_MINUTES = 5;
@@ -73,14 +76,15 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
     const textBodyBeforeRecovery = `acceptance-p03-text-before-recovery-${nonce}`;
     const jsonSecretTokenBeforeRecovery = `acceptance-p03-json-before-recovery-${nonce}`;
     const jsonRawBeforeRecovery = `{"service":"${jsonSecretTokenBeforeRecovery}","port":6379}`;
+    const unsavedDraftOnP03Lock = `acceptance-p03-unsaved-draft-before-lock-${nonce}`;
 
     const labeledSecrets = [
       { label: 'textBodyBeforeRecovery', value: textBodyBeforeRecovery },
       { label: 'jsonSecretTokenBeforeRecovery', value: jsonSecretTokenBeforeRecovery },
+      { label: 'unsavedDraftOnP03Lock', value: unsavedDraftOnP03Lock },
       { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
       { label: 'recoveredPassphrase', value: RECOVERED_PASSPHRASE },
     ] as const;
-
     const monitor = createRequestPlaintextMonitor(labeledSecrets);
     const contexts: BrowserContext[] = [];
 
@@ -132,12 +136,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-        const hintInput = page.getByTestId('item-hint-input');
-        await expect(hintInput).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
-        await hintInput.fill(itemHint);
-        await hintInput.press('Enter');
-        await expect(hintInput).toHaveValue(itemHint);
-
+        await saveAndVerifyItemHintPersisted(page, itemId, itemHint);
         await page.getByTestId('btn-add-json').click();
         const composer = page.getByTestId('new-json-entry-composer');
         await expect(composer).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
@@ -174,23 +173,25 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         });
 
         // On `/app/items/<id>`: item name, hint, tag #infra, and entry type badges stay visible; bodies are masked
-        await expect(page.getByTestId('item-name-input')).toHaveValue(itemName);
-        await expect(page.getByTestId('item-hint-input')).toHaveValue(itemHint);
+        await expect(page.getByTestId('item-name-input')).toHaveValue(itemName, {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expectInputValueEqualsBool(page.getByTestId('item-hint-input'), itemHint);
         await expect(page.getByTestId('item-tags')).toContainText('#infra');
         await expect(page.getByTestId('entry-body')).toHaveCount(0);
         await expect(page.getByTestId('entry-body-locked')).toHaveCount(2);
         await expect(page.getByTestId('entry-body-locked').first()).toContainText('🔒 ••••••');
-        expect(await findLabeledDomBodyLeaks(page, labeledSecrets)).toEqual([]);
+        await expectNoDomOrStorageBodyLeaks(page, labeledSecrets);
 
-        // On `/app`: locked banner + item card with name, hint, and tag #infra; zero entry bodies in DOM
+        // On `/app`: locked banner + item card with name, hint, and tag #infra; zero entry bodies in DOM or storage
         await page.getByRole('link', { name: en.content.item.allItems, exact: true }).click();
         await expectLockedListOnApp(page);
         const itemCard = page.locator(`[data-item-card="${itemId}"]`);
         await expect(itemCard).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
-        await expect(itemCard).toContainText(itemName);
-        await expect(itemCard).toContainText(itemHint);
-        await expect(itemCard).toContainText('#infra');
-        expect(await findLabeledDomBodyLeaks(page, labeledSecrets)).toEqual([]);
+        await expect(itemCard).toContainText(itemName, { timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expect(itemCard).toContainText(itemHint, { timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expect(itemCard).toContainText('#infra', { timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expectNoDomOrStorageBodyLeaks(page, labeledSecrets);
         monitor.assertNoLeaks();
       });
 
@@ -224,23 +225,25 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expectVaultOpen(page);
-        await expect(page.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          page.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body'),
           textBodyBeforeRecovery,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(
+        await expectTextEqualsBool(
           page.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
-        ).toHaveText(jsonSecretTokenBeforeRecovery, { timeout: ACCEPTANCE_UI_WAIT_MS });
+          jsonSecretTokenBeforeRecovery,
+        );
 
-        // Advance clock past the 5-minute auto-lock deadline -> vault auto-locks and wipes entry bodies from DOM
+        // Advance clock past the 5-minute auto-lock deadline -> vault auto-locks and wipes entry bodies from DOM and storage
         await contextA.clock.fastForward(AUTO_LOCK_MINUTES * 60_000 + 30_000);
+        await contextA.clock.runFor(1_000);
         await expectVaultShut(page);
         await expect(page.getByTestId('vault-locked-banner')).toBeVisible({
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expect(page.getByTestId('entry-body')).toHaveCount(0);
         await expect(page.getByTestId('entry-body-locked')).toHaveCount(2);
-        expect(await findLabeledDomBodyLeaks(page, labeledSecrets)).toEqual([]);
+        await expectNoDomOrStorageBodyLeaks(page, labeledSecrets);
 
         // Unlock from the item-page locked banner -> bodies decrypt again
         await page.getByTestId('vault-locked-unlock-cta').click();
@@ -249,19 +252,29 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
           timeout: CRYPTO_WAIT_MS,
         });
-        await expect(page.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          page.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body'),
           textBodyBeforeRecovery,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(
+        await expectTextEqualsBool(
           page.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
-        ).toHaveText(jsonSecretTokenBeforeRecovery, { timeout: ACCEPTANCE_UI_WAIT_MS });
+          jsonSecretTokenBeforeRecovery,
+        );
 
-        // Manual lock -> bodies wiped again
+        // Open a text editor with an unsaved draft, then manual lock -> editor unmounts and draft + bodies are wiped from DOM and storage (ACC-FE1-4)
+        const textCard = page.getByTestId(`entry-card-${textEntryId}`);
+        await textCard.getByTestId(`entry-edit-btn-${textEntryId}`).click();
+        const draftTextarea = textCard.getByTestId(`entry-edit-textarea-${textEntryId}`);
+        await expect(draftTextarea).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await setQuietInputValue(draftTextarea, unsavedDraftOnP03Lock);
+        await expectInputValueEqualsBool(draftTextarea, unsavedDraftOnP03Lock);
+
         await page.getByTestId('vault-lock-button').click();
         await expectVaultShut(page);
+        await expect(draftTextarea).toHaveCount(0);
+        await expect(page.locator('textarea')).toHaveCount(0);
         await expect(page.getByTestId('entry-body')).toHaveCount(0);
-        expect(await findLabeledDomBodyLeaks(page, labeledSecrets)).toEqual([]);
+        await expectNoDomOrStorageBodyLeaks(page, labeledSecrets);
         monitor.assertNoLeaks();
       });
 
@@ -270,11 +283,15 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await page.getByTestId('vault-locked-unlock-cta').click();
         await expectOnUnlockPageAllowingReturnTo(page);
 
+        const metaBeforeRecovery = await fetchVaultMetaViaPage(page);
+        expect(metaBeforeRecovery.status).toBe(200);
+        expect(typeof metaBeforeRecovery.version).toBe('number');
+
         await openRecoveryFromUnlock(page, { kind: 'password' });
         const lookupRes = await submitRecoveryKey(page, recoveryKeySlot1);
         expect(lookupRes.ok()).toBe(true);
         const newVaultVersion = await completeRecoveryWithNewPassphrase(page, RECOVERED_PASSPHRASE);
-        expect(newVaultVersion).toBe(2);
+        expect(newVaultVersion).toBe((metaBeforeRecovery.version ?? 1) + 1);
 
         // Lock and explicitly unlock with the new passphrase in a fresh browser context to prove end-to-end persistence
         await lockVault(page);
@@ -297,13 +314,14 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await expect(pageB).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-        await expect(pageB.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body'),
           textBodyBeforeRecovery,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(
+        await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
-        ).toHaveText(jsonSecretTokenBeforeRecovery, { timeout: ACCEPTANCE_UI_WAIT_MS });
+          jsonSecretTokenBeforeRecovery,
+        );
         monitor.assertNoLeaks();
       });
 

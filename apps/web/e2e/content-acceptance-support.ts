@@ -7,12 +7,13 @@ import { UI_WAIT_MS, expectVaultShut } from './vault-passkey-support';
 // `content-artifacts.spec.ts`). Nothing here stubs `/api/**` (all calls reach the compose stack's real API
 // and Postgres database via the production Next proxy).
 //
-// Security (user-dec-016):
+// Security (user-dec-016, ACC-FE1-9):
 // - Secret inputs (passphrases, recovery keys, entry bodies, raw JSON) are written via DOM prototype setters
-//   so Playwright never logs plaintext in actionability timeout call logs.
-// - Plaintext leak checks return only structural diagnostics (method, pathname, location, needle index),
-//   never echoing secret values into the public CI log.
-
+//   so Playwright never logs plaintext in actionability timeout call logs, and body-carrying UI checks use
+//   boolean helpers (`expectTextEqualsBool`, `expectInputValueEqualsBool`) so failing assertions do not echo
+//   expected/received body text in error messages.
+// - Plaintext leak checks across requests, DOM, and browser storage/caches return only structural diagnostics
+//   (method, pathname, location, needle label), never echoing secret values into the public CI log.
 export const ACCEPTANCE_UI_WAIT_MS = UI_WAIT_MS;
 
 /**
@@ -91,6 +92,26 @@ export async function expectInputValueEqualsBool(
     .toBe(true);
 }
 
+/**
+ * Boolean check that a locator's trimmed textContent equals `expected` without printing either value on failure
+ * (ACC-FE1-9).
+ */
+export async function expectTextEqualsBool(
+  locator: Locator,
+  expected: string,
+  timeout = ACCEPTANCE_UI_WAIT_MS,
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        locator.evaluate((el, target) => {
+          return (el.textContent ?? '').trim() === target;
+        }, expected),
+      { timeout },
+    )
+    .toBe(true);
+}
+
 export interface RequestPlaintextLeak {
   readonly method: string;
   readonly pathname: string;
@@ -109,8 +130,11 @@ export interface RequestPlaintextMonitor {
 }
 
 /**
- * Records every request across attached pages/contexts and checks URL, headers, and postData against
- * registered secret strings (user-dec-016, P04-A4). Never stores or prints the secret values themselves.
+ * Records every request across attached contexts and checks URL, headers, and postData against
+ * registered secret strings (user-dec-016, P04-A4, ACC-FE1-8).
+ * Retains captured request snapshots in memory (never logged) so `registerSecret` also re-scans
+ * requests that occurred before the secret was registered, and listens on the BrowserContext only
+ * to avoid duplicate page+context request events.
  */
 export function createRequestPlaintextMonitor(
   initialSecrets: ReadonlyArray<{ readonly label: string; readonly value: string }> = [],
@@ -122,10 +146,62 @@ export function createRequestPlaintextMonitor(
     }
   }
 
+  interface CapturedRequestSnapshot {
+    readonly method: string;
+    readonly rawUrl: string;
+    readonly pathname: string;
+    readonly headers: Record<string, string>;
+    readonly postData: string;
+  }
+
+  const capturedRequests: CapturedRequestSnapshot[] = [];
   const leaks: RequestPlaintextLeak[] = [];
-  let requestCount = 0;
+  const seenLeakKeys = new Set<string>();
   const attachedPages = new WeakSet<Page>();
   const attachedContexts = new WeakSet<BrowserContext>();
+
+  const recordLeak = (leak: RequestPlaintextLeak) => {
+    const key = `${leak.method}:${leak.pathname}:${leak.surface}:${leak.headerName ?? ''}:${leak.needleLabel}`;
+    if (!seenLeakKeys.has(key)) {
+      seenLeakKeys.add(key);
+      leaks.push(leak);
+    }
+  };
+
+  const scanSnapshotForSecret = (
+    snap: CapturedRequestSnapshot,
+    needleLabel: string,
+    needle: string,
+  ) => {
+    if (!needle) return;
+    if (snap.rawUrl.includes(needle)) {
+      recordLeak({
+        method: snap.method,
+        pathname: snap.pathname,
+        surface: 'url',
+        needleLabel,
+      });
+    }
+    for (const [headerName, headerVal] of Object.entries(snap.headers)) {
+      if (headerVal && headerVal.includes(needle)) {
+        recordLeak({
+          method: snap.method,
+          pathname: snap.pathname,
+          surface: 'header',
+          headerName,
+          needleLabel,
+        });
+      }
+    }
+    if (snap.postData && snap.postData.includes(needle)) {
+      recordLeak({
+        method: snap.method,
+        pathname: snap.pathname,
+        surface: 'postData',
+        needleLabel,
+      });
+    }
+  };
 
   const inspectRequest = (req: {
     method: () => string;
@@ -133,7 +209,6 @@ export function createRequestPlaintextMonitor(
     headers: () => Record<string, string>;
     postData: () => string | null;
   }) => {
-    requestCount += 1;
     const rawUrl = req.url();
     let pathname = rawUrl;
     try {
@@ -141,42 +216,32 @@ export function createRequestPlaintextMonitor(
     } catch {
       pathname = '<invalid-url>';
     }
-    const method = req.method();
-    const headers = req.headers();
-    const postData = req.postData() ?? '';
+    const snap: CapturedRequestSnapshot = {
+      method: req.method(),
+      rawUrl,
+      pathname,
+      headers: req.headers(),
+      postData: req.postData() ?? '',
+    };
+    capturedRequests.push(snap);
 
     for (const [needleLabel, needle] of secrets.entries()) {
-      if (!needle) continue;
-      if (rawUrl.includes(needle)) {
-        leaks.push({ method, pathname, surface: 'url', needleLabel });
-      }
-      for (const [headerName, headerVal] of Object.entries(headers)) {
-        if (headerVal && headerVal.includes(needle)) {
-          leaks.push({ method, pathname, surface: 'header', headerName, needleLabel });
-        }
-      }
-      if (postData && postData.includes(needle)) {
-        leaks.push({ method, pathname, surface: 'postData', needleLabel });
-      }
+      scanSnapshotForSecret(snap, needleLabel, needle);
     }
-  };
-
-  const attachPage = (page: Page) => {
-    if (attachedPages.has(page)) return;
-    attachedPages.add(page);
-    page.on('request', inspectRequest);
   };
 
   const attachContext = (context: BrowserContext) => {
     if (attachedContexts.has(context)) return;
     attachedContexts.add(context);
     context.on('request', inspectRequest);
-    for (const page of context.pages()) {
-      attachPage(page);
-    }
-    context.on('page', (page) => {
-      attachPage(page);
-    });
+  };
+
+  const attachPage = (page: Page) => {
+    const ctx = page.context();
+    if (attachedContexts.has(ctx)) return;
+    if (attachedPages.has(page)) return;
+    attachedPages.add(page);
+    page.on('request', inspectRequest);
   };
 
   return {
@@ -185,13 +250,16 @@ export function createRequestPlaintextMonitor(
     registerSecret(label: string, value: string) {
       if (value.length > 0) {
         secrets.set(label, value);
+        for (const snap of capturedRequests) {
+          scanSnapshotForSecret(snap, label, value);
+        }
       }
     },
     getLeaks() {
       return leaks;
     },
     getRequestCount() {
-      return requestCount;
+      return capturedRequests.length;
     },
     assertNoLeaks() {
       expect(leaks, `Plaintext leaked in network requests: ${JSON.stringify(leaks)}`).toEqual([]);
@@ -251,6 +319,243 @@ export async function findLabeledDomBodyLeaks(
 }
 
 /**
+ * Scans browser storage and cache surfaces (`localStorage`, `sessionStorage`, `indexedDB.databases()` + bounded
+ * string values of each DB, and `caches.keys()` + bounded response bodies) for any of `labeledBodies`, returning
+ * only structural labels on match (ACC-FE1-4, P04-A9).
+ */
+export async function findLabeledStorageAndCacheBodyLeaks(
+  page: Page,
+  labeledBodies: ReadonlyArray<{ readonly label: string; readonly value: string }>,
+): Promise<string[]> {
+  return page.evaluate(async (entries) => {
+    const valid = entries.filter((e) => e.value.length > 0);
+    const leaks: string[] = [];
+
+    const checkString = (haystack: string, surface: string) => {
+      if (!haystack) return;
+      for (const item of valid) {
+        if (haystack.includes(item.value)) {
+          leaks.push(`${item.label}:${surface}`);
+        }
+      }
+    };
+
+    const collectStringsBounded = (val: unknown, surface: string, depth = 0) => {
+      if (depth > 5 || val === null || val === undefined) return;
+      if (typeof val === 'string') {
+        checkString(val, surface);
+        return;
+      }
+      if (Array.isArray(val)) {
+        const lim = Math.min(val.length, 50);
+        for (let i = 0; i < lim; i += 1) {
+          collectStringsBounded(val[i], surface, depth + 1);
+        }
+        return;
+      }
+      if (typeof val === 'object') {
+        const keys = Object.keys(val as Record<string, unknown>).slice(0, 50);
+        for (const k of keys) {
+          checkString(k, surface);
+          collectStringsBounded((val as Record<string, unknown>)[k], surface, depth + 1);
+        }
+      }
+    };
+
+    try {
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const key = window.localStorage.key(i) ?? '';
+        checkString(key, 'localStorage.key');
+        checkString(window.localStorage.getItem(key) ?? '', `localStorage:${key}`);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+
+    try {
+      for (let i = 0; i < window.sessionStorage.length; i += 1) {
+        const key = window.sessionStorage.key(i) ?? '';
+        checkString(key, 'sessionStorage.key');
+        checkString(window.sessionStorage.getItem(key) ?? '', `sessionStorage:${key}`);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+
+    try {
+      if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+        const dbs = await indexedDB.databases();
+        for (const dbInfo of dbs.slice(0, 10)) {
+          const dbName = dbInfo.name;
+          if (!dbName) continue;
+          checkString(dbName, 'indexedDB.name');
+          await new Promise<void>((resolve) => {
+            const timer = window.setTimeout(() => resolve(), 1500);
+            try {
+              const openReq = indexedDB.open(dbName);
+              openReq.onerror = () => {
+                window.clearTimeout(timer);
+                resolve();
+              };
+              openReq.onsuccess = () => {
+                const db = openReq.result;
+                const storeNames = Array.from(db.objectStoreNames).slice(0, 10);
+                if (storeNames.length === 0) {
+                  db.close();
+                  window.clearTimeout(timer);
+                  resolve();
+                  return;
+                }
+                let pendingStores = storeNames.length;
+                const finishStore = () => {
+                  pendingStores -= 1;
+                  if (pendingStores <= 0) {
+                    db.close();
+                    window.clearTimeout(timer);
+                    resolve();
+                  }
+                };
+                for (const storeName of storeNames) {
+                  checkString(storeName, `indexedDB:${dbName}.store`);
+                  try {
+                    const tx = db.transaction(storeName, 'readonly');
+                    const store = tx.objectStore(storeName);
+                    const getAllReq = store.getAll(undefined, 50);
+                    getAllReq.onsuccess = () => {
+                      collectStringsBounded(
+                        getAllReq.result,
+                        `indexedDB:${dbName}/${storeName}`,
+                      );
+                      finishStore();
+                    };
+                    getAllReq.onerror = () => finishStore();
+                  } catch {
+                    finishStore();
+                  }
+                }
+              };
+            } catch {
+              window.clearTimeout(timer);
+              resolve();
+            }
+          });
+        }
+      }
+    } catch {
+      // Best effort IndexedDB scan
+    }
+
+    try {
+      if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+        const cacheNames = await caches.keys();
+        for (const cacheName of cacheNames.slice(0, 10)) {
+          checkString(cacheName, 'caches.name');
+          const cache = await caches.open(cacheName);
+          const requests = await cache.keys();
+          for (const req of requests.slice(0, 30)) {
+            checkString(req.url, `caches:${cacheName}.url`);
+            const res = await cache.match(req);
+            if (res) {
+              const text = (await res.text().catch(() => '')).slice(0, 65_536);
+              checkString(text, `caches:${cacheName}.body`);
+            }
+          }
+        }
+      }
+    } catch {
+      // Best effort CacheStorage scan
+    }
+
+    return [...new Set(leaks)];
+  }, labeledBodies);
+}
+
+/**
+ * Asserts that neither the live DOM nor browser storage/caches (`localStorage`, `sessionStorage`, `indexedDB`,
+ * `caches`) contain any of `labeledBodies` after vault lock (ACC-FE1-4, P04-A9).
+ */
+export async function expectNoDomOrStorageBodyLeaks(
+  page: Page,
+  labeledBodies: ReadonlyArray<{ readonly label: string; readonly value: string }>,
+): Promise<void> {
+  const domLeaks = await findLabeledDomBodyLeaks(page, labeledBodies);
+  expect(domLeaks).toEqual([]);
+  const storageLeaks = await findLabeledStorageAndCacheBodyLeaks(page, labeledBodies);
+  expect(storageLeaks).toEqual([]);
+}
+
+/**
+ * Fetches entries metadata and item summary from the real API using the page's authenticated session
+ * and asserts the item is 200 and its live entry IDs match `expectedLiveEntryIds` (with `forbiddenEntryIds`
+ * absent), proving Undo restored server state rather than rendering from client cache (ACC-FE1-1, P04-A8).
+ */
+export async function expectServerItemAndLiveEntryIds(
+  page: Page,
+  itemId: string,
+  expectedLiveEntryIds: readonly string[],
+  forbiddenEntryIds: readonly string[] = [],
+): Promise<void> {
+  const probe = await page.evaluate(async (id) => {
+    const [itemRes, entriesRes] = await Promise.all([
+      fetch(`/api/v1/items/${encodeURIComponent(id)}`, { credentials: 'include' }),
+      fetch(`/api/v1/items/${encodeURIComponent(id)}/entries`, { credentials: 'include' }),
+    ]);
+    const entriesBody = (await entriesRes.json().catch(() => null)) as {
+      readonly items?: ReadonlyArray<{ readonly id: string }>;
+    } | null;
+    return {
+      itemStatus: itemRes.status,
+      entriesStatus: entriesRes.status,
+      entryIds: (entriesBody?.items ?? []).map((e) => e.id),
+    };
+  }, itemId);
+
+  expect(probe.itemStatus).toBe(200);
+  expect(probe.entriesStatus).toBe(200);
+  for (const forbiddenId of forbiddenEntryIds) {
+    expect(probe.entryIds).not.toContain(forbiddenId);
+  }
+  expect([...probe.entryIds].sort()).toEqual([...expectedLiveEntryIds].sort());
+}
+
+/**
+ * Saves an item hint via the `item-hint-input` field on `/app/items/<id>`, waits for the `PATCH /api/v1/items/<id>`
+ * response (status 200), and reads back `GET /api/v1/items/<id>` with a boolean comparison to prove the hint was
+ * persisted on the server (ACC-FE1-2).
+ */
+export async function saveAndVerifyItemHintPersisted(
+  page: Page,
+  itemId: string,
+  hint: string,
+): Promise<void> {
+  const hintInput = page.getByTestId('item-hint-input');
+  await expect(hintInput).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+  const targetPathname = `/api/v1/items/${itemId}`;
+  const patchResponsePromise = page.waitForResponse(
+    (res) => res.request().method() === 'PATCH' && new URL(res.url()).pathname === targetPathname,
+    { timeout: ACCEPTANCE_UI_WAIT_MS },
+  );
+  await setQuietInputValue(hintInput, hint);
+  await hintInput.press('Enter');
+  const patchRes = await patchResponsePromise;
+  expect(patchRes.status()).toBe(200);
+  await expectInputValueEqualsBool(hintInput, hint);
+
+  const persistedMatches = await page.evaluate(
+    async ({ id, expectedHint }) => {
+      const res = await fetch(`/api/v1/items/${encodeURIComponent(id)}`, {
+        credentials: 'include',
+      });
+      if (res.status !== 200) return false;
+      const body = (await res.json().catch(() => null)) as { readonly hint?: unknown } | null;
+      return body?.hint === expectedHint;
+    },
+    { id: itemId, expectedHint: hint },
+  );
+  expect(persistedMatches).toBe(true);
+}
+
+/**
  * Inspects raw SSR HTML string for:
  * 1) any occurrence of `forbiddenStrings` (reported by label only),
  * 2) any `<... data-vault-decrypted ...>` element that has non-empty inner content.
@@ -261,6 +566,8 @@ export function inspectSsrHtml(
 ): {
   readonly matchedLabels: string[];
   readonly nonEmptyDecryptedNodes: number;
+  readonly hasHtmlRootAndTheme: boolean;
+  readonly hasAuthLoginShellMarker: boolean;
 } {
   const matchedLabels: string[] = [];
   for (const item of forbiddenStrings) {
@@ -281,9 +588,17 @@ export function inspectSsrHtml(
     match = decryptedTagRegex.exec(html);
   }
 
+  // Positive controls (ACC-FE1-3): `app/app/layout.tsx` renders `<html lang="..." data-theme="...">` and the
+  // authenticated `/app` routes never embed the login page marker (`id="auth-login"` / `data-testid="auth-explainer-aside"`).
+  const hasHtmlRootAndTheme = /<html\b[^>]*\bdata-theme=/i.test(html);
+  const hasAuthLoginShellMarker =
+    html.includes('id="auth-login"') || html.includes('data-testid="auth-explainer-aside"');
+
   return {
     matchedLabels,
     nonEmptyDecryptedNodes,
+    hasHtmlRootAndTheme,
+    hasAuthLoginShellMarker,
   };
 }
 

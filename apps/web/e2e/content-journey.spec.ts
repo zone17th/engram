@@ -1,14 +1,16 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
 import en from '../messages/en.json';
 import {
-  expectOnUnlockPageAllowingReturnTo,
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
   expectInputEmptyBool,
   expectInputValueEqualsBool,
-  findLabeledDomBodyLeaks,
+  expectNoDomOrStorageBodyLeaks,
+  expectServerItemAndLiveEntryIds,
+  expectTextEqualsBool,
   setQuietInputValue,
   timedJourneyStep,
+  expectOnUnlockPageAllowingReturnTo,
 } from './content-acceptance-support';
 import { newContextWithRateLimit, uniqueEmail } from './helpers';
 import {
@@ -22,9 +24,8 @@ import {
 } from './vault-journey-support';
 import { CRYPTO_WAIT_MS, VAULT_PASSPHRASE, expectVaultShut } from './vault-passkey-support';
 
-// Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs,
-// so a failure while a recovery-key sheet or decrypted entry is mounted never serializes secrets to disk.
-process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+// Note: `noCopyPrompt: true` in `playwright.config.ts` and `PLAYWRIGHT_NO_COPY_PROMPT: "1"` in `ci.yml`
+// disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 const JOURNEY_TIMEOUT_MS = 480_000;
 
@@ -51,7 +52,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
   test.describe.configure({ mode: 'serial' });
   test.skip(!process.env.E2E_STACK, 'needs the compose stack (E2E_STACK=1): real API, real database');
 
-  test('signup -> onboarding (skip passkey) -> omnibox quick-add 0/1/n (picker keyboard) -> item text edit (incl. offline draft retention + Retry) -> JSON composer & lossless cell edit (incl. offline Retry) -> new context unlock -> delete & Undo (entry toast + Ctrl+Z, item delete + Undo without resurrecting prior-deleted entry) -> lock wipes DOM', async ({
+  test('signup -> onboarding (skip passkey) -> omnibox quick-add 0/1/n (picker keyboard) -> item text edit (incl. offline draft retention + Retry) -> JSON composer & lossless cell edit (incl. offline Retry) -> new context unlock -> delete & Undo (entry toast + Ctrl+Z, item delete + Undo proven via server API) -> lock wipes open draft, DOM, and storage', async ({
     browser,
   }) => {
     test.setTimeout(JOURNEY_TIMEOUT_MS);
@@ -62,14 +63,15 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
     const bodyDupItem2Init = `acceptance-body-dup2-init-${nonce}`;
     const bodyMatchNPicked = `acceptance-body-matchN-picked-${nonce}`;
     const bodyMatch0Edited = `acceptance-body-match0-edited-${nonce}`;
+    const unsavedDraftBeforeLock = `acceptance-unsaved-draft-before-lock-${nonce}`;
     const jsonSecretTokenInit = `acceptance-json-token-init-${nonce}`;
     const jsonSecretTokenEdited = `acceptance-json-token-edited-${nonce}`;
     const jsonSiblingKeep = `acceptance-json-sibling-keep-${nonce}`;
 
-    // Deliberately irregular whitespace, key ordering, escapes, and 64-bit integer lexeme outside the edited cell span
-    // so byte-for-byte comparison proves lossless span splicing (P04-A6).
-    const jsonInitialRaw = `{\n  "service" :  "${jsonSecretTokenInit}" ,\n    "port": 5432,\n\t"snowflake_id": 9007199254740993,\n  "escaped_path": "a\\/b\\u00e9",\n  "sibling": "${jsonSiblingKeep}"\n}`;
-    const jsonExpectedAfterEdit = `{\n  "service" :  "${jsonSecretTokenEdited}" ,\n    "port": 5432,\n\t"snowflake_id": 9007199254740993,\n  "escaped_path": "a\\/b\\u00e9",\n  "sibling": "${jsonSiblingKeep}"\n}`;
+    // Deliberately irregular whitespace, key ordering, escapes (including \n in sibling), and 64-bit integer lexeme
+    // outside the edited cell span so byte-for-byte comparison proves lossless span splicing (P04-A6, ACC-FE1-7).
+    const jsonInitialRaw = `{\n  "service" :  "${jsonSecretTokenInit}" ,\n    "port": 5432,\n\t"snowflake_id": 9007199254740993,\n  "escaped_path": "a\\/b\\u00e9",\n  "sibling": "${jsonSiblingKeep}\\nline2"\n}`;
+    const jsonExpectedAfterEdit = `{\n  "service" :  "${jsonSecretTokenEdited}" ,\n    "port": 5432,\n\t"snowflake_id": 9007199254740993,\n  "escaped_path": "a\\/b\\u00e9",\n  "sibling": "${jsonSiblingKeep}\\nline2"\n}`;
 
     const labeledSecrets = [
       { label: 'bodyMatch0', value: bodyMatch0 },
@@ -77,6 +79,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
       { label: 'bodyDupItem2Init', value: bodyDupItem2Init },
       { label: 'bodyMatchNPicked', value: bodyMatchNPicked },
       { label: 'bodyMatch0Edited', value: bodyMatch0Edited },
+      { label: 'unsavedDraftBeforeLock', value: unsavedDraftBeforeLock },
       { label: 'jsonSecretTokenInit', value: jsonSecretTokenInit },
       { label: 'jsonSecretTokenEdited', value: jsonSecretTokenEdited },
       { label: 'jsonSiblingKeep', value: jsonSiblingKeep },
@@ -231,9 +234,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         entry2Id = entriesMeta.items[2]!.id;
 
         const card0 = pageA.getByTestId(`entry-card-${entry0Id}`);
-        await expect(card0.getByTestId('entry-body')).toHaveText(bodyMatch0, {
-          timeout: ACCEPTANCE_UI_WAIT_MS,
-        });
+        await expectTextEqualsBool(card0.getByTestId('entry-body'), bodyMatch0);
 
         await card0.getByTestId(`entry-edit-btn-${entry0Id}`).click();
         const editTextarea = card0.getByTestId(`entry-edit-textarea-${entry0Id}`);
@@ -254,9 +255,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
 
         // Go back online and press Retry -> save completes with the exact sealed payload
         await card0.getByTestId(`entry-retry-save-${entry0Id}`).click();
-        await expect(card0.getByTestId('entry-body')).toHaveText(bodyMatch0Edited, {
-          timeout: ACCEPTANCE_UI_WAIT_MS,
-        });
+        await expectTextEqualsBool(card0.getByTestId('entry-body'), bodyMatch0Edited);
 
         // Reload page -> vault locks on full reload (in-memory key cleared) -> unlock from banner -> returns to item page and shows edited text
         await pageA.reload();
@@ -269,9 +268,9 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expect(pageA).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
           timeout: CRYPTO_WAIT_MS,
         });
-        await expect(pageA.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageA.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body'),
           bodyMatch0Edited,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
         monitor.assertNoLeaks();
       });
@@ -307,9 +306,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
 
         // Edit one cell (`root.p0`, the value of `"service"`) in Table view
         const serviceCellBtn = jsonCard.getByTestId('json-cell-btn-root.p0');
-        await expect(serviceCellBtn).toHaveText(jsonSecretTokenInit, {
-          timeout: ACCEPTANCE_UI_WAIT_MS,
-        });
+        await expectTextEqualsBool(serviceCellBtn, jsonSecretTokenInit);
         await serviceCellBtn.click();
 
         const cellInput = jsonCard.getByTestId('json-cell-input-root.p0');
@@ -317,9 +314,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await setQuietInputValue(cellInput, jsonSecretTokenEdited);
         await cellInput.press('Enter');
 
-        await expect(serviceCellBtn).toHaveText(jsonSecretTokenEdited, {
-          timeout: ACCEPTANCE_UI_WAIT_MS,
-        });
+        await expectTextEqualsBool(serviceCellBtn, jsonSecretTokenEdited);
 
         // P04-A10 offline draft retention on JSON card: go offline -> press Save -> Retry box appears and edited cell stays intact
         await contextA.setOffline(true);
@@ -327,7 +322,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           await jsonCard.getByTestId(`entry-save-btn-${jsonEntryId}`).click();
           const jsonRetryBox = jsonCard.getByTestId(`entry-save-retry-box-${jsonEntryId}`);
           await expect(jsonRetryBox).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
-          await expect(serviceCellBtn).toHaveText(jsonSecretTokenEdited);
+          await expectTextEqualsBool(serviceCellBtn, jsonSecretTokenEdited);
           monitor.assertNoLeaks();
         } finally {
           await contextA.setOffline(false);
@@ -352,9 +347,9 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         });
 
         const reloadedJsonCard = pageA.getByTestId(`entry-card-${jsonEntryId}`);
-        await expect(reloadedJsonCard.getByTestId('json-cell-btn-root.p0')).toHaveText(
+        await expectTextEqualsBool(
+          reloadedJsonCard.getByTestId('json-cell-btn-root.p0'),
           jsonSecretTokenEdited,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
         await expect(reloadedJsonCard.getByTestId('json-cell-btn-root.p2')).toHaveText(
           '9007199254740993',
@@ -404,21 +399,22 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
 
-        await expect(pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body'),
           bodyMatch0Edited,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
           bodyMatch1,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(pageB.getByTestId(`entry-card-${entry2Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry2Id}`).getByTestId('entry-body'),
           bodyMatchNPicked,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(
+        await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
-        ).toHaveText(jsonSecretTokenEdited, { timeout: ACCEPTANCE_UI_WAIT_MS });
+          jsonSecretTokenEdited,
+        );
         monitor.assertNoLeaks();
       });
 
@@ -441,10 +437,16 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expect(pageB.getByTestId(`entry-card-${entry1Id}`)).toBeVisible({
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-        await expect(pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
           bodyMatch1,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
+        await expectServerItemAndLiveEntryIds(pageB, item1Id, [
+          entry0Id,
+          entry1Id,
+          entry2Id,
+          jsonEntryId,
+        ]);
 
         // Second delete -> Undo via Ctrl+Z keyboard shortcut
         await card1.getByTestId(`entry-menu-trigger-${entry1Id}`).click();
@@ -458,10 +460,16 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expect(pageB.getByTestId(`entry-card-${entry1Id}`)).toBeVisible({
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-        await expect(pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
           bodyMatch1,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
+        await expectServerItemAndLiveEntryIds(pageB, item1Id, [
+          entry0Id,
+          entry1Id,
+          entry2Id,
+          jsonEntryId,
+        ]);
 
         // Delete `entry2Id` on its own and do NOT undo it (leaving 3 live entries: entry0Id, entry1Id, jsonEntryId)
         const card2 = pageB.getByTestId(`entry-card-${entry2Id}`);
@@ -500,38 +508,53 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expect(pageB.getByTestId('entry-body')).toHaveCount(3, {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-        await expect(pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body'),
           bodyMatch0Edited,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body')).toHaveText(
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
           bodyMatch1,
-          { timeout: ACCEPTANCE_UI_WAIT_MS },
         );
-        await expect(
+        await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
-        ).toHaveText(jsonSecretTokenEdited, { timeout: ACCEPTANCE_UI_WAIT_MS });
+          jsonSecretTokenEdited,
+        );
         await expect(pageB.getByTestId(`entry-card-${entry2Id}`)).toHaveCount(0);
+        // Prove the restored item and live entry set via the server API (independent of TanStack cache, ACC-FE1-1)
+        await expectServerItemAndLiveEntryIds(
+          pageB,
+          item1Id,
+          [entry0Id, entry1Id, jsonEntryId],
+          [entry2Id],
+        );
         monitor.assertNoLeaks();
       });
 
-      await timedJourneyStep('7. lock vault -> no decrypted entry body in the DOM (A9)', async () => {
+      await timedJourneyStep('7. open a text editor with an unsaved draft, lock vault -> editor unmounts and no draft or body remains in DOM or storage/caches (A9, ACC-FE1-4)', async () => {
+        const card0 = pageB.getByTestId(`entry-card-${entry0Id}`);
+        await card0.getByTestId(`entry-edit-btn-${entry0Id}`).click();
+        const draftTextarea = card0.getByTestId(`entry-edit-textarea-${entry0Id}`);
+        await expect(draftTextarea).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await setQuietInputValue(draftTextarea, unsavedDraftBeforeLock);
+        await expectInputValueEqualsBool(draftTextarea, unsavedDraftBeforeLock);
+
         await pageB.getByTestId('vault-lock-button').click();
         await expectVaultShut(pageB);
         await expect(pageB.getByTestId('vault-locked-banner')).toBeVisible({
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
+        await expect(draftTextarea).toHaveCount(0);
+        await expect(pageB.locator('textarea')).toHaveCount(0);
         await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
         await expect(pageB.getByTestId('entry-body-locked')).toHaveCount(3);
 
-        const domLeaksOnItem = await findLabeledDomBodyLeaks(pageB, labeledSecrets);
-        expect(domLeaksOnItem).toEqual([]);
+        await expectNoDomOrStorageBodyLeaks(pageB, labeledSecrets);
 
-        // Navigate back to /app locked list via the breadcrumb link and confirm zero DOM leaks there too
+        // Navigate back to /app locked list via the breadcrumb link and confirm zero DOM and storage/cache leaks there too
         await pageB.getByRole('link', { name: en.content.item.allItems, exact: true }).click();
         await expectLockedListOnApp(pageB);
-        const domLeaksOnHome = await findLabeledDomBodyLeaks(pageB, labeledSecrets);
-        expect(domLeaksOnHome).toEqual([]);
+        await expectNoDomOrStorageBodyLeaks(pageB, labeledSecrets);
 
         expect(monitor.getRequestCount()).toBeGreaterThan(0);
         monitor.assertNoLeaks();
