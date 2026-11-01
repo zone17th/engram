@@ -28,6 +28,14 @@ const SECOND_TAG: Tag = {
   created_at: '2026-11-01T00:00:00Z',
 };
 
+const THIRD_TAG: Tag = {
+  id: '33333333-3333-4333-8333-333333333333',
+  display: 'cloud',
+  item_count: 5,
+  last_used_at: '2026-11-01T00:00:00Z',
+  created_at: '2026-11-01T00:00:00Z',
+};
+
 function createTestQueryClient(): QueryClient {
   const client = new QueryClient({
     defaultOptions: {
@@ -134,6 +142,37 @@ describe('features/tags', () => {
     });
   });
 
+  it('usePaginatedTagsList keeps extra pages across refocus/refetch with equal first-page data and merges deduped updates', async () => {
+    let firstPageItems: Tag[] = [SAMPLE_TAG];
+    const spy = vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
+      if (params?.cursor === 'cursor-tags-2') {
+        return { items: [SECOND_TAG, THIRD_TAG], next_cursor: null };
+      }
+      return { items: firstPageItems.map((tag) => ({ ...tag })), next_cursor: 'cursor-tags-2' };
+    });
+
+    const { queryClient } = renderWithProviders(<PaginatedTagsProbe />);
+    expect(await screen.findByText('nhà')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('probe-load-more'));
+    expect(await screen.findByText('ops')).toBeInTheDocument();
+    expect(screen.getByText('cloud')).toBeInTheDocument();
+
+    // Refetch/refocus returning structurally equal first-page data keeps extra pages intact.
+    await queryClient.refetchQueries({ queryKey: contentQueryKeys.tags({ sort: 'recent' }) });
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('nhà')).toBeInTheDocument();
+    expect(screen.getByText('ops')).toBeInTheDocument();
+    expect(screen.getByText('cloud')).toBeInTheDocument();
+
+    // Refetch where first page changes (e.g. SECOND_TAG promoted to page 1 with updated display) merges & dedupes by id with first page winning.
+    firstPageItems = [SAMPLE_TAG, { ...SECOND_TAG, display: 'ops-renamed' }];
+    await queryClient.refetchQueries({ queryKey: contentQueryKeys.tags({ sort: 'recent' }) });
+    expect(await screen.findByText('ops-renamed')).toBeInTheDocument();
+    expect(screen.queryByText('ops')).not.toBeInTheDocument();
+    expect(screen.getByText('cloud')).toBeInTheDocument();
+  });
+
   it('RailTagChip renames a tag via PATCH /tags/{id}, invalidates queries, and focuses the chip filter button', async () => {
     const renameSpy = vi.spyOn(contentApi, 'tagRename').mockResolvedValue({
       ...SAMPLE_TAG,
@@ -144,7 +183,12 @@ describe('features/tags', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
 
     renderWithProviders(
-      <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />,
+      <RailTagChip
+        tag={SAMPLE_TAG}
+        selected={false}
+        onSelect={() => undefined}
+        onRestoreError={() => undefined}
+      />,
       { queryClient },
     );
 
@@ -181,7 +225,12 @@ describe('features/tags', () => {
     });
 
     renderWithProviders(
-      <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />,
+      <RailTagChip
+        tag={SAMPLE_TAG}
+        selected={false}
+        onSelect={() => undefined}
+        onRestoreError={() => undefined}
+      />,
       { locale: 'vi' },
     );
 
@@ -220,7 +269,12 @@ describe('features/tags', () => {
     );
 
     renderWithProviders(
-      <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />,
+      <RailTagChip
+        tag={SAMPLE_TAG}
+        selected={false}
+        onSelect={() => undefined}
+        onRestoreError={() => undefined}
+      />,
       { locale: 'vi' },
     );
 
@@ -248,11 +302,13 @@ describe('features/tags', () => {
           selected
           onSelect={() => undefined}
           onTagDeleted={onTagDeleted}
+          onRestoreError={() => undefined}
         />
         <RailTagChip
           tag={SECOND_TAG}
           selected={false}
           onSelect={() => undefined}
+          onRestoreError={() => undefined}
         />
       </nav>,
       { locale: 'vi' },
@@ -330,7 +386,12 @@ describe('features/tags', () => {
   it('supports keyboard navigation in the tag action menu, Escape, Tab, and focus leaving to close', async () => {
     renderWithProviders(
       <div>
-        <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />
+        <RailTagChip
+          tag={SAMPLE_TAG}
+          selected={false}
+          onSelect={() => undefined}
+          onRestoreError={() => undefined}
+        />
         <button type="button" data-testid="outside-focusable">
           outside
         </button>
@@ -359,9 +420,14 @@ describe('features/tags', () => {
     fireEvent.keyDown(screen.getByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`), { key: 'Tab' });
     expect(screen.queryByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).not.toBeInTheDocument();
 
-    // Focus leaving the chip group closes the menu.
+    // Blur with relatedTarget: null (e.g. Safari/macOS Firefox button press) keeps the menu open.
     fireEvent.click(trigger);
     const reopenedMenu = screen.getByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`);
+    const reopenedRenameItem = screen.getByTestId(`rail-tag-rename-action-${SAMPLE_TAG.id}`);
+    fireEvent.blur(reopenedRenameItem, { relatedTarget: null });
+    expect(screen.getByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).toBeInTheDocument();
+
+    // Focus leaving the chip group (relatedTarget outside) closes the menu.
     fireEvent.blur(reopenedMenu, { relatedTarget: screen.getByTestId('outside-focusable') });
     expect(screen.queryByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).not.toBeInTheDocument();
   });

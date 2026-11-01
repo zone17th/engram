@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProblemError } from '@engram/shared-types';
 import { AppHeader } from '../components/app-shell/app-header';
 import { EmptyState } from '../components/app-shell/empty-state';
@@ -74,6 +74,10 @@ describe('Rail', () => {
     },
   ];
 
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
   function renderRailWithTags(
     ui: ReactNode,
     tags: Tag[] = SAMPLE_TAGS,
@@ -134,6 +138,10 @@ describe('Rail', () => {
   });
 
   it('xoá tag đang chọn sẽ xoá bộ lọc ?tag và hiển thị lỗi khi hoàn tác thất bại', async () => {
+    vi.spyOn(contentApi, 'tagsList').mockResolvedValue({
+      items: [SAMPLE_TAGS[1]],
+      next_cursor: null,
+    });
     vi.spyOn(contentApi, 'tagDelete').mockResolvedValue();
     vi.spyOn(contentApi, 'tagRestore').mockRejectedValue(
       new ProblemError({
@@ -194,6 +202,59 @@ describe('Rail', () => {
     fireEvent.click(loadMoreBtn);
 
     expect(await screen.findByText('#trang-hai')).toBeInTheDocument();
+  });
+
+  it('hiển thị lỗi khi loadMore thất bại và ưu tiên restoreError trước loadMoreError', async () => {
+    vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
+      if (params?.cursor === 'cursor-fail-tags') {
+        throw new ProblemError({
+          type: 'https://engram.zone17.click/problems/internal_error',
+          title: 'Internal error',
+          status: 500,
+          code: 'internal_error',
+        });
+      }
+      return {
+        items: SAMPLE_TAGS,
+        next_cursor: 'cursor-fail-tags',
+      };
+    });
+    vi.spyOn(contentApi, 'tagDelete').mockResolvedValue();
+    vi.spyOn(contentApi, 'tagRestore').mockRejectedValue(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/tag_conflict',
+        title: 'Tag conflict',
+        status: 409,
+        code: 'tag_conflict',
+      }),
+    );
+
+    renderRailWithTags(<Rail />, SAMPLE_TAGS, 'cursor-fail-tags');
+
+    // 1. Trigger loadMore failure -> rail-tags-error shows loadMoreError (internal_error)
+    fireEvent.click(screen.getByTestId('rail-tags-load-more'));
+    const alert = await screen.findByTestId('rail-tags-error');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent(viMessages.content.errors.internal_error);
+
+    // 2. Delete a tag and fail Undo -> restoreErrorCode (tag_conflict) takes precedence over loadMoreErrorCode
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAGS[0].id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${SAMPLE_TAGS[0].id}`));
+
+    const toast = await screen.findByTestId('undo-toast-item');
+    fireEvent.click(within(toast).getByRole('button', { name: /Hoàn tác/ }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('rail-tags-error')).toHaveTextContent(
+        viMessages.content.errors.tag_conflict,
+      );
+    });
+
+    // 3. Selecting a chip clears restoreErrorCode, falling back to loadMoreErrorCode
+    fireEvent.click(screen.getByTestId(`rail-tag-filter-${SAMPLE_TAGS[1].id}`));
+    expect(screen.getByTestId('rail-tags-error')).toHaveTextContent(
+      viMessages.content.errors.internal_error,
+    );
   });
 });
 

@@ -391,6 +391,28 @@ describe('AppPage (/app — Task 19)', () => {
     expect(mockReplace).toHaveBeenCalledWith('/app', { scroll: false });
   });
 
+  it('shows filtered empty state with clear-filter control when ?tag= fails with 400 invalid_request', async () => {
+    vi.stubEnv('NEXT_PUBLIC_CONTENT_ENABLED', 'true');
+    mockSearchParamsString = 'tag=malformed-tag-id';
+    vi.spyOn(contentApi, 'tagsList').mockResolvedValue({ items: [TAG_NHA], next_cursor: null });
+    vi.spyOn(contentApi, 'itemsList').mockRejectedValue(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/invalid_request',
+        title: 'Invalid request',
+        status: 400,
+        code: 'invalid_request',
+      }),
+    );
+
+    renderHomePage();
+
+    expect(await screen.findByTestId('home-filtered-empty-state')).toBeInTheDocument();
+    expect(screen.queryByTestId('recent-items-error')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('home-filtered-clear-btn'));
+    expect(mockReplace).toHaveBeenCalledWith('/app', { scroll: false });
+  });
+
   it('keeps loaded items on screen and shows inline retry calling fetchNextPage when load-more fails', async () => {
     vi.stubEnv('NEXT_PUBLIC_CONTENT_ENABLED', 'true');
     vi.spyOn(contentApi, 'tagsList').mockResolvedValue({ items: [TAG_NHA], next_cursor: null });
