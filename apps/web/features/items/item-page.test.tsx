@@ -24,7 +24,11 @@ import {
 } from '@/features/entries';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
-import { TextEntryCard, type EditorPlaintextHolder } from '@/features/items/text-entry-card';
+import {
+  TextEntryCard,
+  setEditorPlaintextHolderForTests,
+  type EditorPlaintextHolder,
+} from '@/features/items/text-entry-card';
 import {
   VAULT_BODY_QUERY_KEY_PREFIX,
   VaultProvider,
@@ -90,6 +94,12 @@ function createDeferred<T = void>(): {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+function flushMacrotask(): Promise<void> {
+  const d = createDeferred();
+  setTimeout(() => d.resolve(), 0);
+  return d.promise;
 }
 
 const fastTestDeriveKek: DeriveKekFn = (
@@ -335,6 +345,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    setEditorPlaintextHolderForTests(null);
   });
 
   afterEach(() => {
@@ -343,6 +354,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    setEditorPlaintextHolderForTests(null);
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -1324,10 +1336,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.keyDown(textareaAfter, { key: 's', ctrlKey: true });
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeCtrlS);
 
-    // Verify the resettable editorPlaintextHolderRef itself is synchronously cleared to empty strings while fallback GET is held (IP15-BE2-1)
+    // Verify the resettable plaintext holder is synchronously cleared to empty strings while fallback GET is held (IP15-BE2-1, FE3-7a)
     const holderRef: { current: EditorPlaintextHolder } = {
       current: { originalSource: '', draftValue: '' },
     };
+    setEditorPlaintextHolderForTests(holderRef);
     const entryMeta = Array.from(h.server.entries.values())[0];
     h.rerenderPage(
       <TextEntryCard
@@ -1340,7 +1353,6 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         onMoveUp={() => {}}
         onMoveDown={() => {}}
         onDelete={() => {}}
-        editorPlaintextHolderRef={holderRef}
       />,
     );
     await waitFor(() => {
@@ -1394,6 +1406,162 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(sealSpy).not.toHaveBeenCalled();
     expect(sealUpdateSpy).not.toHaveBeenCalled();
 
+    // IP15-BE3-2: Unmount TextEntryCard while fallback GET is held in flight, keep VaultProvider mounted,
+    // lock -> holder is synchronously empty BEFORE releasing the GET; then unlock + release -> zero seal/PUT/restore
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const unmountTextarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(unmountTextarea, { target: { value: PRE_LOCK_DRAFT } });
+    expect(holderRef.current.draftValue).toBe(PRE_LOCK_DRAFT);
+    expect(holderRef.current.originalSource).toBe('Remote v2 body');
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        return problemResponse('version_mismatch', 412);
+      }
+      return null;
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    const { promise: getGateUnmount, resolve: releaseGetUnmount } = createDeferred();
+    const { promise: fallbackGetUnmountEntered, resolve: notifyFallbackGetUnmountEntered } =
+      createDeferred();
+    const { promise: fallbackGetUnmountFinished, resolve: notifyFallbackGetUnmountFinished } =
+      createDeferred();
+    let holdUnmountGet = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdUnmountGet) {
+        notifyFallbackGetUnmountEntered();
+        await getGateUnmount;
+        queueMicrotask(() => notifyFallbackGetUnmountFinished());
+      }
+      return null;
+    });
+
+    const putsBeforeUnmountKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
+    sealSpy.mockClear();
+    sealUpdateSpy.mockClear();
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await fallbackGetUnmountEntered;
+
+    // Unmount TextEntryCard while retaining VaultProvider (before lock and before releasing GET)
+    h.rerenderPage(<div data-testid="unmounted-during-keep-mine">Away</div>);
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+
+    // Lock while GET is still held -> holder remains empty BEFORE releasing the GET
+    await h.lock();
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+
+    // Unlock and release the held GET -> zero seal, zero PUT, zero restore
+    holdUnmountGet = false;
+    await h.unlock();
+    releaseGetUnmount();
+    await fallbackGetUnmountFinished;
+    await act(async () => {
+      await flushMacrotask();
+    });
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(sealUpdateSpy).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+      putsBeforeUnmountKeepMine,
+    );
+    expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
+
+    // Remount TextEntryCard for the remaining checks in this test
+    setEditorPlaintextHolderForTests(null);
+    h.rerenderPage(
+      <TextEntryCard
+        entry={entryMeta}
+        itemId={ITEM_ID}
+        index={0}
+        total={1}
+        canReorder={false}
+        lazy={false}
+        onMoveUp={() => {}}
+        onMoveDown={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
+
+    // IP15-FE3-6: Typing in the textarea while Keep mine fallback GET is in flight aborts Keep mine
+    // back to the conflict banner instead of sealing text that was not confirmed at click
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const revisionTextarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(revisionTextarea, { target: { value: 'Confirmed at click draft' } });
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        return problemResponse('version_mismatch', 412);
+      }
+      return null;
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    const { promise: getGateRev, resolve: releaseGetRev } = createDeferred();
+    const { promise: getRevEntered, resolve: notifyGetRevEntered } = createDeferred();
+    let holdGetRev = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdGetRev) {
+        notifyGetRevEntered();
+        await getGateRev;
+      }
+      return null;
+    });
+
+    const putsBeforeRevKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
+    sealSpy.mockClear();
+    sealUpdateSpy.mockClear();
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await getRevEntered;
+
+    // Edit textarea while fallback GET is in flight -> bumps editorRevisionRef
+    fireEvent.change(revisionTextarea, {
+      target: { value: 'Edited during Keep mine fallback GET' },
+    });
+    holdGetRev = false;
+    releaseGetRev();
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`),
+      ).not.toBeDisabled();
+    });
+    expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(sealUpdateSpy).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+      putsBeforeRevKeepMine,
+    );
+    // Discard the edited draft to return to clean view for BE2-4
+    fireEvent.keyDown(revisionTextarea, { key: 'Escape' });
+    fireEvent.click(screen.getByTestId(`entry-discard-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
     // IP15-BE2-4: Hold fallback GET A, lock/unlock, open a new editor and start deferred PUT B, then release A
     // -> stale A must NOT release B's single-flight guard; Save stays disabled, Ctrl+S sends no extra PUT, and only B settling releases the guard
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));

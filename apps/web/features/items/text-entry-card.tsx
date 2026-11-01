@@ -69,6 +69,18 @@ export interface EditorPlaintextHolder {
   draftValue: string;
   submittedCandidateSource?: string;
 }
+
+let editorPlaintextHolderTestHookRef: { current: EditorPlaintextHolder } | null = null;
+
+/**
+ * Module-scoped test hook to observe the plaintext holder without exposing a public component prop (IP15-FE3-7a).
+ */
+export function setEditorPlaintextHolderForTests(
+  holderRef: { current: EditorPlaintextHolder } | null,
+): void {
+  editorPlaintextHolderTestHookRef = holderRef;
+}
+
 export interface TextEntryCardProps {
   readonly entry: EntryMeta;
   readonly itemId: string;
@@ -89,7 +101,6 @@ export interface TextEntryCardProps {
   readonly onAnnounce?: (message: string) => void;
   readonly onDraftClearedOnLock?: () => void;
   readonly registerCardElement?: (entryId: string, element: HTMLElement | null) => void;
-  readonly editorPlaintextHolderRef?: { current: EditorPlaintextHolder };
 }
 
 export function TextEntryCard({
@@ -112,7 +123,6 @@ export function TextEntryCard({
   onAnnounce,
   onDraftClearedOnLock,
   registerCardElement,
-  editorPlaintextHolderRef,
 }: TextEntryCardProps) {
   const tEntry = useTranslations('content.entry');
   const tLocked = useTranslations('vault.locked');
@@ -171,7 +181,7 @@ export function TextEntryCard({
     draftValue: '',
     submittedCandidateSource: '',
   });
-  const plaintextHolderRef = editorPlaintextHolderRef ?? internalPlaintextHolderRef;
+  const plaintextHolderRef = editorPlaintextHolderTestHookRef ?? internalPlaintextHolderRef;
   plaintextHolderRef.current.originalSource = originalSource;
   plaintextHolderRef.current.draftValue = draftValue;
 
@@ -280,6 +290,26 @@ export function TextEntryCard({
       setMenuOpen(false);
     }
   }, [clearEditorPlaintextHolderSync, unlocked]);
+
+  // Unmount cleanup (IP15-BE3-2): synchronously wipe every plaintext holder field and invalidate
+  // card op/save ownership on unmount, independent of the reset-registration effect, so navigating
+  // away while a fallback GET is held never leaves plaintext in the holder or allows a stale completion.
+  useEffect(() => {
+    const holderToWipe = plaintextHolderRef;
+    return () => {
+      lockEpochRef.current += 1;
+      editorRevisionRef.current = 0;
+      saveOwnerIdRef.current = 0;
+      saveLockRef.current = false;
+      pendingFocusEditBtnRef.current = false;
+      holderToWipe.current.originalSource = '';
+      holderToWipe.current.draftValue = '';
+      holderToWipe.current.submittedCandidateSource = '';
+      if (textareaRef.current) {
+        textareaRef.current.value = '';
+      }
+    };
+  }, [plaintextHolderRef]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -711,8 +741,23 @@ export function TextEntryCard({
         return;
       }
 
-      // Read draft synchronously from the resettable holder AFTER the fallback GET and AFTER the op-token check,
-      // immediately before sealing — never hold savePlan.text or any string derived from the draft across await entryGet (IP15-BE2-1).
+      // IP15-FE3-6: Re-read editorRevisionRef after the fallback GET. If the user edited the textarea
+      // while the GET was in flight, abort back to the conflict banner (with the resolved version) so
+      // Keep mine only seals what was confirmed at click.
+      if (editorRevisionRef.current !== submittedRevision) {
+        releaseSaveGuardIfOwner(ownerId);
+        setConflictState({
+          currentVersion: targetVersion,
+          reloadConfirmOpen: false,
+        });
+        return;
+      }
+
+      // IP15-BE2-1 / FE3-7b: Read the draft synchronously from the resettable holder AFTER the fallback GET
+      // and AFTER the op-token/owner/revision checks, immediately before sealing. Note that in JS/V8, closures
+      // created in the same render can share a lexical context with sibling handlers; the effective security
+      // guarantees are the synchronous op-token/epoch/owner check, synchronous holder + DOM wipe on reset/unmount,
+      // and the absence of any network/cache/DOM/storage sink after reset.
       const currentHolder = plaintextHolderRef.current;
       const textToSeal = applyTextareaEol(
         currentHolder.originalSource,
@@ -723,7 +768,6 @@ export function TextEntryCard({
         return;
       }
       plaintextHolderRef.current.submittedCandidateSource = textToSeal;
-
       const resealed = await sealEntryUpdate({
         entryId: entry.id,
         itemId,
@@ -1550,6 +1594,11 @@ export function NewTextEntryComposer({
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveLockRef = useRef<boolean>(false);
+  const saveOwnerIdRef = useRef<number>(0);
+  const nextSaveOwnerIdRef = useRef<number>(0);
+  const lockEpochRef = useRef<number>(0);
+  const composerHolderRef = useRef<{ draftValue: string }>({ draftValue: '' });
+  composerHolderRef.current.draftValue = draftValue;
   const composerDirtyRef = useRef<boolean>(false);
   composerDirtyRef.current = draftValue.length > 0 || unconfirmedCreate !== null;
 
@@ -1561,10 +1610,13 @@ export function NewTextEntryComposer({
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       const hadNonEmptyDraft = composerDirtyRef.current;
+      lockEpochRef.current += 1;
+      saveOwnerIdRef.current = 0;
+      saveLockRef.current = false;
+      composerHolderRef.current.draftValue = '';
       if (textareaRef.current) {
         textareaRef.current.value = '';
       }
-      saveLockRef.current = false;
       setDraftValue('');
       setDiscardConfirmOpen(false);
       setSavingInFlight(false);
@@ -1576,6 +1628,19 @@ export function NewTextEntryComposer({
       onCancel();
     });
   }, [onCancel, onDraftClearedOnLock, vault]);
+
+  // Unmount cleanup (IP15-BE3-2): synchronously wipe composer holder and invalidate save ownership on unmount.
+  useEffect(() => {
+    return () => {
+      lockEpochRef.current += 1;
+      saveOwnerIdRef.current = 0;
+      saveLockRef.current = false;
+      composerHolderRef.current.draftValue = '';
+      if (textareaRef.current) {
+        textareaRef.current.value = '';
+      }
+    };
+  }, []);
 
   const utf8ByteLength = useMemo(
     () => utf8Encoder.encode(draftValue).byteLength,
@@ -1609,7 +1674,7 @@ export function NewTextEntryComposer({
   }, [isDirty, onCancel, savingInFlight, unconfirmedCreate]);
 
   const executeCreate = useCallback(
-    async (sealed: SealedNewEntryPayload, hadPriorUncertainSend: boolean) => {
+    async (sealed: SealedNewEntryPayload, hadPriorUncertainSend: boolean, ownerId: number) => {
       setSavingInFlight(true);
       setSaveError(null);
       onAnnounce?.(tEntry('saving'));
@@ -1622,15 +1687,20 @@ export function NewTextEntryComposer({
           }),
         );
 
-        if (!applied || !sealed.isCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
+        if (!applied || !sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+          if (saveOwnerIdRef.current === ownerId) {
+            saveOwnerIdRef.current = 0;
+            saveLockRef.current = false;
+            setSavingInFlight(false);
+          }
           return;
         }
 
+        composerHolderRef.current.draftValue = '';
         if (textareaRef.current) {
           textareaRef.current.value = '';
         }
+        saveOwnerIdRef.current = 0;
         saveLockRef.current = false;
         setSavingInFlight(false);
         setUnconfirmedCreate(null);
@@ -1638,13 +1708,15 @@ export function NewTextEntryComposer({
         onAnnounce?.(tEntry('savedAnnounce'));
         onSaved(meta);
       } catch (err) {
-        if (!sealed.isCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
+        if (saveOwnerIdRef.current !== ownerId) {
           return;
         }
+        saveOwnerIdRef.current = 0;
         saveLockRef.current = false;
         setSavingInFlight(false);
+        if (!sealed.isCurrent()) {
+          return;
+        }
 
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
@@ -1707,6 +1779,8 @@ export function NewTextEntryComposer({
     if (saveLockRef.current || savingInFlight || unconfirmedCreate !== null) return;
     if (isEmpty || isOverCap || !vault) return;
 
+    const ownerId = ++nextSaveOwnerIdRef.current;
+    saveOwnerIdRef.current = ownerId;
     saveLockRef.current = true;
     setSavingInFlight(true);
     setSaveError(null);
@@ -1715,16 +1789,21 @@ export function NewTextEntryComposer({
       const sealed = await sealNewEntry({
         itemId,
         type: 'text',
-        text: draftValue,
+        text: composerHolderRef.current.draftValue,
         vault,
       });
-      if (!sealed.isCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+      if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        if (saveOwnerIdRef.current === ownerId) {
+          saveOwnerIdRef.current = 0;
+          saveLockRef.current = false;
+          setSavingInFlight(false);
+        }
         return;
       }
-      await executeCreate(sealed, false);
+      await executeCreate(sealed, false, ownerId);
     } catch (err) {
+      if (saveOwnerIdRef.current !== ownerId) return;
+      saveOwnerIdRef.current = 0;
       saveLockRef.current = false;
       setSavingInFlight(false);
       const classified = classifyContentMutationError(err);
@@ -1733,7 +1812,6 @@ export function NewTextEntryComposer({
       onAnnounce?.(msg);
     }
   }, [
-    draftValue,
     executeCreate,
     isEmpty,
     isOverCap,
@@ -1747,8 +1825,10 @@ export function NewTextEntryComposer({
 
   const handleRetryNew = useCallback(async () => {
     if (!unconfirmedCreate || saveLockRef.current || savingInFlight) return;
+    const ownerId = ++nextSaveOwnerIdRef.current;
+    saveOwnerIdRef.current = ownerId;
     saveLockRef.current = true;
-    await executeCreate(unconfirmedCreate.sealed, true);
+    await executeCreate(unconfirmedCreate.sealed, true, ownerId);
   }, [executeCreate, savingInFlight, unconfirmedCreate]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
