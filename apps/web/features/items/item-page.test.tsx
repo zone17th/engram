@@ -15,6 +15,7 @@ import ItemPage from '@/app/app/items/[id]/page';
 import { ThemeProvider } from '@/components/theme-provider';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
+import * as entriesModule from '@/features/entries';
 import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
@@ -23,6 +24,7 @@ import {
 } from '@/features/entries';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
+import { TextEntryCard, type EditorPlaintextHolder } from '@/features/items/text-entry-card';
 import {
   VAULT_BODY_QUERY_KEY_PREFIX,
   VaultProvider,
@@ -1216,16 +1218,24 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // Stage 1 (race negative control): Click Keep mine while holding the fallback GET /entries/{id}
     holdFallbackGet = true;
     const sealSpy = vi.spyOn(h.vault().getClient(), 'sealEntry');
+    const sealUpdateSpy = vi.spyOn(entriesModule, 'sealEntryUpdate');
     const putsBeforeKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
 
     fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
     await fallbackGetEntered;
 
-    // Lock and unlock while the fallback GET is in flight
+    // Lock while the fallback GET is still held in flight -> reset callback synchronously wipes textarea and draft
     await h.lock();
+    expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+    expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
+    assertNoPlaintextAttrs(h.container, [PRE_LOCK_DRAFT], { locked: true });
+    expect(findCacheSentinelLeaks(h.qc, [PRE_LOCK_DRAFT])).toEqual([]);
+
     await h.unlock();
+
     holdFallbackGet = false;
     sealSpy.mockClear();
+    sealUpdateSpy.mockClear();
     releaseGet();
 
     // Wait for the unlocked view to settle on the remote v2 body
@@ -1235,6 +1245,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     // Zero seal, zero PUT after the fallback GET released, and pre-lock draft is nowhere in DOM or caches
     expect(sealSpy).not.toHaveBeenCalled();
+    expect(sealUpdateSpy).not.toHaveBeenCalled();
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeKeepMine);
     expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
     expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
@@ -1254,6 +1265,68 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
     fireEvent.keyDown(textareaAfter, { key: 's', ctrlKey: true });
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeCtrlS);
+
+    // Verify the resettable editorPlaintextHolderRef itself is synchronously cleared to empty strings while fallback GET is held (IP15-BE2-1)
+    const holderRef: { current: EditorPlaintextHolder } = {
+      current: { originalSource: '', draftValue: '' },
+    };
+    const entryMeta = Array.from(h.server.entries.values())[0];
+    h.rerenderPage(
+      <TextEntryCard
+        entry={entryMeta}
+        itemId={ITEM_ID}
+        index={0}
+        total={1}
+        canReorder={false}
+        lazy={false}
+        onMoveUp={() => {}}
+        onMoveDown={() => {}}
+        onDelete={() => {}}
+        editorPlaintextHolderRef={holderRef}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const holderTextarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(holderTextarea, { target: { value: PRE_LOCK_DRAFT } });
+    expect(holderRef.current.draftValue).toBe(PRE_LOCK_DRAFT);
+    expect(holderRef.current.originalSource).toBe('Remote v2 body');
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    const { promise: getGate2, resolve: releaseGet2 } = createDeferred();
+    const { promise: fallbackGet2Entered, resolve: notifyFallbackGet2Entered } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET') {
+        notifyFallbackGet2Entered();
+        await getGate2;
+      }
+      return null;
+    });
+
+    sealSpy.mockClear();
+    sealUpdateSpy.mockClear();
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await fallbackGet2Entered;
+
+    // Lock while GET is still unresolved -> holderRef.current is synchronously wiped to empty strings
+    await h.lock();
+    expect(holderRef.current).toEqual({ originalSource: '', draftValue: '' });
+
+    await h.unlock();
+    expect(holderRef.current).toEqual({ originalSource: '', draftValue: '' });
+    releaseGet2();
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(sealUpdateSpy).not.toHaveBeenCalled();
   });
 
   it('IP15-BE1-1 / BE1-7 / FE1-6: entry_nonce_reused ends with localized error and draft kept (exactly one PUT and one seal), and after lock/generation change no continuation holds or uses the draft plaintext', async () => {

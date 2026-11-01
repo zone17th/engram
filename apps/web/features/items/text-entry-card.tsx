@@ -64,6 +64,11 @@ async function copyPlaintextToClipboard(text: string): Promise<boolean> {
   return false;
 }
 
+export interface EditorPlaintextHolder {
+  originalSource: string;
+  draftValue: string;
+}
+
 export interface TextEntryCardProps {
   readonly entry: EntryMeta;
   readonly itemId: string;
@@ -84,6 +89,7 @@ export interface TextEntryCardProps {
   readonly onAnnounce?: (message: string) => void;
   readonly onDraftClearedOnLock?: () => void;
   readonly registerCardElement?: (entryId: string, element: HTMLElement | null) => void;
+  readonly editorPlaintextHolderRef?: { current: EditorPlaintextHolder };
 }
 
 export function TextEntryCard({
@@ -106,6 +112,7 @@ export function TextEntryCard({
   onAnnounce,
   onDraftClearedOnLock,
   registerCardElement,
+  editorPlaintextHolderRef,
 }: TextEntryCardProps) {
   const tEntry = useTranslations('content.entry');
   const tLocked = useTranslations('vault.locked');
@@ -159,6 +166,23 @@ export function TextEntryCard({
   const [editing, setEditing] = useState(defaultEditing);
   const [originalSource, setOriginalSource] = useState<string>('');
   const [draftValue, setDraftValue] = useState<string>('');
+  const internalPlaintextHolderRef = useRef<EditorPlaintextHolder>({
+    originalSource: '',
+    draftValue: '',
+  });
+  const plaintextHolderRef = editorPlaintextHolderRef ?? internalPlaintextHolderRef;
+  plaintextHolderRef.current.originalSource = originalSource;
+  plaintextHolderRef.current.draftValue = draftValue;
+
+  const clearEditorPlaintextHolderSync = useCallback(() => {
+    plaintextHolderRef.current.originalSource = '';
+    plaintextHolderRef.current.draftValue = '';
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
+    setOriginalSource('');
+    setDraftValue('');
+  }, [plaintextHolderRef]);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [mixedEolWarningTarget, setMixedEolWarningTarget] = useState<string | null>(null);
 
@@ -205,14 +229,10 @@ export function TextEntryCard({
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
-      if (textareaRef.current) {
-        textareaRef.current.value = '';
-      }
+      clearEditorPlaintextHolderSync();
       saveLockRef.current = false;
       pendingFocusEditBtnRef.current = false;
       setEditing(false);
-      setOriginalSource('');
-      setDraftValue('');
       setDiscardConfirmOpen(false);
       setMixedEolWarningTarget(null);
       setSavingInFlight(false);
@@ -225,7 +245,7 @@ export function TextEntryCard({
         onDraftClearedOnLock?.();
       }
     });
-  }, [onDraftClearedOnLock, vault]);
+  }, [clearEditorPlaintextHolderSync, onDraftClearedOnLock, vault]);
 
   // Also clear immediately if `unlocked` flips to false
   useEffect(() => {
@@ -233,14 +253,10 @@ export function TextEntryCard({
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
-      if (textareaRef.current) {
-        textareaRef.current.value = '';
-      }
+      clearEditorPlaintextHolderSync();
       saveLockRef.current = false;
       pendingFocusEditBtnRef.current = false;
       setEditing(false);
-      setOriginalSource('');
-      setDraftValue('');
       setDiscardConfirmOpen(false);
       setMixedEolWarningTarget(null);
       setSavingInFlight(false);
@@ -250,7 +266,7 @@ export function TextEntryCard({
       setSaveError(null);
       setMenuOpen(false);
     }
-  }, [unlocked]);
+  }, [clearEditorPlaintextHolderSync, unlocked]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -316,8 +332,11 @@ export function TextEntryCard({
   const startEditing = useCallback(() => {
     if (!unlocked || body === undefined) return;
     editorRevisionRef.current = 0;
+    const normalizedDraft = normalizeEolToLf(body);
+    plaintextHolderRef.current.originalSource = body;
+    plaintextHolderRef.current.draftValue = normalizedDraft;
     setOriginalSource(body);
-    setDraftValue(normalizeEolToLf(body));
+    setDraftValue(normalizedDraft);
     setDiscardConfirmOpen(false);
     setMixedEolWarningTarget(null);
     setConflictState(null);
@@ -328,7 +347,7 @@ export function TextEntryCard({
     queueMicrotask(() => {
       textareaRef.current?.focus();
     });
-  }, [body, unlocked]);
+  }, [body, plaintextHolderRef, unlocked]);
 
   const focusEditOrMenuTrigger = useCallback(() => {
     if (editBtnRef.current) {
@@ -350,22 +369,18 @@ export function TextEntryCard({
   }, [body, editing, focusEditOrMenuTrigger, pending, unlocked]);
 
   const closeEditorCleanly = useCallback(() => {
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-    }
+    clearEditorPlaintextHolderSync();
     saveLockRef.current = false;
     editorRevisionRef.current = 0;
     pendingFocusEditBtnRef.current = true;
     setEditing(false);
-    setOriginalSource('');
-    setDraftValue('');
     setDiscardConfirmOpen(false);
     setMixedEolWarningTarget(null);
     setUnconfirmedSave(null);
     setConflictState(null);
     setDeletedRemotely(false);
     setSaveError(null);
-  }, []);
+  }, [clearEditorPlaintextHolderSync]);
 
   const requestCancelEdit = useCallback(() => {
     if (savingInFlight) return;
@@ -411,9 +426,8 @@ export function TextEntryCard({
         setCommittedVersion(meta.version);
 
         if (editorRevisionRef.current === submittedRevision) {
+          clearEditorPlaintextHolderSync();
           setEditing(false);
-          setOriginalSource('');
-          setDraftValue('');
           pendingFocusEditBtnRef.current = true;
         }
         setSavedFlash(true);
@@ -447,12 +461,8 @@ export function TextEntryCard({
               source: 'entry',
             });
           }
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-          }
+          clearEditorPlaintextHolderSync();
           setEditing(false);
-          setOriginalSource('');
-          setDraftValue('');
           setUnconfirmedSave(null);
           setConflictState(null);
           return;
@@ -506,6 +516,7 @@ export function TextEntryCard({
       }
     },
     [
+      clearEditorPlaintextHolderSync,
       entry.id,
       itemId,
       itemName,
@@ -654,9 +665,19 @@ export function TextEntryCard({
         return;
       }
 
-      // Compute text to seal: if draftValue had edits relative to originalSource, savePlan.text has the right EOLs;
-      // if user kept their originalSource as-is against a newer remote version, savePlan.text is still originalSource.
-      const textToSeal = savePlan.text;
+      // Read draft synchronously from the resettable holder AFTER the fallback GET and AFTER the op-token check,
+      // immediately before sealing — never hold savePlan.text or any string derived from the draft across await entryGet (IP15-BE2-1).
+      const currentHolder = plaintextHolderRef.current;
+      const textToSeal = applyTextareaEol(
+        currentHolder.originalSource,
+        currentHolder.draftValue,
+      ).text;
+      if (utf8Encoder.encode(textToSeal).byteLength === 0) {
+        saveLockRef.current = false;
+        setSavingInFlight(false);
+        return;
+      }
+
       const resealed = await sealEntryUpdate({
         entryId: entry.id,
         itemId,
@@ -692,7 +713,7 @@ export function TextEntryCard({
     isOverCap,
     itemId,
     onAnnounce,
-    savePlan.text,
+    plaintextHolderRef,
     savingInFlight,
     translateContentError,
     vault,
@@ -1069,6 +1090,7 @@ export function TextEntryCard({
               className="field-input mono resize-y text-[14px] leading-relaxed"
               {...VAULT_SECRET_INPUT_PROPS}
               onChange={(e) => {
+                plaintextHolderRef.current.draftValue = e.target.value;
                 setDraftValue(e.target.value);
                 editorRevisionRef.current += 1;
                 if (discardConfirmOpen) setDiscardConfirmOpen(false);
