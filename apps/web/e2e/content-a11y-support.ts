@@ -986,6 +986,13 @@ export const KNOWN_UI_TOUCH_44: ReadonlyArray<{ readonly unit: string; readonly 
     control: 'json cell editor input',
     descriptor: /^input\[data-testid="json-cell-input-[^"]+"\]\.field-input\.json-cell-input\.px-2$/,
   },
+  // advisor-dec-224: the cell editor commit button is 41.75 px wide (btn-sm has no coarse min-width; CI 41352191394).
+  // json-cancel-cell-* and json-type-select-* are pre-approved under FU11 but listed only once a run shows them < 44.
+  {
+    unit: 'w4fix FU11',
+    control: 'json cell editor commit button',
+    descriptor: /^button\[data-testid="json-commit-cell-[^"]+"\]\.btn\.btn-primary\.btn-sm$/,
+  },
   // advisor-dec-221: the 44x44 ::after of the item tag remove x overlaps the #tag link and the tag group (CI 41350488609).
   {
     unit: 'w4fix FU11',
