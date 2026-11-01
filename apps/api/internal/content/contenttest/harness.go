@@ -88,7 +88,7 @@ type HarnessOpts struct {
 	RequireEmailVerification bool
 	KeyMutationsDisabled     bool
 	ResetHook                vault.ResetHook
-	ExtraMounts              []func(v1 chi.Router, d httpx.Deps)
+	ExtraMounts              []func(h *Harness, v1 chi.Router, d httpx.Deps)
 }
 
 // Harness là môi trường HTTP test thực tế (Postgres 16 thật qua `dbtest`, đồng hồ giả `clock.Fixed`,
@@ -168,6 +168,20 @@ func NewHarness(t *testing.T, opts HarnessOpts) *Harness {
 	}
 	authn, csrfv, reauth := compose.Adapters(authSvc)
 
+	h := &Harness{
+		T:        t,
+		Origin:   origin,
+		Clock:    clk,
+		Mail:     mail,
+		AuthSvc:  authSvc,
+		VaultSvc: vaultSvc,
+		VaultAPI: vaultAPI,
+		Content:  contentComp,
+		Pool:     pool,
+		Registry: reg,
+		Logs:     logBuf,
+	}
+
 	mounts := []func(v1 chi.Router, d httpx.Deps){
 		authhttp.Mount(authAPI),
 		vaulthttp.Mount(vaultAPI),
@@ -175,7 +189,15 @@ func NewHarness(t *testing.T, opts HarnessOpts) *Harness {
 		taghttp.Mount(contentComp),
 		entryhttp.Mount(contentComp),
 	}
-	mounts = append(mounts, opts.ExtraMounts...)
+	for _, extra := range opts.ExtraMounts {
+		if extra == nil {
+			continue
+		}
+		fn := extra
+		mounts = append(mounts, func(v1 chi.Router, d httpx.Deps) {
+			fn(h, v1, d)
+		})
+	}
 
 	hnd := httpx.NewRouter(httpx.Deps{
 		Config:           cfg,
@@ -193,21 +215,9 @@ func NewHarness(t *testing.T, opts HarnessOpts) *Harness {
 	srv.Listener = ln
 	srv.Start()
 	t.Cleanup(srv.Close)
+	h.Server = srv
 
-	return &Harness{
-		T:        t,
-		Server:   srv,
-		Origin:   origin,
-		Clock:    clk,
-		Mail:     mail,
-		AuthSvc:  authSvc,
-		VaultSvc: vaultSvc,
-		VaultAPI: vaultAPI,
-		Content:  contentComp,
-		Pool:     pool,
-		Registry: reg,
-		Logs:     logBuf,
-	}
+	return h
 }
 
 // ReqOptions cấu hình header/body cho một request trong `Harness.DoReq`.
@@ -311,6 +321,16 @@ func (h *Harness) SignupUser(email, password string) (CookieJar, auth.Me) {
 		h.T.Fatalf("decode me: %v", err)
 	}
 	return j, me
+}
+
+// RefreshSession làm mới phiên đăng nhập hiện tại qua endpoint thật `POST /api/v1/auth/refresh`
+// (kèm cookie `sabk_refresh` và CSRF của phiên) và cập nhật lại cookie mới vào `j`.
+func (h *Harness) RefreshSession(j CookieJar) {
+	h.T.Helper()
+	resp, raw := h.DoReq(j, http.MethodPost, "/api/v1/auth/refresh", `{}`, ReqOptions{})
+	if resp.StatusCode != http.StatusNoContent {
+		h.T.Fatalf("refresh session = %d %s", resp.StatusCode, raw)
+	}
 }
 
 // SignupTwoUsers đăng ký hai người dùng độc lập (Alice và Bob) cho các test cách ly tenant (P04-A1).
