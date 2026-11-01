@@ -460,22 +460,28 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     fireEvent.keyDown(input, { key: 'Enter' });
   }
 
-  it('locked: name prefix and #tag filter match metadata only, no preview text anywhere, and a body-only query matches no items', async () => {
+  it('locked: name prefix and #tag filter match metadata only, clicking option navigates to /app/items/<id>, no preview text anywhere, and a body-only query matches no items', async () => {
     await mountLockedWithFixture(() => <Omnibox />);
 
     // Name prefix match on Enter
     searchOnEnter('Cà phê');
     const listbox = await screen.findByRole('listbox', { name: 'Search results' });
-    expect(within(listbox).getByRole('option', { name: new RegExp(D1.title) })).toBeInTheDocument();
+    const d1Option = within(listbox).getByRole('option', { name: new RegExp(D1.title) });
+    expect(d1Option).toBeInTheDocument();
     expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS])).toEqual([]);
     assertNoPlaintextAttrs(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS], { locked: true });
     assertVaultSecretElementAttributes(document.body);
+
+    // Clicking the matched option navigates to /app/items/<id> (FE1-2 href/navigation assertion)
+    fireEvent.click(d1Option);
+    expect(routerMocks.push).toHaveBeenCalledWith(`/app/items/${D1.id}`);
 
     // #tag filter match (client-side cache)
     const input = screen.getByRole('textbox', { name: 'Search or save' });
     fireEvent.change(input, { target: { value: '#công-thức' } });
     const tagListbox = await screen.findByRole('listbox', { name: 'Tag filter results' });
-    expect(within(tagListbox).getByRole('option', { name: /công-thức/ })).toBeInTheDocument();
+    expect(within(tagListbox).getByRole('option', { name: /#công-thức/ })).toBeInTheDocument();
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #công-thức');
     expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS])).toEqual([]);
 
     // Body-only query ("phin" appears only in D1.preview) -> matches 0 items, offers only Create item option
@@ -506,9 +512,14 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     expect(findLeaks(document.body, DEMO_BODIES.filter((b) => !b.includes('phin')))).toEqual([]);
   }, 30_000);
 
-  it('search results and input that are open when the vault locks are cleared immediately along with search QueryCache keys', async () => {
+  it('search results and input that are open when the vault locks are cleared immediately along with search QueryCache keys, and name search works again after lock', async () => {
     const h = await mountLockedWithFixture(() => <Omnibox />);
     await h.unlock();
+
+    // Seed a search query key so we prove `removeQueries` purges it on lock (HM18A-R1-7)
+    const seededKey = contentQueryKeys.items({ sort: 'alpha', q: 'Cà phê' });
+    h.qc.setQueryData(seededKey, { items: MOCKED_API_ITEMS, next_cursor: null });
+    expect(h.qc.getQueryCache().find({ queryKey: seededKey })).toBeDefined();
 
     searchOnEnter('Cà phê');
     await screen.findByRole('listbox', { name: 'Search results' });
@@ -521,10 +532,17 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     const input = screen.getByRole('textbox', { name: 'Search or save' });
     expect(input).toHaveValue('');
     expect(screen.queryByRole('listbox')).toBeNull();
+    expect(h.qc.getQueryCache().find({ queryKey: seededKey })).toBeUndefined();
     expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS, 'Cà phê'])).toEqual([]);
     assertNoPlaintextAttrs(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS, 'Cà phê'], {
       locked: true,
     });
+
+    // Re-searching by name while locked re-opens the name option with no body leaks (FE1-2 mapping)
+    searchOnEnter('Cà phê');
+    const reOpenedListbox = await screen.findByRole('listbox', { name: 'Search results' });
+    expect(within(reOpenedListbox).getByRole('option', { name: new RegExp(D1.title) })).toBeInTheDocument();
+    expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS])).toEqual([]);
   }, 30_000);
 
   it('while locked no entry body reaches any surface: omnibox, results, list, attributes, query cache', async () => {
@@ -544,7 +562,10 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
 
     const input = screen.getByRole('textbox', { name: 'Search or save' });
     for (const value of ['Cà phê', '#công-thức', 'Ghi', 'phin', 'localhost']) {
-      searchOnEnter(value);
+      fireEvent.change(input, { target: { value } });
+      if (!value.startsWith('#')) {
+        fireEvent.keyDown(input, { key: 'Enter' });
+      }
       await screen.findByRole('listbox');
       fireEvent.keyDown(input, { key: 'ArrowDown' });
       expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);

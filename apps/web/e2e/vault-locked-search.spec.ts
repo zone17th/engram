@@ -22,6 +22,7 @@ test.describe('P03-T21 Locked state U5', () => {
     try {
       await installApiMocks(context);
       await installHomeContentMetadataRoutes(context);
+      await installItemPageMetadataRoutes(context, DEMO_ITEMS[0]!.id);
       const page = await context.newPage();
       const bodyOnly = DEMO_ITEMS[0]!; // "phin" is only in this item's body, never in a title or tag
 
@@ -30,13 +31,22 @@ test.describe('P03-T21 Locked state U5', () => {
       const input = page.locator('#omni textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
+      // UIA-20 / HM18A-R1-11: verify placeholder fits at 390 px without horizontal overflow
+      await page.setViewportSize({ width: 390, height: 844 });
+      const fitsAt390 = await input.evaluate(
+        (el) => el.clientWidth >= 140 && el.scrollWidth <= el.clientWidth + 1,
+      );
+      expect(fitsAt390).toBe(true);
+      await page.setViewportSize({ width: 1280, height: 800 });
+
       // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
       await input.fill('Cà phê');
       await expect(page.getByRole('listbox')).toHaveCount(0);
       await input.press('Enter');
       const listbox = page.getByRole('listbox');
       await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
-      await expect(listbox.getByRole('option', { name: new RegExp(bodyOnly.title) })).toBeVisible();
+      const matchedOption = listbox.getByRole('option', { name: new RegExp(bodyOnly.title) });
+      await expect(matchedOption).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
 
       // Body-only query: nothing matches while locked (only "Create item" option is offered), and nothing leaks.
@@ -47,6 +57,15 @@ test.describe('P03-T21 Locked state U5', () => {
       await expect(page.getByTestId('omnibox-search-empty')).toBeVisible();
       await expect(listbox.getByRole('option', { name: /Create item “phin”|Tạo mục “phin”/ })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
+
+      // HM18A-R1-2: real mouse click on a search result option navigates to `/app/items/<id>` without blur closing the popover first.
+      await input.fill('Cà phê');
+      await input.press('Enter');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await listbox.getByRole('option', { name: new RegExp(bodyOnly.title) }).click();
+      await expect(page).toHaveURL(new RegExp(`/app/items/${bodyOnly.id}$`), {
+        timeout: UI_WAIT_MS,
+      });
     } finally {
       await context.close();
     }

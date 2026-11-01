@@ -142,17 +142,20 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     // Empty input -> hint hidden
     expect(hint).toHaveAttribute('hidden');
 
-    // Search mode -> searchHint visible, mentions Ctrl+Enter and server/unencrypted
+    // Search mode -> searchHint visible, mentions Ctrl+Enter and server/unencrypted, and renders mono span (HM18A-R1-10)
     fireEvent.change(textarea, { target: { value: 'wifi' } });
     expect(hint).not.toHaveAttribute('hidden');
     expect(hint).toHaveTextContent(/Ctrl\+Enter/);
     expect(hint).toHaveTextContent(/gửi tới máy chủ, không mã hoá/);
+    expect(hint.querySelector('span.mono')?.textContent).toBe('tên: nội dung');
+    expect(hint.textContent).not.toContain('`');
 
-    // Tag filter mode (#…) -> tagHint visible, Ctrl+Enter does nothing
+    // Tag filter mode (#…) -> tagHint visible, Ctrl+Enter does nothing; 0 cached tags renders no empty role="listbox" (HM18A-R1-9)
     fireEvent.change(textarea, { target: { value: '#nhà' } });
     expect(hint).not.toHaveAttribute('hidden');
     expect(hint).toHaveTextContent(viMessages.content.omnibox.tagHint);
-    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(textarea).not.toHaveAttribute('aria-controls');
     expect(createSpy).not.toHaveBeenCalled();
     expect(tagsSpy).not.toHaveBeenCalled();
 
@@ -227,7 +230,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
 
     // First Enter -> GET /items?sort=alpha&q=wifi, URL unchanged, live region announces 2 results
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
+    const listbox = await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
     expect(itemsSpy).toHaveBeenCalledTimes(1);
     expect(itemsSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({ sort: 'alpha', q: 'wifi' }),
@@ -235,13 +238,14 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(mockRouterPush).not.toHaveBeenCalled();
     expect(mockRouterReplace).not.toHaveBeenCalled();
 
-    // Up to 3 tag chips + +1 overflow and entry count rendered
-    expect(screen.getByText('#nhà')).toBeInTheDocument();
-    expect(screen.getByText('#ops')).toBeInTheDocument();
-    expect(screen.getByText('#home-lab')).toBeInTheDocument();
-    expect(screen.queryByText('#backup')).not.toBeInTheDocument();
-    expect(screen.getByText('+1')).toBeInTheDocument();
-    expect(screen.getByText('12 entry')).toBeInTheDocument();
+    // Up to 3 tag chips + +1 overflow and entry count rendered inside the first option (HM18A-R1-3)
+    const firstOption = within(listbox).getAllByRole('option')[0]!;
+    expect(within(firstOption).getByText('#nhà')).toBeInTheDocument();
+    expect(within(firstOption).getByText('#ops')).toBeInTheDocument();
+    expect(within(firstOption).getByText('#home-lab')).toBeInTheDocument();
+    expect(within(firstOption).queryByText('#backup')).not.toBeInTheDocument();
+    expect(within(firstOption).getByText('+1')).toBeInTheDocument();
+    expect(within(firstOption).getByText('12 entry')).toBeInTheDocument();
     expect(screen.getByTestId('omnibox-live')).toHaveTextContent('2 kết quả');
 
     // No option active after Enter -> pressing Enter a second time searches again
@@ -264,6 +268,17 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(mockRouterPush).toHaveBeenCalledWith(`/app/items/${ITEM_WIFI.id}`);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    // Mouse pointer sequence (mouseDown -> click) keeps focus on textarea via preventDefault and activates option (HM18A-R1-2)
+    mockRouterPush.mockClear();
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    const listbox2 = await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
+    const secondOption = within(listbox2).getAllByRole('option')[1]!;
+    const mouseDownEvt = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    secondOption.dispatchEvent(mouseDownEvt);
+    expect(mouseDownEvt.defaultPrevented).toBe(true);
+    fireEvent.click(secondOption);
+    expect(mockRouterPush).toHaveBeenCalledWith(`/app/items/${ITEM_WIFI_GUEST.id}`);
   });
 
   it('shows empty prefix state in live region and last option "Tạo mục “…”" creates an item with no entry; Ctrl+Enter also creates an item with no entry', async () => {
@@ -378,31 +393,36 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
-    // Typing #nh -> filters client-side from cache, 0 network requests
+    // Typing #nh -> filters client-side from cache, 0 network requests, exact ICU live count with literal '#' (HM18A-R1-1, HM18A-R1-3)
     fireEvent.change(textarea, { target: { value: '#nh' } });
     expect(tagsSpy).not.toHaveBeenCalled();
     const listbox = screen.getByRole('listbox', { name: 'Kết quả lọc tag' });
-    expect(within(listbox).getByRole('option', { name: /nhà/ })).toBeInTheDocument();
-    expect(within(listbox).queryByRole('option', { name: /ops/ })).not.toBeInTheDocument();
+    expect(textarea).toHaveAttribute('aria-controls', 'omni-listbox');
+    expect(within(listbox).getByRole('option', { name: /#nhà/ })).toBeInTheDocument();
+    expect(within(listbox).queryByRole('option', { name: /#ops/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 tag khớp #nh');
 
     // Enter on highlighted cached tag -> navigates to /app?tag=<id> (never tag name)
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(mockRouterPush).toHaveBeenCalledWith(`/app?tag=${TAG_NHA.id}`);
     expect(tagsSpy).not.toHaveBeenCalled();
 
-    // Typing #clo (not in cache) -> still 0 requests while typing
+    // Typing #clo (not in cache) -> still 0 requests while typing; empty state shown without empty role="listbox" (HM18A-R1-9)
     fireEvent.change(textarea, { target: { value: '#clo' } });
     expect(tagsSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId('omnibox-tag-empty')).toBeInTheDocument();
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(textarea).not.toHaveAttribute('aria-controls');
 
-    // Pressing Enter when not in cache -> sends GET /tags?q=clo
+    // Pressing Enter when not in cache -> sends GET /tags?q=clo and opens listbox with matching option
     fireEvent.keyDown(textarea, { key: 'Enter' });
     await waitFor(() => {
       expect(tagsSpy).toHaveBeenCalledWith(
         expect.objectContaining({ sort: 'alpha', q: 'clo' }),
       );
     });
-    expect(await screen.findByRole('option', { name: /cloud/ })).toBeInTheDocument();
-
+    expect(await screen.findByRole('option', { name: /#cloud/ })).toBeInTheDocument();
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 tag khớp #clo');
     // >50-rune tag token -> blocked on Enter, 0 requests
     tagsSpy.mockClear();
     fireEvent.change(textarea, { target: { value: `#${'t'.repeat(51)}` } });
@@ -457,16 +477,61 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     assertNoPlaintextAttrs(container, [sentinelSearch, sentinelAdd]);
   });
 
-  it('clears textarea, closes listbox, clears live region, and removes search queries from QueryCache on vault lock (P4FE3-5, P4FE4-8)', async () => {
+  it('aborts in-flight search or server tag requests when the user edits the input or presses Escape so stale results never open (HM18A-R1-6)', async () => {
+    const { promise: heldSearch, resolve: resolveHeldSearch } =
+      Promise.withResolvers<contentApi.ItemList>();
+    vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldSearch);
+
+    renderOmnibox();
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+    // 1. Start Enter search while listbox is closed, then edit input before response arrives
+    fireEvent.change(textarea, { target: { value: 'old-query' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    fireEvent.change(textarea, { target: { value: 'new-edited-query' } });
+    await act(async () => {
+      resolveHeldSearch({ items: [ITEM_WIFI], next_cursor: null });
+      await Promise.resolve();
+    });
+
+    // Stale response for 'old-query' must NOT open the listbox
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(textarea).toHaveValue('new-edited-query');
+
+    // 2. Start another Enter search, press Escape to clear while in-flight -> resolving must NOT open the listbox
+    const { promise: heldEscSearch, resolve: resolveEscSearch } =
+      Promise.withResolvers<contentApi.ItemList>();
+    vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldEscSearch);
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+    expect(textarea).toHaveValue('');
+
+    await act(async () => {
+      resolveEscSearch({ items: [ITEM_WIFI], next_cursor: null });
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  it('clears textarea, closes listbox, clears live region, and removes seeded & in-flight search queries from QueryCache on vault lock (P4FE3-5, P4FE4-8, HM18A-R1-7)', async () => {
     const secretQuery = 'pasted-secret-token-7788';
+    const seededSecretQuery = 'seeded-cache-secret-8899';
     vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
       items: [],
       next_cursor: null,
     });
 
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
     });
+    // Seed a search query key with infinite gcTime so only `removeQueries` on lock can purge it (HM18A-R1-7)
+    const seededKey = contentQueryKeys.items({ sort: 'alpha', q: seededSecretQuery });
+    queryClient.setQueryData(seededKey, { items: [ITEM_WIFI], next_cursor: null });
+    expect(queryClient.getQueryCache().find({ queryKey: seededKey })).toBeDefined();
+
     const { container } = renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
@@ -476,7 +541,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
     expect(container.textContent).toContain(secretQuery);
 
-    // Lock the vault -> synchronous reset runs
+    // Lock the vault -> synchronous reset runs and `removeQueries` purges all omnibox search keys
     act(() => {
       triggerVaultLockReset();
     });
@@ -485,36 +550,55 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(screen.getByTestId('omnibox-live')).toHaveTextContent('');
     expect(container.innerHTML).not.toContain(secretQuery);
-    assertNoPlaintextAttrs(container, [secretQuery], { locked: true });
+    assertNoPlaintextAttrs(container, [secretQuery, seededSecretQuery], { locked: true });
+    expect(queryClient.getQueryCache().find({ queryKey: seededKey })).toBeUndefined();
 
-    // Verify every QueryCache key and state is free of the search string
+    // Verify every QueryCache key and state is free of both search strings
     const allQueries = queryClient.getQueryCache().getAll();
     const serializedCache = JSON.stringify(
       allQueries.map((q) => ({ key: q.queryKey, data: q.state.data })),
     );
     expect(serializedCache).not.toContain(secretQuery);
+    expect(serializedCache).not.toContain(seededSecretQuery);
   });
 
-  it('renders English strings with zero hard-coded Vietnamese in en locale (UIA-2) and applies placeholder ellipsis (UIA-20)', async () => {
+  it('renders English strings with zero hard-coded Vietnamese in en locale (UIA-2, UIA-20, HM18A-R1-1, HM18A-R1-3, HM18A-R1-10, HM18A-R1-11)', async () => {
     vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
       items: [],
       next_cursor: null,
     });
 
-    const { container } = renderOmnibox(<Omnibox />, { locale: 'en' });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(contentQueryKeys.tags({ sort: 'recent' }), {
+      items: [TAG_OPS],
+      next_cursor: null,
+    });
+
+    const { container } = renderOmnibox(<Omnibox />, { locale: 'en', queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Search or save' });
 
     expect(textarea).toHaveAttribute('placeholder', enMessages.content.omnibox.placeholder);
-    expect(textarea.className).toContain('placeholder:text-ellipsis');
+    expect(enMessages.content.omnibox.placeholder.length).toBeLessThanOrEqual(26);
+
+    fireEvent.change(textarea, { target: { value: '#op' } });
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #op');
 
     fireEvent.change(textarea, { target: { value: 'router' } });
-    expect(screen.getByTestId('omnibox-hint')).toHaveTextContent(
-      enMessages.content.omnibox.searchHint,
+    const hint = screen.getByTestId('omnibox-hint');
+    expect(hint).toHaveTextContent(
+      'Enter: search by name prefix · Ctrl+Enter: create item with this name — typed text is sent to the server, not encrypted. To save content, type name: content',
     );
+    expect(hint.querySelector('span.mono')?.textContent).toBe('name: content');
 
     fireEvent.keyDown(textarea, { key: 'Enter' });
     await screen.findByRole('listbox', { name: 'Search results' });
-    expect(screen.getByText('No items starting with “router”')).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('omnibox-search-empty')).getByText(
+        'No items starting with “router”',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /Create item “router”/ })).toBeInTheDocument();
 
     // Ensure no Vietnamese diacritics appear anywhere in the rendered English omnibox DOM

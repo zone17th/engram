@@ -18,7 +18,6 @@ import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
 import viMessages from '../messages/vi.json';
 
-
 const mockRouterPush = vi.fn();
 const mockRouterReplace = vi.fn();
 
@@ -31,6 +30,7 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/app',
   useSearchParams: () => new URLSearchParams(),
 }));
+
 function renderWithTheme(ui: ReactNode) {
   return render(
     <NextIntlClientProvider locale="vi" messages={viMessages}>

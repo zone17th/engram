@@ -40,35 +40,68 @@ async function setSecretTextareaValue(locator: Locator, value: string): Promise<
 
 function attachNetworkRecorder(page: Page): {
   readonly records: CapturedRequestRecord[];
+  readonly flushPending: () => Promise<void>;
   readonly countSince: (index: number) => number;
   readonly assertNeverContains: (sentinels: readonly string[]) => void;
 } {
   const records: CapturedRequestRecord[] = [];
-  page.on('request', (req) => {
-    const headersObj = req.headers();
-    const headersText = Object.entries(headersObj)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join('\n');
+  const pendingHeaderTasks = new Set<Promise<void>>();
+  const context = page.context();
+
+  context.on('request', (req) => {
+    const method = req.method();
+    const url = req.url();
+    const postData = req.postData() ?? '';
+    const syncHeaders = req.headers();
+    const filterNonBrowserHeaders = (hdrs: Record<string, string>) =>
+      Object.entries(hdrs)
+        .filter(([k]) => !k.toLowerCase().startsWith('sec-'))
+        .map(([k, v]) => `${k}: ${v}`)
+        .join('\n');
+
+    const recordIndex = records.length;
     records.push({
-      method: req.method(),
-      url: req.url(),
-      headersText,
-      postData: req.postData() ?? '',
+      method,
+      url,
+      headersText: filterNonBrowserHeaders(syncHeaders),
+      postData,
     });
+
+    const task = req
+      .allHeaders()
+      .then((allHdrs) => {
+        records[recordIndex] = {
+          method,
+          url,
+          headersText: filterNonBrowserHeaders(allHdrs),
+          postData,
+        };
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        pendingHeaderTasks.delete(task);
+      });
+    pendingHeaderTasks.add(task);
   });
 
   return {
     records,
+    async flushPending(): Promise<void> {
+      if (pendingHeaderTasks.size > 0) {
+        await Promise.all([...pendingHeaderTasks]);
+      }
+    },
     countSince(index: number): number {
       return records.length - index;
     },
     assertNeverContains(sentinels: readonly string[]): void {
       for (const rec of records) {
         const combined = `${rec.method} ${rec.url}\n${rec.headersText}\n${rec.postData}`;
-        for (const needle of sentinels) {
+        for (let idx = 0; idx < sentinels.length; idx += 1) {
+          const needle = sentinels[idx];
           if (needle && combined.includes(needle)) {
             throw new Error(
-              `Network leak detected in ${rec.method} ${new URL(rec.url).pathname}`,
+              `Network leak detected for sentinel[${idx}] in ${rec.method} ${new URL(rec.url).pathname}`,
             );
           }
         }
@@ -105,17 +138,27 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
 
     const secretBody123 = 'secret-body-123';
     const secretAfterColon = 'SECRET';
+    const fullColonDraft = `a:${secretAfterColon}`;
+    const encodedColonDraft = encodeURIComponent(fullColonDraft);
+    const base64ColonDraft = Buffer.from(fullColonDraft, 'utf8').toString('base64');
     const multiLineSecret = 'first-line-secret-901\nsecond-line-secret-902';
     const fiveKbSingleLine = `fivekb-secret-${'x'.repeat(5120)}`;
     const draftDeletedColonSecret = 'draft-deleted-colon-secret-777';
+    const typedTagSecret = 'typed-tag-secret-555';
+    const longTagSecret = `longtag-${'t'.repeat(55)}`;
 
     const allSentinels = [
       secretBody123,
       secretAfterColon,
+      fullColonDraft,
+      encodedColonDraft,
+      base64ColonDraft,
       'first-line-secret-901',
       'second-line-secret-902',
       'fivekb-secret-',
       draftDeletedColonSecret,
+      typedTagSecret,
+      'longtag-',
     ] as const;
 
     // 1. Paste `secret-body-123`, wait >= 1 s, then type `name: ` in front -> no request contains `secret-body-123` at any time.
@@ -126,16 +169,17 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
 
     await setSecretTextareaValue(omnibox, `name: ${secretBody123}`);
     await page.waitForTimeout(500);
+    await recorder.flushPending();
     expect(recorder.countSince(mark1)).toBe(0);
     recorder.assertNeverContains(allSentinels);
 
-    // 2. Paste `a:SECRET`, wait >= 1 s -> no request contains `a:` or `SECRET` before Enter (advisor-dec-098).
+    // 2. Paste `a:SECRET`, wait >= 1 s -> no request contains `a:SECRET` (or encoded/base64 variants) or `SECRET` before Enter (advisor-dec-098, HM18A-R1-4).
     const mark2 = recorder.records.length;
-    await setSecretTextareaValue(omnibox, `a:${secretAfterColon}`);
+    await setSecretTextareaValue(omnibox, fullColonDraft);
     await page.waitForTimeout(1_100);
+    await recorder.flushPending();
     expect(recorder.countSince(mark2)).toBe(0);
-    recorder.assertNeverContains([...allSentinels, 'a:']);
-
+    recorder.assertNeverContains(allSentinels);
     // 3. Paste multi-line text without `:` then press Enter -> nothing sent; guard alert shown.
     const mark3 = recorder.records.length;
     await setSecretTextareaValue(omnibox, multiLineSecret);
@@ -160,7 +204,44 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await page.waitForTimeout(300);
     await setSecretTextareaValue(omnibox, `wifi #home ${draftDeletedColonSecret}`);
     await page.waitForTimeout(1_100);
+    await recorder.flushPending();
     expect(recorder.countSince(mark5)).toBe(0);
+    recorder.assertNeverContains(allSentinels);
+
+    // 5b. Add-mode Enter stub in 18a -> sends 0 requests (HM18A-R1-8).
+    const markAddStub = recorder.records.length;
+    await setSecretTextareaValue(omnibox, fullColonDraft);
+    await omnibox.press('Enter');
+    await page.waitForTimeout(300);
+    await recorder.flushPending();
+    expect(recorder.countSince(markAddStub)).toBe(0);
+    recorder.assertNeverContains(allSentinels);
+
+    // 6. Tag mode (`#secret` typed without Enter, Enter on >50-rune tag token, Ctrl+Enter in `#` mode) -> nothing sent (HM18A-R1-8).
+    const markTag = recorder.records.length;
+    await setSecretTextareaValue(omnibox, `#${typedTagSecret}`);
+    await page.waitForTimeout(500);
+    await omnibox.press('Control+Enter');
+    await page.waitForTimeout(300);
+    await setSecretTextareaValue(omnibox, `#${longTagSecret}`);
+    await omnibox.press('Enter');
+    await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
+    await page.waitForTimeout(300);
+    await recorder.flushPending();
+    expect(recorder.countSince(markTag)).toBe(0);
+    recorder.assertNeverContains(allSentinels);
+
+    // 7. Positive control (HM18A-R1-8): a valid one-line search + Enter records `GET /api/v1/items?...q=positive-probe` and no sentinel leaks.
+    const markPos = recorder.records.length;
+    await setSecretTextareaValue(omnibox, 'positive-probe');
+    await omnibox.press('Enter');
+    await expect(page.getByRole('listbox')).toBeVisible({ timeout: UI_WAIT_MS });
+    await recorder.flushPending();
+    expect(recorder.countSince(markPos)).toBeGreaterThanOrEqual(1);
+    const positiveSearchRecords = recorder.records
+      .slice(markPos)
+      .filter((r) => r.method === 'GET' && r.url.includes('/api/v1/items') && r.url.includes('q=positive-probe'));
+    expect(positiveSearchRecords).toHaveLength(1);
     recorder.assertNeverContains(allSentinels);
   });
 });
