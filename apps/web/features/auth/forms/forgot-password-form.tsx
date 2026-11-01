@@ -9,8 +9,7 @@ import { AuthStatus, Field, focusFirstInvalidField } from '@/components/ui/field
 import { AuthErrorCard } from '@/features/auth/auth-error';
 import { useSession } from '@/features/auth/session-provider';
 import { TurnstileWidget } from '@/features/auth/turnstile-widget';
-import { authPasswordForgot } from '@/lib/api/auth';
-import { ensureCsrf } from '@/lib/api/auth-fetch';
+import { authPasswordForgot, bootstrapCsrf } from '@/lib/api/auth';
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
 import { useHydrated } from '@/lib/use-hydrated';
@@ -114,7 +113,7 @@ export function ForgotPasswordForm() {
           await sendRequest();
         } catch (firstErr) {
           if (firstErr instanceof ProblemError && firstErr.problem.code === 'csrf_invalid') {
-            await ensureCsrf();
+            await bootstrapCsrf();
             await sendRequest();
           } else {
             throw firstErr;

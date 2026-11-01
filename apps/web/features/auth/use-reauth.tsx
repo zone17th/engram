@@ -45,6 +45,7 @@ export function ReauthMessagesProvider({
 
 function useReauthCopy() {
   const auth = useContext(ReauthMessagesContext);
+  // Without ReauthMessagesProvider (test-only; production /app/layout.tsx always mounts it), fallback strings are ''.
   return useMemo(
     () => ({
       failed: auth?.reauth?.failed ?? '',

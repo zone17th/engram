@@ -8,7 +8,6 @@ import { AuthStatus, Field, focusFirstInvalidField } from '@/components/ui/field
 import { AuthErrorCard } from '@/features/auth/auth-error';
 import { PasswordStrengthMeter } from '@/features/auth/password-strength-meter';
 import { authPasswordReset, bootstrapCsrf } from '@/lib/api/auth';
-import { ensureCsrf } from '@/lib/api/auth-fetch';
 import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import { normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
@@ -119,7 +118,7 @@ export function ResetPasswordForm() {
           await sendRequest();
         } catch (firstErr) {
           if (firstErr instanceof ProblemError && firstErr.problem.code === 'csrf_invalid') {
-            await ensureCsrf();
+            await bootstrapCsrf();
             await sendRequest();
           } else {
             throw firstErr;
