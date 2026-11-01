@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createEvent, fireEvent, render, screen } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { ProblemError } from '@engram/shared-types';
 import { AppHeader } from '../components/app-shell/app-header';
 import { EmptyState } from '../components/app-shell/empty-state';
 import { Omnibox } from '../components/app-shell/omnibox';
@@ -13,6 +14,7 @@ import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
 import { UndoToastProvider } from '../components/ui/undo-toast';
 import { contentQueryKeys } from '../features/items/query-keys';
+import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
 import viMessages from '../messages/vi.json';
 
@@ -72,13 +74,17 @@ describe('Rail', () => {
     },
   ];
 
-  function renderRailWithTags(ui: ReactNode, tags: Tag[] = SAMPLE_TAGS) {
+  function renderRailWithTags(
+    ui: ReactNode,
+    tags: Tag[] = SAMPLE_TAGS,
+    nextCursor: string | null = null,
+  ) {
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
     queryClient.setQueryData(contentQueryKeys.tags({ sort: 'recent' }), {
       items: tags,
-      next_cursor: null,
+      next_cursor: nextCursor,
     });
     return render(
       <NextIntlClientProvider locale="vi" messages={viMessages}>
@@ -107,7 +113,7 @@ describe('Rail', () => {
     expect(onSelectTag).toHaveBeenCalledWith(SAMPLE_TAGS[0].id);
 
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
     queryClient.setQueryData(contentQueryKeys.tags({ sort: 'recent' }), {
       items: SAMPLE_TAGS,
@@ -125,6 +131,69 @@ describe('Rail', () => {
     const clearBtn = screen.getByTestId('rail-clear-filter');
     fireEvent.click(clearBtn);
     expect(onSelectTag).toHaveBeenLastCalledWith(null);
+  });
+
+  it('xoá tag đang chọn sẽ xoá bộ lọc ?tag và hiển thị lỗi khi hoàn tác thất bại', async () => {
+    vi.spyOn(contentApi, 'tagDelete').mockResolvedValue();
+    vi.spyOn(contentApi, 'tagRestore').mockRejectedValue(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/tag_conflict',
+        title: 'Tag conflict',
+        status: 409,
+        code: 'tag_conflict',
+      }),
+    );
+    const onSelectTag = vi.fn();
+
+    renderRailWithTags(
+      <Rail selectedTagId={SAMPLE_TAGS[0].id} onSelectTag={onSelectTag} />,
+    );
+
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAGS[0].id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${SAMPLE_TAGS[0].id}`));
+
+    await waitFor(() => {
+      expect(onSelectTag).toHaveBeenCalledWith(null);
+    });
+
+    const toast = await screen.findByTestId('undo-toast-item');
+    fireEvent.click(within(toast).getByRole('button', { name: /Hoàn tác/ }));
+
+    const alert = await screen.findByTestId('rail-tags-error');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent(viMessages.content.errors.tag_conflict);
+  });
+
+  it('hiển thị chip tag tên dài 50 ký tự với lớp truncate và tải thêm trang tag theo next_cursor', async () => {
+    const longDisplay = 't'.repeat(50);
+    const longTag: Tag = {
+      id: '33333333-3333-4333-8333-333333333333',
+      display: longDisplay,
+      item_count: 1,
+      last_used_at: '2026-11-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z',
+    };
+    const extraTag: Tag = {
+      id: '44444444-4444-4444-8444-444444444444',
+      display: 'trang-hai',
+      item_count: 2,
+      last_used_at: '2026-11-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z',
+    };
+    vi.spyOn(contentApi, 'tagsList').mockResolvedValueOnce({
+      items: [extraTag],
+      next_cursor: null,
+    });
+
+    renderRailWithTags(<Rail />, [longTag], 'cursor-next-tags');
+
+    const labelSpan = screen.getByText(`#${longDisplay}`);
+    expect(labelSpan).toHaveClass('truncate');
+
+    const loadMoreBtn = screen.getByTestId('rail-tags-load-more');
+    fireEvent.click(loadMoreBtn);
+
+    expect(await screen.findByText('#trang-hai')).toBeInTheDocument();
   });
 });
 

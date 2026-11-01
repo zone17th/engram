@@ -162,7 +162,7 @@ test.describe('P04-T19 content home page (U10)', () => {
     await expect(page.getByRole('heading', { name: long200RuneName })).toBeVisible();
 
     // Trigger Undo from the toast -> tag 'home' returns to the rail.
-    const undoBtn = page.getByRole('button', { name: /Undo|Hoàn tác/ });
+    const undoBtn = page.getByTestId('undo-toast-stack').getByRole('button', { name: /Undo|Hoàn tác/ });
     await expect(undoBtn).toBeVisible({ timeout: UI_WAIT_MS });
     await undoBtn.click();
     await expect(page.getByTestId(`rail-tag-filter-${tagHomeRes.data.id}`)).toBeVisible({

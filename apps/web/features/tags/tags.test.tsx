@@ -1,12 +1,12 @@
 import { ProblemError } from '@engram/shared-types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { configureContentQueryDefaults, contentQueryKeys } from '@/features/items/query-keys';
-import { RailTagChip, useTagsList } from '@/features/tags';
+import { RailTagChip, usePaginatedTagsList, useTagsList } from '@/features/tags';
 import * as contentApi from '@/lib/api/content';
 import type { Tag } from '@/lib/api/content';
 import enMessages from '@/messages/en.json';
@@ -16,6 +16,14 @@ const SAMPLE_TAG: Tag = {
   id: '11111111-1111-4111-8111-111111111111',
   display: 'nhà',
   item_count: 8,
+  last_used_at: '2026-11-01T00:00:00Z',
+  created_at: '2026-11-01T00:00:00Z',
+};
+
+const SECOND_TAG: Tag = {
+  id: '22222222-2222-4222-8222-222222222222',
+  display: 'ops',
+  item_count: 3,
   last_used_at: '2026-11-01T00:00:00Z',
   created_at: '2026-11-01T00:00:00Z',
 };
@@ -65,6 +73,24 @@ function TagsListProbe() {
   );
 }
 
+function PaginatedTagsProbe() {
+  const { tags, hasMore, loadMore } = usePaginatedTagsList({ sort: 'recent' });
+  return (
+    <div>
+      <ul>
+        {tags.map((t) => (
+          <li key={t.id}>{t.display}</li>
+        ))}
+      </ul>
+      {hasMore ? (
+        <button type="button" onClick={() => void loadMore()} data-testid="probe-load-more">
+          more
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 describe('features/tags', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -85,7 +111,30 @@ describe('features/tags', () => {
     });
   });
 
-  it('RailTagChip renames a tag via PATCH /tags/{id} and invalidates tag + item queries', async () => {
+  it('usePaginatedTagsList loads extra pages by next_cursor while keeping first-page query key stable', async () => {
+    const spy = vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
+      if (params?.cursor === 'cursor-tags-2') {
+        return { items: [SECOND_TAG], next_cursor: null };
+      }
+      return { items: [SAMPLE_TAG], next_cursor: 'cursor-tags-2' };
+    });
+
+    const { queryClient } = renderWithProviders(<PaginatedTagsProbe />);
+    expect(await screen.findByText('nhà')).toBeInTheDocument();
+    expect(screen.queryByText('ops')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('probe-load-more'));
+    expect(await screen.findByText('ops')).toBeInTheDocument();
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: 'recent', cursor: 'cursor-tags-2' }),
+    );
+    expect(queryClient.getQueryData(contentQueryKeys.tags({ sort: 'recent' }))).toEqual({
+      items: [SAMPLE_TAG],
+      next_cursor: 'cursor-tags-2',
+    });
+  });
+
+  it('RailTagChip renames a tag via PATCH /tags/{id}, invalidates queries, and focuses the chip filter button', async () => {
     const renameSpy = vi.spyOn(contentApi, 'tagRename').mockResolvedValue({
       ...SAMPLE_TAG,
       display: 'gia-đình',
@@ -106,6 +155,7 @@ describe('features/tags', () => {
     fireEvent.click(renameAction);
 
     const input = screen.getByTestId(`rail-tag-rename-input-${SAMPLE_TAG.id}`);
+    expect(input).not.toHaveAttribute('maxlength');
     fireEvent.change(input, { target: { value: 'gia-đình' } });
     fireEvent.click(screen.getByTestId(`rail-tag-rename-save-${SAMPLE_TAG.id}`));
 
@@ -119,6 +169,44 @@ describe('features/tags', () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['content', 'tags'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['content', 'items'] });
+    expect(document.activeElement).toBe(screen.getByTestId(`rail-tag-filter-${SAMPLE_TAG.id}`));
+  });
+
+  it('RailTagChip validates tag display by Unicode code points (50 runes allowed, 51 runes rejected)', async () => {
+    const fiftyEmojiRunes = '🏠'.repeat(50);
+    const fiftyOneEmojiRunes = '🏠'.repeat(51);
+    const renameSpy = vi.spyOn(contentApi, 'tagRename').mockResolvedValue({
+      ...SAMPLE_TAG,
+      display: fiftyEmojiRunes,
+    });
+
+    renderWithProviders(
+      <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />,
+      { locale: 'vi' },
+    );
+
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAG.id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-rename-action-${SAMPLE_TAG.id}`));
+
+    const input = screen.getByTestId(`rail-tag-rename-input-${SAMPLE_TAG.id}`);
+    fireEvent.change(input, { target: { value: fiftyOneEmojiRunes } });
+    fireEvent.click(screen.getByTestId(`rail-tag-rename-save-${SAMPLE_TAG.id}`));
+
+    expect(screen.getByTestId(`rail-tag-rename-error-${SAMPLE_TAG.id}`)).toHaveTextContent(
+      viMessages.content.errors.tag_display_invalid,
+    );
+    expect(renameSpy).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: fiftyEmojiRunes } });
+    fireEvent.click(screen.getByTestId(`rail-tag-rename-save-${SAMPLE_TAG.id}`));
+
+    await waitFor(() => {
+      expect(renameSpy).toHaveBeenCalledWith(
+        SAMPLE_TAG.id,
+        { display: fiftyEmojiRunes },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      );
+    });
   });
 
   it('RailTagChip surfaces tag_conflict error via getContentErrorI18nKey when renaming to an existing tag', async () => {
@@ -148,23 +236,33 @@ describe('features/tags', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true');
   });
 
-  it('RailTagChip deletes a tag and pushes an Undo toast that calls tagRestore with a fresh Idempotency-Key', async () => {
+  it('RailTagChip deletes a tag, moves focus to a stable target, and pushes an Undo toast that restores focus on Undo', async () => {
     const deleteSpy = vi.spyOn(contentApi, 'tagDelete').mockResolvedValue();
     const restoreSpy = vi.spyOn(contentApi, 'tagRestore').mockResolvedValue(SAMPLE_TAG);
     const onTagDeleted = vi.fn();
 
     renderWithProviders(
-      <RailTagChip
-        tag={SAMPLE_TAG}
-        selected
-        onSelect={() => undefined}
-        onTagDeleted={onTagDeleted}
-      />,
+      <nav data-testid="rail-tags" tabIndex={-1}>
+        <RailTagChip
+          tag={SAMPLE_TAG}
+          selected
+          onSelect={() => undefined}
+          onTagDeleted={onTagDeleted}
+        />
+        <RailTagChip
+          tag={SECOND_TAG}
+          selected={false}
+          onSelect={() => undefined}
+        />
+      </nav>,
       { locale: 'vi' },
     );
 
     fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAG.id}`));
     fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${SAMPLE_TAG.id}`));
+
+    // Focus moves immediately to the sibling tag's filter button when Delete closes the menu.
+    expect(document.activeElement).toBe(screen.getByTestId(`rail-tag-filter-${SECOND_TAG.id}`));
 
     await waitFor(() => {
       expect(deleteSpy).toHaveBeenCalledWith(
@@ -175,10 +273,14 @@ describe('features/tags', () => {
     expect(onTagDeleted).toHaveBeenCalledWith(SAMPLE_TAG.id);
 
     const deleteKey = deleteSpy.mock.calls[0]?.[1]?.idempotencyKey;
-    expect(await screen.findByText(/Đã xoá tag #nhà/)).toBeInTheDocument();
-    expect(screen.getByText(/Các mục gắn tag này vẫn giữ nguyên/)).toBeInTheDocument();
+    const toast = await screen.findByTestId('undo-toast-item');
+    expect(within(toast).getByText(/Đã xoá tag #nhà/)).toBeInTheDocument();
+    expect(within(toast).getByTestId('undo-toast-detail')).toHaveTextContent(
+      /Các mục gắn tag này vẫn giữ nguyên/,
+    );
 
-    const undoButton = screen.getByRole('button', { name: /Hoàn tác/ });
+    const undoButton = within(toast).getByRole('button', { name: /Hoàn tác/ });
+    undoButton.focus();
     fireEvent.click(undoButton);
 
     await waitFor(() => {
@@ -189,11 +291,50 @@ describe('features/tags', () => {
     });
     const restoreKey = restoreSpy.mock.calls[0]?.[1]?.idempotencyKey;
     expect(restoreKey).not.toBe(deleteKey);
+    expect(document.activeElement).toBe(screen.getByTestId(`rail-tag-filter-${SAMPLE_TAG.id}`));
   });
 
-  it('supports keyboard navigation in the tag action menu and Escape to close', async () => {
+  it('surfaces mapped content.errors message in role="alert" when Undo tagRestore rejects with tag_conflict', async () => {
+    vi.spyOn(contentApi, 'tagDelete').mockResolvedValue();
+    vi.spyOn(contentApi, 'tagRestore').mockRejectedValue(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/tag_conflict',
+        title: 'Tag conflict',
+        status: 409,
+        code: 'tag_conflict',
+      }),
+    );
+    const onRestoreError = vi.fn();
+
     renderWithProviders(
-      <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />,
+      <RailTagChip
+        tag={SAMPLE_TAG}
+        selected={false}
+        onSelect={() => undefined}
+        onRestoreError={onRestoreError}
+      />,
+      { locale: 'vi' },
+    );
+
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAG.id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${SAMPLE_TAG.id}`));
+
+    const toast = await screen.findByTestId('undo-toast-item');
+    fireEvent.click(within(toast).getByRole('button', { name: /Hoàn tác/ }));
+
+    await waitFor(() => {
+      expect(onRestoreError).toHaveBeenCalledWith('tag_conflict');
+    });
+  });
+
+  it('supports keyboard navigation in the tag action menu, Escape, Tab, and focus leaving to close', async () => {
+    renderWithProviders(
+      <div>
+        <RailTagChip tag={SAMPLE_TAG} selected={false} onSelect={() => undefined} />
+        <button type="button" data-testid="outside-focusable">
+          outside
+        </button>
+      </div>,
     );
 
     const trigger = screen.getByTestId(`rail-tag-menu-trigger-${SAMPLE_TAG.id}`);
@@ -211,5 +352,17 @@ describe('features/tags', () => {
     fireEvent.keyDown(menu, { key: 'Escape' });
     expect(screen.queryByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+
+    // Tab closes the menu without trapping focus.
+    fireEvent.click(trigger);
+    expect(screen.getByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`), { key: 'Tab' });
+    expect(screen.queryByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).not.toBeInTheDocument();
+
+    // Focus leaving the chip group closes the menu.
+    fireEvent.click(trigger);
+    const reopenedMenu = screen.getByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`);
+    fireEvent.blur(reopenedMenu, { relatedTarget: screen.getByTestId('outside-focusable') });
+    expect(screen.queryByTestId(`rail-tag-menu-${SAMPLE_TAG.id}`)).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import { ProblemError } from '@engram/shared-types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -278,9 +278,9 @@ describe('AppPage (/app — Task 19)', () => {
     expect(await screen.findAllByTestId('item-card')).toHaveLength(2);
     expect(screen.getByRole('heading', { name: 'wifi' })).toBeInTheDocument();
 
-    const undoBtn = await screen.findByRole('button', { name: /Hoàn tác/ });
+    const toast = await screen.findByTestId('undo-toast-item');
+    const undoBtn = within(toast).getByRole('button', { name: /Hoàn tác/ });
     fireEvent.click(undoBtn);
-
     await waitFor(() => {
       expect(restoreSpy).toHaveBeenCalledWith(
         TAG_NHA.id,
@@ -360,6 +360,69 @@ describe('AppPage (/app — Task 19)', () => {
     expect(await screen.findAllByTestId('item-card')).toHaveLength(1);
     const loadMoreBtn = screen.getByTestId('recent-items-load-more');
     fireEvent.click(loadMoreBtn);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('item-card')).toHaveLength(2);
+    });
+    expect(itemsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: 'recent', cursor: 'cursor-page-2' }),
+    );
+  });
+
+  it('shows filtered empty state with clear-filter control when ?tag= fails with 404 or 400', async () => {
+    vi.stubEnv('NEXT_PUBLIC_CONTENT_ENABLED', 'true');
+    mockSearchParamsString = 'tag=stale-tag-id';
+    vi.spyOn(contentApi, 'tagsList').mockResolvedValue({ items: [TAG_NHA], next_cursor: null });
+    vi.spyOn(contentApi, 'itemsList').mockRejectedValue(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/not_found',
+        title: 'Not found',
+        status: 404,
+        code: 'not_found',
+      }),
+    );
+
+    renderHomePage();
+
+    expect(await screen.findByTestId('home-filtered-empty-state')).toBeInTheDocument();
+    expect(screen.queryByTestId('recent-items-error')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('home-filtered-clear-btn'));
+    expect(mockReplace).toHaveBeenCalledWith('/app', { scroll: false });
+  });
+
+  it('keeps loaded items on screen and shows inline retry calling fetchNextPage when load-more fails', async () => {
+    vi.stubEnv('NEXT_PUBLIC_CONTENT_ENABLED', 'true');
+    vi.spyOn(contentApi, 'tagsList').mockResolvedValue({ items: [TAG_NHA], next_cursor: null });
+    let failPage2 = true;
+    const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockImplementation(async (params) => {
+      if (params?.cursor === 'cursor-page-2') {
+        if (failPage2) {
+          throw new ProblemError({
+            type: 'https://engram.zone17.click/problems/internal_error',
+            title: 'Internal error',
+            status: 500,
+            code: 'internal_error',
+          });
+        }
+        return { items: [ITEM_DOCKER], next_cursor: null };
+      }
+      return { items: [ITEM_WIFI], next_cursor: 'cursor-page-2' };
+    });
+
+    renderHomePage();
+
+    expect(await screen.findAllByTestId('item-card')).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('recent-items-load-more'));
+
+    const loadMoreError = await screen.findByTestId('recent-items-load-more-error');
+    expect(loadMoreError).toHaveTextContent(viMessages.content.errors.internal_error);
+    // First page remains visible; full-page error is NOT shown.
+    expect(screen.getAllByTestId('item-card')).toHaveLength(1);
+    expect(screen.queryByTestId('recent-items-error')).not.toBeInTheDocument();
+
+    failPage2 = false;
+    fireEvent.click(screen.getByTestId('recent-items-load-more-retry'));
 
     await waitFor(() => {
       expect(screen.getAllByTestId('item-card')).toHaveLength(2);
