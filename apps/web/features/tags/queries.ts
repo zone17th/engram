@@ -46,6 +46,13 @@ export interface UsePaginatedTagsListResult {
  * Wraps `useTagsList` (keeping the shared first-page `['content', 'tags', { sort, q }]` query key
  * and `useTagsList` signature intact for the itempage seam) while managing additional cursor pages
  * (`next_cursor`) for the `/app` tag rail ("Show more" / HM19-R1-4).
+ *
+ * Extra-page reset policy (HM19-R2-2, HM19-R3-1, HM19-R4-2):
+ * - An equal background refetch of the first page keeps `query.data` reference-equal, preserving
+ *   loaded extra pages across window focus/reconnect.
+ * - Any change in query parameters, any change in the first-page `query.data` snapshot, or an
+ *   explicit `resetExtraPages()` call after a tag mutation (rename/delete/restore) drops stale
+ *   extra pages so cursor boundaries stay consistent.
  */
 export function usePaginatedTagsList(
   options: UseTagsListOptions = {},

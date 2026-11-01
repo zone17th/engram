@@ -11,14 +11,18 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { QueryClientContext } from '@tanstack/react-query';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { Kbd } from '@/components/ui/kbd';
 import { useOptionalUndoToast } from '@/components/ui/undo-toast';
+import { unlockUrl } from '@/features/auth/guard-redirect';
+import { EntrySealError } from '@/features/entries/seal';
 import { getVaultSecretInputProps } from '@/features/entries/secret-input-props';
 import {
+  CONTENT_ENTRIES_QUERY_KEY_PREFIX,
   CONTENT_ITEMS_QUERY_KEY_PREFIX,
   CONTENT_ITEM_QUERY_KEY_PREFIX,
   CONTENT_LOOKUP_QUERY_KEY_PREFIX,
@@ -26,20 +30,43 @@ import {
   contentQueryKeys,
   type ContentItemsQueryKey,
 } from '@/features/items/query-keys';
-import { parseQuickAdd } from '@/features/omnibox/quick-add-parse';
+import {
+  DupPickerDialog,
+  type DupPickerSelection,
+} from '@/features/omnibox/dup-picker-dialog';
+import { trimUnicodeWhiteSpace } from '@/features/omnibox/normalize';
+import { parseQuickAdd, type QuickAddParseResult } from '@/features/omnibox/quick-add-parse';
+import {
+  checkTargetTagCap,
+  createQuickAddSavePlan,
+  executeQuickAddSavePlan,
+  hasPlanCommittedMetadata,
+  type QuickAddSavePlan,
+  type SavePlanStepKey,
+  type SavePlanStepStatus,
+} from '@/features/omnibox/save-plan';
 import {
   filterCachedTagsByPrefix,
   parseTagFilterInput,
   splitMarkedPrefix,
 } from '@/features/omnibox/search-helpers';
-import { trimUnicodeWhiteSpace } from '@/features/omnibox/normalize';
+import {
+  clearSaveUnconfirmed,
+  getSaveUnconfirmedSnapshot,
+  reconcileSaveUnconfirmedUser,
+  recordSaveUnconfirmed,
+  subscribeSaveUnconfirmed,
+} from '@/features/omnibox/unconfirmed-save-store';
+import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import {
   createIdempotencyKey,
+  entryDelete,
   getContentErrorI18nKey,
   itemCreate,
   itemDelete,
   itemsList,
+  itemsLookupExact,
   tagsList,
   type ContentErrorCode,
   type ItemList,
@@ -47,10 +74,13 @@ import {
   type Tag,
   type TagList,
 } from '@/lib/api/content';
+import { type Me } from '@/lib/api/auth';
+import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 import { cn } from '@/lib/cn';
 
 const MAX_TEXTAREA_HEIGHT_PX = 132;
 const MAX_VISIBLE_OPTION_TAG_CHIPS = 3;
+const DEFAULT_FALLBACK_USER_ID = 'current-session-user';
 
 export type OmniboxOption =
   | {
@@ -70,6 +100,15 @@ export type OmniboxOption =
       readonly tag: Tag;
       readonly query: string;
     };
+
+interface DupPickerModalState {
+  readonly name: string;
+  readonly tags: readonly string[];
+  readonly body: string;
+  readonly initialItems: readonly ItemSummary[];
+  readonly total: number;
+  readonly nextCursor: string | null;
+}
 
 function SearchIcon({ compact }: { readonly compact: boolean }) {
   return (
@@ -106,16 +145,20 @@ function isImeComposing(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean
 }
 
 /**
- * Checks whether a query key in `QueryCache` is an omnibox search key:
+ * Checks whether a query key in `QueryCache` is an omnibox search or lookup key:
  * - `['content', 'items', { q }]` where `q` is a non-empty string
  * - `['content', 'tags', { q }]` where `q` is a non-empty string
+ * - `['content', 'lookup', name]`
  */
 function isOmniboxSearchQueryKey(queryKey: readonly unknown[]): boolean {
-  if (queryKey.length < 3 || queryKey[0] !== 'content') {
+  if (queryKey.length < 2 || queryKey[0] !== 'content') {
     return false;
   }
   const kind = queryKey[1];
-  if (kind !== 'items' && kind !== 'tags') {
+  if (kind === 'lookup') {
+    return true;
+  }
+  if (queryKey.length < 3 || (kind !== 'items' && kind !== 'tags')) {
     return false;
   }
   const params = queryKey[2];
@@ -134,8 +177,10 @@ export function Omnibox({
   className?: string;
 }) {
   const tOmni = useTranslations('content.omnibox');
+  const tPrivacy = useTranslations('content.privacy');
   const tErrors = useTranslations('content.errors');
   const router = useRouter();
+  const pathname = usePathname() ?? '/app';
   const queryClient = useContext(QueryClientContext);
   const vault = useOptionalVault();
   const undoToast = useOptionalUndoToast();
@@ -148,14 +193,31 @@ export function Omnibox({
   const liveId = `${baseId}-live`;
   const guardAlertId = `${baseId}-guard-alert`;
   const emptyBoxId = `${baseId}-search-empty`;
+  const lockClearedNoticeId = `${baseId}-lock-cleared-notice`;
+  const saveUnconfirmedNoticeId = `${baseId}-save-unconfirmed-notice`;
+  const addPreviewId = `${baseId}-add-preview`;
+  const addErrorId = `${baseId}-add-error`;
+  const addPrivacyId = `${baseId}-add-privacy`;
+  const jsonBannerId = `${baseId}-json-banner`;
+  const savePlanId = `${baseId}-save-plan`;
+  const planErrorId = `${baseId}-plan-error`;
+  const unlockToSaveBtnId = `${baseId}-unlock-to-save-btn`;
 
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const retryPlanBtnRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchAbortRef = useRef<AbortController | null>(null);
+  const planAbortRef = useRef<AbortController | null>(null);
   const createPendingRef = useRef(false);
+  const lookupPendingRef = useRef(false);
+  const inputValueRef = useRef('');
+  const activePlanRef = useRef<QuickAddSavePlan | null>(null);
+  const pendingLockNoticeRef = useRef<'draft' | 'plan' | null>(null);
 
   const [inputValue, setInputValue] = useState('');
+  inputValueRef.current = inputValue;
+
   const [listOpen, setListOpen] = useState(false);
   const [listKind, setListKind] = useState<'search' | 'tag-filter' | null>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -174,9 +236,63 @@ export function Omnibox({
     readonly fromServer: boolean;
   } | null>(null);
 
+  // 18b quick-add state
+  const [activePlan, setActivePlan] = useState<QuickAddSavePlan | null>(null);
+  activePlanRef.current = activePlan;
+  const [, setPlanRenderTick] = useState(0);
+  const [targetTagLimitCount, setTargetTagLimitCount] = useState<number | null>(null);
+  const [dupPickerState, setDupPickerState] = useState<DupPickerModalState | null>(null);
+  const [lockClearedNoticeKind, setLockClearedNoticeKind] = useState<'draft' | 'plan' | null>(null);
+
+  const unconfirmedSnapshot = useSyncExternalStore(
+    subscribeSaveUnconfirmed,
+    getSaveUnconfirmedSnapshot,
+    () => null,
+  );
+
+  const isVaultUnlocked = vault ? vault.state === 'unlocked' : true;
+  const isVaultLocked = !isVaultUnlocked;
+
+  // Resolve active user ID from QueryClient's `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`.
+  const activeUserId = ((): string => {
+    if (queryClient) {
+      const meQueries = queryClient.getQueriesData<Me | null>({ queryKey: ['auth', 'me'] });
+      for (let i = meQueries.length - 1; i >= 0; i -= 1) {
+        const data = meQueries[i]?.[1];
+        if (data?.user?.id) {
+          return data.user.id;
+        }
+      }
+    }
+    return getKnownDeviceSessionUserId() ?? DEFAULT_FALLBACK_USER_ID;
+  })();
+
+  useEffect(() => {
+    reconcileSaveUnconfirmedUser(activeUserId);
+  }, [activeUserId]);
+
+  useEffect(() => {
+    return subscribeSessionBroadcast((message) => {
+      if (message.type === 'signed_out' && (!message.reason || message.reason === 'logout')) {
+        clearSaveUnconfirmed();
+      }
+    });
+  }, []);
+
+  const visibleUnconfirmedRecord =
+    isVaultUnlocked && unconfirmedSnapshot?.userId === activeUserId ? unconfirmedSnapshot : null;
+
   const parsed = useMemo(() => parseQuickAdd(inputValue), [inputValue]);
   const trimmedInput = useMemo(() => trimUnicodeWhiteSpace(inputValue), [inputValue]);
   const hasNonEmptyInput = trimmedInput.length > 0;
+
+  // When vault transitions to unlocked after a lock that cleared a draft/plan, surface the post-unlock notice.
+  useEffect(() => {
+    if (isVaultUnlocked && pendingLockNoticeRef.current !== null) {
+      setLockClearedNoticeKind(pendingLockNoticeRef.current);
+      pendingLockNoticeRef.current = null;
+    }
+  }, [isVaultUnlocked]);
 
   // Read cached tags from the rail's `['content', 'tags', ...]` cache without firing any network request.
   const getCachedTags = useCallback((): Tag[] => {
@@ -240,17 +356,50 @@ export function Omnibox({
     });
   }, [queryClient]);
 
-  // Register synchronous vault lock / logout / user-switch / reset cleanup (plan §2.10, P4FE3-5, P4FE4-8).
+  const abortAndClearSavePlan = useCallback(() => {
+    planAbortRef.current?.abort();
+    planAbortRef.current = null;
+    if (activePlanRef.current) {
+      activePlanRef.current.op.dispose?.();
+      activePlanRef.current = null;
+    }
+    setActivePlan(null);
+    setTargetTagLimitCount(null);
+    setDupPickerState(null);
+    lookupPendingRef.current = false;
+  }, []);
+
+  // Register synchronous vault lock / logout / user-switch / reset cleanup (plan §2.10, §2.11 step 5, P4FE1-12, P4FE3-5, P4FE4-8).
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
+      planAbortRef.current?.abort();
+      planAbortRef.current = null;
+
+      const currentText = trimUnicodeWhiteSpace(
+        textareaRef.current?.value ?? inputValueRef.current,
+      );
+      const currentPlan = activePlanRef.current;
+      const hadDraftOrPlan = currentText.length > 0 || currentPlan !== null;
+      const hadCommittedMeta = hasPlanCommittedMetadata(currentPlan);
+
+      if (currentPlan) {
+        currentPlan.op.dispose?.();
+        activePlanRef.current = null;
+      }
+
+      if (hadDraftOrPlan) {
+        pendingLockNoticeRef.current = hadCommittedMeta ? 'plan' : 'draft';
+      }
+
       if (textareaRef.current) {
         textareaRef.current.value = '';
         textareaRef.current.style.height = '';
         textareaRef.current.style.overflowY = 'hidden';
       }
+      inputValueRef.current = '';
       setInputValue('');
       setListOpen(false);
       setListKind(null);
@@ -260,13 +409,20 @@ export function Omnibox({
       setLiveMessage('');
       setGuardKind(null);
       setActionErrorCode(null);
+      setActivePlan(null);
+      setTargetTagLimitCount(null);
+      setDupPickerState(null);
+      setLockClearedNoticeKind(null);
+      lookupPendingRef.current = false;
+      undoToast?.clearOmniboxJustCleared();
       removeOmniboxSearchQueries();
     });
-  }, [removeOmniboxSearchQueries, vault]);
+  }, [removeOmniboxSearchQueries, undoToast, vault]);
 
   useEffect(() => {
     return () => {
       searchAbortRef.current?.abort();
+      planAbortRef.current?.abort();
     };
   }, []);
 
@@ -358,12 +514,14 @@ export function Omnibox({
   const activeDescendantId =
     listOpen && activeIndex >= 0 && options[activeIndex] ? options[activeIndex].id : undefined;
 
-  const invalidateItemMetadataCaches = useCallback(async () => {
+  const invalidateAllContentMetadataCaches = useCallback(async () => {
     if (!queryClient) return;
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: CONTENT_ITEMS_QUERY_KEY_PREFIX }),
       queryClient.invalidateQueries({ queryKey: CONTENT_ITEM_QUERY_KEY_PREFIX }),
       queryClient.invalidateQueries({ queryKey: CONTENT_LOOKUP_QUERY_KEY_PREFIX }),
+      queryClient.invalidateQueries({ queryKey: CONTENT_TAGS_QUERY_KEY_PREFIX }),
+      queryClient.invalidateQueries({ queryKey: CONTENT_ENTRIES_QUERY_KEY_PREFIX }),
     ]);
   }, [queryClient]);
 
@@ -379,11 +537,14 @@ export function Omnibox({
         const created = await itemCreate({ name: nameToCreate }, { idempotencyKey });
         closeListbox(false);
         setInputValue('');
+        inputValueRef.current = '';
         if (textareaRef.current) {
           textareaRef.current.value = '';
           syncTextareaHeight(textareaRef.current);
+          textareaRef.current.focus();
         }
-        await invalidateItemMetadataCaches();
+        undoToast?.markOmniboxJustCleared(textareaRef.current);
+        void invalidateAllContentMetadataCaches();
 
         undoToast?.pushUndoToast({
           message: tOmni('createdEmptyItemToast', { name: created.name }),
@@ -391,7 +552,8 @@ export function Omnibox({
           returnFocusTo: () => textareaRef.current,
           onUndo: async () => {
             await itemDelete(created.id, { idempotencyKey: createIdempotencyKey() });
-            await invalidateItemMetadataCaches();
+            await invalidateAllContentMetadataCaches();
+            textareaRef.current?.focus();
           },
           onError: (err) => {
             const code = getContentErrorI18nKey(err).replace(
@@ -411,8 +573,415 @@ export function Omnibox({
         createPendingRef.current = false;
       }
     },
-    [closeListbox, invalidateItemMetadataCaches, syncTextareaHeight, tOmni, undoToast],
+    [closeListbox, invalidateAllContentMetadataCaches, syncTextareaHeight, tOmni, undoToast],
   );
+
+  const getStepLocalizedLabel = useCallback(
+    (stepKey: SavePlanStepKey, plan: QuickAddSavePlan): string => {
+      switch (stepKey) {
+        case 'item':
+          return tOmni('savePlanStepItem', { name: plan.itemName });
+        case 'tags':
+          return tOmni('savePlanStepTags', { count: plan.tagTasks.length });
+        case 'assign':
+          return tOmni('savePlanStepAssign');
+        case 'entry':
+          return tOmni('savePlanStepEntry');
+      }
+    },
+    [tOmni],
+  );
+
+  const runPlanExecution = useCallback(
+    async (plan: QuickAddSavePlan) => {
+      planAbortRef.current?.abort();
+      const controller = new AbortController();
+      planAbortRef.current = controller;
+      setActionErrorCode(null);
+
+      const runningStep = plan.steps.find((s) => s.status !== 'done') ?? plan.steps[0];
+      if (runningStep) {
+        setLiveMessage(
+          tOmni('savePlanLiveRunning', {
+            step: getStepLocalizedLabel(runningStep.key, plan),
+          }),
+        );
+      }
+
+      const outcome = await executeQuickAddSavePlan({
+        plan,
+        queryClient,
+        signal: controller.signal,
+        onStepUpdate: () => {
+          setPlanRenderTick((prev) => prev + 1);
+          const currentRunning = plan.steps.find((s) => s.status === 'running');
+          if (currentRunning) {
+            setLiveMessage(
+              tOmni('savePlanLiveRunning', {
+                step: getStepLocalizedLabel(currentRunning.key, plan),
+              }),
+            );
+          }
+        },
+      });
+
+      if (controller.signal.aborted || !plan.op.isCurrent()) {
+        return;
+      }
+
+      if (outcome.status === 'completed') {
+        const savedItemName = outcome.itemName;
+        const savedEntryId = outcome.entryMeta.id;
+
+        plan.op.dispose?.();
+        activePlanRef.current = null;
+        setActivePlan(null);
+        setTargetTagLimitCount(null);
+        setActionErrorCode(null);
+        setLiveMessage('');
+
+        setInputValue('');
+        inputValueRef.current = '';
+        if (textareaRef.current) {
+          textareaRef.current.value = '';
+          syncTextareaHeight(textareaRef.current);
+          textareaRef.current.focus();
+        }
+        // Mark omnibox as just cleared by save so immediate Ctrl+Z / ⌘Z triggers Undo (plan §2.11 step 4, SPEC §7.8).
+        undoToast?.markOmniboxJustCleared(textareaRef.current);
+
+        // Push Undo toast ONLY after entry 201 commit; Undo deletes ONLY the entry (Q18, dec-116, P4BE1-2, P4FE2-13).
+        undoToast?.pushUndoToast({
+          message: tOmni('savedToastMessage', { name: savedItemName }),
+          detail: tOmni('savedUndoDetail'),
+          actionLabel: tOmni('undoAction'),
+          returnFocusTo: () => textareaRef.current,
+          onUndo: async () => {
+            await entryDelete(savedEntryId, {
+              idempotencyKey: createIdempotencyKey(),
+            });
+            await invalidateAllContentMetadataCaches();
+            textareaRef.current?.focus();
+          },
+          onError: (err) => {
+            const code = getContentErrorI18nKey(err).replace(
+              /^content\.errors\./,
+              '',
+            ) as ContentErrorCode;
+            setActionErrorCode(code);
+          },
+        });
+
+        void invalidateAllContentMetadataCaches();
+        return;
+      }
+
+      if (outcome.status === 'failed') {
+        const { classifiedError, stepKey } = outcome;
+
+        // Case (b) pre-lookup terminal logout boundary (`session_invalid`, `forbidden`, or unrefreshed `unauthenticated`)
+        // after an uncertain send -> drop plan and draft, never replay, record `saveUnconfirmed` bound to `user_id`
+        // (SPEC §3.4, advisor-dec-119, advisor-dec-120).
+        if (
+          classifiedError.isLogoutBoundary ||
+          classifiedError.preLookupRecovery === 'terminal_logout_boundary'
+        ) {
+          recordSaveUnconfirmed({
+            userId: activeUserId,
+            itemName: plan.itemName,
+          });
+          plan.op.dispose?.();
+          activePlanRef.current = null;
+          setActivePlan(null);
+          setTargetTagLimitCount(null);
+          setInputValue('');
+          inputValueRef.current = '';
+          if (textareaRef.current) {
+            textareaRef.current.value = '';
+            syncTextareaHeight(textareaRef.current);
+          }
+          const code = classifiedError.i18nKey.replace(
+            /^content\.errors\./,
+            '',
+          ) as ContentErrorCode;
+          setActionErrorCode(code);
+          return;
+        }
+
+        // `409 entry_key_mismatch` or `404 vault_absent`: vault reset or key change on another device
+        // -> drop plan and draft, never resend old ciphertext (SPEC §3.4 step 3 & 6).
+        if (
+          classifiedError.kind === 'entry_key_mismatch' ||
+          classifiedError.kind === 'vault_absent'
+        ) {
+          plan.op.dispose?.();
+          activePlanRef.current = null;
+          setActivePlan(null);
+          setTargetTagLimitCount(null);
+          setInputValue('');
+          inputValueRef.current = '';
+          if (textareaRef.current) {
+            textareaRef.current.value = '';
+            syncTextareaHeight(textareaRef.current);
+          }
+          const code = classifiedError.i18nKey.replace(
+            /^content\.errors\./,
+            '',
+          ) as ContentErrorCode;
+          setActionErrorCode(code);
+          if (vault?.reloadVaultMeta) {
+            void vault.reloadVaultMeta();
+          }
+          return;
+        }
+
+        // Retryable failure (network, timeout, 5xx, 429, 409 idempotency_in_progress, recoverable_auth) ->
+        // keep draft and plan so "Thử lại" resumes from the failed step with the exact same keys + bytes (A3).
+        if (classifiedError.canRetrySameBytes) {
+          setPlanRenderTick((prev) => prev + 1);
+          setLiveMessage(
+            tOmni('savePlanLiveFailed', {
+              step: getStepLocalizedLabel(stepKey, plan),
+            }),
+          );
+          const code = classifiedError.i18nKey.replace(
+            /^content\.errors\./,
+            '',
+          ) as ContentErrorCode;
+          setActionErrorCode(code);
+          requestAnimationFrame(() => {
+            if (document.activeElement === document.body) {
+              retryPlanBtnRef.current?.focus();
+            }
+          });
+          return;
+        }
+
+        // Deterministic 4xx (e.g. `item_tag_limit`, `item_entry_limit`, `not_found`, validation):
+        // plan ends, draft is preserved, UI surfaces error code; next Enter builds a fresh plan (SPEC §3.4 step 3).
+        plan.op.dispose?.();
+        activePlanRef.current = null;
+        setActivePlan(null);
+        const code = classifiedError.i18nKey.replace(
+          /^content\.errors\./,
+          '',
+        ) as ContentErrorCode;
+        setActionErrorCode(code);
+      }
+    },
+    [
+      activeUserId,
+      getStepLocalizedLabel,
+      invalidateAllContentMetadataCaches,
+      queryClient,
+      syncTextareaHeight,
+      tOmni,
+      undoToast,
+      vault,
+    ],
+  );
+
+  const startSavePlanForTarget = useCallback(
+    async (params: {
+      readonly name: string;
+      readonly tags: readonly string[];
+      readonly body: string;
+      readonly targetItem: ItemSummary | null;
+      readonly isNewItem: boolean;
+    }) => {
+      const { name, tags, body, targetItem, isNewItem } = params;
+
+      // Pre-check 20-tag cap before building plan or sending any write request (SPEC §3.4 step 2, plan §2.11 step 2).
+      if (!isNewItem && targetItem) {
+        const capCheck = checkTargetTagCap(targetItem.tags ?? [], tags);
+        if (!capCheck.allowed) {
+          setTargetTagLimitCount(capCheck.existingTagCount);
+          setActionErrorCode(null);
+          return;
+        }
+      }
+
+      setTargetTagLimitCount(null);
+      setActionErrorCode(null);
+
+      if (!vault) {
+        return;
+      }
+
+      try {
+        const plan = await createQuickAddSavePlan({
+          name,
+          tags,
+          body,
+          targetItem,
+          isNewItem,
+          vault,
+        });
+
+        if (!plan.op.isCurrent()) {
+          plan.op.dispose?.();
+          return;
+        }
+
+        activePlanRef.current = plan;
+        setActivePlan(plan);
+        await runPlanExecution(plan);
+      } catch (error) {
+        if (error instanceof EntrySealError) {
+          if (error.code === 'STALE_GENERATION' || error.code === 'VAULT_LOCKED') {
+            return;
+          }
+          if (error.code === 'ENTRY_TOO_LARGE') {
+            setActionErrorCode('entry_too_large');
+            return;
+          }
+          setActionErrorCode('entry_invalid');
+          return;
+        }
+        const code = getContentErrorI18nKey(error).replace(
+          /^content\.errors\./,
+          '',
+        ) as ContentErrorCode;
+        setActionErrorCode(code);
+      }
+    },
+    [runPlanExecution, vault],
+  );
+
+  const submitQuickAdd = useCallback(
+    async (forceCreateNew: boolean, currentParsed: QuickAddParseResult) => {
+      if (currentParsed.mode !== 'add') {
+        return;
+      }
+      if (!isVaultUnlocked) {
+        return;
+      }
+      if (lookupPendingRef.current || activePlanRef.current?.running) {
+        return;
+      }
+
+      clearSaveUnconfirmed();
+      setLockClearedNoticeKind(null);
+      setTargetTagLimitCount(null);
+      setActionErrorCode(null);
+
+      // Ctrl+Enter in add mode always creates a new item with the entry, skipping exact lookup (SPEC §3.4).
+      if (forceCreateNew) {
+        await startSavePlanForTarget({
+          name: currentParsed.name,
+          tags: currentParsed.tags,
+          body: currentParsed.body,
+          targetItem: null,
+          isNewItem: true,
+        });
+        return;
+      }
+
+      // Exact lookup GET /items/lookup?name= ONLY on Enter (advisor-dec-098).
+      searchAbortRef.current?.abort();
+      const controller = new AbortController();
+      searchAbortRef.current = controller;
+      lookupPendingRef.current = true;
+
+      try {
+        const lookupKey = contentQueryKeys.lookup(currentParsed.name);
+        const lookupRes = queryClient
+          ? await queryClient.fetchQuery({
+              queryKey: lookupKey,
+              queryFn: ({ signal }) =>
+                itemsLookupExact({ name: currentParsed.name, signal }),
+              gcTime: 0,
+              staleTime: 0,
+            })
+          : await itemsLookupExact({
+              name: currentParsed.name,
+              signal: controller.signal,
+            });
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const matchedItems = lookupRes.items ?? [];
+        const total = lookupRes.total ?? matchedItems.length;
+
+        if (total === 0 || matchedItems.length === 0) {
+          await startSavePlanForTarget({
+            name: currentParsed.name,
+            tags: currentParsed.tags,
+            body: currentParsed.body,
+            targetItem: null,
+            isNewItem: true,
+          });
+          return;
+        }
+
+        if (total === 1 && matchedItems.length === 1) {
+          await startSavePlanForTarget({
+            name: currentParsed.name,
+            tags: currentParsed.tags,
+            body: currentParsed.body,
+            targetItem: matchedItems[0]!,
+            isNewItem: false,
+          });
+          return;
+        }
+
+        // >= 2 matches -> open U9 duplicate picker dialog.
+        setDupPickerState({
+          name: currentParsed.name,
+          tags: currentParsed.tags,
+          body: currentParsed.body,
+          initialItems: matchedItems,
+          total,
+          nextCursor: lookupRes.next_cursor ?? null,
+        });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        const code = getContentErrorI18nKey(error).replace(
+          /^content\.errors\./,
+          '',
+        ) as ContentErrorCode;
+        setActionErrorCode(code);
+      } finally {
+        lookupPendingRef.current = false;
+      }
+    },
+    [isVaultUnlocked, queryClient, startSavePlanForTarget],
+  );
+
+  const handleDupPickerPick = useCallback(
+    (selection: DupPickerSelection) => {
+      const pending = dupPickerState;
+      setDupPickerState(null);
+      textareaRef.current?.focus();
+      if (!pending) return;
+
+      if (selection.kind === 'create-new') {
+        void startSavePlanForTarget({
+          name: pending.name,
+          tags: pending.tags,
+          body: pending.body,
+          targetItem: null,
+          isNewItem: true,
+        });
+      } else {
+        void startSavePlanForTarget({
+          name: pending.name,
+          tags: pending.tags,
+          body: pending.body,
+          targetItem: selection.item,
+          isNewItem: false,
+        });
+      }
+    },
+    [dupPickerState, startSavePlanForTarget],
+  );
+
+  const handleDupPickerCancel = useCallback(() => {
+    setDupPickerState(null);
+    textareaRef.current?.focus();
+  }, []);
 
   const executeOption = useCallback(
     (option: OmniboxOption) => {
@@ -428,6 +997,7 @@ export function Omnibox({
       if (option.kind === 'tag') {
         closeListbox(false);
         setInputValue('');
+        inputValueRef.current = '';
         if (textareaRef.current) {
           textareaRef.current.value = '';
           syncTextareaHeight(textareaRef.current);
@@ -450,6 +1020,7 @@ export function Omnibox({
       const controller = new AbortController();
       searchAbortRef.current = controller;
       setActionErrorCode(null);
+
       const searchKey: ContentItemsQueryKey = contentQueryKeys.items({
         sort: 'alpha',
         q,
@@ -464,6 +1035,7 @@ export function Omnibox({
               staleTime: 0,
             })
           : await itemsList({ sort: 'alpha', q, signal: controller.signal });
+
         if (controller.signal.aborted || searchAbortRef.current !== controller) return;
         const items = data.items ?? [];
         setSearchResults({ query: q, items });
@@ -514,6 +1086,7 @@ export function Omnibox({
               q: token || undefined,
               signal: controller.signal,
             });
+
         if (controller.signal.aborted || searchAbortRef.current !== controller) return;
         const matched = data.items ?? [];
         setTagFilterState({
@@ -544,8 +1117,17 @@ export function Omnibox({
   const handleInputChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const nextValue = event.target.value;
     setInputValue(nextValue);
+    inputValueRef.current = nextValue;
     setGuardKind(null);
     setActionErrorCode(null);
+    setLockClearedNoticeKind(null);
+    setTargetTagLimitCount(null);
+    undoToast?.clearOmniboxJustCleared();
+
+    if (activePlanRef.current && !activePlanRef.current.running) {
+      abortAndClearSavePlan();
+    }
+
     syncTextareaHeight(event.target);
 
     // Always cancel any in-flight search or server tag request when the user edits the input (HM18A-R1-6).
@@ -647,8 +1229,41 @@ export function Omnibox({
       return;
     }
 
-    // Add / add-invalid mode stub for 18a: no request, no hint (18b adds preview/lookup/save).
-    closeListbox(true);
+    if (parsed.mode === 'add-invalid') {
+      closeListbox(true);
+      return;
+    }
+
+    if (parsed.mode === 'add') {
+      closeListbox(true);
+      const currentPlan = activePlanRef.current;
+      if (currentPlan) {
+        if (currentPlan.running) {
+          return;
+        }
+        if (currentPlan.steps.some((s) => s.status === 'failed')) {
+          void runPlanExecution(currentPlan);
+          return;
+        }
+      }
+      void submitQuickAdd(isCtrl, parsed);
+    }
+  };
+
+  const handleDiscardDraft = () => {
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+    abortAndClearSavePlan();
+    setInputValue('');
+    inputValueRef.current = '';
+    setGuardKind(null);
+    setActionErrorCode(null);
+    setLiveMessage('');
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+      syncTextareaHeight(textareaRef.current);
+      textareaRef.current.focus();
+    }
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -688,16 +1303,11 @@ export function Omnibox({
         return;
       }
       if (inputValue.length > 0) {
-        event.preventDefault();
-        searchAbortRef.current?.abort();
-        searchAbortRef.current = null;
-        setInputValue('');
-        setGuardKind(null);
-        setActionErrorCode(null);
-        if (textareaRef.current) {
-          textareaRef.current.value = '';
-          syncTextareaHeight(textareaRef.current);
+        if (activePlanRef.current?.running) {
+          return;
         }
+        event.preventDefault();
+        handleDiscardDraft();
       }
     }
   };
@@ -714,6 +1324,60 @@ export function Omnibox({
   const showTagHint = parsed.mode === 'tag-filter' && hasNonEmptyInput && guardKind === null;
   const showHint = showSearchHint || showTagHint;
   const isSearchInvalid = parsed.mode === 'search' && hasNonEmptyInput && !parsed.searchable;
+
+  const hasGrammarErr = parsed.mode === 'add-invalid';
+  const isSoftAddHint =
+    hasGrammarErr &&
+    (parsed.error === 'body_empty' || (parsed.error === 'name_empty' && !parsed.name));
+  const hasHardAddErr =
+    (hasGrammarErr && !isSoftAddHint) || targetTagLimitCount !== null;
+  const hasFailedPlanStep = Boolean(
+    activePlan && activePlan.steps.some((s) => s.status === 'failed'),
+  );
+  const isPlanRunning = Boolean(activePlan?.running);
+
+  const addErrorMessage = useMemo((): string | null => {
+    if (hasGrammarErr) {
+      switch (parsed.error) {
+        case 'body_empty':
+          return tOmni('addErrorBodyEmpty');
+        case 'name_empty':
+          return tOmni('addErrorNameEmpty');
+        case 'name_invalid':
+          return tOmni('addErrorNameInvalid');
+        case 'tag_has_space':
+          return tOmni('addErrorTagHasSpace');
+        case 'tag_display_invalid':
+          return tOmni('addErrorTagDisplayInvalid');
+        case 'tag_limit':
+          return tOmni('addErrorTagLimit', { count: parsed.tags.length });
+        default:
+          return tOmni('addErrorNameInvalid');
+      }
+    }
+    if (targetTagLimitCount !== null) {
+      return tOmni('addErrorTargetTagLimit', { count: targetTagLimitCount });
+    }
+    return null;
+  }, [hasGrammarErr, parsed.error, parsed.tags.length, tOmni, targetTagLimitCount]);
+
+  const getStepStatusBadge = (
+    status: SavePlanStepStatus,
+  ): { readonly badgeClass: string; readonly label: string } => {
+    switch (status) {
+      case 'done':
+        return { badgeClass: 'badge-text', label: tOmni('savePlanStatusDone') };
+      case 'running':
+        return { badgeClass: 'badge-warn', label: tOmni('savePlanStatusRunning') };
+      case 'failed':
+        return { badgeClass: 'badge-err', label: tOmni('savePlanStatusFailed') };
+      case 'pending':
+      default:
+        return { badgeClass: 'badge-ok', label: tOmni('savePlanStatusPending') };
+    }
+  };
+
+  const failedStep = activePlan?.steps.find((s) => s.status === 'failed') ?? null;
   const hasOptionChildren = options.length > 0;
 
   return (
@@ -744,7 +1408,9 @@ export function Omnibox({
           aria-describedby={hintId}
           aria-controls={listOpen && hasOptionChildren ? listboxId : undefined}
           aria-activedescendant={activeDescendantId}
-          aria-invalid={isSearchInvalid || guardKind !== null ? true : undefined}
+          aria-invalid={
+            isSearchInvalid || guardKind !== null || hasHardAddErr ? true : undefined
+          }
           className={cn(
             'omnibox-input m-0 block max-h-[132px] resize-none overflow-y-hidden p-0 leading-[1.4]',
             compact && '!text-[15px]',
@@ -761,6 +1427,56 @@ export function Omnibox({
           compact ? 'mt-1.5' : 'mt-2',
         )}
       >
+        {lockClearedNoticeKind !== null && isVaultUnlocked ? (
+          <div
+            id={lockClearedNoticeId}
+            role="status"
+            data-omni-lock-notice="1"
+            data-testid="omnibox-lock-cleared-notice"
+            className="omni-lock-notice rounded-md border border-line bg-surface px-3.5 py-3 text-[13px] leading-[1.45] text-body"
+          >
+            <div className="omni-lock-notice-inner flex flex-wrap items-center justify-between gap-2.5">
+              <p className="m-0 text-[13px] font-semibold text-body">
+                {lockClearedNoticeKind === 'plan'
+                  ? tOmni('lockClearedPlanNotice')
+                  : tOmni('lockClearedDraftNotice')}
+              </p>
+              <button
+                type="button"
+                data-dismiss-lock-notice="1"
+                data-testid="omnibox-lock-notice-dismiss"
+                onClick={() => setLockClearedNoticeKind(null)}
+                className="btn btn-tertiary btn-sm"
+              >
+                {tOmni('lockNoticeDismiss')}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {visibleUnconfirmedRecord !== null ? (
+          <div
+            id={saveUnconfirmedNoticeId}
+            role="status"
+            data-testid="omnibox-save-unconfirmed-notice"
+            className="omni-lock-notice rounded-md border border-warning bg-surface px-3.5 py-3 text-[13px] leading-[1.45] text-body"
+          >
+            <div className="omni-lock-notice-inner flex flex-wrap items-center justify-between gap-2.5">
+              <p className="m-0 text-[13px] font-semibold text-body">
+                {tOmni('saveUnconfirmed', { name: visibleUnconfirmedRecord.itemName })}
+              </p>
+              <button
+                type="button"
+                data-testid="omnibox-save-unconfirmed-dismiss"
+                onClick={() => clearSaveUnconfirmed()}
+                className="btn btn-tertiary btn-sm"
+              >
+                {tOmni('saveUnconfirmedDismiss')}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <div
           id={hintId}
           hidden={!showHint}
@@ -809,6 +1525,220 @@ export function Omnibox({
             <p className="m-0 text-[13px] font-semibold text-body">{tOmni('tagGuardTitle')}</p>
           ) : null}
         </div>
+
+        {isAddLike ? (
+          <div
+            id={addPreviewId}
+            data-omni-add-panel="1"
+            data-testid="omnibox-add-preview"
+            className="omni-add-panel rounded-lg border border-line bg-canvas px-4 py-3.5 shadow-card"
+          >
+            <div className="omni-add-header flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="omni-add-dest flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+                <span className="badge-type badge-text">{tOmni('addBadge')}</span>
+                <span
+                  data-part="dest-label"
+                  data-testid="omnibox-add-dest-label"
+                  className="text-[14px] text-body"
+                >
+                  {tOmni.rich('addDestLabel', {
+                    name: parsed.name || '…',
+                  })}
+                </span>
+                <span
+                  data-part="dest-tags"
+                  data-testid="omnibox-add-dest-tags"
+                  className="omni-add-tags inline-flex flex-wrap items-center gap-1"
+                >
+                  {parsed.tags.length > 0 ? (
+                    parsed.tags.map((tagDisplay) => (
+                      <span
+                        key={tagDisplay}
+                        className="chip dup-chip inline-block max-w-full truncate !px-2 !py-0.5 !text-[12px]"
+                      >
+                        #{tagDisplay}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[12px] text-muted">{tOmni('addNoTags')}</span>
+                  )}
+                </span>
+              </div>
+
+              {isVaultLocked ? (
+                <button
+                  type="button"
+                  id={unlockToSaveBtnId}
+                  data-omni-unlock-save="1"
+                  data-testid="omnibox-unlock-to-save-btn"
+                  onClick={() => {
+                    router?.push(unlockUrl(pathname));
+                  }}
+                  className="btn btn-primary btn-sm"
+                >
+                  <span aria-hidden="true">🔒</span> {tOmni('addUnlockToSave')}
+                </button>
+              ) : (
+                <div
+                  data-part="save-wrap"
+                  className="flex flex-wrap items-center gap-2"
+                >
+                  <span className="text-[12px] text-muted">{tOmni('addSaveShortcut')}</span>
+                  <button
+                    type="button"
+                    data-omni-save-now="1"
+                    data-testid="omnibox-save-now-btn"
+                    disabled={
+                      hasGrammarErr ||
+                      targetTagLimitCount !== null ||
+                      isPlanRunning ||
+                      hasFailedPlanStep
+                    }
+                    onClick={() => {
+                      textareaRef.current?.focus();
+                      void submitQuickAdd(false, parsed);
+                    }}
+                    className="btn btn-primary btn-sm"
+                  >
+                    {tOmni('addSaveNow')}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <p className="omni-add-local-note m-0 mt-1.5 text-[12px] text-muted">
+              {tOmni('addLocalNote')}
+            </p>
+
+            {addErrorMessage !== null ? (
+              <div
+                id={addErrorId}
+                role={isSoftAddHint ? 'status' : 'alert'}
+                data-testid="omnibox-add-error"
+                className="auth-alert !mb-0 mt-3"
+              >
+                <p className="m-0 text-[13px] font-semibold text-body">{addErrorMessage}</p>
+              </div>
+            ) : null}
+
+            {parsed.mode === 'add' && parsed.jsonCandidate ? (
+              <div
+                id={jsonBannerId}
+                data-testid="omnibox-json-banner"
+                className="omni-json-banner mt-3 flex flex-wrap items-center justify-between gap-2.5 rounded-md border border-warning bg-surfaceAlt px-3.5 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="m-0 text-[13px] font-semibold text-body">
+                    {tOmni('jsonBannerTitle')}
+                  </p>
+                  <p className="m-0 text-[12px] text-muted">{tOmni('jsonBannerBody')}</p>
+                </div>
+                {/* Milestone rule ("nút JSON/Import ẩn tới mốc C", plan header & brief item 1):
+                    Task 17 import dialog is not merged yet; keep the action button hidden until Task 17 wires it. */}
+                <button
+                  type="button"
+                  hidden
+                  data-omni-open-json="1"
+                  data-testid="omnibox-json-banner-action"
+                  className="btn btn-secondary btn-sm hidden shrink-0"
+                >
+                  {tOmni('jsonBannerAction')}
+                </button>
+              </div>
+            ) : null}
+
+            {activePlan && activePlan.steps.length > 0 ? (
+              <div
+                id={savePlanId}
+                role="region"
+                aria-label={tOmni('savePlanRegionAriaLabel')}
+                aria-busy={isPlanRunning}
+                data-testid="omnibox-save-plan"
+                className="omni-plan-box mt-3 rounded-md border border-line bg-surface px-3.5 py-3"
+              >
+                <p className="t-label m-0 mb-2 text-[12px] text-muted">
+                  {tOmni('savePlanHeading')}
+                </p>
+                <ol
+                  data-part="step-list"
+                  className="omni-step-list m-0 flex list-none flex-col gap-1.5 p-0"
+                >
+                  {activePlan.steps.map((step) => {
+                    const badge = getStepStatusBadge(step.status);
+                    return (
+                      <li
+                        key={step.key}
+                        data-step-key={step.key}
+                        data-step-status={step.status}
+                        className="omni-step-item flex flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-sm border border-line bg-canvas px-2 py-1.5"
+                      >
+                        <span className="mono text-[12px]">{step.apiLabel}</span>
+                        <span className="text-[13px] text-body">
+                          {getStepLocalizedLabel(step.key, activePlan)}
+                        </span>
+                        <span className={cn('badge-type ml-auto', badge.badgeClass)}>
+                          {badge.label}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+
+                {failedStep ? (
+                  <div
+                    id={planErrorId}
+                    role="alert"
+                    data-testid="omnibox-plan-error"
+                    className="auth-alert !mb-0 mt-3"
+                  >
+                    <p
+                      data-part="fail-title"
+                      className="m-0 text-[13px] font-semibold text-body"
+                    >
+                      {tOmni('savePlanErrorTitle', {
+                        step: getStepLocalizedLabel(failedStep.key, activePlan),
+                      })}
+                    </p>
+                    <p className="m-0 mt-0.5 text-[12px] text-body">
+                      {tOmni('savePlanErrorBody')}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        ref={retryPlanBtnRef}
+                        type="button"
+                        data-omni-retry-plan="1"
+                        data-testid="omnibox-retry-plan-btn"
+                        onClick={() => {
+                          textareaRef.current?.focus();
+                          void runPlanExecution(activePlan);
+                        }}
+                        className="btn btn-primary btn-sm"
+                      >
+                        {tOmni('savePlanRetry')}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="omnibox-discard-draft-btn"
+                        onClick={handleDiscardDraft}
+                        className="btn btn-tertiary btn-sm"
+                      >
+                        {tOmni('savePlanDiscardDraft')}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div
+              id={addPrivacyId}
+              data-testid="omnibox-add-privacy"
+              className="omni-add-privacy border-top-line mt-2.5 border-t border-line pt-2.5"
+            >
+              <p className="m-0 text-[12px] text-body">{tPrivacy('notice')}</p>
+            </div>
+          </div>
+        ) : null}
 
         {actionErrorCode !== null ? (
           <div
@@ -1025,6 +1955,16 @@ export function Omnibox({
           ) : null}
         </div>
       ) : null}
+
+      <DupPickerDialog
+        open={dupPickerState !== null}
+        name={dupPickerState?.name ?? ''}
+        initialItems={dupPickerState?.initialItems ?? []}
+        total={dupPickerState?.total ?? 0}
+        initialNextCursor={dupPickerState?.nextCursor ?? null}
+        onPick={handleDupPickerPick}
+        onCancel={handleDupPickerCancel}
+      />
     </div>
   );
 }
