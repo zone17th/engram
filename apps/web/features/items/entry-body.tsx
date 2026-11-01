@@ -9,6 +9,7 @@ import {
 } from '@/features/entries/concurrency-limiter';
 import {
   classifyEntryOpenError,
+  loadRealEntryBody,
   type EntryOpenErrorKind,
 } from '@/features/entries/real-body-loader';
 import { useOptionalVault, vaultBodyQueryKey } from '@/features/vault/vault-provider';
@@ -352,9 +353,13 @@ export function useEntryBody(
   const captureOpGeneration = vault?.captureOpGeneration;
   const beginOp = vault?.beginOp;
   const vaultKeyId = vault?.vaultMeta?.vault_key_id ?? null;
+  const usesRealVaultMeta = load === loadRealEntryBody;
 
   const viewportEnabled = options?.enabled ?? true;
-  const queryEnabled = unlocked && viewportEnabled;
+  const queryEnabled =
+    unlocked &&
+    viewportEnabled &&
+    (!usesRealVaultMeta || (typeof vaultKeyId === 'string' && vaultKeyId.length > 0));
   const limiter = options?.limiter ?? entryBodyLoadLimiter;
   const itemId = options?.itemId;
 

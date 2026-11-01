@@ -20,11 +20,19 @@ import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
   getUnconfirmedSavesSnapshot,
+  peekUnconfirmedSavesForTests,
+  recordUnconfirmedSave,
   resetEntryBodyLoadLimiterForTests,
+  subscribeUnconfirmedSaves,
 } from '@/features/entries';
+import { subscribeUserChanged } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
-import { TextEntryCard, type EditorPlaintextHolder } from '@/features/items/text-entry-card';
+import {
+  TextEntryCard,
+  setEditorPlaintextHolderForTests,
+  type EditorPlaintextHolder,
+} from '@/features/items/text-entry-card';
 import {
   VAULT_BODY_QUERY_KEY_PREFIX,
   VaultProvider,
@@ -90,6 +98,12 @@ function createDeferred<T = void>(): {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+function flushMacrotask(): Promise<void> {
+  const d = createDeferred();
+  setTimeout(() => d.resolve(), 0);
+  return d.promise;
 }
 
 const fastTestDeriveKek: DeriveKekFn = (
@@ -277,11 +291,13 @@ function getRenderedEntryCardIds(container: HTMLElement): string[] {
 function findCacheSentinelLeaks(
   qc: QueryClient,
   sentinels: readonly string[],
+  options?: { readonly locked?: boolean },
 ): string[] {
   const leaks: string[] = [];
 
   for (const query of qc.getQueryCache().getAll()) {
     const isPermittedVaultBodyCache =
+      !options?.locked &&
       Array.isArray(query.queryKey) &&
       query.queryKey[0] === VAULT_BODY_QUERY_KEY_PREFIX[0] &&
       query.queryKey[1] === VAULT_BODY_QUERY_KEY_PREFIX[1];
@@ -333,6 +349,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    setEditorPlaintextHolderForTests(null);
   });
 
   afterEach(() => {
@@ -341,6 +358,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    setEditorPlaintextHolderForTests(null);
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -374,6 +392,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     server: ServerSimulator;
     signOutSession: () => Promise<void>;
     loginSession: (email: string, password: string) => Promise<void>;
+    signupSession: (email: string, password: string) => Promise<void>;
+    completeOAuthSession: () => Promise<void>;
     unlock: () => Promise<void>;
     lock: () => Promise<void>;
     setCurrentMe: (me: Me) => void;
@@ -386,17 +406,22 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     initialPlaintexts?: Array<{ id: string; text: string; position?: number; version?: number }>;
     itemNotFound?: boolean;
     lazyCards?: boolean;
+    skipInitialVaultMetaReload?: boolean;
   }): Promise<Harness> {
     const locale = options?.locale ?? 'vi';
     const lazyCards = options?.lazyCards ?? false;
     let vaultCtx!: VaultContextValue;
     let signOutFn!: () => Promise<void>;
     let loginFn!: (args: { email: string; password: string }) => Promise<unknown>;
+    let signupFn!: (args: { email: string; password: string }) => Promise<unknown>;
+    let oauthCompleteFn!: () => Promise<unknown>;
     function Probe() {
       vaultCtx = useVault();
       const sess = useSession();
       signOutFn = () => sess.signOut();
       loginFn = (args) => sess.login(args);
+      signupFn = (args) => sess.signup(args);
+      oauthCompleteFn = () => sess.completeOAuthLogin();
       return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
     }
 
@@ -505,6 +530,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
       if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 });
       if (url.endsWith('/auth/login')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/signup')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/oauth/complete')) return jsonResponse(currentMe);
       if (url.endsWith('/vault')) {
         if (!createdVault) return problemResponse('vault_absent', 404);
         return jsonResponse(makeVaultGetResponse(createdVault, KEY_ID, 1));
@@ -762,11 +789,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
 
-    await act(async () => {
-      await vaultCtx.reloadVaultMeta();
-    });
-    await waitFor(() => expect(vaultCtx.vaultMeta?.vault_key_id).toBe(KEY_ID));
-
+    if (!options?.skipInitialVaultMetaReload) {
+      await act(async () => {
+        await vaultCtx.reloadVaultMeta();
+      });
+      await waitFor(() => expect(vaultCtx.vaultMeta?.vault_key_id).toBe(KEY_ID));
+    }
     const sealTextForEntry = async (
       entryId: string,
       plaintext: string,
@@ -860,6 +888,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       loginSession: async (email, password) => {
         await act(async () => {
           await loginFn({ email, password });
+        });
+      },
+      signupSession: async (email, password) => {
+        await act(async () => {
+          await signupFn({ email, password });
+        });
+      },
+      completeOAuthSession: async () => {
+        await act(async () => {
+          await oauthCompleteFn();
         });
       },
       setCurrentMe: (nextMe) => {
@@ -1111,8 +1149,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(puts[0].headers['if-match']).toBe('"1"');
     expect(puts[1].headers['if-match']).toBe('"2"');
 
-    // IP15-BE2-3: Hold PUT #3 (submitting 'Draft C'), revert textarea back to 'Draft B typed while A in flight'
-    // while PUT #3 is in flight, release PUT #3 -> editor stays open, Esc asks discard confirmation, and Save sends PUT #4 with If-Match: "3"
+    // IP15-BE2-3: Hold PUT #3 (submitting 'Draft C' with If-Match: "3"), revert textarea back to 'Draft B typed while A in flight'
+    // while PUT #3 is in flight, release PUT #3 (commits v4) -> editor stays open, Esc asks discard confirmation, and Save sends PUT #4 with If-Match: "4"
     const { promise: put3Gate, resolve: releasePut3 } = createDeferred();
     const { promise: put3Entered, resolve: notifyPut3Entered } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
@@ -1145,7 +1183,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.getByTestId(`entry-discard-confirm-${ENTRY_ID_1}`)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`entry-keep-editing-btn-${ENTRY_ID_1}`));
 
-    // Clicking Save sends PUT #4 with If-Match: "3" and restores 'Draft B typed while A in flight' on the server
+    // Clicking Save sends PUT #4 with If-Match: "4" and restores 'Draft B typed while A in flight' on the server
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
     await waitFor(() => {
       expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
@@ -1155,8 +1193,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     const allPutsAfterReversion = h.server.requests.filter((r) => r.method === 'PUT');
     expect(allPutsAfterReversion).toHaveLength(4);
-    expect(allPutsAfterReversion[2].headers['if-match']).toBe('"2"');
-    expect(allPutsAfterReversion[3].headers['if-match']).toBe('"3"');
+    expect(allPutsAfterReversion[2].headers['if-match']).toBe('"3"');
+    expect(allPutsAfterReversion[3].headers['if-match']).toBe('"4"');
   });
 
   it('412 on entry PUT keeps draft; Copy mine copies draft; Keep mine writes with the new version and fresh nonce; Load latest drops draft after inline confirm', async () => {
@@ -1322,10 +1360,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.keyDown(textareaAfter, { key: 's', ctrlKey: true });
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeCtrlS);
 
-    // Verify the resettable editorPlaintextHolderRef itself is synchronously cleared to empty strings while fallback GET is held (IP15-BE2-1)
+    // Verify the resettable plaintext holder is synchronously cleared to empty strings while fallback GET is held (IP15-BE2-1, FE3-7a)
     const holderRef: { current: EditorPlaintextHolder } = {
       current: { originalSource: '', draftValue: '' },
     };
+    setEditorPlaintextHolderForTests(holderRef);
     const entryMeta = Array.from(h.server.entries.values())[0];
     h.rerenderPage(
       <TextEntryCard
@@ -1338,7 +1377,6 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         onMoveUp={() => {}}
         onMoveDown={() => {}}
         onDelete={() => {}}
-        editorPlaintextHolderRef={holderRef}
       />,
     );
     await waitFor(() => {
@@ -1392,6 +1430,162 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(sealSpy).not.toHaveBeenCalled();
     expect(sealUpdateSpy).not.toHaveBeenCalled();
 
+    // IP15-BE3-2: Unmount TextEntryCard while fallback GET is held in flight, keep VaultProvider mounted,
+    // lock -> holder is synchronously empty BEFORE releasing the GET; then unlock + release -> zero seal/PUT/restore
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const unmountTextarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(unmountTextarea, { target: { value: PRE_LOCK_DRAFT } });
+    expect(holderRef.current.draftValue).toBe(PRE_LOCK_DRAFT);
+    expect(holderRef.current.originalSource).toBe('Remote v2 body');
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        return problemResponse('version_mismatch', 412);
+      }
+      return null;
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    const { promise: getGateUnmount, resolve: releaseGetUnmount } = createDeferred();
+    const { promise: fallbackGetUnmountEntered, resolve: notifyFallbackGetUnmountEntered } =
+      createDeferred();
+    const { promise: fallbackGetUnmountFinished, resolve: notifyFallbackGetUnmountFinished } =
+      createDeferred();
+    let holdUnmountGet = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdUnmountGet) {
+        notifyFallbackGetUnmountEntered();
+        await getGateUnmount;
+        queueMicrotask(() => notifyFallbackGetUnmountFinished());
+      }
+      return null;
+    });
+
+    const putsBeforeUnmountKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
+    sealSpy.mockClear();
+    sealUpdateSpy.mockClear();
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await fallbackGetUnmountEntered;
+
+    // Unmount TextEntryCard while retaining VaultProvider (before lock and before releasing GET)
+    h.rerenderPage(<div data-testid="unmounted-during-keep-mine">Away</div>);
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+
+    // Lock while GET is still held -> holder remains empty BEFORE releasing the GET
+    await h.lock();
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+
+    // Unlock and release the held GET -> zero seal, zero PUT, zero restore
+    holdUnmountGet = false;
+    await h.unlock();
+    releaseGetUnmount();
+    await fallbackGetUnmountFinished;
+    await act(async () => {
+      await flushMacrotask();
+    });
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(sealUpdateSpy).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+      putsBeforeUnmountKeepMine,
+    );
+    expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
+
+    // Remount TextEntryCard for the remaining checks in this test
+    setEditorPlaintextHolderForTests(null);
+    h.rerenderPage(
+      <TextEntryCard
+        entry={entryMeta}
+        itemId={ITEM_ID}
+        index={0}
+        total={1}
+        canReorder={false}
+        lazy={false}
+        onMoveUp={() => {}}
+        onMoveDown={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
+
+    // IP15-FE3-6: Typing in the textarea while Keep mine fallback GET is in flight aborts Keep mine
+    // back to the conflict banner instead of sealing text that was not confirmed at click
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const revisionTextarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(revisionTextarea, { target: { value: 'Confirmed at click draft' } });
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        return problemResponse('version_mismatch', 412);
+      }
+      return null;
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    const { promise: getGateRev, resolve: releaseGetRev } = createDeferred();
+    const { promise: getRevEntered, resolve: notifyGetRevEntered } = createDeferred();
+    let holdGetRev = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdGetRev) {
+        notifyGetRevEntered();
+        await getGateRev;
+      }
+      return null;
+    });
+
+    const putsBeforeRevKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
+    sealSpy.mockClear();
+    sealUpdateSpy.mockClear();
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await getRevEntered;
+
+    // Edit textarea while fallback GET is in flight -> bumps editorRevisionRef
+    fireEvent.change(revisionTextarea, {
+      target: { value: 'Edited during Keep mine fallback GET' },
+    });
+    holdGetRev = false;
+    releaseGetRev();
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`),
+      ).not.toBeDisabled();
+    });
+    expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(sealUpdateSpy).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+      putsBeforeRevKeepMine,
+    );
+    // Discard the edited draft to return to clean view for BE2-4
+    fireEvent.keyDown(revisionTextarea, { key: 'Escape' });
+    fireEvent.click(screen.getByTestId(`entry-discard-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
     // IP15-BE2-4: Hold fallback GET A, lock/unlock, open a new editor and start deferred PUT B, then release A
     // -> stale A must NOT release B's single-flight guard; Save stays disabled, Ctrl+S sends no extra PUT, and only B settling releases the guard
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
@@ -1411,12 +1605,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     const { promise: getAGate, resolve: releaseGetA } = createDeferred();
     const { promise: getAEntered, resolve: notifyGetAEntered } = createDeferred();
+    const { promise: getAResurned, resolve: notifyGetAReturned } = createDeferred();
+    let getACompletedCount = 0;
     let holdGetA = true;
     h.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdGetA) {
         notifyGetAEntered();
         await getAGate;
+        getACompletedCount += 1;
+        queueMicrotask(() => notifyGetAReturned());
       }
       return null;
     });
@@ -1453,16 +1651,21 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const putsWhileBInFlight = h.server.requests.filter((r) => r.method === 'PUT').length;
     expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
 
-    // Release stale fallback GET A while PUT B is still in flight -> Save must stay disabled and Ctrl+S must send no extra PUT
+    // IP15-FE3-5: Release stale fallback GET A while PUT B is still in flight, wait for the route override
+    // counter + several macrotask turns so A's continuation (fetch -> Response.json() -> entryGet -> catch/finally)
+    // has genuinely finished, then assert Save is still disabled and Ctrl+S sends no extra PUT
     releaseGetA();
+    await getAResurned;
+    expect(getACompletedCount).toBe(1);
     await act(async () => {
-      await Promise.resolve();
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
     });
     expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
     fireEvent.keyDown(textareaB, { key: 's', ctrlKey: true });
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsWhileBInFlight);
-
     // Only B settling releases B's guard and commits 'New post-unlock draft B'
     releasePutB();
     await waitFor(() => {
@@ -1921,40 +2124,75 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const cardsAfterOverlap = getRenderedEntryCardIds(h.container);
     expect(cardsAfterOverlap).toEqual([ENTRY_ID_3, ENTRY_ID_1, ENTRY_ID_2]);
 
-    // Part 2: Flush immediately on visibilitychange (hidden) before 400 ms debounce expires
-    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
-    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      value: 'hidden',
-    });
-    fireEvent(document, new Event('visibilitychange'));
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      value: 'visible',
-    });
+    // Part 2 (IP15-BE3-5): Flush immediately on visibilitychange (hidden) WITHOUT advancing the 400 ms debounce timer
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
+      // Pending debounce only -> no PATCH sent yet
+      expect(reorderCallCount).toBe(2);
 
-    await waitFor(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      });
+      await act(async () => {
+        fireEvent(document, new Event('visibilitychange'));
+        await Promise.resolve();
+      });
       expect(reorderCallCount).toBe(3);
-    });
+      const reqsAfterVis = h.server.requests.filter((r) => r.url.endsWith('/entries/reorder'));
+      expect(JSON.parse(reqsAfterVis[2].rawBody)).toEqual({
+        entry_ids: [ENTRY_ID_3, ENTRY_ID_2, ENTRY_ID_1],
+      });
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'visible',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
 
-    // Part 3: Flush immediately on pagehide before 400 ms debounce expires
-    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
-    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
-    fireEvent(window, new Event('pagehide'));
+    // Part 3 (IP15-BE3-5): Flush immediately on pagehide WITHOUT advancing the 400 ms debounce timer
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
+      expect(reorderCallCount).toBe(3);
 
-    await waitFor(() => {
+      await act(async () => {
+        fireEvent(window, new Event('pagehide'));
+        await Promise.resolve();
+      });
       expect(reorderCallCount).toBe(4);
-    });
+      const reqsAfterPagehide = h.server.requests.filter((r) =>
+        r.url.endsWith('/entries/reorder'),
+      );
+      expect(JSON.parse(reqsAfterPagehide[3].rawBody)).toEqual({
+        entry_ids: [ENTRY_ID_2, ENTRY_ID_3, ENTRY_ID_1],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
 
-    // Part 4: Flush immediately on vault lock before 400 ms debounce expires
-    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_1}`));
-    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_1}`));
-    await h.lock();
+    // Part 4 (IP15-BE3-5): Flush immediately on vault lock WITHOUT advancing the 400 ms debounce timer
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_1}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_1}`));
+      expect(reorderCallCount).toBe(4);
 
-    await waitFor(() => {
+      await act(async () => {
+        await h.vault().lockNow();
+      });
       expect(reorderCallCount).toBe(5);
-    });
+      const reqsAfterLock = h.server.requests.filter((r) => r.url.endsWith('/entries/reorder'));
+      expect(JSON.parse(reqsAfterLock[4].rawBody)).toEqual({
+        entry_ids: [ENTRY_ID_2, ENTRY_ID_1, ENTRY_ID_3],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('disables + Tag chip at 20 tags with tooltip, and disables + Text at 200 entries', async () => {
@@ -1962,14 +2200,52 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       id: `tag-${i + 1}`,
       display: `t${i + 1}`,
     }));
+    let activeSentinelCallback: IntersectionObserverCallback | null = null;
+    let observedSentinelTargets: Element[] = [];
+    class MockSentinelIntersectionObserver implements IntersectionObserver {
+      readonly root: Element | Document | null = null;
+      readonly rootMargin: string;
+      readonly thresholds: ReadonlyArray<number> = [0];
+      private readonly cb: IntersectionObserverCallback;
+
+      constructor(cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+        this.cb = cb;
+        this.rootMargin = opts?.rootMargin ?? '0px';
+        activeSentinelCallback = cb;
+      }
+
+      observe(target: Element): void {
+        observedSentinelTargets.push(target);
+      }
+
+      unobserve(target: Element): void {
+        observedSentinelTargets = observedSentinelTargets.filter((t) => t !== target);
+      }
+
+      disconnect(): void {
+        if (activeSentinelCallback === this.cb) {
+          activeSentinelCallback = null;
+        }
+      }
+
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', MockSentinelIntersectionObserver);
+
     const h = await setupItemPageHarness({
       initialItem: makeItemSummary({ tags: twentyTags, entry_count: 200 }),
       initialPlaintexts: [],
     });
 
     // Populate 200 entries metadata on server
+    const expectedIds = Array.from(
+      { length: 200 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    );
     for (let i = 0; i < 200; i++) {
-      const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+      const id = expectedIds[i];
       h.server.entries.set(id, {
         id,
         item_id: ITEM_ID,
@@ -2004,16 +2280,54 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(addTextBtn).toBeDisabled();
     });
 
-    // Also verifies batch rendering: only 20 cards rendered initially out of 200, then load more reveals the next 20-card batch (40, then 60)
-    expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(20);
-    const loadMoreBtn = screen.getByTestId('entries-load-more-btn');
-    fireEvent.click(loadMoreBtn);
-    await waitFor(() => {
-      expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(40);
+    // IP15-BE3-6: Drive the page's real batch sentinel IntersectionObserver:
+    // 1. Initially 20 cards in position order; sentinel is observed
+    const sentinel = screen.getByTestId('entries-batch-sentinel');
+    expect(observedSentinelTargets).toContain(sentinel);
+    expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 20));
+
+    const triggerSentinelObserver = (isIntersecting: boolean) => {
+      const cb = activeSentinelCallback;
+      expect(cb).not.toBeNull();
+      const currentSentinel = screen.getByTestId('entries-batch-sentinel');
+      const fakeEntry: IntersectionObserverEntry = {
+        boundingClientRect: currentSentinel.getBoundingClientRect(),
+        intersectionRatio: isIntersecting ? 1 : 0,
+        intersectionRect: currentSentinel.getBoundingClientRect(),
+        isIntersecting,
+        rootBounds: null,
+        target: currentSentinel,
+        time: Date.now(),
+      };
+      cb!([fakeEntry], {} as IntersectionObserver);
+    };
+
+    // 2. Non-intersecting delivery -> stays at 20 cards
+    act(() => {
+      triggerSentinelObserver(false);
     });
+    expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 20));
+
+    // 3. First intersecting delivery -> advances to 40 cards in position order
+    act(() => {
+      triggerSentinelObserver(true);
+    });
+    await waitFor(() => {
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 40));
+    });
+
+    // 4. Second intersecting delivery -> advances to 60 cards in position order
+    act(() => {
+      triggerSentinelObserver(true);
+    });
+    await waitFor(() => {
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 60));
+    });
+
+    // 5. Explicit load-more button also advances to 80 cards in position order
     fireEvent.click(screen.getByTestId('entries-load-more-btn'));
     await waitFor(() => {
-      expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(60);
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 80));
     });
   });
 
@@ -2118,8 +2432,14 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain(SENTINEL_BODY);
     expect(h.container.textContent).not.toContain(SENTINEL_DRAFT);
     assertNoPlaintextAttrs(h.container, [SENTINEL_BODY, SENTINEL_DRAFT], { locked: true });
-    expect(h.qc.getQueriesData({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })).toEqual([]);
-    expect(findCacheSentinelLeaks(h.qc, [SENTINEL_BODY, SENTINEL_DRAFT])).toEqual([]);
+    expect(
+      h.qc
+        .getQueriesData({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })
+        .filter(([, data]) => data !== undefined),
+    ).toEqual([]);
+    expect(
+      findCacheSentinelLeaks(h.qc, [SENTINEL_BODY, SENTINEL_DRAFT], { locked: true }),
+    ).toEqual([]);
 
     // 4. Unlock again -> shows "Bản nháp chưa lưu đã bị xoá khi khoá vault"
     await h.unlock();
@@ -2414,6 +2734,85 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
     );
     expect(allItemPatches[allItemPatches.length - 1].headers['if-match']).toBe('"5"');
+
+    // IP15-BE3-4: Held Load latest GET(v7) -> concurrent Keep mine hits 412 with current_version=8 (and NO v8 summary)
+    // -> releasing GET(v7) must NOT synthesize a v8 ItemSummary from older fields, must NOT overwrite the typed Keep mine
+    // inputs, and must NOT clear the newer unresolved v8 conflict.
+    h.server.item.version = 7;
+    h.server.item.name = 'remote-v7-name';
+    h.server.item.hint = 'remote-v7-hint';
+
+    fireEvent.change(nameInput, { target: { value: 'local-keep-mine-candidate' } });
+    fireEvent.blur(nameInput);
+    await waitFor(() => {
+      expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    });
+
+    const { promise: loadV7Gate, resolve: releaseLoadV7 } = createDeferred();
+    const { promise: loadV7Entered, resolve: notifyLoadV7Entered } = createDeferred();
+    const { promise: loadV7Finished, resolve: notifyLoadV7Finished } = createDeferred();
+    let holdLoadV7 = true;
+    const fetchedV7Summary: ItemSummary = {
+      ...h.server.item,
+      version: 7,
+      name: 'remote-v7-name',
+      hint: 'remote-v7-hint',
+    };
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && holdLoadV7) {
+        notifyLoadV7Entered();
+        await loadV7Gate;
+        queueMicrotask(() => notifyLoadV7Finished());
+        return jsonResponse(fetchedV7Summary, 200);
+      }
+      return null;
+    });
+
+    // Click Load latest and hold its GET(v7)
+    fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await loadV7Entered;
+
+    // While GET(v7) is pending, another device advances the server to v8; user clicks Keep mine -> PATCH returns 412 with current_version=8 (no v8 summary)
+    h.server.item.version = 8;
+    h.server.item.name = 'remote-v8-authoritative-name';
+    h.server.item.hint = 'remote-v8-authoritative-hint';
+    fireEvent.click(screen.getByTestId('item-conflict-keep-mine'));
+
+    await waitFor(() => {
+      const patchesAfterKeepMine = h.server.requests.filter(
+        (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+      );
+      expect(patchesAfterKeepMine[patchesAfterKeepMine.length - 1].headers['if-match']).toBe('"7"');
+      expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    });
+
+    // Release the older GET(v7)
+    holdLoadV7 = false;
+    h.server.overrideRoute(null);
+    releaseLoadV7();
+    await loadV7Finished;
+    await act(async () => {
+      await flushMacrotask();
+    });
+
+    // The newer v8 conflict remains active, inputs keep the user's typed candidate (not overwritten by v6 or v7),
+    // and the item cache is NOT fabricated with version 8 + older v6/v7 fields
+    expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    expect(screen.getByTestId('item-name-input')).toHaveValue('local-keep-mine-candidate');
+    const cachedAfterStaleRelease = h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID]);
+    expect(cachedAfterStaleRelease?.version).toBe(7);
+    expect(cachedAfterStaleRelease?.name).toBe('remote-v7-name');
+
+    // Clicking Load latest now fetches the real v8 summary and resolves the conflict cleanly
+    fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+      expect(screen.getByTestId('item-name-input')).toHaveValue('remote-v8-authoritative-name');
+      expect(screen.getByTestId('item-hint-input')).toHaveValue('remote-v8-authoritative-hint');
+    });
+    expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(8);
   });
 
   it('409 reorder_mismatch refetches list and re-applies the last move once if both entries still exist, or shows "Danh sách đã đổi ở thiết bị khác" if an entry was removed', async () => {
@@ -2546,7 +2945,20 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 3. Trigger another session_invalid for User A, then log in as User B via real SessionProvider.login
     await h.unlock();
     await waitFor(() => {
-      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+      const bodyEl = screen.queryByTestId('entry-body');
+      if (!bodyEl) {
+        const cardListHtml =
+          h.container.querySelector('[data-testid="entry-card-list"]')?.innerHTML ?? 'none';
+        const cacheSummary = h.qc
+          .getQueryCache()
+          .getAll()
+          .map((q) => `${JSON.stringify(q.queryKey)}:${q.state.status}/${q.state.fetchStatus}`)
+          .join(', ');
+        throw new Error(
+          `entry-body missing (vaultState=${h.vault().state}, keyId=${String(h.vault().vaultMeta?.vault_key_id)}, queries=[${cacheSummary}], list=${cardListHtml.slice(0, 240)})`,
+        );
+      }
+      expect(bodyEl).toHaveTextContent('Secret for User A');
     });
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     const textarea2 = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
@@ -2554,29 +2966,90 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
     });
 
-    // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5)
-    h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
-    failPutWithSessionInvalid = false;
-    h.setCurrentMe(makeMe(USER_B_ID, 'present'));
-    await h.loginSession('b@example.test', 'pw');
-
-    // Store clears BEFORE any detail page mounts
-    await waitFor(() => {
-      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    // Track user-changed notifications and store subscriber notifications (advisor-dec-199, IP15-BE3-3, FE3-3, FE3-4)
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
     });
 
-    // Log User A back in and remount ItemDetailPage -> User A's prior record does NOT return
-    await waitFor(() => {
-      expect(h.vault().inFlight).toBe(false);
-    });
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    await h.loginSession('a@example.test', 'pw');
-    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
-    h.rerenderPage();
-    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+    try {
+      // Same-user re-login (User A -> User A) must NOT emit notifyUserChanged and must NOT clear User A's record
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([]);
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+      // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5 / BE3-3)
+      h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
+      failPutWithSessionInvalid = false;
+      const emitsBeforeSwitch = storeEmitCount;
+
+      // User B logs in with no item page mounted -> eagerly notifies user change and clears the store WITHOUT any snapshot read
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await h.loginSession('b@example.test', 'pw');
+      expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
+      expect(storeEmitCount).toBeGreaterThan(emitsBeforeSwitch);
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+
+      // Log User A back in without any intervening store read/detail mount, then remount -> User A's prior notice does NOT return
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+      });
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([
+        { prev: USER_A_ID, next: USER_B_ID },
+        { prev: USER_B_ID, next: USER_A_ID },
+      ]);
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      h.rerenderPage();
+      expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+
+      // Verify signup and OAuth callback paths also emit notifyUserChanged and clear the store away from the detail route (advisor-dec-199)
+      h.rerenderPage(<div data-testid="away-for-signup-oauth">Away</div>);
+      recordUnconfirmedSave({
+        userId: USER_A_ID,
+        itemId: ITEM_ID,
+        itemName: 'wifi',
+        source: 'entry',
+      });
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+      // Signup as User B -> notifies and clears User A's record
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await h.signupSession('b-signup@example.test', 'pw');
+      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
+        prev: USER_A_ID,
+        next: USER_B_ID,
+      });
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+
+      // Record for User B, then complete OAuth login as User A -> notifies and clears User B's record
+      recordUnconfirmedSave({
+        userId: USER_B_ID,
+        itemId: ITEM_ID,
+        itemName: 'wifi-b',
+        source: 'entry',
+      });
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.completeOAuthSession();
+      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
+        prev: USER_B_ID,
+        next: USER_A_ID,
+      });
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+    } finally {
+      unsubUserChanged();
+      unsubStore();
+    }
   });
 
   it('"+ Văn bản" creates a new text entry via sealNewEntry + POST /items/{id}/entries and renders it in position order', async () => {
@@ -2611,6 +3084,36 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     assertNoPlaintextAttrs(h.container, ['First entry', 'Brand new second entry']);
     expect(findCacheSentinelLeaks(h.qc, ['Brand new second entry'])).toEqual([]);
+
+    // advisor-dec-200: Onboarding step 3 skipped leaves vault.vaultMeta === null while vault.state === 'unlocked';
+    // the first entry save via + Text composer and 404 Save as new entry must call vault.reloadVaultMeta() and succeed
+    cleanup();
+    const hOnboardingSkip = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
+    });
+    expect(hOnboardingSkip.vault().state).toBe('unlocked');
+    expect(hOnboardingSkip.vault().vaultMeta).toBeNull();
+
+    const reloadMetaSpy = vi.spyOn(hOnboardingSkip.vault(), 'reloadVaultMeta');
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'First entry after onboarding step 3 skip' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await waitFor(() => {
+      expect(reloadMetaSpy).toHaveBeenCalledTimes(1);
+      expect(hOnboardingSkip.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'First entry after onboarding step 3 skip',
+      );
+    });
+    const postOnboardingCreateReqs = hOnboardingSkip.server.requests.filter(
+      (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+    );
+    expect(postOnboardingCreateReqs).toHaveLength(1);
   });
 
   it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {
@@ -2842,10 +3345,27 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
           (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
         ),
       ).toBe(true);
-      expect(screen.getAllByTestId('entry-body')).toHaveLength(2);
+      const bodiesText = screen
+        .getAllByTestId('entry-body')
+        .map((el) => el.textContent);
+      expect(bodiesText).toEqual([
+        'Entry 2 body',
+        'Draft rescued via Save as new entry',
+      ]);
     });
-
-    const bodiesText = screen.getAllByTestId('entry-body').map((el) => el.textContent);
-    expect(bodiesText).toContain('Draft rescued via Save as new entry');
+    const postCreateRequests = h.server.requests.filter(
+      (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+    );
+    const parsedPostCreate: unknown = JSON.parse(
+      postCreateRequests[postCreateRequests.length - 1].rawBody,
+    );
+    const rescuedEntryId =
+      parsedPostCreate !== null &&
+      typeof parsedPostCreate === 'object' &&
+      'id' in parsedPostCreate &&
+      typeof parsedPostCreate.id === 'string'
+        ? parsedPostCreate.id
+        : '';
+    expect(getRenderedEntryCardIds(h.container)).toEqual([ENTRY_ID_2, rescuedEntryId]);
   });
 });

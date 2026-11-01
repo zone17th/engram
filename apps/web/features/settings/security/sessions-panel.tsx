@@ -19,6 +19,7 @@ import { useSession } from '@/features/auth/session-provider';
 import { VaultSecurityPanel } from '@/features/settings/security/vault/vault-security-panel';
 import { AutoLockCard } from '@/features/settings/security/auto-lock-card';
 import { PasskeySecurityCard } from '@/features/settings/security/passkey-card';
+import { formatUserAgent } from '@/features/settings/security/user-agent-label';
 
 function formatRelative(iso: string, locale: string): string {
   try {
@@ -85,8 +86,8 @@ export function SessionsPanel({ onOpenRevokeDialog }: { onOpenRevokeDialog: () =
         {sessions.data?.items.map((session) => (
           <div key={session.id} className="flex flex-wrap items-center gap-3">
             <span className={`mono ${session.current ? 'text-success' : 'text-muted'}`}>●</span>
-            <span className="min-w-0 flex-1 break-words">
-              {session.device_label ?? session.user_agent ?? t('security.unknownDevice')}
+            <span className="min-w-0 flex-1 break-words" title={session.user_agent ?? undefined}>
+              {session.device_label ?? formatUserAgent(session.user_agent) ?? t('security.unknownDevice')}
             </span>
             <span className="text-muted">{formatRelative(session.last_seen_at, me?.settings.locale ?? 'en')}</span>
             {session.current ? (

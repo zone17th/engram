@@ -707,7 +707,7 @@ export function RecoveryKeysDialog({
             <section data-view={isRotate ? 'rot-mismatch' : 'rk-mismatch'}>
               <div className="card mb-5 border-error p-5">
                 <p className="t-label mb-2 text-muted">
-                  <span className="mono">412 version_mismatch</span>
+                  {t('errors.versionMismatchBadge')}
                 </p>
                 <AuthStatus tone="error" className="mb-0">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
@@ -738,8 +738,7 @@ export function RecoveryKeysDialog({
             <section data-view={isRotate ? 'rot-ratelimit' : 'rk-ratelimit'}>
               <div className="card mb-5 border-warning p-5">
                 <p className="t-label mb-2 text-muted">
-                  <span className="mono">429 rate_limited</span> ·{' '}
-                  <span className="mono">Retry-After: {classifiedError?.retryAfterSeconds ?? 45}</span>
+                  {t('errors.rateLimitedBadge', { seconds: classifiedError?.retryAfterSeconds ?? 45 })}
                 </p>
                 <AuthStatus tone="error" className="mb-0">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
