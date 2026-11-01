@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -61,9 +62,34 @@ func TestRejectWrongAlgAndTamper(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts := strings.Split(tok, ".")
-	parts[2] = parts[2][:len(parts[2])-2] + "aa"
-	if _, _, _, err := iss.ParseAccess(strings.Join(parts, ".")); err != auth.ErrUnauthenticated {
-		t.Fatalf("tamper: %v", err)
+	if len(parts) != 3 {
+		t.Fatalf("token không đúng định dạng 3 phần: %d", len(parts))
+	}
+	origSig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("decode chữ ký: %v", err)
+	}
+	if len(origSig) == 0 {
+		t.Fatal("chữ ký rỗng")
+	}
+	for _, tc := range []struct {
+		name string
+		idx  int
+	}{
+		{name: "first_byte", idx: 0},
+		{name: "last_byte", idx: len(origSig) - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sig := append([]byte(nil), origSig...)
+			sig[tc.idx] ^= 0xFF
+			tampered := strings.Join([]string{parts[0], parts[1], base64.RawURLEncoding.EncodeToString(sig)}, ".")
+			if tampered == tok {
+				t.Fatalf("token giả mạo trùng bản gốc (%s)", tc.name)
+			}
+			if _, _, _, err := iss.ParseAccess(tampered); err != auth.ErrUnauthenticated {
+				t.Fatalf("tamper (%s): %v", tc.name, err)
+			}
+		})
 	}
 
 	other := auth.NewTokenIssuer(bytes32(2), "http://localhost:3000", "http://localhost:3000", clk)
