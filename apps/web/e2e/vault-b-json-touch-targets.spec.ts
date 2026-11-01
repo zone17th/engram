@@ -7,7 +7,7 @@ import {
 import { UI_WAIT_MS, installApiMocks, unlockFromBanner } from './vault-locked-support';
 
 /**
- * FU11 JSON-TABLE + ITEM TOUCH (advisor-dec-216, -217, -221, -223, -224):
+ * FU11 JSON-TABLE + ITEM TOUCH (advisor-dec-216, -217, -221, -223, -224, -228):
  * Verifies in a coarse-pointer context (`hasTouch: true, isMobile: true`, asserting
  * `window.matchMedia('(pointer: coarse)').matches === true`) at both 390x844 and 768x1024:
  * 1. Every item header and JSON table control reaches >= 44x44 px and `document.elementFromPoint`
@@ -22,6 +22,9 @@ import { UI_WAIT_MS, installApiMocks, unlockFromBanner } from './vault-locked-su
  *      `json-commit-cell-*`, `json-cancel-cell-*`) and the add-field toolbar bar
  *      (`json-new-key-input-*`, `json-new-type-select-*`, `json-confirm-add-field-*`,
  *      `json-cancel-add-field-*`) (dec-223, dec-224)
+ *    - the Import JSON dialog parse-error jump button (`import-json-parse-error-jump`) and
+ *      format-before-save checkbox hit area via its wrapping label (`import-json-format-checkbox`
+ *      / `import-json-format-label`) (dec-228)
  * 2. At 390 and 768, JSON table cells wrap without horizontal clipping, per-row delete `×` buttons
  *    remain on-screen inside the table host viewport in edit/table mode, and the item hint input
  *    placeholder fits without truncation at 390 (dec-216).
@@ -174,7 +177,14 @@ async function probeCoarseControls(
         throw new Error(`Missing control for selector (${name}): ${selector}`);
       }
       el.scrollIntoView({ block: 'center', inline: 'nearest' });
-      const r = el.getBoundingClientRect();
+      const rectSource =
+        el instanceof HTMLInputElement &&
+        el.type === 'checkbox' &&
+        el.labels &&
+        el.labels.length > 0
+          ? el.labels[0]!
+          : el;
+      const r = rectSource.getBoundingClientRect();
       const left = r.left;
       const top = r.top;
       const right = r.right;
@@ -504,6 +514,61 @@ test.describe('FU11 JSON-TABLE + ITEM TOUCH 44x44 coarse-pointer targets and nar
         await expect(tableHost.getByTestId('json-new-key-input-root')).toBeHidden({
           timeout: UI_WAIT_MS,
         });
+
+        // 5. Open Import JSON dialog and probe parse-error jump button + format-before-save checkbox label (dec-228)
+        await page.getByTestId('btn-import-json').click();
+        const importDialog = page.getByTestId('import-json-dialog');
+        await expect(importDialog).toBeVisible({ timeout: UI_WAIT_MS });
+
+        const importTextarea = importDialog.getByTestId('import-json-source-textarea');
+        await importTextarea.fill('{\n  "bad": 1,\n}');
+        await expect(importDialog.getByTestId('import-json-parse-error-jump')).toBeVisible({
+          timeout: UI_WAIT_MS,
+        });
+
+        const importTargets = [
+          {
+            name: 'import-json-parse-error-jump',
+            selector: '[data-testid="import-json-parse-error-jump"]',
+          },
+          {
+            name: 'import-json-format-checkbox',
+            selector: '[data-testid="import-json-format-checkbox"]',
+          },
+        ] as const;
+
+        const measuredImport = await probeCoarseControls(page, importTargets);
+        for (const ctrl of measuredImport) {
+          expect(
+            ctrl.rect.width,
+            `${ctrl.name} width at ${viewport.width}`,
+          ).toBeGreaterThanOrEqual(43.5);
+          expect(
+            ctrl.rect.height,
+            `${ctrl.name} height at ${viewport.width}`,
+          ).toBeGreaterThanOrEqual(43.5);
+          expect(
+            ctrl.hits,
+            `${ctrl.name} 4-corner + center hits at ${viewport.width} (misses: ${ctrl.missDetails.join(', ')})`,
+          ).toEqual({
+            center: true,
+            topLeft: true,
+            topRight: true,
+            bottomLeft: true,
+            bottomRight: true,
+          });
+        }
+
+        // Verify valid JSON enables the format checkbox and clicking its wrapping label toggles it
+        await importTextarea.fill('{"a":1}');
+        const formatCheckbox = importDialog.getByTestId('import-json-format-checkbox');
+        await expect(formatCheckbox).toBeEnabled({ timeout: UI_WAIT_MS });
+        await expect(formatCheckbox).not.toBeChecked();
+        await importDialog.getByTestId('import-json-format-label').click();
+        await expect(formatCheckbox).toBeChecked();
+
+        await importDialog.getByTestId('import-json-cancel-btn').click();
+        await expect(importDialog).toBeHidden({ timeout: UI_WAIT_MS });
       }
     } finally {
       await context.close();
@@ -544,6 +609,15 @@ test.describe('FU11 JSON-TABLE + ITEM TOUCH 44x44 coarse-pointer targets and nar
         timeout: UI_WAIT_MS,
       });
 
+
+      // Open Import JSON dialog with invalid JSON so parse-error jump and format checkbox are mounted
+      await page.getByTestId('btn-import-json').click();
+      const importDialog = page.getByTestId('import-json-dialog');
+      await expect(importDialog).toBeVisible({ timeout: UI_WAIT_MS });
+      await importDialog.getByTestId('import-json-source-textarea').fill('{\n  "bad": 1,\n}');
+      await expect(importDialog.getByTestId('import-json-parse-error-jump')).toBeVisible({
+        timeout: UI_WAIT_MS,
+      });
       const firstTagDisplay = FU11_ITEM_FIXTURE.item.tags[0]!.display;
 
       const comparison = await page.evaluate(
@@ -563,6 +637,9 @@ test.describe('FU11 JSON-TABLE + ITEM TOUCH 44x44 coarse-pointer targets and nar
             typeSelect: '[data-testid="json-type-select-root.p0"]',
             commitCellBtn: '[data-testid="json-commit-cell-root.p0"]',
             cancelCellBtn: '[data-testid="json-cancel-cell-root.p0"]',
+            importParseErrorJump: '[data-testid="import-json-parse-error-jump"]',
+            importFormatLabel: '[data-testid="import-json-format-label"]',
+            importFormatCheckbox: '[data-testid="import-json-format-checkbox"]',
           } as const;
 
           const measureAll = () => {
