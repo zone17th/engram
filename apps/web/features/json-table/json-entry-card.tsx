@@ -1211,7 +1211,17 @@ export function JsonEntryCard({
   // 404 action: Save as new entry (type: 'json')
   const handleSaveAsNewEntry = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
+    // SYNC-BER2-1: a retained card may still hold a pending table cell edit (blur/commit not yet
+    // applied to the holder). Flush it first, exactly as ordinary Save does; when the flush fails
+    // (invalid number, over-cap cell) keep the draft and card, post nothing, and take no save lock.
+    if (modeRef.current === 'table' && gridCommitControlRef.current) {
+      if (!gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+        return;
+      }
+    }
     const syncCandidate = readCurrentCandidateFromHolder();
+    const syncBytes = measureUtf8Bytes(syncCandidate);
+    if (syncBytes === 0 || syncBytes > ENTRY_MAX_PLAINTEXT_BYTES) return;
     if (!parseJsonStrict(syncCandidate).ok) return;
 
     const capturedEpoch = lockEpochRef.current;

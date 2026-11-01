@@ -43,6 +43,7 @@ import type { Me } from '@/lib/api/auth';
 import type {
   Entry,
   EntryChange,
+  EntryCreateRequest,
   EntryChangesPage,
   EntryMeta,
   ItemSummary,
@@ -333,6 +334,8 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
       },
     ];
 
+    const createPosts: EntryCreateRequest[] = [];
+
     let changesHandler: (params: URLSearchParams) => Promise<Response> | Response = () =>
       jsonResponse({
         changes: [],
@@ -412,6 +415,25 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
           items: liveEntryMetas(),
           next_cursor: null,
         });
+      }
+
+      if (parsedUrl.pathname === `/api/v1/items/${ITEM_ID}/entries` && method === 'POST') {
+        const req = JSON.parse(String(init?.body ?? '{}')) as EntryCreateRequest;
+        createPosts.push(req);
+        const created: Entry = {
+          id: req.id,
+          item_id: ITEM_ID,
+          type: req.type,
+          position: 1,
+          version: 1,
+          plaintext_len_bucket: req.plaintext_len_bucket,
+          envelope: req.envelope,
+          ciphertext: req.ciphertext,
+          created_at: '2026-11-01T12:20:00Z',
+          updated_at: '2026-11-01T12:20:00Z',
+        };
+        entriesMap.set(created.id, created);
+        return jsonResponse(toEntryMeta(created), 201);
       }
 
       const singleEntryMatch = /^\/api\/v1\/entries\/([^/]+)$/.exec(parsedUrl.pathname);
@@ -521,6 +543,17 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
       container: rendered.container,
       qc,
       entriesMap,
+      createPosts,
+      openCreatedPlaintext: async (req: EntryCreateRequest): Promise<string> => {
+        const op = vaultCtx.beginOp();
+        const opened = await op.client.openEntry({
+          entryId: req.id,
+          envelope: req.envelope,
+          ciphertext: req.ciphertext,
+          opGeneration: op.opGeneration,
+        });
+        return opened.plaintext;
+      },
       setChangesHandler: (fn: (params: URLSearchParams) => Promise<Response> | Response) => {
         changesHandler = fn;
       },
@@ -588,6 +621,74 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
     const retainedInput = screen.getByTestId('json-cell-input-root.p0') as HTMLInputElement;
     expect(retainedInput.value).toBe(UNCOMMITTED_CELL_SENTINEL);
     assertNoPlaintextAttrs(h.container, [UNCOMMITTED_CELL_SENTINEL]);
+  });
+
+  it('Save as new entry flushes a pending cell edit first: an invalid pending number posts nothing and keeps the draft, a corrected cell seals the corrected source (SYNC-BER2-1)', async () => {
+    const jsonHolderRef: { current: EditorPlaintextHolder } = {
+      current: {
+        originalSource: '',
+        draftValue: '',
+        submittedCandidateSource: '',
+        tableSource: '',
+      },
+    };
+    jsonTableTesting.setJsonEditorPlaintextHolderForTests(jsonHolderRef);
+
+    const h = await setupJsonRetentionHarness('{"n":1}');
+
+    const jsonCard = screen.getByTestId(`entry-card-${ENTRY_ID_JSON}`);
+    fireEvent.click(within(jsonCard).getByTestId('json-cell-btn-root.p0'));
+    const pendingInput = within(jsonCard).getByTestId('json-cell-input-root.p0') as HTMLInputElement;
+    // Incomplete number: not committed, the holder still carries the valid old source.
+    fireEvent.change(pendingInput, { target: { value: '-' } });
+    expect(pendingInput.value).toBe('-');
+    expect(jsonHolderRef.current.tableSource).toBe('{"n":1}');
+
+    h.entriesMap.get(ENTRY_ID_JSON)!.deleted = true;
+    h.setChangesHandler(() =>
+      jsonResponse({
+        changes: [
+          makeEntryChange({
+            id: ENTRY_ID_JSON,
+            item_id: ITEM_ID,
+            type: 'json',
+            version: 1,
+            updated_at: '2026-11-01T12:30:00Z',
+            deleted_at: '2026-11-01T12:30:00Z',
+          }),
+        ],
+        next_cursor: null,
+        watermark: '2026-11-01T12:31:00Z',
+      } satisfies EntryChangesPage),
+    );
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_JSON}`)).toBeEnabled();
+    });
+
+    // Invalid pending number: the flush fails, so no POST, the grid error shows, the draft stays.
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('json-cell-error-root.p0')).toBeInTheDocument();
+    });
+    expect(h.createPosts).toHaveLength(0);
+    const stillPending = screen.getByTestId('json-cell-input-root.p0') as HTMLInputElement;
+    expect(stillPending.value).toBe('-');
+    expect(screen.getByTestId(`entry-card-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_JSON}`)).toBeEnabled();
+
+    // Correct the cell: the flush applies it and exactly one POST seals the corrected source.
+    fireEvent.change(stillPending, { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(h.createPosts).toHaveLength(1);
+    });
+    const created = h.createPosts[0]!;
+    expect(created.type).toBe('json');
+    expect(await h.openCreatedPlaintext(created)).toBe('{"n":2}');
   });
 
   it('wipes the uncommitted cell input value and grid draft and drops the retained card when the vault locks', async () => {
