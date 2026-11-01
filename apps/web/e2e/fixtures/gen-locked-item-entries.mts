@@ -2,8 +2,11 @@
  * Generates `apps/web/e2e/fixtures/locked-item-entries.json` for the P03-T21 / P04-T15
  * locked item-page Playwright E2E specs (`vault-locked-item.spec.ts`, `vault-locked-visual-item.spec.ts`).
  *
- * Regeneration command (from repository root):
- *   pnpm -C apps/web exec tsx e2e/fixtures/gen-locked-item-entries.mts
+ * Regeneration command (from `apps/web`; `tsx` is not installed, and the bundled
+ * generator writes `locked-item-entries.json` next to its own bundled file):
+ *   node ../../node_modules/.pnpm/esbuild@0.28.2/node_modules/esbuild/bin/esbuild e2e/fixtures/gen-locked-item-entries.mts --bundle --platform=node --format=esm --external:@playwright/test --outfile=.tmp-gen/gen.mjs
+ *   node .tmp-gen/gen.mjs
+ *   cp .tmp-gen/locked-item-entries.json e2e/fixtures/ && rm -rf .tmp-gen
  *
  * Uses `sealEntryPayload` from `lib/crypto/envelope.ts` (read-only import) and the
  * public P03 test-vector vault key (`packages/crypto-vectors/vectors/js-v1.json`,
