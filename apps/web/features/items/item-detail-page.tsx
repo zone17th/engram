@@ -271,6 +271,11 @@ export function ItemDetailPage({
       if (!pendingReorderDirtiedRef.current) {
         return;
       }
+      // Single-flight reorder (IP15-BE1-6, IP15-FE1-3): if a PATCH is already in flight,
+      // leave pendingReorderDirtiedRef = true and flush the latest permutation from finally.
+      if (reorderInFlightRef.current) {
+        return;
+      }
 
       pendingReorderDirtiedRef.current = false;
       reorderInFlightRef.current = true;
@@ -283,20 +288,22 @@ export function ItemDetailPage({
           { entry_ids: snapshotIds },
           { idempotencyKey: createIdempotencyKey() },
         );
-        const posMap = new Map(res.entries.map((p) => [p.id, p.position]));
-        queryClient.setQueryData<EntryMetaList | undefined>(
-          contentQueryKeys.entries(itemId),
-          (prev) => {
-            if (!prev || !Array.isArray(prev.items)) return prev;
-            const nextItems = prev.items
-              .map((e) => ({
-                ...e,
-                position: posMap.get(e.id) ?? e.position,
-              }))
-              .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
-            return { ...prev, items: nextItems };
-          },
-        );
+        if (!pendingReorderDirtiedRef.current) {
+          const posMap = new Map(res.entries.map((p) => [p.id, p.position]));
+          queryClient.setQueryData<EntryMetaList | undefined>(
+            contentQueryKeys.entries(itemId),
+            (prev) => {
+              if (!prev || !Array.isArray(prev.items)) return prev;
+              const nextItems = prev.items
+                .map((e) => ({
+                  ...e,
+                  position: posMap.get(e.id) ?? e.position,
+                }))
+                .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+              return { ...prev, items: nextItems };
+            },
+          );
+        }
       } catch (err) {
         const classified = classifyContentMutationError(err);
         if (classified.kind === 'reorder_mismatch') {
@@ -309,7 +316,7 @@ export function ItemDetailPage({
               freshList,
             );
 
-            if (allowMismatchRetry && capturedMove) {
+            if (allowMismatchRetry && capturedMove && !pendingReorderDirtiedRef.current) {
               const reapplied = applySingleMoveToEntries(freshSorted, capturedMove);
               if (reapplied) {
                 setOrderedEntries(reapplied);
@@ -320,21 +327,23 @@ export function ItemDetailPage({
                     { entry_ids: reapplied.map((e) => e.id) },
                     { idempotencyKey: createIdempotencyKey() },
                   );
-                  const retryPosMap = new Map(
-                    retryRes.entries.map((p) => [p.id, p.position]),
-                  );
-                  const committed = reapplied
-                    .map((e) => ({
-                      ...e,
-                      position: retryPosMap.get(e.id) ?? e.position,
-                    }))
-                    .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
-                  setOrderedEntries(committed);
-                  orderedEntriesRef.current = committed;
-                  queryClient.setQueryData<EntryMetaList>(
-                    contentQueryKeys.entries(itemId),
-                    { ...freshList, items: committed },
-                  );
+                  if (!pendingReorderDirtiedRef.current) {
+                    const retryPosMap = new Map(
+                      retryRes.entries.map((p) => [p.id, p.position]),
+                    );
+                    const committed = reapplied
+                      .map((e) => ({
+                        ...e,
+                        position: retryPosMap.get(e.id) ?? e.position,
+                      }))
+                      .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+                    setOrderedEntries(committed);
+                    orderedEntriesRef.current = committed;
+                    queryClient.setQueryData<EntryMetaList>(
+                      contentQueryKeys.entries(itemId),
+                      { ...freshList, items: committed },
+                    );
+                  }
                   return;
                 } catch {
                   // Fall through to mismatch notice
@@ -342,23 +351,32 @@ export function ItemDetailPage({
               }
             }
 
-            setOrderedEntries(freshSorted);
-            orderedEntriesRef.current = freshSorted;
-            const mismatchMsg = tItem('reorderMismatchNotice');
-            setReorderMismatchBanner(mismatchMsg);
-            announce(mismatchMsg);
+            if (!pendingReorderDirtiedRef.current) {
+              setOrderedEntries(freshSorted);
+              orderedEntriesRef.current = freshSorted;
+              const mismatchMsg = tItem('reorderMismatchNotice');
+              setReorderMismatchBanner(mismatchMsg);
+              announce(mismatchMsg);
+            }
           } catch {
-            const mismatchMsg = tItem('reorderMismatchNotice');
-            setReorderMismatchBanner(mismatchMsg);
-            announce(mismatchMsg);
+            if (!pendingReorderDirtiedRef.current) {
+              const mismatchMsg = tItem('reorderMismatchNotice');
+              setReorderMismatchBanner(mismatchMsg);
+              announce(mismatchMsg);
+            }
           }
-        } else {
+        } else if (!pendingReorderDirtiedRef.current) {
           const msg = translateContentError(classified.i18nKey);
           setReorderMismatchBanner(msg);
           announce(msg);
         }
       } finally {
         reorderInFlightRef.current = false;
+        if (pendingReorderDirtiedRef.current) {
+          clearTimeout(pendingReorderTimerRef.current);
+          pendingReorderTimerRef.current = undefined;
+          void flushPendingReorder(true);
+        }
       }
     },
     [announce, itemId, queryClient, tItem, translateContentError],

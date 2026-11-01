@@ -1567,6 +1567,122 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     ]);
   });
 
+  it('IP15-BE1-6 / FE1-3 / FE1-4: single-flights overlapping reorder PATCHes and flushes pending debounce on visibilitychange (hidden), pagehide, and vault lock', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [
+        { id: ENTRY_ID_1, text: 'Entry 1', position: 0 },
+        { id: ENTRY_ID_2, text: 'Entry 2', position: 1 },
+        { id: ENTRY_ID_3, text: 'Entry 3', position: 2 },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-card-${ENTRY_ID_3}`)).toBeInTheDocument();
+    });
+
+    // Part 1: Single-flight reorder when a second move occurs >400 ms while the first PATCH is held
+    const { promise: firstReorderGate, resolve: releaseFirstReorder } = createDeferred();
+    let activeReorderInFlight = 0;
+    let maxConcurrentReorders = 0;
+    let reorderCallCount = 0;
+
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith('/entries/reorder') && init?.method === 'PATCH') {
+        reorderCallCount += 1;
+        activeReorderInFlight += 1;
+        maxConcurrentReorders = Math.max(maxConcurrentReorders, activeReorderInFlight);
+        try {
+          if (reorderCallCount === 1) {
+            await firstReorderGate;
+          }
+          return null;
+        } finally {
+          activeReorderInFlight -= 1;
+        }
+      }
+      return null;
+    });
+
+    vi.useFakeTimers();
+    try {
+      // Move 1: ENTRY_ID_3 up -> [1, 3, 2], debounce 400 ms -> fires PATCH #1 (held)
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_3}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_3}`));
+      await act(async () => {
+        vi.advanceTimersByTime(450);
+      });
+      expect(reorderCallCount).toBe(1);
+
+      // Move 2 while PATCH #1 is still in flight: ENTRY_ID_3 up again -> [3, 1, 2], advance 450 ms
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_3}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_3}`));
+      await act(async () => {
+        vi.advanceTimersByTime(450);
+      });
+
+      // Because PATCH #1 is in flight, PATCH #2 must NOT have been sent concurrently
+      expect(reorderCallCount).toBe(1);
+      expect(maxConcurrentReorders).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Release PATCH #1 -> finally immediately flushes PATCH #2 with the latest intent [3, 1, 2]
+    releaseFirstReorder();
+
+    await waitFor(() => {
+      expect(reorderCallCount).toBe(2);
+    });
+    expect(maxConcurrentReorders).toBe(1);
+
+    const reorderReqs = h.server.requests.filter((r) => r.url.endsWith('/entries/reorder'));
+    expect(JSON.parse(reorderReqs[0].rawBody)).toEqual({
+      entry_ids: [ENTRY_ID_1, ENTRY_ID_3, ENTRY_ID_2],
+    });
+    expect(JSON.parse(reorderReqs[1].rawBody)).toEqual({
+      entry_ids: [ENTRY_ID_3, ENTRY_ID_1, ENTRY_ID_2],
+    });
+    const cardsAfterOverlap = screen
+      .getAllByTestId(/^entry-card-/)
+      .map((el) => el.getAttribute('data-entry-card'));
+    expect(cardsAfterOverlap).toEqual([ENTRY_ID_3, ENTRY_ID_1, ENTRY_ID_2]);
+
+    // Part 2: Flush immediately on visibilitychange (hidden) before 400 ms debounce expires
+    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    fireEvent(document, new Event('visibilitychange'));
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+
+    await waitFor(() => {
+      expect(reorderCallCount).toBe(3);
+    });
+
+    // Part 3: Flush immediately on pagehide before 400 ms debounce expires
+    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
+    fireEvent(window, new Event('pagehide'));
+
+    await waitFor(() => {
+      expect(reorderCallCount).toBe(4);
+    });
+
+    // Part 4: Flush immediately on vault lock before 400 ms debounce expires
+    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_1}`));
+    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_1}`));
+    await h.lock();
+
+    await waitFor(() => {
+      expect(reorderCallCount).toBe(5);
+    });
+  });
+
   it('disables + Tag chip at 20 tags with tooltip, and disables + Text at 200 entries', async () => {
     const twentyTags = Array.from({ length: 20 }, (_, i) => ({
       id: `tag-${i + 1}`,
