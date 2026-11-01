@@ -3978,8 +3978,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       const errBox = screen.getByTestId('entry-body-error');
       expect(errBox).toHaveTextContent(viMessages.content.entry.decryptFailedTitle);
       expect(errBox).toHaveTextContent(viMessages.content.entry.decryptFailedBody);
+      expect(errBox.textContent).not.toContain('AEAD');
     });
-
     // 4. Retry into OK -> recovers plaintext body
     mode = 'ok';
     fireEvent.click(screen.getByTestId('entry-body-retry'));

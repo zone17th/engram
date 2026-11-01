@@ -1297,7 +1297,7 @@
     "entry": {
       "loading": "Đang giải mã nội dung entry…",
       "decryptFailedTitle": "Không giải mã được entry này",
-      "decryptFailedBody": "Dữ liệu xác thực (AEAD) không khớp nên chúng tôi không hiển thị nội dung có thể sai lệch. Các entry khác trong mục vẫn mở bình thường.",
+      "decryptFailedBody": "Không xác thực được dữ liệu giải mã nên nội dung bị hỏng sẽ không được hiển thị. Các entry khác trong mục này vẫn mở bình thường.",
       "networkFailedTitle": "Không tải được entry này",
       "networkFailedBody": "Không kết nối được máy chủ để tải dữ liệu entry. Hãy kiểm tra mạng rồi thử lại.",
       "notFoundTitle": "Entry không còn khả dụng",
