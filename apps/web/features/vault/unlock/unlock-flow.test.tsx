@@ -868,7 +868,12 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     expect(resetVaultLink.getAttribute('style') ?? '').not.toContain('#B4232A');
     const backToUnlockLink = screen.getByTestId('forgot-bottom-back-link');
     expect(backToUnlockLink).toHaveAttribute('href', '/app/unlock');
-    expect(screen.getByTestId('forgot-reauth-note')).toHaveTextContent(/vault\.recover/i);
+    // The note must say account re-auth comes before the recovery key and is time-limited (UIA-17: plain words, no purpose code).
+    const reauthNote = screen.getByTestId('forgot-reauth-note');
+    expect(reauthNote).toHaveTextContent(enMessages.forgotPassphrase.reauthNote.title);
+    expect(reauthNote).toHaveTextContent(enMessages.forgotPassphrase.reauthNote.body);
+    expect(reauthNote).toHaveTextContent(/re-authenticate your account before entering a recovery key/i);
+    expect(reauthNote).toHaveTextContent(/confirm your account \(.*valid for 5 minutes\) before you paste your recovery key/i);
   }, 15_000);
 
   it('BE2-1 & BE2-13: sibling durable lock during in-flight GET /vault on unlock fails closed on baseline mismatch (never reaching unlocked), and route leave during GET /vault aborts unlock', async () => {
