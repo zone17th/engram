@@ -1270,7 +1270,8 @@
       "reorderMovedUp": "Moved up to position {pos}/{total}",
       "reorderMovedDown": "Moved down to position {pos}/{total}",
       "reorderMovedTo": "Moved to position {pos}/{total}",
-      "reorderMismatchNotice": "The entry list changed on another device"
+      "reorderMismatchNotice": "The entry list changed on another device",
+      "lockedBannerBodyShort": "Item names and tags remain searchable; unlock to view entry contents."
     },
     "entry": {
       "loading": "Decrypting entry content…",

@@ -26,8 +26,10 @@ test.describe('P03-T21 Locked state U5', () => {
 
       await page.goto(`/app/items/${item.id}`);
       await expect(page.getByRole('heading', { level: 1, name: item.name })).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('All items');
       await expect(page.getByTestId('item-name-input')).toHaveValue(item.name);
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('vault-locked-banner')).toHaveClass(/locked-banner/);
       for (const record of entries) {
         const card = page.getByTestId(`entry-card-${record.meta.id}`);
         await expect(card).toBeVisible();

@@ -1270,7 +1270,8 @@
       "reorderMovedUp": "Đã chuyển lên vị trí {pos}/{total}",
       "reorderMovedDown": "Đã chuyển xuống vị trí {pos}/{total}",
       "reorderMovedTo": "Đã chuyển tới vị trí {pos}/{total}",
-      "reorderMismatchNotice": "Danh sách đã đổi ở thiết bị khác"
+      "reorderMismatchNotice": "Danh sách đã đổi ở thiết bị khác",
+      "lockedBannerBodyShort": "Tên mục và tag vẫn tìm được; mở khoá để xem nội dung entry."
     },
     "entry": {
       "loading": "Đang giải mã nội dung entry…",

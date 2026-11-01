@@ -1639,4 +1639,47 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     assertNoPlaintextAttrs(h.container, ['First entry', 'Brand new second entry']);
     expect(findCacheSentinelLeaks(h.qc, ['Brand new second entry'])).toEqual([]);
   });
+
+  it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {
+    const h = await setupItemPageHarness({
+      locale: 'en',
+      initialItem: makeItemSummary({
+        name: 'office-router',
+        hint: 'floor 2',
+        tags: [{ id: 'tag-2', display: 'office' }],
+      }),
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Plaintext in English only', position: 0 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-name-input')).toHaveValue('office-router');
+    });
+
+    // Breadcrumb uses English accessible name and link text
+    const breadcrumb = screen.getByRole('navigation', {
+      name: en.content.item.breadcrumbLabel,
+    });
+    expect(breadcrumb).toHaveTextContent(en.content.item.allItems);
+    expect(screen.getByTestId('btn-add-text')).toHaveTextContent(en.content.item.addTextCta);
+    expect(screen.getByTestId('btn-delete-item')).toHaveTextContent(en.content.item.deleteItemCta);
+    expect(screen.getByTestId('item-shortcuts-panel')).toHaveTextContent(
+      en.content.item.shortcutsTitle,
+    );
+
+    // Lock the vault to render LockedBanner -> check .locked-banner class and <640px short copy in en
+    await h.lock();
+    const banner = screen.getByTestId('vault-locked-banner');
+    expect(banner).toHaveClass('locked-banner');
+    expect(screen.getByTestId('vault-locked-banner-body-short')).toHaveTextContent(
+      en.content.item.lockedBannerBodyShort,
+    );
+    expect(screen.getByTestId('vault-locked-banner-body-full')).toHaveTextContent(
+      en.vault.locked.bannerBody,
+    );
+
+    // Verify no Vietnamese diacritics appear anywhere in the rendered item page under English locale
+    const mainEl = h.container.querySelector('main')!;
+    expect(mainEl.textContent).not.toMatch(/[À-ỹ]/);
+    expect(banner.textContent).not.toMatch(/[À-ỹ]/);
+  });
 });

@@ -599,8 +599,16 @@ describe('P03-T21 Locked state U5', () => {
 
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
 
-    // U5 banner with the unlock call to action; no editing surface exists while locked.
-    expect(screen.getByTestId('vault-locked-banner')).toHaveTextContent('Vault locked');
+    // U5 banner with the unlock call to action (.locked-banner class + <640px short copy variant); no editing surface exists while locked.
+    const banner = screen.getByTestId('vault-locked-banner');
+    expect(banner).toHaveClass('locked-banner');
+    expect(banner).toHaveTextContent('Vault locked');
+    expect(screen.getByTestId('vault-locked-banner-body-short')).toHaveTextContent(
+      en.content.item.lockedBannerBodyShort,
+    );
+    expect(screen.getByTestId('vault-locked-banner-body-full')).toHaveTextContent(
+      en.vault.locked.bannerBody,
+    );
     expect(screen.getByTestId('vault-locked-unlock-cta')).toHaveAttribute('href', '/app/unlock');
     expect(document.querySelector('textarea, [contenteditable]:not([contenteditable="false"])')).toBeNull();
     expect(
@@ -887,6 +895,10 @@ describe('P03-T21 Locked state U5', () => {
 
       expect(routerMocks.replace).not.toHaveBeenCalled();
       expect(await screen.findByRole('heading', { level: 1, name: item.title })).toBeInTheDocument();
+      const breadcrumbNav = screen.getByRole('navigation', {
+        name: en.content.item.breadcrumbLabel,
+      });
+      expect(within(breadcrumbNav).getByRole('link', { name: en.content.item.allItems })).toHaveAttribute('href', '/app');
       expect(screen.getByTestId('item-name-input')).toHaveValue(item.title);
       expect(screen.getByTestId(`entry-card-${item.id}`)).toBeInTheDocument();
       expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
