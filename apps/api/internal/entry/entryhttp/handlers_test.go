@@ -690,8 +690,7 @@ func TestEntryLimit200AndConcurrentLastSlotBarrier(t *testing.T) {
 		releaseOnce.Do(func() { close(releaseTx1) })
 	}
 
-	var h *contenttest.Harness
-	h = contenttest.NewHarness(t, contenttest.HarnessOpts{
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{
 		ExtraMounts: []func(h *contenttest.Harness, v1 chi.Router, d httpx.Deps){
 			func(h *contenttest.Harness, v1 chi.Router, d httpx.Deps) {
 				// Mount a barrier-instrumented route calling the exact same entryhttp Mount handler

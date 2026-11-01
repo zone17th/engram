@@ -591,6 +591,7 @@ func (h *handler) entryUpdate(w http.ResponseWriter, r *http.Request) {
 
 	writeRawJSON(w, http.StatusOK, respBytes)
 }
+
 func (h *handler) recordEntryCreated(entryType string) {
 	// user-dec-016 / advisor-dec-149: chỉ ghi nhận label `type` thuộc tập giới hạn {text, json},
 	// không bao giờ đưa dữ liệu người dùng.
