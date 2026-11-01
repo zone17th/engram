@@ -38,16 +38,16 @@
         "position": 0,
         "version": 1,
         "plaintext_len_bucket": 256,
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-01T00:00:00Z",
         "envelope": {
           "v": 1,
           "alg": "xchacha20poly1305-ietf",
           "key_id": "vk:7f3a9b2c4d5e6f7a8b9c0d",
-          "nonce": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+          "nonce": "iDbUm-7s91_NjoOOp9E6JhYuL0R-YXOE",
           "ct_enc": "utf8"
         },
-        "ciphertext": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbLRzosDCxG-aKrPUA56BfSw",
-        "created_at": "2026-11-01T00:00:00Z",
-        "updated_at": "2026-11-01T00:00:00Z"
+        "ciphertext": "leu7Ntb9hcnkKUfgS7EA0XkyFsMmv-7705OKfu-O4KsDNaGOF0OUOaHhNR4FnacQwg7455ieczANl1XU2w"
       },
       "plaintext": "wifi-office: WPA2-Enterprise secret_key_2026!"
     },
@@ -69,16 +69,16 @@
         "position": 1,
         "version": 1,
         "plaintext_len_bucket": 256,
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-01T00:00:00Z",
         "envelope": {
           "v": 1,
           "alg": "xchacha20poly1305-ietf",
           "key_id": "vk:7f3a9b2c4d5e6f7a8b9c0d",
-          "nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+          "nonce": "51TkUW_G2nJAnnIb4lsuJbgh-1z0fNH4",
           "ct_enc": "utf8"
         },
-        "ciphertext": "EvJj1Wv346Z1iisG6CqPme-0JaRQyoUrp9IFzEq5n1nekxY5Y2hm_STyc1svUlH5aii7VVhN8CUhi1s9lfRFfR_OF1Ad3oVFd3f28R2EXBJ1raQTJGrKCUYp6geodBFOLon_2NAEfNsY",
-        "created_at": "2026-11-01T00:00:00Z",
-        "updated_at": "2026-11-01T00:00:00Z"
+        "ciphertext": "3SDFsglxEypyu5swaCCRVYqRidCFGQoVuARAW5iAGdbRUGhB4zv1r3ZnyX1XBl4DQUpN5QbePpZ7kO3LiWFusM4Kktbv3KxvOCRhVWbYVswE7dDxVzZj3K5YbAPpSQ0BOkE1gvPAzCOX"
       },
       "plaintext": "{\"service\":\"postgres-prod\",\"port\":5432,\"big_id\":9007199254740993,\"tags\":[\"db\",\"primary\"]}"
     }
