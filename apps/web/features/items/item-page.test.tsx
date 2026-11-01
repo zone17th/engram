@@ -3095,6 +3095,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hOnboardingSkip.vault().state).toBe('unlocked');
     expect(hOnboardingSkip.vault().vaultMeta).toBeNull();
 
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
+    });
+    expect(hOnboardingSkip.vault().vaultMeta).toBeNull();
+    expect(
+      hOnboardingSkip.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+    ).toHaveLength(0);
+
     const reloadMetaSpy = vi.spyOn(hOnboardingSkip.vault(), 'reloadVaultMeta');
     fireEvent.click(screen.getByTestId('btn-add-text'));
     fireEvent.change(screen.getByTestId('new-entry-textarea'), {
@@ -3110,10 +3119,24 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         'First entry after onboarding step 3 skip',
       );
     });
-    const postOnboardingCreateReqs = hOnboardingSkip.server.requests.filter(
+    const vaultReloadIndex = hOnboardingSkip.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const postOnboardingCreateIndex = hOnboardingSkip.server.requests.findIndex(
       (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
     );
-    expect(postOnboardingCreateReqs).toHaveLength(1);
+    expect(vaultReloadIndex).toBeGreaterThanOrEqual(0);
+    expect(postOnboardingCreateIndex).toBeGreaterThan(vaultReloadIndex);
+    expect(
+      hOnboardingSkip.server.requests.filter(
+        (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      hOnboardingSkip.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(1);
   });
 
   it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {
