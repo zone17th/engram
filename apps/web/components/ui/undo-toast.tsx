@@ -191,9 +191,7 @@ export function UndoToastProvider({
   const [expanded, setExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocusedInside, setIsFocusedInside] = useState(false);
-  const [avoidsFocusOverlay, setAvoidsFocusOverlay] = useState(false);
   const [announcementSeq, setAnnouncementSeq] = useState(0);
-
   const stackRef = useRef<HTMLDivElement | null>(null);
   const isExpandingFocusMoveRef = useRef(false);
   const providerOnErrorRef = useRef(onError);
@@ -588,71 +586,179 @@ export function UndoToastProvider({
     });
   }, [isHovered]);
 
-  // ACC-TV1-5 (FU10, dec-216): Keep the fixed toast stack out of the focused element's focus ring path.
-  // When a page control outside the stack holds focus and its bounding box (plus 8 px focus-ring clearance)
-  // intersects the stack's bounding box, shift the stack out of the focus ring path while keeping it visible.
+  // ACC-TV1-5 (FU10, dec-216, RV-FU10-1, RV-FU10-5): Keep focused page controls clear of the fixed undo-toast stack.
+  // While toasts are visible, measure the stack with a ResizeObserver, expose its height as `--undo-stack-h` on
+  // `<html>`, set `scroll-padding-bottom: calc(var(--undo-stack-h) + 8px)` on `<html>`, and on `focusin` (and stack
+  // growth) call `el.scrollIntoView({ block: 'nearest' })` when the focused element's bounding rect (plus 3 px focus-
+  // ring halo) intersects the stack rect. Ignore `tabIndex === -1` programmatic container hosts, elements inside the
+  // toast stack itself, and fixed/sticky header/footer elements that cannot scroll clear. Throttle with
+  // `requestAnimationFrame` and clean up listeners + styles on unmount and when the stack empties.
+  const prevStackHeightRef = useRef(0);
+
   useEffect(() => {
-    if (toasts.length === 0) {
-      setAvoidsFocusOverlay(false);
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
       return;
     }
 
-    const checkFocusOverlap = () => {
-      const stackEl = stackRef.current;
-      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    const htmlEl = document.documentElement;
+    const clearHtmlStackStyles = () => {
+      htmlEl.style.removeProperty('--undo-stack-h');
+      htmlEl.style.removeProperty('scroll-padding-bottom');
+      prevStackHeightRef.current = 0;
+    };
+
+    if (toasts.length === 0) {
+      clearHtmlStackStyles();
+      return;
+    }
+
+    const stackEl = stackRef.current;
+    if (!stackEl) {
+      clearHtmlStackStyles();
+      return;
+    }
+
+    let rafId: number | null = null;
+
+    const isFixedOrStickyElement = (el: HTMLElement): boolean => {
+      let cur: HTMLElement | null = el;
+      while (cur && cur !== document.body && cur !== htmlEl) {
+        const pos = window.getComputedStyle(cur).position;
+        if (pos === 'fixed' || pos === 'sticky') {
+          return true;
+        }
+        cur = cur.parentElement;
+      }
+      return false;
+    };
+
+    const syncStackHeightAndScrollFocused = () => {
+      rafId = null;
+      const currentStack = stackRef.current;
+      if (!currentStack || toastsRef.current.length === 0) {
+        clearHtmlStackStyles();
+        return;
+      }
+
+      const stackRect = currentStack.getBoundingClientRect();
+      const stackH = Math.max(0, Math.ceil(stackRect.height));
+      if (stackH > 0) {
+        htmlEl.style.setProperty('--undo-stack-h', `${stackH}px`);
+        htmlEl.style.setProperty('scroll-padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+      } else {
+        clearHtmlStackStyles();
+        return;
+      }
+
+      const activeEl = document.activeElement;
       if (
-        !stackEl ||
         !activeEl ||
         !(activeEl instanceof HTMLElement) ||
         activeEl === document.body ||
-        activeEl === document.documentElement ||
-        stackEl.contains(activeEl)
+        activeEl === htmlEl ||
+        currentStack.contains(activeEl)
       ) {
-        setAvoidsFocusOverlay(false);
+        return;
+      }
+
+      // Ignore programmatic-focus container hosts (`tabIndex={-1}`, e.g. entry card `<article tabIndex={-1}>`
+      // or `<nav id="rail-tags" tabIndex={-1}>`).
+      if (activeEl.tabIndex < 0 || activeEl.getAttribute('tabindex') === '-1') {
+        return;
+      }
+
+      // Fixed/sticky header/footer controls cannot scroll clear; leave them in place.
+      if (isFixedOrStickyElement(activeEl)) {
         return;
       }
 
       const focusRect = activeEl.getBoundingClientRect();
-      const stackRect = stackEl.getBoundingClientRect();
-      if (
-        focusRect.width <= 0 ||
-        focusRect.height <= 0 ||
-        stackRect.width <= 0 ||
-        stackRect.height <= 0
-      ) {
-        setAvoidsFocusOverlay(false);
+      if (focusRect.width <= 0 || focusRect.height <= 0) {
         return;
       }
 
-      const pad = 8;
-      const overlaps =
-        focusRect.left - pad < stackRect.right &&
-        focusRect.right + pad > stackRect.left &&
-        focusRect.top - pad < stackRect.bottom &&
-        focusRect.bottom + pad > stackRect.top;
+      const ringPad = 3;
+      const intersects =
+        focusRect.left - ringPad < stackRect.right &&
+        focusRect.right + ringPad > stackRect.left &&
+        focusRect.top - ringPad < stackRect.bottom &&
+        focusRect.bottom + ringPad > stackRect.top;
 
-      if (overlaps) {
-        setAvoidsFocusOverlay(true);
-      } else if (
-        typeof window !== 'undefined' &&
-        focusRect.bottom + pad < window.innerHeight - stackRect.height - 32
-      ) {
-        setAvoidsFocusOverlay(false);
+      if (!intersects) {
+        return;
+      }
+
+      if (typeof activeEl.scrollIntoView === 'function') {
+        activeEl.scrollIntoView({ block: 'nearest' });
+      }
+
+      // Ensure the document window also scrolls when the element remains under the fixed bottom stack
+      // (e.g. when `scrollIntoView({ block: 'nearest' })` is a no-op in a mock or nested scroll container).
+      const updatedFocusRect = activeEl.getBoundingClientRect();
+      const updatedStackRect = currentStack.getBoundingClientRect();
+      const stillIntersects =
+        updatedFocusRect.left - ringPad < updatedStackRect.right &&
+        updatedFocusRect.right + ringPad > updatedStackRect.left &&
+        updatedFocusRect.top - ringPad < updatedStackRect.bottom &&
+        updatedFocusRect.bottom + ringPad > updatedStackRect.top;
+
+      if (stillIntersects && typeof window.scrollBy === 'function') {
+        const deltaY = updatedFocusRect.bottom + ringPad - (updatedStackRect.top - 8);
+        if (deltaY > 0) {
+          window.scrollBy({ top: deltaY, behavior: 'instant' });
+        }
       }
     };
 
-    checkFocusOverlap();
-    window.addEventListener('focusin', checkFocusOverlap, true);
-    window.addEventListener('focusout', checkFocusOverlap, true);
-    window.addEventListener('scroll', checkFocusOverlap, true);
-    window.addEventListener('resize', checkFocusOverlap);
-    return () => {
-      window.removeEventListener('focusin', checkFocusOverlap, true);
-      window.removeEventListener('focusout', checkFocusOverlap, true);
-      window.removeEventListener('scroll', checkFocusOverlap, true);
-      window.removeEventListener('resize', checkFocusOverlap);
+    const scheduleSync = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(syncStackHeightAndScrollFocused);
     };
-  }, [toasts]);
+
+    syncStackHeightAndScrollFocused();
+    prevStackHeightRef.current = Math.max(0, Math.ceil(stackEl.getBoundingClientRect().height));
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        const currentStack = stackRef.current;
+        if (!currentStack) return;
+        const nextH = Math.max(0, Math.ceil(currentStack.getBoundingClientRect().height));
+        const prevH = prevStackHeightRef.current;
+        prevStackHeightRef.current = nextH;
+        if (nextH > 0) {
+          htmlEl.style.setProperty('--undo-stack-h', `${nextH}px`);
+          htmlEl.style.setProperty('scroll-padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+        }
+        if (nextH > prevH) {
+          scheduleSync();
+        }
+      });
+      resizeObserver.observe(stackEl);
+    }
+
+    const onFocusIn = () => {
+      scheduleSync();
+    };
+
+    const onResize = () => {
+      scheduleSync();
+    };
+
+    window.addEventListener('focusin', onFocusIn, true);
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener('focusin', onFocusIn, true);
+      window.removeEventListener('resize', onResize);
+      clearHtmlStackStyles();
+    };
+  }, [toasts, expanded]);
 
   const visibleToasts = expanded ? toasts : toasts.slice(0, UNDO_TOAST_MAX_VISIBLE);
   const hiddenCount = expanded ? 0 : Math.max(0, toasts.length - UNDO_TOAST_MAX_VISIBLE);
@@ -730,8 +836,6 @@ export function UndoToastProvider({
         onBlurCapture={handleBlurCapture}
         className={cn(
           'toast-stack !flex-col max-[639px]:!left-4 max-[639px]:!right-4 max-[639px]:!w-auto max-[639px]:!max-w-none max-[639px]:!translate-x-0 max-[639px]:!bottom-[calc(16px+env(safe-area-inset-bottom,0px))]',
-          avoidsFocusOverlay &&
-            'min-[640px]:!left-auto min-[640px]:!right-6 min-[640px]:!translate-x-0 min-[640px]:!w-auto min-[640px]:!items-end max-[639px]:!-translate-y-14',
           toasts.length === 0 && 'pointer-events-none',
         )}
       >
