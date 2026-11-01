@@ -147,7 +147,7 @@ Chuẩn hoá để search, **không** để identity:
 `name_normalized` (một hàm duy nhất phía Go `internal/textnorm.Normalize`, dùng cho `item.name_normalized`, `tag.normalized`, exact lookup và lọc `q`; fixture chung `packages/content-fixtures/normalize.json`):
 
 1. Từ chối chuỗi không phải UTF-8 hợp lệ, có ký tự điều khiển C0/C1 (trừ space), ký tự bidi override (U+202A–U+202E, U+2066–U+2069), hoặc rỗng sau trim (`400 name_invalid` / `400 tag_display_invalid`).
-2. NFC → lowercase Unicode theo từng rune (`unicode.ToLower`, **không** special-casing theo locale) → thay mọi chuỗi ký tự `White_Space` bằng một space → trim → bỏ ký tự category `P*` ở **đầu và cuối** (lặp tới khi hết; dấu câu ở giữa như `c++`, `wi-fi` giữ nguyên). **Giữ dấu tiếng Việt** (`mã` ≠ `ma`).
+2. NFC → lowercase Unicode theo từng rune (`unicode.ToLower`, **không** special-casing theo locale) → NFC lần nữa (advisor-dec-125) → thay mọi chuỗi ký tự `White_Space` bằng một space → trim → bỏ ký tự category `P*` ở **đầu và cuối** (lặp tới khi hết; dấu câu ở giữa như `c++`, `wi-fi` giữ nguyên). **Giữ dấu tiếng Việt** (`mã` ≠ `ma`).
 3. Kết quả chuẩn hoá rỗng (ví dụ `"!!!"`) → từ chối `name_invalid`. Độ dài đếm theo rune, kiểm cả trên giá trị gốc (sau trim) lẫn kết quả chuẩn hoá.
 
 Web không tự chuẩn hoá để quyết định danh tính; khi UI cần so (ví dụ gộp tag trùng trong quick-add) thì dùng bản TS chạy cùng fixture. Fuzzy/unaccent ở tầng search (§6).
