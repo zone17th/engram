@@ -60,10 +60,12 @@
   --pale-pink: #FFF1FE;
   --pale-blue: #E9E9F6;
   --pale-orange: #FFECE5;
-
+  --error-ink: #C5282D;
+  --success-ink: #1F7A4C;
+  --warning-ink: #8A5200;
+  --link-ink: #006AD4;
   --on-primary: #FFFFFF;
   --on-dark: #FFFFFF;
-
   /* Radius */
   --r-sm: 6px;
   --r-md: 8px;
@@ -100,6 +102,10 @@
   --pale-pink: #33122E;
   --pale-orange: #33201A;
   --accent: #FF7AD9;
+  --error-ink: #FF8589;
+  --success-ink: #5ED093;
+  --warning-ink: #F5B83D;
+  --link-ink: #5EB5FF;
 }
 
 /* ---------- base ---------- */
@@ -411,7 +417,12 @@ body {
   box-shadow: var(--sh-pop); font-size: 14px; z-index: 80;
 }
 .toast button { background: transparent; border: 0; color: var(--ai-cyan); font-weight: 700; cursor: pointer; font-size: 14px; }
-
+.toast-more {
+  pointer-events: auto; background: var(--deep-panel); color: var(--on-dark);
+  border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+  padding: 6px 14px; font-family: var(--font-mono); font-size: 12px;
+  font-weight: 600; cursor: pointer; box-shadow: var(--sh-card);
+}
 /* ---------- form fields (P02 auth/account) ---------- */
 
 .field { display: block; margin-bottom: 1rem; }
@@ -555,7 +566,24 @@ body {
 
 dialog::backdrop { background: rgba(9,12,29,.45); }
 dialog { border: 0; padding: 0; background: transparent; }
-
+.tag-pill-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: 0; color: var(--body);
+  font-family: var(--font-mono); font-size: 14px; font-weight: 500;
+  padding: 6px 8px 6px 12px; cursor: pointer; border-radius: var(--r-pill) 0 0 var(--r-pill);
+}
+.tag-menu-trigger {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-left: 1px solid var(--border);
+  color: var(--muted); font-family: var(--font-mono); font-size: 13px;
+  padding: 6px 10px; cursor: pointer; border-radius: 0 var(--r-pill) var(--r-pill) 0;
+}
+.menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; border: 0; background: transparent; color: var(--body);
+  font-family: var(--font-sans); font-size: 14px; font-weight: 500;
+  padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; text-align: left;
+}
 /* Brand --link (#0091FF) fails WCAG AA on white; keep the token, paint only
    unstyled links with the AA-safe pair. Explicit text utilities and button
    links keep their component colors. */

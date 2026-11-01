@@ -31,7 +31,7 @@
     <div class="ml-auto flex items-center gap-2">
       <button class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
-      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+      <button class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
       <span class="ml-1 w-9 h-9 rounded-pill hidden sm:grid place-items-center font-mono text-[13px]"
             style="background:var(--pale-accent);color:var(--accent)" title="minh@zone17th.click">mh</span>
     </div>
@@ -50,15 +50,10 @@
 
   <!-- rail -->
   <aside class="block" id="rail-tags" aria-label="Bộ lọc tag · Tag filters">
-    <div class="flex items-baseline justify-between gap-2 mb-1">
+    <div class="flex items-baseline justify-between gap-2 mb-3">
       <p class="t-label m-0 text-muted">Tag</p>
       <button type="button" id="rail-clear-filter" hidden class="link-btn mono">Bỏ lọc · <span lang="en">Clear</span></button>
     </div>
-    <p class="privacy-note m-0 mb-3">
-      Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối.
-      <span lang="en" class="block">Item names, tags and hints are not encrypted; only the content is end-to-end encrypted.</span>
-    </p>
-
     <div class="flex flex-wrap gap-1.5" id="rail-tag-list">
       <div class="tag-pill-group" data-tag-item="nhà">
         <button type="button" class="tag-pill-btn" data-tag-filter="nhà" aria-pressed="false">
@@ -186,7 +181,7 @@
           <span class="chip dup-chip">#nhà</span>
           <span class="chip dup-chip">#office</span>
           <span class="chip dup-chip">#home-lab</span>
-          <span class="mono text-[12px] text-muted" aria-label="Còn 1 tag nữa">+1</span>
+          <span class="mono text-[12px] text-muted" aria-hidden="true">+1</span><span class="sr-only">Còn 1 tag nữa · 1 more tag</span>
         </div>
       </a>
 
@@ -243,10 +238,7 @@
 
     <label class="field mb-3">
       <span class="field-label">Tên tag mới · <span lang="en" class="font-normal text-muted">New tag display name</span></span>
-      <input id="tagRenameInput" type="text" maxlength="50" value="nhà" autocomplete="off" spellcheck="false" class="field-input" aria-describedby="tagRenamePrivacy tagRenameConflict">
-      <span id="tagRenamePrivacy" class="field-hint">
-        Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối. · <span lang="en">Item names, tags and hints are not encrypted; only the content is end-to-end encrypted.</span>
-      </span>
+      <input id="tagRenameInput" type="text" maxlength="50" value="nhà" autocomplete="off" spellcheck="false" class="field-input" aria-describedby="tagRenameConflict">
     </label>
 
     <div id="tagRenameConflict" role="alert" class="auth-alert mb-4" hidden>
@@ -288,9 +280,38 @@
   const renameInput = document.getElementById('tagRenameInput');
   const renameConflict = document.getElementById('tagRenameConflict');
 
-  function closeAllTagMenus() {
-    document.querySelectorAll('[data-tag-menu]').forEach((m) => { m.hidden = true; });
+  let openMenuTrigger = null;
+
+  function closeAllTagMenus(refocusTrigger) {
+    document.querySelectorAll('[data-tag-menu]').forEach((m) => {
+      m.hidden = true;
+      m.classList.remove('menu-pop-right');
+    });
     document.querySelectorAll('[data-tag-menu-btn]').forEach((b) => { b.setAttribute('aria-expanded', 'false'); });
+    if (refocusTrigger && openMenuTrigger && typeof openMenuTrigger.focus === 'function') {
+      openMenuTrigger.focus();
+    }
+    openMenuTrigger = null;
+  }
+
+  function openTagMenuForTrigger(btn) {
+    const key = btn.dataset.tagMenuBtn;
+    const grp = btn.closest('[data-tag-item]');
+    const menu = grp ? grp.querySelector('[data-tag-menu]') : null;
+    if (!menu) return;
+    const wasOpen = !menu.hidden;
+    closeAllTagMenus(false);
+    if (!wasOpen) {
+      const rect = grp.getBoundingClientRect();
+      if (rect.left + 190 > window.innerWidth - 12) {
+        menu.classList.add('menu-pop-right');
+      }
+      menu.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      openMenuTrigger = btn;
+      const firstItem = menu.querySelector('[role="menuitem"]');
+      if (firstItem) firstItem.focus();
+    }
   }
 
   function applyTagFilter(tagName) {
@@ -318,7 +339,7 @@
 
   document.querySelectorAll('[data-tag-filter]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      closeAllTagMenus();
+      closeAllTagMenus(false);
       applyTagFilter(btn.dataset.tagFilter);
     });
   });
@@ -326,29 +347,49 @@
   document.querySelectorAll('[data-tag-menu-btn]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const key = btn.dataset.tagMenuBtn;
-      const menu = document.querySelector(`[data-tag-menu="${key}"]`);
-      if (!menu) return;
-      const wasOpen = !menu.hidden;
-      closeAllTagMenus();
-      if (!wasOpen) {
-        menu.hidden = false;
-        btn.setAttribute('aria-expanded', 'true');
+      openTagMenuForTrigger(btn);
+    });
+  });
+
+  document.querySelectorAll('[data-tag-menu]').forEach((menu) => {
+    menu.addEventListener('keydown', (e) => {
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+      if (!items.length) return;
+      const cur = items.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        items[(cur + 1) % items.length].focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        items[(cur - 1 + items.length) % items.length].focus();
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        items[0].focus();
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        items[items.length - 1].focus();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAllTagMenus(true);
       }
     });
   });
 
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.tag-pill-group')) closeAllTagMenus();
+    if (!e.target.closest('.tag-pill-group')) closeAllTagMenus(false);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeAllTagMenus();
+    if (e.key === 'Escape' && openMenuTrigger) {
+      e.preventDefault();
+      closeAllTagMenus(true);
+    }
   });
 
   document.querySelectorAll('[data-tag-rename]').forEach((btn) => {
     btn.addEventListener('click', () => {
       editingTagKey = btn.dataset.tagRename;
-      closeAllTagMenus();
+      closeAllTagMenus(false);
       renameConflict.hidden = true;
       renameInput.removeAttribute('aria-invalid');
       renameInput.value = editingTagKey;
@@ -374,13 +415,39 @@
       renameInput.setAttribute('aria-invalid', 'true');
       return;
     }
-    const grp = document.querySelector(`[data-tag-item="${editingTagKey}"]`);
+    const oldKey = editingTagKey;
+    const grp = document.querySelector(`[data-tag-item="${oldKey}"]`);
     if (grp) {
+      grp.dataset.tagItem = nextName;
       const labelEl = grp.querySelector('[data-tag-label]');
       if (labelEl) labelEl.textContent = '#' + nextName;
+      const filterBtn = grp.querySelector('[data-tag-filter]');
+      if (filterBtn) filterBtn.dataset.tagFilter = nextName;
+      const menuBtn = grp.querySelector('[data-tag-menu-btn]');
+      if (menuBtn) {
+        menuBtn.dataset.tagMenuBtn = nextName;
+        menuBtn.setAttribute('aria-label', `Thao tác tag #${nextName} · Tag actions for #${nextName}`);
+      }
+      const menuEl = grp.querySelector('[data-tag-menu]');
+      if (menuEl) menuEl.dataset.tagMenu = nextName;
+      const renBtn = grp.querySelector('[data-tag-rename]');
+      if (renBtn) renBtn.dataset.tagRename = nextName;
+      const delBtn = grp.querySelector('[data-tag-delete]');
+      if (delBtn) delBtn.dataset.tagDelete = nextName;
     }
+    document.querySelectorAll('[data-item-card]').forEach((card) => {
+      const tags = (card.dataset.tags || '').split(',').map((t) => (t === oldKey ? nextName : t));
+      card.dataset.tags = tags.join(',');
+      card.querySelectorAll('.dup-chip').forEach((chip) => {
+        if (chip.textContent.trim() === '#' + oldKey) chip.textContent = '#' + nextName;
+      });
+    });
+    if (activeTagFilter === oldKey) {
+      activeTagFilter = nextName;
+    }
+    editingTagKey = nextName;
     renameDlg.close();
-    SAK.toast(`Đã đổi tên tag #${editingTagKey} → #${nextName}`);
+    SAK.toast(`Đã đổi tên tag #${oldKey} → #${nextName} · Renamed tag #${oldKey} → #${nextName}`);
   });
 
   document.querySelectorAll('[data-tag-delete]').forEach((btn) => {
@@ -388,10 +455,10 @@
       const key = btn.dataset.tagDelete;
       const grp = document.querySelector(`[data-tag-item="${key}"]`);
       const triggerBtn = grp ? grp.querySelector('[data-tag-menu-btn]') : null;
-      closeAllTagMenus();
+      closeAllTagMenus(false);
       if (grp) grp.hidden = true;
       if (activeTagFilter === key) applyTagFilter(key);
-      SAK.toast(`Đã xoá tag #${key}`, 'Hoàn tác', {
+      SAK.toast(`Đã xoá tag #${key} · Deleted tag #${key}`, 'Hoàn tác', {
         sub: 'Các mục gắn tag này vẫn giữ nguyên · Items with this tag are kept',
         originEl: triggerBtn,
         onAction: () => {

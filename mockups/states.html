@@ -26,7 +26,7 @@
     <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
   </a>
   <span class="vault-pill vault-open" data-vault>🔓 Vault đang mở</span>
-  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+  <button class="btn btn-tertiary btn-icon !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
 </header>
 
 <main class="max-w-[840px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
@@ -138,14 +138,14 @@
       </p>
       <div class="flex gap-2 flex-wrap">
         <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=false">Tải bản mới · <span lang="en">Load latest</span></button>
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã ghi đè bằng bản của bạn (version mới)')">Giữ bản của tôi · <span lang="en">Keep mine</span></button>
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép bản nháp vào clipboard')">Chép bản của tôi · <span lang="en">Copy mine</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã ghi đè bằng bản của bạn (version mới) · Overwritten with your version')">Giữ bản của tôi · <span lang="en">Keep mine</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép bản nháp vào clipboard · Copied your draft to clipboard')">Chép bản của tôi · <span lang="en">Copy mine</span></button>
       </div>
       <div id="err-conflict-confirm" hidden class="rounded-md p-3 mt-3 bg-surface">
         <p class="text-[13px] m-0 mb-1 text-body"><strong>Bỏ thay đổi đang gõ và tải bản mới?</strong></p>
         <p class="text-[12px] text-muted m-0 mb-2" lang="en">Discard your current draft and load the latest version?</p>
         <div class="flex gap-2 flex-wrap">
-          <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true;SAK.toast('Đã tải bản mới nhất')">Bỏ nháp và tải · <span lang="en">Discard &amp; load</span></button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true;SAK.toast('Đã tải bản mới nhất · Loaded latest version')">Bỏ nháp và tải · <span lang="en">Discard &amp; load</span></button>
           <button type="button" class="btn btn-tertiary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true">Huỷ · <span lang="en">Cancel</span></button>
         </div>
       </div>
@@ -154,7 +154,7 @@
     <div class="card card-error p-5" id="err-entry-too-large">
       <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Nội dung quá lớn</p>
       <p class="text-[13px] text-muted m-0 mb-1">
-        Một entry tối đa 256 KiB (262 144 byte UTF-8; <span class="mono">413 entry_too_large</span>). Tách bớt hoặc lưu thành nhiều entry.
+        Một entry tối đa 256 KiB (262.144 byte UTF-8; <span class="mono">413 entry_too_large</span>). Tách bớt hoặc lưu thành nhiều entry.
       </p>
       <p class="text-[12px] text-muted m-0" lang="en">
         <strong>Entry too large (413 entry_too_large).</strong> An entry can be at most 256 KiB (262,144 UTF-8 bytes). Split the content into smaller entries.
@@ -197,11 +197,11 @@
       <p class="text-[12px] text-muted m-0 mb-3" lang="en">
         <strong>Could not decrypt this entry.</strong> AEAD verification failed or the downloaded payload was corrupted (distinct from an incorrect passphrase during vault unlock). Other entries still open normally.
       </p>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang tải và giải mã lại entry…')">Thử lại · <span lang="en">Try again</span></button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang tải và giải mã lại entry… · Reloading and decrypting entry…')">Thử lại · <span lang="en">Retry</span></button>
     </div>
 
     <div class="card card-warning p-5" id="err-entry-key-mismatch">
-      <span class="badge-type badge-warn mb-2 inline-block">409 entry_key_mismatch</span>
+      <span class="badge-type badge-warn mb-2 inline-block">entry_key_mismatch</span>
       <p class="text-[14px] font-semibold m-0 mb-1">Entry này mã hoá bằng khoá cũ</p>
       <p class="text-[13px] text-muted m-0 mb-1">
         Khoá <span class="mono">key_id</span> trong envelope không khớp với <span class="mono">vault_key_id</span> hiện tại của vault (ứng dụng dừng trước khi gọi Worker). Khác với lỗi giải mã AEAD.
@@ -412,7 +412,7 @@
       <p class="text-[12px] text-muted m-0 mb-3" lang="en">
         <strong>Cannot save right now.</strong> What you typed stays in the editor until the vault locks (locking the vault clears unsaved drafts). Retry once connectivity returns.
       </p>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang thử lưu lại với cùng Idempotency-Key…')">Thử lưu lại · <span lang="en">Retry save</span></button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang thử lưu lại với cùng Idempotency-Key… · Retrying save with same Idempotency-Key…')">Thử lưu lại · <span lang="en">Retry save</span></button>
     </div>
 
     <div class="card p-5">

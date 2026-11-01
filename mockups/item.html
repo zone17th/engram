@@ -13,10 +13,6 @@
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--border);
   }
-  .locked-banner {
-    background: rgba(229, 72, 77, .10);
-    border-bottom: 1px solid var(--border);
-  }
   .item-name-field {
     font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
     font-size: 32px;
@@ -41,14 +37,6 @@
   @media (max-width: 900px) {
     .item-name-field { font-size: 24px; }
   }
-  .chip-dashed {
-    border-style: dashed;
-    color: var(--muted);
-  }
-  .chip:disabled {
-    opacity: .45;
-    cursor: not-allowed;
-  }
   .card-head {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
@@ -57,49 +45,6 @@
     border-top: 1px solid var(--border);
     background: var(--surface);
   }
-  .card-error {
-    border-color: var(--error);
-  }
-  .badge-conflict,
-  .badge-err {
-    background: var(--pale-orange);
-    color: var(--body);
-    border: 1px solid var(--error);
-  }
-  .badge-warn {
-    background: var(--pale-orange);
-    color: var(--body);
-    border: 1px solid var(--border-strong);
-  }
-  .badge-ok {
-    background: var(--surface-alt);
-    color: var(--body);
-    border: 1px solid var(--border);
-  }
-  .menu-pop {
-    min-width: 188px;
-  }
-  .menu-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    width: 100%;
-    padding: 9px 14px;
-    border: 0;
-    background: transparent;
-    color: var(--body);
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .menu-item:hover { background: var(--surface); }
-  .menu-item-danger {
-    color: var(--body);
-    border-top: 1px solid var(--border);
-  }
-  .menu-item-danger:hover { background: var(--pale-orange); }
   .import-panel {
     width: min(720px, 94vw);
     max-height: 88vh;
@@ -129,18 +74,6 @@
     overflow: visible;
     text-overflow: clip;
   }
-  @media (pointer: coarse) {
-    .btn-sm, .chip, .menu-item, .seg button {
-      min-height: 44px;
-    }
-    .chip-x {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 28px;
-      min-height: 28px;
-    }
-  }
 </style>
 </head>
 <body class="bg-canvas">
@@ -168,18 +101,18 @@
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <input class="omnibox-input !text-[15px]" placeholder="Tìm hoặc lưu…"
+        <input class="omnibox-input !text-[15px]" placeholder="Tìm hoặc lưu… · Search or save…"
                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
-               aria-label="Tìm hoặc lưu">
+               aria-label="Tìm hoặc lưu · Search or save">
         <span class="kbd">/</span>
       </label>
-      <div data-pop hidden class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto" role="listbox" aria-label="Gợi ý"></div>
+      <div data-pop hidden class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto" role="listbox" aria-label="Gợi ý · Suggestions"></div>
     </div>
 
     <div class="ml-auto flex items-center gap-2">
       <button type="button" class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body hidden sm:inline-flex">Cài đặt</a>
-      <button type="button" class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
     </div>
   </div>
 </header>
@@ -201,7 +134,7 @@
     <p class="t-caption text-muted m-0 mb-2">
       Trạng thái trang mục (P04 U11–U12) · <span lang="en">Item page states</span>
     </p>
-    <div class="seg flex-wrap" data-seg id="item-state-seg" role="group" aria-label="Trạng thái trang mục">
+    <div class="seg flex-wrap" data-seg id="item-state-seg" role="group" aria-label="Trạng thái trang mục · Item page states">
       <button type="button" data-target="default" aria-pressed="true">Mặc định · <span lang="en">Default</span></button>
       <button type="button" data-target="editing" aria-pressed="false">Đang sửa · <span lang="en">Editing</span></button>
       <button type="button" data-target="saving" aria-pressed="false">Lưu / Lỗi lưu · <span lang="en">Save states</span></button>
@@ -212,11 +145,12 @@
   </div>
 
   <!-- ===== đường dẫn ===== -->
-  <nav class="text-[13px] mb-5 text-muted" aria-label="Đường dẫn">
+  <nav class="text-[13px] mb-5 text-muted" aria-label="Đường dẫn · Breadcrumb">
     <a href="index.html" class="no-underline text-body font-medium hover:underline">Tất cả mục · <span lang="en" class="font-normal text-muted">All items</span></a>
     <span class="mx-1.5">/</span><span id="breadcrumb-item-name">wifi</span>
   </nav>
 
+  <h1 id="item-page-heading" class="sr-only">wifi</h1>
   <!-- ============================================================= -->
   <!-- VIEW 1: MẶC ĐỊNH (DEFAULT)                                     -->
   <!-- ============================================================= -->
@@ -232,7 +166,7 @@
           <input id="item-name-input" type="text" value="wifi" maxlength="200"
                  class="item-name-field"
                  aria-describedby="item-privacy-note"
-                 onchange="document.getElementById('breadcrumb-item-name').textContent=this.value;SAK.toast('Đã lưu tên mục · Saved item name')">
+                 onchange="document.getElementById('breadcrumb-item-name').textContent=this.value;document.getElementById('item-page-heading').textContent=this.value;SAK.toast('Đã lưu tên mục · Saved item name')">
         </div>
 
         <div class="min-w-0">
@@ -242,7 +176,7 @@
           </label>
           <input id="item-hint-input" type="text" value="nhà + văn phòng, không phải wifi công ty" maxlength="120"
                  class="field-input"
-                 placeholder="Thêm gợi ý ngắn giúp phân biệt mục trùng tên…"
+                 placeholder="Thêm gợi ý ngắn giúp phân biệt mục trùng tên… · Add a short hint to distinguish duplicate names…"
                  aria-describedby="item-privacy-note"
                  onchange="SAK.toast('Đã lưu gợi ý · Saved hint')">
         </div>
@@ -260,11 +194,11 @@
 
     <!-- Tag chips + ô gắn tag (+) có gợi ý prefix và dòng privacy -->
     <div class="mb-6">
-      <div class="flex flex-wrap items-center gap-2" aria-label="Tag của mục">
-        <span class="chip">#nhà <button type="button" class="chip-x border-0 bg-transparent cursor-pointer p-0" aria-label="Bỏ tag nhà" onclick="SAK.toast('Đã gỡ #nhà','Hoàn tác (Ctrl+Z)')">×</button></span>
-        <span class="chip">#office <button type="button" class="chip-x border-0 bg-transparent cursor-pointer p-0" aria-label="Bỏ tag office" onclick="SAK.toast('Đã gỡ #office','Hoàn tác (Ctrl+Z)')">×</button></span>
+      <div class="flex flex-wrap items-center gap-2" aria-label="Tag của mục · Item tags">
+        <span class="chip" id="item-tag-chip-nha">#nhà <button type="button" class="chip-x border-0 bg-transparent cursor-pointer p-0" aria-label="Bỏ tag nhà · Remove tag nhà" onclick="const c=document.getElementById('item-tag-chip-nha');c.hidden=true;SAK.toast('Đã gỡ #nhà · Removed #nhà','Hoàn tác',{originEl:document.getElementById('tag-add-chip'),onAction:()=>{c.hidden=false}})">×</button></span>
+        <span class="chip" id="item-tag-chip-office">#office <button type="button" class="chip-x border-0 bg-transparent cursor-pointer p-0" aria-label="Bỏ tag office · Remove tag office" onclick="const c=document.getElementById('item-tag-chip-office');c.hidden=true;SAK.toast('Đã gỡ #office · Removed #office','Hoàn tác',{originEl:document.getElementById('tag-add-chip'),onAction:()=>{c.hidden=false}})">×</button></span>
         <button type="button" id="tag-add-chip" class="chip chip-dashed"
-                aria-expanded="true" aria-controls="tag-add-popover"
+                aria-expanded="false" aria-controls="tag-add-popover"
                 onclick="const p=document.getElementById('tag-add-popover');p.hidden=!p.hidden;this.setAttribute('aria-expanded',String(!p.hidden))">
           + Tag · <span lang="en">Add tag</span>
         </button>
@@ -273,28 +207,28 @@
         </span>
       </div>
 
-      <!-- Ô gợi ý tag (mở sẵn để review trực tiếp, đóng/mở bằng nút + Tag) -->
-      <div id="tag-add-popover" class="card p-4 mt-3 max-w-[460px]" role="region" aria-label="Gắn thêm tag">
+      <!-- Ô gợi ý tag (đóng/mở bằng nút + Tag) -->
+      <div id="tag-add-popover" hidden class="card p-4 mt-3 max-w-[460px]" role="region" aria-label="Gắn thêm tag · Assign tag">
         <label for="tag-suggest-input" class="field-label">
           Gắn tag (2/20) · <span lang="en" class="font-normal text-muted">Assign tag (2 of 20)</span>
         </label>
         <div class="flex gap-2 items-center">
           <input id="tag-suggest-input" type="text" value="mạng" maxlength="50"
                  class="field-input"
-                 placeholder="Gõ đầu tên tag để lọc hoặc tạo mới…"
+                 placeholder="Gõ đầu tên tag để lọc hoặc tạo mới… · Type tag prefix to filter or create…"
                  aria-describedby="tag-privacy-note"
                  aria-controls="tag-suggest-list">
           <button type="button" class="btn btn-primary btn-sm shrink-0"
-                  onclick="SAK.toast('Đã gắn #mạng-nhà')">Gắn · <span lang="en">Add</span></button>
+                  onclick="SAK.toast('Đã gắn #mạng-nhà · Attached #mạng-nhà')">Gắn · <span lang="en">Add</span></button>
         </div>
 
-        <div id="tag-suggest-list" role="listbox" aria-label="Gợi ý tag theo tiền tố" class="mt-2 rounded-md overflow-hidden border-line">
-          <button type="button" role="option" aria-selected="true" class="sugg-row" onclick="SAK.toast('Đã gắn #mạng-nhà')">
+        <div id="tag-suggest-list" role="listbox" aria-label="Gợi ý tag theo tiền tố · Tag prefix suggestions" class="mt-2 rounded-md overflow-hidden border-line">
+          <button type="button" role="option" aria-selected="true" class="sugg-row" onclick="SAK.toast('Đã gắn #mạng-nhà · Attached #mạng-nhà')">
             <span class="mono text-accent">#</span>
             <span><strong>mạng</strong>-nhà</span>
             <span class="sugg-meta">6 mục · <span lang="en">6 items</span></span>
           </button>
-          <button type="button" role="option" aria-selected="false" class="sugg-row" onclick="SAK.toast('Đã tạo và gắn #mạng')">
+          <button type="button" role="option" aria-selected="false" class="sugg-row" onclick="SAK.toast('Đã tạo và gắn #mạng · Created and attached #mạng')">
             <span class="mono text-accent">+</span>
             <span>Tạo tag <strong>#mạng</strong> · <span lang="en">Create tag #mạng</span></span>
             <span class="sugg-meta"><span class="kbd">Enter</span></span>
@@ -315,14 +249,14 @@
         + Văn bản · <span lang="en">Text</span>
       </button>
       <button type="button" id="btn-add-json" class="btn btn-secondary btn-sm"
-              onclick="SAK.toast('Đã thêm khung bảng JSON mới')">
+              onclick="SAK.toast('Đã thêm khung bảng JSON mới · Added new JSON table entry')">
         + JSON / bảng · <span lang="en">JSON / table</span>
       </button>
       <button type="button" id="btn-import-json" class="btn btn-tertiary btn-sm" data-open-dialog="importDlg">
         Import JSON…
       </button>
-      <button type="button" class="btn btn-danger btn-sm ml-auto"
-              onclick="SAK.toast('Đã xoá mục “wifi”','Hoàn tác (Ctrl+Z)')">
+      <button type="button" id="btn-delete-item" class="btn btn-danger btn-sm ml-auto"
+              onclick="SAK.toast('Đã xoá mục “wifi” · Deleted item “wifi”','Hoàn tác',{originEl:this})">
         Xoá mục · <span lang="en">Delete item</span>
       </button>
     </div>
@@ -330,15 +264,15 @@
     <div class="grid gap-10 lg:grid-cols-[minmax(0,1fr)_248px] items-start">
 
       <!-- ===== danh sách entry (không có tiêu đề entry, không có ngày sửa trên card) ===== -->
-      <div class="min-w-0 flex flex-col gap-3">
+      <div class="min-w-0 flex flex-col gap-3" id="entry-card-list">
 
-        <!-- entry 1: text + menu ⋯ đang mở để kiểm chứng -->
-        <article class="card min-w-0" id="card-text-1">
+        <!-- entry 1: text -->
+        <article class="card min-w-0" id="card-text-1" data-entry-card="1">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-text">text</span>
-            <span class="mono text-[12px] text-muted">#1</span>
-            <div class="ml-auto flex items-center gap-1 relative">
+            <span class="mono text-[12px] text-muted" data-entry-pos>#1</span>
+            <div class="ml-auto flex items-center gap-1 relative" data-card-menu-host>
               <button type="button" class="btn btn-tertiary btn-sm"
                       onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">
                 Chép · <span lang="en">Copy</span>
@@ -347,34 +281,29 @@
                       onclick="document.querySelector('#item-state-seg [data-target=editing]').click()">
                 Sửa · <span lang="en">Edit</span>
               </button>
-              <button type="button" id="card-menu-btn-1" class="btn btn-tertiary btn-sm"
+              <button type="button" id="card-menu-btn-1" class="btn btn-tertiary btn-sm btn-icon"
+                      data-card-menu-trigger="1"
                       aria-label="Thao tác entry 1 · Entry 1 actions"
-                      aria-haspopup="menu" aria-expanded="true" aria-controls="card-menu-pop"
-                      onclick="const m=document.getElementById('card-menu-pop');m.hidden=!m.hidden;this.setAttribute('aria-expanded',String(!m.hidden))">⋯</button>
+                      aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu-pop">⋯</button>
 
-              <!-- Menu ⋯ (Chép, Sửa, Lên, Xuống, Xoá — xoá hiện Undo toast, không confirm dialog) -->
-              <div id="card-menu-pop" role="menu" aria-label="Thao tác entry 1"
-                   class="popover menu-pop absolute right-0 top-[calc(100%+6px)] z-30">
-                <button type="button" role="menuitem" class="menu-item"
-                        onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">
+              <!-- Menu ⋯ dùng chung cho các card (Chép, Sửa, Lên, Xuống, Xoá — xoá hiện Undo toast, không confirm dialog) -->
+              <div id="card-menu-pop" role="menu" aria-label="Thao tác entry · Entry actions" hidden
+                   class="popover menu-pop menu-pop-right">
+                <button type="button" role="menuitem" class="menu-item" data-card-act="copy">
                   <span>Chép · <span lang="en" class="text-muted">Copy</span></span>
                 </button>
-                <button type="button" role="menuitem" class="menu-item"
-                        onclick="document.querySelector('#item-state-seg [data-target=editing]').click()">
+                <button type="button" role="menuitem" class="menu-item" data-card-act="edit">
                   <span>Sửa · <span lang="en" class="text-muted">Edit</span></span>
                 </button>
-                <button type="button" role="menuitem" class="menu-item"
-                        onclick="SAK.toast('Đã chuyển lên vị trí 1/4 · Moved up')">
+                <button type="button" role="menuitem" class="menu-item" data-card-act="up">
                   <span>Lên · <span lang="en" class="text-muted">Move up</span></span>
                   <span class="mono text-[12px] text-muted" aria-hidden="true">↑</span>
                 </button>
-                <button type="button" role="menuitem" class="menu-item"
-                        onclick="SAK.toast('Đã chuyển xuống vị trí 2/4 · Moved down')">
+                <button type="button" role="menuitem" class="menu-item" data-card-act="down">
                   <span>Xuống · <span lang="en" class="text-muted">Move down</span></span>
                   <span class="mono text-[12px] text-muted" aria-hidden="true">↓</span>
                 </button>
-                <button type="button" role="menuitem" class="menu-item menu-item-danger"
-                        onclick="SAK.toast('Đã xoá entry · Entry deleted','Hoàn tác (Ctrl+Z)')">
+                <button type="button" role="menuitem" class="menu-item menu-item-danger" data-card-act="delete">
                   <span>Xoá · <span lang="en" class="text-muted">Delete</span></span>
                 </button>
               </div>
@@ -386,19 +315,22 @@
         </article>
 
         <!-- entry 2: json có nested + số lớn (tab Bảng / JSON gốc) -->
-        <article class="card overflow-hidden min-w-0" data-seg-scope id="card-json-1">
+        <article class="card overflow-hidden min-w-0" data-seg-scope id="card-json-1" data-entry-card="2">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-json">json</span>
-            <span class="mono text-[12px] text-muted">#2</span>
-            <div class="ml-auto flex flex-wrap items-center gap-1.5">
-              <div class="seg" data-seg role="group" aria-label="Chế độ xem JSON">
+            <span class="mono text-[12px] text-muted" data-entry-pos>#2</span>
+            <div class="ml-auto flex flex-wrap items-center gap-1.5 relative" data-card-menu-host>
+              <div class="seg" data-seg role="group" aria-label="Chế độ xem JSON · JSON view mode">
                 <button type="button" data-target="tbl" aria-pressed="true">Bảng · <span lang="en">Table</span></button>
                 <button type="button" data-target="raw" aria-pressed="false">JSON gốc · <span lang="en">Raw JSON</span></button>
               </div>
               <button type="button" class="btn btn-tertiary btn-sm"
                       onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">Chép · <span lang="en">Copy</span></button>
-              <button type="button" class="btn btn-tertiary btn-sm" aria-label="Thao tác entry 2" aria-haspopup="menu" aria-expanded="false">⋯</button>
+              <button type="button" id="card-menu-btn-2" class="btn btn-tertiary btn-sm btn-icon"
+                      data-card-menu-trigger="2"
+                      aria-label="Thao tác entry 2 · Entry 2 actions"
+                      aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu-pop">⋯</button>
             </div>
           </div>
           <div data-secret>
@@ -408,19 +340,22 @@
         </article>
 
         <!-- entry 3: json mảng, có khoá trùng (tab Bảng / JSON gốc) -->
-        <article class="card overflow-hidden min-w-0" data-seg-scope id="card-json-2">
+        <article class="card overflow-hidden min-w-0" data-seg-scope id="card-json-2" data-entry-card="3">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-json">json</span>
-            <span class="mono text-[12px] text-muted">#3</span>
-            <div class="ml-auto flex flex-wrap items-center gap-1.5">
-              <div class="seg" data-seg role="group" aria-label="Chế độ xem JSON">
+            <span class="mono text-[12px] text-muted" data-entry-pos>#3</span>
+            <div class="ml-auto flex flex-wrap items-center gap-1.5 relative" data-card-menu-host>
+              <div class="seg" data-seg role="group" aria-label="Chế độ xem JSON · JSON view mode">
                 <button type="button" data-target="gtbl" aria-pressed="true">Bảng · <span lang="en">Table</span></button>
                 <button type="button" data-target="graw" aria-pressed="false">JSON gốc · <span lang="en">Raw JSON</span></button>
               </div>
               <button type="button" class="btn btn-tertiary btn-sm"
                       onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">Chép · <span lang="en">Copy</span></button>
-              <button type="button" class="btn btn-tertiary btn-sm" aria-label="Thao tác entry 3" aria-haspopup="menu" aria-expanded="false">⋯</button>
+              <button type="button" id="card-menu-btn-3" class="btn btn-tertiary btn-sm btn-icon"
+                      data-card-menu-trigger="3"
+                      aria-label="Thao tác entry 3 · Entry 3 actions"
+                      aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu-pop">⋯</button>
             </div>
           </div>
           <div data-secret>
@@ -430,17 +365,20 @@
         </article>
 
         <!-- entry 4: text ghi chú thuần -->
-        <article class="card overflow-hidden min-w-0" id="card-text-2">
+        <article class="card overflow-hidden min-w-0" id="card-text-2" data-entry-card="4">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-text">text</span>
-            <span class="mono text-[12px] text-muted">#4</span>
-            <div class="ml-auto flex items-center gap-1">
+            <span class="mono text-[12px] text-muted" data-entry-pos>#4</span>
+            <div class="ml-auto flex items-center gap-1 relative" data-card-menu-host>
               <button type="button" class="btn btn-tertiary btn-sm"
                       onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">Chép · <span lang="en">Copy</span></button>
               <button type="button" class="btn btn-tertiary btn-sm"
                       onclick="document.querySelector('#item-state-seg [data-target=editing]').click()">Sửa · <span lang="en">Edit</span></button>
-              <button type="button" class="btn btn-tertiary btn-sm" aria-label="Thao tác entry 4" aria-haspopup="menu" aria-expanded="false">⋯</button>
+              <button type="button" id="card-menu-btn-4" class="btn btn-tertiary btn-sm btn-icon"
+                      data-card-menu-trigger="4"
+                      aria-label="Thao tác entry 4 · Entry 4 actions"
+                      aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu-pop">⋯</button>
             </div>
           </div>
           <div class="p-4" data-secret>
@@ -514,19 +452,32 @@ Router: Unifi U6 · VLAN 10 (trusted), VLAN 20 (iot), VLAN 30 (guest)</textarea>
             <span>Tối đa 262.144 B UTF-8 · <span lang="en">Max 262,144 B UTF-8</span></span>
           </div>
 
-          <div class="flex flex-wrap items-center justify-end gap-2 mt-4">
-            <button type="button" class="btn btn-tertiary btn-sm"
-                    onclick="document.getElementById('entry-discard-confirm').hidden=false">
-              Huỷ (<span class="mono">Esc</span>) · <span lang="en">Cancel</span>
-            </button>
-            <button type="button" class="btn btn-primary btn-sm"
-                    onclick="SAK.toast('Đã lưu thay đổi · Changes saved')">
-              Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
-            </button>
+          <div class="flex flex-wrap items-center justify-between gap-2 mt-4">
+            <div class="flex flex-wrap gap-1.5">
+              <button type="button" class="btn btn-tertiary btn-sm" id="entry-sim-near-cap">
+                Thử gần trần (258.400 B) · <span lang="en">Simulate near cap</span>
+              </button>
+              <button type="button" class="btn btn-tertiary btn-sm" id="entry-sim-over-cap">
+                Thử vượt trần (263.000 B) · <span lang="en">Simulate over cap</span>
+              </button>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 ml-auto">
+              <button type="button" id="entry-cancel-btn" class="btn btn-tertiary btn-sm">
+                Huỷ (<span class="mono">Esc</span>) · <span lang="en">Cancel</span>
+              </button>
+              <button type="button" id="entry-save-btn" class="btn btn-primary btn-sm">
+                Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+              </button>
+            </div>
           </div>
 
+          <p id="entry-overcap-error" role="alert" hidden class="field-error mt-3 mb-0">
+            Nội dung vượt quá 256 KiB (262.144 B UTF-8; <span class="mono">413 entry_too_large</span>). Hãy rút gọn trước khi lưu. ·
+            <span lang="en">Entry exceeds 256 KiB (262,144 UTF-8 bytes; <span class="mono">413 entry_too_large</span>). Shorten the content before saving.</span>
+          </p>
+
           <!-- Xác nhận inline khi nhấn Esc/Huỷ trên editor đã sửa (dirty) -->
-          <div id="entry-discard-confirm" role="alert" class="auth-status mt-4 mb-0 flex flex-wrap items-center justify-between gap-3">
+          <div id="entry-discard-confirm" hidden role="alert" class="auth-status mt-4 mb-0 flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
               <p class="text-[14px] font-semibold text-body m-0">
                 Bỏ thay đổi? · <span lang="en" class="font-normal text-muted">Discard unsaved changes?</span>
@@ -536,12 +487,10 @@ Router: Unifi U6 · VLAN 10 (trusted), VLAN 20 (iot), VLAN 30 (guest)</textarea>
               </p>
             </div>
             <div class="flex flex-wrap gap-2">
-              <button type="button" class="btn btn-tertiary btn-sm"
-                      onclick="document.getElementById('entry-discard-confirm').hidden=true">
+              <button type="button" id="entry-keep-editing-btn" class="btn btn-tertiary btn-sm">
                 Tiếp tục sửa · <span lang="en">Keep editing</span>
               </button>
-              <button type="button" class="btn btn-danger btn-sm"
-                      onclick="document.querySelector('#item-state-seg [data-target=default]').click()">
+              <button type="button" id="entry-discard-btn" class="btn btn-danger btn-sm">
                 Bỏ thay đổi · <span lang="en">Discard changes</span>
               </button>
             </div>
@@ -624,7 +573,7 @@ Pass: tr4m-Ngh1n-C4y-S0</textarea>
           </div>
           <div class="flex flex-wrap justify-end gap-2">
             <button type="button" class="btn btn-primary btn-sm"
-                    onclick="SAK.toast('Đang gửi lại với cùng Idempotency-Key…')">
+                    onclick="SAK.toast('Đang gửi lại với cùng Idempotency-Key… · Resending with same Idempotency-Key…')">
               Thử lại · <span lang="en">Retry</span>
             </button>
           </div>
@@ -679,11 +628,11 @@ Pass: tr4m-Ngh1n-C4y-S0</textarea>
 
         <div class="flex flex-wrap gap-2">
           <button type="button" class="btn btn-secondary btn-sm"
-                  onclick="SAK.toast('Đã tải tên và gợi ý mới nhất')">
+                  onclick="SAK.toast('Đã tải tên và gợi ý mới nhất · Loaded latest item name and hint')">
             Tải bản mới · <span lang="en">Load latest</span>
           </button>
           <button type="button" class="btn btn-tertiary btn-sm"
-                  onclick="SAK.toast('Đã lưu bản của bạn')">
+                  onclick="SAK.toast('Đã lưu bản của bạn · Saved your version')">
             Giữ bản của tôi · <span lang="en">Keep mine</span>
           </button>
         </div>
@@ -726,17 +675,17 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
               Tải bản mới · <span lang="en">Load latest</span>
             </button>
             <button type="button" class="btn btn-primary btn-sm"
-                    onclick="SAK.toast('Đã mã hoá lại và lưu bản của bạn')">
+                    onclick="SAK.toast('Đã mã hoá lại và lưu bản của bạn · Re-encrypted and saved your version')">
               Giữ bản của tôi · <span lang="en">Keep mine</span>
             </button>
             <button type="button" class="btn btn-tertiary btn-sm"
-                    onclick="SAK.toast('Đã chép bản của bạn vào clipboard')">
+                    onclick="SAK.toast('Đã chép bản của bạn vào clipboard · Copied your draft to clipboard')">
               Chép bản của tôi · <span lang="en">Copy mine</span>
             </button>
           </div>
 
           <!-- Xác nhận inline một bước cho "Tải bản mới" (vì thao tác này bỏ draft đang gõ) -->
-          <div id="conflict-reload-confirm" class="auth-status mt-3 mb-0 flex flex-wrap items-center justify-between gap-3">
+          <div id="conflict-reload-confirm" hidden class="auth-status mt-3 mb-0 flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
               <p class="text-[13px] font-semibold text-body m-0">
                 Bỏ bản nháp đang gõ và tải bản mới từ máy chủ? ·
@@ -749,7 +698,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
                 Huỷ · <span lang="en">Cancel</span>
               </button>
               <button type="button" class="btn btn-danger btn-sm"
-                      onclick="SAK.toast('Đã tải bản mới từ máy chủ')">
+                      onclick="SAK.toast('Đã tải bản mới từ máy chủ · Loaded latest version from server')">
                 Bỏ bản nháp &amp; tải · <span lang="en">Discard &amp; load</span>
               </button>
             </div>
@@ -771,6 +720,12 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
         <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
           <span class="badge-type badge-text">text</span>
           <span class="badge-type badge-warn">entry_key_mismatch</span>
+          <div class="ml-auto flex items-center gap-1">
+            <button type="button" class="btn btn-danger btn-sm"
+                    onclick="const c=document.getElementById('card-key-mismatch');c.hidden=true;SAK.toast('Đã xoá entry khoá cũ · Deleted old-key entry','Hoàn tác',{originEl:this,onAction:()=>{c.hidden=false}})">
+              Xoá entry cũ · <span lang="en">Delete old entry</span>
+            </button>
+          </div>
         </div>
         <div class="p-4">
           <div role="alert" class="auth-status mb-0">
@@ -782,7 +737,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
               Mã khoá trên entry (<span class="mono">envelope.key_id</span>) không khớp với khoá hiện tại của vault nên trình duyệt không gọi giải mã. Điều này xảy ra khi vault đã được đặt lại hoặc đổi khoá ở thiết bị khác. Bạn có thể xoá entry cũ này.
             </p>
             <p class="text-[12px] text-muted m-0 mt-1" lang="en">
-              The entry’s <span class="mono">envelope.key_id</span> does not match your current <span class="mono">vault_key_id</span>, so decryption was skipped. This happens after a vault reset or key change on another device.
+              The entry’s <span class="mono">envelope.key_id</span> does not match your current <span class="mono">vault_key_id</span>, so decryption was skipped. This happens after a vault reset or key change on another device. You can delete this old entry.
             </p>
           </div>
         </div>
@@ -809,7 +764,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
           </div>
           <div class="flex flex-wrap justify-end gap-2">
             <button type="button" class="btn btn-tertiary btn-sm"
-                    onclick="SAK.toast('Đang tải và giải mã lại entry…')">
+                    onclick="SAK.toast('Đang tải và giải mã lại entry… · Reloading and decrypting entry…')">
               Thử lại · <span lang="en">Retry</span>
             </button>
           </div>
@@ -898,7 +853,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
         class="w-full mono text-[13px] leading-relaxed resize-y import-textarea"></textarea>
 
       <div class="flex items-center gap-3 mt-3 flex-wrap">
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Mở hộp chọn file…')">Chọn file…</button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Mở hộp chọn file… · Opening file picker…')">Chọn file… · <span lang="en">Choose file…</span></button>
         <span id="importStatus" class="text-[13px] mono text-body">JSON hợp lệ · 6 khoá · 1 mảng lồng</span>
       </div>
 
@@ -925,8 +880,8 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
     <div class="flex items-center gap-3 px-7 py-5 flex-wrap import-foot">
       <span class="text-[12px] text-muted">Mã hoá trước khi rời máy bạn.</span>
       <div class="ml-auto flex gap-2">
-        <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ</button>
-        <button type="button" class="btn btn-primary" data-toast="Đã nhập 1 entry json vào “wifi”" data-toast-action="Hoàn tác (Ctrl+Z)">Nhập</button>
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
+        <button type="button" class="btn btn-primary" data-toast="Đã nhập 1 entry json vào “wifi” · Imported 1 JSON entry into “wifi”" data-toast-action="Hoàn tác">Nhập · <span lang="en">Import</span></button>
       </div>
     </div>
   </div>
@@ -1004,16 +959,254 @@ src.addEventListener('input', () => {
   }
 });
 
-/* Đếm byte UTF-8 trực tiếp khi sửa text entry (trần 262.144 B) */
-const editArea = document.getElementById('entry-edit-textarea');
-const byteCounter = document.getElementById('entry-byte-counter');
-if (editArea && byteCounter) {
-  const enc = new TextEncoder();
-  editArea.addEventListener('input', () => {
-    const bytes = enc.encode(editArea.value).length;
-    byteCounter.textContent = `${bytes.toLocaleString('vi-VN')} / 262.144 B`;
+/* Menu ⋯ dùng chung cho các card entry (RV1-8, RV1-17) */
+(function () {
+  const menuPop = document.getElementById('card-menu-pop');
+  const cardList = document.getElementById('entry-card-list');
+  if (!menuPop || !cardList) return;
+  let activeTrigger = null;
+  let activeCard = null;
+
+  function visibleCards() {
+    return Array.from(cardList.querySelectorAll('[data-entry-card]')).filter((c) => !c.hidden);
+  }
+
+  function renumberCards() {
+    visibleCards().forEach((c, i) => {
+      const pos = c.querySelector('[data-entry-pos]');
+      if (pos) pos.textContent = '#' + (i + 1);
+    });
+  }
+
+  function syncMenuButtons() {
+    if (!activeCard) return;
+    const cards = visibleCards();
+    const idx = cards.indexOf(activeCard);
+    const upBtn = menuPop.querySelector('[data-card-act="up"]');
+    const downBtn = menuPop.querySelector('[data-card-act="down"]');
+    if (upBtn) upBtn.disabled = idx <= 0;
+    if (downBtn) downBtn.disabled = idx < 0 || idx >= cards.length - 1;
+  }
+
+  function closeCardMenu(refocusTrigger) {
+    if (menuPop.hidden) return;
+    menuPop.hidden = true;
+    document.querySelectorAll('[data-card-menu-trigger]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+    if (refocusTrigger && activeTrigger && typeof activeTrigger.focus === 'function') {
+      activeTrigger.focus();
+    }
+  }
+
+  function openCardMenu(triggerBtn) {
+    const card = triggerBtn.closest('[data-entry-card]');
+    const host = triggerBtn.closest('[data-card-menu-host]');
+    if (!card || !host) return;
+    const wasSameOpen = !menuPop.hidden && activeTrigger === triggerBtn;
+    closeCardMenu(false);
+    if (wasSameOpen) return;
+    activeTrigger = triggerBtn;
+    activeCard = card;
+    host.appendChild(menuPop);
+    syncMenuButtons();
+    menuPop.hidden = false;
+    triggerBtn.setAttribute('aria-expanded', 'true');
+    const firstEnabled = Array.from(menuPop.querySelectorAll('[role="menuitem"]')).find((el) => !el.disabled);
+    if (firstEnabled) firstEnabled.focus();
+  }
+
+  document.querySelectorAll('[data-card-menu-trigger]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openCardMenu(btn);
+    });
   });
-}
+
+  menuPop.addEventListener('keydown', (e) => {
+    const items = Array.from(menuPop.querySelectorAll('[role="menuitem"]')).filter((el) => !el.disabled);
+    if (!items.length) return;
+    const cur = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      items[(cur + 1) % items.length].focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      items[(cur - 1 + items.length) % items.length].focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      items[0].focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      items[items.length - 1].focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeCardMenu(true);
+    }
+  });
+
+  menuPop.addEventListener('click', (e) => {
+    const actBtn = e.target.closest('[data-card-act]');
+    if (!actBtn || actBtn.disabled || !activeCard) return;
+    const act = actBtn.dataset.cardAct;
+    const triggerToRestore = activeTrigger;
+    const cardToAct = activeCard;
+    closeCardMenu(false);
+
+    if (act === 'copy') {
+      SAK.toast('Đã chép vào clipboard · Copied to clipboard', null, { originEl: triggerToRestore });
+      if (triggerToRestore) triggerToRestore.focus();
+    } else if (act === 'edit') {
+      document.querySelector('#item-state-seg [data-target=editing]')?.click();
+    } else if (act === 'up') {
+      const cards = visibleCards();
+      const idx = cards.indexOf(cardToAct);
+      if (idx > 0) {
+        cardList.insertBefore(cardToAct, cards[idx - 1]);
+        renumberCards();
+        SAK.toast(`Đã chuyển lên vị trí ${idx}/${cards.length} · Moved up to ${idx}/${cards.length}`, null, { originEl: triggerToRestore });
+      }
+      if (triggerToRestore) triggerToRestore.focus();
+    } else if (act === 'down') {
+      const cards = visibleCards();
+      const idx = cards.indexOf(cardToAct);
+      if (idx >= 0 && idx < cards.length - 1) {
+        cardList.insertBefore(cards[idx + 1], cardToAct);
+        renumberCards();
+        SAK.toast(`Đã chuyển xuống vị trí ${idx + 2}/${cards.length} · Moved down to ${idx + 2}/${cards.length}`, null, { originEl: triggerToRestore });
+      }
+      if (triggerToRestore) triggerToRestore.focus();
+    } else if (act === 'delete') {
+      cardToAct.hidden = true;
+      renumberCards();
+      SAK.toast('Đã xoá entry · Entry deleted', 'Hoàn tác', {
+        originEl: triggerToRestore,
+        onAction: () => {
+          cardToAct.hidden = false;
+          renumberCards();
+        }
+      });
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!menuPop.hidden && !menuPop.contains(e.target) && !e.target.closest('[data-card-menu-trigger]')) {
+      closeCardMenu(false);
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menuPop.hidden) {
+      e.preventDefault();
+      closeCardMenu(true);
+    }
+  });
+})();
+
+/* Đếm byte UTF-8 trực tiếp, cờ dirty, Ctrl+S / Esc và trạng thái vượt trần 262.144 B (RV1-14) */
+(function () {
+  const editArea = document.getElementById('entry-edit-textarea');
+  const byteCounter = document.getElementById('entry-byte-counter');
+  const saveBtn = document.getElementById('entry-save-btn');
+  const cancelBtn = document.getElementById('entry-cancel-btn');
+  const discardBox = document.getElementById('entry-discard-confirm');
+  const keepBtn = document.getElementById('entry-keep-editing-btn');
+  const discardBtn = document.getElementById('entry-discard-btn');
+  const overcapErr = document.getElementById('entry-overcap-error');
+  const simNearBtn = document.getElementById('entry-sim-near-cap');
+  const simOverBtn = document.getElementById('entry-sim-over-cap');
+  if (!editArea || !byteCounter) return;
+
+  const CAP = 262144;
+  const NEAR_CAP = 240000;
+  const enc = new TextEncoder();
+  let cleanValue = editArea.value;
+  let isDirty = true; /* Mặc định ở tab Editing minh hoạ trạng thái dirty đang hỏi Bỏ thay đổi? */
+  let simulatedBytes = 258400;
+
+  function updateEditorState(bytesOverride) {
+    const realBytes = enc.encode(editArea.value).length;
+    const bytes = bytesOverride != null ? bytesOverride : realBytes;
+    const over = bytes > CAP;
+    const near = !over && bytes >= NEAR_CAP;
+    const empty = bytes === 0;
+    const fmt = bytes.toLocaleString('vi-VN');
+    if (over) {
+      byteCounter.innerHTML = `<span class="text-error-ink font-semibold">${fmt} / 262.144 B · vượt trần 256 KiB · <span lang="en">exceeds 256 KiB cap</span></span>`;
+    } else if (near) {
+      byteCounter.innerHTML = `${fmt} / 262.144 B · gần trần 256 KiB · <span lang="en" class="text-muted">near 256 KiB cap</span>`;
+    } else {
+      byteCounter.innerHTML = `${fmt} / 262.144 B · <span lang="en" class="text-muted">${bytes.toLocaleString('en-US')} / 262,144 B</span>`;
+    }
+    if (over) {
+      editArea.setAttribute('aria-invalid', 'true');
+    } else {
+      editArea.removeAttribute('aria-invalid');
+    }
+    if (overcapErr) overcapErr.hidden = !over;
+    if (saveBtn) saveBtn.disabled = over || empty;
+  }
+
+  function requestCancel() {
+    if (!isDirty) {
+      if (discardBox) discardBox.hidden = true;
+      document.querySelector('#item-state-seg [data-target=default]')?.click();
+      return;
+    }
+    if (discardBox) discardBox.hidden = false;
+  }
+
+  function requestSave() {
+    if (saveBtn && saveBtn.disabled) return;
+    cleanValue = editArea.value;
+    isDirty = false;
+    if (discardBox) discardBox.hidden = true;
+    SAK.toast('Đã lưu thay đổi · Changes saved');
+  }
+
+  editArea.addEventListener('input', () => {
+    simulatedBytes = null;
+    isDirty = editArea.value !== cleanValue;
+    if (!isDirty && discardBox) discardBox.hidden = true;
+    updateEditorState(null);
+  });
+
+  editArea.addEventListener('keydown', (e) => {
+    const k = (e.key || '').toLowerCase();
+    if (k === 's' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      requestSave();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      requestCancel();
+    }
+  });
+
+  if (cancelBtn) cancelBtn.addEventListener('click', requestCancel);
+  if (saveBtn) saveBtn.addEventListener('click', requestSave);
+  if (keepBtn) keepBtn.addEventListener('click', () => {
+    if (discardBox) discardBox.hidden = true;
+    editArea.focus();
+  });
+  if (discardBtn) discardBtn.addEventListener('click', () => {
+    editArea.value = cleanValue;
+    isDirty = false;
+    simulatedBytes = null;
+    if (discardBox) discardBox.hidden = true;
+    updateEditorState(null);
+    document.querySelector('#item-state-seg [data-target=default]')?.click();
+  });
+  if (simNearBtn) simNearBtn.addEventListener('click', () => {
+    simulatedBytes = 258400;
+    isDirty = true;
+    updateEditorState(simulatedBytes);
+  });
+  if (simOverBtn) simOverBtn.addEventListener('click', () => {
+    simulatedBytes = 263000;
+    isDirty = true;
+    updateEditorState(simulatedBytes);
+  });
+
+  updateEditorState(simulatedBytes);
+})();
 </script>
 </body>
 </html>

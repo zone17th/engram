@@ -318,7 +318,7 @@
           });
           return;
         }
-        toast(`Đã lưu vào “${r.add.name}”`, 'Hoàn tác', {
+        toast(`Đã lưu vào “${r.add.name}” · Saved to “${r.add.name}”`, 'Hoàn tác', {
           sub: 'Hoàn tác chỉ xoá nội dung vừa lưu; mục và tag vẫn giữ · Undo only removes the saved entry; the item and tags stay',
           originEl: input
         });
@@ -328,12 +328,12 @@
         return;
       }
       if (r.kind === 'tag') {
-        if (opts.demo) { toast(`Lọc theo #${r.tag.name}`); return; }
+        if (opts.demo) { toast(`Lọc theo #${r.tag.name} · Filter by #${r.tag.name}`); return; }
         input.value = '#' + r.tag.name;
         paint();
         return;
       }
-      if (opts.demo) { toast(`Mở “${r.item.name}”`); return; }
+      if (opts.demo) { toast(`Mở “${r.item.name}” · Open “${r.item.name}”`); return; }
       location.href = 'item.html';
     }
 
@@ -358,7 +358,7 @@
       const row = e.target.closest('.sugg-row');
       if (row) { activate(+row.dataset.i); return; }
       if (e.target.closest('[data-create]')) {
-        toast(`Đã tạo “${input.value}”`);
+        toast(`Đã tạo “${input.value}” · Created “${input.value}”`);
         input.value = ''; paint();
       }
     });
@@ -370,8 +370,9 @@
     }
 
     document.addEventListener('keydown', (e) => {
-      if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) ||
-          (e.key === '/' && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName))) {
+      const k = e.key || '';
+      if ((k === 'k' && (e.metaKey || e.ctrlKey)) ||
+          (k === '/' && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName))) {
         e.preventDefault(); input.focus(); input.select();
       }
     });
@@ -429,18 +430,17 @@
           const created = d.created_at || d.updated || '12/03/2026';
           const count = d.entry_count != null ? d.entry_count : (d.entries != null ? d.entries : 0);
           const isSel = idx === activeIdx;
-          return `<button type="button" role="option" id="dup-opt-${esc(d.id)}" aria-selected="${isSel}"
+          return `<button type="button" role="option" id="dup-opt-${esc(d.id)}" aria-selected="${isSel}" tabindex="${isSel ? '0' : '-1'}"
             class="dup-row" data-pick="${esc(d.id)}" data-opt-idx="${idx}">
             <span class="dup-row-main">
               <span class="dup-row-tags">
                 <strong>${esc(d.name)}</strong>
-                <span class="mono text-[11px] text-muted">ID: ${esc(d.id)}</span>
                 ${shownTags.map((t) => `<span class="chip dup-chip">#${esc(t)}</span>`).join('')}
                 ${extraTags > 0 ? `<span class="mono text-[12px] text-muted">+${extraTags}</span>` : ''}
               </span>
               ${d.hint ? `<span class="text-[13px] text-muted">${esc(d.hint)}</span>` : ''}
             </span>
-            <span class="sugg-meta mono">${count} entries · tạo ${esc(created)}</span>
+            <span class="sugg-meta mono">${count} entries · tạo ${esc(created)} · <span lang="en">created ${esc(created)}</span></span>
           </button>`;
         }).join('');
 
@@ -456,19 +456,21 @@
           <p class="text-[12px] text-muted m-0 mb-4" lang="en">
             <strong>${total} items named “${esc(payload.name)}”.</strong> Duplicate item names are allowed. Pick the target item by its tags and creation date (returns item ID), or create a new item with the same name.
           </p>
-          <div class="dup-list" role="listbox" id="dupListbox" aria-label="Chọn mục đích cho ${esc(payload.name)}">
+          <div class="dup-list" role="listbox" id="dupListbox" aria-label="Chọn mục đích cho ${esc(payload.name)} · Select target item for ${esc(payload.name)}">
             ${rowsHtml}
-            ${hasMore ? `<button type="button" class="btn btn-tertiary btn-sm w-full" data-dup-more="1">
-              Xem thêm (${remaining} mục) · <span lang="en">Load more (${remaining})</span>
-            </button>` : ''}
-            <button type="button" role="option" id="dup-opt-new" aria-selected="${newSel}"
+            <button type="button" role="option" id="dup-opt-new" aria-selected="${newSel}" tabindex="${newSel ? '0' : '-1'}"
               class="dup-row dup-row-new" data-pick="new" data-opt-idx="${newIdx}">
               <span class="mono text-accent">+</span>
               <span><strong>Tạo mục mới cùng tên “${esc(payload.name)}”</strong> · <span lang="en" class="text-muted">Create new item with the same name</span></span>
             </button>
           </div>
+          ${hasMore ? `<div class="mb-4">
+            <button type="button" class="btn btn-tertiary btn-sm w-full" data-dup-more="1">
+              Xem thêm (${remaining} mục) · <span lang="en">Load more (${remaining})</span>
+            </button>
+          </div>` : ''}
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-[12px] text-muted"><span class="kbd">↑↓</span> chọn · <span class="kbd">Enter</span> lưu · <span class="kbd">Esc</span> huỷ</span>
+            <span class="text-[12px] text-muted"><span class="kbd">↑↓</span> chọn · <span class="kbd">Enter</span> lưu · <span class="kbd">Esc</span> huỷ · <span lang="en">select / save / cancel</span></span>
             <button type="button" class="btn btn-tertiary" data-close>Huỷ · <span lang="en">Cancel</span></button>
           </div>
         </div>`;
@@ -477,8 +479,10 @@
       function syncSelection() {
         const opts = dlg.querySelectorAll('[role="option"]');
         opts.forEach((el, idx) => {
-          el.setAttribute('aria-selected', String(idx === activeIdx));
-          if (idx === activeIdx) el.focus();
+          const isSel = idx === activeIdx;
+          el.setAttribute('aria-selected', String(isSel));
+          el.setAttribute('tabindex', isSel ? '0' : '-1');
+          if (isSel) el.focus();
         });
       }
 
@@ -486,10 +490,10 @@
         const resolvedId = pickVal === 'new' ? 'item_new_' + Math.random().toString(36).slice(2, 7) : pickVal;
         dlg.dataset.lastPickedId = resolvedId;
         finish(resolvedId);
-        const labelVi = pickVal === 'new'
-          ? `Đã tạo mục mới “${payload.name}” (${resolvedId}) và lưu entry`
-          : `Đã lưu vào “${payload.name}” (${resolvedId})`;
-        toast(labelVi, 'Hoàn tác', {
+        const label = pickVal === 'new'
+          ? `Đã tạo mục mới “${payload.name}” và lưu entry · Created new item “${payload.name}” and saved entry`
+          : `Đã lưu vào “${payload.name}” · Saved to “${payload.name}”`;
+        toast(label, 'Hoàn tác', {
           sub: 'Hoàn tác chỉ xoá nội dung vừa lưu; mục và tag vẫn giữ · Undo only removes the saved entry; the item and tags stay',
           originEl: triggerEl
         });
@@ -557,17 +561,21 @@
   function formatActionLabel(action) {
     if (!action) return '';
     const sc = undoShortcutLabel();
-    if (/^(hoàn tác|undo)$/i.test(action.trim())) {
+    const stripped = String(action)
+      .replace(/\s*\((?:Ctrl\+Z|⌘Z)\)/gi, '')
+      .replace(/\s*·\s*Undo.*$/i, '')
+      .trim();
+    if (/^(hoàn tác|undo)$/i.test(stripped)) {
       return `Hoàn tác (${sc}) · Undo (${sc})`;
     }
-    if (action.indexOf('Ctrl+Z') >= 0 || action.indexOf('⌘Z') >= 0) return action;
-    if (/hoàn tác/i.test(action)) return `${action} (${sc})`;
+    if (/hoàn tác/i.test(stripped)) return `${stripped} (${sc})`;
     return action;
   }
 
   let lastInteractionWasKeyboard = false;
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Tab' || e.key === 'Enter' || e.key === ' ' || e.key.startsWith('Arrow')) {
+    const k = e.key || '';
+    if (k === 'Tab' || k === 'Enter' || k === ' ' || k.startsWith('Arrow')) {
       lastInteractionWasKeyboard = true;
     }
   }, true);
@@ -583,10 +591,21 @@
   const toastItems = [];
   let toastSeq = 0;
   let toastStackEl = null;
+  let toastLiveEl = null;
+  let toastMoreBtnEl = null;
   let toastExpanded = false;
   let toastHovering = false;
   let toastFocused = false;
   let toastTickInterval = null;
+
+  function collapseAndResumeIfIdle() {
+    if (toastHovering || toastFocused) return;
+    if (toastExpanded) {
+      toastExpanded = false;
+      syncToastDom();
+    }
+    resumeAllToasts();
+  }
 
   function ensureToastStack() {
     if (toastStackEl && document.body.contains(toastStackEl)) return toastStackEl;
@@ -595,28 +614,54 @@
       toastStackEl = document.createElement('div');
       toastStackEl.id = 'toastStack';
       toastStackEl.className = 'toast-stack';
-      toastStackEl.setAttribute('role', 'status');
-      toastStackEl.setAttribute('aria-live', 'polite');
-      toastStackEl.setAttribute('aria-atomic', 'false');
       document.body.appendChild(toastStackEl);
     }
-    toastStackEl.addEventListener('mouseenter', () => {
-      toastHovering = true;
-      pauseAllToasts(false);
-    });
-    toastStackEl.addEventListener('mouseleave', () => {
-      toastHovering = false;
-      if (!toastFocused && !toastExpanded) resumeAllToasts();
-    });
-    toastStackEl.addEventListener('focusin', () => {
-      toastFocused = true;
-      pauseAllToasts(true);
-    });
-    toastStackEl.addEventListener('focusout', (e) => {
-      if (toastStackEl.contains(e.relatedTarget)) return;
-      toastFocused = false;
-      if (!toastHovering && !toastExpanded) resumeAllToasts();
-    });
+    toastLiveEl = toastStackEl.querySelector('#toastLiveRegion');
+    if (!toastLiveEl) {
+      toastLiveEl = document.createElement('div');
+      toastLiveEl.id = 'toastLiveRegion';
+      toastLiveEl.className = 'toast-live';
+      toastLiveEl.setAttribute('role', 'status');
+      toastLiveEl.setAttribute('aria-live', 'polite');
+      toastLiveEl.setAttribute('aria-atomic', 'false');
+      toastStackEl.appendChild(toastLiveEl);
+    }
+    toastMoreBtnEl = toastStackEl.querySelector('[data-toast-expand]');
+    if (!toastMoreBtnEl) {
+      toastMoreBtnEl = document.createElement('button');
+      toastMoreBtnEl.type = 'button';
+      toastMoreBtnEl.className = 'toast-more';
+      toastMoreBtnEl.dataset.toastExpand = '1';
+      toastMoreBtnEl.hidden = true;
+      toastMoreBtnEl.addEventListener('click', () => {
+        toastExpanded = true;
+        pauseAllToasts(true);
+        syncToastDom();
+        const firstBtn = toastLiveEl && toastLiveEl.querySelector('.toast:not([hidden]) [data-toast-action]');
+        if (firstBtn) firstBtn.focus();
+      });
+      toastStackEl.appendChild(toastMoreBtnEl);
+    }
+    if (!toastStackEl.dataset.boundListeners) {
+      toastStackEl.dataset.boundListeners = '1';
+      toastStackEl.addEventListener('mouseenter', () => {
+        toastHovering = true;
+        pauseAllToasts(false);
+      });
+      toastStackEl.addEventListener('mouseleave', () => {
+        toastHovering = false;
+        collapseAndResumeIfIdle();
+      });
+      toastStackEl.addEventListener('focusin', () => {
+        toastFocused = true;
+        pauseAllToasts(true);
+      });
+      toastStackEl.addEventListener('focusout', (e) => {
+        if (e.relatedTarget && toastStackEl.contains(e.relatedTarget)) return;
+        toastFocused = false;
+        collapseAndResumeIfIdle();
+      });
+    }
     return toastStackEl;
   }
 
@@ -648,15 +693,82 @@
     });
   }
 
+  function createToastNode(item) {
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.dataset.toastId = String(item.id);
+    const actionText = formatActionLabel(item.action);
+    el.innerHTML = `<div class="toast-body">
+        <span>${esc(item.msg)}</span>
+        ${item.sub ? `<span class="toast-sub">${esc(item.sub)}</span>` : ''}
+      </div>
+      ${actionText ? `<button type="button" data-toast-action="${item.id}">${esc(actionText)}</button>` : ''}`;
+    const btn = el.querySelector('[data-toast-action]');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const found = toastItems.find((t) => t.id === item.id);
+        if (found) triggerToastUndo(found);
+      });
+    }
+    return el;
+  }
+
+  function syncToastDom() {
+    ensureToastStack();
+    if (!toastItems.length) {
+      if (toastLiveEl) toastLiveEl.innerHTML = '';
+      if (toastMoreBtnEl) toastMoreBtnEl.hidden = true;
+      return;
+    }
+    const maxVisible = toastExpanded ? toastItems.length : 3;
+    const newestFirst = toastItems.slice().reverse();
+    const visibleIds = new Set(newestFirst.slice(0, maxVisible).map((t) => t.id));
+    const hiddenItems = newestFirst.slice(maxVisible);
+    const hiddenCount = hiddenItems.length;
+    const allUndo = hiddenItems.length > 0 && hiddenItems.every((t) => !!t.action);
+
+    toastItems.forEach((item) => {
+      if (item.el) {
+        item.el.hidden = !visibleIds.has(item.id);
+      }
+    });
+
+    if (toastMoreBtnEl) {
+      if (hiddenCount > 0) {
+        toastMoreBtnEl.hidden = false;
+        const viNoun = allUndo ? 'hoàn tác' : 'thông báo';
+        const enNoun = allUndo ? 'undo' : 'more';
+        toastMoreBtnEl.setAttribute(
+          'aria-label',
+          `Mở rộng thêm ${hiddenCount} ${viNoun} · Expand ${hiddenCount} ${enNoun} notifications`
+        );
+        toastMoreBtnEl.textContent = `+${hiddenCount} ${viNoun} · +${hiddenCount} ${enNoun}`;
+      } else {
+        toastMoreBtnEl.hidden = true;
+      }
+    }
+  }
+
   function removeToastById(id, restoreFocusToOrigin) {
     const idx = toastItems.findIndex((t) => t.id === id);
     if (idx < 0) return;
     const [removed] = toastItems.splice(idx, 1);
     const focusWasInside = toastStackEl && toastStackEl.contains(document.activeElement);
-    if (!toastItems.length) toastExpanded = false;
-    renderToastStack();
+    if (removed.el && removed.el.parentNode) {
+      removed.el.parentNode.removeChild(removed.el);
+    }
+    if (!toastItems.length) {
+      toastExpanded = false;
+      toastFocused = false;
+      toastHovering = false;
+    }
+    syncToastDom();
     if ((restoreFocusToOrigin || focusWasInside) && removed.originEl && typeof removed.originEl.focus === 'function') {
       if (document.body.contains(removed.originEl)) removed.originEl.focus();
+    }
+    if (toastStackEl && !toastStackEl.contains(document.activeElement)) {
+      toastFocused = false;
+      collapseAndResumeIfIdle();
     }
   }
 
@@ -666,55 +778,6 @@
       item.onAction(item);
     }
     removeToastById(item.id, true);
-  }
-
-  function renderToastStack() {
-    const host = ensureToastStack();
-    if (!toastItems.length) {
-      host.innerHTML = '';
-      return;
-    }
-    const maxVisible = toastExpanded ? toastItems.length : 3;
-    const newestFirst = toastItems.slice().reverse();
-    const visible = newestFirst.slice(0, maxVisible);
-    const hiddenCount = newestFirst.length - visible.length;
-
-    let html = visible.map((item) => {
-      const actionText = formatActionLabel(item.action);
-      return `<div class="toast" data-toast-id="${item.id}">
-        <div class="toast-body">
-          <span>${esc(item.msg)}</span>
-          ${item.sub ? `<span class="toast-sub">${esc(item.sub)}</span>` : ''}
-        </div>
-        ${actionText ? `<button type="button" data-toast-action="${item.id}">${esc(actionText)}</button>` : ''}
-      </div>`;
-    }).join('');
-
-    if (hiddenCount > 0) {
-      html += `<button type="button" class="toast-more" data-toast-expand="1"
-        aria-label="Mở rộng thêm ${hiddenCount} thông báo hoàn tác · Expand ${hiddenCount} more undo notifications">
-        +${hiddenCount} hoàn tác · +${hiddenCount} more
-      </button>`;
-    }
-    host.innerHTML = html;
-
-    host.querySelectorAll('[data-toast-action]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = +btn.dataset.toastAction;
-        const found = toastItems.find((t) => t.id === id);
-        if (found) triggerToastUndo(found);
-      });
-    });
-    const expBtn = host.querySelector('[data-toast-expand]');
-    if (expBtn) {
-      expBtn.addEventListener('click', () => {
-        toastExpanded = true;
-        pauseAllToasts(true);
-        renderToastStack();
-        const firstBtn = host.querySelector('[data-toast-action]');
-        if (firstBtn) firstBtn.focus();
-      });
-    }
   }
 
   function ensureToastTicker() {
@@ -748,11 +811,14 @@
       originEl,
       remainingMs: duration,
       lastResumeAt: Date.now(),
-      paused: isStackPaused()
+      paused: isStackPaused(),
+      el: null
     };
     if (toastFocused && item.remainingMs < 10000) item.remainingMs = 10000;
+    item.el = createToastNode(item);
     toastItems.push(item);
-    renderToastStack();
+    toastLiveEl.appendChild(item.el);
+    syncToastDom();
     return item.id;
   }
 
@@ -761,7 +827,8 @@
     if (e.shiftKey || e.altKey) return;
     const apple = isApplePlatform();
     const matchMod = apple ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
-    if (!matchMod || e.key.toLowerCase() !== 'z') return;
+    const k = (e.key || '').toLowerCase();
+    if (!matchMod || k !== 'z') return;
     const undoable = toastItems.slice().reverse().find((t) => !!t.action);
     if (!undoable) return;
 
@@ -880,9 +947,9 @@
   /* ---------- chrome chung: theme, khoá vault, tab ---------- */
 
   function initChrome() {
+    ensureToastStack();
     const saved = localStorage.getItem('sak-theme');
     if (saved) document.documentElement.dataset.theme = saved;
-
     document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
       const sync = () => { btn.textContent = document.documentElement.dataset.theme === 'dark' ? '☀' : '☾'; };
       sync();
@@ -927,7 +994,9 @@
         state.semantic = !state.semantic;
         sync();
         document.querySelectorAll('[data-omnibox]').forEach((r) => r._repaint && r._repaint());
-        toast(state.semantic ? 'Đã bật tìm gần nghĩa' : 'Đã tắt tìm gần nghĩa');
+        toast(state.semantic
+          ? 'Đã bật tìm gần nghĩa · Semantic search enabled'
+          : 'Đã tắt tìm gần nghĩa · Semantic search disabled');
       });
     });
 
@@ -939,6 +1008,7 @@
         if (!b.dataset.target) return;
         const scope = b.closest('[data-seg-scope]') || document;
         scope.querySelectorAll('[data-view]').forEach((v) => {
+          if ((v.closest('[data-seg-scope]') || document) !== scope) return;
           v.hidden = v.dataset.view !== b.dataset.target;
         });
       });
