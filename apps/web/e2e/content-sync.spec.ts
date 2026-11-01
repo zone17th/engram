@@ -14,6 +14,7 @@ import {
   UI_WAIT_MS,
   VAULT_PASSPHRASE,
   expectOnUnlockPage,
+  expectVaultShut,
   gotoSettings,
 } from './vault-passkey-support';
 import { fillSecret } from './vault-settings-secret';
@@ -84,6 +85,12 @@ async function triggerFocusWake(page: Page): Promise<void> {
   });
 }
 
+async function expectOnUnlockPageWithOptionalReturnTo(page: Page): Promise<void> {
+  await expect(page).toHaveURL(/\/app\/unlock(\?|$)/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
+  await expectVaultShut(page);
+}
+
 async function gotoItemPageAndUnlockIfLocked(
   page: Page,
   itemId: string,
@@ -96,7 +103,7 @@ async function gotoItemPageAndUnlockIfLocked(
   if (state !== 'unlocked') {
     await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
     await page.getByTestId('vault-locked-unlock-cta').click({ timeout: UI_WAIT_MS });
-    await expectOnUnlockPage(page);
+    await expectOnUnlockPageWithOptionalReturnTo(page);
     await fillSecret(page.getByTestId('unlock-passphrase-input'), passphrase, CRYPTO_WAIT_MS);
     await page.getByTestId('unlock-submit-button').click();
     await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), { timeout: CRYPTO_WAIT_MS });
@@ -457,7 +464,8 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
         timeout: CRYPTO_WAIT_MS,
       });
 
-      // Focus B -> B detects vault reset (404 on GET /vault + GET /auth/me), locks its Worker and purges old entries
+      // Focus B -> B detects vault reset (404 on GET /vault + GET /auth/me), locks its Worker, purges old entries,
+      // and redirects to /app/onboarding with the vault pill showing 'absent' (vault-shut)
       await triggerFocusWake(pageB);
       await expect
         .poll(
@@ -474,9 +482,10 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
         )
         .toEqual({
           pathname: '/app/onboarding',
-          pillState: 'no_vault',
+          pillState: 'absent',
           decryptedCount: 0,
         });
+      await expectVaultShut(pageB);
 
       // Create a new vault in A
       await resetDialog.getByRole('link', { name: /^(Create new vault|Tạo vault mới)$/ }).click();
