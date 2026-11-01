@@ -509,7 +509,7 @@
     },
     "security": {
       "heading": "Security",
-      "subtitle": "The vault holds the key that decrypts your entry content. Item names and tags stay outside the vault.",
+      "subtitle": "The vault holds the key that decrypts your entry content. Item names, hints and tags stay outside the vault.",
       "sessionsTitle": "Sign-in sessions",
       "sessionsEmpty": "Only this session is signed in.",
       "revokeOthers": "Sign out elsewhere",

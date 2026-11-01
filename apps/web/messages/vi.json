@@ -509,7 +509,7 @@
     },
     "security": {
       "heading": "Bảo mật",
-      "subtitle": "Vault giữ khoá giải mã nội dung entry. Tên mục và tag nằm ngoài vault.",
+      "subtitle": "Vault giữ khoá giải mã nội dung entry. Tên mục, gợi ý và tag nằm ngoài vault.",
       "sessionsTitle": "Phiên đăng nhập",
       "sessionsEmpty": "Chỉ phiên này đang đăng nhập.",
       "revokeOthers": "Đăng xuất nơi khác",
