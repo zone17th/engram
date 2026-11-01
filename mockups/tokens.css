@@ -281,8 +281,13 @@ textarea.omnibox-input {
   padding: 0;
   margin: 0;
   max-height: 132px;
-  overflow-y: auto;
+  overflow-y: hidden;
   display: block;
+}
+textarea.omnibox-input::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .omnibox-input::placeholder { color: var(--muted); }
 
@@ -825,11 +830,7 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
 .omni-create-option {
   border-top: 1px dashed var(--border);
 }
-.omni-listbox {
-  margin: 0;
-  padding: 0;
-}
-.omni-Hint[hidden], .omni-hint-line[hidden] {
+.omni-hint-line[hidden] {
   display: none !important;
 }
 

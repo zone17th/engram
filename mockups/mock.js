@@ -611,10 +611,10 @@
 
     const listboxId = baseId + '-listbox';
 
-    input.setAttribute('role', 'combobox');
-    input.setAttribute('aria-autocomplete', 'list');
+    input.removeAttribute('role');
+    input.removeAttribute('aria-expanded');
+    input.removeAttribute('aria-autocomplete');
     input.setAttribute('aria-controls', listboxId);
-    input.setAttribute('aria-expanded', 'false');
     input.setAttribute('data-vault-secret', '');
     input.setAttribute('spellcheck', 'false');
     input.setAttribute('autocomplete', 'off');
@@ -702,13 +702,17 @@
 
     function syncTextareaHeight() {
       if (input.tagName !== 'TEXTAREA') return;
-      if (!input.value || !input.value.includes('\n')) {
+      if (!input.value) {
         input.style.height = '';
+        input.style.overflowY = 'hidden';
         return;
       }
       input.style.height = 'auto';
-      if (input.scrollHeight > 0) {
-        input.style.height = Math.min(input.scrollHeight, 132) + 'px';
+      const sh = input.scrollHeight;
+      if (sh > 0) {
+        const cap = 132;
+        input.style.height = Math.min(sh, cap) + 'px';
+        input.style.overflowY = sh > cap ? 'auto' : 'hidden';
       }
     }
 
@@ -723,7 +727,6 @@
       activeIdx = -1;
       pop.hidden = true;
       pop.innerHTML = '';
-      input.setAttribute('aria-expanded', 'false');
       input.removeAttribute('aria-activedescendant');
       if (clearLive) setLiveText('');
     }
@@ -789,7 +792,6 @@
 
       pop.innerHTML = `${headerHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả tìm kiếm · Search results">${optionsHtml}</div>`;
       pop.hidden = false;
-      input.setAttribute('aria-expanded', 'true');
       input.removeAttribute('aria-activedescendant');
     }
 
@@ -825,7 +827,6 @@
 
       pop.innerHTML = `${headerHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả lọc tag · Tag filter results">${optionsHtml}</div>`;
       pop.hidden = false;
-      input.setAttribute('aria-expanded', 'true');
       syncActiveOption();
     }
 
@@ -912,7 +913,7 @@
       }
 
       if (parsed.mode === 'search') {
-        hintEl.hidden = !hasNonEmptyInput;
+        hintEl.hidden = !hasNonEmptyInput || !guardEl.hidden;
         hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SEARCH_HINT_VI}<span class="mono">tên: nội dung</span></span>
           <span class="omni-hint-en" lang="en">${COPY_SEARCH_HINT_EN}<span class="mono">name: content</span></span>`;
         addPanelEl.hidden = true;
@@ -925,7 +926,7 @@
       }
 
       if (parsed.mode === 'tag-filter') {
-        hintEl.hidden = !hasNonEmptyInput;
+        hintEl.hidden = !hasNonEmptyInput || !guardEl.hidden;
         hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_TAG_HINT_VI}</span>
           <span class="omni-hint-en" lang="en">${COPY_TAG_HINT_EN}</span>`;
         addPanelEl.hidden = true;
@@ -1329,6 +1330,7 @@
         if (!parsed.searchable) {
           closeListbox(false);
           guardEl.hidden = false;
+          hintEl.hidden = true;
           guardEl.innerHTML = `<p class="m-0 text-[13px] font-semibold text-body">Tên tag lọc tối đa 50 ký tự · <span lang="en" class="font-normal text-muted">Tag filter query must be at most 50 characters</span></p>`;
           setLiveText('Tên tag lọc tối đa 50 ký tự · Tag filter query must be at most 50 characters');
           return;
@@ -1347,6 +1349,7 @@
         if (parsed.tooLongOrMulti) {
           closeListbox(false);
           guardEl.hidden = false;
+          hintEl.hidden = true;
           guardEl.innerHTML = `<p class="m-0 text-[13px] font-semibold text-body">Thêm tên và dấu <span class="mono">:</span> để lưu · <span lang="en" class="font-normal text-muted">Add a name and <span class="mono">:</span> to save</span></p>
             <p class="m-0 mt-0.5 text-[12px] text-muted">Chuỗi nhiều dòng hoặc dài quá 200 ký tự không được gửi tìm kiếm để tránh lộ nội dung. Gõ <span class="mono">tên: nội dung</span> ở dòng đầu để mã hoá và lưu. · <span lang="en">Multi-line or &gt; 200-character input is never sent as a search query. Prefix with <span class="mono">name:</span> to encrypt and save.</span></p>`;
           setLiveText('Thêm tên và dấu : để lưu · Add a name and : to save');
@@ -1547,6 +1550,8 @@
         input.select();
       }
     });
+    window.addEventListener('resize', syncTextareaHeight);
+
 
     function onVaultStateChange(isLocked, wasLocked) {
       if (isLocked && !wasLocked) {
