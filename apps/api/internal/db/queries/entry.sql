@@ -316,3 +316,21 @@ WHERE entry.user_id = sqlc.arg('user_id')
 -- name: DeleteEntriesByUser :execrows
 DELETE FROM entry
 WHERE user_id = sqlc.arg('user_id');
+
+-- name: ShiftLiveEntriesOnRestoreCollision :execrows
+UPDATE entry
+SET
+  position = entry.position + 1,
+  updated_at = clock_timestamp()
+WHERE entry.user_id = sqlc.arg('user_id')
+  AND entry.item_id = sqlc.arg('item_id')
+  AND entry.deleted_at IS NULL
+  AND entry.position >= sqlc.arg('restored_position')
+  AND EXISTS (
+    SELECT 1
+    FROM entry AS occupied
+    WHERE occupied.user_id = sqlc.arg('user_id')
+      AND occupied.item_id = sqlc.arg('item_id')
+      AND occupied.deleted_at IS NULL
+      AND occupied.position = sqlc.arg('restored_position')
+  );

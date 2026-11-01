@@ -277,6 +277,32 @@ func (h *handler) entryRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Bước khoá (5, tiếp): khoá các hàng entry đang sống của mục theo id ASC trước khi dời vị trí.
+		if _, err := q.LockLiveEntriesOfItemForUpdate(ctx, gen.LockLiveEntriesOfItemForUpdateParams{
+			UserID: p.UserID,
+			ItemID: lockedEntry.ItemID,
+		}); err != nil {
+			if httpx.WriteContentTxError(ctx, w, r, pool, tx, err) {
+				return
+			}
+			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", httpx.ProblemTitle("internal_error")+".")
+			return
+		}
+
+		// advisor-dec-160 (EA6b-R1-2): nếu đã có entry sống của mục chiếm position cũ của entry được restore
+		// (ví dụ do reorder sau khi xoá), dời mọi entry sống có position >= position cũ lên +1 trong MỘT UPDATE,
+		// cập nhật updated_at = clock_timestamp() (để feed thấy) và giữ nguyên version trước khi restore.
+		if _, err := q.ShiftLiveEntriesOnRestoreCollision(ctx, gen.ShiftLiveEntriesOnRestoreCollisionParams{
+			UserID:           p.UserID,
+			ItemID:           lockedEntry.ItemID,
+			RestoredPosition: lockedEntry.Position,
+		}); err != nil {
+			if httpx.WriteContentTxError(ctx, w, r, pool, tx, err) {
+				return
+			}
+			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", httpx.ProblemTitle("internal_error")+".")
+			return
+		}
 		restored, err := q.RestoreEntry(ctx, gen.RestoreEntryParams{
 			UserID: p.UserID,
 			ID:     entryID,
