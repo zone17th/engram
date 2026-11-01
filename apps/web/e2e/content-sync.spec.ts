@@ -23,6 +23,8 @@ process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 
 const SYNC_TIMEOUT_MS = 360_000;
 const NEW_VAULT_PASSPHRASE = 'sync-reset-new-vault-passphrase-2!';
+// Matches every rendered entry card (`entry-card-<id>`) but not the always-rendered list wrapper `entry-card-list`.
+const ENTRY_CARD_SELECTOR = '[data-testid^="entry-card-"]:not([data-testid="entry-card-list"])';
 
 /**
  * Writes a value into a `<textarea>` or `<input>` without appearing in Playwright's `fill()` call logs.
@@ -538,7 +540,7 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
 
         // While `GET /api/v1/items/<id>/entries` is held, assert 0 `entry-card-*` for old entries
         // and no old body text in B's DOM (proving the client cache was purged, not merely overwritten by a refetch).
-        await expect(pageB.locator('[data-testid^="entry-card-"]')).toHaveCount(0);
+        await expect(pageB.locator(ENTRY_CARD_SELECTOR)).toHaveCount(0);
         await expect(pageB.getByTestId(`entry-card-${entry1Id}`)).toHaveCount(0);
         await expect(pageB.getByTestId(`entry-card-${entry2Id}`)).toHaveCount(0);
         await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
@@ -566,7 +568,7 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
           timeout: UI_WAIT_MS,
         });
         await expect(pageB.getByTestId('item-entries-empty')).toBeVisible({ timeout: UI_WAIT_MS });
-        await expect(pageB.locator('[data-testid^="entry-card-"]')).toHaveCount(0);
+        await expect(pageB.locator(ENTRY_CARD_SELECTOR)).toHaveCount(0);
         await expect(pageB.getByTestId(`entry-card-${entry2Id}`)).toHaveCount(0);
         await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
         expect(
