@@ -53,18 +53,20 @@ import {
   splitMarkedPrefix,
 } from '@/features/omnibox/search-helpers';
 import {
+  captureUnconfirmedSaveClearGeneration,
+  dismissUnconfirmedSave,
+  reconcileUnconfirmedSavesUser,
+  recordUnconfirmedSave,
+  useUnconfirmedSavesForUser,
+} from '@/features/entries/unconfirmed-save-store';
+import {
   clearLockClearedNotice,
-  clearSaveUnconfirmed,
   getLockClearedNoticeSnapshot,
-  getSaveUnconfirmedSnapshot,
   reconcileLockClearedNoticeUser,
-  reconcileSaveUnconfirmedUser,
   recordLockClearedNotice,
-  recordSaveUnconfirmed,
   subscribeLockClearedNotice,
-  subscribeSaveUnconfirmed,
 } from '@/features/omnibox/unconfirmed-save-store';
-import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
+import { getKnownDeviceSessionUserId, subscribeDevicePurge } from '@/features/vault/device-store';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import {
   createIdempotencyKey,
@@ -83,6 +85,7 @@ import {
 } from '@/lib/api/content';
 import { type Me } from '@/lib/api/auth';
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
+import { subscribeUserChanged } from '@/lib/auth/user-changed';
 import { cn } from '@/lib/cn';
 
 const MAX_TEXTAREA_HEIGHT_PX = 132;
@@ -253,12 +256,6 @@ export function Omnibox({
   const [, setPlanRenderTick] = useState(0);
   const [targetTagLimitCount, setTargetTagLimitCount] = useState<number | null>(null);
   const [dupPickerState, setDupPickerState] = useState<DupPickerModalState | null>(null);
-  const unconfirmedSnapshot = useSyncExternalStore(
-    subscribeSaveUnconfirmed,
-    getSaveUnconfirmedSnapshot,
-    () => null,
-  );
-
   const lockNoticeSnapshot = useSyncExternalStore(
     subscribeLockClearedNotice,
     getLockClearedNoticeSnapshot,
@@ -268,25 +265,29 @@ export function Omnibox({
   const isVaultUnlocked = vault ? vault.state === 'unlocked' : true;
   const isVaultLocked = !isVaultUnlocked;
 
-  // Resolve active user ID reactively from QueryClient's `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`.
-  // Subscribe to `QueryCache` updates matching `['auth', 'me', ...]` so user switches hide/clear User A's
-  // `lockClearedNotice` and `saveUnconfirmed` line immediately without requiring an unmount or unrelated re-render
-  // (advisor-dec-120, HM18B-R1-5, HM18-CI-10).
-  const subscribeAuthMeUserId = useCallback(
-    (onStoreChange: () => void): (() => void) => {
-      if (!queryClient) {
-        return () => {};
-      }
-      return queryClient.getQueryCache().subscribe((event) => {
-        const key = event.query?.queryKey;
-        if (Array.isArray(key) && key[0] === 'auth' && key[1] === 'me') {
-          onStoreChange();
-        }
-      });
-    },
-    [queryClient],
-  );
-  const getAuthMeUserIdSnapshot = useCallback((): string | null => {
+  // Resolve active user ID reactively via `subscribeUserChanged` (advisor-dec-199, advisor-dec-205, FU7)
+  // and session broadcasts (plus `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`).
+  const subscribeActiveUserId = useCallback((onStoreChange: () => void): (() => void) => {
+    const unsubUserChanged = subscribeUserChanged(() => {
+      onStoreChange();
+    });
+    const unsubBroadcast = subscribeSessionBroadcast(() => {
+      onStoreChange();
+    });
+    const unsubPurge = subscribeDevicePurge(() => {
+      onStoreChange();
+    });
+    return () => {
+      unsubUserChanged();
+      unsubBroadcast();
+      unsubPurge();
+    };
+  }, []);
+  const getActiveUserIdSnapshot = useCallback((): string | null => {
+    const knownUserId = getKnownDeviceSessionUserId();
+    if (knownUserId) {
+      return knownUserId;
+    }
     if (queryClient) {
       const meQueries = queryClient.getQueriesData<Me | null>({ queryKey: ['auth', 'me'] });
       for (let i = meQueries.length - 1; i >= 0; i -= 1) {
@@ -296,38 +297,26 @@ export function Omnibox({
         }
       }
     }
-    return getKnownDeviceSessionUserId() ?? null;
+    return null;
   }, [queryClient]);
   const activeUserId = useSyncExternalStore(
-    subscribeAuthMeUserId,
-    getAuthMeUserIdSnapshot,
+    subscribeActiveUserId,
+    getActiveUserIdSnapshot,
     () => null,
   );
   activeUserIdRef.current = activeUserId;
 
+  const unconfirmedSaves = useUnconfirmedSavesForUser(activeUserId);
+
   useEffect(() => {
-    reconcileSaveUnconfirmedUser(activeUserId);
+    reconcileUnconfirmedSavesUser(activeUserId);
     reconcileLockClearedNoticeUser(activeUserId);
   }, [activeUserId]);
 
-  useEffect(() => {
-    return subscribeSessionBroadcast((message) => {
-      if (message.type === 'signed_out') {
-        clearLockClearedNotice();
-        if (!message.reason || message.reason === 'logout') {
-          clearSaveUnconfirmed();
-        }
-      }
-    });
-  }, []);
-
   const visibleUnconfirmedRecord =
-    isVaultUnlocked &&
-    activeUserId !== null &&
-    unconfirmedSnapshot?.userId === activeUserId
-      ? unconfirmedSnapshot
+    isVaultUnlocked && unconfirmedSaves.length > 0
+      ? unconfirmedSaves[unconfirmedSaves.length - 1]!
       : null;
-
   const visibleLockClearedNoticeKind =
     isVaultUnlocked &&
     lockNoticeSnapshot !== null &&
@@ -695,7 +684,7 @@ export function Omnibox({
       const controller = new AbortController();
       planAbortRef.current = controller;
       setActionErrorCode(null);
-
+      const capturedClearGeneration = captureUnconfirmedSaveClearGeneration();
       const runningStep = plan.steps.find((s) => s.status !== 'done') ?? plan.steps[0];
       if (runningStep) {
         setLiveMessage(
@@ -796,9 +785,12 @@ export function Omnibox({
           classifiedError.preLookupRecovery === 'terminal_logout_boundary'
         ) {
           if (priorUncertain && activeUserId) {
-            recordSaveUnconfirmed({
+            recordUnconfirmedSave({
               userId: activeUserId,
+              itemId: plan.itemId,
               itemName: plan.itemName,
+              source: 'omnibox',
+              clearGeneration: capturedClearGeneration,
             });
           }
           plan.op.dispose?.();
@@ -1019,7 +1011,9 @@ export function Omnibox({
         return;
       }
 
-      clearSaveUnconfirmed();
+      if (activeUserId) {
+        dismissUnconfirmedSave({ userId: activeUserId });
+      }
       clearLockClearedNotice();
       setTargetTagLimitCount(null);
       setActionErrorCode(null);
@@ -1105,7 +1099,7 @@ export function Omnibox({
         lookupPendingRef.current = false;
       }
     },
-    [isVaultUnlocked, queryClient, startSavePlanForTarget],
+    [activeUserId, isVaultUnlocked, queryClient, startSavePlanForTarget],
   );
 
   const handleDupPickerPick = useCallback(
@@ -1648,7 +1642,14 @@ export function Omnibox({
               <button
                 type="button"
                 data-testid="omnibox-save-unconfirmed-dismiss"
-                onClick={() => clearSaveUnconfirmed()}
+                onClick={() => {
+                  if (activeUserId) {
+                    dismissUnconfirmedSave({
+                      userId: activeUserId,
+                      itemId: visibleUnconfirmedRecord.itemId,
+                    });
+                  }
+                }}
                 className="btn btn-tertiary btn-sm"
               >
                 {tOmni('saveUnconfirmedDismiss')}

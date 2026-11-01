@@ -1,100 +1,31 @@
-/**
- * In-memory, user-scoped store for the "save unconfirmed" notice (`content.omnibox.saveUnconfirmed`)
- * per SPEC §3.4 / §3.7, advisor-dec-098, advisor-dec-119, advisor-dec-120 (CFE5-1, CFE5-2).
- *
- * SECURITY & PRIVACY INVARIANTS:
- * - Held ONLY in tab memory (never `localStorage`, `sessionStorage`, IndexedDB, or `QueryCache`).
- * - Stores ONLY `{ userId, itemName }` (never plaintext entry body or ciphertext).
- * - Bound to `userId`: rendered ONLY when the active authenticated session belongs to the same `userId`.
- * - Cleared immediately when switching to a different `userId`, on voluntary logout, on manual dismiss,
- *   or on full page reload.
- */
+import {
+  captureUnconfirmedSaveClearGeneration,
+  clearAllUnconfirmedSaves,
+  dismissUnconfirmedSave,
+  getUnconfirmedSavesSnapshot,
+  reconcileUnconfirmedSavesUser,
+  recordUnconfirmedSave,
+  subscribeUnconfirmedSaves,
+  useUnconfirmedSavesForUser,
+  type UnconfirmedSaveRecord,
+} from '@/features/entries/unconfirmed-save-store';
+import { getKnownDeviceSessionUserId } from '@/features/vault';
+import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
+import { subscribeUserChanged } from '@/lib/auth/user-changed';
 
-export interface SaveUnconfirmedRecord {
-  readonly userId: string;
-  readonly itemName: string;
-}
+export {
+  captureUnconfirmedSaveClearGeneration,
+  clearAllUnconfirmedSaves,
+  dismissUnconfirmedSave,
+  getUnconfirmedSavesSnapshot,
+  reconcileUnconfirmedSavesUser,
+  recordUnconfirmedSave,
+  subscribeUnconfirmedSaves,
+  useUnconfirmedSavesForUser,
+  type UnconfirmedSaveRecord,
+};
 
 type Listener = () => void;
-
-let currentRecord: SaveUnconfirmedRecord | null = null;
-const listeners = new Set<Listener>();
-
-function emitChange(): void {
-  for (const listener of [...listeners]) {
-    listener();
-  }
-}
-
-/**
- * Records an unconfirmed save notice for `userId` and `itemName` after a mutation step that
- * previously had an uncertain send outcome hits a terminal authentication/session boundary
- * (`session_invalid`, `forbidden`, or `unauthenticated` without refresh — SPEC §3.4 case b).
- */
-export function recordSaveUnconfirmed(record: SaveUnconfirmedRecord): void {
-  const userId = record.userId.trim();
-  const itemName = record.itemName.trim();
-  if (!userId || !itemName) {
-    return;
-  }
-  currentRecord = Object.freeze({ userId, itemName });
-  emitChange();
-}
-
-/**
- * Clears the in-memory unconfirmed save notice (on dismiss, voluntary logout, or test reset).
- */
-export function clearSaveUnconfirmed(): void {
-  if (currentRecord === null) {
-    return;
-  }
-  currentRecord = null;
-  emitChange();
-}
-
-/**
- * Reconciles the stored notice against the active session's `userId` (advisor-dec-120, CFE5-1):
- * - If another user signs in (`activeUserId` is non-empty and differs from `currentRecord.userId`),
- *   the notice is immediately cleared so User B never sees User A's item name.
- */
-export function reconcileSaveUnconfirmedUser(activeUserId: string | null | undefined): void {
-  if (!currentRecord) {
-    return;
-  }
-  if (typeof activeUserId === 'string' && activeUserId.length > 0 && activeUserId !== currentRecord.userId) {
-    currentRecord = null;
-    emitChange();
-  }
-}
-
-/**
- * Returns the unconfirmed save record ONLY if `activeUserId` matches `record.userId`.
- */
-export function getSaveUnconfirmedForUser(
-  activeUserId: string | null | undefined,
-): SaveUnconfirmedRecord | null {
-  if (!currentRecord || !activeUserId) {
-    return null;
-  }
-  return currentRecord.userId === activeUserId ? currentRecord : null;
-}
-
-/**
- * Returns the raw in-memory snapshot (for `useSyncExternalStore`).
- */
-export function getSaveUnconfirmedSnapshot(): SaveUnconfirmedRecord | null {
-  return currentRecord;
-}
-
-/**
- * Subscribes to changes in the unconfirmed save store (for `useSyncExternalStore`).
- */
-export function subscribeSaveUnconfirmed(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
 
 /**
  * In-memory, user-scoped store for the post-unlock "draft cleared on lock" notice
@@ -117,24 +48,54 @@ export interface LockClearedNoticeRecord {
 }
 
 let currentLockNoticeRecord: LockClearedNoticeRecord | null = null;
+let lastSeenLockNoticeUserId: string | null = null;
 const lockNoticeListeners = new Set<Listener>();
+
+let lockNoticeBroadcastUnsubscribe: (() => void) | null = null;
+let lockNoticeUserChangedUnsubscribe: (() => void) | null = null;
+function ensureLockNoticeSubscriptions(): void {
+  if (typeof window === 'undefined') return;
+  if (!lockNoticeBroadcastUnsubscribe) {
+    lockNoticeBroadcastUnsubscribe = subscribeSessionBroadcast((message) => {
+      if (message.type === 'signed_out') {
+        clearLockClearedNotice();
+        return;
+      }
+      if (message.type === 'session_changed') {
+        const knownUserId = getKnownDeviceSessionUserId();
+        if (knownUserId) {
+          reconcileLockClearedNoticeUser(knownUserId);
+        }
+      }
+    });
+  }
+  if (!lockNoticeUserChangedUnsubscribe) {
+    lockNoticeUserChangedUnsubscribe = subscribeUserChanged((_prevUserId, nextUserId) => {
+      clearLockClearedNotice();
+      lastSeenLockNoticeUserId = nextUserId;
+    });
+  }
+}
 
 function emitLockNoticeChange(): void {
   for (const listener of [...lockNoticeListeners]) {
     listener();
   }
 }
-
 /**
  * Records a pending post-unlock "draft cleared on lock" notice (`userId` may be `null` if unknown at lock time;
  * any subsequent change to a known `userId` or `signed_out` broadcast drops a `userId: null` notice rather than
  * adopting it — HM18B-R2-6, HM18-R3-4, advisor-dec-120).
  */
 export function recordLockClearedNotice(record: LockClearedNoticeRecord): void {
+  ensureLockNoticeSubscriptions();
   const rawUserId = typeof record.userId === 'string' ? record.userId.trim() : '';
   const userId = rawUserId.length > 0 ? rawUserId : null;
   if (record.kind !== 'draft' && record.kind !== 'plan') {
     return;
+  }
+  if (userId) {
+    lastSeenLockNoticeUserId = userId;
   }
   currentLockNoticeRecord = Object.freeze({ userId, kind: record.kind });
   emitLockNoticeChange();
@@ -144,6 +105,7 @@ export function recordLockClearedNotice(record: LockClearedNoticeRecord): void {
  * Clears the in-memory lock-cleared notice (on dismiss, new input/save, any `signed_out`, or test reset).
  */
 export function clearLockClearedNotice(): void {
+  lastSeenLockNoticeUserId = null;
   if (currentLockNoticeRecord === null) {
     return;
   }
@@ -159,11 +121,21 @@ export function clearLockClearedNotice(): void {
  *   the notice is immediately cleared so User B never sees User A's lock notice.
  */
 export function reconcileLockClearedNoticeUser(activeUserId: string | null | undefined): void {
-  if (!currentLockNoticeRecord) {
-    return;
-  }
+  ensureLockNoticeSubscriptions();
   const normalizedActive = typeof activeUserId === 'string' ? activeUserId.trim() : '';
   if (!normalizedActive) {
+    return;
+  }
+  if (lastSeenLockNoticeUserId !== null && lastSeenLockNoticeUserId !== normalizedActive) {
+    lastSeenLockNoticeUserId = normalizedActive;
+    if (currentLockNoticeRecord !== null) {
+      currentLockNoticeRecord = null;
+      emitLockNoticeChange();
+    }
+    return;
+  }
+  lastSeenLockNoticeUserId = normalizedActive;
+  if (!currentLockNoticeRecord) {
     return;
   }
   if (currentLockNoticeRecord.userId === null || normalizedActive !== currentLockNoticeRecord.userId) {
@@ -183,6 +155,7 @@ export function getLockClearedNoticeSnapshot(): LockClearedNoticeRecord | null {
  * Subscribes to changes in the lock-cleared notice store (for `useSyncExternalStore`).
  */
 export function subscribeLockClearedNotice(listener: Listener): () => void {
+  ensureLockNoticeSubscriptions();
   lockNoticeListeners.add(listener);
   return () => {
     lockNoticeListeners.delete(listener);
