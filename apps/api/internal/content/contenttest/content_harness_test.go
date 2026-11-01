@@ -17,7 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
@@ -58,18 +58,17 @@ type testItemResponse struct {
 // real `item` rows via Task 2 sqlc queries under `LockUserContent`.
 func newHarnessWithTestRoutes(
 	t *testing.T,
-	onLockHeld func(userID uuid.UUID),
-	shouldFailDeadlock func() bool,
+	onLockHeld func(ctx context.Context, userID uuid.UUID),
+	afterInsertTxHook func(ctx context.Context, userID uuid.UUID, tx pgx.Tx) error,
 	lastEntryBody *[]byte,
 	entryHandlerCalls *atomic.Int32,
 ) *contenttest.Harness {
 	t.Helper()
-	var hRef *contenttest.Harness
-	h := contenttest.NewHarness(t, contenttest.HarnessOpts{
-		ExtraMounts: []func(v1 chi.Router, d httpx.Deps){
-			func(v1 chi.Router, d httpx.Deps) {
+	return contenttest.NewHarness(t, contenttest.HarnessOpts{
+		ExtraMounts: []func(h *contenttest.Harness, v1 chi.Router, d httpx.Deps){
+			func(h *contenttest.Harness, v1 chi.Router, d httpx.Deps) {
 				// 1. POST /api/v1/__test/items (Item/Tag 16 KiB limit, S+C+I+R, no If-Match)
-				v1.Method(http.MethodPost, "/__test/items", hRef.Content.ChainItemTagWrite(d, false, func(w http.ResponseWriter, r *http.Request) {
+				v1.Method(http.MethodPost, "/__test/items", h.Content.ChainItemTagWrite(d, false, func(w http.ResponseWriter, r *http.Request) {
 					p, ok := authctx.PrincipalFrom(r.Context())
 					if !ok {
 						httpx.WriteProblem(w, r, http.StatusUnauthorized, "unauthenticated", "Cần đăng nhập.")
@@ -86,7 +85,7 @@ func newHarnessWithTestRoutes(
 						return
 					}
 
-					tx, err := httpx.BeginMutationTx(r.Context(), hRef.Pool)
+					tx, err := httpx.BeginMutationTx(r.Context(), h.Pool)
 					if err != nil {
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi máy chủ.")
 						return
@@ -95,20 +94,14 @@ func newHarnessWithTestRoutes(
 
 					q := gen.New(tx)
 					if err := q.LockUserContent(r.Context(), p.UserID); err != nil {
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, err) {
+						if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, err) {
 							return
 						}
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi khoá nội dung.")
 						return
 					}
 					if onLockHeld != nil {
-						onLockHeld(p.UserID)
-					}
-					if shouldFailDeadlock != nil && shouldFailDeadlock() {
-						deadlockErr := &pgconn.PgError{Code: httpx.PGCodeDeadlockDetected, Message: "simulated deadlock_detected"}
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, deadlockErr) {
-							return
-						}
+						onLockHeld(r.Context(), p.UserID)
 					}
 
 					item, err := q.InsertItem(r.Context(), gen.InsertItemParams{
@@ -119,11 +112,20 @@ func newHarnessWithTestRoutes(
 						Hint:           req.Hint,
 					})
 					if err != nil {
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, err) {
+						if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, err) {
 							return
 						}
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Không tạo được mục.")
 						return
+					}
+					if afterInsertTxHook != nil {
+						if hookErr := afterInsertTxHook(r.Context(), p.UserID, tx); hookErr != nil {
+							if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, hookErr) {
+								return
+							}
+							httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi hook kiểm thử.")
+							return
+						}
 					}
 
 					respBytes, err := json.Marshal(testItemResponse{
@@ -136,7 +138,7 @@ func newHarnessWithTestRoutes(
 						t.Fatal(err)
 					}
 					if err := httpx.CommitIdempotencyTx(r.Context(), tx, http.StatusCreated, respBytes); err != nil {
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, err) {
+						if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, err) {
 							return
 						}
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Không commit được.")
@@ -147,9 +149,8 @@ func newHarnessWithTestRoutes(
 					w.WriteHeader(http.StatusCreated)
 					_, _ = w.Write(respBytes)
 				}))
-
 				// 2. PATCH /api/v1/__test/items/{id} (Item/Tag 16 KiB limit, S+C+I+R+M with version If-Match)
-				v1.Method(http.MethodPatch, "/__test/items/{id}", hRef.Content.ChainItemTagWrite(d, true, func(w http.ResponseWriter, r *http.Request) {
+				v1.Method(http.MethodPatch, "/__test/items/{id}", h.Content.ChainItemTagWrite(d, true, func(w http.ResponseWriter, r *http.Request) {
 					p, ok := authctx.PrincipalFrom(r.Context())
 					if !ok {
 						httpx.WriteProblem(w, r, http.StatusUnauthorized, "unauthenticated", "Cần đăng nhập.")
@@ -175,7 +176,7 @@ func newHarnessWithTestRoutes(
 						return
 					}
 
-					tx, err := httpx.BeginMutationTx(r.Context(), hRef.Pool)
+					tx, err := httpx.BeginMutationTx(r.Context(), h.Pool)
 					if err != nil {
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi máy chủ.")
 						return
@@ -184,7 +185,7 @@ func newHarnessWithTestRoutes(
 
 					q := gen.New(tx)
 					if err := q.LockUserContent(r.Context(), p.UserID); err != nil {
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, err) {
+						if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, err) {
 							return
 						}
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi khoá nội dung.")
@@ -211,7 +212,7 @@ func newHarnessWithTestRoutes(
 						ExpectedVersion: expectedVer,
 					})
 					if err != nil {
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, err) {
+						if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, err) {
 							return
 						}
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Không cập nhật được mục.")
@@ -237,7 +238,7 @@ func newHarnessWithTestRoutes(
 				}))
 
 				// 3. POST /api/v1/__test/items/{id}/entries (Entry 400 KiB limit, S+C+I+R)
-				v1.Method(http.MethodPost, "/__test/items/{id}/entries", hRef.Content.ChainEntryWrite(d, false, func(w http.ResponseWriter, r *http.Request) {
+				v1.Method(http.MethodPost, "/__test/items/{id}/entries", h.Content.ChainEntryWrite(d, false, func(w http.ResponseWriter, r *http.Request) {
 					if entryHandlerCalls != nil {
 						entryHandlerCalls.Add(1)
 					}
@@ -261,7 +262,7 @@ func newHarnessWithTestRoutes(
 						return
 					}
 
-					tx, err := httpx.BeginMutationTx(r.Context(), hRef.Pool)
+					tx, err := httpx.BeginMutationTx(r.Context(), h.Pool)
 					if err != nil {
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi máy chủ.")
 						return
@@ -270,7 +271,7 @@ func newHarnessWithTestRoutes(
 
 					q := gen.New(tx)
 					if err := q.LockUserContent(r.Context(), p.UserID); err != nil {
-						if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, err) {
+						if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, err) {
 							return
 						}
 						httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Lỗi khoá nội dung.")
@@ -289,7 +290,7 @@ func newHarnessWithTestRoutes(
 							Name:           "entry-host",
 							NameNormalized: "entry-host",
 						}); insErr != nil {
-							if httpx.WriteContentTxError(r.Context(), w, r, hRef.Pool, tx, insErr) {
+							if httpx.WriteContentTxError(r.Context(), w, r, h.Pool, tx, insErr) {
 								return
 							}
 							httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Không tạo được mục.")
@@ -310,8 +311,6 @@ func newHarnessWithTestRoutes(
 			},
 		},
 	})
-	hRef = h
-	return h
 }
 
 // TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim covers Task 3b bullets:
@@ -322,7 +321,8 @@ func newHarnessWithTestRoutes(
 // - same key to another item path -> 409 idempotency_conflict;
 // - an idempotency row older than 24 h is reclaimed (fake clock).
 func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *testing.T) {
-	h := newHarnessWithTestRoutes(t, nil, nil, nil, nil)
+	var entryCalls atomic.Int32
+	h := newHarnessWithTestRoutes(t, nil, nil, nil, &entryCalls)
 	ctx := context.Background()
 	jarA, meA, jarB, meB := h.SignupTwoUsers()
 
@@ -422,13 +422,19 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	itemB := uuid.New()
 	keyPath := "idem_item_path_conflict1"
 	entryPayload := `{"type":"text"}`
-	respPathA, rawPathA := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items/"+itemA.String()+"/entries", entryPayload, contenttest.ReqOptions{
+	pathA := "/api/v1/__test/items/" + itemA.String() + "/entries"
+	pathB := "/api/v1/__test/items/" + itemB.String() + "/entries"
+	respPathA, rawPathA := h.DoReq(jarA, http.MethodPost, pathA, entryPayload, contenttest.ReqOptions{
 		IdemKey: keyPath,
 	})
 	if respPathA.StatusCode != http.StatusCreated {
 		t.Fatalf("POST itemA entries: status=%d body=%s", respPathA.StatusCode, rawPathA)
 	}
-	respPathB, rawPathB := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items/"+itemB.String()+"/entries", entryPayload, contenttest.ReqOptions{
+	var origClaimedAt, origExpiresAt time.Time
+	if err := h.Pool.QueryRow(ctx, `SELECT claimed_at, expires_at FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, keyPath).Scan(&origClaimedAt, &origExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	respPathB, rawPathB := h.DoReq(jarA, http.MethodPost, pathB, entryPayload, contenttest.ReqOptions{
 		IdemKey: keyPath,
 	})
 	if respPathB.StatusCode != http.StatusConflict || contenttest.DecodeProblem(t, rawPathB).Code != "idempotency_conflict" {
@@ -436,8 +442,13 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	}
 
 	// 7. Idempotency row older than 24 h is reclaimed (fake clock).
+	// Access JWT has a 10m TTL while SessionTTL is 30d: after advancing 24h+1s, refresh the same
+	// authenticated session through the real /api/v1/auth/refresh endpoint before sending the reclaim request.
 	h.Clock.Advance(24*time.Hour + time.Second)
-	respReclaim, rawReclaim := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items/"+itemB.String()+"/entries", entryPayload, contenttest.ReqOptions{
+	h.RefreshSession(jarA)
+
+	callsBeforeReclaim := entryCalls.Load()
+	respReclaim, rawReclaim := h.DoReq(jarA, http.MethodPost, pathB, entryPayload, contenttest.ReqOptions{
 		IdemKey: keyPath,
 	})
 	if respReclaim.StatusCode != http.StatusCreated {
@@ -445,6 +456,32 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	}
 	if !strings.Contains(rawReclaim, itemB.String()) {
 		t.Fatalf("reclaimed response = %s, want itemB %s", rawReclaim, itemB)
+	}
+	if gotCalls := entryCalls.Load() - callsBeforeReclaim; gotCalls != 1 {
+		t.Fatalf("entry handler calls on reclaim = %d, want 1", gotCalls)
+	}
+
+	// Assert the expired idempotency_key row was replaced with itemB's concrete path, fingerprint, and new expires_at.
+	var newPath, newStatus string
+	var newHash []byte
+	var newClaimedAt, newExpiresAt time.Time
+	if err := h.Pool.QueryRow(ctx, `SELECT path, request_hash, status, claimed_at, expires_at FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, keyPath).Scan(&newPath, &newHash, &newStatus, &newClaimedAt, &newExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	wantPathBHash := httpx.ComputeIdempotencyFingerprint(http.MethodPost, pathB, []byte(entryPayload))
+	if newPath != pathB || newStatus != "done" || !bytes.Equal(newHash, wantPathBHash) {
+		t.Fatalf("reclaimed idempotency row: path=%q status=%q hash=%x, want path=%q status=\"done\" hash=%x", newPath, newStatus, newHash, pathB, wantPathBHash)
+	}
+	if !newClaimedAt.After(origExpiresAt) || !newExpiresAt.After(origExpiresAt.Add(24*time.Hour)) {
+		t.Fatalf("reclaimed timestamps: claimed_at=%v expires_at=%v, orig expires_at=%v", newClaimedAt, newExpiresAt, origExpiresAt)
+	}
+
+	var itemBCount int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND id = $2`, meA.User.ID, itemB).Scan(&itemBCount); err != nil {
+		t.Fatal(err)
+	}
+	if itemBCount != 1 {
+		t.Fatalf("itemB row count = %d, want 1", itemBCount)
 	}
 
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
@@ -493,6 +530,10 @@ func TestContentIfMatchMissingWildcardWeakListLeadingZeroRejectedWith428(t *test
 			t.Fatalf("If-Match=%q: code=%q, want precondition_required", ifm, prob.Code)
 		}
 	}
+
+	// The 1 initial POST + 9 invalid PATCHes above all pass through RateLimit (step 4, before RequireVersionIfMatch at step 5),
+	// consuming all 10/10 events in the current 1-second window. Advance the fake clock past the 1s window before the valid control.
+	h.Clock.Advance(time.Second + 10*time.Millisecond)
 
 	// Valid If-Match "1" succeeds and increments version to 2.
 	respOK, rawOK := h.DoReq(jarA, http.MethodPatch, "/api/v1/__test/items/"+created.ID.String(), `{"name":"Updated Name"}`, contenttest.ReqOptions{
@@ -671,44 +712,92 @@ func TestContentBodyLimitsEntryItemAndP03VaultThroughRealChain(t *testing.T) {
 //   - Two content transactions of the same user run serially (barrier: the second waits on LockUserContent;
 //     observed via pg_locks and channel barrier);
 //   - different users run in parallel;
-//   - simulated deadlock (40P01) -> 503 dependency_unavailable + Retry-After: 1, and retry with the same key runs exactly once.
+//   - real backend deadlock (40P01) across two concurrent transactions locking two rows in opposite order ->
+//     the aborted transaction returns 503 dependency_unavailable + Retry-After: 1 with its in-transaction
+//     InsertItem rolled back and its idempotency claim released; retry with the same key runs once and replay
+//     returns the stored response, leaving exactly one committed row per key.
 func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock503Retry(t *testing.T) {
 	userAEntered := make(chan struct{}, 4)
-	releaseUserA := make(chan struct{})
+	releaseUserA := make(chan struct{}, 4)
+	cancelUserABarrier := make(chan struct{})
+	var closeUserAOnce sync.Once
+	closeUserABarrier := func() { closeUserAOnce.Do(func() { close(cancelUserABarrier) }) }
+
 	userBEntered := make(chan struct{}, 2)
-	releaseUserB := make(chan struct{})
+	cancelUserBBarrier := make(chan struct{})
+	var closeUserBOnce sync.Once
+	closeUserBBarrier := func() { closeUserBOnce.Do(func() { close(cancelUserBBarrier) }) }
+
+	dlStep1Done := make(chan struct{}, 2)
+	dlProceedStep2 := make(chan struct{})
+	var closeDLOnce sync.Once
+	closeDLBarrier := func() { closeDLOnce.Do(func() { close(dlProceedStep2) }) }
 
 	var userATarget uuid.UUID
 	var userBTarget uuid.UUID
-	var barrierActive atomic.Bool
-	var simulateDeadlock atomic.Bool
-	var deadlockAttempts atomic.Int32
+	var serialBarrierActive atomic.Bool
+	var deadlockBarrierActive atomic.Bool
+	var dlLockItem1 uuid.UUID
+	var dlLockItem2 uuid.UUID
 
 	h := newHarnessWithTestRoutes(
 		t,
-		func(uid uuid.UUID) {
-			if !barrierActive.Load() {
+		func(reqCtx context.Context, uid uuid.UUID) {
+			if !serialBarrierActive.Load() {
 				return
 			}
 			switch uid {
 			case userATarget:
 				userAEntered <- struct{}{}
-				<-releaseUserA
+				select {
+				case <-releaseUserA:
+				case <-cancelUserABarrier:
+				case <-reqCtx.Done():
+				}
 			case userBTarget:
 				userBEntered <- struct{}{}
-				<-releaseUserB
+				select {
+				case <-cancelUserBBarrier:
+				case <-reqCtx.Done():
+				}
 			}
 		},
-		func() bool {
-			if simulateDeadlock.Load() {
-				deadlockAttempts.Add(1)
-				return true
+		func(reqCtx context.Context, uid uuid.UUID, tx pgx.Tx) error {
+			if !deadlockBarrierActive.Load() {
+				return nil
 			}
-			return false
+			// Deterministic two-transaction Postgres 40P01 deadlock after InsertItem has already executed in tx:
+			// - User A locks dlLockItem1 FOR UPDATE, signals step 1, waits for both txs to hold step-1 locks, then locks dlLockItem2 FOR UPDATE.
+			// - User B locks dlLockItem2 FOR UPDATE, signals step 1, waits for both txs to hold step-1 locks, then locks dlLockItem1 FOR UPDATE.
+			firstID, secondID := dlLockItem1, dlLockItem2
+			if uid == userBTarget {
+				firstID, secondID = dlLockItem2, dlLockItem1
+			}
+			if _, err := tx.Exec(reqCtx, `SELECT 1 FROM item WHERE id = $1 FOR UPDATE`, firstID); err != nil {
+				return err
+			}
+			dlStep1Done <- struct{}{}
+			select {
+			case <-dlProceedStep2:
+			case <-reqCtx.Done():
+				return reqCtx.Err()
+			}
+			_, err := tx.Exec(reqCtx, `SELECT 1 FROM item WHERE id = $1 FOR UPDATE`, secondID)
+			return err
 		},
 		nil,
 		nil,
 	)
+
+	// Register barrier release/cancel AFTER NewHarness (so LIFO t.Cleanup runs this BEFORE h.Server.Close)
+	// and BEFORE launching any goroutines/requests.
+	t.Cleanup(func() {
+		serialBarrierActive.Store(false)
+		deadlockBarrierActive.Store(false)
+		closeUserABarrier()
+		closeUserBBarrier()
+		closeDLBarrier()
+	})
 
 	ctx := context.Background()
 	jarA, meA, jarB, meB := h.SignupTwoUsers()
@@ -716,19 +805,22 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	userBTarget = meB.User.ID
 
 	// Part 1: Same user runs serially, different user runs in parallel while User A holds LockUserContent.
-	barrierActive.Store(true)
+	serialBarrierActive.Store(true)
 
-	var wg sync.WaitGroup
-	var statusA1, statusA2, statusB1 int
+	type reqResult struct {
+		resp contenttest.TestResponse
+		raw  string
+	}
+	doneA1 := make(chan reqResult, 1)
+	doneA2 := make(chan reqResult, 1)
+	doneB1 := make(chan reqResult, 1)
 
-	// Start User A tx 1 -> acquires LockUserContent(A) and blocks on releaseUserA.
-	wg.Add(1)
+	// Start User A tx 1 -> acquires LockUserContent(A) and waits on releaseUserA.
 	go func() {
-		defer wg.Done()
-		resp, _ := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", `{"name":"A Serial 1"}`, contenttest.ReqOptions{
+		resp, raw := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", `{"name":"A Serial 1"}`, contenttest.ReqOptions{
 			IdemKey: "idem_serial_user_a_tx01",
 		})
-		statusA1 = resp.StatusCode
+		doneA1 <- reqResult{resp: resp, raw: raw}
 	}()
 
 	select {
@@ -738,13 +830,11 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}
 
 	// Start User A tx 2 -> must block on pg_advisory_xact_lock BEFORE entering userAEntered.
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		resp, _ := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", `{"name":"A Serial 2"}`, contenttest.ReqOptions{
+		resp, raw := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", `{"name":"A Serial 2"}`, contenttest.ReqOptions{
 			IdemKey: "idem_serial_user_a_tx02",
 		})
-		statusA2 = resp.StatusCode
+		doneA2 <- reqResult{resp: resp, raw: raw}
 	}()
 
 	// Wait until Postgres pg_locks shows an ungranted advisory lock waiter for hashtext('engram.content').
@@ -778,13 +868,11 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}
 
 	// Meanwhile, User B sends a write -> acquires LockUserContent(B) in parallel without waiting for User A!
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		resp, _ := h.DoReq(jarB, http.MethodPost, "/api/v1/__test/items", `{"name":"B Parallel 1"}`, contenttest.ReqOptions{
+		resp, raw := h.DoReq(jarB, http.MethodPost, "/api/v1/__test/items", `{"name":"B Parallel 1"}`, contenttest.ReqOptions{
 			IdemKey: "idem_parallel_user_b_01",
 		})
-		statusB1 = resp.StatusCode
+		doneB1 <- reqResult{resp: resp, raw: raw}
 	}()
 
 	select {
@@ -793,75 +881,176 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	case <-time.After(10 * time.Second):
 		t.Fatal("User B transaction was blocked by User A LockUserContent")
 	}
-	close(releaseUserB)
+	closeUserBBarrier()
+
+	var resB1 reqResult
+	select {
+	case resB1 = <-doneB1:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for User B tx 1 response")
+	}
 
 	// Now release User A tx 1 -> User A tx 2 must enter next, then complete.
 	releaseUserA <- struct{}{}
+	var resA1 reqResult
+	select {
+	case resA1 = <-doneA1:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for User A tx 1 response")
+	}
+
 	select {
 	case <-userAEntered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for User A tx 2 to acquire LockUserContent after tx 1 released")
 	}
 	releaseUserA <- struct{}{}
-	wg.Wait()
-	barrierActive.Store(false)
+	var resA2 reqResult
+	select {
+	case resA2 = <-doneA2:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for User A tx 2 response")
+	}
+	serialBarrierActive.Store(false)
 
-	if statusA1 != http.StatusCreated || statusA2 != http.StatusCreated || statusB1 != http.StatusCreated {
-		t.Fatalf("statuses: A1=%d A2=%d B1=%d, want all 201", statusA1, statusA2, statusB1)
+	if resA1.resp.StatusCode != http.StatusCreated || resA2.resp.StatusCode != http.StatusCreated || resB1.resp.StatusCode != http.StatusCreated {
+		t.Fatalf("statuses: A1=%d (%s) A2=%d (%s) B1=%d (%s), want all 201",
+			resA1.resp.StatusCode, resA1.raw, resA2.resp.StatusCode, resA2.raw, resB1.resp.StatusCode, resB1.raw)
 	}
 
-	// Part 2: Simulated deadlock (40P01) -> 503 dependency_unavailable + Retry-After: 1, claim released,
-	// and retry with the same Idempotency-Key runs and creates exactly 1 row.
-	simulateDeadlock.Store(true)
-	keyDeadlock := "idem_deadlock_retry_001"
-	bodyDeadlock := `{"name":"Deadlock Item"}`
+	var itemA1 testItemResponse
+	if err := json.Unmarshal([]byte(resA1.raw), &itemA1); err != nil {
+		t.Fatal(err)
+	}
+	var itemB1 testItemResponse
+	if err := json.Unmarshal([]byte(resB1.raw), &itemB1); err != nil {
+		t.Fatal(err)
+	}
 
-	respDL, rawDL := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", bodyDeadlock, contenttest.ReqOptions{
-		IdemKey: keyDeadlock,
-	})
-	if respDL.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("simulated 40P01: status=%d body=%s, want 503", respDL.StatusCode, rawDL)
+	// Part 2: Real backend deadlock (SQLSTATE 40P01) through the real middleware + handler + Postgres chain.
+	// Two concurrent requests (User A and User B) each insert a new item row inside their mutation transaction
+	// and then lock (itemA1, itemB1) in opposite order after barrier synchronization.
+	// Postgres detects the cycle and raises 40P01 on one transaction while the other succeeds (201).
+	dlLockItem1 = itemA1.ID
+	dlLockItem2 = itemB1.ID
+	deadlockBarrierActive.Store(true)
+
+	keyDLA := "idem_deadlock_real_a_001"
+	bodyDLA := `{"name":"Deadlock Real A"}`
+	keyDLB := "idem_deadlock_real_b_001"
+	bodyDLB := `{"name":"Deadlock Real B"}`
+
+	doneDLA := make(chan reqResult, 1)
+	doneDLB := make(chan reqResult, 1)
+
+	go func() {
+		resp, raw := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", bodyDLA, contenttest.ReqOptions{
+			IdemKey: keyDLA,
+		})
+		doneDLA <- reqResult{resp: resp, raw: raw}
+	}()
+	go func() {
+		resp, raw := h.DoReq(jarB, http.MethodPost, "/api/v1/__test/items", bodyDLB, contenttest.ReqOptions{
+			IdemKey: keyDLB,
+		})
+		doneDLB <- reqResult{resp: resp, raw: raw}
+	}()
+
+	// Wait for both transactions to acquire their first FOR UPDATE lock, then release both to request the opposite lock.
+	for step := 1; step <= 2; step++ {
+		select {
+		case <-dlStep1Done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out waiting for deadlock participant %d to acquire first lock", step)
+		}
 	}
-	if respDL.Header.Get("Retry-After") != "1" {
-		t.Fatalf("simulated 40P01 Retry-After = %q, want \"1\"", respDL.Header.Get("Retry-After"))
+	closeDLBarrier()
+
+	var resDLA, resDLB reqResult
+	select {
+	case resDLA = <-doneDLA:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for User A deadlock request to finish")
 	}
-	probDL := contenttest.DecodeProblem(t, rawDL)
+	select {
+	case resDLB = <-doneDLB:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for User B deadlock request to finish")
+	}
+	deadlockBarrierActive.Store(false)
+
+	// Exactly one transaction must be aborted by Postgres with 40P01 -> 503 + Retry-After: 1,
+	// and the other transaction must commit with 201 Created.
+	var victimJar contenttest.CookieJar
+	var victimUserID uuid.UUID
+	var victimKey, victimBody, victimItemName string
+	var victimRes, winnerRes reqResult
+	var winnerUserID uuid.UUID
+	var winnerKey, winnerItemName string
+
+	switch {
+	case resDLA.resp.StatusCode == http.StatusServiceUnavailable && resDLB.resp.StatusCode == http.StatusCreated:
+		victimJar, victimUserID, victimKey, victimBody, victimItemName, victimRes = jarA, meA.User.ID, keyDLA, bodyDLA, "Deadlock Real A", resDLA
+		winnerUserID, winnerKey, winnerItemName, winnerRes = meB.User.ID, keyDLB, "Deadlock Real B", resDLB
+	case resDLB.resp.StatusCode == http.StatusServiceUnavailable && resDLA.resp.StatusCode == http.StatusCreated:
+		victimJar, victimUserID, victimKey, victimBody, victimItemName, victimRes = jarB, meB.User.ID, keyDLB, bodyDLB, "Deadlock Real B", resDLB
+		winnerUserID, winnerKey, winnerItemName, winnerRes = meA.User.ID, keyDLA, "Deadlock Real A", resDLA
+	default:
+		t.Fatalf("expected one 503 and one 201 from real deadlock, got A=%d (%s) B=%d (%s)",
+			resDLA.resp.StatusCode, resDLA.raw, resDLB.resp.StatusCode, resDLB.raw)
+	}
+
+	if victimRes.resp.Header.Get("Retry-After") != "1" {
+		t.Fatalf("real 40P01 Retry-After = %q, want \"1\"", victimRes.resp.Header.Get("Retry-After"))
+	}
+	probDL := contenttest.DecodeProblem(t, victimRes.raw)
 	if probDL.Code != "dependency_unavailable" || probDL.RetryAfter == nil || *probDL.RetryAfter != 1 {
-		t.Fatalf("simulated 40P01 problem = %+v", probDL)
+		t.Fatalf("real 40P01 problem = %+v", probDL)
 	}
 
-	// Claim must have been released so no idempotency_key row remains and no item row was committed.
-	var dlIdemRows, dlItemRows int
-	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, keyDeadlock).Scan(&dlIdemRows); err != nil {
+	// Verify the aborted transaction rolled back its in-transaction InsertItem AND released its idempotency claim.
+	var victimIdemRows, victimItemRows int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, victimUserID, victimKey).Scan(&victimIdemRows); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = 'Deadlock Item'`, meA.User.ID).Scan(&dlItemRows); err != nil {
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = $2`, victimUserID, victimItemName).Scan(&victimItemRows); err != nil {
 		t.Fatal(err)
 	}
-	if dlIdemRows != 0 || dlItemRows != 0 {
-		t.Fatalf("after 40P01 rollback: idemRows=%d itemRows=%d, want 0 and 0", dlIdemRows, dlItemRows)
+	if victimIdemRows != 0 || victimItemRows != 0 {
+		t.Fatalf("after real 40P01 rollback: victim idemRows=%d itemRows=%d, want 0 and 0", victimIdemRows, victimItemRows)
 	}
 
-	// Disable deadlock simulation and retry with the exact same Idempotency-Key -> succeeds (201) and creates 1 row.
-	simulateDeadlock.Store(false)
-	respDLRetry, rawDLRetry := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", bodyDeadlock, contenttest.ReqOptions{
-		IdemKey: keyDeadlock,
+	// Verify the winner committed exactly 1 item row and 1 done idempotency row.
+	var winnerIdemRows, winnerItemRows int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2 AND status = 'done'`, winnerUserID, winnerKey).Scan(&winnerIdemRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = $2`, winnerUserID, winnerItemName).Scan(&winnerItemRows); err != nil {
+		t.Fatal(err)
+	}
+	if winnerIdemRows != 1 || winnerItemRows != 1 || winnerRes.resp.StatusCode != http.StatusCreated {
+		t.Fatalf("winner state: idemRows=%d itemRows=%d status=%d, want 1, 1, 201", winnerIdemRows, winnerItemRows, winnerRes.resp.StatusCode)
+	}
+
+	// Retry the aborted request with the exact same Idempotency-Key -> runs once, succeeds (201), and creates 1 row.
+	respDLRetry, rawDLRetry := h.DoReq(victimJar, http.MethodPost, "/api/v1/__test/items", victimBody, contenttest.ReqOptions{
+		IdemKey: victimKey,
 	})
 	if respDLRetry.StatusCode != http.StatusCreated {
-		t.Fatalf("retry after 40P01 with same key: status=%d body=%s, want 201", respDLRetry.StatusCode, rawDLRetry)
+		t.Fatalf("retry after real 40P01 with same key: status=%d body=%s, want 201", respDLRetry.StatusCode, rawDLRetry)
 	}
-	// Replay once more with the same key -> returns stored 201 without creating a second item.
-	respDLReplay, rawDLReplay := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", bodyDeadlock, contenttest.ReqOptions{
-		IdemKey: keyDeadlock,
+	// Replay once more with the same key -> returns stored 201 response without creating a second item.
+	respDLReplay, rawDLReplay := h.DoReq(victimJar, http.MethodPost, "/api/v1/__test/items", victimBody, contenttest.ReqOptions{
+		IdemKey: victimKey,
 	})
 	if respDLReplay.StatusCode != http.StatusCreated || rawDLReplay != rawDLRetry {
-		t.Fatalf("replay after 40P01 recovery: status=%d body=%s, want %s", respDLReplay.StatusCode, rawDLReplay, rawDLRetry)
+		t.Fatalf("replay after real 40P01 recovery: status=%d body=%s, want %s", respDLReplay.StatusCode, rawDLReplay, rawDLRetry)
 	}
-	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = 'Deadlock Item'`, meA.User.ID).Scan(&dlItemRows); err != nil {
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = $2`, victimUserID, victimItemName).Scan(&victimItemRows); err != nil {
 		t.Fatal(err)
 	}
-	if dlItemRows != 1 {
-		t.Fatalf("Deadlock Item count after retry+replay = %d, want 1", dlItemRows)
+	if victimItemRows != 1 {
+		t.Fatalf("victim item count after retry+replay = %d, want 1", victimItemRows)
 	}
 
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
