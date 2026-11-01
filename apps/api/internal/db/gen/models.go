@@ -203,6 +203,18 @@ type OauthTransaction struct {
 	ConsumedAt            pgtype.Timestamptz
 }
 
+type PasswordResetToken struct {
+	ID                 uuid.UUID
+	UserID             uuid.UUID
+	TargetEmail        string
+	TokenHash          []byte
+	PasswordHashSha256 []byte
+	WasEmailUnverified bool
+	ExpiresAt          pgtype.Timestamptz
+	ConsumedAt         pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
+}
+
 type PgExtension struct {
 	Oid            pgtype.Uint32
 	Extname        string

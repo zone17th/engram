@@ -103,7 +103,9 @@ export function VerifyEmailForm() {
     } catch (err) {
       const message =
         err instanceof ProblemError
-          ? err.problem.detail ?? err.problem.title
+          ? err.problem.code === 'rate_limited'
+            ? t('errors.rateLimitedTitle')
+            : t('errors.genericTitle')
           : t('errors.network');
       setAlert({ tone: 'error', message });
     } finally {

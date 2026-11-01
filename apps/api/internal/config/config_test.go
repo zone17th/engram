@@ -688,3 +688,44 @@ func TestTrustedProxyCIDRsLoaded(t *testing.T) {
 		}
 	})
 }
+
+func TestMailCaptureAsDeliveryFailClosedAndRejectedInProduction(t *testing.T) {
+	setEnv(t, nil)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() default: %v", err)
+	}
+	if cfg.MailCaptureAsDelivery {
+		t.Fatal("AUTH_MAIL_CAPTURE_AS_DELIVERY must default to false (fail closed)")
+	}
+
+	setEnv(t, map[string]string{
+		"APP_ENV":                       "development",
+		"AUTH_MAIL_CAPTURE_AS_DELIVERY": "true",
+	})
+	cfgDev, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() development with AUTH_MAIL_CAPTURE_AS_DELIVERY=true: %v", err)
+	}
+	if !cfgDev.MailCaptureAsDelivery {
+		t.Fatal("development should allow AUTH_MAIL_CAPTURE_AS_DELIVERY=true")
+	}
+
+	for _, envName := range []string{"production", "staging"} {
+		t.Run(envName, func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"APP_ENV":                       envName,
+				"APP_ORIGIN":                    "https://engram.zone17.click",
+				"AUTH_MAIL_CAPTURE_AS_DELIVERY": "true",
+				"AUTH_JWT_SECRET":               b64(32),
+				"AUTH_CSRF_SECRET":              b64(33),
+				"AUTH_REAUTH_SECRET":            b64(34),
+				"AUTH_IP_PEPPER":                b64(35),
+				"AUTH_EMAIL_PEPPER":             b64(36),
+			})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s must refuse boot when AUTH_MAIL_CAPTURE_AS_DELIVERY=true", envName)
+			}
+		})
+	}
+}

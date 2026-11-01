@@ -72,9 +72,11 @@ describe('RouteGuard', () => {
 });
 
 describe('keepAuthFormMountedWhileLoading', () => {
-  it('keeps login, signup, verify-email, password-enroll, and OAuth callback mounted', () => {
+  it('keeps login, signup, forgot-password, reset-password, verify-email, password-enroll, and OAuth callback mounted', () => {
     expect(keepAuthFormMountedWhileLoading('/app/auth/login')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/signup')).toBe(true);
+    expect(keepAuthFormMountedWhileLoading('/app/auth/forgot-password')).toBe(true);
+    expect(keepAuthFormMountedWhileLoading('/app/auth/reset-password')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/verify-email')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/password-enroll')).toBe(true);
     expect(keepAuthFormMountedWhileLoading('/app/auth/callback/google')).toBe(true);
@@ -95,6 +97,8 @@ describe('resolveGuardRedirect', () => {
     expect(
       resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/callback/google', me: null }),
     ).toBeNull();
+    expect(resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/forgot-password', me: null })).toBeNull();
+    expect(resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/reset-password', me: null })).toBeNull();
     expect(resolveGuardRedirect({ status: 'signed_out', pathname: '/app/auth/verify-email', me: null })).toBe(
       '/app/auth/login?returnTo=%2Fapp%2Fauth%2Fverify-email',
     );
@@ -114,6 +118,12 @@ describe('resolveGuardRedirect', () => {
     ).toBeNull();
     expect(
       resolveGuardRedirect({ status: 'authenticated_without_vault', pathname: '/app/settings', me }),
+    ).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'authenticated_without_vault', pathname: '/app/auth/reset-password', me }),
+    ).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'authenticated_without_vault', pathname: '/app/auth/forgot-password', me }),
     ).toBeNull();
     expect(resolveGuardRedirect({ status: 'authenticated_without_vault', pathname: '/app', me })).toBe(
       '/app/auth/verify-email',
@@ -144,6 +154,12 @@ describe('resolveGuardRedirect', () => {
         me,
       }),
     ).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'authenticated_without_vault', pathname: '/app/auth/reset-password', me }),
+    ).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'authenticated_without_vault', pathname: '/app/auth/forgot-password', me }),
+    ).toBeNull();
   });
 
   it('lets a present vault leave onboarding and stay on app routes', () => {
@@ -158,6 +174,12 @@ describe('resolveGuardRedirect', () => {
     );
     expect(
       resolveGuardRedirect({ status: 'authenticated_with_vault', pathname: '/app/auth/reauth', me }),
+    ).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'authenticated_with_vault', pathname: '/app/auth/reset-password', me }),
+    ).toBeNull();
+    expect(
+      resolveGuardRedirect({ status: 'authenticated_with_vault', pathname: '/app/auth/forgot-password', me }),
     ).toBeNull();
   });
 
@@ -191,6 +213,8 @@ describe('resolveGuardRedirect while the vault holds no key (U5, advisor-dec-048
     expect(guard('/app/items-archive', 'locked')).toBe('/app/unlock?returnTo=%2Fapp%2Fitems-archive');
     expect(guard('/app/settings', 'locked')).toBeNull();
     expect(guard('/app/unlock', 'locked')).toBeNull();
+    expect(guard('/app/auth/forgot-password', 'locked')).toBeNull();
+    expect(guard('/app/auth/reset-password', 'locked')).toBeNull();
   });
 
   it('leaves the recovering rules unchanged: no list while a recovery is pending', () => {
@@ -207,5 +231,7 @@ describe('resolveGuardRedirect while the vault holds no key (U5, advisor-dec-048
     expect(guard('/app', 'unlocked')).toBeNull();
     expect(guard('/app/items/d1', 'unlocked')).toBeNull();
     expect(guard('/app/unlock', 'unlocked')).toBe('/app');
+    expect(guard('/app/auth/forgot-password', 'unlocked')).toBeNull();
+    expect(guard('/app/auth/reset-password', 'unlocked')).toBeNull();
   });
 });

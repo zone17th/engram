@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -67,6 +68,9 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if fn := getOnNewAuthService(); fn != nil {
+		fn(svc)
+	}
 	if len(providers) == 0 {
 		providers = DefaultProviders(cfg)
 	}
@@ -81,6 +85,25 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 	}
 	api := authhttp.NewAPI(svc, oa, captcha, cfg.TrustedProxyContains)
 	return svc, oa, api, nil
+}
+
+var (
+	onNewAuthServiceMu sync.RWMutex
+	onNewAuthService   func(*auth.Service)
+)
+
+// SetOnNewAuthService registers an optional hook called when NewAuth constructs
+// an *auth.Service (used by lifecycle tests).
+func SetOnNewAuthService(fn func(*auth.Service)) {
+	onNewAuthServiceMu.Lock()
+	onNewAuthService = fn
+	onNewAuthServiceMu.Unlock()
+}
+
+func getOnNewAuthService() func(*auth.Service) {
+	onNewAuthServiceMu.RLock()
+	defer onNewAuthServiceMu.RUnlock()
+	return onNewAuthService
 }
 
 func Adapters(svc *auth.Service) (httpx.Authenticator, httpx.CSRFVerifier, httpx.ReauthVerifier) {

@@ -2,6 +2,9 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { NextIntlClientProvider } from 'next-intl';
+import en from '../messages/en.json';
+import viMessages from '../messages/vi.json';
 import { Button } from '../components/ui/button';
 import {
   AuthStatus,
@@ -22,12 +25,14 @@ import { Switch } from '../components/ui/switch';
 describe('Field', () => {
   it('nối label, hint và error qua id/aria', () => {
     render(
-      <Field
-        label="Email"
-        hint="Dùng email đăng nhập"
-        error="Email không hợp lệ"
-        defaultValue="bad"
-      />,
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field
+          label="Email"
+          hint="Dùng email đăng nhập"
+          error="Email không hợp lệ"
+          defaultValue="bad"
+        />
+      </NextIntlClientProvider>,
     );
     const input = screen.getByLabelText('Email');
     expect(input).toHaveAttribute('aria-invalid', 'true');
@@ -36,7 +41,11 @@ describe('Field', () => {
   });
 
   it('email/password giữ autocomplete và không chặn paste', () => {
-    render(<Field label="Mật khẩu" type="password" autoComplete="current-password" />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field label="Mật khẩu" type="password" autoComplete="current-password" />
+      </NextIntlClientProvider>,
+    );
     const input = screen.getByLabelText('Mật khẩu');
     expect(input).toHaveAttribute('type', 'password');
     expect(input).toHaveAttribute('autocomplete', 'current-password');
@@ -44,7 +53,11 @@ describe('Field', () => {
   });
 
   it('password toggle đổi type và có accessible name', async () => {
-    render(<Field label="Mật khẩu" type="password" defaultValue="secret" />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field label="Mật khẩu" type="password" defaultValue="secret" />
+      </NextIntlClientProvider>,
+    );
     const input = screen.getByLabelText('Mật khẩu');
     expect(input).toHaveAttribute('type', 'password');
     const toggle = screen.getByRole('button', { name: 'Hiện' });
@@ -54,12 +67,36 @@ describe('Field', () => {
     expect(screen.getByRole('button', { name: 'Ẩn' })).toBeInTheDocument();
   });
 
+  it('password toggle lấy nhãn i18n theo locale hiện tại (không trộn tiếng Việt sang tiếng Anh)', async () => {
+    const { unmount } = render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <Field label="Login password" type="password" defaultValue="secret" />
+      </NextIntlClientProvider>,
+    );
+    const enToggle = screen.getByRole('button', { name: 'Show' });
+    expect(screen.queryByRole('button', { name: 'Hiện' })).not.toBeInTheDocument();
+    await userEvent.click(enToggle);
+    expect(screen.getByRole('button', { name: 'Hide' })).toBeInTheDocument();
+    unmount();
+
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field label="Mật khẩu đăng nhập" type="password" defaultValue="secret" />
+      </NextIntlClientProvider>,
+    );
+    const viToggle = screen.getByRole('button', { name: 'Hiện' });
+    await userEvent.click(viToggle);
+    expect(screen.getByRole('button', { name: 'Ẩn' })).toBeInTheDocument();
+  });
+
   it('focusFirstInvalidField focus ô lỗi đầu tiên', () => {
     render(
-      <form data-testid="form">
-        <Field label="A" error="lỗi A" />
-        <Field label="B" error="lỗi B" />
-      </form>,
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <form data-testid="form">
+          <Field label="A" error="lỗi A" />
+          <Field label="B" error="lỗi B" />
+        </form>
+      </NextIntlClientProvider>,
     );
     const form = screen.getByTestId('form');
     focusFirstInvalidField(form);
