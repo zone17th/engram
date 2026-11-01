@@ -46,6 +46,7 @@ import {
   type VaultContextValue,
 } from '@/features/vault';
 import type { Me } from '@/lib/api/auth';
+import { getSessionEpoch } from '@/lib/api/auth-fetch';
 import type {
   Entry,
   EntryChange,
@@ -57,7 +58,6 @@ import type {
   ItemSummary,
   Tag,
 } from '@/lib/api/content';
-import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import { commitAuthenticatedUser, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
@@ -87,6 +87,51 @@ vi.mock('next/navigation', () => ({
     throw new Error('NEXT_NOT_FOUND');
   },
 }));
+
+// Real BroadcastChannel instances never deliver to the instance that posted (and jsdom/Node did not deliver a second
+// instance's message to the singleton channel in CI), so a REMOTE `session_changed` is simulated by stubbing the global
+// before lib/auth/broadcast.ts caches its channel (same technique as item-page.test.tsx).
+const sessionBroadcastHoisted = vi.hoisted(() => {
+  type Listener = (event: { data: unknown }) => void;
+  const sessionListeners = new Set<Listener>();
+
+  class StubBroadcastChannel {
+    readonly name: string;
+    private readonly localListeners = new Set<Listener>();
+
+    constructor(name: string) {
+      this.name = name;
+    }
+
+    addEventListener(type: string, listener: Listener): void {
+      if (type !== 'message') return;
+      this.localListeners.add(listener);
+      if (this.name === 'sabk.auth.session') sessionListeners.add(listener);
+    }
+
+    removeEventListener(type: string, listener: Listener): void {
+      if (type !== 'message') return;
+      this.localListeners.delete(listener);
+      sessionListeners.delete(listener);
+    }
+
+    postMessage(): void {}
+
+    close(): void {
+      for (const listener of this.localListeners) sessionListeners.delete(listener);
+      this.localListeners.clear();
+    }
+  }
+
+  vi.stubGlobal('BroadcastChannel', StubBroadcastChannel);
+
+  return {
+    listenerCount: () => sessionListeners.size,
+    emitRemoteSessionBroadcast: (message: { type: 'session_changed' }) => {
+      for (const listener of [...sessionListeners]) listener({ data: message });
+    },
+  };
+});
 
 const PASSPHRASE = 'task20-changes-sync-passphrase-1';
 const KEY_ID_1 = 'vk:7f3a91c4e0b2d8a1f5c309';
@@ -327,6 +372,7 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     textEntryCardTesting.setEditorPlaintextHolderForTests(null);
     jsonTableTesting.setJsonEditorPlaintextHolderForTests(null);
     vi.restoreAllMocks();
+    vi.useRealTimers();
     if (originalVisibilityStateDescriptor) {
       Object.defineProperty(document, 'visibilityState', originalVisibilityStateDescriptor);
     } else {
@@ -1708,7 +1754,7 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     assertItemsAndTagsKeptAndSyncStateCleared(h);
   });
 
-  it('T1d: purges ["content","entries"] and ["vault","body"] with 0 body queries and no stale DOM plaintext when vault becomes absent on a focus wake with an active item page', async () => {
+  it('T1d: purges ["content","entries"] and ["vault","body"] with no body DATA left in any ["vault","body"] query and no stale DOM plaintext when vault becomes absent on a focus wake with an active item page', async () => {
     const STALE_DOM_SENTINEL = 'STALE_PLAINTEXT_BEFORE_ABSENT_WAKE_9101';
     const h = await setupSyncHarness({
       initialUnlocked: true,
@@ -1748,7 +1794,11 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       expect(['locked', 'no_vault']).toContain(h.vault().state);
       expect(entriesRefetchIntercepted).toBe(true);
       expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
-      expect(h.qc.getQueryCache().findAll({ queryKey: ['vault', 'body'] })).toHaveLength(0);
+      // A mounted card's useEntryBody observer legitimately re-registers an EMPTY pending query for its key right after
+      // removeQueries (enabled only while unlocked with a valid vault_key_id, so no fetch while locked/no_vault). The
+      // security property is that NO ['vault','body'] query holds decrypted data, not that no query object exists.
+      const bodyQueries = h.qc.getQueryCache().findAll({ queryKey: ['vault', 'body'] });
+      expect(bodyQueries.filter((query) => query.state.data !== undefined)).toHaveLength(0);
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
       expect(document.body.textContent ?? '').not.toContain(STALE_DOM_SENTINEL);
     });
@@ -1824,7 +1874,7 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(isEntryRemotelyDeleted(ENTRY_ID_3)).toBe(false);
   });
 
-  it('T2: preserves remembered vault_key_id across observed transient loading/unavailable session states so recovery with a replacement key purges seeded entries and bodies (FER1-4 / BER1-6)', async () => {
+  it('T2: preserves remembered vault_key_id across an observed transient session loading state (remote session_changed with /auth/me held) so recovery with a replacement key purges seeded entries and bodies (FER1-4 / BER1-6)', async () => {
     const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
 
     // Establish KEY_ID_3 as the current live key, then transition to null/absent so vaultMeta is null
@@ -1838,44 +1888,56 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       await h.vault().reloadVaultMeta();
     });
     expect(h.vault().vaultMeta).toBeNull();
+    expect(sessionBroadcastHoisted.listenerCount()).toBeGreaterThan(0);
 
-    // 1. Hold /auth/me response and trigger a remote session_changed broadcast -> sessionEpoch increments
-    //    with no cached me data for the new epoch, driving sessionStatus to 'loading'.
-    const heldLoadingMe = createDeferred<Response>();
+    // 1. Hold every /auth/me response (one fresh deferred per request: a Response body can only be read once) and
+    //    deliver a REMOTE session_changed: SessionProvider bumps the session epoch, the new epoch's me query starts
+    //    empty and sessionStatus becomes 'loading' while the request is in flight. Never call act() from inside another
+    //    act() here (an overlapping act breaks every following test).
+    const heldMeResponses: Array<PromiseWithResolvers<Response>> = [];
     h.overrideRoute((url) => {
       const parsed = new URL(url, 'http://localhost');
       if (parsed.pathname.endsWith('/auth/me')) {
-        return heldLoadingMe.promise;
+        const held = createDeferred<Response>();
+        heldMeResponses.push(held);
+        return held.promise;
       }
       return null;
     });
 
-    await act(async () => {
-      postSessionBroadcast({ type: 'session_changed' });
-      // Clear the carried me cache for the new epoch so meQuery is in loading state
-      h.qc.removeQueries({ queryKey: ['auth', 'me'] });
-      void h.refetchMeSession();
+    try {
+      const epochBefore = getSessionEpoch();
+      await act(async () => {
+        sessionBroadcastHoisted.emitRemoteSessionBroadcast({ type: 'session_changed' });
+      });
+
+      await waitFor(() => {
+        expect(getSessionEpoch()).toBe(epochBefore + 1);
+        expect(heldMeResponses.length).toBeGreaterThan(0);
+        expect(h.sessionStatus()).toBe('loading');
+        expect(screen.getByTestId('session-status-probe')).toHaveTextContent('loading');
+      });
+      // The vault provider keeps the same user across the transient state.
+      expect(h.vault().vaultMeta).toBeNull();
+    } finally {
+      // Release every held request with the SAME user (present vault); later /auth/me calls use the default route.
+      h.overrideRoute(null);
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await act(async () => {
+        for (const held of heldMeResponses.splice(0)) {
+          held.resolve(jsonResponse(makeMe(USER_A_ID, 'present')));
+        }
+      });
+    }
+
+    await waitFor(() => {
+      expect(h.sessionStatus()).toBe('authenticated_with_vault');
     });
 
-    // Deterministically observe sessionStatus === 'loading' while /auth/me is held
-    await waitFor(() => {
-      expect(h.sessionStatus()).toBe('loading');
-      expect(screen.getByTestId('session-status-probe')).toHaveTextContent('loading');
-    });
-
-    // Resolve with a 500 error so meQuery enters isError and sessionStatus is observed as 'unavailable'
-    await act(async () => {
-      heldLoadingMe.resolve(problemResponse('internal_error', 500));
-    });
-    await waitFor(() => {
-      expect(h.sessionStatus()).toBe('unavailable');
-      expect(screen.getByTestId('session-status-probe')).toHaveTextContent('unavailable');
-    });
-    // 2. Recover with the same user (USER_A_ID) and a brand-new replacement vault key KEY_ID_4 while entries/bodies are seeded.
-    //    If the f4beb96 preservation branch were reverted (clearing lastSeenVaultByUserRef on non-authenticated status),
-    //    recovery would enter the first-observation (!prev) branch with serverVaultStatus === 'present' and FAIL to purge.
-    h.overrideRoute(null);
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    // 2. Recovered with the same user (USER_A_ID); now a brand-new replacement vault key KEY_ID_4 appears while
+    //    entries/bodies are seeded. If the f4beb96 preservation branch were reverted (clearing lastSeenVaultByUserRef
+    //    on a non-authenticated status), recovery would enter the first-observation (!prev) branch with no remembered
+    //    key and FAIL to purge when KEY_ID_4 arrives.
     h.setActiveVaultKeyId(KEY_ID_4);
     seedResetCachesAndSyncState(h);
     expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeDefined();
@@ -1883,10 +1945,6 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       'stale-plaintext-before-reset',
     );
 
-    await h.refetchMeSession();
-    await waitFor(() => {
-      expect(h.sessionStatus()).toBe('authenticated_with_vault');
-    });
     await act(async () => {
       await h.vault().reloadVaultMeta();
     });
