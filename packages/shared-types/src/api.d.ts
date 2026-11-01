@@ -399,14 +399,19 @@ export interface paths {
         put?: never;
         /**
          * Đặt lại mật khẩu tài khoản bằng token từ email
-         * @description Tiêu thụ token một lần (43 ký tự base64url = 32 byte CSPRNG, TTL 30 phút, gắn với user_id, target_email và
-         *     SHA-256 của password_hash hiện tại dưới khoá app_user FOR UPDATE), cập nhật password_hash mới, thu hồi toàn bộ
-         *     session và refresh token, ghi secevent auth.password.reset và gửi notice mail chuyên biệt password_reset_notice
-         *     theo locale của tài khoản (ADR 0006, advisor-dec-140). Nếu tài khoản chưa xác minh email lúc phát hành token,
-         *     đồng thời đánh dấu email đã xác minh và gỡ toàn bộ danh tính OAuth trong cùng transaction (D3). Không tự động
-         *     đăng nhập (trả 204 và xoá toàn bộ cookie auth bằng ClearAuthCookies). Tuyệt đối không mở khoá, re-key hay reset
-         *     vault (user-dec-016). Mọi lỗi giá trị token (sai định dạng base64url/độ dài, không tồn tại, đã dùng, hết hạn,
-         *     lệch trạng thái) đều trả 400 reset_token_invalid.
+         * @description Tiêu thụ token một lần (43 ký tự base64url = 32 byte CSPRNG, TTL 30 phút, gắn với user_id, target_email,
+         *     SHA-256 của password_hash hiện tại và bản chụp was_email_unverified; khoá theo thứ tự app_user FOR UPDATE ->
+         *     RevokeAllUserSessions trên session -> password_reset_token FOR UPDATE), cập nhật password_hash mới, thu hồi
+         *     toàn bộ session và refresh token, ghi secevent auth.password.reset và gửi notice mail chuyên biệt
+         *     password_reset_notice theo locale của tài khoản (ADR 0006, advisor-dec-140, advisor-dec-146). Nếu tài khoản
+         *     chưa xác minh email lúc phát hành token (was_email_unverified) hoặc hiện tại, đồng thời đánh dấu email đã xác
+         *     minh, huỷ các luồng OAuth login ready của các danh tính bị gỡ cùng các luồng link/reauth đang chờ, và gỡ toàn
+         *     bộ danh tính OAuth trong cùng transaction (D3, E1 A). Không tự động đăng nhập (trả 204 và xoá toàn bộ cookie
+         *     auth bằng ClearAuthCookies). Tuyệt đối không mở khoá, re-key hay reset vault (user-dec-016). Thiếu trường,
+         *     giá trị null hoặc sai kiểu JSON trả 400 invalid_request; mọi lỗi giá trị chuỗi token (rỗng, sai định dạng
+         *     base64url/độ dài, không tồn tại, đã dùng, hết hạn, lệch trạng thái) đều trả 400 reset_token_invalid. Khi gặp
+         *     SQLSTATE 40P01/55P03, server rollback và tự động retry 1 lần; nếu vẫn xung đột khoá thì trả 503
+         *     dependency_unavailable kèm Retry-After: 1 (E2 B).
          */
         post: operations["authPasswordReset"];
         delete?: never;
@@ -1240,7 +1245,7 @@ export interface components {
             /** @description Request ID, không phải URL. */
             instance?: string;
             code: components["schemas"]["ProblemCode"];
-            /** @description Giây; khớp header Retry-After (trên 429 rate_limited hoặc 409 idempotency_in_progress với giá trị 1). */
+            /** @description Giây; khớp header Retry-After (trên 429 rate_limited, 409 idempotency_in_progress hoặc 503 dependency_unavailable với giá trị 1). */
             retry_after?: number;
             /**
              * @description Chỉ khi code=session_invalid. Token lạ dùng invalid.
@@ -2526,6 +2531,17 @@ export interface operations {
             400: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
+            /** @description Deadlock hoặc lock timeout tạm thời sau khi đã tự động retry 1 lần (40P01/55P03); transaction đã rollback sạch sẽ, client thử lại sau Retry-After: 1 (dependency_unavailable) */
+            503: {
+                headers: {
+                    "Retry-After": components["headers"]["RetryAfter"];
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     authSessionsList: {
