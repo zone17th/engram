@@ -26,15 +26,14 @@
               stroke-width="2.6" stroke-linecap="round"
               stroke-dasharray="0.1 5.2 0.1 4 20"/>
       </svg>
-      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
     </a>
 
-    <div class="ml-auto flex items-center gap-2">
-      <button class="vault-pill vault-open" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <button type="button" class="vault-pill vault-open btn-icon !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3 [@media(pointer:coarse)]:!h-[44px]" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
-      <button class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
-      <span class="ml-1 w-9 h-9 rounded-pill hidden sm:grid place-items-center font-mono text-[13px]"
-            style="background:var(--pale-accent);color:var(--accent)" title="minh@zone17th.click">mh</span>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
     </div>
   </div>
 </header>
@@ -141,7 +140,7 @@
     <p class="t-body-lg mb-1 text-muted" lang="en">Type then press Enter to search. Type <span class="mono">name: content</span> to save.</p>
     <p class="t-body mb-6 text-muted">Một ô duy nhất cho cả hai việc — không gửi yêu cầu nào trước khi bạn nhấn Enter. · <span lang="en">One box for both — nothing is sent before you press Enter.</span></p>
     <!-- Thanh chuyển kịch bản Omnibox & Quick-add (P04 Bước 2: U8, U9, Q17, Q18) -->
-    <div class="mb-4 p-3.5 rounded-lg bg-surface border-line" id="omni-demo-bar">
+    <div class="mb-4 p-3.5 rounded-lg bg-surface rule-line" id="omni-demo-bar">
       <p class="t-caption text-muted m-0 mb-2">
         Trạng thái Omnibox &amp; Quick-add (P04 U8, U9, Q17) · <span lang="en">Omnibox &amp; Quick-add states</span>
       </p>
