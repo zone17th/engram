@@ -310,6 +310,36 @@ func TestEntryCreateGetRoundTripAndListMetadataOnly(t *testing.T) {
 		t.Fatalf("entry 3 position = %d, want 2 (max over all rows incl. tombstone + 1)", meta3.Position)
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+	// Verify metric entries_created_total{type} recorded text=2, json=1 (idempotent replay was NOT double-counted)
+	// and has only label "type" with values in {"text", "json"} (user-dec-016, advisor-dec-149).
+	families, err := h.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Registry.Gather: %v", err)
+	}
+	var foundEntriesCreated bool
+	gotTypeCounts := map[string]float64{}
+	for _, f := range families {
+		if f.GetName() != "entries_created_total" {
+			continue
+		}
+		foundEntriesCreated = true
+		for _, m := range f.GetMetric() {
+			if len(m.GetLabel()) != 1 || m.GetLabel()[0].GetName() != "type" {
+				t.Fatalf("entries_created_total has unexpected labels: %+v", m.GetLabel())
+			}
+			val := m.GetLabel()[0].GetValue()
+			if val != entry.TypeText && val != entry.TypeJSON {
+				t.Fatalf("entries_created_total has unexpected type label value %q", val)
+			}
+			gotTypeCounts[val] = m.GetCounter().GetValue()
+		}
+	}
+	if !foundEntriesCreated {
+		t.Fatal("missing entries_created_total metric in registry")
+	}
+	if gotTypeCounts[entry.TypeText] != 2 || gotTypeCounts[entry.TypeJSON] != 1 {
+		t.Fatalf("entries_created_total counts = %v, want text=2 json=1", gotTypeCounts)
+	}
 
 	// GET /items/{id}/entries returns only live entries (entry 1 at pos 0, entry 3 at pos 2),
 	// with no envelope or ciphertext fields, and supports keyset pagination via limit & cursor.
