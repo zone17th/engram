@@ -275,6 +275,9 @@ body {
   font-family: 'Inter', sans-serif; font-size: 18px; letter-spacing: -.02em;
   color: var(--body); min-width: 0;
 }
+/* App-only (audit UIA-8): the global :focus-visible outline below would draw a second ring
+   inside the shell; the shell's :focus-within ring above is the visible focus indicator. */
+.omnibox-input:focus-visible { outline: none; }
 textarea.omnibox-input {
   resize: none;
   line-height: 1.4;
@@ -347,7 +350,7 @@ textarea.omnibox-input::placeholder {
 }
 .json-table td {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
-  vertical-align: top; color: var(--body); min-width: 88px;
+  vertical-align: top; color: var(--body);
 }
 .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 112px; }
 .json-table td.k, .json-table td.json-col-act, .json-table td[colspan] { min-width: 0; }
@@ -361,7 +364,7 @@ textarea.omnibox-input::placeholder {
 .json-table .v-bool { font-family: 'Sometype Mono', monospace; color: var(--success-ink); }
 [data-theme='dark'] .json-table .v-bool { color: var(--product-teal); }
 .json-table .v-null { font-family: 'Sometype Mono', monospace; color: var(--muted); font-style: italic; }
-.json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
 @media (max-width: 639px) {
   .json-nest { max-width: calc(100vw - 208px); }
 }
@@ -462,7 +465,7 @@ textarea.omnibox-input::placeholder {
 }
 
 
-.seg { display: inline-flex; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
+.seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
 .seg button {
   border: 0; background: transparent; cursor: pointer; border-radius: var(--r-sm);
   padding: 5px 12px; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
@@ -494,12 +497,22 @@ textarea.omnibox-input::placeholder {
 }
 .vault-open { background: rgba(48,164,108,.12); color: var(--success-ink); }
 .vault-shut { background: rgba(229,72,77,.10); color: var(--error-ink); }
+/* Light theme (RV-UI1-1): --success-ink (#1F7A4C) on the 12% tint is only ~4.5:1 over the app header
+   (bg-surface/80: 4.52, pure --surface: 4.48), so the open pill text keeps the darker #117A4B (4.56 / 4.52). */
+:root:not([data-theme='dark']) .vault-open { color: #117A4B; }
 
 .locked-banner {
   background: color-mix(in srgb, var(--error) 10%, var(--canvas));
   border-bottom: 1px solid var(--border);
   color: var(--error-ink);
 }
+
+/* Brand --link (#0091FF) fails AA as text on a card; the text-link utility inside a card uses the AA-safe ink token. */
+.card .text-link { color: var(--link-ink); }
+
+/* Opacity utilities fail AA at 12px on the always-dark panel; use the secondary-text-on-deep-panel pair. */
+.bg-deepPanel .mono { color: var(--border); }
+[data-theme='dark'] .bg-deepPanel .mono { color: var(--muted); }
 
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
@@ -824,8 +837,8 @@ section[data-view] .t-label {
   border: 0;
 }
 
-.border-top-line { border-top: 1px solid var(--border); }
-.border-line { border: 1px solid var(--border); }
+.rule-top-line { border-top: 1px solid var(--border); }
+.rule-line { border: 1px solid var(--border); }
 
 .omni-aux {
   display: flex;
@@ -943,14 +956,14 @@ section[data-view] .t-label {
   overflow-wrap: anywhere;
 }
 .omni-empty-box {
-  padding: 22px 16px;
+  padding: 18px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 .omni-create-option {
   border-top: 1px dashed var(--border);
   background: var(--canvas);
-  padding: 18px 16px;
+  padding: 14px 16px;
   flex-wrap: wrap;
   gap: 6px 10px;
 }
@@ -965,7 +978,11 @@ section[data-view] .t-label {
   display: none !important;
 }
 
-a { color: var(--link); }
+/* Zero-specificity base so it can never paint body links #0091FF (3.2:1 on white) over the AA rule below. */
+:where(a) { color: var(--link); }
+/* Brand --link fails WCAG AA as text on white; unstyled links use the AA-safe ink token.
+   Explicit text utilities and button links keep their component colours. */
+:where(a:not(.btn):not([class*='text-'])) { color: var(--link-ink); }
 
 @media (pointer: coarse) {
   .btn, .btn-sm, .btn-tertiary, .btn-danger,
