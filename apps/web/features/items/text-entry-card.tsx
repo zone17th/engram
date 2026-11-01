@@ -13,7 +13,10 @@ import {
 } from 'react';
 import {
   ENTRY_MAX_PLAINTEXT_BYTES,
+  ENTRY_NEAR_CAP_BYTES,
   VAULT_SECRET_INPUT_PROPS,
+  captureEntrySaveOpGuard,
+  copyEntryPlaintextToClipboard,
   loadRealEntryBody,
   mutateSealedEntryCreate,
   mutateSealedEntryUpdate,
@@ -22,6 +25,7 @@ import {
   sealNewEntry,
   toEntryCreateVariables,
   toEntryUpdateVariables,
+  type EditorPlaintextHolder,
   type SealedEntryUpdatePayload,
   type SealedNewEntryPayload,
 } from '@/features/entries';
@@ -49,26 +53,9 @@ import {
   normalizeEolToLf,
 } from '@/lib/json/eol';
 
+export type { EditorPlaintextHolder };
+
 const utf8Encoder = new TextEncoder();
-const NEAR_CAP_BYTES = 240_000;
-
-async function copyPlaintextToClipboard(text: string): Promise<boolean> {
-  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-export interface EditorPlaintextHolder {
-  originalSource: string;
-  draftValue: string;
-  submittedCandidateSource?: string;
-}
 
 let editorPlaintextHolderTestHookRef: { current: EditorPlaintextHolder } | null = null;
 
@@ -352,7 +339,7 @@ export function TextEntryCard({
     [savePlan.text],
   );
   const isOverCap = utf8ByteLength > ENTRY_MAX_PLAINTEXT_BYTES;
-  const isNearCap = !isOverCap && utf8ByteLength >= NEAR_CAP_BYTES;
+  const isNearCap = !isOverCap && utf8ByteLength >= ENTRY_NEAR_CAP_BYTES;
   const isEmpty = utf8ByteLength === 0;
   const isDirty = savePlan.changed;
 
@@ -713,25 +700,8 @@ export function TextEntryCard({
   // 412 action 1: Giữ bản của tôi (Keep mine) -> fetch latest version if needed, re-seal draft with fresh nonce, PUT with new If-Match + new Idempotency-Key
   const handleConflictKeepMine = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
-    const capturedEpoch = lockEpochRef.current;
-    const startedOp = typeof vault.beginOp === 'function' ? vault.beginOp() : null;
-    const capturedGen =
-      startedOp?.opGeneration ??
-      (typeof vault.captureOpGeneration === 'function'
-        ? vault.captureOpGeneration()
-        : undefined);
-    const isOpStillCurrent = () => {
-      if (lockEpochRef.current !== capturedEpoch) return false;
-      if (startedOp && !startedOp.isCurrent()) return false;
-      if (
-        capturedGen !== undefined &&
-        typeof vault.getClient === 'function' &&
-        vault.getClient().getGeneration() !== capturedGen
-      ) {
-        return false;
-      }
-      return true;
-    };
+    const guard = captureEntrySaveOpGuard(vault, lockEpochRef);
+    const isOpStillCurrent = guard.isStillCurrent;
 
     const submittedRevision = editorRevisionRef.current;
     const ownerId = ++nextSaveOwnerIdRef.current;
@@ -848,7 +818,7 @@ export function TextEntryCard({
 
   // 412 action 3: Chép bản của tôi (Copy mine)
   const handleConflictCopyMine = useCallback(async () => {
-    await copyPlaintextToClipboard(savePlan.text);
+    await copyEntryPlaintextToClipboard(savePlan.text);
     onAnnounce?.(tEntry('copiedMine'));
   }, [onAnnounce, savePlan.text, tEntry]);
 
@@ -913,7 +883,7 @@ export function TextEntryCard({
 
   const handleCopyBody = useCallback(async () => {
     if (!unlocked || body === undefined) return;
-    await copyPlaintextToClipboard(body);
+    await copyEntryPlaintextToClipboard(body);
     onAnnounce?.(tEntry('copied'));
   }, [body, onAnnounce, tEntry, unlocked]);
 
@@ -1662,7 +1632,7 @@ export function NewTextEntryComposer({
     [draftValue],
   );
   const isOverCap = utf8ByteLength > ENTRY_MAX_PLAINTEXT_BYTES;
-  const isNearCap = !isOverCap && utf8ByteLength >= NEAR_CAP_BYTES;
+  const isNearCap = !isOverCap && utf8ByteLength >= ENTRY_NEAR_CAP_BYTES;
   const isEmpty = utf8ByteLength === 0;
   const isDirty = draftValue.length > 0;
   const saveDisabled =

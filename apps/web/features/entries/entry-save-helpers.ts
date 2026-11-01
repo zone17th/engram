@@ -50,44 +50,6 @@ export function captureEntrySaveOpGuard(
 }
 
 /**
- * Ensures `vault.vaultMeta` is populated before sealing an entry (advisor-dec-200).
- * When onboarding step 3 is skipped, `vault.vaultMeta` is `null` while the Worker is unlocked.
- * Calls `await vault.reloadVaultMeta()` when `vaultMeta === null`, verifies `guard.isStillCurrent()`
- * after the `await`, and returns a vault context carrying the resolved `vaultMeta` so `sealEntryUpdate` /
- * `sealNewEntry` can seal in the same tick without waiting for a React re-render.
- */
-export async function ensureVaultForEntrySeal<
-  TVault extends Pick<
-    VaultContextValue,
-    'vaultMeta' | 'reloadVaultMeta' | 'beginOp' | 'captureOpGeneration' | 'getClient'
-  >,
->(
-  vault: TVault,
-  guard: EntrySaveOpGuard,
-): Promise<TVault | null> {
-  if (!guard.isStillCurrent()) {
-    return null;
-  }
-  if (vault.vaultMeta?.vault_key_id) {
-    return vault;
-  }
-  if (typeof vault.reloadVaultMeta !== 'function') {
-    return vault;
-  }
-  const reloaded = await vault.reloadVaultMeta();
-  if (!guard.isStillCurrent()) {
-    return null;
-  }
-  if (reloaded?.vault_key_id && !vault.vaultMeta?.vault_key_id) {
-    return {
-      ...vault,
-      vaultMeta: reloaded,
-    };
-  }
-  return vault;
-}
-
-/**
  * Copies plaintext to the OS clipboard via `navigator.clipboard.writeText` without
  * auto-clearing (SPEC §7.3, Q16, advisor-dec-114).
  */
