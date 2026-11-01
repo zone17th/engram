@@ -192,7 +192,6 @@ export function UndoToastProvider({
   const [isHovered, setIsHovered] = useState(false);
   const [isFocusedInside, setIsFocusedInside] = useState(false);
   const [announcementSeq, setAnnouncementSeq] = useState(0);
-
   const stackRef = useRef<HTMLDivElement | null>(null);
   const isExpandingFocusMoveRef = useRef(false);
   const providerOnErrorRef = useRef(onError);
@@ -587,6 +586,205 @@ export function UndoToastProvider({
     });
   }, [isHovered]);
 
+  // ACC-TV1-5 (FU10, dec-216, RV-FU10-1, RV-FU10-5, RV-FU10-R2-1, RV-FU10-R2-3): Keep keyboard-focused page
+  // controls clear of the fixed undo-toast stack, including the last focusable control at the document bottom.
+  // While toasts are visible, measure the stack with a ResizeObserver, expose its height as `--undo-stack-h` on
+  // `<html>`, set `scroll-padding-bottom: calc(var(--undo-stack-h) + 8px)` on `<html>`, and set
+  // `padding-bottom: calc(var(--undo-stack-h) + 8px)` on `<body>` (`data-undo-stack-active` on `<html>`) so the
+  // document has enough bottom scroll room even when a control is at the very end of the page. On `focusin` (and stack
+  // growth) call `el.scrollIntoView({ block: 'nearest' })` when a keyboard-focused (`:focus-visible`) element's
+  // bounding rect (plus 3 px focus-ring halo) intersects the stack rect. Ignore pointer/mouse focus,
+  // `tabIndex === -1` programmatic container hosts, elements inside the toast stack itself, and fixed/sticky
+  // header/footer elements that cannot scroll clear. Throttle with `requestAnimationFrame` and clean up listeners +
+  // styles on unmount and when the stack empties.
+  const prevStackHeightRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      return;
+    }
+
+    const htmlEl = document.documentElement;
+    const bodyEl = document.body;
+    const applyStackClearanceStyles = (heightPx: number) => {
+      htmlEl.style.setProperty('--undo-stack-h', `${heightPx}px`);
+      htmlEl.style.setProperty('scroll-padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+      htmlEl.setAttribute('data-undo-stack-active', 'true');
+      bodyEl?.style.setProperty('padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+    };
+    const clearHtmlStackStyles = () => {
+      htmlEl.style.removeProperty('--undo-stack-h');
+      htmlEl.style.removeProperty('scroll-padding-bottom');
+      htmlEl.removeAttribute('data-undo-stack-active');
+      bodyEl?.style.removeProperty('padding-bottom');
+      prevStackHeightRef.current = 0;
+    };
+
+    if (toasts.length === 0) {
+      clearHtmlStackStyles();
+      return;
+    }
+
+    const stackEl = stackRef.current;
+    if (!stackEl) {
+      clearHtmlStackStyles();
+      return;
+    }
+
+    let rafId: number | null = null;
+
+    const isFixedOrStickyElement = (el: HTMLElement): boolean => {
+      let cur: HTMLElement | null = el;
+      while (cur && cur !== document.body && cur !== htmlEl) {
+        const pos = window.getComputedStyle(cur).position;
+        if (pos === 'fixed' || pos === 'sticky') {
+          return true;
+        }
+        cur = cur.parentElement;
+      }
+      return false;
+    };
+
+    const syncStackHeightAndScrollFocused = () => {
+      rafId = null;
+      const currentStack = stackRef.current;
+      if (!currentStack || toastsRef.current.length === 0) {
+        clearHtmlStackStyles();
+        return;
+      }
+
+      const stackRect = currentStack.getBoundingClientRect();
+      const stackH = Math.max(0, Math.ceil(stackRect.height));
+      if (stackH > 0) {
+        applyStackClearanceStyles(stackH);
+      } else {
+        clearHtmlStackStyles();
+        return;
+      }
+
+      const activeEl = document.activeElement;
+      if (
+        !activeEl ||
+        !(activeEl instanceof HTMLElement) ||
+        activeEl === document.body ||
+        activeEl === htmlEl ||
+        currentStack.contains(activeEl)
+      ) {
+        return;
+      }
+
+      // Ignore programmatic-focus container hosts (`tabIndex={-1}`, e.g. entry card `<article tabIndex={-1}>`
+      // or `<nav id="rail-tags" tabIndex={-1}>`).
+      if (activeEl.tabIndex < 0 || activeEl.getAttribute('tabindex') === '-1') {
+        return;
+      }
+
+      // Restrict clearance scroll to keyboard / `:focus-visible` focus (RV-FU10-R2-3) so pointer/mouse mousedown
+      // on a control near the stack does not scroll the page between mousedown and mouseup.
+      const isKeyboardFocused =
+        lastInteractionWasKeyboardRef.current ||
+        (() => {
+          try {
+            return typeof activeEl.matches === 'function' && activeEl.matches(':focus-visible');
+          } catch {
+            return true;
+          }
+        })();
+      if (!isKeyboardFocused) {
+        return;
+      }
+
+      // Fixed/sticky header/footer controls cannot scroll clear; leave them in place.
+      if (isFixedOrStickyElement(activeEl)) {
+        return;
+      }
+      const focusRect = activeEl.getBoundingClientRect();
+      if (focusRect.width <= 0 || focusRect.height <= 0) {
+        return;
+      }
+
+      const ringPad = 3;
+      const intersects =
+        focusRect.left - ringPad < stackRect.right &&
+        focusRect.right + ringPad > stackRect.left &&
+        focusRect.top - ringPad < stackRect.bottom &&
+        focusRect.bottom + ringPad > stackRect.top;
+
+      if (!intersects) {
+        return;
+      }
+
+      if (typeof activeEl.scrollIntoView === 'function') {
+        activeEl.scrollIntoView({ block: 'nearest' });
+      }
+
+      // Ensure the document window also scrolls when the element remains under the fixed bottom stack
+      // (e.g. when `scrollIntoView({ block: 'nearest' })` is a no-op in a mock or nested scroll container).
+      const updatedFocusRect = activeEl.getBoundingClientRect();
+      const updatedStackRect = currentStack.getBoundingClientRect();
+      const stillIntersects =
+        updatedFocusRect.left - ringPad < updatedStackRect.right &&
+        updatedFocusRect.right + ringPad > updatedStackRect.left &&
+        updatedFocusRect.top - ringPad < updatedStackRect.bottom &&
+        updatedFocusRect.bottom + ringPad > updatedStackRect.top;
+
+      if (stillIntersects && typeof window.scrollBy === 'function') {
+        const deltaY = updatedFocusRect.bottom + ringPad - (updatedStackRect.top - 8);
+        if (deltaY > 0) {
+          window.scrollBy({ top: deltaY, behavior: 'instant' });
+        }
+      }
+    };
+
+    const scheduleSync = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(syncStackHeightAndScrollFocused);
+    };
+
+    syncStackHeightAndScrollFocused();
+    prevStackHeightRef.current = Math.max(0, Math.ceil(stackEl.getBoundingClientRect().height));
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        const currentStack = stackRef.current;
+        if (!currentStack) return;
+        const nextH = Math.max(0, Math.ceil(currentStack.getBoundingClientRect().height));
+        const prevH = prevStackHeightRef.current;
+        prevStackHeightRef.current = nextH;
+        if (nextH > 0) {
+          applyStackClearanceStyles(nextH);
+        }
+        if (nextH > prevH) {
+          scheduleSync();
+        }
+      });
+      resizeObserver.observe(stackEl);
+    }
+
+    const onFocusIn = () => {
+      scheduleSync();
+    };
+
+    const onResize = () => {
+      scheduleSync();
+    };
+
+    window.addEventListener('focusin', onFocusIn, true);
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener('focusin', onFocusIn, true);
+      window.removeEventListener('resize', onResize);
+      clearHtmlStackStyles();
+    };
+  }, [toasts, expanded]);
+
   const visibleToasts = expanded ? toasts : toasts.slice(0, UNDO_TOAST_MAX_VISIBLE);
   const hiddenCount = expanded ? 0 : Math.max(0, toasts.length - UNDO_TOAST_MAX_VISIBLE);
   const newestToast = toasts[0];
@@ -662,7 +860,7 @@ export function UndoToastProvider({
         onFocusCapture={handleFocusCapture}
         onBlurCapture={handleBlurCapture}
         className={cn(
-          'fixed bottom-7 left-1/2 z-[80] flex -translate-x-1/2 flex-col items-center gap-2',
+          'toast-stack !flex-col max-[639px]:!left-4 max-[639px]:!right-4 max-[639px]:!w-auto max-[639px]:!max-w-none max-[639px]:!translate-x-0 max-[639px]:!bottom-[calc(16px+env(safe-area-inset-bottom,0px))]',
           toasts.length === 0 && 'pointer-events-none',
         )}
       >
@@ -705,12 +903,25 @@ export function UndoToastCard({
   return (
     <div
       data-testid="undo-toast-item"
-      className={cn('toast !static !translate-x-0', className)}
+      className={cn(
+        'toast !static !translate-x-0 max-[639px]:!w-full max-[639px]:!max-w-none',
+        className,
+      )}
     >
-      <div className="flex flex-col gap-0.5">
-        <span>{item.message}</span>
+      <div className="toast-body flex min-w-0 flex-1 flex-col gap-0.5">
+        <span
+          data-testid="undo-toast-message"
+          title={item.message}
+          className="line-clamp-2 break-words [overflow-wrap:anywhere]"
+        >
+          {item.message}
+        </span>
         {item.detail ? (
-          <span className="toast-sub" data-testid="undo-toast-detail">
+          <span
+            className="toast-sub line-clamp-2 break-words"
+            data-testid="undo-toast-detail"
+            title={item.detail}
+          >
             {item.detail}
           </span>
         ) : null}
