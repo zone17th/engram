@@ -11,6 +11,8 @@ import { EntryBody, type EntryBodyLoader } from '@/features/items/entry-body';
  */
 export function ItemArticle({
   entryId,
+  version,
+  itemId,
   title,
   kind,
   load = loadDemoEntryBody,
@@ -18,6 +20,8 @@ export function ItemArticle({
   footerLabel,
 }: {
   entryId: string;
+  version?: number;
+  itemId?: string;
   title: string;
   kind: 'text' | 'json';
   /** Defaults to the P03 preview loader; a function prop cannot cross from the server page, so the page omits it. */
@@ -32,7 +36,7 @@ export function ItemArticle({
         <span className="text-[15px] font-semibold">{headerLabel}</span>
       </header>
       <div className="p-5">
-        <EntryBody entryId={entryId} load={load} kind={kind} variant="full" />
+        <EntryBody entryId={entryId} version={version} itemId={itemId} load={load} kind={kind} variant="full" />
       </div>
       <footer className="border-t border-line px-4 py-2 text-[12px] text-muted">{footerLabel}</footer>
     </article>
