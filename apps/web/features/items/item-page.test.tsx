@@ -4068,7 +4068,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(screen.getByTestId(`entry-conflict-banner-${ENTRY_ID_1}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
 
     let forceNullMetaForKeepMine = true;
@@ -4146,7 +4146,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(screen.getByTestId(`entry-conflict-banner-${ENTRY_ID_1}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
 
     forceNullMetaForKeepMine = true;
