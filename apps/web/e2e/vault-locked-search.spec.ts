@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { DEMO_ITEMS } from '../lib/demo-fixtures';
+import { installHomeContentMetadataRoutes } from './content-home-support';
 import { UI_WAIT_MS, findBodyLeaks, installApiMocks } from './vault-locked-support';
 
 /**
@@ -17,6 +18,7 @@ test.describe('P03-T21 Locked state U5', () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
       await installApiMocks(context);
+      await installHomeContentMetadataRoutes(context);
       const page = await context.newPage();
       const bodyOnly = DEMO_ITEMS[0]; // "phin" is only in this item's body, never in a title or tag
 
@@ -27,15 +29,16 @@ test.describe('P03-T21 Locked state U5', () => {
 
       // Name query: the item is suggested, with the popover open the page still holds no body.
       await input.fill('ca phe');
-      await expect(page.getByRole('listbox')).toBeVisible({ timeout: UI_WAIT_MS });
-      await expect(page.locator(`[data-search-option="${bodyOnly.id}"]`)).toBeVisible();
+      const listbox = page.getByRole('listbox');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(listbox.locator(`[data-search-option="${bodyOnly.id}"]`)).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
 
       // Body-only query: nothing matches while locked, and still nothing leaks.
       await input.fill('phin');
-      await expect(page.getByRole('listbox')).toBeVisible();
-      await expect(page.locator('[data-search-option]')).toHaveCount(0);
-      await expect(page.getByText('Không có mục mẫu phù hợp.')).toBeVisible();
+      await expect(listbox).toBeVisible();
+      await expect(listbox.locator('[data-search-option]')).toHaveCount(0);
+      await expect(listbox.getByText('Không có mục mẫu phù hợp.')).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
     } finally {
       await context.close();
