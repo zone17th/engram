@@ -948,7 +948,6 @@
     "submitting": "Deriving key… (Argon2id 64 MiB)",
     "caption": "Slow devices may take a few seconds. Key derivation runs entirely inside your browser.",
     "forgotPassphrase": "I forgot my passphrase",
-    "signOut": "Sign out",
     "errors": {
       "empty": "Enter your vault passphrase.",
       "incorrectPassphraseBadge": "wrong passphrase · AEAD fail",

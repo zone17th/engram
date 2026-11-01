@@ -948,7 +948,6 @@
     "submitting": "Đang tính khoá… (Argon2id 64 MiB)",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
     "forgotPassphrase": "Tôi quên passphrase",
-    "signOut": "Đăng xuất",
     "errors": {
       "empty": "Hãy nhập passphrase của vault.",
       "incorrectPassphraseBadge": "passphrase sai · AEAD fail",
