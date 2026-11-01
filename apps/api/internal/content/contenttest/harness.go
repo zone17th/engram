@@ -365,8 +365,9 @@ func AssertJSONEqual(t testing.TB, want, got string) {
 		if err := dec.Decode(&v); err != nil {
 			t.Fatalf("AssertJSONEqual decode %s (%q): %v", label, s, err)
 		}
-		if dec.More() {
-			t.Fatalf("AssertJSONEqual trailing data in %s (%q)", label, s)
+		var extra any
+		if err := dec.Decode(&extra); err != io.EOF {
+			t.Fatalf("AssertJSONEqual trailing data in %s (%q): %v", label, s, err)
 		}
 		return v
 	}

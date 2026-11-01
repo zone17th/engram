@@ -1185,24 +1185,44 @@ func (f *fakeBarrierTB) runCleanupsLIFO() {
 	}
 }
 
-func newBarrierProbeServer(b *barrierController, activeHandlers *atomic.Int32) *httptest.Server {
+func newBarrierProbeServer(probeCtx context.Context, b *barrierController, activeHandlers *atomic.Int32) *httptest.Server {
+	handlerCtx := func(r *http.Request) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(probeCtx, cancel)
+		return ctx, func() {
+			stop()
+			cancel()
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/serial/a", func(w http.ResponseWriter, r *http.Request) {
 		activeHandlers.Add(1)
 		defer activeHandlers.Add(-1)
-		b.onLockHeld(r.Context(), b.userATarget)
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		hCtx, cancel := handlerCtx(r)
+		defer cancel()
+		b.onLockHeld(hCtx, b.userATarget)
 		w.WriteHeader(http.StatusCreated)
 	})
 	mux.HandleFunc("/serial/b", func(w http.ResponseWriter, r *http.Request) {
 		activeHandlers.Add(1)
 		defer activeHandlers.Add(-1)
-		b.onLockHeld(r.Context(), b.userBTarget)
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		hCtx, cancel := handlerCtx(r)
+		defer cancel()
+		b.onLockHeld(hCtx, b.userBTarget)
 		w.WriteHeader(http.StatusCreated)
 	})
 	mux.HandleFunc("/deadlock", func(w http.ResponseWriter, r *http.Request) {
 		activeHandlers.Add(1)
 		defer activeHandlers.Add(-1)
-		if err := b.waitDeadlockStep2(r.Context()); err != nil {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		hCtx, cancel := handlerCtx(r)
+		defer cancel()
+		if err := b.waitDeadlockStep2(hCtx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -1228,12 +1248,15 @@ func startBarrierProbeRequest(ctx context.Context, srv *httptest.Server, path st
 }
 
 // emergencyAbortBarrierProbe independently aborts a probe run without relying on b.releaseAll():
-// it cancels the client requests' context, closes all active client/server HTTP connections via
-// srv.CloseClientConnections() (which cancels server-side r.Context().Done() inside onLockHeld /
-// waitDeadlockStep2), and joins the cleanup/server and client request goroutines with a bounded wait.
+// it cancels the server-side probe context (which directly unblocks <-reqCtx.Done() in onLockHeld /
+// waitDeadlockStep2), cancels the client requests' context, closes all active client/server HTTP
+// connections via srv.CloseClientConnections() (which also cancels r.Context().Done() because the
+// probe handlers drained r.Body to EOF before entering the barrier, enabling net/http background
+// read disconnect detection), and joins the cleanup/server and client request goroutines with a bounded wait.
 func emergencyAbortBarrierProbe(
 	tb testing.TB,
 	label string,
+	cancelProbeCtx context.CancelFunc,
 	cancelReqCtx context.CancelFunc,
 	srv *httptest.Server,
 	reqWG *sync.WaitGroup,
@@ -1242,6 +1265,9 @@ func emergencyAbortBarrierProbe(
 	bound time.Duration,
 ) {
 	tb.Helper()
+	if cancelProbeCtx != nil {
+		cancelProbeCtx()
+	}
 	if cancelReqCtx != nil {
 		cancelReqCtx()
 	}
@@ -1320,10 +1346,13 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		b.userATarget = uuid.New()
 		b.userBTarget = uuid.New()
 
+		probeCtx, cancelProbeCtx := context.WithCancel(context.Background())
+		defer cancelProbeCtx()
+
 		var activeHandlers atomic.Int32
 		var srv *httptest.Server
 		attachFn(ft, b, func(innerTB testing.TB) {
-			srv = newBarrierProbeServer(b, &activeHandlers)
+			srv = newBarrierProbeServer(probeCtx, b, &activeHandlers)
 			innerTB.Cleanup(srv.Close)
 		})
 
@@ -1342,24 +1371,23 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		select {
 		case <-bodyDone:
 		case <-time.After(caseCleanupBound):
-			emergencyAbortBarrierProbe(tb, "scenario_timeout", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			emergencyAbortBarrierProbe(tb, "scenario_timeout", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			tb.Fatalf("scenario goroutine did not exit via Fatal within %s", caseCleanupBound)
 		}
 
 		failed, fatalMsg := ft.status()
 		if !failed || completedNormally.Load() {
-			emergencyAbortBarrierProbe(tb, "unexpected_scenario_exit", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			emergencyAbortBarrierProbe(tb, "unexpected_scenario_exit", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			tb.Fatalf("expected Fatal Goexit, got failed=%v completedNormally=%v msg=%q", failed, completedNormally.Load(), fatalMsg)
 		}
 		if !strings.Contains(fatalMsg, wantDiagnostic) {
-			emergencyAbortBarrierProbe(tb, "unexpected_diagnostic", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			emergencyAbortBarrierProbe(tb, "unexpected_diagnostic", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			tb.Fatalf("fatal diagnostic = %q, want substring %q", fatalMsg, wantDiagnostic)
 		}
 		if held := activeHandlers.Load(); held != wantHeldAtFatal {
-			emergencyAbortBarrierProbe(tb, "unexpected_held_count", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			emergencyAbortBarrierProbe(tb, "unexpected_held_count", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			tb.Fatalf("active held handlers at Fatal = %d, want %d", held, wantHeldAtFatal)
 		}
-
 		cleanupDone := make(chan time.Duration, 1)
 		go func() {
 			start := time.Now()
@@ -1377,7 +1405,7 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 				fatalMsg, wantHeldAtFatal, elapsed, caseCleanupBound)
 		case <-time.After(caseCleanupBound):
 			// Independent emergency abort: does NOT call b.releaseAll() or synchronous srv.Close().
-			emergencyAbortBarrierProbe(tb, "cleanup_timeout", cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
+			emergencyAbortBarrierProbe(tb, "cleanup_timeout", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
 			tb.Fatalf("LIFO barrier cleanup + srv.Close exceeded %s bound (diagnostic=%q)", caseCleanupBound, fatalMsg)
 		}
 	}
@@ -1459,8 +1487,11 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		b.userATarget = uuid.New()
 		b.userBTarget = uuid.New()
 
+		probeCtx, cancelProbeCtx := context.WithCancel(context.Background())
+		defer cancelProbeCtx()
+
 		var activeHandlers atomic.Int32
-		srv := newBarrierProbeServer(b, &activeHandlers)
+		srv := newBarrierProbeServer(probeCtx, b, &activeHandlers)
 		registerBroken(ft, b, srv)
 
 		reqCtx, cancelReqCtx := context.WithCancel(context.Background())
@@ -1486,12 +1517,12 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		select {
 		case <-bodyDone:
 		case <-time.After(cleanupBound):
-			emergencyAbortBarrierProbe(t, mode+"_scenario_timeout", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			emergencyAbortBarrierProbe(t, mode+"_scenario_timeout", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			t.Fatalf("%s: scenario goroutine did not exit via Fatal within %s", mode, cleanupBound)
 		}
 
 		if held := activeHandlers.Load(); held != 1 {
-			emergencyAbortBarrierProbe(t, mode+"_unexpected_held", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			emergencyAbortBarrierProbe(t, mode+"_unexpected_held", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			t.Fatalf("%s: active held handlers at Fatal = %d, want 1", mode, held)
 		}
 
@@ -1509,11 +1540,11 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		case <-time.After(negativeHangBound):
 			// Confirmed that broken cleanup leaves srv.Close blocked past negativeHangBound.
 			if held := activeHandlers.Load(); held != 1 {
-				emergencyAbortBarrierProbe(t, mode+"_held_changed", cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
+				emergencyAbortBarrierProbe(t, mode+"_held_changed", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
 				t.Fatalf("%s: expected handler to still be held at %s, got active=%d", mode, negativeHangBound, held)
 			}
 			abortStart := time.Now()
-			emergencyAbortBarrierProbe(t, mode+"_independent_abort", cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
+			emergencyAbortBarrierProbe(t, mode+"_independent_abort", cancelProbeCtx, cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
 			t.Logf("mode=%s confirmed_hang_past=%s recovered_via_independent_abort=%s active_after=%d",
 				mode, negativeHangBound, time.Since(abortStart), activeHandlers.Load())
 		}
@@ -1583,4 +1614,98 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		}
 		t.Logf("mode=ineffective_release_cleanup fatal=%q elapsed=%s bound=%s", fatalMsg, elapsed, cleanupBound)
 	})
+}
+
+func TestAssertJSONEqualRejectsTrailingDataAndAcceptsTrailingWhitespace(t *testing.T) {
+	runAssertJSONEqual := func(want, got string) (bool, string) {
+		ft := &fakeBarrierTB{TB: t}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			contenttest.AssertJSONEqual(ft, want, got)
+		}()
+		<-done
+		return ft.status()
+	}
+
+	t.Run("accepts_valid_json_with_trailing_whitespace_and_reordered_keys", func(t *testing.T) {
+		failed, msg := runAssertJSONEqual(
+			"{\"id\":\"00000000-0000-0000-0000-000000000001\",\"name\":\"Item 1\",\"version\":1,\"entry_count\":0}",
+			"  { \"version\": 1, \"entry_count\": 0, \"name\": \"Item 1\", \"id\": \"00000000-0000-0000-0000-000000000001\" } \t\r\n  ",
+		)
+		if failed {
+			t.Fatalf("expected valid JSON with trailing whitespace to be accepted, got fatal=%q", msg)
+		}
+	})
+
+	rejectCases := []struct {
+		name          string
+		want          string
+		got           string
+		wantSubstring string
+	}{
+		{
+			name:          "trailing_closing_brace_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":1}}`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "trailing_closing_brace_in_want",
+			want:          `{"a":1}}`,
+			got:           `{"a":1}`,
+			wantSubstring: "AssertJSONEqual trailing data in want",
+		},
+		{
+			name:          "trailing_closing_bracket_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":1}]`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "trailing_closing_bracket_after_array",
+			want:          `[1,2]`,
+			got:           `[1,2]]`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "second_json_value_in_got",
+			want:          `{"a":1}`,
+			got:           "{\"a\":1}\n{\"b\":2}",
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "second_scalar_value_in_want",
+			want:          `{"a":1} 42`,
+			got:           `{"a":1}`,
+			wantSubstring: "AssertJSONEqual trailing data in want",
+		},
+		{
+			name:          "trailing_garbage_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":1} garbage`,
+			wantSubstring: "AssertJSONEqual trailing data in got",
+		},
+		{
+			name:          "invalid_json_in_got",
+			want:          `{"a":1}`,
+			got:           `{"a":`,
+			wantSubstring: "AssertJSONEqual decode got",
+		},
+		{
+			name:          "value_mismatch",
+			want:          `{"a":1}`,
+			got:           `{"a":2}`,
+			wantSubstring: "AssertJSONEqual mismatch",
+		},
+	}
+
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			failed, msg := runAssertJSONEqual(tc.want, tc.got)
+			if !failed || !strings.Contains(msg, tc.wantSubstring) {
+				t.Fatalf("want Fatal containing %q, got failed=%v msg=%q", tc.wantSubstring, failed, msg)
+			}
+		})
+	}
 }
