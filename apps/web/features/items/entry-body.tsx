@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   entryBodyLoadLimiter,
   type ConcurrencyLimiter,
@@ -56,6 +56,19 @@ export interface UseEntryBodyResult {
 /** The mask shown wherever a body would be. It never depends on the body, so it cannot leak its length or kind. */
 export const LOCK_MASK_TEXT = '🔒 ••••••';
 
+class VersionHandoffSignal extends Error {
+  readonly discoveredVersion: number;
+
+  constructor(discoveredVersion: number) {
+    super('version_handoff');
+    this.name = 'VersionHandoffSignal';
+    this.discoveredVersion = discoveredVersion;
+  }
+}
+
+function isVersionHandoffSignal(error: unknown): error is VersionHandoffSignal {
+  return error instanceof VersionHandoffSignal;
+}
 /**
  * Tracks whether a DOM element has entered the viewport via `IntersectionObserver` (plan Task 14 item 5).
  * Once an element intersects the viewport, `inView` stays `true` so scrolling back and forth does not
@@ -228,14 +241,19 @@ export function useEntryBody(
         effectiveVersion !== undefined &&
         discoveredVersion !== effectiveVersion
       ) {
-        // Store the decrypted plaintext under the newly discovered version key and switch to it
-        // while keeping the old version key clean.
+        // IP14-BE1-2 / IP14-FE1-11: Handoff to the authoritative version without resolving
+        // plaintext under the obsolete version key, and remove the obsolete exact key immediately.
+        const obsoleteKey = vaultBodyQueryKey(entryId, effectiveVersion);
         queryClient.setQueryData(vaultBodyQueryKey(entryId, discoveredVersion), body);
         setResolvedVersionOverride({
           entryId,
           fromVersion: initialVersion,
           toVersion: discoveredVersion,
         });
+        queueMicrotask(() => {
+          queryClient.removeQueries({ queryKey: obsoleteKey, exact: true });
+        });
+        throw new VersionHandoffSignal(discoveredVersion);
       }
 
       return body;
@@ -249,22 +267,28 @@ export function useEntryBody(
     refetchOnReconnect: false,
   });
 
+  const isHandoffError = query.status === 'error' && isVersionHandoffSignal(query.error);
   const classifiedError =
-    unlocked && query.status === 'error' ? classifyEntryOpenError(query.error) : null;
+    unlocked && query.status === 'error' && !isHandoffError
+      ? classifyEntryOpenError(query.error)
+      : null;
   const oldKey = classifiedError?.kind === 'old_key';
-  const failed =
-    unlocked &&
-    query.status === 'error' &&
-    classifiedError?.kind !== 'stale_generation' &&
-    classifiedError?.kind !== 'vault_locked';
-  const decryptFailed = failed && !oldKey;
+  // IP14-FE1-14: If an error occurs while the vault is currently unlocked (including a transient
+  // stale_generation / vault_locked race), surface the Retry card rather than leaving a dead-end placeholder.
+  const failed = unlocked && query.status === 'error' && !isHandoffError;
+  const decryptFailed = classifiedError?.kind === 'decrypt_failed';
 
-  const refetch = useCallback(() => query.refetch(), [query]);
+  const refetchRef = useRef(query.refetch);
+  refetchRef.current = query.refetch;
+  const refetch = useCallback(() => refetchRef.current(), []);
 
   return {
     unlocked,
     body: unlocked ? query.data : undefined,
-    pending: unlocked && query.data === undefined && (query.status === 'pending' || query.isFetching),
+    pending:
+      unlocked &&
+      query.data === undefined &&
+      (query.status === 'pending' || query.isFetching || isHandoffError),
     failed,
     oldKey,
     decryptFailed,
@@ -317,24 +341,50 @@ export function EntryBody({
   kind?: 'text' | 'json';
   className?: string;
 }) {
-  const tLocked = useTranslations('vault.locked');
   const tEntry = useTranslations('content.entry');
+  const titleId = useId();
   const [hostEl, setHostEl] = useState<HTMLElement | null>(null);
+  const [retryingFromError, setRetryingFromError] = useState(false);
+  const [lastErrorKind, setLastErrorKind] = useState<EntryOpenErrorKind | null>(null);
+  const errorContainerRef = useRef<HTMLDivElement | null>(null);
+  const retryBtnRef = useRef<HTMLButtonElement | null>(null);
+  const shouldRestoreFocusRef = useRef(false);
+
   const inViewport = useEntryInViewport(hostEl, {
     disabled: !lazy || enabled !== undefined,
   });
   const effectiveEnabled = enabled ?? inViewport;
 
-  const { unlocked, body, pending, failed, oldKey, refetch } = useEntryBody(
-    entryId,
-    version,
-    load,
-    {
+  const { unlocked, body, pending, failed, oldKey, decryptFailed, errorKind, refetch } =
+    useEntryBody(entryId, version, load, {
       enabled: effectiveEnabled,
       itemId,
       limiter,
-    },
-  );
+    });
+
+  useEffect(() => {
+    if (!unlocked) {
+      setRetryingFromError(false);
+      shouldRestoreFocusRef.current = false;
+      return;
+    }
+    if (errorKind && !oldKey) {
+      setLastErrorKind(errorKind);
+    }
+    if (!pending && retryingFromError) {
+      setRetryingFromError(false);
+      if (shouldRestoreFocusRef.current) {
+        shouldRestoreFocusRef.current = false;
+        queueMicrotask(() => {
+          if (failed && retryBtnRef.current) {
+            retryBtnRef.current.focus();
+          } else if (hostEl) {
+            hostEl.focus();
+          }
+        });
+      }
+    }
+  }, [unlocked, pending, failed, oldKey, errorKind, retryingFromError, hostEl]);
 
   if (!unlocked) return <LockMask className={className} />;
 
@@ -342,34 +392,70 @@ export function EntryBody({
     return (
       <div
         ref={setHostEl}
-        className={cn('auth-status mb-0 flex flex-col gap-1', className)}
+        className={cn(
+          'rounded-md border border-line bg-surface p-3 flex flex-col gap-1',
+          className,
+        )}
         role="alert"
         data-testid="entry-body-old-key"
       >
-        <span className="badge-type badge-warn self-start">{tEntry('oldKeyBadge')}</span>
+        <span className="badge-type badge-json self-start">{tEntry('oldKeyBadge')}</span>
         <p className="m-0 text-[14px] font-semibold text-body">{tEntry('oldKeyTitle')}</p>
         <p className="m-0 text-[13px] text-muted">{tEntry('oldKeyBody')}</p>
       </div>
     );
   }
 
-  if (failed) {
+  if (failed || (retryingFromError && pending)) {
+    const activeKind = errorKind ?? lastErrorKind ?? (decryptFailed ? 'decrypt_failed' : 'other');
+    const errorTitle =
+      activeKind === 'decrypt_failed'
+        ? tEntry('decryptFailedTitle')
+        : activeKind === 'network'
+          ? tEntry('networkFailedTitle')
+          : activeKind === 'not_found'
+            ? tEntry('notFoundTitle')
+            : tEntry('loadFailedTitle');
+    const errorBody =
+      activeKind === 'decrypt_failed'
+        ? tEntry('decryptFailedBody')
+        : activeKind === 'network'
+          ? tEntry('networkFailedBody')
+          : activeKind === 'not_found'
+            ? tEntry('notFoundBody')
+            : tEntry('loadFailedBody');
+
     return (
       <div
-        ref={setHostEl}
+        ref={(node) => {
+          errorContainerRef.current = node;
+          setHostEl(node);
+        }}
+        tabIndex={-1}
+        aria-busy={retryingFromError && pending ? 'true' : undefined}
         className={cn('flex flex-wrap items-center justify-between gap-2', className)}
         role="alert"
         data-testid="entry-body-error"
       >
         <div className="min-w-0">
-          <p className="t-caption m-0 font-semibold text-body">{tEntry('decryptFailedTitle')}</p>
-          <p className="t-caption m-0 text-muted">{tLocked('bodyError')}</p>
+          <p id={titleId} className="t-caption m-0 font-semibold text-body">
+            {errorTitle}
+          </p>
+          <p className="t-caption m-0 text-muted">
+            {retryingFromError && pending ? tEntry('loading') : errorBody}
+          </p>
         </div>
         <button
+          ref={retryBtnRef}
           type="button"
+          disabled={retryingFromError && pending}
+          aria-describedby={titleId}
           className="btn btn-secondary btn-sm shrink-0"
           data-testid="entry-body-retry"
           onClick={() => {
+            shouldRestoreFocusRef.current = true;
+            setRetryingFromError(true);
+            errorContainerRef.current?.focus();
             void refetch();
           }}
         >
@@ -379,7 +465,22 @@ export function EntryBody({
     );
   }
 
-  if (!effectiveEnabled || pending || body === undefined) {
+  if (!effectiveEnabled) {
+    // IP14-FE1-14: Off-screen / waiting cards render an inert skeleton (no role="status")
+    // so a 200-entry item does not create 200 live regions announcing work that has not started.
+    return (
+      <p
+        ref={setHostEl}
+        aria-hidden="true"
+        className={cn('t-caption m-0 text-muted', className)}
+        data-testid="entry-body-loading"
+      >
+        {tEntry('loading')}
+      </p>
+    );
+  }
+
+  if (pending || body === undefined) {
     return (
       <p
         ref={setHostEl}
@@ -387,7 +488,7 @@ export function EntryBody({
         role="status"
         data-testid="entry-body-loading"
       >
-        {tLocked('bodyLoading')}
+        {tEntry('loading')}
       </p>
     );
   }
@@ -396,6 +497,7 @@ export function EntryBody({
     return (
       <pre
         ref={setHostEl}
+        tabIndex={-1}
         className={cn('json-raw overflow-x-auto rounded-md', className)}
         data-testid="entry-body"
       >
@@ -407,6 +509,7 @@ export function EntryBody({
   return (
     <p
       ref={setHostEl}
+      tabIndex={-1}
       className={cn(
         variant === 'summary' ? 't-legal text-muted' : 'm-0 text-[15px] leading-relaxed text-body',
         className,

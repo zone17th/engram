@@ -1039,9 +1039,15 @@
       "loading": "Đang giải mã nội dung entry…",
       "decryptFailedTitle": "Không giải mã được entry này",
       "decryptFailedBody": "Dữ liệu xác thực (AEAD) không khớp nên chúng tôi không hiển thị nội dung có thể sai lệch. Các entry khác trong mục vẫn mở bình thường.",
-      "oldKeyBadge": "entry_key_mismatch",
+      "networkFailedTitle": "Không tải được entry này",
+      "networkFailedBody": "Không kết nối được máy chủ để tải dữ liệu entry. Hãy kiểm tra mạng rồi thử lại.",
+      "notFoundTitle": "Entry không còn khả dụng",
+      "notFoundBody": "Entry này đã bị xoá hoặc không còn trong tài khoản của bạn.",
+      "loadFailedTitle": "Không tải được entry này",
+      "loadFailedBody": "Chưa tải được entry này lúc này. Vui lòng thử lại.",
+      "oldKeyBadge": "Khoá cũ",
       "oldKeyTitle": "Entry này mã hoá bằng khoá cũ",
-      "oldKeyBody": "Mã khoá trên entry (envelope.key_id) không khớp với khoá hiện tại của vault nên trình duyệt không gọi giải mã. Điều này xảy ra khi vault đã được đặt lại hoặc đổi khoá ở thiết bị khác.",
+      "oldKeyBody": "Mã khoá trên entry không khớp với khoá hiện tại của vault nên trình duyệt không gọi giải mã. Điều này xảy ra khi vault đã được đặt lại hoặc đổi khoá ở thiết bị khác.",
       "retry": "Thử lại"
     }
   }

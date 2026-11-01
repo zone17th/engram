@@ -1039,9 +1039,15 @@
       "loading": "Decrypting entry content…",
       "decryptFailedTitle": "Could not decrypt this entry",
       "decryptFailedBody": "Authenticated decryption failed, so corrupted content is not shown. Other entries in this item still open normally.",
-      "oldKeyBadge": "entry_key_mismatch",
+      "networkFailedTitle": "Could not load this entry",
+      "networkFailedBody": "Could not reach the server to download this entry. Check your connection and try again.",
+      "notFoundTitle": "Entry no longer available",
+      "notFoundBody": "This entry was deleted or is no longer available in your account.",
+      "loadFailedTitle": "Could not load this entry",
+      "loadFailedBody": "We could not load this entry right now. Please try again.",
+      "oldKeyBadge": "Older key",
       "oldKeyTitle": "This entry was encrypted with an older vault key",
-      "oldKeyBody": "The entry's envelope.key_id does not match your current vault_key_id, so decryption was skipped. This happens after a vault reset or key change on another device.",
+      "oldKeyBody": "The encryption key on this entry does not match your current vault key, so decryption was skipped. This happens after a vault reset or key change on another device.",
       "retry": "Retry"
     }
   }
