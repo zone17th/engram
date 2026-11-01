@@ -78,6 +78,23 @@ describe('lib/json/eol', () => {
     expect(tieFirstCr.lfCount).toBe(1);
     expect(tieFirstCr.majority).toBe('cr');
     expect(tieFirstCr.majoritySeq).toBe('\r');
+
+    // Fallback branch when first break is not among the tied maximum counts (`crlf -> lf -> cr` order, JL2-5):
+    // crlf=1 (first break), lf=2, cr=2 -> lf & cr tied at 2, firstBreak='crlf' not tied -> falls back to 'lf'
+    const tieFallbackLfVsCr = detectEol('{\r\n  "a": 1,\n  "b": 2,\n  "c": 3,\r  "d": 4,\r  "e": 5}');
+    expect(tieFallbackLfVsCr.crlfCount).toBe(1);
+    expect(tieFallbackLfVsCr.lfCount).toBe(2);
+    expect(tieFallbackLfVsCr.crCount).toBe(2);
+    expect(tieFallbackLfVsCr.majority).toBe('lf');
+    expect(tieFallbackLfVsCr.majoritySeq).toBe('\n');
+
+    // lf=1 (first break), crlf=2, cr=2 -> crlf & cr tied at 2, firstBreak='lf' not tied -> falls back to 'crlf'
+    const tieFallbackCrlfVsCr = detectEol('{\n  "a": 1,\r\n  "b": 2,\r\n  "c": 3,\r  "d": 4,\r  "e": 5}');
+    expect(tieFallbackCrlfVsCr.lfCount).toBe(1);
+    expect(tieFallbackCrlfVsCr.crlfCount).toBe(2);
+    expect(tieFallbackCrlfVsCr.crCount).toBe(2);
+    expect(tieFallbackCrlfVsCr.majority).toBe('crlf');
+    expect(tieFallbackCrlfVsCr.majoritySeq).toBe('\r\n');
   });
 
   it('returns changed: false and preserves originalSource byte-for-byte when textarea only normalized EOLs (§2.10 rule 2, P04-A6)', () => {

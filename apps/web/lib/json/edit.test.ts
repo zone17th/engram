@@ -617,6 +617,27 @@ describe('lib/json/edit', () => {
       expect(crossDocEdit.error.code).toBe('STALE_SPAN');
     }
 
+    // Ref from an edited doc applied to a fresh parse of different text -> STALE_SPAN (JL2-2)
+    const editedDocA = insertRow(docA.document, viewA.containerRef, { valueLexeme: '3' });
+    expect(editedDocA.ok).toBe(true);
+    if (!editedDocA.ok) return;
+    const editedViewA = buildRootTableView(editedDocA.document);
+    expect(editedViewA.kind).toBe('primitive-array');
+    if (editedViewA.kind !== 'primitive-array') return;
+    const freshDocC = parseJsonStrict('[1, 2]');
+    expect(freshDocC.ok).toBe(true);
+    if (!freshDocC.ok) return;
+    expect(freshDocC.document.revision).toBeGreaterThan(editedDocA.document.revision);
+    const staleEditedRefEdit = setValue(
+      freshDocC.document,
+      editedViewA.rows[0]!.valueCell.nodeRef,
+      '99',
+    );
+    expect(staleEditedRefEdit.ok).toBe(false);
+    if (!staleEditedRefEdit.ok) {
+      expect(staleEditedRefEdit.error.code).toBe('STALE_SPAN');
+    }
+
     // Multi-value or malformed lexemes in insertRow / insertField are rejected with INVALID_VALUE_LEXEME
     const viewB = buildRootTableView(docB.document);
     expect(viewB.kind).toBe('primitive-array');
@@ -642,6 +663,66 @@ describe('lib/json/edit', () => {
     expect(badField.ok).toBe(false);
     if (!badField.ok) {
       expect(badField.error.code).toBe('INVALID_VALUE_LEXEME');
+    }
+
+    // Leading/trailing JSON whitespace in lexemes is rejected across insertRow, insertField,
+    // initialValueLexeme, and setValue (JL2-4)
+    const wsRow = insertRow(docB.document, viewB.containerRef, {
+      valueLexeme: '2\n',
+    });
+    expect(wsRow.ok).toBe(false);
+    if (!wsRow.ok) {
+      expect(wsRow.error.code).toBe('INVALID_VALUE_LEXEME');
+    }
+
+    const wsRowMissingCol = insertRow(objDoc.document, objView.containerRef, {
+      columnKey: 'b',
+      valueLexeme: ' 2',
+    });
+    expect(wsRowMissingCol.ok).toBe(false);
+    if (!wsRowMissingCol.ok) {
+      expect(wsRowMissingCol.error.code).toBe('INVALID_VALUE_LEXEME');
+    }
+
+    const wsField = insertField(objDoc.document, objView.containerRef, 'b', {
+      initialValueLexeme: 'true\r\n',
+    });
+    expect(wsField.ok).toBe(false);
+    if (!wsField.ok) {
+      expect(wsField.error.code).toBe('INVALID_VALUE_LEXEME');
+    }
+
+    const wsSetNumber = setValue(objDoc.document, objView.rows[0]!.valueCell.nodeRef, ' 42\t');
+    expect(wsSetNumber.ok).toBe(false);
+    if (!wsSetNumber.ok) {
+      expect(wsSetNumber.error.code).toBe('INVALID_NUMBER_LEXEME');
+    }
+
+    const boolNullDoc = parseJsonStrict('{"flag": true, "empty": null}');
+    expect(boolNullDoc.ok).toBe(true);
+    if (boolNullDoc.ok) {
+      const bnView = buildRootTableView(boolNullDoc.document);
+      expect(bnView.kind).toBe('object');
+      if (bnView.kind === 'object') {
+        const wsBool = setValue(
+          boolNullDoc.document,
+          bnView.rows[0]!.valueCell.nodeRef,
+          'true\n',
+        );
+        expect(wsBool.ok).toBe(false);
+        if (!wsBool.ok) {
+          expect(wsBool.error.code).toBe('INVALID_BOOLEAN_LEXEME');
+        }
+        const wsNull = setValue(
+          boolNullDoc.document,
+          bnView.rows[1]!.valueCell.nodeRef,
+          ' null ',
+        );
+        expect(wsNull.ok).toBe(false);
+        if (!wsNull.ok) {
+          expect(wsNull.error.code).toBe('INVALID_NULL_LEXEME');
+        }
+      }
     }
 
     // Sentinel body text never appears in any JsonEditError message or fields (JL1-3)

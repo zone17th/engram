@@ -25,8 +25,10 @@ export {
 } from './eol';
 
 export {
+  JSON_PARSE_STATIC_MESSAGES,
   isValidJsonNumberLexeme,
   lineColumnToOffset,
+  nextRevision,
   offsetToLineColumn,
   parseJsonStrict,
   type JsonArrayNode,
@@ -99,6 +101,7 @@ export {
 
 export {
   JSON_FORMAT_MAX_DEPTH,
+  JSON_FORMAT_STATIC_MESSAGES,
   JsonFormatError,
   areNonWhitespaceTokensIdentical,
   formatJsonStrict,

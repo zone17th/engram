@@ -1,5 +1,6 @@
 import { detectEol, type MajorityEolKind } from './eol';
 import {
+  nextRevision,
   parseJsonStrict,
   type JsonDocument,
   type JsonParseError,
@@ -13,6 +14,15 @@ export type JsonFormatErrorCode =
   | 'DEPTH_LIMIT_EXCEEDED'
   | 'BYTE_LIMIT_EXCEEDED'
   | 'TOKEN_MISMATCH';
+
+export const JSON_FORMAT_STATIC_MESSAGES: readonly string[] = [
+  'Cannot format invalid JSON',
+  'JSON nesting depth exceeds maximum formatting depth',
+  'Formatted JSON exceeds maximum allowed UTF-8 byte length',
+  'Formatted output token count differs from input',
+  'Formatted output token sequence differs from input',
+  'Formatted JSON failed strict re-parse',
+];
 
 export class JsonFormatError extends Error {
   readonly code: JsonFormatErrorCode;
@@ -216,11 +226,11 @@ export function formatJsonStrict(
     if (!parsed.ok) {
       return {
         ok: false,
-      error: new JsonFormatError(
-        'PARSE_ERROR',
-        'Cannot format invalid JSON',
-        { parseError: parsed.error },
-      ),
+        error: new JsonFormatError(
+          'PARSE_ERROR',
+          'Cannot format invalid JSON',
+          { parseError: parsed.error },
+        ),
       };
     }
     doc = parsed.document;
@@ -371,7 +381,7 @@ export function formatJsonStrict(
     }
   }
 
-  const reparsed = parseJsonStrict(formattedText, { revision: doc.revision + 1 });
+  const reparsed = parseJsonStrict(formattedText, { revision: nextRevision() });
   if (!reparsed.ok) {
     return {
       ok: false,

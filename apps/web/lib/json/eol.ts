@@ -15,7 +15,8 @@ export interface EolAnalysis {
    * The majority EOL kind (`'lf'`, `'crlf'`, or `'cr'`) used when inserting new lines in
    * `edit.ts` or normalizing mixed/CR documents on raw textarea save (plan §2.10 rule 2 & 5):
    * - Compares `lfCount`, `crlfCount`, and `crCount`.
-   * - Tie-breaker among the tied maximum counts: kind of the first line break in the document.
+   * - Tie-breaker among the tied maximum counts: kind of the first line break in the document;
+   *   if the first line break is not among the tied maximum, falls back in `'crlf' -> 'lf' -> 'cr'` order.
    * - If there are no line breaks at all (empty/single-line), defaults to `'lf'`.
    */
   majority: MajorityEolKind;
@@ -108,7 +109,8 @@ export function detectEol(text: string): EolAnalysis {
     kind = 'lf';
   }
 
-  // Majority EOL over {LF, CRLF, CR}, tie = first break's kind; pure-CR doc stays CR (advisor-dec-126).
+  // Majority EOL over {LF, CRLF, CR}, tie = first break's kind; if first break is not among the
+  // tied maximum counts, fall back in `crlf -> lf -> cr` order; pure-CR doc stays CR (advisor-dec-126).
   const maxCount = Math.max(lfCount, crlfCount, crCount);
   let majority: MajorityEolKind;
   if (maxCount === 0) {

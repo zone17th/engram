@@ -2,6 +2,7 @@ import { detectEol } from './eol';
 import { JSON_TABLE_MAX_COLUMNS, type JsonNodeRef } from './model';
 import {
   isValidJsonNumberLexeme,
+  nextRevision,
   parseJsonStrict,
   type JsonArrayNode,
   type JsonDocument,
@@ -125,17 +126,17 @@ export function escapeJsonStringMinimal(value: string): string {
 
 /**
  * Applies a `JsonTextEdit` splice to `source` and strictly reparses the resulting string
- * with an incremented revision (`document.revision + 1`).
+ * with a fresh monotonic revision allocated from `nextRevision()`.
  */
 export function applyTextEditAndReparse(
   document: JsonDocument,
   edit: JsonTextEdit,
 ): JsonEditOutcome {
-  const { source, revision } = document;
+  const { source } = document;
   const nextSource =
     source.slice(0, edit.offset) + edit.content + source.slice(edit.offset + edit.length);
 
-  const parsed = parseJsonStrict(nextSource, { revision: revision + 1 });
+  const parsed = parseJsonStrict(nextSource, { revision: nextRevision() });
   if (!parsed.ok) {
     return {
       ok: false,
@@ -194,7 +195,21 @@ function resolveTargetNode(
 }
 
 function isSingleJsonValueLexeme(lexeme: string): boolean {
-  if (!isWellFormedUtf16(lexeme)) {
+  if (lexeme.length === 0 || !isWellFormedUtf16(lexeme)) {
+    return false;
+  }
+  const first = lexeme.charCodeAt(0);
+  const last = lexeme.charCodeAt(lexeme.length - 1);
+  if (
+    first === 0x20 ||
+    first === 0x09 ||
+    first === 0x0a ||
+    first === 0x0d ||
+    last === 0x20 ||
+    last === 0x09 ||
+    last === 0x0a ||
+    last === 0x0d
+  ) {
     return false;
   }
   const parsed = parseJsonStrict(`[${lexeme}]`, { revision: 0 });

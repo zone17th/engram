@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   JSON_FORMAT_MAX_DEPTH,
+  JSON_FORMAT_STATIC_MESSAGES,
   areNonWhitespaceTokensIdentical,
   formatJsonStrict,
 } from './format';
+import { JSON_PARSE_STATIC_MESSAGES } from './parse';
 import { JSON_MAX_UTF8_BYTES } from './utf8';
 
 describe('lib/json/format', () => {
-function stripWhitespaceOutsideStringsOracle(input: string): string {
-  return input.replace(/"(?:\\.|[^"\\])*"|\s+/g, (match) =>
-    match.startsWith('"') ? match : '',
-  );
-}
+  function stripWhitespaceOutsideStringsOracle(input: string): string {
+    return input.replace(/"(?:\\.|[^"\\])*"|\s+/g, (match) =>
+      match.startsWith('"') ? match : '',
+    );
+  }
 
   it('pretty-prints with 2-space indentation while keeping non-whitespace tokens identical (P04-A7)', () => {
     const compact =
@@ -96,13 +98,20 @@ function stripWhitespaceOutsideStringsOracle(input: string): string {
       expect(res.error.message).not.toContain('256 KiB');
     }
 
-    // Never embeds body text in PARSE_ERROR on format (JL1-3)
+    // Never embeds body text or single-character tokens in PARSE_ERROR on format (JL1-3, JL2-3)
     const sentinel = 'hunter2-format-secret';
-    const badFormat = formatJsonStrict(`{"secret": ${sentinel}}`);
+    const badFormat = formatJsonStrict(`{"secret": Ω${sentinel}}`);
     expect(badFormat.ok).toBe(false);
     if (!badFormat.ok) {
       expect(badFormat.error.code).toBe('PARSE_ERROR');
+      expect(JSON_FORMAT_STATIC_MESSAGES).toContain(badFormat.error.message);
+      expect(badFormat.error.parseError).toBeDefined();
+      if (badFormat.error.parseError) {
+        expect(JSON_PARSE_STATIC_MESSAGES).toContain(badFormat.error.parseError.message);
+      }
+      expect(badFormat.error.message).not.toContain('Ω');
       expect(badFormat.error.message).not.toContain(sentinel);
+      expect(JSON.stringify(badFormat.error)).not.toContain('Ω');
       expect(JSON.stringify(badFormat.error)).not.toContain(sentinel);
     }
   });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   JSON_MAX_UTF8_BYTES,
+  JsonUtf8Error,
   assertUtf8ByteLimit,
   decodeUtf8FileStrict,
   encodeUtf8Bytes,
@@ -167,7 +168,18 @@ describe('lib/json/utf8', () => {
     if (!failPaste.ok) {
       expect(failPaste.error.code).toBe('BYTE_LIMIT_EXCEEDED');
     }
-    expect(() => assertUtf8ByteLimit(overAscii)).toThrow(/exceeds limit/);
+    let thrownLimitErr: unknown;
+    try {
+      assertUtf8ByteLimit(overAscii);
+    } catch (err) {
+      thrownLimitErr = err;
+    }
+    expect(thrownLimitErr).toBeInstanceOf(JsonUtf8Error);
+    if (thrownLimitErr instanceof JsonUtf8Error) {
+      expect(thrownLimitErr.code).toBe('BYTE_LIMIT_EXCEEDED');
+      expect(thrownLimitErr.byteLength).toBe(JSON_MAX_UTF8_BYTES + 1);
+      expect(thrownLimitErr.limitBytes).toBe(JSON_MAX_UTF8_BYTES);
+    }
 
     // Multi-byte UTF-8: UTF-16 length is well below 262144, but UTF-8 byte length is 262145
     // Each 'é' is 1 UTF-16 code unit but 2 UTF-8 bytes.
@@ -191,7 +203,18 @@ describe('lib/json/utf8', () => {
       expect('text' in badRes).toBe(false);
       expect(badRes.error.message).not.toContain('sentinel-secret');
     }
-    expect(() => encodeUtf8Bytes(`bad\udc00-${sentinel}`)).toThrow(/unpaired UTF-16 surrogate/);
+    let thrownEncodeErr: unknown;
+    try {
+      encodeUtf8Bytes(`bad\udc00-Ω-${sentinel}`);
+    } catch (err) {
+      thrownEncodeErr = err;
+    }
+    expect(thrownEncodeErr).toBeInstanceOf(JsonUtf8Error);
+    if (thrownEncodeErr instanceof JsonUtf8Error) {
+      expect(thrownEncodeErr.code).toBe('ILL_FORMED_UTF16');
+      expect(thrownEncodeErr.message).not.toContain('sentinel-secret');
+      expect(thrownEncodeErr.message).not.toContain('Ω');
+    }
 
     const overLimitSentinel = `sentinel-secret-${'x'.repeat(300)}`;
     const overRes = validatePastedTextStrict(overLimitSentinel, { limitBytes: 64 });

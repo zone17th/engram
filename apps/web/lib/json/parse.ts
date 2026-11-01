@@ -44,6 +44,43 @@ export interface JsonParseError {
   readonly message: string;
 }
 
+export const JSON_PARSE_STATIC_MESSAGES: readonly string[] = [
+  'U+FEFF (BOM) is not valid RFC 8259 whitespace',
+  'Comments are not permitted in RFC 8259 JSON',
+  'Unescaped control character in JSON string',
+  'Unterminated escape in JSON string',
+  'Incomplete \\uXXXX escape sequence in string',
+  'Invalid hex digit in \\uXXXX escape sequence',
+  'Invalid escape sequence in JSON string',
+  'Unterminated JSON string literal',
+  'Unexpected end of input after minus sign',
+  'Leading zeros are not allowed in RFC 8259 numbers',
+  'Invalid number literal',
+  'Trailing decimal point in number literal',
+  'Decimal point must be followed by at least one digit',
+  'Incomplete exponent in number literal',
+  'Exponent must contain at least one digit',
+  'JSON document is empty',
+  'Unexpected end of input while expecting a JSON value',
+  'Malformed JSON number token',
+  'Unexpected token while expecting a JSON value',
+  'Unterminated JSON array',
+  'Unexpected comma at start of array',
+  'Unexpected end of input after comma in array',
+  'Trailing comma is not permitted in RFC 8259 array',
+  'Expected "," or "]" after array element',
+  'Unterminated JSON object',
+  'Unexpected comma at start of object',
+  'Unexpected end of input while expecting object key',
+  'Expected double-quoted string as object property key',
+  'Unexpected end of input while expecting ":"',
+  'Expected ":" after object property key',
+  'Unexpected end of input after comma in object',
+  'Trailing comma is not permitted in RFC 8259 object',
+  'Expected "," or "}" after object property value',
+  'Unexpected trailing content after root JSON value',
+];
+
 export interface JsonStringFlags {
   readonly hasLoneSurrogate: boolean;
   readonly hasCarriageReturn: boolean;
@@ -369,7 +406,16 @@ type StackFrame =
       elements: JsonNode[];
     };
 
-let nextDefaultRevision = 1;
+let revisionCounter = 1;
+
+/**
+ * Allocates the next monotonically increasing document revision ID.
+ * Shared across fresh parses, splice edits, and formatting so references from an
+ * edited document can never collide with a subsequent fresh parse.
+ */
+export function nextRevision(): number {
+  return revisionCounter++;
+}
 
 /**
  * Iterative (explicit-stack, zero-recursion) strict RFC 8259 JSON parser with UTF-16 spans.
@@ -388,7 +434,10 @@ export function parseJsonStrict(
   source: string,
   options?: { revision?: number },
 ): JsonParseResult {
-  const revision = options?.revision ?? nextDefaultRevision++;
+  const revision = options?.revision ?? nextRevision();
+  if (revision >= revisionCounter) {
+    revisionCounter = revision + 1;
+  }
   const len = source.length;
   let pos = 0;
   let nextId = 1;

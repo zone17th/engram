@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  JSON_PARSE_STATIC_MESSAGES,
   isValidJsonNumberLexeme,
   lineColumnToOffset,
   offsetToLineColumn,
@@ -90,19 +91,20 @@ describe('lib/json/parse', () => {
     }
   });
 
-  it('never embeds source body text into any JsonParseError field (JL1-3)', () => {
+  it('never embeds source body text or single-character tokens into any JsonParseError field (JL1-3, JL2-3)', () => {
     const sentinel = 'hunter2-secret-token';
     const failingInputs = [
-      `{"pw": ${sentinel}}`,
-      `{"pw": "bad\\q${sentinel}"}`,
-      `{"pw": "ctrl\u0007${sentinel}"}`,
-      `{"pw": "bad\\u12G4${sentinel}"}`,
-      `{"pw": "${sentinel}`,
-      `{"pw": 0123} ${sentinel}`,
-      `{${sentinel}: 1}`,
-      `{"${sentinel}" 1}`,
-      `{"a": 1 "${sentinel}": 2}`,
-      `// ${sentinel}\n{"a":1}`,
+      `{"pw": Ω${sentinel}}`,
+      `{"pw": tΩ${sentinel}}`,
+      `{"pw": "bad\\Ω${sentinel}"}`,
+      `{"pw": "ctrl\u0007Ω${sentinel}"}`,
+      `{"pw": "bad\\u12Ω4${sentinel}"}`,
+      `{"pw": "Ω${sentinel}`,
+      `{"pw": 0123} Ω${sentinel}`,
+      `{Ω${sentinel}: 1}`,
+      `{"${sentinel}" Ω}`,
+      `{"a": 1 Ω"${sentinel}": 2}`,
+      `// Ω${sentinel}\n{"a":1}`,
     ];
 
     for (const input of failingInputs) {
@@ -110,8 +112,11 @@ describe('lib/json/parse', () => {
       expect(res.ok).toBe(false);
       if (!res.ok) {
         const serialized = JSON.stringify(res.error);
+        expect(JSON_PARSE_STATIC_MESSAGES).toContain(res.error.message);
+        expect(res.error.message).not.toContain('Ω');
         expect(res.error.message).not.toContain(sentinel);
         expect(res.error.message).not.toContain('hunter2');
+        expect(serialized).not.toContain('Ω');
         expect(serialized).not.toContain(sentinel);
         expect(serialized).not.toContain('hunter2');
       }
