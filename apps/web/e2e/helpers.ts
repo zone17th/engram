@@ -185,16 +185,22 @@ export async function waitForOAuthProviders(page: Page) {
   });
 }
 
+export async function fillSignupConfirmIfPresent(page: Page, password = PASSWORD) {
+  const confirmPw = page.getByLabel(
+    /^(Confirm password|Nhập lại mật khẩu|Confirm login password|Nhập lại mật khẩu đăng nhập)$/,
+  );
+  if ((await confirmPw.count()) > 0) {
+    await fillSecret(confirmPw, password);
+  }
+}
+
 export async function signupViaUi(page: Page, email: string, password = PASSWORD) {
   await isolateRateLimit(page);
   await page.goto('/app/auth/signup');
   await waitForAuthPageReady(page);
   await page.getByLabel('Email').fill(email);
   await fillSecret(page.getByLabel(/^(Login password|Mật khẩu đăng nhập)$/), password);
-  const confirmPw = page.getByLabel(/^(Confirm password|Nhập lại mật khẩu|Confirm login password|Nhập lại mật khẩu đăng nhập)$/);
-  if ((await confirmPw.count()) > 0) {
-    await fillSecret(confirmPw, password);
-  }
+  await fillSignupConfirmIfPresent(page, password);
   await page.getByRole('checkbox', { name: /agree|terms|điều khoản/i }).check();
   await page.getByRole('button', { name: /Create account|Tạo tài khoản/ }).click();
   const outcome = await Promise.race([
