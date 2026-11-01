@@ -27,8 +27,8 @@ func insertPurgeTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	t.Helper()
 	id := uuid.New()
 	_, err := pool.Exec(ctx, `
-		INSERT INTO app_user (id, email, password_hash, email_verified_at)
-		VALUES ($1, $2, 'test-hash', now())
+		INSERT INTO app_user (id, email, email_verified_at)
+		VALUES ($1, $2, now())
 	`, id, email)
 	if err != nil {
 		t.Fatalf("insert test user %s: %v", email, err)
