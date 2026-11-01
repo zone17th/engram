@@ -5,9 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,11 +17,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/riverqueue/river"
+
 	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
 	"github.com/zone17th/engram/apps/api/internal/auth/oauth"
@@ -146,6 +146,7 @@ func issueResetTokenForTest(t *testing.T, h *harness, email string) string {
 	tok, _ := extractNewResetTokenFromSink(t, h, email, before)
 	return tok
 }
+
 func runNoticeMailForLatestNotification(t *testing.T, h *harness) {
 	t.Helper()
 	ctx := context.Background()
@@ -217,12 +218,14 @@ func TestPasswordForgotCapabilityFlagAndConfig(t *testing.T) {
 	h.csrfJar(j)
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", `{"email":"any@example.com"}`, true, "203.0.113.10")
 	requireAcceptanceProblem(t, h, resp, http.StatusServiceUnavailable, "mail_delivery_unavailable")
+	_ = resp.Body.Close()
 	if captchaCalled.Load() {
 		t.Fatal("503 mail_delivery_unavailable must return before CAPTCHA verification")
 	}
 	// Invalid email syntax still returns 400 invalid_request before 503.
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", `{"email":"not-an-email"}`, true, "203.0.113.10")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "invalid_request")
+	_ = resp.Body.Close()
 }
 
 // 2. Anti-enumeration & Async acceptance boundary + queue overflow.
@@ -396,6 +399,7 @@ func TestPasswordResetPresenceAwareJSONBoundaryAndTokenShape(t *testing.T) {
 		xff := fmt.Sprintf("198.51.100.%d", 20+i)
 		resp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", tc.body, true, xff)
 		requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "invalid_request")
+		_ = resp.Body.Close()
 	}
 
 	invalidTokenBodies := []struct {
@@ -413,11 +417,13 @@ func TestPasswordResetPresenceAwareJSONBoundaryAndTokenShape(t *testing.T) {
 		xff := fmt.Sprintf("198.51.100.%d", 40+i)
 		resp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", tc.body, true, xff)
 		requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
+		_ = resp.Body.Close()
 	}
 
 	// Weak password (< 12 runes or > 1024 UTF-8 bytes) with valid 43-char token -> 400 password_weak.
 	resp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","new_password":"short"}`, true, "198.51.100.60")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "password_weak")
+	_ = resp.Body.Close()
 }
 
 // 4. End-to-end happy path: single use, session revocation, cookie clearing (including caller B vs target A),
@@ -534,6 +540,7 @@ func TestPasswordResetHappyPathSingleUseSessionRevokeNoticeAndVaultUntouched(t *
 	for idx, jA := range []jar{jarA1, jarA2} {
 		resp = h.doAs(jA, http.MethodGet, "/api/v1/auth/me", "", false, "203.0.113.1")
 		raw := requireAcceptanceProblem(t, h, resp, http.StatusUnauthorized, "session_invalid")
+		_ = resp.Body.Close()
 		if !strings.Contains(raw, `"revoked"`) {
 			t.Fatalf("Alice session %d expected reason=revoked, got %s", idx+1, raw)
 		}
@@ -543,7 +550,7 @@ func TestPasswordResetHappyPathSingleUseSessionRevokeNoticeAndVaultUntouched(t *
 	h.csrfJar(jarB1)
 	resp = h.doAs(jarB1, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok+`","new_password":"anotherpassword12"}`, true, "203.0.113.6")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
-
+	_ = resp.Body.Close()
 	// Alice can immediately log in with new password (lockout throttle was reset).
 	jarNew := jar{}
 	h.csrfJar(jarNew)
@@ -655,12 +662,13 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	h.csrfJar(j)
 	resp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok1+`","new_password":"newpassword123"}`, true, "198.51.100.2")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
+	_ = resp.Body.Close()
 
 	// Advance clock > 30 minutes: tok2 expires.
 	h.clk.Advance(auth.PasswordResetTTL + time.Second)
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok2+`","new_password":"newpassword123"}`, true, "198.51.100.3")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
-
+	_ = resp.Body.Close()
 	// Refresh session after clock advance.
 	resp = h.do(http.MethodPost, "/api/v1/auth/refresh", "", true)
 	if resp.StatusCode != http.StatusNoContent {
@@ -687,16 +695,45 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 		t.Fatal(err)
 	}
 	defer func() { _ = holdTokTx.Rollback(ctx) }()
+	var holdTokPID int32
+	if err := holdTokTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holdTokPID); err != nil {
+		t.Fatalf("holdTokTx pid: %v", err)
+	}
 	if _, err := holdTokTx.Exec(ctx, `SELECT id FROM password_reset_token WHERE token_hash = $1 FOR UPDATE`, hashWait); err != nil {
 		t.Fatal(err)
 	}
 
+	var resetTxPID atomic.Int32
+	h.svc.SetOnResetAttempt(func(txCtx context.Context, tx pgx.Tx, _ int) error {
+		var pid int32
+		if err := tx.QueryRow(txCtx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+			return err
+		}
+		resetTxPID.Store(pid)
+		return nil
+	})
 	resetLockedExpiry := make(chan struct{})
 	var onceExpiry sync.Once
 	h.svc.SetOnResetLocked(func() {
 		onceExpiry.Do(func() { close(resetLockedExpiry) })
 	})
 	resetWaitDone := make(chan *http.Response, 1)
+	var joinResetWaitOnce sync.Once
+	var respWait *http.Response
+	joinResetWait := func() *http.Response {
+		joinResetWaitOnce.Do(func() {
+			respWait = <-resetWaitDone
+		})
+		return respWait
+	}
+	t.Cleanup(func() {
+		h.svc.SetOnResetAttempt(nil)
+		h.svc.SetOnResetLocked(nil)
+		_ = holdTokTx.Rollback(ctx)
+		if r := joinResetWait(); r != nil && r.Body != nil {
+			_ = r.Body.Close()
+		}
+	})
 	go func() {
 		jExp := jar{}
 		h.csrfJar(jExp)
@@ -704,16 +741,46 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	}()
 
 	<-resetLockedExpiry
-	// Advance clock past token expiry while ResetPassword is blocked waiting on GetPasswordResetTokenByHashForUpdate,
+	waiterPID := resetTxPID.Load()
+	if waiterPID == 0 {
+		t.Fatal("expected reset transaction backend PID to be recorded before OnResetLocked")
+	}
+	// Positively observe the specific reset backend waiting on the token lock held by holdTokTx
+	// BEFORE advancing the fake clock (AU3-BE2-2). Because RevokeAllUserSessions (and in pre-fix code,
+	// the stale clock sample) executes before GetPasswordResetTokenByHashForUpdate, observing
+	// waiterPID blocked on holdTokPID proves the pre-lock statements already ran while the clock was still valid.
+	var observedWaitOnTok bool
+	tokWaitDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(tokWaitDeadline) {
+		var blocked int
+		qErr := h.pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_locks w WHERE w.pid = $1 AND NOT w.granted AND $2 = ANY(pg_blocking_pids(w.pid))`,
+			waiterPID, holdTokPID,
+		).Scan(&blocked)
+		if qErr != nil {
+			t.Fatalf("query pg_locks for token lock wait: %v", qErr)
+		}
+		if blocked > 0 {
+			observedWaitOnTok = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !observedWaitOnTok {
+		t.Fatalf("reset backend pid=%d was not observed waiting on token lock holder pid=%d before deadline", waiterPID, holdTokPID)
+	}
+
+	// Advance clock past token expiry while ResetPassword is confirmed blocked on GetPasswordResetTokenByHashForUpdate,
 	// then release the external token lock.
 	h.clk.Advance(2 * time.Second)
 	if err := holdTokTx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	respWait := <-resetWaitDone
+	respWait = joinResetWait()
+	h.svc.SetOnResetAttempt(nil)
 	h.svc.SetOnResetLocked(nil)
 	requireAcceptanceProblem(t, h, respWait, http.StatusBadRequest, "reset_token_invalid")
-
+	_ = respWait.Body.Close()
 	// Verify the early RevokeAllUserSessions was rolled back: refresh and /auth/me still succeed, and old password still works.
 	resp = h.do(http.MethodPost, "/api/v1/auth/refresh", "", true)
 	if resp.StatusCode != http.StatusNoContent {
@@ -737,7 +804,7 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokBeforePwChange+`","new_password":"otherpassword12"}`, true, "198.51.100.4")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
-
+	_ = resp.Body.Close()
 	// (c) Email change A -> B -> A must NOT revive token issued at A (AU2-BE1-7).
 	tokAtEmailA := issueResetTokenForTest(t, h, "inv-a@example.com")
 
@@ -775,7 +842,7 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	// but tokAtEmailA MUST be rejected because ConfirmEmailToken expired pending reset tokens!
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokAtEmailA+`","new_password":"revivedpassword12"}`, true, "198.51.100.5")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
-
+	_ = resp.Body.Close()
 	// (d) Unlink password identity expires pending reset tokens.
 	tokBeforeUnlink := issueResetTokenForTest(t, h, "inv-a@example.com")
 	grantLink := h.grant("account.identity_link", "changedpassword12")
@@ -800,6 +867,7 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokBeforeUnlink+`","new_password":"afterunlinkpassword12"}`, true, "198.51.100.6")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
+	_ = resp.Body.Close()
 }
 
 // 6. Rate limits (IP 5/min, Email 1/min and 3/hour) + CAPTCHA on forgot.
@@ -817,10 +885,10 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", `{"email":"QUOTA-TARGET@example.com"}`, true, "198.51.100.11")
 	raw := requireAcceptanceProblem(t, h, resp, http.StatusTooManyRequests, "rate_limited")
+	_ = resp.Body.Close()
 	if resp.Header.Get("Retry-After") == "" || !strings.Contains(raw, `"retry_after"`) {
 		t.Fatalf("missing Retry-After on email rate limit: %s", raw)
 	}
-
 	// Email 3/hour rate limit at HTTP handler level (AU3-BE1-10):
 	// Inject clock-backed minute (1/min) and hourly (3/hour) limiters into h.api,
 	// advance the injected clock past the 1-minute window (but within 1 hour) for both known and unknown normalized emails.
@@ -847,6 +915,7 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 		h.clk.Advance(61 * time.Second)
 		r4 := h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", fmt.Sprintf(`{"email":%q}`, strings.ToUpper(target)), true, "198.51.100.129")
 		raw4 := requireAcceptanceProblem(t, h, r4, http.StatusTooManyRequests, "rate_limited")
+		_ = r4.Body.Close()
 		if r4.Header.Get("Retry-After") == "" || !strings.Contains(raw4, `"retry_after"`) {
 			t.Fatalf("hourly 4th attempt for %s missing Retry-After: %s", target, raw4)
 		}
@@ -863,7 +932,7 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 	}
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", `{"email":"ip-limit-6@example.com"}`, true, "198.51.100.50")
 	requireAcceptanceProblem(t, h, resp, http.StatusTooManyRequests, "rate_limited")
-
+	_ = resp.Body.Close()
 	// IP rate limit on reset: 5 requests from same IP -> 6th is 429.
 	for i := range 5 {
 		r := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","new_password":"correcthorse"}`, true, "198.51.100.51")
@@ -874,7 +943,7 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 	}
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","new_password":"correcthorse"}`, true, "198.51.100.51")
 	requireAcceptanceProblem(t, h, resp, http.StatusTooManyRequests, "rate_limited")
-
+	_ = resp.Body.Close()
 	// CAPTCHA on forgot: when configured, missing/wrong token -> 403 captcha_required before email quota; valid token -> 202.
 	srv := acceptanceCaptchaServer(t, h, auth.StaticCaptcha{Accept: "turnstile-valid"})
 	t.Cleanup(srv.Close)
@@ -886,6 +955,7 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 	h.csrfJar(jCap)
 	resp = h.doAs(jCap, http.MethodPost, "/api/v1/auth/password/forgot", `{"email":"cap-user@example.com"}`, true, "198.51.100.70")
 	rawCap := requireAcceptanceProblem(t, h, resp, http.StatusForbidden, "captcha_required")
+	_ = resp.Body.Close()
 	if !strings.Contains(rawCap, `"captcha_required":true`) {
 		t.Fatalf("expected captcha_required:true extension, got %s", rawCap)
 	}
@@ -897,39 +967,41 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-// 7. Concurrent issuance serialization under app_user FOR UPDATE (AU2-BE1-6, AU3-BE1-9).
+// 7. Concurrent issuance serialization under app_user FOR UPDATE (AU2-BE1-6, AU3-BE1-9, AU3-BE2-3).
 func TestPasswordForgotConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
 	signupAcceptance(t, h, "concurrent-issue@example.com")
+	var userID uuid.UUID
+	if err := h.pool.QueryRow(ctx, `SELECT id FROM app_user WHERE email = 'concurrent-issue@example.com'`).Scan(&userID); err != nil {
+		t.Fatalf("select user id: %v", err)
+	}
 
-	// Deterministically overlap two ProcessForgotJob calls using OnJobLocked:
-	// Job 1 acquires app_user FOR UPDATE and pauses inside OnJobLocked.
-	// Job 2 starts concurrently and blocks on GetUserByIDForUpdate until Job 1 commits.
-	// If GetUserByIDForUpdate were removed from ProcessForgotJob, Job 2 would enter OnJobLocked
-	// while Job 1 is still paused, which we explicitly detect and fail on.
+	// Deterministically overlap two ProcessForgotJob calls using OnJobLocked (AU3-BE2-3):
+	// Issuer 1 (Locale="en") acquires app_user FOR UPDATE and pauses inside OnJobLocked.
+	// Issuer 2 (Locale="vi") starts while Issuer 1 holds the root lock and blocks on GetUserByIDForUpdate.
+	// We positively observe in pg_locks that a second backend is waiting on the exact backend PID
+	// holding the granted RowShareLock/ExclusiveLock on app_user BEFORE releasing Issuer 1.
+	// Because each issuer uses a distinct Locale ("en" vs "vi"), each delivered reset link is
+	// independently associated with its issuer (locale=en for Issuer 1, locale=vi for Issuer 2).
 	job1Locked := make(chan struct{})
+	var job1LockedOnce sync.Once
 	releaseJob1 := make(chan struct{})
 	var releaseJob1Once sync.Once
 	unblockJob1 := func() { releaseJob1Once.Do(func() { close(releaseJob1) }) }
-	job2Started := make(chan struct{})
+
 	var inCriticalSection atomic.Int32
 	var overlapDetected atomic.Bool
-	var lockOrder []int
-	var lockMu sync.Mutex
-	callSeq := atomic.Int32{}
+	var callSeq atomic.Int32
 
 	h.svc.SetForgotHooks(auth.ForgotHooks{
 		OnJobLocked: func(_ uuid.UUID) {
-			seq := int(callSeq.Add(1))
+			seq := callSeq.Add(1)
 			if inCriticalSection.Add(1) > 1 {
 				overlapDetected.Store(true)
 			}
-			lockMu.Lock()
-			lockOrder = append(lockOrder, seq)
-			lockMu.Unlock()
 			if seq == 1 {
-				close(job1Locked)
+				job1LockedOnce.Do(func() { close(job1Locked) })
 				<-releaseJob1
 			}
 			inCriticalSection.Add(-1)
@@ -940,26 +1012,41 @@ func TestPasswordForgotConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 		h.svc.SetForgotHooks(auth.ForgotHooks{})
 	})
 
+	beforeMails := snapshotResetMailLinks(t, h, "concurrent-issue@example.com")
+
 	errCh1 := make(chan error, 1)
 	go func() {
 		errCh1 <- h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "concurrent-issue@example.com", Locale: "en"})
 	}()
 	<-job1Locked
-	beforeJob1Mail := snapshotResetMailLinks(t, h, "concurrent-issue@example.com")
 
 	errCh2 := make(chan error, 1)
 	go func() {
-		close(job2Started)
-		errCh2 <- h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "concurrent-issue@example.com", Locale: "en"})
+		errCh2 <- h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "concurrent-issue@example.com", Locale: "vi"})
 	}()
-	<-job2Started
 
-	// Wait until Postgres pg_locks / pg_stat_activity shows Job 2 waiting on the transaction/tuple lock held by Job 1.
+	// Positively observe in pg_locks that the second issuer is blocked on the first issuer's app_user lock,
+	// or that overlapDetected fired if the root lock was removed. Fail if the deadline expires without observation!
+	var observedBlockedOnRoot bool
 	waitDeadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(waitDeadline) {
-		var blockedCount int
-		_ = h.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&blockedCount)
-		if blockedCount > 0 {
+		if overlapDetected.Load() {
+			break
+		}
+		var blocked int
+		qErr := h.pool.QueryRow(ctx, `
+			SELECT count(*)
+			FROM pg_locks w
+			JOIN pg_locks h ON h.pid = ANY(pg_blocking_pids(w.pid))
+			WHERE NOT w.granted
+			  AND h.granted
+			  AND h.relation = 'app_user'::regclass
+		`).Scan(&blocked)
+		if qErr != nil {
+			t.Fatalf("query pg_locks for concurrent issuance block: %v", qErr)
+		}
+		if blocked > 0 {
+			observedBlockedOnRoot = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -967,18 +1054,21 @@ func TestPasswordForgotConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 
 	unblockJob1()
 	if err := <-errCh1; err != nil {
-		t.Fatalf("job1 ProcessForgotJob: %v", err)
+		t.Fatalf("issuer 1 ProcessForgotJob: %v", err)
 	}
 	if err := <-errCh2; err != nil {
-		t.Fatalf("job2 ProcessForgotJob: %v", err)
+		t.Fatalf("issuer 2 ProcessForgotJob: %v", err)
 	}
 	h.svc.SetForgotHooks(auth.ForgotHooks{})
 
 	if overlapDetected.Load() {
 		t.Fatal("concurrent ProcessForgotJob entered critical section simultaneously; app_user FOR UPDATE lock missing")
 	}
-	if len(lockOrder) != 2 || lockOrder[0] != 1 || lockOrder[1] != 2 {
-		t.Fatalf("unexpected lock acquisition order: %v", lockOrder)
+	if !observedBlockedOnRoot {
+		t.Fatalf("second issuer was never positively observed blocked on first issuer's app_user lock for user %s", userID)
+	}
+	if got := callSeq.Load(); got != 2 {
+		t.Fatalf("expected exactly 2 OnJobLocked invocations, got %d", got)
 	}
 
 	var liveCount, totalCount int
@@ -992,45 +1082,55 @@ func TestPasswordForgotConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 		t.Fatalf("expected 2 total tokens and 1 live token, got total=%d live=%d", totalCount, liveCount)
 	}
 
-	// Identify the two issued tokens and verify ONLY the second (surviving) token is accepted by ResetPassword.
+	// Associate each delivered mail/token with its known issuer via its distinct locale parameter
+	// (Issuer 1 = locale=en, controlled last Issuer 2 = locale=vi) rather than deriving from DB state.
 	entries, err := h.mail.EntriesFor("concurrent-issue@example.com", auth.PurposePasswordReset)
 	if err != nil || len(entries) != 2 {
-		t.Fatalf("expected 2 reset mails, got %d err=%v (before=%d)", len(entries), err, len(beforeJob1Mail))
+		t.Fatalf("expected 2 reset mails, got %d err=%v (before=%d)", len(entries), err, len(beforeMails))
+	}
+	var job1Tok, job2Tok string
+	for _, e := range entries {
+		tok := parseResetTokenLink(t, e.Link)
+		switch {
+		case strings.Contains(e.Link, "locale=en"):
+			job1Tok = tok
+		case strings.Contains(e.Link, "locale=vi"):
+			job2Tok = tok
+		default:
+			t.Fatalf("unexpected reset mail link without issuer locale marker: %q", e.Link)
+		}
+	}
+	if job1Tok == "" || job2Tok == "" || job1Tok == job2Tok {
+		t.Fatalf("failed to associate distinct tokens with Issuer 1 (en=%q) and Issuer 2 (vi=%q)", job1Tok, job2Tok)
+	}
+
+	// Verify in DB that Issuer 2's token is the unconsumed live row and Issuer 1's token was expired.
+	rawJob2, err := auth.ParseResetToken(job2Tok)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var liveHash []byte
 	if err := h.pool.QueryRow(ctx, `SELECT token_hash FROM password_reset_token WHERE consumed_at IS NULL`).Scan(&liveHash); err != nil {
 		t.Fatal(err)
 	}
-	var expiredTok, liveTok string
-	for _, e := range entries {
-		tok := parseResetTokenLink(t, e.Link)
-		raw, err := auth.ParseResetToken(tok)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if bytes.Equal(auth.SHA256Bytes(raw), liveHash) {
-			liveTok = tok
-		} else {
-			expiredTok = tok
-		}
-	}
-	if expiredTok == "" || liveTok == "" {
-		t.Fatalf("failed to partition expiredTok=%q and liveTok=%q", expiredTok, liveTok)
+	if !bytes.Equal(auth.SHA256Bytes(rawJob2), liveHash) {
+		t.Fatalf("expected controlled last issuer (Job 2, locale=vi) token hash %x to match surviving DB token hash %x", auth.SHA256Bytes(rawJob2), liveHash)
 	}
 
 	j := jar{}
 	h.csrfJar(j)
-	respExp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+expiredTok+`","new_password":"winnerpassword12"}`, true, "198.51.100.140")
+	respExp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+job1Tok+`","new_password":"winnerpassword12"}`, true, "198.51.100.140")
 	requireAcceptanceProblem(t, h, respExp, http.StatusBadRequest, "reset_token_invalid")
+	_ = respExp.Body.Close()
 
-	respLive := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+liveTok+`","new_password":"winnerpassword12"}`, true, "198.51.100.141")
+	respLive := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+job2Tok+`","new_password":"winnerpassword12"}`, true, "198.51.100.141")
 	if respLive.StatusCode != http.StatusNoContent {
-		t.Fatalf("surviving token reset = %d %s, want 204", respLive.StatusCode, h.body(respLive))
+		t.Fatalf("surviving Job 2 token reset = %d %s, want 204", respLive.StatusCode, h.body(respLive))
 	}
 	_ = respLive.Body.Close()
 }
 
-// 8. D2 deterministic barrier race: old-password Login vs ResetPassword (AU2-BE1-3, AU3-BE1-6).
+// 8. D2 deterministic barrier race: old-password Login vs ResetPassword (AU2-BE1-3, AU3-BE1-6, AU3-BE2-5).
 func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
@@ -1049,15 +1149,19 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 		<-releaseLogin
 	})
 	loginDone := make(chan *http.Response, 1)
+	var joinLoginOnce sync.Once
+	var respLogin *http.Response
+	joinLogin := func() *http.Response {
+		joinLoginOnce.Do(func() {
+			respLogin = <-loginDone
+		})
+		return respLogin
+	}
 	t.Cleanup(func() {
 		h.svc.SetOnLoginVerified(nil)
 		unblockLogin()
-		select {
-		case r := <-loginDone:
-			if r != nil && r.Body != nil {
-				_ = r.Body.Close()
-			}
-		default:
+		if r := joinLogin(); r != nil && r.Body != nil {
+			_ = r.Body.Close()
 		}
 	})
 
@@ -1068,7 +1172,11 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 	}()
 
 	// Wait until Login has verified the old password outside the transaction.
-	<-loginVerified
+	select {
+	case <-loginVerified:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Login to reach OnLoginVerified barrier")
+	}
 
 	// Now execute ResetPassword to completion.
 	jReset := jar{}
@@ -1081,9 +1189,10 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 
 	// Release Login to enter its session-issuance transaction.
 	unblockLogin()
-	respLogin := <-loginDone
+	respLogin = joinLogin()
 	h.svc.SetOnLoginVerified(nil)
 	requireAcceptanceProblem(t, h, respLogin, http.StatusUnauthorized, "invalid_credentials")
+	_ = respLogin.Body.Close()
 
 	// Assert 0 live sessions exist for the user.
 	var aliveSessions int
@@ -1118,7 +1227,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	grantLink := h.grant("account.identity_link", "correcthorse")
 	resp := h.withGrant(http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
 	requireAcceptanceProblem(t, h, resp, http.StatusForbidden, "email_not_verified")
-
+	_ = resp.Body.Close()
 	// Temporarily mark verified to start link flow, then set email_verified_at = NULL before callback.
 	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE email = 'victim-d3@example.com'`); err != nil {
 		t.Fatal(err)
@@ -1196,8 +1305,83 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		t.Fatalf("insert reauth receipt: %v", err)
 	}
 
-	// Start two genuinely in-flight OAuth login callbacks (same-email Google and different-email GitHub)
-	// BEFORE reset, and hold them inside fakeProvider.Exchange while their oauth_transaction status is 'claimed'!
+	// Start genuinely in-flight OAuth login callbacks (same-email Google and different-email GitHub)
+	// BEFORE reset, and hold them inside fakeProvider.Exchange while their oauth_transaction status is 'claimed' (AU3-BE1-8, AU3-BE2-5)!
+	// startClaimedCallback registers idempotent cleanup and completion ownership BEFORE starting the request
+	// and uses a bounded select for Exchange entry, early completion (if callback rejects before Exchange), or deadline.
+	tryStartClaimedCallback := func(provider string, fake *oauth.Fake, cbURL string, jFlow jar, xff string) (bool, string, <-chan string, func()) {
+		t.Helper()
+		exchEntered := make(chan struct{})
+		var enterOnce sync.Once
+		exchRelease := make(chan struct{})
+		var relOnce sync.Once
+		unblockExch := func() { relOnce.Do(func() { close(exchRelease) }) }
+
+		fake.SetOnExchange(func(_ oauth.ExchangeRequest) {
+			enterOnce.Do(func() { close(exchEntered) })
+			<-exchRelease
+		})
+
+		cbStatusCh := make(chan string, 1)
+		outCh := make(chan string, 1)
+		var joinOnce sync.Once
+		var finalStatus string
+		joinCallback := func() string {
+			joinOnce.Do(func() {
+				finalStatus = <-cbStatusCh
+				outCh <- finalStatus
+				close(outCh)
+			})
+			return finalStatus
+		}
+		releaseAndJoin := func() {
+			fake.SetOnExchange(nil)
+			unblockExch()
+			joinCallback()
+		}
+		// Register cleanup BEFORE launching the request goroutine so any early return or fatal
+		// always clears the hook, releases the Exchange barrier, and joins the client goroutine.
+		t.Cleanup(releaseAndJoin)
+
+		go func() {
+			client := noRedirect()
+			req, err := http.NewRequest(http.MethodGet, cbURL, nil)
+			if err != nil {
+				cbStatusCh <- "request_build_error:" + err.Error()
+				return
+			}
+			req.Header.Set("X-Forwarded-For", xff)
+			jFlow.apply(req)
+			resp, err := client.Do(req)
+			if err != nil {
+				cbStatusCh <- "request_do_error:" + err.Error()
+				return
+			}
+			loc := resp.Header.Get("Location")
+			_ = resp.Body.Close()
+			cbStatusCh <- statusFromCallback(loc)
+		}()
+
+		select {
+		case <-exchEntered:
+			return true, "", outCh, releaseAndJoin
+		case earlyStatus := <-cbStatusCh:
+			// Record early completion so joinCallback is already satisfied without blocking.
+			joinOnce.Do(func() {
+				finalStatus = earlyStatus
+				outCh <- earlyStatus
+				close(outCh)
+			})
+			fake.SetOnExchange(nil)
+			unblockExch()
+			return false, earlyStatus, outCh, releaseAndJoin
+		case <-time.After(5 * time.Second):
+			releaseAndJoin()
+			t.Fatalf("timed out waiting for %s OAuth callback to enter Exchange or return early", provider)
+			return false, "", outCh, releaseAndJoin
+		}
+	}
+
 	startClaimedCallback := func(provider string, fake *oauth.Fake, xff string) (jar, <-chan string, func()) {
 		t.Helper()
 		jFlow := jar{}
@@ -1208,45 +1392,33 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		jFlow = cloneAcceptanceJar(h.jar)
 		h.jar = saved
 
-		exchEntered := make(chan struct{})
-		var enterOnce sync.Once
-		exchRelease := make(chan struct{})
-		var relOnce sync.Once
-		unblockExch := func() { relOnce.Do(func() { close(exchRelease) }) }
-		fake.SetOnExchange(func(_ oauth.ExchangeRequest) {
-			enterOnce.Do(func() { close(exchEntered) })
-			<-exchRelease
-		})
-		cbStatusCh := make(chan string, 1)
-		go func() {
-			client := noRedirect()
-			req, err := http.NewRequest(http.MethodGet, cbURL, nil)
-			if err != nil {
-				cbStatusCh <- ""
-				return
-			}
-			req.Header.Set("X-Forwarded-For", xff)
-			jFlow.apply(req)
-			resp, err := client.Do(req)
-			if err != nil {
-				cbStatusCh <- ""
-				return
-			}
-			loc := resp.Header.Get("Location")
-			_ = resp.Body.Close()
-			cbStatusCh <- statusFromCallback(loc)
-		}()
-		<-exchEntered
-		return jFlow, cbStatusCh, func() {
-			fake.SetOnExchange(nil)
-			unblockExch()
+		entered, earlyStatus, outCh, releaseAndJoin := tryStartClaimedCallback(provider, fake, cbURL, jFlow, xff)
+		if !entered {
+			t.Fatalf("%s OAuth callback exited before reaching Exchange with status=%q", provider, earlyStatus)
+		}
+		return jFlow, outCh, releaseAndJoin
+	}
+
+	// AU3-BE2-5: Exercise a failure-before-Exchange callback path (missing OAuth binding cookie -> "invalid_flow")
+	// through tryStartClaimedCallback to prove early callback rejection returns immediately without hanging on exchEntered
+	// and leaves hooks/goroutines cleanly joined.
+	{
+		jEarly := jar{}
+		h.csrfJar(jEarly)
+		saved := h.jar
+		h.jar = jEarly
+		earlyCbURL := oauthCallbackURL(t, h, "/api/v1/auth/oauth/google/start")
+		h.jar = saved
+		// Pass an empty jar (no binding cookie) so OAuth Callback rejects before calling fakeGoogle.Exchange!
+		enteredEarly, earlyStatus, _, releaseEarly := tryStartClaimedCallback("google", fakeGoogle, earlyCbURL, jar{}, "198.51.100.204")
+		releaseEarly()
+		if enteredEarly || earlyStatus != "invalid_flow" {
+			t.Fatalf("expected failure-before-Exchange callback to return entered=false status=invalid_flow immediately, got entered=%v status=%q", enteredEarly, earlyStatus)
 		}
 	}
 
 	jarInFlightSame, sameCbCh, releaseSameExch := startClaimedCallback("google", fakeGoogle, "198.51.100.205")
-	t.Cleanup(releaseSameExch)
 	jarInFlightDiff, diffCbCh, releaseDiffExch := startClaimedCallback("github", fakeGitHub, "198.51.100.206")
-	t.Cleanup(releaseDiffExch)
 
 	// Verify both in-flight callbacks are genuinely in status = 'claimed' in DB before reset runs!
 	var claimedCount int
@@ -1268,15 +1440,19 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		<-releaseComplete
 	})
 	completeDone := make(chan *http.Response, 1)
+	var joinCompleteOnce sync.Once
+	var respComplete *http.Response
+	joinComplete := func() *http.Response {
+		joinCompleteOnce.Do(func() {
+			respComplete = <-completeDone
+		})
+		return respComplete
+	}
 	t.Cleanup(func() {
 		h.oa.SetOnOwnerDiscovered(nil)
 		unblockComplete()
-		select {
-		case r := <-completeDone:
-			if r != nil && r.Body != nil {
-				_ = r.Body.Close()
-			}
-		default:
+		if r := joinComplete(); r != nil && r.Body != nil {
+			_ = r.Body.Close()
 		}
 	})
 
@@ -1285,7 +1461,11 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		completeDone <- h.doAs(jarAttacker, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.200")
 	}()
 
-	<-ownerDiscovered
+	select {
+	case <-ownerDiscovered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for oauth.Service.Complete to reach OnOwnerDiscovered")
+	}
 
 	// Victim consumes reset token while Complete is paused after owner discovery and while the two callbacks are held in Exchange ('claimed').
 	jVictim := jar{}
@@ -1298,10 +1478,10 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 
 	// Release Complete -> must fail with 400 oauth_state_invalid and issue 0 sessions!
 	unblockComplete()
-	respComplete := <-completeDone
+	respComplete = joinComplete()
 	h.oa.SetOnOwnerDiscovered(nil)
 	requireAcceptanceProblem(t, h, respComplete, http.StatusBadRequest, "oauth_state_invalid")
-
+	_ = respComplete.Body.Close()
 	// Assert pending link/reauth flows and unconsumed reauth receipts for victim were all cancelled by reset!
 	var uncancelledUserOAuth, uncancelledReceipts int
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM oauth_transaction WHERE expected_user_id = $1 AND consumed_at IS NULL`, victimID).Scan(&uncancelledUserOAuth); err != nil {
@@ -1355,7 +1535,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	h.csrfJar(jarInFlightSame)
 	respSame := h.doAs(jarInFlightSame, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.202")
 	requireAcceptanceProblem(t, h, respSame, http.StatusConflict, "email_taken")
-
+	_ = respSame.Body.Close()
 	releaseDiffExch()
 	if got := <-diffCbCh; got != "login_ready" {
 		t.Fatalf("in-flight diff-email callback status after exchange release = %q, want login_ready", got)
@@ -1410,30 +1590,39 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		<-rel2
 	})
 	comp2Done := make(chan *http.Response, 1)
+	var joinComp2Once sync.Once
+	var respComp2 *http.Response
+	joinComp2 := func() *http.Response {
+		joinComp2Once.Do(func() {
+			respComp2 = <-comp2Done
+		})
+		return respComp2
+	}
 	t.Cleanup(func() {
 		h.oa.SetOnOwnerDiscovered(nil)
 		unblock2()
-		select {
-		case r := <-comp2Done:
-			if r != nil && r.Body != nil {
-				_ = r.Body.Close()
-			}
-		default:
+		if r := joinComp2(); r != nil && r.Body != nil {
+			_ = r.Body.Close()
 		}
 	})
 	go func() {
 		h.csrfJar(jarRecheck)
 		comp2Done <- h.doAs(jarRecheck, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.209")
 	}()
-	<-disc2
+	select {
+	case <-disc2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second oauth.Service.Complete to reach OnOwnerDiscovered")
+	}
 	// Remove the Google identity directly while leaving the oauth_transaction in status='ready'.
 	if _, err := h.pool.Exec(ctx, `DELETE FROM auth_identity WHERE user_id = $1 AND provider = 'google'`, victimID); err != nil {
 		t.Fatal(err)
 	}
 	unblock2()
-	respComp2 := <-comp2Done
+	respComp2 = joinComp2()
 	h.oa.SetOnOwnerDiscovered(nil)
 	requireAcceptanceProblem(t, h, respComp2, http.StatusBadRequest, "oauth_state_invalid")
+	_ = respComp2.Body.Close()
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM session WHERE user_id = $1 AND revoked_at IS NULL`, victimID).Scan(&sessionCount); err != nil {
 		t.Fatal(err)
 	}
@@ -1606,6 +1795,7 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 	resp503 := h.doAs(jRetry, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok2+`","new_password":"retryexhausted12"}`, true, "203.0.113.95")
 	h.svc.SetOnResetAttempt(nil)
 	raw503 := requireAcceptanceProblem(t, h, resp503, http.StatusServiceUnavailable, "dependency_unavailable")
+	_ = resp503.Body.Close()
 	if resp503.Header.Get("Retry-After") != "1" || !strings.Contains(raw503, `"retry_after":1`) {
 		t.Fatalf("503 dependency_unavailable must include Retry-After: 1 header and retry_after: 1 body, got header=%q body=%s", resp503.Header.Get("Retry-After"), raw503)
 	}
@@ -1624,7 +1814,7 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 	_ = resp204.Body.Close()
 }
 
-// 12. Service.Close cancels active blocked forgot-worker DB work and waits for worker exit before pool teardown (AU3-BE1-1).
+// 12. Service.Close cancels active blocked forgot-worker DB work and waits for worker exit before pool teardown (AU3-BE1-1, AU3-BE2-1).
 func TestServiceCloseCancelsBlockedWorkerAndWaitsForExit(t *testing.T) {
 	dsn := dbtest.StartPostgres(t)
 	dbtest.MigrateUp(t, dsn)
@@ -1645,6 +1835,12 @@ func TestServiceCloseCancelsBlockedWorkerAndWaitsForExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Register svc.Close immediately after construction so any failure before the explicit Close call
+	// still cancels and joins the worker before dbtest.Pool's cleanup closes the pool (AU3-BE2-1).
+	t.Cleanup(func() {
+		svc.SetForgotHooks(auth.ForgotHooks{})
+		svc.Close()
+	})
 
 	// Seed a user and hold app_user FOR UPDATE in an external transaction so the forgot worker
 	// blocks inside GetUserByIDForUpdate(ctx, u.ID).
@@ -1657,17 +1853,29 @@ func TestServiceCloseCancelsBlockedWorkerAndWaitsForExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = holdTx.Rollback(ctx) }()
+	var holderPID int32
+	if err := holdTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatalf("holder pid: %v", err)
+	}
 	if _, err := holdTx.Exec(ctx, `SELECT id FROM app_user WHERE id = $1 FOR UPDATE`, uid); err != nil {
 		t.Fatal(err)
 	}
 
 	jobStarted := make(chan struct{})
 	jobDone := make(chan error, 1)
+	onJobDoneEntered := make(chan struct{})
+	releaseOnJobDone := make(chan struct{})
+	var releaseOnJobDoneOnce sync.Once
+	unblockOnJobDone := func() { releaseOnJobDoneOnce.Do(func() { close(releaseOnJobDone) }) }
+	t.Cleanup(unblockOnJobDone)
+
 	svc.SetForgotHooks(auth.ForgotHooks{
 		OnJobStart: func(_ auth.ForgotJob) {
 			close(jobStarted)
 		},
 		OnJobDone: func(_ auth.ForgotJob, err error) {
+			close(onJobDoneEntered)
+			<-releaseOnJobDone
 			jobDone <- err
 		},
 	})
@@ -1675,32 +1883,67 @@ func TestServiceCloseCancelsBlockedWorkerAndWaitsForExit(t *testing.T) {
 	svc.EnqueueForgotPassword("close-worker@example.com", "en")
 	<-jobStarted
 
-	// Wait until pg_locks confirms the worker query is blocked on app_user FOR UPDATE.
+	// Positively identify the blocked worker query waiting on holderPID in pg_locks and fail if not observed.
+	var observedBlocked bool
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var blocked int
-		_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&blocked)
+		qErr := pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_locks w WHERE NOT w.granted AND $1 = ANY(pg_blocking_pids(w.pid))`,
+			holderPID,
+		).Scan(&blocked)
+		if qErr != nil {
+			t.Fatalf("query pg_locks for blocked worker: %v", qErr)
+		}
 		if blocked > 0 {
+			observedBlocked = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-
-	// Calling svc.Close() must cancel the in-flight DB query and wait for the worker to exit
-	// well before the 15-second ForgotJobTimeout and before pool.Close() is called.
-	startClose := time.Now()
-	svc.Close()
-	elapsed := time.Since(startClose)
-	if elapsed >= 5*time.Second {
-		t.Fatalf("svc.Close() took %v, expected immediate cancellation", elapsed)
+	if !observedBlocked {
+		t.Fatalf("worker was never observed blocked on holderPID=%d before svc.Close()", holderPID)
 	}
+
+	// Run svc.Close() in a goroutine and enforce the deadline externally (AU3-BE2-1):
+	// 1. svc.Close() must cancel the worker's context, causing GetUserByIDForUpdate to abort and enter OnJobDone.
+	// 2. While OnJobDone is held on releaseOnJobDone, a cancel-only Close() (pre-fix code) would return early!
+	//    We assert closeReturned has NOT fired while OnJobDone is still paused, deterministically failing old code
+	//    without any scheduler race.
+	// 3. After releasing releaseOnJobDone, closeReturned must complete within the external deadline.
+	closeReturned := make(chan struct{})
+	go func() {
+		svc.Close()
+		close(closeReturned)
+	}()
+
+	select {
+	case <-onJobDoneEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for svc.Close() to cancel blocked DB query and enter OnJobDone")
+	}
+
+	select {
+	case <-closeReturned:
+		t.Fatal("svc.Close() returned before worker finished OnJobDone and exited")
+	default:
+	}
+
+	unblockOnJobDone()
+
+	select {
+	case <-closeReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for svc.Close() to return after worker exit")
+	}
+
 	select {
 	case jobErr := <-jobDone:
 		if jobErr == nil {
 			t.Fatal("expected cancelled worker job to report non-nil error")
 		}
 	default:
-		t.Fatal("svc.Close() returned before worker finished OnJobDone")
+		t.Fatal("expected jobDone result after svc.Close() returned")
 	}
 }
 
