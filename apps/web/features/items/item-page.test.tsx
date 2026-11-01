@@ -4173,19 +4173,20 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     expect(hCard.container.textContent).not.toContain('SENTINEL-KEEP-MINE-HELD-RELOAD');
 
-    // Happy path: trigger 412 conflict again, then with vaultMeta === null click Keep mine -> reloads GET /vault then PUTs
+    // Happy path: after unlock, card loads the authoritative v2 body ('Remote concurrent v2').
+    // Bump server entry to v3 so Save (sending If-Match: "2") hits a fresh 412 (current_version: 3),
+    // then with vaultMeta === null click Keep mine -> reloads GET /vault then PUTs with If-Match: "3" and commits v4.
     testHarnessHoisted.setSealRecorderListener(null);
     holdCardVaultGet = false;
-    act(() => {
-      hCard.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'Initial card body v1');
-    });
     await waitFor(() => {
-      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote concurrent v2');
     });
+
+    await hCard.server.sealTextForEntry(ENTRY_ID_1, 'Remote concurrent v3', 3, 0);
 
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
-      target: { value: 'Keep mine draft v3 after null vaultMeta' },
+      target: { value: 'Keep mine draft v4 after null vaultMeta' },
     });
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
@@ -4221,10 +4222,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     );
     expect(keepMineVaultIdx).toBeGreaterThanOrEqual(0);
     expect(keepMinePutIdx).toBeGreaterThan(keepMineVaultIdx);
+    expect(hCard.server.requests[keepMinePutIdx].headers['if-match']).toBe('"3"');
+    expect(hCard.server.entries.get(ENTRY_ID_1)?.version).toBe(4);
     await waitFor(() => {
       expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
       expect(screen.getByTestId('entry-body')).toHaveTextContent(
-        'Keep mine draft v3 after null vaultMeta',
+        'Keep mine draft v4 after null vaultMeta',
       );
     });
   });
