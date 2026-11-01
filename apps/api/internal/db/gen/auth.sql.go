@@ -118,6 +118,27 @@ func (q *Queries) CancelPendingOAuthBySession(ctx context.Context, arg CancelPen
 	return result.RowsAffected(), nil
 }
 
+const cancelPendingOAuthByUser = `-- name: CancelPendingOAuthByUser :execrows
+UPDATE oauth_transaction
+SET consumed_at = $2, status = 'completed'
+WHERE expected_user_id = $1
+  AND consumed_at IS NULL
+  AND status IN ('pending', 'claimed', 'ready')
+`
+
+type CancelPendingOAuthByUserParams struct {
+	ExpectedUserID *uuid.UUID
+	ConsumedAt     pgtype.Timestamptz
+}
+
+func (q *Queries) CancelPendingOAuthByUser(ctx context.Context, arg CancelPendingOAuthByUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelPendingOAuthByUser, arg.ExpectedUserID, arg.ConsumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const cancelPendingOAuthByUserExceptSession = `-- name: CancelPendingOAuthByUserExceptSession :execrows
 UPDATE oauth_transaction
 SET consumed_at = $3, status = 'completed'
@@ -140,6 +161,32 @@ func (q *Queries) CancelPendingOAuthByUserExceptSession(ctx context.Context, arg
 	return result.RowsAffected(), nil
 }
 
+const cancelReadyOAuthLoginByUserIdentities = `-- name: CancelReadyOAuthLoginByUserIdentities :execrows
+UPDATE oauth_transaction t
+SET consumed_at = $2, status = 'completed'
+FROM auth_identity i
+WHERE i.user_id = $1
+  AND i.provider IN ('google', 'github')
+  AND t.mode = 'login'
+  AND t.status = 'ready'
+  AND t.consumed_at IS NULL
+  AND t.identity_provider = i.provider
+  AND t.identity_provider_uid = i.provider_uid
+`
+
+type CancelReadyOAuthLoginByUserIdentitiesParams struct {
+	UserID     uuid.UUID
+	ConsumedAt pgtype.Timestamptz
+}
+
+func (q *Queries) CancelReadyOAuthLoginByUserIdentities(ctx context.Context, arg CancelReadyOAuthLoginByUserIdentitiesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelReadyOAuthLoginByUserIdentities, arg.UserID, arg.ConsumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const cancelReceiptsBySession = `-- name: CancelReceiptsBySession :execrows
 UPDATE oauth_reauth_receipt
 SET consumed_at = $2
@@ -153,6 +200,25 @@ type CancelReceiptsBySessionParams struct {
 
 func (q *Queries) CancelReceiptsBySession(ctx context.Context, arg CancelReceiptsBySessionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, cancelReceiptsBySession, arg.SessionID, arg.ConsumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const cancelReceiptsByUser = `-- name: CancelReceiptsByUser :execrows
+UPDATE oauth_reauth_receipt
+SET consumed_at = $2
+WHERE user_id = $1 AND consumed_at IS NULL
+`
+
+type CancelReceiptsByUserParams struct {
+	UserID     uuid.UUID
+	ConsumedAt pgtype.Timestamptz
+}
+
+func (q *Queries) CancelReceiptsByUser(ctx context.Context, arg CancelReceiptsByUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelReceiptsByUser, arg.UserID, arg.ConsumedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -289,6 +355,35 @@ func (q *Queries) ConsumeEmailVerification(ctx context.Context, arg ConsumeEmail
 	return i, err
 }
 
+const consumePasswordResetToken = `-- name: ConsumePasswordResetToken :one
+UPDATE password_reset_token
+SET consumed_at = $2
+WHERE id = $1 AND consumed_at IS NULL
+RETURNING id, user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at, consumed_at, created_at
+`
+
+type ConsumePasswordResetTokenParams struct {
+	ID         uuid.UUID
+	ConsumedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ConsumePasswordResetToken(ctx context.Context, arg ConsumePasswordResetTokenParams) (PasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, consumePasswordResetToken, arg.ID, arg.ConsumedAt)
+	var i PasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TargetEmail,
+		&i.TokenHash,
+		&i.PasswordHashSha256,
+		&i.WasEmailUnverified,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const consumeReceipt = `-- name: ConsumeReceipt :one
 UPDATE oauth_reauth_receipt
 SET consumed_at = $2
@@ -361,6 +456,19 @@ func (q *Queries) DeleteExpiredOAuthTransactions(ctx context.Context, expiresAt 
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredPasswordResetTokens = `-- name: DeleteExpiredPasswordResetTokens :execrows
+DELETE FROM password_reset_token
+WHERE expires_at < $1
+`
+
+func (q *Queries) DeleteExpiredPasswordResetTokens(ctx context.Context, expiresAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredPasswordResetTokens, expiresAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteExpiredReceipts = `-- name: DeleteExpiredReceipts :execrows
 DELETE FROM oauth_reauth_receipt
 WHERE expires_at < $1
@@ -418,6 +526,39 @@ func (q *Queries) DeleteInactiveThrottle(ctx context.Context, lastFailedAt pgtyp
 	return result.RowsAffected(), nil
 }
 
+const deleteOAuthIdentitiesByUser = `-- name: DeleteOAuthIdentitiesByUser :many
+DELETE FROM auth_identity
+WHERE user_id = $1 AND provider IN ('google', 'github')
+RETURNING id, user_id, provider, provider_uid, password_hash, created_at
+`
+
+func (q *Queries) DeleteOAuthIdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]AuthIdentity, error) {
+	rows, err := q.db.Query(ctx, deleteOAuthIdentitiesByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuthIdentity
+	for rows.Next() {
+		var i AuthIdentity
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Provider,
+			&i.ProviderUid,
+			&i.PasswordHash,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteRefreshUsedForDeadSessions = `-- name: DeleteRefreshUsedForDeadSessions :execrows
 DELETE FROM session_refresh_used u
 USING session s
@@ -450,6 +591,25 @@ type ExpirePendingByUserPurposeParams struct {
 
 func (q *Queries) ExpirePendingByUserPurpose(ctx context.Context, arg ExpirePendingByUserPurposeParams) (int64, error) {
 	result, err := q.db.Exec(ctx, expirePendingByUserPurpose, arg.UserID, arg.Purpose, arg.ConsumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const expirePendingPasswordResetTokensByUser = `-- name: ExpirePendingPasswordResetTokensByUser :execrows
+UPDATE password_reset_token
+SET consumed_at = $2
+WHERE user_id = $1 AND consumed_at IS NULL
+`
+
+type ExpirePendingPasswordResetTokensByUserParams struct {
+	UserID     uuid.UUID
+	ConsumedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ExpirePendingPasswordResetTokensByUser(ctx context.Context, arg ExpirePendingPasswordResetTokensByUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, expirePendingPasswordResetTokensByUser, arg.UserID, arg.ConsumedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -616,6 +776,25 @@ func (q *Queries) GetLatestOAuthTxByBinding(ctx context.Context, cookieBindingHa
 	return i, err
 }
 
+const getNotificationMailContext = `-- name: GetNotificationMailContext :one
+SELECT n.meta, u.locale
+FROM user_notification n
+JOIN app_user u ON u.id = n.user_id
+WHERE n.id = $1
+`
+
+type GetNotificationMailContextRow struct {
+	Meta   []byte
+	Locale string
+}
+
+func (q *Queries) GetNotificationMailContext(ctx context.Context, id int64) (GetNotificationMailContextRow, error) {
+	row := q.db.QueryRow(ctx, getNotificationMailContext, id)
+	var i GetNotificationMailContextRow
+	err := row.Scan(&i.Meta, &i.Locale)
+	return i, err
+}
+
 const getOAuthTxByIDForUpdate = `-- name: GetOAuthTxByIDForUpdate :one
 SELECT id, provider, mode, status, state_hash, cookie_binding_hash, pkce_verifier, nonce, expected_user_id, expected_session_id, action, identity_provider, identity_provider_uid, identity_email, identity_email_verified, completion_deadline, started_at, expires_at, claimed_at, consumed_at FROM oauth_transaction WHERE id = $1 FOR UPDATE
 `
@@ -676,6 +855,48 @@ func (q *Queries) GetOAuthTxByStateHash(ctx context.Context, stateHash []byte) (
 		&i.ExpiresAt,
 		&i.ClaimedAt,
 		&i.ConsumedAt,
+	)
+	return i, err
+}
+
+const getPasswordResetTokenByHash = `-- name: GetPasswordResetTokenByHash :one
+SELECT id, user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at, consumed_at, created_at FROM password_reset_token WHERE token_hash = $1
+`
+
+func (q *Queries) GetPasswordResetTokenByHash(ctx context.Context, tokenHash []byte) (PasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetTokenByHash, tokenHash)
+	var i PasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TargetEmail,
+		&i.TokenHash,
+		&i.PasswordHashSha256,
+		&i.WasEmailUnverified,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPasswordResetTokenByHashForUpdate = `-- name: GetPasswordResetTokenByHashForUpdate :one
+SELECT id, user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at, consumed_at, created_at FROM password_reset_token WHERE token_hash = $1 FOR UPDATE
+`
+
+func (q *Queries) GetPasswordResetTokenByHashForUpdate(ctx context.Context, tokenHash []byte) (PasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetTokenByHashForUpdate, tokenHash)
+	var i PasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TargetEmail,
+		&i.TokenHash,
+		&i.PasswordHashSha256,
+		&i.WasEmailUnverified,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1085,6 +1306,46 @@ func (q *Queries) InsertPasswordIdentity(ctx context.Context, arg InsertPassword
 	return i, err
 }
 
+const insertPasswordResetToken = `-- name: InsertPasswordResetToken :one
+INSERT INTO password_reset_token (
+  user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at, consumed_at, created_at
+`
+
+type InsertPasswordResetTokenParams struct {
+	UserID             uuid.UUID
+	TargetEmail        string
+	TokenHash          []byte
+	PasswordHashSha256 []byte
+	WasEmailUnverified bool
+	ExpiresAt          pgtype.Timestamptz
+}
+
+func (q *Queries) InsertPasswordResetToken(ctx context.Context, arg InsertPasswordResetTokenParams) (PasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, insertPasswordResetToken,
+		arg.UserID,
+		arg.TargetEmail,
+		arg.TokenHash,
+		arg.PasswordHashSha256,
+		arg.WasEmailUnverified,
+		arg.ExpiresAt,
+	)
+	var i PasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TargetEmail,
+		&i.TokenHash,
+		&i.PasswordHashSha256,
+		&i.WasEmailUnverified,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertReauthReceipt = `-- name: InsertReauthReceipt :one
 INSERT INTO oauth_reauth_receipt (
   user_id, session_id, provider, action, token_hash, expires_at
@@ -1334,6 +1595,25 @@ WHERE subject_hash = $1
 func (q *Queries) ResetThrottle(ctx context.Context, subjectHash []byte) error {
 	_, err := q.db.Exec(ctx, resetThrottle, subjectHash)
 	return err
+}
+
+const revokeAllUserSessions = `-- name: RevokeAllUserSessions :execrows
+UPDATE session
+SET revoked_at = $2
+WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+type RevokeAllUserSessionsParams struct {
+	UserID    uuid.UUID
+	RevokedAt pgtype.Timestamptz
+}
+
+func (q *Queries) RevokeAllUserSessions(ctx context.Context, arg RevokeAllUserSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAllUserSessions, arg.UserID, arg.RevokedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeOtherSessions = `-- name: RevokeOtherSessions :execrows
