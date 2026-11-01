@@ -10,6 +10,7 @@ import {
   expectTextEqualsBool,
   setQuietInputValue,
   timedJourneyStep,
+  verifyStorageAndCacheScannerPositiveControl,
   expectOnUnlockPageAllowingReturnTo,
 } from './content-acceptance-support';
 import { newContextWithRateLimit, uniqueEmail } from './helpers';
@@ -64,6 +65,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
     const bodyMatchNPicked = `acceptance-body-matchN-picked-${nonce}`;
     const bodyMatch0Edited = `acceptance-body-match0-edited-${nonce}`;
     const unsavedDraftBeforeLock = `acceptance-unsaved-draft-before-lock-${nonce}`;
+    const omniboxDraftBeforeLock = `acceptance-omnibox-draft-before-lock-${nonce}`;
     const jsonSecretTokenInit = `acceptance-json-token-init-${nonce}`;
     const jsonSecretTokenEdited = `acceptance-json-token-edited-${nonce}`;
     const jsonSiblingKeep = `acceptance-json-sibling-keep-${nonce}`;
@@ -80,6 +82,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
       { label: 'bodyMatchNPicked', value: bodyMatchNPicked },
       { label: 'bodyMatch0Edited', value: bodyMatch0Edited },
       { label: 'unsavedDraftBeforeLock', value: unsavedDraftBeforeLock },
+      { label: 'omniboxDraftBeforeLock', value: omniboxDraftBeforeLock },
       { label: 'jsonSecretTokenInit', value: jsonSecretTokenInit },
       { label: 'jsonSecretTokenEdited', value: jsonSecretTokenEdited },
       { label: 'jsonSiblingKeep', value: jsonSiblingKeep },
@@ -110,6 +113,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         monitor.registerSecret('recoveryKeySlot1', keys.slot1);
         monitor.registerSecret('recoveryKeySlot2', keys.slot2);
         await expectUnlockedOnApp(pageA);
+        await verifyStorageAndCacheScannerPositiveControl(pageA, nonce);
         monitor.assertNoLeaks();
       });
 
@@ -531,7 +535,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         monitor.assertNoLeaks();
       });
 
-      await timedJourneyStep('7. open a text editor with an unsaved draft, lock vault -> editor unmounts and no draft or body remains in DOM or storage/caches (A9, ACC-FE1-4)', async () => {
+      await timedJourneyStep('7. open a text editor with an unsaved draft and put a nonce draft in the omnibox, lock vault -> editor unmounts, omnibox draft is cleared, and no draft or body remains in DOM or storage/caches (A9, ACC-FE1-4, ACC-FE2-2)', async () => {
         const card0 = pageB.getByTestId(`entry-card-${entry0Id}`);
         await card0.getByTestId(`entry-edit-btn-${entry0Id}`).click();
         const draftTextarea = card0.getByTestId(`entry-edit-textarea-${entry0Id}`);
@@ -539,14 +543,20 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await setQuietInputValue(draftTextarea, unsavedDraftBeforeLock);
         await expectInputValueEqualsBool(draftTextarea, unsavedDraftBeforeLock);
 
+        const omniboxTextarea = pageB.locator('textarea[data-omnibox-input]').first();
+        await expect(omniboxTextarea).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await setQuietInputValue(omniboxTextarea, omniboxDraftBeforeLock);
+        await expectInputValueEqualsBool(omniboxTextarea, omniboxDraftBeforeLock);
+
         await pageB.getByTestId('vault-lock-button').click();
         await expectVaultShut(pageB);
         await expect(pageB.getByTestId('vault-locked-banner')).toBeVisible({
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expect(draftTextarea).toHaveCount(0);
-        // The omnibox textarea stays mounted while locked; it must be empty. Every other textarea (editors) must be gone.
+        // The omnibox textarea stays mounted while locked; its draft must be cleared to '' (ACC-FE2-2). Every other textarea (editors) must be gone.
         await expect(pageB.locator('textarea:not([data-omnibox-input])')).toHaveCount(0);
+        await expectInputEmptyBool(omniboxTextarea);
         expect(
           await pageB.locator('textarea[data-omnibox-input]').evaluateAll((els) => els.every((el) => (el as HTMLTextAreaElement).value === '')),
         ).toBe(true);
@@ -554,7 +564,6 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expect(pageB.getByTestId('entry-body-locked')).toHaveCount(3);
 
         await expectNoDomOrStorageBodyLeaks(pageB, labeledSecrets);
-
         // Navigate back to /app locked list via the breadcrumb link and confirm zero DOM and storage/cache leaks there too
         await pageB.getByRole('link', { name: en.content.item.allItems, exact: true }).click();
         await expectLockedListOnApp(pageB);

@@ -1,5 +1,3 @@
-process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
-
 import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
 import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
@@ -26,6 +24,9 @@ import {
   type A11yTheme,
   type ContentA11yContext,
 } from './content-a11y-support';
+
+// Note: `noCopyPrompt: true` in `playwright.config.ts` and `PLAYWRIGHT_NO_COPY_PROMPT: "1"` in `ci.yml`
+// disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 /**
  * P04-T21c Stage W2 — Home page a11y + visual sweep (`U8` omnibox quick-add & search listbox,

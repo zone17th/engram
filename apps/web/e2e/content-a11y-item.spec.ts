@@ -1,5 +1,3 @@
-process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
-
 import { expect, test, type Browser, type TestInfo } from '@playwright/test';
 import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
@@ -25,6 +23,9 @@ import {
   type A11yTheme,
   type ContentA11yContext,
 } from './content-a11y-support';
+
+// Note: `noCopyPrompt: true` in `playwright.config.ts` and `PLAYWRIGHT_NO_COPY_PROMPT: "1"` in `ci.yml`
+// disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 /**
  * P04-T21c Stage W2 — Item page + text entries + JSON card + entry menu + Undo toast a11y & visual sweep
@@ -689,6 +690,19 @@ async function runItemGroup(
               },
             )
             .toBe(true);
+          // ACC-FE2-6: re-assert once after the next two animation frames (no fixed sleep) to catch any late focus steal.
+          expect(
+            await page.getByTestId(`entry-card-${jsonEntryId}`).evaluate((card) => {
+              const { promise, resolve } = Promise.withResolvers<boolean>();
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() =>
+                  resolve(Boolean(document.activeElement && card.contains(document.activeElement))),
+                ),
+              );
+              return promise;
+            }),
+            `focus-after-delete post-rAF (${groupLabel})`,
+          ).toBe(true);
         }
 
         const undoToasts = page.getByTestId('undo-toast-item');
@@ -753,6 +767,19 @@ async function runItemGroup(
               { message: `focus-after-undo (${groupLabel})`, timeout: CONTENT_A11Y_UI_WAIT_MS },
             )
             .toBe(true);
+          // ACC-FE2-6: re-assert once after the next two animation frames (no fixed sleep) to catch any late focus steal.
+          expect(
+            await page.getByTestId(`entry-card-${deleteTargetTextEntryId}`).evaluate((card) => {
+              const { promise, resolve } = Promise.withResolvers<boolean>();
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() =>
+                  resolve(Boolean(document.activeElement && card.contains(document.activeElement))),
+                ),
+              );
+              return promise;
+            }),
+            `focus-after-undo post-rAF (${groupLabel})`,
+          ).toBe(true);
           await expect(page.getByTestId('item-page-live-region')).toContainText(
             msgs.content.entry.restoredNotice,
             { timeout: CONTENT_A11Y_UI_WAIT_MS },

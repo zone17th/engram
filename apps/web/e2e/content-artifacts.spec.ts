@@ -229,8 +229,7 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and earlier test output disk s
         expect(inspectLoginSsr.hasAuthLoginShellMarker).toBe(true);
 
         const unauthItemApi = await contextUnauth.request.get(`/api/v1/items/${userAItemId}`);
-        expect(unauthItemApi.status()).not.toBe(200);
-
+        expect(unauthItemApi.status()).toBe(401);
         const pageUnauth = await contextUnauth.newPage();
         await pageUnauth.goto(expectedItemPathname);
         await expect(pageUnauth).toHaveURL(/\/app\/auth\/login/, {

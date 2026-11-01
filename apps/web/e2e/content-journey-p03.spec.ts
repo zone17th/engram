@@ -77,11 +77,13 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
     const jsonSecretTokenBeforeRecovery = `acceptance-p03-json-before-recovery-${nonce}`;
     const jsonRawBeforeRecovery = `{"service":"${jsonSecretTokenBeforeRecovery}","port":6379}`;
     const unsavedDraftOnP03Lock = `acceptance-p03-unsaved-draft-before-lock-${nonce}`;
+    const omniboxDraftOnP03Lock = `acceptance-p03-omnibox-draft-before-lock-${nonce}`;
 
     const labeledSecrets = [
       { label: 'textBodyBeforeRecovery', value: textBodyBeforeRecovery },
       { label: 'jsonSecretTokenBeforeRecovery', value: jsonSecretTokenBeforeRecovery },
       { label: 'unsavedDraftOnP03Lock', value: unsavedDraftOnP03Lock },
+      { label: 'omniboxDraftOnP03Lock', value: omniboxDraftOnP03Lock },
       { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
       { label: 'recoveredPassphrase', value: RECOVERED_PASSPHRASE },
     ] as const;
@@ -261,7 +263,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
           jsonSecretTokenBeforeRecovery,
         );
 
-        // Open a text editor with an unsaved draft, then manual lock -> editor unmounts and draft + bodies are wiped from DOM and storage (ACC-FE1-4)
+        // Open a text editor with an unsaved draft and put a nonce draft in the omnibox, then manual lock -> editor unmounts, omnibox draft is cleared, and draft + bodies are wiped from DOM and storage (ACC-FE1-4, ACC-FE2-2)
         const textCard = page.getByTestId(`entry-card-${textEntryId}`);
         await textCard.getByTestId(`entry-edit-btn-${textEntryId}`).click();
         const draftTextarea = textCard.getByTestId(`entry-edit-textarea-${textEntryId}`);
@@ -269,11 +271,17 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await setQuietInputValue(draftTextarea, unsavedDraftOnP03Lock);
         await expectInputValueEqualsBool(draftTextarea, unsavedDraftOnP03Lock);
 
+        const omniboxTextarea = page.locator('textarea[data-omnibox-input]').first();
+        await expect(omniboxTextarea).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await setQuietInputValue(omniboxTextarea, omniboxDraftOnP03Lock);
+        await expectInputValueEqualsBool(omniboxTextarea, omniboxDraftOnP03Lock);
+
         await page.getByTestId('vault-lock-button').click();
         await expectVaultShut(page);
         await expect(draftTextarea).toHaveCount(0);
-        // The omnibox textarea stays mounted while locked; it must be empty. Every other textarea (editors) must be gone.
+        // The omnibox textarea stays mounted while locked; its draft must be cleared to '' (ACC-FE2-2). Every other textarea (editors) must be gone.
         await expect(page.locator('textarea:not([data-omnibox-input])')).toHaveCount(0);
+        await expectInputEmptyBool(omniboxTextarea);
         expect(
           await page.locator('textarea[data-omnibox-input]').evaluateAll((els) => els.every((el) => (el as HTMLTextAreaElement).value === '')),
         ).toBe(true);

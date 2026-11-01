@@ -122,7 +122,6 @@ export interface RequestPlaintextLeak {
 
 export interface RequestPlaintextMonitor {
   readonly attachContext: (context: BrowserContext) => void;
-  readonly attachPage: (page: Page) => void;
   readonly registerSecret: (label: string, value: string) => void;
   readonly getLeaks: () => readonly RequestPlaintextLeak[];
   readonly getRequestCount: () => number;
@@ -157,9 +156,7 @@ export function createRequestPlaintextMonitor(
   const capturedRequests: CapturedRequestSnapshot[] = [];
   const leaks: RequestPlaintextLeak[] = [];
   const seenLeakKeys = new Set<string>();
-  const attachedPages = new WeakSet<Page>();
   const attachedContexts = new WeakSet<BrowserContext>();
-
   const recordLeak = (leak: RequestPlaintextLeak) => {
     const key = `${leak.method}:${leak.pathname}:${leak.surface}:${leak.headerName ?? ''}:${leak.needleLabel}`;
     if (!seenLeakKeys.has(key)) {
@@ -236,17 +233,8 @@ export function createRequestPlaintextMonitor(
     context.on('request', inspectRequest);
   };
 
-  const attachPage = (page: Page) => {
-    const ctx = page.context();
-    if (attachedContexts.has(ctx)) return;
-    if (attachedPages.has(page)) return;
-    attachedPages.add(page);
-    page.on('request', inspectRequest);
-  };
-
   return {
     attachContext,
-    attachPage,
     registerSecret(label: string, value: string) {
       if (value.length > 0) {
         secrets.set(label, value);
@@ -471,6 +459,77 @@ export async function findLabeledStorageAndCacheBodyLeaks(
 }
 
 /**
+ * Self-checks `findLabeledStorageAndCacheBodyLeaks` (ACC-FE2-5): plants synthetic nonces into `localStorage`
+ * and an `IndexedDB` object store, asserts the scanner reports both labels, and removes both fixtures cleanly.
+ * Keep this out of the lock assertions' path so it never interferes with real lock-wipe verification.
+ */
+export async function verifyStorageAndCacheScannerPositiveControl(
+  page: Page,
+  nonce: string,
+): Promise<void> {
+  const lsKey = `__engram_scanner_selfcheck_${nonce}`;
+  const lsNeedle = `scanner-positive-ls-needle-${nonce}`;
+  const idbName = `__engram_scanner_selfcheck_idb_${nonce}`;
+  const idbStore = 'selfcheck_store';
+  const idbNeedle = `scanner-positive-idb-needle-${nonce}`;
+
+  await page.evaluate(
+    async ({ key, lsVal, dbName, storeName, idbVal }) => {
+      window.localStorage.setItem(key, lsVal);
+      const { promise, resolve } = Promise.withResolvers<void>();
+      const openReq = indexedDB.open(dbName, 1);
+      openReq.onupgradeneeded = () => {
+        openReq.result.createObjectStore(storeName);
+      };
+      openReq.onsuccess = () => {
+        const db = openReq.result;
+        const tx = db.transaction(storeName, 'readwrite');
+        tx.objectStore(storeName).put({ nested: idbVal }, 'k1');
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      };
+      openReq.onerror = () => resolve();
+      await promise;
+    },
+    { key: lsKey, lsVal: lsNeedle, dbName: idbName, storeName: idbStore, idbVal: idbNeedle },
+  );
+
+  try {
+    const hits = await findLabeledStorageAndCacheBodyLeaks(page, [
+      { label: 'selfcheckLocalStorage', value: lsNeedle },
+      { label: 'selfcheckIndexedDB', value: idbNeedle },
+    ]);
+    expect(hits).toContain(`selfcheckLocalStorage:localStorage:${lsKey}`);
+    expect(hits).toContain(`selfcheckIndexedDB:indexedDB:${idbName}/${idbStore}`);
+  } finally {
+    await page.evaluate(
+      async ({ key, dbName }) => {
+        window.localStorage.removeItem(key);
+        const { promise, resolve } = Promise.withResolvers<void>();
+        const delReq = indexedDB.deleteDatabase(dbName);
+        delReq.onsuccess = () => resolve();
+        delReq.onerror = () => resolve();
+        delReq.onblocked = () => resolve();
+        await promise;
+      },
+      { key: lsKey, dbName: idbName },
+    );
+  }
+
+  const afterCleanup = await findLabeledStorageAndCacheBodyLeaks(page, [
+    { label: 'selfcheckLocalStorage', value: lsNeedle },
+    { label: 'selfcheckIndexedDB', value: idbNeedle },
+  ]);
+  expect(afterCleanup).toEqual([]);
+}
+
+/**
  * Asserts that neither the live DOM nor browser storage/caches (`localStorage`, `sessionStorage`, `indexedDB`,
  * `caches`) contain any of `labeledBodies` after vault lock (ACC-FE1-4, P04-A9).
  */
@@ -483,7 +542,6 @@ export async function expectNoDomOrStorageBodyLeaks(
   const storageLeaks = await findLabeledStorageAndCacheBodyLeaks(page, labeledBodies);
   expect(storageLeaks).toEqual([]);
 }
-
 /**
  * Fetches entries metadata and item summary from the real API using the page's authenticated session
  * and asserts the item is 200 and its live entry IDs match `expectedLiveEntryIds` (with `forbiddenEntryIds`

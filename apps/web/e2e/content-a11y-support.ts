@@ -37,9 +37,8 @@ import {
 } from './vault-passkey-support';
 import { fillSecret } from './vault-settings-secret';
 
-// Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs,
-// so a failure while a recovery-key sheet or secret input is mounted can never serialize secrets to disk.
-process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+// Note: `noCopyPrompt: true` in `playwright.config.ts` and `PLAYWRIGHT_NO_COPY_PROMPT: "1"` in `ci.yml`
+// disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 export {
   A11Y_LANGS,
@@ -543,7 +542,13 @@ async function expectNoHorizontalOverflowAtWidth(
           return cs.display !== 'none' && cs.visibility !== 'hidden';
         });
         if (children.length === 1) {
-          return hasEllipsisOrLineClamp(getComputedStyle(children[0]!));
+          const onlyChild = children[0]!;
+          const hasNonEmptyDirectTextSibling = Array.from(el.childNodes).some(
+            (node) => node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim().length > 0,
+          );
+          if (!hasNonEmptyDirectTextSibling && hasEllipsisOrLineClamp(getComputedStyle(onlyChild))) {
+            return true;
+          }
         }
         return false;
       };
@@ -966,25 +971,60 @@ export async function measureCoarseTouchTargets(
 }
 
 /**
- * Known product controls below 44x44 px under a coarse pointer (advisor-dec-217). Each entry is an anchored pattern on
- * the exact element descriptor and names the unit that fixes it; remove the entry when that unit merges. These are
- * logged on every sweep and not failed; any other control below 44x44 px fails the sweep.
+ * Known product controls below 44x44 px under a coarse pointer (advisor-dec-217, ACC-FE2-1). Each entry is an anchored
+ * pattern on the exact element descriptor, carries `minW`/`minH` size floors (minimum observed CI size rounded down per
+ * axis; 43.5 where observed height is already 44), and names the unit that fixes it; remove the entry when that unit merges.
+ * Any listed control that falls below its `minW`/`minH` floor, or any unlisted control below 44x44 px, fails the sweep.
  */
-export const KNOWN_UI_TOUCH_44: ReadonlyArray<{ readonly unit: string; readonly control: string; readonly descriptor: RegExp }> = [
-  { unit: 'w4fix FU11', control: 'item tag chip #tag link', descriptor: /^a\[href="\/app\?tag=[^"]+"\]\.text-body\.no-underline$/ },
+export const KNOWN_UI_TOUCH_44: ReadonlyArray<{
+  readonly unit: string;
+  readonly control: string;
+  readonly descriptor: RegExp;
+  readonly minW: number;
+  readonly minH: number;
+}> = [
+  {
+    unit: 'w4fix FU11',
+    control: 'item tag chip #tag link',
+    descriptor: /^a\[href="\/app\?tag=[^"]+"\]\.text-body\.no-underline$/,
+    minW: 38,
+    minH: 21,
+  },
   {
     unit: 'w4fix FU11',
     control: 'breadcrumb All items link',
     descriptor: /^a\[href="\/app"\]\.font-medium\.text-body\.no-underline$/,
+    minW: 49,
+    minH: 16,
   },
-  { unit: 'w4fix FU11', control: 'json cell button (short value)', descriptor: /^button\[data-testid="json-cell-btn-[^"]+"\]/ },
-  { unit: 'w4fix FU11', control: 'json field delete x', descriptor: /^button\[data-testid="json-remove-field-[^"]+"\]/ },
-  { unit: 'w4fix FU11', control: 'json row delete x', descriptor: /^button\[data-testid="json-remove-row-[^"]+"\]/ },
+  {
+    unit: 'w4fix FU11',
+    control: 'json cell button (short value)',
+    descriptor: /^button\[data-testid="json-cell-btn-[^"]+"\]\.json-cell-btn\.rounded\.border$/,
+    minW: 29,
+    minH: 43.5,
+  },
+  {
+    unit: 'w4fix FU11',
+    control: 'json field delete x',
+    descriptor: /^button\[data-testid="json-remove-field-[^"]+"\]\.btn\.btn-tertiary\.btn-sm$/,
+    minW: 26,
+    minH: 43.5,
+  },
+  {
+    unit: 'w4fix FU11',
+    control: 'json row delete x',
+    descriptor: /^button\[data-testid="json-remove-row-[^"]+"\]\.btn\.btn-tertiary\.btn-sm$/,
+    minW: 26,
+    minH: 43.5,
+  },
   // advisor-dec-223: the inline JSON cell editor input is 28 px tall under a coarse pointer (CI 41351378645).
   {
     unit: 'w4fix FU11',
     control: 'json cell editor input',
     descriptor: /^input\[data-testid="json-cell-input-[^"]+"\]\.field-input\.json-cell-input\.px-2$/,
+    minW: 281,
+    minH: 27,
   },
   // advisor-dec-224: the cell editor commit button is 41.75 px wide (btn-sm has no coarse min-width; CI 41352191394).
   // json-cancel-cell-* and json-type-select-* are pre-approved under FU11 but listed only once a run shows them < 44.
@@ -992,19 +1032,24 @@ export const KNOWN_UI_TOUCH_44: ReadonlyArray<{ readonly unit: string; readonly 
     unit: 'w4fix FU11',
     control: 'json cell editor commit button',
     descriptor: /^button\[data-testid="json-commit-cell-[^"]+"\]\.btn\.btn-primary\.btn-sm$/,
+    minW: 41,
+    minH: 43.5,
   },
   // advisor-dec-221: the 44x44 ::after of the item tag remove x overlaps the #tag link and the tag group (CI 41350488609).
   {
     unit: 'w4fix FU11',
     control: 'item tag remove x',
     descriptor: /^button\[data-testid="item-tag-remove-[^"]+"\]\.chip-x\.cursor-pointer\.border-0$/,
+    minW: 8,
+    minH: 15,
   },
 ];
 
-const knownTouchGap = (descriptor: string) => KNOWN_UI_TOUCH_44.find((k) => k.descriptor.test(descriptor));
+const knownTouchGap = (descriptor: string) =>
+  KNOWN_UI_TOUCH_44.find((k) => k.descriptor.test(descriptor));
 
 /**
- * Generic 44x44 px touch-target sweep on a coarse-pointer mobile state (ACC-A11Y1-5).
+ * Generic 44x44 px touch-target sweep on a coarse-pointer mobile state (ACC-A11Y1-5, ACC-FE2-1).
  * Sweeps all visible interactive controls (`GENERIC_COARSE_INTERACTIVE_SELECTOR` plus any explicit `selectors`)
  * and asserts both effective width >= 44 px and effective height >= 44 px (using soft assertions so every
  * coarse state in the test is swept and any product control below 44x44 is logged in full).
@@ -1019,7 +1064,7 @@ export async function expectCoarseTouchTargetsAtLeast44(
     : [GENERIC_COARSE_INTERACTIVE_SELECTOR, ...selectors];
   const measurements = await measureCoarseTouchTargets(page, combinedSelectors);
   console.log(
-    `touch-target-known-list ${stateLabel}: ${KNOWN_UI_TOUCH_44.map((k) => `[${k.unit}] ${k.control}`).join('; ')}`,
+    `touch-target-known-list ${stateLabel}: ${KNOWN_UI_TOUCH_44.map((k) => `[${k.unit}] ${k.control} (min ${k.minW}x${k.minH})`).join('; ')}`,
   );
 
   for (const m of measurements) {
@@ -1035,10 +1080,16 @@ export async function expectCoarseTouchTargetsAtLeast44(
     const known = m.below44.filter((b) => knownTouchGap(b.descriptor));
     const unknown = m.below44.filter((b) => !knownTouchGap(b.descriptor));
     for (const b of known) {
-      const k = knownTouchGap(b.descriptor);
+      const k = knownTouchGap(b.descriptor)!;
       console.log(
-        `touch-target-known-gap ${stateLabel} [${k?.unit}] ${k?.control}: ${b.descriptor} ${b.effectiveWidth}x${b.effectiveHeight}`,
+        `touch-target-known-gap ${stateLabel} [${k.unit}] ${k.control}: ${b.descriptor} ${b.effectiveWidth}x${b.effectiveHeight} (floor ${k.minW}x${k.minH})`,
       );
+      expect
+        .soft(
+          b.effectiveWidth >= k.minW && b.effectiveHeight >= k.minH,
+          `touch target known gap below floor (${stateLabel}) [${k.unit}] ${k.control}: ${b.descriptor} is ${b.effectiveWidth}x${b.effectiveHeight}, floor is ${k.minW}x${k.minH}`,
+        )
+        .toBe(true);
     }
     // Every control below 44x44 px that is not a listed known gap fails (min width/height over all controls is implied).
     expect
