@@ -96,8 +96,10 @@ const UNICODE_PUNCT_RE = /^\p{P}$/u;
 
 /**
  * Counts Unicode code points (runes) in a string, matching Go `utf8.RuneCountInString`.
+ * When `maxRunes` is provided, stops scanning as soon as the count exceeds `maxRunes`
+ * and returns `maxRunes + 1` so callers can reject oversized inputs in O(maxRunes) time.
  */
-export function countRunes(value: string): number {
+export function countRunes(value: string, maxRunes?: number): number {
   let count = 0;
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
@@ -108,6 +110,9 @@ export function countRunes(value: string): number {
       }
     }
     count++;
+    if (maxRunes !== undefined && count > maxRunes) {
+      return count;
+    }
   }
   return count;
 }
@@ -172,9 +177,9 @@ export function hasForbiddenRune(value: string): boolean {
 }
 
 /**
- * Lowercases a single Unicode code point using Go `unicode.ToLower` 1-to-1 simple case
- * folding semantics (no locale special-casing, no multi-character expansion, no contextual
- * Greek final-sigma rule).
+ * Lowercases a single Unicode code point using Go `unicode.ToLower` 1-to-1 simple
+ * lowercase mapping semantics (no locale special-casing, no multi-character expansion,
+ * no contextual Greek final-sigma rule).
  */
 export function toLowerRuneGo(cp: number): string {
   // U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE -> 'i' (U+0069) in Go unicode.ToLower,
@@ -195,30 +200,43 @@ export function toLowerRuneGo(cp: number): string {
 }
 
 /**
- * Trims leading and trailing Unicode `White_Space` code points (`unicode.IsSpace`).
+ * Trims leading and trailing Unicode `White_Space` code points (`unicode.IsSpace`)
+ * by scanning code-unit indices from both ends without allocating a full rune array.
  */
 export function trimUnicodeWhiteSpace(value: string): string {
-  const runes = Array.from(value);
   let start = 0;
-  let end = runes.length;
-  while (start < end) {
-    const cp = runes[start]?.codePointAt(0);
+  const len = value.length;
+  while (start < len) {
+    const cp = value.codePointAt(start);
     if (cp === undefined || !isUnicodeWhiteSpace(cp)) {
       break;
     }
-    start++;
+    start += cp > 0xffff ? 2 : 1;
   }
+  if (start >= len) {
+    return '';
+  }
+  let end = len;
   while (end > start) {
-    const cp = runes[end - 1]?.codePointAt(0);
-    if (cp === undefined || !isUnicodeWhiteSpace(cp)) {
+    const prevCode = value.charCodeAt(end - 1);
+    let step = 1;
+    let cp = prevCode;
+    if (prevCode >= 0xdc00 && prevCode <= 0xdfff && end - 2 >= start) {
+      const highCode = value.charCodeAt(end - 2);
+      if (highCode >= 0xd800 && highCode <= 0xdbff) {
+        cp = ((highCode - 0xd800) << 10) + (prevCode - 0xdc00) + 0x10000;
+        step = 2;
+      }
+    }
+    if (!isUnicodeWhiteSpace(cp)) {
       break;
     }
-    end--;
+    end -= step;
   }
-  if (start === 0 && end === runes.length) {
+  if (start === 0 && end === len) {
     return value;
   }
-  return runes.slice(start, end).join('');
+  return value.slice(start, end);
 }
 
 /**
@@ -255,38 +273,27 @@ function normalizeStep2(value: string): string {
     collapsed += ch;
   }
 
-  let res = collapsed;
-  while (res.length > 0) {
-    const before = res;
-    const runes = Array.from(res);
-    let start = 0;
-    let end = runes.length;
-    while (start < end) {
-      const ch = runes[start];
-      if (ch === undefined || !UNICODE_PUNCT_RE.test(ch)) {
-        break;
-      }
-      start++;
-    }
-    while (end > start) {
-      const ch = runes[end - 1];
-      if (ch === undefined || !UNICODE_PUNCT_RE.test(ch)) {
-        break;
-      }
-      end--;
-    }
-    res = runes.slice(start, end).join('');
-    while (res.startsWith(' ')) {
-      res = res.slice(1);
-    }
-    while (res.endsWith(' ')) {
-      res = res.slice(0, -1);
-    }
-    if (res === before) {
+  const runes = Array.from(collapsed);
+  let start = 0;
+  let end = runes.length;
+  while (start < end) {
+    const ch = runes[start];
+    if (ch === undefined || (ch !== ' ' && !UNICODE_PUNCT_RE.test(ch))) {
       break;
     }
+    start++;
   }
-  return res;
+  while (end > start) {
+    const ch = runes[end - 1];
+    if (ch === undefined || (ch !== ' ' && !UNICODE_PUNCT_RE.test(ch))) {
+      break;
+    }
+    end--;
+  }
+  if (start === 0 && end === runes.length) {
+    return collapsed;
+  }
+  return runes.slice(start, end).join('');
 }
 
 /**
@@ -322,6 +329,7 @@ function resolveInputString(input: string | Uint8Array): string | null {
 function normalizeAndTrim(
   input: string | Uint8Array,
   invalidCode: NormalizeErrorCode,
+  maxRunes?: number,
 ): NormalizeBothResult {
   const s = resolveInputString(input);
   if (s === null || hasForbiddenRune(s)) {
@@ -331,15 +339,21 @@ function normalizeAndTrim(
   if (trimmed === '') {
     return { ok: false, error: invalidCode };
   }
+  if (maxRunes !== undefined && countRunes(trimmed, maxRunes) > maxRunes) {
+    return { ok: false, error: invalidCode };
+  }
   const normalized = normalizeStep2(trimmed);
   if (normalized === '') {
+    return { ok: false, error: invalidCode };
+  }
+  if (maxRunes !== undefined && countRunes(normalized, maxRunes) > maxRunes) {
     return { ok: false, error: invalidCode };
   }
   return { ok: true, trimmed, normalized };
 }
 
 function runeCountBetween(value: string, minRunes: number, maxRunes: number): boolean {
-  const n = countRunes(value);
+  const n = countRunes(value, maxRunes);
   return n >= minRunes && n <= maxRunes;
 }
 
@@ -361,7 +375,7 @@ export function normalize(input: string | Uint8Array): NormalizeSingleResult {
  * - Maps failures to `'name_invalid'`.
  */
 export function normalizeName(input: string | Uint8Array): NormalizeBothResult {
-  const res = normalizeAndTrim(input, 'name_invalid');
+  const res = normalizeAndTrim(input, 'name_invalid', NAME_MAX_RUNES);
   if (!res.ok) {
     return res;
   }
@@ -392,7 +406,7 @@ export function normalizeLookupName(input: string | Uint8Array): NormalizeSingle
  * - Maps failures to `'tag_display_invalid'`.
  */
 export function normalizeTag(input: string | Uint8Array): NormalizeBothResult {
-  const res = normalizeAndTrim(input, 'tag_display_invalid');
+  const res = normalizeAndTrim(input, 'tag_display_invalid', TAG_MAX_RUNES);
   if (!res.ok) {
     return res;
   }
@@ -417,7 +431,7 @@ export function validateHint(input: string | Uint8Array): ValidateHintResult {
     return { ok: false, error: 'hint_invalid' };
   }
   const trimmed = trimUnicodeWhiteSpace(s);
-  if (countRunes(trimmed) > HINT_MAX_RUNES) {
+  if (countRunes(trimmed, HINT_MAX_RUNES) > HINT_MAX_RUNES) {
     return { ok: false, error: 'hint_invalid' };
   }
   return { ok: true, trimmed };
@@ -435,11 +449,11 @@ function normalizeOptionalQuery(
   if (trimmed === '') {
     return { ok: true, normalized: '' };
   }
-  if (countRunes(trimmed) > maxRunes) {
+  if (countRunes(trimmed, maxRunes) > maxRunes) {
     return { ok: false, error: 'name_invalid' };
   }
   const normalized = normalizeStep2(trimmed);
-  if (normalized === '' || countRunes(normalized) > maxRunes) {
+  if (normalized === '' || countRunes(normalized, maxRunes) > maxRunes) {
     return { ok: false, error: 'name_invalid' };
   }
   return { ok: true, normalized };

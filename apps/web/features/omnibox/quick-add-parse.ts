@@ -2,7 +2,8 @@
  * Omnibox quick-add grammar and mode classifier per P04 plan mục 2.11 and SPEC §3.4.
  *
  * SECURITY INVARIANT (advisor-dec-098, P4BE1-1, P4FE1-3):
- * - This parser is a pure, synchronous, side-effect-free function.
+ * - This parser is synchronous, with no I/O or requests; only a module-level revision counter
+ *   in lib/json is touched when `parseJsonStrict` runs on a JSON candidate body.
  * - It makes NO network requests, reads/writes NO storage or query cache, and NEVER embeds
  *   user input in error codes.
  * - Search (`GET /items?q=`) and add-mode exact lookup (`GET /items/lookup?name=`) are sent
@@ -10,8 +11,10 @@
  */
 
 import { parseJsonStrict } from '../../lib/json/parse';
+import { JSON_MAX_UTF8_BYTES, measureUtf8Bytes } from '../../lib/json/utf8';
 import {
   NAME_MAX_RUNES,
+  TAG_MAX_RUNES,
   countRunes,
   isUnicodeWhiteSpace,
   normalizeName,
@@ -62,6 +65,27 @@ function findFirstLineEnd(value: string): number {
 }
 
 /**
+ * Scans `value` from index 0 past any leading Unicode `White_Space` code points and
+ * returns `true` if the first non-whitespace code point is `#` (U+0023).
+ * Avoids trimming or allocating over the full input string.
+ */
+function startsWithHashAfterLeadingWhiteSpace(value: string): boolean {
+  let i = 0;
+  const len = value.length;
+  while (i < len) {
+    const cp = value.codePointAt(i);
+    if (cp === undefined) {
+      return false;
+    }
+    if (!isUnicodeWhiteSpace(cp)) {
+      return cp === 0x23; /* '#' */
+    }
+    i += cp > 0xffff ? 2 : 1;
+  }
+  return false;
+}
+
+/**
  * Finds the index of the first ASCII `:` on `firstLine` that is NOT immediately followed
  * by `//` (SPEC §3.4 `(?!//)` rule so URLs in `head` like `docs https://a.b: note` do not
  * split at `https:`). Full-width colon `：` (U+FF1A) is NOT a separator.
@@ -92,39 +116,31 @@ export function findQuickAddSeparatorColon(firstLine: string): number {
  *   any plain word after a tag sets `hasWordAfterTag = true` (`tag_has_space`, Q5).
  */
 function splitHeadNameAndTags(head: string): HeadTokensSplit {
-  const runes = Array.from(head);
   const tokens: { text: string; startCodeUnit: number }[] = [];
 
   let i = 0;
-  let codeUnitOffset = 0;
-  while (i < runes.length) {
-    while (i < runes.length) {
-      const ch = runes[i];
-      const cp = ch?.codePointAt(0);
-      if (ch === undefined || cp === undefined || !isUnicodeWhiteSpace(cp)) {
+  const len = head.length;
+  while (i < len) {
+    while (i < len) {
+      const cp = head.codePointAt(i);
+      if (cp === undefined || !isUnicodeWhiteSpace(cp)) {
         break;
       }
-      codeUnitOffset += ch.length;
-      i++;
+      i += cp > 0xffff ? 2 : 1;
     }
-    if (i >= runes.length) {
+    if (i >= len) {
       break;
     }
-    const tokenStartOffset = codeUnitOffset;
-    let tokenText = '';
-    while (i < runes.length) {
-      const ch = runes[i];
-      const cp = ch?.codePointAt(0);
-      if (ch === undefined || cp === undefined || isUnicodeWhiteSpace(cp)) {
+    const tokenStartOffset = i;
+    while (i < len) {
+      const cp = head.codePointAt(i);
+      if (cp === undefined || isUnicodeWhiteSpace(cp)) {
         break;
       }
-      tokenText += ch;
-      codeUnitOffset += ch.length;
-      i++;
+      i += cp > 0xffff ? 2 : 1;
     }
-    tokens.push({ text: tokenText, startCodeUnit: tokenStartOffset });
+    tokens.push({ text: head.slice(tokenStartOffset, i), startCodeUnit: tokenStartOffset });
   }
-
   let firstTagIndex = -1;
   for (let idx = 0; idx < tokens.length; idx++) {
     const tok = tokens[idx];
@@ -167,15 +183,18 @@ function splitHeadNameAndTags(head: string): HeadTokensSplit {
 }
 
 /**
- * Checks whether `trimmedBody` starts with `{` or `[` and is accepted by `parseJsonStrict`
- * (`apps/web/lib/json`).
+ * Checks whether `trimmedBody` starts with `{` or `[`, is within the 262,144-byte UTF-8
+ * limit (`JSON_MAX_UTF8_BYTES`), and is accepted by `parseJsonStrict` (`apps/web/lib/json`).
  */
 function isJsonCandidateBody(trimmedBody: string): boolean {
-  if (trimmedBody.length === 0) {
+  if (trimmedBody.length === 0 || trimmedBody.length > JSON_MAX_UTF8_BYTES) {
     return false;
   }
   const firstChar = trimmedBody.charCodeAt(0);
   if (firstChar !== 0x7b /* '{' */ && firstChar !== 0x5b /* '[' */) {
+    return false;
+  }
+  if (measureUtf8Bytes(trimmedBody) > JSON_MAX_UTF8_BYTES) {
     return false;
   }
   return parseJsonStrict(trimmedBody).ok;
@@ -189,20 +208,18 @@ function isSearchableInput(rawInput: string, firstLineEnd: number): boolean {
   if (firstLineEnd !== rawInput.length) {
     return false;
   }
-  return countRunes(rawInput) <= QUICK_ADD_SEARCHABLE_MAX_RUNES;
+  return (
+    countRunes(rawInput, QUICK_ADD_SEARCHABLE_MAX_RUNES) <= QUICK_ADD_SEARCHABLE_MAX_RUNES
+  );
 }
 
 /**
  * Parses the omnibox input string into a `QuickAddParseResult` per P04 plan mục 2.11 and SPEC §3.4.
  */
 export function parseQuickAdd(input: string): QuickAddParseResult {
-  const firstLineEnd = findFirstLineEnd(input);
-  const firstLine = input.slice(0, firstLineEnd);
-  const trimmedLeading = trimUnicodeWhiteSpace(input);
-
-  // Rule 1: Input starting with `#` (after leading whitespace) is always tag-filter mode,
-  // never quick-add.
-  if (trimmedLeading.startsWith('#')) {
+  // Rule 1: input starting with `#` after leading whitespace is always tag-filter mode,
+  // never quick-add (e.g. `"#nhà"`, `"  #nhà"`, `"\t#nhà: x"`).
+  if (startsWithHashAfterLeadingWhiteSpace(input)) {
     return {
       mode: 'tag-filter',
       name: '',
@@ -213,6 +230,8 @@ export function parseQuickAdd(input: string): QuickAddParseResult {
     };
   }
 
+  const firstLineEnd = findFirstLineEnd(input);
+  const firstLine = input.slice(0, firstLineEnd);
   const colonIndex = findQuickAddSeparatorColon(firstLine);
   if (colonIndex === -1) {
     return {
@@ -231,7 +250,12 @@ export function parseQuickAdd(input: string): QuickAddParseResult {
 
   const { nameSegment, tagTokens, hasWordAfterTag } = splitHeadNameAndTags(rawHead);
   const trimmedNameCandidate = trimUnicodeWhiteSpace(nameSegment);
-  const nameNorm = normalizeName(nameSegment);
+  const nameCandidateWithinLimit =
+    trimmedNameCandidate !== '' &&
+    countRunes(trimmedNameCandidate, NAME_MAX_RUNES) <= NAME_MAX_RUNES;
+  const nameNorm = nameCandidateWithinLimit
+    ? normalizeName(trimmedNameCandidate)
+    : ({ ok: false, error: 'name_invalid' } as const);
 
   // Parse and deduplicate tags that are valid so the UI preview can still display what was
   // recognized, while recording the first grammar/validation error if any.
@@ -250,7 +274,15 @@ export function parseQuickAdd(input: string): QuickAddParseResult {
       tagValidationError ??= 'tag_display_invalid';
       continue;
     }
-    const tagNorm = normalizeTag(rawTagDisplay);
+    const trimmedTagCandidate = trimUnicodeWhiteSpace(rawTagDisplay);
+    if (
+      trimmedTagCandidate === '' ||
+      countRunes(trimmedTagCandidate, TAG_MAX_RUNES) > TAG_MAX_RUNES
+    ) {
+      tagValidationError ??= 'tag_display_invalid';
+      continue;
+    }
+    const tagNorm = normalizeTag(trimmedTagCandidate);
     if (!tagNorm.ok) {
       tagValidationError ??= 'tag_display_invalid';
       continue;
@@ -262,7 +294,6 @@ export function parseQuickAdd(input: string): QuickAddParseResult {
   }
 
   const displayName = nameNorm.ok ? nameNorm.trimmed : trimmedNameCandidate;
-
   // Determine validation errors in priority order:
   // 1. Name empty or invalid
   if (trimmedNameCandidate === '') {
@@ -277,7 +308,7 @@ export function parseQuickAdd(input: string): QuickAddParseResult {
     };
   }
 
-  if (!nameNorm.ok || countRunes(nameNorm.trimmed) > NAME_MAX_RUNES) {
+  if (!nameNorm.ok || countRunes(nameNorm.trimmed, NAME_MAX_RUNES) > NAME_MAX_RUNES) {
     return {
       mode: 'add-invalid',
       name: displayName,
