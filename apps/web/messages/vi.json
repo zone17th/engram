@@ -207,7 +207,7 @@
       "disabledHint": "Nút mở khoá sau khi tick. Trước lúc đó chưa có gì được gửi lên máy chủ."
     },
     "vaultExists": {
-      "badge": "409 vault_exists",
+      "badge": "Vault đã tồn tại",
       "title": "Vault đã được tạo ở tab hoặc thiết bị khác",
       "bodyPrefix": "Tài khoản này đã có vault trước khi yêu cầu tạo tại đây hoàn tất. ",
       "bodyStrong": "10 recovery key vừa hiển thị không thuộc về bất kỳ vault nào — hãy huỷ bỏ ngay",
@@ -969,10 +969,10 @@
       "recoveringTitle": "Tab này đang ở giữa luồng khôi phục",
       "recoveringBody": "Hãy hoàn tất đặt passphrase mới ở màn khôi phục, hoặc khoá vault trước để quay lại mở khoá bình thường.",
       "recoveringLockCta": "Khoá và chuyển sang mở khoá",
-      "rateLimitedBadge": "429 rate_limited",
+      "rateLimitedBadge": "Thử quá nhiều lần — thử lại sau {seconds} giây",
       "rateLimitedTitle": "Thử quá nhiều lần — vui lòng đợi",
       "rateLimitedBody": "Vui lòng đợi {clock} ({seconds} giây) trước khi thử lại.",
-      "sessionExpiredBadge": "401 session_invalid",
+      "sessionExpiredBadge": "Cần đăng nhập lại",
       "sessionExpiredTitle": "Phiên đăng nhập đã hết hạn",
       "sessionExpiredBody": "Mở vault cần một phiên tài khoản còn hiệu lực. Đăng nhập lại rồi quay về đúng màn này.",
       "sessionExpiredCta": "Đăng nhập lại",

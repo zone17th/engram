@@ -207,7 +207,7 @@
       "disabledHint": "Unlocks after you tick the box above. Nothing has been sent to the server yet."
     },
     "vaultExists": {
-      "badge": "409 vault_exists",
+      "badge": "Vault already exists",
       "title": "Vault was created elsewhere (another tab or device)",
       "bodyPrefix": "This account already has a vault before this request finished. ",
       "bodyStrong": "The 10 recovery keys just generated belong to no vault — discard them immediately",
@@ -969,10 +969,10 @@
       "recoveringTitle": "Recovery is in progress in this tab",
       "recoveringBody": "Finish setting a new passphrase on the recovery screen, or lock the vault first to switch back to normal unlock.",
       "recoveringLockCta": "Lock and switch to unlock",
-      "rateLimitedBadge": "429 rate_limited",
+      "rateLimitedBadge": "Too many attempts — try again in {seconds}s",
       "rateLimitedTitle": "Too many requests — please wait",
       "rateLimitedBody": "Please wait {clock} ({seconds}s) before trying again.",
-      "sessionExpiredBadge": "401 session_invalid",
+      "sessionExpiredBadge": "Sign-in needed",
       "sessionExpiredTitle": "Session expired",
       "sessionExpiredBody": "Unlocking the vault requires an active sign-in session. Sign in again to return to this unlock screen.",
       "sessionExpiredCta": "Sign in again",
