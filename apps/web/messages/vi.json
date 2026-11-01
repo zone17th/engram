@@ -1285,6 +1285,35 @@
         "title": "Chưa có gì ở đây",
         "body": "Tính năng quản lý nội dung chưa được bật trên bản dựng này."
       }
-    }
+      },
+      "omnibox": {
+        "ariaLabel": "Tìm hoặc lưu",
+        "placeholder": "Tìm hoặc tên: nội dung",
+        "placeholderCompact": "Tìm hoặc tên: nội dung",
+        "searchHint": "Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ `tên: nội dung`",
+        "tagHint": "Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá",
+        "guardTitle": "Thêm tên và dấu : để lưu",
+        "guardBody": "Chuỗi nhiều dòng hoặc dài quá 200 ký tự không được gửi tìm kiếm để tránh lộ nội dung. Gõ tên: nội dung ở dòng đầu để mã hoá và lưu.",
+        "tagGuardTitle": "Tên tag lọc tối đa 50 ký tự",
+        "searchListboxAriaLabel": "Kết quả tìm kiếm",
+        "searchGroupHeader": "{count, plural, other {# kết quả cho “{query}”}}",
+        "searchLiveCount": "{count, plural, other {# kết quả}}",
+        "searchEntryCount": "{count, plural, other {# entry}}",
+        "searchMoreTagsAria": "{count, plural, other {Còn # tag nữa}}",
+        "searchEmptyEyebrow": "Tìm không ra",
+        "searchEmptyTitle": "Không có mục bắt đầu bằng “{query}”",
+        "searchEmptyBody": "Chỉ khớp tiền tố tên mục.",
+        "createItemOption": "Tạo mục “{query}”",
+        "createdEmptyItemToast": "Đã tạo mục “{name}” (chưa có entry)",
+        "undoAction": "Hoàn tác",
+        "tagListboxAriaLabel": "Kết quả lọc tag",
+        "tagGroupCache": "{count, plural, other {Lọc tag trên bộ nhớ đệm · # tag}}",
+        "tagGroupServer": "{count, plural, other {Kết quả tìm tag · # tag}}",
+        "tagItemCount": "{count, plural, other {# mục}}",
+        "tagLiveCount": "{count, plural, other {# tag khớp #{query}}}",
+        "tagEmptyTitle": "Không có tag bắt đầu bằng “#{query}”",
+        "tagEmptyCacheBody": "Nhấn Enter để tìm trong toàn bộ tag trên máy chủ.",
+        "tagEmptyServerBody": "Không có tag nào khớp trên máy chủ."
+      }
   }
 }

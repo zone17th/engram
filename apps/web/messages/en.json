@@ -1285,6 +1285,35 @@
         "title": "Nothing here yet",
         "body": "Content management is not enabled in this build yet."
       }
-    }
+      },
+      "omnibox": {
+        "ariaLabel": "Search or save",
+        "placeholder": "Search or name: content",
+        "placeholderCompact": "Search or name: content",
+        "searchHint": "Enter: search by name prefix · Ctrl+Enter: create item with this name — typed text is sent to the server, not encrypted. To save content, type `name: content`",
+        "tagHint": "Enter: filter by tag — typed text is sent to the server, not encrypted",
+        "guardTitle": "Add a name and : to save",
+        "guardBody": "Multi-line or > 200-character input is never sent as a search query. Prefix with name: on the first line to encrypt and save.",
+        "tagGuardTitle": "Tag filter query must be at most 50 characters",
+        "searchListboxAriaLabel": "Search results",
+        "searchGroupHeader": "{count, plural, one {# result for “{query}”} other {# results for “{query}”}}",
+        "searchLiveCount": "{count, plural, one {# result} other {# results}}",
+        "searchEntryCount": "{count, plural, one {# entry} other {# entries}}",
+        "searchMoreTagsAria": "{count, plural, one {# more tag} other {# more tags}}",
+        "searchEmptyEyebrow": "No prefix match",
+        "searchEmptyTitle": "No items starting with “{query}”",
+        "searchEmptyBody": "Search only matches item name prefixes.",
+        "createItemOption": "Create item “{query}”",
+        "createdEmptyItemToast": "Created item “{name}” (no entries)",
+        "undoAction": "Undo",
+        "tagListboxAriaLabel": "Tag filter results",
+        "tagGroupCache": "{count, plural, one {Client tag cache · # tag} other {Client tag cache · # tags}}",
+        "tagGroupServer": "{count, plural, one {Tag search results · # tag} other {Tag search results · # tags}}",
+        "tagItemCount": "{count, plural, one {# item} other {# items}}",
+        "tagLiveCount": "{count, plural, one {# matching tag for #{query}} other {# matching tags for #{query}}}",
+        "tagEmptyTitle": "No tags starting with “#{query}”",
+        "tagEmptyCacheBody": "Press Enter to search all tags on the server.",
+        "tagEmptyServerBody": "No matching tags on the server."
+      }
   }
 }
