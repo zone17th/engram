@@ -1,6 +1,6 @@
 import { ERROR_CODES, ProblemError, type ProblemDetails } from '@engram/shared-types';
 import { MutationObserver, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, renderHook } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
@@ -1016,34 +1016,45 @@ describe('lib/api/content', () => {
     });
 
     it('CCFE3 (advisor-dec-134): useContentMutation wires contentMutationOptions into useMutation (gcTime 0, retry false, networkMode always, plaintext guard)', async () => {
+      // Real timers: the offline-proof/probe flow needs no fake clock, and the whole React commit
+      // pipeline then runs on its native schedulers (afterEach restores the file-level fake timers).
+      vi.useRealTimers();
       const queryClient = new QueryClient();
-      const wrapper = ({ children }: { children: ReactNode }) =>
-        createElement(QueryClientProvider, { client: queryClient }, children);
-      const { result, unmount } = renderHook(
-        () =>
-          useContentMutation<{ ok: boolean }, Error, EntryCreateRequest>({
-            mutationFn: async (vars) => ({ ok: Boolean(vars.id) }),
-          }),
-        { wrapper },
+      // Probe component instead of renderHook: capture the hook value DURING RENDER so the test never
+      // depends on an effect flush (CI r41267951137 saw renderHook's `result.current` null here).
+      type ContentMutation = ReturnType<
+        typeof useContentMutation<{ ok: boolean }, Error, EntryCreateRequest>
+      >;
+      let hook: ContentMutation | undefined;
+      function Probe() {
+        hook = useContentMutation<{ ok: boolean }, Error, EntryCreateRequest>({
+          mutationFn: async (vars) => ({ ok: Boolean(vars.id) }),
+        });
+        return null;
+      }
+      const { unmount } = render(
+        createElement(QueryClientProvider, { client: queryClient }, createElement(Probe)),
       );
-      // Same online renderHook pattern as the gcTime test above; fail with a clear message if the
-      // effect that sets result.current did not flush.
-      expect(result.current, 'renderHook did not flush its result effect').not.toBeNull();
+      try {
+        expect(hook, 'Probe did not render useContentMutation').toBeDefined();
+        const mutation$ = hook as ContentMutation;
 
-      await act(async () => {
-        await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
-      });
-      // The mutation is still in the cache while the hook is mounted: its options are what the hook passed.
-      const mutation = queryClient.getMutationCache().getAll()[0];
-      expect(mutation?.options).toMatchObject({ gcTime: 0, retry: false, networkMode: 'always' });
-      const built = contentMutationOptions<{ ok: boolean }, Error, EntryCreateRequest>({
-        mutationFn: async (vars) => ({ ok: Boolean(vars.id) }),
-      });
-      expect(built).toMatchObject({ gcTime: 0, retry: false, networkMode: 'always' });
-      await expect(
-        built.mutationFn?.({ plaintext: 'x' } as unknown as EntryCreateRequest, undefined as never),
-      ).rejects.toThrow(/forbids plaintext fields/);
-      unmount();
+        await act(async () => {
+          await mutation$.mutateAsync(SAMPLE_ENTRY_CREATE);
+        });
+        // The mutation is still in the cache while the hook is mounted: its options are what the hook passed.
+        const mutation = queryClient.getMutationCache().getAll()[0];
+        expect(mutation?.options).toMatchObject({ gcTime: 0, retry: false, networkMode: 'always' });
+        const built = contentMutationOptions<{ ok: boolean }, Error, EntryCreateRequest>({
+          mutationFn: async (vars) => ({ ok: Boolean(vars.id) }),
+        });
+        expect(built).toMatchObject({ gcTime: 0, retry: false, networkMode: 'always' });
+        await expect(
+          built.mutationFn?.({ plaintext: 'x' } as unknown as EntryCreateRequest, undefined as never),
+        ).rejects.toThrow(/forbids plaintext fields/);
+      } finally {
+        unmount();
+      }
     });
 
     it(

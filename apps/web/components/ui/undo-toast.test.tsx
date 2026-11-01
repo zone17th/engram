@@ -10,6 +10,16 @@ import {
   type UndoToastOptions,
 } from '@/components/ui/undo-toast';
 
+/**
+ * Undo buttons only. The collapsed "+N" overflow button's accessible name is `+N · Hoàn tác`
+ * (CCFE2-4), so a bare /Hoàn tác/ role query also matches it; exclude it by test id.
+ */
+function getUndoButtons(): HTMLElement[] {
+  return screen
+    .getAllByRole('button', { name: /Hoàn tác/i })
+    .filter((el) => el.getAttribute('data-testid') !== 'undo-toast-overflow');
+}
+
 function TestHarness({
   onPushReady,
 }: {
@@ -99,7 +109,7 @@ describe('components/ui/undo-toast', () => {
     expect(screen.getByText('Đã xoá entry 1')).toBeInTheDocument();
     expect(screen.getByText('Đã xoá entry 2')).toBeInTheDocument();
 
-    const buttons = screen.getAllByRole('button', { name: /Hoàn tác/i });
+    const buttons = getUndoButtons();
     expect(buttons).toHaveLength(2);
 
     // Click both Undos consecutively
@@ -109,7 +119,7 @@ describe('components/ui/undo-toast', () => {
     expect(undo2).toHaveBeenCalledTimes(1);
     expect(undo1).toHaveBeenCalledTimes(0);
 
-    const remainingButtons = screen.getAllByRole('button', { name: /Hoàn tác/i });
+    const remainingButtons = getUndoButtons();
     expect(remainingButtons).toHaveLength(1);
     act(() => {
       fireEvent.click(remainingButtons[0]!);
@@ -412,7 +422,7 @@ describe('components/ui/undo-toast', () => {
             });
           }
         });
-        expect(screen.getAllByRole('button', { name: /Hoàn tác/i })).toHaveLength(3);
+        expect(getUndoButtons()).toHaveLength(3);
 
         // outsideBtn -> Undo(4) -> Undo(3) -> Undo(2) -> "+1"
         const overflowBtn = screen.getByTestId('undo-toast-overflow');
@@ -423,7 +433,7 @@ describe('components/ui/undo-toast', () => {
 
         await user.keyboard('{Enter}');
 
-        const allUndoBtns = screen.getAllByRole('button', { name: /Hoàn tác/i });
+        const allUndoBtns = getUndoButtons();
         expect(allUndoBtns).toHaveLength(4);
         expect(screen.getByText('Toast 1 (oldest)')).toBeInTheDocument();
         expect(screen.queryByTestId('undo-toast-overflow')).not.toBeInTheDocument();
@@ -481,7 +491,7 @@ describe('components/ui/undo-toast', () => {
       act(() => {
         fireEvent.click(overflowBtn);
       });
-      const allUndoBtns = screen.getAllByRole('button', { name: /Hoàn tác/i });
+      const allUndoBtns = getUndoButtons();
       expect(allUndoBtns).toHaveLength(4);
       expect(screen.getByText('Toast 1 (oldest)')).toBeInTheDocument();
       expect(document.activeElement).toBe(allUndoBtns[3]);
