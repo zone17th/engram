@@ -41,6 +41,7 @@ interface QueuedPatchStep {
   readonly kind: 'name' | 'hint' | 'both';
   readonly body: ItemUpdateRequest;
   readonly idempotencyKey: string;
+  ifMatch?: number;
 }
 
 export interface ItemHeaderProps {
@@ -77,6 +78,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
     readonly currentVersion?: number;
   } | null>(null);
 
+  const [uncertainPatchError, setUncertainPatchError] = useState<string | null>(null);
   // Sequential PATCH queue state (P4FE2-4)
   const latestVersionRef = useRef<number>(item.version);
   const latestCommittedNameRef = useRef<string>(item.name);
@@ -84,6 +86,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   const patchQueueRef = useRef<QueuedPatchStep[]>([]);
   const drainingRef = useRef<boolean>(false);
   const conflictRef = useRef<boolean>(false);
+  const uncertainStepPausedRef = useRef<boolean>(false);
   const mountedRef = useRef<boolean>(true);
 
   useEffect(() => {
@@ -101,7 +104,12 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
     latestCommittedNameRef.current = item.name;
     latestCommittedHintRef.current = item.hint ?? null;
 
-    if (!conflictRef.current && !drainingRef.current && patchQueueRef.current.length === 0) {
+    if (
+      !conflictRef.current &&
+      !uncertainStepPausedRef.current &&
+      !drainingRef.current &&
+      patchQueueRef.current.length === 0
+    ) {
       if (!nameDirty) {
         setNameInput(item.name);
       }
@@ -122,13 +130,20 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   );
 
   const drainPatchQueue = useCallback(async () => {
-    if (drainingRef.current || conflictRef.current) return;
+    if (drainingRef.current || conflictRef.current || uncertainStepPausedRef.current) return;
     drainingRef.current = true;
 
     try {
-      while (patchQueueRef.current.length > 0 && !conflictRef.current) {
+      while (
+        patchQueueRef.current.length > 0 &&
+        !conflictRef.current &&
+        !uncertainStepPausedRef.current
+      ) {
         const nextStep = patchQueueRef.current[0];
-        const versionToUse = latestVersionRef.current;
+        if (nextStep.ifMatch === undefined) {
+          nextStep.ifMatch = latestVersionRef.current;
+        }
+        const versionToUse = nextStep.ifMatch;
 
         try {
           const updated = await itemUpdate(item.id, nextStep.body, {
@@ -139,6 +154,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           applyItemSummaryToCache(updated);
 
           if (mountedRef.current) {
+            setUncertainPatchError(null);
             if (nextStep.kind === 'name') {
               setNameDirty(false);
               onAnnounce?.(tItem('nameSaved'));
@@ -152,22 +168,38 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
             }
           }
         } catch (err) {
-          const classified = classifyContentMutationError(err);
+          const classified = classifyContentMutationError(err, {
+            hadUncertainSend: true,
+          });
           if (classified.kind === 'version_mismatch') {
             // Stop queue on 412 and preserve typed values in the inputs (plan §2.10, P4FE2-4)
             patchQueueRef.current = [];
             conflictRef.current = true;
+            uncertainStepPausedRef.current = false;
             if (classified.currentVersion !== undefined) {
               latestVersionRef.current = classified.currentVersion;
             }
             if (mountedRef.current) {
+              setUncertainPatchError(null);
               setConflict412({ currentVersion: classified.currentVersion });
               onAnnounce?.(tItem('conflictTitle'));
             }
             break;
           }
 
-          // Other error: remove failed step and show field error
+          // Uncertain outcome (canRetrySameBytes after shared retries): stop draining, retain exact step
+          // (If-Match, body, Idempotency-Key), and offer Retry that replays it (IP15-BE1-4).
+          if (classified.canRetrySameBytes) {
+            uncertainStepPausedRef.current = true;
+            if (mountedRef.current) {
+              const msg = translateContentError(classified.i18nKey);
+              setUncertainPatchError(msg);
+              onAnnounce?.(msg);
+            }
+            break;
+          }
+
+          // Deterministic 4xx: remove failed step and show field error
           patchQueueRef.current.shift();
           if (mountedRef.current) {
             const msg = translateContentError(classified.i18nKey);
@@ -184,6 +216,13 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       drainingRef.current = false;
     }
   }, [applyItemSummaryToCache, item.id, onAnnounce, tItem, translateContentError]);
+
+  const handleRetryUncertainPatch = useCallback(() => {
+    if (!uncertainStepPausedRef.current || drainingRef.current) return;
+    uncertainStepPausedRef.current = false;
+    setUncertainPatchError(null);
+    void drainPatchQueue();
+  }, [drainPatchQueue]);
 
   const enqueuePatch = useCallback(
     (step: QueuedPatchStep) => {
@@ -270,9 +309,11 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       const latest = await itemGet(item.id);
       conflictRef.current = false;
       patchQueueRef.current = [];
+      uncertainStepPausedRef.current = false;
       applyItemSummaryToCache(latest);
       if (mountedRef.current) {
         setConflict412(null);
+        setUncertainPatchError(null);
         setNameError(null);
         setHintError(null);
         setNameDirty(false);
@@ -315,6 +356,8 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       }
 
       conflictRef.current = false;
+      uncertainStepPausedRef.current = false;
+      setUncertainPatchError(null);
       setConflict412(null);
       const nextHint = validHint.trimmed === '' ? null : validHint.trimmed;
       setNameInput(normName.trimmed);
@@ -705,6 +748,24 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           </div>
         ) : null}
 
+
+        {uncertainPatchError ? (
+          <div
+            role="alert"
+            data-testid="item-patch-uncertain-retry-box"
+            className="auth-alert mt-4 flex flex-wrap items-center justify-between gap-2"
+          >
+            <span data-testid="item-patch-uncertain-error">{uncertainPatchError}</span>
+            <button
+              type="button"
+              data-testid="item-patch-retry-btn"
+              className="btn btn-secondary btn-sm"
+              onClick={handleRetryUncertainPatch}
+            >
+              {tItem('retry')}
+            </button>
+          </div>
+        ) : null}
         <div
           id="item-privacy-note"
           data-testid="item-privacy-note"

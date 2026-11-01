@@ -1382,6 +1382,108 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(nameInput).toHaveValue('my-conflicting-typed-name');
   });
 
+  it('IP15-BE1-4: stops draining item PATCH queue on an uncertain outcome, retains exact If-Match/body/Idempotency-Key for Retry, and then sends queued hint using the confirmed version', async () => {
+    const h = await setupItemPageHarness();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-name-input')).toHaveValue('wifi');
+    });
+
+    // Simulate a committed name PATCH on the server whose responses are all lost (network drop),
+    // while a hint PATCH is already queued behind it.
+    let dropNamePatchResponses = true;
+    let committedNameIdempotencyKey: string | null = null;
+    let committedNameSnapshot: ItemSummary | null = null;
+
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/items/${ITEM_ID}`) && init?.method === 'PATCH') {
+        const rawBody = typeof init.body === 'string' ? init.body : '';
+        const parsed = JSON.parse(rawBody) as ItemUpdateRequest;
+        const headersObj =
+          init.headers instanceof Headers
+            ? Object.fromEntries(init.headers.entries())
+            : (init.headers as Record<string, string> | undefined) ?? {};
+        const idemKey =
+          headersObj['Idempotency-Key'] ?? headersObj['idempotency-key'] ?? '';
+
+        if (parsed.name !== undefined) {
+          if (!committedNameSnapshot) {
+            // Server commits the name update on first attempt (version 1 -> 2), then response is lost
+            committedNameIdempotencyKey = idemKey;
+            h.server.item.name = parsed.name;
+            h.server.item.version = 2;
+            committedNameSnapshot = { ...h.server.item };
+          }
+          if (dropNamePatchResponses) {
+            throw new TypeError('Failed to fetch');
+          }
+          // Idempotent replay with the same key returns the stored response without re-checking If-Match
+          if (idemKey === committedNameIdempotencyKey && committedNameSnapshot) {
+            return jsonResponse(committedNameSnapshot, 200);
+          }
+        }
+      }
+      return null;
+    });
+
+    const nameInput = screen.getByTestId('item-name-input');
+    const hintInput = screen.getByTestId('item-hint-input');
+
+    // Enqueue name PATCH #1 and hint PATCH #2 in one round
+    fireEvent.change(nameInput, { target: { value: 'wifi-committed-uncertain' } });
+    fireEvent.blur(nameInput);
+    fireEvent.change(hintInput, { target: { value: 'hint-queued-after-uncertain' } });
+    fireEvent.blur(hintInput);
+
+    // Wait for shared auto-retries to exhaust and the uncertain Retry box to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('item-patch-uncertain-retry-box')).toBeInTheDocument();
+    });
+
+    // Verify the queued hint PATCH was NOT sent while name outcome was uncertain (no self-412!)
+    const patchesBeforeRetry = h.server.requests.filter(
+      (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+    );
+    expect(patchesBeforeRetry.length).toBeGreaterThanOrEqual(1);
+    for (const req of patchesBeforeRetry) {
+      expect(JSON.parse(req.rawBody)).toEqual({ name: 'wifi-committed-uncertain' });
+      expect(req.headers['if-match']).toBe('"1"');
+      expect(req.headers['idempotency-key']).toBe(committedNameIdempotencyKey);
+    }
+    expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+
+    // Now allow network responses through and click Retry
+    dropNamePatchResponses = false;
+    fireEvent.click(screen.getByTestId('item-patch-retry-btn'));
+
+    // Retry replays the exact name PATCH (same Idempotency-Key, If-Match: "1", body), receives v2,
+    // and then drains the queued hint PATCH using If-Match: "2"
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-patch-uncertain-retry-box')).toBeNull();
+      expect(h.server.item.version).toBe(3);
+    });
+
+    const allPatches = h.server.requests.filter(
+      (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+    );
+    const replayedNamePatch = allPatches[allPatches.length - 2];
+    const drainedHintPatch = allPatches[allPatches.length - 1];
+
+    expect(replayedNamePatch.headers['idempotency-key']).toBe(committedNameIdempotencyKey);
+    expect(replayedNamePatch.headers['if-match']).toBe('"1"');
+    expect(JSON.parse(replayedNamePatch.rawBody)).toEqual({
+      name: 'wifi-committed-uncertain',
+    });
+
+    expect(drainedHintPatch.headers['if-match']).toBe('"2"');
+    expect(JSON.parse(drainedHintPatch.rawBody)).toEqual({
+      hint: 'hint-queued-after-uncertain',
+    });
+    expect(h.server.item.name).toBe('wifi-committed-uncertain');
+    expect(h.server.item.hint).toBe('hint-queued-after-uncertain');
+    expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+  });
+
   it('Move up x3 fast sends exactly ONE reorder request after 400 ms; reorder then leave within 400 ms still sends the request immediately', async () => {
     const h = await setupItemPageHarness({
       initialPlaintexts: [
