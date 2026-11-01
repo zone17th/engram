@@ -173,7 +173,7 @@ async function runItemGroup(
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
         await expect(page.getByTestId('item-page-live-region')).toContainText(
-          msgs.content.item.saved,
+          msgs.content.item.nameSaved,
           { timeout: CONTENT_A11Y_UI_WAIT_MS },
         );
 
