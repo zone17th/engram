@@ -419,7 +419,7 @@ func TestItemEntriesReorderPermutationMismatchVersionAndCrossUserIsolation(t *te
 	// Create 3 entries on itemA: e0 (pos 0), e1 (pos 1), e2 (pos 2), plus eDel (pos 3, then soft-deleted).
 	createOnItem := func(jar contenttest.CookieJar, vf vaultFixture, itemID uuid.UUID, seed byte, idem string) entry.Meta {
 		id := uuid.NewString()
-		sealed := sealEntryFixture(t, id, vf.VaultKeyID, vf.VK, []byte{seed, 0x01, 0x02}, seqBytes(vault.WrapNonceBytes, seed))
+		sealed := sealEntryFixture(t, id, vf.VaultKeyID, vf.VK, []byte(fmt.Sprintf("reorder fixture 0x%02x", seed)), seqBytes(vault.WrapNonceBytes, seed))
 		resp, raw := h.DoReq(jar, http.MethodPost, "/api/v1/items/"+itemID.String()+"/entries",
 			makeCreateBody(id, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
 			contenttest.ReqOptions{IdemKey: idem})
@@ -789,7 +789,7 @@ func TestEntryRestoreAfterReorderShiftsCollidingLivePositions(t *testing.T) {
 	createEntry := func(itemID uuid.UUID, seed byte, idem string) entry.Meta {
 		t.Helper()
 		id := uuid.NewString()
-		sealed := sealEntryFixture(t, id, vfA.VaultKeyID, vfA.VK, []byte{seed, 0x10, 0x20}, seqBytes(vault.WrapNonceBytes, seed))
+		sealed := sealEntryFixture(t, id, vfA.VaultKeyID, vfA.VK, []byte(fmt.Sprintf("restore shift fixture 0x%02x", seed)), seqBytes(vault.WrapNonceBytes, seed))
 		resp, raw := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+itemID.String()+"/entries",
 			makeCreateBody(id, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
 			contenttest.ReqOptions{IdemKey: idem})
