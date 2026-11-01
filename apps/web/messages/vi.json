@@ -745,7 +745,7 @@
         "step1Next": "Không đường nào dùng được",
         "step2Label": "Bước 2/5 — Kiểm tra bản sao lưu",
         "step2Title": "Xuất hoặc kiểm tra bản backup trước khi xoá",
-        "step2Body": "Đặt lại chỉ xoá dữ liệu trên máy chủ live, không xoá các file backup bạn đang giữ ở ngoài. Trước khi đặt lại, hãy kiểm tra các bản backup đang có hoặc xuất một bản backup mã hoá (.sabk.json) phòng khi sau này bạn nhớ lại passphrase cũ hoặc tìm thấy bản in.",
+        "step2Body": "Đặt lại chỉ xoá dữ liệu trên máy chủ live, không xoá các file backup bạn đang giữ ở ngoài. Trước khi đặt lại, hãy kiểm tra các bản backup đang có phòng khi sau này bạn nhớ lại passphrase cũ hoặc tìm thấy bản in; xuất backup mã hoá (.sabk.json) sẽ có sau.",
         "step2ExportLink": "Tới mục Dữ liệu / Xuất",
         "step2Next": "Đã kiểm tra backup",
         "step3Label": "Bước 3/5 — Xác thực lại tài khoản",
