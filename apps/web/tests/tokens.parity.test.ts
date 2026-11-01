@@ -132,10 +132,9 @@ describe('component rules (advisor-dec-129, P04 UIA-11)', () => {
   const WEB_DIFFERENT: Record<string, string> = {
     ".seg button[aria-pressed='true'], .seg button[data-state='on']":
       ".seg button[aria-selected='true'], .seg button[aria-pressed='true'], .seg button[data-state='on']",
-    a: ':where(a)',
     '.sr-only': '', // Tailwind ships the identical utility
-    '.border-line': '', // would override the Tailwind `border-line` colour utility with a full border
-    '.border-top-line': '', // same family as .border-line
+    '.rule-line': '', // renamed from .border-line (would override Tailwind `border-line` colour utility)
+    '.rule-top-line': '', // renamed from .border-top-line (same family as .rule-line)
   };
 
   const mockupSelectors = selectors(mockupCss);

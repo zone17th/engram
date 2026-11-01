@@ -880,7 +880,7 @@
             </div>
           </div>
         </div>
-        <div class="omni-add-privacy mt-2.5 pt-2.5 border-top-line" id="${baseId}-add-privacy">
+        <div class="omni-add-privacy mt-2.5 pt-2.5 rule-top-line" id="${baseId}-add-privacy">
           <p class="m-0 text-[12px] text-body">${COPY_PRIVACY_VI}</p>
           <p class="m-0 text-[12px] text-muted" lang="en">${COPY_PRIVACY_EN}</p>
         </div>`;
@@ -4249,12 +4249,12 @@
       const syncVault = (syncOpts) => {
         syncOpts = syncOpts || {};
         pills.forEach((btn) => {
-          btn.className = 'vault-pill ' + (state.locked ? 'vault-shut' : 'vault-open');
+          btn.className = 'vault-pill ' + (state.locked ? 'vault-shut' : 'vault-open') + ' btn-icon !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3 [@media(pointer:coarse)]:!h-[44px]';
           // Nhãn ngắn trên mobile: pill nằm trong header chật, không được đẩy tràn.
           btn.setAttribute('aria-label', state.locked ? 'Vault đã khoá · Vault locked' : 'Vault mở · 15 phút · Vault open · 15 min');
           btn.innerHTML = state.locked
-            ? '<span aria-hidden="true">🔒</span> <span class="sm:hidden">Đã khoá</span><span class="hidden sm:inline">Vault đã khoá</span>'
-            : '<span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span>';
+            ? '<span aria-hidden="true">🔒</span><span class="hidden sm:inline">Vault đã khoá</span>'
+            : '<span aria-hidden="true">🔓</span><span class="hidden sm:inline">Vault mở · 15 phút</span>';
         });
         document.body.classList.toggle('is-locked', state.locked);
         document.querySelectorAll('[data-secret]').forEach((el) => {
