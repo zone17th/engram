@@ -1084,8 +1084,8 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Màn | File | Mục spec |
 |---|---|---|
 | Landing | `mockups/landing.html` | §11.1 (marketing route) |
-| Tìm kiếm / vỏ app | `mockups/index.html` | §7.2 |
-| Chi tiết mục | `mockups/item.html` | §7.3, §7.4, §7.5 |
+| Tìm kiếm / vỏ app (`#rail-tags`, `#tagRenameDlg`, `#dupDialog`, `#recent-grid`) | `mockups/index.html` | §7.2 |
+| Chi tiết mục (`default`, `editing`, `saving`, `conflict`, `crypto-err`, `limits`, `#importDlg`) | `mockups/item.html` | §7.3, §7.4, §7.5 |
 | Cài đặt (tài khoản P02; `#baomat` P03: `#passDlg`, `#rkDlg`, `#rotateDlg`, `#passkeyAddDlg`, `#resetDlg`; tìm kiếm P05) | `mockups/settings.html` | §7.6 |
 | Đăng ký / đăng nhập / OAuth return / re-auth / password-enroll | `mockups/auth.html` | §3.1, §10.2 |
 | Onboarding vault (`pp`, `pp-oom` → 10 RK `rk`, `rk-exists` → passkey `pk`) | `mockups/onboarding.html` | §3.2, §5.2 |
@@ -1100,7 +1100,14 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 - `unlock.html`: `pk` (`#unlock-passkey-not-found`), `err` (`#err-passphrase-aead`, `#err-insufficient-memory`, `#err-session-expired`), `err-pk` (`#err-prf-unsupported`, `#err-pk-cancelled`, `#err-prf-missing`, `#err-pk-aead`, `#err-rate-limited`, `#err-pk-not-found`).
 - `recovery.html`: `s1` (`#recovery-reauth-start`), `s2` (`#s2-err-invalid`, `#s2-err-rate`, `#s2-err-aead`), `s3` (`#s3-recovering-note`), `s3-err` (`#s3-reauth-expired-password`, `#s3-reauth-expired-oauth`, `#s3-err-oom`, `#s3-err-version`, `#s3-err-rate`), `s4-reauth` (`#s4-regenerate-reauth`), `s4` (`#s4-replacement-card`).
 - `states.html` (`vault`): `#vault-version-mismatch`, `#vault-reauth-expired-password`, `#vault-reauth-expired-oauth`, `#vault-rate-limited`, `#vault-mutations-disabled`, `#vault-locked-broadcast`, `#vault-insufficient-memory`.
-- `settings.html#baomat` dialogs: `#passDlg` (`pass-form`, `pass-oauth`, `pass-oom`, `pass-reauth-expired`, `pass-mismatch`, `pass-ratelimit`, `pass-done`); `#rkDlg` (`rk-reauth`, `rk-keys` / `#rkRegenSaved` / `#rkRegenDoneBtn`, `rk-reauth-expired`, `rk-mismatch`, `rk-ratelimit`, `rk-done`); `#rotateDlg` (`rot-reauth`, `rot-keys` / `#rkRotateSaved` / `#rkRotateConfirmBtn`, `rot-reauth-expired`, `rot-mismatch`, `rot-ratelimit`, `rot-done`); `#passkeyAddDlg` (`pk-start`, `pk-prf-unsupported`, `pk-cancelled`, `pk-prf-missing`, `pk-orphan`, `pk-reauth-expired`); `#resetDlg` (`rst-s1`, `rst-s2`, `rst-s3`, `rst-s4` / `#rst-confirm-word` / `#rstConfirmBtn`, `rst-s5`, `rst-reauth-expired`, `rst-mismatch`).
+- `settings.html#baomat` dialogs: `#passDlg` (`pass-form`, `pass-oauth`, `pass-oom`, `pass-reauth-expired`, `pass-mismatch`, `pass-ratelimit`, `pass-done`); `#rkDlg` (`rk-reauth`, `rk-keys` / `#rkRegenSaved` / `#rkRegenDoneBtn`, `rk-reauth-expired`, `rk-mismatch`, `rk-ratelimit`, `rk-done`); `#rotateDlg` (`rot-reauth`, `rot-keys` / `#rkRotateSaved` / `#rkRotateConfirmBtn`, `rot-reauth-expired`, `rot-mismatch`, `rk-ratelimit`, `rot-done`); `#passkeyAddDlg` (`pk-start`, `pk-prf-unsupported`, `pk-cancelled`, `pk-prf-missing`, `pk-orphan`, `pk-reauth-expired`); `#resetDlg` (`rst-s1`, `rst-s2`, `rst-s3`, `rst-s4` / `#rst-confirm-word` / `#rstConfirmBtn`, `rst-s5`, `rst-reauth-expired`, `rst-mismatch`).
+
+**Neo trạng thái & bước dialog chi tiết (P04 content — U8–U14, U18):**
+
+- `index.html`: `#rail-tags` (`#rail-tag-list`, `#rail-clear-filter`, menu tag `⋯` Đổi tên / Xoá có Undo), `#tagRenameDlg` (`#tagRenameInput`, `#tagRenameConflict` `409 tag_conflict`), `#dupDialog` (picker trùng tên U9: `#dupListbox`, `#dup-opt-new`, phân trang `Xem thêm`), `#recent-items-header`, `#recent-grid` (danh sách gần đây duy nhất, không preview body).
+- `item.html`: `default` (`#item-default`: `#item-name-input`, `#item-hint-input`, `#item-privacy-note`, `#tag-add-chip`, `#tag-add-popover`, `#tag-suggest-input`, `#entry-composer`, `#card-menu-pop`, tab `Bảng` / `JSON gốc`), `editing` (`#item-editing`: `#card-text-editing`, `#entry-edit-textarea`, `#entry-byte-counter`, `#entry-discard-confirm`), `saving` (`#item-saving`: `#card-saving`, `#card-saved`, `#card-save-error`), `conflict` (`#item-conflict`: `#card-conflict-412`, `#conflict-reload-confirm`, `#item-header-conflict-412`), `crypto-err` (`#item-crypto-err`: `#card-key-mismatch`, `#card-decrypt-fail`), `limits` (`#item-limits`: `#item-tag-limit-20`, `#item-entry-limit-200`), `#importDlg`.
+- `states.html` (`err`, `off`): `#err-version-mismatch` (`412 version_mismatch` ba nút + `#err-conflict-confirm`), `#err-entry-too-large` (`413 entry_too_large` 256 KiB), `#err-dup-name-picker` (mở U9 `#dupDialog`), `#err-decrypt-fail` (kèm nút Thử lại), `#err-entry-key-mismatch` (`409 entry_key_mismatch`), `#off-save-deferred` (giữ trong ô soạn thảo cho tới khi vault khoá).
+- `mock.js`: `#toastStack` (một `role="status"` chung, xếp chồng tối đa 3 + nút `+N` `[data-toast-expand]`, dừng đếm khi hover/focus, ≥ 10 s sau focus, `Ctrl+Z` / `⌘Z`), `SAK.openDupDialog` (`#dupDialog`).
 
 **Phân vai khi mockup và spec lệch nhau:**
 
@@ -1117,10 +1124,10 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 
 **Mockup có chủ đích thể hiện các quyết định trong spec**, không phải minh hoạ suông — đây là những chỗ implementation dễ làm sai:
 
-- Nhóm **"Gần nghĩa" nằm riêng, dưới các nhóm lexical**; bật/tắt semantic không xáo trộn thứ tự lexical (§6.4).
-- **Trùng tên mục là hợp lệ** — quick-add hỏi chọn mục nào, kèm lựa chọn tạo mục mới cùng tên (§3.4).
-- **Bảng JSON không mất mát**: cột theo thứ tự khoá trong nguồn; hàng có khoá trùng rơi về bảng field/value; số lớn hiện nguyên văn (§7.4).
-- **Khoá vault chỉ che nội dung entry** — tên mục, tag, số entry vẫn đọc được (§5.1).
+- Nhóm **"Gần nghĩa" nằm riêng, dưới các nhóm lexical**; bật/tắt semantic không xáo trộn thứ tự lexical (§6.4, thuộc P05; ở P04 công tắc "Gần nghĩa" và cột "Liên quan" không hiển thị trên trang chủ/trang mục).
+- **Trùng tên mục là hợp lệ** — quick-add mở picker U9 (`#dupDialog`: mỗi dòng hiện tên, tối đa 3 chip tag, `created_at`, `entry_count`, nút "Xem thêm" khi còn trang, và dòng cuối "Tạo mục mới cùng tên") trả về đúng item ID (§3.4).
+- **Bảng JSON không mất mát**: cột theo thứ tự khoá trong nguồn; hàng có khoá trùng rơi về bảng field/value; số lớn hiện nguyên văn; tab xem nguồn dùng tên thống nhất **"JSON gốc"** (§7.4).
+- **Khoá vault chỉ che nội dung entry; tên mục, tag và gợi ý không được mã hoá** — tên mục, tag, số entry vẫn đọc được; lưới mục gần đây trên trang chủ là danh sách gần đây duy nhất và không tải hay preview nội dung entry (§5.1, §7.3).
 - **Đổi passphrase không cần passphrase cũ**; "Đặt lại vault" nằm sau danh sách đường mở khoá phải thử trước (§3.9, §3.10).
 - **Tạo lại (regenerate) recovery key chỉ hiện key mới cho các slot đang trống** (theo thứ tự slot nhỏ nhất trước); **"Xoay cả 10" (`#rotateDlg`) thay cho nút thu hồi cũ** để cấp bộ 10 key mới trên live server; **đổi passphrase chỉ bọc lại `wrapK` nên các recovery key, bản in cũ và passkey vẫn mở được vault** (§3.9, §3.12, §5.9).
 

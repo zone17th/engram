@@ -60,7 +60,6 @@
         Đặt tên theo từ khoá bạn sẽ nhớ lúc cần tìm.
       </p>
       <button class="btn btn-primary" onclick="SAK.toast('Mở ô thêm nhanh')">Thêm mục đầu tiên</button>
-      <p class="t-caption mt-4 mb-0" style="color:var(--muted)">Hoặc nhấn <span class="kbd">N</span> ở bất cứ đâu.</p>
     </div>
 
     <div class="card p-6 text-center">
@@ -126,27 +125,44 @@
   <!-- ============================================================= -->
   <section data-view="err" hidden class="flex flex-col gap-3">
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <span class="badge-type mb-2 inline-block" style="background:var(--pale-orange);color:var(--error)">409</span>
-      <p class="text-[14px] font-semibold m-0 mb-1">Mục này vừa được sửa ở nơi khác</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Bản bạn đang xem cũ hơn bản trên máy chủ. Tải lại để xem bản mới, phần bạn vừa gõ được giữ nguyên để chép sang.
+    <div class="card card-error p-5" id="err-version-mismatch">
+      <span class="badge-type badge-error mb-2 inline-block">412</span>
+      <div role="alert" class="auth-alert mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1 text-body">Đã được sửa ở thiết bị khác</p>
+        <p class="text-[13px] m-0 text-body">
+          Bản bạn đang sửa có phiên bản cũ hơn bản trên máy chủ (<span class="mono">412 version_mismatch</span>). Bản nháp trong ô vẫn giữ nguyên — ứng dụng không tự ghi đè. Chọn tải bản mới (bỏ nháp), chủ ý giữ bản của bạn để ghi đè với phiên bản mới nhất, hoặc chép bản của bạn để tự gộp.
+        </p>
+      </div>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Modified on another device (412 version_mismatch).</strong> Your draft is kept in the editor — we never overwrite automatically. Load the latest version (discards your draft after confirmation), keep your version (deliberately seals and overwrites against the latest version), or copy your draft to merge manually.
       </p>
       <div class="flex gap-2 flex-wrap">
-        <button class="btn btn-secondary btn-sm">Tải bản mới</button>
-        <button class="btn btn-tertiary btn-sm">Giữ bản của tôi</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=false">Tải bản mới · <span lang="en">Load latest</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã ghi đè bằng bản của bạn (version mới)')">Giữ bản của tôi · <span lang="en">Keep mine</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép bản nháp vào clipboard')">Chép bản của tôi · <span lang="en">Copy mine</span></button>
+      </div>
+      <div id="err-conflict-confirm" hidden class="rounded-md p-3 mt-3 bg-surface">
+        <p class="text-[13px] m-0 mb-1 text-body"><strong>Bỏ thay đổi đang gõ và tải bản mới?</strong></p>
+        <p class="text-[12px] text-muted m-0 mb-2" lang="en">Discard your current draft and load the latest version?</p>
+        <div class="flex gap-2 flex-wrap">
+          <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true;SAK.toast('Đã tải bản mới nhất')">Bỏ nháp và tải · <span lang="en">Discard &amp; load</span></button>
+          <button type="button" class="btn btn-tertiary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true">Huỷ · <span lang="en">Cancel</span></button>
+        </div>
       </div>
     </div>
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Nội dung quá lớn</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Một entry tối đa 256 KiB sau khi bỏ khoảng trắng thừa. Tách bớt hoặc lưu thành nhiều entry.
+    <div class="card card-error p-5" id="err-entry-too-large">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Nội dung quá lớn</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Một entry tối đa 256 KiB (262 144 byte UTF-8; <span class="mono">413 entry_too_large</span>). Tách bớt hoặc lưu thành nhiều entry.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Entry too large (413 entry_too_large).</strong> An entry can be at most 256 KiB (262,144 UTF-8 bytes). Split the content into smaller entries.
       </p>
     </div>
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">JSON không hợp lệ</p>
+    <div class="card card-error p-5">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">JSON không hợp lệ</p>
       <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">Dòng 14, cột 3: thiếu dấu phẩy giữa hai khoá.</p>
       <div class="rounded-md p-3 mono text-[12px]" style="background:var(--surface);color:var(--muted)">
         "amount": 1200<br>"currency": "VND"
@@ -154,13 +170,16 @@
       <button class="btn btn-tertiary btn-sm mt-3">Lưu dạng văn bản</button>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Trùng tên mục</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Đã có mục tên “hoá đơn điện”. Thêm entry vào mục cũ hay tạo mục mới?</p>
-      <div class="flex gap-2 flex-wrap">
-        <button class="btn btn-primary btn-sm">Thêm vào mục cũ</button>
-        <button class="btn btn-tertiary btn-sm">Tạo mục mới</button>
-      </div>
+    <div class="card p-5" id="err-dup-name-picker">
+      <p class="t-label mb-1 text-muted">Trùng tên mục · U9 Picker</p>
+      <p class="text-[14px] font-semibold m-0 mb-1">Nhiều mục trùng tên khi thêm nhanh</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Trùng tên mục là hợp lệ. Khi có từ 2 mục cùng tên chuẩn hoá trở lên, nhấn <span class="kbd">Enter</span> mở hộp chọn mục đích (U9: tên + tối đa 3 chip tag + ngày tạo + số entry, nút “Xem thêm”, dòng cuối “Tạo mục mới cùng tên”) trả về đúng ID mục.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Duplicate item names (U9 picker).</strong> Duplicate names are valid. When 2+ items match on Enter, the U9 picker opens (name, up to 3 tag chips, <span class="mono">created_at</span>, <span class="mono">entry_count</span>, “Load more”, and “Create new item with the same name”) and resolves to an item ID.
+      </p>
+      <button type="button" class="btn btn-primary btn-sm" data-open-dup-picker="wifi">Mở picker trùng tên “wifi” · <span lang="en">Open U9 picker</span></button>
     </div>
 
     <div class="card p-5">
@@ -170,11 +189,25 @@
       </p>
     </div>
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Không giải mã được entry này</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Dữ liệu có dấu hiệu sai lệch nên chúng tôi không hiển thị nội dung có thể sai.
-        Các entry khác vẫn mở bình thường. Thử bản backup nếu bạn có.
+    <div class="card card-error p-5" id="err-decrypt-fail">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Không giải mã được entry này</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Xác thực AEAD thất bại hoặc dữ liệu tải về bị lỗi nên ứng dụng không hiển thị nội dung có thể sai (khác với lỗi sai passphrase lúc mở khoá vault). Các entry khác vẫn mở bình thường.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Could not decrypt this entry.</strong> AEAD verification failed or the downloaded payload was corrupted (distinct from an incorrect passphrase during vault unlock). Other entries still open normally.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang tải và giải mã lại entry…')">Thử lại · <span lang="en">Try again</span></button>
+    </div>
+
+    <div class="card card-warning p-5" id="err-entry-key-mismatch">
+      <span class="badge-type badge-warn mb-2 inline-block">409 entry_key_mismatch</span>
+      <p class="text-[14px] font-semibold m-0 mb-1">Entry này mã hoá bằng khoá cũ</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Khoá <span class="mono">key_id</span> trong envelope không khớp với <span class="mono">vault_key_id</span> hiện tại của vault (ứng dụng dừng trước khi gọi Worker). Khác với lỗi giải mã AEAD.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Encrypted with an older key (entry_key_mismatch).</strong> The entry's <span class="mono">key_id</span> does not match the current <span class="mono">vault_key_id</span> (checked before calling the Worker; distinct from AEAD decryption failure).
       </p>
     </div>
 
@@ -371,12 +404,15 @@
       </p>
     </div>
 
-    <div class="card p-5">
+    <div class="card p-5" id="off-save-deferred">
       <p class="text-[14px] font-semibold m-0 mb-1">Không lưu được lúc này</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Nội dung bạn gõ vẫn nằm trong ô soạn thảo, chưa mất. Có mạng lại thì bấm lưu.
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Nội dung bạn gõ vẫn nằm trong ô soạn thảo cho tới khi vault khoá (khoá vault sẽ xoá bản nháp chưa lưu). Có mạng lại thì bấm lưu để gửi lại đúng yêu cầu cũ.
       </p>
-      <button class="btn btn-secondary btn-sm">Thử lưu lại</button>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Cannot save right now.</strong> What you typed stays in the editor until the vault locks (locking the vault clears unsaved drafts). Retry once connectivity returns.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang thử lưu lại với cùng Idempotency-Key…')">Thử lưu lại · <span lang="en">Retry save</span></button>
     </div>
 
     <div class="card p-5">
