@@ -885,6 +885,7 @@ func TestEntryLimit200AndConcurrentLastSlotBarrier(t *testing.T) {
 //   - Retry of that PUT with the same Idempotency-Key and If-Match: "1" (simulating lost response) ->
 //     200 with JSON-equal original response (advisor-dec-135), NOT 412.
 //   - New PUT with stale If-Match: "1" and a new Idempotency-Key -> 412 version_mismatch + current_version: 2.
+//   - PUT on an entry whose parent item is soft-deleted -> 404 not_found (even if If-Match is stale, 404 takes priority over 412).
 //   - PUT on a soft-deleted entry -> 404 not_found (even if If-Match is stale, 404 takes priority over 412).
 func TestEntryUpdateVersionIfMatchNonceReuseDeletedAndIdempotentReplay(t *testing.T) {
 	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
@@ -1020,9 +1021,38 @@ func TestEntryUpdateVersionIfMatchNonceReuseDeletedAndIdempotentReplay(t *testin
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
 
-	// 7. Soft-delete the entry via SQL/gen query and verify PUT returns 404 not_found (even with stale If-Match "1").
 	ctx := context.Background()
 	q := gen.New(h.Pool)
+
+	// 7. Soft-delete the parent item via SQL/gen query (while entry itself remains deleted_at IS NULL)
+	// and verify PUT returns 404 not_found before 412 (sending stale If-Match "1"), then restore parent item.
+	deleteBatch := uuid.New()
+	if _, err := q.SoftDeleteItem(ctx, gen.SoftDeleteItemParams{
+		DeleteBatch: &deleteBatch,
+		UserID:      meA.User.ID,
+		ID:          item.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	respDeletedItemPut, rawDeletedItemPut := h.DoReq(jarA, http.MethodPut, "/api/v1/entries/"+entryID,
+		makeUpdateBody(sealedV3.EnvelopeRaw, sealedV3.CiphertextB64, sealedV3.PlaintextLenBucket),
+		contenttest.ReqOptions{
+			IdemKey: "idem_put_on_deleted_parent_item_01",
+			IfMatch: `"1"`, // stale version (current is 2), but 404 not_found must take priority over 412
+		})
+	if respDeletedItemPut.StatusCode != http.StatusNotFound || contenttest.DecodeProblem(t, rawDeletedItemPut).Code != "not_found" {
+		t.Fatalf("PUT on entry with soft-deleted parent item = %d %s, want 404 not_found", respDeletedItemPut.StatusCode, rawDeletedItemPut)
+	}
+	if _, err := q.RestoreItem(ctx, gen.RestoreItemParams{
+		EntryCount: 1,
+		UserID:     meA.User.ID,
+		ID:         item.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// 8. Soft-delete the entry via SQL/gen query and verify PUT returns 404 not_found (even with stale If-Match "1").
 	if _, err := q.SoftDeleteEntry(ctx, gen.SoftDeleteEntryParams{UserID: meA.User.ID, ID: uuid.MustParse(entryID)}); err != nil {
 		t.Fatal(err)
 	}

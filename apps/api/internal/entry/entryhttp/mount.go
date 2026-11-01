@@ -481,6 +481,45 @@ func (h *handler) entryUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Giải quyết item_id của entry bằng một lần đọc không khoá trước bước (3) để khoá item
+	// trước entry theo đúng thứ tự khoá mục 2.5 (không tồn tại / của user khác -> 404 not_found).
+	entryRef, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{
+		UserID: p.UserID,
+		ID:     entryID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeContentProblem(w, r, "not_found")
+			return
+		}
+		if httpx.WriteContentTxError(ctx, w, r, pool, tx, err) {
+			return
+		}
+		httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", httpx.ProblemTitle("internal_error")+".")
+		return
+	}
+
+	// Bước khoá (3): item FOR UPDATE — không tồn tại / của user khác / đã xoá mềm -> 404 not_found (ưu tiên hơn 412).
+	lockedItem, err := q.LockItemForUpdate(ctx, gen.LockItemForUpdateParams{
+		UserID: p.UserID,
+		ID:     entryRef.ItemID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeContentProblem(w, r, "not_found")
+			return
+		}
+		if httpx.WriteContentTxError(ctx, w, r, pool, tx, err) {
+			return
+		}
+		httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", httpx.ProblemTitle("internal_error")+".")
+		return
+	}
+	if lockedItem.DeletedAt.Valid {
+		writeContentProblem(w, r, "not_found")
+		return
+	}
+
 	// Bước khoá (5): entry FOR UPDATE — không tồn tại / của user khác / đã xoá mềm -> 404 not_found (ưu tiên hơn 412).
 	lockedEntry, err := q.LockEntryForUpdate(ctx, gen.LockEntryForUpdateParams{
 		UserID: p.UserID,
