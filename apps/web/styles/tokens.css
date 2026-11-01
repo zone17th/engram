@@ -358,10 +358,17 @@ textarea.omnibox-input::placeholder {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
   vertical-align: top; color: var(--body);
 }
+.json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 112px; }
+.json-table td.k, .json-table td.json-col-act, .json-table td[colspan] { min-width: 0; }
+@media (max-width: 639px) {
+  .json-dup-row-note { max-width: calc(100vw - 134px); }
+}
 .json-table tr:last-child td { border-bottom: 0; }
 .json-table .k { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
+.json-table .k-occ { font-family: var(--font-mono); }
 .json-table .v-num { font-family: var(--font-mono); color: var(--accent); }
-.json-table .v-bool { font-family: var(--font-mono); color: var(--product-teal); }
+.json-table .v-bool { font-family: var(--font-mono); color: var(--success-ink); }
+[data-theme='dark'] .json-table .v-bool { color: var(--product-teal); }
 .json-table .v-null { font-family: var(--font-mono); color: var(--muted); font-style: italic; }
 .json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
 .json-toggle {
@@ -377,6 +384,44 @@ textarea.omnibox-input::placeholder {
   background: var(--surface); color: var(--body); margin: 0;
   border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
 }
+.json-raw-editor { font-family: var(--font-mono); }
+.json-raw-editor:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--pale-accent);
+}
+.json-raw-editor[aria-invalid='true'] {
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--error) 18%, transparent);
+}
+.json-cell-edit-wrap {
+  display: flex; flex-direction: column; gap: 6px;
+  min-width: 180px; max-width: 100%;
+}
+.json-cell-btn { font-family: var(--font-sans); }
+.json-cell-btn:hover { background: var(--surface); border-color: var(--border); }
+.json-cell-readonly { font-family: var(--font-mono); }
+.json-cell-input { font-family: var(--font-mono); }
+.json-cell-input[aria-invalid='true'] {
+  border-color: var(--error);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--error) 18%, transparent);
+}
+.json-type-btn { font-family: var(--font-mono); }
+.json-type-btn:hover { background: var(--surface-alt); color: var(--body); border-color: var(--border-strong); }
+.json-table-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 8px 12px; padding: 8px 12px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+}
+.json-page-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 8px 12px; padding: 8px 12px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+}
+.json-readonly-note {
+  margin: 0; padding: 8px 12px; background: var(--surface-alt);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--body);
+}
+.json-col-idx { width: 44px; min-width: 44px; }
 
 /* ---------- misc ---------- */
 
@@ -386,6 +431,9 @@ textarea.omnibox-input::placeholder {
   font-family: var(--font-mono); color: var(--muted);
   background: var(--surface-alt); border-radius: var(--r-md);
   padding: 12px 14px; letter-spacing: .12em;
+}
+[data-secret][data-locked] > :not([data-lock-veil]) {
+  display: none !important;
 }
 
 .seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
@@ -639,9 +687,15 @@ textarea.omnibox-input::placeholder {
 
 dialog::backdrop { background: rgba(9,12,29,.45); }
 dialog { border: 0; padding: 0; background: transparent; max-width: calc(100vw - 16px); }
-#passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg { color: var(--body); }
-dialog .btn, section[data-view] .btn { white-space: normal; text-align: center; }
-dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
+#passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg, #importDlg, #jsonImportStubDlg { color: var(--body); }
+#passDlg .btn, #rkDlg .btn, #rotateDlg .btn, #passkeyAddDlg .btn, #resetDlg .btn,
+#dupDialog .btn, #tagRenameDlg .btn, #importDlg .btn, #jsonImportStubDlg .btn,
+section.scope-vault .btn,
+section[data-view] .btn { white-space: normal; text-align: center; }
+#passDlg .t-label, #rkDlg .t-label, #rotateDlg .t-label, #passkeyAddDlg .t-label, #resetDlg .t-label,
+#dupDialog .t-label, #tagRenameDlg .t-label, #importDlg .t-label, #jsonImportStubDlg .t-label,
+section.scope-vault .t-label,
+section[data-view] .t-label { overflow-wrap: anywhere; }
 
 .card-error { border-color: var(--error); }
 .card-warning { border-color: var(--warning); }
@@ -899,7 +953,7 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
   flex: 1 1 180px;
   line-height: 1.35;
 }
-.omni-hint-line[hidden] {
+.omni-hint-line[hidden], .omni-hint-vi[hidden] {
   display: none !important;
 }
 
@@ -916,7 +970,8 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
 @media (pointer: coarse) {
   .btn, .btn-sm, .btn-tertiary, .btn-danger,
   .seg button, .chip, .tag-pill-btn, .tag-menu-trigger,
-  .menu-item, .dup-row, .sugg-row, .toast button, .toast-more, .link-btn {
+  .menu-item, .dup-row, .sugg-row, .toast button, .toast-more, .link-btn,
+  .json-toggle, .json-cell-btn, .json-type-btn {
     min-height: 44px;
   }
   .tag-menu-trigger, .btn-icon { min-width: 44px; }
