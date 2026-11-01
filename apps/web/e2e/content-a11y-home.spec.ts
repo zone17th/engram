@@ -151,17 +151,16 @@ async function runHomeGroup(
       },
     );
 
-    // ---- State 4 (captured while Undo toast from quick-add is fresh, or after a controlled quick-add):
-    // Wait for or clear initial toasts first so `home` state is a clean U10 grid + rail view.
+    // ---- State 1: `home` (U10 home rail, tag filter, recent grid) ----
+    // Per `components/ui/undo-toast.tsx`, keyboard-triggered quick-add toasts have `UNDO_TOAST_KEYBOARD_DURATION_MS = 10_000`
+    // and no close/dismiss button (activating a toast button triggers Undo and deletes the entry). Rather than wasting
+    // >10s waiting for auto-dismiss or reloading `/app` (which drops the in-memory vault key), capture the `home` state
+    // immediately and mask `[data-testid="undo-toast-stack"]` in the `home` screenshot (`undo-toast` is swept in State 4).
     await a11yStep(`[home ${groupLabel}] settle clean U10 home state and sweep 390/768/1440`, async () => {
       await page.evaluate(() => {
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
         }
-      });
-      // Wait for the 5s auto-dismiss of the quick-add Undo toasts without reloading `/app` (so the in-memory vault key stays unlocked)
-      await expect(page.getByTestId('undo-toast-item')).toHaveCount(0, {
-        timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
       await expect(page.getByTestId('item-card')).toHaveCount(3, {
         timeout: CONTENT_A11Y_UI_WAIT_MS,
@@ -170,10 +169,15 @@ async function runHomeGroup(
         timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
 
-      await checkContentState(ctx, { state: 'home', fullPage: true }, [
-        '[data-testid="item-card"]',
-        '[data-testid="rail-tags"]',
-      ]);
+      await checkContentState(
+        ctx,
+        {
+          state: 'home',
+          fullPage: true,
+          maskSelectors: ['[data-testid="undo-toast-stack"]'],
+        },
+        ['[data-testid="item-card"]', '[data-testid="rail-tags"]'],
+      );
     });
 
     // ---- U10 Rail tag filter & tag menu keyboard check (in keyboard pass) ----

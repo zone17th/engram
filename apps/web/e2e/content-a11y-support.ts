@@ -92,6 +92,7 @@ export interface ContentStateSpec {
   readonly axeInclude?: string;
   readonly motionRoots?: string;
   readonly fullPage?: boolean;
+  readonly maskSelectors?: readonly string[];
 }
 
 export function contentA11yScreenshotName(
@@ -480,6 +481,7 @@ async function saveContentScreenshot(
       page.locator('[data-visual-mask]'),
       page.getByTestId('recovery-keys-grid'),
       page.locator('[data-testid^="recovery-key-slot-"]'),
+      ...(spec.maskSelectors ?? []).map((sel) => page.locator(sel)),
     ],
   });
   expect.soft(buffer.byteLength, `screenshot ${fileName}`).toBeGreaterThan(0);
@@ -531,9 +533,25 @@ async function expectNoHorizontalOverflowAtWidth(
       for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
         const style = getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const rect = el.getBoundingClientRect();
+        const overflowX = style.overflowX;
+        if (overflowX === 'auto' || overflowX === 'scroll') {
+          // Intentional horizontal scroll container (e.g. `json-table-host-<id>` with `overflow-x-auto`):
+          // its box itself must stay within the viewport, while inner `scrollWidth > clientWidth` is valid.
+          if (rect.left < -1 || rect.right > clientWidth + 1) {
+            overflowingContainers.push(
+              `${sel} (scroll container spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
+            );
+          }
+          continue;
+        }
         if (el.scrollWidth > el.clientWidth + 1) {
           overflowingContainers.push(
-            `${sel} (scrollWidth=${el.scrollWidth} > clientWidth=${el.clientWidth})`,
+            `${sel} (overflow-x=${overflowX} cuts off or overflows content: scrollWidth=${el.scrollWidth} > clientWidth=${el.clientWidth})`,
+          );
+        } else if (rect.left < -1 || rect.right > clientWidth + 1) {
+          overflowingContainers.push(
+            `${sel} (overflow-x=${overflowX} spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
           );
         }
       }
@@ -556,6 +574,58 @@ async function expectNoHorizontalOverflowAtWidth(
       `container overflow ${spec.state} ${ctx.lang} ${ctx.theme} ${width}`,
     )
     .toEqual([]);
+}
+
+/**
+ * Asserts that a horizontal scroll region (such as `[data-testid="json-table-host-<id>"]` at 390 px)
+ * has `overflow-x` set to `auto` or `scroll`, has `scrollWidth > clientWidth`, and actually scrolls
+ * horizontally (`scrollLeft > 0`) while the document itself stays within the viewport width.
+ */
+export async function expectHorizontallyScrollable(
+  page: Page,
+  selector: string,
+  label: string,
+): Promise<void> {
+  const result = await page.evaluate((sel) => {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (!el) return null;
+    const style = getComputedStyle(el);
+    const overflowX = style.overflowX;
+    const scrollWidth = el.scrollWidth;
+    const clientWidth = el.clientWidth;
+    const docScrollWidth = document.documentElement.scrollWidth;
+    const docClientWidth = document.documentElement.clientWidth;
+    const prevScrollLeft = el.scrollLeft;
+    el.scrollLeft = Math.min(48, Math.max(1, scrollWidth - clientWidth));
+    const scrolledLeft = el.scrollLeft;
+    el.scrollLeft = prevScrollLeft;
+    return {
+      overflowX,
+      scrollWidth,
+      clientWidth,
+      scrolledLeft,
+      docScrollWidth,
+      docClientWidth,
+    };
+  }, selector);
+
+  expect(result, `horizontal scroll region (${label}): ${selector} not found`).not.toBeNull();
+  expect(
+    ['auto', 'scroll'],
+    `horizontal scroll region (${label}): ${selector} overflow-x=${result?.overflowX}`,
+  ).toContain(result!.overflowX);
+  expect(
+    result!.scrollWidth,
+    `horizontal scroll region (${label}): ${selector} scrollWidth=${result?.scrollWidth} must exceed clientWidth=${result?.clientWidth}`,
+  ).toBeGreaterThan(result!.clientWidth);
+  expect(
+    result!.scrolledLeft,
+    `horizontal scroll region (${label}): ${selector} failed to advance scrollLeft`,
+  ).toBeGreaterThan(0);
+  expect(
+    result!.docScrollWidth,
+    `horizontal scroll region (${label}): document scrollWidth=${result?.docScrollWidth} must not exceed clientWidth=${result?.docClientWidth}`,
+  ).toBeLessThanOrEqual(result!.docClientWidth);
 }
 
 /**

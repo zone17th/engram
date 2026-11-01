@@ -15,6 +15,7 @@ import {
   checkContentState,
   expectAppAnimatesWithoutPreference,
   expectCoarseTouchTargetsAtLeast44,
+  expectHorizontallyScrollable,
   expectInputEquals,
   expectNoPlaintextInDomAttributes,
   newCoarseTouchContext,
@@ -412,7 +413,14 @@ async function runItemGroup(
           `[data-testid="entry-save-btn-${jsonEntryId}"]`,
         ]);
 
-        // Save table edit and wait for dirty bar to clear
+        // Prove that at 390 px the JSON table host (`overflow-x-auto`) is horizontally scrollable inside the card (S3TV1-7)
+        await page.setViewportSize({ width: 390, height: 844 });
+        await expectHorizontallyScrollable(
+          page,
+          `[data-testid="json-table-host-${jsonEntryId}"]`,
+          `json-table ${groupLabel} 390`,
+        );
+        await page.setViewportSize({ width: 1440, height: 900 });
         await jsonTableSaveBtn.click();
         await expect(jsonTableSaveBtn).toBeHidden({
           timeout: CONTENT_A11Y_UI_WAIT_MS,
@@ -607,6 +615,15 @@ async function runItemGroup(
             await expect(coarsePage.getByTestId('item-header')).toBeVisible({
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
+            // Per `JsonEntryCard` (`useEntryInViewport`, Task 14 item 5), cards below the 390x844 mobile fold render
+            // `entry-body-loading` until scrolled into the viewport (`IntersectionObserver` rootMargin `100px`), and then
+            // mount `json-tab-table-${id}` / `json-table-host-${id}` once `useEntryBody` finishes decrypting.
+            const coarseJsonCard = coarsePage.getByTestId(`entry-card-${jsonEntryId}`);
+            await expect(coarseJsonCard).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+            await coarseJsonCard.scrollIntoViewIfNeeded();
+            await expect(coarsePage.getByTestId(`json-tab-table-${jsonEntryId}`)).toBeVisible({
+              timeout: CONTENT_A11Y_UI_WAIT_MS,
+            });
             await expect(coarsePage.getByTestId(`json-table-host-${jsonEntryId}`)).toBeVisible({
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
@@ -616,7 +633,6 @@ async function runItemGroup(
             if (await coarseLimitsToggle.isVisible()) {
               await coarseLimitsToggle.click();
             }
-
             // 1. Item page controls: buttons, chip-x remove buttons, segmented toggle buttons, entry menu trigger
             await expectCoarseTouchTargetsAtLeast44(
               coarsePage,
@@ -654,7 +670,6 @@ async function runItemGroup(
                 `[data-testid="json-table-host-${jsonEntryId}"] .json-toggle`,
                 `[data-testid="json-table-host-${jsonEntryId}"] .json-cell-btn`,
               ],
-              [`[data-testid="json-table-host-${jsonEntryId}"] .json-toggle`],
             );
 
             await coarsePage.getByTestId('json-cell-btn-root.p0').click();
