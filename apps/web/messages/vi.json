@@ -971,7 +971,7 @@
       "recoveringTitle": "Tab này đang ở giữa luồng khôi phục",
       "recoveringBody": "Hãy hoàn tất đặt passphrase mới ở màn khôi phục, hoặc khoá vault trước để quay lại mở khoá bình thường.",
       "recoveringLockCta": "Khoá và chuyển sang mở khoá",
-      "rateLimitedBadge": "Thử quá nhiều lần — thử lại sau {seconds} giây",
+      "rateLimitedBadge": "Tạm dừng mở khoá",
       "rateLimitedTitle": "Thử quá nhiều lần — vui lòng đợi",
       "rateLimitedBody": "Vui lòng đợi {clock} ({seconds} giây) trước khi thử lại.",
       "sessionExpiredBadge": "Cần đăng nhập lại",

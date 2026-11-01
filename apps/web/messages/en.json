@@ -971,7 +971,7 @@
       "recoveringTitle": "Recovery is in progress in this tab",
       "recoveringBody": "Finish setting a new passphrase on the recovery screen, or lock the vault first to switch back to normal unlock.",
       "recoveringLockCta": "Lock and switch to unlock",
-      "rateLimitedBadge": "Too many attempts — try again in {seconds}s",
+      "rateLimitedBadge": "Unlock paused",
       "rateLimitedTitle": "Too many requests — please wait",
       "rateLimitedBody": "Please wait {clock} ({seconds}s) before trying again.",
       "sessionExpiredBadge": "Sign-in needed",

@@ -489,7 +489,7 @@ export function VaultUnlockFlow() {
               id="err-rate-limited"
               data-testid="unlock-error-rate-limited"
               className="mb-4"
-              label={t('errors.rateLimitedBadge', { seconds: effectiveRateLimitSeconds })}
+              label={t('errors.rateLimitedBadge')}
             >
               <div role="alert">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
