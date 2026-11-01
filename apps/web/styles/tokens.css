@@ -421,6 +421,10 @@ textarea.omnibox-input::placeholder {
 }
 .vault-open { background: rgba(48,164,108,.12); color: var(--success-ink); }
 .vault-shut { background: rgba(229,72,77,.10); color: var(--error-ink); }
+/* App-only, light theme (RV-UI1-1): the mockup --success-ink (#1F7A4C) on the 12% tint is only
+   ~4.5:1 over the app header (bg-surface/80: 4.52, pure --surface: 4.48), so the open pill text
+   keeps the pre-port darker #117A4B (4.56 / 4.52). No :root token change; dark stays on the token. */
+:root:not([data-theme='dark']) .vault-open { color: #117A4B; }
 
 .locked-banner {
   background: color-mix(in srgb, var(--error) 10%, var(--canvas));
@@ -899,8 +903,11 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
   display: none !important;
 }
 
-/* Mockup `a { color: var(--link) }`, ported at zero specificity: written as plain `a` it
-   would beat the AA rule below and paint body links #0091FF (3.2:1 on white). */
+/* Mockup `a { color: var(--link) }`, ported at zero specificity so it can never paint text
+   #0091FF (3.2:1 on white). Note (RV-UI1-3): tokens.css is imported before `@tailwind base`,
+   and Tailwind preflight `a { color: inherit }` (0,0,1) beats both zero-specificity :where()
+   rules here, so today they change nothing: unstyled anchors inherit their parent colour.
+   Give a rule class specificity if unstyled links ever need a real colour. */
 :where(a) { color: var(--link); }
 /* App-only: brand --link fails WCAG AA as text on white; unstyled links use the AA-safe
    ink token. Explicit text utilities and button links keep their component colours. */
