@@ -1517,6 +1517,9 @@ paths:
         '413':
           description: Body quá 16 KiB (invalid_request)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -1635,6 +1638,9 @@ paths:
         '413':
           description: Body quá 16 KiB (invalid_request)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '428':
           description: Thiếu hoặc sai định dạng If-Match (precondition_required)
           $ref: '#/components/responses/Problem'
@@ -1649,7 +1655,7 @@ paths:
       description: |
         Sinh `delete_batch`; mục và mọi entry **sống** của mục bị xoá mềm cùng batch (`deleted_via='item'`); `entry_count = 0`;
         `item_count − 1` trên mọi tag gắn với mục; `item_tag` giữ nguyên để restore. Mục đã xoá → `204` không đổi gì.
-        Không có request body (client có thể gửi `{}`).
+        Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -1677,6 +1683,12 @@ paths:
         '409':
           description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Có body nhưng không phải `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -1690,13 +1702,19 @@ paths:
       description: |
         Khôi phục mục và **chỉ** entry có `deleted_via='item'` cùng `delete_batch` của lần xoá mục; entry user đã xoá riêng trước đó
         vẫn xoá. `item_count + 1` cho mọi tag gắn với mục. Số tag sống của mục sau restore > 20 → `409 item_tag_limit`, không restore gì.
-        Mục đang sống → `200` không đổi gì. Không có request body (client có thể gửi `{}`).
+        Mục đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
       security:
         - sessionCookie: []
           csrfHeader: []
       parameters:
         - $ref: '#/components/parameters/ItemId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
       responses:
         '200':
           description: Mục sau khi khôi phục
@@ -1722,6 +1740,12 @@ paths:
         '409':
           description: 'Quá 20 tag sống hoặc xung đột idempotency (item_tag_limit, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -1776,6 +1800,9 @@ paths:
         '413':
           description: Body quá 16 KiB (invalid_request)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -1788,7 +1815,7 @@ paths:
       summary: Gỡ một tag khỏi mục
       description: |
         Gỡ đúng một cặp; cặp không tồn tại → vẫn `200` với trạng thái hiện tại, không đổi gì. Trả `ItemSummary` để client cập nhật cache.
-        Không có request body (client có thể gửi `{}`).
+        Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -1821,6 +1848,12 @@ paths:
         '409':
           description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Có body nhưng không phải `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -1908,6 +1941,9 @@ paths:
         '413':
           description: Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -1962,6 +1998,9 @@ paths:
         '413':
           description: Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2014,6 +2053,9 @@ paths:
           $ref: '#/components/responses/IdempotencyConflict'
         '413':
           description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
           $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
@@ -2103,6 +2145,9 @@ paths:
         '413':
           description: Body quá 16 KiB (invalid_request)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2154,6 +2199,9 @@ paths:
         '413':
           description: Body quá 16 KiB (invalid_request)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2164,7 +2212,7 @@ paths:
       summary: Xoá mềm tag (không xoá mục)
       description: |
         Tag `deleted_at`; `item_tag` giữ nguyên nhưng không còn tính vào tag sống của mục. Tag đã xoá → `204` không đổi gì.
-        Không có request body (client có thể gửi `{}`).
+        Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -2192,6 +2240,12 @@ paths:
         '409':
           description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Có body nhưng không phải `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2204,13 +2258,19 @@ paths:
       summary: Khôi phục tag đã xoá mềm
       description: |
         `normalized` đã bị tag sống khác chiếm → `409 tag_conflict`; một mục sống gắn tag đã có 20 tag sống → `409 item_tag_limit`
-        và không restore gì. Tag đang sống → `200` không đổi gì. Không có request body (client có thể gửi `{}`).
+        và không restore gì. Tag đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
       security:
         - sessionCookie: []
           csrfHeader: []
       parameters:
         - $ref: '#/components/parameters/TagId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
       responses:
         '200':
           description: Tag sau khi khôi phục
@@ -2236,6 +2296,12 @@ paths:
         '409':
           description: 'Trùng tag sống, mục sẽ quá 20 tag hoặc xung đột idempotency (tag_conflict, item_tag_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2251,6 +2317,8 @@ paths:
         `watermark` là `clock_timestamp()` của server ở đầu trang đầu của chuỗi (gắn trong cursor). Client chỉ lưu watermark sau
         khi đọc hết trang cuối, lần sau gửi `since = watermark − 120 s` và dedup theo `(id, updated_at)`; mỗi lần thức dậy vẫn bắt
         buộc refetch nguồn chuẩn (overlap chỉ là heuristic, ADR 0005). `since` cũ hơn `now() − 29 ngày` → `410 changes_window_expired`.
+        Client mới (thiết bị mới, storage trống, sau `410`) gọi không có `since` để lấy watermark đầu tiên, không phụ thuộc đồng hồ
+        client. Client lưu `watermark` nguyên chuỗi; khi trừ 120 giây thì làm tròn xuống (lệch về phía sớm hơn là an toàn).
         Không có envelope/ciphertext trong feed.
       security:
         - sessionCookie: []
@@ -2359,6 +2427,9 @@ paths:
         '413':
           description: Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large)
           $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '428':
           description: Thiếu hoặc sai định dạng If-Match (precondition_required)
           $ref: '#/components/responses/Problem'
@@ -2372,7 +2443,7 @@ paths:
       summary: Xoá mềm entry (Undo bằng entryRestore trong 30 ngày)
       description: |
         `deleted_at = clock_timestamp()`, `deleted_via='entry'`, `entry_count − 1`; không tăng `version`. Entry đã xoá → `204` không
-        đổi gì. Không có request body (client có thể gửi `{}`).
+        đổi gì. Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -2400,6 +2471,12 @@ paths:
         '409':
           description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 400 KiB (entry_too_large)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Có body nhưng không phải `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2413,13 +2490,19 @@ paths:
       description: |
         Entry phải `deleted_via='entry'` (`'item'` → `409 entry_restore_via_item`: restore mục thay vì entry); mục phải sống
         (`409 item_deleted`); `entry_count < 200` (`409 item_entry_limit`). Giữ nguyên `position` cũ; không tăng `version`.
-        Entry đang sống → `200` không đổi gì. Không có request body (client có thể gửi `{}`).
+        Entry đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
       security:
         - sessionCookie: []
           csrfHeader: []
       parameters:
         - $ref: '#/components/parameters/EntryId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
       responses:
         '200':
           description: Metadata entry sau khi khôi phục
@@ -2445,6 +2528,12 @@ paths:
         '409':
           description: 'Xoá theo mục, mục đã xoá, quá 200 entry hoặc xung đột idempotency (entry_restore_via_item, item_deleted, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 400 KiB (entry_too_large)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2549,7 +2638,7 @@ components:
       required: true
       description: |
         Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
-        (số thập phân không có số 0 đứng đầu, trong miền int32). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+        (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
         danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
       schema:
         type: string
@@ -2641,8 +2730,11 @@ components:
     ChangesSince:
       name: since
       in: query
-      required: true
-      description: Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor.
+      required: false
+      description: |
+        Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. Không có
+        `since` (và không có cursor) → bootstrap: `{changes: [], next_cursor: null, watermark}`, không quét bảng; có cursor mà
+        thiếu `since` → `400 invalid_request`.
       schema:
         type: string
         format: date-time
@@ -3794,10 +3886,11 @@ components:
       properties:
         entry_ids:
           type: array
-          minItems: 1
           maxItems: 200
           uniqueItems: true
-          description: Hoán vị đúng tập entry sống của mục, theo thứ tự mới.
+          description: |
+            Hoán vị đúng tập entry sống của mục, theo thứ tự mới. Mục không có entry sống → `[]` hợp lệ (200 `{entries: []}`);
+            `[]` khi mục còn entry sống là lệch tập → `409 reorder_mismatch`, không phải 400.
           items:
             $ref: '#/components/schemas/EntryIdValue'
     EntryPosition:
@@ -4077,3 +4170,8 @@ components:
           type: string
           format: date-time
           description: Thời điểm server ở đầu trang đầu của chuỗi; client chỉ lưu sau khi đọc hết trang cuối.
+    EmptyObject:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+      description: 'Body `{}` của các POST restore (vẫn cần `Content-Type: application/json`).'

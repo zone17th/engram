@@ -866,7 +866,7 @@ export interface paths {
          * Xoá mềm mục (Undo bằng itemRestore trong 30 ngày)
          * @description Sinh `delete_batch`; mục và mọi entry **sống** của mục bị xoá mềm cùng batch (`deleted_via='item'`); `entry_count = 0`;
          *     `item_count − 1` trên mọi tag gắn với mục; `item_tag` giữ nguyên để restore. Mục đã xoá → `204` không đổi gì.
-         *     Không có request body (client có thể gửi `{}`).
+         *     Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
          */
         delete: operations["itemDelete"];
         options?: never;
@@ -893,7 +893,7 @@ export interface paths {
          * Khôi phục mục đã xoá mềm
          * @description Khôi phục mục và **chỉ** entry có `deleted_via='item'` cùng `delete_batch` của lần xoá mục; entry user đã xoá riêng trước đó
          *     vẫn xoá. `item_count + 1` cho mọi tag gắn với mục. Số tag sống của mục sau restore > 20 → `409 item_tag_limit`, không restore gì.
-         *     Mục đang sống → `200` không đổi gì. Không có request body (client có thể gửi `{}`).
+         *     Mục đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
          */
         post: operations["itemRestore"];
         delete?: never;
@@ -937,7 +937,7 @@ export interface paths {
         /**
          * Gỡ một tag khỏi mục
          * @description Gỡ đúng một cặp; cặp không tồn tại → vẫn `200` với trạng thái hiện tại, không đổi gì. Trả `ItemSummary` để client cập nhật cache.
-         *     Không có request body (client có thể gửi `{}`).
+         *     Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
          */
         delete: operations["itemTagRemove"];
         options?: never;
@@ -1055,7 +1055,7 @@ export interface paths {
         /**
          * Xoá mềm tag (không xoá mục)
          * @description Tag `deleted_at`; `item_tag` giữ nguyên nhưng không còn tính vào tag sống của mục. Tag đã xoá → `204` không đổi gì.
-         *     Không có request body (client có thể gửi `{}`).
+         *     Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
          */
         delete: operations["tagDelete"];
         options?: never;
@@ -1079,7 +1079,7 @@ export interface paths {
         /**
          * Khôi phục tag đã xoá mềm
          * @description `normalized` đã bị tag sống khác chiếm → `409 tag_conflict`; một mục sống gắn tag đã có 20 tag sống → `409 item_tag_limit`
-         *     và không restore gì. Tag đang sống → `200` không đổi gì. Không có request body (client có thể gửi `{}`).
+         *     và không restore gì. Tag đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
          */
         post: operations["tagRestore"];
         delete?: never;
@@ -1101,6 +1101,8 @@ export interface paths {
          *     `watermark` là `clock_timestamp()` của server ở đầu trang đầu của chuỗi (gắn trong cursor). Client chỉ lưu watermark sau
          *     khi đọc hết trang cuối, lần sau gửi `since = watermark − 120 s` và dedup theo `(id, updated_at)`; mỗi lần thức dậy vẫn bắt
          *     buộc refetch nguồn chuẩn (overlap chỉ là heuristic, ADR 0005). `since` cũ hơn `now() − 29 ngày` → `410 changes_window_expired`.
+         *     Client mới (thiết bị mới, storage trống, sau `410`) gọi không có `since` để lấy watermark đầu tiên, không phụ thuộc đồng hồ
+         *     client. Client lưu `watermark` nguyên chuỗi; khi trừ 120 giây thì làm tròn xuống (lệch về phía sớm hơn là an toàn).
          *     Không có envelope/ciphertext trong feed.
          */
         get: operations["entriesChanges"];
@@ -1133,7 +1135,7 @@ export interface paths {
         /**
          * Xoá mềm entry (Undo bằng entryRestore trong 30 ngày)
          * @description `deleted_at = clock_timestamp()`, `deleted_via='entry'`, `entry_count − 1`; không tăng `version`. Entry đã xoá → `204` không
-         *     đổi gì. Không có request body (client có thể gửi `{}`).
+         *     đổi gì. Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
          */
         delete: operations["entryDelete"];
         options?: never;
@@ -1154,7 +1156,7 @@ export interface paths {
          * Khôi phục entry đã xoá riêng
          * @description Entry phải `deleted_via='entry'` (`'item'` → `409 entry_restore_via_item`: restore mục thay vì entry); mục phải sống
          *     (`409 item_deleted`); `entry_count < 200` (`409 item_entry_limit`). Giữ nguyên `position` cũ; không tăng `version`.
-         *     Entry đang sống → `200` không đổi gì. Không có request body (client có thể gửi `{}`).
+         *     Entry đang sống → `200` không đổi gì. Body rỗng hoặc `{}`, nhưng vẫn bắt buộc `Content-Type: application/json` như mọi POST (thiếu → `415 invalid_request`).
          */
         post: operations["entryRestore"];
         delete?: never;
@@ -1663,7 +1665,10 @@ export interface components {
             tag_ids: string[];
         };
         ItemEntriesReorderRequest: {
-            /** @description Hoán vị đúng tập entry sống của mục, theo thứ tự mới. */
+            /**
+             * @description Hoán vị đúng tập entry sống của mục, theo thứ tự mới. Mục không có entry sống → `[]` hợp lệ (200 `{entries: []}`);
+             *     `[]` khi mục còn entry sống là lệch tập → `409 reorder_mismatch`, không phải 400.
+             */
             entry_ids: components["schemas"]["EntryIdValue"][];
         };
         EntryPosition: {
@@ -1816,6 +1821,8 @@ export interface components {
              */
             watermark: string;
         };
+        /** @description Body `{}` của các POST restore (vẫn cần `Content-Type: application/json`). */
+        EmptyObject: Record<string, never>;
     };
     responses: {
         /** @description Lỗi RFC 9457 */
@@ -1885,7 +1892,7 @@ export interface components {
         PasskeyId: string;
         /**
          * @description Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
-         *     (số thập phân không có số 0 đứng đầu, trong miền int32). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+         *     (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
          *     danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
          */
         VersionIfMatch: string;
@@ -1909,7 +1916,11 @@ export interface components {
         LookupName: string;
         EntriesLimit: number;
         ChangesLimit: number;
-        /** @description Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. */
+        /**
+         * @description Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. Không có
+         *     `since` (và không có cursor) → bootstrap: `{changes: [], next_cursor: null, watermark}`, không quét bảng; có cursor mà
+         *     thiếu `since` → `400 invalid_request`.
+         */
         ChangesSince: string;
     };
     requestBodies: never;
@@ -3331,6 +3342,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3431,6 +3444,10 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3441,7 +3458,7 @@ export interface operations {
             header: {
                 /**
                  * @description Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
-                 *     (số thập phân không có số 0 đứng đầu, trong miền int32). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+                 *     (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
                  *     danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
                  */
                 "If-Match": components["parameters"]["VersionIfMatch"];
@@ -3487,6 +3504,8 @@ export interface operations {
             412: components["responses"]["Problem"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
             428: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
@@ -3509,7 +3528,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
         responses: {
             /** @description Mục sau khi khôi phục */
             200: {
@@ -3531,6 +3554,10 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Quá 20 tag sống hoặc xung đột idempotency (item_tag_limit, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3579,6 +3606,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3623,6 +3652,10 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3704,6 +3737,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3752,6 +3787,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3800,6 +3837,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3885,6 +3924,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3925,6 +3966,10 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3973,6 +4018,8 @@ export interface operations {
             409: components["responses"]["IdempotencyConflict"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -3993,7 +4040,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
         responses: {
             /** @description Tag sau khi khôi phục */
             200: {
@@ -4015,15 +4066,23 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Trùng tag sống, mục sẽ quá 20 tag hoặc xung đột idempotency (tag_conflict, item_tag_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
     };
     entriesChanges: {
         parameters: {
-            query: {
-                /** @description Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. */
-                since: components["parameters"]["ChangesSince"];
+            query?: {
+                /**
+                 * @description Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. Không có
+                 *     `since` (và không có cursor) → bootstrap: `{changes: [], next_cursor: null, watermark}`, không quét bảng; có cursor mà
+                 *     thiếu `since` → `400 invalid_request`.
+                 */
+                since?: components["parameters"]["ChangesSince"];
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["ChangesLimit"];
             };
@@ -4087,7 +4146,7 @@ export interface operations {
             header: {
                 /**
                  * @description Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
-                 *     (số thập phân không có số 0 đứng đầu, trong miền int32). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+                 *     (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
                  *     danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
                  */
                 "If-Match": components["parameters"]["VersionIfMatch"];
@@ -4133,6 +4192,8 @@ export interface operations {
             412: components["responses"]["Problem"];
             /** @description Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large) */
             413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
             428: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
@@ -4175,6 +4236,10 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };
@@ -4195,7 +4260,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
         responses: {
             /** @description Metadata entry sau khi khôi phục */
             200: {
@@ -4217,6 +4286,10 @@ export interface operations {
             404: components["responses"]["Problem"];
             /** @description Xoá theo mục, mục đã xoá, quá 200 entry hoặc xung đột idempotency (entry_restore_via_item, item_deleted, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
         };

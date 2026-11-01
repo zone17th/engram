@@ -98,8 +98,12 @@ var problemTitles = map[string]string{
 
 // contentProblemStatus là HTTP status cố định của mọi code mà API content P04
 // (/items*, /tags*, /entries*) trả từ handler (plan P04 mục 3). Code do middleware
-// chung trả (session, CSRF, JSON content, rate limit, idempotency, If-Match) có
-// status riêng của middleware và không đi qua bảng này.
+// chung trả (session, CSRF, JSON content, rate limit, idempotency, If-Match, trần
+// body) có status riêng của middleware và không đi qua bảng này: ví dụ trần body
+// item/tag trả 413 invalid_request và thiếu Content-Type trả 415 invalid_request,
+// nên BodyLimit mang status của nó (BodyLimit{Bytes, Code} + 413), không suy ra
+// từ ContentProblemStatus("invalid_request") = 400. Title ở problemTitles không
+// phải copy UI; web dùng content.errors.<code> (có thể override theo operation).
 var contentProblemStatus = map[string]int{
 	"invalid_request":         http.StatusBadRequest,
 	"not_found":               http.StatusNotFound,

@@ -399,10 +399,109 @@ func TestOpenAPIP04ContractInvariants(t *testing.T) {
 	}
 
 	// Import không nhận filename; không có PUT thay cả bộ tag.
-	if block := openAPIBlock(t, spec, "    EntryImportJsonRequest:"); strings.Contains(block, "filename") {
-		t.Error("EntryImportJsonRequest không được có filename (Q7)")
+	// Kiểm key property (thụt 8 dấu cách), không kiểm chữ "filename" trong description.
+	if block := openAPIBlock(t, spec, "    EntryImportJsonRequest:"); strings.Contains(block, "\n        filename:") ||
+		!strings.Contains(block, "\n      additionalProperties: false\n") {
+		t.Error("EntryImportJsonRequest không được có property filename và phải additionalProperties: false (Q7)")
 	}
 	if block := openAPIBlock(t, spec, "  /items/{id}/tags:"); strings.Contains(block, "\n    put:") {
 		t.Error("không được có PUT /items/{id}/tags (Q3)")
+	}
+}
+
+// openAPIOperation trả block của operation có operationId `id` (từ dòng method tới trước
+// method hoặc path kế tiếp).
+func openAPIOperation(t *testing.T, spec, id string) string {
+	t.Helper()
+	spec = strings.ReplaceAll(spec, "\r\n", "\n")
+	at := strings.Index(spec, "\n      operationId: "+id+"\n")
+	if at < 0 {
+		t.Fatalf("openapi.yaml thiếu operationId %s", id)
+	}
+	start := strings.LastIndex(spec[:at], "\n    ")
+	end := len(spec)
+	if m := regexp.MustCompile(`\n(    (get|post|put|patch|delete):|  /|[a-z])`).FindStringIndex(spec[at+1:]); m != nil {
+		end = at + 1 + m[0]
+	}
+	return spec[start:end]
+}
+
+// TestOpenAPIP04PerOperationContract ghim đúng operation nào mang Idempotency-Key, If-Match,
+// 413/415, và các field nullable mà UI dựa vào (CFE1-12, CBE1-3).
+func TestOpenAPIP04PerOperationContract(t *testing.T) {
+	spec := readOpenAPI(t)
+	mutations := map[string]bool{
+		"itemCreate": true, "itemUpdate": true, "itemDelete": true, "itemRestore": true, "itemTagsAdd": true,
+		"itemTagRemove": true, "itemEntriesReorder": true, "tagUpsert": true, "tagRename": true, "tagDelete": true,
+		"tagRestore": true, "entryCreate": true, "entryImportJson": true, "entryUpdate": true, "entryDelete": true,
+		"entryRestore": true,
+	}
+	if len(mutations) != 16 {
+		t.Fatalf("plan P04 có 16 mutation, bảng test có %d", len(mutations))
+	}
+	entryBody := map[string]bool{"entryCreate": true, "entryImportJson": true, "entryUpdate": true, "entryDelete": true, "entryRestore": true}
+	for _, id := range p04OperationIDs {
+		op := openAPIOperation(t, spec, id)
+		hasKey := strings.Contains(op, "$ref: '#/components/parameters/IdempotencyKey'")
+		if hasKey != mutations[id] {
+			t.Errorf("%s: Idempotency-Key = %v, plan muốn %v", id, hasKey, mutations[id])
+		}
+		hasIfMatch := strings.Contains(op, "$ref: '#/components/parameters/VersionIfMatch'")
+		if want := id == "itemUpdate" || id == "entryUpdate"; hasIfMatch != want {
+			t.Errorf("%s: VersionIfMatch = %v, plan muốn %v", id, hasIfMatch, want)
+		}
+		if !mutations[id] {
+			if strings.Contains(op, "\n        '415':") {
+				t.Errorf("%s là GET, không được khai báo 415", id)
+			}
+			continue
+		}
+		if !strings.Contains(op, "\n        '415':") {
+			t.Errorf("%s: thiếu 415 (RequireJSONContent)", id)
+		}
+		want413 := "(invalid_request)"
+		if entryBody[id] {
+			want413 = "(entry_too_large)"
+		}
+		if r := openAPIBlock(t, op, "        '413':"); !strings.Contains(r, want413) {
+			t.Errorf("%s: 413 phải là %s", id, want413)
+		}
+		if !strings.Contains(op, "\n        '429':") {
+			t.Errorf("%s: thiếu 429 (content_write)", id)
+		}
+	}
+	for _, id := range []string{"itemRestore", "tagRestore", "entryRestore"} {
+		if !strings.Contains(openAPIOperation(t, spec, id), "$ref: '#/components/schemas/EmptyObject'") {
+			t.Errorf("%s: requestBody phải là EmptyObject (gửi {} với Content-Type JSON)", id)
+		}
+	}
+	if !strings.Contains(openAPIOperation(t, spec, "tagUpsert"), "\n        '201':") ||
+		!strings.Contains(openAPIOperation(t, spec, "tagUpsert"), "\n        '200':") {
+		t.Error("tagUpsert phải có cả 200 (đã có) và 201 (tạo mới)")
+	}
+
+	// Field nullable/required mà UI dựa vào.
+	nullable := map[string]string{"ItemSummary": "hint", "ItemList": "next_cursor", "EntryChange": "deleted_at", "EntryChangesPage": "next_cursor"}
+	for schema, field := range nullable {
+		prop := openAPIBlock(t, openAPIBlock(t, spec, "    "+schema+":"), "        "+field+":")
+		if ref := regexp.MustCompile(`\$ref: '#/components/schemas/(\w+)'`).FindStringSubmatch(prop); ref != nil {
+			prop = openAPIBlock(t, spec, "    "+ref[1]+":")
+		}
+		if !strings.Contains(prop, "'null'") {
+			t.Errorf("%s.%s phải nullable", schema, field)
+		}
+	}
+	page := openAPIBlock(t, spec, "    EntryChangesPage:")
+	if !regexp.MustCompile(`(?m)^      required: \[[^\]]*\bwatermark\b`).MatchString(page) {
+		t.Error("EntryChangesPage.watermark phải required")
+	}
+	if strings.Contains(openAPIBlock(t, page, "        watermark:"), "'null'") {
+		t.Error("EntryChangesPage.watermark không được nullable")
+	}
+	if since := openAPIBlock(t, spec, "    ChangesSince:"); !strings.Contains(since, "\n      required: false\n") {
+		t.Error("since phải optional (bootstrap watermark, CFE1-5)")
+	}
+	if reorder := openAPIBlock(t, spec, "    ItemEntriesReorderRequest:"); strings.Contains(reorder, "minItems") {
+		t.Error("entry_ids không có minItems: [] là hoán vị hợp lệ của tập rỗng (CBE1-2)")
 	}
 }
