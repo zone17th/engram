@@ -45,6 +45,7 @@ export interface UseEntryBodyResult {
   readonly unlocked: boolean;
   readonly body: string | undefined;
   readonly pending: boolean;
+  readonly activeLoading: boolean;
   readonly failed: boolean;
   readonly oldKey: boolean;
   readonly decryptFailed: boolean;
@@ -123,6 +124,87 @@ function publishVersionHandoff(
   for (const listener of [...listeners]) {
     listener(toVersion);
   }
+}
+
+type SlotActivityListener = () => void;
+
+const activeSlotBus = new WeakMap<
+  QueryClient,
+  {
+    readonly counts: Map<string, number>;
+    readonly listeners: Map<string, Set<SlotActivityListener>>;
+  }
+>();
+
+function getActiveSlotKey(entryId: string, version: number | undefined): string {
+  return version !== undefined ? `${entryId}:${version}` : entryId;
+}
+
+function ensureActiveSlotBus(queryClient: QueryClient) {
+  let state = activeSlotBus.get(queryClient);
+  if (!state) {
+    state = {
+      counts: new Map(),
+      listeners: new Map(),
+    };
+    activeSlotBus.set(queryClient, state);
+  }
+  return state;
+}
+
+function isEntrySlotActive(
+  queryClient: QueryClient,
+  entryId: string,
+  version: number | undefined,
+): boolean {
+  const state = activeSlotBus.get(queryClient);
+  if (!state) return false;
+  return (state.counts.get(getActiveSlotKey(entryId, version)) ?? 0) > 0;
+}
+
+function markEntrySlotActive(
+  queryClient: QueryClient,
+  entryId: string,
+  version: number | undefined,
+  active: boolean,
+): void {
+  const state = ensureActiveSlotBus(queryClient);
+  const key = getActiveSlotKey(entryId, version);
+  const prev = state.counts.get(key) ?? 0;
+  const next = active ? prev + 1 : Math.max(0, prev - 1);
+  if (next === prev) return;
+  if (next === 0) {
+    state.counts.delete(key);
+  } else {
+    state.counts.set(key, next);
+  }
+  const channelListeners = state.listeners.get(key);
+  if (!channelListeners) return;
+  for (const listener of [...channelListeners]) {
+    listener();
+  }
+}
+
+function subscribeEntrySlotActive(
+  queryClient: QueryClient,
+  entryId: string,
+  version: number | undefined,
+  listener: SlotActivityListener,
+): () => void {
+  const state = ensureActiveSlotBus(queryClient);
+  const key = getActiveSlotKey(entryId, version);
+  let channelListeners = state.listeners.get(key);
+  if (!channelListeners) {
+    channelListeners = new Set();
+    state.listeners.set(key, channelListeners);
+  }
+  channelListeners.add(listener);
+  return () => {
+    channelListeners.delete(listener);
+    if (channelListeners.size === 0) {
+      state.listeners.delete(key);
+    }
+  };
 }
 /**
  * Tracks whether a DOM element has entered the viewport via `IntersectionObserver` (plan Task 14 item 5).
@@ -235,6 +317,20 @@ export function useEntryBody(
   const queryClient = useQueryClient();
   const unlocked = vault?.state === 'unlocked';
 
+  const [slotActive, setSlotActive] = useState<boolean>(() =>
+    unlocked ? isEntrySlotActive(queryClient, entryId, effectiveVersion) : false,
+  );
+
+  useEffect(() => {
+    if (!unlocked) {
+      setSlotActive(false);
+      return;
+    }
+    setSlotActive(isEntrySlotActive(queryClient, entryId, effectiveVersion));
+    return subscribeEntrySlotActive(queryClient, entryId, effectiveVersion, () => {
+      setSlotActive(isEntrySlotActive(queryClient, entryId, effectiveVersion));
+    });
+  }, [unlocked, queryClient, entryId, effectiveVersion]);
   useEffect(() => {
     if (!unlocked || initialVersion === undefined) {
       return;
@@ -285,22 +381,27 @@ export function useEntryBody(
 
       const body = await limiter.run(
         async () => {
-          if (!isCurrent()) {
-            throw new Error('vault_locked_during_load');
+          markEntrySlotActive(queryClient, entryId, effectiveVersion, true);
+          try {
+            if (!isCurrent()) {
+              throw new Error('vault_locked_during_load');
+            }
+            return await load(entryId, {
+              client,
+              opGeneration,
+              version: effectiveVersion,
+              itemId,
+              vaultKeyId,
+              isCurrent,
+              signal,
+              queryClient,
+              onResolvedVersion: (nextVer: number) => {
+                discoveredVersion = nextVer;
+              },
+            });
+          } finally {
+            markEntrySlotActive(queryClient, entryId, effectiveVersion, false);
           }
-          return load(entryId, {
-            client,
-            opGeneration,
-            version: effectiveVersion,
-            itemId,
-            vaultKeyId,
-            isCurrent,
-            signal,
-            queryClient,
-            onResolvedVersion: (nextVer: number) => {
-              discoveredVersion = nextVer;
-            },
-          });
         },
         { signal },
       );
@@ -360,13 +461,16 @@ export function useEntryBody(
   refetchRef.current = query.refetch;
   const refetch = useCallback(() => refetchRef.current(), []);
 
+  const pending =
+    unlocked &&
+    query.data === undefined &&
+    (query.status === 'pending' || query.isFetching || isHandoffError);
+
   return {
     unlocked,
     body: unlocked ? query.data : undefined,
-    pending:
-      unlocked &&
-      query.data === undefined &&
-      (query.status === 'pending' || query.isFetching || isHandoffError),
+    pending,
+    activeLoading: pending && (slotActive || isHandoffError),
     failed,
     oldKey,
     decryptFailed,
@@ -428,23 +532,57 @@ export function EntryBody({
   const retryBtnRef = useRef<HTMLButtonElement | null>(null);
   const bodyNodeRef = useRef<HTMLElement | null>(null);
   const shouldRestoreFocusRef = useRef(false);
+  const pointerClickedOutsideCardRef = useRef(false);
 
   const inViewport = useEntryInViewport(hostEl, {
     disabled: !lazy || enabled !== undefined,
   });
   const effectiveEnabled = enabled ?? inViewport;
 
-  const { unlocked, body, pending, failed, oldKey, decryptFailed, errorKind, refetch } =
-    useEntryBody(entryId, version, load, {
-      enabled: effectiveEnabled,
-      itemId,
-      limiter,
-    });
+  const {
+    unlocked,
+    body,
+    pending,
+    activeLoading,
+    failed,
+    oldKey,
+    decryptFailed,
+    errorKind,
+    refetch,
+  } = useEntryBody(entryId, version, load, {
+    enabled: effectiveEnabled,
+    itemId,
+    limiter,
+  });
+
+  useEffect(() => {
+    if (!retryingFromError || !pending || typeof document === 'undefined') {
+      return;
+    }
+    const onPointerDownCapture = (e: Event) => {
+      const target = e.target;
+      if (
+        target instanceof Node &&
+        errorContainerRef.current &&
+        !errorContainerRef.current.contains(target)
+      ) {
+        pointerClickedOutsideCardRef.current = true;
+        shouldRestoreFocusRef.current = false;
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDownCapture, true);
+    document.addEventListener('mousedown', onPointerDownCapture, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDownCapture, true);
+      document.removeEventListener('mousedown', onPointerDownCapture, true);
+    };
+  }, [retryingFromError, pending]);
 
   useEffect(() => {
     if (!unlocked) {
       setRetryingFromError(false);
       shouldRestoreFocusRef.current = false;
+      pointerClickedOutsideCardRef.current = false;
       return;
     }
     if (errorKind && !oldKey) {
@@ -452,15 +590,27 @@ export function EntryBody({
     }
     if (!pending && retryingFromError) {
       setRetryingFromError(false);
-      if (shouldRestoreFocusRef.current) {
+      const hadPointerOutside = pointerClickedOutsideCardRef.current;
+      pointerClickedOutsideCardRef.current = false;
+      if (shouldRestoreFocusRef.current && !hadPointerOutside) {
         shouldRestoreFocusRef.current = false;
-        if (failed && retryBtnRef.current) {
-          retryBtnRef.current.focus();
-        } else if (bodyNodeRef.current) {
-          bodyNodeRef.current.focus();
-        } else if (hostEl) {
-          hostEl.focus();
+        const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+        const canRestoreFocus =
+          activeEl === document.body ||
+          (errorContainerRef.current !== null && errorContainerRef.current.contains(activeEl)) ||
+          (bodyNodeRef.current !== null && bodyNodeRef.current.contains(activeEl)) ||
+          (hostEl !== null && hostEl.contains(activeEl));
+        if (canRestoreFocus) {
+          if (failed && retryBtnRef.current) {
+            retryBtnRef.current.focus();
+          } else if (bodyNodeRef.current) {
+            bodyNodeRef.current.focus();
+          } else if (hostEl) {
+            hostEl.focus();
+          }
         }
+      } else {
+        shouldRestoreFocusRef.current = false;
       }
     }
   }, [unlocked, pending, failed, oldKey, errorKind, retryingFromError, hostEl]);
@@ -539,6 +689,7 @@ export function EntryBody({
           className="btn btn-secondary btn-sm shrink-0"
           data-testid="entry-body-retry"
           onClick={() => {
+            pointerClickedOutsideCardRef.current = false;
             shouldRestoreFocusRef.current = true;
             setRetryingFromError(true);
             errorContainerRef.current?.focus();
@@ -551,9 +702,10 @@ export function EntryBody({
     );
   }
 
-  if (!effectiveEnabled) {
-    // IP14-FE1-14: Off-screen / waiting cards render an inert skeleton (no role="status")
-    // so a 200-entry item does not create 200 live regions announcing work that has not started.
+  if (!effectiveEnabled || ((pending || body === undefined) && !activeLoading)) {
+    // IP14-FE1-14: Off-screen cards and enabled cards queued behind the concurrency limiter
+    // (not yet holding a slot) render an inert skeleton (no role="status") so only cards
+    // actively holding a slot announce loading.
     return (
       <p
         ref={setHostEl}
