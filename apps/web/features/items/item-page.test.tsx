@@ -24,6 +24,10 @@ import {
   resetEntryBodyLoadLimiterForTests,
   subscribeUnconfirmedSaves,
 } from '@/features/entries';
+import {
+  __testing as sealTesting,
+  type SealAttemptObservation,
+} from '@/features/entries/seal';
 import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
 import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
@@ -353,6 +357,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     clearAllUnconfirmedSaves();
     userChangedTesting.resetCommittedUserForTests();
     textEntryCardTesting.setEditorPlaintextHolderForTests(null);
+    sealTesting.setSealAttemptListenerForTests(null);
   });
 
   afterEach(() => {
@@ -363,6 +368,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     clearAllUnconfirmedSaves();
     userChangedTesting.resetCommittedUserForTests();
     textEntryCardTesting.setEditorPlaintextHolderForTests(null);
+    sealTesting.setSealAttemptListenerForTests(null);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalVisibilityStateDescriptor) {
@@ -3312,7 +3318,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     ).toHaveLength(1);
   });
 
-  it('IP15-FE4-2 / BE4-3: holding GET /vault (reloadVaultMeta) during save and locking (and locking + unlocking) cancels with STALE_GENERATION, zero seal, zero POST/PUT, empty holder and DOM, and no draft restoration; null/invalid key id rejects VAULT_KEY_MISSING with no write across + Text, regular Save, Keep mine, and 404 Save as new entry', async () => {
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (1a + Text lock): holding GET /vault (reloadVaultMeta) during + Text save and locking before release rejects STALE_GENERATION with zero getText calls, zero seal, zero POST, empty DOM, and no draft restoration', async () => {
     const h = await setupItemPageHarness({
       initialPlaintexts: [],
       skipInitialVaultMetaReload: true,
@@ -3325,127 +3331,157 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.vault().state).toBe('unlocked');
     expect(h.vault().vaultMeta).toBeNull();
 
-    // 1a. + Text composer: hold GET /vault after Save starts, lock before releasing valid metadata ->
-    // zero Worker sealEntry, zero POST, composer closed/wiped, no draft restoration after unlock.
-    let holdVaultGet = true;
-    let vaultGetEnteredGate = Promise.withResolvers<void>();
-    let vaultGetReleaseGate = Promise.withResolvers<void>();
-    let returnInvalidVaultKeyId = false;
-    let returnVaultAbsent404 = false;
-
+    const vaultGetEnteredGate = Promise.withResolvers<void>();
+    const vaultGetReleaseGate = Promise.withResolvers<void>();
     h.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (method === 'GET' && url.endsWith('/vault')) {
-        if (holdVaultGet) {
-          vaultGetEnteredGate.resolve();
-          await vaultGetReleaseGate.promise;
-        }
-        if (returnVaultAbsent404) {
-          return problemResponse('vault_absent', 404);
-        }
-        if (returnInvalidVaultKeyId) {
-          return jsonResponse({
-            vault_key_id: 'invalid-key-id-format',
-            version: 1,
-          });
-        }
+        vaultGetEnteredGate.resolve();
+        await vaultGetReleaseGate.promise;
       }
       return null;
     });
 
-    const sealsBeforeComposerLock = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
+    const sealsBefore = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
     fireEvent.click(screen.getByTestId('btn-add-text'));
-    const composerTextarea1 = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
-    fireEvent.change(composerTextarea1, {
+    const composerTextarea = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
+    fireEvent.change(composerTextarea, {
       target: { value: 'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY' },
     });
     fireEvent.click(screen.getByTestId('new-entry-save-btn'));
 
     await vaultGetEnteredGate.promise;
+    expect(observedAttempts).toHaveLength(1);
+    expect(observedAttempts[0].helper).toBe('sealNewEntry');
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+
     await h.lock();
     expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
     expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY');
 
     vaultGetReleaseGate.resolve();
-    await flushMacrotask();
-    await flushMacrotask();
-
-    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
-      sealsBeforeComposerLock,
-    );
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: 'STALE_GENERATION',
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
     expect(
       h.server.requests.filter(
         (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
       ),
     ).toHaveLength(0);
+    assertNoPlaintextAttrs(h.container, ['SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY']);
+  });
 
-    // 1b. + Text composer: hold GET /vault after Save starts, lock AND unlock before releasing valid metadata ->
-    // STALE_GENERATION, zero Worker sealEntry, zero POST, empty DOM, no draft restoration.
-    await h.unlockWithoutReload();
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (1b + Text lock + unlock): holding GET /vault (reloadVaultMeta) during + Text save and locking + unlocking before release rejects STALE_GENERATION with zero getText calls, zero seal, zero POST, empty DOM, and no draft restoration', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
+    });
     expect(h.vault().state).toBe('unlocked');
     expect(h.vault().vaultMeta).toBeNull();
-    expect(screen.getByTestId('draft-cleared-on-lock-banner')).toBeInTheDocument();
 
-    vaultGetEnteredGate = Promise.withResolvers<void>();
-    vaultGetReleaseGate = Promise.withResolvers<void>();
-    const sealsBeforeComposerLockUnlock = h.workerCalls.filter(
-      (c) => c.type === 'sealEntry',
-    ).length;
+    const vaultGetEnteredGate = Promise.withResolvers<void>();
+    const vaultGetReleaseGate = Promise.withResolvers<void>();
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        vaultGetEnteredGate.resolve();
+        await vaultGetReleaseGate.promise;
+      }
+      return null;
+    });
 
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
+    const sealsBefore = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
     fireEvent.click(screen.getByTestId('btn-add-text'));
-    const composerTextarea2 = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
-    fireEvent.change(composerTextarea2, {
+    const composerTextarea = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
+    fireEvent.change(composerTextarea, {
       target: { value: 'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK' },
     });
     fireEvent.click(screen.getByTestId('new-entry-save-btn'));
 
     await vaultGetEnteredGate.promise;
+    expect(observedAttempts).toHaveLength(1);
+    expect(observedAttempts[0].helper).toBe('sealNewEntry');
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+
     await h.lock();
     await h.unlockWithoutReload();
     expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
     expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+    expect(screen.getByTestId('draft-cleared-on-lock-banner')).toBeInTheDocument();
 
     vaultGetReleaseGate.resolve();
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: 'STALE_GENERATION',
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
     await waitFor(() => {
       expect(h.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
     });
     await flushMacrotask();
-    await flushMacrotask();
 
-    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
-      sealsBeforeComposerLockUnlock,
-    );
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
     expect(
       h.server.requests.filter(
         (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
       ),
     ).toHaveLength(0);
     expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK');
-    assertNoPlaintextAttrs(h.container, [
-      'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY',
-      'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK',
-    ]);
+    assertNoPlaintextAttrs(h.container, ['SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK']);
+  });
 
-    // 1c. + Text composer with vaultMeta === null where reloadVaultMeta returns an invalid key_id ->
-    // VAULT_KEY_MISSING, zero Worker sealEntry, zero POST.
-    await h.signOutSession();
-    await waitFor(() => {
-      expect(h.vault().inFlight).toBe(false);
-      expect(h.vault().state).toBe('no_vault');
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (1c + Text invalid key id): + Text save with vaultMeta === null where reloadVaultMeta returns an invalid key_id rejects VAULT_KEY_MISSING with zero getText calls, zero seal, and zero POST', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
     });
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    await h.loginSession('a@example.test', 'pw');
+
     await waitFor(() => {
-      expect(h.vault().state).toBe('locked');
-      expect(h.vault().inFlight).toBe(false);
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
     });
-    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
     expect(h.vault().vaultMeta).toBeNull();
 
-    holdVaultGet = false;
-    returnInvalidVaultKeyId = true;
-    const sealsBeforeInvalidKey = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        return jsonResponse({
+          vault_key_id: 'invalid-key-id-format',
+          version: 1,
+        });
+      }
+      return null;
+    });
 
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
+    const sealsBefore = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
     fireEvent.click(screen.getByTestId('btn-add-text'));
     fireEvent.change(screen.getByTestId('new-entry-textarea'), {
       target: { value: 'Draft with invalid key_id on reload' },
@@ -3453,36 +3489,50 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId('new-entry-save-btn'));
 
     await waitFor(() => {
+      expect(observedAttempts).toHaveLength(1);
       expect(screen.getByTestId('new-entry-save-error')).toBeInTheDocument();
     });
-    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
-      sealsBeforeInvalidKey,
-    );
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: 'VAULT_KEY_MISSING',
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
     expect(
       h.server.requests.filter(
         (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
       ),
     ).toHaveLength(0);
+  });
 
-    // 1d. + Text composer with vaultMeta === null where reloadVaultMeta resolves null (404 vault_absent) ->
-    // VAULT_KEY_MISSING / lock, zero Worker sealEntry, zero POST.
-    await h.signOutSession();
-    await waitFor(() => {
-      expect(h.vault().inFlight).toBe(false);
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (1d + Text vault_absent): + Text save with vaultMeta === null where reloadVaultMeta resolves null (404 vault_absent) rejects VAULT_KEY_MISSING with zero getText calls, zero seal, and zero POST', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
     });
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    await h.loginSession('a@example.test', 'pw');
+
     await waitFor(() => {
-      expect(h.vault().state).toBe('locked');
-      expect(h.vault().inFlight).toBe(false);
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
     });
-    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
     expect(h.vault().vaultMeta).toBeNull();
 
-    returnInvalidVaultKeyId = false;
-    returnVaultAbsent404 = true;
-    const sealsBeforeNullReload = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        return problemResponse('vault_absent', 404);
+      }
+      return null;
+    });
 
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
+    const sealsBefore = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
     fireEvent.click(screen.getByTestId('btn-add-text'));
     fireEvent.change(screen.getByTestId('new-entry-textarea'), {
       target: { value: 'Draft when reloadVaultMeta returns null' },
@@ -3490,20 +3540,25 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId('new-entry-save-btn'));
 
     await waitFor(() => {
+      expect(observedAttempts).toHaveLength(1);
       expect(h.vault().state).toBe('locked');
     });
-    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
-      sealsBeforeNullReload,
-    );
+    // In VaultProvider, 404 vault_absent triggers void lock() before returning null, so by the time
+    // reloadVaultMeta resolves null, isCurrent() is already false (or keyId is null); either way zero getText/seal/POST.
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: expect.stringMatching(/^(?:STALE_GENERATION|VAULT_KEY_MISSING)$/),
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
     expect(
       h.server.requests.filter(
         (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
       ),
     ).toHaveLength(0);
+  });
 
-    // 2. Card editing paths (regular Save, Keep mine, and 404 Save as new entry) with vaultMeta === null:
-    // Mount fresh harness with 1 entry so we can test holder wipe + zero seal + happy-path reload across all 3 card save paths.
-    cleanup();
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (2a regular Save): regular card Save with vaultMeta === null holds GET /vault during lock + unlock to reject STALE_GENERATION with zero getText calls, empty holder, zero seal, and zero PUT, then reloads and PUTs on happy path', async () => {
     const holderProbeRef = {
       current: {
         originalSource: '',
@@ -3523,8 +3578,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     let holdCardVaultGet = false;
     let failCardVaultGet500 = false;
-    let cardVaultGetEntered = Promise.withResolvers<void>();
-    let cardVaultGetRelease = Promise.withResolvers<void>();
+    const cardVaultGetEntered = Promise.withResolvers<void>();
+    const cardVaultGetRelease = Promise.withResolvers<void>();
 
     hCard.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
@@ -3540,9 +3595,6 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return null;
     });
 
-    // Helper to reset vaultMeta to null while unlocked (signOut clears ['vault','meta'] and sets vaultMeta=null;
-    // login + unlockWithoutReload with failCardVaultGet500=true leaves vaultMeta === null after useEntryBody's
-    // single reload attempt fails; then seeding the body query cache makes the Edit button immediately available).
     const enterUnlockedWithNullVaultMetaAndCachedBody = async (
       cachedBody: string,
       version: number,
@@ -3571,8 +3623,6 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       failCardVaultGet500 = false;
     };
 
-    // 2a. Regular Save with vaultMeta === null:
-    // First hold GET /vault, lock + unlock before releasing -> STALE_GENERATION, holder wiped, zero seal, zero PUT.
     await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
     holdCardVaultGet = true;
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
@@ -3581,6 +3631,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     expect(holderProbeRef.current.draftValue).toBe('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
 
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
     const sealsBeforeRegLock = hCard.workerCalls.filter((c) => c.type === 'sealEntry').length;
     const putsBeforeRegLock = hCard.server.requests.filter(
       (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
@@ -3588,6 +3644,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
     await cardVaultGetEntered.promise;
+    expect(observedAttempts).toHaveLength(1);
+    expect(observedAttempts[0].helper).toBe('sealEntryUpdate');
+    expect(observedAttempts[0].getTextCalls).toBe(0);
 
     // Lock while reloadVaultMeta is held -> holder wiped synchronously before getText
     await hCard.lock();
@@ -3597,12 +3656,17 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       submittedCandidateSource: '',
     });
     await hCard.unlockWithoutReload();
+    expect(hCard.vault().vaultMeta).toBeNull();
 
     cardVaultGetRelease.resolve();
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: 'STALE_GENERATION',
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
     await waitFor(() => {
       expect(hCard.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
     });
-    await flushMacrotask();
     await flushMacrotask();
 
     expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
@@ -3621,6 +3685,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hCard.container.textContent).not.toContain('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
 
     // Now regular Save happy path with vaultMeta === null -> reloads GET /vault then sends PUT -> v2
+    sealTesting.setSealAttemptListenerForTests(null);
     holdCardVaultGet = false;
     await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
     hCard.server.requests.splice(0);
@@ -3646,19 +3711,47 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     );
     expect(regVaultIdx).toBeGreaterThanOrEqual(0);
     expect(regPutIdx).toBeGreaterThan(regVaultIdx);
+  });
 
-    // 2b. Keep mine with vaultMeta === null:
-    // Trigger 412 conflict, then with vaultMeta === null click Keep mine -> reloads GET /vault then sends PUT -> v4
-    await enterUnlockedWithNullVaultMetaAndCachedBody(
-      'Regular save body v2 after null vaultMeta',
-      2,
-    );
-    // Bump server entry version to 3 so the initial PUT gets 412 with current_version: 3
-    await hCard.server.sealTextForEntry(ENTRY_ID_1, 'Remote concurrent v3', 3, 0);
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (2b Keep mine): 412 Keep mine with vaultMeta === null holds GET /vault during lock + unlock to reject STALE_GENERATION with zero getText calls, empty holder, zero seal, and zero PUT, then reloads and PUTs on happy path', async () => {
+    const holderProbeRef = {
+      current: {
+        originalSource: '',
+        draftValue: '',
+        submittedCandidateSource: '',
+      },
+    };
+    textEntryCardTesting.setEditorPlaintextHolderForTests(holderProbeRef);
+
+    const hCard = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial card body v1', position: 0 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
+    });
+
+    let holdCardVaultGet = false;
+    let cardVaultGetEntered = Promise.withResolvers<void>();
+    let cardVaultGetRelease = Promise.withResolvers<void>();
+
+    hCard.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (holdCardVaultGet) {
+          cardVaultGetEntered.resolve();
+          await cardVaultGetRelease.promise;
+        }
+      }
+      return null;
+    });
+
+    // Bump server entry version to 2 so the initial PUT gets 412 with current_version: 2
+    await hCard.server.sealTextForEntry(ENTRY_ID_1, 'Remote concurrent v2', 2, 0);
 
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
-      target: { value: 'Keep mine draft v4 after null vaultMeta' },
+      target: { value: 'SENTINEL-KEEP-MINE-HELD-RELOAD' },
     });
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
@@ -3667,6 +3760,84 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     let forceNullMetaForKeepMine = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaForKeepMine ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
+    holdCardVaultGet = true;
+    cardVaultGetEntered = Promise.withResolvers<void>();
+    cardVaultGetRelease = Promise.withResolvers<void>();
+    const sealsBeforeKeepMineLock = hCard.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    const putsBeforeKeepMineLock = hCard.server.requests.filter(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    ).length;
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await cardVaultGetEntered.promise;
+    expect(observedAttempts).toHaveLength(1);
+    expect(observedAttempts[0].helper).toBe('sealEntryUpdate');
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+
+    await hCard.lock();
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    await hCard.unlockWithoutReload();
+    forceNullMetaForKeepMine = false;
+
+    cardVaultGetRelease.resolve();
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: 'STALE_GENERATION',
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
+    await flushMacrotask();
+
+    expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeKeepMineLock,
+    );
+    expect(
+      hCard.server.requests.filter(
+        (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+      ),
+    ).toHaveLength(putsBeforeKeepMineLock);
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    expect(hCard.container.textContent).not.toContain('SENTINEL-KEEP-MINE-HELD-RELOAD');
+
+    // Happy path: trigger 412 conflict again, then with vaultMeta === null click Keep mine -> reloads GET /vault then PUTs
+    sealTesting.setSealAttemptListenerForTests(null);
+    holdCardVaultGet = false;
+    act(() => {
+      hCard.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'Initial card body v1');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Keep mine draft v3 after null vaultMeta' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-banner-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    forceNullMetaForKeepMine = true;
     Object.defineProperty(hCard.vault(), 'vaultMeta', {
       get: () => (forceNullMetaForKeepMine ? null : { vault_key_id: KEY_ID, version: 1 }),
       configurable: true,
@@ -3697,12 +3868,44 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await waitFor(() => {
       expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
       expect(screen.getByTestId('entry-body')).toHaveTextContent(
-        'Keep mine draft v4 after null vaultMeta',
+        'Keep mine draft v3 after null vaultMeta',
       );
     });
+  });
 
-    // 2c. 404 "Save as new entry" with vaultMeta === null:
-    // First hold GET /vault during Save as new entry, lock + unlock before releasing -> STALE_GENERATION, zero seal, zero POST, empty holder.
+  it('IP15-FE5-1 / BE5-1 / BE5-2 (2c Save as new entry): 404 Save as new entry with vaultMeta === null holds GET /vault during lock + unlockWithoutReload to reject STALE_GENERATION with zero getText calls, empty holder, zero seal, and zero POST, then reloads and POSTs on happy path', async () => {
+    const holderProbeRef = {
+      current: {
+        originalSource: '',
+        draftValue: '',
+        submittedCandidateSource: '',
+      },
+    };
+    textEntryCardTesting.setEditorPlaintextHolderForTests(holderProbeRef);
+
+    const hCard = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial card body v1', position: 0 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
+    });
+
+    let holdCardVaultGet = false;
+    let cardVaultGetEntered = Promise.withResolvers<void>();
+    let cardVaultGetRelease = Promise.withResolvers<void>();
+
+    hCard.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (holdCardVaultGet) {
+          cardVaultGetEntered.resolve();
+          await cardVaultGetRelease.promise;
+        }
+      }
+      return null;
+    });
+
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
       target: { value: 'SENTINEL-SAVE-AS-NEW-HELD-RELOAD' },
@@ -3720,6 +3923,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       configurable: true,
     });
 
+    const observedAttempts: SealAttemptObservation[] = [];
+    sealTesting.setSealAttemptListenerForTests((obs) => {
+      void obs.promise.catch(() => undefined);
+      observedAttempts.push(obs);
+    });
+
     holdCardVaultGet = true;
     cardVaultGetEntered = Promise.withResolvers<void>();
     cardVaultGetRelease = Promise.withResolvers<void>();
@@ -3727,6 +3936,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_1}`));
     await cardVaultGetEntered.promise;
+    expect(observedAttempts).toHaveLength(1);
+    expect(observedAttempts[0].helper).toBe('sealNewEntry');
+    expect(observedAttempts[0].getTextCalls).toBe(0);
 
     await hCard.lock();
     expect(holderProbeRef.current).toEqual({
@@ -3734,11 +3946,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       draftValue: '',
       submittedCandidateSource: '',
     });
-    await hCard.unlock();
+    // Avoid gate cycle: use unlockWithoutReload while GET /vault is still held by cardVaultGetRelease
+    await hCard.unlockWithoutReload();
     forceNullMetaForSaveAsNew = false;
 
     cardVaultGetRelease.resolve();
-    await flushMacrotask();
+    await expect(observedAttempts[0].promise).rejects.toMatchObject({
+      name: 'EntrySealError',
+      code: 'STALE_GENERATION',
+    });
+    expect(observedAttempts[0].getTextCalls).toBe(0);
     await flushMacrotask();
 
     expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
@@ -3749,21 +3966,22 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
       ),
     ).toHaveLength(0);
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
     expect(hCard.container.textContent).not.toContain('SENTINEL-SAVE-AS-NEW-HELD-RELOAD');
 
     // Now 404 "Save as new entry" happy path with vaultMeta === null -> reloads GET /vault then POSTs /items/{id}/entries
+    sealTesting.setSealAttemptListenerForTests(null);
     holdCardVaultGet = false;
     hCard.server.entries.get(ENTRY_ID_1)!.deleted = false;
     act(() => {
-      hCard.qc.setQueryData(
-        vaultBodyQueryKey(ENTRY_ID_1, 4),
-        'Keep mine draft v4 after null vaultMeta',
-      );
+      hCard.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'Initial card body v1');
     });
     await waitFor(() => {
-      expect(screen.getByTestId('entry-body')).toHaveTextContent(
-        'Keep mine draft v4 after null vaultMeta',
-      );
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
     });
 
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
