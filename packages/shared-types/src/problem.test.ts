@@ -124,8 +124,9 @@ describe('problem', () => {
       'reorder_mismatch',
       'changes_window_expired',
     ] as const;
-    expect(ERROR_CODES.slice(-p04.length)).toEqual([...p04]);
-    expect(ERROR_CODES[ERROR_CODES.length - p04.length - 1]).toBe('passkey_not_found');
+    expect(ERROR_CODES.slice(-p04.length - 1, -1)).toEqual([...p04]);
+    expect(ERROR_CODES[ERROR_CODES.length - p04.length - 2]).toBe('passkey_not_found');
+    expect(ERROR_CODES[ERROR_CODES.length - 1]).toBe('reset_token_invalid');
   });
 
   it('đồng bộ hai chiều giữa ERROR_CODES và danh sách ProblemCode trong openapi.yaml', () => {

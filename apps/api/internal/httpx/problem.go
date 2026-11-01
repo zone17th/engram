@@ -94,6 +94,8 @@ var problemTitles = map[string]string{
 	"entry_restore_via_item": "Entry bị xoá theo mục; hãy khôi phục mục",
 	"reorder_mismatch":       "Danh sách sắp xếp không khớp entry hiện có",
 	"changes_window_expired": "Mốc thay đổi đã quá cửa sổ lưu",
+	// P04 authui (ADR 0006).
+	"reset_token_invalid": "Mã đặt lại mật khẩu không hợp lệ",
 }
 
 // contentProblemStatus là HTTP status cố định của mọi code mà API content P04
