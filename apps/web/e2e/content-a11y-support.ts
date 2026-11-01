@@ -10,7 +10,7 @@ import {
 } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { ItemSummary, Tag } from '../lib/api/content';
+import type { ItemSummary } from '../lib/api/content';
 import { isolateRateLimit, patchSettingsViaPage } from './helpers';
 import {
   A11Y_LANGS,
@@ -93,6 +93,7 @@ export interface ContentStateSpec {
   readonly motionRoots?: string;
   readonly fullPage?: boolean;
   readonly maskSelectors?: readonly string[];
+  readonly allowedHorizontalScrollSelectors?: readonly string[];
 }
 
 export function contentA11yScreenshotName(
@@ -191,23 +192,31 @@ export async function expectInputEquals(
 export function attachPlaintextLeakGuard(
   context: BrowserContext,
   forbiddenBodies: ReadonlyArray<{ readonly label: string; readonly value: string }>,
-): { assertNoLeaks: () => void } {
+): {
+  assertNoLeaks: () => void;
+  assertSawEntriesPost: () => void;
+} {
   const leaks: string[] = [];
+  let entriesPostCount = 0;
 
   context.on('request', (req) => {
     const url = req.url();
+    const pathname = new URL(url).pathname;
+    if (req.method() === 'POST' && /^\/api\/v1\/items\/[^/]+\/entries$/.test(pathname)) {
+      entriesPostCount += 1;
+    }
     const headersText = JSON.stringify(req.headers());
     const postData = req.postData() ?? '';
     for (const item of forbiddenBodies) {
       if (!item.value) continue;
       if (url.includes(item.value)) {
-        leaks.push(`${req.method()} ${new URL(url).pathname} leaked ${item.label} in URL`);
+        leaks.push(`${req.method()} ${pathname} leaked ${item.label} in URL`);
       }
       if (headersText.includes(item.value)) {
-        leaks.push(`${req.method()} ${new URL(url).pathname} leaked ${item.label} in headers`);
+        leaks.push(`${req.method()} ${pathname} leaked ${item.label} in headers`);
       }
       if (postData.includes(item.value)) {
-        leaks.push(`${req.method()} ${new URL(url).pathname} leaked ${item.label} in postData`);
+        leaks.push(`${req.method()} ${pathname} leaked ${item.label} in postData`);
       }
     }
   });
@@ -217,6 +226,12 @@ export function attachPlaintextLeakGuard(
       expect(leaks, `Plaintext body leak detected in network requests: ${leaks.join('; ')}`).toEqual(
         [],
       );
+    },
+    assertSawEntriesPost: () => {
+      expect(
+        entriesPostCount,
+        'Plaintext leak guard positive control: expected at least 1 POST to /api/v1/items/<id>/entries',
+      ).toBeGreaterThanOrEqual(1);
     },
   };
 }
@@ -346,45 +361,6 @@ export async function unlockLockedAppPage(
   await expectLockedListOnApp(page);
   await unlockFromLockedList(page, passphrase);
 }
-/**
- * Performs an authenticated JSON mutation from the page context using the active session and `sabk_csrf` cookie.
- * Never used to send entry plaintext (entry bodies must be created through the real UI).
- */
-export async function apiMutateMetadata<TResponse>(
-  page: Page,
-  method: 'POST' | 'PATCH' | 'DELETE',
-  path: string,
-  body?: Record<string, unknown>,
-): Promise<{ status: number; data: TResponse }> {
-  return page.evaluate(
-    async ({ methodArg, pathArg, bodyArg }) => {
-      const parts = document.cookie.split(';');
-      let csrf: string | null = null;
-      for (const part of parts) {
-        const trimmed = part.trim();
-        if (trimmed.startsWith('sabk_csrf=')) {
-          csrf = decodeURIComponent(trimmed.slice('sabk_csrf='.length));
-          break;
-        }
-      }
-      const res = await fetch(`/api/v1${pathArg}`, {
-        method: methodArg,
-        credentials: 'same-origin',
-        headers: {
-          accept: 'application/json',
-          ...(bodyArg !== undefined ? { 'content-type': 'application/json' } : {}),
-          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          'Idempotency-Key': crypto.randomUUID(),
-        },
-        body: bodyArg !== undefined ? JSON.stringify(bodyArg) : undefined,
-      });
-      const parsed = res.headers.get('content-type')?.includes('json') ? await res.json() : null;
-      return { status: res.status, data: parsed as TResponse };
-    },
-    { methodArg: method, pathArg: path, bodyArg: body },
-  );
-}
-
 export async function apiLookupItems(
   page: Page,
   name: string,
@@ -396,16 +372,6 @@ export async function apiLookupItems(
     });
     return (await res.json()) as { items: ItemSummary[]; total: number };
   }, name);
-}
-
-export async function apiListTags(page: Page): Promise<{ items: Tag[] }> {
-  return page.evaluate(async () => {
-    const res = await fetch('/api/v1/tags?sort=recent', {
-      credentials: 'same-origin',
-      headers: { accept: 'application/json' },
-    });
-    return (await res.json()) as { items: Tag[] };
-  });
 }
 
 async function settleViewport(page: Page, lang: A11yLang, theme: A11yTheme): Promise<void> {
@@ -426,8 +392,9 @@ async function settleViewport(page: Page, lang: A11yLang, theme: A11yTheme): Pro
 }
 
 /**
- * Tags any text-like `<input>` holding a non-empty value other than the public item name/hint inputs
- * so `mask` hides secret inputs if any exist on screen.
+ * Tags any non-empty `<input>` (excluding the public item name/hint inputs), `<textarea>`,
+ * or `[contenteditable]` element with `data-visual-mask="true"` so `saveContentScreenshot`
+ * masks secret/body inputs and editors if any exist on screen (ACC-A11Y1-1).
  */
 async function tagSecretInputsForMask(page: Page): Promise<void> {
   await page.evaluate(() => {
@@ -441,6 +408,21 @@ async function tagSecretInputsForMask(page: Page): Promise<void> {
         input.setAttribute('data-visual-mask', 'true');
       } else {
         input.removeAttribute('data-visual-mask');
+      }
+    }
+    for (const ta of Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea'))) {
+      if (ta.value !== '' || (ta.hasAttribute('data-vault-secret') && !ta.hasAttribute('data-omnibox-input'))) {
+        ta.setAttribute('data-visual-mask', 'true');
+      } else {
+        ta.removeAttribute('data-visual-mask');
+      }
+    }
+    for (const ce of Array.from(document.querySelectorAll<HTMLElement>('[contenteditable]'))) {
+      const attr = ce.getAttribute('contenteditable');
+      if (attr !== 'false' && (ce.textContent ?? '').length > 0) {
+        ce.setAttribute('data-visual-mask', 'true');
+      } else {
+        ce.removeAttribute('data-visual-mask');
       }
     }
   });
@@ -481,6 +463,14 @@ async function saveContentScreenshot(
       page.locator('[data-visual-mask]'),
       page.getByTestId('recovery-keys-grid'),
       page.locator('[data-testid^="recovery-key-slot-"]'),
+      page.locator('p[data-testid="entry-body"], pre[data-testid="entry-body"]'),
+      page.locator('textarea[data-vault-secret]:not([data-omnibox-input])'),
+      page.locator('input[data-vault-secret]'),
+      page.locator('[data-testid^="json-cell-btn-"]'),
+      page.locator('[data-testid^="json-cell-input-"]'),
+      page.locator('[data-testid^="json-readonly-cell-"]'),
+      page.locator('[data-testid^="json-raw-textarea-"]'),
+      page.locator('#omni textarea[data-vault-secret][data-visual-mask]'),
       ...(spec.maskSelectors ?? []).map((sel) => page.locator(sel)),
     ],
   });
@@ -524,40 +514,45 @@ async function expectNoHorizontalOverflowAtWidth(
   width: number,
   extraSelectors: readonly string[] = [],
 ): Promise<void> {
-  const metrics = await ctx.page.evaluate((selectors) => {
-    const scrollWidth = document.documentElement.scrollWidth;
-    const clientWidth = document.documentElement.clientWidth;
-    const innerWidth = window.innerWidth;
-    const overflowingContainers: string[] = [];
-    for (const sel of selectors) {
-      for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
-        const style = getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden') continue;
-        const rect = el.getBoundingClientRect();
-        const overflowX = style.overflowX;
-        if (overflowX === 'auto' || overflowX === 'scroll') {
-          // Intentional horizontal scroll container (e.g. `json-table-host-<id>` with `overflow-x-auto`):
-          // its box itself must stay within the viewport, while inner `scrollWidth > clientWidth` is valid.
-          if (rect.left < -1 || rect.right > clientWidth + 1) {
+  const allowedScrollSelectors = spec.allowedHorizontalScrollSelectors ?? [];
+  const metrics = await ctx.page.evaluate(
+    ({ selectors, allowedScrollSels }) => {
+      const scrollWidth = document.documentElement.scrollWidth;
+      const clientWidth = document.documentElement.clientWidth;
+      const innerWidth = window.innerWidth;
+      const overflowingContainers: string[] = [];
+      for (const sel of selectors) {
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+          const style = getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') continue;
+          const rect = el.getBoundingClientRect();
+          const overflowX = style.overflowX;
+          const isExplicitScrollHost = allowedScrollSels.some((allowSel) => el.matches(allowSel));
+          if ((overflowX === 'auto' || overflowX === 'scroll') && isExplicitScrollHost) {
+            // Explicitly allowlisted horizontal scroll container (e.g. `json-table-host-<id>`):
+            // its box itself must stay within the viewport, while inner `scrollWidth > clientWidth` is valid.
+            if (rect.left < -1 || rect.right > clientWidth + 1) {
+              overflowingContainers.push(
+                `${sel} (scroll container spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
+              );
+            }
+            continue;
+          }
+          if (el.scrollWidth > el.clientWidth + 1) {
             overflowingContainers.push(
-              `${sel} (scroll container spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
+              `${sel} (overflow-x=${overflowX} cuts off or overflows content: scrollWidth=${el.scrollWidth} > clientWidth=${el.clientWidth})`,
+            );
+          } else if (rect.left < -1 || rect.right > clientWidth + 1) {
+            overflowingContainers.push(
+              `${sel} (overflow-x=${overflowX} spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
             );
           }
-          continue;
-        }
-        if (el.scrollWidth > el.clientWidth + 1) {
-          overflowingContainers.push(
-            `${sel} (overflow-x=${overflowX} cuts off or overflows content: scrollWidth=${el.scrollWidth} > clientWidth=${el.clientWidth})`,
-          );
-        } else if (rect.left < -1 || rect.right > clientWidth + 1) {
-          overflowingContainers.push(
-            `${sel} (overflow-x=${overflowX} spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
-          );
         }
       }
-    }
-    return { scrollWidth, clientWidth, innerWidth, overflowingContainers };
-  }, extraSelectors);
+      return { scrollWidth, clientWidth, innerWidth, overflowingContainers };
+    },
+    { selectors: extraSelectors, allowedScrollSels: allowedScrollSelectors },
+  );
 
   console.log(
     `overflow ${spec.state} ${ctx.lang} ${ctx.theme} ${width}: scrollWidth=${metrics.scrollWidth} clientWidth=${metrics.clientWidth} innerWidth=${metrics.innerWidth}`,
@@ -653,6 +648,9 @@ export async function checkContentState(
   }
 }
 
+export const GENERIC_COARSE_INTERACTIVE_SELECTOR =
+  'button, [role="button"], [role="menuitem"], [role="tab"], a[href], input, select, textarea';
+
 export interface TouchTargetMeasurement {
   readonly selector: string;
   readonly count: number;
@@ -663,10 +661,12 @@ export interface TouchTargetMeasurement {
   readonly below44: ReadonlyArray<{
     readonly selector: string;
     readonly index: number;
+    readonly descriptor: string;
     readonly width: number;
     readonly height: number;
-    readonly afterWidth: number;
-    readonly afterHeight: number;
+    readonly effectiveWidth: number;
+    readonly effectiveHeight: number;
+    readonly pseudoHitOk: boolean;
   }>;
 }
 
@@ -696,11 +696,14 @@ export async function newCoarseTouchContext(
 
 /**
  * Measures the hit area of interactive controls matching `selectors` under `(pointer: coarse)` at 390 px.
- * Accounts for `::after` hit-target expansion (such as `.chip-x::after` which is 44x44 centered).
+ * Width rule: 44 x 44 px (plan §606, ACC-A11Y1-5).
+ * For elements with bounding box < 44 px, accepts a `::after` / `::before` pseudo-element expansion
+ * ONLY when an `elementFromPoint` hit test at all 4 corners of the claimed box (inset 1 px) returns
+ * the element itself or a descendant (scrolling the element into the viewport first so `elementFromPoint` can sample it).
  */
 export async function measureCoarseTouchTargets(
   page: Page,
-  selectors: readonly string[],
+  selectors: readonly string[] = [GENERIC_COARSE_INTERACTIVE_SELECTOR],
 ): Promise<TouchTargetMeasurement[]> {
   const pointerCoarseMatches = await page.evaluate(
     () => window.matchMedia('(pointer: coarse)').matches,
@@ -709,20 +712,36 @@ export async function measureCoarseTouchTargets(
 
   return page.evaluate((selList) => {
     const results: TouchTargetMeasurement[] = [];
+    const openModals = Array.from(document.querySelectorAll<HTMLDialogElement>('dialog[open]'));
+    const activeModal = openModals.length > 0 ? openModals[openModals.length - 1]! : null;
+
+    const describeElement = (el: HTMLElement): string => {
+      const tag = el.tagName.toLowerCase();
+      const testId = el.getAttribute('data-testid');
+      const id = el.id ? `#${el.id}` : '';
+      const role = el.getAttribute('role') ? `[role="${el.getAttribute('role')}"]` : '';
+      const cls =
+        typeof el.className === 'string' && el.className.trim()
+          ? `.${el.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+          : '';
+      const href = tag === 'a' ? el.getAttribute('href') : null;
+      return `${tag}${id}${testId ? `[data-testid="${testId}"]` : ''}${href ? `[href="${href}"]` : ''}${role}${cls}`;
+    };
+
     for (const selector of selList) {
-      const elements = Array.from(document.querySelectorAll<HTMLElement>(selector)).filter(
-        (el) => {
-          const style = getComputedStyle(el);
-          const rect = el.getBoundingClientRect();
-          return (
-            style.display !== 'none' &&
-            style.visibility !== 'hidden' &&
-            !el.hasAttribute('hidden') &&
-            rect.width > 0 &&
-            rect.height > 0
-          );
-        },
-      );
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(selector)).filter((el) => {
+        if (activeModal && !activeModal.contains(el)) return false;
+        if (el.closest('[hidden], [aria-hidden="true"]')) return false;
+        if ((el as HTMLInputElement).type === 'hidden') return false;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      });
 
       let minWidth = Infinity;
       let minHeight = Infinity;
@@ -731,40 +750,88 @@ export async function measureCoarseTouchTargets(
       const below44: Array<{
         selector: string;
         index: number;
+        descriptor: string;
         width: number;
         height: number;
-        afterWidth: number;
-        afterHeight: number;
+        effectiveWidth: number;
+        effectiveHeight: number;
+        pseudoHitOk: boolean;
       }> = [];
 
       elements.forEach((el, index) => {
-        const rect = el.getBoundingClientRect();
-        const afterStyle = getComputedStyle(el, '::after');
-        const hasAfter =
-          afterStyle.content !== 'none' &&
-          afterStyle.content !== 'normal' &&
-          afterStyle.display !== 'none';
-        const afterW = hasAfter ? Number.parseFloat(afterStyle.width) || 0 : 0;
-        const afterH = hasAfter ? Number.parseFloat(afterStyle.height) || 0 : 0;
-
+        let rect = el.getBoundingClientRect();
         const w = Math.round(rect.width * 100) / 100;
         const h = Math.round(rect.height * 100) / 100;
-        const effW = Math.max(w, afterW);
-        const effH = Math.max(h, afterH);
+
+        let effW = w;
+        let effH = h;
+        let pseudoHitOk = false;
+
+        if (w < 43.5 || h < 43.5) {
+          const afterStyle = getComputedStyle(el, '::after');
+          const beforeStyle = getComputedStyle(el, '::before');
+          const hasAfter =
+            afterStyle.content !== 'none' &&
+            afterStyle.content !== 'normal' &&
+            afterStyle.display !== 'none';
+          const hasBefore =
+            beforeStyle.content !== 'none' &&
+            beforeStyle.content !== 'normal' &&
+            beforeStyle.display !== 'none';
+          const pseudoW = Math.max(
+            hasAfter ? Number.parseFloat(afterStyle.width) || 0 : 0,
+            hasBefore ? Number.parseFloat(beforeStyle.width) || 0 : 0,
+          );
+          const pseudoH = Math.max(
+            hasAfter ? Number.parseFloat(afterStyle.height) || 0 : 0,
+            hasBefore ? Number.parseFloat(beforeStyle.height) || 0 : 0,
+          );
+          const candW = Math.max(w, pseudoW);
+          const candH = Math.max(h, pseudoH);
+
+          if (candW >= 43.5 && candH >= 43.5) {
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            rect = el.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const halfW = candW / 2 - 1;
+            const halfH = candH / 2 - 1;
+            const corners: Array<[number, number]> = [
+              [cx - halfW, cy - halfH],
+              [cx + halfW, cy - halfH],
+              [cx - halfW, cy + halfH],
+              [cx + halfW, cy + halfH],
+            ];
+            const allHit = corners.every(([px, py]) => {
+              if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) {
+                return false;
+              }
+              const hit = document.elementFromPoint(px, py);
+              return Boolean(hit && (hit === el || el.contains(hit)));
+            });
+            if (allHit) {
+              effW = Math.round(candW * 100) / 100;
+              effH = Math.round(candH * 100) / 100;
+              pseudoHitOk = true;
+            }
+          }
+        }
 
         minWidth = Math.min(minWidth, w);
         minHeight = Math.min(minHeight, h);
         minEffWidth = Math.min(minEffWidth, effW);
         minEffHeight = Math.min(minEffHeight, effH);
 
-        if (effH < 43.5) {
+        if (effW < 43.5 || effH < 43.5) {
           below44.push({
             selector,
             index,
+            descriptor: describeElement(el),
             width: w,
             height: h,
-            afterWidth: afterW,
-            afterHeight: afterH,
+            effectiveWidth: effW,
+            effectiveHeight: effH,
+            pseudoHitOk,
           });
         }
       });
@@ -784,39 +851,73 @@ export async function measureCoarseTouchTargets(
 }
 
 /**
- * Asserts that every measured control selector on a coarse-pointer mobile page matched at least one visible control
- * and has an effective hit target height >= 44 px (and icon/menu triggers have width >= 44 px).
+ * Known product controls below 44x44 px under a coarse pointer (advisor-dec-217). Each entry is an anchored pattern on
+ * the exact element descriptor and names the unit that fixes it; remove the entry when that unit merges. These are
+ * logged on every sweep and not failed; any other control below 44x44 px fails the sweep.
+ */
+export const KNOWN_UI_TOUCH_44: ReadonlyArray<{ readonly unit: string; readonly control: string; readonly descriptor: RegExp }> = [
+  {
+    unit: 'w4fix FU3',
+    control: 'mobile vault lock button 38x38',
+    descriptor: /^button\[data-testid="vault-lock-button-mobile"\]\.grid\.h-\[38px\]\.w-\[38px\]$/,
+  },
+  { unit: 'w4fix FU3', control: 'header logo link', descriptor: /^a\[href="\/app"\]\.min-w-0\.shrink-0\.no-underline$/ },
+  { unit: 'w4fix FU11', control: 'item tag chip #tag link', descriptor: /^a\[href="\/app\?tag=[^"]+"\]\.text-body\.no-underline$/ },
+  {
+    unit: 'w4fix FU11',
+    control: 'breadcrumb All items link',
+    descriptor: /^a\[href="\/app"\]\.font-medium\.text-body\.no-underline$/,
+  },
+  { unit: 'w4fix FU11', control: 'json cell button (short value)', descriptor: /^button\[data-testid="json-cell-btn-[^"]+"\]/ },
+  { unit: 'w4fix FU11', control: 'json field delete x', descriptor: /^button\[data-testid="json-remove-field-[^"]+"\]/ },
+  { unit: 'w4fix FU11', control: 'json row delete x', descriptor: /^button\[data-testid="json-remove-row-[^"]+"\]/ },
+];
+
+const knownTouchGap = (descriptor: string) => KNOWN_UI_TOUCH_44.find((k) => k.descriptor.test(descriptor));
+
+/**
+ * Generic 44x44 px touch-target sweep on a coarse-pointer mobile state (ACC-A11Y1-5).
+ * Sweeps all visible interactive controls (`GENERIC_COARSE_INTERACTIVE_SELECTOR` plus any explicit `selectors`)
+ * and asserts both effective width >= 44 px and effective height >= 44 px (using soft assertions so every
+ * coarse state in the test is swept and any product control below 44x44 is logged in full).
  */
 export async function expectCoarseTouchTargetsAtLeast44(
   page: Page,
   stateLabel: string,
-  selectors: readonly string[],
-  minWidth44Selectors: readonly string[] = [],
+  selectors: readonly string[] = [GENERIC_COARSE_INTERACTIVE_SELECTOR],
 ): Promise<void> {
-  const measurements = await measureCoarseTouchTargets(page, selectors);
-  const widthSet = new Set(minWidth44Selectors);
+  const combinedSelectors = selectors.includes(GENERIC_COARSE_INTERACTIVE_SELECTOR)
+    ? selectors
+    : [GENERIC_COARSE_INTERACTIVE_SELECTOR, ...selectors];
+  const measurements = await measureCoarseTouchTargets(page, combinedSelectors);
+  console.log(
+    `touch-target-known-list ${stateLabel}: ${KNOWN_UI_TOUCH_44.map((k) => `[${k.unit}] ${k.control}`).join('; ')}`,
+  );
 
   for (const m of measurements) {
     console.log(
-      `touch-target ${stateLabel} ${m.selector}: count=${m.count} effW=${m.effectiveWidth} effH=${m.effectiveHeight}`,
+      `touch-target ${stateLabel} ${m.selector}: count=${m.count} effW=${m.effectiveWidth} effH=${m.effectiveHeight} below44=${m.below44.length}`,
     );
-    expect(
-      m.count,
-      `touch target (${stateLabel}): expected at least 1 visible element for ${m.selector}`,
-    ).toBeGreaterThan(0);
-    expect(
-      m.below44,
-      `touch target (${stateLabel}): ${m.selector} has controls below 44px height: ${JSON.stringify(m.below44)}`,
-    ).toEqual([]);
-    expect(
-      m.effectiveHeight,
-      `touch target (${stateLabel}): ${m.selector} height ${m.effectiveHeight}px < 44px`,
-    ).toBeGreaterThanOrEqual(43.5);
-    if (widthSet.has(m.selector)) {
-      expect(
-        m.effectiveWidth,
-        `touch target (${stateLabel}): ${m.selector} width ${m.effectiveWidth}px < 44px`,
-      ).toBeGreaterThanOrEqual(43.5);
+    expect
+      .soft(
+        m.count,
+        `touch target (${stateLabel}): expected at least 1 visible element for ${m.selector}`,
+      )
+      .toBeGreaterThan(0);
+    const known = m.below44.filter((b) => knownTouchGap(b.descriptor));
+    const unknown = m.below44.filter((b) => !knownTouchGap(b.descriptor));
+    for (const b of known) {
+      const k = knownTouchGap(b.descriptor);
+      console.log(
+        `touch-target-known-gap ${stateLabel} [${k?.unit}] ${k?.control}: ${b.descriptor} ${b.effectiveWidth}x${b.effectiveHeight}`,
+      );
     }
+    // Every control below 44x44 px that is not a listed known gap fails (min width/height over all controls is implied).
+    expect
+      .soft(
+        unknown,
+        `touch target (${stateLabel}): ${m.selector} has controls below 44x44px: ${JSON.stringify(unknown)}`,
+      )
+      .toEqual([]);
   }
 }

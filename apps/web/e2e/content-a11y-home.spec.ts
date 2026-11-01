@@ -59,8 +59,14 @@ async function quickAddEntryViaUi(
   useCtrlEnter = false,
 ): Promise<void> {
   const omnibox = page.locator('#omni textarea[data-vault-secret]');
+  const saveBtn = page.getByTestId('omnibox-save-now-btn');
   await setQuietValue(omnibox, draft);
-  await omnibox.press(useCtrlEnter ? 'Control+Enter' : 'Enter');
+  if (useCtrlEnter) {
+    await omnibox.press('Control+Enter');
+  } else {
+    await expect(saveBtn).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+    await saveBtn.click();
+  }
   await expectInputEmpty(omnibox);
   const toast = page
     .getByTestId('undo-toast-item')
@@ -151,16 +157,19 @@ async function runHomeGroup(
       },
     );
 
-    // ---- State 1: `home` (U10 home rail, tag filter, recent grid) ----
-    // Per `components/ui/undo-toast.tsx`, keyboard-triggered quick-add toasts have `UNDO_TOAST_KEYBOARD_DURATION_MS = 10_000`
-    // and no close/dismiss button (activating a toast button triggers Undo and deletes the entry). Rather than wasting
-    // >10s waiting for auto-dismiss or reloading `/app` (which drops the in-memory vault key), capture the `home` state
-    // immediately and mask `[data-testid="undo-toast-stack"]` in the `home` screenshot (`undo-toast` is swept in State 4).
+    // ---- State 1: `home` (U10 home rail, tag filter, recent grid — deterministic 0 toasts, no mask over cards/omnibox) ----
+    // Wait for the seed quick-add Undo toasts to auto-dismiss (UNDO_TOAST_DEFAULT_DURATION_MS = 5_000, UNDO_TOAST_KEYBOARD_DURATION_MS = 10_000)
+    // after moving pointer away from the bottom-centered toast stack and blurring active focus so `paused === false` (`undo-toast.tsx:209`).
+    // This makes `home`, `omnibox-open`, and `picker` 100% deterministic with 0 toasts (ACC-TV1-1, ACC-TV1-6, ACC-A11Y1-8).
     await a11yStep(`[home ${groupLabel}] settle clean U10 home state and sweep 390/768/1440`, async () => {
+      await page.mouse.move(10, 10);
       await page.evaluate(() => {
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
         }
+      });
+      await expect(page.getByTestId('undo-toast-item')).toHaveCount(0, {
+        timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
       await expect(page.getByTestId('item-card')).toHaveCount(3, {
         timeout: CONTENT_A11Y_UI_WAIT_MS,
@@ -174,9 +183,14 @@ async function runHomeGroup(
         {
           state: 'home',
           fullPage: true,
-          maskSelectors: ['[data-testid="undo-toast-stack"]'],
         },
-        ['[data-testid="item-card"]', '[data-testid="rail-tags"]'],
+        [
+          '[data-testid="item-card"]',
+          '[data-testid="item-card"] h3',
+          '[data-testid="item-tag-chip"]',
+          '[data-testid="rail-tags"]',
+          '[data-testid="rail-tag-item"]',
+        ],
       );
     });
 
@@ -307,7 +321,10 @@ async function runHomeGroup(
 
         await checkContentState(ctx, { state: 'omnibox-open', fullPage: true }, [
           '#omni-pop',
+          '#omni-listbox .sugg-row',
           '[data-testid="item-card"]',
+          '[data-testid="item-card"] h3',
+          '[data-testid="item-tag-chip"]',
         ]);
 
         // Escape closes listbox, removes aria-controls and aria-activedescendant, and keeps focus on omnibox
@@ -374,8 +391,13 @@ async function runHomeGroup(
         await checkContentState(
           ctx,
           { state: 'picker', axeInclude: '#dupDialog', fullPage: false },
-          ['#dupDialog .dup-panel'],
+          ['#dupDialog .dup-panel', '#dupDialog .dup-row', '#dupDialog .dup-chip'],
         );
+
+        // Ensure 0 stale toasts exist before picking (ACC-A11Y1-8, ACC-TV1-6)
+        await expect(page.getByTestId('undo-toast-item')).toHaveCount(0, {
+          timeout: CONTENT_A11Y_UI_WAIT_MS,
+        });
 
         // Choose the 2nd item (`secondDupId`) via keyboard ArrowDown + Enter (in keyboard pass) or click
         if (ctx.keyboard) {
@@ -395,41 +417,83 @@ async function runHomeGroup(
           await expect(omnibox).toBeFocused();
         }
 
-        // Verify U18 Undo toast appears on home with detail scope line and 1 shared role="status" live region
+        // Verify U18 Undo toast appears on home with detail scope line, count 1, and 1 shared role="status" live region
         const toastStack = page.getByTestId('undo-toast-stack');
-        const toastItem = page
-          .getByTestId('undo-toast-item')
-          .filter({ hasText: DUP_ITEM_NAME })
-          .first();
+        const toastItems = page.getByTestId('undo-toast-item');
+        await expect(toastItems).toHaveCount(1, { timeout: CONTENT_A11Y_UI_WAIT_MS });
+        const toastItem = toastItems.first();
         await expect(toastItem).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(toastItem).toContainText(DUP_ITEM_NAME);
         await expect(toastItem.getByTestId('undo-toast-detail')).toContainText(
           msgs.content.omnibox.savedUndoDetail,
         );
         await expect(toastStack.locator('[role="status"]')).toHaveCount(1);
 
+        if (ctx.keyboard) {
+          // ACC-A11Y1-4 (P4FE2-3, `undo-toast.tsx:511-545`):
+          // 1) Immediately after quick-add save, focus is in the just-cleared omnibox (`omniboxClearedElRef.current === activeEl`
+          //    and `value === ''`): pressing Ctrl+Z WITH FOCUS LEFT IN THE CLEARED OMNIBOX consumes the Undo toast!
+          const lookupAfterPick = await apiLookupItems(page, DUP_ITEM_NAME);
+          const secondItemAfterPick = lookupAfterPick.items.find((it) => it.id === secondDupId);
+          expect(secondItemAfterPick?.entry_count).toBe(2);
+
+          await expect(omnibox).toBeFocused();
+          await expectInputEmpty(omnibox);
+          await page.keyboard.press('Control+z');
+          await expect(toastItems).toHaveCount(0, { timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expect(omnibox).toBeFocused();
+          await expect
+            .poll(
+              async () => {
+                const res = await apiLookupItems(page, DUP_ITEM_NAME);
+                return res.items.find((it) => it.id === secondDupId)?.entry_count ?? -1;
+              },
+              { timeout: CONTENT_A11Y_UI_WAIT_MS },
+            )
+            .toBe(1);
+
+          // 2) Re-create the quick-add toast via the picker so we can prove:
+          //    (a) typing a character in the omnibox clears `omniboxClearedElRef` (`undo-toast.tsx:250-254`) so Ctrl+Z keeps the toast,
+          //    (b) sweeping `undo-toast` across 390/768/1440, and
+          //    (c) pressing Ctrl+Z on the focused Undo button consumes the toast and restores focus to the omnibox.
+          await setQuietValue(omnibox, addDraft);
+          await omnibox.press('Enter');
+          await expect(pickerDialog).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          const firstOpt = pickerListbox.getByRole('option').first();
+          await firstOpt.focus();
+          await page.keyboard.press('ArrowDown');
+          await page.keyboard.press('Enter');
+          await expect(pickerDialog).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expectInputEmpty(omnibox);
+          await expect(omnibox).toBeFocused();
+          await expect(toastItems).toHaveCount(1, { timeout: CONTENT_A11Y_UI_WAIT_MS });
+
+          // Type a character into the omnibox, then press Ctrl+Z -> toast MUST remain (native input undo, not toast Undo)
+          await omnibox.press('x');
+          await page.keyboard.press('Control+z');
+          await expect(toastItems).toHaveCount(1);
+          await setQuietValue(omnibox, '');
+          await expectInputEmpty(omnibox);
+        }
+
         // Pause toast timer by focusing the Undo button so the toast remains stable across the 390/768/1440 sweep
-        const undoBtn = toastItem.getByRole('button');
+        const undoBtn = toastItems.first().getByRole('button');
         await undoBtn.focus();
         await expect(undoBtn).toBeFocused();
 
         await checkContentState(ctx, { state: 'undo-toast', fullPage: true }, [
           '[data-testid="undo-toast-item"]',
           '[data-testid="item-card"]',
+          '[data-testid="item-card"] h3',
+          '[data-testid="item-tag-chip"]',
         ]);
 
         if (ctx.keyboard) {
-          // Verify that typing inside the omnibox makes Ctrl+Z use native undo instead of triggering toast Undo,
-          // and that pressing Ctrl+Z when focus is outside an input (or in the just-cleared omnibox) triggers Undo
-          // and returns focus to the omnibox (plan §2.8, P4FE2-3).
-          const lookupAfterPick = await apiLookupItems(page, DUP_ITEM_NAME);
-          const secondItemAfterPick = lookupAfterPick.items.find((it) => it.id === secondDupId);
-          expect(secondItemAfterPick?.entry_count).toBe(2);
-
           // Focus the Undo button in the toast stack and press Ctrl+Z -> triggers Undo, restores focus to omnibox
           await undoBtn.focus();
           await expect(undoBtn).toBeFocused();
           await page.keyboard.press('Control+z');
-
+          await expect(toastItems).toHaveCount(0, { timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expect(omnibox).toBeFocused({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expect
             .poll(
@@ -450,6 +514,7 @@ async function runHomeGroup(
         `[home ${groupLabel}] coarse pointer (hasTouch: true, isMobile: true at 390) touch target >= 44 px`,
         async () => {
           const coarseContext = await newCoarseTouchContext(browser, context);
+          const coarseLeakGuard = attachPlaintextLeakGuard(coarseContext, forbiddenSecrets);
           try {
             const coarsePage = await coarseContext.newPage();
             await coarsePage.goto('/app', {
@@ -462,15 +527,13 @@ async function runHomeGroup(
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
 
-            // 1. Measure home rail controls (`home` state)
-            await expectCoarseTouchTargetsAtLeast44(
-              coarsePage,
-              'home-rail',
-              ['.tag-pill-btn', '.tag-menu-trigger'],
-              ['.tag-menu-trigger'],
-            );
+            // 1. Generic 44x44 px touch target sweep on `home` state (plus rail controls)
+            await expectCoarseTouchTargetsAtLeast44(coarsePage, 'home-rail', [
+              '.tag-pill-btn',
+              '.tag-menu-trigger',
+            ]);
 
-            // 2. Open omnibox search listbox (`omnibox-open` state) and measure `.sugg-row`
+            // 2. Open omnibox search listbox (`omnibox-open` state) and sweep generic interactive controls + `[role="option"]`
             const coarseOmnibox = coarsePage.getByRole('textbox', {
               name: msgs.content.omnibox.ariaLabel,
             });
@@ -484,7 +547,7 @@ async function runHomeGroup(
             await expectCoarseTouchTargetsAtLeast44(coarsePage, 'omnibox-open', ['.sugg-row']);
             await coarsePage.keyboard.press('Escape');
 
-            // 3. Open U9 duplicate picker (`picker` state) and measure `.dup-row` and cancel `.btn`
+            // 3. Open U9 duplicate picker (`picker` state) and sweep generic interactive controls inside modal + `.dup-row`
             await setQuietValue(coarseOmnibox, `${DUP_ITEM_NAME}: ${bodyDupPick}`);
             await coarseOmnibox.press('Enter');
             const coarsePicker = coarsePage.getByTestId('dup-picker-dialog');
@@ -494,13 +557,18 @@ async function runHomeGroup(
               '[data-testid="dup-picker-cancel"]',
             ]);
 
-            // 4. Pick first option -> measure Undo toast button (`undo-toast` state)
+            // 4. Pick first option -> sweep Undo toast state (`undo-toast`)
             await coarsePicker.getByRole('option').first().click();
-            const coarseToast = coarsePage.getByTestId('undo-toast-item').first();
-            await expect(coarseToast).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+            const coarseToast = coarsePage.getByTestId('undo-toast-item');
+            await expect(coarseToast).toHaveCount(1, { timeout: CONTENT_A11Y_UI_WAIT_MS });
             await expectCoarseTouchTargetsAtLeast44(coarsePage, 'home-undo-toast', [
               '[data-testid="undo-toast-item"] button',
             ]);
+
+            // ACC-A11Y1-2 & ACC-A11Y1-11: DOM attribute scan + network leak guard + positive control on coarseContext
+            await expectNoPlaintextInDomAttributes(coarsePage, forbiddenSecrets);
+            coarseLeakGuard.assertNoLeaks();
+            coarseLeakGuard.assertSawEntriesPost();
           } finally {
             await coarseContext.close();
           }
@@ -510,6 +578,7 @@ async function runHomeGroup(
 
     await expectNoPlaintextInDomAttributes(page, forbiddenSecrets);
     leakGuard.assertNoLeaks();
+    leakGuard.assertSawEntriesPost();
   } finally {
     await context.close();
   }
