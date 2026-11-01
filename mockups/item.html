@@ -1059,6 +1059,9 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
           <button type="button" id="importChooseFileBtn" class="btn btn-tertiary btn-sm">
             Chọn file <span class="mono">.json</span>… · <span lang="en">Choose <span class="mono">.json</span> file…</span>
           </button>
+          <button type="button" id="importClearFileBtn" class="btn btn-tertiary btn-sm" hidden>
+            Bỏ file · <span lang="en">Clear file</span>
+          </button>
           <span id="importSourceBadge" class="badge-type badge-ok">Nguồn: dán (<span class="mono">paste</span>) · 412 / 262.144 B</span>
         </div>
         <span id="importStatus" class="text-[12px] mono text-body">JSON hợp lệ · 7 khoá · giữ nguyên thứ tự khoá &amp; chữ số</span>
@@ -1259,6 +1262,7 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
   const saveAsTextBtn = document.getElementById('importSaveAsTextBtn');
   const submitBtn = document.getElementById('importSubmitBtn');
   const chooseFileBtn = document.getElementById('importChooseFileBtn');
+  const clearFileBtn = document.getElementById('importClearFileBtn');
   const fileInput = document.getElementById('importFileInput');
   const formatChk = document.getElementById('importFormatBeforeSave');
   const stateBar = document.getElementById('importStateBar');
@@ -1298,6 +1302,10 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
     src.disabled = blockedAt200;
     src.readOnly = importSourceKind === 'file';
     if (chooseFileBtn) chooseFileBtn.disabled = blockedAt200;
+    if (clearFileBtn) {
+      clearFileBtn.hidden = importSourceKind !== 'file';
+      clearFileBtn.disabled = blockedAt200;
+    }
     if (formatChk) formatChk.disabled = blockedAt200 || forcedUtf8Error;
 
     if (blockedAt200) {
@@ -1396,6 +1404,17 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
         }
       });
     });
+    if (clearFileBtn) {
+      clearFileBtn.addEventListener('click', () => {
+        fileInput.value = '';
+        importSourceKind = 'paste';
+        forcedUtf8Error = false;
+        importSource = src.value || routerRaw;
+        src.value = importSource;
+        syncImportUi();
+        src.focus();
+      });
+    }
   }
 
   if (saveAsTextBtn) {

@@ -449,6 +449,10 @@ textarea.omnibox-input::placeholder {
   background: var(--surface-alt); border-radius: var(--r-md);
   padding: 12px 14px; letter-spacing: .12em;
 }
+[data-secret][data-locked] > :not([data-lock-veil]) {
+  display: none !important;
+}
+
 
 .seg { display: inline-flex; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
 .seg button {
@@ -671,14 +675,12 @@ dialog { border: 0; padding: 0; background: transparent; max-width: calc(100vw -
 #passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg, #importDlg { color: var(--body); }
 #passDlg .btn, #rkDlg .btn, #rotateDlg .btn, #passkeyAddDlg .btn, #resetDlg .btn,
 #dupDialog .btn, #tagRenameDlg .btn, #importDlg .btn,
-section.scope-vault .btn,
-section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='enroll']):not([data-view='oauth']):not([data-view='reauth']):not([data-view='err']):not([data-view='auth']) .btn {
+section.scope-vault .btn {
   white-space: normal; text-align: center;
 }
 #passDlg .t-label, #rkDlg .t-label, #rotateDlg .t-label, #passkeyAddDlg .t-label, #resetDlg .t-label,
 #dupDialog .t-label, #tagRenameDlg .t-label, #importDlg .t-label,
-section.scope-vault .t-label,
-section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='enroll']):not([data-view='oauth']):not([data-view='reauth']):not([data-view='err']):not([data-view='auth']) .t-label {
+section.scope-vault .t-label {
   overflow-wrap: anywhere;
 }
 

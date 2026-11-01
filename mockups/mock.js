@@ -3061,6 +3061,7 @@
   /* ---------- Interactive JSON Entry Card Controller ---------- */
 
   const jsonCardInstances = [];
+  let vaultTogglePointerDown = false;
   const SUP_DIGITS = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
   function toSuperscriptNum(n) {
     return String(n).split('').map((d) => SUP_DIGITS[d.charCodeAt(0) - 48] || d).join('');
@@ -3515,6 +3516,10 @@
 
     function paint(explicitFocusTarget) {
       const prevFocus = explicitFocusTarget !== undefined ? explicitFocusTarget : captureFocusTarget();
+      if (state.locked && tableHost.closest('[data-secret]')) {
+        tableHost.innerHTML = '';
+        return;
+      }
       if (!currentDoc) {
         tableHost.innerHTML = `<div class="p-4 text-[13px] text-error-ink">Chưa thể hiển thị bảng vì JSON đang có lỗi cú pháp. Hãy sửa ở tab JSON gốc. · <span lang="en">Cannot render table while JSON is invalid. Fix in Raw JSON tab.</span></div>`;
         return;
@@ -3568,14 +3573,15 @@
       return true;
     }
 
-    function commitCellEdit(path) {
+    function commitCellEdit(path, opts) {
+      opts = opts || {};
       if (!currentDoc || !path || activeEditCellKey !== path) return false;
       const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(path)}"]`);
       const newVal = inp ? inp.value : '';
       const node = getNodeByPath(currentDoc.root, path);
       if (!node) return false;
       const isKey = path.split('.').pop().startsWith('k');
-      const focusAfterCommit = { kind: 'act', act: 'edit-cell', path };
+      const focusAfterCommit = opts.skipFocus ? null : { kind: 'act', act: 'edit-cell', path };
 
       if (node.kind === 'string') {
         if (node.value === newVal) {
@@ -3638,12 +3644,75 @@
       return false;
     }
 
+    let cancelCellPointerDown = false;
+    let inTablePointerDown = false;
+
+    const handleTablePointerDown = (e) => {
+      const actBtn = e.target.closest('[data-json-act]');
+      if (actBtn && actBtn.dataset.jsonAct === 'cancel-cell') {
+        cancelCellPointerDown = true;
+        inTablePointerDown = true;
+      } else if (actBtn || e.target.closest('[data-json-type-select]')) {
+        cancelCellPointerDown = false;
+        inTablePointerDown = true;
+      } else {
+        cancelCellPointerDown = false;
+        inTablePointerDown = false;
+      }
+      setTimeout(() => {
+        cancelCellPointerDown = false;
+        inTablePointerDown = false;
+      }, 0);
+    };
+
+    tableHost.addEventListener('pointerdown', handleTablePointerDown);
+    tableHost.addEventListener('mousedown', handleTablePointerDown);
+
+    function submitAddField(path) {
+      const keyInp = tableHost.querySelector(`[data-json-new-key="${CSS.escape(path)}"]`);
+      const typeSel = tableHost.querySelector(`[data-json-new-type="${CSS.escape(path)}"]`);
+      const newKey = keyInp ? keyInp.value.trim() : '';
+      const newType = typeSel ? typeSel.value : 'null';
+      const objNode = getNodeByPath(currentDoc.root, path);
+      if (!objNode || objNode.kind !== 'object') return false;
+      if (!newKey) {
+        activeAddKeyError = 'Nhập tên khoá · Enter a key name';
+        paint({ kind: 'new-key', path });
+        return false;
+      }
+      if (objNode.properties.some((p) => p.key === newKey)) {
+        activeAddKeyError = 'Key đã có · Key already exists';
+        paint({ kind: 'new-key', path });
+        return false;
+      }
+      const valLex = newType === 'string' ? '""'
+        : newType === 'number' ? '0'
+        : newType === 'true' ? 'true'
+        : newType === 'false' ? 'false'
+        : newType === 'object' ? '{}'
+        : newType === 'array' ? '[]'
+        : 'null';
+      const propText = `${escapeJsonStringMinimal(newKey)}: ${valLex}`;
+      const edit = computeInsertionSpan(currentSource, objNode.span, objNode.properties, objNode.properties.length, propText);
+      return applySourceSplice(edit, 'Đã thêm trường · Added field', { kind: 'act', act: 'open-add-field', path });
+    }
+
     tableHost.addEventListener('click', (e) => {
+      cancelCellPointerDown = false;
+      inTablePointerDown = false;
       const btn = e.target.closest('[data-json-act]');
       if (!btn || !currentDoc) return;
       const act = btn.dataset.jsonAct;
       const path = btn.dataset.path;
 
+      /* S3RV2-2: commit any open cell editor in the target control's own click handler so focusout does not swallow the first click */
+      if (activeEditCellKey && act !== 'commit-cell' && act !== 'cancel-cell') {
+        if (act !== 'edit-cell' || activeEditCellKey !== path) {
+          if (!commitCellEdit(activeEditCellKey, { skipFocus: true })) {
+            return;
+          }
+        }
+      }
       if (act === 'toggle-nest') {
         e.stopPropagation();
         if (openContainers.has(path)) openContainers.delete(path);
@@ -3658,9 +3727,6 @@
         return;
       }
       if (act === 'edit-cell') {
-        if (activeEditCellKey && activeEditCellKey !== path) {
-          commitCellEdit(activeEditCellKey);
-        }
         activeEditCellKey = path;
         activeCellError = null;
         paint({ kind: 'edit-input', path });
@@ -3719,32 +3785,7 @@
         return;
       }
       if (act === 'confirm-add-field') {
-        const keyInp = tableHost.querySelector(`[data-json-new-key="${CSS.escape(path)}"]`);
-        const typeSel = tableHost.querySelector(`[data-json-new-type="${CSS.escape(path)}"]`);
-        const newKey = keyInp ? keyInp.value.trim() : '';
-        const newType = typeSel ? typeSel.value : 'null';
-        const objNode = getNodeByPath(currentDoc.root, path);
-        if (!objNode || objNode.kind !== 'object') return;
-        if (!newKey) {
-          activeAddKeyError = 'Nhập tên khoá · Enter a key name';
-          paint({ kind: 'new-key', path });
-          return;
-        }
-        if (objNode.properties.some((p) => p.key === newKey)) {
-          activeAddKeyError = 'Key đã có · Key already exists';
-          paint({ kind: 'new-key', path });
-          return;
-        }
-        const valLex = newType === 'string' ? '""'
-          : newType === 'number' ? '0'
-          : newType === 'true' ? 'true'
-          : newType === 'false' ? 'false'
-          : newType === 'object' ? '{}'
-          : newType === 'array' ? '[]'
-          : 'null';
-        const propText = `${escapeJsonStringMinimal(newKey)}: ${valLex}`;
-        const edit = computeInsertionSpan(currentSource, objNode.span, objNode.properties, objNode.properties.length, propText);
-        applySourceSplice(edit, 'Đã thêm trường · Added field', { kind: 'act', act: 'open-add-field', path });
+        submitAddField(path);
         return;
       }
       if (act === 'remove-field') {
@@ -3828,6 +3869,20 @@
     });
 
     tableHost.addEventListener('keydown', (e) => {
+      const newKeyEl = e.target.closest('[data-json-new-key], [data-json-new-type]');
+      if (newKeyEl) {
+        const addPath = newKeyEl.dataset.jsonNewKey || newKeyEl.dataset.jsonNewType || activeAddFormPath || 'root';
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          activeAddFormPath = null;
+          activeAddKeyError = null;
+          paint({ kind: 'act', act: 'open-add-field', path: addPath });
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          submitAddField(addPath);
+        }
+        return;
+      }
       const inp = e.target.closest('[data-json-edit-input]');
       if (!inp) return;
       const path = inp.dataset.jsonEditInput;
@@ -3851,9 +3906,15 @@
       if (!wrap) return;
       const path = wrap.dataset.jsonActiveEditor;
       if (!path || activeEditCellKey !== path) return;
+      if (vaultTogglePointerDown) return;
+      if (cancelCellPointerDown || inTablePointerDown) {
+        return;
+      }
       const next = e.relatedTarget;
       if (next && wrap.contains(next)) return;
-      commitCellEdit(path);
+      /* S3RV2-2: if focus moves to another interactive control inside tableHost, let its click handler commit first */
+      if (next && tableHost.contains(next)) return;
+      commitCellEdit(path, { skipFocus: true });
     });
 
     /* Wire Raw JSON editor panel if rawHost is an interactive container */
@@ -4125,7 +4186,11 @@
           const formatMsgEl = rawHost.querySelector('[data-json-format-msg]');
           if (formatMsgEl) formatMsgEl.hidden = true;
         }
-        if (!isLocked) {
+        if (isLocked) {
+          if (tableHost.closest('[data-secret]')) {
+            tableHost.innerHTML = '';
+          }
+        } else {
           paint();
           if (validateRawDraftFn) validateRawDraftFn();
         }
@@ -4172,34 +4237,19 @@
         document.body.classList.toggle('is-locked', state.locked);
         document.querySelectorAll('[data-secret]').forEach((el) => {
           if (state.locked) {
-            if (!el.dataset.locked) {
-              el.dataset.locked = '1';
-              Array.from(el.children).forEach((child) => {
-                if (child.hasAttribute('data-lock-veil')) return;
-                if (child.hidden) child.dataset.wasHiddenBeforeLock = '1';
-                child.hidden = true;
-              });
-              let veil = el.querySelector(':scope > [data-lock-veil]');
-              if (!veil) {
-                veil = document.createElement('div');
-                veil.className = 'lock-veil';
-                veil.setAttribute('data-lock-veil', '1');
-                veil.textContent = '•••• •••• •••• ••••';
-                el.appendChild(veil);
-              }
-              veil.hidden = false;
+            el.dataset.locked = '1';
+            let veil = el.querySelector(':scope > [data-lock-veil]');
+            if (!veil) {
+              veil = document.createElement('div');
+              veil.className = 'lock-veil';
+              veil.setAttribute('data-lock-veil', '1');
+              veil.textContent = '•••• •••• •••• ••••';
+              el.appendChild(veil);
             }
+            veil.hidden = false;
           } else if (el.dataset.locked) {
             const veil = el.querySelector(':scope > [data-lock-veil]');
             if (veil) veil.remove();
-            Array.from(el.children).forEach((child) => {
-              if (child.dataset.wasHiddenBeforeLock === '1') {
-                delete child.dataset.wasHiddenBeforeLock;
-                child.hidden = true;
-              } else {
-                child.hidden = false;
-              }
-            });
             delete el.dataset.locked;
           }
         });
@@ -4219,9 +4269,25 @@
         prevLocked = state.locked;
       };
       window.SAK._syncVault = syncVault;
-      const toggle = () => { state.locked = !state.locked; syncVault(); };
-      pills.forEach((b) => b.addEventListener('click', toggle));
-      unlockBtns.forEach((b) => b.addEventListener('click', toggle));
+      const markVaultPointerDown = () => {
+        vaultTogglePointerDown = true;
+        setTimeout(() => { vaultTogglePointerDown = false; }, 0);
+      };
+      const toggle = () => {
+        vaultTogglePointerDown = false;
+        state.locked = !state.locked;
+        syncVault();
+      };
+      pills.forEach((b) => {
+        b.addEventListener('pointerdown', markVaultPointerDown);
+        b.addEventListener('mousedown', markVaultPointerDown);
+        b.addEventListener('click', toggle);
+      });
+      unlockBtns.forEach((b) => {
+        b.addEventListener('pointerdown', markVaultPointerDown);
+        b.addEventListener('mousedown', markVaultPointerDown);
+        b.addEventListener('click', toggle);
+      });
       syncVault();
     }
     document.querySelectorAll('[data-sem-toggle]').forEach((btn) => {
