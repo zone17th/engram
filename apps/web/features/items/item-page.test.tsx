@@ -395,7 +395,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     signupSession: (email: string, password: string) => Promise<void>;
     completeOAuthSession: () => Promise<void>;
     unlock: () => Promise<void>;
+    unlockWithoutReload: () => Promise<void>;
     lock: () => Promise<void>;
+    workerCalls: Array<{ type: string; id: number }>;
     setCurrentMe: (me: Me) => void;
     rerenderPage: (node?: ReactNode) => void;
   }
@@ -748,6 +750,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       },
     });
 
+    const workerCalls: Array<{ type: string; id: number }> = [];
+
     const buildTree = (child?: ReactNode) => (
       <NextIntlClientProvider locale={locale} messages={locale === 'vi' ? viMessages : en}>
         <ThemeProvider initialTheme="light" initialLocale={locale}>
@@ -760,6 +764,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
                       deriveKek: fastTestDeriveKek,
                     });
                     shims.push(shim);
+                    const origPostMessage = shim.port.postMessage.bind(shim.port);
+                    shim.port.postMessage = (message, transfer) => {
+                      workerCalls.push({ type: message.type, id: message.id });
+                      return origPostMessage(message, transfer);
+                    };
                     return shim.port;
                   }}
                   lockEpochEnv={makeSimpleLockEpochEnv()}
@@ -857,6 +866,20 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
     };
 
+    const unlockWithoutReload = async () => {
+      const op = vaultCtx.beginOp();
+      await act(async () => {
+        await vaultCtx.unlockPassphrase({
+          passphrase: PASSPHRASE,
+          kdf: createdVault!.kdf,
+          vaultKeyWrappedByKek: createdVault!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: createdVault!.private_keys_wrapped,
+          opGeneration: op.opGeneration,
+        });
+      });
+      await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+    };
+
     const lock = async () => {
       await act(async () => {
         await vaultCtx.lockNow();
@@ -879,7 +902,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         },
       },
       unlock,
+      unlockWithoutReload,
       lock,
+      workerCalls,
       signOutSession: async () => {
         await act(async () => {
           await signOutFn();
@@ -3137,6 +3162,495 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
       ),
     ).toHaveLength(1);
+  });
+
+  it('IP15-FE4-2 / BE4-3: holding GET /vault (reloadVaultMeta) during save and locking (and locking + unlocking) cancels with STALE_GENERATION, zero seal, zero POST/PUT, empty holder and DOM, and no draft restoration; null/invalid key id rejects VAULT_KEY_MISSING with no write across + Text, regular Save, Keep mine, and 404 Save as new entry', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
+    });
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+
+    // 1a. + Text composer: hold GET /vault after Save starts, lock before releasing valid metadata ->
+    // zero Worker sealEntry, zero POST, composer closed/wiped, no draft restoration after unlock.
+    let holdVaultGet = true;
+    let vaultGetEnteredGate = Promise.withResolvers<void>();
+    let vaultGetReleaseGate = Promise.withResolvers<void>();
+    let returnInvalidVaultKeyId = false;
+    let returnVaultAbsent404 = false;
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (holdVaultGet) {
+          vaultGetEnteredGate.resolve();
+          await vaultGetReleaseGate.promise;
+        }
+        if (returnVaultAbsent404) {
+          return problemResponse('vault_absent', 404);
+        }
+        if (returnInvalidVaultKeyId) {
+          return jsonResponse({
+            vault_key_id: 'invalid-key-id-format',
+            version: 1,
+          });
+        }
+      }
+      return null;
+    });
+
+    const sealsBeforeComposerLock = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    const composerTextarea1 = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
+    fireEvent.change(composerTextarea1, {
+      target: { value: 'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await vaultGetEnteredGate.promise;
+    await h.lock();
+    expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+    expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY');
+
+    vaultGetReleaseGate.resolve();
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeComposerLock,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+
+    // 1b. + Text composer: hold GET /vault after Save starts, lock AND unlock before releasing valid metadata ->
+    // STALE_GENERATION, zero Worker sealEntry, zero POST, empty DOM, no draft restoration.
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+    expect(screen.getByTestId('draft-cleared-on-lock-banner')).toBeInTheDocument();
+
+    vaultGetEnteredGate = Promise.withResolvers<void>();
+    vaultGetReleaseGate = Promise.withResolvers<void>();
+    const sealsBeforeComposerLockUnlock = h.workerCalls.filter(
+      (c) => c.type === 'sealEntry',
+    ).length;
+
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    const composerTextarea2 = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
+    fireEvent.change(composerTextarea2, {
+      target: { value: 'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await vaultGetEnteredGate.promise;
+    await h.lock();
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+
+    vaultGetReleaseGate.resolve();
+    await waitFor(() => {
+      expect(h.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+    });
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeComposerLockUnlock,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+    expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK');
+    assertNoPlaintextAttrs(h.container, [
+      'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY',
+      'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK',
+    ]);
+
+    // 1c. + Text composer with vaultMeta === null where reloadVaultMeta returns an invalid key_id ->
+    // VAULT_KEY_MISSING, zero Worker sealEntry, zero POST.
+    await h.signOutSession();
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+    });
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlockWithoutReload();
+    expect(h.vault().vaultMeta).toBeNull();
+
+    holdVaultGet = false;
+    returnInvalidVaultKeyId = true;
+    const sealsBeforeInvalidKey = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'Draft with invalid key_id on reload' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('new-entry-save-error')).toBeInTheDocument();
+    });
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeInvalidKey,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+
+    // 1d. + Text composer with vaultMeta === null where reloadVaultMeta resolves null (404 vault_absent) ->
+    // VAULT_KEY_MISSING / lock, zero Worker sealEntry, zero POST.
+    await h.signOutSession();
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlockWithoutReload();
+    expect(h.vault().vaultMeta).toBeNull();
+
+    returnInvalidVaultKeyId = false;
+    returnVaultAbsent404 = true;
+    const sealsBeforeNullReload = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'Draft when reloadVaultMeta returns null' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+    });
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeNullReload,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+
+    // 2. Card editing paths (regular Save, Keep mine, and 404 Save as new entry) with vaultMeta === null:
+    // Mount fresh harness with 1 entry so we can test holder wipe + zero seal + happy-path reload across all 3 card save paths.
+    cleanup();
+    const holderProbeRef = {
+      current: {
+        originalSource: '',
+        draftValue: '',
+        submittedCandidateSource: '',
+      },
+    };
+    setEditorPlaintextHolderForTests(holderProbeRef);
+
+    const hCard = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial card body v1', position: 0 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
+    });
+
+    // Helper to reset vaultMeta to null while unlocked (signOut clears ['vault','meta'] and sets vaultMeta=null;
+    // login + unlockWithoutReload leaves vault unlocked with vaultMeta === null while entry-body is already in QueryCache
+    // if we re-prime or wait, wait: signOut clears private cache! So we can instead open the editor first or re-seed
+    // the body query cache so Edit button is immediately available while vaultMeta === null).
+    const enterUnlockedWithNullVaultMetaAndCachedBody = async (
+      cachedBody: string,
+      version: number,
+    ) => {
+      await hCard.signOutSession();
+      await waitFor(() => {
+        expect(hCard.vault().inFlight).toBe(false);
+        expect(hCard.vault().state).toBe('no_vault');
+      });
+      await hCard.loginSession('a@example.test', 'pw');
+      await waitFor(() => {
+        expect(hCard.vault().state).toBe('locked');
+        expect(hCard.vault().inFlight).toBe(false);
+      });
+      await hCard.unlockWithoutReload();
+      expect(hCard.vault().state).toBe('unlocked');
+      expect(hCard.vault().vaultMeta).toBeNull();
+      act(() => {
+        hCard.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, version), cachedBody);
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-body')).toHaveTextContent(cachedBody);
+      });
+    };
+
+    // 2a. Regular Save with vaultMeta === null:
+    // First hold GET /vault, lock + unlock before releasing -> STALE_GENERATION, holder wiped, zero seal, zero PUT.
+    await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
+    let holdCardVaultGet = true;
+    let cardVaultGetEntered = Promise.withResolvers<void>();
+    let cardVaultGetRelease = Promise.withResolvers<void>();
+
+    hCard.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault') && holdCardVaultGet) {
+        cardVaultGetEntered.resolve();
+        await cardVaultGetRelease.promise;
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'SENTINEL-REGULAR-SAVE-HELD-RELOAD' },
+    });
+    expect(holderProbeRef.current.draftValue).toBe('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
+
+    const sealsBeforeRegLock = hCard.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    const putsBeforeRegLock = hCard.server.requests.filter(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    ).length;
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await cardVaultGetEntered.promise;
+
+    // Lock while reloadVaultMeta is held -> holder wiped synchronously before getText
+    await hCard.lock();
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    await hCard.unlockWithoutReload();
+
+    cardVaultGetRelease.resolve();
+    await waitFor(() => {
+      expect(hCard.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+    });
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeRegLock,
+    );
+    expect(
+      hCard.server.requests.filter(
+        (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+      ),
+    ).toHaveLength(putsBeforeRegLock);
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    expect(hCard.container.textContent).not.toContain('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
+
+    // Now regular Save happy path with vaultMeta === null -> reloads GET /vault then sends PUT -> v2
+    holdCardVaultGet = false;
+    await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
+    hCard.server.requests.splice(0);
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Regular save body v2 after null vaultMeta' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(hCard.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Regular save body v2 after null vaultMeta',
+      );
+    });
+    const regVaultIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const regPutIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    );
+    expect(regVaultIdx).toBeGreaterThanOrEqual(0);
+    expect(regPutIdx).toBeGreaterThan(regVaultIdx);
+
+    // 2b. Keep mine with vaultMeta === null:
+    // Trigger 412 conflict, then with vaultMeta === null click Keep mine -> reloads GET /vault then sends PUT -> v4
+    await enterUnlockedWithNullVaultMetaAndCachedBody(
+      'Regular save body v2 after null vaultMeta',
+      2,
+    );
+    // Bump server entry version to 3 so the initial PUT gets 412 with current_version: 3
+    await hCard.server.sealTextForEntry(ENTRY_ID_1, 'Remote concurrent v3', 3, 0);
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Keep mine draft v4 after null vaultMeta' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-banner-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    let forceNullMetaForKeepMine = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaForKeepMine ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+    hCard.server.requests.splice(0);
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(
+        hCard.server.requests.some((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+      ).toBe(true);
+      expect(
+        hCard.server.requests.some(
+          (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+        ),
+      ).toBe(true);
+    });
+    forceNullMetaForKeepMine = false;
+    const keepMineVaultIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const keepMinePutIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    );
+    expect(keepMineVaultIdx).toBeGreaterThanOrEqual(0);
+    expect(keepMinePutIdx).toBeGreaterThan(keepMineVaultIdx);
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Keep mine draft v4 after null vaultMeta',
+      );
+    });
+
+    // 2c. 404 "Save as new entry" with vaultMeta === null:
+    // First hold GET /vault during Save as new entry, lock + unlock before releasing -> STALE_GENERATION, zero seal, zero POST, empty holder.
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'SENTINEL-SAVE-AS-NEW-HELD-RELOAD' },
+    });
+    hCard.server.entries.get(ENTRY_ID_1)!.deleted = true;
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    let forceNullMetaForSaveAsNew = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaForSaveAsNew ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+
+    holdCardVaultGet = true;
+    cardVaultGetEntered = Promise.withResolvers<void>();
+    cardVaultGetRelease = Promise.withResolvers<void>();
+    const sealsBeforeSaveAsNewLock = hCard.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_1}`));
+    await cardVaultGetEntered.promise;
+
+    await hCard.lock();
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    await hCard.unlock();
+    forceNullMetaForSaveAsNew = false;
+
+    cardVaultGetRelease.resolve();
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeSaveAsNewLock,
+    );
+    expect(
+      hCard.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+    expect(hCard.container.textContent).not.toContain('SENTINEL-SAVE-AS-NEW-HELD-RELOAD');
+
+    // Now 404 "Save as new entry" happy path with vaultMeta === null -> reloads GET /vault then POSTs /items/{id}/entries
+    holdCardVaultGet = false;
+    hCard.server.entries.get(ENTRY_ID_1)!.deleted = false;
+    act(() => {
+      hCard.qc.setQueryData(
+        vaultBodyQueryKey(ENTRY_ID_1, 4),
+        'Keep mine draft v4 after null vaultMeta',
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Keep mine draft v4 after null vaultMeta',
+      );
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Rescued via 404 Save as new entry with null vaultMeta' },
+    });
+    hCard.server.entries.get(ENTRY_ID_1)!.deleted = true;
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    let forceNullMetaHappySaveAsNew = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaHappySaveAsNew ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+    hCard.server.requests.splice(0);
+
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(
+        hCard.server.requests.some((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+      ).toBe(true);
+      expect(
+        hCard.server.requests.some(
+          (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+        ),
+      ).toBe(true);
+    });
+    forceNullMetaHappySaveAsNew = false;
+    const saveAsNewVaultIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const saveAsNewPostIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+    );
+    expect(saveAsNewVaultIdx).toBeGreaterThanOrEqual(0);
+    expect(saveAsNewPostIdx).toBeGreaterThan(saveAsNewVaultIdx);
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Rescued via 404 Save as new entry with null vaultMeta',
+      );
+    });
   });
 
   it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {

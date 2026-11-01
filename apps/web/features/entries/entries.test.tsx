@@ -813,6 +813,191 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       }
     }, 30_000);
 
+    it.each([
+      ['sealNewEntry', 'lock'],
+      ['sealNewEntry', 'lock_and_unlock'],
+      ['sealEntryUpdate', 'lock'],
+      ['sealEntryUpdate', 'lock_and_unlock'],
+      ['sealEntryImportJson', 'lock'],
+      ['sealEntryImportJson', 'lock_and_unlock'],
+    ] as const)(
+      'IP15-BE4-3 / FE4-2: %s with held reloadVaultMeta during %s rejects STALE_GENERATION before getText or Worker sealEntry and disposes reset listener',
+      async (helperName, transition) => {
+        const h = await mountUnlockedHarness();
+        const { promise: reloadEntered, resolve: notifyReloadEntered } =
+          Promise.withResolvers<void>();
+        const { promise: reloadGate, resolve: releaseReload } = Promise.withResolvers<void>();
+
+        let beginOpCount = 0;
+        let getTextCalls = 0;
+        const activeResetters = new Set<() => void>();
+        const holder = { value: `SENTINEL-RELOAD-RACE-${helperName}-${transition}` };
+
+        const invokeHelper = (vaultCtx: Parameters<typeof sealNewEntry>[0]['vault']) => {
+          if (helperName === 'sealNewEntry') {
+            return sealNewEntry({
+              itemId: ITEM_ID,
+              entryId: ENTRY_ID_2,
+              getText: () => {
+                getTextCalls += 1;
+                return holder.value;
+              },
+              vault: vaultCtx,
+            });
+          }
+          if (helperName === 'sealEntryUpdate') {
+            return sealEntryUpdate({
+              entryId: ENTRY_ID_1,
+              itemId: ITEM_ID,
+              version: 1,
+              getText: () => {
+                getTextCalls += 1;
+                return holder.value;
+              },
+              vault: vaultCtx,
+            });
+          }
+          return sealEntryImportJson({
+            itemId: ITEM_ID,
+            entryId: ENTRY_ID_2,
+            source: 'paste',
+            getText: () => {
+              getTextCalls += 1;
+              return holder.value;
+            },
+            vault: vaultCtx,
+          });
+        };
+
+        const initialVault = h.vault();
+        const origRegister = initialVault.registerSecretFormReset.bind(initialVault);
+        const unsubHolderWipe = origRegister(() => {
+          holder.value = '';
+        });
+
+        const nullMetaVault: Parameters<typeof sealNewEntry>[0]['vault'] = {
+          get state() {
+            return h.vault().state;
+          },
+          vaultMeta: null,
+          beginOp: () => {
+            beginOpCount += 1;
+            return h.vault().beginOp();
+          },
+          registerSecretFormReset: (fn: () => void) => {
+            activeResetters.add(fn);
+            const unsub = h.vault().registerSecretFormReset(fn);
+            return () => {
+              activeResetters.delete(fn);
+              unsub();
+            };
+          },
+          reloadVaultMeta: async () => {
+            notifyReloadEntered();
+            await reloadGate;
+            return { vault_key_id: KEY_ID };
+          },
+        };
+
+        const workerSealsBefore = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+        const sealPromise = invokeHelper(nullMetaVault);
+        // Prevent unhandled rejection before the assertion awaits sealPromise
+        void sealPromise.catch(() => undefined);
+
+        await reloadEntered;
+        // Prove initial opGeneration and reset listener were captured synchronously BEFORE awaiting reloadVaultMeta
+        expect(beginOpCount).toBe(1);
+        expect(activeResetters.size).toBe(1);
+        expect(getTextCalls).toBe(0);
+
+        await h.lock();
+        expect(holder.value).toBe('');
+        if (transition === 'lock_and_unlock') {
+          await h.unlock();
+        }
+
+        releaseReload();
+
+        await expect(sealPromise).rejects.toMatchObject({
+          name: 'EntrySealError',
+          code: 'STALE_GENERATION',
+        });
+        expect(getTextCalls).toBe(0);
+        expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(workerSealsBefore);
+        expect(activeResetters.size).toBe(0);
+        unsubHolderWipe();
+      },
+      30_000,
+    );
+
+    it.each(['sealNewEntry', 'sealEntryUpdate', 'sealEntryImportJson'] as const)(
+      'IP15-FE4-2: %s rejects VAULT_KEY_MISSING with zero getText and zero Worker sealEntry when reloadVaultMeta resolves null or an invalid key id',
+      async (helperName) => {
+        const h = await mountUnlockedHarness();
+        let getTextCalls = 0;
+        const workerSealsBefore = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+        const invokeWithReloadResult = (
+          reloadedMeta: { readonly vault_key_id: string } | null,
+        ) => {
+          const stubVault: Parameters<typeof sealNewEntry>[0]['vault'] = {
+            state: 'unlocked',
+            vaultMeta: null,
+            beginOp: () => h.vault().beginOp(),
+            registerSecretFormReset: (fn) => h.vault().registerSecretFormReset(fn),
+            reloadVaultMeta: async () => reloadedMeta,
+          };
+          if (helperName === 'sealNewEntry') {
+            return sealNewEntry({
+              itemId: ITEM_ID,
+              entryId: ENTRY_ID_2,
+              getText: () => {
+                getTextCalls += 1;
+                return 'SENTINEL-SHOULD-NOT-BE-READ';
+              },
+              vault: stubVault,
+            });
+          }
+          if (helperName === 'sealEntryUpdate') {
+            return sealEntryUpdate({
+              entryId: ENTRY_ID_1,
+              itemId: ITEM_ID,
+              version: 1,
+              getText: () => {
+                getTextCalls += 1;
+                return 'SENTINEL-SHOULD-NOT-BE-READ';
+              },
+              vault: stubVault,
+            });
+          }
+          return sealEntryImportJson({
+            itemId: ITEM_ID,
+            entryId: ENTRY_ID_2,
+            source: 'file',
+            getText: () => {
+              getTextCalls += 1;
+              return '{"sentinel":"SHOULD-NOT-BE-READ"}';
+            },
+            vault: stubVault,
+          });
+        };
+
+        await expect(invokeWithReloadResult(null)).rejects.toMatchObject({
+          name: 'EntrySealError',
+          code: 'VAULT_KEY_MISSING',
+        });
+        await expect(
+          invokeWithReloadResult({ vault_key_id: 'invalid-key-id-format' }),
+        ).rejects.toMatchObject({
+          name: 'EntrySealError',
+          code: 'VAULT_KEY_MISSING',
+        });
+        expect(getTextCalls).toBe(0);
+        expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(workerSealsBefore);
+      },
+      30_000,
+    );
+
   });
 
   describe('2. key_id mismatch vs AEAD decrypt failure + Retry + identity auth + version reconciliation', () => {
