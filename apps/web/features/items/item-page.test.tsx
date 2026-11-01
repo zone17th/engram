@@ -1083,6 +1083,165 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
   });
 
+  it('IP15-BE1-1 / FE1-2: lock and unlock during Keep mine fallback GET does not seal, PUT, or restore the pre-lock draft; Ctrl+S during 412 sends nothing', async () => {
+    const PRE_LOCK_DRAFT = 'PRE-LOCK-KEEP-MINE-DRAFT-SENTINEL-8812';
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial v1 body', version: 1 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial v1 body');
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: PRE_LOCK_DRAFT } });
+
+    // Server advances to version 2, and we return a 412 WITHOUT current_version so Keep mine must run fallback GET /entries/{id}
+    await h.server.sealTextForEntry(ENTRY_ID_1, 'Remote v2 body', 2, 0);
+
+    const { promise: getGate, resolve: releaseGet } = createDeferred();
+    let holdFallbackGet = false;
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        return problemResponse('version_mismatch', 412);
+      }
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdFallbackGet) {
+        await getGate;
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    // Verify Save button is disabled and Ctrl+S during 412 conflict sends nothing
+    const putsBeforeCtrlS = h.server.requests.filter((r) => r.method === 'PUT').length;
+    expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
+    fireEvent.keyDown(textarea, { key: 's', ctrlKey: true });
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeCtrlS);
+
+    // Click Keep mine while holding the fallback GET /entries/{id}
+    holdFallbackGet = true;
+    const sealSpy = vi.spyOn(h.vault().getClient(), 'sealEntry');
+    const putsBeforeKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(
+        h.server.requests.some(
+          (r) => r.method === 'GET' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+        ),
+      ).toBe(true);
+    });
+
+    // Lock and unlock while the fallback GET is in flight
+    await h.lock();
+    await h.unlock();
+
+    holdFallbackGet = false;
+    sealSpy.mockClear();
+    releaseGet();
+
+    // Wait for the unlocked view to settle on the remote v2 body
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
+
+    // Zero seal, zero PUT after the fallback GET released, and pre-lock draft is nowhere in DOM or caches
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeKeepMine);
+    expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+    expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
+    assertNoPlaintextAttrs(h.container, [PRE_LOCK_DRAFT]);
+    expect(findCacheSentinelLeaks(h.qc, [PRE_LOCK_DRAFT])).toEqual([]);
+  });
+
+  it('IP15-BE1-1 / BE1-7 / FE1-6: entry_nonce_reused ends with localized error and draft kept (exactly one PUT and one seal), and after lock/generation change no continuation holds or uses the draft plaintext', async () => {
+    const NONCE_DRAFT_1 = 'NONCE-REUSED-DRAFT-ALPHA-7711';
+    const NONCE_DRAFT_2 = 'NONCE-REUSED-DRAFT-BETA-7722';
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial body for nonce test', version: 1 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial body for nonce test');
+    });
+
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+        return problemResponse('entry_nonce_reused', 400);
+      }
+      return null;
+    });
+
+    const sealSpy = vi.spyOn(h.vault().getClient(), 'sealEntry');
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: NONCE_DRAFT_1 } });
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    // 1. Unlocked 400 entry_nonce_reused: exactly ONE seal and ONE PUT, localized error shown, draft kept in editor
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-save-error-${ENTRY_ID_1}`)).toHaveTextContent(
+        viMessages.content.errors.entry_nonce_reused,
+      );
+    });
+    expect(sealSpy).toHaveBeenCalledTimes(1);
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(1);
+    expect(textarea.value).toBe(NONCE_DRAFT_1);
+
+    // 2. Defer the 400 entry_nonce_reused response across a lock -> unlock (generation change):
+    // when the response arrives after unlock, no continuation holds or reseals the pre-lock draft
+    const { promise: nonceGate, resolve: releaseNonceResponse } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+        await nonceGate;
+        return problemResponse('entry_nonce_reused', 400);
+      }
+      return null;
+    });
+
+    fireEvent.change(textarea, { target: { value: NONCE_DRAFT_2 } });
+    sealSpy.mockClear();
+    const putsBeforeSecondSave = h.server.requests.filter((r) => r.method === 'PUT').length;
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+        putsBeforeSecondSave + 1,
+      );
+    });
+    expect(sealSpy).toHaveBeenCalledTimes(1);
+
+    // Lock and unlock while the PUT is in flight -> generation changes and editor resets
+    await h.lock();
+    await h.unlock();
+
+    sealSpy.mockClear();
+    const putsBeforeRelease = h.server.requests.filter((r) => r.method === 'PUT').length;
+    releaseNonceResponse();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial body for nonce test');
+    });
+
+    expect(sealSpy).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeRelease);
+    expect(h.container.textContent).not.toContain(NONCE_DRAFT_1);
+    expect(h.container.textContent).not.toContain(NONCE_DRAFT_2);
+    assertNoPlaintextAttrs(h.container, [NONCE_DRAFT_1, NONCE_DRAFT_2]);
+    expect(findCacheSentinelLeaks(h.qc, [NONCE_DRAFT_1, NONCE_DRAFT_2])).toEqual([]);
+  });
+
   it('editing name, Tab, editing hint, blur in one network round sends two ordered PATCHes using the returned version (no 412) and final item has both; renaming to another item name works; PATCH 412 keeps typed value', async () => {
     const h = await setupItemPageHarness();
 

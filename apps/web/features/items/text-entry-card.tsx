@@ -178,6 +178,7 @@ export function TextEntryCard({
   const editBtnRef = useRef<HTMLButtonElement | null>(null);
   const saveLockRef = useRef<boolean>(false);
 
+  const lockEpochRef = useRef<number>(0);
   const editingActiveRef = useRef<boolean>(false);
   editingActiveRef.current =
     editing ||
@@ -191,6 +192,7 @@ export function TextEntryCard({
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       const hadActiveEditorOrDraft = editingActiveRef.current;
+      lockEpochRef.current += 1;
       if (textareaRef.current) {
         textareaRef.current.value = '';
       }
@@ -215,6 +217,7 @@ export function TextEntryCard({
   // Also clear immediately if `unlocked` flips to false
   useEffect(() => {
     if (!unlocked && editingActiveRef.current) {
+      lockEpochRef.current += 1;
       if (textareaRef.current) {
         textareaRef.current.value = '';
       }
@@ -279,7 +282,12 @@ export function TextEntryCard({
 
   // Save is disabled when empty, over 256 KiB cap, or while a PUT is in-flight or in "Thử lại" (P4FE1-13)
   const saveDisabled =
-    isEmpty || isOverCap || savingInFlight || unconfirmedSave !== null;
+    isEmpty ||
+    isOverCap ||
+    savingInFlight ||
+    unconfirmedSave !== null ||
+    conflictState !== null ||
+    deletedRemotely;
 
   const formattedBytes = useMemo(() => {
     try {
@@ -435,27 +443,8 @@ export function TextEntryCard({
           return;
         }
 
-        // 400 entry_nonce_reused -> automatically re-seal with fresh nonce and new Idempotency-Key once
-        if (classified.kind === 'entry_nonce_reused' && vault) {
-          try {
-            const resealed = await sealEntryUpdate({
-              entryId: entry.id,
-              itemId,
-              version: ifMatchVersion,
-              text: savePlan.text,
-              vault,
-            });
-            if (!resealed.isCurrent()) return;
-            await executePut(resealed, ifMatchVersion, false);
-            return;
-          } catch (resealErr) {
-            const resealClassified = classifyContentMutationError(resealErr);
-            const msg = translateContentError(resealClassified.i18nKey);
-            setSaveError(msg);
-            onAnnounce?.(msg);
-            return;
-          }
-        }
+        // 400 entry_nonce_reused -> deterministic 400: end the flow with its localized error and keep the draft in the editor;
+        // never capture plaintext in executePut or automatically reseal (IP15-BE1-1, BE1-7, FE1-6).
 
         const msg = translateContentError(classified.i18nKey);
         if (classified.canRetrySameBytes) {
@@ -481,7 +470,6 @@ export function TextEntryCard({
       me?.user?.id,
       onAnnounce,
       queryClient,
-      savePlan.text,
       tEntry,
       translateContentError,
       vault,
@@ -490,7 +478,13 @@ export function TextEntryCard({
 
   const handleSave = useCallback(
     async (bypassMixedEolWarning = false) => {
-      if (saveLockRef.current || savingInFlight || unconfirmedSave !== null) {
+      if (
+        saveLockRef.current ||
+        savingInFlight ||
+        unconfirmedSave !== null ||
+        conflictState !== null ||
+        deletedRemotely
+      ) {
         return;
       }
       if (isEmpty || isOverCap || !vault) {
@@ -545,6 +539,8 @@ export function TextEntryCard({
     },
     [
       closeEditorCleanly,
+      conflictState,
+      deletedRemotely,
       currentVersion,
       entry.id,
       executePut,
@@ -569,6 +565,26 @@ export function TextEntryCard({
   // 412 action 1: Giữ bản của tôi (Keep mine) -> fetch latest version if needed, re-seal draft with fresh nonce, PUT with new If-Match + new Idempotency-Key
   const handleConflictKeepMine = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
+    const capturedEpoch = lockEpochRef.current;
+    const startedOp = typeof vault.beginOp === 'function' ? vault.beginOp() : null;
+    const capturedGen =
+      startedOp?.opGeneration ??
+      (typeof vault.captureOpGeneration === 'function'
+        ? vault.captureOpGeneration()
+        : undefined);
+    const isOpStillCurrent = () => {
+      if (lockEpochRef.current !== capturedEpoch) return false;
+      if (startedOp && !startedOp.isCurrent()) return false;
+      if (
+        capturedGen !== undefined &&
+        typeof vault.getClient === 'function' &&
+        vault.getClient().getGeneration() !== capturedGen
+      ) {
+        return false;
+      }
+      return true;
+    };
+
     saveLockRef.current = true;
     setSavingInFlight(true);
     setSaveError(null);
@@ -577,7 +593,16 @@ export function TextEntryCard({
       let targetVersion = conflictState?.currentVersion;
       if (targetVersion === undefined) {
         const latestEntry = await entryGet(entry.id);
+        if (!isOpStillCurrent()) {
+          saveLockRef.current = false;
+          setSavingInFlight(false);
+          return;
+        }
         targetVersion = latestEntry.version;
+      } else if (!isOpStillCurrent()) {
+        saveLockRef.current = false;
+        setSavingInFlight(false);
+        return;
       }
 
       // Compute text to seal: if draftValue had edits relative to originalSource, savePlan.text has the right EOLs;
@@ -591,7 +616,7 @@ export function TextEntryCard({
         vault,
       });
 
-      if (!resealed.isCurrent()) {
+      if (!isOpStillCurrent() || !resealed.isCurrent()) {
         saveLockRef.current = false;
         setSavingInFlight(false);
         return;
@@ -602,6 +627,9 @@ export function TextEntryCard({
     } catch (err) {
       saveLockRef.current = false;
       setSavingInFlight(false);
+      if (!isOpStillCurrent()) {
+        return;
+      }
       const classified = classifyContentMutationError(err);
       const msg = translateContentError(classified.i18nKey);
       setSaveError(msg);
