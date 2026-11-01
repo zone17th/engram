@@ -16,7 +16,7 @@ export const DialogTrigger = forwardRef<
 >(function DialogTrigger({ className, ...props }, ref) {
   return <DialogPrimitive.Trigger ref={ref} className={cn('touch-target', className)} {...props} />;
 });
-DialogTrigger.displayName = DialogPrimitive.Trigger.displayName;
+DialogTrigger.displayName = 'DialogTrigger';
 
 export const DialogClose = forwardRef<
   ElementRef<typeof DialogPrimitive.Close>,
@@ -24,7 +24,7 @@ export const DialogClose = forwardRef<
 >(function DialogClose({ className, ...props }, ref) {
   return <DialogPrimitive.Close ref={ref} className={cn('touch-target', className)} {...props} />;
 });
-DialogClose.displayName = DialogPrimitive.Close.displayName;
+DialogClose.displayName = 'DialogClose';
 export const DialogPortal = DialogPrimitive.Portal;
 
 export const DialogOverlay = forwardRef<
