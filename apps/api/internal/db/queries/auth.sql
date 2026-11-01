@@ -344,3 +344,70 @@ WHERE u.session_id = s.id
     (s.revoked_at IS NOT NULL AND s.revoked_at < $1)
     OR s.expires_at < $1
   );
+
+-- name: InsertPasswordResetToken :one
+INSERT INTO password_reset_token (
+  user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;
+
+-- name: GetPasswordResetTokenByHash :one
+SELECT * FROM password_reset_token WHERE token_hash = $1;
+
+-- name: GetPasswordResetTokenByHashForUpdate :one
+SELECT * FROM password_reset_token WHERE token_hash = $1 FOR UPDATE;
+
+-- name: ConsumePasswordResetToken :one
+UPDATE password_reset_token
+SET consumed_at = $2
+WHERE id = $1 AND consumed_at IS NULL
+RETURNING *;
+
+-- name: ExpirePendingPasswordResetTokensByUser :execrows
+UPDATE password_reset_token
+SET consumed_at = $2
+WHERE user_id = $1 AND consumed_at IS NULL;
+
+-- name: DeleteExpiredPasswordResetTokens :execrows
+DELETE FROM password_reset_token
+WHERE expires_at < $1;
+
+-- name: RevokeAllUserSessions :execrows
+UPDATE session
+SET revoked_at = $2
+WHERE user_id = $1 AND revoked_at IS NULL;
+
+-- name: DeleteOAuthIdentitiesByUser :many
+DELETE FROM auth_identity
+WHERE user_id = $1 AND provider IN ('google', 'github')
+RETURNING *;
+
+-- name: CancelPendingOAuthByUser :execrows
+UPDATE oauth_transaction
+SET consumed_at = $2, status = 'completed'
+WHERE expected_user_id = $1
+  AND consumed_at IS NULL
+  AND status IN ('pending', 'claimed', 'ready');
+
+-- name: CancelReadyOAuthLoginByUserIdentities :execrows
+UPDATE oauth_transaction t
+SET consumed_at = $2, status = 'completed'
+FROM auth_identity i
+WHERE i.user_id = $1
+  AND i.provider IN ('google', 'github')
+  AND t.mode = 'login'
+  AND t.status = 'ready'
+  AND t.consumed_at IS NULL
+  AND t.identity_provider = i.provider
+  AND t.identity_provider_uid = i.provider_uid;
+
+-- name: CancelReceiptsByUser :execrows
+UPDATE oauth_reauth_receipt
+SET consumed_at = $2
+WHERE user_id = $1 AND consumed_at IS NULL;
+
+-- name: GetNotificationMailContext :one
+SELECT n.meta, u.locale
+FROM user_notification n
+JOIN app_user u ON u.id = n.user_id
+WHERE n.id = $1;

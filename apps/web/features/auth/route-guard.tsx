@@ -64,7 +64,10 @@ export function RouteGuard({ children }: { children: ReactNode }) {
     return <AuthLoadingFrame label={t('loading')} />;
   }
 
-  if (status === 'unavailable') {
+  const isPasswordRecoveryRoute =
+    pathname === '/app/auth/forgot-password' || pathname === '/app/auth/reset-password';
+
+  if (status === 'unavailable' && !isPasswordRecoveryRoute) {
     return (
       <UnavailableFrame
         title={t('unavailableTitle')}

@@ -9,6 +9,7 @@ import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { LocaleThemeSync } from '@/features/auth/locale-sync';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
+import { ReauthMessagesProvider } from '@/features/auth/use-reauth';
 import { VaultProvider } from '@/features/vault/vault-provider';
 import { resolveAppLocale } from '@/i18n/app-locale';
 import { THEME_COOKIE, resolveInitialTheme, themeToDataAttribute } from '@/lib/preferences/cookies';
@@ -38,12 +39,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <ThemeProvider initialTheme={themePref} initialLocale={locale}>
             <QueryProvider>
               <UndoToastProvider>
-                <SessionProvider>
-                  <VaultProvider silentUnlockOnLoad>
-                    <LocaleThemeSync />
-                    <RouteGuard>{children}</RouteGuard>
-                  </VaultProvider>
-                </SessionProvider>
+                <ReauthMessagesProvider auth={messages.auth}>
+                  <SessionProvider>
+                    <VaultProvider silentUnlockOnLoad>
+                      <LocaleThemeSync />
+                      <RouteGuard>{children}</RouteGuard>
+                    </VaultProvider>
+                  </SessionProvider>
+                </ReauthMessagesProvider>
               </UndoToastProvider>
             </QueryProvider>
           </ThemeProvider>

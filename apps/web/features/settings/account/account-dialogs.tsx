@@ -141,7 +141,15 @@ export function AccountDialogs({
           try {
             await runMutation(grantToken, kind);
           } catch (err) {
-            setError(err instanceof ProblemError ? err.problem.detail ?? err.problem.title : t('errors.generic'));
+            setError(
+              err instanceof ProblemError
+                ? err.problem.code === 'email_not_verified'
+                  ? t('account.linkRequiresVerifiedEmail')
+                  : kind === 'link'
+                    ? t('errors.generic')
+                    : (err.problem.detail ?? err.problem.title)
+                : t('errors.generic'),
+            );
           } finally {
             setPending(false);
           }
@@ -162,7 +170,13 @@ export function AccountDialogs({
       if (!grantResult || !pendingKind) throw new Error('missing grant');
       await runMutation(grantResult.grant, pendingKind);
     } catch (err) {
-      setError(err instanceof ProblemError ? err.problem.detail ?? err.problem.title : t('errors.generic'));
+      setError(
+        err instanceof ProblemError
+          ? err.problem.code === 'email_not_verified'
+            ? t('account.linkRequiresVerifiedEmail')
+            : (err.problem.detail ?? err.problem.title)
+          : t('errors.generic'),
+      );
     } finally {
       setPending(false);
     }
@@ -259,6 +273,11 @@ export function AccountDialogs({
               title={t('dialogs.link.title', { provider: context.provider === 'google' ? 'Google' : 'GitHub' })}
               description={t('dialogs.link.description')}
             />
+            {error && (
+              <AuthStatus tone="error" className="mt-4">
+                {error}
+              </AuthStatus>
+            )}
             <DialogFooter className="mt-6">
               <Button variant="tertiary" onClick={close}>
                 {t('common.cancel')}

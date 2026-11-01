@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   completeFakeOAuth,
+  confirmAccountEmailViaSink,
   expectSignedIn,
   fetchMeViaPage,
   isolateRateLimit,
@@ -74,6 +75,7 @@ test.describe('P02 account (real API)', () => {
   test('unlinking Google preserves password sign-in', async ({ page }) => {
     const email = uniqueEmail('unlink-google');
     await signupViaUi(page, email);
+    await confirmAccountEmailViaSink(page, email);
     await linkGoogleFromSettings(page, email, `unlink-${email}`);
 
     await expect(page.getByRole('button', { name: /Unlink Google|Gỡ Google/ })).toBeVisible();

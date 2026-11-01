@@ -109,6 +109,7 @@ describe('password rotation session race', () => {
         oauth_providers: [],
         email_verification_required: false,
         captcha_site_key: null,
+        mail_delivery_available: false,
       });
       if (url.endsWith('/auth/me')) {
         meCalls += 1;
@@ -140,6 +141,7 @@ describe('password rotation session race', () => {
         oauth_providers: [],
         email_verification_required: false,
         captcha_site_key: null,
+        mail_delivery_available: false,
       });
       if (url.endsWith('/auth/me')) {
         meCalls += 1;

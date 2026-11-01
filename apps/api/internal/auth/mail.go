@@ -11,6 +11,12 @@ import (
 	"sync"
 )
 
+const (
+	PurposePasswordReset          = "password_reset"
+	PurposePasswordResetOAuthOnly = "password_reset_oauth_only"
+	PurposePasswordResetNotice    = "password_reset_notice"
+)
+
 type SinkMailer struct {
 	dir string
 	mu  sync.Mutex
@@ -74,4 +80,33 @@ func (m *SinkMailer) EntriesFor(recipient, purpose string) ([]SinkEntry, error) 
 		}
 	}
 	return out, nil
+}
+
+func FormatPasswordResetNoticeDetail(locale string, unlinked []string) string {
+	if locale != "vi" {
+		locale = "en"
+	}
+	var names []string
+	for _, p := range unlinked {
+		switch p {
+		case "google":
+			names = append(names, "Google")
+		case "github":
+			names = append(names, "GitHub")
+		}
+	}
+	if locale == "vi" {
+		msg := "Mật khẩu đăng nhập engram của bạn vừa được đặt lại. Mật khẩu tài khoản đăng nhập engram của bạn vừa được thay đổi và toàn bộ phiên đăng nhập đã bị thu hồi."
+		if len(names) > 0 {
+			msg += " Các phương thức đăng nhập đã ngắt liên kết: " + strings.Join(names, ", ") + "."
+		}
+		msg += " Nếu bạn không thực hiện thao tác này, hãy đặt lại mật khẩu ngay."
+		return msg
+	}
+	msg := "Your engram login password was reset. Your engram account login password was changed and all sessions were signed out."
+	if len(names) > 0 {
+		msg += " Unlinked sign-in providers: " + strings.Join(names, ", ") + "."
+	}
+	msg += " If you did not perform this action, reset your password immediately."
+	return msg
 }

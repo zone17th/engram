@@ -18,15 +18,21 @@ const mocks = vi.hoisted(() => {
       login,
       signup,
       config: null as unknown,
+      configLoading: false,
+      configError: false,
+      bootstrapComplete: true,
+      status: 'signed_out',
       lastSessionEndReason: null,
       webLocksAvailable: true,
     },
   };
 });
 
+let searchParamsValue = '';
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mocks.replace }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(searchParamsValue),
 }));
 
 vi.mock('@/features/auth/session-provider', () => ({
@@ -94,11 +100,17 @@ beforeEach(() => {
     value: turnstileMocks,
   });
   document.querySelectorAll('script[data-engram-turnstile]').forEach((script) => script.remove());
+  searchParamsValue = '';
   mocks.session.config = {
     oauth_providers: [],
     email_verification_required: false,
     captcha_site_key: null,
+    mail_delivery_available: false,
   };
+  mocks.session.configLoading = false;
+  mocks.session.configError = false;
+  mocks.session.bootstrapComplete = true;
+  mocks.session.status = 'signed_out';
   mocks.session.lastSessionEndReason = null;
   mocks.session.webLocksAvailable = true;
   mocks.login.mockResolvedValue(undefined);
@@ -182,7 +194,10 @@ describe('SignupForm retry behavior', () => {
 
     renderIntl(<SignupForm />);
     fillLoginFields();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'I agree to the terms and how data is handled.' }));
+    fireEvent.change(screen.getByLabelText('Confirm password'), {
+      target: { value: 'a sufficiently long password' },
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: /I agree to the/i }));
     await submitForm(formElement());
 
     expect(screen.getByText('Too many attempts. Try again in 2 seconds.')).toBeInTheDocument();
@@ -198,6 +213,50 @@ describe('SignupForm retry behavior', () => {
     });
     expect(screen.queryByText(/Too many attempts/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled();
+  });
+  it('validates password confirmation mismatch and links to /terms and /privacy', async () => {
+    renderIntl(<SignupForm />);
+    fillLoginFields();
+    fireEvent.change(screen.getByLabelText('Confirm password'), {
+      target: { value: 'a different password value' },
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: /I agree to the/i }));
+    await submitForm(formElement());
+
+    expect(screen.getByText('Passwords do not match.')).toBeInTheDocument();
+    expect(mocks.signup).not.toHaveBeenCalled();
+    const termsLink = screen.getByRole('link', { name: 'Terms of Service' });
+    expect(termsLink).toHaveAttribute('href', '/terms');
+    expect(termsLink).toHaveAttribute('target', '_blank');
+    expect(termsLink).toHaveAttribute('rel', 'noopener noreferrer');
+
+    const privacyLink = screen.getByRole('link', { name: 'Privacy Policy' });
+    expect(privacyLink).toHaveAttribute('href', '/privacy');
+    expect(privacyLink).toHaveAttribute('target', '_blank');
+    expect(privacyLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+});
+
+describe('LoginForm ?reset=done one-shot banner and cross-links', () => {
+  it('shows the reset success banner once, strips ?reset=done via replaceState, and hides it after submit', async () => {
+    searchParamsValue = 'reset=done';
+    window.history.replaceState(null, '', '/app/auth/login?reset=done');
+
+    renderIntl(<LoginForm />);
+
+    expect(screen.getByTestId('login-reset-banner')).toBeInTheDocument();
+    expect(screen.getByText(en.auth.login.resetSuccessTitle)).toBeInTheDocument();
+    expect(window.location.search).toBe('');
+    expect(screen.getByRole('link', { name: 'Forgot password?' })).toHaveAttribute(
+      'href',
+      '/app/auth/forgot-password',
+    );
+    expect(screen.getByRole('link', { name: en.auth.login.createAccountLink })).toHaveAttribute('href', '/app/auth/signup');
+
+    mocks.login.mockRejectedValueOnce(problem('invalid_credentials', { status: 401 }));
+    fillLoginFields();
+    await submitForm(formElement());
+    expect(screen.queryByTestId('login-reset-banner')).not.toBeInTheDocument();
   });
 });
 
