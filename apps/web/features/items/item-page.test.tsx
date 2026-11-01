@@ -25,7 +25,7 @@ import {
   resetEntryBodyLoadLimiterForTests,
   subscribeUnconfirmedSaves,
 } from '@/features/entries';
-import { subscribeUserChanged } from '@/lib/auth/user-changed';
+import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
@@ -36,6 +36,7 @@ import {
 import {
   VAULT_BODY_QUERY_KEY_PREFIX,
   VaultProvider,
+  getKnownDeviceSessionUserId,
   resetVaultBroadcastForTests,
   useVault,
   type LockEpochEnvironment,
@@ -349,6 +350,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    userChangedTesting.resetCommittedUserForTests();
     setEditorPlaintextHolderForTests(null);
   });
 
@@ -358,8 +360,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    userChangedTesting.resetCommittedUserForTests();
     setEditorPlaintextHolderForTests(null);
-    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalVisibilityStateDescriptor) {
@@ -398,7 +400,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     unlockWithoutReload: () => Promise<void>;
     lock: () => Promise<void>;
     workerCalls: Array<{ type: string; id: number }>;
-    setCurrentMe: (me: Me) => void;
+    setCurrentMe: (me: Me | null) => void;
     rerenderPage: (node?: ReactNode) => void;
   }
 
@@ -428,7 +430,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     }
 
     let createdVault: CreateVaultResult | null = null;
-    let currentMe = makeMe(USER_A_ID, 'present');
+    let currentMe: Me | null = makeMe(USER_A_ID, 'present');
     let routeOverride:
       | ((url: string, init?: RequestInit) => Promise<Response | null> | Response | null)
       | null = null;
@@ -529,11 +531,19 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
           captcha_site_key: null,
         });
       }
-      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 });
-      if (url.endsWith('/auth/login')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/signup')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/oauth/complete')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/me')) {
+        if (!currentMe) {
+          return problemResponse('session_invalid', 401);
+        }
+        return jsonResponse(currentMe);
+      }
+      if (url.endsWith('/auth/logout')) {
+        currentMe = null;
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/auth/login')) return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
+      if (url.endsWith('/auth/signup')) return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
+      if (url.endsWith('/auth/oauth/complete')) return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
       if (url.endsWith('/vault')) {
         if (!createdVault) return problemResponse('vault_absent', 404);
         return jsonResponse(makeVaultGetResponse(createdVault, KEY_ID, 1));
@@ -2910,7 +2920,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
   });
 
-  it('session_invalid on uncertain entry PUT drops draft without replay, records saveUnconfirmed across terminal error until same-user re-login, and clears on explicit logout or user switch through real SessionProvider (advisor-dec-120, IP15-BE1-8, FE1-9)', async () => {
+  it('session_invalid on uncertain entry PUT drops draft without replay, records saveUnconfirmed across terminal error until same-user re-login, and clears on explicit logout (advisor-dec-120, IP15-BE1-8, FE1-9)', async () => {
     const h = await setupItemPageHarness({
       initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
     });
@@ -2922,6 +2932,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     let failPutWithSessionInvalid = true;
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
+        h.setCurrentMe(null);
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -2933,22 +2944,34 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     // 1. Terminal session_invalid boundary: editor closes, draft dropped, and record survives signed_out(reason='invalid')
-    // so when User A re-logs in, the saveUnconfirmed banner is shown
+    // even when /auth/me returns signed-out and knownDeviceSessionUserId pointer is null
     await waitFor(() => {
       expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
       expect(getUnconfirmedSavesSnapshot()[0].userId).toBe(USER_A_ID);
+      expect(getKnownDeviceSessionUserId()).toBeNull();
     });
 
-    // Re-login as User A via real SessionProvider.login
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    await h.loginSession('a@example.test', 'pw');
-    await waitFor(() => {
-      expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
+    // Re-login as User A via real SessionProvider.login: same-user re-login never notifies userChangedEvents and preserves record
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
     });
+    try {
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([]);
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
+      });
+    } finally {
+      unsubUserChanged();
+    }
 
     // 2. Navigate away from the item page (unmount ItemDetailPage) and call explicit SessionProvider.signOut()
     // -> clears the unconfirmed-save store even when no item page is mounted
     h.rerenderPage(<div data-testid="away-from-item-page">Away</div>);
+    failPutWithSessionInvalid = false;
     await h.signOutSession();
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
 
@@ -2959,6 +2982,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     // Re-login as User A and remount ItemDetailPage -> banner is gone because explicit logout cleared it
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
     await h.loginSession('a@example.test', 'pw');
     await waitFor(() => {
       expect(h.vault().state).toBe('locked');
@@ -2966,38 +2990,58 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     h.rerenderPage();
     expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+  });
 
-    // 3. Trigger another session_invalid for User A, then log in as User B via real SessionProvider.login
-    await h.unlock();
-    await waitFor(() => {
-      const bodyEl = screen.queryByTestId('entry-body');
-      if (!bodyEl) {
-        const cardListHtml =
-          h.container.querySelector('[data-testid="entry-card-list"]')?.innerHTML ?? 'none';
-        const cacheSummary = h.qc
-          .getQueryCache()
-          .getAll()
-          .map((q) => `${JSON.stringify(q.queryKey)}:${q.state.status}/${q.state.fetchStatus}`)
-          .join(', ');
-        throw new Error(
-          `entry-body missing (vaultState=${h.vault().state}, keyId=${String(h.vault().vaultMeta?.vault_key_id)}, queries=[${cacheSummary}], list=${cardListHtml.slice(0, 240)})`,
-        );
-      }
-      expect(bodyEl).toHaveTextContent('Secret for User A');
+  it('advisor-dec-199 / IP15-BE4-2 / FE4-6 (login): terminal session_invalid with /auth/me signed-out and pointer null followed by direct User B login away from detail route notifies subscriber and empties store before any detail mount', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
     });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    let failPutWithSessionInvalid = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
+        // Terminal auth loss: /auth/me now returns signed-out (401 session_invalid)
+        h.setCurrentMe(null);
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
-    const textarea2 = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
-    fireEvent.change(textarea2, { target: { value: 'Second uncertain draft for User A' } });
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Uncertain draft before terminal session_invalid' },
+    });
+    // Unmount ItemDetailPage as the uncertain PUT hits terminal session_invalid so no detail route is mounted when B logs in
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
       expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(peekUnconfirmedSavesForTests()[0].userId).toBe(USER_A_ID);
+      expect(getKnownDeviceSessionUserId()).toBeNull();
     });
 
-    // Track user-changed notifications and store subscriber notifications (advisor-dec-199, IP15-BE3-3, FE3-3, FE3-4)
+    h.rerenderPage(<div data-testid="away-for-terminal-null-login">Away</div>);
+    failPutWithSessionInvalid = false;
+
+    // Wait for VaultProvider's signed_out lock transition to settle with /auth/me returning signed-out and pointer null
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+      expect(getKnownDeviceSessionUserId()).toBeNull();
+    });
+    expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+
     const userChangedEvents: Array<{ prev: string; next: string }> = [];
     const unsubUserChanged = subscribeUserChanged((prev, next) => {
       userChangedEvents.push({ prev, next });
+    });
+    // IP15-FE4-4: Register a throwing listener first to verify it never aborts login or prevents subsequent listeners from running
+    const unsubThrowing = subscribeUserChanged(() => {
+      throw new Error('listener boom');
     });
     let storeEmitCount = 0;
     const unsubStore = subscribeUnconfirmedSaves(() => {
@@ -3005,25 +3049,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     try {
-      // Same-user re-login (User A -> User A) must NOT emit notifyUserChanged and must NOT clear User A's record
-      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-      await h.loginSession('a@example.test', 'pw');
-      expect(userChangedEvents).toEqual([]);
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
-
-      // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5 / BE3-3)
-      h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
-      failPutWithSessionInvalid = false;
-      const emitsBeforeSwitch = storeEmitCount;
-
-      // User B logs in with no item page mounted -> eagerly notifies user change and clears the store WITHOUT any snapshot read
+      // Direct User B login from the settled terminal-null state (without restoring User A first)
       h.setCurrentMe(makeMe(USER_B_ID, 'present'));
       await h.loginSession('b@example.test', 'pw');
+
       expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
-      expect(storeEmitCount).toBeGreaterThan(emitsBeforeSwitch);
+      expect(storeEmitCount).toBe(1);
       expect(peekUnconfirmedSavesForTests()).toEqual([]);
 
-      // Log User A back in without any intervening store read/detail mount, then remount -> User A's prior notice does NOT return
+      // Wait for VaultProvider to settle for B, then log User A back in and remount -> User A's prior notice does NOT return
       await waitFor(() => {
         expect(h.vault().inFlight).toBe(false);
       });
@@ -3036,27 +3070,71 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(peekUnconfirmedSavesForTests()).toEqual([]);
       h.rerenderPage();
       expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+    } finally {
+      unsubThrowing();
+      unsubUserChanged();
+      unsubStore();
+    }
+  });
 
-      // Verify signup and OAuth callback paths also emit notifyUserChanged and clear the store away from the detail route (advisor-dec-199)
-      h.rerenderPage(<div data-testid="away-for-signup-oauth">Away</div>);
-      recordUnconfirmedSave({
-        userId: USER_A_ID,
-        itemId: ITEM_ID,
-        itemName: 'wifi',
-        source: 'entry',
-      });
+  it('advisor-dec-199 / IP15-BE4-2 / FE4-6 (signup & OAuth): terminal session_invalid with /auth/me signed-out and pointer null followed by direct User B signup or OAuth login away from detail route notifies subscriber and empties store before any detail mount', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    let failPutWithSessionInvalid = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
+        h.setCurrentMe(null);
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    // 1. Trigger real terminal session_invalid for User A -> /auth/me returns signed-out and pointer is null
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Draft before terminal session_invalid for signup switch' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
       expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(getKnownDeviceSessionUserId()).toBeNull();
+    });
 
-      // Signup as User B -> notifies and clears User A's record
+    h.rerenderPage(<div data-testid="away-for-terminal-null-signup-oauth">Away</div>);
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+      expect(getKnownDeviceSessionUserId()).toBeNull();
+    });
+
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
+    });
+
+    try {
+      // Direct User B signup from the settled terminal-null state -> notifies subscriber and empties store
       h.setCurrentMe(makeMe(USER_B_ID, 'present'));
       await h.signupSession('b-signup@example.test', 'pw');
-      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
-        prev: USER_A_ID,
-        next: USER_B_ID,
-      });
+      expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
+      expect(storeEmitCount).toBe(1);
       expect(peekUnconfirmedSavesForTests()).toEqual([]);
 
-      // Record for User B, then complete OAuth login as User A -> notifies and clears User B's record
+      // 2. Now User B has a record, and User B's session hits terminal session_invalid with /auth/me signed-out and pointer null
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+      });
       recordUnconfirmedSave({
         userId: USER_B_ID,
         itemId: ITEM_ID,
@@ -3064,12 +3142,41 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         source: 'entry',
       });
       expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+      // Trigger real terminal session_invalid via ItemDetailPage PUT for User B
+      h.rerenderPage();
+      await h.unlock();
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+      });
+      fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+      fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+        target: { value: 'Draft for B before terminal session_invalid' },
+      });
+      fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+      await waitFor(() => {
+        expect(getKnownDeviceSessionUserId()).toBeNull();
+      });
+      h.rerenderPage(<div data-testid="away-for-terminal-null-oauth">Away</div>);
+      failPutWithSessionInvalid = false;
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+        expect(h.vault().state).toBe('no_vault');
+        expect(getKnownDeviceSessionUserId()).toBeNull();
+      });
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(peekUnconfirmedSavesForTests()[0].userId).toBe(USER_B_ID);
+
+      const emitsBeforeOAuth = storeEmitCount;
+      // Direct User A OAuth completion from the settled terminal-null state -> notifies subscriber and empties store
       h.setCurrentMe(makeMe(USER_A_ID, 'present'));
       await h.completeOAuthSession();
-      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
-        prev: USER_B_ID,
-        next: USER_A_ID,
-      });
+      expect(userChangedEvents).toEqual([
+        { prev: USER_A_ID, next: USER_B_ID },
+        { prev: USER_B_ID, next: USER_A_ID },
+      ]);
+      expect(storeEmitCount).toBeGreaterThan(emitsBeforeOAuth);
       expect(peekUnconfirmedSavesForTests()).toEqual([]);
     } finally {
       unsubUserChanged();
@@ -3285,6 +3392,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(h.vault().inFlight).toBe(false);
       expect(h.vault().state).toBe('no_vault');
     });
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
     await h.loginSession('a@example.test', 'pw');
     await waitFor(() => {
       expect(h.vault().state).toBe('locked');
@@ -3321,6 +3429,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await waitFor(() => {
       expect(h.vault().inFlight).toBe(false);
     });
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
     await h.loginSession('a@example.test', 'pw');
     await waitFor(() => {
       expect(h.vault().state).toBe('locked');
@@ -3384,6 +3493,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         expect(hCard.vault().inFlight).toBe(false);
         expect(hCard.vault().state).toBe('no_vault');
       });
+      hCard.setCurrentMe(makeMe(USER_A_ID, 'present'));
       await hCard.loginSession('a@example.test', 'pw');
       await waitFor(() => {
         expect(hCard.vault().state).toBe('locked');
