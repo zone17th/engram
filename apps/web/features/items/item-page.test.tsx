@@ -424,6 +424,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return out;
     };
 
+    type ServerEntryRecord = Entry & { deleted?: boolean; deletedPosition?: number };
+
     const toEntryMeta = (rec: ServerEntryRecord): EntryMeta => ({
       id: rec.id,
       item_id: rec.item_id,
