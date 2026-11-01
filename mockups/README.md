@@ -26,12 +26,13 @@ Rồi mở <http://localhost:5178/landing.html>. Trong Claude Code có sẵn lau
 | `index.html` | §7.2 | Vỏ ứng dụng: rail tag, omnibox tìm/lưu, lưới mục gần đây. |
 | `item.html` | §7.3, §7.4, §7.5 | Chi tiết mục: tên + tag + entry; entry `json` xem dạng bảng; modal nhập JSON. |
 | `settings.html` | §7.6 | Tài khoản (email, mật khẩu, provider, locale, theme), phiên/audit/thông báo P02; `#baomat` P03 (passphrase `#passDlg`, RK còn N/10 + `#rkDlg` regenerate + `#rotateDlg` xoay cả 10, passkey + `#passkeyAddDlg`, auto-lock 5/15/60/Never + nhớ thiết bị, `#resetDlg` đặt lại vault 5 bước); tìm kiếm `#timkiem` P05. |
-| `auth.html` | §3.1, §10.2 | Đăng nhập/đăng ký, xác minh email, đặt mật khẩu OAuth-only, OAuth return, re-auth, lỗi auth (CAPTCHA, lockout, session). |
+| `auth.html` | §3.1, §10.2 | Đăng nhập/đăng ký (kèm khung giải thích sản phẩm, liên kết chéo, đo độ mạnh mật khẩu cục bộ), quên mật khẩu tài khoản (`forgot`: yêu cầu, đã gửi trung tính, lỗi mail `503 mail_delivery_unavailable`, đặt mật khẩu mới, link hết hạn/đã dùng, hoàn tất kèm cảnh báo không mở khoá vault), xác minh email, đặt mật khẩu OAuth-only, OAuth return, re-auth, lỗi auth (CAPTCHA, lockout, session). |
 | `onboarding.html` | §3.2, §5.2 | Ba bước tạo vault: passphrase (`pp`, lỗi thiếu bộ nhớ `pp-oom`) → lưới 10 recovery key (`rk`, `409 vault_exists` `rk-exists`) → passkey tuỳ chọn & nhớ thiết bị (`pk`, lỗi PRF/cancel/missing/orphan). |
 | `unlock.html` | §3.3, §3.14 | Mở vault: thiết bị mới (`new`), có passkey (`pk`), thiết bị đã nhớ (`known`), lỗi mở khoá (`err`) và lỗi passkey (`err-pk`). |
 | `recovery.html` | §3.10 | Quên passphrase: thử đường khác + re-auth đầu luồng (`s1`) → nhập một RK (`s2`) → đặt passphrase mới ở trạng thái `recovering` (`s3`, lỗi `s3-err`) → xác nhận lại trước khi tạo key bù (`s4-reauth`) → bù key cho slot trống (`s4`). |
 | `states.html` | §7.7, §6.8 | Bộ trạng thái dùng chung: rỗng (`empty`), đang tải (`load`), lỗi (`err`), Auth/P02 (`auth`), Vault/P03 (`vault`), ngoại tuyến (`off`), giảm chức năng (`degr`). |
 | `docs.html` | §11.1, §5.1 | Trang tài liệu/quyền riêng tư theo token landing. |
+| `legal.html` | §5.1, §10.4, §11.1 | Điều khoản sử dụng (`#terms`) và Chính sách quyền riêng tư (`#privacy`), xoá tài khoản (`#deletion`), liên hệ (`#contact`) — tĩnh, song ngữ vi + `lang="en"`. |
 
 Ngoài phạm vi bản này, phải thiết kế thêm trước khi implement: share dialog / recipient status / shared-with-me (P08-A),
 extension popup/options/unlock (P08-B), màn quản lý API token (P08-C), và các màn P07 (import backup, rotate VK, sync).
@@ -65,8 +66,9 @@ P07/P08 phải thêm mockup riêng trước khi implement.
 
 | Target | Nội dung |
 |---|---|
-| `login` | Form + submitting + validation |
-| `signup` | Form + email trùng |
+| `login` | Form đăng nhập + liên kết Quên mật khẩu / Tạo tài khoản + khung giải thích sản phẩm (1440/768 bên cạnh, 390 phía trên) + submitting + validation (vi & `lang="en"`) |
+| `signup` | Form tạo tài khoản đầy đủ (nhập lại mật khẩu, thước đo độ mạnh cục bộ `#signup-password-meter`, ghi chú mật khẩu khác passphrase `#signup-passphrase-note`, link `legal.html#terms` & `legal.html#privacy`, liên kết Đăng nhập) + khung giải thích sản phẩm + lỗi không khớp mật khẩu + email trùng (`409 email_taken`) |
+| `forgot` | Quên mật khẩu đăng nhập qua email: `forgot-request` (`#forgot-request`), `forgot-sent` (`#forgot-sent`, thông báo trung tính chống dò email), `forgot-mail-err` (`#forgot-mail-unavailable`, `503 mail_delivery_unavailable`), `forgot-reset` (`#forgot-reset`, mật khẩu mới + nhập lại + thước đo `#reset-password-meter` + cảnh báo `#forgot-reset-vault-notice`), `forgot-invalid` (`#forgot-invalid`, link hết hạn/đã dùng), `forgot-done` (`#forgot-done`, hoàn tất + thu hồi các phiên khác + cảnh báo `#forgot-done-vault-notice`) |
 | `verify` | Xác minh email + token lỗi |
 | `enroll` | Đặt mật khẩu lần đầu + sent/expired/reused/session/quota |
 | `oauth` | Callback loading, cancel, error, collision |

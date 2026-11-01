@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Điều khoản &amp; Quyền riêng tư — engram</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="tw.js"></script>
+</head>
+<body class="bg-canvas">
+
+<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-3 flex-wrap">
+  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+        <stop offset="0%" stop-color="var(--logo-magenta)"/>
+        <stop offset="100%" stop-color="var(--logo-cyan)"/>
+      </linearGradient></defs>
+      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+            stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="0.1 5.2 0.1 4 20"/>
+    </svg>
+    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+  </a>
+  <div class="ml-auto flex items-center gap-2">
+    <a href="auth.html" class="btn btn-tertiary no-underline !text-body">
+      Về đăng nhập · <span lang="en" class="font-normal">Back to sign in</span>
+    </a>
+    <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+  </div>
+</header>
+
+<main class="max-w-container mx-auto px-5 pt-10 pb-24">
+
+  <!-- Tiêu đề trang -->
+  <div class="max-w-[780px] mb-10">
+    <p class="t-label mb-2" style="color:var(--muted)">Pháp lý &amp; bảo mật · Cập nhật 01/11/2026 · <span lang="en">Legal &amp; Privacy · Updated 2026-11-01</span></p>
+    <h1 class="t-headline-md mb-3">Điều khoản sử dụng &amp; Chính sách quyền riêng tư</h1>
+    <p class="t-body-lg m-0 mb-2" style="color:var(--muted)">
+      Viết ngắn gọn, rõ ràng đúng theo kiến trúc mã hoá của <strong>engram</strong> (<span class="mono">engram.zone17.click</span>): thứ gì được mã hoá đầu-cuối, thứ gì lưu dạng văn bản thường để tìm kiếm, không bán dữ liệu, cách xoá tài khoản và địa chỉ liên hệ.
+    </p>
+    <p class="text-[14px] m-0" lang="en" style="color:var(--muted)">
+      Short, plain-language Terms of Service and Privacy Policy aligned with <strong>engram</strong>’s encryption model: end-to-end encrypted entry bodies, plaintext item names/tags/hints for search, no selling of data, account deletion, and contact details.
+    </p>
+  </div>
+
+  <div class="grid gap-10 lg:grid-cols-[220px_minmax(0,1fr)] items-start">
+
+    <!-- Mục lục -->
+    <nav aria-label="Mục lục pháp lý · Legal navigation" class="lg:sticky lg:top-6">
+      <p class="t-label mb-2.5" style="color:var(--muted)">Trên trang này · <span lang="en">On this page</span></p>
+      <div class="flex flex-wrap lg:flex-col gap-1 text-[14px]">
+        <a href="#terms" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">
+          1. Điều khoản sử dụng · <span lang="en" style="color:var(--muted)">Terms</span>
+        </a>
+        <a href="#privacy" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">
+          2. Quyền riêng tư &amp; phạm vi E2E · <span lang="en" style="color:var(--muted)">Privacy &amp; E2E</span>
+        </a>
+        <a href="#deletion" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">
+          3. Không bán dữ liệu &amp; xoá tài khoản · <span lang="en" style="color:var(--muted)">Deletion</span>
+        </a>
+        <a href="#contact" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">
+          4. Liên hệ · <span lang="en" style="color:var(--muted)">Contact</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="min-w-0 flex flex-col gap-8 max-w-[820px]">
+
+      <!-- ============================================================= -->
+      <!-- 1. ĐIỀU KHOẢN SỬ DỤNG (TERMS OF SERVICE)                       -->
+      <!-- ============================================================= -->
+      <section id="terms" class="panel p-6 md:p-8">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 1 · <span lang="en">Section 1</span></p>
+        <h2 class="t-title-md mb-4">Điều khoản sử dụng</h2>
+
+        <div class="flex flex-col gap-4 mb-6">
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1.5">1.1 · Dịch vụ và hai lớp xác thực tách biệt</p>
+            <p class="t-body m-0" style="color:var(--body)">
+              <strong>engram</strong> là sổ lưu ghi chú văn bản (<span class="mono">text</span>) và bảng cấu trúc (<span class="mono">json</span>) theo từ khoá.
+              Tài khoản của bạn dùng <strong>mật khẩu đăng nhập</strong> (hoặc Google/GitHub OAuth) để quản lý phiên làm việc.
+              Nội dung entry được khoá bằng <strong>passphrase mã hoá vault</strong> riêng biệt. Đặt lại mật khẩu đăng nhập qua email chỉ khôi phục quyền vào tài khoản, <strong>không</strong> mở khoá hay giải mã được vault.
+            </p>
+          </div>
+
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1.5">1.2 · Trách nhiệm giữ khoá và khôi phục</p>
+            <p class="t-body m-0" style="color:var(--body)">
+              Vì máy chủ không bao giờ nhận hoặc lưu passphrase, khoá dẫn xuất (<span class="mono">KEK</span>), khoá vault (<span class="mono">VK</span>) hay bản rõ của 10 recovery key, chúng tôi <strong>không thể mở hộ dữ liệu</strong>.
+              Khi tạo vault, bạn bắt buộc lưu lại bộ <strong>10 recovery key</strong> (và có thể thêm passkey hoặc bật nhớ thiết bị). Nếu mất toàn bộ các đường mở khoá và không còn bản backup mở được, cách duy nhất là <strong>đặt lại vault</strong> (xoá vĩnh viễn nội dung entry trên máy chủ, giữ lại tên mục và tag).
+            </p>
+          </div>
+
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1.5">1.3 · Giới hạn sử dụng hợp lệ</p>
+            <p class="t-body m-0" style="color:var(--body)">
+              Bạn toàn quyền sở hữu dữ liệu mình lưu. Không dùng dịch vụ để lưu nội dung vi phạm pháp luật, phát tán mã độc, hoặc tấn công làm gián đoạn hệ thống. Mỗi entry giới hạn tối đa <span class="mono">256 KiB</span>, tối đa 200 entry và 20 tag cho mỗi mục để đảm bảo hiệu năng đồng bộ.
+            </p>
+          </div>
+        </div>
+
+        <!-- English block (same pattern as auth.html / onboarding.html) -->
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Terms of Service · English</p>
+          <p class="text-[14px] font-semibold m-0 mb-2" style="color:var(--ink)">
+            1. Account access vs. encrypted vault keys
+          </p>
+          <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
+            <strong>engram</strong> stores keyword-indexed <span class="mono">text</span> and <span class="mono">json</span> entries. Your <strong>account login password</strong> (or linked Google/GitHub account) authenticates your session with the server. Your <strong>vault passphrase</strong> is completely separate and derives the encryption keys inside your browser. Resetting your login password by email restores account access only and <strong>never</strong> unlocks or decrypts your vault.
+          </p>
+          <p class="text-[14px] font-semibold m-0 mb-1.5" style="color:var(--ink)">
+            2. Your responsibility for recovery paths &amp; acceptable use
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            Because our servers never receive your passphrase, <span class="mono">KEK</span>, <span class="mono">VK</span>, or plaintext recovery keys, we cannot decrypt or recover your entries for you. At vault setup you must save your <strong>10 single-use recovery keys</strong> (and may add WebAuthn PRF passkeys or a remembered device). If all unlock paths and decryptable backups are lost, the only option is a vault reset, which permanently deletes encrypted entry bodies while keeping item names and tags. Each entry is capped at <span class="mono">256 KiB</span> (up to 200 entries and 20 tags per item); you may not use engram for unlawful content or service abuse.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============================================================= -->
+      <!-- 2. CHÍNH SÁCH QUYỀN RIÊNG TƯ & PHẠM VI MÃ HOÁ (PRIVACY & E2E)   -->
+      <!-- ============================================================= -->
+      <section id="privacy" class="panel p-6 md:p-8">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 2 · <span lang="en">Section 2</span></p>
+        <h2 class="t-title-md mb-4">Chính sách quyền riêng tư &amp; Phạm vi mã hoá đầu-cuối</h2>
+
+        <p class="t-body mb-5" style="color:var(--body)">
+          Chúng tôi công khai rõ ràng ranh giới bảo mật theo đúng thiết kế hệ thống (SPEC §5.1, §10.4): dữ liệu nào được mã hoá đầu-cuối trên trình duyệt và dữ liệu nào ở dạng văn bản thường (<span class="mono">plaintext</span>) trên máy chủ.
+        </p>
+
+        <div class="grid gap-3 md:grid-cols-2 mb-6">
+          <div class="card p-5" style="border-color:var(--success)">
+            <p class="t-label mb-1.5" style="color:var(--success)">Được mã hoá đầu-cuối · <span lang="en">End-to-end encrypted</span></p>
+            <p class="text-[14px] font-semibold m-0 mb-1.5">Nội dung mọi entry (<span class="mono">text</span> &amp; <span class="mono">json</span>)</p>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              Mã hoá trên trình duyệt bằng <span class="mono">XChaCha20-Poly1305</span> với khoá dẫn xuất qua <span class="mono">Argon2id (64 MiB)</span> trong Web Worker. Máy chủ chỉ lưu bản mã (<span class="mono">ciphertext</span>) và các bản bọc khoá (<span class="mono">wrap</span>), không có cách nào đọc nội dung.
+            </p>
+          </div>
+
+          <div class="card p-5" style="border-color:var(--warning)">
+            <p class="t-label mb-1.5" style="color:var(--body)">KHÔNG mã hoá · <span lang="en">Plaintext on server</span></p>
+            <p class="text-[14px] font-semibold m-0 mb-1.5">Tên mục (<span class="mono">name</span>), tag và gợi nhớ (<span class="mono">hint</span>)</p>
+            <p class="text-[13px] m-0" style="color:var(--body)">
+              <strong>Tên mục, nhãn (<span class="mono">tag</span>) và gợi nhớ (<span class="mono">hint</span>) KHÔNG được mã hoá</strong> để tính năng tìm kiếm và gợi ý hoạt động. Máy chủ cũng thấy loại entry, thời điểm sửa, số lượng và kích thước xấp xỉ (<span class="mono">plaintext_len_bucket</span>). <strong>Tuyệt đối không đặt mật khẩu hay bí mật vào tên mục, tag hoặc gợi nhớ.</strong>
+            </p>
+          </div>
+        </div>
+
+        <div class="card p-0 overflow-hidden mb-6">
+          <table class="w-full text-[13.5px]" style="border-collapse:collapse">
+            <thead>
+              <tr style="background:var(--surface)">
+                <th class="t-label text-left p-3" style="color:var(--muted)">Dữ liệu · <span lang="en">Data</span></th>
+                <th class="t-label text-left p-3" style="color:var(--muted)">Trạng thái trên máy chủ · <span lang="en">On server</span></th>
+                <th class="t-label text-left p-3" style="color:var(--muted)">Mục đích · <span lang="en">Purpose</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3 font-semibold">Nội dung entry (<span class="mono">text</span>, <span class="mono">json</span>)</td>
+                <td class="p-3"><span class="badge-type" style="background:var(--pale-accent);color:var(--accent)">Ciphertext (E2E)</span></td>
+                <td class="p-3" style="color:var(--muted)">Chỉ giải mã trong trình duyệt của bạn · <span lang="en">Decrypted only in your browser</span></td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3 font-semibold">Tên mục (<span class="mono">name</span>), <span class="mono">tag</span>, gợi nhớ (<span class="mono">hint</span>)</td>
+                <td class="p-3"><span class="badge-type badge-json">Plaintext</span></td>
+                <td class="p-3" style="color:var(--muted)">Tìm kiếm từ khoá, lọc tag, gợi ý · <span lang="en">Keyword search, tag filtering, suggestions</span></td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3 font-semibold">Email, cài đặt, phiên, nhật ký bảo mật</td>
+                <td class="p-3"><span class="badge-type badge-text">Plaintext / Hash</span></td>
+                <td class="p-3" style="color:var(--muted)">Xác thực tài khoản; mật khẩu đăng nhập băm Argon2id · <span lang="en">Auth &amp; security audit</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card p-5 mb-6">
+          <p class="text-[15px] font-semibold m-0 mb-1.5">2.1 · Tìm kiếm gần nghĩa (Semantic search) và nhật ký truy cập</p>
+          <p class="t-body m-0" style="color:var(--body)">
+            Khi bạn bật tính năng tìm kiếm "gần nghĩa" (tuỳ chọn), tên mục, tag và gợi nhớ có thể được gửi tới dịch vụ tạo vector (embedding) để đối chiếu ngữ nghĩa; <strong>nội dung entry không bao giờ được gửi</strong>. Tắt tính năng này trong Cài đặt sẽ dừng gửi và xoá các vector đã tạo. Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm (<span class="mono">q</span>) và không bao giờ ghi nội dung entry, passphrase hay recovery key.
+          </p>
+        </div>
+
+        <!-- English block -->
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Privacy Policy &amp; E2E Scope · English</p>
+          <p class="text-[14px] font-semibold m-0 mb-2" style="color:var(--ink)">
+            Plainly: what is encrypted and what is not
+          </p>
+          <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
+            <strong>Encrypted end-to-end:</strong> The body of every <span class="mono">text</span> and <span class="mono">json</span> entry is encrypted in your browser (<span class="mono">XChaCha20-Poly1305</span>, key derived via <span class="mono">Argon2id 64 MiB</span>). The server stores only ciphertext and wrapped keys and cannot read your entry contents.
+          </p>
+          <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
+            <strong>NOT encrypted (plaintext):</strong> <strong>Item names (<span class="mono">name</span>), tags (<span class="mono">tag</span>), and hints (<span class="mono">hint</span>) are NOT encrypted</strong> on the server so search and filtering work. Entry type, timestamps, counts, and approximate length (<span class="mono">plaintext_len_bucket</span>; ciphertext length reveals plaintext length) are also visible to the server. Do not put secrets in item names, tags, or hints.
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>Similar-meaning search &amp; logs:</strong> When optional semantic search is enabled, item names, tags, and hints are sent to an embedding service to build vectors; entry contents are never sent. Turning it off stops embedding and deletes stored vectors. Server logs never record search queries (<span class="mono">q</span>), entry bodies, passphrases, or recovery keys.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============================================================= -->
+      <!-- 3. KHÔNG BÁN DỮ LIỆU, XUẤT BACKUP & XOÁ TÀI KHOẢN               -->
+      <!-- ============================================================= -->
+      <section id="deletion" class="panel p-6 md:p-8">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 3 · <span lang="en">Section 3</span></p>
+        <h2 class="t-title-md mb-4">Không bán dữ liệu, Xuất dữ liệu &amp; Xoá tài khoản</h2>
+
+        <div class="grid gap-4 md:grid-cols-2 mb-6">
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1.5">Không bán hoặc chia sẻ dữ liệu</p>
+            <p class="t-body m-0" style="color:var(--body)">
+              Chúng tôi <strong>không bán, không cho thuê và không dùng dữ liệu của bạn để quảng cáo</strong>. Cookie chỉ dùng cho phiên đăng nhập (<span class="mono">HttpOnly</span>) và bảo vệ chống giả mạo yêu cầu (<span class="mono">CSRF</span>), không có trình theo dõi quảng cáo của bên thứ ba.
+            </p>
+          </div>
+
+          <div class="card p-5">
+            <p class="text-[15px] font-semibold m-0 mb-1.5">Xuất dữ liệu &amp; Xoá tài khoản vĩnh viễn</p>
+            <p class="t-body m-0" style="color:var(--body)">
+              Bạn có thể xuất bản sao lưu bất cứ lúc nào. Khi bạn yêu cầu <strong>xoá tài khoản</strong>, toàn bộ vault, recovery key, passkey, mục, tag và entry trên máy chủ hoạt động sẽ bị xoá vĩnh viễn (các mục xoá mềm trước đó cũng được dọn sạch tự động theo chu kỳ lưu trữ; nhật ký kiểm toán bảo mật giữ tối đa 90 ngày).
+            </p>
+          </div>
+        </div>
+
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">No Selling Data &amp; Account Deletion · English</p>
+          <p class="text-[13px] m-0 mb-2.5" style="color:var(--body)">
+            <strong>No selling of personal data:</strong> We never sell, rent, or monetize your data with advertisers. We use strictly necessary <span class="mono">HttpOnly</span> session and CSRF cookies — no third-party ad trackers.
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>Export &amp; account deletion:</strong> You can export your data (encrypted backup or decrypted JSON) at any time. Deleting your account permanently deletes your vault, wrapped recovery keys, passkeys, items, tags, and encrypted entries from the live database (audit logs expire within 90 days).
+          </p>
+        </div>
+      </section>
+
+      <!-- ============================================================= -->
+      <!-- 4. LIÊN HỆ (CONTACT PLACEHOLDER)                               -->
+      <!-- ============================================================= -->
+      <section id="contact" class="panel p-6 md:p-8">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 4 · <span lang="en">Section 4</span></p>
+        <h2 class="t-title-md mb-3">Liên hệ · <span lang="en" class="text-[22px] font-normal" style="color:var(--muted)">Contact</span></h2>
+        <p class="t-body mb-4" style="color:var(--body)">
+          Nếu bạn có câu hỏi về điều khoản, quyền riêng tư, cần báo cáo lỗ hổng bảo mật hoặc yêu cầu hỗ trợ tài khoản, vui lòng liên hệ qua địa chỉ dưới đây. <strong>Tuyệt đối không gửi passphrase hay recovery key trong email</strong> — chúng tôi không bao giờ yêu cầu các bí mật đó.
+        </p>
+        <p class="text-[13px] mb-5" lang="en" style="color:var(--muted)">
+          For questions about these Terms, Privacy Policy, security disclosures, or account requests, contact us at the placeholder address below. <strong>Never send your vault passphrase or recovery keys</strong> — we will never ask for them.
+        </p>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <a href="mailto:hello@zone17th.click" class="btn btn-secondary no-underline mono text-[14px]">hello@zone17th.click</a>
+          <a href="docs.html" class="btn btn-tertiary no-underline">
+            Xem tài liệu chi tiết · <span lang="en" class="font-normal">Full documentation</span>
+          </a>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+</main>
+
+<script src="mock.js"></script>
+<script>SAK.initChrome();</script>
+</body>
+</html>
