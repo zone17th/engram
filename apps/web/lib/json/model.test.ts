@@ -20,6 +20,12 @@ describe('lib/json/model', () => {
     expect(view.rows.map((r) => r.key)).toEqual(['10', '2', 'dup', 'dup']);
     expect(view.rows.map((r) => r.occurrenceIndex)).toEqual([0, 0, 0, 1]);
     expect(view.rows.map((r) => r.keyLabel)).toEqual(['10', '2', 'dup (#1)', 'dup (#2)']);
+    // Field row nodeRef and valueRef spans match valueNode.span; propertyRef span matches prop.span
+    const firstRow = view.rows[0]!;
+    expect(firstRow.nodeRef.span).toEqual(firstRow.valueCell.nodeRef.span);
+    expect(firstRow.valueRef.span).toEqual(firstRow.valueCell.nodeRef.span);
+    expect(firstRow.propertyRef.span.start).toBe(firstRow.keyCell.nodeRef.span.start);
+    expect(firstRow.propertyRef.span.end).toBe(firstRow.valueCell.nodeRef.span.end);
   });
 
   it('builds array-of-objects union columns (max 20) in first-appearance order and groups 21+ into +N field', () => {
@@ -209,6 +215,23 @@ describe('lib/json/model', () => {
         expect(rootView.rows).toHaveLength(1);
         const level2 = rootView.rows[0]!.cell.expand();
         expect(level2.kind).toBe('array-of-arrays');
+      }
+    }
+
+    // 10000-deep object builds root view immediately (1 row) without building all 10000 levels
+    const deepObj = '{"a":'.repeat(10_000) + '42' + '}'.repeat(10_000);
+    const deepObjParsed = parseJsonStrict(deepObj);
+    expect(deepObjParsed.ok).toBe(true);
+    if (deepObjParsed.ok) {
+      const rootObjView = buildRootTableView(deepObjParsed.document);
+      expect(rootObjView.kind).toBe('object');
+      if (rootObjView.kind === 'object') {
+        expect(rootObjView.rows).toHaveLength(1);
+        expect(rootObjView.rows[0]!.valueCell.kind).toBe('container');
+        if (rootObjView.rows[0]!.valueCell.kind === 'container') {
+          const level2Obj = rootObjView.rows[0]!.valueCell.expand();
+          expect(level2Obj.kind).toBe('object');
+        }
       }
     }
   });

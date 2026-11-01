@@ -88,6 +88,8 @@ export interface JsonFieldRowView {
   readonly keyCell: JsonPrimitiveCellView;
   readonly valueCell: JsonPrimitiveCellView | JsonContainerCellView;
   readonly nodeRef: JsonNodeRef;
+  readonly valueRef: JsonNodeRef;
+  readonly propertyRef: JsonNodeRef;
 }
 
 export interface JsonObjectTableView {
@@ -240,6 +242,7 @@ function makeNodeRef(
   document: JsonDocument,
   node: JsonNode,
   extra?: {
+    parentId?: number | null;
     propertyId?: number;
     propertyKey?: string;
     occurrenceIndex?: number;
@@ -251,8 +254,11 @@ function makeNodeRef(
     revision: document.revision,
     nodeId: node.id,
     span: node.span,
-    parentId: parent ? parent.id : null,
-    ...extra,
+    parentId: extra?.parentId !== undefined ? extra.parentId : parent ? parent.id : null,
+    ...(extra?.propertyId !== undefined ? { propertyId: extra.propertyId } : {}),
+    ...(extra?.propertyKey !== undefined ? { propertyKey: extra.propertyKey } : {}),
+    ...(extra?.occurrenceIndex !== undefined ? { occurrenceIndex: extra.occurrenceIndex } : {}),
+    ...(extra?.elementIndex !== undefined ? { elementIndex: extra.elementIndex } : {}),
   };
 }
 
@@ -260,6 +266,7 @@ export function buildCellView(
   document: JsonDocument,
   node: JsonNode,
   refExtra?: {
+    parentId?: number | null;
     propertyId?: number;
     propertyKey?: string;
     occurrenceIndex?: number;
@@ -390,18 +397,22 @@ function buildFieldRowView(
   const keyLabel = isDuplicateKey ? `${prop.key} (#${prop.occurrenceIndex + 1})` : prop.key;
 
   const keyCellRaw = buildCellView(document, prop.keyNode, {
+    parentId: parentObject.id,
     propertyId: prop.id,
     propertyKey: prop.key,
     occurrenceIndex: prop.occurrenceIndex,
   }) as JsonPrimitiveCellView;
 
   const valueCell = buildCellView(document, prop.valueNode, {
+    parentId: parentObject.id,
     propertyId: prop.id,
     propertyKey: prop.key,
     occurrenceIndex: prop.occurrenceIndex,
   });
 
-  const nodeRef: JsonNodeRef = {
+  const nodeRef = valueCell.nodeRef;
+  const valueRef = valueCell.nodeRef;
+  const propertyRef: JsonNodeRef = {
     revision: document.revision,
     nodeId: prop.valueNode.id,
     span: prop.span,
@@ -423,6 +434,8 @@ function buildFieldRowView(
     keyCell: keyCellRaw,
     valueCell,
     nodeRef,
+    valueRef,
+    propertyRef,
   };
 }
 

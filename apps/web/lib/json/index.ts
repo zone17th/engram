@@ -86,6 +86,7 @@ export {
   insertRow,
   removeField,
   removeRow,
+  removeRowAt,
   setValue,
   type InsertFieldOptions,
   type InsertRowOptions,

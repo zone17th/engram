@@ -29,6 +29,7 @@ export type JsonEditErrorCode =
   | 'INVALID_BOOLEAN_LEXEME'
   | 'INVALID_NULL_LEXEME'
   | 'INVALID_STRING_VALUE'
+  | 'INVALID_VALUE_LEXEME'
   | 'INVALID_CONTAINER_KIND'
   | 'INVALID_INDEX'
   | 'KEY_EXISTS'
@@ -140,7 +141,7 @@ export function applyTextEditAndReparse(
       ok: false,
       error: new JsonEditError(
         'REPARSE_FAILED',
-        `Edited JSON failed strict re-parse: ${parsed.error.message}`,
+        'Edited JSON failed strict re-parse',
         parsed.error,
       ),
     };
@@ -159,7 +160,7 @@ function validateRefRevision(document: JsonDocument, ref: JsonNodeRef): JsonEdit
   if (ref.revision !== document.revision) {
     return new JsonEditError(
       'STALE_SPAN',
-      `Node reference revision ${ref.revision} does not match current document revision ${document.revision}`,
+      'Node reference revision does not match current document revision',
     );
   }
   return null;
@@ -177,7 +178,7 @@ function resolveTargetNode(
   if (!node) {
     return {
       ok: false,
-      error: new JsonEditError('NODE_NOT_FOUND', `Node ${ref.nodeId} not found in document`),
+      error: new JsonEditError('NODE_NOT_FOUND', 'Target node not found in document'),
     };
   }
   if (node.span.start !== ref.span.start || node.span.end !== ref.span.end) {
@@ -185,11 +186,23 @@ function resolveTargetNode(
       ok: false,
       error: new JsonEditError(
         'STALE_SPAN',
-        `Node ${ref.nodeId} span [${ref.span.start}, ${ref.span.end}) does not match current span [${node.span.start}, ${node.span.end})`,
+        'Target node span does not match current document',
       ),
     };
   }
   return { ok: true, node };
+}
+
+function isSingleJsonValueLexeme(lexeme: string): boolean {
+  if (!isWellFormedUtf16(lexeme)) {
+    return false;
+  }
+  const parsed = parseJsonStrict(`[${lexeme}]`, { revision: 0 });
+  return (
+    parsed.ok &&
+    parsed.document.root.kind === 'array' &&
+    parsed.document.root.elements.length === 1
+  );
 }
 
 function findLineStart(source: string, offset: number): number {
@@ -383,19 +396,23 @@ function computeInsertionSpan(
 
   if (clampedIndex === 0) {
     // Insert before the current first item (`items[0]`).
-    // Rule 5: no preceding sibling -> indent is parent + 2 spaces (when multiline).
+    // When `first` is on its own line, splice at `findLineStart(source, first.span.start)`
+    // using the first sibling's leading indentation so the existing first line is untouched.
     const first = items[0]!;
-    if (!isMultilineContainer) {
+    const firstHasOwnLine = hasLineBreakBetween(source, containerSpan.start, first.span.start);
+    if (!isMultilineContainer || !firstHasOwnLine) {
       return {
         offset: first.span.start,
         length: 0,
         content: `${newItemText}, `,
       };
     }
+    const firstLineStart = findLineStart(source, first.span.start);
+    const firstIndent = getLeadingIndentAt(source, first.span.start);
     return {
-      offset: first.span.start,
+      offset: firstLineStart,
       length: 0,
-      content: `${newItemText},${eol}${defaultChildIndent}`,
+      content: `${firstIndent}${newItemText},${eol}`,
     };
   }
 
@@ -502,23 +519,29 @@ export function setValue(
     }
 
     // If this string node is an object property key, ensure renaming does not collide with an
-    // existing key in the same object when `propertyId` is provided.
-    if (nodeRef.propertyId !== undefined && nodeRef.parentId !== null) {
-      const prop = document.propertyById.get(nodeRef.propertyId);
-      const parent = document.nodeById.get(nodeRef.parentId);
-      if (
-        prop &&
-        prop.keyNode.id === node.id &&
-        parent &&
-        parent.kind === 'object'
-      ) {
-        const duplicate = parent.properties.some(
+    // existing sibling key in the parent object.
+    const parentFromMap = document.parentById.get(node.id);
+    const parentFromRef =
+      nodeRef.parentId !== null ? document.nodeById.get(nodeRef.parentId) : undefined;
+    const parentObj =
+      parentFromMap && parentFromMap.kind === 'object'
+        ? parentFromMap
+        : parentFromRef && parentFromRef.kind === 'object'
+          ? parentFromRef
+          : null;
+    if (parentObj) {
+      const prop =
+        nodeRef.propertyId !== undefined
+          ? document.propertyById.get(nodeRef.propertyId)
+          : parentObj.properties.find((p) => p.keyNode.id === node.id);
+      if (prop && prop.keyNode.id === node.id) {
+        const duplicate = parentObj.properties.some(
           (p) => p.id !== prop.id && p.key === newInput,
         );
         if (duplicate) {
           return {
             ok: false,
-            error: new JsonEditError('KEY_EXISTS', `Key "${newInput}" already exists in object`),
+            error: new JsonEditError('KEY_EXISTS', 'Property key already exists in object'),
           };
         }
       }
@@ -539,7 +562,7 @@ export function setValue(
         ok: false,
         error: new JsonEditError(
           'INVALID_NUMBER_LEXEME',
-          `Invalid RFC 8259 number lexeme: "${newInput}"`,
+          'Invalid RFC 8259 number lexeme',
         ),
       };
     }
@@ -566,7 +589,7 @@ export function setValue(
         ok: false,
         error: new JsonEditError(
           'INVALID_BOOLEAN_LEXEME',
-          `Expected "true" or "false" for boolean cell, got "${newInput}"`,
+          'Expected "true" or "false" for boolean cell',
         ),
       };
     }
@@ -593,7 +616,7 @@ export function setValue(
       ok: false,
       error: new JsonEditError(
         'INVALID_NULL_LEXEME',
-        `Expected "null" for null cell, got "${newInput}"`,
+        'Expected "null" for null cell',
       ),
     };
   }
@@ -726,7 +749,7 @@ export function insertField(
       ok: false,
       error: new JsonEditError(
         'INVALID_CONTAINER_KIND',
-        `insertField requires an object node, got "${node.kind}"`,
+        'insertField requires an object node',
       ),
     };
   }
@@ -746,12 +769,21 @@ export function insertField(
     if (node.properties[i]!.key === key) {
       return {
         ok: false,
-        error: new JsonEditError('KEY_EXISTS', `Key "${key}" already exists in object`),
+        error: new JsonEditError('KEY_EXISTS', 'Property key already exists in object'),
       };
     }
   }
 
   const initialValueLexeme = options?.initialValueLexeme ?? 'null';
+  if (!isSingleJsonValueLexeme(initialValueLexeme)) {
+    return {
+      ok: false,
+      error: new JsonEditError(
+        'INVALID_VALUE_LEXEME',
+        'Initial field value must be a single valid JSON value lexeme',
+      ),
+    };
+  }
   const insertIndex = options?.index ?? node.properties.length;
   const keyLexeme = escapeJsonStringMinimal(key);
   const propText = `${keyLexeme}: ${initialValueLexeme}`;
@@ -834,7 +866,7 @@ export function insertRow(
       ok: false,
       error: new JsonEditError(
         'INVALID_CONTAINER_KIND',
-        `insertRow requires an array node, got "${node.kind}"`,
+        'insertRow requires an array node',
       ),
     };
   }
@@ -852,8 +884,15 @@ export function insertRow(
     } else {
       itemLexeme = 'null';
     }
+  } else if (!isSingleJsonValueLexeme(itemLexeme)) {
+    return {
+      ok: false,
+      error: new JsonEditError(
+        'INVALID_VALUE_LEXEME',
+        'Row value must be a single valid JSON value lexeme',
+      ),
+    };
   }
-
   const insertIndex = options?.index ?? node.elements.length;
   const edit = computeInsertionSpan(
     document.source,
@@ -866,60 +905,105 @@ export function insertRow(
 }
 
 /**
- * Removes an element from an array node by element `JsonNodeRef` or 0-based element index.
+ * Removes an element from an array node by 0-based `elementIndex`, or by an element
+ * `JsonNodeRef` (carrying `elementIndex` or targeting a non-array child element).
+ * Calling `removeRow(doc, arrayRef)` without `elementIndex` on an array container ref
+ * (where `elementIndex === undefined`) is rejected with `INVALID_INDEX` so an array ref
+ * without index can never delete the array itself from its parent.
+ * To remove a nested array element by its element ref alone, pass a ref with `elementIndex`
+ * (as produced by `model.ts`) or call `removeRowAt(doc, elementRef)`.
  */
 export function removeRow(
   document: JsonDocument,
   arrayOrElementRef: JsonNodeRef,
   elementIndex?: number,
 ): JsonEditOutcome {
-  const revErr = validateRefRevision(document, arrayOrElementRef);
-  if (revErr) {
-    return { ok: false, error: revErr };
-  }
-
-  let arrayNode: JsonArrayNode;
-  let targetIndex: number;
-
   const resolved = resolveTargetNode(document, arrayOrElementRef);
   if (!resolved.ok) {
     return resolved;
   }
 
-  if (resolved.node.kind === 'array' && elementIndex !== undefined) {
-    arrayNode = resolved.node;
-    targetIndex = elementIndex;
-  } else {
-    // `arrayOrElementRef` points to the element node itself
-    const parentId = arrayOrElementRef.parentId;
-    const parent = parentId !== null ? document.nodeById.get(parentId) : undefined;
-    if (!parent || parent.kind !== 'array') {
+  if (elementIndex !== undefined) {
+    if (resolved.node.kind !== 'array') {
       return {
         ok: false,
         error: new JsonEditError(
           'INVALID_CONTAINER_KIND',
-          'Target node for removeRow is not an array or array element',
+          'Target node for removeRow(doc, arrayRef, index) must be an array node',
         ),
       };
     }
-    arrayNode = parent;
-    targetIndex = arrayNode.elements.findIndex((el) => el.id === resolved.node.id);
+    const arrayNode = resolved.node;
+    if (elementIndex < 0 || elementIndex >= arrayNode.elements.length) {
+      return {
+        ok: false,
+        error: new JsonEditError(
+          'INVALID_INDEX',
+          'Array element index is out of bounds',
+        ),
+      };
+    }
+    const edit = computeRemovalSpan(
+      document.source,
+      arrayNode.span,
+      arrayNode.elements,
+      elementIndex,
+    );
+    return applyTextEditAndReparse(document, edit);
   }
 
-  if (targetIndex < 0 || targetIndex >= arrayNode.elements.length) {
+  if (resolved.node.kind === 'array' && arrayOrElementRef.elementIndex === undefined) {
     return {
       ok: false,
       error: new JsonEditError(
         'INVALID_INDEX',
-        `Array element index ${targetIndex} is out of bounds (length ${arrayNode.elements.length})`,
+        'removeRow on an array container reference requires an explicit element index',
+      ),
+    };
+  }
+
+  return removeRowAt(document, arrayOrElementRef);
+}
+
+/**
+ * Removes the array element directly referenced by `elementRef` from its parent array.
+ */
+export function removeRowAt(
+  document: JsonDocument,
+  elementRef: JsonNodeRef,
+): JsonEditOutcome {
+  const resolved = resolveTargetNode(document, elementRef);
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const parentId = elementRef.parentId ?? (document.parentById.get(resolved.node.id)?.id ?? null);
+  const parent = parentId !== null ? document.nodeById.get(parentId) : undefined;
+  if (!parent || parent.kind !== 'array') {
+    return {
+      ok: false,
+      error: new JsonEditError(
+        'INVALID_CONTAINER_KIND',
+        'Target node for removeRowAt is not an element of a parent array',
+      ),
+    };
+  }
+
+  const targetIndex = parent.elements.findIndex((el) => el.id === resolved.node.id);
+  if (targetIndex < 0 || targetIndex >= parent.elements.length) {
+    return {
+      ok: false,
+      error: new JsonEditError(
+        'INVALID_INDEX',
+        'Array element index is out of bounds',
       ),
     };
   }
 
   const edit = computeRemovalSpan(
     document.source,
-    arrayNode.span,
-    arrayNode.elements,
+    parent.span,
+    parent.elements,
     targetIndex,
   );
   return applyTextEditAndReparse(document, edit);
@@ -962,7 +1046,7 @@ export function removeField(
         ok: false,
         error: new JsonEditError(
           'NODE_NOT_FOUND',
-          `Property ${targetRef.propertyId} not found in document`,
+          'Target property not found in document',
         ),
       };
     }
@@ -1008,16 +1092,22 @@ export function removeField(
     };
   }
 
-  // Verify span integrity when targetRef was a property ref
-  if (
-    targetRef.propertyId !== undefined &&
-    targetRef.span.start === propNode.span.start &&
-    targetRef.span.end !== propNode.span.end
-  ) {
-    return {
-      ok: false,
-      error: new JsonEditError('STALE_SPAN', 'Property span does not match current document'),
-    };
+  // Verify span integrity when targetRef was a property/value/key ref
+  if (targetRef.propertyId !== undefined) {
+    const matchesPropertySpan =
+      targetRef.span.start === propNode.span.start && targetRef.span.end === propNode.span.end;
+    const matchesValueSpan =
+      targetRef.span.start === propNode.valueNode.span.start &&
+      targetRef.span.end === propNode.valueNode.span.end;
+    const matchesKeySpan =
+      targetRef.span.start === propNode.keyNode.span.start &&
+      targetRef.span.end === propNode.keyNode.span.end;
+    if (!matchesPropertySpan && !matchesValueSpan && !matchesKeySpan) {
+      return {
+        ok: false,
+        error: new JsonEditError('STALE_SPAN', 'Property span does not match current document'),
+      };
+    }
   }
 
   const removeIndex = propNode.propertyIndex;
