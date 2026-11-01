@@ -67,9 +67,9 @@ Quick-add là một **kế hoạch** trong memory của phiên: `itemId` (UUID c
 
 Undo quick-add **chỉ** `DELETE /entries/{entryId}`. Mục, tag và cặp gán mà kế hoạch đã tạo là metadata dùng chung mà thiết bị khác có thể đã đổi tên, gắn thêm tag hay thêm entry trong lúc đó; server không chứng minh được "chưa ai đụng tới" nếu không thêm cơ chế phiên bản riêng. Toast nói rõ phạm vi; mục rỗng xoá tay được. Lock/logout/reset/đổi `vault_key_id` bỏ kế hoạch và draft; không gửi lại ciphertext cũ sau unlock (Q15).
 
-### 10. Ranh giới gửi của omnibox (Q17)
+### 10. Ranh giới gửi của omnibox (Q17, advisor-dec-098)
 
-Chuỗi đang gõ chưa phân loại có thể là body tương lai (dán body trước, gõ `name:` sau), và huỷ request không rút lại được dữ liệu đã gửi. Vì vậy ranh giới đặt **trước khi gửi**: ô omnibox không gửi gì theo từng phím ngoài lookup tên ở add mode (`GET /items/lookup?name=`, chỉ phần name). Tìm kiếm chỉ gửi khi người dùng nhấn Enter, chỉ input một dòng ≤ 200 rune, có dòng báo "chữ đã gõ gửi tới máy chủ, không mã hoá", kết quả hiện dưới ô và không vào URL/history. Lọc tag (`#…`) chạy phía client trên cache; chỉ gửi `GET /tags?q=` khi không có trong cache. Server từ chối `q`/`name` > 200 rune. Gợi ý theo phím của P05 phải giữ ranh giới này.
+Chuỗi đang gõ chưa phân loại có thể là body tương lai (dán body trước, gõ `name:` sau), và huỷ request không rút lại được dữ liệu đã gửi. Vì vậy ranh giới đặt **trước khi gửi**: ô omnibox **không gửi gì trước Enter** ở mọi chế độ. Add mode cũng vậy (advisor-dec-098): chuỗi dán vào như `root:hunter2` đã là add mode, nên lookup theo debounce sẽ gửi phần trước `:` — một mảnh body — trước khi người dùng xác nhận. Lookup tên (`GET /items/lookup?name=`, chỉ phần name) chạy khi Enter; trước Enter, preview chỉ dựng từ name và tag parse cục bộ; name không hợp lệ hoặc > 200 rune thì không gửi. Picker vốn cần kết quả lookup ở Enter nên luồng không thêm bước. Tìm kiếm chỉ gửi khi người dùng nhấn Enter, chỉ input một dòng ≤ 200 rune, có dòng báo "chữ đã gõ gửi tới máy chủ, không mã hoá", kết quả hiện dưới ô và không vào URL/history. Lọc tag (`#…`) chạy phía client trên cache; chỉ gửi `GET /tags?q=` khi không có trong cache. Server từ chối `q`/`name` > 200 rune. Gợi ý theo phím của P05 phải giữ ranh giới này.
 
 ### 11. Feed thay đổi: watermark, overlap 120 giây là heuristic, refetch bắt buộc
 
@@ -102,4 +102,5 @@ P04 không thêm field plaintext nào ngoài danh sách SPEC (`name`, `hint`, ta
 - Client có ba nút conflict thay vì màn so sánh; người dùng tự gộp qua clipboard.
 - Ghi cùng user tuần tự hoá; cần đo p95 burst (Task 21b).
 - Feed không bền; mọi client bắt buộc refetch khi thức dậy.
-- Threat model bổ sung: request ghi cũ sau reset bị chặn bằng `key_id`; feed không bền; omnibox không gửi chuỗi chưa phân loại; clipboard sau "Chép".
+- Threat model bổ sung: request ghi cũ sau reset bị chặn bằng `key_id`; feed không bền; omnibox không gửi gì trước Enter (kể cả lookup add mode); clipboard sau "Chép".
+- Preview add mode không biết trước số mục trùng tên; người dùng biết khi Enter (0/1 → lưu, nhiều → picker). Đây là giá của ranh giới gửi (advisor-dec-098).
