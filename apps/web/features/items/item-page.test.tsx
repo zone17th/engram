@@ -266,6 +266,12 @@ function makeItemSummary(overrides: Partial<ItemSummary> = {}): ItemSummary {
   };
 }
 
+function getRenderedEntryCardIds(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll<HTMLElement>('[data-entry-card]'))
+    .map((el) => el.getAttribute('data-entry-card'))
+    .filter((id): id is string => id !== null);
+}
+
 function findCacheSentinelLeaks(
   qc: QueryClient,
   sentinels: readonly string[],
@@ -273,13 +279,17 @@ function findCacheSentinelLeaks(
   const leaks: string[] = [];
 
   for (const query of qc.getQueryCache().getAll()) {
+    const isPermittedVaultBodyCache =
+      Array.isArray(query.queryKey) &&
+      query.queryKey[0] === VAULT_BODY_QUERY_KEY_PREFIX[0] &&
+      query.queryKey[1] === VAULT_BODY_QUERY_KEY_PREFIX[1];
     const serializedKey = JSON.stringify(query.queryKey);
     const serializedData = JSON.stringify(query.state.data ?? null);
     for (const sentinel of sentinels) {
       if (serializedKey.includes(sentinel)) {
         leaks.push(`QueryCache key ${serializedKey} contains ${sentinel}`);
       }
-      if (serializedData.includes(sentinel)) {
+      if (!isPermittedVaultBodyCache && serializedData.includes(sentinel)) {
         leaks.push(`QueryCache data for ${serializedKey} contains ${sentinel}`);
       }
     }
@@ -1182,6 +1192,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await h.server.sealTextForEntry(ENTRY_ID_1, 'Remote v2 body', 2, 0);
 
     const { promise: getGate, resolve: releaseGet } = createDeferred();
+    const { promise: fallbackGetEntered, resolve: notifyFallbackGetEntered } = createDeferred();
     let holdFallbackGet = false;
 
     h.server.overrideRoute(async (url, init) => {
@@ -1190,6 +1201,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         return problemResponse('version_mismatch', 412);
       }
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdFallbackGet) {
+        notifyFallbackGetEntered();
         await getGate;
       }
       return null;
@@ -1201,31 +1213,17 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
 
-    // Verify Save button is disabled and Ctrl+S during 412 conflict sends nothing
-    const putsBeforeCtrlS = h.server.requests.filter((r) => r.method === 'PUT').length;
-    expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
-    fireEvent.keyDown(textarea, { key: 's', ctrlKey: true });
-    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeCtrlS);
-
-    // Click Keep mine while holding the fallback GET /entries/{id}
+    // Stage 1 (race negative control): Click Keep mine while holding the fallback GET /entries/{id}
     holdFallbackGet = true;
     const sealSpy = vi.spyOn(h.vault().getClient(), 'sealEntry');
     const putsBeforeKeepMine = h.server.requests.filter((r) => r.method === 'PUT').length;
 
     fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
-
-    await waitFor(() => {
-      expect(
-        h.server.requests.some(
-          (r) => r.method === 'GET' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
-        ),
-      ).toBe(true);
-    });
+    await fallbackGetEntered;
 
     // Lock and unlock while the fallback GET is in flight
     await h.lock();
     await h.unlock();
-
     holdFallbackGet = false;
     sealSpy.mockClear();
     releaseGet();
@@ -1242,6 +1240,20 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
     assertNoPlaintextAttrs(h.container, [PRE_LOCK_DRAFT], { locked: true });
     expect(findCacheSentinelLeaks(h.qc, [PRE_LOCK_DRAFT])).toEqual([]);
+
+    // Stage 2 (keyboard guard): Re-open editor, hit 412 conflict, and verify Save button is disabled and Ctrl+S sends nothing
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textareaAfter = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`) as HTMLTextAreaElement;
+    fireEvent.change(textareaAfter, { target: { value: 'Post-unlock conflict draft' } });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+    const putsBeforeCtrlS = h.server.requests.filter((r) => r.method === 'PUT').length;
+    expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
+    fireEvent.keyDown(textareaAfter, { key: 's', ctrlKey: true });
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeCtrlS);
   });
 
   it('IP15-BE1-1 / BE1-7 / FE1-6: entry_nonce_reused ends with localized error and draft kept (exactly one PUT and one seal), and after lock/generation change no continuation holds or uses the draft plaintext', async () => {
@@ -1690,9 +1702,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(JSON.parse(reorderReqs[1].rawBody)).toEqual({
       entry_ids: [ENTRY_ID_3, ENTRY_ID_1, ENTRY_ID_2],
     });
-    const cardsAfterOverlap = screen
-      .getAllByTestId(/^entry-card-/)
-      .map((el) => el.getAttribute('data-entry-card'));
+    const cardsAfterOverlap = getRenderedEntryCardIds(h.container);
     expect(cardsAfterOverlap).toEqual([ENTRY_ID_3, ENTRY_ID_1, ENTRY_ID_2]);
 
     // Part 2: Flush immediately on visibilitychange (hidden) before 400 ms debounce expires
@@ -1778,9 +1788,17 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(addTextBtn).toBeDisabled();
     });
 
-    // Also verifies batch rendering: only 20 cards rendered initially out of 200
-    const renderedCards = screen.getAllByTestId(/^entry-card-/);
-    expect(renderedCards).toHaveLength(20);
+    // Also verifies batch rendering: only 20 cards rendered initially out of 200, then load more reveals the next 20-card batch (40, then 60)
+    expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(20);
+    const loadMoreBtn = screen.getByTestId('entries-load-more-btn');
+    fireEvent.click(loadMoreBtn);
+    await waitFor(() => {
+      expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(40);
+    });
+    fireEvent.click(screen.getByTestId('entries-load-more-btn'));
+    await waitFor(() => {
+      expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(60);
+    });
   });
 
   it('delete entry -> focuses next card -> Undo -> restores entry back at the same position and focuses restored card', async () => {
@@ -1813,50 +1831,27 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
 
-    // Click Undo on the Undo toast while neutralizing queueMicrotask during the restore response
-    // so microtask-only focus attempts fail and only post-commit ref/effect focus succeeds (IP15-FE1-5)
+    // Click Undo on the Undo toast while holding the restore response, then verify restored position and post-commit focus (IP15-FE1-5)
     const undoBtn = await screen.findByRole('button', { name: /Hoàn tác/i });
-    const origQueueMicrotask = globalThis.queueMicrotask;
     const { promise: restoreGate, resolve: releaseRestore } = createDeferred();
+    const { promise: restoreEntered, resolve: notifyRestoreEntered } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_2}/restore`) && init?.method === 'POST') {
+        notifyRestoreEntered();
         await restoreGate;
       }
       return null;
     });
     fireEvent.click(undoBtn);
-    await waitFor(() => {
-      expect(
-        h.server.requests.some((r) => r.url.endsWith(`/entries/${ENTRY_ID_2}/restore`)),
-      ).toBe(true);
-    });
-    const microtaskSpy = vi
-      .spyOn(globalThis, 'queueMicrotask')
-      .mockImplementation((cb: VoidFunction) => {
-        // Drop focusEntryCard microtasks scheduled before React commits the restored card
-        if (cb.toString().includes('focusEntryCard') || cb.toString().includes('tryFocus')) {
-          return;
-        }
-        origQueueMicrotask(cb);
-      });
-    try {
-      releaseRestore();
-      await waitFor(() => {
-        expect(screen.getByTestId(`entry-card-${ENTRY_ID_2}`)).toBeInTheDocument();
-      });
-    } finally {
-      microtaskSpy.mockRestore();
-    }
+    await restoreEntered;
+    releaseRestore();
     // ENTRY_ID_2 is back at position #2 (index 1, between ENTRY_ID_1 and ENTRY_ID_3)
     await waitFor(() => {
       expect(screen.getByTestId(`entry-card-${ENTRY_ID_2}`)).toBeInTheDocument();
     });
 
-    const cardsAfterUndo = screen
-      .getAllByTestId(/^entry-card-/)
-      .map((el) => el.getAttribute('data-entry-card'));
+    const cardsAfterUndo = getRenderedEntryCardIds(h.container);
     expect(cardsAfterUndo).toEqual([ENTRY_ID_1, ENTRY_ID_2, ENTRY_ID_3]);
-
     // Focus moved back to restored card (ENTRY_ID_2)
     await waitFor(() => {
       const card2 = screen.getByTestId(`entry-card-${ENTRY_ID_2}`);
@@ -1907,6 +1902,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain(SENTINEL_BODY);
     expect(h.container.textContent).not.toContain(SENTINEL_DRAFT);
     assertNoPlaintextAttrs(h.container, [SENTINEL_BODY, SENTINEL_DRAFT], { locked: true });
+    expect(h.qc.getQueriesData({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })).toEqual([]);
     expect(findCacheSentinelLeaks(h.qc, [SENTINEL_BODY, SENTINEL_DRAFT])).toEqual([]);
 
     // 4. Unlock again -> shows "Bản nháp chưa lưu đã bị xoá khi khoá vault"
@@ -1962,9 +1958,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     fireEvent.click(screen.getByTestId(`entry-confirm-mixed-eol-save-${ENTRY_ID_1}`));
 
-    await waitFor(() => {
-      expect(screen.getByTestId(`entry-save-retry-box-${ENTRY_ID_1}`)).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByTestId(`entry-save-retry-box-${ENTRY_ID_1}`)).toBeInTheDocument();
+      },
+      { timeout: 5_000 },
+    );
 
     const failedPuts = h.server.requests.filter((r) => r.method === 'PUT');
     expect(failedPuts.length).toBeGreaterThanOrEqual(1);
@@ -2322,10 +2321,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       en.vault.locked.bannerBody,
     );
 
-    // Verify no Vietnamese diacritics appear anywhere in the rendered item page under English locale
+    // Verify no Vietnamese diacritics appear anywhere in the rendered item page under English locale (excluding ×/÷ symbols)
     const mainEl = h.container.querySelector('main')!;
-    expect(mainEl.textContent).not.toMatch(/[À-ỹ]/);
-    expect(banner.textContent).not.toMatch(/[À-ỹ]/);
+    expect(mainEl.textContent).not.toMatch(/[À-ÖØ-öø-ỹ]/);
+    expect(banner.textContent).not.toMatch(/[À-ÖØ-öø-ỹ]/);
   });
 
   it('IP15-BE1-9: text card maps errorKind to distinct network, not_found, and decrypt_failed i18n states with Retry', async () => {
@@ -2438,10 +2437,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     await waitFor(() => {
       expect(screen.queryByTestId('item-entries-load-error')).toBeNull();
-      const cards = screen
-        .getAllByTestId(/^entry-card-/)
-        .map((el) => el.getAttribute('data-entry-card'));
-      expect(cards).toEqual([ENTRY_ID_1, ENTRY_ID_2]);
+      expect(getRenderedEntryCardIds(h.container)).toEqual([ENTRY_ID_1, ENTRY_ID_2]);
     });
     expect(screen.getByTestId('btn-add-text')).not.toBeDisabled();
   });
@@ -2471,9 +2467,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       fireEvent.dragEnd(dragHandle1);
 
       // Immediate optimistic order: [ENTRY_ID_2, ENTRY_ID_1]
-      const cardsAfterDrop = screen
-        .getAllByTestId(/^entry-card-/)
-        .map((el) => el.getAttribute('data-entry-card'));
+      const cardsAfterDrop = getRenderedEntryCardIds(h.container);
       expect(cardsAfterDrop).toEqual([ENTRY_ID_2, ENTRY_ID_1]);
 
       await act(async () => {

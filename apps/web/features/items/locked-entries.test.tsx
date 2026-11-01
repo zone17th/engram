@@ -906,7 +906,7 @@ describe('P03-T21 Locked state U5', () => {
       });
       expect(within(breadcrumbNav).getByRole('link', { name: en.content.item.allItems })).toHaveAttribute('href', '/app');
       expect(screen.getByTestId('item-name-input')).toHaveValue(item.title);
-      expect(screen.getByTestId(`entry-card-${item.id}`)).toBeInTheDocument();
+      expect(await screen.findByTestId(`entry-card-${item.id}`)).toBeInTheDocument();
       expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
       expect(screen.queryByTestId('entry-body')).toBeNull();
       for (const tag of item.tags) {
