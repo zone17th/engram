@@ -2501,11 +2501,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await waitFor(() => {
       const addTextBtn = screen.getByTestId('btn-add-text');
       expect(addTextBtn).toBeDisabled();
+      expect(addTextBtn).toHaveAttribute('title', viMessages.content.item.entryLimitHint);
+      expect(screen.getByTestId('entry-limit-hint')).toHaveTextContent(
+        viMessages.content.item.entryLimitHint,
+      );
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 20));
     });
 
     // IP15-BE3-6: Drive the page's real batch sentinel IntersectionObserver:
     // 1. Initially 20 cards in position order; sentinel is observed
-    const sentinel = screen.getByTestId('entries-batch-sentinel');
+    const sentinel = await screen.findByTestId('entries-batch-sentinel');
     expect(observedSentinelTargets).toContain(sentinel);
     expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 20));
 
