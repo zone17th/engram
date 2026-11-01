@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -189,6 +190,10 @@ func DecodeStrictJSON(w http.ResponseWriter, r *http.Request, dst any) ([]byte, 
 		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "Thiếu nội dung JSON.")
 		return nil, false
 	}
+	if !hasRawMessageField(reflect.TypeOf(dst)) && !utf8.Valid(body) {
+		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "JSON không hợp lệ.")
+		return nil, false
+	}
 	if err := rejectDuplicateOrUnknownJSONKeys(body, reflect.TypeOf(dst)); err != nil {
 		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "JSON không hợp lệ.")
 		return nil, false
@@ -218,6 +223,29 @@ func derefType(t reflect.Type) reflect.Type {
 		t = t.Elem()
 	}
 	return t
+}
+
+func hasRawMessageField(t reflect.Type) bool {
+	t = derefType(t)
+	if t == nil {
+		return false
+	}
+	if t == rawMessageType {
+		return true
+	}
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.IsExported() || f.Tag.Get("json") == "-" {
+			continue
+		}
+		if derefType(f.Type) == rawMessageType {
+			return true
+		}
+	}
+	return false
 }
 
 func allowedStructJSONFields(t reflect.Type) map[string]reflect.Type {
@@ -490,8 +518,8 @@ func (a *API) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 type itemCreateRequest struct {
-	ID   *string         `json:"id"`
-	Name *string         `json:"name"`
+	ID   json.RawMessage `json:"id"`
+	Name json.RawMessage `json:"name"`
 	Hint json.RawMessage `json:"hint"`
 }
 
@@ -504,27 +532,24 @@ func (a *API) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req itemCreateRequest
-	if _, ok := DecodeStrictJSON(w, r, &req); !ok {
+	rawBody, ok := DecodeStrictJSON(w, r, &req)
+	if !ok {
 		return
 	}
-	if req.Name == nil {
+	if len(bytes.TrimSpace(req.Name)) == 0 {
 		WriteDomainError(w, r, item.ErrInvalidRequest)
 		return
 	}
 
-	var clientID *uuid.UUID
-	if req.ID != nil {
-		parsedID, err := uuid.Parse(*req.ID)
-		if err != nil || len(*req.ID) != 36 {
-			WriteDomainError(w, r, item.ErrInvalidRequest)
-			return
-		}
-		clientID = &parsedID
+	clientID, err := parseOptionalIDField(req.ID)
+	if err != nil {
+		WriteDomainError(w, r, err)
+		return
 	}
 
-	nameDisplay, nameNormalized, err := textnorm.NormalizeName(*req.Name)
+	nameDisplay, nameNormalized, err := parseRequiredNameField(req.Name)
 	if err != nil {
-		WriteDomainError(w, r, item.ErrNameInvalid)
+		WriteDomainError(w, r, err)
 		return
 	}
 
@@ -533,7 +558,10 @@ func (a *API) Create(w http.ResponseWriter, r *http.Request) {
 		WriteDomainError(w, r, err)
 		return
 	}
-
+	if !utf8.Valid(rawBody) {
+		WriteDomainError(w, r, item.ErrInvalidRequest)
+		return
+	}
 	ctx := r.Context()
 	pool := a.provider.ContentPool()
 	tx, err := httpx.BeginMutationTx(ctx, pool)
@@ -591,7 +619,7 @@ func (a *API) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 type itemUpdateRequest struct {
-	Name *string         `json:"name"`
+	Name json.RawMessage `json:"name"`
 	Hint json.RawMessage `json:"hint"`
 }
 
@@ -612,11 +640,12 @@ func (a *API) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req itemUpdateRequest
-	if _, ok := DecodeStrictJSON(w, r, &req); !ok {
+	rawBody, ok := DecodeStrictJSON(w, r, &req)
+	if !ok {
 		return
 	}
-	hasName := req.Name != nil
-	hasHint := len(req.Hint) > 0
+	hasName := len(bytes.TrimSpace(req.Name)) > 0
+	hasHint := len(bytes.TrimSpace(req.Hint)) > 0
 	if !hasName && !hasHint {
 		WriteDomainError(w, r, item.ErrInvalidRequest)
 		return
@@ -625,9 +654,9 @@ func (a *API) Update(w http.ResponseWriter, r *http.Request) {
 	var newNameDisplay, newNameNormalized string
 	if hasName {
 		var err error
-		newNameDisplay, newNameNormalized, err = textnorm.NormalizeName(*req.Name)
+		newNameDisplay, newNameNormalized, err = parseRequiredNameField(req.Name)
 		if err != nil {
-			WriteDomainError(w, r, item.ErrNameInvalid)
+			WriteDomainError(w, r, err)
 			return
 		}
 	}
@@ -641,7 +670,10 @@ func (a *API) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
+	if !utf8.Valid(rawBody) {
+		WriteDomainError(w, r, item.ErrInvalidRequest)
+		return
+	}
 	ctx := r.Context()
 	pool := a.provider.ContentPool()
 	tx, err := httpx.BeginMutationTx(ctx, pool)
@@ -1018,22 +1050,83 @@ func (a *API) Restore(w http.ResponseWriter, r *http.Request) {
 	writeJSONBytes(w, http.StatusOK, respBytes)
 }
 
+func decodeSingleJSONString(trimmedRaw []byte, dst *string) error {
+	dec := json.NewDecoder(bytes.NewReader(trimmedRaw))
+	if err := dec.Decode(dst); err != nil {
+		return item.ErrInvalidRequest
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return item.ErrInvalidRequest
+	}
+	return nil
+}
+
+// parseOptionalIDField phân tích trường `id` tuỳ chọn của `POST /items`:
+//   - Bỏ qua (`len == 0`) -> `nil, nil` (server tự sinh UUID).
+//   - `null` tường minh, kiểu khác string, UTF-8 hỏng, hoặc UUID không hợp lệ -> `400 invalid_request`.
+func parseOptionalIDField(raw json.RawMessage) (*uuid.UUID, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) || trimmed[0] != '"' || !utf8.Valid(trimmed) {
+		return nil, item.ErrInvalidRequest
+	}
+	var idStr string
+	if err := decodeSingleJSONString(trimmed, &idStr); err != nil {
+		return nil, item.ErrInvalidRequest
+	}
+	parsedID, err := uuid.Parse(idStr)
+	if err != nil || len(idStr) != 36 {
+		return nil, item.ErrInvalidRequest
+	}
+	return &parsedID, nil
+}
+
+// parseRequiredNameField phân tích trường `name` của `POST /items` hoặc `PATCH /items/{id}`
+// khi trường này có mặt trong JSON:
+//   - `null` tường minh hoặc kiểu không phải string -> `400 invalid_request`.
+//   - Byte UTF-8 không hợp lệ trong chuỗi JSON thô (trước khi `encoding/json` thay bằng U+FFFD)
+//     hoặc vi phạm quy tắc `textnorm.NormalizeName` -> `400 name_invalid`.
+//   - Ký tự U+FFFD hợp lệ trong UTF-8 vẫn được chấp nhận.
+func parseRequiredNameField(raw json.RawMessage) (string, string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || trimmed[0] != '"' {
+		return "", "", item.ErrInvalidRequest
+	}
+	if !utf8.Valid(trimmed) {
+		return "", "", item.ErrNameInvalid
+	}
+	var rawName string
+	if err := decodeSingleJSONString(trimmed, &rawName); err != nil {
+		return "", "", item.ErrInvalidRequest
+	}
+	display, normalized, err := textnorm.NormalizeName(rawName)
+	if err != nil {
+		return "", "", item.ErrNameInvalid
+	}
+	return display, normalized, nil
+}
+
 // parseOptionalHintField phân tích giá trị `hint` từ `json.RawMessage`:
-//   - Rỗng hoặc `null` -> `nil` (xoá hoặc không đặt hint).
-//   - Chuỗi hợp lệ -> `textnorm.ValidateHint`, nếu sau trim rỗng (`""`) thì lưu `nil` hoặc `""`?
-//     Wait: kiểm tra OpenAPI `ItemHint`: `type: [string, 'null'], maxLength: 120, description: Gợi ý tuỳ chọn... 0–120 rune; null = không có hoặc xoá hint`.
+//   - Bỏ qua (`len == 0`) hoặc `null` -> `nil, nil` (không có hoặc xoá hint).
+//   - Kiểu không phải string/null -> `400 invalid_request`.
+//   - Byte UTF-8 không hợp lệ trong chuỗi JSON thô (trước khi `encoding/json` thay bằng U+FFFD)
+//     hoặc vi phạm `textnorm.ValidateHint` (0..120 rune, C0/C1, bidi) -> `400 hint_invalid`.
 func parseOptionalHintField(raw json.RawMessage) (*string, error) {
 	trimmedRaw := bytes.TrimSpace(raw)
 	if len(trimmedRaw) == 0 || bytes.Equal(trimmedRaw, []byte("null")) {
 		return nil, nil
 	}
-	var s string
-	dec := json.NewDecoder(bytes.NewReader(trimmedRaw))
-	if err := dec.Decode(&s); err != nil {
+	if trimmedRaw[0] != '"' {
 		return nil, item.ErrInvalidRequest
 	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+	if !utf8.Valid(trimmedRaw) {
+		return nil, item.ErrHintInvalid
+	}
+	var s string
+	if err := decodeSingleJSONString(trimmedRaw, &s); err != nil {
 		return nil, item.ErrInvalidRequest
 	}
 	validated, err := textnorm.ValidateHint(s)
