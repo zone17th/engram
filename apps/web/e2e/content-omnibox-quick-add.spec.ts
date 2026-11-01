@@ -63,19 +63,42 @@ async function collectOmniboxFailureDiagnostics(
       ].filter((id) => Boolean(document.querySelector(`[data-testid="${id}"]:not([hidden])`)));
       const actionErrorText =
         document.querySelector('[data-testid="omnibox-action-error"]')?.textContent?.trim() ?? null;
-      return { stepStatuses, errorTestIds, actionErrorText };
+      const unlockToSaveVisible = Boolean(
+        document.querySelector('[data-testid="omnibox-unlock-to-save-btn"]:not([hidden])'),
+      );
+      const vaultState =
+        document.querySelector('.vault-pill')?.getAttribute('data-vault-state') ?? null;
+      return { stepStatuses, errorTestIds, actionErrorText, unlockToSaveVisible, vaultState };
     })
-    .catch(() => ({ stepStatuses: [], errorTestIds: [], actionErrorText: null }));
+    .catch(() => ({
+      stepStatuses: [],
+      errorTestIds: [],
+      actionErrorText: null,
+      unlockToSaveVisible: false,
+      vaultState: null,
+    }));
 
   const recentResponses = apiResponses
     .slice(-15)
     .map((r) => `${r.method} ${r.pathname} -> ${r.status}`);
   return JSON.stringify({
+    vaultState: domState.vaultState,
+    unlockToSaveVisible: domState.unlockToSaveVisible,
     stepStatuses: domState.stepStatuses,
     errorTestIds: domState.errorTestIds,
     actionErrorText: domState.actionErrorText,
     recentResponses,
   });
+}
+
+async function expectOmniboxEmptyBool(omnibox: Locator): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        omnibox.evaluate((el) => (el as HTMLTextAreaElement | HTMLInputElement).value.length === 0),
+      { timeout: UI_WAIT_MS },
+    )
+    .toBe(true);
 }
 
 async function expectOmniboxClearedOrReport(
@@ -84,11 +107,14 @@ async function expectOmniboxClearedOrReport(
   apiResponses: readonly ApiResponseSummary[],
 ): Promise<void> {
   try {
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxEmptyBool(omnibox);
   } catch (err) {
+    const valueLength = await omnibox
+      .evaluate((el) => (el as HTMLTextAreaElement | HTMLInputElement).value.length)
+      .catch(() => -1);
     const diag = await collectOmniboxFailureDiagnostics(page, apiResponses);
     throw new Error(
-      `Quick-add did not clear omnibox textarea. Diagnostics: ${diag}\nOriginal error: ${err instanceof Error ? err.message : String(err)}`,
+      `Quick-add did not clear omnibox textarea (valueLength=${valueLength}). Diagnostics: ${diag}\nOriginal error: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
@@ -167,10 +193,10 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     const apiResponses = attachApiResponseRecorder(page);
     const email = uniqueEmail('content-omni-a3');
     await signupPasswordUser(page, email);
+    // Stay on `/app` after onboarding skip (no full-page reload) so the vault stays unlocked and G1 / A3
+    // exercise the advisor-dec-200 `reloadVaultMeta` bootstrap on the first save (HM18-CI-8).
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
     await expectUnlockedOnApp(page);
-
-    await page.goto('/app');
     const omnibox = page.locator('#omni textarea[data-vault-secret]');
     await expect(omnibox).toBeVisible({ timeout: UI_WAIT_MS });
     await expect(page.getByTestId('home-empty-state')).toBeVisible({ timeout: UI_WAIT_MS });
@@ -294,8 +320,9 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await signupPasswordUser(page, email);
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
     await expectUnlockedOnApp(page);
-
     await page.goto('/app');
+    await expectLockedListOnApp(page);
+    await unlockFromLockedList(page, VAULT_PASSPHRASE);
     const omnibox = page.locator('#omni textarea[data-vault-secret]');
     await expect(omnibox).toBeVisible({ timeout: UI_WAIT_MS });
 
@@ -324,14 +351,17 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await page.keyboard.press('Escape');
     await expect(pickerDialog).toBeHidden({ timeout: UI_WAIT_MS });
     await expect(omnibox).toBeFocused({ timeout: UI_WAIT_MS });
-    await expect(omnibox).toHaveValue('dup-target: append-to-second-item');
+    const preservedAfterEsc = await omnibox.evaluate(
+      (el) => (el as HTMLTextAreaElement).value === 'dup-target: append-to-second-item',
+    );
+    expect(preservedAfterEsc).toBe(true);
 
     // 2. Press Enter again -> choose the 2nd item -> entry lands on `secondItemId` and focus returns to omnibox (HM18B-R1-2)
     await omnibox.press('Enter');
     await expect(pickerDialog).toBeVisible({ timeout: UI_WAIT_MS });
     await page.locator(`#dup-opt-${secondItemId}`).click();
     await expect(pickerDialog).toBeHidden({ timeout: UI_WAIT_MS });
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxEmptyBool(omnibox);
     await expect(omnibox).toBeFocused({ timeout: UI_WAIT_MS });
 
     const lookupAfterPick2nd = await page.evaluate(async () => {
@@ -348,7 +378,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await expect(pickerDialog).toBeVisible({ timeout: UI_WAIT_MS });
     await page.getByTestId('dup-picker-create-same-name').click();
     await expect(pickerDialog).toBeHidden({ timeout: UI_WAIT_MS });
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxEmptyBool(omnibox);
     await expect(omnibox).toBeFocused({ timeout: UI_WAIT_MS });
 
     const lookupThree = await page.evaluate(async () => {
@@ -375,8 +405,6 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await signupPasswordUser(page, email);
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
     await expectUnlockedOnApp(page);
-
-    await page.goto('/app');
     const omnibox = page.locator('#omni textarea[data-vault-secret]');
     await expect(omnibox).toBeVisible({ timeout: UI_WAIT_MS });
 
@@ -423,18 +451,21 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     deleteRequestUrls.length = 0;
     await setSecretTextareaValue(omnibox, 'undo-target: keep-this-entry');
     await omnibox.press('Enter');
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxEmptyBool(omnibox);
     await expect(
       page.getByTestId('undo-toast-item').filter({ hasText: 'undo-target' }).first(),
     ).toBeVisible({ timeout: UI_WAIT_MS });
 
     await omnibox.focus();
     await omnibox.pressSequentially('x');
-    await expect(omnibox).toHaveValue('x');
+    const typedCharMatch = await omnibox.evaluate(
+      (el) => (el as HTMLTextAreaElement).value === 'x',
+    );
+    expect(typedCharMatch).toBe(true);
     await page.keyboard.press('Control+z');
 
     // Native undo reverts 'x' to '' while the toast remains visible and no DELETE request is sent
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxEmptyBool(omnibox);
     await expect(
       page.getByTestId('undo-toast-item').filter({ hasText: 'undo-target' }).first(),
     ).toBeVisible({ timeout: UI_WAIT_MS });
@@ -472,7 +503,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await page.unroute('**/api/v1/items/*/entries');
 
     await expectLockedListOnApp(page);
-    await expect(omnibox).toHaveValue('');
+    await expectOmniboxEmptyBool(omnibox);
 
     // Unlock through the real `/app/unlock` route (Omnibox unmounts on `/app/unlock` and remounts on `/app`)
     await unlockFromLockedList(page, VAULT_PASSPHRASE);

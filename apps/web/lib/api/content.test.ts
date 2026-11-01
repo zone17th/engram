@@ -564,6 +564,110 @@ describe('lib/api/content', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
       }
     });
+
+    it('advisor-dec-203 (HM18-R3-3): invokes onAttempt in order with { attempt, uncertainOutcome } for clean send, retry after uncertain send, hard failure, and preserves identical behavior without onAttempt', async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+
+      // 1. Clean send (single attempt, uncertainOutcome: false)
+      const cleanAttempts: Array<{ readonly attempt: number; readonly uncertainOutcome: boolean }> = [];
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: SAMPLE_ENTRY_ID,
+            item_id: SAMPLE_ITEM_ID,
+            type: 'text',
+            position: 0,
+            version: 1,
+            plaintext_len_bucket: 256,
+            created_at: '2026-11-01T00:00:00Z',
+            updated_at: '2026-11-01T00:00:00Z',
+          },
+          201,
+        ),
+      );
+      const created = await entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+        idempotencyKey: createIdempotencyKey(),
+        onAttempt: (outcome) => {
+          expect(Object.keys(outcome).sort()).toEqual(['attempt', 'uncertainOutcome']);
+          cleanAttempts.push(outcome);
+        },
+      });
+      expect(created.id).toBe(SAMPLE_ENTRY_ID);
+      expect(cleanAttempts).toEqual([{ attempt: 1, uncertainOutcome: false }]);
+
+      // 2. Retry after an uncertain send (attempt 1: TypeError -> uncertainOutcome: true; attempt 2: 503 -> uncertainOutcome: true; attempt 3: 201 -> uncertainOutcome: false)
+      fetchMock.mockReset();
+      const retryAttempts: Array<{ readonly attempt: number; readonly uncertainOutcome: boolean }> = [];
+      fetchMock
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce(problemResponse('dependency_unavailable', 503, { retry_after: 1 }))
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              id: SAMPLE_ENTRY_ID,
+              item_id: SAMPLE_ITEM_ID,
+              type: 'text',
+              position: 0,
+              version: 1,
+              plaintext_len_bucket: 256,
+              created_at: '2026-11-01T00:00:00Z',
+              updated_at: '2026-11-01T00:00:00Z',
+            },
+            201,
+          ),
+        );
+      const retryPromise = entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+        idempotencyKey: createIdempotencyKey(),
+        onAttempt: (outcome) => {
+          retryAttempts.push(outcome);
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const retriedCreated = await retryPromise;
+      expect(retriedCreated.id).toBe(SAMPLE_ENTRY_ID);
+      expect(retryAttempts).toEqual([
+        { attempt: 1, uncertainOutcome: true },
+        { attempt: 2, uncertainOutcome: true },
+        { attempt: 3, uncertainOutcome: false },
+      ]);
+
+      // 3. Hard failure (e.g. 401 session_invalid after uncertain send, or direct 409 item_tag_limit)
+      fetchMock.mockReset();
+      const hardFailAttempts: Array<{ readonly attempt: number; readonly uncertainOutcome: boolean }> = [];
+      fetchMock
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce(problemResponse('session_invalid', 401));
+      await expect(
+        entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+          idempotencyKey: createIdempotencyKey(),
+          onAttempt: (outcome) => {
+            hardFailAttempts.push(outcome);
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: 'ProblemError',
+        problem: { code: 'session_invalid', status: 401 },
+      });
+      expect(hardFailAttempts).toEqual([
+        { attempt: 1, uncertainOutcome: true },
+        { attempt: 2, uncertainOutcome: false },
+      ]);
+
+      // 4. Identical behavior when onAttempt is omitted
+      fetchMock.mockReset();
+      fetchMock
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce(problemResponse('session_invalid', 401));
+      await expect(
+        entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+          idempotencyKey: createIdempotencyKey(),
+        }),
+      ).rejects.toMatchObject({
+        name: 'ProblemError',
+        problem: { code: 'session_invalid', status: 401 },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('pre-lookup 401/403 split (SPEC §3.4, advisor-dec-098/119/121, CFE5-3, CBE4-1)', () => {

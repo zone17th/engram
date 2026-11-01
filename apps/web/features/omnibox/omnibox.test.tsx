@@ -42,7 +42,9 @@ const registeredResetFns = new Set<() => void>();
 let mockVaultState: 'locked' | 'unlocked' = 'unlocked';
 let mockVaultGeneration = 1;
 let mockVaultMetaOverride: { vault_key_id: string; version: number } | null | undefined = undefined;
-const mockReloadVaultMeta = vi.fn(async () => ({ vault_key_id: TEST_KEY_ID, version: 1 }));
+const mockReloadVaultMeta = vi.fn<() => Promise<{ vault_key_id: string; version: number } | null>>(
+  async () => ({ vault_key_id: TEST_KEY_ID, version: 1 }),
+);
 const mockSealEntryCalls: Array<{
   readonly entryId: string;
   readonly keyId: string;
@@ -908,6 +910,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const unlockBtn = screen.getByTestId('omnibox-unlock-to-save-btn');
     expect(unlockBtn).toHaveTextContent('Mở khoá để lưu');
     fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(unlockBtn).toHaveFocus();
     expect(lookupSpy).not.toHaveBeenCalled();
     expect(itemCreateSpy).not.toHaveBeenCalled();
   });
@@ -1846,8 +1849,9 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
     });
 
-    // HM18B-R2-6: When user ID is unknown at lock time, lock notice is still recorded as pending,
-    // adopted when User A is reconciled, never shown to User B, and cleared on any `signed_out` reason (incl. `expired`/`revoked`).
+    // HM18B-R2-6 & HM18-R3-4: When user ID is unknown at lock time, lock notice is recorded with `userId: null`
+    // while `activeUserId === null`, cleared on any `signed_out` reason (incl. `expired`/`revoked`), and dropped
+    // (never adopted) when a user ID subsequently appears so User B can never see a notice recorded before User B signed in.
     remounted.unmount();
     clearLockClearedNotice();
     queryClient.removeQueries({ queryKey: ['auth', 'me'] });
@@ -1868,7 +1872,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       'Bản nháp chưa lưu đã bị xoá khi khoá vault',
     );
 
-    // Once User A's ID becomes known, notice is adopted by User A; switching to User B clears it
+    // HM18-R3-4 (dec-120): When a known user ID appears, a `userId: null` notice is dropped rather than adopted
     queryClient.setQueryData(['auth', 'me'], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     unlockedUnknownView.rerender(
@@ -1880,9 +1884,29 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
         </QueryClientProvider>
       </NextIntlClientProvider>,
     );
-    expect(screen.getByTestId('omnibox-lock-cleared-notice')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+    });
 
-    // Involuntary `signed_out` broadcast (`reason: 'expired'`) immediately clears the lock notice
+    // Record a known-user notice for User A and verify involuntary `signed_out` (`reason: 'expired'`) immediately clears it
+    unlockedUnknownView.unmount();
+    const knownUserView = renderOmnibox(<Omnibox />, { queryClient });
+    const knownTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(knownTextarea, { target: { value: 'nháp của User A: bí mật' } });
+    act(() => {
+      triggerVaultLockReset();
+    });
+    triggerVaultUnlock();
+    knownUserView.rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('omnibox-lock-cleared-notice')).toBeInTheDocument();
     act(() => {
       postSessionBroadcast({ type: 'signed_out', reason: 'expired' });
     });
@@ -2159,5 +2183,85 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     }
 
     fetchSpy.mockRestore();
+  });
+
+  it('fences reloadVaultMeta() against lock/unlock during the await, double Ctrl+Enter submit, null return, and rejected error (HM18-R3-2)', async () => {
+    const itemCreateSpy = vi.spyOn(contentApi, 'itemCreate');
+    const entryCreateSpy = vi.spyOn(contentApi, 'entryCreate');
+
+    // 1. Held-promise lock (and re-unlock) while reloadVaultMeta() is in flight + double Ctrl+Enter during the await ->
+    //    only 1 reloadVaultMeta call, and when the held promise resolves after lock + unlock, nothing is sealed or sent.
+    mockVaultMetaOverride = null;
+    const { promise: heldReloadPromise, resolve: resolveHeldReload } =
+      Promise.withResolvers<{ vault_key_id: string; version: number } | null>();
+    mockReloadVaultMeta.mockImplementation(() => heldReloadPromise);
+
+    const { rerender, queryClient, unmount } = renderOmnibox();
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(textarea, { target: { value: 'fenced-item #nhà: secret-dropped-during-reload' } });
+
+    // First Ctrl+Enter starts reloadVaultMeta(); second Ctrl+Enter while pending is ignored by savePlanStartingRef
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(mockReloadVaultMeta).toHaveBeenCalledTimes(1);
+
+    // Vault locks (and then unlocks again) before reloadVaultMeta resolves
+    act(() => {
+      triggerVaultLockReset();
+    });
+    triggerVaultUnlock();
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+
+    await act(async () => {
+      resolveHeldReload({ vault_key_id: TEST_KEY_ID, version: 1 });
+    });
+
+    expect(mockSealEntryCalls).toHaveLength(0);
+    expect(itemCreateSpy).not.toHaveBeenCalled();
+    expect(entryCreateSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('omnibox-action-error')).not.toBeInTheDocument();
+    unmount();
+
+    // 2. reloadVaultMeta() resolves to `null` (e.g. foreign/signed-out session or handled 404) -> silent return, no `vault_absent` banner, no seal/write
+    clearLockClearedNotice();
+    mockVaultMetaOverride = null;
+    mockReloadVaultMeta.mockReset();
+    mockReloadVaultMeta.mockResolvedValueOnce(null);
+
+    const nullView = renderOmnibox();
+    const nullTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(nullTextarea, { target: { value: 'null-meta-item: secret-body' } });
+    fireEvent.keyDown(nullTextarea, { key: 'Enter', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(mockReloadVaultMeta).toHaveBeenCalledTimes(1);
+    });
+    expect(mockSealEntryCalls).toHaveLength(0);
+    expect(itemCreateSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('omnibox-action-error')).not.toBeInTheDocument();
+    nullView.unmount();
+
+    // 3. reloadVaultMeta() rejects with a network/server error -> surfaces `omnibox-action-error` and does not seal or send writes
+    mockVaultMetaOverride = null;
+    mockReloadVaultMeta.mockReset();
+    mockReloadVaultMeta.mockRejectedValueOnce(new TypeError('Failed to fetch /api/v1/vault'));
+
+    renderOmnibox();
+    const rejectTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(rejectTextarea, { target: { value: 'reject-meta-item: secret-body' } });
+    fireEvent.keyDown(rejectTextarea, { key: 'Enter', ctrlKey: true });
+
+    const actionErr = await screen.findByTestId('omnibox-action-error');
+    expect(actionErr).toHaveTextContent(viMessages.content.errors.network);
+    expect(mockSealEntryCalls).toHaveLength(0);
+    expect(itemCreateSpy).not.toHaveBeenCalled();
   });
 });

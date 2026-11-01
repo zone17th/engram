@@ -64,14 +64,27 @@ async function collectOmniboxFailureDiagnostics(
       ].filter((id) => Boolean(document.querySelector(`[data-testid="${id}"]:not([hidden])`)));
       const actionErrorText =
         document.querySelector('[data-testid="omnibox-action-error"]')?.textContent?.trim() ?? null;
-      return { stepStatuses, errorTestIds, actionErrorText };
+      const unlockToSaveVisible = Boolean(
+        document.querySelector('[data-testid="omnibox-unlock-to-save-btn"]:not([hidden])'),
+      );
+      const vaultState =
+        document.querySelector('.vault-pill')?.getAttribute('data-vault-state') ?? null;
+      return { stepStatuses, errorTestIds, actionErrorText, unlockToSaveVisible, vaultState };
     })
-    .catch(() => ({ stepStatuses: [], errorTestIds: [], actionErrorText: null }));
+    .catch(() => ({
+      stepStatuses: [],
+      errorTestIds: [],
+      actionErrorText: null,
+      unlockToSaveVisible: false,
+      vaultState: null,
+    }));
 
   const recentResponses = apiResponses
     .slice(-15)
     .map((r) => `${r.method} ${r.pathname} -> ${r.status}`);
   return JSON.stringify({
+    vaultState: domState.vaultState,
+    unlockToSaveVisible: domState.unlockToSaveVisible,
     stepStatuses: domState.stepStatuses,
     errorTestIds: domState.errorTestIds,
     actionErrorText: domState.actionErrorText,
@@ -180,10 +193,11 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
 
     const email = uniqueEmail('content-omni-cap');
     await signupPasswordUser(page, email);
+    // Stay on `/app` directly after onboarding skip (NO `page.goto('/app')` reload) so the vault remains unlocked
+    // while `vault.vaultMeta` starts as `null` — exercising the advisor-dec-200 `reloadVaultMeta` bootstrap guard
+    // when step 5b saves the first quick-add entry (HM18-CI-8).
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
     await expectUnlockedOnApp(page);
-
-    await page.goto('/app');
     const omnibox = page.locator('#omni textarea[data-vault-secret]');
     await expect(omnibox).toBeVisible({ timeout: UI_WAIT_MS });
 
@@ -366,7 +380,15 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     const markPosCreate = recorder.records.length;
     await setSecretTextareaValue(omnibox, 'positive-created-item');
     await omnibox.press('Control+Enter');
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expect
+      .poll(
+        async () =>
+          omnibox.evaluate(
+            (el) => (el as HTMLTextAreaElement | HTMLInputElement).value.length === 0,
+          ),
+        { timeout: UI_WAIT_MS },
+      )
+      .toBe(true);
     await recorder.flushPending();
     const positiveCreateRecords = recorder.records
       .slice(markPosCreate)
