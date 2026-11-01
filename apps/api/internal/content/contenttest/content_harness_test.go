@@ -329,6 +329,7 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	jarA, meA, jarB, meB := h.SignupTwoUsers()
 
 	// 1. Send 10 distinct writes within 1 second -> all 10 succeed (201).
+	var rawWrite1 string
 	for i := 1; i <= 10; i++ {
 		key := "idem_rate_write_00" + strconv.Itoa(10+i)
 		body := `{"name":"Item ` + strconv.Itoa(i) + `"}`
@@ -337,6 +338,9 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 		})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("write %d: status=%d body=%s", i, resp.StatusCode, raw)
+		}
+		if i == 1 {
+			rawWrite1 = raw
 		}
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
@@ -353,6 +357,7 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	if respReplay.StatusCode != http.StatusCreated {
 		t.Fatalf("replay at exhausted quota: status=%d body=%s, want 201", respReplay.StatusCode, rawReplay)
 	}
+	contenttest.AssertJSONEqual(t, rawWrite1, rawReplay)
 	var rateEventsAfterReplay int
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE user_id = $1 AND scope = $2`, meA.User.ID, httpx.ScopeContentWrite).Scan(&rateEventsAfterReplay); err != nil {
 		t.Fatal(err)
@@ -400,9 +405,10 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	resp11Replay, raw11Replay := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", body11, contenttest.ReqOptions{
 		IdemKey: key11,
 	})
-	if resp11Replay.StatusCode != http.StatusCreated || raw11Replay != raw11Retry {
-		t.Fatalf("replay of 11th write: status=%d body=%s, want %s", resp11Replay.StatusCode, raw11Replay, raw11Retry)
+	if resp11Replay.StatusCode != http.StatusCreated {
+		t.Fatalf("replay of 11th write: status=%d body=%s, want 201", resp11Replay.StatusCode, raw11Replay)
 	}
+	contenttest.AssertJSONEqual(t, raw11Retry, raw11Replay)
 	var itemElevenCount int
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = 'Item Eleven'`, meA.User.ID).Scan(&itemElevenCount); err != nil {
 		t.Fatal(err)
@@ -647,9 +653,10 @@ func TestContentBodyLimitsEntryItemAndP03VaultThroughRealChain(t *testing.T) {
 	respReplay, rawReplay := h.DoReq(jarA, http.MethodPost, entryPath, exactBody, contenttest.ReqOptions{
 		IdemKey: keyExact,
 	})
-	if respReplay.StatusCode != http.StatusCreated || rawReplay != rawExact || entryCalls.Load() != callsBeforeReplay {
+	if respReplay.StatusCode != http.StatusCreated || entryCalls.Load() != callsBeforeReplay {
 		t.Fatalf("replay exact 400 KiB: status=%d calls=%d (before=%d)", respReplay.StatusCode, entryCalls.Load(), callsBeforeReplay)
 	}
+	contenttest.AssertJSONEqual(t, rawExact, rawReplay)
 
 	// 3. Read error midway -> 400 invalid_request (tested directly on the router handler so mid-stream error is delivered to middleware).
 	keyMidway := "idem_entry_midway_err_1"
@@ -1111,9 +1118,10 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	respDLReplay, rawDLReplay := h.DoReq(victimJar, http.MethodPost, "/api/v1/__test/items", victimBody, contenttest.ReqOptions{
 		IdemKey: victimKey,
 	})
-	if respDLReplay.StatusCode != http.StatusCreated || rawDLReplay != rawDLRetry {
-		t.Fatalf("replay after real 40P01 recovery: status=%d body=%s, want %s", respDLReplay.StatusCode, rawDLReplay, rawDLRetry)
+	if respDLReplay.StatusCode != http.StatusCreated {
+		t.Fatalf("replay after real 40P01 recovery: status=%d body=%s, want 201", respDLReplay.StatusCode, rawDLReplay)
 	}
+	contenttest.AssertJSONEqual(t, rawDLRetry, rawDLReplay)
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = $2`, victimUserID, victimItemName).Scan(&victimItemRows); err != nil {
 		t.Fatal(err)
 	}
