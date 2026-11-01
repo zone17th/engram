@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,6 +11,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/notification"
+	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
 type SecurityNoticeWorker struct {
@@ -24,15 +26,28 @@ func NewSecurityNoticeWorker(pool *pgxpool.Pool, mail auth.Mailer, logger *slog.
 }
 
 func (w *SecurityNoticeWorker) Work(ctx context.Context, job *river.Job[notification.SecurityNoticeArgs]) error {
-	row, err := gen.New(w.pool).GetNotificationForMail(ctx, job.Args.NotificationID)
+	q := gen.New(w.pool)
+	row, err := q.GetNotificationForMail(ctx, job.Args.NotificationID)
 	if err != nil {
 		return err
 	}
 	if w.mail == nil {
 		return nil
 	}
+	purpose := "security"
+	detail := ""
+	if ctxRow, err := q.GetNotificationMailContext(ctx, job.Args.NotificationID); err == nil && len(ctxRow.Meta) > 0 {
+		var meta secevent.Meta
+		if json.Unmarshal(ctxRow.Meta, &meta) == nil {
+			meta = meta.Sanitize()
+			if meta.Event == secevent.EventPasswordReset {
+				purpose = auth.PurposePasswordResetNotice
+				detail = auth.FormatPasswordResetNoticeDetail(ctxRow.Locale, meta.UnlinkedProviders)
+			}
+		}
+	}
 	for _, to := range row.EmailTargets {
-		if err := w.mail.Send(ctx, to, "security", ""); err != nil {
+		if err := w.mail.Send(ctx, to, purpose, detail); err != nil {
 			if w.logger != nil {
 				w.logger.ErrorContext(ctx, "gửi security notice thất bại", slog.Int64("notification_id", row.ID))
 			}

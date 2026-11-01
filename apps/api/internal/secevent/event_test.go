@@ -28,3 +28,24 @@ func TestMetaSanitizeDropsSecrets(t *testing.T) {
 		t.Fatalf("phải bỏ enum lạ: %+v", got)
 	}
 }
+
+func TestMetaSanitizePasswordResetAndUnlinkedProviders(t *testing.T) {
+	m := secevent.Meta{
+		Event:             secevent.EventPasswordReset,
+		UnlinkedProviders: []string{secevent.ProviderGoogle, "google", secevent.ProviderGitHub, "password", "evil-token"},
+	}
+	out := m.Sanitize()
+	if out.Event != secevent.EventPasswordReset {
+		t.Fatalf("Event = %q, want %q", out.Event, secevent.EventPasswordReset)
+	}
+	if len(out.UnlinkedProviders) != 2 || out.UnlinkedProviders[0] != "google" || out.UnlinkedProviders[1] != "github" {
+		t.Fatalf("UnlinkedProviders = %v, want [google github]", out.UnlinkedProviders)
+	}
+	bad := secevent.Meta{
+		Event:             "auth.login.success",
+		UnlinkedProviders: []string{"password", "secret"},
+	}.Sanitize()
+	if bad.Event != "" || len(bad.UnlinkedProviders) != 0 {
+		t.Fatalf("unexpected sanitized meta: %+v", bad)
+	}
+}

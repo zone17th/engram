@@ -33,6 +33,8 @@ func Mount(api *API) func(v1 chi.Router, d httpx.Deps) {
 			g.Post("/auth/refresh", api.Refresh)
 			g.Post("/auth/logout", api.Logout)
 			g.With(httpx.RequireCSRF(d.CSRF)).Post("/auth/oauth/complete", api.OauthComplete)
+			g.With(httpx.RequireCSRF(d.CSRF)).Post("/auth/password/forgot", api.PasswordForgot)
+			g.With(httpx.RequireCSRF(d.CSRF)).Post("/auth/password/reset", api.PasswordReset)
 		})
 
 		v1.Get("/auth/oauth/{provider}/start", api.OauthStart)

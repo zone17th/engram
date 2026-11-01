@@ -274,6 +274,7 @@ jobs:
       APP_ORIGIN: http://127.0.0.1:3000
       AUTH_FAKE_OAUTH: 'true'
       AUTH_REQUIRE_EMAIL_VERIFICATION: 'true'
+      AUTH_MAIL_CAPTURE_AS_DELIVERY: 'true'
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

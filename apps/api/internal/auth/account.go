@@ -64,6 +64,8 @@ func (s *Service) ChangePassword(ctx context.Context, p authctx.Principal, newPa
 		}
 	}
 	now := s.clk.Now()
+	_, _ = q.CancelPendingEmailProofs(ctx, gen.CancelPendingEmailProofsParams{UserID: p.UserID, ConsumedAt: pgts(now)})
+	_, _ = q.ExpirePendingPasswordResetTokensByUser(ctx, gen.ExpirePendingPasswordResetTokensByUserParams{UserID: p.UserID, ConsumedAt: pgts(now)})
 	_, _ = q.RevokeOtherSessions(ctx, gen.RevokeOtherSessionsParams{UserID: p.UserID, ID: p.SessionID, RevokedAt: pgts(now)})
 	_, _ = q.RevokeSession(ctx, gen.RevokeSessionParams{ID: p.SessionID, RevokedAt: pgts(now)})
 	issued, err := s.sessions.Issue(ctx, tx, IssueParams{UserID: p.UserID, IPHash: HashIP(s.ipPepper, ip), UserAgent: ua})
@@ -274,6 +276,7 @@ func (s *Service) ConfirmEmailToken(ctx context.Context, p authctx.Principal, to
 			return Me{}, err
 		}
 		_, _ = q.CancelPendingEmailProofs(ctx, gen.CancelPendingEmailProofsParams{UserID: p.UserID, ConsumedAt: pgts(now)})
+		_, _ = q.ExpirePendingPasswordResetTokensByUser(ctx, gen.ExpirePendingPasswordResetTokensByUserParams{UserID: p.UserID, ConsumedAt: pgts(now)})
 		_, _ = q.RevokeOtherSessions(ctx, gen.RevokeOtherSessionsParams{UserID: p.UserID, ID: p.SessionID, RevokedAt: pgts(now)})
 	} else {
 		if _, err := q.UpdateUserEmailVerified(ctx, gen.UpdateUserEmailVerifiedParams{ID: p.UserID, EmailVerifiedAt: pgts(now)}); err != nil {
@@ -335,6 +338,9 @@ func (s *Service) UnlinkIdentity(ctx context.Context, p authctx.Principal, provi
 		return ErrNotFound
 	}
 	now := s.clk.Now()
+	if provider == "password" {
+		_, _ = q.ExpirePendingPasswordResetTokensByUser(ctx, gen.ExpirePendingPasswordResetTokensByUserParams{UserID: p.UserID, ConsumedAt: pgts(now)})
+	}
 	_, _ = q.RevokeOtherSessions(ctx, gen.RevokeOtherSessionsParams{UserID: p.UserID, ID: p.SessionID, RevokedAt: pgts(now)})
 	uid, sid := p.UserID, p.SessionID
 	if err := s.audit.Record(ctx, tx, secevent.Record{
