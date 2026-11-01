@@ -636,9 +636,14 @@
       toastMoreBtnEl.addEventListener('click', () => {
         toastExpanded = true;
         pauseAllToasts(true);
-        syncToastDom();
+        if (toastItems.length) {
+          toastItems.forEach((item) => {
+            if (item.el) item.el.hidden = false;
+          });
+        }
         const firstBtn = toastLiveEl && toastLiveEl.querySelector('.toast:not([hidden]) [data-toast-action]');
         if (firstBtn) firstBtn.focus();
+        syncToastDom();
       });
       toastStackEl.appendChild(toastMoreBtnEl);
     }
@@ -817,7 +822,7 @@
     if (toastFocused && item.remainingMs < 10000) item.remainingMs = 10000;
     item.el = createToastNode(item);
     toastItems.push(item);
-    toastLiveEl.appendChild(item.el);
+    toastLiveEl.insertBefore(item.el, toastLiveEl.firstChild);
     syncToastDom();
     return item.id;
   }
@@ -1008,7 +1013,8 @@
         if (!b.dataset.target) return;
         const scope = b.closest('[data-seg-scope]') || document;
         scope.querySelectorAll('[data-view]').forEach((v) => {
-          if ((v.closest('[data-seg-scope]') || document) !== scope) return;
+          const own = v.parentElement && v.parentElement.closest('[data-seg-scope]');
+          if ((own || document) !== scope) return;
           v.hidden = v.dataset.view !== b.dataset.target;
         });
       });

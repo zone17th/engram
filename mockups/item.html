@@ -40,10 +40,12 @@
   .card-head {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
+    border-radius: calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px) 0 0;
   }
   .card-foot {
     border-top: 1px solid var(--border);
     background: var(--surface);
+    border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
   }
   .import-panel {
     width: min(720px, 94vw);
@@ -315,7 +317,7 @@
         </article>
 
         <!-- entry 2: json có nested + số lớn (tab Bảng / JSON gốc) -->
-        <article class="card overflow-hidden min-w-0" data-seg-scope id="card-json-1" data-entry-card="2">
+        <article class="card min-w-0" data-seg-scope id="card-json-1" data-entry-card="2">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-json">json</span>
@@ -334,13 +336,13 @@
             </div>
           </div>
           <div data-secret>
-            <div data-view="tbl" id="cfgTable" class="overflow-x-auto"></div>
+            <div data-view="tbl" id="cfgTable" class="overflow-x-auto overflow-hidden rounded-b-[15px]"></div>
             <pre data-view="raw" hidden class="json-raw" id="cfgRaw"></pre>
           </div>
         </article>
 
         <!-- entry 3: json mảng, có khoá trùng (tab Bảng / JSON gốc) -->
-        <article class="card overflow-hidden min-w-0" data-seg-scope id="card-json-2" data-entry-card="3">
+        <article class="card min-w-0" data-seg-scope id="card-json-2" data-entry-card="3">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-json">json</span>
@@ -359,13 +361,13 @@
             </div>
           </div>
           <div data-secret>
-            <div data-view="gtbl" id="guestTable" class="overflow-x-auto"></div>
+            <div data-view="gtbl" id="guestTable" class="overflow-x-auto overflow-hidden rounded-b-[15px]"></div>
             <pre data-view="graw" hidden class="json-raw" id="guestRaw"></pre>
           </div>
         </article>
 
         <!-- entry 4: text ghi chú thuần -->
-        <article class="card overflow-hidden min-w-0" id="card-text-2" data-entry-card="4">
+        <article class="card min-w-0" id="card-text-2" data-entry-card="4">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
             <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
             <span class="badge-type badge-text">text</span>

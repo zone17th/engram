@@ -352,6 +352,7 @@ body {
   font-family: 'Sometype Mono', monospace; font-size: 13px; line-height: 1.6;
   white-space: pre; overflow-x: auto; padding: 16px;
   background: var(--surface); color: var(--body); margin: 0;
+  border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
 }
 
 /* ---------- misc ---------- */
@@ -421,7 +422,6 @@ body {
   display: flex; flex-direction: column-reverse; align-items: center; gap: 8px;
   width: 100%;
 }
-.toast-live:empty { display: none; }
 .toast-stack .toast {
   position: static; transform: none; width: 100%; pointer-events: auto;
   flex-wrap: wrap; justify-content: space-between;
@@ -614,7 +614,7 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
 .dup-row-new { border-style: dashed; align-items: center; justify-content: flex-start; }
 .dup-row-main { min-width: 0; flex: 1 1 180px; display: flex; flex-direction: column; gap: 4px; }
 .dup-row-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.dup-chip { padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+.dup-chip { padding: 2px 8px; font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
 .dup-row .sugg-meta { margin-left: 0; flex-wrap: wrap; white-space: normal; }
 .tag-pill-group {
   position: relative;
