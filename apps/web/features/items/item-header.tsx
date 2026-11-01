@@ -124,10 +124,17 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   }, [item.id, item.name, item.hint, item.version, nameDirty, hintDirty]);
 
   const applyItemSummaryToCache = useCallback(
-    (updated: ItemSummary, source: 'patch' | 'tag' | 'fetch' = 'patch') => {
+    (updated: ItemSummary, source: 'patch' | 'tag' | 'fetch' = 'patch'): ItemSummary => {
       if (source === 'tag' && updated.version < latestVersionRef.current) {
         // Tag assignment/removal does not bump item version (openapi.yaml:1684).
         // Never lower latestVersionRef or overwrite newer committed name/hint with an older tag summary (IP15-BE1-5).
+        const mergedTagSummary: ItemSummary = {
+          ...updated,
+          version: latestVersionRef.current,
+          name: latestCommittedNameRef.current,
+          hint: latestCommittedHintRef.current,
+          tags: updated.tags,
+        };
         queryClient.setQueryData<ItemSummary | undefined>(
           contentQueryKeys.item(updated.id),
           (prev) =>
@@ -139,27 +146,35 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
                   hint: latestCommittedHintRef.current,
                   tags: updated.tags,
                 }
-              : {
-                  ...updated,
-                  version: latestVersionRef.current,
-                  name: latestCommittedNameRef.current,
-                  hint: latestCommittedHintRef.current,
-                },
+              : mergedTagSummary,
         );
-        return;
+        return mergedTagSummary;
       }
 
-      if (updated.version < latestVersionRef.current && source !== 'fetch') {
-        return;
+      if (updated.version < latestVersionRef.current) {
+        // IP15-BE2-6: Reject stale full summaries regardless of source ('patch' or 'fetch') so an older
+        // Load latest GET is never relabelled with a newer item version or allowed to overwrite newer name/hint.
+        const existing = queryClient.getQueryData<ItemSummary>(contentQueryKeys.item(updated.id));
+        if (existing && existing.version >= latestVersionRef.current) {
+          return existing;
+        }
+        return {
+          ...updated,
+          version: latestVersionRef.current,
+          name: latestCommittedNameRef.current,
+          hint: latestCommittedHintRef.current,
+        };
       }
 
-      latestVersionRef.current = Math.max(latestVersionRef.current, updated.version);
+      latestVersionRef.current = updated.version;
       latestCommittedNameRef.current = updated.name;
       latestCommittedHintRef.current = updated.hint ?? null;
-      queryClient.setQueryData<ItemSummary>(contentQueryKeys.item(updated.id), {
+      const accepted: ItemSummary = {
         ...updated,
         version: latestVersionRef.current,
-      });
+      };
+      queryClient.setQueryData<ItemSummary>(contentQueryKeys.item(updated.id), accepted);
+      return accepted;
     },
     [queryClient],
   );
@@ -345,7 +360,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       conflictRef.current = false;
       patchQueueRef.current = [];
       uncertainStepPausedRef.current = false;
-      applyItemSummaryToCache(latest, 'fetch');
+      const accepted = applyItemSummaryToCache(latest, 'fetch');
       if (mountedRef.current) {
         setConflict412(null);
         setUncertainPatchError(null);
@@ -353,8 +368,8 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
         setHintError(null);
         setNameDirty(false);
         setHintDirty(false);
-        setNameInput(latest.name);
-        setHintInput(latest.hint ?? '');
+        setNameInput(accepted.name);
+        setHintInput(accepted.hint ?? '');
       }
     } catch (err) {
       const classified = classifyContentMutationError(err);
@@ -384,10 +399,10 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       let baseVersion = conflict412?.currentVersion;
       if (baseVersion === undefined) {
         const latest = await itemGet(item.id);
-        baseVersion = latest.version;
-        latestVersionRef.current = latest.version;
+        const accepted = applyItemSummaryToCache(latest, 'fetch');
+        baseVersion = accepted.version;
       } else {
-        latestVersionRef.current = baseVersion;
+        latestVersionRef.current = Math.max(latestVersionRef.current, baseVersion);
       }
 
       conflictRef.current = false;
@@ -412,7 +427,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
         setNameError(translateContentError(classified.i18nKey));
       }
     }
-  }, [conflict412, enqueuePatch, hintInput, item.id, nameInput, translateContentError]);
+  }, [applyItemSummaryToCache, conflict412, enqueuePatch, hintInput, item.id, nameInput, translateContentError]);
 
   // Tag popover and suggestions
   const [tagPopoverOpen, setTagPopoverOpen] = useState(false);

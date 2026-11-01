@@ -67,8 +67,8 @@ async function copyPlaintextToClipboard(text: string): Promise<boolean> {
 export interface EditorPlaintextHolder {
   originalSource: string;
   draftValue: string;
+  submittedCandidateSource?: string;
 }
-
 export interface TextEntryCardProps {
   readonly entry: EntryMeta;
   readonly itemId: string;
@@ -169,6 +169,7 @@ export function TextEntryCard({
   const internalPlaintextHolderRef = useRef<EditorPlaintextHolder>({
     originalSource: '',
     draftValue: '',
+    submittedCandidateSource: '',
   });
   const plaintextHolderRef = editorPlaintextHolderRef ?? internalPlaintextHolderRef;
   plaintextHolderRef.current.originalSource = originalSource;
@@ -177,6 +178,7 @@ export function TextEntryCard({
   const clearEditorPlaintextHolderSync = useCallback(() => {
     plaintextHolderRef.current.originalSource = '';
     plaintextHolderRef.current.draftValue = '';
+    plaintextHolderRef.current.submittedCandidateSource = '';
     if (textareaRef.current) {
       textareaRef.current.value = '';
     }
@@ -209,6 +211,15 @@ export function TextEntryCard({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const editBtnRef = useRef<HTMLButtonElement | null>(null);
   const saveLockRef = useRef<boolean>(false);
+  const saveOwnerIdRef = useRef<number>(0);
+  const nextSaveOwnerIdRef = useRef<number>(0);
+  const releaseSaveGuardIfOwner = useCallback((ownerId: number) => {
+    if (saveOwnerIdRef.current === ownerId) {
+      saveOwnerIdRef.current = 0;
+      saveLockRef.current = false;
+      setSavingInFlight(false);
+    }
+  }, []);
   const pendingFocusEditBtnRef = useRef<boolean>(false);
 
   const lockEpochRef = useRef<number>(0);
@@ -230,6 +241,7 @@ export function TextEntryCard({
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
       clearEditorPlaintextHolderSync();
+      saveOwnerIdRef.current = 0;
       saveLockRef.current = false;
       pendingFocusEditBtnRef.current = false;
       setEditing(false);
@@ -254,6 +266,7 @@ export function TextEntryCard({
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
       clearEditorPlaintextHolderSync();
+      saveOwnerIdRef.current = 0;
       saveLockRef.current = false;
       pendingFocusEditBtnRef.current = false;
       setEditing(false);
@@ -335,6 +348,7 @@ export function TextEntryCard({
     const normalizedDraft = normalizeEolToLf(body);
     plaintextHolderRef.current.originalSource = body;
     plaintextHolderRef.current.draftValue = normalizedDraft;
+    plaintextHolderRef.current.submittedCandidateSource = '';
     setOriginalSource(body);
     setDraftValue(normalizedDraft);
     setDiscardConfirmOpen(false);
@@ -368,8 +382,24 @@ export function TextEntryCard({
     }
   }, [body, editing, focusEditOrMenuTrigger, pending, unlocked]);
 
+  // Rebase originalSource when useEntryBody resolves the authoritative body for committedVersion while editing stays open (IP15-BE2-3)
+  useEffect(() => {
+    if (
+      editing &&
+      unlocked &&
+      body !== undefined &&
+      committedVersion !== null &&
+      currentVersion === committedVersion &&
+      originalSource !== body
+    ) {
+      plaintextHolderRef.current.originalSource = body;
+      setOriginalSource(body);
+    }
+  }, [body, committedVersion, currentVersion, editing, originalSource, plaintextHolderRef, unlocked]);
+
   const closeEditorCleanly = useCallback(() => {
     clearEditorPlaintextHolderSync();
+    saveOwnerIdRef.current = 0;
     saveLockRef.current = false;
     editorRevisionRef.current = 0;
     pendingFocusEditBtnRef.current = true;
@@ -397,6 +427,7 @@ export function TextEntryCard({
       ifMatchVersion: number,
       hadPriorUncertainSend: boolean,
       submittedRevision: number,
+      ownerId: number,
     ) => {
       setSavingInFlight(true);
       setSaveError(null);
@@ -411,13 +442,12 @@ export function TextEntryCard({
           }),
         );
 
-        // P4BE2-1: Never update state after await if the op generation moved (locked/logged out)
-        if (!applied || !sealed.isCurrent()) {
+        // P4BE2-1 / IP15-BE2-4: Never update state or release a successor's guard if stale or not owner
+        if (!applied || !sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
           return;
         }
 
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+        releaseSaveGuardIfOwner(ownerId);
         setUnconfirmedSave(null);
         setConflictState(null);
         setDeletedRemotely(false);
@@ -429,6 +459,15 @@ export function TextEntryCard({
           clearEditorPlaintextHolderSync();
           setEditing(false);
           pendingFocusEditBtnRef.current = true;
+        } else {
+          // IP15-BE2-3: Rebase dirty/EOL comparison onto the newly committed body via the resettable holder
+          // so reverting to the pre-save body while PUT was in flight still sees savePlan.changed === true
+          const committedCandidate = plaintextHolderRef.current.submittedCandidateSource ?? '';
+          plaintextHolderRef.current.submittedCandidateSource = '';
+          if (committedCandidate.length > 0) {
+            plaintextHolderRef.current.originalSource = committedCandidate;
+            setOriginalSource(committedCandidate);
+          }
         }
         setSavedFlash(true);
         onAnnounce?.(tEntry('savedAnnounce'));
@@ -438,15 +477,11 @@ export function TextEntryCard({
           queryKey: vaultBodyQueryKey(entry.id, meta.version),
         });
       } catch (err) {
-        if (!sealed.isCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
+        if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
           return;
         }
 
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-
+        releaseSaveGuardIfOwner(ownerId);
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
@@ -522,7 +557,9 @@ export function TextEntryCard({
       itemName,
       me?.user?.id,
       onAnnounce,
+      plaintextHolderRef,
       queryClient,
+      releaseSaveGuardIfOwner,
       tEntry,
       translateContentError,
       vault,
@@ -563,6 +600,9 @@ export function TextEntryCard({
       }
 
       const submittedRevision = editorRevisionRef.current;
+      const ownerId = ++nextSaveOwnerIdRef.current;
+      saveOwnerIdRef.current = ownerId;
+      plaintextHolderRef.current.submittedCandidateSource = savePlan.text;
       setMixedEolWarningTarget(null);
       saveLockRef.current = true;
       setSavingInFlight(true);
@@ -576,15 +616,16 @@ export function TextEntryCard({
           text: savePlan.text,
           vault,
         });
-        if (!sealed.isCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
+        if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+          releaseSaveGuardIfOwner(ownerId);
           return;
         }
-        await executePut(sealed, effectiveVersion, false, submittedRevision);
+        await executePut(sealed, effectiveVersion, false, submittedRevision, ownerId);
       } catch (err) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        releaseSaveGuardIfOwner(ownerId);
         const classified = classifyContentMutationError(err);
         const msg = translateContentError(classified.i18nKey);
         setSaveError(msg);
@@ -602,6 +643,8 @@ export function TextEntryCard({
       isOverCap,
       itemId,
       onAnnounce,
+      plaintextHolderRef,
+      releaseSaveGuardIfOwner,
       savePlan,
       savingInFlight,
       translateContentError,
@@ -612,12 +655,15 @@ export function TextEntryCard({
 
   const handleRetrySameBytes = useCallback(async () => {
     if (!unconfirmedSave || saveLockRef.current || savingInFlight) return;
+    const ownerId = ++nextSaveOwnerIdRef.current;
+    saveOwnerIdRef.current = ownerId;
     saveLockRef.current = true;
     await executePut(
       unconfirmedSave.sealed,
       unconfirmedSave.ifMatch,
       true,
       unconfirmedSave.submittedRevision,
+      ownerId,
     );
   }, [executePut, savingInFlight, unconfirmedSave]);
 
@@ -645,6 +691,8 @@ export function TextEntryCard({
     };
 
     const submittedRevision = editorRevisionRef.current;
+    const ownerId = ++nextSaveOwnerIdRef.current;
+    saveOwnerIdRef.current = ownerId;
     saveLockRef.current = true;
     setSavingInFlight(true);
     setSaveError(null);
@@ -653,15 +701,13 @@ export function TextEntryCard({
       let targetVersion = conflictState?.currentVersion;
       if (targetVersion === undefined) {
         const latestEntry = await entryGet(entry.id);
-        if (!isOpStillCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
+        if (!isOpStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+          releaseSaveGuardIfOwner(ownerId);
           return;
         }
         targetVersion = latestEntry.version;
-      } else if (!isOpStillCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+      } else if (!isOpStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+        releaseSaveGuardIfOwner(ownerId);
         return;
       }
 
@@ -673,10 +719,10 @@ export function TextEntryCard({
         currentHolder.draftValue,
       ).text;
       if (utf8Encoder.encode(textToSeal).byteLength === 0) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+        releaseSaveGuardIfOwner(ownerId);
         return;
       }
+      plaintextHolderRef.current.submittedCandidateSource = textToSeal;
 
       const resealed = await sealEntryUpdate({
         entryId: entry.id,
@@ -686,20 +732,19 @@ export function TextEntryCard({
         vault,
       });
 
-      if (!isOpStillCurrent() || !resealed.isCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+      if (!isOpStillCurrent() || !resealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        releaseSaveGuardIfOwner(ownerId);
         return;
       }
 
       setConflictState(null);
-      await executePut(resealed, targetVersion, false, submittedRevision);
+      await executePut(resealed, targetVersion, false, submittedRevision, ownerId);
     } catch (err) {
-      saveLockRef.current = false;
-      setSavingInFlight(false);
-      if (!isOpStillCurrent()) {
+      if (!isOpStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+        releaseSaveGuardIfOwner(ownerId);
         return;
       }
+      releaseSaveGuardIfOwner(ownerId);
       const classified = classifyContentMutationError(err);
       const msg = translateContentError(classified.i18nKey);
       setSaveError(msg);
@@ -714,6 +759,7 @@ export function TextEntryCard({
     itemId,
     onAnnounce,
     plaintextHolderRef,
+    releaseSaveGuardIfOwner,
     savingInFlight,
     translateContentError,
     vault,
@@ -755,6 +801,8 @@ export function TextEntryCard({
   // 404 action: Save as new entry
   const handleSaveAsNewEntry = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
+    const ownerId = ++nextSaveOwnerIdRef.current;
+    saveOwnerIdRef.current = ownerId;
     saveLockRef.current = true;
     setSavingInFlight(true);
     setSaveError(null);
@@ -766,26 +814,26 @@ export function TextEntryCard({
         text: savePlan.text,
         vault,
       });
-      if (!sealedNew.isCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+      if (!sealedNew.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        releaseSaveGuardIfOwner(ownerId);
         return;
       }
       const { applied } = await mutateSealedEntryCreate(
         queryClient,
         toEntryCreateVariables(sealedNew),
       );
-      if (!applied || !sealedNew.isCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
+      if (!applied || !sealedNew.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        releaseSaveGuardIfOwner(ownerId);
         return;
       }
       closeEditorCleanly();
       void queryClient.invalidateQueries({ queryKey: contentQueryKeys.entries(itemId) });
       onAnnounce?.(tEntry('savedAnnounce'));
     } catch (err) {
-      saveLockRef.current = false;
-      setSavingInFlight(false);
+      if (saveOwnerIdRef.current !== ownerId) {
+        return;
+      }
+      releaseSaveGuardIfOwner(ownerId);
       const classified = classifyContentMutationError(err);
       const msg = translateContentError(classified.i18nKey);
       setSaveError(msg);
@@ -798,6 +846,7 @@ export function TextEntryCard({
     itemId,
     onAnnounce,
     queryClient,
+    releaseSaveGuardIfOwner,
     savePlan.text,
     savingInFlight,
     tEntry,

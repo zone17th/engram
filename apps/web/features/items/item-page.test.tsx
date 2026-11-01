@@ -1101,6 +1101,53 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(puts).toHaveLength(2);
     expect(puts[0].headers['if-match']).toBe('"1"');
     expect(puts[1].headers['if-match']).toBe('"2"');
+
+    // IP15-BE2-3: Hold PUT #3 (submitting 'Draft C'), revert textarea back to 'Draft B typed while A in flight'
+    // while PUT #3 is in flight, release PUT #3 -> editor stays open, Esc asks discard confirmation, and Save sends PUT #4 with If-Match: "3"
+    const { promise: put3Gate, resolve: releasePut3 } = createDeferred();
+    const { promise: put3Entered, resolve: notifyPut3Entered } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+        putCount += 1;
+        if (putCount === 3) {
+          notifyPut3Entered();
+          await put3Gate;
+        }
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textarea3 = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`) as HTMLTextAreaElement;
+    fireEvent.change(textarea3, { target: { value: 'Draft C submitted' } });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await put3Entered;
+
+    // Revert back to the pre-save body while PUT #3 ('Draft C submitted') is still in flight
+    fireEvent.change(textarea3, { target: { value: 'Draft B typed while A in flight' } });
+    releasePut3();
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).not.toBeDisabled();
+    });
+
+    // Escape before the second Save must recognize the reversion as dirty against 'Draft C submitted' and ask discard confirmation
+    fireEvent.keyDown(textarea3, { key: 'Escape' });
+    expect(screen.getByTestId(`entry-discard-confirm-${ENTRY_ID_1}`)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`entry-keep-editing-btn-${ENTRY_ID_1}`));
+
+    // Clicking Save sends PUT #4 with If-Match: "3" and restores 'Draft B typed while A in flight' on the server
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Draft B typed while A in flight',
+      );
+    });
+    const allPutsAfterReversion = h.server.requests.filter((r) => r.method === 'PUT');
+    expect(allPutsAfterReversion).toHaveLength(4);
+    expect(allPutsAfterReversion[2].headers['if-match']).toBe('"2"');
+    expect(allPutsAfterReversion[3].headers['if-match']).toBe('"3"');
   });
 
   it('412 on entry PUT keeps draft; Copy mine copies draft; Keep mine writes with the new version and fresh nonce; Load latest drops draft after inline confirm', async () => {
@@ -1317,16 +1364,103 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     // Lock while GET is still unresolved -> holderRef.current is synchronously wiped to empty strings
     await h.lock();
-    expect(holderRef.current).toEqual({ originalSource: '', draftValue: '' });
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
 
     await h.unlock();
-    expect(holderRef.current).toEqual({ originalSource: '', draftValue: '' });
+    expect(holderRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
     releaseGet2();
     await waitFor(() => {
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
     });
     expect(sealSpy).not.toHaveBeenCalled();
     expect(sealUpdateSpy).not.toHaveBeenCalled();
+
+    // IP15-BE2-4: Hold fallback GET A, lock/unlock, open a new editor and start deferred PUT B, then release A
+    // -> stale A must NOT release B's single-flight guard; Save stays disabled, Ctrl+S sends no extra PUT, and only B settling releases the guard
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textareaGuard = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(textareaGuard, { target: { value: 'Draft before held GET A' } });
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        return problemResponse('version_mismatch', 412);
+      }
+      return null;
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    const { promise: getAGate, resolve: releaseGetA } = createDeferred();
+    const { promise: getAEntered, resolve: notifyGetAEntered } = createDeferred();
+    let holdGetA = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdGetA) {
+        notifyGetAEntered();
+        await getAGate;
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+    await getAEntered;
+
+    // Lock and unlock while GET A is still held
+    holdGetA = false;
+    await h.lock();
+    await h.unlock();
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Remote v2 body');
+    });
+
+    // Open a new editor and start deferred PUT B before releasing GET A
+    const { promise: putBGate, resolve: releasePutB } = createDeferred();
+    const { promise: putBEntered, resolve: notifyPutBEntered } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'PUT') {
+        notifyPutBEntered();
+        await putBGate;
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textareaB = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(textareaB, { target: { value: 'New post-unlock draft B' } });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await putBEntered;
+
+    const putsWhileBInFlight = h.server.requests.filter((r) => r.method === 'PUT').length;
+    expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
+
+    // Release stale fallback GET A while PUT B is still in flight -> Save must stay disabled and Ctrl+S must send no extra PUT
+    releaseGetA();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
+    fireEvent.keyDown(textareaB, { key: 's', ctrlKey: true });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsWhileBInFlight);
+
+    // Only B settling releases B's guard and commits 'New post-unlock draft B'
+    releasePutB();
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('New post-unlock draft B');
+    });
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsWhileBInFlight);
   });
 
   it('IP15-BE1-1 / BE1-7 / FE1-6: entry_nonce_reused ends with localized error and draft kept (exactly one PUT and one seal), and after lock/generation change no continuation holds or uses the draft plaintext', async () => {
@@ -2180,6 +2314,76 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(patches[0].headers['if-match']).toBe('"1"');
     expect(patches[1].headers['if-match']).toBe('"2"');
     expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+
+    // IP15-BE2-6: Defer Load latest GET(v2), apply a newer summary(v3), release GET(v2) -> name/hint/cache stay at v3 and next PATCH uses If-Match: "3"
+    h.server.item.version = 4;
+    h.server.item.name = 'remote-v4-name';
+    h.server.item.hint = 'remote-v4-hint';
+
+    // Trigger 412 conflict on name edit (local has version 3, server has version 4)
+    fireEvent.change(nameInput, { target: { value: 'local-conflict-attempt' } });
+    fireEvent.blur(nameInput);
+    await waitFor(() => {
+      expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    });
+
+    const { promise: loadLatestGate, resolve: releaseLoadLatest } = createDeferred();
+    const { promise: loadLatestEntered, resolve: notifyLoadLatestEntered } = createDeferred();
+    const staleFetchSummaryV4: ItemSummary = {
+      ...h.server.item,
+      version: 4,
+      name: 'stale-fetch-v4-name',
+      hint: 'stale-fetch-v4-hint',
+    };
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET') {
+        notifyLoadLatestEntered();
+        await loadLatestGate;
+        return jsonResponse(staleFetchSummaryV4, 200);
+      }
+      return null;
+    });
+
+    // Click Load latest -> enters held GET(v4)
+    fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await loadLatestEntered;
+
+    // While GET(v4) is held, a newer summary (version 5) is observed via tag mutation
+    h.server.item.version = 5;
+    h.server.item.name = 'authoritative-v5-name';
+    h.server.item.hint = 'authoritative-v5-hint';
+    fireEvent.click(screen.getByTestId('item-tag-remove-nhà'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-tag-chip-nhà')).toBeNull();
+    });
+
+    // Release the older GET(v4) -> must NOT overwrite v5 name/hint or relabel v4 as v5
+    h.server.overrideRoute(null);
+    releaseLoadLatest();
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+    });
+
+    expect(screen.getByTestId('item-name-input')).toHaveValue('authoritative-v5-name');
+    expect(screen.getByTestId('item-hint-input')).toHaveValue('authoritative-v5-hint');
+    expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.name).toBe(
+      'authoritative-v5-name',
+    );
+    expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(5);
+
+    // Subsequent PATCH uses If-Match: "5" corresponding to the displayed v5 base
+    fireEvent.change(nameInput, { target: { value: 'committed-v6-name' } });
+    fireEvent.blur(nameInput);
+    await waitFor(() => {
+      expect(h.server.item.version).toBe(6);
+      expect(h.server.item.name).toBe('committed-v6-name');
+    });
+    const allItemPatches = h.server.requests.filter(
+      (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+    );
+    expect(allItemPatches[allItemPatches.length - 1].headers['if-match']).toBe('"5"');
   });
 
   it('409 reorder_mismatch refetches list and re-applies the last move once if both entries still exist, or shows "Danh sách đã đổi ở thiết bị khác" if an entry was removed', async () => {
