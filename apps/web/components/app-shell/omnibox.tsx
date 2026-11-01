@@ -265,24 +265,38 @@ export function Omnibox({
   const isVaultUnlocked = vault ? vault.state === 'unlocked' : true;
   const isVaultLocked = !isVaultUnlocked;
 
-  // Resolve active user ID reactively via `subscribeUserChanged` (advisor-dec-199, advisor-dec-205, FU7)
-  // and session broadcasts (plus `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`).
-  const subscribeActiveUserId = useCallback((onStoreChange: () => void): (() => void) => {
-    const unsubUserChanged = subscribeUserChanged(() => {
-      onStoreChange();
-    });
-    const unsubBroadcast = subscribeSessionBroadcast(() => {
-      onStoreChange();
-    });
-    const unsubPurge = subscribeDevicePurge(() => {
-      onStoreChange();
-    });
-    return () => {
-      unsubUserChanged();
-      unsubBroadcast();
-      unsubPurge();
-    };
-  }, []);
+  // Resolve active user ID reactively via `subscribeUserChanged` (advisor-dec-199, advisor-dec-205, FU7),
+  // session/device broadcasts, and QueryClient's `['auth', 'me', ...]` cache so both user-switch commits
+  // and initial `null -> knownUserId` session resolutions immediately reconcile/hide user-scoped notices
+  // without requiring an unmount or parent rerender (advisor-dec-120, HM18B-R1-5, HM18-R3-4, HM18-CI-10).
+  const subscribeActiveUserId = useCallback(
+    (onStoreChange: () => void): (() => void) => {
+      const unsubUserChanged = subscribeUserChanged(() => {
+        onStoreChange();
+      });
+      const unsubBroadcast = subscribeSessionBroadcast(() => {
+        onStoreChange();
+      });
+      const unsubPurge = subscribeDevicePurge(() => {
+        onStoreChange();
+      });
+      const unsubCache = queryClient
+        ? queryClient.getQueryCache().subscribe((event) => {
+            const key = event.query?.queryKey;
+            if (Array.isArray(key) && key[0] === 'auth' && key[1] === 'me') {
+              onStoreChange();
+            }
+          })
+        : () => {};
+      return () => {
+        unsubUserChanged();
+        unsubBroadcast();
+        unsubPurge();
+        unsubCache();
+      };
+    },
+    [queryClient],
+  );
   const getActiveUserIdSnapshot = useCallback((): string | null => {
     const knownUserId = getKnownDeviceSessionUserId();
     if (knownUserId) {
