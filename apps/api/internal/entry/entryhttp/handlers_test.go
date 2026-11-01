@@ -546,6 +546,10 @@ func TestEntryEnvelopeAndKeyValidation(t *testing.T) {
 	}
 	contenttest.AssertInvariants(t, h.Pool, meB.User.ID)
 
+	// Advance clock past the 1s content_write window so user A's 10 prior validation writes
+	// do not rate-limit the seed create below.
+	h.Clock.Advance(2 * time.Second)
+
 	// Now create a vault for User B, create an entry for A, and verify that creating an entry with A's ID
 	// (either by A or by B, even after A's entry is soft-deleted) returns 409 entry_id_conflict without leaking owner.
 	vfB := createVaultForUser(t, h, jarB, 0x38)
