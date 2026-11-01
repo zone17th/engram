@@ -1,6 +1,6 @@
 {
   "brand": { "name": "engram", "tagline": "Type one word you still remember." },
-  "nav": { "how": "How it works", "privacy": "Privacy", "recovery": "Recovery", "openApp": "Open engram" },
+  "nav": { "how": "How it works", "privacy": "Privacy", "recovery": "Recovery", "openApp": "Open engram", "signIn": "Sign in", "signUp": "Create account" },
   "landing": {
     "heroTitle": "Type one word you still remember.",
     "heroTitleSecond": "See the thing you forgot.",
@@ -36,8 +36,7 @@
     "recoveryPasskeyBody": "Fingerprint or security key. Open the vault without typing anything.",
     "recoveryDeviceTitle": "Remembered device",
     "recoveryDeviceBody": "Your usual machine opens straight away; an unfamiliar one does not.",
-    "ctaBody": "Free, no cap on items. Needs an email and a passphrase you use nowhere else.",
-    "previewNote": "This build is a UI preview: sign-up, vault and encryption arrive in a later build."
+    "ctaBody": "Free, no cap on items. Needs an email and a passphrase you use nowhere else."
   },
   "app": {
     "searchPlaceholder": "Type a keyword…",

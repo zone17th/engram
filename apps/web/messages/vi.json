@@ -1,6 +1,6 @@
 {
   "brand": { "name": "engram", "tagline": "Gõ một từ bạn còn nhớ." },
-  "nav": { "how": "Cách dùng", "privacy": "Riêng tư", "recovery": "Khôi phục", "openApp": "Mở engram" },
+  "nav": { "how": "Cách dùng", "privacy": "Riêng tư", "recovery": "Khôi phục", "openApp": "Mở engram", "signIn": "Đăng nhập", "signUp": "Tạo tài khoản" },
   "landing": {
     "heroTitle": "Gõ một từ bạn còn nhớ.",
     "heroTitleSecond": "Thấy lại thứ bạn đã quên.",
@@ -36,8 +36,7 @@
     "recoveryPasskeyBody": "Vân tay hoặc khoá bảo mật. Mở vault không cần gõ gì.",
     "recoveryDeviceTitle": "Thiết bị đã nhớ",
     "recoveryDeviceBody": "Máy quen của bạn mở thẳng, máy lạ thì không.",
-    "ctaBody": "Miễn phí, không giới hạn số mục. Cần email và một passphrase bạn không dùng ở đâu khác.",
-    "previewNote": "Bản hiện tại là bản xem trước giao diện: đăng ký, vault và mã hoá bật ở bản sau."
+    "ctaBody": "Miễn phí, không giới hạn số mục. Cần email và một passphrase bạn không dùng ở đâu khác."
   },
   "app": {
     "searchPlaceholder": "Gõ từ khoá…",

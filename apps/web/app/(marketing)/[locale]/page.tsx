@@ -16,6 +16,7 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations('landing');
+  const tNav = await getTranslations('nav');
   const wallTags = t.raw('wallTags') as string[];
 
   return (
@@ -117,10 +118,13 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
         <div className="py-12 text-center">
           <h2 className="t-headline-md mb-4">{t('cta')}</h2>
           <p className="t-body-lg mx-auto mb-8 max-w-[52ch] text-muted">{t('ctaBody')}</p>
-          <Link href="/app" className="btn btn-primary no-underline !px-7 !py-4 !text-[16px]">
-            {t('cta')}
+          {/* Nút CTA theo mockups/landing.html: "Tạo tài khoản" mở trang đăng ký thật (audit UIA-6). */}
+          <Link
+            href="/app/auth/signup"
+            className="btn btn-primary no-underline !px-7 !py-4 !text-[16px]"
+          >
+            {tNav('signUp')}
           </Link>
-          <p className="t-body mt-4 text-muted">{t('previewNote')}</p>
         </div>
       </section>
 
