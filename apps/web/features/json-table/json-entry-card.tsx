@@ -161,6 +161,7 @@ export function JsonEntryCard({
   const [cardEl, setCardEl] = useState<HTMLElement | null>(null);
   const handleCardRef = useCallback(
     (el: HTMLElement | null) => {
+      cardArticleRef.current = el;
       setCardEl(el);
       registerCardElement?.(entry.id, el);
     },
@@ -241,6 +242,9 @@ export function JsonEntryCard({
   const [menuOpen, setMenuOpen] = useState<boolean>(false);
   const [resetEpoch, setResetEpoch] = useState<number>(0);
   const cardKeepMountedTokenRef = useRef<symbol>(Symbol('JsonEntryCard'));
+
+  const cardArticleRef = useRef<HTMLElement | null>(null);
+  const pendingPostSaveFocusRef = useRef<boolean>(false);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const menuPopRef = useRef<HTMLDivElement | null>(null);
   const tabTableBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -418,6 +422,7 @@ export function JsonEntryCard({
       setDeletedRemotely(false);
       setCellEditActive(false);
       setSaveError(null);
+      pendingPostSaveFocusRef.current = false;
       setMenuOpen(false);
       setResetEpoch((prev) => prev + 1);
       if (hadActiveDraft) {
@@ -448,6 +453,7 @@ export function JsonEntryCard({
       setDeletedRemotely(false);
       setCellEditActive(false);
       setSaveError(null);
+      pendingPostSaveFocusRef.current = false;
       setMenuOpen(false);
       setResetEpoch((prev) => prev + 1);
     }
@@ -465,6 +471,7 @@ export function JsonEntryCard({
       editorRevisionRef.current = 0;
       saveOwnerIdRef.current = 0;
       saveLockRef.current = false;
+      pendingPostSaveFocusRef.current = false;
       holderToWipe.current.originalSource = '';
       holderToWipe.current.draftValue = '';
       holderToWipe.current.submittedCandidateSource = '';
@@ -488,7 +495,6 @@ export function JsonEntryCard({
         ? originalSource
         : undefined;
   const effectiveFailed = failed && effectiveBody === undefined;
-  const effectivePending = pending && effectiveBody === undefined;
 
   // Close menu on outside click
   useEffect(() => {
@@ -798,6 +804,7 @@ export function JsonEntryCard({
             setRawSettledIssue(null);
           }
           setMode('table');
+          pendingPostSaveFocusRef.current = true;
         } else if (committedCandidate.length > 0) {
           // User kept editing while PUT was in flight -> rebase comparison base (IP15-BE2-3)
           plaintextHolderRef.current.originalSource = committedCandidate;
@@ -1280,12 +1287,26 @@ export function JsonEntryCard({
     vault,
   ]);
 
+  const hasLoadedJsonSource = unlocked && (body !== undefined || originalSource !== '');
+
+  // IP16-R3-1: After Save commits, keep the table mounted across the version hand-off and restore focus
+  // to the edited cell (or to the card article when the cell no longer exists).
+  useEffect(() => {
+    if (!pendingPostSaveFocusRef.current || !unlocked || savingInFlight) return;
+    pendingPostSaveFocusRef.current = false;
+    const restored = gridCommitControlRef.current?.restoreFocusAfterSave() ?? false;
+    if (!restored) {
+      cardArticleRef.current?.focus();
+    }
+  }, [mode, originalSource, savingInFlight, tableSource, unlocked]);
+
   const handleCopyBody = useCallback(async () => {
-    if (!unlocked || effectiveBody === undefined) return;
-    const candidate = readCurrentCandidateFromHolder() || effectiveBody;
+    if (!hasLoadedJsonSource) return;
+    const candidate = readCurrentCandidateFromHolder() || originalSource || body || '';
+    if (!candidate) return;
     await copyEntryPlaintextToClipboard(candidate);
     onAnnounce?.(tEntry('copied'));
-  }, [effectiveBody, onAnnounce, readCurrentCandidateFromHolder, tEntry, unlocked]);
+  }, [body, hasLoadedJsonSource, onAnnounce, originalSource, readCurrentCandidateFromHolder, tEntry]);
 
   const handleMenuKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(
@@ -1380,7 +1401,7 @@ export function JsonEntryCard({
         </span>
 
         {/* Table / Raw JSON segmented switcher (Task 16 item 5, hidden when locked or error) */}
-        {unlocked && effectiveBody !== undefined && !oldKey && !effectiveFailed ? (
+        {hasLoadedJsonSource && !oldKey && !effectiveFailed ? (
           <div
             role="group"
             aria-label={tJson('viewModeAria')}
@@ -1443,7 +1464,7 @@ export function JsonEntryCard({
             </span>
           ) : null}
 
-          {unlocked && effectiveBody !== undefined && !oldKey && !effectiveFailed ? (
+          {hasLoadedJsonSource && !oldKey && !effectiveFailed ? (
             <button
               type="button"
               className="btn btn-tertiary btn-sm"
@@ -1491,7 +1512,7 @@ export function JsonEntryCard({
                 data-testid={`entry-menu-copy-${entry.id}`}
                 data-card-act="copy"
                 className="menu-item"
-                disabled={!unlocked || effectiveBody === undefined || oldKey || effectiveFailed}
+                disabled={!hasLoadedJsonSource || oldKey || effectiveFailed}
                 onClick={() => {
                   setMenuOpen(false);
                   void handleCopyBody();
@@ -1506,7 +1527,7 @@ export function JsonEntryCard({
                 data-testid={`entry-menu-edit-${entry.id}`}
                 data-card-act="edit"
                 className="menu-item"
-                disabled={!unlocked || effectiveBody === undefined || oldKey || effectiveFailed}
+                disabled={!hasLoadedJsonSource || oldKey || effectiveFailed}
                 onClick={() => {
                   setMenuOpen(false);
                   handleSwitchMode('raw');
@@ -1569,7 +1590,7 @@ export function JsonEntryCard({
       </div>
 
       {/* Card Body */}
-      <div className={mode === 'table' && unlocked && effectiveBody !== undefined && !oldKey && !effectiveFailed ? '' : 'p-4'}>
+      <div className={mode === 'table' && hasLoadedJsonSource && !oldKey && !effectiveFailed ? '' : 'p-4'}>
         {!unlocked ? (
           <LockMask />
         ) : oldKey ? (
@@ -1619,7 +1640,7 @@ export function JsonEntryCard({
               {tEntry('retry')}
             </button>
           </div>
-        ) : !inViewport || effectivePending || effectiveBody === undefined ? (
+        ) : !inViewport || (!hasLoadedJsonSource && (pending || body === undefined)) ? (
           <p role="status" data-testid="entry-body-loading" className="t-caption m-0 text-muted">
             {tLocked('bodyLoading')}
           </p>

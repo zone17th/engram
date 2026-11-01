@@ -43,6 +43,7 @@ import {
 import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
+import { contentQueryKeys } from '@/features/items/query-keys';
 import {
   TextEntryCard,
   __testing as textEntryCardTesting,
@@ -1152,7 +1153,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.getByTestId('item-not-found-back')).toHaveAttribute('href', '/app');
   });
 
-  it('renders content.privacy notice in the item header and in the tag popover, and hides + JSON / Import JSON in Milestone A', async () => {
+  it('renders content.privacy notice in the item header and in the tag popover, and shows + Text / + JSON / Import JSON in Milestone C', async () => {
     await setupItemPageHarness();
     await waitFor(() => {
       expect(screen.getByTestId('item-privacy-note')).toHaveTextContent(
@@ -1171,14 +1172,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       );
     });
 
-    // + Text and + JSON / table exist in Milestone C (Task 16); Import JSON stays hidden until Task 17
+    // + Text, + JSON / table, and Import JSON… exist in Milestone C (Tasks 16-17)
     const actionBar = screen.getByTestId('entry-composer');
     expect(within(actionBar).getByTestId('btn-add-text')).toBeInTheDocument();
     expect(within(actionBar).getByTestId('btn-add-json')).toHaveTextContent(
       viMessages.content.json.addJsonCta,
     );
-    expect(within(actionBar).queryByText(/Import JSON/i)).toBeNull();
-    expect(screen.queryByText(/Import JSON/i)).toBeNull();
+    expect(within(actionBar).getByTestId('btn-import-json')).toHaveTextContent(
+      viMessages.content.json.importJsonCta,
+    );
   });
 
   it('renders javascript:alert(1) and URLs as plain text with NO <a> links and NO innerHTML, and shows no entry title or edit date on cards (Q19)', async () => {
@@ -1914,8 +1916,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial body for nonce test');
     });
 
+    const { promise: firstNonceReturned, resolve: notifyFirstNonceReturned } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+        queueMicrotask(() => notifyFirstNonceReturned());
         return problemResponse('entry_nonce_reused', 400);
       }
       return null;
@@ -1927,13 +1931,17 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.change(textarea, { target: { value: NONCE_DRAFT_1 } });
 
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await firstNonceReturned;
 
     // 1. Unlocked 400 entry_nonce_reused: exactly ONE seal and ONE PUT, localized error shown, draft kept in editor
-    await waitFor(() => {
-      expect(screen.getByTestId(`entry-save-error-${ENTRY_ID_1}`)).toHaveTextContent(
-        viMessages.content.errors.entry_nonce_reused,
-      );
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByTestId(`entry-save-error-${ENTRY_ID_1}`)).toHaveTextContent(
+          viMessages.content.errors.entry_nonce_reused,
+        );
+      },
+      { timeout: 5_000 },
+    );
     expect(sealSpy).toHaveBeenCalledTimes(1);
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(1);
     expect(textarea.value).toBe(NONCE_DRAFT_1);
@@ -1941,9 +1949,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 2. Defer the 400 entry_nonce_reused response across a lock -> unlock (generation change):
     // when the response arrives after unlock, no continuation holds or reseals the pre-lock draft
     const { promise: nonceGate, resolve: releaseNonceResponse } = createDeferred();
+    const { promise: secondNonceEntered, resolve: notifySecondNonceEntered } = createDeferred();
+    const { promise: secondNonceReturned, resolve: notifySecondNonceReturned } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+        notifySecondNonceEntered();
         await nonceGate;
+        queueMicrotask(() => notifySecondNonceReturned());
         return problemResponse('entry_nonce_reused', 400);
       }
       return null;
@@ -1954,12 +1966,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const putsBeforeSecondSave = h.server.requests.filter((r) => r.method === 'PUT').length;
 
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await secondNonceEntered;
 
-    await waitFor(() => {
-      expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
-        putsBeforeSecondSave + 1,
-      );
-    });
+    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+      putsBeforeSecondSave + 1,
+    );
     expect(sealSpy).toHaveBeenCalledTimes(1);
 
     // Lock and unlock while the PUT is in flight -> generation changes and editor resets
@@ -1969,18 +1980,24 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     sealSpy.mockClear();
     const putsBeforeRelease = h.server.requests.filter((r) => r.method === 'PUT').length;
     releaseNonceResponse();
-
-    await waitFor(() => {
-      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial body for nonce test');
+    await secondNonceReturned;
+    await act(async () => {
+      await flushMacrotask();
     });
 
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial body for nonce test');
+      },
+      { timeout: 5_000 },
+    );
     expect(sealSpy).not.toHaveBeenCalled();
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeRelease);
     expect(h.container.textContent).not.toContain(NONCE_DRAFT_1);
     expect(h.container.textContent).not.toContain(NONCE_DRAFT_2);
     assertNoPlaintextAttrs(h.container, [NONCE_DRAFT_1, NONCE_DRAFT_2]);
     expect(findCacheSentinelLeaks(h.qc, [NONCE_DRAFT_1, NONCE_DRAFT_2])).toEqual([]);
-  });
+  }, 30_000);
 
   it('editing name, Tab, editing hint, blur in one network round sends two ordered PATCHes using the returned version (no 412) and final item has both; renaming to another item name works; PATCH 412 keeps typed value', async () => {
     const h = await setupItemPageHarness();
@@ -2507,6 +2524,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       const addTextBtn = screen.getByTestId('btn-add-text');
       expect(addTextBtn).toBeDisabled();
       expect(addTextBtn).toHaveAttribute('title', viMessages.content.item.entryLimitHint);
+      const importJsonBtn = screen.getByTestId('btn-import-json');
+      expect(importJsonBtn).toBeDisabled();
+      expect(importJsonBtn).toHaveAttribute('title', viMessages.content.item.entryLimitHint);
       expect(screen.getByTestId('entry-limit-hint')).toHaveTextContent(
         viMessages.content.item.entryLimitHint,
       );
@@ -2835,6 +2855,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     const { promise: tagGate, resolve: releaseTagResponse } = createDeferred();
+    const { promise: tagEntered, resolve: notifyTagEntered } = createDeferred();
+    const { promise: tagReturned, resolve: notifyTagReturned } = createDeferred();
     let capturedStaleTagSummary: ItemSummary | null = null;
 
     h.server.overrideRoute(async (url, init) => {
@@ -2848,7 +2870,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
           tags: h.server.item.tags.filter((t) => t.id !== 'tag-2'),
         };
         h.server.item.tags = capturedStaleTagSummary.tags;
+        notifyTagEntered();
         await tagGate;
+        queueMicrotask(() => notifyTagReturned());
         return jsonResponse(capturedStaleTagSummary, 200);
       }
       return null;
@@ -2856,9 +2880,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     // 1. Trigger tag removal (held in flight with snapshot at version 1)
     fireEvent.click(screen.getByTestId('item-tag-remove-office'));
-    await waitFor(() => {
-      expect(capturedStaleTagSummary).not.toBeNull();
-    });
+    await tagEntered;
+    expect(capturedStaleTagSummary).not.toBeNull();
 
     // 2. Complete a name PATCH while the tag response is still in flight -> advances item to version 2
     const nameInput = screen.getByTestId('item-name-input');
@@ -2872,6 +2895,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     // 3. Release the delayed tag response carrying version 1 and old name 'wifi'
     releaseTagResponse();
+    await tagReturned;
 
     await waitFor(() => {
       expect(screen.queryByTestId('item-tag-chip-office')).toBeNull();
@@ -2912,6 +2936,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     const { promise: loadLatestGate, resolve: releaseLoadLatest } = createDeferred();
     const { promise: loadLatestEntered, resolve: notifyLoadLatestEntered } = createDeferred();
+    const { promise: loadLatestReturned, resolve: notifyLoadLatestReturned } = createDeferred();
     const staleFetchSummaryV4: ItemSummary = {
       ...h.server.item,
       version: 4,
@@ -2924,6 +2949,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET') {
         notifyLoadLatestEntered();
         await loadLatestGate;
+        queueMicrotask(() => notifyLoadLatestReturned());
         return jsonResponse(staleFetchSummaryV4, 200);
       }
       return null;
@@ -2934,10 +2960,27 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await loadLatestEntered;
 
     // While GET(v4) is held, a newer summary (version 5) is observed via tag mutation
+    const { promise: tagNhaReturned, resolve: notifyTagNhaReturned } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET') {
+        notifyLoadLatestEntered();
+        await loadLatestGate;
+        queueMicrotask(() => notifyLoadLatestReturned());
+        return jsonResponse(staleFetchSummaryV4, 200);
+      }
+      if (url.endsWith(`/items/${ITEM_ID}/tags/tag-1`) && method === 'DELETE') {
+        h.server.item.tags = h.server.item.tags.filter((t) => t.id !== 'tag-1');
+        queueMicrotask(() => notifyTagNhaReturned());
+        return jsonResponse({ ...h.server.item }, 200);
+      }
+      return null;
+    });
     h.server.item.version = 5;
     h.server.item.name = 'authoritative-v5-name';
     h.server.item.hint = 'authoritative-v5-hint';
     fireEvent.click(screen.getByTestId('item-tag-remove-nhà'));
+    await tagNhaReturned;
     await waitFor(() => {
       expect(screen.queryByTestId('item-tag-chip-nhà')).toBeNull();
     });
@@ -2945,8 +2988,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // Release the older GET(v4) -> must NOT overwrite v5 name/hint or relabel v4 as v5
     h.server.overrideRoute(null);
     releaseLoadLatest();
+    await loadLatestReturned;
+    await act(async () => {
+      await flushMacrotask();
+    });
     await waitFor(() => {
+      expect(h.qc.isFetching()).toBe(0);
       expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+      expect(screen.getByTestId('item-name-input')).toHaveValue('authoritative-v5-name');
+      expect(screen.getByTestId('item-hint-input')).toHaveValue('authoritative-v5-hint');
     });
 
     expect(screen.getByTestId('item-name-input')).toHaveValue('authoritative-v5-name');
@@ -2957,12 +3007,28 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(5);
 
     // Subsequent PATCH uses If-Match: "5" corresponding to the displayed v5 base
-    fireEvent.change(nameInput, { target: { value: 'committed-v6-name' } });
-    fireEvent.blur(nameInput);
-    await waitFor(() => {
-      expect(h.server.item.version).toBe(6);
-      expect(h.server.item.name).toBe('committed-v6-name');
-    });
+    const patchesBeforeV6 = h.server.requests.filter(
+      (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+    ).length;
+    const nameInputForV6 = screen.getByTestId('item-name-input');
+    fireEvent.change(nameInputForV6, { target: { value: 'committed-v6-name' } });
+    fireEvent.blur(nameInputForV6);
+    await waitFor(
+      () => {
+        const currentPatches = h.server.requests.filter(
+          (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+        );
+        expect(
+          currentPatches.length,
+          `Expected PATCH #${patchesBeforeV6 + 1}; observed PATCHes: ${JSON.stringify(
+            currentPatches.map((p) => ({ ifMatch: p.headers['if-match'], body: p.rawBody })),
+          )}`,
+        ).toBeGreaterThan(patchesBeforeV6);
+        expect(h.server.item.version).toBe(6);
+        expect(h.server.item.name).toBe('committed-v6-name');
+      },
+      { timeout: 5_000 },
+    );
     const allItemPatches = h.server.requests.filter(
       (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
     );
@@ -2975,8 +3041,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     h.server.item.name = 'remote-v7-name';
     h.server.item.hint = 'remote-v7-hint';
 
-    fireEvent.change(nameInput, { target: { value: 'local-keep-mine-candidate' } });
-    fireEvent.blur(nameInput);
+    const nameInputForV7 = screen.getByTestId('item-name-input');
+    fireEvent.change(nameInputForV7, { target: { value: 'local-keep-mine-candidate' } });
+    fireEvent.blur(nameInputForV7);
     await waitFor(() => {
       expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
     });
@@ -3086,7 +3153,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     ).length;
     expect(getsAfterAutoResolve - getsBeforeAutoResolve).toBe(2);
     expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(8);
-  });
+  }, 30_000);
 
   it('409 reorder_mismatch refetches list and re-applies the last move once if both entries still exist, or shows "Danh sách đã đổi ở thiết bị khác" if an entry was removed', async () => {
     const h = await setupItemPageHarness({
@@ -4796,11 +4863,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 1. Explicit signOut() while PUT is held in flight -> release PUT with 401 session_invalid -> pure snapshot stays []
     const { promise: putLogoutGate, resolve: releasePutLogout } = createDeferred();
     const { promise: putLogoutEntered, resolve: notifyPutLogoutEntered } = createDeferred();
+    const { promise: putLogoutFinished, resolve: notifyPutLogoutFinished } = createDeferred();
     let holdPutForLogout = true;
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdPutForLogout) {
         notifyPutLogoutEntered();
         await putLogoutGate;
+        queueMicrotask(() => notifyPutLogoutFinished());
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -4823,10 +4892,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // Release the held PUT with 401 session_invalid -> stale clearGeneration drops the record
     holdPutForLogout = false;
     releasePutLogout();
-    const logoutSettle = Promise.withResolvers<void>();
-    setTimeout(logoutSettle.resolve, 25);
-    await logoutSettle.promise;
-
+    await putLogoutFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
     expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
 
@@ -4850,11 +4921,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 2. User switch A -> B committed while User A's PUT is held in flight -> release PUT with 401 session_invalid -> pure snapshot stays []
     const { promise: putSwitchGate, resolve: releasePutSwitch } = createDeferred();
     const { promise: putSwitchEntered, resolve: notifyPutSwitchEntered } = createDeferred();
+    const { promise: putSwitchFinished, resolve: notifyPutSwitchFinished } = createDeferred();
     let holdPutForSwitch = true;
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdPutForSwitch) {
         notifyPutSwitchEntered();
         await putSwitchGate;
+        queueMicrotask(() => notifyPutSwitchFinished());
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -4878,11 +4951,112 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // Release User A's late 401 session_invalid -> stale clearGeneration drops User A's record
     holdPutForSwitch = false;
     releasePutSwitch();
-    const switchSettle = Promise.withResolvers<void>();
-    setTimeout(switchSettle.resolve, 25);
-    await switchSettle.promise;
+    await putSwitchFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
+
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+    // 3. Text composer POST held across explicit signOut() -> release POST with 401 session_invalid -> pure snapshot stays [] (IP16-R3-3)
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlock();
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    const { promise: compPostGate, resolve: releaseCompPost } = createDeferred();
+    const { promise: compPostEntered, resolve: notifyCompPostEntered } = createDeferred();
+    const { promise: compPostFinished, resolve: notifyCompPostFinished } = createDeferred();
+    let holdCompPost = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (
+        url.endsWith(`/items/${ITEM_ID}/entries`) &&
+        init?.method === 'POST' &&
+        holdCompPost
+      ) {
+        notifyCompPostEntered();
+        await compPostGate;
+        queueMicrotask(() => notifyCompPostFinished());
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    const genBeforeCompLogout = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'New text composer draft held across signOut' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+    await compPostEntered;
+
+    await h.signOutSession();
+    expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(
+      genBeforeCompLogout,
+    );
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+    holdCompPost = false;
+    releaseCompPost();
+    await compPostFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
 
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
     expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
   }, 30_000);
+
+  it('advisor-dec-215: invalidates CONTENT_ITEMS_QUERY_KEY_PREFIX home list queries after both item name PATCH and item hint PATCH', async () => {
+    const h = await setupItemPageHarness();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-name-input')).toHaveValue('wifi');
+    });
+
+    const recentItemsKey = contentQueryKeys.items({ sort: 'recent' });
+    const nameInput = screen.getByTestId('item-name-input');
+    const hintInput = screen.getByTestId('item-hint-input');
+
+    // 1. Seed a fresh home list query ['content', 'items', { sort: 'recent', ... }] -> PATCH item name -> assert list query is invalidated
+    h.qc.setQueryData(recentItemsKey, {
+      items: [{ ...h.server.item }],
+      next_cursor: null,
+    });
+    expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(false);
+
+    fireEvent.change(nameInput, { target: { value: 'wifi-renamed-dec-215' } });
+    fireEvent.blur(nameInput);
+
+    await waitFor(() => {
+      expect(h.server.item.name).toBe('wifi-renamed-dec-215');
+      expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(true);
+    });
+
+    // 2. Re-seed a fresh home list query -> PATCH item hint -> assert list query is invalidated
+    h.qc.setQueryData(recentItemsKey, {
+      items: [{ ...h.server.item }],
+      next_cursor: null,
+    });
+    expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(false);
+
+    fireEvent.change(hintInput, { target: { value: 'updated-hint-dec-215' } });
+    fireEvent.blur(hintInput);
+
+    await waitFor(() => {
+      expect(h.server.item.hint).toBe('updated-hint-dec-215');
+      expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(true);
+    });
+  });
 });

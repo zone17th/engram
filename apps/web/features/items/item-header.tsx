@@ -12,7 +12,10 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useOptionalUndoToast } from '@/components/ui/undo-toast';
-import { contentQueryKeys } from '@/features/items/query-keys';
+import {
+  CONTENT_ITEMS_QUERY_KEY_PREFIX,
+  contentQueryKeys,
+} from '@/features/items/query-keys';
 import {
   normalizeName,
   normalizeTag,
@@ -142,6 +145,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           contentQueryKeys.item(updated.id),
           mergedTagSummary,
         );
+        void queryClient.invalidateQueries({ queryKey: CONTENT_ITEMS_QUERY_KEY_PREFIX });
         return mergedTagSummary;
       }
 
@@ -157,6 +161,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       latestCommittedNameRef.current = accepted.name;
       latestCommittedHintRef.current = accepted.hint ?? null;
       queryClient.setQueryData<ItemSummary>(contentQueryKeys.item(updated.id), accepted);
+      void queryClient.invalidateQueries({ queryKey: CONTENT_ITEMS_QUERY_KEY_PREFIX });
       return accepted;
     },
     [queryClient],
