@@ -202,9 +202,9 @@
         </div>
         <p class="text-[13px] text-muted m-0">Nhà + văn phòng, không phải wifi công ty</p>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#nhà</span>
-          <span class="chip dup-chip">#office</span>
-          <span class="chip dup-chip">#home-lab</span>
+          <span class="chip dup-chip" title="#nhà">#nhà</span>
+          <span class="chip dup-chip" title="#office">#office</span>
+          <span class="chip dup-chip" title="#home-lab">#home-lab</span>
           <span class="mono text-[12px] text-muted" aria-hidden="true">+1</span><span class="sr-only">Còn 1 tag nữa · 1 more tag</span>
         </div>
       </a>
@@ -216,8 +216,8 @@
         </div>
         <p class="text-[13px] text-muted m-0">Tầng 4 — SSID nội bộ</p>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#công-ty</span>
-          <span class="chip dup-chip">#office</span>
+          <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+          <span class="chip dup-chip" title="#office">#office</span>
         </div>
       </a>
 
@@ -227,8 +227,8 @@
           <span class="mono text-[12px] text-muted">9 entries</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#ops</span>
-          <span class="chip dup-chip">#home-lab</span>
+          <span class="chip dup-chip" title="#ops">#ops</span>
+          <span class="chip dup-chip" title="#home-lab">#home-lab</span>
         </div>
       </a>
 
@@ -239,8 +239,8 @@
         </div>
         <p class="text-[13px] text-muted m-0">router, VLAN, DNS</p>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#nhà</span>
-          <span class="chip dup-chip">#home-lab</span>
+          <span class="chip dup-chip" title="#nhà">#nhà</span>
+          <span class="chip dup-chip" title="#home-lab">#home-lab</span>
         </div>
       </a>
 
@@ -473,7 +473,10 @@
       const tags = (card.dataset.tags || '').split(',').map((t) => (t === oldKey ? nextName : t));
       card.dataset.tags = tags.join(',');
       card.querySelectorAll('.dup-chip').forEach((chip) => {
-        if (chip.textContent.trim() === '#' + oldKey) chip.textContent = '#' + nextName;
+        if (chip.textContent.trim() === '#' + oldKey) {
+          chip.textContent = '#' + nextName;
+          chip.setAttribute('title', '#' + nextName);
+        }
       });
     });
     if (activeTagFilter === oldKey) {

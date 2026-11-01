@@ -729,7 +729,7 @@
           html += `<div role="option" id="${optId}" aria-selected="false" class="sugg-row" data-opt-idx="${listOptions.length - 1}">
             <span class="omni-opt-main">
               <span class="omni-opt-title">${markPrefix(it.name, query)}</span>
-              ${shownTags.map((t) => `<span class="chip dup-chip">#${esc(t)}</span>`).join('')}
+              ${shownTags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')}
               ${extra > 0 ? `<span class="mono text-[12px] text-muted">+${extra}</span>` : ''}
             </span>
             <span class="sugg-meta mono">${count} entries</span>
@@ -846,7 +846,7 @@
       addPanelEl.hidden = false;
 
       const tagChipsHtml = parsed.tags.length
-        ? parsed.tags.map((t) => `<span class="chip dup-chip">#${esc(t)}</span>`).join('')
+        ? parsed.tags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')
         : `<span class="text-[12px] text-muted">không gắn tag · <span lang="en">no tags</span></span>`;
 
       let errorHtml = '';
@@ -1523,7 +1523,7 @@
             <span class="dup-row-main">
               <span class="dup-row-tags">
                 <strong>${esc(d.name)}</strong>
-                ${shownTags.map((t) => `<span class="chip dup-chip">#${esc(t)}</span>`).join('')}
+                ${shownTags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')}
                 ${extraTags > 0 ? `<span class="mono text-[12px] text-muted">+${extraTags}</span>` : ''}
               </span>
               ${d.hint ? `<span class="text-[13px] text-muted">${esc(d.hint)}</span>` : ''}
@@ -1730,8 +1730,11 @@
             if (item.el) item.el.hidden = false;
           });
         }
-        const firstBtn = toastLiveEl && toastLiveEl.querySelector('.toast:not([hidden]) [data-toast-action]');
-        if (firstBtn) firstBtn.focus();
+        const firstTarget = toastLiveEl && (
+          toastLiveEl.querySelector('.toast:not([hidden]) [data-toast-action]') ||
+          toastLiveEl.querySelector('.toast:not([hidden])')
+        );
+        if (firstTarget) firstTarget.focus();
         syncToastDom();
       });
       toastStackEl.appendChild(toastMoreBtnEl);
@@ -1790,6 +1793,7 @@
   function createToastNode(item) {
     const el = document.createElement('div');
     el.className = 'toast';
+    el.tabIndex = -1;
     el.dataset.toastId = String(item.id);
     const actionText = formatActionLabel(item.action);
     el.innerHTML = `<div class="toast-body">

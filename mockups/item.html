@@ -48,6 +48,9 @@
     background: var(--surface);
     border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
   }
+  .card-table-clip {
+    border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
+  }
   .import-panel {
     width: min(720px, 94vw);
     max-height: 88vh;
@@ -360,7 +363,7 @@
             </div>
           </div>
           <div data-secret>
-            <div data-view="tbl" id="cfgTable" class="overflow-x-auto overflow-hidden rounded-b-[15px]"></div>
+            <div data-view="tbl" id="cfgTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
             <pre data-view="raw" hidden class="json-raw" id="cfgRaw"></pre>
           </div>
         </article>
@@ -385,7 +388,7 @@
             </div>
           </div>
           <div data-secret>
-            <div data-view="gtbl" id="guestTable" class="overflow-x-auto overflow-hidden rounded-b-[15px]"></div>
+            <div data-view="gtbl" id="guestTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
             <pre data-view="graw" hidden class="json-raw" id="guestRaw"></pre>
           </div>
         </article>
