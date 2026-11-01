@@ -494,6 +494,19 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'landing-vi-dark-390.png',
   'landing-vi-dark-768.png',
   'landing-vi-dark-1440.png',
+  // P04 itempage Task 16 U13 (e2e/content-itempage-visual.spec.ts)
+  'content-item-json-table-light-390.png',
+  'content-item-json-table-light-1440.png',
+  'content-item-json-table-dark-390.png',
+  'content-item-json-table-dark-1440.png',
+  'content-item-json-raw-light-390.png',
+  'content-item-json-raw-light-1440.png',
+  'content-item-json-raw-dark-390.png',
+  'content-item-json-raw-dark-1440.png',
+  'content-item-json-error-light-390.png',
+  'content-item-json-error-light-1440.png',
+  'content-item-json-error-dark-390.png',
+  'content-item-json-error-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440', 'content']);
 
