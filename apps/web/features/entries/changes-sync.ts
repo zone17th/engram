@@ -299,15 +299,39 @@ export function subscribeActiveEntryCards(listener: () => void): () => void {
 // ---------------------------------------------------------------------------
 
 /**
- * Refetches canonical metadata sources on wake (plan §2.9, Task 20 item 1):
- * invalidates `['content', 'entries', *]`, `['content', 'item', *]`, `['content', 'items', *]`, and `['content', 'tags', *]`.
+ * Returns `true` when at least one `['content', 'entries', itemId]` query currently has an active
+ * `useQuery` observer mounted in `queryClient` (i.e. an item page is open).
+ */
+export function hasActiveContentEntriesQuery(queryClient: QueryClient): boolean {
+  return queryClient
+    .getQueryCache()
+    .findAll({ queryKey: CONTENT_ENTRIES_QUERY_KEY_PREFIX, type: 'active' })
+    .some((query) => query.getObserversCount() > 0);
+}
+
+/**
+ * Refetches active canonical metadata sources on wake (plan §2.9, Task 20 item 1):
+ * invalidates active `['content', 'entries', *]`, `['content', 'item', *]`, `['content', 'items', *]`, and `['content', 'tags', *]`.
+ * Uses `refetchType: 'active'` so no network request is triggered when nothing is mounted.
  */
 export async function refetchCanonicalContentSources(queryClient: QueryClient): Promise<void> {
   await Promise.allSettled([
-    queryClient.invalidateQueries({ queryKey: CONTENT_ENTRIES_QUERY_KEY_PREFIX }),
-    queryClient.invalidateQueries({ queryKey: CONTENT_ITEM_QUERY_KEY_PREFIX }),
-    queryClient.invalidateQueries({ queryKey: CONTENT_ITEMS_QUERY_KEY_PREFIX }),
-    queryClient.invalidateQueries({ queryKey: CONTENT_TAGS_QUERY_KEY_PREFIX }),
+    queryClient.invalidateQueries({
+      queryKey: CONTENT_ENTRIES_QUERY_KEY_PREFIX,
+      refetchType: 'active',
+    }),
+    queryClient.invalidateQueries({
+      queryKey: CONTENT_ITEM_QUERY_KEY_PREFIX,
+      refetchType: 'active',
+    }),
+    queryClient.invalidateQueries({
+      queryKey: CONTENT_ITEMS_QUERY_KEY_PREFIX,
+      refetchType: 'active',
+    }),
+    queryClient.invalidateQueries({
+      queryKey: CONTENT_TAGS_QUERY_KEY_PREFIX,
+      refetchType: 'active',
+    }),
   ]);
 }
 
@@ -582,16 +606,12 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
   const vaultState = vault?.state ?? 'locked';
   const vaultKeyId = vault?.vaultMeta?.vault_key_id ?? null;
   const reloadVaultMeta = vault?.reloadVaultMeta;
-  const registerSecretFormReset = vault?.registerSecretFormReset;
-
   const isAuthenticatedRef = useRef(isAuthenticated);
   isAuthenticatedRef.current = isAuthenticated;
   const userIdRef = useRef(userId);
   userIdRef.current = userId;
   const vaultStateRef = useRef(vaultState);
   vaultStateRef.current = vaultState;
-  const serverVaultStatusRef = useRef(serverVaultStatus);
-  serverVaultStatusRef.current = serverVaultStatus;
   const reloadVaultMetaRef = useRef(reloadVaultMeta);
   reloadVaultMetaRef.current = reloadVaultMeta;
 
@@ -599,16 +619,8 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     ensureGlobalSyncLifecycleSubscriptions();
   }, []);
 
-  // Clear remote tombstones synchronously on every vault lock / secret form reset
   useEffect(() => {
-    if (!registerSecretFormReset) return;
-    return registerSecretFormReset(() => {
-      clearRemoteTombstones();
-    });
-  }, [registerSecretFormReset]);
-
-  useEffect(() => {
-    if (vaultState !== 'unlocked') {
+    if (vaultState !== 'unlocked' && vaultState !== 'unlocking') {
       clearRemoteTombstones();
     }
   }, [vaultState]);
@@ -678,10 +690,6 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     };
   }, [isAuthenticated, queryClient, serverVaultStatus, userId, vaultKeyId, vaultState]);
 
-  // Bootstrap initial watermark when first entering unlocked state so changes made before the first wake are caught
-  const bootstrappedKeyRef = useRef<string | null>(null);
-  const runWakeCycleRef = useRef<((trigger: 'wake' | 'bootstrap') => Promise<void>) | null>(null);
-
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
       return;
@@ -690,42 +698,49 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     let inFlightPromise: Promise<void> | null = null;
     let scheduledMicrotask = false;
 
-    const executeCycle = async (trigger: 'wake' | 'bootstrap'): Promise<void> => {
+    const executeWakeCycle = async (): Promise<void> => {
       if (!isAuthenticatedRef.current || !userIdRef.current) {
         return;
       }
       const activeUserId = userIdRef.current;
+      const hasActiveEntries = hasActiveContentEntriesQuery(queryClient);
+      const wasUnlockedAtWakeStart =
+        vaultStateRef.current === 'unlocked' || vaultStateRef.current === 'unlocking';
 
-      if (trigger === 'wake') {
-        // 1. Always refetch canonical metadata sources regardless of vault lock state or feed result
-        const refetchPromise = refetchCanonicalContentSources(queryClient);
+      // 1. Always refetch active canonical metadata sources on wake regardless of vault lock state or feed result.
+      //    Uses refetchType: 'active', which makes no request when nothing is mounted.
+      const refetchPromise = refetchCanonicalContentSources(queryClient);
 
-        // 2. Reconcile GET /vault metadata when a vault exists so a reset/rewrap on another device locks this tab
-        //    (VaultProvider.verifyOnWake only checks GET /auth/me, not GET /vault).
-        const shouldReloadVaultMeta =
-          typeof reloadVaultMetaRef.current === 'function' &&
-          (serverVaultStatusRef.current === 'present' || vaultStateRef.current === 'unlocked');
+      // 2. Reconcile GET /vault metadata on wake ONLY when the vault is unlocked AND an entries query is active
+      //    so non-item pages never issue an unexpected GET /vault request.
+      const shouldReloadVaultMeta =
+        hasActiveEntries &&
+        wasUnlockedAtWakeStart &&
+        typeof reloadVaultMetaRef.current === 'function';
 
-        const reloadPromise = shouldReloadVaultMeta
-          ? reloadVaultMetaRef
-              .current!()
-              .then((freshMeta) => {
-                if (freshMeta === null) {
-                  purgeEntriesCacheOnVaultReset(queryClient);
-                }
-                return freshMeta;
-              })
-              .catch(() => null)
-          : Promise.resolve(null);
+      const reloadPromise = shouldReloadVaultMeta
+        ? reloadVaultMetaRef
+            .current!()
+            .then((freshMeta) => {
+              if (freshMeta === null) {
+                purgeEntriesCacheOnVaultReset(queryClient);
+              }
+              return freshMeta;
+            })
+            .catch(() => null)
+        : Promise.resolve(null);
 
-        await Promise.allSettled([refetchPromise, reloadPromise]);
-      }
+      await Promise.allSettled([refetchPromise, reloadPromise]);
 
-      // 3. If the vault is still unlocked for the same user, poll all pages of GET /entries/changes
+      // 3. Run the changes feed ONLY on a wake event, ONLY when the session is authenticated,
+      //    the vault was unlocked on wake (and did not lock during verification), AND at least one
+      //    ['content','entries',itemId] query is currently active/observed.
       if (
         !isAuthenticatedRef.current ||
         userIdRef.current !== activeUserId ||
-        vaultStateRef.current !== 'unlocked'
+        !wasUnlockedAtWakeStart ||
+        (vaultStateRef.current !== 'unlocked' && vaultStateRef.current !== 'unlocking') ||
+        !hasActiveContentEntriesQuery(queryClient)
       ) {
         return;
       }
@@ -736,12 +751,13 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
         isUnlockedAndCurrent: () =>
           isAuthenticatedRef.current &&
           userIdRef.current === activeUserId &&
-          vaultStateRef.current === 'unlocked',
+          (vaultStateRef.current === 'unlocked' || vaultStateRef.current === 'unlocking') &&
+          hasActiveContentEntriesQuery(queryClient),
         fetchChanges: fetchChangesRef.current,
       });
     };
 
-    const triggerCoalescedCycle = (trigger: 'wake' | 'bootstrap'): Promise<void> => {
+    const triggerCoalescedWakeCycle = (): Promise<void> => {
       if (!isAuthenticatedRef.current || !userIdRef.current) {
         return Promise.resolve();
       }
@@ -756,7 +772,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       const p = Promise.resolve()
         .then(() => {
           scheduledMicrotask = false;
-          return executeCycle(trigger);
+          return executeWakeCycle();
         })
         .finally(() => {
           inFlightPromise = null;
@@ -766,17 +782,15 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       return p;
     };
 
-    runWakeCycleRef.current = triggerCoalescedCycle;
-
     const onFocus = () => {
-      void triggerCoalescedCycle('wake');
+      void triggerCoalescedWakeCycle();
     };
     const onOnline = () => {
-      void triggerCoalescedCycle('wake');
+      void triggerCoalescedWakeCycle();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void triggerCoalescedCycle('wake');
+        void triggerCoalescedWakeCycle();
       }
     };
 
@@ -785,29 +799,11 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      runWakeCycleRef.current = null;
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onOnline);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [queryClient]);
-
-  // Bootstrap watermark once when the vault becomes unlocked and no watermark is held yet for this user
-  useEffect(() => {
-    if (!isAuthenticated || !userId || vaultState !== 'unlocked') {
-      bootstrappedKeyRef.current = null;
-      return;
-    }
-    if (getWatermarkForUser(userId) !== null) {
-      return;
-    }
-    const bootstrapToken = `${userId}:${vaultKeyId ?? 'unlocked'}`;
-    if (bootstrappedKeyRef.current === bootstrapToken) {
-      return;
-    }
-    bootstrappedKeyRef.current = bootstrapToken;
-    void runWakeCycleRef.current?.('bootstrap');
-  }, [isAuthenticated, userId, vaultKeyId, vaultState]);
 }
 
 /**

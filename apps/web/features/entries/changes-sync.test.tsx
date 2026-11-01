@@ -1,5 +1,5 @@
 import type { ProblemDetails } from '@engram/shared-types';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
   act,
   cleanup,
@@ -27,6 +27,7 @@ import {
   clearAllChangesSyncState,
   computeChangesSince,
   dedupEntryChanges,
+  hasActiveContentEntriesQuery,
   isEntryRemotelyDeleted,
   subscribeRemoteTombstones,
   useEntryRemotelyDeleted,
@@ -341,25 +342,46 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       readonly position?: number;
     }>;
     readonly renderItemPage?: boolean;
+    readonly observeEntriesQuery?: boolean;
+  }
+
+  function ActiveEntriesQueryObserver({ itemId }: { readonly itemId: string }) {
+    useQuery({
+      queryKey: contentQueryKeys.entries(itemId),
+      queryFn: async () => {
+        const res = await fetch(`/api/v1/items/${itemId}/entries`);
+        return (await res.json()) as EntryMetaList;
+      },
+      retry: false,
+    });
+    return null;
   }
 
   async function setupSyncHarness(options: SyncHarnessOptions = {}) {
     const locale = options.locale ?? 'vi';
     const initialUnlocked = options.initialUnlocked ?? true;
     const renderItemPage = options.renderItemPage ?? false;
+    const initialObserveEntries = options.observeEntriesQuery ?? true;
 
     let vaultCtx!: VaultContextValue;
     let signOutFn!: () => Promise<void>;
     let loginFn!: (args: { email: string; password: string }) => Promise<unknown>;
     let refetchMeFn!: () => Promise<void>;
+    let sessionStatusVal = 'loading';
 
     function Probe() {
       vaultCtx = useVault();
       const sess = useSession();
+      sessionStatusVal = sess.status;
       signOutFn = () => sess.signOut();
       loginFn = (args) => sess.login(args);
       refetchMeFn = () => sess.refetchMe();
-      return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
+      return (
+        <>
+          <output data-testid="vault-state-probe">{vaultCtx.state}</output>
+          <output data-testid="session-status-probe">{sess.status}</output>
+        </>
+      );
     }
 
     let createdVault: CreateVaultResult | null = null;
@@ -623,9 +645,12 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     );
 
     const rendered = render(buildTree(null));
-    await waitFor(() =>
-      expect(screen.getByTestId('vault-state-probe')).toHaveTextContent('locked'),
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId('vault-state-probe')).toHaveTextContent('locked');
+      expect(screen.getByTestId('session-status-probe')).toHaveTextContent(
+        'authenticated_with_vault',
+      );
+    });
 
     const createOp = vaultCtx.beginOp();
     await act(async () => {
@@ -690,21 +715,27 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     requestLog.splice(0);
     changesCallCount = 0;
 
-    rendered.rerender(
-      buildTree(
-        <>
-          <ContentChangesSync />
-          {renderItemPage ? <ItemDetailPage itemId={ITEM_ID} lazyCards={false} /> : null}
-        </>,
-      ),
-    );
+    let currentObserveEntries = initialObserveEntries;
+    const renderCurrentTree = () => {
+      rendered.rerender(
+        buildTree(
+          <>
+            <ContentChangesSync />
+            {renderItemPage ? (
+              <ItemDetailPage itemId={ITEM_ID} lazyCards={false} />
+            ) : currentObserveEntries ? (
+              <ActiveEntriesQueryObserver itemId={ITEM_ID} />
+            ) : null}
+          </>,
+        ),
+      );
+    };
 
-    if (initialUnlocked) {
-      // Wait for initial bootstrap feed call on mount
+    renderCurrentTree();
+
+    if (renderItemPage || currentObserveEntries) {
       await waitFor(() => {
-        expect(
-          requestLog.some((r) => r.pathname === '/api/v1/entries/changes'),
-        ).toBe(true);
+        expect(hasActiveContentEntriesQuery(qc)).toBe(true);
       });
     }
 
@@ -712,8 +743,18 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       container: rendered.container,
       qc,
       vault: () => vaultCtx,
+      sessionStatus: () => sessionStatusVal,
       entriesMap,
       requests: requestLog,
+      setObserveEntriesQuery: async (observe: boolean) => {
+        currentObserveEntries = observe;
+        act(() => {
+          renderCurrentTree();
+        });
+        await waitFor(() => {
+          expect(hasActiveContentEntriesQuery(qc)).toBe(observe);
+        });
+      },
       sealForEntry,
       setChangesHandler: (
         fn: (params: URLSearchParams, callIndex: number) => Promise<Response> | Response,
@@ -769,6 +810,28 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     };
   }
 
+  interface WakeProbeHarness {
+    readonly requests: ReadonlyArray<{ readonly pathname: string }>;
+    readonly vault: () => VaultContextValue;
+  }
+
+  async function dispatchFocusWakeAndWaitForMeRefresh(
+    h: WakeProbeHarness,
+  ): Promise<void> {
+    const meCountBefore = h.requests.filter((r) => r.pathname.endsWith('/auth/me')).length;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    if (h.vault().state === 'unlocked') {
+      await waitFor(() => {
+        expect(
+          h.requests.filter((r) => r.pathname.endsWith('/auth/me')).length,
+        ).toBeGreaterThan(meCountBefore);
+        expect(h.vault().state).not.toBe('unlocking');
+      });
+    }
+  }
+
   it('computes since = watermark - 120 s in RFC3339Nano preserving sub-millisecond precision', () => {
     expect(computeChangesSince('2026-11-01T12:05:00.123456789Z')).toBe(
       '2026-11-01T12:03:00.123456789Z',
@@ -779,14 +842,46 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(computeChangesSince('not-a-timestamp')).toBeUndefined();
   });
 
+  it('does not call the changes feed on mount or on wake when no entries query is active, and calls the feed on wake when an entries query is active and vault unlocked (F1)', async () => {
+    const h = await setupSyncHarness({
+      initialUnlocked: true,
+      observeEntriesQuery: false,
+      renderItemPage: false,
+    });
+
+    // 1. No feed call on mount even when authenticated and vault unlocked
+    expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(0);
+    expect(hasActiveContentEntriesQuery(h.qc)).toBe(false);
+
+    // 2. Wake while unlocked with NO active entries query (e.g. /app list, settings, unlock, onboarding)
+    //    -> 0 feed calls and 0 reloadVaultMeta calls from ContentChangesSync
+    h.requests.splice(0);
+    await dispatchFocusWakeAndWaitForMeRefresh(h);
+    expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(0);
+    expect(h.requests.filter((r) => r.pathname.endsWith('/vault'))).toHaveLength(0);
+
+    // 3. Mount an active ['content','entries',ITEM_ID] observer -> still no feed call on observer mount alone
+    await h.setObserveEntriesQuery(true);
+    expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(0);
+
+    // 4. Wake while unlocked AND entries query is active -> calls the changes feed and stores watermark
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => {
+      expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(1);
+      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(
+        '2026-11-01T12:00:00.123456789Z',
+      );
+    });
+  });
+
   it('triggers canonical refetch on wake (focus, online, visibilitychange) even when feed returns empty, and coalesces overlapping wake bursts into one cycle', async () => {
-    const h = await setupSyncHarness({ initialUnlocked: true });
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: true });
     const invalidateSpy = vi.spyOn(h.qc, 'invalidateQueries');
 
-    // Clear initial bootstrap logs
     h.requests.splice(0);
     invalidateSpy.mockClear();
-
     const pageGate = createDeferred<void>();
     let changesCallsDuringBurst = 0;
     h.setChangesHandler(async () => {
@@ -829,25 +924,36 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     // Overlapping wakes coalesced into exactly 1 feed request
     expect(changesCallsDuringBurst).toBe(1);
 
-    // Canonical sources were invalidated regardless of empty feed
-    const invalidatedPrefixes = invalidateSpy.mock.calls.map((call) => {
-      const firstArg = call[0];
-      return firstArg && typeof firstArg === 'object' && 'queryKey' in firstArg
-        ? firstArg.queryKey
-        : undefined;
+    // Canonical sources were invalidated with refetchType: 'active' regardless of empty feed
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['content', 'entries'],
+      refetchType: 'active',
     });
-    expect(invalidatedPrefixes).toContainEqual(['content', 'entries']);
-    expect(invalidatedPrefixes).toContainEqual(['content', 'item']);
-    expect(invalidatedPrefixes).toContainEqual(['content', 'items']);
-    expect(invalidatedPrefixes).toContainEqual(['content', 'tags']);
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['content', 'item'],
+      refetchType: 'active',
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['content', 'items'],
+      refetchType: 'active',
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['content', 'tags'],
+      refetchType: 'active',
+    });
   });
 
   it('reads all feed pages before storing the new watermark, keeps old watermark on second-page error, and passes since = watermark - 120 s on the next call', async () => {
-    const h = await setupSyncHarness({ initialUnlocked: true });
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: true });
     const initialWatermark = '2026-11-01T12:00:00.123456789Z';
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(initialWatermark);
 
-    // Seed cached entry metadata + decrypted body for ENTRY_ID_1 v1
+    // Bootstrap initial watermark via first wake on the open item page
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => {
+      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(initialWatermark);
+    });
     h.qc.setQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID), {
       items: [
         {
@@ -1088,6 +1194,7 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_3, 5))).toBe('body-3-v5');
 
     // Now test 410 changes_window_expired on wake: drops watermark and relies on canonical refetch
+    changesSyncTesting.setWatermarkForUser(USER_A_ID, '2026-11-01T12:00:00.123456789Z');
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).not.toBeNull();
     h.setChangesHandler(() => problemResponse('changes_window_expired', 410));
 
@@ -1100,25 +1207,38 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     });
   });
 
-  it('does not call the changes feed when the vault is locked, and writes nothing to localStorage or sessionStorage', async () => {
-    const h = await setupSyncHarness({ initialUnlocked: false });
+  it('does not call the changes feed when the vault is locked, and writes no changes-sync state to localStorage or sessionStorage', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: false, observeEntriesQuery: true });
 
-    // No bootstrap feed call while locked
+    // Clear the sabk.vault.lockEpoch wake notification written by lockNow() in harness setup
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+
+    // No feed call on mount while locked
     expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(0);
 
-    // Trigger wake while locked -> canonical queries invalidated, reloadVaultMeta called, but 0 feed calls
+    // Trigger wake while locked -> active canonical queries invalidated, but 0 feed calls and 0 reloadVaultMeta calls
     const invalidateSpy = vi.spyOn(h.qc, 'invalidateQueries');
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
     });
 
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['content', 'entries'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ['content', 'entries'],
+        refetchType: 'active',
+      });
     });
     expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(0);
+    expect(h.requests.filter((r) => r.pathname.endsWith('/vault'))).toHaveLength(0);
 
-    // Unlock -> bootstrap feed call runs, still 0 keys in localStorage / sessionStorage
+    // Unlock and trigger wake -> feed call runs, still 0 keys in localStorage / sessionStorage
     await h.unlock();
+    expect(h.requests.filter((r) => r.pathname === '/api/v1/entries/changes')).toHaveLength(0);
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
     await waitFor(() => {
       expect(
         h.requests.filter((r) => r.pathname === '/api/v1/entries/changes').length,
@@ -1276,7 +1396,8 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     fireEvent.keyDown(jsonInput, { key: 'Enter' });
     expect(jsonHolderRef.current.tableSource).toContain(JSON_DRAFT_SENTINEL);
 
-    // Remote device deletes ALL THREE entries (ENTRY_ID_1, ENTRY_ID_2, ENTRY_ID_3)
+    // Remote device deletes ALL THREE entries (ENTRY_ID_1, ENTRY_ID_2, ENTRY_ID_3).
+    // Wait for VaultProvider.verifyOnWake to restore unlocked state before inspecting cards.
     h.entriesMap.get(ENTRY_ID_1)!.deleted = true;
     h.entriesMap.get(ENTRY_ID_2)!.deleted = true;
     h.entriesMap.get(ENTRY_ID_3)!.deleted = true;
@@ -1312,9 +1433,10 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       } satisfies EntryChangesPage),
     );
 
-    // Trigger wake -> feed + refetch remove all 3 from ['content','entries',ITEM_ID]
+    // Trigger reconnect wake ('online') -> ContentChangesSync runs feed + canonical refetch while
+    // keeping the open tab's active editors intact so advisor-dec-211 keeps dirty cards mounted.
     await act(async () => {
-      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('online'));
     });
 
     await waitFor(() => {
