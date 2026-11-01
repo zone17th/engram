@@ -57,7 +57,7 @@ export function DupPickerDialog({
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
-
+  const closingExplicitlyRef = useRef(false);
   const [items, setItems] = useState<ItemSummary[]>([...initialItems]);
   const [nextCursor, setNextCursor] = useState<string | null>(initialNextCursor);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -75,6 +75,7 @@ export function DupPickerDialog({
     if (!dlg) return;
 
     if (open) {
+      closingExplicitlyRef.current = false;
       if (!dlg.open && typeof dlg.showModal === 'function') {
         try {
           dlg.showModal();
@@ -89,6 +90,7 @@ export function DupPickerDialog({
         firstOpt.focus();
       }
     } else if (dlg.open) {
+      closingExplicitlyRef.current = true;
       if (typeof dlg.close === 'function') {
         try {
           dlg.close();
@@ -98,7 +100,24 @@ export function DupPickerDialog({
       } else {
         dlg.removeAttribute('open');
       }
+      closingExplicitlyRef.current = false;
     }
+
+    return () => {
+      if (dlg.open) {
+        closingExplicitlyRef.current = true;
+        if (typeof dlg.close === 'function') {
+          try {
+            dlg.close();
+          } catch {
+            dlg.removeAttribute('open');
+          }
+        } else {
+          dlg.removeAttribute('open');
+        }
+        closingExplicitlyRef.current = false;
+      }
+    };
   }, [open]);
 
   useEffect(() => {
@@ -179,7 +198,29 @@ export function DupPickerDialog({
     }
   };
 
+  const closeNativeDialogSync = () => {
+    const dlg = dialogRef.current;
+    if (!dlg || !dlg.open) return;
+    closingExplicitlyRef.current = true;
+    if (typeof dlg.close === 'function') {
+      try {
+        dlg.close();
+      } catch {
+        dlg.removeAttribute('open');
+      }
+    } else {
+      dlg.removeAttribute('open');
+    }
+    closingExplicitlyRef.current = false;
+  };
+
+  const handleCancelExplicit = () => {
+    closeNativeDialogSync();
+    onCancel();
+  };
+
   const handleSelectIndex = (idx: number) => {
+    closeNativeDialogSync();
     if (idx === createNewOptionIndex) {
       onPick({ kind: 'create-new' });
       return;
@@ -206,7 +247,7 @@ export function DupPickerDialog({
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      onCancel();
+      handleCancelExplicit();
       return;
     }
     if (event.key === 'Enter') {
@@ -228,7 +269,9 @@ export function DupPickerDialog({
       aria-labelledby="dupDialogTitle"
       onKeyDown={handleKeyDown}
       onClose={() => {
-        onCancel();
+        if (!closingExplicitlyRef.current) {
+          onCancel();
+        }
       }}
       className="m-auto border-0 bg-transparent p-0 text-body"
     >
@@ -311,12 +354,12 @@ export function DupPickerDialog({
             type="button"
             role="option"
             id="dup-opt-new"
+            data-testid="dup-picker-create-same-name"
             aria-selected={activeIndex === createNewOptionIndex}
             tabIndex={activeIndex === createNewOptionIndex ? 0 : -1}
             data-pick="new"
             data-opt-idx={createNewOptionIndex}
             onClick={() => handleSelectIndex(createNewOptionIndex)}
-            className="dup-row dup-row-new flex w-full cursor-pointer flex-wrap items-center justify-start gap-2 rounded-lg border border-dashed border-line bg-canvas px-3.5 py-3 text-left text-body"
           >
             <span className="mono text-accent">+</span>
             <span>
@@ -350,7 +393,7 @@ export function DupPickerDialog({
             type="button"
             data-close="1"
             data-testid="dup-picker-cancel"
-            onClick={onCancel}
+            onClick={handleCancelExplicit}
             className="btn btn-tertiary"
           >
             {tOmni('dupCancel')}

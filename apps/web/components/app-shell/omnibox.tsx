@@ -51,10 +51,15 @@ import {
   splitMarkedPrefix,
 } from '@/features/omnibox/search-helpers';
 import {
+  clearLockClearedNotice,
   clearSaveUnconfirmed,
+  getLockClearedNoticeSnapshot,
   getSaveUnconfirmedSnapshot,
+  reconcileLockClearedNoticeUser,
   reconcileSaveUnconfirmedUser,
+  recordLockClearedNotice,
   recordSaveUnconfirmed,
+  subscribeLockClearedNotice,
   subscribeSaveUnconfirmed,
 } from '@/features/omnibox/unconfirmed-save-store';
 import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
@@ -80,7 +85,6 @@ import { cn } from '@/lib/cn';
 
 const MAX_TEXTAREA_HEIGHT_PX = 132;
 const MAX_VISIBLE_OPTION_TAG_CHIPS = 3;
-const DEFAULT_FALLBACK_USER_ID = 'current-session-user';
 
 export type OmniboxOption =
   | {
@@ -104,7 +108,6 @@ export type OmniboxOption =
 interface DupPickerModalState {
   readonly name: string;
   readonly tags: readonly string[];
-  readonly body: string;
   readonly initialItems: readonly ItemSummary[];
   readonly total: number;
   readonly nextCursor: string | null;
@@ -213,8 +216,9 @@ export function Omnibox({
   const lookupPendingRef = useRef(false);
   const inputValueRef = useRef('');
   const activePlanRef = useRef<QuickAddSavePlan | null>(null);
-  const pendingLockNoticeRef = useRef<'draft' | 'plan' | null>(null);
-
+  const submittedDraftRef = useRef<string | null>(null);
+  const activeUserIdRef = useRef<string | null>(null);
+  const hadDupPickerOpenRef = useRef(false);
   const [inputValue, setInputValue] = useState('');
   inputValueRef.current = inputValue;
 
@@ -242,11 +246,15 @@ export function Omnibox({
   const [, setPlanRenderTick] = useState(0);
   const [targetTagLimitCount, setTargetTagLimitCount] = useState<number | null>(null);
   const [dupPickerState, setDupPickerState] = useState<DupPickerModalState | null>(null);
-  const [lockClearedNoticeKind, setLockClearedNoticeKind] = useState<'draft' | 'plan' | null>(null);
-
   const unconfirmedSnapshot = useSyncExternalStore(
     subscribeSaveUnconfirmed,
     getSaveUnconfirmedSnapshot,
+    () => null,
+  );
+
+  const lockNoticeSnapshot = useSyncExternalStore(
+    subscribeLockClearedNotice,
+    getLockClearedNoticeSnapshot,
     () => null,
   );
 
@@ -254,7 +262,8 @@ export function Omnibox({
   const isVaultLocked = !isVaultUnlocked;
 
   // Resolve active user ID from QueryClient's `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`.
-  const activeUserId = ((): string => {
+  // Never fall back to a shared constant (advisor-dec-120, HM18B-R1-5).
+  const activeUserId = ((): string | null => {
     if (queryClient) {
       const meQueries = queryClient.getQueriesData<Me | null>({ queryKey: ['auth', 'me'] });
       for (let i = meQueries.length - 1; i >= 0; i -= 1) {
@@ -264,36 +273,65 @@ export function Omnibox({
         }
       }
     }
-    return getKnownDeviceSessionUserId() ?? DEFAULT_FALLBACK_USER_ID;
+    return getKnownDeviceSessionUserId() ?? null;
   })();
+  activeUserIdRef.current = activeUserId;
 
   useEffect(() => {
     reconcileSaveUnconfirmedUser(activeUserId);
+    reconcileLockClearedNoticeUser(activeUserId);
   }, [activeUserId]);
 
   useEffect(() => {
     return subscribeSessionBroadcast((message) => {
       if (message.type === 'signed_out' && (!message.reason || message.reason === 'logout')) {
         clearSaveUnconfirmed();
+        clearLockClearedNotice();
       }
     });
   }, []);
 
   const visibleUnconfirmedRecord =
-    isVaultUnlocked && unconfirmedSnapshot?.userId === activeUserId ? unconfirmedSnapshot : null;
+    isVaultUnlocked &&
+    activeUserId !== null &&
+    unconfirmedSnapshot?.userId === activeUserId
+      ? unconfirmedSnapshot
+      : null;
 
+  const visibleLockClearedNoticeKind =
+    isVaultUnlocked &&
+    activeUserId !== null &&
+    lockNoticeSnapshot?.userId === activeUserId
+      ? lockNoticeSnapshot.kind
+      : null;
   const parsed = useMemo(() => parseQuickAdd(inputValue), [inputValue]);
   const trimmedInput = useMemo(() => trimUnicodeWhiteSpace(inputValue), [inputValue]);
   const hasNonEmptyInput = trimmedInput.length > 0;
 
-  // When vault transitions to unlocked after a lock that cleared a draft/plan, surface the post-unlock notice.
+  // Restore focus to the omnibox textarea after the U9 duplicate picker dialog closes and unmounts (HM18B-R1-2).
   useEffect(() => {
-    if (isVaultUnlocked && pendingLockNoticeRef.current !== null) {
-      setLockClearedNoticeKind(pendingLockNoticeRef.current);
-      pendingLockNoticeRef.current = null;
+    if (dupPickerState !== null) {
+      hadDupPickerOpenRef.current = true;
+      return;
     }
-  }, [isVaultUnlocked]);
-
+    if (!hadDupPickerOpenRef.current) {
+      return;
+    }
+    hadDupPickerOpenRef.current = false;
+    textareaRef.current?.focus();
+    const rafId = requestAnimationFrame(() => {
+      if (
+        document.activeElement === document.body ||
+        document.activeElement === null ||
+        document.activeElement === textareaRef.current
+      ) {
+        textareaRef.current?.focus();
+      }
+    });
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
+  }, [dupPickerState]);
   // Read cached tags from the rail's `['content', 'tags', ...]` cache without firing any network request.
   const getCachedTags = useCallback((): Tag[] => {
     if (!queryClient) return [];
@@ -366,6 +404,7 @@ export function Omnibox({
     setActivePlan(null);
     setTargetTagLimitCount(null);
     setDupPickerState(null);
+    submittedDraftRef.current = null;
     lookupPendingRef.current = false;
   }, []);
 
@@ -390,10 +429,12 @@ export function Omnibox({
         activePlanRef.current = null;
       }
 
-      if (hadDraftOrPlan) {
-        pendingLockNoticeRef.current = hadCommittedMeta ? 'plan' : 'draft';
+      if (hadDraftOrPlan && activeUserIdRef.current) {
+        recordLockClearedNotice({
+          userId: activeUserIdRef.current,
+          kind: hadCommittedMeta ? 'plan' : 'draft',
+        });
       }
-
       if (textareaRef.current) {
         textareaRef.current.value = '';
         textareaRef.current.style.height = '';
@@ -412,7 +453,7 @@ export function Omnibox({
       setActivePlan(null);
       setTargetTagLimitCount(null);
       setDupPickerState(null);
-      setLockClearedNoticeKind(null);
+      submittedDraftRef.current = null;
       lookupPendingRef.current = false;
       undoToast?.clearOmniboxJustCleared();
       removeOmniboxSearchQueries();
@@ -639,17 +680,21 @@ export function Omnibox({
         setTargetTagLimitCount(null);
         setActionErrorCode(null);
         setLiveMessage('');
+        const currentVal = textareaRef.current?.value ?? inputValueRef.current;
+        const submittedVal = submittedDraftRef.current;
+        submittedDraftRef.current = null;
 
-        setInputValue('');
-        inputValueRef.current = '';
-        if (textareaRef.current) {
-          textareaRef.current.value = '';
-          syncTextareaHeight(textareaRef.current);
-          textareaRef.current.focus();
+        if (submittedVal === null || currentVal === submittedVal) {
+          setInputValue('');
+          inputValueRef.current = '';
+          if (textareaRef.current) {
+            textareaRef.current.value = '';
+            syncTextareaHeight(textareaRef.current);
+            textareaRef.current.focus();
+          }
+          // Mark omnibox as just cleared by save so immediate Ctrl+Z / ⌘Z triggers Undo (plan §2.11 step 4, SPEC §7.8).
+          undoToast?.markOmniboxJustCleared(textareaRef.current);
         }
-        // Mark omnibox as just cleared by save so immediate Ctrl+Z / ⌘Z triggers Undo (plan §2.11 step 4, SPEC §7.8).
-        undoToast?.markOmniboxJustCleared(textareaRef.current);
-
         // Push Undo toast ONLY after entry 201 commit; Undo deletes ONLY the entry (Q18, dec-116, P4BE1-2, P4FE2-13).
         undoToast?.pushUndoToast({
           message: tOmni('savedToastMessage', { name: savedItemName }),
@@ -677,23 +722,27 @@ export function Omnibox({
       }
 
       if (outcome.status === 'failed') {
-        const { classifiedError, stepKey } = outcome;
+        const { classifiedError, stepKey, priorUncertain } = outcome;
 
         // Case (b) pre-lookup terminal logout boundary (`session_invalid`, `forbidden`, or unrefreshed `unauthenticated`)
-        // after an uncertain send -> drop plan and draft, never replay, record `saveUnconfirmed` bound to `user_id`
-        // (SPEC §3.4, advisor-dec-119, advisor-dec-120).
+        // -> drop plan and draft, never replay; record `saveUnconfirmed` bound to `user_id` ONLY when the failing step
+        // had an uncertain prior send (`priorUncertain === true`) and a real `activeUserId` is known
+        // (SPEC §3.4, advisor-dec-119, advisor-dec-120, HM18B-R1-5).
         if (
           classifiedError.isLogoutBoundary ||
           classifiedError.preLookupRecovery === 'terminal_logout_boundary'
         ) {
-          recordSaveUnconfirmed({
-            userId: activeUserId,
-            itemName: plan.itemName,
-          });
+          if (priorUncertain && activeUserId) {
+            recordSaveUnconfirmed({
+              userId: activeUserId,
+              itemName: plan.itemName,
+            });
+          }
           plan.op.dispose?.();
           activePlanRef.current = null;
           setActivePlan(null);
           setTargetTagLimitCount(null);
+          submittedDraftRef.current = null;
           setInputValue('');
           inputValueRef.current = '';
           if (textareaRef.current) {
@@ -718,6 +767,7 @@ export function Omnibox({
           activePlanRef.current = null;
           setActivePlan(null);
           setTargetTagLimitCount(null);
+          submittedDraftRef.current = null;
           setInputValue('');
           inputValueRef.current = '';
           if (textareaRef.current) {
@@ -762,6 +812,7 @@ export function Omnibox({
         plan.op.dispose?.();
         activePlanRef.current = null;
         setActivePlan(null);
+        submittedDraftRef.current = null;
         const code = classifiedError.i18nKey.replace(
           /^content\.errors\./,
           '',
@@ -823,6 +874,7 @@ export function Omnibox({
           return;
         }
 
+        submittedDraftRef.current = textareaRef.current?.value ?? inputValueRef.current;
         activePlanRef.current = plan;
         setActivePlan(plan);
         await runPlanExecution(plan);
@@ -861,7 +913,7 @@ export function Omnibox({
       }
 
       clearSaveUnconfirmed();
-      setLockClearedNoticeKind(null);
+      clearLockClearedNotice();
       setTargetTagLimitCount(null);
       setActionErrorCode(null);
 
@@ -927,11 +979,10 @@ export function Omnibox({
           return;
         }
 
-        // >= 2 matches -> open U9 duplicate picker dialog.
+        // >= 2 matches -> open U9 duplicate picker dialog (do not copy plaintext body into modal state — HM18B-R1-8).
         setDupPickerState({
           name: currentParsed.name,
           tags: currentParsed.tags,
-          body: currentParsed.body,
           initialItems: matchedItems,
           total,
           nextCursor: lookupRes.next_cursor ?? null,
@@ -956,12 +1007,22 @@ export function Omnibox({
       setDupPickerState(null);
       textareaRef.current?.focus();
       if (!pending) return;
+      if (lookupPendingRef.current || activePlanRef.current?.running) {
+        return;
+      }
+
+      // Read the draft from the textarea / ref at pick time rather than storing body in modal state (HM18B-R1-8).
+      const latestDraft = textareaRef.current?.value ?? inputValueRef.current;
+      const latestParsed = parseQuickAdd(latestDraft);
+      if (latestParsed.mode !== 'add' || !latestParsed.body) {
+        return;
+      }
 
       if (selection.kind === 'create-new') {
         void startSavePlanForTarget({
           name: pending.name,
           tags: pending.tags,
-          body: pending.body,
+          body: latestParsed.body,
           targetItem: null,
           isNewItem: true,
         });
@@ -969,7 +1030,7 @@ export function Omnibox({
         void startSavePlanForTarget({
           name: pending.name,
           tags: pending.tags,
-          body: pending.body,
+          body: latestParsed.body,
           targetItem: selection.item,
           isNewItem: false,
         });
@@ -1115,15 +1176,21 @@ export function Omnibox({
   );
 
   const handleInputChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    // Prevent silent data loss or draft/plan divergence while a save plan is actively running (HM18B-R1-3).
+    if (activePlanRef.current?.running) {
+      if (textareaRef.current) {
+        textareaRef.current.value = inputValueRef.current;
+      }
+      return;
+    }
     const nextValue = event.target.value;
     setInputValue(nextValue);
     inputValueRef.current = nextValue;
     setGuardKind(null);
     setActionErrorCode(null);
-    setLockClearedNoticeKind(null);
+    clearLockClearedNotice();
     setTargetTagLimitCount(null);
     undoToast?.clearOmniboxJustCleared();
-
     if (activePlanRef.current && !activePlanRef.current.running) {
       abortAndClearSavePlan();
     }
@@ -1400,6 +1467,8 @@ export function Omnibox({
           ref={textareaRef}
           rows={1}
           value={inputValue}
+          readOnly={isPlanRunning}
+          aria-busy={isPlanRunning || undefined}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
           placeholder={tOmni('placeholder')}
@@ -1427,7 +1496,7 @@ export function Omnibox({
           compact ? 'mt-1.5' : 'mt-2',
         )}
       >
-        {lockClearedNoticeKind !== null && isVaultUnlocked ? (
+        {visibleLockClearedNoticeKind !== null ? (
           <div
             id={lockClearedNoticeId}
             role="status"
@@ -1437,7 +1506,7 @@ export function Omnibox({
           >
             <div className="omni-lock-notice-inner flex flex-wrap items-center justify-between gap-2.5">
               <p className="m-0 text-[13px] font-semibold text-body">
-                {lockClearedNoticeKind === 'plan'
+                {visibleLockClearedNoticeKind === 'plan'
                   ? tOmni('lockClearedPlanNotice')
                   : tOmni('lockClearedDraftNotice')}
               </p>
@@ -1445,7 +1514,7 @@ export function Omnibox({
                 type="button"
                 data-dismiss-lock-notice="1"
                 data-testid="omnibox-lock-notice-dismiss"
-                onClick={() => setLockClearedNoticeKind(null)}
+                onClick={() => clearLockClearedNotice()}
                 className="btn btn-tertiary btn-sm"
               >
                 {tOmni('lockNoticeDismiss')}

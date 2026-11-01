@@ -228,6 +228,7 @@ export type ExecuteSavePlanOutcome =
       readonly stepKey: SavePlanStepKey;
       readonly classifiedError: ClassifiedContentMutationError;
       readonly rawError: unknown;
+      readonly priorUncertain: boolean;
       readonly hadUncertainSend: boolean;
     };
 
@@ -309,7 +310,7 @@ export async function executeQuickAddSavePlan(
           plan.running = false;
           return { status: 'aborted_or_stale' };
         }
-        const classified = classifyContentMutationError(error, { hadUncertainSend: true });
+        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
         if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
           plan.itemCreateUncertainSend = false;
         }
@@ -323,7 +324,8 @@ export async function executeQuickAddSavePlan(
           stepKey: 'item',
           classifiedError: classified,
           rawError: error,
-          hadUncertainSend: true,
+          priorUncertain,
+          hadUncertainSend: priorUncertain,
         };
       }
       continue;
@@ -360,7 +362,7 @@ export async function executeQuickAddSavePlan(
             plan.running = false;
             return { status: 'aborted_or_stale' };
           }
-          const classified = classifyContentMutationError(error, { hadUncertainSend: true });
+          const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
           if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
             tagTask.uncertainSend = false;
           }
@@ -374,7 +376,8 @@ export async function executeQuickAddSavePlan(
             stepKey: 'tags',
             classifiedError: classified,
             rawError: error,
-            hadUncertainSend: true,
+            priorUncertain,
+            hadUncertainSend: priorUncertain,
           };
         }
       }
@@ -412,7 +415,7 @@ export async function executeQuickAddSavePlan(
           plan.running = false;
           return { status: 'aborted_or_stale' };
         }
-        const classified = classifyContentMutationError(error, { hadUncertainSend: true });
+        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
         if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
           plan.assignTagsUncertainSend = false;
         }
@@ -426,7 +429,8 @@ export async function executeQuickAddSavePlan(
           stepKey: 'assign',
           classifiedError: classified,
           rawError: error,
-          hadUncertainSend: true,
+          priorUncertain,
+          hadUncertainSend: priorUncertain,
         };
       }
       continue;
@@ -485,7 +489,7 @@ export async function executeQuickAddSavePlan(
           plan.running = false;
           return { status: 'aborted_or_stale' };
         }
-        const classified = classifyContentMutationError(error, { hadUncertainSend: true });
+        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
         if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
           plan.entryCreateUncertainSend = false;
         }
@@ -499,7 +503,8 @@ export async function executeQuickAddSavePlan(
           stepKey: 'entry',
           classifiedError: classified,
           rawError: error,
-          hadUncertainSend: true,
+          priorUncertain,
+          hadUncertainSend: priorUncertain,
         };
       }
     }
