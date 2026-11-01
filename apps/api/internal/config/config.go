@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/kelseyhightower/envconfig"
+	"golang.org/x/net/publicsuffix"
 )
 
 const minSecretLen = 32
@@ -278,7 +279,7 @@ func (c *Config) validateWebAuthnPolicy() error {
 		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không hợp lệ", c.WebAuthnRPID)
 	}
 	if !isRPIDMatchOrRegistrableSuffix(rpID, originHost) {
-		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không khớp với host của APP_ORIGIN (%q)", rpID, originHost)
+		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không khớp với host của APP_ORIGIN (%q) hoặc là public suffix", rpID, originHost)
 	}
 
 	c.WebAuthnRPID = rpID
@@ -342,12 +343,21 @@ func isValidRPIDHost(rpID string) bool {
 	return true
 }
 
+// isRPIDMatchOrRegistrableSuffix nhận rpID khi nó bằng host của origin hoặc là hậu tố domain đăng ký được của host
+// đó. RP ID là public suffix bị từ chối (KS-PSL, P04 Task 9): xét cả phần ICANN lẫn phần private của Public Suffix
+// List (`github.io` là suffix private) nên không lọc theo cờ icann. Ngoại lệ tường minh duy nhất là `localhost`
+// (dev). IP chỉ được nhận khi trùng chính xác host của origin, không qua tra PSL.
 func isRPIDMatchOrRegistrableSuffix(rpID, originHost string) bool {
+	if net.ParseIP(originHost) != nil || net.ParseIP(rpID) != nil {
+		return rpID == originHost
+	}
+	if rpID != "localhost" {
+		if suffix, _ := publicsuffix.PublicSuffix(rpID); suffix == rpID {
+			return false
+		}
+	}
 	if rpID == originHost {
 		return true
-	}
-	if net.ParseIP(originHost) != nil || net.ParseIP(rpID) != nil {
-		return false
 	}
 	if strings.Count(rpID, ".") < 1 {
 		return false

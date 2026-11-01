@@ -994,5 +994,46 @@
         "reloadCta": "Tải lại & thử lại"
       }
     }
+  },
+  "content": {
+    "errors": {
+      "name_invalid": "Tên mục phải dài 1–200 ký tự sau chuẩn hoá, không chỉ gồm dấu câu và không chứa ký tự điều khiển hoặc ký tự đảo chiều văn bản (bidi).",
+      "hint_invalid": "Gợi ý tối đa 120 ký tự và không chứa ký tự điều khiển.",
+      "tag_display_invalid": "Tên tag phải dài 1–50 ký tự và không chứa ký tự điều khiển.",
+      "item_id_conflict": "Mã định danh mục này đã được dùng cho một mục khác.",
+      "item_deleted": "Mục chứa entry này đã bị xoá. Hãy khôi phục mục trước.",
+      "item_tag_limit": "Mỗi mục gắn tối đa 20 tag đang hoạt động.",
+      "item_entry_limit": "Mỗi mục chứa tối đa 200 entry đang hoạt động.",
+      "tag_conflict": "Đã có tag hoạt động trùng tên sau chuẩn hoá.",
+      "entry_invalid": "Dữ liệu mã hoá hoặc envelope của entry không hợp lệ.",
+      "entry_too_large": "Mỗi entry tối đa 256 KiB. Hãy tách bớt hoặc lưu thành nhiều entry.",
+      "entry_id_conflict": "Mã định danh entry này đã tồn tại.",
+      "entry_key_mismatch": "Entry này được mã hoá bằng khoá vault khác. Hãy tải lại trạng thái vault.",
+      "entry_nonce_reused": "Nonce mã hoá bị trùng. Hãy bấm lưu lại để tạo nonce mới.",
+      "entry_restore_via_item": "Entry này bị xoá cùng mục. Hãy khôi phục mục thay vì khôi phục riêng entry.",
+      "reorder_mismatch": "Danh sách entry đã thay đổi ở thiết bị khác. Đang tải lại thứ tự mới nhất.",
+      "changes_window_expired": "Mốc đồng bộ đã quá 29 ngày. Đang tải lại toàn bộ danh sách.",
+      "not_found": "Mục, tag hoặc entry này đã bị xoá hoặc không thuộc tài khoản của bạn.",
+      "invalid_request": "Yêu cầu không hợp lệ. Vui lòng kiểm tra lại dữ liệu.",
+      "rate_limited": "Thao tác quá nhanh. Chờ vài giây rồi thử lại — lần lưu vừa rồi không bị nhân đôi.",
+      "precondition_required": "Thiếu điều kiện phiên bản. Hãy tải lại bản mới nhất rồi thử lại.",
+      "version_mismatch": "Đã được sửa ở thiết bị khác. Bạn có thể tải bản mới hoặc giữ bản của mình.",
+      "idempotency_conflict": "Xung đột khoá yêu cầu với nội dung khác. Hãy thực hiện lại thao tác.",
+      "idempotency_in_progress": "Lần lưu trước vẫn đang xử lý trên máy chủ. Đang thử lại với cùng khoá yêu cầu.",
+      "vault_absent": "Chưa có vault hoặc vault vừa được đặt lại. Hãy thiết lập vault trước khi lưu nội dung.",
+      "dependency_unavailable": "Máy chủ đang bận tạm thời. Bản nháp vẫn còn nguyên — hãy thử lại.",
+      "unauthenticated": "Phiên đăng nhập đã kết thúc. Vui lòng đăng nhập lại.",
+      "access_expired": "Phiên truy cập đã hết hạn và chưa tự làm mới được. Bản nháp vẫn an toàn — hãy thử lại.",
+      "session_invalid": "Phiên đăng nhập không còn hợp lệ. Vui lòng đăng nhập lại.",
+      "csrf_invalid": "Mã bảo vệ CSRF đã hết hạn và chưa tự làm mới được. Hãy thử lại.",
+      "forbidden": "Bạn không có quyền thực hiện thao tác này.",
+      "internal_error": "Chưa xử lý được yêu cầu lúc này. Bản nháp vẫn còn nguyên — hãy thử lại.",
+      "network": "Không kết nối được máy chủ. Bản nháp vẫn giữ trong tab này cho tới khi vault khoá — hãy thử lại.",
+      "offline": "Đang ngoại tuyến. Không lưu được lúc này — bản nháp vẫn nằm trong ô cho tới khi vault khoá."
+    },
+    "privacy": {
+      "notice": "Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối",
+      "hintServerReadable": "máy chủ đọc được"
+    }
   }
 }
