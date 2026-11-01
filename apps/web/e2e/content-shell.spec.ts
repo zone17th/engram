@@ -25,6 +25,6 @@ test.describe('P04-T11 content shell skeleton', () => {
     await expectUnlockedOnApp(page);
 
     await expect(page.locator('main')).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(page.getByRole('combobox')).toBeVisible({ timeout: UI_WAIT_MS });
+    await expect(page.getByRole('textbox', { name: 'Search or save' })).toBeVisible({ timeout: UI_WAIT_MS });
   });
 });
