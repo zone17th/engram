@@ -450,6 +450,33 @@ textarea.omnibox-input::placeholder {
   font-weight: 600; cursor: pointer; box-shadow: var(--sh-card);
 }
 .toast-more:hover { background: var(--dark-footer); }
+@media (max-width: 639px) {
+  .toast-stack { gap: 6px; bottom: 16px; }
+  .toast-live { gap: 6px; }
+  .toast-stack .toast {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 9px 12px;
+    font-size: 13px;
+    line-height: 1.3;
+  }
+  .toast-stack .toast .toast-body {
+    width: 100%;
+    flex: none;
+    gap: 2px;
+  }
+  .toast-stack .toast .toast-sub {
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  .toast-stack .toast button {
+    align-self: flex-end;
+    font-size: 13px;
+    line-height: 1.25;
+    padding: 2px 0;
+  }
+}
 /* ---------- form fields (P02 auth/account) ---------- */
 
 .field { display: block; margin-bottom: 1rem; }
@@ -823,12 +850,23 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
   overflow-wrap: anywhere;
 }
 .omni-empty-box {
-  padding: 16px;
+  padding: 18px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 .omni-create-option {
   border-top: 1px dashed var(--border);
+  background: var(--canvas);
+  padding: 14px 16px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.omni-create-option > span:nth-child(2) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 1 1 180px;
+  line-height: 1.35;
 }
 .omni-hint-line[hidden] {
   display: none !important;
