@@ -9,17 +9,21 @@
 @tailwind components;
 @tailwind utilities;
 
-/* FU3 UI-TOUCH-44 (advisor-dec-204, RV-UI4-6, dec-206):
+/* FU3 UI-TOUCH-44 (advisor-dec-204, RV-UI4-6, dec-206; FU3 fix1 LEAD-FU3-1):
    Under `@media (pointer: coarse)`, `.touch-target` ensures at least a 44x44 px
    hit area via an invisible centered `::after` pseudo-element when the control's
    own box is smaller than 44px on either axis. Controls like `.switch` that draw
-   their thumb on `::after` expand via `::before` instead.
+   their thumb on `::after` expand via `::before` instead, and `.chip-x` keeps its
+   own `tokens.css` `::after` 44x44 hit rule.
+   `position: relative` is wrapped in `:where(.touch-target)` (specificity 0,0,0)
+   so any explicit positioning (`.field-toggle { position: absolute }`, `.toast`,
+   Tailwind `absolute`/`fixed`/`sticky`/`!static` utilities) always wins.
    Zero impact on fine-pointer layout or visuals. */
 @media (pointer: coarse) {
-  .touch-target {
+  :where(.touch-target) {
     position: relative;
   }
-  .touch-target:not(.switch)::after,
+  .touch-target:not(.switch):not(.chip-x)::after,
   .switch.touch-target::before {
     content: '';
     position: absolute;

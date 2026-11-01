@@ -239,4 +239,124 @@ test.describe('FU3 UI-TOUCH-44 header and primary control touch targets', () => 
       await context.close();
     }
   });
+
+  test('coarse pointer on /app/auth/login keeps .field-toggle computed position absolute and inside the password input box while reaching >= 44x44 hit area (LEAD-FU3-1)', async ({
+    browser,
+  }) => {
+    test.setTimeout(60_000);
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+
+    try {
+      const url = process.env.BASE_URL ?? 'http://127.0.0.1:3000';
+      await context.addCookies([
+        { name: 'sabk_csrf', value: 'test-csrf-token', url },
+        { name: 'sabk_locale', value: 'en', url },
+      ]);
+      await context.route('**/api/v1/auth/csrf', async (route) => {
+        await route.fulfill({
+          status: 204,
+          headers: { 'set-cookie': 'sabk_csrf=test-csrf-token; Path=/; SameSite=Lax' },
+        });
+      });
+      await context.route('**/api/v1/auth/config', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            oauth_providers: [],
+            email_verification_required: false,
+            captcha_site_key: null,
+          }),
+        });
+      });
+      await context.route('**/api/v1/auth/me', async (route) => {
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/problem+json',
+          body: JSON.stringify({
+            type: 'about:blank',
+            title: 'Unauthenticated',
+            status: 401,
+            code: 'unauthenticated',
+          }),
+        });
+      });
+
+      const page = await context.newPage();
+      await page.goto('/app/auth/login');
+      await expect(page.locator('#auth-login')).toBeVisible({ timeout: UI_WAIT_MS });
+
+      const isCoarse = await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
+      expect(isCoarse).toBe(true);
+
+      const fieldToggleCheck = await page.evaluate(() => {
+        const input = document.querySelector<HTMLInputElement>(
+          '#auth-login .field-password .field-input',
+        );
+        const toggle = document.querySelector<HTMLButtonElement>(
+          '#auth-login .field-password .field-toggle',
+        );
+        if (!input || !toggle) {
+          throw new Error('Missing password .field-input or .field-toggle on /app/auth/login');
+        }
+        const toggleStyle = window.getComputedStyle(toggle);
+        const inputRect = input.getBoundingClientRect();
+        const toggleRect = toggle.getBoundingClientRect();
+        return {
+          computedPosition: toggleStyle.position,
+          hasTouchTargetClass: toggle.classList.contains('touch-target'),
+          inputRect: {
+            left: inputRect.left,
+            top: inputRect.top,
+            right: inputRect.right,
+            bottom: inputRect.bottom,
+            width: inputRect.width,
+            height: inputRect.height,
+          },
+          toggleRect: {
+            left: toggleRect.left,
+            top: toggleRect.top,
+            right: toggleRect.right,
+            bottom: toggleRect.bottom,
+            width: toggleRect.width,
+            height: toggleRect.height,
+          },
+        };
+      });
+
+      expect(fieldToggleCheck.hasTouchTargetClass).toBe(true);
+      expect(fieldToggleCheck.computedPosition).toBe('absolute');
+      expect(fieldToggleCheck.toggleRect.left).toBeGreaterThanOrEqual(
+        fieldToggleCheck.inputRect.left,
+      );
+      expect(fieldToggleCheck.toggleRect.right).toBeLessThanOrEqual(
+        fieldToggleCheck.inputRect.right,
+      );
+      expect(fieldToggleCheck.toggleRect.top).toBeGreaterThanOrEqual(
+        fieldToggleCheck.inputRect.top,
+      );
+      expect(fieldToggleCheck.toggleRect.bottom).toBeLessThanOrEqual(
+        fieldToggleCheck.inputRect.bottom,
+      );
+
+      const [measuredToggle] = await measureHeaderControls(page, [
+        { name: 'password-field-toggle', selector: '#auth-login .field-password .field-toggle' },
+      ]);
+      expect(measuredToggle!.effectiveRect.width).toBeGreaterThanOrEqual(44);
+      expect(measuredToggle!.effectiveRect.height).toBeGreaterThanOrEqual(44);
+      expect(measuredToggle!.probeHits).toEqual({
+        center: true,
+        left: true,
+        right: true,
+        top: true,
+        bottom: true,
+      });
+    } finally {
+      await context.close();
+    }
+  });
 });

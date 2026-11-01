@@ -872,11 +872,14 @@ describe('components/ui/undo-toast', () => {
 });
 
 describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions and primary ui controls', () => {
-  it('defines .touch-target under @media (pointer: coarse) in globals.css without altering tokens.css', () => {
+  it('defines :where(.touch-target) with zero-specificity position: relative under @media (pointer: coarse) in globals.css without altering tokens.css (LEAD-FU3-1)', () => {
     const globalsCss = readFileSync(resolve(__dirname, '../../app/globals.css'), 'utf8');
     expect(globalsCss).toMatch(/@media\s*\(pointer:\s*coarse\)/);
-    expect(globalsCss).toMatch(/\.touch-target\s*\{\s*position:\s*relative;\s*\}/);
-    expect(globalsCss).toMatch(/\.touch-target:not\(\.switch\)::after,\s*\.switch\.touch-target::before/);
+    expect(globalsCss).toMatch(/:where\(\.touch-target\)\s*\{\s*position:\s*relative;\s*\}/);
+    expect(globalsCss).not.toMatch(/(?<!:where\()\.touch-target\s*\{\s*position:\s*relative;\s*\}/);
+    expect(globalsCss).toMatch(
+      /\.touch-target:not\(\.switch\):not\(\.chip-x\)::after,\s*\.switch\.touch-target::before/,
+    );
     expect(globalsCss).toMatch(/inset:\s*min\(0px,\s*calc\(\(100%\s*-\s*44px\)\s*\/\s*2\)\)/);
   });
 
