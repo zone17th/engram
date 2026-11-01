@@ -10,6 +10,7 @@ export interface ConcurrencyLimiter {
 
 interface QueuedWaiter {
   readonly grant: () => void;
+  readonly cancel: (err: Error) => void;
   readonly abortCleanup: () => void;
 }
 
@@ -27,6 +28,25 @@ function createAbortError(signal?: AbortSignal): Error {
 }
 
 /**
+ * Local `new Promise` deferred replacement for `Promise.withResolvers`
+ * to maintain compatibility with browsers lacking ES2024 `Promise.withResolvers`
+ * (Chrome/Edge/Firefox 111, Safari 16.4 — IP14-BE1-4, IP14-FE1-3).
+ */
+function createDeferredVoid(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (reason?: unknown) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
  * Bounded FIFO semaphore limiting concurrent `GET /entries/{id}` + `openEntry` tasks
  * (plan Task 14 item 3 & 4: max 4 concurrent fetch + decrypt).
  */
@@ -38,6 +58,7 @@ export function createConcurrencyLimiter(
   }
 
   let active = 0;
+  let resetGeneration = 0;
   const queue: QueuedWaiter[] = [];
 
   const pump = (): void => {
@@ -50,40 +71,54 @@ export function createConcurrencyLimiter(
     }
   };
 
-  const release = (): void => {
+  const release = (slotGeneration: number): void => {
+    if (slotGeneration !== resetGeneration) {
+      return;
+    }
     if (active > 0) {
       active -= 1;
     }
     pump();
   };
 
-  const acquire = (signal?: AbortSignal): Promise<void> => {
+  const acquire = (signal?: AbortSignal): Promise<number> => {
     if (signal?.aborted) {
       return Promise.reject(createAbortError(signal));
     }
     if (active < limit) {
       active += 1;
-      return Promise.resolve();
+      return Promise.resolve(resetGeneration);
     }
-    const { promise, resolve, reject } = Promise.withResolvers<void>();
-    let waiter!: QueuedWaiter;
-    const onAbort = () => {
+    let grantedGeneration = resetGeneration;
+    const { promise, resolve, reject } = createDeferredVoid();
+    let settled = false;
+    const abortCleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const waiter: QueuedWaiter = {
+      grant: () => {
+        if (settled) return;
+        settled = true;
+        grantedGeneration = resetGeneration;
+        resolve();
+      },
+      cancel: (err: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      },
+      abortCleanup,
+    };
+    function onAbort(): void {
       const idx = queue.indexOf(waiter);
       if (idx !== -1) {
         queue.splice(idx, 1);
       }
-      reject(createAbortError(signal));
-    };
-    const abortCleanup = () => {
-      signal?.removeEventListener('abort', onAbort);
-    };
-    waiter = {
-      grant: () => resolve(),
-      abortCleanup,
-    };
+      waiter.cancel(createAbortError(signal));
+    }
     signal?.addEventListener('abort', onAbort, { once: true });
     queue.push(waiter);
-    return promise;
+    return promise.then(() => grantedGeneration);
   };
 
   return {
@@ -94,21 +129,26 @@ export function createConcurrencyLimiter(
       task: () => Promise<T>,
       options?: { readonly signal?: AbortSignal },
     ): Promise<T> {
-      await acquire(options?.signal);
+      const slotGeneration = await acquire(options?.signal);
       try {
-        if (options?.signal?.aborted) {
-          throw createAbortError(options.signal);
+        if (options?.signal?.aborted || slotGeneration !== resetGeneration) {
+          throw createAbortError(options?.signal);
         }
         return await task();
       } finally {
-        release();
+        release(slotGeneration);
       }
     },
     reset(): void {
+      resetGeneration += 1;
       active = 0;
+      const abortErr = createAbortError();
       while (queue.length > 0) {
         const w = queue.shift();
-        w?.abortCleanup();
+        if (w) {
+          w.abortCleanup();
+          w.cancel(abortErr);
+        }
       }
     },
   };

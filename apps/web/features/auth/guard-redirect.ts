@@ -30,9 +30,14 @@ export function isAuthRoute(path: string): boolean {
   return path === AUTH_PREFIX || path.startsWith(`${AUTH_PREFIX}/`);
 }
 
-/** Login/signup stay reachable while signed out; other /app/auth/* routes require a session. */
+/** Login, signup, forgot-password, and reset-password stay reachable while signed out. */
 export function isPublicAuthRoute(path: string): boolean {
-  return path === `${AUTH_PREFIX}/login` || path === `${AUTH_PREFIX}/signup`;
+  return (
+    path === `${AUTH_PREFIX}/login` ||
+    path === `${AUTH_PREFIX}/signup` ||
+    path === `${AUTH_PREFIX}/forgot-password` ||
+    path === `${AUTH_PREFIX}/reset-password`
+  );
 }
 
 /** Keep fragment-token, public auth forms, and OAuth callback mounted so hash/status UI can render. */
@@ -102,6 +107,8 @@ export function resolveGuardRedirect(input: {
   const reauth = pathname === `${AUTH_PREFIX}/reauth`;
   const verify = pathname === `${AUTH_PREFIX}/verify-email`;
   const enroll = pathname === `${AUTH_PREFIX}/password-enroll`;
+  const forgotPassword = pathname === `${AUTH_PREFIX}/forgot-password`;
+  const resetPassword = pathname === `${AUTH_PREFIX}/reset-password`;
 
   if (status === 'signed_out') {
     // OAuth callback must stay reachable while signed out so cancel/error/conflict UI can render.
@@ -112,12 +119,12 @@ export function resolveGuardRedirect(input: {
   if (!me) return null;
 
   if (needsEmailVerify(me)) {
-    const allowed = settings || verify || callback || enroll || reauth;
+    const allowed = settings || verify || callback || enroll || reauth || forgotPassword || resetPassword;
     return allowed ? null : '/app/auth/verify-email';
   }
 
   if (status === 'authenticated_without_vault') {
-    const allowed = settings || onboarding || callback || reauth || verify || enroll;
+    const allowed = settings || onboarding || callback || reauth || verify || enroll || forgotPassword || resetPassword;
     return allowed ? null : '/app/onboarding';
   }
 
@@ -138,7 +145,9 @@ export function resolveGuardRedirect(input: {
         callback ||
         reauth ||
         verify ||
-        enroll;
+        enroll ||
+        forgotPassword ||
+        resetPassword;
       if (allowedWhileLocked) return null;
       return unlockUrl(pathname);
     }
@@ -146,6 +155,6 @@ export function resolveGuardRedirect(input: {
   }
 
   if (onboarding) return '/app';
-  if (auth && !reauth && !callback && !verify && !enroll) return '/app';
+  if (auth && !reauth && !callback && !verify && !enroll && !forgotPassword && !resetPassword) return '/app';
   return null;
 }

@@ -17,6 +17,8 @@ describe('audit catalog', () => {
     expect(eventMessageKey('auth.login.success')).toBe('audit.events.auth_login_success');
     expect(eventMessageKey('not.a.real.event')).toBe('audit.events.unknown');
     expect(AUDIT_EVENTS).toContain('auth.reauth');
+    expect(AUDIT_EVENTS).toContain('auth.password.reset');
+    expect(eventMessageKey('auth.password.reset')).toBe('audit.events.auth_password_reset');
   });
 
   it('maps notice kinds and results', () => {

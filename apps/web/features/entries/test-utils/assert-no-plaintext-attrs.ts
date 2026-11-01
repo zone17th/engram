@@ -18,19 +18,24 @@ export interface PlaintextAttrLeak {
 
 export interface AssertNoPlaintextAttrsOptions {
   /**
-   * Optional predicate or element list identifying active secret-editing fields whose live `.value`
+   * When `true` (e.g. scanning DOM after vault lock, logout, user switch, or reset — plan §2.10, A9, IP14-FE1-7),
+   * NO element in the subtree is exempt from `.value` / `value` attribute scanning, including
+   * `<input data-vault-secret>` and `<textarea data-vault-secret>`.
+   */
+  readonly locked?: boolean;
+  /**
+   * Optional predicate identifying active secret-editing fields whose live `.value`
    * property is allowed to hold the draft while unlocked and editing (plan §1, §2.10).
    *
    * Note: even on an active editing field, HTML attributes such as `title`, `aria-label`,
    * `aria-description`, `data-*`, `placeholder`, and `alt` are NEVER allowed to contain sentinel
    * plaintext; only the live editing `.value` (or `value` attribute when not explicitly prohibited)
-   * on an allowed editing element is exempt.
+   * on an allowed editing element is exempt when `locked !== true`.
    *
-   * Defaults to matching `<input data-vault-secret>` and `<textarea data-vault-secret>`.
+   * Defaults to matching `<input data-vault-secret>` and `<textarea data-vault-secret>` when `locked !== true`.
    */
   readonly isAllowedEditingElement?: (element: Element) => boolean;
 }
-
 function defaultIsAllowedEditingElement(element: Element): boolean {
   const tag = element.tagName.toUpperCase();
   if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
@@ -67,7 +72,10 @@ export function findPlaintextAttrLeaks(
     return [];
   }
 
-  const isAllowedEditor = options?.isAllowedEditingElement ?? defaultIsAllowedEditingElement;
+  const isAllowedEditor =
+    options?.locked === true
+      ? () => false
+      : (options?.isAllowedEditingElement ?? defaultIsAllowedEditingElement);
   const elements = collectSubtreeElements(root);
   const leaks: PlaintextAttrLeak[] = [];
   const recorded = new Set<string>();

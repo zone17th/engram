@@ -18,14 +18,14 @@ import {
   type SafeContentMutationVariables,
 } from '@/lib/api/content';
 import { contentQueryKeys } from '@/features/items/query-keys';
-import { vaultBodyQueryKey } from '@/features/vault/vault-provider';
-import type {
-  EntryOpHandle,
-  SealedEntryUpdatePayload,
-  SealedImportJsonEntryPayload,
-  SealedNewEntryPayload,
+import { useOptionalVault, vaultBodyQueryKey } from '@/features/vault/vault-provider';
+import {
+  EntrySealError,
+  type EntryOpHandle,
+  type SealedEntryUpdatePayload,
+  type SealedImportJsonEntryPayload,
+  type SealedNewEntryPayload,
 } from '@/features/entries/seal';
-
 /**
  * Variables accepted by `useCreateEntryMutation` / `mutateSealedEntryCreate`.
  * Only sealed payload + metadata + op handle — never plaintext (plan §2.10, P4FE1-2, P4BE2-1).
@@ -35,6 +35,7 @@ export interface SealedEntryCreateVariables {
   readonly entryId: string;
   readonly idempotencyKey: string;
   readonly requestBody: EntryCreateRequest;
+  readonly serializedBody?: string;
   readonly op: EntryOpHandle;
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
@@ -48,6 +49,7 @@ export interface SealedEntryImportJsonVariables {
   readonly entryId: string;
   readonly idempotencyKey: string;
   readonly requestBody: EntryImportJsonRequest;
+  readonly serializedBody?: string;
   readonly op: EntryOpHandle;
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
@@ -63,11 +65,11 @@ export interface SealedEntryUpdateVariables {
   readonly ifMatch: number | string;
   readonly idempotencyKey: string;
   readonly requestBody: EntryUpdateRequest;
+  readonly serializedBody?: string;
   readonly op: EntryOpHandle;
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
 }
-
 function assertSealedMutationVariables(variables: unknown): void {
   if (typeof variables !== 'object' || variables === null) {
     throw new Error('Entry mutation variables must be an object.');
@@ -81,6 +83,79 @@ function assertSealedMutationVariables(variables: unknown): void {
       if ('plaintext' in rb || 'rawJson' in rb || 'text' in rb) {
         throw new Error('Entry mutation requestBody must not contain plaintext fields.');
       }
+    }
+  }
+}
+
+function createStaleOpError(): EntrySealError {
+  return new EntrySealError(
+    'STALE_GENERATION',
+    'Vault locked or operation generation changed before entry mutation completed.',
+  );
+}
+
+/**
+ * Enforces that a sealed mutation is still current BEFORE the initial send and binds an
+ * `AbortSignal` to the sealed operation's lifetime (aborting immediately on vault lock,
+ * logout, user switch, or reset via `registerSecretFormReset` / `op.onReset` — IP14-BE1-3).
+ * Also verifies that `serializedBody` (when carried from `seal*`) remains byte-identical to
+ * `JSON.stringify(requestBody)` (IP14-FE1-13).
+ */
+async function executeWithOpLifetimeSignal<T>(params: {
+  readonly op: EntryOpHandle;
+  readonly requestBody: object;
+  readonly serializedBody?: string;
+  readonly callerSignal?: AbortSignal;
+  readonly registerReset?: (resetFn: () => void) => () => void;
+  readonly run: (signal: AbortSignal) => Promise<T>;
+}): Promise<T> {
+  const { op, requestBody, serializedBody, callerSignal, registerReset, run } = params;
+
+  if (serializedBody !== undefined && JSON.stringify(requestBody) !== serializedBody) {
+    throw new Error('Sealed requestBody was mutated after initial serialization.');
+  }
+
+  if (!op.isCurrent()) {
+    throw createStaleOpError();
+  }
+
+  const controller = new AbortController();
+  const abortForLock = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(createStaleOpError());
+    }
+  };
+  const abortForCaller = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(callerSignal?.reason);
+    }
+  };
+
+  if (callerSignal?.aborted) {
+    abortForCaller();
+  } else if (callerSignal) {
+    callerSignal.addEventListener('abort', abortForCaller, { once: true });
+  }
+
+  const unsubOpReset = typeof op.onReset === 'function' ? op.onReset(abortForLock) : undefined;
+  const unsubProviderReset =
+    typeof registerReset === 'function' ? registerReset(abortForLock) : undefined;
+
+  if (!op.isCurrent()) {
+    abortForLock();
+  }
+
+  try {
+    if (!op.isCurrent()) {
+      throw createStaleOpError();
+    }
+    return await run(controller.signal);
+  } finally {
+    unsubOpReset?.();
+    unsubProviderReset?.();
+    op.dispose?.();
+    if (callerSignal) {
+      callerSignal.removeEventListener('abort', abortForCaller);
     }
   }
 }
@@ -170,6 +245,7 @@ export function toEntryCreateVariables(
     entryId: sealed.entryId,
     idempotencyKey: sealed.idempotencyKey,
     requestBody: sealed.requestBody,
+    serializedBody: sealed.serializedBody,
     op: sealed.op,
     signal: opts?.signal,
     uncertainPriorSend: opts?.uncertainPriorSend,
@@ -188,6 +264,7 @@ export function toEntryImportJsonVariables(
     entryId: sealed.entryId,
     idempotencyKey: sealed.idempotencyKey,
     requestBody: sealed.requestBody,
+    serializedBody: sealed.serializedBody,
     op: sealed.op,
     signal: opts?.signal,
     uncertainPriorSend: opts?.uncertainPriorSend,
@@ -212,6 +289,7 @@ export function toEntryUpdateVariables(
     ifMatch,
     idempotencyKey: sealed.idempotencyKey,
     requestBody: sealed.requestBody,
+    serializedBody: sealed.serializedBody,
     op: sealed.op,
     signal: opts?.signal,
     uncertainPriorSend: opts?.uncertainPriorSend,
@@ -227,10 +305,17 @@ export async function mutateSealedEntryCreate(
   variables: SealedEntryCreateVariables,
 ): Promise<{ readonly meta: EntryMeta; readonly applied: boolean }> {
   assertSealedMutationVariables(variables);
-  const meta = await entryCreate(variables.itemId, variables.requestBody, {
-    idempotencyKey: variables.idempotencyKey,
-    signal: variables.signal,
-    uncertainPriorSend: variables.uncertainPriorSend,
+  const meta = await executeWithOpLifetimeSignal({
+    op: variables.op,
+    requestBody: variables.requestBody,
+    serializedBody: variables.serializedBody,
+    callerSignal: variables.signal,
+    run: (signal) =>
+      entryCreate(variables.itemId, variables.requestBody, {
+        idempotencyKey: variables.idempotencyKey,
+        signal,
+        uncertainPriorSend: variables.uncertainPriorSend,
+      }),
   });
   const applied = applyCommittedEntryMetaToCache({
     queryClient,
@@ -251,10 +336,17 @@ export async function mutateSealedEntryImportJson(
   variables: SealedEntryImportJsonVariables,
 ): Promise<{ readonly meta: EntryMeta; readonly applied: boolean }> {
   assertSealedMutationVariables(variables);
-  const meta = await entryImportJson(variables.itemId, variables.requestBody, {
-    idempotencyKey: variables.idempotencyKey,
-    signal: variables.signal,
-    uncertainPriorSend: variables.uncertainPriorSend,
+  const meta = await executeWithOpLifetimeSignal({
+    op: variables.op,
+    requestBody: variables.requestBody,
+    serializedBody: variables.serializedBody,
+    callerSignal: variables.signal,
+    run: (signal) =>
+      entryImportJson(variables.itemId, variables.requestBody, {
+        idempotencyKey: variables.idempotencyKey,
+        signal,
+        uncertainPriorSend: variables.uncertainPriorSend,
+      }),
   });
   const applied = applyCommittedEntryMetaToCache({
     queryClient,
@@ -275,11 +367,18 @@ export async function mutateSealedEntryUpdate(
   variables: SealedEntryUpdateVariables,
 ): Promise<{ readonly meta: EntryMeta; readonly applied: boolean }> {
   assertSealedMutationVariables(variables);
-  const meta = await entryUpdate(variables.entryId, variables.requestBody, {
-    idempotencyKey: variables.idempotencyKey,
-    ifMatch: variables.ifMatch,
-    signal: variables.signal,
-    uncertainPriorSend: variables.uncertainPriorSend,
+  const meta = await executeWithOpLifetimeSignal({
+    op: variables.op,
+    requestBody: variables.requestBody,
+    serializedBody: variables.serializedBody,
+    callerSignal: variables.signal,
+    run: (signal) =>
+      entryUpdate(variables.entryId, variables.requestBody, {
+        idempotencyKey: variables.idempotencyKey,
+        ifMatch: variables.ifMatch,
+        signal,
+        uncertainPriorSend: variables.uncertainPriorSend,
+      }),
   });
   const applied = applyCommittedEntryMetaToCache({
     queryClient,
@@ -334,14 +433,24 @@ export function useCreateEntryMutation(
   SafeContentMutationVariables<SealedEntryCreateVariables>
 > {
   const queryClient = useQueryClient();
+  const vault = useOptionalVault();
+  const registerReset = vault?.registerSecretFormReset;
 
   return useContentMutation<EntryMeta, unknown, SealedEntryCreateVariables>({
     mutationFn: async (variables) => {
       assertSealedMutationVariables(variables);
-      return entryCreate(variables.itemId, variables.requestBody, {
-        idempotencyKey: variables.idempotencyKey,
-        signal: variables.signal,
-        uncertainPriorSend: variables.uncertainPriorSend,
+      return executeWithOpLifetimeSignal({
+        op: variables.op,
+        requestBody: variables.requestBody,
+        serializedBody: variables.serializedBody,
+        callerSignal: variables.signal,
+        registerReset,
+        run: (signal) =>
+          entryCreate(variables.itemId, variables.requestBody, {
+            idempotencyKey: variables.idempotencyKey,
+            signal,
+            uncertainPriorSend: variables.uncertainPriorSend,
+          }),
       });
     },
     onSuccess: (meta, variables) => {
@@ -394,15 +503,25 @@ export function useUpdateEntryMutation(
   SafeContentMutationVariables<SealedEntryUpdateVariables>
 > {
   const queryClient = useQueryClient();
+  const vault = useOptionalVault();
+  const registerReset = vault?.registerSecretFormReset;
 
   return useContentMutation<EntryMeta, unknown, SealedEntryUpdateVariables>({
     mutationFn: async (variables) => {
       assertSealedMutationVariables(variables);
-      return entryUpdate(variables.entryId, variables.requestBody, {
-        idempotencyKey: variables.idempotencyKey,
-        ifMatch: variables.ifMatch,
-        signal: variables.signal,
-        uncertainPriorSend: variables.uncertainPriorSend,
+      return executeWithOpLifetimeSignal({
+        op: variables.op,
+        requestBody: variables.requestBody,
+        serializedBody: variables.serializedBody,
+        callerSignal: variables.signal,
+        registerReset,
+        run: (signal) =>
+          entryUpdate(variables.entryId, variables.requestBody, {
+            idempotencyKey: variables.idempotencyKey,
+            ifMatch: variables.ifMatch,
+            signal,
+            uncertainPriorSend: variables.uncertainPriorSend,
+          }),
       });
     },
     onSuccess: (meta, variables) => {
@@ -450,14 +569,24 @@ export function useImportJsonEntryMutation(
   SafeContentMutationVariables<SealedEntryImportJsonVariables>
 > {
   const queryClient = useQueryClient();
+  const vault = useOptionalVault();
+  const registerReset = vault?.registerSecretFormReset;
 
   return useContentMutation<EntryMeta, unknown, SealedEntryImportJsonVariables>({
     mutationFn: async (variables) => {
       assertSealedMutationVariables(variables);
-      return entryImportJson(variables.itemId, variables.requestBody, {
-        idempotencyKey: variables.idempotencyKey,
-        signal: variables.signal,
-        uncertainPriorSend: variables.uncertainPriorSend,
+      return executeWithOpLifetimeSignal({
+        op: variables.op,
+        requestBody: variables.requestBody,
+        serializedBody: variables.serializedBody,
+        callerSignal: variables.signal,
+        registerReset,
+        run: (signal) =>
+          entryImportJson(variables.itemId, variables.requestBody, {
+            idempotencyKey: variables.idempotencyKey,
+            signal,
+            uncertainPriorSend: variables.uncertainPriorSend,
+          }),
       });
     },
     onSuccess: (meta, variables) => {

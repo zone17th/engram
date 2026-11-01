@@ -16,7 +16,16 @@ vi.mock('@/features/auth/session-provider', () => ({
   useSession: () => ({
     login: vi.fn(),
     signup: vi.fn(),
-    config: { oauth_providers: [], email_verification_required: false, captcha_site_key: null },
+    config: {
+      oauth_providers: [],
+      email_verification_required: false,
+      captcha_site_key: null,
+      mail_delivery_available: true,
+    },
+    configLoading: false,
+    configError: false,
+    bootstrapComplete: true,
+    status: 'signed_out',
     lastSessionEndReason: null,
     webLocksAvailable: true,
   }),

@@ -50,6 +50,7 @@ type AuthConfig struct {
 	OAuthProviders            []string `json:"oauth_providers"`
 	EmailVerificationRequired bool     `json:"email_verification_required"`
 	CaptchaSiteKey            *string  `json:"captcha_site_key"`
+	MailDeliveryAvailable     bool     `json:"mail_delivery_available"`
 }
 
 type SessionItem struct {

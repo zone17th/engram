@@ -2,6 +2,7 @@ package authhttp
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -19,15 +20,19 @@ import (
 
 type Captcha = auth.Captcha
 
+type Limiter interface {
+	Allow(key string) (ok bool, retryAfter int)
+}
+
 type API struct {
 	svc       *auth.Service
 	oauth     *oauth.Service
 	captcha   Captcha
 	trusted   func(net.IP) bool
-	credLimit *httpx.FixedWindow
-	cbLimit   *httpx.FixedWindow
-	mailMin   *httpx.FixedWindow
-	mailHour  *httpx.FixedWindow
+	credLimit Limiter
+	cbLimit   Limiter
+	mailMin   Limiter
+	mailHour  Limiter
 }
 
 func NewAPI(svc *auth.Service, oa *oauth.Service, captcha Captcha, trusted func(net.IP) bool) *API {
@@ -46,11 +51,23 @@ func NewAPI(svc *auth.Service, oa *oauth.Service, captcha Captcha, trusted func(
 	}
 }
 
+func (a *API) SetMailLimiters(minLim, hourLim Limiter) {
+	if a == nil {
+		return
+	}
+	if minLim != nil {
+		a.mailMin = minLim
+	}
+	if hourLim != nil {
+		a.mailHour = hourLim
+	}
+}
+
 func (a *API) ip(r *http.Request) string {
 	return httpx.ClientIP(r, a.trusted)
 }
 
-func (a *API) limit(l *httpx.FixedWindow, key string, w http.ResponseWriter, r *http.Request) bool {
+func (a *API) limit(l Limiter, key string, w http.ResponseWriter, r *http.Request) bool {
 	ok, retry := l.Allow(key)
 	if ok {
 		return true
@@ -627,6 +644,108 @@ func (a *API) PasswordChange(w http.ResponseWriter, r *http.Request) {
 	a.applySession(w, r, issued)
 	NoStore(w)
 	writeJSON(w, http.StatusOK, me)
+}
+
+func (a *API) PasswordForgot(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email        json.RawMessage `json:"email"`
+		CaptchaToken *string         `json:"captcha_token"`
+		Locale       *string         `json:"locale"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	var rawEmail *string
+	if err := decodeRequiredStringField(in.Email, &rawEmail); err != nil {
+		WriteDomainError(w, r, err)
+		return
+	}
+	email, err := auth.NormalizeEmail(*rawEmail)
+	if err != nil {
+		WriteDomainError(w, r, err)
+		return
+	}
+	locale := "en"
+	if in.Locale != nil && *in.Locale != "" {
+		if *in.Locale != "en" && *in.Locale != "vi" {
+			WriteDomainError(w, r, auth.ErrInvalidRequest)
+			return
+		}
+		locale = *in.Locale
+	}
+	if !a.svc.MailDeliveryAvailable() {
+		WriteDomainError(w, r, auth.ErrMailDeliveryUnavailable)
+		return
+	}
+	ip := a.ip(r)
+	if !a.limit(a.credLimit, "cred:"+ip, w, r) {
+		return
+	}
+	if a.captcha.Enabled() {
+		tok := ""
+		if in.CaptchaToken != nil {
+			tok = *in.CaptchaToken
+		}
+		if err := a.captcha.Verify(r.Context(), tok, ip, "", "login"); err != nil {
+			WriteDomainError(w, r, auth.ErrCaptchaRequired)
+			return
+		}
+	}
+	emailKey := "forgot:" + hex.EncodeToString(a.svc.EmailSubjectHash(email))
+	if !a.limit(a.mailMin, emailKey, w, r) || !a.limit(a.mailHour, emailKey+":h", w, r) {
+		return
+	}
+	a.svc.EnqueueForgotPassword(email, locale)
+	NoStore(w)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (a *API) PasswordReset(w http.ResponseWriter, r *http.Request) {
+	ip := a.ip(r)
+	if !a.limit(a.credLimit, "cred:"+ip, w, r) {
+		return
+	}
+	var in struct {
+		Token       json.RawMessage `json:"token"`
+		NewPassword json.RawMessage `json:"new_password"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	var token, newPassword *string
+	if err := decodeRequiredStringField(in.Token, &token); err != nil {
+		WriteDomainError(w, r, err)
+		return
+	}
+	if err := decodeRequiredStringField(in.NewPassword, &newPassword); err != nil {
+		WriteDomainError(w, r, err)
+		return
+	}
+	if err := a.svc.ResetPassword(r.Context(), auth.ResetPasswordInput{
+		Token:       *token,
+		NewPassword: *newPassword,
+		IP:          ip,
+		UA:          r.UserAgent(),
+	}); err != nil {
+		WriteDomainError(w, r, err)
+		return
+	}
+	ClearAuthCookies(w)
+	NoStore(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func decodeRequiredStringField(raw json.RawMessage, dst **string) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return auth.ErrInvalidRequest
+	}
+	var value string
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return auth.ErrInvalidRequest
+	}
+	*dst = &value
+	return nil
 }
 
 func (a *API) FakeAuthorize(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ import {
   PASSWORD,
   completeFakeOAuth,
   expectSignedIn,
+  fillSignupConfirmIfPresent,
   isolateRateLimit,
   waitForOAuthProviders,
   waitForAuthPageReady,
@@ -85,6 +86,7 @@ export async function signupViaUiSecret(page: Page, email: string, password = PA
   await waitForAuthPageReady(page);
   await page.getByLabel('Email').fill(email);
   await fillSecret(page.getByLabel(/Login password|Mật khẩu đăng nhập/), password, UI_WAIT_MS);
+  await fillSignupConfirmIfPresent(page, password);
   await page.getByRole('checkbox', { name: /agree|terms|điều khoản/i }).check();
   await page.getByRole('button', { name: /Create account|Tạo tài khoản/ }).click();
   const outcome = await Promise.race([

@@ -53,6 +53,8 @@ type harness struct {
 	mail   *auth.SinkMailer
 	svc    *auth.Service
 	pool   *pgxpool.Pool
+	oa     *oauth.Service
+	api    *authhttp.API
 }
 
 func newHarness(t *testing.T, providers []oauth.Provider) *harness {
@@ -69,6 +71,7 @@ func newHarness(t *testing.T, providers []oauth.Provider) *harness {
 	t.Setenv("DATABASE_URL", dsn)
 	t.Setenv("APP_ORIGIN", origin)
 	t.Setenv("APP_ENV", "development")
+	t.Setenv("AUTH_MAIL_CAPTURE_AS_DELIVERY", "true")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -77,10 +80,11 @@ func newHarness(t *testing.T, providers []oauth.Provider) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, _, api, err := compose.NewAuth(cfg, pool, nil, clk, mail, providers)
+	svc, oa, api, err := compose.NewAuth(cfg, pool, nil, clk, mail, providers)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(svc.Close)
 	authn, csrfv, reauth := compose.Adapters(svc)
 	hnd := httpx.NewRouter(httpx.Deps{
 		Config:        cfg,
@@ -97,7 +101,7 @@ func newHarness(t *testing.T, providers []oauth.Provider) *harness {
 	srv.Listener = ln
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, jar: jar{}, origin: origin, clk: clk, mail: mail, svc: svc, pool: pool}
+	return &harness{t: t, srv: srv, jar: jar{}, origin: origin, clk: clk, mail: mail, svc: svc, oa: oa, api: api, pool: pool}
 }
 
 func (h *harness) do(method, path, body string, withCSRF bool) *http.Response {

@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -177,21 +178,34 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 	}); err != nil {
 		t.Fatalf("NotifySecurity: %v", err)
 	}
+	if err := notes.NotifySecurity(ctx, nil, secevent.Notice{
+		UserID: userID,
+		Kind:   secevent.NoticeSecurity,
+		Meta: secevent.Meta{
+			Event:             secevent.EventPasswordReset,
+			UnlinkedProviders: []string{secevent.ProviderGoogle},
+		},
+		EmailTargets: []string{email},
+	}); err != nil {
+		t.Fatalf("NotifySecurity password_reset: %v", err)
+	}
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var state, jobErrors string
+		var completedCount int
+		var jobErrors string
 		err := pool.QueryRow(ctx,
-			`SELECT state::text, coalesce(errors::text, '') FROM river_job WHERE kind = 'security_notice_mail' ORDER BY id DESC LIMIT 1`,
-		).Scan(&state, &jobErrors)
+			`SELECT count(*) FILTER (WHERE state = 'completed'), coalesce(string_agg(errors::text, ';'), '') FROM river_job WHERE kind = 'security_notice_mail'`,
+		).Scan(&completedCount, &jobErrors)
 		if err == nil {
 			if strings.Contains(jobErrors, "not registered") || strings.Contains(jobErrors, "Unhandled job kind") {
-				t.Fatalf("security_notice_mail failed with unhandled job kind under worker.Run: state=%q errors=%s", state, jobErrors)
+				t.Fatalf("security_notice_mail failed with unhandled job kind under worker.Run: errors=%s", jobErrors)
 			}
-			if state == "completed" {
+			if completedCount == 2 {
 				break
 			}
 		}
+		state := fmt.Sprintf("completed=%d", completedCount)
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for security_notice_mail job to complete under worker.Run (last state=%q errors=%s)", state, jobErrors)
 		}
@@ -214,5 +228,114 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 	}
 	if len(entries) != 1 {
 		t.Fatalf("delivered security emails in default sink %q = %d, want 1", wantSink, len(entries))
+	}
+	resetEntries, err := sink.EntriesFor(email, auth.PurposePasswordResetNotice)
+	if err != nil {
+		t.Fatalf("EntriesFor password_reset_notice: %v", err)
+	}
+	if len(resetEntries) != 1 || !strings.Contains(resetEntries[0].Link, "Google") {
+		t.Fatalf("delivered password_reset_notice emails = %+v, want 1 mentioning Google", resetEntries)
+	}
+}
+
+// TestSecurityNoticeWorkerContextQueryFailureReturnsErrorForRetry covers AU3-BE1-3 / AU3-BE2-4:
+// if GetNotificationForMail succeeds (a notification row exists) but GetNotificationMailContext
+// fails on the context SELECT itself (or on JSON decoding), Work must return the error so River
+// retries rather than silently downgrading to a generic "security" mail with empty detail;
+// once the fault is repaired, retrying Work delivers the localized password_reset_notice email.
+func TestSecurityNoticeWorkerContextQueryFailureReturnsErrorForRetry(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	email := "notice-err-retry@example.com"
+	var userID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO app_user (email, email_verified_at, locale) VALUES ($1, now(), 'vi') RETURNING id`,
+		email,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var notifID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_notification (user_id, kind, meta, email_targets) VALUES ($1, 'security', $2, $3) RETURNING id`,
+		userID,
+		[]byte(`{"event":"auth.password.reset","unlinked_providers":["google"]}`),
+		[]string{email},
+	).Scan(&notifID); err != nil {
+		t.Fatalf("insert notification: %v", err)
+	}
+
+	sinkDir := t.TempDir()
+	sink, err := auth.NewSinkMailer(sinkDir)
+	if err != nil {
+		t.Fatalf("NewSinkMailer: %v", err)
+	}
+	w := worker.NewSecurityNoticeWorker(pool, sink, silentLogger())
+	job := &river.Job[notification.SecurityNoticeArgs]{
+		Args: notification.SecurityNoticeArgs{NotificationID: notifID},
+	}
+
+	// Case 1 (AU3-BE2-4): Force GetNotificationMailContext's SQL SELECT itself to fail while
+	// GetNotificationForMail (which only selects id, user_id, kind, email_targets) succeeds,
+	// by temporarily renaming user_notification.meta.
+	var metaRenamed bool
+	if _, err := pool.Exec(ctx, `ALTER TABLE user_notification RENAME COLUMN meta TO meta_hidden`); err != nil {
+		t.Fatalf("rename meta column: %v", err)
+	}
+	metaRenamed = true
+	t.Cleanup(func() {
+		if metaRenamed {
+			_, _ = pool.Exec(ctx, `ALTER TABLE user_notification RENAME COLUMN meta_hidden TO meta`)
+		}
+	})
+
+	if err := w.Work(ctx, job); err == nil {
+		t.Fatal("expected SecurityNoticeWorker.Work to return error when GetNotificationMailContext SELECT fails")
+	}
+	if secMails, _ := sink.EntriesFor(email, "security"); len(secMails) != 0 {
+		t.Fatalf("must not silently downgrade to generic security mail on context query failure, got %d", len(secMails))
+	}
+	if resetMails, _ := sink.EntriesFor(email, auth.PurposePasswordResetNotice); len(resetMails) != 0 {
+		t.Fatalf("expected 0 reset notice mails while context query fails, got %d", len(resetMails))
+	}
+
+	// Repair the schema fault and verify River retry succeeds and delivers the localized VI reset notice naming Google.
+	if _, err := pool.Exec(ctx, `ALTER TABLE user_notification RENAME COLUMN meta_hidden TO meta`); err != nil {
+		t.Fatalf("restore meta column: %v", err)
+	}
+	metaRenamed = false
+
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("expected SecurityNoticeWorker.Work retry after schema repair to succeed, got: %v", err)
+	}
+	if secMails, _ := sink.EntriesFor(email, "security"); len(secMails) != 0 {
+		t.Fatalf("expected 0 generic security mails after repaired retry, got %d", len(secMails))
+	}
+	resetMails, err := sink.EntriesFor(email, auth.PurposePasswordResetNotice)
+	if err != nil || len(resetMails) != 1 {
+		t.Fatalf("expected 1 password_reset_notice mail after repaired retry, got %d err=%v", len(resetMails), err)
+	}
+	if !strings.Contains(resetMails[0].Link, "Mật khẩu đăng nhập engram của bạn vừa được đặt lại") || !strings.Contains(resetMails[0].Link, "Google") {
+		t.Fatalf("unexpected localized reset notice detail after retry: %q", resetMails[0].Link)
+	}
+
+	// Case 2: Corrupt JSONB meta shape so GetNotificationMailContext SQL succeeds but json.Unmarshal fails.
+	var notifID2 int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_notification (user_id, kind, meta, email_targets) VALUES ($1, 'security', '["corrupt"]'::jsonb, $2) RETURNING id`,
+		userID,
+		[]string{email},
+	).Scan(&notifID2); err != nil {
+		t.Fatalf("insert corrupt notification: %v", err)
+	}
+	if err := w.Work(ctx, &river.Job[notification.SecurityNoticeArgs]{
+		Args: notification.SecurityNoticeArgs{NotificationID: notifID2},
+	}); err == nil {
+		t.Fatal("expected SecurityNoticeWorker.Work to return error when notification meta JSON cannot be decoded")
+	}
+	if secMails, _ := sink.EntriesFor(email, "security"); len(secMails) != 0 {
+		t.Fatalf("must not silently downgrade to generic security mail on JSON decode error, got %d", len(secMails))
 	}
 }

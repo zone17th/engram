@@ -72,7 +72,13 @@ export function PasswordEnrollForm() {
       await passwordEnrollSend();
       setView('sent');
     } catch (err) {
-      setError(err instanceof ProblemError ? err.problem.detail ?? err.problem.title : t('errors.network'));
+      setError(
+        err instanceof ProblemError
+          ? err.problem.code === 'rate_limited'
+            ? t('errors.rateLimitedTitle')
+            : t('errors.genericTitle')
+          : t('errors.network'),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -110,8 +116,12 @@ export function PasswordEnrollForm() {
           if (err.problem.code === 'verification_invalid') {
             setError(t('enroll.invalidToken'));
             clearPendingPasswordEnrollmentToken();
+          } else if (err.problem.code === 'password_weak') {
+            setError(t('validation.password.weak'));
+          } else if (err.problem.code === 'rate_limited') {
+            setError(t('errors.rateLimitedTitle'));
           } else {
-            setError(err.problem.detail ?? err.problem.title);
+            setError(t('errors.genericTitle'));
           }
         } else {
           setError(t('errors.network'));

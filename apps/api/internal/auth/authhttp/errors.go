@@ -39,6 +39,10 @@ func WriteDomainError(w http.ResponseWriter, r *http.Request, err error) {
 			t := true
 			extra.CaptchaRequired = &t
 		}
+		if de.Code == "dependency_unavailable" {
+			retry := 1
+			extra.RetryAfter = &retry
+		}
 		httpx.WriteProblemExtra(w, r, statusFor(de.Code), de.Code, httpx.ProblemTitle(de.Code)+".", extra)
 		return
 	}

@@ -18,6 +18,7 @@ export const AUDIT_EVENTS = [
   'auth.settings.change',
   'auth.oauth.login',
   'auth.reauth',
+  'auth.password.reset',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
