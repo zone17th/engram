@@ -997,9 +997,9 @@
   },
   "content": {
     "errors": {
-      "name_invalid": "Tên mục phải dài 1–200 ký tự sau chuẩn hoá và không chứa ký tự điều khiển.",
+      "name_invalid": "Tên mục phải dài 1–200 ký tự sau chuẩn hoá, không chỉ gồm dấu câu và không chứa ký tự điều khiển hoặc ký tự đảo chiều văn bản (bidi).",
       "hint_invalid": "Gợi ý tối đa 120 ký tự và không chứa ký tự điều khiển.",
-      "tag_display_invalid": "Tên tag phải dài 1–50 ký tự, không có khoảng trắng hoặc ký tự điều khiển.",
+      "tag_display_invalid": "Tên tag phải dài 1–50 ký tự và không chứa ký tự điều khiển.",
       "item_id_conflict": "Mã định danh mục này đã được dùng cho một mục khác.",
       "item_deleted": "Mục chứa entry này đã bị xoá. Hãy khôi phục mục trước.",
       "item_tag_limit": "Mỗi mục gắn tối đa 20 tag đang hoạt động.",
@@ -1023,9 +1023,9 @@
       "vault_absent": "Chưa có vault hoặc vault vừa được đặt lại. Hãy thiết lập vault trước khi lưu nội dung.",
       "dependency_unavailable": "Máy chủ đang bận tạm thời. Bản nháp vẫn còn nguyên — hãy thử lại.",
       "unauthenticated": "Phiên đăng nhập đã kết thúc. Vui lòng đăng nhập lại.",
-      "access_expired": "Phiên truy cập vừa hết hạn. Đang làm mới phiên…",
+      "access_expired": "Phiên truy cập đã hết hạn và chưa tự làm mới được. Bản nháp vẫn an toàn — hãy thử lại.",
       "session_invalid": "Phiên đăng nhập không còn hợp lệ. Vui lòng đăng nhập lại.",
-      "csrf_invalid": "Mã bảo vệ CSRF đã hết hạn. Đang làm mới và thử lại…",
+      "csrf_invalid": "Mã bảo vệ CSRF đã hết hạn và chưa tự làm mới được. Hãy thử lại.",
       "forbidden": "Bạn không có quyền thực hiện thao tác này.",
       "internal_error": "Chưa xử lý được yêu cầu lúc này. Bản nháp vẫn còn nguyên — hãy thử lại.",
       "network": "Không kết nối được máy chủ. Bản nháp vẫn giữ trong tab này cho tới khi vault khoá — hãy thử lại.",

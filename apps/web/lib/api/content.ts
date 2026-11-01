@@ -47,7 +47,8 @@ export type EmptyObject = components['schemas']['EmptyObject'];
 const MAX_INT32_VERSION = 2_147_483_647;
 const MAX_AUTO_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
-
+export const MAX_AUTO_RETRY_WAIT_SECONDS = 30;
+const MAX_AUTO_RETRY_WAIT_MS = MAX_AUTO_RETRY_WAIT_SECONDS * 1_000;
 /**
  * Formats the strong `If-Match: "<version>"` precondition header for content mutations
  * (`PATCH /items/{id}`, `PUT /entries/{id}` — plan §2.4, ADR 0005 §3).
@@ -161,6 +162,35 @@ export function isNetworkOrTimeoutError(error: unknown): boolean {
 }
 
 /**
+ * Extracts a 5xx HTTP status from a non-Problem `Error` thrown by `authFetch.parseResponse`
+ * (e.g. `Error("Yêu cầu thất bại (HTTP 502).")` or `Error("Lỗi không rõ định dạng (HTTP 504).")`
+ * when a reverse proxy or gateway returns an HTML/plain 5xx page — CCFE2, CBE4-1, SPEC §3.4).
+ */
+export function extractNonProblem5xxStatus(error: unknown): number | null {
+  if (error instanceof ProblemError) return null;
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    const rawStatus = error.status;
+    if (typeof rawStatus === 'number' && Number.isInteger(rawStatus) && rawStatus >= 500 && rawStatus <= 599) {
+      return rawStatus;
+    }
+  }
+  if (error instanceof Error) {
+    const match = /\bHTTP\s+(5\d{2})\b/i.exec(error.message);
+    if (match?.[1]) {
+      const parsed = Number.parseInt(match[1], 10);
+      if (parsed >= 500 && parsed <= 599) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+export function isNonProblem5xxError(error: unknown): boolean {
+  return extractNonProblem5xxStatus(error) !== null;
+}
+
+/**
  * Maps a `ProblemCode`, `ProblemError`, or network/offline error to its `content.errors.*` i18n key.
  */
 export function getContentErrorI18nKey(errorOrCode: unknown): ContentErrorI18nKey {
@@ -191,6 +221,10 @@ export function getContentErrorI18nKey(errorOrCode: unknown): ContentErrorI18nKe
 
   if (isNetworkOrTimeoutError(errorOrCode)) {
     return CONTENT_ERROR_I18N_KEYS.network;
+  }
+
+  if (isNonProblem5xxError(errorOrCode)) {
+    return CONTENT_ERROR_I18N_KEYS.dependency_unavailable;
   }
 
   return CONTENT_ERROR_I18N_KEYS.internal_error;
@@ -302,8 +336,8 @@ export function classifyPreLookupError(
     return 'not_pre_lookup';
   }
 
-  if (hadUncertainSend && isNetworkOrTimeoutError(error)) {
-    // CBE4-1: a network/timeout failure (including during refresh) is not a logout.
+  if (hadUncertainSend && (isNetworkOrTimeoutError(error) || isNonProblem5xxError(error))) {
+    // CBE4-1: a network/timeout failure or non-problem 5xx (including during refresh) is not a logout.
     return 'replay_same_request';
   }
 
@@ -519,6 +553,18 @@ export function classifyContentMutationError(
     };
   }
 
+  const nonProblem5xxStatus = extractNonProblem5xxStatus(error);
+  if (nonProblem5xxStatus !== null) {
+    return {
+      kind: 'server_unavailable',
+      i18nKey: CONTENT_ERROR_I18N_KEYS.dependency_unavailable,
+      status: nonProblem5xxStatus,
+      canRetrySameBytes: true,
+      isLogoutBoundary: false,
+      preLookupRecovery: options.hadUncertainSend === false ? preLookupRecovery : 'replay_same_request',
+    };
+  }
+
   return {
     kind: 'generic',
     i18nKey,
@@ -527,16 +573,6 @@ export function classifyContentMutationError(
     preLookupRecovery,
   };
 }
-
-/**
- * Compile-time guard: forbids passing any object with a `plaintext` or `rawJson` property
- * into content mutation payloads or `useContentMutation` variables (plan §2.10, user-dec-016).
- */
-export type ForbidPlaintextField<T> = T extends string
-  ? never
-  : T extends { readonly plaintext?: unknown } | { readonly body?: string } | { readonly rawJson?: unknown }
-    ? never
-    : T;
 
 /**
  * Union of all valid non-secret / already-sealed request payloads for content mutations.
@@ -566,11 +602,15 @@ export interface ContentMutateOptions<TBody extends ContentMutationBody | undefi
   readonly body?: TBody;
   readonly idempotencyKey: string;
   readonly ifMatch?: string;
+  /**
+   * AbortSignal to cancel in-flight requests and bounded `Retry-After` waits.
+   * Callers (Tasks 15/16/18) MUST tie this signal to vault lock, logout, and reset so a sleeping
+   * retry never fires stale ciphertext after the vault locks (plan §2.10, §2.11 step 5, CCFE6).
+   */
   readonly signal?: AbortSignal;
   /**
    * When true, marks that this request was already sent at least once with an uncertain outcome
-   * (e.g. caller is replaying after an earlier timeout/network drop), enabling pre-lookup `csrf_invalid`
-   * bootstrap + replay.
+   * (e.g. caller is replaying after an earlier timeout/network drop).
    */
   readonly uncertainPriorSend?: boolean;
 }
@@ -611,19 +651,57 @@ function isAbortFromCaller(error: unknown, signal?: AbortSignal): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+function attachRetryAfterSeconds(error: unknown, retryAfterSeconds: number): void {
+  if (typeof error === 'object' && error !== null) {
+    try {
+      Object.defineProperty(error, 'retryAfterSeconds', {
+        value: retryAfterSeconds,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch {
+      // Ignore frozen error objects; ProblemError still carries problem.retry_after.
+    }
+  }
+}
+
 function getAutoRetryDelayMs(error: unknown): number | null {
   if (error instanceof ProblemError) {
     const { code, status, retry_after } = error.problem;
     if (status === 409 && code === 'idempotency_in_progress') {
-      return normalizeRetryAfter(retry_after, 1) * 1_000;
+      const seconds = normalizeRetryAfter(retry_after, 1);
+      const delayMs = seconds * 1_000;
+      if (delayMs > MAX_AUTO_RETRY_WAIT_MS) {
+        attachRetryAfterSeconds(error, seconds);
+        return null;
+      }
+      return delayMs;
     }
     if (status === 429 || code === 'rate_limited') {
-      return normalizeRetryAfter(retry_after, 1) * 1_000;
+      const seconds = normalizeRetryAfter(retry_after, 1);
+      const delayMs = seconds * 1_000;
+      if (delayMs > MAX_AUTO_RETRY_WAIT_MS) {
+        attachRetryAfterSeconds(error, seconds);
+        return null;
+      }
+      return delayMs;
     }
     if (status === 503 && code === 'dependency_unavailable') {
-      return retry_after !== undefined ? normalizeRetryAfter(retry_after, 1) * 1_000 : DEFAULT_RETRY_DELAY_MS;
+      if (retry_after !== undefined) {
+        const seconds = normalizeRetryAfter(retry_after, 1);
+        const delayMs = seconds * 1_000;
+        if (delayMs > MAX_AUTO_RETRY_WAIT_MS) {
+          attachRetryAfterSeconds(error, seconds);
+          return null;
+        }
+        return delayMs;
+      }
+      return DEFAULT_RETRY_DELAY_MS;
     }
     return null;
+  }
+  if (isNonProblem5xxError(error)) {
+    return DEFAULT_RETRY_DELAY_MS;
   }
   if (isNetworkOrTimeoutError(error)) {
     return 0;
@@ -639,19 +717,21 @@ function getAutoRetryDelayMs(error: unknown): number | null {
  *   refresh retry (CFE5-3) and up to 2 automatic retries.
  * - Auto-retries at most 2 times on:
  *   - network error or timeout
- *   - `409 idempotency_in_progress` (waits 1 s)
- *   - `429 rate_limited` (waits `Retry-After` seconds)
- *   - `503 dependency_unavailable`
- * - Pre-lookup recovery after an uncertain send (SPEC §3.4, advisor-dec-098/119):
+ *   - `409 idempotency_in_progress` (waits 1 s, capped at ≤ 30 s)
+ *   - `429 rate_limited` (waits `Retry-After` seconds when ≤ 30 s; above 30 s throws immediately
+ *     with `retryAfterSeconds` exposed so the UI can show "Thử lại")
+ *   - `503 dependency_unavailable` and non-Problem 5xx (e.g. proxy 502/504 HTML)
+ * - Callers MUST pass an `AbortSignal` tied to vault lock/logout so a sleeping retry never fires
+ *   after lock.
+ * - Pre-lookup recovery (SPEC §3.4, advisor-dec-098/119):
  *   - `access_expired` and `unauthenticated` with session CSRF evidence are refreshed inside
  *     `authMutate` once and replayed with the exact same bytes + key + If-Match (CFE5-3).
- *   - If an attempt after an uncertain send receives `403 csrf_invalid`, refreshes CSRF via
- *     `GET /auth/csrf` (through `authFetch('/auth/csrf')`) or re-reads the cookie and replays
- *     the exact same bytes + key + If-Match.
+ *   - `403 csrf_invalid` (on the first send or after an uncertain send) bootstraps CSRF via
+ *     `GET /auth/csrf` once within the 2-retry budget and replays the exact same bytes + key + If-Match.
  *   - `unauthenticated` reaching `contentMutate` (no refresh or refresh failed with 401),
  *     `session_invalid`, and `forbidden` are terminal (case b): never replayed.
- *   - CBE4-1: a refresh that fails on network error or 5xx surfaces as a retryable error,
- *     never as a terminal logout boundary.
+ *   - CBE4-1: a refresh that fails on network error or 5xx (including non-Problem 5xx) surfaces as a
+ *     retryable error, never as a terminal logout boundary.
  */
 export async function contentMutate<
   TResponse,
@@ -678,7 +758,6 @@ export async function contentMutate<
     headers['If-Match'] = opts.ifMatch;
   }
 
-  let hadUncertainSend = Boolean(opts.uncertainPriorSend);
   let csrfRecoveredOnce = false;
 
   for (let retryCount = 0; ; retryCount += 1) {
@@ -694,11 +773,10 @@ export async function contentMutate<
         throw error;
       }
 
-      // Pre-lookup recovery after an uncertain send: if a prior send had an uncertain outcome
-      // and the server rejected before idempotency lookup with `403 csrf_invalid`, re-read /
-      // refresh the CSRF cookie in-session and replay the exact same bytes + key once.
+      // Pre-lookup recovery: if the server rejected before idempotency lookup with `403 csrf_invalid`
+      // (either on the first send or after an uncertain prior send — CCFE8), bootstrap the CSRF
+      // cookie in-session once within the 2-retry budget and replay the exact same bytes + key.
       if (
-        hadUncertainSend &&
         !csrfRecoveredOnce &&
         error instanceof ProblemError &&
         error.problem.code === 'csrf_invalid' &&
@@ -708,7 +786,7 @@ export async function contentMutate<
         try {
           await authFetch<void>('/auth/csrf', { signal: opts.signal });
         } catch {
-          // Even if /auth/csrf fails, readCsrfToken() on the next attempt may already have a updated cookie from another tab.
+          // Even if /auth/csrf fails, readCsrfToken() on the next attempt may already have an updated cookie from another tab.
         }
         continue;
       }
@@ -718,15 +796,6 @@ export async function contentMutate<
         throw error;
       }
 
-      if (
-        isNetworkOrTimeoutError(error) ||
-        (error instanceof ProblemError &&
-          (error.problem.code === 'idempotency_in_progress' ||
-            error.problem.code === 'dependency_unavailable' ||
-            error.problem.status >= 500))
-      ) {
-        hadUncertainSend = true;
-      }
 
       if (delayMs > 0) {
         await waitMs(delayMs, opts.signal);
@@ -737,6 +806,9 @@ export async function contentMutate<
 
 export interface ContentIdempotentOptions {
   readonly idempotencyKey: string;
+  /**
+   * AbortSignal tied to vault lock/logout so in-flight requests or Retry-After waits are cancelled immediately on lock.
+   */
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
 }
@@ -1157,7 +1229,7 @@ export type UseContentMutationOptions<
   TContext = unknown,
 > = Omit<
   UseMutationOptions<TData, TError, SafeContentMutationVariables<TVariables>, TContext>,
-  'gcTime' | 'retry'
+  'gcTime' | 'retry' | 'networkMode'
 >;
 
 function assertSafeMutationVariables(variables: unknown): void {
@@ -1175,9 +1247,10 @@ function assertSafeMutationVariables(variables: unknown): void {
 }
 
 /**
- * Wraps TanStack `useMutation` with `gcTime: 0` and `retry: false` (retries are handled inside
- * `contentMutate` with stable serialized bytes + `Idempotency-Key`), and enforces that variables
- * contain only sealed payloads or metadata (never plaintext body — plan §2.10, P4FE1-2).
+ * Wraps TanStack `useMutation` with `gcTime: 0`, `retry: false` (retries are handled inside
+ * `contentMutate` with stable serialized bytes + `Idempotency-Key`), and `networkMode: 'always'`
+ * (never pauses/queues mutations offline across a vault lock — SPEC §7.7, §3.4 step 6, CCFE3),
+ * and enforces that variables contain only sealed payloads or metadata (never plaintext body — plan §2.10, P4FE1-2).
  */
 export function useContentMutation<
   TData = unknown,
@@ -1192,6 +1265,7 @@ export function useContentMutation<
     ...rest,
     gcTime: 0,
     retry: false,
+    networkMode: 'always',
     mutationFn: mutationFn
       ? async (variables, context) => {
           assertSafeMutationVariables(variables);

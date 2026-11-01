@@ -106,6 +106,24 @@ const eslintConfig = [
       ],
     },
   },
+  {
+    files: ["features/{items,entries,json-table,omnibox,tags}/**/*.{ts,tsx,js,jsx,mjs}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@tanstack/react-query",
+              importNames: ["useMutation"],
+              message:
+                "Use useContentMutation from '@/lib/api/content' instead of useMutation in P04 content features so mutations never carry plaintext in MutationCache (plan §2.10, P4FE2-16).",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];
 
 export default eslintConfig;

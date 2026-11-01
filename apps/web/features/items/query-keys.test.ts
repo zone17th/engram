@@ -1,5 +1,8 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, useQueryClient } from '@tanstack/react-query';
+import { renderHook } from '@testing-library/react';
+import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
+import { QueryProvider } from '@/components/query-provider';
 import {
   CONTENT_ENTRIES_QUERY_KEY_PREFIX,
   CONTENT_ITEM_QUERY_KEY_PREFIX,
@@ -70,6 +73,46 @@ describe('features/items/query-keys', () => {
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,
     });
-    expect(client.getQueryDefaults(['vault', 'body', 'entry-1'])).toBeUndefined();
+    expect(client.getQueryDefaults(['vault', 'body', 'entry-1'])).not.toHaveProperty('refetchOnWindowFocus');
+    expect(client.getQueryDefaults(['vault', 'body', 'entry-1'])).not.toHaveProperty('refetchOnReconnect');
+  });
+
+  it('CCFE5: QueryProvider wires configureContentQueryDefaults while keeping non-content keys on their P03 defaults (refetchOnWindowFocus: false, staleTime: 30_000, retry: 1)', () => {
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryProvider, null, children);
+
+    const { result } = renderHook(() => useQueryClient(), { wrapper });
+    const client = result.current;
+
+    // Global defaults for non-content queries (auth, vault, recovery) remain unchanged from P03
+    expect(client.getDefaultOptions().queries).toMatchObject({
+      staleTime: 30_000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    });
+    expect(client.getDefaultOptions().mutations).toMatchObject({
+      retry: false,
+    });
+
+    // Non-content query keys have no per-prefix override and resolve to global defaults
+    expect(client.getQueryDefaults(['vault', 'body', 'entry-1'])).not.toHaveProperty('refetchOnWindowFocus');
+    expect(client.getQueryDefaults(['auth', 'me'])).not.toHaveProperty('refetchOnWindowFocus');
+    expect(
+      client.defaultQueryOptions({ queryKey: ['vault', 'body', 'entry-1'] }).refetchOnWindowFocus,
+    ).toBe(false);
+
+    // Content query keys receive refetchOnWindowFocus: true and refetchOnReconnect: true
+    expect(client.getQueryDefaults(contentQueryKeys.items({ sort: 'recent' }))).toMatchObject({
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    });
+    expect(
+      client.defaultQueryOptions({ queryKey: contentQueryKeys.items({ sort: 'recent' }) })
+        .refetchOnWindowFocus,
+    ).toBe(true);
+    expect(
+      client.defaultQueryOptions({ queryKey: contentQueryKeys.tags({ sort: 'alpha' }) })
+        .refetchOnReconnect,
+    ).toBe(true);
   });
 });

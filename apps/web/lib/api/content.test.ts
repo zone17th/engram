@@ -1,6 +1,9 @@
 import { ERROR_CODES, ProblemError, type ProblemDetails } from '@engram/shared-types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ESLint } from 'eslint';
 import { createElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
@@ -100,6 +103,13 @@ function problemResponse(
       },
     },
   );
+}
+
+function htmlErrorResponse(status: number, bodyHtml = '<html><body>502 Bad Gateway</body></html>'): Response {
+  return new Response(bodyHtml, {
+    status,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
 }
 
 function sessionCsrfCookie(): string {
@@ -377,6 +387,124 @@ describe('lib/api/content', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it('CCFE6: caps in-helper Retry-After waits at ≤ 30 s, throws immediately with retryAfterSeconds exposed when Retry-After > 30 s (e.g. 900), and cancels wait on AbortSignal', async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const idempotencyKey = createIdempotencyKey();
+
+      // 1) Retry-After: 900 exceeds the 30 s cap -> throws immediately on first send without waiting or retrying
+      fetchMock.mockResolvedValueOnce(
+        problemResponse('rate_limited', 429, { retry_after: 900 }, { 'Retry-After': '900' }),
+      );
+
+      let caughtLong429: unknown;
+      try {
+        await tagUpsert({ display: 'nhà' }, { idempotencyKey });
+      } catch (err) {
+        caughtLong429 = err;
+      }
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(caughtLong429).toBeInstanceOf(ProblemError);
+      expect(caughtLong429).toMatchObject({
+        retryAfterSeconds: 900,
+        problem: { code: 'rate_limited', status: 429, retry_after: 900 },
+      });
+      const classified = classifyContentMutationError(caughtLong429);
+      expect(classified.kind).toBe('rate_limited');
+      expect(classified.retryAfterSeconds).toBe(900);
+      expect(classified.canRetrySameBytes).toBe(true);
+      expect(classified.isLogoutBoundary).toBe(false);
+
+      // 2) Retry-After: 20 (≤ 30 s) sleeps, and aborting the lock/logout AbortSignal cancels the sleep so it never fires after lock
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(
+        problemResponse('rate_limited', 429, { retry_after: 20 }, { 'Retry-After': '20' }),
+      );
+      const lockAbort = new AbortController();
+      const pAbort = entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+        idempotencyKey,
+        signal: lockAbort.signal,
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      lockAbort.abort(new DOMException('Vault locked', 'AbortError'));
+
+      await expect(pAbort).rejects.toThrow(/Vault locked|Aborted/);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('CCFE2: auto-retries non-ProblemError 5xx (e.g. 502 HTML after a lost response) up to 2 times with identical body bytes and key, and classifies it as retryable', async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const idempotencyKey = createIdempotencyKey();
+      const expectedSerialized = JSON.stringify(SAMPLE_ENTRY_CREATE);
+
+      // Subcase 1: 502 HTML on attempt 0 (after server committed or lost response) -> retries after 1 s with identical bytes + key -> 201
+      fetchMock
+        .mockResolvedValueOnce(htmlErrorResponse(502))
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              id: SAMPLE_ENTRY_ID,
+              item_id: SAMPLE_ITEM_ID,
+              type: 'text',
+              position: 0,
+              version: 1,
+              plaintext_len_bucket: 256,
+              created_at: '2026-11-01T00:00:00Z',
+              updated_at: '2026-11-01T00:00:00Z',
+            },
+            201,
+          ),
+        );
+
+      const recoverPromise = entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, { idempotencyKey });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const recovered = await recoverPromise;
+      expect(recovered.id).toBe(SAMPLE_ENTRY_ID);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      for (const [, init] of fetchMock.mock.calls) {
+        const reqInit = init as RequestInit;
+        expect(reqInit.body).toBe(expectedSerialized);
+        expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
+      }
+
+      // Subcase 2: persistent 502 HTML across all 3 attempts (initial + 2 auto-retries) -> surfaces retryable server_unavailable
+      fetchMock.mockReset();
+      fetchMock
+        .mockResolvedValueOnce(htmlErrorResponse(502))
+        .mockResolvedValueOnce(htmlErrorResponse(502))
+        .mockResolvedValueOnce(htmlErrorResponse(502));
+
+      let caught502: unknown;
+      const failPromise = entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, { idempotencyKey }).catch(
+        (err: unknown) => {
+          caught502 = err;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      await failPromise;
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      for (const [, init] of fetchMock.mock.calls) {
+        const reqInit = init as RequestInit;
+        expect(reqInit.body).toBe(expectedSerialized);
+        expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
+      }
+
+      expect(caught502).toBeInstanceOf(Error);
+      expect(caught502).not.toBeInstanceOf(ProblemError);
+      const classified502 = classifyContentMutationError(caught502, { hadUncertainSend: true });
+      expect(classified502.kind).toBe('server_unavailable');
+      expect(classified502.status).toBe(502);
+      expect(classified502.canRetrySameBytes).toBe(true);
+      expect(classified502.isLogoutBoundary).toBe(false);
+      expect(classified502.preLookupRecovery).toBe('replay_same_request');
+      expect(classified502.i18nKey).toBe('content.errors.dependency_unavailable');
+    });
+
     it('retries 503 dependency_unavailable up to 2 times and does NOT retry other 4xx errors', async () => {
       const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
       const idempotencyKey = createIdempotencyKey();
@@ -430,7 +558,7 @@ describe('lib/api/content', () => {
   });
 
   describe('pre-lookup 401/403 split (SPEC §3.4, advisor-dec-098/119/121, CFE5-3, CBE4-1)', () => {
-    it('CFE5-3: reuses authFetch refresh path (no second refresh) and sends identical Idempotency-Key, If-Match, and body string on auto-retry for access_expired and unauthenticated with session CSRF', async () => {
+    it('CFE5-3 & CCFE9: reuses authFetch refresh path (no second refresh) and sends identical Idempotency-Key, If-Match, and body string on auto-retry for both access_expired and unauthenticated with session CSRF', async () => {
       const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
       const idempotencyKey = createIdempotencyKey();
       const ifMatch = formatVersionIfMatch(3);
@@ -441,10 +569,7 @@ describe('lib/api/content', () => {
       };
       const expectedSerialized = JSON.stringify(body);
 
-      // 1) Initial PUT -> 401 unauthenticated (with session CSRF cookie present)
-      // 2) Lock-time GET /auth/me -> 401 unauthenticated
-      // 3) POST /auth/refresh -> 204
-      // 4) Replay PUT -> 200 EntryMeta
+      // Subcase 1: unauthenticated (with session CSRF cookie present) -> refresh -> replay
       fetchMock
         .mockResolvedValueOnce(problemResponse('unauthenticated', 401))
         .mockResolvedValueOnce(problemResponse('unauthenticated', 401))
@@ -468,7 +593,6 @@ describe('lib/api/content', () => {
       });
 
       expect(updated.version).toBe(4);
-      // Exactly 1 refresh call inside authFetch, no second refresh in contentMutate
       const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/auth/refresh'));
       expect(refreshCalls).toHaveLength(1);
 
@@ -476,14 +600,95 @@ describe('lib/api/content', () => {
         String(url).includes(`/entries/${SAMPLE_ENTRY_ID}`),
       );
       expect(entryCalls).toHaveLength(2);
-      const firstInit = entryCalls[0]?.[1] as RequestInit;
-      const secondInit = entryCalls[1]?.[1] as RequestInit;
-      expect(firstInit.body).toBe(expectedSerialized);
-      expect(secondInit.body).toBe(expectedSerialized);
-      expect(new Headers(firstInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
-      expect(new Headers(secondInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
-      expect(new Headers(firstInit.headers).get('If-Match')).toBe(ifMatch);
-      expect(new Headers(secondInit.headers).get('If-Match')).toBe(ifMatch);
+      for (const [, init] of entryCalls) {
+        const reqInit = init as RequestInit;
+        expect(reqInit.body).toBe(expectedSerialized);
+        expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
+        expect(new Headers(reqInit.headers).get('If-Match')).toBe(ifMatch);
+      }
+
+      // Subcase 2: access_expired -> refresh -> replay with identical body bytes, key, and If-Match
+      fetchMock.mockReset();
+      const idempotencyKey2 = createIdempotencyKey();
+      fetchMock
+        .mockResolvedValueOnce(problemResponse('access_expired', 401))
+        .mockResolvedValueOnce(problemResponse('access_expired', 401))
+        .mockResolvedValueOnce(emptyResponse(204))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            id: SAMPLE_ENTRY_ID,
+            item_id: SAMPLE_ITEM_ID,
+            type: 'text',
+            position: 0,
+            version: 5,
+            plaintext_len_bucket: 256,
+            created_at: '2026-11-01T00:00:00Z',
+            updated_at: '2026-11-01T00:00:03Z',
+          }),
+        );
+
+      const updated2 = await entryUpdate(SAMPLE_ENTRY_ID, body, {
+        idempotencyKey: idempotencyKey2,
+        ifMatch: formatVersionIfMatch(4),
+      });
+      expect(updated2.version).toBe(5);
+
+      const refreshCalls2 = fetchMock.mock.calls.filter(([url]) => String(url).includes('/auth/refresh'));
+      expect(refreshCalls2).toHaveLength(1);
+      const entryCalls2 = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes(`/entries/${SAMPLE_ENTRY_ID}`),
+      );
+      expect(entryCalls2).toHaveLength(2);
+      for (const [, init] of entryCalls2) {
+        const reqInit = init as RequestInit;
+        expect(reqInit.body).toBe(expectedSerialized);
+        expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey2);
+        expect(new Headers(reqInit.headers).get('If-Match')).toBe('"4"');
+      }
+    });
+
+    it('CCFE8: bootstraps CSRF and replays once with the same bytes and key when csrf_invalid occurs on the first send (within the 2-retry budget)', async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const idempotencyKey = createIdempotencyKey();
+      const expectedSerialized = JSON.stringify(SAMPLE_ENTRY_CREATE);
+
+      // 1) First send gets 403 csrf_invalid immediately (no prior uncertain send)
+      // 2) contentMutate bootstraps GET /auth/csrf -> 204
+      // 3) Replay sends identical body bytes + key -> 201
+      fetchMock
+        .mockResolvedValueOnce(problemResponse('csrf_invalid', 403))
+        .mockResolvedValueOnce(emptyResponse(204))
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              id: SAMPLE_ENTRY_ID,
+              item_id: SAMPLE_ITEM_ID,
+              type: 'text',
+              position: 0,
+              version: 1,
+              plaintext_len_bucket: 256,
+              created_at: '2026-11-01T00:00:00Z',
+              updated_at: '2026-11-01T00:00:00Z',
+            },
+            201,
+          ),
+        );
+
+      const created = await entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, { idempotencyKey });
+      expect(created.id).toBe(SAMPLE_ENTRY_ID);
+
+      const csrfCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/auth/csrf'));
+      expect(csrfCalls).toHaveLength(1);
+
+      const postCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes(`/items/${SAMPLE_ITEM_ID}/entries`),
+      );
+      expect(postCalls).toHaveLength(2);
+      for (const [, init] of postCalls) {
+        const reqInit = init as RequestInit;
+        expect(reqInit.body).toBe(expectedSerialized);
+        expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
+      }
     });
 
     it('replays the exact same bytes and key after an uncertain send hits access_expired or csrf_invalid', async () => {
@@ -557,12 +762,38 @@ describe('lib/api/content', () => {
       expect(classifiedUnauth.canRetrySameBytes).toBe(false);
       expect(classifiedUnauth.preLookupRecovery).toBe('terminal_logout_boundary');
 
-      // Case 2: session_invalid after uncertain send -> ends immediately, no replay
+      // Case 1b (CCFE9): session CSRF present, initial send gets 401 unauthenticated, conditional POST /auth/refresh fails with 401 unauthenticated -> terminal case (b), no replay
       Object.defineProperty(document, 'cookie', {
         configurable: true,
         writable: true,
         value: `sabk_csrf=${sessionCsrfCookie()}`,
       });
+      fetchMock.mockReset();
+      fetchMock
+        .mockResolvedValueOnce(problemResponse('unauthenticated', 401)) // initial mutation -> 401
+        .mockResolvedValueOnce(problemResponse('unauthenticated', 401)) // lock GET /auth/me -> 401
+        .mockResolvedValueOnce(problemResponse('unauthenticated', 401)); // POST /auth/refresh -> 401 terminal
+
+      let caughtRefresh401: unknown;
+      try {
+        await entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, { idempotencyKey });
+      } catch (err) {
+        caughtRefresh401 = err;
+      }
+      expect(caughtRefresh401).toBeInstanceOf(ProblemError);
+      const postRefresh401Calls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes(`/items/${SAMPLE_ITEM_ID}/entries`),
+      );
+      expect(postRefresh401Calls).toHaveLength(1);
+      const classifiedRefresh401 = classifyContentMutationError(caughtRefresh401, {
+        hadUncertainSend: true,
+      });
+      expect(classifiedRefresh401.kind).toBe('terminal_auth');
+      expect(classifiedRefresh401.isLogoutBoundary).toBe(true);
+      expect(classifiedRefresh401.canRetrySameBytes).toBe(false);
+      expect(classifiedRefresh401.preLookupRecovery).toBe('terminal_logout_boundary');
+
+      // Case 2: session_invalid after uncertain send -> ends immediately, no replay
       fetchMock.mockReset();
       fetchMock
         .mockRejectedValueOnce(new TypeError('Failed to fetch'))
@@ -607,12 +838,24 @@ describe('lib/api/content', () => {
       expect(classifiedForbidden.preLookupRecovery).toBe('terminal_logout_boundary');
     });
 
-    it('CBE4-1: a refresh that fails on a network error or 5xx is NOT a logout; keeps bytes/key and surfaces a retryable error', async () => {
+    it('CBE4-1 & CCFE2 & CCFE9: a refresh that fails on a network error, Problem 5xx, or non-Problem 502 HTML is NOT a logout; re-sends identical bytes/key across attempts and surfaces a retryable error', async () => {
       const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
       const idempotencyKey = createIdempotencyKey();
+      const expectedSerialized = JSON.stringify(SAMPLE_ENTRY_CREATE);
+
+      const assertAllEntryPostCallsMatch = () => {
+        const entryPostCalls = fetchMock.mock.calls.filter(([url]) =>
+          String(url).includes(`/items/${SAMPLE_ITEM_ID}/entries`),
+        );
+        expect(entryPostCalls).toHaveLength(3);
+        for (const [, init] of entryPostCalls) {
+          const reqInit = init as RequestInit;
+          expect(reqInit.body).toBe(expectedSerialized);
+          expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
+        }
+      };
 
       // Subcase A: lost response -> retry gets 401 unauthenticated -> conditional refresh fails with network TypeError
-      // (and remaining auto-retries also fail with network TypeError).
       const networkOutage = new TypeError('Failed to fetch');
       fetchMock
         .mockRejectedValueOnce(networkOutage) // attempt 0: lost mutation response
@@ -629,6 +872,7 @@ describe('lib/api/content', () => {
         surfacedNetworkErr = err;
       }
 
+      assertAllEntryPostCallsMatch();
       expect(surfacedNetworkErr).toBe(networkOutage);
       const classifiedNet = classifyContentMutationError(surfacedNetworkErr, {
         hadUncertainSend: true,
@@ -660,6 +904,7 @@ describe('lib/api/content', () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await p503;
 
+      assertAllEntryPostCallsMatch();
       expect(surfaced503Err).toBeInstanceOf(ProblemError);
       const classified503 = classifyContentMutationError(surfaced503Err, {
         hadUncertainSend: true,
@@ -668,6 +913,37 @@ describe('lib/api/content', () => {
       expect(classified503.isLogoutBoundary).toBe(false);
       expect(classified503.canRetrySameBytes).toBe(true);
       expect(classified503.preLookupRecovery).toBe('replay_same_request');
+
+      // Subcase C (CCFE2): refresh POST returns 502 HTML (non-ProblemError 5xx) -> auto-retried with identical bytes + key, classified retryable
+      fetchMock.mockReset();
+      fetchMock
+        .mockRejectedValueOnce(networkOutage) // attempt 0: lost mutation response
+        .mockResolvedValueOnce(problemResponse('access_expired', 401)) // attempt 1: hits access_expired
+        .mockResolvedValueOnce(problemResponse('access_expired', 401)) // refresh lock: GET /auth/me
+        .mockResolvedValueOnce(htmlErrorResponse(502)) // refresh lock: POST /auth/refresh -> 502 HTML
+        .mockResolvedValueOnce(problemResponse('access_expired', 401)) // refresh lock: probe GET /auth/me -> rethrows 502 Error
+        .mockResolvedValueOnce(htmlErrorResponse(502)); // attempt 2: 502 HTML
+
+      let surfacedRefresh502: unknown;
+      const pRefresh502 = entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, { idempotencyKey }).catch(
+        (err: unknown) => {
+          surfacedRefresh502 = err;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      await pRefresh502;
+
+      assertAllEntryPostCallsMatch();
+      expect(surfacedRefresh502).toBeInstanceOf(Error);
+      expect(surfacedRefresh502).not.toBeInstanceOf(ProblemError);
+      const classifiedRefresh502 = classifyContentMutationError(surfacedRefresh502, {
+        hadUncertainSend: true,
+      });
+      expect(classifiedRefresh502.kind).toBe('server_unavailable');
+      expect(classifiedRefresh502.status).toBe(502);
+      expect(classifiedRefresh502.isLogoutBoundary).toBe(false);
+      expect(classifiedRefresh502.canRetrySameBytes).toBe(true);
+      expect(classifiedRefresh502.preLookupRecovery).toBe('replay_same_request');
     });
   });
 
@@ -731,6 +1007,87 @@ describe('lib/api/content', () => {
       // With gcTime: 0, inactive mutation entries are garbage-collected immediately.
       await vi.advanceTimersByTimeAsync(0);
       expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+    });
+
+    it('CCFE3: forces networkMode: "always" on useContentMutation so mutations execute immediately when navigator.onLine === false and never pause in an offline queue', async () => {
+      vi.stubGlobal('navigator', {
+        ...navigator,
+        onLine: false,
+        locks: {
+          request: vi.fn(async (_name: string, callback: () => Promise<unknown>) => callback()),
+        },
+      });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+      const queryClient = new QueryClient();
+      const wrapper = ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client: queryClient }, children);
+
+      const idempotencyKey = createIdempotencyKey();
+      const { result } = renderHook(
+        () =>
+          useContentMutation<unknown, Error, EntryCreateRequest>({
+            mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey }),
+          }),
+        { wrapper },
+      );
+
+      let caughtOfflineErr: unknown;
+      await act(async () => {
+        try {
+          await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
+        } catch (err) {
+          caughtOfflineErr = err;
+        }
+      });
+
+      // mutationFn actually ran (initial + 2 network retries = 3 calls) rather than pausing in MutationCache
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(caughtOfflineErr).toBeInstanceOf(TypeError);
+      const classified = classifyContentMutationError(caughtOfflineErr);
+      expect(classified.kind).toBe('offline');
+      expect(classified.i18nKey).toBe('content.errors.offline');
+      expect(classified.canRetrySameBytes).toBe(true);
+    });
+
+    it('CCFE11 (P4FE2-16): ESLint no-restricted-imports bans useMutation from @tanstack/react-query in features/{items,entries,json-table,omnibox,tags}/** and allows useContentMutation', async () => {
+      vi.useRealTimers();
+      const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+      const eslint = new ESLint({ cwd: webRoot });
+
+      // 1) Importing useMutation in a P04 content feature directory triggers no-restricted-imports error
+      const [badResult] = await eslint.lintText(
+        "import { useMutation } from '@tanstack/react-query';\nexport const x = useMutation;\n",
+        { filePath: path.join(webRoot, 'features/items/forbidden-mutation-fixture.ts') },
+      );
+      expect(badResult).toBeDefined();
+      const restrictedMsgs = (badResult?.messages ?? []).filter(
+        (m) => m.ruleId === 'no-restricted-imports',
+      );
+      expect(restrictedMsgs.length).toBeGreaterThan(0);
+      expect(restrictedMsgs[0]?.message).toMatch(/useContentMutation/);
+
+      // 2) Importing useQuery from @tanstack/react-query and useContentMutation from @/lib/api/content is allowed
+      const [goodResult] = await eslint.lintText(
+        "import { useQuery } from '@tanstack/react-query';\nimport { useContentMutation } from '@/lib/api/content';\nexport const q = [useQuery, useContentMutation];\n",
+        { filePath: path.join(webRoot, 'features/items/allowed-mutation-fixture.ts') },
+      );
+      const goodRestrictedMsgs = (goodResult?.messages ?? []).filter(
+        (m) => m.ruleId === 'no-restricted-imports',
+      );
+      expect(goodRestrictedMsgs).toHaveLength(0);
+
+      // 3) Importing useMutation outside P04 content directories (e.g. features/vault/**) is unaffected
+      const [vaultResult] = await eslint.lintText(
+        "import { useMutation } from '@tanstack/react-query';\nexport const v = useMutation;\n",
+        { filePath: path.join(webRoot, 'features/vault/allowed-vault-mutation-fixture.ts') },
+      );
+      const vaultRestrictedMsgs = (vaultResult?.messages ?? []).filter(
+        (m) => m.ruleId === 'no-restricted-imports',
+      );
+      expect(vaultRestrictedMsgs).toHaveLength(0);
     });
   });
 

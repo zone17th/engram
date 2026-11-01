@@ -1,9 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
-import type { components } from '@engram/shared-types';
+import type { ContentSort } from '@/lib/api/content';
 
-export type ContentSort = components['schemas']['ItemList'] extends never
-  ? 'recent' | 'alpha'
-  : components['parameters']['ContentSort'];
+export type { ContentSort };
 
 export interface ContentItemsListKeyParams {
   readonly sort?: ContentSort;

@@ -997,9 +997,9 @@
   },
   "content": {
     "errors": {
-      "name_invalid": "Item name must be 1–200 characters after normalization and contain no control characters.",
+      "name_invalid": "Item name must be 1–200 characters after normalization, not consist only of punctuation, and contain no control or bidirectional override characters.",
       "hint_invalid": "Item hint must be at most 120 characters and contain no control characters.",
-      "tag_display_invalid": "Tag name must be 1–50 characters without whitespace or control characters.",
+      "tag_display_invalid": "Tag name must be 1–50 characters and contain no control characters.",
       "item_id_conflict": "This item ID is already in use by another item.",
       "item_deleted": "This item was deleted. Restore the item first before restoring its entry.",
       "item_tag_limit": "An item can have at most 20 active tags.",
@@ -1023,9 +1023,9 @@
       "vault_absent": "Your vault has not been set up or was reset. Set up your vault before saving entries.",
       "dependency_unavailable": "The server is temporarily busy. Your draft is safe — please retry.",
       "unauthenticated": "Your session has ended. Sign in again to continue.",
-      "access_expired": "Your access token expired. Refreshing your session…",
+      "access_expired": "Your session expired and could not be refreshed automatically. Your draft is safe — please retry.",
       "session_invalid": "Your session is no longer valid. Please sign in again.",
-      "csrf_invalid": "Security token expired. Refreshing token and retrying…",
+      "csrf_invalid": "Security token expired and could not be refreshed automatically. Please retry.",
       "forbidden": "You do not have permission to perform this action.",
       "internal_error": "We could not process the request right now. Your draft is still here — please retry.",
       "network": "Could not reach the server. Your draft stays in this tab until the vault locks — please retry.",
