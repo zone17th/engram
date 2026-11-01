@@ -1010,6 +1010,69 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.queryByTestId(`entry-conflict-412-${ENTRY_ID_1}`)).toBeNull();
   });
 
+  it('IP15-BE1-3: typing a newer edit while a PUT is in flight keeps the editor open on 2xx and the next PUT uses the returned version', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial v1 content', version: 1 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial v1 content');
+    });
+
+    const { promise: putAGate, resolve: releasePutA } = createDeferred();
+    let putCount = 0;
+
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+        putCount += 1;
+        if (putCount === 1) {
+          await putAGate;
+        }
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`) as HTMLTextAreaElement;
+
+    // Type draft A and submit PUT A (held in flight)
+    fireEvent.change(textarea, { target: { value: 'Draft A submitted' } });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(1);
+    });
+
+    // Type draft B while PUT A is still in flight
+    fireEvent.change(textarea, { target: { value: 'Draft B typed while A in flight' } });
+
+    // Release PUT A (commits v2 on server)
+    releasePutA();
+
+    // Editor remains open with Draft B preserved and Save button re-enabled
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).not.toBeDisabled();
+    });
+    expect(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toHaveValue(
+      'Draft B typed while A in flight',
+    );
+
+    // Click Save for Draft B -> sends PUT #2 with If-Match: "2" (new version from PUT A) and closes editor on 2xx
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Draft B typed while A in flight',
+      );
+    });
+
+    const puts = h.server.requests.filter((r) => r.method === 'PUT');
+    expect(puts).toHaveLength(2);
+    expect(puts[0].headers['if-match']).toBe('"1"');
+    expect(puts[1].headers['if-match']).toBe('"2"');
+  });
+
   it('412 on entry PUT keeps draft; Copy mine copies draft; Keep mine writes with the new version and fresh nonce; Load latest drops draft after inline confirm', async () => {
     const writeTextMock = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', {

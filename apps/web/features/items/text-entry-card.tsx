@@ -148,6 +148,11 @@ export function TextEntryCard({
 
   const currentVersion = resolvedVersion ?? entry.version;
 
+  const [committedVersion, setCommittedVersion] = useState<number | null>(null);
+  const effectiveVersion =
+    committedVersion !== null && committedVersion > currentVersion
+      ? committedVersion
+      : currentVersion;
   // Editor state — holds plaintext ONLY while editing and unlocked; wiped on lock via registerSecretFormReset
   const [editing, setEditing] = useState(defaultEditing);
   const [originalSource, setOriginalSource] = useState<string>('');
@@ -161,6 +166,7 @@ export function TextEntryCard({
     readonly sealed: SealedEntryUpdatePayload;
     readonly ifMatch: number;
     readonly errorMessage: string;
+    readonly submittedRevision: number;
   } | null>(null);
   const [conflictState, setConflictState] = useState<{
     readonly currentVersion?: number;
@@ -179,6 +185,7 @@ export function TextEntryCard({
   const saveLockRef = useRef<boolean>(false);
 
   const lockEpochRef = useRef<number>(0);
+  const editorRevisionRef = useRef<number>(0);
   const editingActiveRef = useRef<boolean>(false);
   editingActiveRef.current =
     editing ||
@@ -193,6 +200,8 @@ export function TextEntryCard({
     return vault.registerSecretFormReset(() => {
       const hadActiveEditorOrDraft = editingActiveRef.current;
       lockEpochRef.current += 1;
+      editorRevisionRef.current = 0;
+      setCommittedVersion(null);
       if (textareaRef.current) {
         textareaRef.current.value = '';
       }
@@ -218,6 +227,8 @@ export function TextEntryCard({
   useEffect(() => {
     if (!unlocked && editingActiveRef.current) {
       lockEpochRef.current += 1;
+      editorRevisionRef.current = 0;
+      setCommittedVersion(null);
       if (textareaRef.current) {
         textareaRef.current.value = '';
       }
@@ -299,6 +310,7 @@ export function TextEntryCard({
 
   const startEditing = useCallback(() => {
     if (!unlocked || body === undefined) return;
+    editorRevisionRef.current = 0;
     setOriginalSource(body);
     setDraftValue(normalizeEolToLf(body));
     setDiscardConfirmOpen(false);
@@ -318,6 +330,7 @@ export function TextEntryCard({
       textareaRef.current.value = '';
     }
     saveLockRef.current = false;
+    editorRevisionRef.current = 0;
     setEditing(false);
     setOriginalSource('');
     setDraftValue('');
@@ -346,6 +359,7 @@ export function TextEntryCard({
       sealed: SealedEntryUpdatePayload,
       ifMatchVersion: number,
       hadPriorUncertainSend: boolean,
+      submittedRevision: number,
     ) => {
       setSavingInFlight(true);
       setSaveError(null);
@@ -372,9 +386,13 @@ export function TextEntryCard({
         setDeletedRemotely(false);
         setDiscardConfirmOpen(false);
         setMixedEolWarningTarget(null);
-        setEditing(false);
-        setOriginalSource('');
-        setDraftValue('');
+        setCommittedVersion(meta.version);
+
+        if (editorRevisionRef.current === submittedRevision) {
+          setEditing(false);
+          setOriginalSource('');
+          setDraftValue('');
+        }
         setSavedFlash(true);
         onAnnounce?.(tEntry('savedAnnounce'));
 
@@ -453,6 +471,7 @@ export function TextEntryCard({
             sealed,
             ifMatch: ifMatchVersion,
             errorMessage: msg,
+            submittedRevision,
           });
           onAnnounce?.(msg);
           return;
@@ -509,6 +528,7 @@ export function TextEntryCard({
         return;
       }
 
+      const submittedRevision = editorRevisionRef.current;
       setMixedEolWarningTarget(null);
       saveLockRef.current = true;
       setSavingInFlight(true);
@@ -518,7 +538,7 @@ export function TextEntryCard({
         const sealed = await sealEntryUpdate({
           entryId: entry.id,
           itemId,
-          version: currentVersion,
+          version: effectiveVersion,
           text: savePlan.text,
           vault,
         });
@@ -527,7 +547,7 @@ export function TextEntryCard({
           setSavingInFlight(false);
           return;
         }
-        await executePut(sealed, currentVersion, false);
+        await executePut(sealed, effectiveVersion, false, submittedRevision);
       } catch (err) {
         saveLockRef.current = false;
         setSavingInFlight(false);
@@ -541,7 +561,7 @@ export function TextEntryCard({
       closeEditorCleanly,
       conflictState,
       deletedRemotely,
-      currentVersion,
+      effectiveVersion,
       entry.id,
       executePut,
       isEmpty,
@@ -559,7 +579,12 @@ export function TextEntryCard({
   const handleRetrySameBytes = useCallback(async () => {
     if (!unconfirmedSave || saveLockRef.current || savingInFlight) return;
     saveLockRef.current = true;
-    await executePut(unconfirmedSave.sealed, unconfirmedSave.ifMatch, true);
+    await executePut(
+      unconfirmedSave.sealed,
+      unconfirmedSave.ifMatch,
+      true,
+      unconfirmedSave.submittedRevision,
+    );
   }, [executePut, savingInFlight, unconfirmedSave]);
 
   // 412 action 1: Giữ bản của tôi (Keep mine) -> fetch latest version if needed, re-seal draft with fresh nonce, PUT with new If-Match + new Idempotency-Key
@@ -585,6 +610,7 @@ export function TextEntryCard({
       return true;
     };
 
+    const submittedRevision = editorRevisionRef.current;
     saveLockRef.current = true;
     setSavingInFlight(true);
     setSaveError(null);
@@ -623,7 +649,7 @@ export function TextEntryCard({
       }
 
       setConflictState(null);
-      await executePut(resealed, targetVersion, false);
+      await executePut(resealed, targetVersion, false, submittedRevision);
     } catch (err) {
       saveLockRef.current = false;
       setSavingInFlight(false);
@@ -1021,6 +1047,7 @@ export function TextEntryCard({
               {...VAULT_SECRET_INPUT_PROPS}
               onChange={(e) => {
                 setDraftValue(e.target.value);
+                editorRevisionRef.current += 1;
                 if (discardConfirmOpen) setDiscardConfirmOpen(false);
                 if (mixedEolWarningTarget) setMixedEolWarningTarget(null);
               }}
