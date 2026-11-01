@@ -30,7 +30,7 @@ import {
 } from '@/lib/api/auth-fetch';
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 import { hasWebLocks } from '@/lib/auth/session-lock';
-import { notifyUserChanged } from '@/lib/auth/user-changed';
+import { commitAuthenticatedUser } from '@/lib/auth/user-changed';
 import { useReauth, type UseReauthReturn } from '@/features/auth/use-reauth';
 import {
   getKnownDeviceSessionUserId,
@@ -125,6 +125,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (me?.user.id) {
       setKnownDeviceSessionUserId(me.user.id);
+      commitAuthenticatedUser(me.user.id);
     }
   }, [me?.user.id]);
 
@@ -177,10 +178,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signup = useCallback(
     async (...args: Parameters<typeof apiSignup>) => {
       const result = await apiSignup(...args);
-      const prevUserId = me?.user.id ?? getKnownDeviceSessionUserId();
-      if (prevUserId && prevUserId !== result.user.id) {
-        notifyUserChanged(prevUserId, result.user.id);
-      }
+      commitAuthenticatedUser(result.user.id);
       setKnownDeviceSessionUserId(result.user.id);
       bumpSessionEpoch();
       setSessionEpochState(getSessionEpoch());
@@ -188,16 +186,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       queryClient.setQueryData(['auth', 'me', getSessionEpoch()], result);
       return result;
     },
-    [clearPrivateCache, me?.user.id, queryClient],
+    [clearPrivateCache, queryClient],
   );
 
   const login = useCallback(
     async (...args: Parameters<typeof apiLogin>) => {
       const result = await apiLogin(...args);
-      const prevUserId = me?.user.id ?? getKnownDeviceSessionUserId();
-      if (prevUserId && prevUserId !== result.user.id) {
-        notifyUserChanged(prevUserId, result.user.id);
-      }
+      commitAuthenticatedUser(result.user.id);
       setKnownDeviceSessionUserId(result.user.id);
       bumpSessionEpoch();
       setSessionEpochState(getSessionEpoch());
@@ -205,23 +200,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       queryClient.setQueryData(['auth', 'me', getSessionEpoch()], result);
       return result;
     },
-    [clearPrivateCache, me?.user.id, queryClient],
+    [clearPrivateCache, queryClient],
   );
 
   const completeOAuthLogin = useCallback(async () => {
     const result = await oauthComplete();
-    const prevUserId = me?.user.id ?? getKnownDeviceSessionUserId();
-    if (prevUserId && prevUserId !== result.user.id) {
-      notifyUserChanged(prevUserId, result.user.id);
-    }
+    commitAuthenticatedUser(result.user.id);
     bumpSessionEpoch();
     setKnownDeviceSessionUserId(result.user.id);
     setSessionEpochState(getSessionEpoch());
     clearPrivateCache();
     queryClient.setQueryData(['auth', 'me', getSessionEpoch()], result);
     return result;
-  }, [clearPrivateCache, me?.user.id, queryClient]);
-
+  }, [clearPrivateCache, queryClient]);
   useEffect(() => {
     return subscribeSessionBroadcast((message, origin) => {
       if (message.type === 'session_changed') {

@@ -60,13 +60,14 @@ const utf8Encoder = new TextEncoder();
 let editorPlaintextHolderTestHookRef: { current: EditorPlaintextHolder } | null = null;
 
 /**
- * Module-scoped test hook to observe the plaintext holder without exposing a public component prop (IP15-FE3-7a).
+ * Module-scoped test namespace to observe the plaintext holder without exposing a public component prop or
+ * production export (IP15-FE3-7a, IP15-FE4-7).
  */
-export function setEditorPlaintextHolderForTests(
-  holderRef: { current: EditorPlaintextHolder } | null,
-): void {
-  editorPlaintextHolderTestHookRef = holderRef;
-}
+export const __testing = {
+  setEditorPlaintextHolderForTests(holderRef: { current: EditorPlaintextHolder } | null): void {
+    editorPlaintextHolderTestHookRef = holderRef;
+  },
+};
 
 export interface TextEntryCardProps {
   readonly entry: EntryMeta;

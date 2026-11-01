@@ -20,24 +20,26 @@ import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
   getUnconfirmedSavesSnapshot,
-  peekUnconfirmedSavesForTests,
   recordUnconfirmedSave,
   resetEntryBodyLoadLimiterForTests,
   subscribeUnconfirmedSaves,
 } from '@/features/entries';
-import { subscribeUserChanged } from '@/lib/auth/user-changed';
+import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
+import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
   TextEntryCard,
-  setEditorPlaintextHolderForTests,
+  __testing as textEntryCardTesting,
   type EditorPlaintextHolder,
 } from '@/features/items/text-entry-card';
 import {
   VAULT_BODY_QUERY_KEY_PREFIX,
   VaultProvider,
+  getKnownDeviceSessionUserId,
   resetVaultBroadcastForTests,
   useVault,
+  vaultBodyQueryKey,
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
@@ -349,7 +351,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
-    setEditorPlaintextHolderForTests(null);
+    userChangedTesting.resetCommittedUserForTests();
+    textEntryCardTesting.setEditorPlaintextHolderForTests(null);
   });
 
   afterEach(() => {
@@ -358,8 +361,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
-    setEditorPlaintextHolderForTests(null);
-    vi.unstubAllEnvs();
+    userChangedTesting.resetCommittedUserForTests();
+    textEntryCardTesting.setEditorPlaintextHolderForTests(null);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalVisibilityStateDescriptor) {
@@ -395,8 +398,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     signupSession: (email: string, password: string) => Promise<void>;
     completeOAuthSession: () => Promise<void>;
     unlock: () => Promise<void>;
+    unlockWithoutReload: () => Promise<void>;
     lock: () => Promise<void>;
-    setCurrentMe: (me: Me) => void;
+    workerCalls: Array<{ type: string; id: number }>;
+    setCurrentMe: (me: Me | null) => void;
     rerenderPage: (node?: ReactNode) => void;
   }
 
@@ -426,7 +431,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     }
 
     let createdVault: CreateVaultResult | null = null;
-    let currentMe = makeMe(USER_A_ID, 'present');
+    let currentMe: Me | null = makeMe(USER_A_ID, 'present');
     let routeOverride:
       | ((url: string, init?: RequestInit) => Promise<Response | null> | Response | null)
       | null = null;
@@ -527,11 +532,19 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
           captcha_site_key: null,
         });
       }
-      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 });
-      if (url.endsWith('/auth/login')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/signup')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/oauth/complete')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/me')) {
+        if (!currentMe) {
+          return problemResponse('session_invalid', 401);
+        }
+        return jsonResponse(currentMe);
+      }
+      if (url.endsWith('/auth/logout')) {
+        currentMe = null;
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/auth/login')) return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
+      if (url.endsWith('/auth/signup')) return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
+      if (url.endsWith('/auth/oauth/complete')) return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
       if (url.endsWith('/vault')) {
         if (!createdVault) return problemResponse('vault_absent', 404);
         return jsonResponse(makeVaultGetResponse(createdVault, KEY_ID, 1));
@@ -748,6 +761,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       },
     });
 
+    const workerCalls: Array<{ type: string; id: number }> = [];
+
     const buildTree = (child?: ReactNode) => (
       <NextIntlClientProvider locale={locale} messages={locale === 'vi' ? viMessages : en}>
         <ThemeProvider initialTheme="light" initialLocale={locale}>
@@ -760,6 +775,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
                       deriveKek: fastTestDeriveKek,
                     });
                     shims.push(shim);
+                    const origPostMessage = shim.port.postMessage.bind(shim.port);
+                    shim.port.postMessage = (message, transfer) => {
+                      workerCalls.push({ type: message.type, id: message.id });
+                      return origPostMessage(message, transfer);
+                    };
                     return shim.port;
                   }}
                   lockEpochEnv={makeSimpleLockEpochEnv()}
@@ -857,6 +877,20 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
     };
 
+    const unlockWithoutReload = async () => {
+      const op = vaultCtx.beginOp();
+      await act(async () => {
+        await vaultCtx.unlockPassphrase({
+          passphrase: PASSPHRASE,
+          kdf: createdVault!.kdf,
+          vaultKeyWrappedByKek: createdVault!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: createdVault!.private_keys_wrapped,
+          opGeneration: op.opGeneration,
+        });
+      });
+      await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+    };
+
     const lock = async () => {
       await act(async () => {
         await vaultCtx.lockNow();
@@ -879,7 +913,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         },
       },
       unlock,
+      unlockWithoutReload,
       lock,
+      workerCalls,
       signOutSession: async () => {
         await act(async () => {
           await signOutFn();
@@ -1364,7 +1400,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const holderRef: { current: EditorPlaintextHolder } = {
       current: { originalSource: '', draftValue: '' },
     };
-    setEditorPlaintextHolderForTests(holderRef);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(holderRef);
     const entryMeta = Array.from(h.server.entries.values())[0];
     h.rerenderPage(
       <TextEntryCard
@@ -1509,7 +1545,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
 
     // Remount TextEntryCard for the remaining checks in this test
-    setEditorPlaintextHolderForTests(null);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(null);
     h.rerenderPage(
       <TextEntryCard
         entry={entryMeta}
@@ -2751,7 +2787,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const { promise: loadV7Gate, resolve: releaseLoadV7 } = createDeferred();
     const { promise: loadV7Entered, resolve: notifyLoadV7Entered } = createDeferred();
     const { promise: loadV7Finished, resolve: notifyLoadV7Finished } = createDeferred();
-    let holdLoadV7 = true;
+    // Hold the first GET(v7) AND make the automatic one-time retry also return v7 so we verify both:
+    // (a) IP15-BE3-4: when even the one-time refetch returns a stale v7 snapshot (< observed v8 validator),
+    //     the v8 conflict stays active, typed inputs are preserved, and cache is not fabricated at v8;
+    // (b) IP15-FE4-5: stale Load latest announces and auto-refetches once (2 GET /items/{id} calls total),
+    //     and when the server serves v8 on the auto-refetch, a single Load latest resolves the conflict cleanly.
+    let returnStaleV7Count = 2;
     const fetchedV7Summary: ItemSummary = {
       ...h.server.item,
       version: 7,
@@ -2759,18 +2800,24 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       hint: 'remote-v7-hint',
     };
 
+    let getCallsDuringStaleLoadLatest = 0;
     h.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
-      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && holdLoadV7) {
-        notifyLoadV7Entered();
-        await loadV7Gate;
-        queueMicrotask(() => notifyLoadV7Finished());
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && returnStaleV7Count > 0) {
+        getCallsDuringStaleLoadLatest += 1;
+        returnStaleV7Count -= 1;
+        if (getCallsDuringStaleLoadLatest === 1) {
+          notifyLoadV7Entered();
+          await loadV7Gate;
+        } else {
+          queueMicrotask(() => notifyLoadV7Finished());
+        }
         return jsonResponse(fetchedV7Summary, 200);
       }
       return null;
     });
 
-    // Click Load latest and hold its GET(v7)
+    // Click Load latest and hold its first GET(v7)
     fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
     await loadV7Entered;
 
@@ -2788,30 +2835,59 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
     });
 
-    // Release the older GET(v7)
-    holdLoadV7 = false;
-    h.server.overrideRoute(null);
+    // Release the held first GET(v7) -> stale Load latest announces to item-page-live-region and auto-refetches once (2nd GET)
     releaseLoadV7();
     await loadV7Finished;
     await act(async () => {
       await flushMacrotask();
     });
 
-    // The newer v8 conflict remains active, inputs keep the user's typed candidate (not overwritten by v6 or v7),
-    // and the item cache is NOT fabricated with version 8 + older v6/v7 fields
+    // IP15-FE4-5: Verify it announced and refetched exactly once (1 initial GET + 1 auto-refetch = 2 GETs)
+    expect(getCallsDuringStaleLoadLatest).toBe(2);
+    expect(screen.getByTestId('item-page-live-region')).toHaveTextContent(
+      viMessages.content.item.conflictBody,
+    );
+
+    // IP15-BE3-4: Because the auto-refetch also returned stale v7 (< v8), the v8 conflict remains active,
+    // inputs keep the user's typed candidate, and cache is NOT fabricated with version 8 + older fields
     expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
     expect(screen.getByTestId('item-name-input')).toHaveValue('local-keep-mine-candidate');
     const cachedAfterStaleRelease = h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID]);
     expect(cachedAfterStaleRelease?.version).toBe(7);
     expect(cachedAfterStaleRelease?.name).toBe('remote-v7-name');
 
-    // Clicking Load latest now fetches the real v8 summary and resolves the conflict cleanly
+    // IP15-FE4-5: Now verify that when a stale Load latest GET(v7) is followed by a server that serves v8 on the
+    // one-time auto-refetch, a single Load latest click announces, refetches v8, and resolves the conflict without a second click.
+    const { promise: loadV7Gate2, resolve: releaseLoadV7_2 } = createDeferred();
+    const { promise: loadV7Entered2, resolve: notifyLoadV7Entered2 } = createDeferred();
+    let interceptFirstGetOnly = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && interceptFirstGetOnly) {
+        interceptFirstGetOnly = false;
+        notifyLoadV7Entered2();
+        await loadV7Gate2;
+        return jsonResponse(fetchedV7Summary, 200);
+      }
+      return null;
+    });
+
+    const getsBeforeAutoResolve = h.server.requests.filter(
+      (r) => r.method === 'GET' && r.url.endsWith(`/items/${ITEM_ID}`),
+    ).length;
     fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await loadV7Entered2;
+    releaseLoadV7_2();
+
     await waitFor(() => {
       expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
       expect(screen.getByTestId('item-name-input')).toHaveValue('remote-v8-authoritative-name');
       expect(screen.getByTestId('item-hint-input')).toHaveValue('remote-v8-authoritative-hint');
     });
+    const getsAfterAutoResolve = h.server.requests.filter(
+      (r) => r.method === 'GET' && r.url.endsWith(`/items/${ITEM_ID}`),
+    ).length;
+    expect(getsAfterAutoResolve - getsBeforeAutoResolve).toBe(2);
     expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(8);
   });
 
@@ -2885,7 +2961,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
   });
 
-  it('session_invalid on uncertain entry PUT drops draft without replay, records saveUnconfirmed across terminal error until same-user re-login, and clears on explicit logout or user switch through real SessionProvider (advisor-dec-120, IP15-BE1-8, FE1-9)', async () => {
+  it('session_invalid on uncertain entry PUT drops draft without replay, records saveUnconfirmed across terminal error until same-user re-login, and clears on explicit logout (advisor-dec-120, IP15-BE1-8, FE1-9)', async () => {
     const h = await setupItemPageHarness({
       initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
     });
@@ -2897,6 +2973,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     let failPutWithSessionInvalid = true;
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
+        h.setCurrentMe(null);
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -2908,22 +2985,34 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     // 1. Terminal session_invalid boundary: editor closes, draft dropped, and record survives signed_out(reason='invalid')
-    // so when User A re-logs in, the saveUnconfirmed banner is shown
+    // even when /auth/me returns signed-out and knownDeviceSessionUserId pointer is null
     await waitFor(() => {
       expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
       expect(getUnconfirmedSavesSnapshot()[0].userId).toBe(USER_A_ID);
+      expect(getKnownDeviceSessionUserId()).toBeNull();
     });
 
-    // Re-login as User A via real SessionProvider.login
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    await h.loginSession('a@example.test', 'pw');
-    await waitFor(() => {
-      expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
+    // Re-login as User A via real SessionProvider.login: same-user re-login never notifies userChangedEvents and preserves record
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
     });
+    try {
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
+      });
+    } finally {
+      unsubUserChanged();
+    }
 
     // 2. Navigate away from the item page (unmount ItemDetailPage) and call explicit SessionProvider.signOut()
     // -> clears the unconfirmed-save store even when no item page is mounted
     h.rerenderPage(<div data-testid="away-from-item-page">Away</div>);
+    failPutWithSessionInvalid = false;
     await h.signOutSession();
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
 
@@ -2934,6 +3023,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     // Re-login as User A and remount ItemDetailPage -> banner is gone because explicit logout cleared it
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
     await h.loginSession('a@example.test', 'pw');
     await waitFor(() => {
       expect(h.vault().state).toBe('locked');
@@ -2941,35 +3031,130 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     h.rerenderPage();
     expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+  });
 
-    // 3. Trigger another session_invalid for User A, then log in as User B via real SessionProvider.login
-    await h.unlock();
-    await waitFor(() => {
-      const bodyEl = screen.queryByTestId('entry-body');
-      if (!bodyEl) {
-        const cardListHtml =
-          h.container.querySelector('[data-testid="entry-card-list"]')?.innerHTML ?? 'none';
-        const cacheSummary = h.qc
-          .getQueryCache()
-          .getAll()
-          .map((q) => `${JSON.stringify(q.queryKey)}:${q.state.status}/${q.state.fetchStatus}`)
-          .join(', ');
-        throw new Error(
-          `entry-body missing (vaultState=${h.vault().state}, keyId=${String(h.vault().vaultMeta?.vault_key_id)}, queries=[${cacheSummary}], list=${cardListHtml.slice(0, 240)})`,
-        );
-      }
-      expect(bodyEl).toHaveTextContent('Secret for User A');
+  it('advisor-dec-199 / IP15-BE4-2 / FE4-6 (login): terminal session_invalid with /auth/me signed-out and pointer null followed by direct User B login away from detail route notifies subscriber and empties store before any detail mount', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
     });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    let failPutWithSessionInvalid = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
+        // Terminal auth loss: /auth/me now returns signed-out (401 session_invalid)
+        h.setCurrentMe(null);
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
-    const textarea2 = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
-    fireEvent.change(textarea2, { target: { value: 'Second uncertain draft for User A' } });
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Uncertain draft before terminal session_invalid' },
+    });
+    // Unmount ItemDetailPage as the uncertain PUT hits terminal session_invalid so no detail route is mounted when B logs in
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()[0].userId).toBe(USER_A_ID);
+      expect(getKnownDeviceSessionUserId()).toBeNull();
     });
 
-    // Track user-changed notifications and store subscriber notifications (advisor-dec-199, IP15-BE3-3, FE3-3, FE3-4)
+    h.rerenderPage(<div data-testid="away-for-terminal-null-login">Away</div>);
+    failPutWithSessionInvalid = false;
+
+    // Wait for VaultProvider's signed_out lock transition to settle with /auth/me returning signed-out and pointer null
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+      expect(getKnownDeviceSessionUserId()).toBeNull();
+    });
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    // IP15-FE4-4: Register a throwing listener first to verify it never aborts login or prevents subsequent listeners from running
+    const unsubThrowing = subscribeUserChanged(() => {
+      throw new Error('listener boom');
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
+    });
+
+    try {
+      // Direct User B login from the settled terminal-null state (without restoring User A first)
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await h.loginSession('b@example.test', 'pw');
+
+      expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
+      expect(storeEmitCount).toBe(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+      // Wait for VaultProvider to settle for B, then log User A back in and remount -> User A's prior notice does NOT return
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+      });
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([
+        { prev: USER_A_ID, next: USER_B_ID },
+        { prev: USER_B_ID, next: USER_A_ID },
+      ]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+      h.rerenderPage();
+      expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+    } finally {
+      unsubThrowing();
+      unsubUserChanged();
+      unsubStore();
+    }
+  });
+
+  it('advisor-dec-199 / IP15-BE4-2 / FE4-6 (signup & OAuth): terminal session_invalid with /auth/me signed-out and pointer null followed by direct User B signup or OAuth login away from detail route notifies subscriber and empties store before any detail mount', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    let failPutWithSessionInvalid = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
+        h.setCurrentMe(null);
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    // 1. Trigger real terminal session_invalid for User A -> /auth/me returns signed-out and pointer is null
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Draft before terminal session_invalid for signup switch' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(getKnownDeviceSessionUserId()).toBeNull();
+    });
+
+    h.rerenderPage(<div data-testid="away-for-terminal-null-signup-oauth">Away</div>);
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+      expect(getKnownDeviceSessionUserId()).toBeNull();
+    });
+
     const userChangedEvents: Array<{ prev: string; next: string }> = [];
     const unsubUserChanged = subscribeUserChanged((prev, next) => {
       userChangedEvents.push({ prev, next });
@@ -2980,72 +3165,60 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     try {
-      // Same-user re-login (User A -> User A) must NOT emit notifyUserChanged and must NOT clear User A's record
-      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-      await h.loginSession('a@example.test', 'pw');
-      expect(userChangedEvents).toEqual([]);
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
-
-      // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5 / BE3-3)
-      h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
-      failPutWithSessionInvalid = false;
-      const emitsBeforeSwitch = storeEmitCount;
-
-      // User B logs in with no item page mounted -> eagerly notifies user change and clears the store WITHOUT any snapshot read
+      // Direct User B signup from the settled terminal-null state -> notifies subscriber and empties store
       h.setCurrentMe(makeMe(USER_B_ID, 'present'));
-      await h.loginSession('b@example.test', 'pw');
+      await h.signupSession('b-signup@example.test', 'pw');
       expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
-      expect(storeEmitCount).toBeGreaterThan(emitsBeforeSwitch);
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      expect(storeEmitCount).toBe(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
 
-      // Log User A back in without any intervening store read/detail mount, then remount -> User A's prior notice does NOT return
+      // 2. Now User B has a record, and User B's session hits terminal session_invalid with /auth/me signed-out and pointer null
       await waitFor(() => {
         expect(h.vault().inFlight).toBe(false);
       });
-      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-      await h.loginSession('a@example.test', 'pw');
-      expect(userChangedEvents).toEqual([
-        { prev: USER_A_ID, next: USER_B_ID },
-        { prev: USER_B_ID, next: USER_A_ID },
-      ]);
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
-      h.rerenderPage();
-      expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
-
-      // Verify signup and OAuth callback paths also emit notifyUserChanged and clear the store away from the detail route (advisor-dec-199)
-      h.rerenderPage(<div data-testid="away-for-signup-oauth">Away</div>);
-      recordUnconfirmedSave({
-        userId: USER_A_ID,
-        itemId: ITEM_ID,
-        itemName: 'wifi',
-        source: 'entry',
-      });
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
-
-      // Signup as User B -> notifies and clears User A's record
-      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
-      await h.signupSession('b-signup@example.test', 'pw');
-      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
-        prev: USER_A_ID,
-        next: USER_B_ID,
-      });
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
-
-      // Record for User B, then complete OAuth login as User A -> notifies and clears User B's record
       recordUnconfirmedSave({
         userId: USER_B_ID,
         itemId: ITEM_ID,
         itemName: 'wifi-b',
         source: 'entry',
       });
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+      // Trigger real terminal session_invalid via ItemDetailPage PUT for User B
+      h.rerenderPage();
+      await h.unlock();
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+      });
+      fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+      fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+        target: { value: 'Draft for B before terminal session_invalid' },
+      });
+      fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+      await waitFor(() => {
+        expect(getKnownDeviceSessionUserId()).toBeNull();
+      });
+      h.rerenderPage(<div data-testid="away-for-terminal-null-oauth">Away</div>);
+      failPutWithSessionInvalid = false;
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+        expect(h.vault().state).toBe('no_vault');
+        expect(getKnownDeviceSessionUserId()).toBeNull();
+      });
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()[0].userId).toBe(USER_B_ID);
+
+      const emitsBeforeOAuth = storeEmitCount;
+      // Direct User A OAuth completion from the settled terminal-null state -> notifies subscriber and empties store
       h.setCurrentMe(makeMe(USER_A_ID, 'present'));
       await h.completeOAuthSession();
-      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
-        prev: USER_B_ID,
-        next: USER_A_ID,
-      });
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      expect(userChangedEvents).toEqual([
+        { prev: USER_A_ID, next: USER_B_ID },
+        { prev: USER_B_ID, next: USER_A_ID },
+      ]);
+      expect(storeEmitCount).toBeGreaterThan(emitsBeforeOAuth);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
     } finally {
       unsubUserChanged();
       unsubStore();
@@ -3095,6 +3268,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hOnboardingSkip.vault().state).toBe('unlocked');
     expect(hOnboardingSkip.vault().vaultMeta).toBeNull();
 
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
+    });
+    expect(hOnboardingSkip.vault().vaultMeta).toBeNull();
+    expect(
+      hOnboardingSkip.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+    ).toHaveLength(0);
+
     const reloadMetaSpy = vi.spyOn(hOnboardingSkip.vault(), 'reloadVaultMeta');
     fireEvent.click(screen.getByTestId('btn-add-text'));
     fireEvent.change(screen.getByTestId('new-entry-textarea'), {
@@ -3110,10 +3292,587 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         'First entry after onboarding step 3 skip',
       );
     });
-    const postOnboardingCreateReqs = hOnboardingSkip.server.requests.filter(
+    const vaultReloadIndex = hOnboardingSkip.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const postOnboardingCreateIndex = hOnboardingSkip.server.requests.findIndex(
       (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
     );
-    expect(postOnboardingCreateReqs).toHaveLength(1);
+    expect(vaultReloadIndex).toBeGreaterThanOrEqual(0);
+    expect(postOnboardingCreateIndex).toBeGreaterThan(vaultReloadIndex);
+    expect(
+      hOnboardingSkip.server.requests.filter(
+        (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      hOnboardingSkip.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('IP15-FE4-2 / BE4-3: holding GET /vault (reloadVaultMeta) during save and locking (and locking + unlocking) cancels with STALE_GENERATION, zero seal, zero POST/PUT, empty holder and DOM, and no draft restoration; null/invalid key id rejects VAULT_KEY_MISSING with no write across + Text, regular Save, Keep mine, and 404 Save as new entry', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-loading')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).toBeEnabled();
+    });
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+
+    // 1a. + Text composer: hold GET /vault after Save starts, lock before releasing valid metadata ->
+    // zero Worker sealEntry, zero POST, composer closed/wiped, no draft restoration after unlock.
+    let holdVaultGet = true;
+    let vaultGetEnteredGate = Promise.withResolvers<void>();
+    let vaultGetReleaseGate = Promise.withResolvers<void>();
+    let returnInvalidVaultKeyId = false;
+    let returnVaultAbsent404 = false;
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (holdVaultGet) {
+          vaultGetEnteredGate.resolve();
+          await vaultGetReleaseGate.promise;
+        }
+        if (returnVaultAbsent404) {
+          return problemResponse('vault_absent', 404);
+        }
+        if (returnInvalidVaultKeyId) {
+          return jsonResponse({
+            vault_key_id: 'invalid-key-id-format',
+            version: 1,
+          });
+        }
+      }
+      return null;
+    });
+
+    const sealsBeforeComposerLock = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    const composerTextarea1 = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
+    fireEvent.change(composerTextarea1, {
+      target: { value: 'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await vaultGetEnteredGate.promise;
+    await h.lock();
+    expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+    expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY');
+
+    vaultGetReleaseGate.resolve();
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeComposerLock,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+
+    // 1b. + Text composer: hold GET /vault after Save starts, lock AND unlock before releasing valid metadata ->
+    // STALE_GENERATION, zero Worker sealEntry, zero POST, empty DOM, no draft restoration.
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+    expect(screen.getByTestId('draft-cleared-on-lock-banner')).toBeInTheDocument();
+
+    vaultGetEnteredGate = Promise.withResolvers<void>();
+    vaultGetReleaseGate = Promise.withResolvers<void>();
+    const sealsBeforeComposerLockUnlock = h.workerCalls.filter(
+      (c) => c.type === 'sealEntry',
+    ).length;
+
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    const composerTextarea2 = screen.getByTestId('new-entry-textarea') as HTMLTextAreaElement;
+    fireEvent.change(composerTextarea2, {
+      target: { value: 'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await vaultGetEnteredGate.promise;
+    await h.lock();
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+
+    vaultGetReleaseGate.resolve();
+    await waitFor(() => {
+      expect(h.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+    });
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeComposerLockUnlock,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+    expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK');
+    assertNoPlaintextAttrs(h.container, [
+      'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY',
+      'SENTINEL-COMPOSER-HELD-RELOAD-LOCK-UNLOCK',
+    ]);
+
+    // 1c. + Text composer with vaultMeta === null where reloadVaultMeta returns an invalid key_id ->
+    // VAULT_KEY_MISSING, zero Worker sealEntry, zero POST.
+    await h.signOutSession();
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+    });
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlockWithoutReload();
+    expect(h.vault().vaultMeta).toBeNull();
+
+    holdVaultGet = false;
+    returnInvalidVaultKeyId = true;
+    const sealsBeforeInvalidKey = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'Draft with invalid key_id on reload' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('new-entry-save-error')).toBeInTheDocument();
+    });
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeInvalidKey,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+
+    // 1d. + Text composer with vaultMeta === null where reloadVaultMeta resolves null (404 vault_absent) ->
+    // VAULT_KEY_MISSING / lock, zero Worker sealEntry, zero POST.
+    await h.signOutSession();
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+    });
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlockWithoutReload();
+    expect(h.vault().vaultMeta).toBeNull();
+
+    returnInvalidVaultKeyId = false;
+    returnVaultAbsent404 = true;
+    const sealsBeforeNullReload = h.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'Draft when reloadVaultMeta returns null' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+    });
+    expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeNullReload,
+    );
+    expect(
+      h.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+
+    // 2. Card editing paths (regular Save, Keep mine, and 404 Save as new entry) with vaultMeta === null:
+    // Mount fresh harness with 1 entry so we can test holder wipe + zero seal + happy-path reload across all 3 card save paths.
+    cleanup();
+    const holderProbeRef = {
+      current: {
+        originalSource: '',
+        draftValue: '',
+        submittedCandidateSource: '',
+      },
+    };
+    textEntryCardTesting.setEditorPlaintextHolderForTests(holderProbeRef);
+
+    const hCard = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial card body v1', position: 0 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
+    });
+
+    let holdCardVaultGet = false;
+    let failCardVaultGet500 = false;
+    let cardVaultGetEntered = Promise.withResolvers<void>();
+    let cardVaultGetRelease = Promise.withResolvers<void>();
+
+    hCard.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (failCardVaultGet500) {
+          return problemResponse('internal_error', 500);
+        }
+        if (holdCardVaultGet) {
+          cardVaultGetEntered.resolve();
+          await cardVaultGetRelease.promise;
+        }
+      }
+      return null;
+    });
+
+    // Helper to reset vaultMeta to null while unlocked (signOut clears ['vault','meta'] and sets vaultMeta=null;
+    // login + unlockWithoutReload with failCardVaultGet500=true leaves vaultMeta === null after useEntryBody's
+    // single reload attempt fails; then seeding the body query cache makes the Edit button immediately available).
+    const enterUnlockedWithNullVaultMetaAndCachedBody = async (
+      cachedBody: string,
+      version: number,
+    ) => {
+      failCardVaultGet500 = true;
+      await hCard.signOutSession();
+      await waitFor(() => {
+        expect(hCard.vault().inFlight).toBe(false);
+        expect(hCard.vault().state).toBe('no_vault');
+      });
+      hCard.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await hCard.loginSession('a@example.test', 'pw');
+      await waitFor(() => {
+        expect(hCard.vault().state).toBe('locked');
+        expect(hCard.vault().inFlight).toBe(false);
+      });
+      await hCard.unlockWithoutReload();
+      expect(hCard.vault().state).toBe('unlocked');
+      expect(hCard.vault().vaultMeta).toBeNull();
+      act(() => {
+        hCard.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, version), cachedBody);
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-body')).toHaveTextContent(cachedBody);
+      });
+      failCardVaultGet500 = false;
+    };
+
+    // 2a. Regular Save with vaultMeta === null:
+    // First hold GET /vault, lock + unlock before releasing -> STALE_GENERATION, holder wiped, zero seal, zero PUT.
+    await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
+    holdCardVaultGet = true;
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'SENTINEL-REGULAR-SAVE-HELD-RELOAD' },
+    });
+    expect(holderProbeRef.current.draftValue).toBe('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
+
+    const sealsBeforeRegLock = hCard.workerCalls.filter((c) => c.type === 'sealEntry').length;
+    const putsBeforeRegLock = hCard.server.requests.filter(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    ).length;
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    await cardVaultGetEntered.promise;
+
+    // Lock while reloadVaultMeta is held -> holder wiped synchronously before getText
+    await hCard.lock();
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    await hCard.unlockWithoutReload();
+
+    cardVaultGetRelease.resolve();
+    await waitFor(() => {
+      expect(hCard.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+    });
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeRegLock,
+    );
+    expect(
+      hCard.server.requests.filter(
+        (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+      ),
+    ).toHaveLength(putsBeforeRegLock);
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    expect(hCard.container.textContent).not.toContain('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
+
+    // Now regular Save happy path with vaultMeta === null -> reloads GET /vault then sends PUT -> v2
+    holdCardVaultGet = false;
+    await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
+    hCard.server.requests.splice(0);
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Regular save body v2 after null vaultMeta' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(hCard.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Regular save body v2 after null vaultMeta',
+      );
+    });
+    const regVaultIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const regPutIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    );
+    expect(regVaultIdx).toBeGreaterThanOrEqual(0);
+    expect(regPutIdx).toBeGreaterThan(regVaultIdx);
+
+    // 2b. Keep mine with vaultMeta === null:
+    // Trigger 412 conflict, then with vaultMeta === null click Keep mine -> reloads GET /vault then sends PUT -> v4
+    await enterUnlockedWithNullVaultMetaAndCachedBody(
+      'Regular save body v2 after null vaultMeta',
+      2,
+    );
+    // Bump server entry version to 3 so the initial PUT gets 412 with current_version: 3
+    await hCard.server.sealTextForEntry(ENTRY_ID_1, 'Remote concurrent v3', 3, 0);
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Keep mine draft v4 after null vaultMeta' },
+    });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-banner-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    let forceNullMetaForKeepMine = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaForKeepMine ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+    hCard.server.requests.splice(0);
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(
+        hCard.server.requests.some((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+      ).toBe(true);
+      expect(
+        hCard.server.requests.some(
+          (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+        ),
+      ).toBe(true);
+    });
+    forceNullMetaForKeepMine = false;
+    const keepMineVaultIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const keepMinePutIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'PUT' && r.url.endsWith(`/entries/${ENTRY_ID_1}`),
+    );
+    expect(keepMineVaultIdx).toBeGreaterThanOrEqual(0);
+    expect(keepMinePutIdx).toBeGreaterThan(keepMineVaultIdx);
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Keep mine draft v4 after null vaultMeta',
+      );
+    });
+
+    // 2c. 404 "Save as new entry" with vaultMeta === null:
+    // First hold GET /vault during Save as new entry, lock + unlock before releasing -> STALE_GENERATION, zero seal, zero POST, empty holder.
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'SENTINEL-SAVE-AS-NEW-HELD-RELOAD' },
+    });
+    hCard.server.entries.get(ENTRY_ID_1)!.deleted = true;
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    let forceNullMetaForSaveAsNew = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaForSaveAsNew ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+
+    holdCardVaultGet = true;
+    cardVaultGetEntered = Promise.withResolvers<void>();
+    cardVaultGetRelease = Promise.withResolvers<void>();
+    const sealsBeforeSaveAsNewLock = hCard.workerCalls.filter((c) => c.type === 'sealEntry').length;
+
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_1}`));
+    await cardVaultGetEntered.promise;
+
+    await hCard.lock();
+    expect(holderProbeRef.current).toEqual({
+      originalSource: '',
+      draftValue: '',
+      submittedCandidateSource: '',
+    });
+    await hCard.unlock();
+    forceNullMetaForSaveAsNew = false;
+
+    cardVaultGetRelease.resolve();
+    await flushMacrotask();
+    await flushMacrotask();
+
+    expect(hCard.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(
+      sealsBeforeSaveAsNewLock,
+    );
+    expect(
+      hCard.server.requests.filter(
+        (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+      ),
+    ).toHaveLength(0);
+    expect(hCard.container.textContent).not.toContain('SENTINEL-SAVE-AS-NEW-HELD-RELOAD');
+
+    // Now 404 "Save as new entry" happy path with vaultMeta === null -> reloads GET /vault then POSTs /items/{id}/entries
+    holdCardVaultGet = false;
+    hCard.server.entries.get(ENTRY_ID_1)!.deleted = false;
+    act(() => {
+      hCard.qc.setQueryData(
+        vaultBodyQueryKey(ENTRY_ID_1, 4),
+        'Keep mine draft v4 after null vaultMeta',
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Keep mine draft v4 after null vaultMeta',
+      );
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
+      target: { value: 'Rescued via 404 Save as new entry with null vaultMeta' },
+    });
+    hCard.server.entries.get(ENTRY_ID_1)!.deleted = true;
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
+    let forceNullMetaHappySaveAsNew = true;
+    Object.defineProperty(hCard.vault(), 'vaultMeta', {
+      get: () => (forceNullMetaHappySaveAsNew ? null : { vault_key_id: KEY_ID, version: 1 }),
+      configurable: true,
+    });
+    hCard.server.requests.splice(0);
+
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(
+        hCard.server.requests.some((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+      ).toBe(true);
+      expect(
+        hCard.server.requests.some(
+          (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+        ),
+      ).toBe(true);
+    });
+    forceNullMetaHappySaveAsNew = false;
+    const saveAsNewVaultIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'GET' && r.url.endsWith('/vault'),
+    );
+    const saveAsNewPostIdx = hCard.server.requests.findIndex(
+      (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+    );
+    expect(saveAsNewVaultIdx).toBeGreaterThanOrEqual(0);
+    expect(saveAsNewPostIdx).toBeGreaterThan(saveAsNewVaultIdx);
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Rescued via 404 Save as new entry with null vaultMeta',
+      );
+    });
+  });
+
+  it('IP15-FE4-3: unlocked item page with vaultKeyId === null makes one reloadVaultMeta() attempt and shows the error/Retry card instead of an endless skeleton if it fails or stays null, then decrypts on Retry', async () => {
+    let failVaultMetaMode: 'network_500' | 'invalid_key_id' | 'ok' = 'network_500';
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Decrypted after Retry', position: 0 }],
+      skipInitialVaultMetaReload: true,
+    });
+
+    // First lock, configure /vault to fail with 500, and unlockWithoutReload so useEntryBody enters
+    // unlocked state with vaultKeyId === null against the failing /vault endpoint.
+    await h.lock();
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (failVaultMetaMode === 'network_500') {
+          return problemResponse('internal_error', 500);
+        }
+        if (failVaultMetaMode === 'invalid_key_id') {
+          return jsonResponse({
+            vault_key_id: '',
+            version: 1,
+          });
+        }
+      }
+      return null;
+    });
+    h.server.requests.splice(0);
+
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+
+    // 1. One reloadVaultMeta() attempt fails (500) -> shows entry-body-error with Retry instead of endless loading skeleton
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body-error')).toBeInTheDocument();
+      expect(screen.getByTestId('entry-body-retry')).toBeEnabled();
+    });
+    expect(screen.queryByTestId('entry-body-loading')).toBeNull();
+    expect(
+      h.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+    ).toHaveLength(1);
+
+    // 2. Click Retry when reloadVaultMeta returns an empty/invalid key_id -> still shows entry-body-error with Retry
+    failVaultMetaMode = 'invalid_key_id';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+    await waitFor(() => {
+      expect(
+        h.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+      ).toHaveLength(2);
+      expect(screen.getByTestId('entry-body-error')).toBeInTheDocument();
+      expect(screen.getByTestId('entry-body-retry')).toBeEnabled();
+    });
+    expect(screen.queryByTestId('entry-body-loading')).toBeNull();
+
+    // 3. Click Retry when reloadVaultMeta succeeds -> resolves vault_key_id and decrypts the entry body
+    failVaultMetaMode = 'ok';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+    await waitFor(() => {
+      expect(h.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId('entry-body-error')).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Decrypted after Retry');
+    });
   });
 
   it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {
@@ -3219,8 +3978,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       const errBox = screen.getByTestId('entry-body-error');
       expect(errBox).toHaveTextContent(viMessages.content.entry.decryptFailedTitle);
       expect(errBox).toHaveTextContent(viMessages.content.entry.decryptFailedBody);
+      expect(errBox.textContent).not.toContain('AEAD');
     });
-
     // 4. Retry into OK -> recovers plaintext body
     mode = 'ok';
     fireEvent.click(screen.getByTestId('entry-body-retry'));

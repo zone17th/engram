@@ -66,6 +66,10 @@
       "lockNowNamed": "{state} — Khoá vault ngay (L)",
       "settings": "Cài đặt",
       "settingsDone": "Xong"
+    },
+    "preview": {
+      "label": "Bản xem trước",
+      "body": "Đây là dữ liệu mẫu để xem giao diện. Bản xem trước chỉ đọc: thay đổi không được lưu và nội dung không được gửi tới máy chủ."
     }
   },
   "states": {
@@ -965,7 +969,6 @@
     "submitting": "Đang mở khoá…",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
     "forgotPassphrase": "Tôi quên passphrase",
-    "signOut": "Đăng xuất",
     "errors": {
       "empty": "Hãy nhập passphrase của vault.",
       "incorrectPassphraseBadge": "sai passphrase",
@@ -1297,7 +1300,7 @@
     "entry": {
       "loading": "Đang giải mã nội dung entry…",
       "decryptFailedTitle": "Không giải mã được entry này",
-      "decryptFailedBody": "Dữ liệu xác thực (AEAD) không khớp nên chúng tôi không hiển thị nội dung có thể sai lệch. Các entry khác trong mục vẫn mở bình thường.",
+      "decryptFailedBody": "Không xác thực được dữ liệu giải mã nên nội dung bị hỏng sẽ không được hiển thị. Các entry khác trong mục này vẫn mở bình thường.",
       "networkFailedTitle": "Không tải được entry này",
       "networkFailedBody": "Không kết nối được máy chủ để tải dữ liệu entry. Hãy kiểm tra mạng rồi thử lại.",
       "notFoundTitle": "Entry không còn khả dụng",

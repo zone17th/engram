@@ -352,17 +352,68 @@ export function useEntryBody(
   const getClient = vault?.getClient;
   const captureOpGeneration = vault?.captureOpGeneration;
   const beginOp = vault?.beginOp;
+  const reloadVaultMeta = vault?.reloadVaultMeta;
   const vaultKeyId = vault?.vaultMeta?.vault_key_id ?? null;
+  const hasValidVaultKeyId = typeof vaultKeyId === 'string' && vaultKeyId.length > 0;
   const usesRealVaultMeta = load === loadRealEntryBody;
-
   const viewportEnabled = options?.enabled ?? true;
+
+  const [metaReloadError, setMetaReloadError] = useState<unknown>(null);
+  const metaReloadAttemptedGenRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!unlocked) {
+      setMetaReloadError(null);
+      metaReloadAttemptedGenRef.current = null;
+      return;
+    }
+    if (hasValidVaultKeyId) {
+      setMetaReloadError(null);
+      return;
+    }
+    if (!usesRealVaultMeta || !viewportEnabled) {
+      return;
+    }
+    const currentGen =
+      typeof captureOpGeneration === 'function' ? captureOpGeneration() : -1;
+    if (metaReloadAttemptedGenRef.current === currentGen) {
+      return;
+    }
+    metaReloadAttemptedGenRef.current = currentGen;
+    if (typeof reloadVaultMeta !== 'function') {
+      setMetaReloadError(new Error('vault_meta_unavailable'));
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const reloaded = await reloadVaultMeta();
+        if (cancelled) return;
+        const nextKeyId = reloaded?.vault_key_id;
+        if (typeof nextKeyId !== 'string' || nextKeyId.length === 0) {
+          setMetaReloadError(new Error('vault_meta_unavailable'));
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setMetaReloadError(err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    captureOpGeneration,
+    hasValidVaultKeyId,
+    reloadVaultMeta,
+    unlocked,
+    usesRealVaultMeta,
+    viewportEnabled,
+  ]);
+
   const queryEnabled =
-    unlocked &&
-    viewportEnabled &&
-    (!usesRealVaultMeta || (typeof vaultKeyId === 'string' && vaultKeyId.length > 0));
+    unlocked && viewportEnabled && (!usesRealVaultMeta || hasValidVaultKeyId);
   const limiter = options?.limiter ?? entryBodyLoadLimiter;
   const itemId = options?.itemId;
-
   const queryKey =
     effectiveVersion !== undefined
       ? vaultBodyQueryKey(entryId, effectiveVersion)
@@ -452,22 +503,60 @@ export function useEntryBody(
   });
 
   const isHandoffError = query.status === 'error' && isVersionHandoffSignal(query.error);
+  const metaReloadFailed =
+    unlocked &&
+    usesRealVaultMeta &&
+    !hasValidVaultKeyId &&
+    query.data === undefined &&
+    metaReloadError !== null;
   const classifiedError =
     unlocked && query.status === 'error' && !isHandoffError
       ? classifyEntryOpenError(query.error)
-      : null;
+      : metaReloadFailed
+        ? classifyEntryOpenError(metaReloadError)
+        : null;
   const oldKey = classifiedError?.kind === 'old_key';
-  // IP14-FE1-14: If an error occurs while the vault is currently unlocked (including a transient
-  // stale_generation / vault_locked race), surface the Retry card rather than leaving a dead-end placeholder.
-  const failed = unlocked && query.status === 'error' && !isHandoffError;
+  // IP14-FE1-14 / IP15-FE4-3: If an error occurs while the vault is currently unlocked (including a transient
+  // stale_generation / vault_locked race or a failed reloadVaultMeta() when vaultKeyId is null), surface the
+  // Retry card rather than leaving an endless loading skeleton.
+  const failed = (unlocked && query.status === 'error' && !isHandoffError) || metaReloadFailed;
   const decryptFailed = classifiedError?.kind === 'decrypt_failed';
 
   const refetchRef = useRef(query.refetch);
   refetchRef.current = query.refetch;
-  const refetch = useCallback(() => refetchRef.current(), []);
+  const reloadVaultMetaRef = useRef(reloadVaultMeta);
+  reloadVaultMetaRef.current = reloadVaultMeta;
+  const usesRealVaultMetaRef = useRef(usesRealVaultMeta);
+  usesRealVaultMetaRef.current = usesRealVaultMeta;
+  const hasValidVaultKeyIdRef = useRef(hasValidVaultKeyId);
+  hasValidVaultKeyIdRef.current = hasValidVaultKeyId;
+
+  const refetch = useCallback(async () => {
+    if (usesRealVaultMetaRef.current && !hasValidVaultKeyIdRef.current) {
+      const reloadFn = reloadVaultMetaRef.current;
+      if (typeof reloadFn !== 'function') {
+        setMetaReloadError(new Error('vault_meta_unavailable'));
+        return undefined;
+      }
+      setMetaReloadError(null);
+      try {
+        const reloaded = await reloadFn();
+        const nextKeyId = reloaded?.vault_key_id;
+        if (typeof nextKeyId !== 'string' || nextKeyId.length === 0) {
+          setMetaReloadError(new Error('vault_meta_unavailable'));
+          return undefined;
+        }
+      } catch (err) {
+        setMetaReloadError(err);
+        return undefined;
+      }
+    }
+    return refetchRef.current();
+  }, []);
 
   const pending =
     unlocked &&
+    !metaReloadFailed &&
     query.data === undefined &&
     (query.status === 'pending' || query.isFetching || isHandoffError);
 
