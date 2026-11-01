@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,9 +62,13 @@ type Service struct {
 	forgotQueue     chan ForgotJob
 	forgotWorkerCtx context.Context
 	forgotCancel    context.CancelFunc
+	forgotDone      chan struct{}
+	hooksMu         sync.RWMutex
 	forgotHooks     ForgotHooks
 	onLoginVerified func()
 	onResetLocked   func()
+	onResetAttempt  func(ctx context.Context, tx pgx.Tx, attempt int) error
+	onLogoutRevoked func()
 }
 
 func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, csrf *CSRF, tokens *TokenIssuer, grants *Grants, lockout *Lockout, clk clock.Clock, audit Auditor, notify Notifier, probe SemanticProbe, mail Mailer, vault VaultStatus) (*Service, error) {
@@ -88,6 +93,7 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 		forgotQueue: make(chan ForgotJob, ForgotQueueSize),
 	}
 	svc.forgotWorkerCtx, svc.forgotCancel = context.WithCancel(context.Background())
+	svc.forgotDone = make(chan struct{})
 	go svc.runForgotWorker()
 	return svc, nil
 }
@@ -333,8 +339,8 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (Me, IssueResult, er
 		return Me{}, IssueResult{}, ErrInvalidCredentials
 	}
 	_ = s.lockout.Reset(ctx, subject)
-	if s.onLoginVerified != nil {
-		s.onLoginVerified()
+	if fn := s.getOnLoginVerified(); fn != nil {
+		fn()
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -394,6 +400,9 @@ func (s *Service) Logout(ctx context.Context, p *authctx.Principal, refresh stri
 	q := s.q.WithTx(tx)
 	now := pgts(s.clk.Now())
 	_, _ = q.RevokeSession(ctx, gen.RevokeSessionParams{ID: sessID, RevokedAt: now})
+	if fn := s.getOnLogoutRevoked(); fn != nil {
+		fn()
+	}
 	_, _ = q.CancelPendingBySession(ctx, gen.CancelPendingBySessionParams{SessionID: &sessID, ConsumedAt: now})
 	_, _ = q.CancelPendingOAuthBySession(ctx, gen.CancelPendingOAuthBySessionParams{ExpectedSessionID: &sessID, ConsumedAt: now})
 	_, _ = q.CancelReceiptsBySession(ctx, gen.CancelReceiptsBySessionParams{SessionID: sessID, ConsumedAt: now})

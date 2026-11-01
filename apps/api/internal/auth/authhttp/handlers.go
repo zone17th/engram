@@ -20,15 +20,19 @@ import (
 
 type Captcha = auth.Captcha
 
+type Limiter interface {
+	Allow(key string) (ok bool, retryAfter int)
+}
+
 type API struct {
 	svc       *auth.Service
 	oauth     *oauth.Service
 	captcha   Captcha
 	trusted   func(net.IP) bool
-	credLimit *httpx.FixedWindow
-	cbLimit   *httpx.FixedWindow
-	mailMin   *httpx.FixedWindow
-	mailHour  *httpx.FixedWindow
+	credLimit Limiter
+	cbLimit   Limiter
+	mailMin   Limiter
+	mailHour  Limiter
 }
 
 func NewAPI(svc *auth.Service, oa *oauth.Service, captcha Captcha, trusted func(net.IP) bool) *API {
@@ -47,11 +51,23 @@ func NewAPI(svc *auth.Service, oa *oauth.Service, captcha Captcha, trusted func(
 	}
 }
 
+func (a *API) SetMailLimiters(minLim, hourLim Limiter) {
+	if a == nil {
+		return
+	}
+	if minLim != nil {
+		a.mailMin = minLim
+	}
+	if hourLim != nil {
+		a.mailHour = hourLim
+	}
+}
+
 func (a *API) ip(r *http.Request) string {
 	return httpx.ClientIP(r, a.trusted)
 }
 
-func (a *API) limit(l *httpx.FixedWindow, key string, w http.ResponseWriter, r *http.Request) bool {
+func (a *API) limit(l Limiter, key string, w http.ResponseWriter, r *http.Request) bool {
 	ok, retry := l.Allow(key)
 	if ok {
 		return true

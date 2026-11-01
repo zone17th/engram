@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +36,7 @@ type Service struct {
 	audit             auth.Auditor
 	clk               clock.Clock
 	providers         map[string]Provider
+	hooksMu           sync.RWMutex
 	onOwnerDiscovered func()
 }
 
@@ -52,7 +54,15 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *auth.SessionSt
 }
 
 func (s *Service) SetOnOwnerDiscovered(fn func()) {
+	s.hooksMu.Lock()
 	s.onOwnerDiscovered = fn
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getOnOwnerDiscovered() func() {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.onOwnerDiscovered
 }
 
 func (s *Service) Provider(name string) (Provider, bool) {
@@ -464,8 +474,8 @@ func (s *Service) Complete(ctx context.Context, binding, ip, ua string) (auth.Me
 	if identErr != nil && !errors.Is(identErr, pgx.ErrNoRows) {
 		return auth.Me{}, auth.IssueResult{}, identErr
 	}
-	if s.onOwnerDiscovered != nil {
-		s.onOwnerDiscovered()
+	if fn := s.getOnOwnerDiscovered(); fn != nil {
+		fn()
 	}
 
 	if identErr == nil {

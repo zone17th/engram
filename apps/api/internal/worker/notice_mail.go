@@ -34,16 +34,21 @@ func (w *SecurityNoticeWorker) Work(ctx context.Context, job *river.Job[notifica
 	if w.mail == nil {
 		return nil
 	}
+	ctxRow, err := q.GetNotificationMailContext(ctx, job.Args.NotificationID)
+	if err != nil {
+		return err
+	}
 	purpose := "security"
 	detail := ""
-	if ctxRow, err := q.GetNotificationMailContext(ctx, job.Args.NotificationID); err == nil && len(ctxRow.Meta) > 0 {
+	if len(ctxRow.Meta) > 0 {
 		var meta secevent.Meta
-		if json.Unmarshal(ctxRow.Meta, &meta) == nil {
-			meta = meta.Sanitize()
-			if meta.Event == secevent.EventPasswordReset {
-				purpose = auth.PurposePasswordResetNotice
-				detail = auth.FormatPasswordResetNoticeDetail(ctxRow.Locale, meta.UnlinkedProviders)
-			}
+		if err := json.Unmarshal(ctxRow.Meta, &meta); err != nil {
+			return err
+		}
+		meta = meta.Sanitize()
+		if meta.Event == secevent.EventPasswordReset {
+			purpose = auth.PurposePasswordResetNotice
+			detail = auth.FormatPasswordResetNoticeDetail(ctxRow.Locale, meta.UnlinkedProviders)
 		}
 	}
 	for _, to := range row.EmailTargets {

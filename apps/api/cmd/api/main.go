@@ -111,6 +111,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose auth: %w", err)
 	}
+	defer svc.Close()
 	authn, csrfv, reauth := compose.Adapters(svc)
 	_, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, nil, nil, metrics, nil, logger)
 	if err != nil {
