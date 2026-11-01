@@ -24,9 +24,9 @@ func isForeignKeyViolation(err error) bool {
 func TestContentMigration0006CleanAndFrom0005WithData(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Migrate a clean DB directly to latest (version 6).
+	// 1. Migrate a clean DB explicitly to version 6.
 	dsnClean := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsnClean)
+	migrateToVersion(t, dsnClean, 6)
 
 	v, dirty, err := db.Version(dsnClean)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestContentMigration0006CleanAndFrom0005WithData(t *testing.T) {
 	}
 
 	// Migrate 5 -> 6.
-	dbtest.MigrateUp(t, dsnUpgrade)
+	migrateToVersion(t, dsnUpgrade, 6)
 	vUp, dirtyUp, err := db.Version(dsnUpgrade)
 	if err != nil || dirtyUp || vUp != 6 {
 		t.Fatalf("upgrade 5->6: v=%d dirty=%v err=%v", vUp, dirtyUp, err)
