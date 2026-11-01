@@ -1084,7 +1084,7 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Màn | File | Mục spec |
 |---|---|---|
 | Landing | `mockups/landing.html` | §11.1 (marketing route) |
-| Tìm kiếm / vỏ app (`#rail-tags`, `#tagRenameDlg`, `#dupDialog` do `SAK.openDupDialog` tạo, `#recent-grid`) | `mockups/index.html` | §7.2 |
+| Tìm kiếm / vỏ app (`#omni`, `#omni-state-seg`, `#rail-tags`, `#tagRenameDlg`, `#dupDialog` do `SAK.openDupDialog` tạo, `#recent-grid`) | `mockups/index.html` | §7.2 |
 | Chi tiết mục (`default`, `editing`, `saving`, `conflict`, `crypto-err`, `limits`, `#importDlg`) | `mockups/item.html` | §7.3, §7.4, §7.5 |
 | Cài đặt (tài khoản P02; `#baomat` P03: `#passDlg`, `#rkDlg`, `#rotateDlg`, `#passkeyAddDlg`, `#resetDlg`; tìm kiếm P05) | `mockups/settings.html` | §7.6 |
 | Đăng ký / đăng nhập / OAuth return / re-auth / password-enroll | `mockups/auth.html` | §3.1, §10.2 |
@@ -1104,10 +1104,10 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 
 **Neo trạng thái & bước dialog chi tiết (P04 content — U8–U14, U18):**
 
-- `index.html`: `#rail-tags` (`#rail-tag-list`, `#rail-clear-filter`, menu tag `⋯` Đổi tên / Xoá có Undo), `#tagRenameDlg` (`#tagRenameInput`, `#tagRenameConflict` `409 tag_conflict`), `#dupDialog` (picker trùng tên U9 do `SAK.openDupDialog` tạo động: `#dupListbox`, `#dup-opt-new`, phân trang `Xem thêm`), `#recent-items-header`, `#recent-grid` (danh sách gần đây duy nhất, không preview body).
+- `index.html`: `#omni` (`#omni-listbox`, `#omni-state-seg` chuyển 14 trạng thái tìm/quick-add/lưu nhiều bước/khoá; các phần tử `#omni-hint`, `#omni-live`, `#omni-guard-alert`, `#omni-lock-cleared-notice`, `#omni-add-preview` kèm `#omni-add-error`, `#omni-json-banner`, `#omni-save-plan`, `#omni-unlock-to-save-btn`, `#omni-add-privacy` do `SAK.initOmnibox` tạo), `#rail-tags` (`#rail-tag-list`, `#rail-clear-filter`, menu tag `⋯` Đổi tên / Xoá có Undo), `#tagRenameDlg` (`#tagRenameInput`, `#tagRenameConflict` `409 tag_conflict`), `#dupDialog` (picker trùng tên U9 do `SAK.openDupDialog` tạo động: `#dupListbox`, `#dup-opt-new`, phân trang `Xem thêm`), `#recent-items-header`, `#recent-grid` (danh sách gần đây duy nhất, không preview body).
 - `item.html`: `default` (`#item-default`: `#item-name-input`, `#item-hint-input`, `#item-privacy-note`, `#tag-add-chip`, `#tag-add-popover`, `#tag-suggest-input`, `#entry-composer`, `#card-menu-pop`, tab `Bảng` / `JSON gốc`), `editing` (`#item-editing`: `#card-text-editing`, `#entry-edit-textarea`, `#entry-byte-counter`, `#entry-discard-confirm`), `saving` (`#item-saving`: `#card-saving`, `#card-saved`, `#card-save-error`), `conflict` (`#item-conflict`: `#card-conflict-412`, `#conflict-reload-confirm`, `#item-header-conflict-412`), `crypto-err` (`#item-crypto-err`: `#card-key-mismatch`, `#card-decrypt-fail`), `limits` (`#item-limits`: `#item-tag-limit-20`, `#item-entry-limit-200`), `#importDlg`.
-- `states.html` (`err`, `off`): `#err-version-mismatch` (`412 version_mismatch` ba nút + `#err-conflict-confirm`), `#err-entry-too-large` (`413 entry_too_large` 256 KiB), `#err-dup-name-picker` (mở U9 `#dupDialog`), `#err-decrypt-fail` (kèm nút Thử lại), `#err-entry-key-mismatch` (`entry_key_mismatch`), `#off-save-deferred` (giữ trong ô soạn thảo cho tới khi vault khoá).
-- `mock.js`: `#toastStack` / `#toastLiveRegion` (do `SAK.initChrome` / `SAK.toast` tạo: một `role="status"` chung, xếp chồng tối đa 3 + nút `+N` `[data-toast-expand]`, dừng đếm khi hover/focus, ≥ 10 s sau focus, `Ctrl+Z` / `⌘Z`), `SAK.openDupDialog` (tạo `#dupDialog`).
+- `states.html` (`empty`, `err`, `off`): `#empty-search-no-match` (không có mục bắt đầu bằng từ khoá), `#err-version-mismatch` (`412 version_mismatch` ba nút + `#err-conflict-confirm`), `#err-entry-too-large` (`413 entry_too_large` 256 KiB), `#err-dup-name-picker` (mở U9 `#dupDialog`), `#err-decrypt-fail` (kèm nút Thử lại), `#err-entry-key-mismatch` (`entry_key_mismatch`), `#off-save-deferred` (giữ trong ô soạn thảo cho tới khi vault khoá).
+- `mock.js`: `SAK.initOmnibox` (P04 omnibox: không gửi trước Enter, `searchHint`/`tagHint`, listbox sau Enter, quick-add preview cục bộ + dòng privacy, lưu nhiều bước `item → tags → assign → entry` có Thử lại, banner phát hiện JSON, khoá xoá nháp; giữ `opts.demo` cho `landing.html`), `#toastStack` / `#toastLiveRegion` (do `SAK.initChrome` / `SAK.toast` tạo: một `role="status"` chung, xếp chồng tối đa 3 + nút `+N` `[data-toast-expand]`, dừng đếm khi hover/focus, ≥ 10 s sau focus, `Ctrl+Z` / `⌘Z`), `SAK.openDupDialog` (tạo `#dupDialog`).
 
 **Phân vai khi mockup và spec lệch nhau:**
 
@@ -1124,7 +1124,7 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 
 **Mockup có chủ đích thể hiện các quyết định trong spec**, không phải minh hoạ suông — đây là những chỗ implementation dễ làm sai:
 
-- Nhóm **"Gần nghĩa" nằm riêng, dưới các nhóm lexical**; bật/tắt semantic không xáo trộn thứ tự lexical (§6.4, thuộc P05; ở P04 công tắc "Gần nghĩa" và cột "Liên quan" đã bỏ khỏi khung trang chủ/trang mục, còn dropdown gợi ý omnibox cũ giữ tạm tới bước 2).
+- **Omnibox không gửi gì trước Enter (Q17, advisor-dec-098)**: ở P04, ô omnibox (`index.html`, `item.html`) hiển thị dòng gợi ý cố định (`searchHint` khi tìm, `tagHint` khi lọc `#…`) và chỉ mở listbox kết quả sau khi nhấn `Enter` (chặn tìm kiếm với chuỗi nhiều dòng hoặc > 200 ký tự). Ở chế độ thêm nhanh (`tên #tag: nội dung`), xem trước đích và tag dựng cục bộ kèm dòng privacy, số mục trùng tên chỉ kiểm tra sau `Enter` (§3.4, §7.2; nhóm "Gần nghĩa" theo từng phím thuộc P05, chỉ giữ trong demo marketing `landing.html` qua `opts.demo`).
 - **Trùng tên mục là hợp lệ** — quick-add mở picker U9 (`#dupDialog`: mỗi dòng hiện tên, tối đa 3 chip tag, `created_at`, `entry_count`, nút "Xem thêm" khi còn trang, và dòng cuối "Tạo mục mới cùng tên") trả về đúng item ID (§3.4).
 - **Bảng JSON không mất mát**: cột theo thứ tự khoá trong nguồn; hàng có khoá trùng rơi về bảng field/value; số lớn hiện nguyên văn; tab xem nguồn dùng tên thống nhất **"JSON gốc"** (§7.4).
 - **Khoá vault chỉ che nội dung entry; tên mục, tag và gợi ý không được mã hoá** — tên mục, tag, số entry vẫn đọc được; lưới mục gần đây trên trang chủ là danh sách gần đây duy nhất và không tải hay preview nội dung entry (§5.1, §7.3).
