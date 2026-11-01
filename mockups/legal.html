@@ -207,7 +207,7 @@
                   Từ khoá / nội dung bạn gõ tìm kiếm · <span lang="en" class="font-normal" style="color:var(--muted)">Search query text</span>
                 </td>
                 <td class="p-3"><span class="badge-type badge-json">Plaintext</span></td>
-                <td class="p-3" style="color:var(--muted)">Máy chủ xử lý tìm kiếm; gửi tới nhà cung cấp embedding bên thứ ba khi bật gợi ý gần nghĩa (<span class="mono">≈</span>) · <span lang="en">Seen by server for search, and by the third-party embedding provider when semantic suggest (<span class="mono">≈</span>) is on</span></td>
+                <td class="p-3" style="color:var(--muted)">Máy chủ xử lý tìm kiếm; khi bật gợi ý gần nghĩa (<span class="mono">≈</span>, sẽ có ở bản tìm kiếm sắp tới) có thể gửi tới nhà cung cấp embedding do hệ thống cấu hình (có thể là dịch vụ bên thứ ba) · <span lang="en">Seen by server for search; when semantic suggest (<span class="mono">≈</span>, arrives with the upcoming search release) is on, may be sent to an embedding provider, which can be a third-party service</span></td>
               </tr>
               <tr style="border-top:1px solid var(--border)">
                 <td class="p-3 font-semibold">
@@ -222,10 +222,10 @@
 
         <div class="card p-5 mb-6">
           <p class="text-[15px] font-semibold m-0 mb-1.5">
-            2.1 · Gợi ý gần nghĩa (nhà cung cấp bên thứ ba) và nhật ký truy cập · <span lang="en" class="font-normal" style="color:var(--muted)">Semantic suggest (third-party provider) &amp; access logs</span>
+            2.1 · Gợi ý gần nghĩa (sẽ có ở bản tìm kiếm sắp tới) và nhật ký truy cập · <span lang="en" class="font-normal" style="color:var(--muted)">Semantic suggest (arrives with the upcoming search release) &amp; access logs</span>
           </p>
           <p class="t-body m-0" style="color:var(--body)">
-            Khi bạn bật tính năng gợi ý "gần nghĩa" (<span class="mono">≈</span>, tuỳ chọn), <strong>tên mục, tag, gợi nhớ và cả văn bản bạn gõ tìm kiếm</strong> được gửi tới <strong>nhà cung cấp tạo vector (embedding) bên thứ ba</strong> để đối chiếu ngữ nghĩa; <strong>nội dung entry không bao giờ được gửi</strong>. Tắt tính năng này trong Cài đặt sẽ dừng gửi và xoá các vector đã tạo. Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key.
+            Khi bạn bật tính năng gợi ý "gần nghĩa" (<span class="mono">≈</span>, tuỳ chọn, <strong>sẽ có ở bản tìm kiếm sắp tới</strong>), <strong>tên mục, tag, gợi nhớ và cả văn bản bạn gõ tìm kiếm</strong> có thể được gửi tới <strong>nhà cung cấp tạo vector (embedding) do hệ thống cấu hình, có thể là dịch vụ bên thứ ba</strong>, để đối chiếu ngữ nghĩa; <strong>nội dung entry không bao giờ được gửi</strong>. Tắt tính năng này trong Cài đặt sẽ dừng gửi và xoá các vector đã tạo. Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key.
           </p>
         </div>
 
@@ -245,7 +245,7 @@
             <strong>Account &amp; security records:</strong> Your email address, account settings, active sessions, and security audit events are stored on the server as plaintext or hashes; your account login password is never stored in plaintext and is hashed with <span class="mono">Argon2id</span>.
           </p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            <strong>2.1 · Semantic suggest (third-party embedding provider) &amp; access logs:</strong> When optional semantic suggest (<span class="mono">≈</span>) is enabled, item names, tags, hints, and <strong>the text you search</strong> go to a <strong>third-party embedding provider</strong> to compute similarity vectors; <strong>entry bodies are never sent</strong>. Turning semantic suggest off in Settings stops sending data and deletes stored vectors. Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys.
+            <strong>2.1 · Semantic suggest (arrives with the upcoming search release) &amp; access logs:</strong> When optional semantic suggest (<span class="mono">≈</span>, <strong>arrives with the upcoming search release</strong>) is enabled, item names, tags, hints, and <strong>the text you search</strong> <strong>may be sent to an embedding provider, which can be a third-party service</strong>, to compute similarity vectors; <strong>entry bodies are never sent</strong>. Turning semantic suggest off in Settings stops sending data and deletes stored vectors. Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys.
           </p>
         </div>
       </section>
@@ -304,35 +304,35 @@
         </h2>
         <p class="t-body mb-3" style="color:var(--body)">
           <strong>(a) Yêu cầu chung &amp; hỗ trợ tài khoản (bao gồm yêu cầu xuất/xoá tài khoản):</strong> gửi qua GitHub Issues tại
-          <a href="https://github.com/zone17th/engram/issues" class="underline mono text-[14px]" style="color:var(--link)">https://github.com/zone17th/engram/issues</a>.
+          <a href="https://github.com/zone17th/engram/issues" class="underline mono text-[14px] break-all" style="color:var(--link);overflow-wrap:anywhere">https://github.com/zone17th/engram/issues</a>.
           <strong>Cảnh báo:</strong> vì đây là kênh công khai, <strong>tuyệt đối không đăng dữ liệu cá nhân, mật khẩu, passphrase hay recovery key vào issue công khai</strong>; với yêu cầu về tài khoản, chỉ nêu yêu cầu cần hỗ trợ, chúng tôi sẽ phản hồi bước tiếp theo.
         </p>
         <p class="t-body mb-4" style="color:var(--body)">
           <strong>(b) Báo cáo lỗ hổng bảo mật:</strong> vui lòng gửi riêng tư qua GitHub Private Vulnerability Reporting tại
-          <a href="https://github.com/zone17th/engram/security/advisories/new" class="underline mono text-[14px]" style="color:var(--link)">https://github.com/zone17th/engram/security/advisories/new</a>.
+          <a href="https://github.com/zone17th/engram/security/advisories/new" class="underline mono text-[14px] break-all" style="color:var(--link);overflow-wrap:anywhere">https://github.com/zone17th/engram/security/advisories/new</a>.
         </p>
         <div class="rounded-lg p-4 mb-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
           <p class="t-label mb-1.5" style="color:var(--muted)">Contact · English</p>
           <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
             <strong>(a) General questions &amp; account requests (including export or deletion requests):</strong> open an issue at
-            <a href="https://github.com/zone17th/engram/issues" class="underline mono text-[13px]" style="color:var(--link)">https://github.com/zone17th/engram/issues</a>.
+            <a href="https://github.com/zone17th/engram/issues" class="underline mono text-[13px] break-all" style="color:var(--link);overflow-wrap:anywhere">https://github.com/zone17th/engram/issues</a>.
             <strong>Warning:</strong> do not post personal data, passwords, vault passphrases, or recovery keys in a public issue; for account requests state only the request and we will follow up.
           </p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             <strong>(b) Security vulnerability reports:</strong> report privately via GitHub private vulnerability reporting at
-            <a href="https://github.com/zone17th/engram/security/advisories/new" class="underline mono text-[13px]" style="color:var(--link)">https://github.com/zone17th/engram/security/advisories/new</a>.
+            <a href="https://github.com/zone17th/engram/security/advisories/new" class="underline mono text-[13px] break-all" style="color:var(--link);overflow-wrap:anywhere">https://github.com/zone17th/engram/security/advisories/new</a>.
           </p>
         </div>
 
-        <div class="flex flex-wrap items-center gap-3">
-          <a href="https://github.com/zone17th/engram/issues" class="btn btn-secondary no-underline text-[14px]">
-            GitHub Issues · <span lang="en" class="font-normal">General &amp; account requests</span>
+        <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
+          <a href="https://github.com/zone17th/engram/issues" class="btn btn-secondary no-underline text-[14px] !whitespace-normal text-center">
+            <span>GitHub Issues · <span lang="en" class="font-normal">General &amp; account requests</span></span>
           </a>
-          <a href="https://github.com/zone17th/engram/security/advisories/new" class="btn btn-secondary no-underline text-[14px]">
-            Báo cáo lỗ hổng riêng tư · <span lang="en" class="font-normal">Report a vulnerability</span>
+          <a href="https://github.com/zone17th/engram/security/advisories/new" class="btn btn-secondary no-underline text-[14px] !whitespace-normal text-center">
+            <span>Báo cáo lỗ hổng riêng tư · <span lang="en" class="font-normal">Report a vulnerability</span></span>
           </a>
-          <a href="docs.html" class="btn btn-tertiary no-underline">
-            Xem tài liệu chi tiết · <span lang="en" class="font-normal">Full documentation</span>
+          <a href="docs.html" class="btn btn-tertiary no-underline !whitespace-normal text-center">
+            <span>Xem tài liệu chi tiết · <span lang="en" class="font-normal">Full documentation</span></span>
           </a>
         </div>
       </section>
