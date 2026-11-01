@@ -638,8 +638,9 @@ export function UndoToastProvider({
     if (typeof source === 'string' && source.trim().length > 0) {
       return source;
     }
-    const sampleAction = newestToast ? newestToast.actionLabel : 'Undo';
-    return `${overflowButtonText} (${sampleAction})`;
+    const hiddenToasts = toasts.slice(UNDO_TOAST_MAX_VISIBLE);
+    const sampleAction = (hiddenToasts[0] ?? newestToast)?.actionLabel;
+    return sampleAction ? `${overflowButtonText} · ${sampleAction}` : overflowButtonText;
   }, [hiddenCount, toasts, overflowAriaLabel, newestToast, overflowButtonText]);
   return (
     <UndoToastContext.Provider value={contextValue}>
@@ -671,7 +672,6 @@ export function UndoToastProvider({
           <button
             type="button"
             data-testid="undo-toast-overflow"
-            aria-expanded={expanded}
             aria-label={overflowButtonAriaLabel}
             onClick={expandStack}
             className="toast !static !translate-x-0 cursor-pointer border-0 font-mono text-[13px] font-bold"

@@ -256,131 +256,199 @@ describe('components/ui/undo-toast', () => {
     expect(screen.getByText('Đã lưu vào docker')).toBeInTheDocument();
   });
 
-  it('CCFE4 & CCFE9 & CCFE10: "+N" button has aria-expanded and accessible name, keyboard activation (Tab/Enter) moves focus to the 4th Undo without collapsing or freezing timers, and collapsed 4th toast expires on its own clock', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    let api!: UndoToastContextValue;
-    render(
-      <UndoToastProvider overflowAriaLabel={(n) => `Hiện thêm ${n} thao tác hoàn tác`}>
-        <TestHarness
-          onPushReady={(ctx) => {
-            api = ctx;
-          }}
-        />
-      </UndoToastProvider>,
-    );
+  it(
+    'CCFE10 & CCFE2-4: "+N" overflow button builds accessible name from caller actionLabel without English fallback or stale aria-expanded, and supports custom overflowAriaLabel',
+    () => {
+      let api!: UndoToastContextValue;
+      const { unmount } = render(
+        <UndoToastProvider>
+          <TestHarness
+            onPushReady={(ctx) => {
+              api = ctx;
+            }}
+          />
+        </UndoToastProvider>,
+      );
 
-    // Subcase A (CCFE9): Collapsed 4th toast expires on its own independent clock when stack is not paused
-    act(() => {
-      api.pushUndoToast({
-        id: 'clock-1',
-        message: 'Oldest short clock',
-        actionLabel: 'Hoàn tác',
-        durationMs: 3_000,
-        onUndo: vi.fn(),
+      act(() => {
+        api.pushUndoToast({ id: 'a1', message: 'Toast 1', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        api.pushUndoToast({ id: 'a2', message: 'Toast 2', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        api.pushUndoToast({ id: 'a3', message: 'Toast 3', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        api.pushUndoToast({ id: 'a4', message: 'Toast 4', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
       });
-      api.pushUndoToast({
-        id: 'clock-2',
-        message: 'Toast clock 2',
-        actionLabel: 'Hoàn tác',
-        durationMs: 8_000,
-        onUndo: vi.fn(),
+
+      const defaultOverflowBtn = screen.getByTestId('undo-toast-overflow');
+      expect(defaultOverflowBtn).toHaveTextContent('+1');
+      expect(defaultOverflowBtn).toHaveAttribute('aria-label', '+1 · Hoàn tác');
+      expect(defaultOverflowBtn).not.toHaveAttribute('aria-expanded');
+      unmount();
+
+      render(
+        <UndoToastProvider overflowAriaLabel={(n) => `Hiện thêm ${n} thao tác hoàn tác`}>
+          <TestHarness
+            onPushReady={(ctx) => {
+              api = ctx;
+            }}
+          />
+        </UndoToastProvider>,
+      );
+
+      act(() => {
+        api.pushUndoToast({ id: 'b1', message: 'Toast B1', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        api.pushUndoToast({ id: 'b2', message: 'Toast B2', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        api.pushUndoToast({ id: 'b3', message: 'Toast B3', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        api.pushUndoToast({ id: 'b4', message: 'Toast B4', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
       });
-      api.pushUndoToast({
-        id: 'clock-3',
-        message: 'Toast clock 3',
-        actionLabel: 'Hoàn tác',
-        durationMs: 8_000,
-        onUndo: vi.fn(),
+
+      const customOverflowBtn = screen.getByTestId('undo-toast-overflow');
+      expect(customOverflowBtn).toHaveAttribute('aria-label', 'Hiện thêm 1 thao tác hoàn tác');
+      expect(customOverflowBtn).not.toHaveAttribute('aria-expanded');
+    },
+    15_000,
+  );
+
+  it(
+    'CCFE9: collapsed 4th toast expires on its own independent clock when stack is not paused',
+    () => {
+      let api!: UndoToastContextValue;
+      render(
+        <UndoToastProvider>
+          <TestHarness
+            onPushReady={(ctx) => {
+              api = ctx;
+            }}
+          />
+        </UndoToastProvider>,
+      );
+
+      act(() => {
+        api.pushUndoToast({
+          id: 'clock-1',
+          message: 'Oldest short clock',
+          actionLabel: 'Hoàn tác',
+          durationMs: 3_000,
+          onUndo: vi.fn(),
+        });
+        api.pushUndoToast({
+          id: 'clock-2',
+          message: 'Toast clock 2',
+          actionLabel: 'Hoàn tác',
+          durationMs: 8_000,
+          onUndo: vi.fn(),
+        });
+        api.pushUndoToast({
+          id: 'clock-3',
+          message: 'Toast clock 3',
+          actionLabel: 'Hoàn tác',
+          durationMs: 8_000,
+          onUndo: vi.fn(),
+        });
+        api.pushUndoToast({
+          id: 'clock-4',
+          message: 'Toast clock 4',
+          actionLabel: 'Hoàn tác',
+          durationMs: 8_000,
+          onUndo: vi.fn(),
+        });
       });
-      api.pushUndoToast({
-        id: 'clock-4',
-        message: 'Toast clock 4',
-        actionLabel: 'Hoàn tác',
-        durationMs: 8_000,
-        onUndo: vi.fn(),
+
+      expect(screen.getByTestId('undo-toast-overflow')).toHaveTextContent('+1');
+
+      // Advance 3.1 s without hover/focus -> the collapsed 4th toast (clock-1) expires on its own timer
+      act(() => {
+        vi.advanceTimersByTime(3_100);
       });
-    });
+      expect(screen.queryByTestId('undo-toast-overflow')).not.toBeInTheDocument();
+      expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(3);
 
-    expect(screen.getByTestId('undo-toast-overflow')).toHaveTextContent('+1');
-    expect(screen.getByTestId('undo-toast-overflow')).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('undo-toast-overflow')).toHaveAttribute(
-      'aria-label',
-      'Hiện thêm 1 thao tác hoàn tác',
-    );
+      // Clear remaining
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(screen.queryAllByTestId('undo-toast-item')).toHaveLength(0);
+    },
+    15_000,
+  );
 
-    // Advance 3.1 s without hover/focus -> the collapsed 4th toast (clock-1) expires on its own timer
-    act(() => {
-      vi.advanceTimersByTime(3_100);
-    });
-    expect(screen.queryByTestId('undo-toast-overflow')).not.toBeInTheDocument();
-    expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(3);
+  it(
+    'CCFE4: keyboard activation (Tab/Enter) on "+N" moves focus to the 4th Undo without collapsing or freezing timers, and pausing on "+N" keeps the 4th toast alive',
+    async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => vi.advanceTimersByTimeAsync(ms),
+        delay: null,
+      });
+      let api!: UndoToastContextValue;
+      render(
+        <UndoToastProvider>
+          <TestHarness
+            onPushReady={(ctx) => {
+              api = ctx;
+            }}
+          />
+        </UndoToastProvider>,
+      );
 
-    // Clear remaining
-    act(() => {
-      vi.advanceTimersByTime(10_000);
-    });
-    expect(screen.queryAllByTestId('undo-toast-item')).toHaveLength(0);
+      const undo1 = vi.fn();
+      const undo2 = vi.fn();
+      const undo3 = vi.fn();
+      const undo4 = vi.fn();
 
-    // Subcase B (CCFE4): Keyboard user Tabs to "+1" and presses Enter -> focus moves to the 4th (newly shown) Undo button, stack stays expanded, and after tabbing out timers resume and expire
-    const undo1 = vi.fn();
-    const undo2 = vi.fn();
-    const undo3 = vi.fn();
-    const undo4 = vi.fn();
-
-    const outsideBtn = screen.getByTestId('outside-btn');
-    outsideBtn.focus();
-
-    act(() => {
-      api.pushUndoToast({ id: 'u1', message: 'Toast 1 (oldest)', actionLabel: 'Hoàn tác', onUndo: undo1 });
-      api.pushUndoToast({ id: 'u2', message: 'Toast 2', actionLabel: 'Hoàn tác', onUndo: undo2 });
-      api.pushUndoToast({ id: 'u3', message: 'Toast 3', actionLabel: 'Hoàn tác', onUndo: undo3 });
-      api.pushUndoToast({ id: 'u4', message: 'Toast 4 (newest)', actionLabel: 'Hoàn tác', onUndo: undo4 });
-    });
-
-    // Tab through outsideBtn -> Toast 4 Undo -> Toast 3 Undo -> Toast 2 Undo -> "+1" overflow button
-    await user.tab();
-    await user.tab();
-    await user.tab();
-    await user.tab();
-
-    const overflowBtn = screen.getByTestId('undo-toast-overflow');
-    expect(document.activeElement).toBe(overflowBtn);
-    expect(overflowBtn).toHaveAttribute('aria-expanded', 'false');
-
-    // Focusing "+1" pauses all timers including the collapsed 4th toast
-    act(() => {
-      vi.advanceTimersByTime(15_000);
-    });
-    expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(3);
-
-    // Activate "+1" with Enter via userEvent keyboard
-    await user.keyboard('{Enter}');
-
-    // Stack expands, does NOT collapse on microtask, and focus moves to the newly revealed 4th Undo button
-    const allUndoBtns = screen.getAllByRole('button', { name: /Hoàn tác/i });
-    expect(allUndoBtns).toHaveLength(4);
-    expect(screen.getByText('Toast 1 (oldest)')).toBeInTheDocument();
-    expect(document.activeElement).toBe(allUndoBtns[3]);
-
-    // While focus remains on the 4th Undo button, timers stay paused
-    act(() => {
-      vi.advanceTimersByTime(15_000);
-    });
-    expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(4);
-
-    // Move focus outside the stack -> stack collapses and timers resume (not frozen forever), expiring all toasts after ≥10 s
-    await act(async () => {
+      const outsideBtn = screen.getByTestId('outside-btn');
       outsideBtn.focus();
-      fireEvent.focusOut(allUndoBtns[3]!, { relatedTarget: outsideBtn });
-      await Promise.resolve();
-    });
-    expect(document.activeElement).toBe(outsideBtn);
 
-    act(() => {
-      vi.advanceTimersByTime(30_000);
-    });
-    expect(screen.queryAllByTestId('undo-toast-item')).toHaveLength(0);
-  });
+      act(() => {
+        api.pushUndoToast({ id: 'u1', message: 'Toast 1 (oldest)', actionLabel: 'Hoàn tác', onUndo: undo1 });
+        api.pushUndoToast({ id: 'u2', message: 'Toast 2', actionLabel: 'Hoàn tác', onUndo: undo2 });
+        api.pushUndoToast({ id: 'u3', message: 'Toast 3', actionLabel: 'Hoàn tác', onUndo: undo3 });
+        api.pushUndoToast({ id: 'u4', message: 'Toast 4 (newest)', actionLabel: 'Hoàn tác', onUndo: undo4 });
+      });
+
+      // Tab through outsideBtn -> Toast 4 Undo -> Toast 3 Undo -> Toast 2 Undo -> "+1" overflow button
+      await user.tab();
+      await user.tab();
+      await user.tab();
+      await user.tab();
+
+      const overflowBtn = screen.getByTestId('undo-toast-overflow');
+      expect(document.activeElement).toBe(overflowBtn);
+      expect(overflowBtn).toHaveAttribute('aria-label', '+1 · Hoàn tác');
+
+      // Focusing "+1" pauses all timers including the collapsed 4th toast
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+      expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(3);
+
+      // Activate "+1" with Enter via userEvent keyboard
+      await user.keyboard('{Enter}');
+
+      // Stack expands, does NOT collapse on microtask, and focus moves to the newly revealed 4th Undo button
+      const allUndoBtns = screen.getAllByRole('button', { name: /Hoàn tác/i });
+      expect(allUndoBtns).toHaveLength(4);
+      expect(screen.getByText('Toast 1 (oldest)')).toBeInTheDocument();
+      expect(document.activeElement).toBe(allUndoBtns[3]);
+
+      // While focus remains on the 4th Undo button, timers stay paused
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+      expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(4);
+
+      // Move focus outside the stack -> stack collapses and timers resume (not frozen forever), expiring all toasts after ≥10 s
+      await act(async () => {
+        outsideBtn.focus();
+        fireEvent.focusOut(allUndoBtns[3]!, { relatedTarget: outsideBtn });
+        await Promise.resolve();
+      });
+      expect(document.activeElement).toBe(outsideBtn);
+
+      act(() => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(screen.queryAllByTestId('undo-toast-item')).toHaveLength(0);
+    },
+    15_000,
+  );
 
   it('returns focus to origin when Undo is activated with focus inside toast, and does NOT move focus when focus already left the toast before timeout', async () => {
     let api!: UndoToastContextValue;

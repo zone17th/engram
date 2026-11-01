@@ -1,5 +1,5 @@
 import { ERROR_CODES, ProblemError, type ProblemDetails } from '@engram/shared-types';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +48,9 @@ import {
 } from '@/lib/api/content';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
+
+const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const hoistedEslint = new ESLint({ cwd: WEB_ROOT });
 
 const SAMPLE_ITEM_ID = '00000000-0000-4000-8000-000000000010';
 const SAMPLE_TAG_ID = '00000000-0000-4000-8000-000000000020';
@@ -143,6 +146,7 @@ function lastFetchInit(fetchMock: ReturnType<typeof vi.fn>): RequestInit {
 describe('lib/api/content', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    onlineManager.setOnline(true);
     Object.defineProperty(document, 'cookie', {
       configurable: true,
       writable: true,
@@ -159,6 +163,7 @@ describe('lib/api/content', () => {
   });
 
   afterEach(() => {
+    onlineManager.setOnline(true);
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -1009,86 +1014,119 @@ describe('lib/api/content', () => {
       expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
     });
 
-    it('CCFE3: forces networkMode: "always" on useContentMutation so mutations execute immediately when navigator.onLine === false and never pause in an offline queue', async () => {
-      vi.stubGlobal('navigator', {
-        ...navigator,
-        onLine: false,
-        locks: {
-          request: vi.fn(async (_name: string, callback: () => Promise<unknown>) => callback()),
-        },
-      });
+    it(
+      'CCFE3 & CCFE2-2: forces networkMode: "always" on useContentMutation so mutations execute immediately under onlineManager.setOnline(false) while plain useMutation stays isPaused',
+      async () => {
+        onlineManager.setOnline(false);
+        Object.defineProperty(navigator, 'onLine', {
+          value: false,
+          configurable: true,
+          writable: true,
+        });
 
-      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-      fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+        const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+        fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
 
-      const queryClient = new QueryClient();
-      const wrapper = ({ children }: { children: ReactNode }) =>
-        createElement(QueryClientProvider, { client: queryClient }, children);
+        const queryClient = new QueryClient({
+          defaultOptions: {
+            mutations: {
+              retry: false,
+            },
+          },
+        });
+        const wrapper = ({ children }: { children: ReactNode }) =>
+          createElement(QueryClientProvider, { client: queryClient }, children);
 
-      const idempotencyKey = createIdempotencyKey();
-      const { result } = renderHook(
-        () =>
-          useContentMutation<unknown, Error, EntryCreateRequest>({
-            mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey }),
-          }),
-        { wrapper },
-      );
+        // 1) Negative proof (CCFE2-2): a plain useMutation (default networkMode: "online") under
+        // onlineManager.setOnline(false) pauses in MutationCache and NEVER calls fetch.
+        const idempotencyKeyPaused = createIdempotencyKey();
+        const { result: plainResult } = renderHook(
+          () =>
+            useMutation<unknown, Error, EntryCreateRequest>({
+              mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey: idempotencyKeyPaused }),
+            }),
+          { wrapper },
+        );
 
-      let caughtOfflineErr: unknown;
-      await act(async () => {
-        try {
-          await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
-        } catch (err) {
-          caughtOfflineErr = err;
-        }
-      });
+        await act(async () => {
+          plainResult.current.mutate(SAMPLE_ENTRY_CREATE);
+          await Promise.resolve();
+        });
 
-      // mutationFn actually ran (initial + 2 network retries = 3 calls) rather than pausing in MutationCache
-      expect(fetchMock).toHaveBeenCalledTimes(3);
-      expect(caughtOfflineErr).toBeInstanceOf(TypeError);
-      const classified = classifyContentMutationError(caughtOfflineErr);
-      expect(classified.kind).toBe('offline');
-      expect(classified.i18nKey).toBe('content.errors.offline');
-      expect(classified.canRetrySameBytes).toBe(true);
-    });
+        expect(plainResult.current.isPaused).toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(0);
 
-    it('CCFE11 (P4FE2-16): ESLint no-restricted-imports bans useMutation from @tanstack/react-query in features/{items,entries,json-table,omnibox,tags}/** and allows useContentMutation', async () => {
-      vi.useRealTimers();
-      const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-      const eslint = new ESLint({ cwd: webRoot });
+        // 2) Positive proof (CCFE3): useContentMutation enforces networkMode: "always", so even under
+        // onlineManager.setOnline(false) and navigator.onLine === false it executes immediately (3 fetch attempts)
+        // and never parks sealed payloads in an offline queue across a vault lock.
+        const idempotencyKey = createIdempotencyKey();
+        const { result } = renderHook(
+          () =>
+            useContentMutation<unknown, Error, EntryCreateRequest>({
+              mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey }),
+            }),
+          { wrapper },
+        );
 
-      // 1) Importing useMutation in a P04 content feature directory triggers no-restricted-imports error
-      const [badResult] = await eslint.lintText(
-        "import { useMutation } from '@tanstack/react-query';\nexport const x = useMutation;\n",
-        { filePath: path.join(webRoot, 'features/items/forbidden-mutation-fixture.ts') },
-      );
-      expect(badResult).toBeDefined();
-      const restrictedMsgs = (badResult?.messages ?? []).filter(
-        (m) => m.ruleId === 'no-restricted-imports',
-      );
-      expect(restrictedMsgs.length).toBeGreaterThan(0);
-      expect(restrictedMsgs[0]?.message).toMatch(/useContentMutation/);
+        let caughtOfflineErr: unknown;
+        await act(async () => {
+          try {
+            await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
+          } catch (err) {
+            caughtOfflineErr = err;
+          }
+        });
 
-      // 2) Importing useQuery from @tanstack/react-query and useContentMutation from @/lib/api/content is allowed
-      const [goodResult] = await eslint.lintText(
-        "import { useQuery } from '@tanstack/react-query';\nimport { useContentMutation } from '@/lib/api/content';\nexport const q = [useQuery, useContentMutation];\n",
-        { filePath: path.join(webRoot, 'features/items/allowed-mutation-fixture.ts') },
-      );
-      const goodRestrictedMsgs = (goodResult?.messages ?? []).filter(
-        (m) => m.ruleId === 'no-restricted-imports',
-      );
-      expect(goodRestrictedMsgs).toHaveLength(0);
+        expect(result.current.isPaused).toBe(false);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(caughtOfflineErr).toBeInstanceOf(TypeError);
+        const classified = classifyContentMutationError(caughtOfflineErr);
+        expect(classified.kind).toBe('offline');
+        expect(classified.i18nKey).toBe('content.errors.offline');
+        expect(classified.canRetrySameBytes).toBe(true);
+      },
+      15_000,
+    );
 
-      // 3) Importing useMutation outside P04 content directories (e.g. features/vault/**) is unaffected
-      const [vaultResult] = await eslint.lintText(
-        "import { useMutation } from '@tanstack/react-query';\nexport const v = useMutation;\n",
-        { filePath: path.join(webRoot, 'features/vault/allowed-vault-mutation-fixture.ts') },
-      );
-      const vaultRestrictedMsgs = (vaultResult?.messages ?? []).filter(
-        (m) => m.ruleId === 'no-restricted-imports',
-      );
-      expect(vaultRestrictedMsgs).toHaveLength(0);
-    });
+    it(
+      'CCFE11 (P4FE2-16): ESLint no-restricted-imports bans useMutation from @tanstack/react-query in features/{items,entries,json-table,omnibox,tags}/** and allows useContentMutation',
+      async () => {
+        vi.useRealTimers();
+
+        // 1) Importing useMutation in a P04 content feature directory triggers no-restricted-imports error
+        const [badResult] = await hoistedEslint.lintText(
+          "import { useMutation } from '@tanstack/react-query';\nexport const x = useMutation;\n",
+          { filePath: path.join(WEB_ROOT, 'features/items/forbidden-mutation-fixture.ts') },
+        );
+        expect(badResult).toBeDefined();
+        const restrictedMsgs = (badResult?.messages ?? []).filter(
+          (m) => m.ruleId === 'no-restricted-imports',
+        );
+        expect(restrictedMsgs.length).toBeGreaterThan(0);
+        expect(restrictedMsgs[0]?.message).toMatch(/useContentMutation/);
+
+        // 2) Importing useQuery from @tanstack/react-query and useContentMutation from @/lib/api/content is allowed
+        const [goodResult] = await hoistedEslint.lintText(
+          "import { useQuery } from '@tanstack/react-query';\nimport { useContentMutation } from '@/lib/api/content';\nexport const q = [useQuery, useContentMutation];\n",
+          { filePath: path.join(WEB_ROOT, 'features/items/allowed-mutation-fixture.ts') },
+        );
+        const goodRestrictedMsgs = (goodResult?.messages ?? []).filter(
+          (m) => m.ruleId === 'no-restricted-imports',
+        );
+        expect(goodRestrictedMsgs).toHaveLength(0);
+
+        // 3) Importing useMutation outside P04 content directories (e.g. features/vault/**) is unaffected
+        const [vaultResult] = await hoistedEslint.lintText(
+          "import { useMutation } from '@tanstack/react-query';\nexport const v = useMutation;\n",
+          { filePath: path.join(WEB_ROOT, 'features/vault/allowed-vault-mutation-fixture.ts') },
+        );
+        const vaultRestrictedMsgs = (vaultResult?.messages ?? []).filter(
+          (m) => m.ruleId === 'no-restricted-imports',
+        );
+        expect(vaultRestrictedMsgs).toHaveLength(0);
+      },
+      30_000,
+    );
   });
 
   describe('all 23 plan §3 operations', () => {
