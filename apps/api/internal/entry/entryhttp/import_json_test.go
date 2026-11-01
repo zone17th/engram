@@ -554,3 +554,181 @@ func TestEntryImportJSONRejectionsWriteNothingAndLogPrivacy(t *testing.T) {
 		t.Fatalf("access log missing route pattern /api/v1/items/{id}/entries/import-json:\n%s", logs)
 	}
 }
+
+func countJSONCreatedMetric(t *testing.T, h *contenttest.Harness) float64 {
+	t.Helper()
+	families, err := h.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Registry.Gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != "entries_created_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			if len(m.GetLabel()) == 1 && m.GetLabel()[0].GetName() == "type" && m.GetLabel()[0].GetValue() == entry.TypeJSON {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// TestEntryImportJSONPostAuditFinishFailureRollsBackAndRetryRecovers covers EA6c-R1-1:
+//   - Import inserts its entry row, increments parent entry_count, and records its `entry.import` audit row
+//     inside the mutation transaction, then `FinishIdempotencyTx` fails before commit (via a test-owned trigger
+//     on `idempotency_key` transition to `status = 'done'` raising SQLSTATE `55P03`).
+//   - Asserts (1) HTTP `503 dependency_unavailable` + `Retry-After: 1` (and `retry_after: 1` problem field);
+//     (2) no new entry row, no `entry.import` audit row, parent `entry_count` unchanged, in-progress idempotency
+//     claim released, metric `entries_created_total{type="json"}` unchanged, and `contenttest.AssertInvariants`;
+//     (3) after dropping the trigger, retrying the identical body and `Idempotency-Key` returns `201 Created`,
+//     creates exactly 1 entry row and 1 `entry.import` audit row, updates `entry_count` and metric to 1, and a
+//     subsequent replay with the same key adds neither.
+func TestEntryImportJSONPostAuditFinishFailureRollsBackAndRetryRecovers(t *testing.T) {
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	jarA, meA := h.SignupUser("entry-import-post-audit-rollback@example.com", "correct-horse-battery-staple-a")
+	vf := createVaultForUser(t, h, jarA, 0xB0)
+	item := insertTestItem(t, h, meA.User.ID, "Import Post Audit Rollback Item")
+
+	ctx := context.Background()
+	const targetIdemKey = "idem_t6c_post_audit_fail_retry_01"
+
+	dropTriggerSQL := `
+DROP TRIGGER IF EXISTS trg_test_ea6c_r1_1_fail_idem_done ON idempotency_key;
+DROP FUNCTION IF EXISTS fn_test_ea6c_r1_1_fail_idem_done();
+`
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), dropTriggerSQL)
+	})
+
+	createTriggerSQL := fmt.Sprintf(`
+CREATE OR REPLACE FUNCTION fn_test_ea6c_r1_1_fail_idem_done() RETURNS trigger AS $$
+BEGIN
+	IF NEW.user_id = '%s'::uuid AND NEW.key = '%s' AND NEW.status = 'done' THEN
+		RAISE EXCEPTION 'simulated lock_not_available on idempotency finish' USING ERRCODE = '55P03';
+	END IF;
+	RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_test_ea6c_r1_1_fail_idem_done ON idempotency_key;
+CREATE TRIGGER trg_test_ea6c_r1_1_fail_idem_done
+BEFORE UPDATE ON idempotency_key
+FOR EACH ROW
+EXECUTE FUNCTION fn_test_ea6c_r1_1_fail_idem_done();
+`, meA.User.ID.String(), targetIdemKey)
+
+	if _, err := h.Pool.Exec(ctx, createTriggerSQL); err != nil {
+		t.Fatalf("install test trigger on idempotency_key: %v", err)
+	}
+
+	entryID := uuid.NewString()
+	jsonPlain := []byte(`{"service":"vault-import","secret":"rollback-then-recover-sentinel"}`)
+	sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, jsonPlain, seqBytes(vault.WrapNonceBytes, 0xE1))
+	reqBody := makeImportJSONBody(entryID, entry.TypeJSON, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket, entry.ImportSourceFile)
+	importPath := "/api/v1/items/" + item.ID.String() + "/entries/import-json"
+
+	// 1. First attempt: entry and audit row are inserted in tx, then FinishIdempotencyTx hits the 55P03 trigger.
+	respFail, rawFail := h.DoReq(jarA, http.MethodPost, importPath, reqBody, contenttest.ReqOptions{
+		IdemKey: targetIdemKey,
+	})
+	if respFail.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("post-audit finish failure status = %d %s, want 503", respFail.StatusCode, rawFail)
+	}
+	if gotRA := respFail.Header.Get("Retry-After"); gotRA != "1" {
+		t.Fatalf("Retry-After header = %q, want \"1\"", gotRA)
+	}
+	probFail := contenttest.DecodeProblem(t, rawFail)
+	if probFail.Code != "dependency_unavailable" || probFail.RetryAfter == nil || *probFail.RetryAfter != 1 {
+		t.Fatalf("503 problem = %+v (raw: %s), want code=dependency_unavailable retry_after=1", probFail, rawFail)
+	}
+
+	// 2. Verify full transaction rollback: no entry row, no entry.import audit row, parent entry_count unchanged (0),
+	// in-progress idempotency claim released (0 rows), metric unchanged (0), and all content invariants hold.
+	if gotEntries := countEntriesForItem(t, h, item.ID); gotEntries != 0 {
+		t.Fatalf("entry rows after 503 rollback = %d, want 0", gotEntries)
+	}
+	if gotAudits := countAllEntryImportAuditRows(t, h); gotAudits != 0 {
+		t.Fatalf("entry.import audit rows after 503 rollback = %d, want 0", gotAudits)
+	}
+	var itemEntryCount int32
+	if err := h.Pool.QueryRow(ctx, `SELECT entry_count FROM item WHERE id = $1 AND user_id = $2`, item.ID, meA.User.ID).Scan(&itemEntryCount); err != nil {
+		t.Fatalf("query item.entry_count: %v", err)
+	}
+	if itemEntryCount != 0 {
+		t.Fatalf("item.entry_count after 503 rollback = %d, want 0", itemEntryCount)
+	}
+	var idemClaims int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, targetIdemKey).Scan(&idemClaims); err != nil {
+		t.Fatalf("query idempotency_key count: %v", err)
+	}
+	if idemClaims != 0 {
+		t.Fatalf("idempotency_key rows after 503 rollback = %d, want 0 (claim must be released)", idemClaims)
+	}
+	if gotMetric := countJSONCreatedMetric(t, h); gotMetric != 0 {
+		t.Fatalf("entries_created_total{type=json} after 503 rollback = %v, want 0", gotMetric)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// 3. Remove the trigger before retry, then retry the identical body and Idempotency-Key -> 201 Created.
+	if _, err := h.Pool.Exec(ctx, dropTriggerSQL); err != nil {
+		t.Fatalf("drop test trigger before retry: %v", err)
+	}
+
+	respRetry, rawRetry := h.DoReq(jarA, http.MethodPost, importPath, reqBody, contenttest.ReqOptions{
+		IdemKey: targetIdemKey,
+	})
+	if respRetry.StatusCode != http.StatusCreated {
+		t.Fatalf("retry with same Idempotency-Key after trigger removal = %d %s, want 201", respRetry.StatusCode, rawRetry)
+	}
+	var metaRetry entry.Meta
+	if err := json.Unmarshal([]byte(rawRetry), &metaRetry); err != nil {
+		t.Fatal(err)
+	}
+	if metaRetry.ID != entryID || metaRetry.ItemID != item.ID.String() || metaRetry.Type != entry.TypeJSON || metaRetry.Position != 0 || metaRetry.Version != 1 {
+		t.Fatalf("unexpected retry EntryMeta: %+v", metaRetry)
+	}
+	if gotEntries := countEntriesForItem(t, h, item.ID); gotEntries != 1 {
+		t.Fatalf("entry rows after retry = %d, want 1", gotEntries)
+	}
+	auditRows := queryEntryImportAuditRows(t, h, meA.User.ID)
+	if len(auditRows) != 1 {
+		t.Fatalf("entry.import audit rows after retry = %d, want 1", len(auditRows))
+	}
+	var auditMeta map[string]any
+	if err := json.Unmarshal(auditRows[0].MetaRaw, &auditMeta); err != nil {
+		t.Fatalf("unmarshal retry audit meta: %v", err)
+	}
+	if len(auditMeta) != 1 || auditMeta["import_source"] != secevent.ImportSourceFile {
+		t.Fatalf("retry audit meta = %v, want exact {\"import_source\":\"file\"}", auditMeta)
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT entry_count FROM item WHERE id = $1 AND user_id = $2`, item.ID, meA.User.ID).Scan(&itemEntryCount); err != nil {
+		t.Fatalf("query item.entry_count after retry: %v", err)
+	}
+	if itemEntryCount != 1 {
+		t.Fatalf("item.entry_count after retry = %d, want 1", itemEntryCount)
+	}
+	if gotMetric := countJSONCreatedMetric(t, h); gotMetric != 1 {
+		t.Fatalf("entries_created_total{type=json} after retry = %v, want 1", gotMetric)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// Further replay with the same Idempotency-Key returns the identical 201 response and adds neither entry nor audit row.
+	respReplay, rawReplay := h.DoReq(jarA, http.MethodPost, importPath, reqBody, contenttest.ReqOptions{
+		IdemKey: targetIdemKey,
+	})
+	if respReplay.StatusCode != http.StatusCreated {
+		t.Fatalf("further replay status = %d %s, want 201", respReplay.StatusCode, rawReplay)
+	}
+	contenttest.AssertJSONEqual(t, rawRetry, rawReplay)
+	if gotEntries := countEntriesForItem(t, h, item.ID); gotEntries != 1 {
+		t.Fatalf("entry rows after further replay = %d, want 1", gotEntries)
+	}
+	if gotAudits := countAllEntryImportAuditRows(t, h); gotAudits != 1 {
+		t.Fatalf("entry.import audit rows after further replay = %d, want 1", gotAudits)
+	}
+	if gotMetric := countJSONCreatedMetric(t, h); gotMetric != 1 {
+		t.Fatalf("entries_created_total{type=json} after further replay = %v, want 1", gotMetric)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+}
