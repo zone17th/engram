@@ -370,13 +370,74 @@ describe('components/ui/undo-toast', () => {
     15_000,
   );
 
+  // Root cause of the earlier hangs (advisor-dec-134 / fix-3): every user-event API call runs inside RTL's
+  // `asyncWrapper`, which awaits `setTimeout(resolve, 0)` and only advances it when a `jest` global with fake
+  // timers exists. Under `vi.useFakeTimers()` that timer is faked and never fires, so `user.tab()/keyboard()`
+  // never settle (user-event's `advanceTimers`/`delay: null` options do not cover this). So the real-keyboard
+  // test below runs on REAL timers and the timer assertions use fake timers WITHOUT user-event.
   it(
-    'CCFE4: keyboard activation (Tab/Enter) on "+N" moves focus to the 4th Undo without collapsing or freezing timers, and pausing on "+N" keeps the 4th toast alive',
+    'CCFE4 (a): real keyboard Tab -> "+N" then Enter expands the stack and moves focus to the 4th Undo (real timers, user-event)',
     async () => {
-      const user = userEvent.setup({
-        advanceTimers: (ms) => vi.advanceTimersByTimeAsync(ms),
-        delay: null,
-      });
+      vi.useRealTimers();
+      const user = userEvent.setup();
+      let api!: UndoToastContextValue;
+      const { unmount } = render(
+        <UndoToastProvider>
+          <TestHarness
+            onPushReady={(ctx) => {
+              api = ctx;
+            }}
+          />
+        </UndoToastProvider>,
+      );
+
+      try {
+        const outsideBtn = screen.getByTestId('outside-btn');
+        outsideBtn.focus();
+
+        // 60 s durations: nothing can expire while the test runs.
+        act(() => {
+          for (const [id, message] of [
+            ['k1', 'Toast 1 (oldest)'],
+            ['k2', 'Toast 2'],
+            ['k3', 'Toast 3'],
+            ['k4', 'Toast 4 (newest)'],
+          ] as const) {
+            api.pushUndoToast({
+              id,
+              message,
+              actionLabel: 'Hoàn tác',
+              durationMs: 60_000,
+              onUndo: vi.fn(),
+            });
+          }
+        });
+        expect(screen.getAllByRole('button', { name: /Hoàn tác/i })).toHaveLength(3);
+
+        // outsideBtn -> Undo(4) -> Undo(3) -> Undo(2) -> "+1"
+        const overflowBtn = screen.getByTestId('undo-toast-overflow');
+        for (let i = 0; i < 4 && document.activeElement !== overflowBtn; i += 1) {
+          await user.tab();
+        }
+        expect(document.activeElement).toBe(overflowBtn);
+
+        await user.keyboard('{Enter}');
+
+        const allUndoBtns = screen.getAllByRole('button', { name: /Hoàn tác/i });
+        expect(allUndoBtns).toHaveLength(4);
+        expect(screen.getByText('Toast 1 (oldest)')).toBeInTheDocument();
+        expect(screen.queryByTestId('undo-toast-overflow')).not.toBeInTheDocument();
+        expect(document.activeElement).toBe(allUndoBtns[3]);
+      } finally {
+        unmount();
+      }
+    },
+    15_000,
+  );
+
+  it(
+    'CCFE4 (b): focus on "+N" pauses every timer; after expansion timers stay paused while focus is inside, then resume and expire once focus leaves (fake timers, no user-event)',
+    async () => {
       let api!: UndoToastContextValue;
       render(
         <UndoToastProvider>
@@ -388,56 +449,52 @@ describe('components/ui/undo-toast', () => {
         </UndoToastProvider>,
       );
 
-      const undo1 = vi.fn();
-      const undo2 = vi.fn();
-      const undo3 = vi.fn();
-      const undo4 = vi.fn();
-
       const outsideBtn = screen.getByTestId('outside-btn');
       outsideBtn.focus();
 
       act(() => {
-        api.pushUndoToast({ id: 'u1', message: 'Toast 1 (oldest)', actionLabel: 'Hoàn tác', onUndo: undo1 });
-        api.pushUndoToast({ id: 'u2', message: 'Toast 2', actionLabel: 'Hoàn tác', onUndo: undo2 });
-        api.pushUndoToast({ id: 'u3', message: 'Toast 3', actionLabel: 'Hoàn tác', onUndo: undo3 });
-        api.pushUndoToast({ id: 'u4', message: 'Toast 4 (newest)', actionLabel: 'Hoàn tác', onUndo: undo4 });
+        for (const [id, message] of [
+          ['u1', 'Toast 1 (oldest)'],
+          ['u2', 'Toast 2'],
+          ['u3', 'Toast 3'],
+          ['u4', 'Toast 4 (newest)'],
+        ] as const) {
+          api.pushUndoToast({ id, message, actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+        }
       });
 
-      // Tab through outsideBtn -> Toast 4 Undo -> Toast 3 Undo -> Toast 2 Undo -> "+1" overflow button
-      await user.tab();
-      await user.tab();
-      await user.tab();
-      await user.tab();
-
       const overflowBtn = screen.getByTestId('undo-toast-overflow');
-      expect(document.activeElement).toBe(overflowBtn);
       expect(overflowBtn).toHaveAttribute('aria-label', '+1 · Hoàn tác');
 
-      // Focusing "+1" pauses all timers including the collapsed 4th toast
+      // Focusing "+1" pauses all timers, including the collapsed 4th toast's.
+      act(() => {
+        overflowBtn.focus();
+      });
+      expect(document.activeElement).toBe(overflowBtn);
       act(() => {
         vi.advanceTimersByTime(15_000);
       });
       expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(3);
+      expect(screen.getByTestId('undo-toast-overflow')).toBeInTheDocument();
 
-      // Activate "+1" with Enter via userEvent keyboard
-      await user.keyboard('{Enter}');
-
-      // Stack expands, does NOT collapse on microtask, and focus moves to the newly revealed 4th Undo button
+      // Browser fires click for Enter/Space on a button: expand and move focus to the 4th Undo.
+      act(() => {
+        fireEvent.click(overflowBtn);
+      });
       const allUndoBtns = screen.getAllByRole('button', { name: /Hoàn tác/i });
       expect(allUndoBtns).toHaveLength(4);
       expect(screen.getByText('Toast 1 (oldest)')).toBeInTheDocument();
       expect(document.activeElement).toBe(allUndoBtns[3]);
 
-      // While focus remains on the 4th Undo button, timers stay paused
+      // While focus stays inside the expanded stack, timers stay paused.
       act(() => {
         vi.advanceTimersByTime(15_000);
       });
       expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(4);
 
-      // Move focus outside the stack -> stack collapses and timers resume (not frozen forever), expiring all toasts after ≥10 s
+      // Focus leaves the stack: the deferred blur check runs on a microtask, then timers resume.
       await act(async () => {
         outsideBtn.focus();
-        fireEvent.focusOut(allUndoBtns[3]!, { relatedTarget: outsideBtn });
         await Promise.resolve();
       });
       expect(document.activeElement).toBe(outsideBtn);
@@ -446,6 +503,7 @@ describe('components/ui/undo-toast', () => {
         vi.advanceTimersByTime(30_000);
       });
       expect(screen.queryAllByTestId('undo-toast-item')).toHaveLength(0);
+      expect(document.activeElement).toBe(outsideBtn);
     },
     15_000,
   );
