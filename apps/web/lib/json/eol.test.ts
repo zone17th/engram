@@ -48,16 +48,16 @@ describe('lib/json/eol', () => {
     const loneCr = detectEol('{\r  "a": 1\r}');
     expect(loneCr.kind).toBe('cr');
     expect(loneCr.crCount).toBe(2);
-    expect(loneCr.majority).toBe('lf');
+    expect(loneCr.majority).toBe('cr');
+    expect(loneCr.majoritySeq).toBe('\r');
     expect(loneCr.requiresConversionWarning).toBe(true);
-
     const mixedWithCr = detectEol('{\r\n  "a": 1,\r  "b": 2\r\n}');
     expect(mixedWithCr.kind).toBe('cr');
     expect(mixedWithCr.majority).toBe('crlf');
     expect(mixedWithCr.requiresConversionWarning).toBe(true);
   });
 
-  it('resolves LF vs CRLF ties using the first line break in the document (plan §2.10 rule 5)', () => {
+  it('resolves ties over {LF, CRLF, CR} using the first line break in the document (plan §2.10 rule 5)', () => {
     const tieFirstCrlf = detectEol('{\r\n  "a": 1,\n  "b": 2}');
     expect(tieFirstCrlf.kind).toBe('mixed');
     expect(tieFirstCrlf.crlfCount).toBe(1);
@@ -71,6 +71,13 @@ describe('lib/json/eol', () => {
     expect(tieFirstLf.lfCount).toBe(1);
     expect(tieFirstLf.majority).toBe('lf');
     expect(tieFirstLf.majoritySeq).toBe('\n');
+
+    const tieFirstCr = detectEol('{\r  "a": 1,\n  "b": 2}');
+    expect(tieFirstCr.kind).toBe('cr');
+    expect(tieFirstCr.crCount).toBe(1);
+    expect(tieFirstCr.lfCount).toBe(1);
+    expect(tieFirstCr.majority).toBe('cr');
+    expect(tieFirstCr.majoritySeq).toBe('\r');
   });
 
   it('returns changed: false and preserves originalSource byte-for-byte when textarea only normalized EOLs (§2.10 rule 2, P04-A6)', () => {
@@ -113,5 +120,6 @@ describe('lib/json/eol', () => {
 
     expect(convertEol('a\r\nb\rc\n', 'lf')).toBe('a\nb\nc\n');
     expect(convertEol('a\nb\rc', 'crlf')).toBe('a\r\nb\r\nc');
+    expect(convertEol('a\r\nb\nc', 'cr')).toBe('a\rb\rc');
   });
 });

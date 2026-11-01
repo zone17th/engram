@@ -1,6 +1,6 @@
 export type EolKind = 'lf' | 'crlf' | 'mixed' | 'cr';
 
-export type MajorityEolKind = 'lf' | 'crlf';
+export type MajorityEolKind = 'lf' | 'crlf' | 'cr';
 
 export interface EolAnalysis {
   /**
@@ -12,13 +12,11 @@ export interface EolAnalysis {
    */
   kind: EolKind;
   /**
-   * The majority EOL kind (`'lf'` or `'crlf'`) used when inserting new lines in `edit.ts`
-   * or normalizing mixed/CR documents on raw textarea save (plan §2.10 rule 2 & 5):
-   * - Compares `lfCount` vs `crlfCount`.
-   * - Tie-breaker when `lfCount === crlfCount`: kind of the first line break in the document
-   *   (`'crlf'` if the first break is `\r\n`, otherwise `'lf'`).
-   * - If there are no `\n` or `\r\n` breaks at all (empty/single-line or only lone `\r`),
-   *   defaults to `'lf'`.
+   * The majority EOL kind (`'lf'`, `'crlf'`, or `'cr'`) used when inserting new lines in
+   * `edit.ts` or normalizing mixed/CR documents on raw textarea save (plan §2.10 rule 2 & 5):
+   * - Compares `lfCount`, `crlfCount`, and `crCount`.
+   * - Tie-breaker among the tied maximum counts: kind of the first line break in the document.
+   * - If there are no line breaks at all (empty/single-line), defaults to `'lf'`.
    */
   majority: MajorityEolKind;
   /** Number of bare `\n` line breaks (not preceded by `\r`). */
@@ -29,8 +27,8 @@ export interface EolAnalysis {
   crCount: number;
   /** Total number of line breaks (`lfCount + crlfCount + crCount`). */
   totalBreaks: number;
-  /** The literal EOL sequence corresponding to `majority` (`"\n"` or `"\r\n"`). */
-  majoritySeq: '\n' | '\r\n';
+  /** The literal EOL sequence corresponding to `majority` (`"\n"`, `"\r\n"`, or `"\r"`). */
+  majoritySeq: '\n' | '\r\n' | '\r';
   /**
    * True when `kind === 'mixed' || kind === 'cr'`.
    * Saving from a `<textarea>` in this state requires warning the user before converting
@@ -110,18 +108,30 @@ export function detectEol(text: string): EolAnalysis {
     kind = 'lf';
   }
 
+  // Majority EOL over {LF, CRLF, CR}, tie = first break's kind; pure-CR doc stays CR (advisor-dec-126).
+  const maxCount = Math.max(lfCount, crlfCount, crCount);
   let majority: MajorityEolKind;
-  if (crlfCount > lfCount) {
-    majority = 'crlf';
-  } else if (lfCount > crlfCount) {
+  if (maxCount === 0) {
     majority = 'lf';
   } else {
-    // Tie between lfCount and crlfCount (including when both are 0):
-    // Rule 5 of §2.10: when LF and CRLF counts are equal, use the kind of the first line break.
-    majority = firstBreak === 'crlf' ? 'crlf' : 'lf';
+    const lfTied = lfCount === maxCount;
+    const crlfTied = crlfCount === maxCount;
+    const crTied = crCount === maxCount;
+    const tiedCount = (lfTied ? 1 : 0) + (crlfTied ? 1 : 0) + (crTied ? 1 : 0);
+    if (tiedCount === 1) {
+      majority = crlfTied ? 'crlf' : crTied ? 'cr' : 'lf';
+    } else if (
+      (firstBreak === 'crlf' && crlfTied) ||
+      (firstBreak === 'cr' && crTied) ||
+      (firstBreak === 'lf' && lfTied)
+    ) {
+      majority = firstBreak;
+    } else {
+      majority = crlfTied ? 'crlf' : lfTied ? 'lf' : 'cr';
+    }
   }
 
-  const majoritySeq = majority === 'crlf' ? '\r\n' : '\n';
+  const majoritySeq = majority === 'crlf' ? '\r\n' : majority === 'cr' ? '\r' : '\n';
   const requiresConversionWarning = kind === 'mixed' || kind === 'cr';
 
   return {
@@ -149,12 +159,15 @@ export function normalizeEolToLf(text: string): string {
 }
 
 /**
- * Converts all line breaks in `text` to the specified `target` EOL (`'lf'` or `'crlf'`).
+ * Converts all line breaks in `text` to the specified `target` EOL (`'lf'`, `'crlf'`, or `'cr'`).
  */
 export function convertEol(text: string, target: MajorityEolKind): string {
   const lfText = normalizeEolToLf(text);
   if (target === 'lf') {
     return lfText;
+  }
+  if (target === 'cr') {
+    return lfText.replace(/\n/g, '\r');
   }
   return lfText.replace(/\n/g, '\r\n');
 }
@@ -190,7 +203,7 @@ export function applyTextareaEol(
   }
 
   const targetEol = sourceEol.majority;
-  const text = targetEol === 'crlf' ? normalizedInput.replace(/\n/g, '\r\n') : normalizedInput;
+  const text = convertEol(normalizedInput, targetEol);
 
   return {
     changed: true,
