@@ -744,6 +744,12 @@ export function ItemDetailPage({
     }
   }, [creatingText, unlocked]);
 
+  const handleCancelCreatingText = useCallback(() => {
+    setCreatingText(false);
+    queueMicrotask(() => {
+      addTextBtnRef.current?.focus();
+    });
+  }, []);
   const handleCreatedTextEntry = useCallback(
     (created: EntryMeta) => {
       setCreatingText(false);
@@ -995,12 +1001,7 @@ export function ItemDetailPage({
                     itemId={itemId}
                     itemName={itemQuery.data.name}
                     onSaved={handleCreatedTextEntry}
-                    onCancel={() => {
-                      setCreatingText(false);
-                      queueMicrotask(() => {
-                        addTextBtnRef.current?.focus();
-                      });
-                    }}
+                    onCancel={handleCancelCreatingText}
                     onAnnounce={announce}
                     onDraftClearedOnLock={handleDraftClearedOnLock}
                   />

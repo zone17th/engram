@@ -419,6 +419,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   const [tagQueryInput, setTagQueryInput] = useState('');
   const [tagError, setTagError] = useState<string | null>(null);
   const [tagBusy, setTagBusy] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState<number>(0);
   const addTagChipRef = useRef<HTMLButtonElement | null>(null);
   const tagInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -476,6 +477,19 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       exactMatchInAll,
     };
   }, [tagQueryInput, tagsSuggestQuery.data]);
+
+  const hasCreateOption = Boolean(parsedNewTag && !parsedNewTag.exactMatchInAll);
+  const totalPopoverOptions = suggestions.length + (hasCreateOption ? 1 : 0);
+  const boundedHighlightIndex =
+    totalPopoverOptions > 0
+      ? Math.max(0, Math.min(highlightedIndex, totalPopoverOptions - 1))
+      : -1;
+  const activeOptionId =
+    boundedHighlightIndex >= 0
+      ? boundedHighlightIndex < suggestions.length
+        ? `tag-suggest-opt-${suggestions[boundedHighlightIndex].id}`
+        : 'tag-suggest-opt-create'
+      : undefined;
 
   const handleAttachExistingTag = useCallback(
     async (tag: Pick<Tag, 'id' | 'display'>) => {
@@ -631,9 +645,43 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
 
   const handleTagInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (e.key === 'ArrowDown') {
+      if (totalPopoverOptions > 0) {
+        e.preventDefault();
+        setHighlightedIndex((prev) => (prev + 1) % totalPopoverOptions);
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      if (totalPopoverOptions > 0) {
+        e.preventDefault();
+        setHighlightedIndex(
+          (prev) => (prev - 1 + totalPopoverOptions) % totalPopoverOptions,
+        );
+      }
+      return;
+    }
+    if (e.key === 'Home') {
+      if (totalPopoverOptions > 0) {
+        e.preventDefault();
+        setHighlightedIndex(0);
+      }
+      return;
+    }
+    if (e.key === 'End') {
+      if (totalPopoverOptions > 0) {
+        e.preventDefault();
+        setHighlightedIndex(totalPopoverOptions - 1);
+      }
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
-      void handleCreateAndAttachTag();
+      if (boundedHighlightIndex >= 0 && boundedHighlightIndex < suggestions.length) {
+        void handleAttachExistingTag(suggestions[boundedHighlightIndex]);
+      } else {
+        void handleCreateAndAttachTag();
+      }
     } else if (e.key === 'Escape') {
       e.preventDefault();
       setTagPopoverOpen(false);
@@ -814,6 +862,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       <div className="mb-6">
         <div
           className="flex flex-wrap items-center gap-2"
+          role="group"
           aria-label={tItem('tagsLabel')}
           data-testid="item-tags"
         >
@@ -857,6 +906,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
             onClick={() => {
               if (atTagLimit) return;
               setTagError(null);
+              setHighlightedIndex(0);
               setTagPopoverOpen((prev) => !prev);
             }}
           >
@@ -907,9 +957,11 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
                 placeholder={tItem('tagInputPlaceholder')}
                 aria-describedby="tag-privacy-note"
                 aria-controls="tag-suggest-list"
+                aria-activedescendant={activeOptionId}
                 className="field-input"
                 onChange={(e) => {
                   setTagQueryInput(e.target.value);
+                  setHighlightedIndex(0);
                   if (tagError) setTagError(null);
                 }}
                 onKeyDown={handleTagInputKeyDown}
@@ -943,9 +995,10 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
               {suggestions.map((suggestion, idx) => (
                 <button
                   key={suggestion.id}
+                  id={`tag-suggest-opt-${suggestion.id}`}
                   type="button"
                   role="option"
-                  aria-selected={idx === 0}
+                  aria-selected={idx === boundedHighlightIndex}
                   data-testid={`tag-suggest-option-${suggestion.display}`}
                   className="sugg-row"
                   disabled={tagBusy}
@@ -963,9 +1016,10 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
 
               {parsedNewTag && !parsedNewTag.exactMatchInAll ? (
                 <button
+                  id="tag-suggest-opt-create"
                   type="button"
                   role="option"
-                  aria-selected={suggestions.length === 0}
+                  aria-selected={boundedHighlightIndex === suggestions.length}
                   data-testid="tag-suggest-create-option"
                   className="sugg-row"
                   disabled={tagBusy}

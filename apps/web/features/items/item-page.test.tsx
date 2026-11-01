@@ -1975,6 +1975,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('item-tag-chip-nhà')).toBeInTheDocument();
     });
 
+    expect(screen.getByTestId('item-tags')).toHaveAttribute('role', 'group');
     // Open tag popover and type prefix "mạng"
     fireEvent.click(screen.getByTestId('tag-add-chip'));
     const tagInput = screen.getByTestId('tag-suggest-input');
@@ -1987,10 +1988,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('tag-suggest-option-mạng-nhà')).toBeInTheDocument();
     });
 
+    // IP15-FE1-7: ArrowDown/Home/End + Enter selects the highlighted suggestion via aria-activedescendant
+    expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-tag-3');
+    fireEvent.keyDown(tagInput, { key: 'ArrowDown' });
+    expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-create');
+    fireEvent.keyDown(tagInput, { key: 'Home' });
+    expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-tag-3');
+
     // Create and attach a brand new tag "mạng-mới" via Enter / Add button
     fireEvent.change(tagInput, { target: { value: 'mạng-mới' } });
     fireEvent.click(screen.getByTestId('tag-attach-submit'));
-
     await waitFor(() => {
       expect(screen.getByTestId('item-tag-chip-mạng-mới')).toBeInTheDocument();
     });
@@ -2201,6 +2208,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await waitFor(() => {
       expect(screen.getByTestId('entry-body')).toHaveTextContent('First entry');
     });
+
+    // IP15-FE1-8: locking with an empty, just-opened composer does NOT report draftClearedOnLock after unlock
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    expect(screen.getByTestId('new-entry-textarea')).toHaveValue('');
+    await h.lock();
+    await h.unlock();
+    expect(screen.queryByTestId('draft-cleared-on-lock-banner')).toBeNull();
 
     fireEvent.click(screen.getByTestId('btn-add-text'));
     const newTextarea = screen.getByTestId('new-entry-textarea');

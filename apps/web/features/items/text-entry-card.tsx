@@ -1479,6 +1479,8 @@ export function NewTextEntryComposer({
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveLockRef = useRef<boolean>(false);
+  const composerDirtyRef = useRef<boolean>(false);
+  composerDirtyRef.current = draftValue.length > 0 || unconfirmedCreate !== null;
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -1487,6 +1489,7 @@ export function NewTextEntryComposer({
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
+      const hadNonEmptyDraft = composerDirtyRef.current;
       if (textareaRef.current) {
         textareaRef.current.value = '';
       }
@@ -1496,7 +1499,9 @@ export function NewTextEntryComposer({
       setSavingInFlight(false);
       setUnconfirmedCreate(null);
       setSaveError(null);
-      onDraftClearedOnLock?.();
+      if (hadNonEmptyDraft) {
+        onDraftClearedOnLock?.();
+      }
       onCancel();
     });
   }, [onCancel, onDraftClearedOnLock, vault]);
