@@ -93,6 +93,7 @@ type requestLockTrace struct {
 	startWaitAt time.Time
 	grantedAt   time.Time
 	err         error
+	onStartWait func()
 }
 
 func (rt *requestLockTrace) snapshot() (recorded bool, pid uint32, startWait, granted time.Time, err error) {
@@ -164,7 +165,11 @@ func (tr *perfQueryTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, 
 			reqTrace.mu.Lock()
 			reqTrace.backendPID = pid
 			reqTrace.startWaitAt = now
+			onStart := reqTrace.onStartWait
 			reqTrace.mu.Unlock()
+			if onStart != nil {
+				onStart()
+			}
 			return context.WithValue(ctx, activeTraceSpanKey{}, &activeLockSpan{
 				reqTrace:  reqTrace,
 				pid:       pid,
@@ -196,12 +201,12 @@ func (tr *perfQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, da
 		}
 		return
 	}
-	if _, ok := ctx.Value(activeCommitSpanKey{}).(*activeCommitSpan); ok && data.Err == nil {
+	if commitSpan, ok := ctx.Value(activeCommitSpanKey{}).(*activeCommitSpan); ok && commitSpan != nil && data.Err == nil {
 		if conn != nil && conn.PgConn() != nil {
 			pid := conn.PgConn().PID()
 			tr.commitMu.Lock()
 			if tr.trackPurgePID != 0 && pid == tr.trackPurgePID {
-				tr.purgeCommitAt = time.Now()
+				tr.purgeCommitAt = commitSpan.startedAt
 				tr.purgeCommitted = true
 			}
 			tr.commitMu.Unlock()
@@ -392,7 +397,16 @@ func (h *perfHarness) doServeHTTP(
 }
 
 func (h *perfHarness) advanceRateLimitWindow() {
-	h.Clock.Advance(2 * time.Second)
+	h.Clock.Advance(1100 * time.Millisecond)
+}
+
+func (h *perfHarness) refreshSession(jar contenttest.CookieJar) {
+	h.T.Helper()
+	code, raw, _ := h.doServeHTTP(context.Background(), jar, http.MethodPost, "/api/v1/auth/refresh", `{}`, "")
+	if code != http.StatusNoContent {
+		h.T.Fatalf("POST /api/v1/auth/refresh = %d %s", code, raw)
+	}
+	h.advanceRateLimitWindow()
 }
 
 type perfUser struct {
@@ -657,7 +671,13 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 			'text' AS type,
 			pos AS position,
 			$2::jsonb AS envelope,
-			gen_random_bytes(pt_len + 16) AS ciphertext,
+			(
+				SELECT string_agg(
+					gen_random_bytes(LEAST(1024, (pt_len + 16) - (c - 1) * 1024 + (e * 0))),
+					''::bytea
+				)
+				FROM generate_series(1, ((pt_len + 16) + 1023) / 1024) AS c
+			) AS ciphertext,
 			pt_len AS plaintext_len_bucket,
 			1 AS version,
 			now() - (e || ' milliseconds')::interval,
@@ -698,10 +718,14 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 		t.Fatalf("seed 20000 entries via generate_series + gen_random_bytes: %v", err)
 	}
 
-	// Verify exact counts and total ciphertext size <= 150 MB.
+	if _, err := pool.Exec(ctx, `ANALYZE item, tag, item_tag, entry`); err != nil {
+		t.Fatalf("ANALYZE seeded content tables: %v", err)
+	}
+
+	// Verify exact counts, distinct random ciphertexts, and total ciphertext size <= 150 MB.
 	var (
-		gotItems, gotTags, gotEntries, got64K, got199Items int
-		totalCiphertextBytes                               int64
+		gotItems, gotTags, gotEntries, got64K, got199Items, gotDistinctSample int
+		totalCiphertextBytes                                                  int64
 	)
 	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM item WHERE user_id = $1`, user.UserID).Scan(&gotItems); err != nil {
 		t.Fatal(err)
@@ -721,6 +745,17 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM item WHERE user_id = $1 AND entry_count = 199`, user.UserID).Scan(&got199Items); err != nil {
 		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(DISTINCT md5(ciphertext))::int
+		FROM (
+			SELECT ciphertext FROM entry WHERE user_id = $1 LIMIT 16
+		) AS sample
+	`, user.UserID).Scan(&gotDistinctSample); err != nil {
+		t.Fatal(err)
+	}
+	if gotDistinctSample < 2 {
+		t.Fatalf("seeded entries ciphertext sample distinct count = %d, want >= 2 (rows must not all be identical)", gotDistinctSample)
 	}
 
 	if gotItems != seedTotalItems {
@@ -756,7 +791,7 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 		  AND deleted_at IS NULL
 		  AND entry_count <= 4
 		ORDER BY id ASC
-		LIMIT 60
+		LIMIT 120
 	`, user.UserID)
 	if err != nil {
 		t.Fatalf("select non-full items: %v", err)
@@ -774,8 +809,8 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(nonFullIDs) < 40 {
-		t.Fatalf("non-full items found = %d, want >= 40", len(nonFullIDs))
+	if len(nonFullIDs) < 112 {
+		t.Fatalf("non-full items found = %d, want >= 112", len(nonFullIDs))
 	}
 
 	totalMiB := float64(totalCiphertextBytes) / (1024.0 * 1024.0)
@@ -1177,7 +1212,13 @@ func seedExpiredTombstonesForRound(
 			'text',
 			$3::int + g,
 			$4::jsonb,
-			gen_random_bytes(1024 + 16),
+			(
+				SELECT string_agg(
+					gen_random_bytes(LEAST(1024, (1024 + 16) - (c - 1) * 1024 + (g * 0))),
+					''::bytea
+				)
+				FROM generate_series(1, ((1024 + 16) + 1023) / 1024) AS c
+			),
 			1024,
 			1,
 			$5::timestamptz,
@@ -1198,7 +1239,7 @@ func queryContentAdvisoryLockSnapshot(
 	userID uuid.UUID,
 ) (holderPID uint32, waiterPIDs []uint32, err error) {
 	rows, err := obsConn.Query(ctx, `
-		SELECT l.pid::oid::int8, l.granted
+		SELECT l.pid, l.granted
 		FROM pg_locks AS l
 		JOIN pg_database AS d ON d.oid = l.database AND d.datname = current_database()
 		WHERE l.locktype = 'advisory'
@@ -1212,15 +1253,15 @@ func queryContentAdvisoryLockSnapshot(
 	defer rows.Close()
 
 	for rows.Next() {
-		var pid64 int64
+		var pid int32
 		var granted bool
-		if err := rows.Scan(&pid64, &granted); err != nil {
+		if err := rows.Scan(&pid, &granted); err != nil {
 			return 0, nil, err
 		}
 		if granted {
-			holderPID = uint32(pid64)
+			holderPID = uint32(pid)
 		} else {
-			waiterPIDs = append(waiterPIDs, uint32(pid64))
+			waiterPIDs = append(waiterPIDs, uint32(pid))
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1266,6 +1307,9 @@ func runPopulation3ConfirmedPurgeOverlap(
 		t.Fatalf("acquire observation conn: %v", err)
 	}
 	defer obsConn.Release()
+
+	// Warm up prepared statement cache on the dedicated observation connection before timed rounds.
+	_, _, _ = queryContentAdvisoryLockSnapshot(ctx, obsConn, user.UserID)
 
 	now := h.Clock.Now().UTC()
 	cutoff := now.Add(-entry.ContentPurgeRetentionWindow)
@@ -1315,6 +1359,8 @@ func runPopulation3ConfirmedPurgeOverlap(
 		)
 
 		burstGate := make(chan struct{})
+		all10EnteredLockCh := make(chan struct{})
+		var startedWaitCount atomic.Int32
 		outcomes := make([]roundReqOutcome, pop3BurstSize)
 		var reqWG sync.WaitGroup
 		reqWG.Add(pop3BurstSize)
@@ -1323,7 +1369,13 @@ func runPopulation3ConfirmedPurgeOverlap(
 			creq := roundReqs[j]
 			itemID := burstItems[j]
 			path := "/api/v1/items/" + itemID.String() + "/entries"
-			rTrace := &requestLockTrace{}
+			rTrace := &requestLockTrace{
+				onStartWait: func() {
+					if startedWaitCount.Add(1) == pop3BurstSize {
+						close(all10EnteredLockCh)
+					}
+				},
+			}
 
 			go func(slot int, path string, creq preparedCreateReq, rt *requestLockTrace) {
 				defer reqWG.Done()
@@ -1345,23 +1397,32 @@ func runPopulation3ConfirmedPurgeOverlap(
 			close(burstGate)
 
 			deadline := time.Now().Add(pop3MaxWaitForBlocked)
+			allEnteredNotified := false
 			for {
 				holder, waiters, qErr := queryContentAdvisoryLockSnapshot(hCtx, obsConn, user.UserID)
 				if qErr == nil && holder != 0 && len(waiters) >= pop3BurstSize {
+					purgeReleasedAt = time.Now()
 					snapshotHolderPID = holder
 					snapshotWaiterPIDs = waiters
 					all10Blocked = true
 					h.Tracer.armPurgeCommitTracker(holder)
-					purgeReleasedAt = time.Now()
 					break
 				}
 				if time.Now().After(deadline) {
 					purgeReleasedAt = time.Now()
 					break
 				}
-				time.Sleep(pop3PollInterval)
+				if !allEnteredNotified {
+					select {
+					case <-all10EnteredLockCh:
+						allEnteredNotified = true
+						time.Sleep(150 * time.Microsecond)
+					case <-time.After(pop3PollInterval):
+					}
+				} else {
+					time.Sleep(pop3PollInterval)
+				}
 			}
-
 			if extraPurgeHoldDelay > 0 {
 				time.Sleep(extraPurgeHoldDelay)
 			}
@@ -1508,18 +1569,29 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	user := h.signupAndCreateVault("perf-a10-user@example.com", 0x10)
 	seeded := seedPerfDataset(t, h.Pool, user)
 
-	// Partition non-full items so each population and self-check writes into items that remain well below
-	// the 200-entry limit throughout the entire test run:
-	//   - nonFull[0..29] (30 items): Population 1 (+10 entries/item) & Self-Check A Pop 1 (+10 entries/item) -> max 24 entries/item.
-	//   - nonFull[30..39] (10 items): Population 2 (+30 entries/item), Population 3 (+10..30 entries/item),
-	//     Self-Check A Pop 2 (+30 entries/item), Self-Check B Pop 2 (+30 entries/item), Self-Check B Pop 3 (+10..30 entries/item)
-	//     -> max ~140 entries/item (<= 200).
-	//   - nonFull[40]: dedicated parent item for Population 3's 500 expired tombstones (tombstones do not count toward live entry_count).
-	pop1Items := seeded.NonFullItemIDs[:30]
-	burstItems := seeded.NonFullItemIDs[30:40]
-	tombstoneItemID := seeded.NonFullItemIDs[40]
+	// Partition non-full items into disjoint slices per population and self-check so no item ever
+	// accumulates more than ~40 entries (staying well below the 200-entry limit throughout the entire run):
+	//   - nonFull[0..29]   (30 items): Real Population 1 (+10 entries/item -> max 14)
+	//   - nonFull[30..39]  (10 items): Real Population 2 (+30 entries/item -> max 34)
+	//   - nonFull[40..49]  (10 items): Real Population 3 (+10..40 entries/item -> max 44)
+	//   - nonFull[50..79]  (30 items): Self-Check A Population 1 (+10 entries/item -> max 14)
+	//   - nonFull[80..89]  (10 items): Self-Check A Population 2 (+30 entries/item -> max 34)
+	//   - nonFull[90..99]  (10 items): Self-Check B Population 2 (+30 entries/item -> max 34)
+	//   - nonFull[100..109](10 items): Self-Check B Population 3 (+10..40 entries/item -> max 44)
+	//   - nonFull[110]: dedicated parent item for Population 3's 500 expired tombstones
+	//   - nonFull[111]: dedicated item topped up to 199 live entries for Self-Check A's Population 1
+	pop1Items := seeded.NonFullItemIDs[0:30]
+	pop2Items := seeded.NonFullItemIDs[30:40]
+	pop3Items := seeded.NonFullItemIDs[40:50]
+	checkAPop1Items := seeded.NonFullItemIDs[50:80]
+	checkAPop2Items := seeded.NonFullItemIDs[80:90]
+	checkBPop2Items := seeded.NonFullItemIDs[90:100]
+	checkBPop3Items := seeded.NonFullItemIDs[100:110]
+	tombstoneItemID := seeded.NonFullItemIDs[110]
+	checkAItem199BaseID := seeded.NonFullItemIDs[111]
 
 	t.Run("RealPopulations_1_2_3", func(t *testing.T) {
+		h.refreshSession(user.Jar)
 		h.Tracer.setCreateLockHeldDelay(0)
 
 		pop1 := runPopulation1Sequential(t, h, user, seeded.Item199ID, pop1Items, "pop1_sequential")
@@ -1527,12 +1599,12 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 			t.Fatalf("Population 1 p95 = %s >= ceiling %s", pop1.P95, p95Ceiling)
 		}
 
-		pop2 := runPopulation2BurstNoPurge(t, h, user, burstItems, "pop2_burst_no_purge")
+		pop2 := runPopulation2BurstNoPurge(t, h, user, pop2Items, "pop2_burst_no_purge")
 		if !pop2.passesCeiling(p95Ceiling) {
 			t.Fatalf("Population 2 p95 = %s >= ceiling %s", pop2.P95, p95Ceiling)
 		}
 
-		pop3 := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, burstItems, 0, "pop3_burst_purge_overlap")
+		pop3 := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, pop3Items, 0, "pop3_burst_purge_overlap")
 		if !pop3.passesCeiling(p95Ceiling) {
 			t.Fatalf("Population 3 p95 = %s >= ceiling %s (decision_required per plan)", pop3.P95, p95Ceiling)
 		}
@@ -1541,20 +1613,18 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	})
 
 	t.Run("SelfCheckA_Inject20msInCreateLock_Pop2FailsWhilePop1Passes", func(t *testing.T) {
-		// Create a dedicated non-full item with 199 entries for Self-Check A's Population 1 run
-		// by using another user or setting up an item at 199 entries. Using the same seeded DB,
-		// we bump nonFull[41] to 199 live entries via SQL so Self-Check A runs the exact Population 1 flow.
-		item199CheckA := prepareItemAt199Entries(t, h.Pool, user, seeded.NonFullItemIDs[41], 1)
+		h.refreshSession(user.Jar)
+		item199CheckA := prepareItemAt199Entries(t, h.Pool, user, checkAItem199BaseID, 1)
 
 		h.Tracer.setCreateLockHeldDelay(20 * time.Millisecond)
 		defer h.Tracer.setCreateLockHeldDelay(0)
 
-		pop1CheckA := runPopulation1Sequential(t, h, user, item199CheckA, pop1Items, "selfcheck_a_pop1_20ms")
+		pop1CheckA := runPopulation1Sequential(t, h, user, item199CheckA, checkAPop1Items, "selfcheck_a_pop1_20ms")
 		if !pop1CheckA.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check A: expected Population 1 to PASS with 20 ms lock hold, got p95=%s (ceiling=%s)", pop1CheckA.P95, p95Ceiling)
 		}
 
-		pop2CheckA := runPopulation2BurstNoPurge(t, h, user, burstItems, "selfcheck_a_pop2_20ms")
+		pop2CheckA := runPopulation2BurstNoPurge(t, h, user, checkAPop2Items, "selfcheck_a_pop2_20ms")
 		if pop2CheckA.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check A: expected Population 2 to FAIL ceiling %s when 20 ms is injected in create lock (10 serialized * 20 ms >= 180 ms), but got p95=%s", p95Ceiling, pop2CheckA.P95)
 		}
@@ -1565,14 +1635,15 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	})
 
 	t.Run("SelfCheckB_Inject200msInPurgeLock_Pop3FailsWhilePop2Passes", func(t *testing.T) {
+		h.refreshSession(user.Jar)
 		h.Tracer.setCreateLockHeldDelay(0)
 
-		pop2CheckB := runPopulation2BurstNoPurge(t, h, user, burstItems, "selfcheck_b_pop2_200ms_purge")
+		pop2CheckB := runPopulation2BurstNoPurge(t, h, user, checkBPop2Items, "selfcheck_b_pop2_200ms_purge")
 		if !pop2CheckB.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check B: expected Population 2 to PASS when 200 ms is only in purge lock, got p95=%s (ceiling=%s)", pop2CheckB.P95, p95Ceiling)
 		}
 
-		pop3CheckB := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, burstItems, 200*time.Millisecond, "selfcheck_b_pop3_200ms_purge")
+		pop3CheckB := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, checkBPop3Items, 200*time.Millisecond, "selfcheck_b_pop3_200ms_purge")
 		if pop3CheckB.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check B: expected Population 3 to FAIL ceiling %s when 200 ms is injected in purge lock, but got p95=%s", p95Ceiling, pop3CheckB.P95)
 		}
@@ -1627,7 +1698,13 @@ func prepareItemAt199Entries(t *testing.T, pool *pgxpool.Pool, user perfUser, it
 			'text',
 			$3::int + g,
 			$4::jsonb,
-			gen_random_bytes(1024 + 16),
+			(
+				SELECT string_agg(
+					gen_random_bytes(LEAST(1024, (1024 + 16) - (c - 1) * 1024 + (g * 0))),
+					''::bytea
+				)
+				FROM generate_series(1, ((1024 + 16) + 1023) / 1024) AS c
+			),
 			1024,
 			1
 		FROM generate_series(1, $5::int) AS g
