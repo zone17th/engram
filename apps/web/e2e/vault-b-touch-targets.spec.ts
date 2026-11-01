@@ -442,7 +442,7 @@ test.describe('FU3 UI-TOUCH-44 header and primary control touch targets', () => 
     try {
       await setupMockedHomeRoute(context);
       const restoredTagIds: string[] = [];
-      await context.route('**/api/v1/tags/*', async (route) => {
+      await context.route('**/api/v1/tags/**', async (route) => {
         const method = route.request().method();
         if (method === 'DELETE') {
           await route.fulfill({ status: 204 });
