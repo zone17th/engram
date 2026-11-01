@@ -464,6 +464,23 @@ export function JsonEntryCard({
     };
   }, [entry.id, itemId, plaintextHolderRef]);
 
+  // When a card is kept mounted with an unsaved draft or remote-tombstone / conflict / retry state,
+  // fall back to `originalSource` if the query cache body was evicted by a remote tombstone (advisor-dec-211).
+  const hasRetainedEditorState =
+    isDirty ||
+    savingInFlight ||
+    unconfirmedSave !== null ||
+    conflictState !== null ||
+    deletedRemotely;
+  const effectiveBody =
+    body !== undefined
+      ? body
+      : unlocked && hasRetainedEditorState && originalSource !== ''
+        ? originalSource
+        : undefined;
+  const effectiveFailed = failed && effectiveBody === undefined;
+  const effectivePending = pending && effectiveBody === undefined;
+
   // Close menu on outside click
   useEffect(() => {
     if (!menuOpen) return;
@@ -1253,11 +1270,11 @@ export function JsonEntryCard({
   ]);
 
   const handleCopyBody = useCallback(async () => {
-    if (!unlocked || body === undefined) return;
-    const candidate = readCurrentCandidateFromHolder() || body;
+    if (!unlocked || effectiveBody === undefined) return;
+    const candidate = readCurrentCandidateFromHolder() || effectiveBody;
     await copyEntryPlaintextToClipboard(candidate);
     onAnnounce?.(tEntry('copied'));
-  }, [body, onAnnounce, readCurrentCandidateFromHolder, tEntry, unlocked]);
+  }, [effectiveBody, onAnnounce, readCurrentCandidateFromHolder, tEntry, unlocked]);
 
   const handleMenuKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(
@@ -1310,7 +1327,7 @@ export function JsonEntryCard({
     conflictState ||
       unconfirmedSave ||
       saveError ||
-      failed ||
+      effectiveFailed ||
       switchBlockedError ||
       (mode === 'raw' && rawSettledIssue !== null),
   );
@@ -1352,7 +1369,7 @@ export function JsonEntryCard({
         </span>
 
         {/* Table / Raw JSON segmented switcher (Task 16 item 5, hidden when locked or error) */}
-        {unlocked && body !== undefined && !oldKey && !failed ? (
+        {unlocked && effectiveBody !== undefined && !oldKey && !effectiveFailed ? (
           <div
             role="group"
             aria-label={tJson('viewModeAria')}
@@ -1415,7 +1432,7 @@ export function JsonEntryCard({
             </span>
           ) : null}
 
-          {unlocked && body !== undefined && !oldKey && !failed ? (
+          {unlocked && effectiveBody !== undefined && !oldKey && !effectiveFailed ? (
             <button
               type="button"
               className="btn btn-tertiary btn-sm"
@@ -1463,7 +1480,7 @@ export function JsonEntryCard({
                 data-testid={`entry-menu-copy-${entry.id}`}
                 data-card-act="copy"
                 className="menu-item"
-                disabled={!unlocked || body === undefined || oldKey || failed}
+                disabled={!unlocked || effectiveBody === undefined || oldKey || effectiveFailed}
                 onClick={() => {
                   setMenuOpen(false);
                   void handleCopyBody();
@@ -1478,7 +1495,7 @@ export function JsonEntryCard({
                 data-testid={`entry-menu-edit-${entry.id}`}
                 data-card-act="edit"
                 className="menu-item"
-                disabled={!unlocked || body === undefined || oldKey || failed}
+                disabled={!unlocked || effectiveBody === undefined || oldKey || effectiveFailed}
                 onClick={() => {
                   setMenuOpen(false);
                   handleSwitchMode('raw');
@@ -1541,7 +1558,7 @@ export function JsonEntryCard({
       </div>
 
       {/* Card Body */}
-      <div className={mode === 'table' && unlocked && body !== undefined && !oldKey && !failed ? '' : 'p-4'}>
+      <div className={mode === 'table' && unlocked && effectiveBody !== undefined && !oldKey && !effectiveFailed ? '' : 'p-4'}>
         {!unlocked ? (
           <LockMask />
         ) : oldKey ? (
@@ -1554,7 +1571,7 @@ export function JsonEntryCard({
             <p className="m-0 text-[14px] font-semibold text-body">{tEntry('oldKeyTitle')}</p>
             <p className="m-0 text-[13px] text-muted">{tEntry('oldKeyBody')}</p>
           </div>
-        ) : failed ? (
+        ) : effectiveFailed ? (
           <div
             role="alert"
             data-testid="entry-body-error"
@@ -1591,7 +1608,7 @@ export function JsonEntryCard({
               {tEntry('retry')}
             </button>
           </div>
-        ) : !inViewport || pending || body === undefined ? (
+        ) : !inViewport || effectivePending || effectiveBody === undefined ? (
           <p role="status" data-testid="entry-body-loading" className="t-caption m-0 text-muted">
             {tLocked('bodyLoading')}
           </p>

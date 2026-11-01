@@ -704,6 +704,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       }
       const activeUserId = userIdRef.current;
       const hasActiveEntries = hasActiveContentEntriesQuery(queryClient);
+      const keyAtWakeStart = lastSeenVaultByUserRef.current?.vaultKeyId ?? null;
       const wasUnlockedAtWakeStart =
         vaultStateRef.current === 'unlocked' || vaultStateRef.current === 'unlocking';
 
@@ -722,7 +723,10 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
         ? reloadVaultMetaRef
             .current!()
             .then((freshMeta) => {
-              if (freshMeta === null) {
+              if (
+                freshMeta === null ||
+                (keyAtWakeStart !== null && freshMeta.vault_key_id !== keyAtWakeStart)
+              ) {
                 purgeEntriesCacheOnVaultReset(queryClient);
               }
               return freshMeta;
