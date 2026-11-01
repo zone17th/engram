@@ -33,7 +33,7 @@ test.describe('P03-T21 Locked state U5', () => {
       for (const record of entries) {
         const card = page.getByTestId(`entry-card-${record.meta.id}`);
         await expect(card).toBeVisible();
-        await expect(card).toContainText(record.meta.type);
+        await expect(card).toContainText(new RegExp(`\\b${record.meta.type}\\b`, 'i'));
       }
       await expect(page.getByTestId('entry-body-locked')).toHaveCount(entries.length);
       await expect(page.getByTestId('entry-body-locked').first()).toContainText('🔒 ••••••');
