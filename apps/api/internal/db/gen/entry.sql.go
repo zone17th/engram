@@ -709,6 +709,39 @@ func (q *Queries) RestoreEntry(ctx context.Context, arg RestoreEntryParams) (Res
 	return i, err
 }
 
+const shiftLiveEntriesOnRestoreCollision = `-- name: ShiftLiveEntriesOnRestoreCollision :execrows
+UPDATE entry
+SET
+  position = entry.position + 1,
+  updated_at = clock_timestamp()
+WHERE entry.user_id = $1
+  AND entry.item_id = $2
+  AND entry.deleted_at IS NULL
+  AND entry.position >= $3
+  AND EXISTS (
+    SELECT 1
+    FROM entry AS occupied
+    WHERE occupied.user_id = $1
+      AND occupied.item_id = $2
+      AND occupied.deleted_at IS NULL
+      AND occupied.position = $3
+  )
+`
+
+type ShiftLiveEntriesOnRestoreCollisionParams struct {
+	UserID           uuid.UUID
+	ItemID           uuid.UUID
+	RestoredPosition int32
+}
+
+func (q *Queries) ShiftLiveEntriesOnRestoreCollision(ctx context.Context, arg ShiftLiveEntriesOnRestoreCollisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, shiftLiveEntriesOnRestoreCollision, arg.UserID, arg.ItemID, arg.RestoredPosition)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const softDeleteEntry = `-- name: SoftDeleteEntry :one
 
 UPDATE entry

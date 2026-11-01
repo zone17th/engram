@@ -14,6 +14,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/entry"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/vault"
 )
 
@@ -610,4 +611,437 @@ func TestItemEntriesReorderPermutationMismatchVersionAndCrossUserIsolation(t *te
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
 	contenttest.AssertInvariants(t, h.Pool, meB.User.ID)
+}
+
+// TestItemEntriesReorderBodyLimit16KiBPreLookup covers EA6b-R1-1 (SPEC §9.2, OpenAPI itemEntriesReorder, plan §2.3):
+//   - PATCH /items/{id}/entries/reorder is mounted through ChainItemTagWrite (16 KiB pre-Lookup limit -> 413 invalid_request).
+//   - A valid reorder JSON body padded to exact 16 KiB (16,384 B) with Content-Length and with Transfer-Encoding: chunked
+//     reaches the handler, returns 200 OK, updates positions, and persists the idempotency row.
+//   - A reorder body of 16 KiB + 1 (16,385 B) with Content-Length and with Transfer-Encoding: chunked is rejected with
+//     413 invalid_request BEFORE Idempotency.Lookup / rate-limit / Claim:
+//     0 idempotency_key rows created, 0 rate_event rows added for content_write, and entry positions/timestamps untouched.
+//   - A reorder body of 16 KiB + 1 sent with an existing committed Idempotency-Key still returns 413 invalid_request
+//     before Idempotency.Lookup (does not replay 200 or return 409 idempotency_key_reused).
+//   - AssertInvariants after every case.
+func TestItemEntriesReorderBodyLimit16KiBPreLookup(t *testing.T) {
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	jarA, meA := h.SignupUser("entry-reorder-16k@example.com", "correct-horse-battery-staple-a")
+	vfA := createVaultForUser(t, h, jarA, 0xA0)
+	itemA := insertTestItem(t, h, meA.User.ID, "Reorder 16KiB Limit Item")
+
+	id0 := uuid.NewString()
+	sealed0 := sealEntryFixture(t, id0, vfA.VaultKeyID, vfA.VK, []byte("reorder limit e0"), seqBytes(vault.WrapNonceBytes, 0xE1))
+	resp0, raw0 := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+itemA.ID.String()+"/entries",
+		makeCreateBody(id0, entry.TypeText, sealed0.EnvelopeRaw, sealed0.CiphertextB64, sealed0.PlaintextLenBucket),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_16k_seed_e0"})
+	if resp0.StatusCode != http.StatusCreated {
+		t.Fatalf("seed e0 = %d %s", resp0.StatusCode, raw0)
+	}
+
+	id1 := uuid.NewString()
+	sealed1 := sealEntryFixture(t, id1, vfA.VaultKeyID, vfA.VK, []byte("reorder limit e1"), seqBytes(vault.WrapNonceBytes, 0xE2))
+	resp1, raw1 := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+itemA.ID.String()+"/entries",
+		makeCreateBody(id1, entry.TypeText, sealed1.EnvelopeRaw, sealed1.CiphertextB64, sealed1.PlaintextLenBucket),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_16k_seed_e1"})
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("seed e1 = %d %s", resp1.StatusCode, raw1)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	ctx := context.Background()
+	countIdemKey := func(key string) int {
+		t.Helper()
+		var n int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, key).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	countContentWriteEvents := func() int {
+		t.Helper()
+		var n int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE scope = $1`, string(httpx.ScopeContentWrite)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	makePaddedReorderBody := func(ids []string, targetLen int) string {
+		t.Helper()
+		base, err := json.Marshal(map[string]any{"entry_ids": ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(base) > targetLen {
+			t.Fatalf("base reorder JSON len %d > targetLen %d", len(base), targetLen)
+		}
+		padded := string(base) + strings.Repeat(" ", targetLen-len(base))
+		if len(padded) != targetLen {
+			t.Fatalf("padded len = %d, want %d", len(padded), targetLen)
+		}
+		return padded
+	}
+
+	reorderPath := "/api/v1/items/" + itemA.ID.String() + "/entries/reorder"
+	limitBytes := int(httpx.ContentItemTagJSONLimit) // 16,384 B (16 KiB)
+	overBytes := limitBytes + 1                      // 16,385 B (16 KiB + 1)
+
+	// 1. Over-limit (16 KiB + 1) with Content-Length and with chunked encoding -> 413 invalid_request before Lookup/rate-limit/Claim.
+	eventsBeforeOver := countContentWriteEvents()
+	overBody := makePaddedReorderBody([]string{id1, id0}, overBytes)
+	for _, chunked := range []bool{false, true} {
+		mode := "cl"
+		if chunked {
+			mode = "chunked"
+		}
+		idemKey := "idem_t6b_reorder_16k_over_" + mode
+		respOver, rawOver := h.DoReq(jarA, http.MethodPatch, reorderPath, overBody, contenttest.ReqOptions{
+			IdemKey: idemKey,
+			Chunked: chunked,
+		})
+		if respOver.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("reorder 16 KiB+1 (%s): status = %d (%s), want 413", mode, respOver.StatusCode, rawOver)
+		}
+		if code := contenttest.DecodeProblem(t, rawOver).Code; code != "invalid_request" {
+			t.Fatalf("reorder 16 KiB+1 (%s): code = %q, want invalid_request", mode, code)
+		}
+		if got := countIdemKey(idemKey); got != 0 {
+			t.Fatalf("reorder 16 KiB+1 (%s): idempotency rows = %d, want 0 (must reject before Lookup/Claim)", mode, got)
+		}
+		if got := countContentWriteEvents(); got != eventsBeforeOver {
+			t.Fatalf("reorder 16 KiB+1 (%s): rate_event count = %d, want %d (must reject before rate limit)", mode, got, eventsBeforeOver)
+		}
+		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+	}
+
+	// Verify entry positions [id0@0, id1@1] were not modified by the rejected 16 KiB + 1 requests.
+	respListBefore, rawListBefore := h.DoReq(jarA, http.MethodGet, "/api/v1/items/"+itemA.ID.String()+"/entries", "", contenttest.ReqOptions{})
+	if respListBefore.StatusCode != http.StatusOK {
+		t.Fatalf("GET entries after 413 = %d %s", respListBefore.StatusCode, rawListBefore)
+	}
+	var listBefore entry.MetaList
+	if err := json.Unmarshal([]byte(rawListBefore), &listBefore); err != nil {
+		t.Fatal(err)
+	}
+	if len(listBefore.Items) != 2 || listBefore.Items[0].ID != id0 || listBefore.Items[0].Position != 0 || listBefore.Items[1].ID != id1 || listBefore.Items[1].Position != 1 {
+		t.Fatalf("entries after 413 were modified: %+v", listBefore.Items)
+	}
+
+	// 2. Exact 16 KiB (16,384 B) with Content-Length and with chunked encoding -> reaches handler, returns 200 OK.
+	exactBodyCL := makePaddedReorderBody([]string{id1, id0}, limitBytes)
+	keyExactCL := "idem_t6b_reorder_16k_exact_cl"
+	respExactCL, rawExactCL := h.DoReq(jarA, http.MethodPatch, reorderPath, exactBodyCL, contenttest.ReqOptions{
+		IdemKey: keyExactCL,
+		Chunked: false,
+	})
+	if respExactCL.StatusCode != http.StatusOK {
+		t.Fatalf("reorder exact 16 KiB (cl): status = %d (%s), want 200", respExactCL.StatusCode, rawExactCL)
+	}
+	if got := countIdemKey(keyExactCL); got != 1 {
+		t.Fatalf("reorder exact 16 KiB (cl): idempotency rows = %d, want 1", got)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	exactBodyChunked := makePaddedReorderBody([]string{id0, id1}, limitBytes)
+	keyExactChunked := "idem_t6b_reorder_16k_exact_chunked"
+	respExactChunked, rawExactChunked := h.DoReq(jarA, http.MethodPatch, reorderPath, exactBodyChunked, contenttest.ReqOptions{
+		IdemKey: keyExactChunked,
+		Chunked: true,
+	})
+	if respExactChunked.StatusCode != http.StatusOK {
+		t.Fatalf("reorder exact 16 KiB (chunked): status = %d (%s), want 200", respExactChunked.StatusCode, rawExactChunked)
+	}
+	if got := countIdemKey(keyExactChunked); got != 1 {
+		t.Fatalf("reorder exact 16 KiB (chunked): idempotency rows = %d, want 1", got)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// 3. Over-limit (16 KiB + 1) reusing an EXISTING committed Idempotency-Key (keyExactCL) ->
+	// still rejected with 413 invalid_request BEFORE Idempotency.Lookup (neither replays 200 nor returns 409 conflict).
+	for _, chunked := range []bool{false, true} {
+		respOverExisting, rawOverExisting := h.DoReq(jarA, http.MethodPatch, reorderPath, overBody, contenttest.ReqOptions{
+			IdemKey: keyExactCL,
+			Chunked: chunked,
+		})
+		if respOverExisting.StatusCode != http.StatusRequestEntityTooLarge || contenttest.DecodeProblem(t, rawOverExisting).Code != "invalid_request" {
+			t.Fatalf("reorder 16 KiB+1 with existing key (chunked=%v) = %d %s, want 413 invalid_request before Lookup",
+				chunked, respOverExisting.StatusCode, rawOverExisting)
+		}
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+}
+
+// TestEntryRestoreAfterReorderShiftsCollidingLivePositions covers EA6b-R1-2 (advisor-dec-160):
+//   - Exact 2-entry sequence: create A@0, B@1; DELETE A; reorder [B] -> B@0; restore A -> A@0, B@1 (no tie),
+//     B.version unchanged, B.updated_at bumped (so Task 7 changes feed sees the shifted row).
+//   - 3-entry cascading variant: create A@0, B@1, C@2; DELETE A@0; reorder [B, C] -> B@0, C@1;
+//     restore A -> A@0, B@1, C@2 (shift cascades across B and C in one UPDATE, both updated_at bumped, versions unchanged).
+//   - 3-entry middle-slot variant: from [A@0, B@1, C@2], DELETE B@1; reorder [A, C] -> A@0, C@1;
+//     restore B -> A@0, B@1, C@2 (C@1 shifts to C@2 with updated_at bumped, while A@0 < 1 is untouched).
+//   - AssertInvariants after each step.
+func TestEntryRestoreAfterReorderShiftsCollidingLivePositions(t *testing.T) {
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	jarA, meA := h.SignupUser("entry-restore-shift@example.com", "correct-horse-battery-staple-a")
+	vfA := createVaultForUser(t, h, jarA, 0xB0)
+
+	ctx := context.Background()
+	q := gen.New(h.Pool)
+
+	createEntry := func(itemID uuid.UUID, seed byte, idem string) entry.Meta {
+		t.Helper()
+		id := uuid.NewString()
+		sealed := sealEntryFixture(t, id, vfA.VaultKeyID, vfA.VK, []byte{seed, 0x10, 0x20}, seqBytes(vault.WrapNonceBytes, seed))
+		resp, raw := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+itemID.String()+"/entries",
+			makeCreateBody(id, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
+			contenttest.ReqOptions{IdemKey: idem})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("createEntry(%s) = %d %s", idem, resp.StatusCode, raw)
+		}
+		var m entry.Meta
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+		return m
+	}
+
+	// =========================================================================
+	// Part 1: Exact 2-entry sequence (create A@0, B@1; delete A; reorder [B] -> B@0; restore A -> A@0, B@1)
+	// =========================================================================
+	item2 := insertTestItem(t, h, meA.User.ID, "Two Entry Restore Shift Item")
+	a := createEntry(item2.ID, 0x11, "idem_t6b_r12_2e_create_a")
+	b := createEntry(item2.ID, 0x12, "idem_t6b_r12_2e_create_b")
+	if a.Position != 0 || b.Position != 1 {
+		t.Fatalf("initial positions = (%d, %d), want (0, 1)", a.Position, b.Position)
+	}
+
+	// Bump B to version=2 via PUT so we can verify B.version=2 is preserved across both reorder and restore shift.
+	sealedBV2 := sealEntryFixture(t, b.ID, vfA.VaultKeyID, vfA.VK, []byte("b v2 body"), seqBytes(vault.WrapNonceBytes, 0x13))
+	respPutB, rawPutB := h.DoReq(jarA, http.MethodPut, "/api/v1/entries/"+b.ID,
+		makeUpdateBody(sealedBV2.EnvelopeRaw, sealedBV2.CiphertextB64, sealedBV2.PlaintextLenBucket),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_r12_2e_put_b_v2", IfMatch: `"1"`})
+	if respPutB.StatusCode != http.StatusOK {
+		t.Fatalf("PUT B v2 = %d %s", respPutB.StatusCode, rawPutB)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// Delete A (pos 0).
+	respDelA, _ := h.DoReq(jarA, http.MethodDelete, "/api/v1/entries/"+a.ID, "", contenttest.ReqOptions{
+		IdemKey: "idem_t6b_r12_2e_del_a",
+	})
+	if respDelA.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE A = %d", respDelA.StatusCode)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// Reorder [B] -> B moves to position 0.
+	respReordB, rawReordB := h.DoReq(jarA, http.MethodPatch, "/api/v1/items/"+item2.ID.String()+"/entries/reorder",
+		fmt.Sprintf(`{"entry_ids":[%q]}`, b.ID),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_r12_2e_reorder_b"})
+	if respReordB.StatusCode != http.StatusOK {
+		t.Fatalf("reorder [B] = %d %s", respReordB.StatusCode, rawReordB)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	rowBAfterReorder, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{
+		UserID: meA.User.ID,
+		ID:     uuid.MustParse(b.ID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rowBAfterReorder.Position != 0 || rowBAfterReorder.Version != 2 {
+		t.Fatalf("B after reorder: pos=%d version=%d, want pos=0 version=2", rowBAfterReorder.Position, rowBAfterReorder.Version)
+	}
+
+	// Restore A -> A is restored at 0, B is shifted to 1 with updated_at bumped and version=2 unchanged.
+	respRestA, rawRestA := h.DoReq(jarA, http.MethodPost, "/api/v1/entries/"+a.ID+"/restore", `{}`, contenttest.ReqOptions{
+		IdemKey: "idem_t6b_r12_2e_restore_a",
+	})
+	if respRestA.StatusCode != http.StatusOK {
+		t.Fatalf("restore A = %d %s", respRestA.StatusCode, rawRestA)
+	}
+	var metaARestored entry.Meta
+	if err := json.Unmarshal([]byte(rawRestA), &metaARestored); err != nil {
+		t.Fatal(err)
+	}
+	if metaARestored.ID != a.ID || metaARestored.Position != 0 || metaARestored.Version != 1 {
+		t.Fatalf("restored A meta = %+v, want id=%s pos=0 version=1", metaARestored, a.ID)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	rowBAfterRestoreA, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{
+		UserID: meA.User.ID,
+		ID:     uuid.MustParse(b.ID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rowBAfterRestoreA.Position != 1 {
+		t.Fatalf("B position after restore A = %d, want 1 (shifted +1)", rowBAfterRestoreA.Position)
+	}
+	if rowBAfterRestoreA.Version != 2 {
+		t.Fatalf("B version after restore A = %d, want 2 (unchanged)", rowBAfterRestoreA.Version)
+	}
+	if !rowBAfterRestoreA.UpdatedAt.Time.After(rowBAfterReorder.UpdatedAt.Time) {
+		t.Fatalf("expected B.updated_at (%v) to advance after restore shift (was %v)",
+			rowBAfterRestoreA.UpdatedAt.Time, rowBAfterReorder.UpdatedAt.Time)
+	}
+
+	// Verify GET /items/{item2}/entries returns [A@0, B@1] with no tie.
+	respList2, rawList2 := h.DoReq(jarA, http.MethodGet, "/api/v1/items/"+item2.ID.String()+"/entries", "", contenttest.ReqOptions{})
+	if respList2.StatusCode != http.StatusOK {
+		t.Fatalf("GET item2 entries = %d %s", respList2.StatusCode, rawList2)
+	}
+	var list2 entry.MetaList
+	if err := json.Unmarshal([]byte(rawList2), &list2); err != nil {
+		t.Fatal(err)
+	}
+	if len(list2.Items) != 2 ||
+		list2.Items[0].ID != a.ID || list2.Items[0].Position != 0 || list2.Items[0].Version != 1 ||
+		list2.Items[1].ID != b.ID || list2.Items[1].Position != 1 || list2.Items[1].Version != 2 {
+		t.Fatalf("item2 entries after restore A = %+v, want [A@0 v1, B@1 v2]", list2.Items)
+	}
+
+	// =========================================================================
+	// Part 2: 3-entry cascading shift variant (create A3@0, B3@1, C3@2; delete A3; reorder [B3, C3] -> B3@0, C3@1; restore A3 -> A3@0, B3@1, C3@2)
+	// =========================================================================
+	h.Clock.Advance(2 * time.Second)
+	item3 := insertTestItem(t, h, meA.User.ID, "Three Entry Cascading Shift Item")
+	a3 := createEntry(item3.ID, 0x21, "idem_t6b_r12_3e_create_a")
+	b3 := createEntry(item3.ID, 0x22, "idem_t6b_r12_3e_create_b")
+	c3 := createEntry(item3.ID, 0x23, "idem_t6b_r12_3e_create_c")
+
+	// Bump C3 to version=2 via PUT.
+	sealedC3V2 := sealEntryFixture(t, c3.ID, vfA.VaultKeyID, vfA.VK, []byte("c3 v2 body"), seqBytes(vault.WrapNonceBytes, 0x24))
+	respPutC3, rawPutC3 := h.DoReq(jarA, http.MethodPut, "/api/v1/entries/"+c3.ID,
+		makeUpdateBody(sealedC3V2.EnvelopeRaw, sealedC3V2.CiphertextB64, sealedC3V2.PlaintextLenBucket),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_r12_3e_put_c_v2", IfMatch: `"1"`})
+	if respPutC3.StatusCode != http.StatusOK {
+		t.Fatalf("PUT C3 v2 = %d %s", respPutC3.StatusCode, rawPutC3)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// Delete A3 (pos 0).
+	respDelA3, _ := h.DoReq(jarA, http.MethodDelete, "/api/v1/entries/"+a3.ID, "", contenttest.ReqOptions{
+		IdemKey: "idem_t6b_r12_3e_del_a",
+	})
+	if respDelA3.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE A3 = %d", respDelA3.StatusCode)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// Reorder [B3, C3] -> B3@0, C3@1.
+	respReordBC, rawReordBC := h.DoReq(jarA, http.MethodPatch, "/api/v1/items/"+item3.ID.String()+"/entries/reorder",
+		fmt.Sprintf(`{"entry_ids":[%q,%q]}`, b3.ID, c3.ID),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_r12_3e_reorder_bc"})
+	if respReordBC.StatusCode != http.StatusOK {
+		t.Fatalf("reorder [B3, C3] = %d %s", respReordBC.StatusCode, rawReordBC)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	rowB3Before, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(b3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowC3Before, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(c3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Restore A3 -> cascades shift across both B3 (0->1) and C3 (1->2).
+	respRestA3, rawRestA3 := h.DoReq(jarA, http.MethodPost, "/api/v1/entries/"+a3.ID+"/restore", `{}`, contenttest.ReqOptions{
+		IdemKey: "idem_t6b_r12_3e_restore_a",
+	})
+	if respRestA3.StatusCode != http.StatusOK {
+		t.Fatalf("restore A3 = %d %s", respRestA3.StatusCode, rawRestA3)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	rowB3After, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(b3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowC3After, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(c3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rowB3After.Position != 1 || rowB3After.Version != 1 || !rowB3After.UpdatedAt.Time.After(rowB3Before.UpdatedAt.Time) {
+		t.Fatalf("B3 after cascading restore = (pos=%d, v=%d, updated=%v vs %v), want pos=1 v=1 and bumped updated_at",
+			rowB3After.Position, rowB3After.Version, rowB3After.UpdatedAt.Time, rowB3Before.UpdatedAt.Time)
+	}
+	if rowC3After.Position != 2 || rowC3After.Version != 2 || !rowC3After.UpdatedAt.Time.After(rowC3Before.UpdatedAt.Time) {
+		t.Fatalf("C3 after cascading restore = (pos=%d, v=%d, updated=%v vs %v), want pos=2 v=2 and bumped updated_at",
+			rowC3After.Position, rowC3After.Version, rowC3After.UpdatedAt.Time, rowC3Before.UpdatedAt.Time)
+	}
+
+	// =========================================================================
+	// Part 3: Middle-slot shift on item3 (delete B3@1; reorder [A3, C3] -> A3@0, C3@1; restore B3@1 -> A3@0 untouched, B3@1, C3@2 shifted)
+	// =========================================================================
+	h.Clock.Advance(2 * time.Second)
+	respDelB3, _ := h.DoReq(jarA, http.MethodDelete, "/api/v1/entries/"+b3.ID, "", contenttest.ReqOptions{
+		IdemKey: "idem_t6b_r12_3e_del_b_mid",
+	})
+	if respDelB3.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE B3 = %d", respDelB3.StatusCode)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	respReordAC, rawReordAC := h.DoReq(jarA, http.MethodPatch, "/api/v1/items/"+item3.ID.String()+"/entries/reorder",
+		fmt.Sprintf(`{"entry_ids":[%q,%q]}`, a3.ID, c3.ID),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_r12_3e_reorder_ac"})
+	if respReordAC.StatusCode != http.StatusOK {
+		t.Fatalf("reorder [A3, C3] = %d %s", respReordAC.StatusCode, rawReordAC)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	rowA3BeforeMid, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(a3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowC3BeforeMid, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(c3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	respRestB3, rawRestB3 := h.DoReq(jarA, http.MethodPost, "/api/v1/entries/"+b3.ID+"/restore", `{}`, contenttest.ReqOptions{
+		IdemKey: "idem_t6b_r12_3e_restore_b_mid",
+	})
+	if respRestB3.StatusCode != http.StatusOK {
+		t.Fatalf("restore B3 = %d %s", respRestB3.StatusCode, rawRestB3)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	rowA3AfterMid, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(a3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowC3AfterMid, err := q.GetEntryByUserAndID(ctx, gen.GetEntryByUserAndIDParams{UserID: meA.User.ID, ID: uuid.MustParse(c3.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A3 at pos 0 (< restored pos 1) must NOT be shifted or have updated_at bumped.
+	if rowA3AfterMid.Position != 0 || !rowA3AfterMid.UpdatedAt.Time.Equal(rowA3BeforeMid.UpdatedAt.Time) {
+		t.Fatalf("A3 (pos < 1) was unexpectedly modified: pos=%d updated_at=%v (was %v)",
+			rowA3AfterMid.Position, rowA3AfterMid.UpdatedAt.Time, rowA3BeforeMid.UpdatedAt.Time)
+	}
+	// C3 at pos 1 (>= restored pos 1) must shift to 2 and have updated_at bumped, version=2 unchanged.
+	if rowC3AfterMid.Position != 2 || rowC3AfterMid.Version != 2 || !rowC3AfterMid.UpdatedAt.Time.After(rowC3BeforeMid.UpdatedAt.Time) {
+		t.Fatalf("C3 (pos >= 1) after mid restore = (pos=%d, v=%d, updated=%v vs %v), want pos=2 v=2 and bumped updated_at",
+			rowC3AfterMid.Position, rowC3AfterMid.Version, rowC3AfterMid.UpdatedAt.Time, rowC3BeforeMid.UpdatedAt.Time)
+	}
+
+	respList3, rawList3 := h.DoReq(jarA, http.MethodGet, "/api/v1/items/"+item3.ID.String()+"/entries", "", contenttest.ReqOptions{})
+	if respList3.StatusCode != http.StatusOK {
+		t.Fatalf("GET item3 entries = %d %s", respList3.StatusCode, rawList3)
+	}
+	var list3 entry.MetaList
+	if err := json.Unmarshal([]byte(rawList3), &list3); err != nil {
+		t.Fatal(err)
+	}
+	if len(list3.Items) != 3 ||
+		list3.Items[0].ID != a3.ID || list3.Items[0].Position != 0 || list3.Items[0].Version != 1 ||
+		list3.Items[1].ID != b3.ID || list3.Items[1].Position != 1 || list3.Items[1].Version != 1 ||
+		list3.Items[2].ID != c3.ID || list3.Items[2].Position != 2 || list3.Items[2].Version != 2 {
+		t.Fatalf("item3 final entries = %+v, want [A3@0 v1, B3@1 v1, C3@2 v2]", list3.Items)
+	}
 }
