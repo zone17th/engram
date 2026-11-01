@@ -72,6 +72,8 @@ func PurgeExpiredContent(ctx context.Context, pool *pgxpool.Pool, cutoff time.Ti
 }
 
 // PurgeExpiredContentWithLimits thực thi `PurgeExpiredContent` với `batchSize` và `maxBatches` tuỳ chỉnh.
+// `batchSize` luôn được kẹp trong khoảng `1..DefaultContentPurgeBatchSize` (`<= 500`) để bảo đảm
+// mỗi transaction giữ `LockUserContent(user_id)` không bao giờ vượt quá giới hạn lô 500 hàng (mục 2.5, 2.8).
 func PurgeExpiredContentWithLimits(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -79,7 +81,7 @@ func PurgeExpiredContentWithLimits(
 	batchSize int32,
 	maxBatches int,
 ) (PurgeResult, error) {
-	if batchSize <= 0 {
+	if batchSize <= 0 || batchSize > DefaultContentPurgeBatchSize {
 		batchSize = DefaultContentPurgeBatchSize
 	}
 	if maxBatches <= 0 {
@@ -145,7 +147,7 @@ func PurgeUserExpiredContentBatch(
 	cutoff time.Time,
 	batchSize int32,
 ) (PurgeResult, error) {
-	if batchSize <= 0 {
+	if batchSize <= 0 || batchSize > DefaultContentPurgeBatchSize {
 		batchSize = DefaultContentPurgeBatchSize
 	}
 	cutoffTS := pgtype.Timestamptz{
@@ -334,7 +336,7 @@ func (w *ContentPurgeWorker) Work(ctx context.Context, job *river.Job[ContentPur
 	cutoff := w.clk.Now().UTC().Add(-ContentPurgeRetentionWindow)
 	if job != nil {
 		if job.Args.BatchSize > 0 {
-			batchSize = job.Args.BatchSize
+			batchSize = min(job.Args.BatchSize, DefaultContentPurgeBatchSize)
 		}
 		if job.Args.MaxBatches > 0 {
 			maxBatches = job.Args.MaxBatches

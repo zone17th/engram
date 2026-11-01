@@ -271,6 +271,8 @@ func TestPurgeExpiredContentExplicitCutoffCascadesIdempotencyAndInvariants(t *te
 // TestPurgeExpiredContentMultiBatchOver500AndRiverWorkerRegistration verifies:
 //   - A user with > 500 expired tombstones (e.g. 520 expired entries) is purged in batches of at most 500
 //     per transaction under `LockUserContent(user_id)`.
+//   - Passing a requested `batchSize > 500` (e.g. 750) is clamped at the single-batch boundary (`<= 500`),
+//     removing at most 500 rows in one transaction and leaving the remaining 20 expired rows for the next transaction (EA7-R1-2).
 //   - `worker.New` registers `content_purge` (`entry.ContentPurgeArgs`) so River executes the job end-to-end.
 func TestPurgeExpiredContentMultiBatchOver500AndRiverWorkerRegistration(t *testing.T) {
 	dsn := dbtest.StartPostgres(t)
@@ -313,16 +315,30 @@ func TestPurgeExpiredContentMultiBatchOver500AndRiverWorkerRegistration(t *testi
 	}
 	contenttest.AssertInvariants(t, pool, userA)
 
-	// Single-batch call (`PurgeUserExpiredContentBatch` with DefaultContentPurgeBatchSize = 500)
-	// must delete at most 500 rows in one transaction, leaving 20 expired rows for the next batch.
-	batch1, err := entry.PurgeUserExpiredContentBatch(ctx, pool, userA, cutoff, entry.DefaultContentPurgeBatchSize)
+	// Single-batch call (`PurgeUserExpiredContentBatch` with an oversized `batchSize = 750 > 500`)
+	// must clamp to `DefaultContentPurgeBatchSize = 500` and delete at most 500 rows in one transaction,
+	// leaving 20 expired rows for the next transaction (EA7-R1-2).
+	var batch1HookCalls int
+	batch1Ctx := entry.WithPurgeLockHeldHook(ctx, func(_ context.Context, _ uuid.UUID) {
+		batch1HookCalls++
+	})
+	batch1, err := entry.PurgeUserExpiredContentBatch(batch1Ctx, pool, userA, cutoff, 750)
 	if err != nil {
-		t.Fatalf("PurgeUserExpiredContentBatch 1: %v", err)
+		t.Fatalf("PurgeUserExpiredContentBatch 1 (requested 750): %v", err)
 	}
 	if batch1.EntriesDeleted != 500 {
-		t.Fatalf("batch 1 EntriesDeleted = %d, want 500", batch1.EntriesDeleted)
+		t.Fatalf("batch 1 EntriesDeleted = %d, want 500 (clamped from 750)", batch1.EntriesDeleted)
 	}
-
+	if batch1HookCalls != 1 {
+		t.Fatalf("batch 1 hook calls = %d, want 1", batch1HookCalls)
+	}
+	var remainingAfterBatch1 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM entry WHERE user_id = $1 AND deleted_at < $2`, userA, cutoff).Scan(&remainingAfterBatch1); err != nil {
+		t.Fatal(err)
+	}
+	if remainingAfterBatch1 != 20 {
+		t.Fatalf("remaining expired entries after single clamped batch = %d, want 20", remainingAfterBatch1)
+	}
 	// Execute the remaining purge via the River worker registered in `worker.New`.
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
