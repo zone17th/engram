@@ -180,6 +180,69 @@ func hasAdvisoryContentLockWaiter(ctx context.Context, h *contenttest.Harness, u
 	return err == nil && waiting >= 1
 }
 
+func waitForResetBlockedByPurgeTx(
+	t *testing.T,
+	ctx context.Context,
+	h *contenttest.Harness,
+	userID uuid.UUID,
+	pauseStep entry.PurgeBatchStep,
+	earlyResetDone <-chan struct{},
+) (purgePID, resetPID int32) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := h.Pool.QueryRow(ctx, `
+			SELECT COALESCE(holder.pid, 0), COALESCE(waiter.pid, 0)
+			FROM pg_locks AS waiter
+			JOIN pg_database AS d ON d.oid = waiter.database AND d.datname = current_database()
+			JOIN pg_locks AS holder
+			  ON holder.database = waiter.database
+			 AND holder.locktype = 'advisory'
+			 AND holder.objsubid = 2
+			 AND holder.classid = waiter.classid
+			 AND holder.objid = waiter.objid
+			 AND holder.granted
+			WHERE waiter.locktype = 'advisory'
+			  AND NOT waiter.granted
+			  AND waiter.objsubid = 2
+			  AND waiter.classid::int4 = hashtext('engram.content')
+			  AND waiter.objid::int4 = hashtext(($1::uuid)::text)
+			  AND holder.pid = ANY(pg_blocking_pids(waiter.pid))
+			LIMIT 1
+		`, userID).Scan(&purgePID, &resetPID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("query pg_locks / pg_blocking_pids for purge->reset (%s): %v", pauseStep, err)
+		}
+		if purgePID != 0 && resetPID != 0 {
+			return purgePID, resetPID
+		}
+		select {
+		case <-earlyResetDone:
+			t.Fatalf("reset finished early before blocking behind purge tx at step %s", pauseStep)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for reset tx to block behind purge tx on LockUserContent at step %s", pauseStep)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func assertRowLockedByPurgeAtStep(t *testing.T, ctx context.Context, h *contenttest.Harness, table string, rowID uuid.UUID, step entry.PurgeBatchStep) {
+	t.Helper()
+	probeTx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin probeTx (%s at %s): %v", table, step, err)
+	}
+	defer func() { _ = probeTx.Rollback(ctx) }()
+
+	var dummy uuid.UUID
+	query := fmt.Sprintf(`SELECT id FROM %s WHERE id = $1 FOR UPDATE NOWAIT`, table)
+	if err := probeTx.QueryRow(ctx, query, rowID).Scan(&dummy); err == nil {
+		t.Fatalf("expected %s row %s to be locked FOR UPDATE by purge tx at step %s", table, rowID, step)
+	}
+}
+
 // softDeleteItemInTx executes the exact item soft-delete transaction following plan §2.5 & §2.8 lock order:
 //  1. LockUserContent(userID)
 //  2. LockItemForUpdate(userID, itemID)
@@ -1426,27 +1489,43 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 	// - expiredItem and expiredTag (35d > 30d cutoff) are purged;
 	// - liveItem (with entry_count=0) and liveTag (with item_count=1) remain intact;
 	// - AssertInvariants passes.
-	seedPurgeRaceFixture := func(seed byte, vf vaultFixture) (liveItemID, expiredItemID, liveTagID, expiredTagID uuid.UUID, cutoff time.Time) {
+	seedPurgeRaceFixture := func(seed byte, vf vaultFixture) (liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID uuid.UUID, cutoff time.Time) {
 		t.Helper()
 		baseNow := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 		cutoff = baseNow.Add(-entry.ContentPurgeRetentionWindow) // now - 30d
 		del35d := baseNow.Add(-35 * 24 * time.Hour)
+		del34d := baseNow.Add(-34 * 24 * time.Hour)
 		del10d := baseNow.Add(-10 * 24 * time.Hour)
 
 		liveItem := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("PurgeRace-LiveItem-%02x", seed))
-		expItem := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("PurgeRace-ExpItem-%02x", seed))
+		expItem1 := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("PurgeRace-ExpItem1-%02x", seed))
+		expItem2 := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("PurgeRace-ExpItem2-%02x", seed))
+		expItemLowID, expItemHighID = expItem1.ID, expItem2.ID
+		if bytes.Compare(expItemLowID[:], expItemHighID[:]) > 0 {
+			expItemLowID, expItemHighID = expItemHighID, expItemLowID
+		}
+
 		liveTag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("pr-live-tag-%02x", seed))
-		expTag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("pr-exp-tag-%02x", seed))
+		expTag1 := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("pr-exp-tag1-%02x", seed))
+		expTag2 := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("pr-exp-tag2-%02x", seed))
+		expTagLowID, expTagHighID = expTag1.ID, expTag2.ID
+		if bytes.Compare(expTagLowID[:], expTagHighID[:]) > 0 {
+			expTagLowID, expTagHighID = expTagHighID, expTagLowID
+		}
 
 		assignTestTagToLiveItem(t, ctx, q, baseNow, meA.User.ID, liveItem.ID, liveTag.ID)
-		assignTestTagToLiveItem(t, ctx, q, baseNow, meA.User.ID, liveItem.ID, expTag.ID)
+		assignTestTagToLiveItem(t, ctx, q, baseNow, meA.User.ID, liveItem.ID, expTagLowID)
+		assignTestTagToLiveItem(t, ctx, q, baseNow, meA.User.ID, liveItem.ID, expTagHighID)
 
-		// Soft-delete expTag 35d ago.
-		if _, err := h.Pool.Exec(ctx, `UPDATE tag SET deleted_at = $1 WHERE id = $2`, del35d, expTag.ID); err != nil {
+		// Give the higher-ID expired tag an older deleted_at (del35d) than the lower-ID expired tag (del34d).
+		if _, err := h.Pool.Exec(ctx, `UPDATE tag SET deleted_at = $1 WHERE id = $2`, del34d, expTagLowID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.Pool.Exec(ctx, `UPDATE tag SET deleted_at = $1 WHERE id = $2`, del35d, expTagHighID); err != nil {
 			t.Fatal(err)
 		}
 
-		// Create 1 live entry, 1 recent tombstone (10d), and 1 expired tombstone (35d) on liveItem, plus 1 expired entry on expItem.
+		// Create 1 live entry, 1 recent tombstone (10d), and 1 expired tombstone (35d) on liveItem, plus 1 expired entry on expItemLowID.
 		viaEntry := entry.DeletedViaEntry
 		viaItem := entry.DeletedViaItem
 		for i, spec := range []struct {
@@ -1457,7 +1536,7 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 			{itemID: liveItem.ID, deletedAt: nil, via: nil},
 			{itemID: liveItem.ID, deletedAt: &del10d, via: &viaEntry},
 			{itemID: liveItem.ID, deletedAt: &del35d, via: &viaEntry},
-			{itemID: expItem.ID, deletedAt: &del35d, via: &viaItem},
+			{itemID: expItemLowID, deletedAt: &del34d, via: &viaItem},
 		} {
 			eid := uuid.New()
 			sealed := sealEntryFixture(t, eid.String(), vf.VaultKeyID, vf.VK, []byte(fmt.Sprintf("purge-race-%02x-%d", seed, i)), seqBytes(vault.WrapNonceBytes, seed+byte(i+1)))
@@ -1478,25 +1557,33 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 		if _, err := h.Pool.Exec(ctx, `UPDATE item SET entry_count = 1 WHERE id = $1`, liveItem.ID); err != nil {
 			t.Fatal(err)
 		}
-		expBatch := uuid.New()
-		if _, err := h.Pool.Exec(ctx, `UPDATE item SET deleted_at = $1, delete_batch = $2, entry_count = 0 WHERE id = $3`, del35d, expBatch, expItem.ID); err != nil {
+		expBatchLow := uuid.New()
+		if _, err := h.Pool.Exec(ctx, `UPDATE item SET deleted_at = $1, delete_batch = $2, entry_count = 0 WHERE id = $3`, del34d, expBatchLow, expItemLowID); err != nil {
+			t.Fatal(err)
+		}
+		expBatchHigh := uuid.New()
+		if _, err := h.Pool.Exec(ctx, `UPDATE item SET deleted_at = $1, delete_batch = $2, entry_count = 0 WHERE id = $3`, del35d, expBatchHigh, expItemHighID); err != nil {
 			t.Fatal(err)
 		}
 		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
-		return liveItem.ID, expItem.ID, liveTag.ID, expTag.ID, cutoff
+		return liveItem.ID, expItemLowID, expItemHighID, liveTag.ID, expTagLowID, expTagHighID, cutoff
 	}
 
-	assertPostResetAndPurgeState := func(label string, liveItemID, expItemID, liveTagID, expTagID uuid.UUID) {
+	assertPostResetAndPurgeState := func(label string, liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID uuid.UUID) {
 		t.Helper()
 		totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
 		if totalE != 0 {
 			t.Fatalf("%s: total entries = %d, want 0", label, totalE)
 		}
-		if _, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: expItemID}); !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("%s: expected expired item to be purged, got err=%v", label, err)
+		for _, expItemID := range []uuid.UUID{expItemLowID, expItemHighID} {
+			if _, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: expItemID}); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("%s: expected expired item %s to be purged, got err=%v", label, expItemID, err)
+			}
 		}
-		if _, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: expTagID}); !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("%s: expected expired tag to be purged, got err=%v", label, err)
+		for _, expTagID := range []uuid.UUID{expTagLowID, expTagHighID} {
+			if _, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: expTagID}); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("%s: expected expired tag %s to be purged, got err=%v", label, expTagID, err)
+			}
 		}
 		gotLiveItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: liveItemID})
 		if err != nil || gotLiveItem.DeletedAt.Valid || gotLiveItem.EntryCount != 0 {
@@ -1519,7 +1606,7 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 	// 3A. Reset acquires LockUserContent first (at each ResetHookStep) -> PurgeExpiredContent waits on LockUserContent.
 	for idx, pauseStep := range resetSteps {
 		vf := createVaultForUser(t, h, jarA, byte(0x90+idx*8))
-		liveItemID, expItemID, liveTagID, expTagID, cutoff := seedPurgeRaceFixture(byte(0x90+idx*8), vf)
+		liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID, cutoff := seedPurgeRaceFixture(byte(0x90+idx*8), vf)
 
 		stepReached := make(chan struct{}, 1)
 		releaseStep := make(chan struct{})
@@ -1576,69 +1663,169 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 			t.Fatalf("PurgeExpiredContent after reset (step %s): %v", pauseStep, err)
 		}
 
-		assertPostResetAndPurgeState(fmt.Sprintf("Reset->Purge(%s)", pauseStep), liveItemID, expItemID, liveTagID, expTagID)
+		assertPostResetAndPurgeState(fmt.Sprintf("Reset->Purge(%s)", pauseStep), liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID)
 	}
 
-	// 3B. PurgeExpiredContent acquires LockUserContent first (paused in WithPurgeLockHeldHook) -> Reset waits on LockUserContent.
-	{
-		vf := createVaultForUser(t, h, jarA, 0xD0)
-		liveItemID, expItemID, liveTagID, expTagID, cutoff := seedPurgeRaceFixture(0xD0, vf)
+	// 3B. PurgeExpiredContent acquires LockUserContent first (at each purge lock step:
+	//     after_user_content_lock -> after_items_locked -> after_tags_locked -> before_deletes) ->
+	//     Reset waits behind the purge tx on LockUserContent.
+	purgeSteps := []entry.PurgeBatchStep{
+		entry.PurgeBatchStepAfterUserContentLock,
+		entry.PurgeBatchStepAfterItemsLocked,
+		entry.PurgeBatchStepAfterTagsLocked,
+		entry.PurgeBatchStepBeforeDeletes,
+	}
+	for idx, pauseStep := range purgeSteps {
+		t.Run("PurgeFirst/"+string(pauseStep), func(t *testing.T) {
+			seed := byte(0xD0 + idx*8)
+			vf := createVaultForUser(t, h, jarA, seed)
+			liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID, cutoff := seedPurgeRaceFixture(seed, vf)
+			var observedPurgeSteps []entry.PurgeBatchStep
+			var stepMu sync.Mutex
+			purgeEntered := make(chan struct{}, 1)
+			releasePurge := make(chan struct{})
+			var closeOnce sync.Once
+			closeRel := func() { closeOnce.Do(func() { close(releasePurge) }) }
+			t.Cleanup(closeRel)
 
-		purgeEntered := make(chan struct{}, 1)
-		releasePurge := make(chan struct{})
-		var closeOnce sync.Once
-		closeRel := func() { closeOnce.Do(func() { close(releasePurge) }) }
-
-		purgeCtx := entry.WithPurgeLockHeldHook(ctx, func(pCtx context.Context, uid uuid.UUID) {
-			if uid != meA.User.ID {
-				return
+			var purgeCtx context.Context
+			if pauseStep == entry.PurgeBatchStepAfterUserContentLock {
+				// Preserve explicit WithPurgeLockHeldHook coverage at the content-lock boundary while also recording PurgeBatchSteps.
+				baseCtx := entry.WithPurgeLockHeldHook(ctx, func(pCtx context.Context, uid uuid.UUID) {
+					if uid != meA.User.ID {
+						return
+					}
+					select {
+					case purgeEntered <- struct{}{}:
+					default:
+					}
+					select {
+					case <-releasePurge:
+					case <-pCtx.Done():
+					}
+				})
+				purgeCtx = entry.WithPurgeBatchStepCallback(baseCtx, func(_ context.Context, uid uuid.UUID, step entry.PurgeBatchStep) error {
+					if uid == meA.User.ID {
+						stepMu.Lock()
+						observedPurgeSteps = append(observedPurgeSteps, step)
+						stepMu.Unlock()
+					}
+					return nil
+				})
+			} else {
+				purgeCtx = entry.WithPurgeBatchStepCallback(ctx, func(pCtx context.Context, uid uuid.UUID, step entry.PurgeBatchStep) error {
+					if uid != meA.User.ID {
+						return nil
+					}
+					stepMu.Lock()
+					observedPurgeSteps = append(observedPurgeSteps, step)
+					stepMu.Unlock()
+					if step == pauseStep {
+						select {
+						case purgeEntered <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releasePurge:
+						case <-pCtx.Done():
+							return pCtx.Err()
+						}
+					}
+					return nil
+				})
 			}
+
+			purgeErrCh := make(chan error, 1)
+			resetDoneCh := make(chan struct{}, 1)
+
+			go func() {
+				_, err := entry.PurgeExpiredContent(purgeCtx, h.Pool, cutoff)
+				purgeErrCh <- err
+			}()
+
 			select {
-			case purgeEntered <- struct{}{}:
-			default:
+			case <-purgeEntered:
+			case <-time.After(10 * time.Second):
+				closeRel()
+				t.Fatalf("timed out waiting for PurgeExpiredContent to reach step %s", pauseStep)
 			}
-			select {
-			case <-releasePurge:
-			case <-pCtx.Done():
+
+			go func() {
+				runReset(vf, fmt.Sprintf("idem_t8_purgef_reset_%d", idx), entry.ResetHook)
+				close(resetDoneCh)
+			}()
+
+			purgePID, _ := waitForResetBlockedByPurgeTx(t, ctx, h, meA.User.ID, pauseStep, resetDoneCh)
+
+			// Verify exact lock/row state at each purge boundary before releasing the barrier.
+			switch pauseStep {
+			case entry.PurgeBatchStepAfterUserContentLock:
+				var itemOrTagOrEntryLocks int
+				if err := h.Pool.QueryRow(ctx, `
+					SELECT count(*)::int
+					FROM pg_locks
+					WHERE pid = $1
+					  AND relation IN ('item'::regclass, 'tag'::regclass, 'entry'::regclass)
+				`, purgePID).Scan(&itemOrTagOrEntryLocks); err != nil {
+					t.Fatalf("query purgePID locks at %s: %v", pauseStep, err)
+				}
+				if itemOrTagOrEntryLocks != 0 {
+					t.Fatalf("at %s purgePID=%d already holds %d item/tag/entry locks, want 0", pauseStep, purgePID, itemOrTagOrEntryLocks)
+				}
+			case entry.PurgeBatchStepAfterItemsLocked:
+				assertRowLockedByPurgeAtStep(t, ctx, h, "item", expItemLowID, pauseStep)
+				assertRowLockedByPurgeAtStep(t, ctx, h, "item", expItemHighID, pauseStep)
+				var tagOrEntryLocks int
+				if err := h.Pool.QueryRow(ctx, `
+					SELECT count(*)::int
+					FROM pg_locks
+					WHERE pid = $1
+					  AND relation IN ('tag'::regclass, 'entry'::regclass)
+				`, purgePID).Scan(&tagOrEntryLocks); err != nil {
+					t.Fatalf("query purgePID tag/entry locks at %s: %v", pauseStep, err)
+				}
+				if tagOrEntryLocks != 0 {
+					t.Fatalf("at %s purgePID=%d already holds %d tag/entry locks, want 0", pauseStep, purgePID, tagOrEntryLocks)
+				}
+			case entry.PurgeBatchStepAfterTagsLocked, entry.PurgeBatchStepBeforeDeletes:
+				assertRowLockedByPurgeAtStep(t, ctx, h, "item", expItemLowID, pauseStep)
+				assertRowLockedByPurgeAtStep(t, ctx, h, "item", expItemHighID, pauseStep)
+				assertRowLockedByPurgeAtStep(t, ctx, h, "tag", expTagLowID, pauseStep)
+				assertRowLockedByPurgeAtStep(t, ctx, h, "tag", expTagHighID, pauseStep)
+				var entryLocks int
+				if err := h.Pool.QueryRow(ctx, `
+					SELECT count(*)::int
+					FROM pg_locks
+					WHERE pid = $1
+					  AND relation = 'entry'::regclass
+				`, purgePID).Scan(&entryLocks); err != nil {
+					t.Fatalf("query purgePID entry locks at %s: %v", pauseStep, err)
+				}
+				if entryLocks != 0 {
+					t.Fatalf("at %s purgePID=%d already holds %d entry locks before deletes, want 0", pauseStep, purgePID, entryLocks)
+				}
 			}
-		})
 
-		purgeErrCh := make(chan error, 1)
-		resetDoneCh := make(chan struct{}, 1)
-
-		go func() {
-			_, err := entry.PurgeExpiredContent(purgeCtx, h.Pool, cutoff)
-			purgeErrCh <- err
-		}()
-
-		select {
-		case <-purgeEntered:
-		case <-time.After(10 * time.Second):
 			closeRel()
-			t.Fatal("timed out waiting for PurgeExpiredContent to enter WithPurgeLockHeldHook")
-		}
 
-		go func() {
-			runReset(vf, "idem_t8_purgef_reset_01", entry.ResetHook)
-			resetDoneCh <- struct{}{}
-		}()
+			if err := <-purgeErrCh; err != nil {
+				t.Fatalf("PurgeExpiredContent (%s): %v", pauseStep, err)
+			}
+			select {
+			case <-resetDoneCh:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for reset after purge (%s)", pauseStep)
+			}
 
-		waitForPgLocksCondition(t, 10*time.Second, "reset waiting on LockUserContent while PurgeExpiredContent holds lock", func() bool {
-			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+			stepMu.Lock()
+			gotSteps := slices.Clone(observedPurgeSteps)
+			stepMu.Unlock()
+			if !slices.Equal(gotSteps, purgeSteps) {
+				t.Fatalf("PurgeExpiredContent observed steps = %v, want %v", gotSteps, purgeSteps)
+			}
+
+			assertPostResetAndPurgeState(fmt.Sprintf("Purge(%s)->Reset", pauseStep), liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID)
 		})
-
-		closeRel()
-
-		if err := <-purgeErrCh; err != nil {
-			t.Fatalf("PurgeExpiredContent: %v", err)
-		}
-		select {
-		case <-resetDoneCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for reset after purge")
-		}
-
-		assertPostResetAndPurgeState("Purge->Reset", liveItemID, expItemID, liveTagID, expTagID)
 	}
 }
 

@@ -31,7 +31,24 @@ const (
 	ContentPurgeRetentionWindow = 30 * 24 * time.Hour
 )
 
-type purgeLockHeldHookKey struct{}
+type (
+	purgeLockHeldHookKey struct{}
+	purgeStepCallbackKey struct{}
+)
+
+// PurgeBatchStep identifies a lock/deletion step inside PurgeUserExpiredContentBatch for deterministic barrier tests (Task 8).
+type PurgeBatchStep string
+
+const (
+	// PurgeBatchStepAfterUserContentLock fires immediately after LockUserContent(user_id) is acquired.
+	PurgeBatchStepAfterUserContentLock PurgeBatchStep = "after_user_content_lock"
+	// PurgeBatchStepAfterItemsLocked fires immediately after LockExpiredItemsForPurgeByUserBatch completes.
+	PurgeBatchStepAfterItemsLocked PurgeBatchStep = "after_items_locked"
+	// PurgeBatchStepAfterTagsLocked fires immediately after LockExpiredTagsForPurgeByUserBatch completes.
+	PurgeBatchStepAfterTagsLocked PurgeBatchStep = "after_tags_locked"
+	// PurgeBatchStepBeforeDeletes fires at the transition into the DELETE/cascade stage after all item and tag locks are held.
+	PurgeBatchStepBeforeDeletes PurgeBatchStep = "before_deletes"
+)
 
 // WithPurgeLockHeldHook gắn một callback kiểm thử vào `ctx`: ngay sau khi một transaction
 // lô purge đã giữ `LockUserContent(user_id)` và trước khi chạy các câu lệnh `DELETE`, nó gọi
@@ -39,6 +56,19 @@ type purgeLockHeldHookKey struct{}
 // không có key này trong context nên hoàn toàn là no-op.
 func WithPurgeLockHeldHook(ctx context.Context, fn func(ctx context.Context, userID uuid.UUID)) context.Context {
 	return context.WithValue(ctx, purgeLockHeldHookKey{}, fn)
+}
+
+// WithPurgeBatchStepCallback attaches a test-only callback to ctx that is invoked at each lock/delete boundary
+// of PurgeUserExpiredContentBatch. In production no callback is present in ctx, making it a zero-cost no-op.
+func WithPurgeBatchStepCallback(ctx context.Context, fn func(ctx context.Context, userID uuid.UUID, step PurgeBatchStep) error) context.Context {
+	return context.WithValue(ctx, purgeStepCallbackKey{}, fn)
+}
+
+func runPurgeBatchStepCallback(ctx context.Context, userID uuid.UUID, step PurgeBatchStep) error {
+	if fn, ok := ctx.Value(purgeStepCallbackKey{}).(func(ctx context.Context, userID uuid.UUID, step PurgeBatchStep) error); ok && fn != nil {
+		return fn(ctx, userID, step)
+	}
+	return nil
 }
 
 // PurgeResult ghi nhận tổng số hàng đã xoá vĩnh viễn trong một lượt `PurgeExpiredContent`.
@@ -171,6 +201,9 @@ func PurgeUserExpiredContentBatch(
 	if hook, ok := ctx.Value(purgeLockHeldHookKey{}).(func(ctx context.Context, userID uuid.UUID)); ok && hook != nil {
 		hook(ctx, userID)
 	}
+	if err := runPurgeBatchStepCallback(ctx, userID, PurgeBatchStepAfterUserContentLock); err != nil {
+		return PurgeResult{}, err
+	}
 
 	var res PurgeResult
 	remaining := batchSize
@@ -185,6 +218,9 @@ func PurgeUserExpiredContentBatch(
 		return PurgeResult{}, err
 	}
 	remaining -= int32(len(itemIDs))
+	if err := runPurgeBatchStepCallback(ctx, userID, PurgeBatchStepAfterItemsLocked); err != nil {
+		return PurgeResult{}, err
+	}
 
 	// Bước 4 (mục 2.5): chọn ứng viên `tag` hết hạn trong ngân sách lô còn lại và khoá theo `id ASC` (`FOR UPDATE`).
 	var tagIDs []uuid.UUID
@@ -199,11 +235,17 @@ func PurgeUserExpiredContentBatch(
 		}
 		remaining -= int32(len(tagIDs))
 	}
+	if err := runPurgeBatchStepCallback(ctx, userID, PurgeBatchStepAfterTagsLocked); err != nil {
+		return PurgeResult{}, err
+	}
 
 	// Bước 5 (mục 2.5): sau khi đã giữ toàn bộ khoá `item` và `tag` của lô, thực hiện xoá:
 	//   - Xoá `item` đã khoá (cascade sang `entry` con và `item_tag`).
 	//   - Xoá `tag` đã khoá (cascade sang `item_tag`, giữ nguyên `item` sống).
 	//   - Xoá tối đa `remaining` hàng `entry` hết hạn còn lại.
+	if err := runPurgeBatchStepCallback(ctx, userID, PurgeBatchStepBeforeDeletes); err != nil {
+		return PurgeResult{}, err
+	}
 	if len(itemIDs) > 0 {
 		itemsDel, err := qtx.DeleteExpiredItemsByUserIDs(ctx, gen.DeleteExpiredItemsByUserIDsParams{
 			UserID: userID,
