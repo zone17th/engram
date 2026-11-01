@@ -31,29 +31,47 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack at 3
       const createdItemId = '00000000-0000-4000-8000-000000000999';
       let deletedItemId: string | null = null;
 
+      const createdItemSummary = {
+        id: createdItemId,
+        name: long200RuneName,
+        hint: null,
+        tags: [],
+        entry_count: 0,
+        version: 1,
+        created_at: '2026-11-02T00:00:00Z',
+        updated_at: '2026-11-02T00:00:00Z',
+        last_used_at: '2026-11-02T00:00:00Z',
+      };
+
+      // Playwright `*` does not cross `/`: register both `**/api/v1/items*` (for POST /api/v1/items)
+      // and `**/api/v1/items/**` (for DELETE /api/v1/items/{id} and POST /api/v1/items/{id}/restore)
+      // after `installApiMocks` + `installHomeContentMetadataRoutes` so neither hits the catch-all.
       await context.route('**/api/v1/items*', async (route, request) => {
-        const method = request.method();
-        if (method === 'POST') {
+        if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/items') {
           await route.fulfill({
             status: 201,
             contentType: 'application/json',
-            body: JSON.stringify({
-              id: createdItemId,
-              name: long200RuneName,
-              hint: null,
-              tags: [],
-              entry_count: 0,
-              version: 1,
-              created_at: '2026-11-02T00:00:00Z',
-              updated_at: '2026-11-02T00:00:00Z',
-              last_used_at: '2026-11-02T00:00:00Z',
-            }),
+            body: JSON.stringify(createdItemSummary),
           });
           return;
         }
+        await route.fallback();
+      });
+
+      await context.route('**/api/v1/items/**', async (route, request) => {
+        const method = request.method();
+        const pathname = new URL(request.url()).pathname;
         if (method === 'DELETE') {
-          deletedItemId = new URL(request.url()).pathname.split('/').pop() ?? null;
+          deletedItemId = pathname.split('/').pop() ?? null;
           await route.fulfill({ status: 204 });
+          return;
+        }
+        if (method === 'POST' && pathname.endsWith('/restore')) {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify(createdItemSummary),
+          });
           return;
         }
         await route.fallback();
