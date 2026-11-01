@@ -63,3 +63,14 @@ export {
   type SecretElementAttributeViolation,
   type VaultSecretInputProps,
 } from '@/features/entries/secret-input-props';
+
+export {
+  clearAllUnconfirmedSaves,
+  dismissUnconfirmedSave,
+  getUnconfirmedSavesSnapshot,
+  reconcileUnconfirmedSavesUser,
+  recordUnconfirmedSave,
+  subscribeUnconfirmedSaves,
+  useUnconfirmedSavesForUser,
+  type UnconfirmedSaveRecord,
+} from '@/features/entries/unconfirmed-save-store';
