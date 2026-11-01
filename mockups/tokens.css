@@ -275,6 +275,15 @@ body {
   font-family: 'Inter', sans-serif; font-size: 18px; letter-spacing: -.02em;
   color: var(--body); min-width: 0;
 }
+textarea.omnibox-input {
+  resize: none;
+  line-height: 1.4;
+  padding: 0;
+  margin: 0;
+  max-height: 132px;
+  overflow-y: auto;
+  display: block;
+}
 .omnibox-input::placeholder { color: var(--muted); }
 
 .popover {
@@ -815,6 +824,13 @@ dialog .t-label, section[data-view] .t-label { overflow-wrap: anywhere; }
 }
 .omni-create-option {
   border-top: 1px dashed var(--border);
+}
+.omni-listbox {
+  margin: 0;
+  padding: 0;
+}
+.omni-Hint[hidden], .omni-hint-line[hidden] {
+  display: none !important;
 }
 
 a { color: var(--link); }

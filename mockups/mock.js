@@ -119,6 +119,16 @@
     const b = map[Math.min(at + nq.length, map.length - 1)];
     return esc(text.slice(0, a)) + '<mark>' + esc(text.slice(a, b)) + '</mark>' + esc(text.slice(b));
   }
+  function markPrefixExact(text, q) {
+    const s = String(text || '');
+    const nq = normIdentity(q);
+    if (!nq) return esc(s);
+    const lowerS = s.normalize('NFC').toLowerCase().normalize('NFC');
+    const at = lowerS.indexOf(nq);
+    if (at < 0) return esc(s);
+    return esc(s.slice(0, at)) + '<mark>' + esc(s.slice(at, at + nq.length)) + '</mark>' + esc(s.slice(at + nq.length));
+  }
+
 
   const state = { semantic: true, locked: false };
 
@@ -396,7 +406,7 @@
     const seenNormTags = new Set();
     for (let i = 0; i < rawTags.length; i++) {
       const t = rawTags[i];
-      const nt = normIdentity(t) || norm(t);
+      const nt = normIdentity(t);
       if (!nt) {
         invalidTagSyntax = true;
         continue;
@@ -489,23 +499,23 @@
   }
 
   function lookupItemsExact(name) {
-    const target = norm(name);
+    const target = normIdentity(name);
     if (!target) return [];
-    return ITEMS.filter((it) => norm(it.name) === target);
+    return ITEMS.filter((it) => normIdentity(it.name) === target);
   }
 
   function searchItemsPrefix(q) {
-    const target = norm(q);
+    const target = normIdentity(q);
     if (!target) return [];
     return ITEMS
-      .filter((it) => norm(it.name).startsWith(target))
-      .sort((a, b) => norm(a.name).localeCompare(norm(b.name)) || (b.touched - a.touched));
+      .filter((it) => normIdentity(it.name).startsWith(target))
+      .sort((a, b) => normIdentity(a.name).localeCompare(normIdentity(b.name)) || (b.touched - a.touched));
   }
 
   function filterTagsPrefix(q) {
-    const target = norm(q);
+    const target = normIdentity(q);
     if (!target) return TAGS.slice();
-    return TAGS.filter((t) => norm(t.name).startsWith(target));
+    return TAGS.filter((t) => normIdentity(t.name).startsWith(target));
   }
 
   const omniboxInstances = [];
@@ -594,14 +604,16 @@
     if (!input || !shell || !pop) return null;
 
     const baseId = root.id || 'omni';
-    const popId = pop.id || (baseId + '-listbox');
-    pop.id = popId;
-    pop.setAttribute('role', 'listbox');
-    pop.setAttribute('aria-label', 'Kết quả tìm kiếm · Search results');
+    const popWrapId = (pop.id && pop.id !== (baseId + '-listbox')) ? pop.id : (baseId + '-pop');
+    pop.id = popWrapId;
+    pop.removeAttribute('role');
+    pop.removeAttribute('aria-label');
+
+    const listboxId = baseId + '-listbox';
 
     input.setAttribute('role', 'combobox');
     input.setAttribute('aria-autocomplete', 'list');
-    input.setAttribute('aria-controls', popId);
+    input.setAttribute('aria-controls', listboxId);
     input.setAttribute('aria-expanded', 'false');
     input.setAttribute('data-vault-secret', '');
     input.setAttribute('spellcheck', 'false');
@@ -679,6 +691,27 @@
     let hadCommittedMetaOnLock = false;
     let showPostUnlockNotice = false;
 
+    let lastErrorAlertSig = '';
+    let lastFailAlertSig = '';
+    let planStepTimers = [];
+
+    function clearPlanTimers() {
+      planStepTimers.forEach((tid) => clearTimeout(tid));
+      planStepTimers = [];
+    }
+
+    function syncTextareaHeight() {
+      if (input.tagName !== 'TEXTAREA') return;
+      if (!input.value || !input.value.includes('\n')) {
+        input.style.height = '';
+        return;
+      }
+      input.style.height = 'auto';
+      if (input.scrollHeight > 0) {
+        input.style.height = Math.min(input.scrollHeight, 132) + 'px';
+      }
+    }
+
     function setLiveText(text) {
       if (liveEl) liveEl.textContent = text || '';
     }
@@ -696,7 +729,8 @@
     }
 
     function syncActiveOption() {
-      const optEls = pop.querySelectorAll('[role="option"]');
+      const lb = pop.querySelector('#' + listboxId) || pop;
+      const optEls = lb.querySelectorAll('[role="option"]');
       optEls.forEach((el, idx) => {
         const isSel = idx === activeIdx;
         el.setAttribute('aria-selected', String(isSel));
@@ -717,18 +751,19 @@
       listOptions = [];
       activeIdx = -1;
 
-      let html = '';
+      let headerHtml = '';
+      let optionsHtml = '';
       if (items.length > 0) {
-        html += `<div class="sugg-group">${items.length} kết quả cho “${esc(query)}” · <span lang="en">${items.length} ${items.length === 1 ? 'result' : 'results'} for “${esc(query)}”</span></div>`;
+        headerHtml = `<div class="sugg-group" aria-hidden="true">${items.length} kết quả cho “${esc(query)}” · <span lang="en">${items.length} ${items.length === 1 ? 'result' : 'results'} for “${esc(query)}”</span></div>`;
         items.forEach((it, idx) => {
           const optId = `${baseId}-opt-item-${esc(it.id)}-${idx}`;
           const shownTags = (it.tags || []).slice(0, 3);
           const extra = (it.tags || []).length > 3 ? (it.tags.length - 3) : 0;
           const count = it.entry_count != null ? it.entry_count : (it.entries != null ? it.entries : 0);
           listOptions.push({ id: optId, kind: 'item', item: it, query });
-          html += `<div role="option" id="${optId}" aria-selected="false" class="sugg-row" data-opt-idx="${listOptions.length - 1}">
+          optionsHtml += `<div role="option" id="${optId}" aria-selected="false" class="sugg-row" data-opt-idx="${listOptions.length - 1}">
             <span class="omni-opt-main">
-              <span class="omni-opt-title">${markPrefix(it.name, query)}</span>
+              <span class="omni-opt-title">${markPrefixExact(it.name, query)}</span>
               ${shownTags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')}
               ${extra > 0 ? `<span class="mono text-[12px] text-muted">+${extra}</span>` : ''}
             </span>
@@ -739,12 +774,12 @@
       } else {
         const createOptId = `${baseId}-opt-create`;
         listOptions.push({ id: createOptId, kind: 'create', query });
-        html += `<div class="omni-empty-box" id="${baseId}-search-empty">
+        headerHtml = `<div class="omni-empty-box" id="${baseId}-search-empty" aria-hidden="true">
           <p class="t-label mb-1 text-muted">Tìm không ra · <span lang="en">No prefix match</span></p>
           <p class="text-[14px] font-semibold text-body m-0 mb-1">Không có mục bắt đầu bằng “${esc(query)}”</p>
           <p class="text-[12px] text-muted m-0" lang="en">No items starting with “${esc(query)}”. Search only matches item name prefixes.</p>
-        </div>
-        <div role="option" id="${createOptId}" aria-selected="false" class="sugg-row omni-create-option" data-opt-idx="0">
+        </div>`;
+        optionsHtml = `<div role="option" id="${createOptId}" aria-selected="false" class="sugg-row omni-create-option" data-opt-idx="0">
           <span class="mono text-accent">+</span>
           <span><strong>Tạo mục “${esc(query)}”</strong> · <span lang="en" class="text-muted">Create item “${esc(query)}”</span></span>
           <span class="sugg-meta"><span class="kbd">Enter</span></span>
@@ -752,7 +787,7 @@
         setLiveText(`Không có mục bắt đầu bằng “${query}” · No items starting with “${query}”`);
       }
 
-      pop.innerHTML = html;
+      pop.innerHTML = `${headerHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả tìm kiếm · Search results">${optionsHtml}</div>`;
       pop.hidden = false;
       input.setAttribute('aria-expanded', 'true');
       input.removeAttribute('aria-activedescendant');
@@ -764,36 +799,94 @@
       listOptions = [];
       activeIdx = matchedTags.length ? 0 : -1;
 
-      let html = `<div class="sugg-group">${fromServerLookup ? 'Kết quả tìm tag (GET /tags?q=)' : 'Lọc tag trên bộ nhớ đệm · Client tag cache'} · <span lang="en">${matchedTags.length} tags</span></div>`;
+      const hdrLabel = fromServerLookup
+        ? 'Kết quả tìm tag · <span lang="en">Tag search results</span>'
+        : 'Lọc tag trên bộ nhớ đệm · <span lang="en">Client tag cache</span>';
+      let headerHtml = `<div class="sugg-group" aria-hidden="true">${hdrLabel} · <span lang="en">${matchedTags.length} tags</span></div>`;
+      let optionsHtml = '';
       if (matchedTags.length) {
         matchedTags.forEach((t, idx) => {
           const optId = `${baseId}-opt-tag-${idx}`;
           listOptions.push({ id: optId, kind: 'tag', tag: t, query: tagQuery });
-          html += `<div role="option" id="${optId}" aria-selected="${idx === activeIdx}" class="sugg-row" data-opt-idx="${idx}">
+          optionsHtml += `<div role="option" id="${optId}" aria-selected="${idx === activeIdx}" class="sugg-row" data-opt-idx="${idx}">
             <span class="mono text-accent">#</span>
-            <span>${markPrefix(t.name, tagQuery)}</span>
+            <span>${markPrefixExact(t.name, tagQuery)}</span>
             <span class="sugg-meta mono">${t.count} mục · <span lang="en">${t.count} items</span></span>
           </div>`;
         });
         setLiveText(`${matchedTags.length} tag khớp #${tagQuery} · ${matchedTags.length} matching tags`);
       } else {
-        html += `<div class="omni-empty-box">
+        headerHtml += `<div class="omni-empty-box" aria-hidden="true">
           <p class="text-[14px] font-semibold text-body m-0 mb-1">Không có tag bắt đầu bằng “#${esc(tagQuery)}”</p>
-          <p class="text-[12px] text-muted m-0" lang="en">No tags starting with “#${esc(tagQuery)}” (${fromServerLookup ? 'checked GET /tags?q=' : 'press Enter to query server'}).</p>
+          <p class="text-[12px] text-muted m-0" lang="en">No tags starting with “#${esc(tagQuery)}” (${fromServerLookup ? 'no matching tags on server' : 'press Enter to search all tags'}).</p>
         </div>`;
-        setLiveText(`Không có tag bắt đầu bằng “#${tagQuery}”`);
+        setLiveText(`Không có tag bắt đầu bằng “#${tagQuery}” · No tags starting with “#${tagQuery}”`);
       }
 
-      pop.innerHTML = html;
+      pop.innerHTML = `${headerHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả lọc tag · Tag filter results">${optionsHtml}</div>`;
       pop.hidden = false;
       input.setAttribute('aria-expanded', 'true');
       syncActiveOption();
     }
 
+    function ensureAddPanelScaffold() {
+      if (addPanelEl.dataset.scaffoldReady === '1') return;
+      addPanelEl.dataset.scaffoldReady = '1';
+      addPanelEl.innerHTML = `<div class="omni-add-header">
+          <div class="omni-add-dest">
+            <span class="badge-type badge-text">text · E2E</span>
+            <span class="text-[14px] text-body" data-part="dest-label"></span>
+            <span class="omni-add-tags" data-part="dest-tags"></span>
+          </div>
+          <button type="button" class="btn btn-primary btn-sm" data-omni-unlock-save="1" id="${baseId}-unlock-to-save-btn" hidden>
+            <span aria-hidden="true">🔒</span> Mở khoá để lưu · <span lang="en">Unlock to save</span>
+          </button>
+          <div class="flex flex-wrap items-center gap-2" data-part="save-wrap">
+            <span class="text-[12px] text-muted"><span class="kbd">Enter</span> lưu · <span class="kbd">Ctrl+Enter</span> luôn tạo mục mới · <span lang="en">save / always create new item</span></span>
+            <button type="button" class="btn btn-primary btn-sm" data-omni-save-now="1">
+              Lưu entry · <span lang="en">Save entry</span>
+            </button>
+          </div>
+        </div>
+        <p class="omni-add-local-note m-0 mt-1.5 text-[12px] text-muted">
+          Xem trước dựng cục bộ từ tên và tag (chưa gửi máy chủ; số mục trùng tên chỉ kiểm tra sau khi nhấn <span class="kbd">Enter</span>). ·
+          <span lang="en">Preview parsed locally (nothing sent before <span class="kbd">Enter</span>; duplicate count is checked only on <span class="kbd">Enter</span>).</span>
+        </p>
+        <div class="auth-alert mt-3 mb-0" id="${baseId}-add-error" hidden>
+          <p class="m-0 text-[13px] font-semibold text-body" data-part="err-vi"></p>
+          <p class="m-0 mt-0.5 text-[12px] text-muted" lang="en" data-part="err-en"></p>
+        </div>
+        <div class="omni-json-banner mt-3" id="${baseId}-json-banner" hidden>
+          <div class="min-w-0">
+            <p class="m-0 text-[13px] font-semibold text-body">Phát hiện JSON — Lưu như bảng · <span lang="en" class="font-normal text-muted">JSON detected — Save as table</span></p>
+            <p class="m-0 text-[12px] text-muted">Quick-add mặc định lưu dạng <span class="mono">text</span>. Bấm nút bên cạnh để mở hộp nhập bảng JSON với nội dung này. · <span lang="en">Quick-add saves as <span class="mono">text</span> by default. Open JSON table import with this payload instead.</span></p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm shrink-0" data-omni-open-json="1">
+            Lưu như bảng · <span lang="en">Save as table</span>
+          </button>
+        </div>
+        <div class="omni-plan-box mt-3" id="${baseId}-save-plan" role="region" aria-label="Tiến trình lưu quick-add · Quick-add save progress" hidden>
+          <p class="t-label text-[12px] text-muted m-0 mb-2">Kế hoạch lưu nhiều bước · <span lang="en">Multi-step save plan</span></p>
+          <ol class="omni-step-list m-0 p-0 list-none flex flex-col gap-1.5" data-part="step-list"></ol>
+          <div role="alert" class="auth-alert mt-3 mb-0" id="${baseId}-plan-error" hidden>
+            <p class="m-0 text-[13px] font-semibold text-body" data-part="fail-title"></p>
+            <p class="m-0 mt-0.5 text-[12px] text-body">Bấm <strong>Thử lại</strong> để chạy tiếp từ bước lỗi với đúng <span class="mono">Idempotency-Key</span> và gói dữ liệu đã mã hoá (không mã hoá lại, không tạo bản sao). · <span lang="en" class="text-muted">Click <strong>Retry</strong> to resume from the failed step with the same <span class="mono">Idempotency-Key</span> and sealed payload.</span></p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button type="button" class="btn btn-primary btn-sm" data-omni-retry-plan="1">Thử lại · <span lang="en">Retry</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="omni-add-privacy mt-2.5 pt-2.5 border-top-line" id="${baseId}-add-privacy">
+          <p class="m-0 text-[12px] text-body">${COPY_PRIVACY_VI}</p>
+          <p class="m-0 text-[12px] text-muted" lang="en">${COPY_PRIVACY_EN}</p>
+        </div>`;
+    }
     function renderHintAndPanels() {
+      syncTextareaHeight();
       const parsed = parseQuickAdd(input.value);
       const isAddLike = parsed.mode === 'add' || parsed.mode === 'add-invalid';
       shell.classList.toggle('is-add', isAddLike);
+      const hasNonEmptyInput = input.value.trim().length > 0;
 
       if (showPostUnlockNotice && !state.locked) {
         lockNoticeEl.hidden = false;
@@ -819,135 +912,152 @@
       }
 
       if (parsed.mode === 'search') {
-        hintEl.hidden = false;
+        hintEl.hidden = !hasNonEmptyInput;
         hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SEARCH_HINT_VI}<span class="mono">tên: nội dung</span></span>
           <span class="omni-hint-en" lang="en">${COPY_SEARCH_HINT_EN}<span class="mono">name: content</span></span>`;
         addPanelEl.hidden = true;
-        addPanelEl.innerHTML = '';
-        if (parsed.searchable) {
+        lastErrorAlertSig = '';
+        lastFailAlertSig = '';
+        if (parsed.searchable || !hasNonEmptyInput) {
           input.removeAttribute('aria-invalid');
         }
         return;
       }
 
       if (parsed.mode === 'tag-filter') {
-        hintEl.hidden = false;
+        hintEl.hidden = !hasNonEmptyInput;
         hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_TAG_HINT_VI}</span>
           <span class="omni-hint-en" lang="en">${COPY_TAG_HINT_EN}</span>`;
         addPanelEl.hidden = true;
-        addPanelEl.innerHTML = '';
+        lastErrorAlertSig = '';
+        lastFailAlertSig = '';
         input.removeAttribute('aria-invalid');
         return;
       }
 
       hintEl.hidden = true;
-      hintEl.innerHTML = '';
       guardEl.hidden = true;
       addPanelEl.hidden = false;
+      ensureAddPanelScaffold();
 
-      const tagChipsHtml = parsed.tags.length
-        ? parsed.tags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')
-        : `<span class="text-[12px] text-muted">không gắn tag · <span lang="en">no tags</span></span>`;
+      const destLabelEl = addPanelEl.querySelector('[data-part="dest-label"]');
+      if (destLabelEl) {
+        destLabelEl.innerHTML = `Sẽ lưu vào <strong>${esc(parsed.name || '…')}</strong> · <span lang="en" class="text-muted">Will save to <strong>${esc(parsed.name || '…')}</strong></span>`;
+      }
 
-      let errorHtml = '';
+      const destTagsEl = addPanelEl.querySelector('[data-part="dest-tags"]');
+      if (destTagsEl) {
+        destTagsEl.innerHTML = parsed.tags.length
+          ? parsed.tags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')
+          : `<span class="text-[12px] text-muted">không gắn tag · <span lang="en">no tags</span></span>`;
+      }
+
       const hasGrammarErr = parsed.mode === 'add-invalid';
-      const hasPlanTargetLimitErr = activePlan && activePlan.error === 'target-tag-limit';
+      const hasPlanTargetLimitErr = !!(activePlan && activePlan.error === 'target-tag-limit');
+      const hasPlanFailedStep = !!(activePlan && activePlan.steps && activePlan.steps.some((s) => s.status === 'failed'));
+      const errBox = addPanelEl.querySelector('#' + baseId + '-add-error');
+      const errViEl = addPanelEl.querySelector('[data-part="err-vi"]');
+      const errEnEl = addPanelEl.querySelector('[data-part="err-en"]');
+
       if (hasGrammarErr) {
-        input.setAttribute('aria-invalid', 'true');
-        errorHtml = `<div role="alert" class="auth-alert mt-3 mb-0" id="${baseId}-add-error">
-          <p class="m-0 text-[13px] font-semibold text-body">${esc(parsed.errorVi)}</p>
-          <p class="m-0 mt-0.5 text-[12px] text-muted" lang="en">${esc(parsed.errorEn)}</p>
-        </div>`;
+        const isSoftHint = parsed.error === 'empty-body' || (parsed.error === 'name-invalid' && !parsed.name);
+        const roleVal = isSoftHint ? 'status' : 'alert';
+        if (roleVal === 'alert') {
+          input.setAttribute('aria-invalid', 'true');
+        } else {
+          input.removeAttribute('aria-invalid');
+        }
+        const sig = `${roleVal}:${parsed.error}:${parsed.errorVi}`;
+        if (errBox) {
+          errBox.hidden = false;
+          if (sig !== lastErrorAlertSig) {
+            lastErrorAlertSig = sig;
+            errBox.setAttribute('role', roleVal);
+            if (errViEl) errViEl.textContent = parsed.errorVi;
+            if (errEnEl) errEnEl.textContent = parsed.errorEn;
+          }
+        }
       } else if (hasPlanTargetLimitErr) {
         input.setAttribute('aria-invalid', 'true');
-        errorHtml = `<div role="alert" class="auth-alert mt-3 mb-0" id="${baseId}-add-error">
-          <p class="m-0 text-[13px] font-semibold text-body">${esc(activePlan.errorVi)}</p>
-          <p class="m-0 mt-0.5 text-[12px] text-muted" lang="en">${esc(activePlan.errorEn)}</p>
-        </div>`;
+        const sig = `alert:target-tag-limit:${activePlan.errorVi}`;
+        if (errBox) {
+          errBox.hidden = false;
+          if (sig !== lastErrorAlertSig) {
+            lastErrorAlertSig = sig;
+            errBox.setAttribute('role', 'alert');
+            if (errViEl) errViEl.textContent = activePlan.errorVi;
+            if (errEnEl) errEnEl.textContent = activePlan.errorEn;
+          }
+        }
       } else {
         input.removeAttribute('aria-invalid');
+        lastErrorAlertSig = '';
+        if (errBox) errBox.hidden = true;
       }
 
-      let jsonBannerHtml = '';
-      if (parsed.mode === 'add' && parsed.jsonCandidate) {
-        jsonBannerHtml = `<div class="omni-json-banner mt-3" id="${baseId}-json-banner">
-          <div class="min-w-0">
-            <p class="m-0 text-[13px] font-semibold text-body">Phát hiện JSON — Lưu như bảng · <span lang="en" class="font-normal text-muted">JSON detected — Save as table</span></p>
-            <p class="m-0 text-[12px] text-muted">Quick-add mặc định lưu dạng <span class="mono">text</span>. Bấm nút bên cạnh để mở hộp nhập bảng JSON với nội dung này. · <span lang="en">Quick-add saves as <span class="mono">text</span> by default. Open JSON table import with this payload instead.</span></p>
-          </div>
-          <button type="button" class="btn btn-secondary btn-sm shrink-0" data-omni-open-json="1">
-            Phát hiện JSON — Lưu như bảng · <span lang="en">Save as table</span>
-          </button>
-        </div>`;
+      const jsonBannerEl = addPanelEl.querySelector('#' + baseId + '-json-banner');
+      if (jsonBannerEl) {
+        jsonBannerEl.hidden = !(parsed.mode === 'add' && parsed.jsonCandidate);
       }
 
-      let planStepperHtml = '';
+      const planBoxEl = addPanelEl.querySelector('#' + baseId + '-save-plan');
+      const stepListEl = addPanelEl.querySelector('[data-part="step-list"]');
+      const planErrorEl = addPanelEl.querySelector('#' + baseId + '-plan-error');
+      const failTitleEl = addPanelEl.querySelector('[data-part="fail-title"]');
+
       if (activePlan && activePlan.steps && activePlan.steps.length) {
-        const stepRows = activePlan.steps.map((st) => {
-          let badgeClass = 'badge-ok';
-          let statusLabel = 'Chờ · Pending';
-          if (st.status === 'done') { badgeClass = 'badge-text'; statusLabel = '✓ Xong · Done'; }
-          else if (st.status === 'running') { badgeClass = 'badge-warn'; statusLabel = 'Đang gửi… · Sending…'; }
-          else if (st.status === 'failed') { badgeClass = 'badge-err'; statusLabel = 'Lỗi · Failed'; }
-          return `<li class="omni-step-item" data-step-key="${esc(st.key)}" data-step-status="${esc(st.status)}">
-            <span class="mono text-[12px]">${esc(st.api)}</span>
-            <span class="text-[13px] text-body">${esc(st.labelVi)} · <span lang="en" class="text-muted">${esc(st.labelEn)}</span></span>
-            <span class="badge-type ${badgeClass} ml-auto">${statusLabel}</span>
-          </li>`;
-        }).join('');
-
+        if (planBoxEl) {
+          planBoxEl.hidden = false;
+          planBoxEl.setAttribute('aria-busy', String(!!activePlan.running));
+        }
+        if (stepListEl) {
+          stepListEl.innerHTML = activePlan.steps.map((st) => {
+            let badgeClass = 'badge-ok';
+            let statusLabel = 'Chờ · Pending';
+            if (st.status === 'done') { badgeClass = 'badge-text'; statusLabel = '✓ Xong · Done'; }
+            else if (st.status === 'running') { badgeClass = 'badge-warn'; statusLabel = 'Đang gửi… · Sending…'; }
+            else if (st.status === 'failed') { badgeClass = 'badge-err'; statusLabel = 'Lỗi · Failed'; }
+            return `<li class="omni-step-item" data-step-key="${esc(st.key)}" data-step-status="${esc(st.status)}">
+              <span class="mono text-[12px]">${esc(st.api)}</span>
+              <span class="text-[13px] text-body">${esc(st.labelVi)} · <span lang="en" class="text-muted">${esc(st.labelEn)}</span></span>
+              <span class="badge-type ${badgeClass} ml-auto">${statusLabel}</span>
+            </li>`;
+          }).join('');
+        }
         const failedStep = activePlan.steps.find((s) => s.status === 'failed');
-        const failAlert = failedStep ? `<div role="alert" class="auth-alert mt-3 mb-0" id="${baseId}-plan-error">
-          <p class="m-0 text-[13px] font-semibold text-body">Lỗi ở bước “${esc(failedStep.labelVi)}” — bản nháp và kế hoạch được giữ nguyên · <span lang="en" class="font-normal text-muted">Failed at “${esc(failedStep.labelEn)}” — draft &amp; plan preserved</span></p>
-          <p class="m-0 mt-0.5 text-[12px] text-body">Bấm <strong>Thử lại</strong> để chạy tiếp từ bước lỗi với đúng <span class="mono">Idempotency-Key</span> và gói dữ liệu đã mã hoá (không mã hoá lại, không tạo bản sao). · <span lang="en" class="text-muted">Click <strong>Retry</strong> to resume from the failed step with the same <span class="mono">Idempotency-Key</span> and sealed payload.</span></p>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <button type="button" class="btn btn-primary btn-sm" data-omni-retry-plan="1">Thử lại · <span lang="en">Retry</span></button>
-          </div>
-        </div>` : '';
-
-        planStepperHtml = `<div class="omni-plan-box mt-3" id="${baseId}-save-plan" role="region" aria-label="Tiến trình lưu quick-add · Quick-add save progress">
-          <p class="t-label text-[12px] text-muted m-0 mb-2">Kế hoạch lưu nhiều bước · <span lang="en">Multi-step save plan</span></p>
-          <ol class="omni-step-list m-0 p-0 list-none flex flex-col gap-1.5">${stepRows}</ol>
-          ${failAlert}
-        </div>`;
+        if (failedStep && planErrorEl) {
+          planErrorEl.hidden = false;
+          const failSig = `${failedStep.key}:${failedStep.labelVi}`;
+          if (failSig !== lastFailAlertSig) {
+            lastFailAlertSig = failSig;
+            if (failTitleEl) {
+              failTitleEl.innerHTML = `Lỗi ở bước “${esc(failedStep.labelVi)}” — bản nháp và kế hoạch được giữ nguyên · <span lang="en" class="font-normal text-muted">Failed at “${esc(failedStep.labelEn)}” — draft &amp; plan preserved</span>`;
+            }
+          }
+        } else if (planErrorEl) {
+          planErrorEl.hidden = true;
+          lastFailAlertSig = '';
+        }
+      } else if (planBoxEl) {
+        planBoxEl.hidden = true;
+        planBoxEl.removeAttribute('aria-busy');
+        if (planErrorEl) planErrorEl.hidden = true;
+        lastFailAlertSig = '';
       }
 
-      let actionBtnHtml = '';
+      const unlockBtnEl = addPanelEl.querySelector('#' + baseId + '-unlock-to-save-btn');
+      const saveWrapEl = addPanelEl.querySelector('[data-part="save-wrap"]');
+      const saveBtnEl = addPanelEl.querySelector('[data-omni-save-now]');
       if (state.locked) {
-        actionBtnHtml = `<button type="button" class="btn btn-primary btn-sm" data-omni-unlock-save="1" id="${baseId}-unlock-to-save-btn">
-          🔒 Mở khoá để lưu · <span lang="en">Unlock to save</span>
-        </button>`;
+        if (unlockBtnEl) unlockBtnEl.hidden = false;
+        if (saveWrapEl) saveWrapEl.hidden = true;
       } else {
-        const disabledAttr = (hasGrammarErr || hasPlanTargetLimitErr || (activePlan && activePlan.running)) ? 'disabled' : '';
-        actionBtnHtml = `<div class="flex flex-wrap items-center gap-2">
-          <span class="text-[12px] text-muted"><span class="kbd">Enter</span> lưu · <span class="kbd">Ctrl+Enter</span> luôn tạo mục mới · <span lang="en">save / always create new item</span></span>
-          <button type="button" class="btn btn-primary btn-sm" data-omni-save-now="1" ${disabledAttr}>
-            Lưu entry · <span lang="en">Save entry</span>
-          </button>
-        </div>`;
+        if (unlockBtnEl) unlockBtnEl.hidden = true;
+        if (saveWrapEl) saveWrapEl.hidden = false;
+        if (saveBtnEl) {
+          saveBtnEl.disabled = !!(hasGrammarErr || hasPlanTargetLimitErr || (activePlan && activePlan.running) || hasPlanFailedStep);
+        }
       }
-
-      addPanelEl.innerHTML = `<div class="omni-add-header">
-          <div class="omni-add-dest">
-            <span class="badge-type badge-text">text · E2E</span>
-            <span class="text-[14px] text-body">
-              Sẽ lưu vào <strong>${esc(parsed.name || '…')}</strong> · <span lang="en" class="text-muted">Will save to <strong>${esc(parsed.name || '…')}</strong></span>
-            </span>
-            <span class="omni-add-tags">${tagChipsHtml}</span>
-          </div>
-          ${actionBtnHtml}
-        </div>
-        <p class="omni-add-local-note m-0 mt-1.5 text-[12px] text-muted">
-          Xem trước dựng cục bộ từ tên và tag (chưa gửi máy chủ; số mục trùng tên chỉ kiểm tra sau khi nhấn <span class="kbd">Enter</span>). ·
-          <span lang="en">Preview parsed locally (nothing sent before <span class="kbd">Enter</span>; duplicate count is checked only on <span class="kbd">Enter</span>).</span>
-        </p>
-        ${errorHtml}
-        ${jsonBannerHtml}
-        ${planStepperHtml}
-        <div class="omni-add-privacy mt-2.5 pt-2.5 border-top-line" id="${baseId}-add-privacy">
-          <p class="m-0 text-[12px] text-body">${COPY_PRIVACY_VI}</p>
-          <p class="m-0 text-[12px] text-muted" lang="en">${COPY_PRIVACY_EN}</p>
-        </div>`;
     }
 
     function buildSavePlan(parsed, targetItemId, isNewItem, optsPlan) {
@@ -987,7 +1097,7 @@
       });
 
       return {
-        name: parsed.name,
+        name: optsPlan.resolvedName || parsed.name,
         tags: parsed.tags.slice(),
         itemId: targetItemId,
         isNewItem: !!isNewItem,
@@ -1000,8 +1110,10 @@
 
     function completeQuickAddSave(plan) {
       const savedName = plan.name;
+      clearPlanTimers();
       activePlan = null;
       input.value = '';
+      syncTextareaHeight();
       input.dataset.justClearedBySave = '1';
       closeListbox(true);
       renderHintAndPanels();
@@ -1009,44 +1121,102 @@
         sub: COPY_UNDO_SUB,
         originEl: input
       });
-      setLiveText(`Đã lưu vào “${savedName}”. ${COPY_UNDO_SUB}`);
     }
 
     function runPlanSteps(plan, immediate) {
       if (!plan || !plan.steps) return;
+      clearPlanTimers();
       plan.running = true;
+
+      if (immediate) {
+        for (let i = 0; i < plan.steps.length; i++) {
+          const st = plan.steps[i];
+          if (st.status === 'done') continue;
+          if (plan.pauseAtKey && st.key === plan.pauseAtKey) {
+            st.status = 'running';
+            plan.pauseAtKey = null;
+            plan.running = true;
+            renderHintAndPanels();
+            setLiveText(`Đang lưu bước ${st.labelVi}…`);
+            return;
+          }
+          if (plan.failAtKey && st.key === plan.failAtKey) {
+            st.status = 'failed';
+            plan.failAtKey = null;
+            plan.running = false;
+            renderHintAndPanels();
+            setLiveText(`Lỗi ở bước ${st.labelVi}. Bấm Thử lại để tiếp tục.`);
+            const retryBtn = addPanelEl.querySelector('[data-omni-retry-plan]');
+            if (retryBtn && document.activeElement === document.body) retryBtn.focus();
+            return;
+          }
+          st.status = 'done';
+        }
+        plan.running = false;
+        renderHintAndPanels();
+        completeQuickAddSave(plan);
+        return;
+      }
+
+      const pendingIndices = [];
       for (let i = 0; i < plan.steps.length; i++) {
-        const st = plan.steps[i];
-        if (st.status === 'done') continue;
-        if (plan.failAtKey && st.key === plan.failAtKey) {
-          st.status = 'failed';
-          plan.failAtKey = null;
-          plan.running = false;
-          renderHintAndPanels();
-          setLiveText(`Lỗi ở bước ${st.labelVi}. Bấm Thử lại để tiếp tục.`);
+        if (plan.steps[i].status !== 'done') {
+          pendingIndices.push(i);
+        }
+      }
+      if (!pendingIndices.length) {
+        plan.running = false;
+        renderHintAndPanels();
+        completeQuickAddSave(plan);
+        return;
+      }
+
+      function advanceStep(pos) {
+        if (activePlan !== plan || state.locked) return;
+        const stepIdx = pendingIndices[pos];
+        const st = plan.steps[stepIdx];
+        st.status = 'running';
+        renderHintAndPanels();
+
+        if (plan.pauseAtKey && st.key === plan.pauseAtKey) {
+          plan.pauseAtKey = null;
+          setLiveText(`Đang lưu bước ${st.labelVi}…`);
           return;
         }
-        st.status = 'done';
-      }
-      plan.running = false;
-      renderHintAndPanels();
-      if (immediate) {
-        completeQuickAddSave(plan);
-      } else {
-        setTimeout(() => {
-          if (activePlan === plan && !state.locked) {
+
+        const tid = setTimeout(() => {
+          if (activePlan !== plan || state.locked) return;
+          if (plan.failAtKey && st.key === plan.failAtKey) {
+            st.status = 'failed';
+            plan.failAtKey = null;
+            plan.running = false;
+            renderHintAndPanels();
+            setLiveText(`Lỗi ở bước ${st.labelVi}. Bấm Thử lại để tiếp tục.`);
+            const retryBtn = addPanelEl.querySelector('[data-omni-retry-plan]');
+            if (retryBtn) retryBtn.focus();
+            return;
+          }
+          st.status = 'done';
+          if (pos + 1 < pendingIndices.length) {
+            advanceStep(pos + 1);
+          } else {
+            plan.running = false;
+            renderHintAndPanels();
             completeQuickAddSave(plan);
           }
-        }, 180);
+        }, 160);
+        planStepTimers.push(tid);
       }
+
+      advanceStep(0);
     }
 
     function executeAddAfterTargetResolved(parsed, targetItem, isNewItem, simOpts) {
       simOpts = simOpts || {};
       const existingTags = (targetItem && Array.isArray(targetItem.tags)) ? targetItem.tags : [];
       const existingCount = simOpts.existingTagCount != null ? simOpts.existingTagCount : existingTags.length;
-      const existingNormSet = new Set(existingTags.map((t) => normIdentity(t) || norm(t)));
-      const newUniqueCount = parsed.tags.filter((t) => !existingNormSet.has(normIdentity(t) || norm(t))).length;
+      const existingNormSet = new Set(existingTags.map((t) => normIdentity(t)));
+      const newUniqueCount = parsed.tags.filter((t) => !existingNormSet.has(normIdentity(t))).length;
 
       if (!isNewItem && existingCount + newUniqueCount > 20) {
         activePlan = {
@@ -1065,11 +1235,16 @@
         ? ('item_new_' + Math.random().toString(36).slice(2, 7))
         : (targetItem ? targetItem.id : 'i1');
 
+      const resolvedTargetName = (!isNewItem && targetItem && targetItem.name) ? targetItem.name : parsed.name;
       activePlan = buildSavePlan(parsed, resolvedId, isNewItem, {
+        resolvedName: resolvedTargetName,
         failAtKey: simOpts.failAtKey || null
       });
+      if (simOpts.pauseAtKey) {
+        activePlan.pauseAtKey = simOpts.pauseAtKey;
+      }
       renderHintAndPanels();
-      runPlanSteps(activePlan, !!simOpts.immediate);
+      runPlanSteps(activePlan, simOpts.immediate != null ? !!simOpts.immediate : !!(simOpts.failAtKey || simOpts.pauseAtKey));
     }
 
     function submitQuickAdd(forceCreateNew, simOpts) {
@@ -1097,7 +1272,8 @@
           name: parsed.name,
           dupes: matches,
           total: matches.length,
-          silentToast: true
+          silentToast: true,
+          triggerEl: input
         }).then((pickedId) => {
           if (!pickedId) return;
           if (String(pickedId).startsWith('item_new_')) {
@@ -1150,6 +1326,14 @@
 
       if (parsed.mode === 'tag-filter') {
         if (isCtrl) return;
+        if (!parsed.searchable) {
+          closeListbox(false);
+          guardEl.hidden = false;
+          guardEl.innerHTML = `<p class="m-0 text-[13px] font-semibold text-body">Tên tag lọc tối đa 50 ký tự · <span lang="en" class="font-normal text-muted">Tag filter query must be at most 50 characters</span></p>`;
+          setLiveText('Tên tag lọc tối đa 50 ký tự · Tag filter query must be at most 50 characters');
+          return;
+        }
+        guardEl.hidden = true;
         if (listOpen && listKind === 'tag-filter' && activeIdx >= 0 && listOptions[activeIdx]) {
           executeOption(listOptions[activeIdx]);
           return;
@@ -1200,6 +1384,13 @@
 
       if (parsed.mode === 'add') {
         closeListbox(true);
+        if (activePlan && activePlan.steps && activePlan.steps.some((s) => s.status === 'failed')) {
+          runPlanSteps(activePlan, false);
+          return;
+        }
+        if (activePlan && activePlan.running) {
+          return;
+        }
         submitQuickAdd(isCtrl, {});
       }
     }
@@ -1207,7 +1398,8 @@
     input.addEventListener('input', () => {
       showPostUnlockNotice = false;
       guardEl.hidden = true;
-      if (activePlan && !activePlan.running) {
+      if (activePlan) {
+        clearPlanTimers();
         activePlan = null;
       }
       const parsed = parseQuickAdd(input.value);
@@ -1233,6 +1425,10 @@
         activeIdx = activeIdx <= 0 ? listOptions.length - 1 : activeIdx - 1;
         syncActiveOption();
       } else if (e.key === 'Enter') {
+        if (e.shiftKey && !e.ctrlKey && !e.metaKey && input.tagName === 'TEXTAREA') {
+          requestAnimationFrame(syncTextareaHeight);
+          return;
+        }
         e.preventDefault();
         handleEnter(e);
       } else if (e.key === 'Escape') {
@@ -1242,6 +1438,7 @@
         } else if (input.value) {
           e.preventDefault();
           input.value = '';
+          clearPlanTimers();
           activePlan = null;
           guardEl.hidden = true;
           renderHintAndPanels();
@@ -1280,11 +1477,16 @@
         return;
       }
       if (e.target.closest('[data-omni-save-now]')) {
+        if (activePlan && activePlan.steps && activePlan.steps.some((s) => s.status === 'failed')) {
+          return;
+        }
+        input.focus();
         submitQuickAdd(false, {});
         return;
       }
       if (e.target.closest('[data-omni-retry-plan]')) {
         if (activePlan) {
+          input.focus();
           runPlanSteps(activePlan, false);
         }
         return;
@@ -1331,6 +1533,7 @@
 
     if (!opts.pinned) {
       document.addEventListener('click', (e) => {
+        if (e.target.closest('#omni-demo-bar')) return;
         if (!root.contains(e.target)) closeListbox(false);
       });
     }
@@ -1353,6 +1556,7 @@
           hadDraftOnLock = true;
           hadCommittedMetaOnLock = hasCommitted;
           input.value = '';
+          clearPlanTimers();
           activePlan = null;
           guardEl.hidden = true;
         }
@@ -1388,6 +1592,7 @@
         showPostUnlockNotice = false;
         hadDraftOnLock = false;
         hadCommittedMetaOnLock = false;
+        clearPlanTimers();
         activePlan = null;
         guardEl.hidden = true;
         closeListbox(true);
@@ -1396,68 +1601,95 @@
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wif';
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'search-results') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wif';
           renderHintAndPanels();
           renderSearchListbox('wif', searchItemsPrefix('wif'));
+          input.focus();
         } else if (scenarioName === 'search-empty') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'thuế 2026';
           renderHintAndPanels();
           renderSearchListbox('thuế 2026', []);
+          input.focus();
         } else if (scenarioName === 'search-multiline-guard') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
-          input.value = 'dòng 1 chưa có dấu hai chấm\ndòng 2 nội dung dài';
+          input.value = 'dòng 1 chưa có dấu hai chấm\ndòng 2 nội dung dài cần mã hoá';
           renderHintAndPanels();
           handleEnter({ ctrlKey: false, metaKey: false });
+          input.focus();
+        } else if (scenarioName === 'search-200-guard') {
+          if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
+          input.value = 'chuỗi-một-dòng-dài-quá-200-ký-tự-không-có-dấu-hai-chấm-' + 'a'.repeat(160);
+          renderHintAndPanels();
+          handleEnter({ ctrlKey: false, metaKey: false });
+          input.focus();
         } else if (scenarioName === 'tag-filter') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = '#nh';
           renderHintAndPanels();
           renderTagListbox('nh', filterTagsPrefix('nh'), false);
+          input.focus();
         } else if (scenarioName === 'add-preview') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wifi #nhà #office: SSID Zone17th-5G / mk 8chars';
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'add-json-banner') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wifi #ops: {"ssid":"Zone17th-5G","vlan":10}';
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'add-err-tag-space') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wifi #nhà bố mẹ: Abc123@home';
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'add-err-21-tags') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           const tags21 = Array.from({ length: 21 }, (_, i) => `#t${i + 1}`).join(' ');
           input.value = `wifi ${tags21}: nội dung mẫu`;
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'add-err-empty-body') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wifi #nhà:   ';
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'add-err-target-tag-cap') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'wifi-office #tag-mới-1 #tag-mới-2 #tag-mới-3: nội dung thêm';
           const parsed = parseQuickAdd(input.value);
           executeAddAfterTargetResolved(parsed, ITEMS.find((i) => i.id === 'i3'), false, { existingTagCount: 18 });
+          input.focus();
+        } else if (scenarioName === 'save-step-running') {
+          if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
+          input.value = 'router-mới #nhà #ops: cấu hình PPPoE ISP';
+          const parsed = parseQuickAdd(input.value);
+          executeAddAfterTargetResolved(parsed, null, true, { pauseAtKey: 'entry', immediate: true });
+          input.focus();
         } else if (scenarioName === 'save-step-error') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = 'router-mới #nhà #ops: cấu hình PPPoE ISP';
           const parsed = parseQuickAdd(input.value);
-          executeAddAfterTargetResolved(parsed, null, true, { failAtKey: 'entry' });
+          executeAddAfterTargetResolved(parsed, null, true, { failAtKey: 'entry', immediate: true });
+          const retryBtn = addPanelEl.querySelector('[data-omni-retry-plan]');
+          if (retryBtn) retryBtn.focus();
         } else if (scenarioName === 'locked-add') {
           input.value = 'wifi #nhà: mật khẩu đang gõ khi khoá';
           state.locked = true;
           if (window.SAK._syncVault) window.SAK._syncVault({ keepDraftForDemo: true });
           renderHintAndPanels();
+          input.focus();
         } else if (scenarioName === 'unlocked-draft-cleared') {
           if (state.locked) { state.locked = false; if (window.SAK._syncVault) window.SAK._syncVault(); }
           input.value = '';
           hadCommittedMetaOnLock = true;
           showPostUnlockNotice = true;
           renderHintAndPanels();
+          input.focus();
         }
       },
       onVaultStateChange
@@ -1475,16 +1707,17 @@
   function openDupDialog(add, onPick) {
     const payload = add && typeof add === 'object' ? add : {
       name: String(add || 'wifi'),
-      dupes: ITEMS.filter((i) => norm(i.name) === norm(add || 'wifi'))
+      dupes: ITEMS.filter((i) => normIdentity(i.name) === normIdentity(add || 'wifi'))
     };
     const dupes = Array.isArray(payload.dupes) && payload.dupes.length
       ? payload.dupes
-      : ITEMS.filter((i) => norm(i.name) === norm(payload.name || 'wifi'));
+      : ITEMS.filter((i) => normIdentity(i.name) === normIdentity(payload.name || 'wifi'));
     const total = payload.total || dupes.length;
     const pageSize = payload.pageSize || 2;
     let shownCount = Math.min(pageSize, dupes.length);
-    const triggerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
+    const triggerEl = (payload.triggerEl instanceof HTMLElement)
+      ? payload.triggerEl
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     let dlg = document.getElementById('dupDialog');
     if (!dlg) {
       dlg = document.createElement('dialog');
@@ -1501,7 +1734,7 @@
         if (settled) return;
         settled = true;
         if (dlg.open) dlg.close();
-        if (triggerEl && typeof triggerEl.focus === 'function') triggerEl.focus();
+        if (triggerEl && triggerEl.isConnected && typeof triggerEl.focus === 'function') triggerEl.focus();
         if (typeof onPick === 'function' && pickedId) onPick(pickedId);
         resolve(pickedId || null);
       }
@@ -2150,7 +2383,7 @@
 
   window.SAK = {
     TAGS, ITEMS, search, parseQuickAdd, initOmnibox, openDupDialog,
-    renderJsonTable, initChrome, toast, state, norm,
+    renderJsonTable, initChrome, toast, state, norm, normIdentity,
     undoShortcutLabel, isApplePlatform
   };
 })();

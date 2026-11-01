@@ -81,7 +81,7 @@
     text-overflow: clip;
   }
   #omni .omni-hint-line { display: none; }
-  #omni:focus-within .omni-hint-line {
+  #omni:focus-within .omni-hint-line:not([hidden]) {
     display: block;
     position: absolute;
     left: 0;
@@ -130,12 +130,12 @@
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <input class="omnibox-input !text-[15px]" placeholder="Tìm rồi Enter, hoặc “tên: nội dung”… · Search or “name: content”…"
-               data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
-               aria-label="Tìm hoặc lưu · Search or save">
+        <textarea rows="1" class="omnibox-input !text-[15px]" placeholder="Tìm rồi Enter, hoặc “tên: nội dung”… · Search or “name: content”…"
+                  data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+                  aria-label="Tìm hoặc lưu · Search or save"></textarea>
         <span class="kbd">/</span>
       </label>
-      <div data-pop hidden id="omni-listbox" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto" role="listbox" aria-label="Kết quả tìm kiếm · Search results"></div>
+      <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto"></div>
     </div>
 
     <div class="ml-auto flex items-center gap-2">

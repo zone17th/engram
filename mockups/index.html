@@ -140,24 +140,8 @@
     <h1 class="t-title-lg mb-1">Gõ rồi Enter để tìm. Gõ <span class="mono">tên: nội dung</span> để lưu.</h1>
     <p class="t-body-lg mb-1 text-muted" lang="en">Type then press Enter to search. Type <span class="mono">name: content</span> to save.</p>
     <p class="t-body mb-6 text-muted">Một ô duy nhất cho cả hai việc — không gửi yêu cầu nào trước khi bạn nhấn Enter. · <span lang="en">One box for both — nothing is sent before you press Enter.</span></p>
-
-    <div class="relative" data-omnibox id="omni">
-      <label class="omnibox-shell">
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
-          <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
-          <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-        <input class="omnibox-input" placeholder="wifi, docker, #nhà… hoặc “tên #tag: nội dung” · Search or “name #tag: content”"
-               data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
-               aria-label="Tìm hoặc lưu · Search or save">
-        <span class="kbd">Ctrl K</span>
-      </label>
-      <div data-pop hidden id="omni-listbox" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"
-           role="listbox" aria-label="Kết quả tìm kiếm · Search results"></div>
-    </div>
-
     <!-- Thanh chuyển kịch bản Omnibox & Quick-add (P04 Bước 2: U8, U9, Q17, Q18) -->
-    <div class="mt-4 p-3.5 rounded-lg bg-surface border-line" id="omni-demo-bar">
+    <div class="mb-4 p-3.5 rounded-lg bg-surface border-line" id="omni-demo-bar">
       <p class="t-caption text-muted m-0 mb-2">
         Trạng thái Omnibox &amp; Quick-add (P04 U8, U9, Q17) · <span lang="en">Omnibox &amp; Quick-add states</span>
       </p>
@@ -165,7 +149,8 @@
         <button type="button" data-omni-scenario="search-hint" aria-pressed="true">1. Gợi ý tìm · <span lang="en">Search hint</span></button>
         <button type="button" data-omni-scenario="search-results" aria-pressed="false">2. Kết quả Enter · <span lang="en">Results</span></button>
         <button type="button" data-omni-scenario="search-empty" aria-pressed="false">3. Tìm rỗng · <span lang="en">No match</span></button>
-        <button type="button" data-omni-scenario="search-multiline-guard" aria-pressed="false">4. Chặn nhiều dòng/&gt;200 · <span lang="en">Multiline guard</span></button>
+        <button type="button" data-omni-scenario="search-multiline-guard" aria-pressed="false">4a. Chặn nhiều dòng · <span lang="en">Multiline guard</span></button>
+        <button type="button" data-omni-scenario="search-200-guard" aria-pressed="false">4b. Chặn &gt;200 ký tự · <span lang="en">&gt;200 runes guard</span></button>
         <button type="button" data-omni-scenario="tag-filter" aria-pressed="false">5. Lọc #tag · <span lang="en">Tag filter</span></button>
         <button type="button" data-omni-scenario="add-preview" aria-pressed="false">6. Xem trước lưu · <span lang="en">Add preview</span></button>
         <button type="button" data-omni-scenario="add-json-banner" aria-pressed="false">7. Phát hiện JSON · <span lang="en">JSON banner</span></button>
@@ -173,6 +158,7 @@
         <button type="button" data-omni-scenario="add-err-21-tags" aria-pressed="false">9. Lỗi &gt;20 tag · <span lang="en">&gt;20 tags err</span></button>
         <button type="button" data-omni-scenario="add-err-empty-body" aria-pressed="false">10. Thiếu nội dung · <span lang="en">Empty body</span></button>
         <button type="button" data-omni-scenario="add-err-target-tag-cap" aria-pressed="false">11. Đích đã có N tag · <span lang="en">Target tag cap</span></button>
+        <button type="button" data-omni-scenario="save-step-running" aria-pressed="false">12a. Đang lưu… · <span lang="en">Saving step</span></button>
         <button type="button" data-omni-scenario="save-step-error" aria-pressed="false">12. Lưu lỗi giữa chừng · <span lang="en">Mid-save retry</span></button>
         <button type="button" data-omni-scenario="locked-add" aria-pressed="false">13. Đang khoá vault · <span lang="en">Locked save</span></button>
         <button type="button" data-omni-scenario="unlocked-draft-cleared" aria-pressed="false">14. Xoá nháp khi khoá · <span lang="en">Draft cleared</span></button>
@@ -182,6 +168,20 @@
         <button type="button" class="mono link-btn" data-open-dup-picker="wifi">Picker trùng tên (U9) · <span lang="en">U9 Picker</span></button> ·
         <button type="button" class="mono link-btn" id="omni-sim-toast-4">Chồng 4 toast Undo (+1) · <span lang="en">4 Undo toasts (+1)</span></button>
       </p>
+    </div>
+
+    <div class="relative" data-omnibox id="omni">
+      <label class="omnibox-shell">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
+          <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
+          <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <textarea rows="1" class="omnibox-input" placeholder="wifi, docker, #nhà… hoặc “tên #tag: nội dung” · Search or “name #tag: content”"
+                  data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+                  aria-label="Tìm hoặc lưu · Search or save"></textarea>
+        <span class="kbd">Ctrl K</span>
+      </label>
+      <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"></div>
     </div>
     <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mt-12 mb-4" id="recent-items-header">
       <div>
@@ -443,7 +443,7 @@
     const nextName = renameInput.value.trim().replace(/^#+/, '');
     if (!nextName) return;
     const existing = Array.from(document.querySelectorAll('[data-tag-item]'))
-      .find((el) => !el.hidden && el.dataset.tagItem !== editingTagKey && SAK.norm(el.dataset.tagItem) === SAK.norm(nextName));
+      .find((el) => !el.hidden && el.dataset.tagItem !== editingTagKey && (SAK.normIdentity ? SAK.normIdentity(el.dataset.tagItem) : SAK.norm(el.dataset.tagItem)) === (SAK.normIdentity ? SAK.normIdentity(nextName) : SAK.norm(nextName)));
     if (existing) {
       renameConflict.hidden = false;
       renameInput.setAttribute('aria-invalid', 'true');
