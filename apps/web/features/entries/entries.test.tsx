@@ -221,13 +221,18 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function problemResponse(code: ProblemDetails['code'], status: number) {
+function problemResponse(
+  code: ProblemDetails['code'],
+  status: number,
+  extra?: Partial<ProblemDetails>,
+) {
   return new Response(
     JSON.stringify({
       type: `https://engram.zone17.click/problems/${code}`,
       title: code,
       status,
       code,
+      ...extra,
     }),
     {
       status,
