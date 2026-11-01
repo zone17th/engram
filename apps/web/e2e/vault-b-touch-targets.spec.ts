@@ -428,4 +428,118 @@ test.describe('FU3 UI-TOUCH-44 header and primary control touch targets', () => 
       await context.close();
     }
   });
+
+  test('coarse pointer with 4+ undo toasts keeps visible Undo buttons tappable at center without overflow ::after overlay stealing taps (RV-B-FE-7)', async ({
+    browser,
+  }) => {
+    test.setTimeout(90_000);
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+
+    try {
+      await setupMockedHomeRoute(context);
+      const restoredTagIds: string[] = [];
+      await context.route('**/api/v1/tags/*', async (route) => {
+        const method = route.request().method();
+        if (method === 'DELETE') {
+          await route.fulfill({ status: 204 });
+          return;
+        }
+        if (method === 'POST' && route.request().url().endsWith('/restore')) {
+          const parts = new URL(route.request().url()).pathname.split('/');
+          const tagId = parts[parts.length - 2] ?? '';
+          restoredTagIds.push(tagId);
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              id: tagId,
+              display: 'restored-tag',
+              item_count: 1,
+              created_at: '2026-10-30T00:00:00Z',
+              last_used_at: '2026-10-30T00:00:00Z',
+            }),
+          });
+          return;
+        }
+        await route.fallback();
+      });
+
+      const page = await context.newPage();
+      await page.goto('/app');
+      await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+
+      const isCoarse = await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
+      expect(isCoarse).toBe(true);
+
+      // Delete 4 tags from the rail so 4 simultaneous undo toasts are queued (3 visible cards + "+1" overflow button)
+      for (let i = 1; i <= 4; i++) {
+        const tagId = `00000000-0000-4000-8000-00000000010${i}`;
+        await page.getByTestId(`rail-tag-menu-trigger-${tagId}`).click();
+        await page.getByTestId(`rail-tag-delete-action-${tagId}`).click();
+      }
+
+      await expect(page.getByTestId('undo-toast-item')).toHaveCount(3, { timeout: UI_WAIT_MS });
+      const overflowBtn = page.getByTestId('undo-toast-overflow');
+      await expect(overflowBtn).toBeVisible({ timeout: UI_WAIT_MS });
+
+      const toastStackProbe = await page.evaluate(() => {
+        const overflow = document.querySelector<HTMLElement>('[data-testid="undo-toast-overflow"]');
+        if (!overflow) {
+          throw new Error('Missing undo-toast-overflow button');
+        }
+        const overflowRect = overflow.getBoundingClientRect();
+        const overflowAfter = window.getComputedStyle(overflow, '::after');
+        const undoButtons = Array.from(
+          document.querySelectorAll<HTMLButtonElement>('[data-testid="undo-toast-item"] button'),
+        );
+        if (undoButtons.length !== 3) {
+          throw new Error(`Expected 3 visible undo toast buttons, found ${undoButtons.length}`);
+        }
+        const undoButtonHits = undoButtons.map((btn, idx) => {
+          const r = btn.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const hit = document.elementFromPoint(cx, cy);
+          return {
+            index: idx,
+            hitsUndoButton: Boolean(hit && (hit === btn || btn.contains(hit))),
+            hitTestId: hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? null,
+            hitTag: hit?.tagName ?? null,
+          };
+        });
+        const StaticTouchTargets = Array.from(
+          document.querySelectorAll<HTMLElement>('.touch-target'),
+        )
+          .filter((el) => window.getComputedStyle(el).position === 'static')
+          .map((el) => el.getAttribute('data-testid') ?? el.tagName);
+        return {
+          overflowHasTouchTarget: overflow.classList.contains('touch-target'),
+          overflowAfterContent: overflowAfter.content,
+          overflowWidth: overflowRect.width,
+          overflowHeight: overflowRect.height,
+          undoButtonHits,
+          StaticTouchTargets,
+        };
+      });
+
+      expect(toastStackProbe.overflowHasTouchTarget).toBe(false);
+      expect(toastStackProbe.overflowAfterContent).toBe('none');
+      expect(toastStackProbe.overflowWidth).toBeGreaterThanOrEqual(44);
+      expect(toastStackProbe.overflowHeight).toBeGreaterThanOrEqual(44);
+      expect(toastStackProbe.StaticTouchTargets).toEqual([]);
+      for (const probe of toastStackProbe.undoButtonHits) {
+        expect(probe.hitsUndoButton, `Undo button ${probe.index} center hit`).toBe(true);
+      }
+
+      // Actually click the first visible Undo button and verify it triggers Undo (restores tag) rather than expanding the overflow stack
+      await page.locator('[data-testid="undo-toast-item"] button').first().click();
+      await expect.poll(() => restoredTagIds.length, { timeout: UI_WAIT_MS }).toBe(1);
+    } finally {
+      await context.close();
+    }
+  });
 });

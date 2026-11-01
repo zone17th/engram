@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRef } from 'react';
@@ -872,15 +872,77 @@ describe('components/ui/undo-toast', () => {
 });
 
 describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions and primary ui controls', () => {
-  it('defines :where(.touch-target) with zero-specificity position: relative under @media (pointer: coarse) in globals.css without altering tokens.css (LEAD-FU3-1)', () => {
+  it('defines :where(.touch-target) with zero-specificity position: relative under @media (pointer: coarse) in globals.css, excludes static/!static hosts, and does not alter tokens.css (LEAD-FU3-1, RV-B-FE-7)', () => {
     const globalsCss = readFileSync(resolve(__dirname, '../../app/globals.css'), 'utf8');
     expect(globalsCss).toMatch(/@media\s*\(pointer:\s*coarse\)/);
-    expect(globalsCss).toMatch(/:where\(\.touch-target\)\s*\{\s*position:\s*relative;\s*\}/);
-    expect(globalsCss).not.toMatch(/(?<!:where\()\.touch-target\s*\{\s*position:\s*relative;\s*\}/);
     expect(globalsCss).toMatch(
-      /\.touch-target:not\(\.switch\):not\(\.chip-x\)::after,\s*\.switch\.touch-target::before/,
+      /:where\(\.touch-target:not\(\.static\):not\(\.\\!static\)\)\s*\{\s*position:\s*relative;\s*\}/,
+    );
+    expect(globalsCss).not.toMatch(/(?<!:where\()\.touch-target[^{]*\{\s*position:\s*relative;\s*\}/);
+    expect(globalsCss).toMatch(
+      /\.touch-target:not\(\.switch\):not\(\.chip-x\):not\(\.static\):not\(\.\\!static\)::after,\s*\.switch\.touch-target:not\(\.static\):not\(\.\\!static\)::before/,
     );
     expect(globalsCss).toMatch(/inset:\s*min\(0px,\s*calc\(\(100%\s*-\s*44px\)\s*\/\s*2\)\)/);
+  });
+
+  it('RV-B-FE-7: undo-toast overflow button has no .touch-target class, carries coarse 44x44 min-size utilities, and no component combines .touch-target with static/!static', () => {
+    expect(DialogTrigger.displayName).toBeTruthy();
+    expect(DialogClose.displayName).toBeTruthy();
+
+    let api!: UndoToastContextValue;
+    render(
+      <UndoToastProvider>
+        <TestHarness
+          onPushReady={(ctx) => {
+            api = ctx;
+          }}
+        />
+      </UndoToastProvider>,
+    );
+
+    act(() => {
+      api.pushUndoToast({ id: 'rv7-1', message: 'Toast 1', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+      api.pushUndoToast({ id: 'rv7-2', message: 'Toast 2', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+      api.pushUndoToast({ id: 'rv7-3', message: 'Toast 3', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+      api.pushUndoToast({ id: 'rv7-4', message: 'Toast 4', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+    });
+
+    const overflowBtn = screen.getByTestId('undo-toast-overflow');
+    expect(overflowBtn).not.toHaveClass('touch-target');
+    expect(overflowBtn).toHaveClass('toast', '!static');
+    expect(overflowBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+    expect(overflowBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+    // Guard over component and feature sources: no class string combines `touch-target` with `static` or `!static`
+    const webRoot = resolve(__dirname, '../..');
+    const scanDirs = ['components', 'features', 'app'];
+    const collectTsxFiles = (dir: string): string[] => {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          files.push(...collectTsxFiles(full));
+        } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
+          files.push(full);
+        }
+      }
+      return files;
+    };
+
+    const offenders: string[] = [];
+    for (const sub of scanDirs) {
+      for (const file of collectTsxFiles(join(webRoot, sub))) {
+        const source = readFileSync(file, 'utf8');
+        const lines = source.split(/\r?\n/);
+        lines.forEach((line, idx) => {
+          if (/\btouch-target\b/.test(line) && /(?:^|\s|['"`])!?static(?:\s|['"`]|$)/.test(line)) {
+            offenders.push(`${file}:${idx + 1}: ${line.trim()}`);
+          }
+        });
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('applies .touch-target to primary ui controls (Button, Chip, Segmented, Switch, Field password toggle, DialogTrigger/DialogClose, Toast)', () => {

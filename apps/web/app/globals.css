@@ -9,7 +9,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* FU3 UI-TOUCH-44 (advisor-dec-204, RV-UI4-6, dec-206; FU3 fix1 LEAD-FU3-1):
+/* FU3 UI-TOUCH-44 (advisor-dec-204, RV-UI4-6, dec-206; FU3 fix1 LEAD-FU3-1; FU3 fix4 RV-B-FE-7):
    Under `@media (pointer: coarse)`, `.touch-target` ensures at least a 44x44 px
    hit area via an invisible centered `::after` pseudo-element when the control's
    own box is smaller than 44px on either axis. Controls like `.switch` that draw
@@ -17,14 +17,17 @@
    own `tokens.css` `::after` 44x44 hit rule.
    `position: relative` is wrapped in `:where(.touch-target)` (specificity 0,0,0)
    so any explicit positioning (`.field-toggle { position: absolute }`, `.toast`,
-   Tailwind `absolute`/`fixed`/`sticky`/`!static` utilities) always wins.
+   Tailwind `absolute`/`fixed`/`sticky` utilities) always wins.
+   Non-positioned hosts (`static`/`!static`) are excluded from `:where(.touch-target)`
+   and from the `::after`/`::before` pseudo-element rules so an unanchored pseudo
+   never attaches to an ancestor container (RV-B-FE-7).
    Zero impact on fine-pointer layout or visuals. */
 @media (pointer: coarse) {
-  :where(.touch-target) {
+  :where(.touch-target:not(.static):not(.\!static)) {
     position: relative;
   }
-  .touch-target:not(.switch):not(.chip-x)::after,
-  .switch.touch-target::before {
+  .touch-target:not(.switch):not(.chip-x):not(.static):not(.\!static)::after,
+  .switch.touch-target:not(.static):not(.\!static)::before {
     content: '';
     position: absolute;
     inset: min(0px, calc((100% - 44px) / 2));
