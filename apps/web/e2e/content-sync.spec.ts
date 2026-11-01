@@ -484,6 +484,22 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
         // Focus B -> B detects vault reset (404 on GET /vault + GET /auth/me), locks its Worker immediately,
         // purges decrypted bodies + entries cache, and shows locked state on `/app/items/<id>` with 0 decrypted bodies
         // and no old entry body text in B's DOM (plan Task 20: "reset ở A -> B khi focus bị khoá (P03)").
+        // SYNC-FER2-1: hold B's entries GET BEFORE the wake so the wake's canonical refetch cannot
+        // repopulate or overwrite anything. While it is held, any card/body that is absent was removed
+        // by the CLIENT purge (locked cards would otherwise render from the stale cache).
+        const { promise: wakeEntriesGate, resolve: releaseWakeEntriesFetch } =
+          Promise.withResolvers<void>();
+        let wakeHeldEntriesGets = 0;
+        const wakeEntriesRoutePattern = `**/api/v1/items/${itemId}/entries*`;
+        await pageB.route(wakeEntriesRoutePattern, async (route) => {
+          if (route.request().method() !== 'GET') {
+            await route.continue();
+            return;
+          }
+          wakeHeldEntriesGets += 1;
+          await wakeEntriesGate;
+          await route.continue();
+        });
         await triggerFocusWake(pageB);
         await expect
           .poll(
@@ -510,6 +526,43 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
         await expectVaultShut(pageB);
         await expect(pageB.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
         await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
+        // Still held: no card at all (cards would render locked from a stale cache), no body, no old plaintext.
+        await expect(pageB.locator(ENTRY_CARD_SELECTOR)).toHaveCount(0);
+        await expect(pageB.getByTestId(`entry-card-${entry1Id}`)).toHaveCount(0);
+        await expect(pageB.getByTestId(`entry-card-${entry2Id}`)).toHaveCount(0);
+        expect(
+          await pageB.evaluate(() =>
+            document.body.innerText.includes('entry-2-added-by-A-while-feed-empty'),
+          ),
+        ).toBe(false);
+
+        // Release the wake's held refetch, then drop this first hold; the in-tab unlock leg below
+        // registers its own hold.
+        const wakeHeldResponses = wakeHeldEntriesGets;
+        const releasedWakeResponse =
+          wakeHeldResponses > 0
+            ? pageB.waitForResponse(
+                (res) =>
+                  res.request().method() === 'GET' &&
+                  new URL(res.url()).pathname === `/api/v1/items/${itemId}/entries`,
+                { timeout: UI_WAIT_MS },
+              )
+            : null;
+        releaseWakeEntriesFetch();
+        if (releasedWakeResponse) {
+          await releasedWakeResponse;
+        }
+        await pageB.unroute(wakeEntriesRoutePattern);
+        await expect
+          .poll(
+            async () =>
+              pageB.evaluate(
+                () => document.querySelector('.vault-pill')?.getAttribute('data-vault-state') ?? null,
+              ),
+            { timeout: UI_WAIT_MS },
+          )
+          .toBe('locked');
+        await expect(pageB.locator(ENTRY_CARD_SELECTOR)).toHaveCount(0);
 
         // Create a new vault in A via the reset dialog's "Create new vault" link -> /app/onboarding
         await resetDialog.getByRole('link', { name: /^(Create new vault|Tạo vault mới)$/ }).click();
