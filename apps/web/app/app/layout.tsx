@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { fontVariables } from '@/app/fonts';
 import { QueryProvider } from '@/components/query-provider';
 import { ThemeProvider } from '@/components/theme-provider';
+import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { LocaleThemeSync } from '@/features/auth/locale-sync';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
@@ -36,12 +37,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ThemeProvider initialTheme={themePref} initialLocale={locale}>
             <QueryProvider>
-              <SessionProvider>
-                <VaultProvider silentUnlockOnLoad>
-                  <LocaleThemeSync />
-                  <RouteGuard>{children}</RouteGuard>
-                </VaultProvider>
-              </SessionProvider>
+              <UndoToastProvider>
+                <SessionProvider>
+                  <VaultProvider silentUnlockOnLoad>
+                    <LocaleThemeSync />
+                    <RouteGuard>{children}</RouteGuard>
+                  </VaultProvider>
+                </SessionProvider>
+              </UndoToastProvider>
             </QueryProvider>
           </ThemeProvider>
         </NextIntlClientProvider>
