@@ -126,8 +126,9 @@ function emitLockNoticeChange(): void {
 }
 
 /**
- * Records a pending post-unlock "draft cleared on lock" notice (`userId` may be `null` if unknown at lock time,
- * in which case it is adopted by the next reconciled user or cleared on `signed_out` — HM18B-R2-6).
+ * Records a pending post-unlock "draft cleared on lock" notice (`userId` may be `null` if unknown at lock time;
+ * any subsequent change to a known `userId` or `signed_out` broadcast drops a `userId: null` notice rather than
+ * adopting it — HM18B-R2-6, HM18-R3-4, advisor-dec-120).
  */
 export function recordLockClearedNotice(record: LockClearedNoticeRecord): void {
   const rawUserId = typeof record.userId === 'string' ? record.userId.trim() : '';
@@ -151,8 +152,9 @@ export function clearLockClearedNotice(): void {
 }
 
 /**
- * Reconciles the stored lock-cleared notice against the active session's `userId` (HM18B-R1-4, HM18B-R2-6, advisor-dec-120):
- * - If the pending notice had `userId === null` (recorded when user ID was not yet cached), adopts the first known `activeUserId`.
+ * Reconciles the stored lock-cleared notice against the active session's `userId` (HM18B-R1-4, HM18-R3-4, advisor-dec-120):
+ * - Never adopts a `userId === null` notice into a newly discovered `activeUserId` (drops it on user/session change so
+ *   User B can never see a notice recorded before User B's ID became known).
  * - If another user signs in (`activeUserId` is non-empty and differs from `currentLockNoticeRecord.userId`),
  *   the notice is immediately cleared so User B never sees User A's lock notice.
  */
@@ -164,15 +166,7 @@ export function reconcileLockClearedNoticeUser(activeUserId: string | null | und
   if (!normalizedActive) {
     return;
   }
-  if (currentLockNoticeRecord.userId === null) {
-    currentLockNoticeRecord = Object.freeze({
-      userId: normalizedActive,
-      kind: currentLockNoticeRecord.kind,
-    });
-    emitLockNoticeChange();
-    return;
-  }
-  if (normalizedActive !== currentLockNoticeRecord.userId) {
+  if (currentLockNoticeRecord.userId === null || normalizedActive !== currentLockNoticeRecord.userId) {
     currentLockNoticeRecord = null;
     emitLockNoticeChange();
   }

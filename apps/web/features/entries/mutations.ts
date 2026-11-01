@@ -39,6 +39,7 @@ export interface SealedEntryCreateVariables {
   readonly op: EntryOpHandle;
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
+  readonly onAttempt?: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void;
 }
 
 /**
@@ -238,7 +239,11 @@ export function applyCommittedEntryMetaToCache(params: {
  */
 export function toEntryCreateVariables(
   sealed: SealedNewEntryPayload,
-  opts?: { readonly signal?: AbortSignal; readonly uncertainPriorSend?: boolean },
+  opts?: {
+    readonly signal?: AbortSignal;
+    readonly uncertainPriorSend?: boolean;
+    readonly onAttempt?: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void;
+  },
 ): SealedEntryCreateVariables {
   return {
     itemId: sealed.itemId,
@@ -249,6 +254,7 @@ export function toEntryCreateVariables(
     op: sealed.op,
     signal: opts?.signal,
     uncertainPriorSend: opts?.uncertainPriorSend,
+    onAttempt: opts?.onAttempt,
   };
 }
 
@@ -315,6 +321,7 @@ export async function mutateSealedEntryCreate(
         idempotencyKey: variables.idempotencyKey,
         signal,
         uncertainPriorSend: variables.uncertainPriorSend,
+        onAttempt: variables.onAttempt,
       }),
   });
   const applied = applyCommittedEntryMetaToCache({
@@ -450,6 +457,7 @@ export function useCreateEntryMutation(
             idempotencyKey: variables.idempotencyKey,
             signal,
             uncertainPriorSend: variables.uncertainPriorSend,
+            onAttempt: variables.onAttempt,
           }),
       });
     },

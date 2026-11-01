@@ -253,57 +253,33 @@ function isAbortOrStale(error: unknown, signal: AbortSignal, op: EntryOpHandle):
 }
 
 /**
- * Executes `action()` while observing `globalThis.fetch` calls to detect whether an earlier
- * attempt inside `contentMutate` / `authMutate` rejected or returned 5xx before a subsequent
- * retry settled (HM18B-R2-3, SPEC §3.4 case b).
+ * Executes `action(onAttempt)` while observing per-attempt outcomes from `contentMutate` via
+ * `onAttempt` (advisor-dec-203, HM18-R3-3) to detect whether an earlier attempt inside
+ * `contentMutate` rejected on network/timeout or returned 5xx before a subsequent retry settled.
  */
 async function runStepWithRetryObservation<T>(
-  action: () => Promise<T>,
+  action: (
+    onAttempt: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void,
+  ) => Promise<T>,
 ): Promise<{ readonly value: T } | { readonly error: unknown; readonly hadInternalUncertainRetry: boolean }> {
-  const currentFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch : undefined;
-  if (!currentFetch) {
-    try {
-      const value = await action();
-      return { value };
-    } catch (error) {
-      return { error, hadInternalUncertainRetry: false };
-    }
-  }
-
-  let fetchAttempts = 0;
   let sawEarlierUncertainOutcome = false;
   let lastAttemptFollowedUncertain = false;
-
-  const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
-    fetchAttempts += 1;
-    if (fetchAttempts > 1 && sawEarlierUncertainOutcome) {
+  const onAttempt = (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => {
+    if (outcome.attempt > 1 && sawEarlierUncertainOutcome) {
       lastAttemptFollowedUncertain = true;
     }
-    try {
-      const res = await currentFetch(input, init);
-      if (res.status >= 500 && res.status <= 599) {
-        sawEarlierUncertainOutcome = true;
-      }
-      return res;
-    } catch (err) {
+    if (outcome.uncertainOutcome) {
       sawEarlierUncertainOutcome = true;
-      throw err;
     }
   };
-
-  globalThis.fetch = wrappedFetch;
   try {
-    const value = await action();
+    const value = await action(onAttempt);
     return { value };
   } catch (error) {
     return {
       error,
       hadInternalUncertainRetry: lastAttemptFollowedUncertain,
     };
-  } finally {
-    if (globalThis.fetch === wrappedFetch) {
-      globalThis.fetch = currentFetch;
-    }
   }
 }
 
@@ -343,13 +319,14 @@ export async function executeQuickAddSavePlan(
     if (step.key === 'item') {
       const initialPriorUncertain = plan.itemCreateUncertainSend;
       plan.itemCreateUncertainSend = true;
-      const outcome = await runStepWithRetryObservation(() =>
+      const outcome = await runStepWithRetryObservation((onAttempt) =>
         itemCreate(
           { id: plan.itemId, name: plan.itemName },
           {
             idempotencyKey: plan.itemCreateIdempotencyKey ?? createIdempotencyKey(),
             signal,
             uncertainPriorSend: initialPriorUncertain,
+            onAttempt,
           },
         ),
       );
@@ -400,13 +377,14 @@ export async function executeQuickAddSavePlan(
         }
         const initialPriorUncertain = tagTask.uncertainSend;
         tagTask.uncertainSend = true;
-        const outcome = await runStepWithRetryObservation(() =>
+        const outcome = await runStepWithRetryObservation((onAttempt) =>
           tagUpsert(
             { display: tagTask.display },
             {
               idempotencyKey: tagTask.idempotencyKey,
               signal,
               uncertainPriorSend: initialPriorUncertain,
+              onAttempt,
             },
           ),
         );
@@ -455,7 +433,7 @@ export async function executeQuickAddSavePlan(
 
       const initialPriorUncertain = plan.assignTagsUncertainSend;
       plan.assignTagsUncertainSend = true;
-      const outcome = await runStepWithRetryObservation(() =>
+      const outcome = await runStepWithRetryObservation((onAttempt) =>
         itemTagsAdd(
           plan.itemId,
           { tag_ids: tagIds },
@@ -463,6 +441,7 @@ export async function executeQuickAddSavePlan(
             idempotencyKey: plan.assignTagsIdempotencyKey ?? createIdempotencyKey(),
             signal,
             uncertainPriorSend: initialPriorUncertain,
+            onAttempt,
           },
         ),
       );
@@ -504,13 +483,14 @@ export async function executeQuickAddSavePlan(
     if (step.key === 'entry') {
       const initialPriorUncertain = plan.entryCreateUncertainSend;
       plan.entryCreateUncertainSend = true;
-      const outcome = await runStepWithRetryObservation(async () => {
+      const outcome = await runStepWithRetryObservation(async (onAttempt) => {
         if (queryClient) {
           const res = await mutateSealedEntryCreate(
             queryClient,
             toEntryCreateVariables(plan.sealedEntry, {
               signal,
               uncertainPriorSend: initialPriorUncertain,
+              onAttempt,
             }),
           );
           return res.meta;
@@ -519,6 +499,7 @@ export async function executeQuickAddSavePlan(
           idempotencyKey: plan.sealedEntry.idempotencyKey,
           signal,
           uncertainPriorSend: initialPriorUncertain,
+          onAttempt,
         });
       });
 

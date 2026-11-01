@@ -209,12 +209,16 @@ export function Omnibox({
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const retryPlanBtnRef = useRef<HTMLButtonElement>(null);
+  const unlockToSaveBtnRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchAbortRef = useRef<AbortController | null>(null);
   const planAbortRef = useRef<AbortController | null>(null);
   const createPendingRef = useRef(false);
   const createAbortRef = useRef<AbortController | null>(null);
   const lookupPendingRef = useRef(false);
+  const savePlanStartingRef = useRef(false);
+  const savePlanStartAbortRef = useRef<AbortController | null>(null);
+  const resetEpochRef = useRef(0);
   const inputValueRef = useRef('');
   const activePlanRef = useRef<QuickAddSavePlan | null>(null);
   const submittedDraftRef = useRef<string | null>(null);
@@ -304,7 +308,8 @@ export function Omnibox({
   const visibleLockClearedNoticeKind =
     isVaultUnlocked &&
     lockNoticeSnapshot !== null &&
-    (lockNoticeSnapshot.userId === null || lockNoticeSnapshot.userId === activeUserId)
+    ((lockNoticeSnapshot.userId === null && activeUserId === null) ||
+      (lockNoticeSnapshot.userId !== null && lockNoticeSnapshot.userId === activeUserId))
       ? lockNoticeSnapshot.kind
       : null;
   const parsed = useMemo(() => parseQuickAdd(inputValue), [inputValue]);
@@ -398,6 +403,9 @@ export function Omnibox({
   }, [queryClient]);
 
   const abortAndClearSavePlan = useCallback(() => {
+    savePlanStartAbortRef.current?.abort();
+    savePlanStartAbortRef.current = null;
+    savePlanStartingRef.current = false;
     planAbortRef.current?.abort();
     planAbortRef.current = null;
     if (activePlanRef.current) {
@@ -415,14 +423,17 @@ export function Omnibox({
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
+      resetEpochRef.current += 1;
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
       createAbortRef.current?.abort();
       createAbortRef.current = null;
       createPendingRef.current = false;
+      savePlanStartAbortRef.current?.abort();
+      savePlanStartAbortRef.current = null;
+      savePlanStartingRef.current = false;
       planAbortRef.current?.abort();
       planAbortRef.current = null;
-
       const currentText = trimUnicodeWhiteSpace(
         textareaRef.current?.value ?? inputValueRef.current,
       );
@@ -470,6 +481,7 @@ export function Omnibox({
     return () => {
       searchAbortRef.current?.abort();
       createAbortRef.current?.abort();
+      savePlanStartAbortRef.current?.abort();
       planAbortRef.current?.abort();
     };
   }, []);
@@ -868,6 +880,9 @@ export function Omnibox({
       readonly targetItem: ItemSummary | null;
       readonly isNewItem: boolean;
     }) => {
+      if (savePlanStartingRef.current || activePlanRef.current?.running) {
+        return;
+      }
       const { name, tags, body, targetItem, isNewItem } = params;
 
       // Pre-check 20-tag cap before building plan or sending any write request (SPEC §3.4 step 2, plan §2.11 step 2).
@@ -887,15 +902,36 @@ export function Omnibox({
         return;
       }
 
+      const startResetEpoch = resetEpochRef.current;
+      const startUserId = activeUserIdRef.current;
+      const startController = new AbortController();
+      savePlanStartAbortRef.current = startController;
+      savePlanStartingRef.current = true;
+
+      const isStartStale = (): boolean =>
+        startController.signal.aborted ||
+        resetEpochRef.current !== startResetEpoch ||
+        (startUserId !== null && activeUserIdRef.current !== startUserId);
+
       try {
         let effectiveVault = vault;
         if (!vault.vaultMeta?.vault_key_id && typeof vault.reloadVaultMeta === 'function') {
           const loadedMeta = await vault.reloadVaultMeta();
+          if (isStartStale()) {
+            return;
+          }
           if (!loadedMeta?.vault_key_id) {
-            setActionErrorCode('vault_absent');
+            // If the session signed out or user changed during reloadVaultMeta, return silently (HM18-R3-2).
+            if (activeUserIdRef.current === null && startUserId !== null) {
+              return;
+            }
             return;
           }
           effectiveVault = { ...vault, vaultMeta: loadedMeta };
+        }
+
+        if (isStartStale()) {
+          return;
         }
 
         const plan = await createQuickAddSavePlan({
@@ -907,7 +943,7 @@ export function Omnibox({
           vault: effectiveVault,
         });
 
-        if (!plan.op.isCurrent()) {
+        if (isStartStale() || !plan.op.isCurrent()) {
           plan.op.dispose?.();
           return;
         }
@@ -917,6 +953,9 @@ export function Omnibox({
         setActivePlan(plan);
         await runPlanExecution(plan);
       } catch (error) {
+        if (isStartStale()) {
+          return;
+        }
         if (error instanceof EntrySealError) {
           if (error.code === 'STALE_GENERATION' || error.code === 'VAULT_LOCKED') {
             return;
@@ -933,6 +972,11 @@ export function Omnibox({
           '',
         ) as ContentErrorCode;
         setActionErrorCode(code);
+      } finally {
+        if (savePlanStartAbortRef.current === startController) {
+          savePlanStartAbortRef.current = null;
+        }
+        savePlanStartingRef.current = false;
       }
     },
     [runPlanExecution, vault],
@@ -944,9 +988,14 @@ export function Omnibox({
         return;
       }
       if (!isVaultUnlocked) {
+        unlockToSaveBtnRef.current?.focus();
         return;
       }
-      if (lookupPendingRef.current || activePlanRef.current?.running) {
+      if (
+        lookupPendingRef.current ||
+        savePlanStartingRef.current ||
+        activePlanRef.current?.running
+      ) {
         return;
       }
 
@@ -1045,7 +1094,11 @@ export function Omnibox({
       setDupPickerState(null);
       textareaRef.current?.focus();
       if (!pending) return;
-      if (lookupPendingRef.current || activePlanRef.current?.running) {
+      if (
+        lookupPendingRef.current ||
+        savePlanStartingRef.current ||
+        activePlanRef.current?.running
+      ) {
         return;
       }
 
@@ -1674,6 +1727,7 @@ export function Omnibox({
 
               {isVaultLocked ? (
                 <button
+                  ref={unlockToSaveBtnRef}
                   type="button"
                   id={unlockToSaveBtnId}
                   data-omni-unlock-save="1"
