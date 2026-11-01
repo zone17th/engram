@@ -30,7 +30,7 @@
     </a>
 
     <div class="ml-auto flex items-center gap-2">
-      <button class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <button class="vault-pill vault-open" data-vault aria-label="Vault mở · 15 phút"><span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
       <button class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
       <span class="ml-1 w-9 h-9 rounded-pill hidden sm:grid place-items-center font-mono text-[13px]"
@@ -137,29 +137,52 @@
 
   <!-- cột chính -->
   <section class="min-w-0">
-    <h1 class="t-title-lg mb-1">Gõ để tìm. Gõ tiếp để lưu.</h1>
-    <p class="t-body-lg mb-7" style="color:var(--muted)">Một ô duy nhất cho cả hai việc.</p>
+    <h1 class="t-title-lg mb-1">Gõ rồi Enter để tìm. Gõ <span class="mono">tên: nội dung</span> để lưu.</h1>
+    <p class="t-body-lg mb-1 text-muted" lang="en">Type then press Enter to search. Type <span class="mono">name: content</span> to save.</p>
+    <p class="t-body mb-6 text-muted">Một ô duy nhất cho cả hai việc — không gửi yêu cầu nào trước khi bạn nhấn Enter. · <span lang="en">One box for both — nothing is sent before you press Enter.</span></p>
+    <!-- Thanh chuyển kịch bản Omnibox & Quick-add (P04 Bước 2: U8, U9, Q17, Q18) -->
+    <div class="mb-4 p-3.5 rounded-lg bg-surface border-line" id="omni-demo-bar">
+      <p class="t-caption text-muted m-0 mb-2">
+        Trạng thái Omnibox &amp; Quick-add (P04 U8, U9, Q17) · <span lang="en">Omnibox &amp; Quick-add states</span>
+      </p>
+      <div class="seg flex-wrap" data-seg id="omni-state-seg" role="group" aria-label="Trạng thái Omnibox · Omnibox states">
+        <button type="button" data-omni-scenario="search-hint" aria-pressed="true">1. Gợi ý tìm · <span lang="en">Search hint</span></button>
+        <button type="button" data-omni-scenario="search-results" aria-pressed="false">2. Kết quả Enter · <span lang="en">Results</span></button>
+        <button type="button" data-omni-scenario="search-empty" aria-pressed="false">3. Tìm rỗng · <span lang="en">No match</span></button>
+        <button type="button" data-omni-scenario="search-multiline-guard" aria-pressed="false">4a. Chặn nhiều dòng · <span lang="en">Multiline guard</span></button>
+        <button type="button" data-omni-scenario="search-200-guard" aria-pressed="false">4b. Chặn &gt;200 ký tự · <span lang="en">&gt;200 runes guard</span></button>
+        <button type="button" data-omni-scenario="tag-filter" aria-pressed="false">5. Lọc #tag · <span lang="en">Tag filter</span></button>
+        <button type="button" data-omni-scenario="add-preview" aria-pressed="false">6. Xem trước lưu · <span lang="en">Add preview</span></button>
+        <button type="button" data-omni-scenario="add-json-banner" aria-pressed="false">7. Phát hiện JSON · <span lang="en">JSON banner</span></button>
+        <button type="button" data-omni-scenario="add-err-tag-space" aria-pressed="false">8. Lỗi tag khoảng trắng · <span lang="en">Tag space err</span></button>
+        <button type="button" data-omni-scenario="add-err-21-tags" aria-pressed="false">9. Lỗi &gt;20 tag · <span lang="en">&gt;20 tags err</span></button>
+        <button type="button" data-omni-scenario="add-err-empty-body" aria-pressed="false">10. Thiếu nội dung · <span lang="en">Empty body</span></button>
+        <button type="button" data-omni-scenario="add-err-target-tag-cap" aria-pressed="false">11. Đích đã có N tag · <span lang="en">Target tag cap</span></button>
+        <button type="button" data-omni-scenario="save-step-running" aria-pressed="false">12a. Đang lưu… · <span lang="en">Saving step</span></button>
+        <button type="button" data-omni-scenario="save-step-error" aria-pressed="false">12. Lưu lỗi giữa chừng · <span lang="en">Mid-save retry</span></button>
+        <button type="button" data-omni-scenario="locked-add" aria-pressed="false">13. Đang khoá vault · <span lang="en">Locked save</span></button>
+        <button type="button" data-omni-scenario="unlocked-draft-cleared" aria-pressed="false">14. Xoá nháp khi khoá · <span lang="en">Draft cleared</span></button>
+      </div>
+      <p class="t-caption mt-2.5 mb-0 text-muted">
+        Thử nhanh · <span lang="en">Quick triggers:</span>
+        <button type="button" class="mono link-btn" data-open-dup-picker="wifi">Picker trùng tên (U9) · <span lang="en">U9 Picker</span></button> ·
+        <button type="button" class="mono link-btn" id="omni-sim-toast-4">Chồng 4 toast Undo (+1) · <span lang="en">4 Undo toasts (+1)</span></button>
+      </p>
+    </div>
 
     <div class="relative" data-omnibox id="omni">
       <label class="omnibox-shell">
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="flex:none">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <input class="omnibox-input" placeholder="wifi, docker, hợp đồng… hoặc “tên #tag: nội dung”"
-               autocomplete="off" spellcheck="false" aria-label="Tìm hoặc lưu">
+        <textarea rows="1" class="omnibox-input" placeholder="Tìm hoặc tên: nội dung"
+                  data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+                  aria-label="Tìm hoặc lưu · Search or save"></textarea>
         <span class="kbd">Ctrl K</span>
       </label>
-      <div data-pop hidden class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"
-           role="listbox" aria-label="Gợi ý"></div>
+      <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"></div>
     </div>
-
-    <p class="t-caption mt-3 text-muted">
-      Thử: <button type="button" class="mono link-btn" data-fill="wif">wif</button> ·
-      <button type="button" class="mono link-btn" data-fill="wifi #nhà: SSID Zone17th / mk 8chars">wifi #nhà: …</button> ·
-      <button type="button" class="mono link-btn" data-open-dup-picker="wifi">Picker trùng tên (U9) · <span lang="en">Duplicate picker</span></button>
-    </p>
-
     <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mt-12 mb-4" id="recent-items-header">
       <div>
         <h2 class="t-title-sm">Mục gần đây · <span lang="en" class="font-normal text-muted text-[18px]">Recent items</span></h2>
@@ -179,9 +202,9 @@
         </div>
         <p class="text-[13px] text-muted m-0">Nhà + văn phòng, không phải wifi công ty</p>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#nhà</span>
-          <span class="chip dup-chip">#office</span>
-          <span class="chip dup-chip">#home-lab</span>
+          <span class="chip dup-chip" title="#nhà">#nhà</span>
+          <span class="chip dup-chip" title="#office">#office</span>
+          <span class="chip dup-chip" title="#home-lab">#home-lab</span>
           <span class="mono text-[12px] text-muted" aria-hidden="true">+1</span><span class="sr-only">Còn 1 tag nữa · 1 more tag</span>
         </div>
       </a>
@@ -193,8 +216,8 @@
         </div>
         <p class="text-[13px] text-muted m-0">Tầng 4 — SSID nội bộ</p>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#công-ty</span>
-          <span class="chip dup-chip">#office</span>
+          <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+          <span class="chip dup-chip" title="#office">#office</span>
         </div>
       </a>
 
@@ -204,8 +227,8 @@
           <span class="mono text-[12px] text-muted">9 entries</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#ops</span>
-          <span class="chip dup-chip">#home-lab</span>
+          <span class="chip dup-chip" title="#ops">#ops</span>
+          <span class="chip dup-chip" title="#home-lab">#home-lab</span>
         </div>
       </a>
 
@@ -216,8 +239,8 @@
         </div>
         <p class="text-[13px] text-muted m-0">router, VLAN, DNS</p>
         <div class="flex flex-wrap items-center gap-1.5 mt-auto">
-          <span class="chip dup-chip">#nhà</span>
-          <span class="chip dup-chip">#home-lab</span>
+          <span class="chip dup-chip" title="#nhà">#nhà</span>
+          <span class="chip dup-chip" title="#home-lab">#home-lab</span>
         </div>
       </a>
 
@@ -267,12 +290,22 @@
   SAK.initChrome();
   const omni = document.getElementById('omni');
   const box = SAK.initOmnibox(omni);
-  document.querySelectorAll('[data-fill]').forEach(b => b.addEventListener('click', () => {
-    box.input.value = b.dataset.fill;
-    box.input.focus();
-    box.paint();
-  }));
-
+  document.querySelectorAll('[data-omni-scenario]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (box && typeof box.setScenario === 'function') {
+        box.setScenario(btn.dataset.omniScenario);
+      }
+    });
+  });
+  const simToast4Btn = document.getElementById('omni-sim-toast-4');
+  if (simToast4Btn) {
+    simToast4Btn.addEventListener('click', () => {
+      const sub = 'Hoàn tác chỉ xoá nội dung vừa lưu; mục và tag vẫn giữ · Undo only removes the saved entry; the item and tags stay';
+      ['wifi', 'docker', 'k8s', 'mạng nhà'].forEach((n) => {
+        SAK.toast(`Đã lưu vào “${n}” · Saved to “${n}”`, 'Hoàn tác', { sub, originEl: box ? box.input : simToast4Btn });
+      });
+    });
+  }
   /* Rail tag filter, menu, rename & delete with Undo toast */
   let activeTagFilter = null;
   let editingTagKey = null;
@@ -410,7 +443,7 @@
     const nextName = renameInput.value.trim().replace(/^#+/, '');
     if (!nextName) return;
     const existing = Array.from(document.querySelectorAll('[data-tag-item]'))
-      .find((el) => !el.hidden && el.dataset.tagItem !== editingTagKey && SAK.norm(el.dataset.tagItem) === SAK.norm(nextName));
+      .find((el) => !el.hidden && el.dataset.tagItem !== editingTagKey && (SAK.normIdentity ? SAK.normIdentity(el.dataset.tagItem) : SAK.norm(el.dataset.tagItem)) === (SAK.normIdentity ? SAK.normIdentity(nextName) : SAK.norm(nextName)));
     if (existing) {
       renameConflict.hidden = false;
       renameInput.setAttribute('aria-invalid', 'true');
@@ -440,7 +473,10 @@
       const tags = (card.dataset.tags || '').split(',').map((t) => (t === oldKey ? nextName : t));
       card.dataset.tags = tags.join(',');
       card.querySelectorAll('.dup-chip').forEach((chip) => {
-        if (chip.textContent.trim() === '#' + oldKey) chip.textContent = '#' + nextName;
+        if (chip.textContent.trim() === '#' + oldKey) {
+          chip.textContent = '#' + nextName;
+          chip.setAttribute('title', '#' + nextName);
+        }
       });
     });
     if (activeTagFilter === oldKey) {
