@@ -600,6 +600,13 @@ export interface ContentMutateOptions<TBody extends ContentMutationBody | undefi
    * Plaintext strings are forbidden at both compile time and runtime.
    */
   readonly body?: TBody;
+  /**
+   * Pre-serialized JSON string of `body` (e.g. frozen `serializedBody` from `sealNewEntry` /
+   * `sealEntryUpdate` / `sealEntryImportJson` — FU9, F-2, advisor-dec-212).
+   * When given, verified against `JSON.stringify(body)` before the first send and forwarded
+   * verbatim on every attempt/replay.
+   */
+  readonly serializedBody?: string;
   readonly idempotencyKey: string;
   readonly ifMatch?: string;
   /**
@@ -759,12 +766,25 @@ export async function contentMutate<
   }
 
   const method = opts.method;
-  const serializedBody: string | null =
-    opts.body !== undefined
-      ? JSON.stringify(opts.body)
-      : method === 'DELETE'
-        ? null
-        : '{}';
+  let serializedBody: string | null;
+  if (opts.serializedBody !== undefined) {
+    if (typeof opts.serializedBody !== 'string') {
+      throw new Error('contentMutate requires serializedBody to be a string when provided.');
+    }
+    if (opts.body === undefined) {
+      throw new Error('contentMutate cannot accept serializedBody without a body object.');
+    }
+    if (JSON.stringify(opts.body) !== opts.serializedBody) {
+      throw new Error('contentMutate serializedBody does not match JSON.stringify(body).');
+    }
+    serializedBody = opts.serializedBody;
+  } else if (opts.body !== undefined) {
+    serializedBody = JSON.stringify(opts.body);
+  } else if (method === 'DELETE') {
+    serializedBody = null;
+  } else {
+    serializedBody = '{}';
+  }
 
   const headers: Record<string, string> = {
     'Idempotency-Key': opts.idempotencyKey,
@@ -840,6 +860,11 @@ export interface ContentIdempotentOptions {
    */
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
+  /**
+   * Pre-serialized JSON string of the request body (FU9, F-2, advisor-dec-212).
+   * Verified against `JSON.stringify(body)` before any send and sent unchanged across attempts/replays.
+   */
+  readonly serializedBody?: string;
   /**
    * Optional per-attempt outcome observer invoked once per `contentMutate` attempt after the
    * outcome is classified, not per underlying HTTP send (an internal silent-refresh replay inside
@@ -925,6 +950,7 @@ export function itemCreate(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -954,6 +980,7 @@ export function itemUpdate(
     ifMatch: resolveVersionIfMatch(opts.ifMatch),
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -969,6 +996,7 @@ export function itemDelete(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -986,6 +1014,7 @@ export function itemRestore(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1003,6 +1032,7 @@ export function itemTagsAdd(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1019,6 +1049,7 @@ export function itemTagRemove(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1036,6 +1067,7 @@ export function itemEntriesReorder(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1074,6 +1106,7 @@ export function tagUpsert(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1091,6 +1124,7 @@ export function tagRename(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1106,6 +1140,7 @@ export function tagDelete(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1123,6 +1158,7 @@ export function tagRestore(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1161,6 +1197,7 @@ export function entryCreate(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1178,6 +1215,7 @@ export function entryImportJson(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1207,6 +1245,7 @@ export function entryUpdate(
     ifMatch: resolveVersionIfMatch(opts.ifMatch),
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1222,6 +1261,7 @@ export function entryDelete(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
@@ -1239,6 +1279,7 @@ export function entryRestore(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    serializedBody: opts.serializedBody,
     onAttempt: opts.onAttempt,
   });
 }
