@@ -21,9 +21,12 @@ CREATE TABLE item (
 CREATE INDEX item_user_name_prefix ON item (user_id, name_normalized text_pattern_ops)
   WHERE deleted_at IS NULL;
 CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops);
-CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC, id DESC)
+  WHERE deleted_at IS NULL;
 CREATE INDEX item_user_created ON item (user_id, created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX item_user_name_exact ON item (user_id, name_normalized, created_at, id)
+CREATE INDEX item_user_name_exact ON item (user_id, name_normalized, created_at DESC, id ASC)
+  WHERE deleted_at IS NULL;
+CREATE INDEX item_user_name_alpha ON item (user_id, name_normalized ASC, id ASC)
   WHERE deleted_at IS NULL;
 CREATE INDEX item_purge_idx ON item (deleted_at) WHERE deleted_at IS NOT NULL;
 
@@ -44,7 +47,7 @@ CREATE UNIQUE INDEX tag_user_norm_uq ON tag (user_id, normalized) WHERE deleted_
 CREATE INDEX tag_user_norm_prefix ON tag (user_id, normalized text_pattern_ops)
   WHERE deleted_at IS NULL;
 CREATE INDEX tag_norm_trgm ON tag USING gin (tag_unaccent gin_trgm_ops);
-CREATE INDEX tag_user_recent ON tag (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX tag_user_recent ON tag (user_id, last_used_at DESC, id DESC) WHERE deleted_at IS NULL;
 CREATE INDEX tag_purge_idx ON tag (deleted_at) WHERE deleted_at IS NOT NULL;
 
 CREATE TABLE item_tag (
