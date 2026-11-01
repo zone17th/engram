@@ -93,6 +93,7 @@
       "plainBadge": "Plaintext on server",
       "plainTitle": "Names, tags, hints & search queries",
       "plainBody": "Item names (name), tags (tag), hints (hint), and the text you search are NOT encrypted so keyword search and suggestions work. The server also sees entry type, timestamps, counts, and can infer plaintext length from ciphertext size. Never put passwords or secrets in item names, tags, or hints.",
+      "tableAriaLabel": "Data encryption and server visibility summary",
       "tableColData": "Data",
       "tableColServer": "On server",
       "tableColPurpose": "Purpose",
