@@ -1224,7 +1224,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeKeepMine);
     expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
     expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
-    assertNoPlaintextAttrs(h.container, [PRE_LOCK_DRAFT]);
+    assertNoPlaintextAttrs(h.container, [PRE_LOCK_DRAFT], { locked: true });
     expect(findCacheSentinelLeaks(h.qc, [PRE_LOCK_DRAFT])).toEqual([]);
   });
 
@@ -1375,6 +1375,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     h.server.item.version = 4;
     h.server.item.name = 'remote-name-v4';
 
+    // 1. Item 412 "Keep mine": overwrites using the latest server version (4 -> 5)
     fireEvent.change(nameInput, { target: { value: 'my-conflicting-typed-name' } });
     fireEvent.blur(nameInput);
 
@@ -1382,6 +1383,35 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
     });
     expect(nameInput).toHaveValue('my-conflicting-typed-name');
+
+    fireEvent.click(screen.getByTestId('item-conflict-keep-mine'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+      expect(h.server.item.version).toBe(5);
+      expect(h.server.item.name).toBe('my-conflicting-typed-name');
+    });
+
+    // 2. Item 412 "Load latest": discards typed value and loads the latest server name/hint (version 6)
+    h.server.item.version = 6;
+    h.server.item.name = 'remote-latest-name-v6';
+    h.server.item.hint = 'remote-latest-hint-v6';
+
+    fireEvent.change(nameInput, { target: { value: 'local-discarded-name' } });
+    fireEvent.blur(nameInput);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    });
+    expect(nameInput).toHaveValue('local-discarded-name');
+
+    fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+      expect(nameInput).toHaveValue('remote-latest-name-v6');
+      expect(hintInput).toHaveValue('remote-latest-hint-v6');
+    });
   });
 
   it('IP15-BE1-4: stops draining item PATCH queue on an uncertain outcome, retains exact If-Match/body/Idempotency-Key for Retry, and then sends queued hint using the confirmed version', async () => {
@@ -1860,7 +1890,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
     expect(h.container.textContent).not.toContain(SENTINEL_BODY);
     expect(h.container.textContent).not.toContain(SENTINEL_DRAFT);
-    assertNoPlaintextAttrs(h.container, [SENTINEL_BODY, SENTINEL_DRAFT]);
+    assertNoPlaintextAttrs(h.container, [SENTINEL_BODY, SENTINEL_DRAFT], { locked: true });
     expect(findCacheSentinelLeaks(h.qc, [SENTINEL_BODY, SENTINEL_DRAFT])).toEqual([]);
 
     // 4. Unlock again -> shows "Bản nháp chưa lưu đã bị xoá khi khoá vault"
@@ -2349,5 +2379,85 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(cards).toEqual([ENTRY_ID_1, ENTRY_ID_2]);
     });
     expect(screen.getByTestId('btn-add-text')).not.toBeDisabled();
+  });
+
+  it('IP15-FE1-4: 404 on entry PUT keeps draft and "Save as new entry" creates a new entry via POST /items/{id}/entries; desktop drag-and-drop reorders cards', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [
+        { id: ENTRY_ID_1, text: 'Entry 1 body', position: 0 },
+        { id: ENTRY_ID_2, text: 'Entry 2 body', position: 1 },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-card-${ENTRY_ID_1}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`entry-card-${ENTRY_ID_2}`)).toBeInTheDocument();
+    });
+
+    // Part 1: Desktop drag-and-drop reorder (drag ENTRY_ID_1 at index 0 onto ENTRY_ID_2 at index 1)
+    vi.useFakeTimers();
+    try {
+      const dragHandle1 = screen.getByTestId(`entry-drag-handle-${ENTRY_ID_1}`);
+      const targetCard2 = screen.getByTestId(`entry-card-${ENTRY_ID_2}`);
+
+      fireEvent.dragStart(dragHandle1);
+      fireEvent.dragOver(targetCard2);
+      fireEvent.drop(targetCard2);
+      fireEvent.dragEnd(dragHandle1);
+
+      // Immediate optimistic order: [ENTRY_ID_2, ENTRY_ID_1]
+      const cardsAfterDrop = screen
+        .getAllByTestId(/^entry-card-/)
+        .map((el) => el.getAttribute('data-entry-card'));
+      expect(cardsAfterDrop).toEqual([ENTRY_ID_2, ENTRY_ID_1]);
+
+      await act(async () => {
+        vi.advanceTimersByTime(450);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => {
+      expect(
+        h.server.requests.filter((r) => r.url.endsWith('/entries/reorder')),
+      ).toHaveLength(1);
+    });
+    const dragReorderBody = JSON.parse(
+      h.server.requests.find((r) => r.url.endsWith('/entries/reorder'))!.rawBody,
+    ) as { entry_ids: string[] };
+    expect(dragReorderBody.entry_ids).toEqual([ENTRY_ID_2, ENTRY_ID_1]);
+
+    // Part 2: 404 on entry PUT -> deletedRemotely banner -> "Save as new entry" creates a new entry
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textarea = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'Draft rescued via Save as new entry' } });
+
+    // Remote device deletes ENTRY_ID_1 on server while editing
+    const rec1 = h.server.entries.get(ENTRY_ID_1)!;
+    rec1.deleted = true;
+
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+    expect(textarea).toHaveValue('Draft rescued via Save as new entry');
+    expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
+
+    // Click "Save as new entry" -> seals and POSTs to /items/{id}/entries
+    fireEvent.click(screen.getByTestId(`entry-save-as-new-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(
+        h.server.requests.some(
+          (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+        ),
+      ).toBe(true);
+      expect(screen.getAllByTestId('entry-body')).toHaveLength(2);
+    });
+
+    const bodiesText = screen.getAllByTestId('entry-body').map((el) => el.textContent);
+    expect(bodiesText).toContain('Draft rescued via Save as new entry');
   });
 });
