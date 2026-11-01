@@ -1,5 +1,5 @@
 import { ERROR_CODES, ProblemError, type ProblemDetails } from '@engram/shared-types';
-import { onlineManager, QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query';
+import { MutationObserver, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import {
   classifyContentMutationError,
   classifyPreLookupError,
   contentMutate,
+  contentMutationOptions,
   createIdempotencyKey,
   entriesChanges,
   entryCreate,
@@ -1014,76 +1015,86 @@ describe('lib/api/content', () => {
       expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
     });
 
-    it(
-      'CCFE3 & CCFE2-2: forces networkMode: "always" on useContentMutation so mutations execute immediately under onlineManager.setOnline(false) while plain useMutation stays isPaused',
-      async () => {
-        onlineManager.setOnline(false);
-        Object.defineProperty(navigator, 'onLine', {
-          value: false,
-          configurable: true,
-          writable: true,
-        });
+    it('CCFE3 (advisor-dec-134): useContentMutation wires contentMutationOptions into useMutation (gcTime 0, retry false, networkMode always, plaintext guard)', async () => {
+      const queryClient = new QueryClient();
+      const wrapper = ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client: queryClient }, children);
+      const { result, unmount } = renderHook(
+        () =>
+          useContentMutation<{ ok: boolean }, Error, EntryCreateRequest>({
+            mutationFn: async (vars) => ({ ok: Boolean(vars.id) }),
+          }),
+        { wrapper },
+      );
+      // Same online renderHook pattern as the gcTime test above; fail with a clear message if the
+      // effect that sets result.current did not flush.
+      expect(result.current, 'renderHook did not flush its result effect').not.toBeNull();
 
+      await act(async () => {
+        await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
+      });
+      // The mutation is still in the cache while the hook is mounted: its options are what the hook passed.
+      const mutation = queryClient.getMutationCache().getAll()[0];
+      expect(mutation?.options).toMatchObject({ gcTime: 0, retry: false, networkMode: 'always' });
+      const built = contentMutationOptions<{ ok: boolean }, Error, EntryCreateRequest>({
+        mutationFn: async (vars) => ({ ok: Boolean(vars.id) }),
+      });
+      expect(built).toMatchObject({ gcTime: 0, retry: false, networkMode: 'always' });
+      await expect(
+        built.mutationFn?.({ plaintext: 'x' } as unknown as EntryCreateRequest, undefined as never),
+      ).rejects.toThrow(/forbids plaintext fields/);
+      unmount();
+    });
+
+    it(
+      'CCFE3 & CCFE2-2: contentMutationOptions forces networkMode "always" so mutations run immediately under onlineManager.setOnline(false), while plain options stay isPaused (no React)',
+      async () => {
         const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
         fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+        const queryClient = new QueryClient();
+        try {
+          onlineManager.setOnline(false);
+          Object.defineProperty(navigator, 'onLine', {
+            value: false,
+            configurable: true,
+            writable: true,
+          });
 
-        const queryClient = new QueryClient({
-          defaultOptions: {
-            mutations: {
-              retry: false,
-            },
-          },
-        });
-        const wrapper = ({ children }: { children: ReactNode }) =>
-          createElement(QueryClientProvider, { client: queryClient }, children);
+          // 1) Negative proof (CCFE2-2): default networkMode "online" pauses and NEVER calls fetch.
+          const pausedKey = createIdempotencyKey();
+          const plainObserver = new MutationObserver<unknown, Error, EntryCreateRequest>(queryClient, {
+            mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey: pausedKey }),
+          });
+          // Not awaited: a paused mutation stays pending until the network returns.
+          plainObserver.mutate(SAMPLE_ENTRY_CREATE).catch(() => undefined);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(plainObserver.getCurrentResult().isPaused).toBe(true);
+          expect(fetchMock).toHaveBeenCalledTimes(0);
+          plainObserver.reset();
+          queryClient.getMutationCache().clear();
 
-        // 1) Negative proof (CCFE2-2): a plain useMutation (default networkMode: "online") under
-        // onlineManager.setOnline(false) pauses in MutationCache and NEVER calls fetch.
-        const idempotencyKeyPaused = createIdempotencyKey();
-        const { result: plainResult } = renderHook(
-          () =>
-            useMutation<unknown, Error, EntryCreateRequest>({
-              mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey: idempotencyKeyPaused }),
+          // 2) Positive proof (CCFE3): contentMutationOptions executes immediately while offline
+          // (3 attempts, network retries have zero delay) and surfaces an `offline` error.
+          const key = createIdempotencyKey();
+          const contentObserver = new MutationObserver<unknown, Error, EntryCreateRequest>(
+            queryClient,
+            contentMutationOptions<unknown, Error, EntryCreateRequest>({
+              mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey: key }),
             }),
-          { wrapper },
-        );
+          );
+          const caught = await contentObserver.mutate(SAMPLE_ENTRY_CREATE).catch((err: unknown) => err);
 
-        await act(async () => {
-          plainResult.current.mutate(SAMPLE_ENTRY_CREATE);
-          await Promise.resolve();
-        });
-
-        expect(plainResult.current.isPaused).toBe(true);
-        expect(fetchMock).toHaveBeenCalledTimes(0);
-
-        // 2) Positive proof (CCFE3): useContentMutation enforces networkMode: "always", so even under
-        // onlineManager.setOnline(false) and navigator.onLine === false it executes immediately (3 fetch attempts)
-        // and never parks sealed payloads in an offline queue across a vault lock.
-        const idempotencyKey = createIdempotencyKey();
-        const { result } = renderHook(
-          () =>
-            useContentMutation<unknown, Error, EntryCreateRequest>({
-              mutationFn: (vars) => entryCreate(SAMPLE_ITEM_ID, vars, { idempotencyKey }),
-            }),
-          { wrapper },
-        );
-
-        let caughtOfflineErr: unknown;
-        await act(async () => {
-          try {
-            await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
-          } catch (err) {
-            caughtOfflineErr = err;
-          }
-        });
-
-        expect(result.current.isPaused).toBe(false);
-        expect(fetchMock).toHaveBeenCalledTimes(3);
-        expect(caughtOfflineErr).toBeInstanceOf(TypeError);
-        const classified = classifyContentMutationError(caughtOfflineErr);
-        expect(classified.kind).toBe('offline');
-        expect(classified.i18nKey).toBe('content.errors.offline');
-        expect(classified.canRetrySameBytes).toBe(true);
+          expect(contentObserver.getCurrentResult().isPaused).toBe(false);
+          expect(fetchMock).toHaveBeenCalledTimes(3);
+          expect(caught).toBeInstanceOf(TypeError);
+          const classified = classifyContentMutationError(caught);
+          expect(classified.kind).toBe('offline');
+          expect(classified.i18nKey).toBe('content.errors.offline');
+          expect(classified.canRetrySameBytes).toBe(true);
+        } finally {
+          onlineManager.setOnline(true);
+          queryClient.getMutationCache().clear();
+        }
       },
       15_000,
     );

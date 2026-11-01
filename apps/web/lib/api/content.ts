@@ -1247,21 +1247,22 @@ function assertSafeMutationVariables(variables: unknown): void {
 }
 
 /**
- * Wraps TanStack `useMutation` with `gcTime: 0`, `retry: false` (retries are handled inside
- * `contentMutate` with stable serialized bytes + `Idempotency-Key`), and `networkMode: 'always'`
- * (never pauses/queues mutations offline across a vault lock — SPEC §7.7, §3.4 step 6, CCFE3),
- * and enforces that variables contain only sealed payloads or metadata (never plaintext body — plan §2.10, P4FE1-2).
+ * The exact options `useContentMutation` hands to TanStack `useMutation`: `gcTime: 0`, `retry: false`
+ * (retries are handled inside `contentMutate` with stable serialized bytes + `Idempotency-Key`),
+ * `networkMode: 'always'` (never pauses/queues mutations offline across a vault lock — SPEC §7.7,
+ * §3.4 step 6, CCFE3) and a `mutationFn` wrapper that rejects plaintext variables
+ * (plan §2.10, P4FE1-2). Exported so tests can drive a `MutationObserver` without React.
  */
-export function useContentMutation<
+export function contentMutationOptions<
   TData = unknown,
   TError = unknown,
   TVariables extends object | void = void,
   TContext = unknown,
 >(
   options: UseContentMutationOptions<TData, TError, TVariables, TContext>,
-): UseMutationResult<TData, TError, SafeContentMutationVariables<TVariables>, TContext> {
+): UseMutationOptions<TData, TError, SafeContentMutationVariables<TVariables>, TContext> {
   const { mutationFn, ...rest } = options;
-  return useMutation<TData, TError, SafeContentMutationVariables<TVariables>, TContext>({
+  return {
     ...rest,
     gcTime: 0,
     retry: false,
@@ -1272,5 +1273,23 @@ export function useContentMutation<
           return mutationFn(variables, context);
         }
       : undefined,
-  });
+  };
+}
+
+/**
+ * Wraps TanStack `useMutation` with `contentMutationOptions` (`gcTime: 0`, `retry: false`,
+ * `networkMode: 'always'`) and enforces that variables contain only sealed payloads or metadata
+ * (never plaintext body — plan §2.10, P4FE1-2).
+ */
+export function useContentMutation<
+  TData = unknown,
+  TError = unknown,
+  TVariables extends object | void = void,
+  TContext = unknown,
+>(
+  options: UseContentMutationOptions<TData, TError, TVariables, TContext>,
+): UseMutationResult<TData, TError, SafeContentMutationVariables<TVariables>, TContext> {
+  return useMutation<TData, TError, SafeContentMutationVariables<TVariables>, TContext>(
+    contentMutationOptions(options),
+  );
 }
