@@ -148,6 +148,18 @@ func IsAllowedCreateType(t string) bool {
 	return t == TypeText || t == TypeJSON
 }
 
+// ImportSourcePaste và ImportSourceFile là hai giá trị hợp lệ của `source` trên `POST /items/{id}/entries/import-json`
+// (plan mục 2.3, 3, Task 6c).
+const (
+	ImportSourcePaste = "paste"
+	ImportSourceFile  = "file"
+)
+
+// IsAllowedImportSource kiểm tra `source` gửi qua `entryImportJson` chỉ nhận `"paste"` hoặc `"file"` (plan mục 3, Task 6c).
+func IsAllowedImportSource(src string) bool {
+	return src == ImportSourcePaste || src == ImportSourceFile
+}
+
 // ExpectedPlaintextLenBucket tính `ceil((ciphertextLen - 16) / 256) * 256` (SPEC §5.5, plan mục 2.3, 2.6).
 // Yêu cầu `ciphertextLen >= CiphertextMinBytes` (17).
 func ExpectedPlaintextLenBucket(ciphertextLen int) (int32, bool) {

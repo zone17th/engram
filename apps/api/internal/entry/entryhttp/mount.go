@@ -53,14 +53,15 @@ type ContentDeps interface {
 	ChainEntryWrite(d httpx.Deps, requireIfMatch bool, fn http.HandlerFunc) http.Handler
 }
 
-// Mount đăng ký các route `/api/v1/items/{id}/entries*` và `/api/v1/entries/{id}*` của Task 6a–6b:
-//   - GET    /items/{id}/entries         (`itemEntriesList`): S
-//   - POST   /items/{id}/entries         (`entryCreate`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
-//   - PATCH  /items/{id}/entries/reorder (`itemEntriesReorder`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
-//   - GET    /entries/{id}               (`entryGet`): S
-//   - PUT    /entries/{id}               (`entryUpdate`): S + C + I + R + M (qua `ChainEntryWrite(d, true, ...)`)
-//   - DELETE /entries/{id}               (`entryDelete`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
-//   - POST   /entries/{id}/restore       (`entryRestore`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+// Mount đăng ký các route `/api/v1/items/{id}/entries*` và `/api/v1/entries/{id}*` của Task 6a–6c:
+//   - GET    /items/{id}/entries             (`itemEntriesList`): S
+//   - POST   /items/{id}/entries             (`entryCreate`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - POST   /items/{id}/entries/import-json (`entryImportJson`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - PATCH  /items/{id}/entries/reorder     (`itemEntriesReorder`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - GET    /entries/{id}                   (`entryGet`): S
+//   - PUT    /entries/{id}                   (`entryUpdate`): S + C + I + R + M (qua `ChainEntryWrite(d, true, ...)`)
+//   - DELETE /entries/{id}                   (`entryDelete`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - POST   /entries/{id}/restore           (`entryRestore`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
 func Mount(c ContentDeps) func(v1 chi.Router, d httpx.Deps) {
 	return func(v1 chi.Router, d httpx.Deps) {
 		if c == nil || c.ContentPool() == nil {
@@ -84,6 +85,7 @@ func Mount(c ContentDeps) func(v1 chi.Router, d httpx.Deps) {
 
 		// Các route ghi (cột S+C+I+R[+M]) bắt buộc đi qua ChainEntryWrite (trần 400 KiB -> 413 entry_too_large).
 		v1.Method(http.MethodPost, "/items/{id}/entries", c.ChainEntryWrite(d, false, h.entryCreate))
+		v1.Method(http.MethodPost, "/items/{id}/entries/import-json", c.ChainEntryWrite(d, false, h.entryImportJSON))
 		v1.Method(http.MethodPut, "/entries/{id}", c.ChainEntryWrite(d, true, h.entryUpdate))
 		v1.Method(http.MethodDelete, "/entries/{id}", c.ChainEntryWrite(d, false, h.entryDelete))
 		v1.Method(http.MethodPost, "/entries/{id}/restore", c.ChainEntryWrite(d, false, h.entryRestore))
@@ -149,6 +151,28 @@ func (h *handler) entryCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.createAndCommitEntry(w, r, p, itemID, entryID, *req.Type, payload, nil)
+}
+
+// createAndCommitEntry thực thi phần giao dịch tạo entry dùng chung giữa `entryCreate` và `entryImportJson`
+// (plan mục 2.5, 2.6, 3, Task 6a, Task 6c):
+//   - Mở mutation tx qua `BeginMutationTx`.
+//   - Tuân thủ đúng thứ tự khoá toàn cục mục 2.5: (1) `LockVaultKeyForShare` (+ so khớp `key_id`),
+//     (2) `LockUserContent`, (3) `LockItemForUpdate`, (5) kiểm tra `EntryIDExistsGlobal`, trần 200 entry sống,
+//     `InsertEntry` và `AddItemEntryCount`.
+//   - Nếu `beforeCommit != nil` (ví dụ ghi bản ghi audit `entry.import` của Task 6c), thực thi ngay trong cùng
+//     transaction `tx` trước `CommitIdempotencyTx` để đảm bảo nguyên tử (rollback thì không có hàng audit,
+//     replay idempotent được middleware trả trước handler nên không ghi lần hai).
+func (h *handler) createAndCommitEntry(
+	w http.ResponseWriter,
+	r *http.Request,
+	p authctx.Principal,
+	itemID uuid.UUID,
+	entryID uuid.UUID,
+	entryType string,
+	payload entry.ValidatedPayload,
+	beforeCommit func(ctx context.Context, tx pgx.Tx) error,
+) {
 	ctx := r.Context()
 	pool := h.c.ContentPool()
 	tx, err := httpx.BeginMutationTx(ctx, pool)
@@ -238,7 +262,7 @@ func (h *handler) entryCreate(w http.ResponseWriter, r *http.Request) {
 		ID:                 entryID,
 		UserID:             p.UserID,
 		ItemID:             itemID,
-		Type:               *req.Type,
+		Type:               entryType,
 		Envelope:           payload.EnvelopeBytes,
 		Ciphertext:         payload.CiphertextBytes,
 		PlaintextLenBucket: payload.PlaintextLenBucket,
@@ -263,6 +287,16 @@ func (h *handler) entryCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if beforeCommit != nil {
+		if err := beforeCommit(ctx, tx); err != nil {
+			if httpx.WriteContentTxError(ctx, w, r, pool, tx, err) {
+				return
+			}
+			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", httpx.ProblemTitle("internal_error")+".")
+			return
+		}
+	}
+
 	meta := entry.MetaFromInsertRow(inserted)
 	respBytes, err := json.Marshal(meta)
 	if err != nil {
@@ -278,7 +312,7 @@ func (h *handler) entryCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.recordEntryCreated(*req.Type)
+	h.recordEntryCreated(entryType)
 	writeRawJSON(w, http.StatusCreated, respBytes)
 }
 
