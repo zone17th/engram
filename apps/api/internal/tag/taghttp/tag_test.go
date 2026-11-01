@@ -254,6 +254,7 @@ func awaitAsyncResult(t testing.TB, label string, ch <-chan asyncReqResult) asyn
 		return asyncReqResult{}
 	}
 }
+
 func awaitUserContentLockWaiter(t testing.TB, h *contenttest.Harness, userID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
@@ -879,8 +880,9 @@ func TestAssignItemTagsLimit20ParallelFrom19AndAdditiveSnapshot(t *testing.T) {
 
 	resA := awaitAsyncResult(t, "parallel assign A", chA)
 	resB := awaitAsyncResult(t, "parallel assign B", chB)
-	if !((resA.resp.StatusCode == http.StatusOK && resB.resp.StatusCode == http.StatusConflict) ||
-		(resA.resp.StatusCode == http.StatusConflict && resB.resp.StatusCode == http.StatusOK)) {
+	oneWinsOneConflicts := (resA.resp.StatusCode == http.StatusOK && resB.resp.StatusCode == http.StatusConflict) ||
+		(resA.resp.StatusCode == http.StatusConflict && resB.resp.StatusCode == http.StatusOK)
+	if !oneWinsOneConflicts {
 		t.Fatalf("parallel assigns from 19 tags: A=%d (%s) B=%d (%s), want one 200 and one 409",
 			resA.resp.StatusCode, resA.body, resB.resp.StatusCode, resB.body)
 	}
