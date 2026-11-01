@@ -68,6 +68,7 @@ export {
   clearAllUnconfirmedSaves,
   dismissUnconfirmedSave,
   getUnconfirmedSavesSnapshot,
+  peekUnconfirmedSavesForTests,
   reconcileUnconfirmedSavesUser,
   recordUnconfirmedSave,
   subscribeUnconfirmedSaves,

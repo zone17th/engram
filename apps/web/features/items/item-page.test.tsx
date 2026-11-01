@@ -20,8 +20,12 @@ import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
   getUnconfirmedSavesSnapshot,
+  peekUnconfirmedSavesForTests,
+  recordUnconfirmedSave,
   resetEntryBodyLoadLimiterForTests,
+  subscribeUnconfirmedSaves,
 } from '@/features/entries';
+import { subscribeUserChanged } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
@@ -388,6 +392,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     server: ServerSimulator;
     signOutSession: () => Promise<void>;
     loginSession: (email: string, password: string) => Promise<void>;
+    signupSession: (email: string, password: string) => Promise<void>;
+    completeOAuthSession: () => Promise<void>;
     unlock: () => Promise<void>;
     lock: () => Promise<void>;
     setCurrentMe: (me: Me) => void;
@@ -406,11 +412,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     let vaultCtx!: VaultContextValue;
     let signOutFn!: () => Promise<void>;
     let loginFn!: (args: { email: string; password: string }) => Promise<unknown>;
+    let signupFn!: (args: { email: string; password: string }) => Promise<unknown>;
+    let oauthCompleteFn!: () => Promise<unknown>;
     function Probe() {
       vaultCtx = useVault();
       const sess = useSession();
       signOutFn = () => sess.signOut();
       loginFn = (args) => sess.login(args);
+      signupFn = (args) => sess.signup(args);
+      oauthCompleteFn = () => sess.completeOAuthLogin();
       return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
     }
 
@@ -519,6 +529,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
       if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 });
       if (url.endsWith('/auth/login')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/signup')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/oauth/complete')) return jsonResponse(currentMe);
       if (url.endsWith('/vault')) {
         if (!createdVault) return problemResponse('vault_absent', 404);
         return jsonResponse(makeVaultGetResponse(createdVault, KEY_ID, 1));
@@ -874,6 +886,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       loginSession: async (email, password) => {
         await act(async () => {
           await loginFn({ email, password });
+        });
+      },
+      signupSession: async (email, password) => {
+        await act(async () => {
+          await signupFn({ email, password });
+        });
+      },
+      completeOAuthSession: async () => {
+        await act(async () => {
+          await oauthCompleteFn();
         });
       },
       setCurrentMe: (nextMe) => {
@@ -1581,12 +1603,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     const { promise: getAGate, resolve: releaseGetA } = createDeferred();
     const { promise: getAEntered, resolve: notifyGetAEntered } = createDeferred();
+    const { promise: getAResurned, resolve: notifyGetAReturned } = createDeferred();
+    let getACompletedCount = 0;
     let holdGetA = true;
     h.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdGetA) {
         notifyGetAEntered();
         await getAGate;
+        getACompletedCount += 1;
+        queueMicrotask(() => notifyGetAReturned());
       }
       return null;
     });
@@ -1623,16 +1649,21 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const putsWhileBInFlight = h.server.requests.filter((r) => r.method === 'PUT').length;
     expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
 
-    // Release stale fallback GET A while PUT B is still in flight -> Save must stay disabled and Ctrl+S must send no extra PUT
+    // IP15-FE3-5: Release stale fallback GET A while PUT B is still in flight, wait for the route override
+    // counter + several macrotask turns so A's continuation (fetch -> Response.json() -> entryGet -> catch/finally)
+    // has genuinely finished, then assert Save is still disabled and Ctrl+S sends no extra PUT
     releaseGetA();
+    await getAResurned;
+    expect(getACompletedCount).toBe(1);
     await act(async () => {
-      await Promise.resolve();
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
     });
     expect(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeDisabled();
     fireEvent.keyDown(textareaB, { key: 's', ctrlKey: true });
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsWhileBInFlight);
-
     // Only B settling releases B's guard and commits 'New post-unlock draft B'
     releasePutB();
     await waitFor(() => {
@@ -2933,29 +2964,90 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
     });
 
-    // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5)
-    h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
-    failPutWithSessionInvalid = false;
-    h.setCurrentMe(makeMe(USER_B_ID, 'present'));
-    await h.loginSession('b@example.test', 'pw');
-
-    // Store clears BEFORE any detail page mounts
-    await waitFor(() => {
-      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    // Track user-changed notifications and store subscriber notifications (advisor-dec-199, IP15-BE3-3, FE3-3, FE3-4)
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
     });
 
-    // Log User A back in and remount ItemDetailPage -> User A's prior record does NOT return
-    await waitFor(() => {
-      expect(h.vault().inFlight).toBe(false);
-    });
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    await h.loginSession('a@example.test', 'pw');
-    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
-    h.rerenderPage();
-    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+    try {
+      // Same-user re-login (User A -> User A) must NOT emit notifyUserChanged and must NOT clear User A's record
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([]);
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+      // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5 / BE3-3)
+      h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
+      failPutWithSessionInvalid = false;
+      const emitsBeforeSwitch = storeEmitCount;
+
+      // User B logs in with no item page mounted -> eagerly notifies user change and clears the store WITHOUT any snapshot read
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await h.loginSession('b@example.test', 'pw');
+      expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
+      expect(storeEmitCount).toBeGreaterThan(emitsBeforeSwitch);
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+
+      // Log User A back in without any intervening store read/detail mount, then remount -> User A's prior notice does NOT return
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+      });
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      expect(userChangedEvents).toEqual([
+        { prev: USER_A_ID, next: USER_B_ID },
+        { prev: USER_B_ID, next: USER_A_ID },
+      ]);
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      h.rerenderPage();
+      expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+
+      // Verify signup and OAuth callback paths also emit notifyUserChanged and clear the store away from the detail route (advisor-dec-199)
+      h.rerenderPage(<div data-testid="away-for-signup-oauth">Away</div>);
+      recordUnconfirmedSave({
+        userId: USER_A_ID,
+        itemId: ITEM_ID,
+        itemName: 'wifi',
+        source: 'entry',
+      });
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+      // Signup as User B -> notifies and clears User A's record
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await h.signupSession('b-signup@example.test', 'pw');
+      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
+        prev: USER_A_ID,
+        next: USER_B_ID,
+      });
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+
+      // Record for User B, then complete OAuth login as User A -> notifies and clears User B's record
+      recordUnconfirmedSave({
+        userId: USER_B_ID,
+        itemId: ITEM_ID,
+        itemName: 'wifi-b',
+        source: 'entry',
+      });
+      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.completeOAuthSession();
+      expect(userChangedEvents[userChangedEvents.length - 1]).toEqual({
+        prev: USER_B_ID,
+        next: USER_A_ID,
+      });
+      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+    } finally {
+      unsubUserChanged();
+      unsubStore();
+    }
   });
 
   it('"+ Văn bản" creates a new text entry via sealNewEntry + POST /items/{id}/entries and renders it in position order', async () => {
