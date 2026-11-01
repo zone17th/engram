@@ -114,6 +114,23 @@ type EmailVerification struct {
 	CreatedAt            pgtype.Timestamptz
 }
 
+type Entry struct {
+	ID                 uuid.UUID
+	UserID             uuid.UUID
+	ItemID             uuid.UUID
+	Type               string
+	Position           int32
+	Envelope           []byte
+	Ciphertext         []byte
+	PlaintextLenBucket int32
+	Version            int32
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	DeletedAt          pgtype.Timestamptz
+	DeletedVia         *string
+	DeleteBatch        *uuid.UUID
+}
+
 type IdempotencyKey struct {
 	UserID      uuid.UUID
 	Key         string
@@ -127,6 +144,28 @@ type IdempotencyKey struct {
 	StatusCode  *int32
 	Response    []byte
 	CreatedAt   pgtype.Timestamptz
+}
+
+type Item struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Name           string
+	NameNormalized string
+	NameUnaccent   *string
+	Hint           *string
+	EntryCount     int32
+	Version        int32
+	LastUsedAt     pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	DeletedAt      pgtype.Timestamptz
+	DeleteBatch    *uuid.UUID
+}
+
+type ItemTag struct {
+	ItemID    uuid.UUID
+	TagID     uuid.UUID
+	CreatedAt pgtype.Timestamptz
 }
 
 type OauthReauthReceipt struct {
@@ -258,6 +297,19 @@ type SessionRefreshUsed struct {
 	TokenHash []byte
 	SessionID uuid.UUID
 	UsedAt    pgtype.Timestamptz
+}
+
+type Tag struct {
+	ID          uuid.UUID
+	UserID      uuid.UUID
+	Display     string
+	Normalized  string
+	TagUnaccent *string
+	ItemCount   int32
+	LastUsedAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	DeletedAt   pgtype.Timestamptz
 }
 
 type UserNotification struct {
