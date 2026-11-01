@@ -2,6 +2,13 @@
 
 import { cn } from '@/lib/cn';
 
+/*
+ * Static toast: one caller-placed notice with its own role="status", no timer, no stack and
+ * no keyboard shortcut. For reversible actions use `ui/undo-toast.tsx` (provider-managed stack,
+ * timers, Ctrl/⌘+Z, one shared live region). They stay separate because their behaviour
+ * differs; both share the `.toast` look from styles/tokens.css.
+ */
+
 /** Toast tĩnh: hiển thị thông báo + một hành động. Không tự hẹn giờ đóng ở P01.
  * Action là <button> trần — style bởi .toast button trong tokens.css (không gắn .btn).
  */

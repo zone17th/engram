@@ -481,6 +481,19 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-a11y-settings-remember-device-vi-dark-768.png',
   'vault-a11y-settings-remember-device-vi-dark-1440.png',
   // P04 content screenshot allowlist block (W3/W4 lanes append content screenshot names here):
+  // P04 uipolish capture (advisor-dec-187 D3, e2e/content-uipolish-capture.spec.ts): public landing only.
+  'landing-en-light-390.png',
+  'landing-en-light-768.png',
+  'landing-en-light-1440.png',
+  'landing-en-dark-390.png',
+  'landing-en-dark-768.png',
+  'landing-en-dark-1440.png',
+  'landing-vi-light-390.png',
+  'landing-vi-light-768.png',
+  'landing-vi-light-1440.png',
+  'landing-vi-dark-390.png',
+  'landing-vi-dark-768.png',
+  'landing-vi-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440', 'content']);
 
