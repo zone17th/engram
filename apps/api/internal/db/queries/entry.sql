@@ -334,3 +334,49 @@ WHERE entry.user_id = sqlc.arg('user_id')
       AND occupied.deleted_at IS NULL
       AND occupied.position = sqlc.arg('restored_position')
   );
+
+-- name: LockExpiredItemsForPurgeByUserBatch :many
+SELECT i.id
+FROM item AS i
+WHERE i.user_id = sqlc.arg('user_id')
+  AND i.id IN (
+    SELECT expired.id
+    FROM item AS expired
+    WHERE expired.user_id = sqlc.arg('user_id')
+      AND expired.deleted_at IS NOT NULL
+      AND expired.deleted_at < sqlc.arg('cutoff')
+    ORDER BY expired.deleted_at ASC, expired.id ASC
+    LIMIT sqlc.arg('batch_limit')
+  )
+ORDER BY i.id ASC
+FOR UPDATE;
+
+-- name: LockExpiredTagsForPurgeByUserBatch :many
+SELECT t.id
+FROM tag AS t
+WHERE t.user_id = sqlc.arg('user_id')
+  AND t.id IN (
+    SELECT expired.id
+    FROM tag AS expired
+    WHERE expired.user_id = sqlc.arg('user_id')
+      AND expired.deleted_at IS NOT NULL
+      AND expired.deleted_at < sqlc.arg('cutoff')
+    ORDER BY expired.deleted_at ASC, expired.id ASC
+    LIMIT sqlc.arg('batch_limit')
+  )
+ORDER BY t.id ASC
+FOR UPDATE;
+
+-- name: DeleteExpiredItemsByUserIDs :execrows
+DELETE FROM item
+WHERE user_id = sqlc.arg('user_id')
+  AND id = ANY(sqlc.arg('ids')::uuid[])
+  AND deleted_at IS NOT NULL
+  AND deleted_at < sqlc.arg('cutoff');
+
+-- name: DeleteExpiredTagsByUserIDs :execrows
+DELETE FROM tag
+WHERE user_id = sqlc.arg('user_id')
+  AND id = ANY(sqlc.arg('ids')::uuid[])
+  AND deleted_at IS NOT NULL
+  AND deleted_at < sqlc.arg('cutoff');

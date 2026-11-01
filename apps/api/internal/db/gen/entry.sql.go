@@ -69,6 +69,50 @@ func (q *Queries) DeleteEntriesByUser(ctx context.Context, userID uuid.UUID) (in
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredItemsByUserIDs = `-- name: DeleteExpiredItemsByUserIDs :execrows
+DELETE FROM item
+WHERE user_id = $1
+  AND id = ANY($2::uuid[])
+  AND deleted_at IS NOT NULL
+  AND deleted_at < $3
+`
+
+type DeleteExpiredItemsByUserIDsParams struct {
+	UserID uuid.UUID
+	Ids    []uuid.UUID
+	Cutoff pgtype.Timestamptz
+}
+
+func (q *Queries) DeleteExpiredItemsByUserIDs(ctx context.Context, arg DeleteExpiredItemsByUserIDsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredItemsByUserIDs, arg.UserID, arg.Ids, arg.Cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredTagsByUserIDs = `-- name: DeleteExpiredTagsByUserIDs :execrows
+DELETE FROM tag
+WHERE user_id = $1
+  AND id = ANY($2::uuid[])
+  AND deleted_at IS NOT NULL
+  AND deleted_at < $3
+`
+
+type DeleteExpiredTagsByUserIDsParams struct {
+	UserID uuid.UUID
+	Ids    []uuid.UUID
+	Cutoff pgtype.Timestamptz
+}
+
+func (q *Queries) DeleteExpiredTagsByUserIDs(ctx context.Context, arg DeleteExpiredTagsByUserIDsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredTagsByUserIDs, arg.UserID, arg.Ids, arg.Cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const entryIDExistsGlobal = `-- name: EntryIDExistsGlobal :one
 
 SELECT EXISTS (
@@ -488,6 +532,92 @@ func (q *Queries) LockEntryForUpdate(ctx context.Context, arg LockEntryForUpdate
 		&i.DeleteBatch,
 	)
 	return i, err
+}
+
+const lockExpiredItemsForPurgeByUserBatch = `-- name: LockExpiredItemsForPurgeByUserBatch :many
+SELECT i.id
+FROM item AS i
+WHERE i.user_id = $1
+  AND i.id IN (
+    SELECT expired.id
+    FROM item AS expired
+    WHERE expired.user_id = $1
+      AND expired.deleted_at IS NOT NULL
+      AND expired.deleted_at < $2
+    ORDER BY expired.deleted_at ASC, expired.id ASC
+    LIMIT $3
+  )
+ORDER BY i.id ASC
+FOR UPDATE
+`
+
+type LockExpiredItemsForPurgeByUserBatchParams struct {
+	UserID     uuid.UUID
+	Cutoff     pgtype.Timestamptz
+	BatchLimit int32
+}
+
+func (q *Queries) LockExpiredItemsForPurgeByUserBatch(ctx context.Context, arg LockExpiredItemsForPurgeByUserBatchParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockExpiredItemsForPurgeByUserBatch, arg.UserID, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockExpiredTagsForPurgeByUserBatch = `-- name: LockExpiredTagsForPurgeByUserBatch :many
+SELECT t.id
+FROM tag AS t
+WHERE t.user_id = $1
+  AND t.id IN (
+    SELECT expired.id
+    FROM tag AS expired
+    WHERE expired.user_id = $1
+      AND expired.deleted_at IS NOT NULL
+      AND expired.deleted_at < $2
+    ORDER BY expired.deleted_at ASC, expired.id ASC
+    LIMIT $3
+  )
+ORDER BY t.id ASC
+FOR UPDATE
+`
+
+type LockExpiredTagsForPurgeByUserBatchParams struct {
+	UserID     uuid.UUID
+	Cutoff     pgtype.Timestamptz
+	BatchLimit int32
+}
+
+func (q *Queries) LockExpiredTagsForPurgeByUserBatch(ctx context.Context, arg LockExpiredTagsForPurgeByUserBatchParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockExpiredTagsForPurgeByUserBatch, arg.UserID, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockLiveEntriesOfItemForUpdate = `-- name: LockLiveEntriesOfItemForUpdate :many

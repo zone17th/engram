@@ -382,3 +382,276 @@ jobCompleted:
 	contenttest.AssertInvariants(t, pool, userA)
 	_ = gen.New(pool)
 }
+
+// TestPurgeExpiredContentLockAcquisitionOrderItemTagBeforeEntry covers EA7-R1-1:
+//   - Verifies that `PurgeUserExpiredContentBatch` acquires locks in the global order
+//     (`LockUserContent` -> `item` rows in ascending `id` -> `tag` rows in ascending `id` -> `entry` deletes)
+//     and never locks an `entry` row before all `item` and `tag` rows of the batch are locked.
+//   - Stage 1 (item wait): a concurrent tx holds a `FOR UPDATE` lock on the higher-ID expired `item` row;
+//     `pg_locks` / `pg_blocking_pids` proves the purge tx waits on `item` while holding zero row/tuple locks
+//     on `entry` or `tag`.
+//   - Stage 2 (tag wait): a concurrent tx holds a `FOR UPDATE` lock on the higher-ID expired `tag` row;
+//     `pg_locks` / `pg_blocking_pids` proves the purge tx waits on `tag` while holding `item` locks and zero
+//     row/tuple locks on `entry` (nor has the expired `item` been deleted/cascaded yet).
+//   - Verifies counter invariants (`contenttest.AssertInvariants`) before and after purge.
+func TestPurgeExpiredContentLockAcquisitionOrderItemTagBeforeEntry(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	userA := insertPurgeTestUser(t, ctx, pool, "purge-lock-order@example.com")
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-entry.ContentPurgeRetentionWindow)
+	del35d := now.Add(-35 * 24 * time.Hour)
+	del34d := now.Add(-34 * 24 * time.Hour)
+
+	// Live item with 1 live entry and 1 expired entry (must not be locked before item & tag!).
+	liveItem := insertPurgeTestItem(t, ctx, pool, userA, "Lock Order Live Item", 1, nil)
+	liveEntry := insertPurgeTestEntry(t, ctx, pool, userA, liveItem, 0, nil, "")
+	expStandaloneEntry := insertPurgeTestEntry(t, ctx, pool, userA, liveItem, 1, &del35d, entry.DeletedViaEntry)
+
+	// Two expired items: force itemLowID < itemHighID, but give itemHighID an OLDER deleted_at (del35d)
+	// than itemLowID (del34d) so that without `ORDER BY i.id ASC` on the outer lock query, itemHighID
+	// would be locked before itemLowID.
+	itemA := insertPurgeTestItem(t, ctx, pool, userA, "Expired Item 1", 0, &del35d)
+	itemB := insertPurgeTestItem(t, ctx, pool, userA, "Expired Item 2", 0, &del35d)
+	itemLowID, itemHighID := itemA, itemB
+	if bytes.Compare(itemLowID[:], itemHighID[:]) > 0 {
+		itemLowID, itemHighID = itemHighID, itemLowID
+	}
+	if _, err := pool.Exec(ctx, `UPDATE item SET deleted_at = $1 WHERE id = $2`, del34d, itemLowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE item SET deleted_at = $1 WHERE id = $2`, del35d, itemHighID); err != nil {
+		t.Fatal(err)
+	}
+	cascadedEntryOnItemLow := insertPurgeTestEntry(t, ctx, pool, userA, itemLowID, 0, &del34d, entry.DeletedViaItem)
+
+	// Two expired tags: similarly give tagHighID an older deleted_at (del35d) than tagLowID (del34d).
+	liveTag := insertPurgeTestTag(t, ctx, pool, userA, "lock-order-live-tag", 1, nil)
+	linkPurgeItemTag(t, ctx, pool, liveItem, liveTag)
+
+	tagA := insertPurgeTestTag(t, ctx, pool, userA, "expired-tag-1", 0, &del35d)
+	tagB := insertPurgeTestTag(t, ctx, pool, userA, "expired-tag-2", 0, &del35d)
+	tagLowID, tagHighID := tagA, tagB
+	if bytes.Compare(tagLowID[:], tagHighID[:]) > 0 {
+		tagLowID, tagHighID = tagHighID, tagLowID
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tag SET deleted_at = $1 WHERE id = $2`, del34d, tagLowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tag SET deleted_at = $1 WHERE id = $2`, del35d, tagHighID); err != nil {
+		t.Fatal(err)
+	}
+
+	contenttest.AssertInvariants(t, pool, userA)
+
+	// --- Stage 1: Hold FOR UPDATE on `itemHighID` and verify purge blocks on `item` before touching `tag` or `entry`. ---
+	blockerItemTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin blockerItemTx: %v", err)
+	}
+	defer func() { _ = blockerItemTx.Rollback(ctx) }()
+
+	var blockerItemPID int32
+	if err := blockerItemTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&blockerItemPID); err != nil {
+		t.Fatal(err)
+	}
+	var lockedItem uuid.UUID
+	if err := blockerItemTx.QueryRow(ctx, `SELECT id FROM item WHERE id = $1 FOR UPDATE`, itemHighID).Scan(&lockedItem); err != nil {
+		t.Fatalf("lock itemHighID: %v", err)
+	}
+
+	// Also hold a Second tx that will lock `tagHighID` so after Stage 1 releases `itemHighID`,
+	// purge advances to Stage 2 and blocks on `tagHighID` before any `DELETE` or `entry` lock runs.
+	blockerTagTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin blockerTagTx: %v", err)
+	}
+	defer func() { _ = blockerTagTx.Rollback(ctx) }()
+
+	var blockerTagPID int32
+	if err := blockerTagTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&blockerTagPID); err != nil {
+		t.Fatal(err)
+	}
+	var lockedTag uuid.UUID
+	if err := blockerTagTx.QueryRow(ctx, `SELECT id FROM tag WHERE id = $1 FOR UPDATE`, tagHighID).Scan(&lockedTag); err != nil {
+		t.Fatalf("lock tagHighID: %v", err)
+	}
+
+	type purgeOutcome struct {
+		res entry.PurgeResult
+		err error
+	}
+	purgeCh := make(chan purgeOutcome, 1)
+	go func() {
+		res, err := entry.PurgeUserExpiredContentBatch(ctx, pool, userA, cutoff, entry.DefaultContentPurgeBatchSize)
+		purgeCh <- purgeOutcome{res: res, err: err}
+	}()
+
+	// Poll pg_locks until the purge backend is blocked by blockerItemPID on relation `item`.
+	var purgePID int32
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := pool.QueryRow(ctx, `
+			SELECT a.pid
+			FROM pg_stat_activity AS a
+			WHERE a.datname = current_database()
+			  AND $1 = ANY(pg_blocking_pids(a.pid))
+			  AND EXISTS (
+				SELECT 1
+				FROM pg_locks AS l
+				WHERE l.pid = a.pid
+				  AND l.relation = 'item'::regclass
+			  )
+			LIMIT 1
+		`, blockerItemPID).Scan(&purgePID)
+		if err == nil && purgePID != 0 {
+			break
+		}
+		select {
+		case out := <-purgeCh:
+			t.Fatalf("purge finished early while blockerItemTx held item lock: %+v, err=%v", out.res, out.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for purge tx to block on itemHighID held by PID %d", blockerItemPID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// While blocked on `itemHighID`:
+	//   1. Purge must NOT have acquired any lock on `entry` or `tag` relations.
+	//   2. Because `itemLowID < itemHighID` is locked in ascending ID order, `itemLowID` must already be
+	//      locked by `purgePID` (verify another connection with `FOR UPDATE NOWAIT` on `itemLowID` fails).
+	var prematureEntryOrTagLocks int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM pg_locks
+		WHERE pid = $1
+		  AND relation IN ('entry'::regclass, 'tag'::regclass)
+	`, purgePID).Scan(&prematureEntryOrTagLocks); err != nil {
+		t.Fatalf("query premature entry/tag locks at stage 1: %v", err)
+	}
+	if prematureEntryOrTagLocks != 0 {
+		t.Fatalf("stage 1: purgePID %d already holds %d locks on entry/tag while waiting on item lock", purgePID, prematureEntryOrTagLocks)
+	}
+
+	probeTx1, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dummy uuid.UUID
+	if err := probeTx1.QueryRow(ctx, `SELECT id FROM item WHERE id = $1 FOR UPDATE NOWAIT`, itemLowID).Scan(&dummy); err == nil {
+		_ = probeTx1.Rollback(ctx)
+		t.Fatalf("expected itemLowID (%s) to already be locked FOR UPDATE before itemHighID (%s) in ascending ID order", itemLowID, itemHighID)
+	}
+	_ = probeTx1.Rollback(ctx)
+
+	// Release Stage 1 (`itemHighID` lock) -> purge must now advance to Stage 2 and block on `tagHighID`
+	// BEFORE executing any DELETE on `item` (or cascading to `entry`) or locking `entry`.
+	if err := blockerItemTx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback blockerItemTx: %v", err)
+	}
+
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		var blockedOnTag bool
+		err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity AS a
+				WHERE a.datname = current_database()
+				  AND a.pid = $1
+				  AND $2 = ANY(pg_blocking_pids(a.pid))
+				  AND EXISTS (
+					SELECT 1
+					FROM pg_locks AS l
+					WHERE l.pid = a.pid
+					  AND l.relation = 'tag'::regclass
+				  )
+			)
+		`, purgePID, blockerTagPID).Scan(&blockedOnTag)
+		if err != nil {
+			t.Fatalf("poll stage 2 tag wait: %v", err)
+		}
+		if blockedOnTag {
+			break
+		}
+		select {
+		case out := <-purgeCh:
+			t.Fatalf("purge finished early while blockerTagTx held tag lock: %+v, err=%v", out.res, out.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for purgePID %d to block on tagHighID held by PID %d", purgePID, blockerTagPID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// While blocked on `tagHighID`:
+	//   1. Purge must still hold ZERO locks on `entry` (item DELETE cascade has NOT run yet!).
+	//   2. `tagLowID` (`< tagHighID`) must already be locked FOR UPDATE by `purgePID`.
+	//   3. `cascadedEntryOnItemLow` and `expStandaloneEntry` must NOT be locked FOR UPDATE yet.
+	var prematureEntryLocks int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM pg_locks
+		WHERE pid = $1
+		  AND relation = 'entry'::regclass
+	`, purgePID).Scan(&prematureEntryLocks); err != nil {
+		t.Fatalf("query premature entry locks at stage 2: %v", err)
+	}
+	if prematureEntryLocks != 0 {
+		t.Fatalf("stage 2: purgePID %d already holds %d locks on entry while waiting on tag lock", purgePID, prematureEntryLocks)
+	}
+
+	probeTx2, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probeTx2.QueryRow(ctx, `SELECT id FROM tag WHERE id = $1 FOR UPDATE NOWAIT`, tagLowID).Scan(&dummy); err == nil {
+		_ = probeTx2.Rollback(ctx)
+		t.Fatalf("expected tagLowID (%s) to already be locked FOR UPDATE before tagHighID (%s) in ascending ID order", tagLowID, tagHighID)
+	}
+	_ = probeTx2.Rollback(ctx)
+
+	// Release Stage 2 (`tagHighID` lock) and verify the purge batch completes cleanly.
+	if err := blockerTagTx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback blockerTagTx: %v", err)
+	}
+
+	select {
+	case out := <-purgeCh:
+		if out.err != nil {
+			t.Fatalf("PurgeUserExpiredContentBatch: %v", out.err)
+		}
+		if out.res.ItemsDeleted != 2 || out.res.TagsDeleted != 2 || out.res.EntriesDeleted != 1 {
+			t.Fatalf("PurgeUserExpiredContentBatch result = %+v, want ItemsDeleted=2, TagsDeleted=2, EntriesDeleted=1", out.res)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for PurgeUserExpiredContentBatch to complete after releasing tag lock")
+	}
+
+	for _, id := range []uuid.UUID{itemLowID, itemHighID} {
+		if rowExists(t, ctx, pool, "item", id) {
+			t.Fatalf("expected expired item %s to be deleted", id)
+		}
+	}
+	for _, id := range []uuid.UUID{tagLowID, tagHighID} {
+		if rowExists(t, ctx, pool, "tag", id) {
+			t.Fatalf("expected expired tag %s to be deleted", id)
+		}
+	}
+	for _, id := range []uuid.UUID{cascadedEntryOnItemLow, expStandaloneEntry} {
+		if rowExists(t, ctx, pool, "entry", id) {
+			t.Fatalf("expected expired/cascaded entry %s to be deleted", id)
+		}
+	}
+	if !rowExists(t, ctx, pool, "item", liveItem) || !rowExists(t, ctx, pool, "entry", liveEntry) || !rowExists(t, ctx, pool, "tag", liveTag) {
+		t.Fatal("expected live item, entry, and tag to survive purge")
+	}
+
+	contenttest.AssertInvariants(t, pool, userA)
+}

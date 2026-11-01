@@ -124,10 +124,20 @@ func PurgeExpiredContentWithLimits(
 // PurgeUserExpiredContentBatch thực thi đúng MỘT transaction lô cho `userID`:
 //   - Mở transaction, lấy `LockUserContent(userID)` (bước 2 thứ tự khoá toàn cục mục 2.5).
 //   - Gọi hook kiểm thử `WithPurgeLockHeldHook` (nếu có).
-//   - Xoá tối đa `batchSize` hàng tổng cộng có `deleted_at < cutoff` theo thứ tự:
-//     (1) `PurgeExpiredEntriesByUserBatch`, (2) `PurgeExpiredItemsByUserBatch` (cascade `entry` / `item_tag`),
-//     (3) `PurgeExpiredTagsByUserBatch` (cascade `item_tag`, giữ nguyên `item` sống).
-//   - Commit để giải phóng `LockUserContent(userID)`.
+//   - Tuân thủ nghiêm ngặt thứ tự khoá toàn cục mục 2.5 (`LockUserContent` -> `item` theo `id`
+//     tăng dần -> `tag` theo `id` tăng dần -> `entry`) trong giới hạn lô tối đa `batchSize`
+//     (`<= 500` hàng trực tiếp tổng cộng gồm `item` + `tag` + `entry` còn lại):
+//     (1) Chọn và khoá trước các hàng `item` hết hạn của lô theo `id ASC` (`LockExpiredItemsForPurgeByUserBatch`),
+//     trừ số `item` đã chọn vào ngân sách lô `remaining`.
+//     (2) Chọn và khoá trước các hàng `tag` hết hạn của lô theo `id ASC` (`LockExpiredTagsForPurgeByUserBatch`),
+//     trừ số `tag` đã chọn vào ngân sách lô `remaining`.
+//     (3) Xoá các hàng `item` đã khoá (`DeleteExpiredItemsByUserIDs`; FK `ON DELETE CASCADE` xoá các
+//     `entry` và `item_tag` con chỉ sau khi mọi khoá `item` và `tag` của transaction đã được giữ).
+//     (4) Xoá các hàng `tag` đã khoá (`DeleteExpiredTagsByUserIDs`; FK `ON DELETE CASCADE` xoá `item_tag`,
+//     giữ nguyên `item` sống).
+//     (5) Xoá tối đa `remaining` hàng `entry` hết hạn còn lại (`PurgeExpiredEntriesByUserBatch`).
+//   - Không bao giờ khoá bất kỳ hàng `entry` nào trước khi đã khoá xong `item` và `tag` trong cùng transaction.
+//   - Commit để giải phóng `LockUserContent(userID)` và các khoá hàng.
 func PurgeUserExpiredContentBatch(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -163,7 +173,8 @@ func PurgeUserExpiredContentBatch(
 	var res PurgeResult
 	remaining := batchSize
 
-	entriesDel, err := qtx.PurgeExpiredEntriesByUserBatch(ctx, gen.PurgeExpiredEntriesByUserBatchParams{
+	// Bước 3 (mục 2.5): chọn ứng viên `item` hết hạn trong ngân sách lô và khoá theo `id ASC` (`FOR UPDATE`).
+	itemIDs, err := qtx.LockExpiredItemsForPurgeByUserBatch(ctx, gen.LockExpiredItemsForPurgeByUserBatchParams{
 		UserID:     userID,
 		Cutoff:     cutoffTS,
 		BatchLimit: remaining,
@@ -171,24 +182,52 @@ func PurgeUserExpiredContentBatch(
 	if err != nil {
 		return PurgeResult{}, err
 	}
-	res.EntriesDeleted = entriesDel
-	remaining -= int32(entriesDel)
+	remaining -= int32(len(itemIDs))
 
+	// Bước 4 (mục 2.5): chọn ứng viên `tag` hết hạn trong ngân sách lô còn lại và khoá theo `id ASC` (`FOR UPDATE`).
+	var tagIDs []uuid.UUID
 	if remaining > 0 {
-		itemsDel, err := qtx.PurgeExpiredItemsByUserBatch(ctx, gen.PurgeExpiredItemsByUserBatchParams{
+		tagIDs, err = qtx.LockExpiredTagsForPurgeByUserBatch(ctx, gen.LockExpiredTagsForPurgeByUserBatchParams{
 			UserID:     userID,
 			Cutoff:     cutoffTS,
 			BatchLimit: remaining,
+		})
+		if err != nil {
+			return PurgeResult{}, err
+		}
+		remaining -= int32(len(tagIDs))
+	}
+
+	// Bước 5 (mục 2.5): sau khi đã giữ toàn bộ khoá `item` và `tag` của lô, thực hiện xoá:
+	//   - Xoá `item` đã khoá (cascade sang `entry` con và `item_tag`).
+	//   - Xoá `tag` đã khoá (cascade sang `item_tag`, giữ nguyên `item` sống).
+	//   - Xoá tối đa `remaining` hàng `entry` hết hạn còn lại.
+	if len(itemIDs) > 0 {
+		itemsDel, err := qtx.DeleteExpiredItemsByUserIDs(ctx, gen.DeleteExpiredItemsByUserIDsParams{
+			UserID: userID,
+			Ids:    itemIDs,
+			Cutoff: cutoffTS,
 		})
 		if err != nil {
 			return PurgeResult{}, err
 		}
 		res.ItemsDeleted = itemsDel
-		remaining -= int32(itemsDel)
+	}
+
+	if len(tagIDs) > 0 {
+		tagsDel, err := qtx.DeleteExpiredTagsByUserIDs(ctx, gen.DeleteExpiredTagsByUserIDsParams{
+			UserID: userID,
+			Ids:    tagIDs,
+			Cutoff: cutoffTS,
+		})
+		if err != nil {
+			return PurgeResult{}, err
+		}
+		res.TagsDeleted = tagsDel
 	}
 
 	if remaining > 0 {
-		tagsDel, err := qtx.PurgeExpiredTagsByUserBatch(ctx, gen.PurgeExpiredTagsByUserBatchParams{
+		entriesDel, err := qtx.PurgeExpiredEntriesByUserBatch(ctx, gen.PurgeExpiredEntriesByUserBatchParams{
 			UserID:     userID,
 			Cutoff:     cutoffTS,
 			BatchLimit: remaining,
@@ -196,7 +235,7 @@ func PurgeUserExpiredContentBatch(
 		if err != nil {
 			return PurgeResult{}, err
 		}
-		res.TagsDeleted = tagsDel
+		res.EntriesDeleted = entriesDel
 	}
 
 	if err := tx.Commit(ctx); err != nil {
