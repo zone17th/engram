@@ -3,8 +3,8 @@ import type { QueryClient } from '@tanstack/react-query';
 import { entryGet, type Entry } from '@/lib/api/content';
 import { contentQueryKeys } from '@/features/items/query-keys';
 import type { EntryBodyLoadContext, EntryBodyLoader } from '@/features/items/entry-body';
+import { ENTRY_KEY_ID_REGEX } from '@/features/entries/seal';
 import { CryptoClientError, CryptoWorkerError } from '@/lib/crypto/client';
-
 export type EntryOpenErrorKind =
   | 'old_key'
   | 'decrypt_failed'
@@ -157,6 +157,13 @@ export function createRealEntryBodyLoader(
         'Vault locked or generation changed while fetching entry.',
       );
     }
+    // IP14-BE1-1 (HIGH): Authenticate the requested entry identity, never trust an ID supplied by the server response.
+    if (typeof entry.id !== 'string' || entry.id !== entryId) {
+      throw new EntryBodyOpenError(
+        'decrypt_failed',
+        'Returned entry identity does not match the requested entry ID.',
+      );
+    }
 
     const expectedKeyId = ctx.vaultKeyId ?? options.getExpectedKeyId?.() ?? null;
     if (typeof expectedKeyId !== 'string' || expectedKeyId.length === 0) {
@@ -173,6 +180,14 @@ export function createRealEntryBodyLoader(
         ? entry.envelope.key_id
         : '';
 
+    // IP14-FE1-10: A missing or malformed envelope key_id is a corrupt/invalid entry ('decrypt_failed'), not 'old_key'.
+    if (!ENTRY_KEY_ID_REGEX.test(envelopeKeyId)) {
+      throw new EntryBodyOpenError(
+        'decrypt_failed',
+        'Entry envelope key_id is missing or malformed.',
+      );
+    }
+
     // Compare envelope.key_id with vaultMeta.vault_key_id BEFORE calling Worker openEntry
     if (envelopeKeyId !== expectedKeyId) {
       throw new EntryBodyOpenError(
@@ -188,7 +203,7 @@ export function createRealEntryBodyLoader(
     let opened: { plaintext: string };
     try {
       opened = await ctx.client.openEntry({
-        entryId: entry.id,
+        entryId,
         envelope: entry.envelope,
         ciphertext: entry.ciphertext,
         opGeneration: ctx.opGeneration,

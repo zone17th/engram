@@ -1,6 +1,8 @@
 export {
   ENTRY_BUCKET_STEP_BYTES,
+  ENTRY_KEY_ID_REGEX,
   ENTRY_MAX_PLAINTEXT_BYTES,
+  ENTRY_UUID_REGEX,
   EntrySealError,
   computePlaintextLenBucket,
   sealEntryImportJson,

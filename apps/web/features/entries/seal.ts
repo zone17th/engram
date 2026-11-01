@@ -7,13 +7,29 @@ import {
   type EntryUpdateRequest,
   type PlaintextLenBucket,
 } from '@/lib/api/content';
-import type { CryptoClient } from '@/lib/crypto/client';
 import {
-  ENTRY_ID_UUID_REGEX,
+  CryptoClientError,
+  CryptoWorkerError,
+  type CryptoClient,
+} from '@/lib/crypto/client';
+import {
   ENTRY_PLAINTEXT_MAX_BYTES,
-  KEY_ID_REGEX,
-} from '@/lib/crypto/envelope';
-import { hasLoneSurrogate } from '@/lib/crypto/protocol';
+  hasLoneSurrogate,
+} from '@/lib/crypto/protocol';
+
+/**
+ * Matches server-generated `vault_key_id` (`vk:` + 22 base64url chars, ADR 0002 §3)
+ * or item share keys (`sk:` + 22 base64url chars, SPEC §5.3).
+ * Kept in this dependency-free content module so `features/entries` never imports
+ * `lib/crypto/envelope.ts` (which pulls `sodium.ts` / `libsodium-wrappers-sumo` into the main thread — IP14-BE1-5).
+ */
+export const ENTRY_KEY_ID_REGEX = /^(?:vk|sk):[A-Za-z0-9_-]{22}$/;
+
+/**
+ * Matches lowercase hyphenated UUID (`8-4-4-4-12` hex, SPEC §5.5 & ADR 0002 §3).
+ */
+export const ENTRY_UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export const ENTRY_MAX_PLAINTEXT_BYTES = ENTRY_PLAINTEXT_MAX_BYTES; // 262_144
 export const ENTRY_BUCKET_STEP_BYTES = 256;
@@ -28,8 +44,8 @@ export type EntrySealErrorCode =
   | 'ENTRY_TYPE_INVALID'
   | 'VAULT_LOCKED'
   | 'VAULT_KEY_MISSING'
-  | 'STALE_GENERATION';
-
+  | 'STALE_GENERATION'
+  | 'SEAL_FAILED';
 /**
  * Typed client-side validation/lifecycle error thrown by `sealNewEntry` / `sealEntryUpdate`
  * BEFORE or after calling the crypto Worker. Never includes or echoes the plaintext string.
@@ -66,13 +82,18 @@ export interface EntrySealVaultContext {
   };
   readonly getClient?: () => CryptoClient;
   readonly captureOpGeneration?: () => number;
+  readonly registerSecretFormReset?: (resetFn: () => void) => () => void;
 }
 
 export interface EntryOpHandle {
   readonly opGeneration: number;
   readonly isCurrent: () => boolean;
+  /**
+   * Optional hook to register a synchronous reset listener invoked on vault lock,
+   * logout, user switch, or reset (`VaultContextValue.registerSecretFormReset` — IP14-BE1-3).
+   */
+  readonly onReset?: (listener: () => void) => () => void;
 }
-
 /**
  * Computes `plaintext_len_bucket = ceil(bytes / 256) * 256` for `1 <= bytes <= 262144`
  * (SPEC §5.5, plan §2.3, §2.6).
@@ -138,27 +159,44 @@ function resolveOpFromVault(vault: EntrySealVaultContext): {
   readonly client: CryptoClient;
   readonly opGeneration: number;
   readonly isCurrent: () => boolean;
+  readonly onReset?: (listener: () => void) => () => void;
   readonly keyId: string;
 } {
   if (vault.state !== undefined && vault.state !== 'unlocked') {
     throw new EntrySealError('VAULT_LOCKED', 'Vault must be unlocked before sealing an entry.');
   }
   const keyId = vault.vaultMeta?.vault_key_id;
-  if (typeof keyId !== 'string' || !KEY_ID_REGEX.test(keyId)) {
+  if (typeof keyId !== 'string' || !ENTRY_KEY_ID_REGEX.test(keyId)) {
     throw new EntrySealError(
       'VAULT_KEY_MISSING',
       'Vault metadata (vault_key_id) is missing or invalid.',
     );
   }
+  let resetObserved = false;
+  const registerReset =
+    typeof vault.registerSecretFormReset === 'function'
+      ? vault.registerSecretFormReset.bind(vault)
+      : undefined;
+  if (registerReset) {
+    const unsub = registerReset(() => {
+      resetObserved = true;
+      unsub();
+    });
+  }
+
   if (typeof vault.beginOp === 'function') {
     const started = vault.beginOp();
+    const client = started.client;
+    const opGeneration = started.opGeneration;
     return {
-      client: started.client,
-      opGeneration: started.opGeneration,
+      client,
+      opGeneration,
       isCurrent: () =>
-        (vault.state === undefined || vault.state === 'unlocked') &&
-        vault.vaultMeta?.vault_key_id === keyId &&
-        started.isCurrent(),
+        !resetObserved &&
+        started.isCurrent() &&
+        client.getState() === 'unlocked' &&
+        client.getGeneration() === opGeneration,
+      ...(registerReset ? { onReset: registerReset } : {}),
       keyId,
     };
   }
@@ -172,24 +210,79 @@ function resolveOpFromVault(vault: EntrySealVaultContext): {
       client,
       opGeneration,
       isCurrent: () =>
-        (vault.state === undefined || vault.state === 'unlocked') &&
-        vault.vaultMeta?.vault_key_id === keyId &&
+        !resetObserved &&
         client.getState() === 'unlocked' &&
         client.getGeneration() === opGeneration,
+      ...(registerReset ? { onReset: registerReset } : {}),
       keyId,
     };
   }
   throw new EntrySealError('VAULT_LOCKED', 'Vault client is unavailable.');
 }
 
+function mapWorkerSealError(err: unknown): EntrySealError {
+  if (err instanceof EntrySealError) {
+    return err;
+  }
+  if (err instanceof CryptoClientError || err instanceof CryptoWorkerError) {
+    switch (err.code) {
+      case 'STALE_GENERATION':
+        return new EntrySealError(
+          'STALE_GENERATION',
+          'Vault locked or changed while sealing entry.',
+          { cause: err },
+        );
+      case 'VAULT_LOCKED':
+      case 'VAULT_RECOVERING':
+        return new EntrySealError(
+          'VAULT_LOCKED',
+          'Vault must be unlocked before sealing an entry.',
+          { cause: err },
+        );
+      case 'ENVELOPE_INVALID':
+        return new EntrySealError(
+          'ENTRY_ID_INVALID',
+          'Entry envelope or key identifier is invalid.',
+          { cause: err },
+        );
+      default:
+        return new EntrySealError(
+          'SEAL_FAILED',
+          'Could not seal entry content in the crypto worker.',
+          { cause: err },
+        );
+    }
+  }
+  return new EntrySealError(
+    'SEAL_FAILED',
+    'Could not seal entry content in the crypto worker.',
+    { cause: err },
+  );
+}
+
+async function sealWithMappedErrors(
+  client: CryptoClient,
+  params: {
+    readonly entryId: string;
+    readonly keyId: string;
+    readonly plaintext: string;
+    readonly opGeneration: number;
+  },
+): Promise<{ readonly envelope: EntryEnvelopeV1; readonly ciphertext: string }> {
+  try {
+    return await client.sealEntry(params);
+  } catch (err) {
+    throw mapWorkerSealError(err);
+  }
+}
+
 function generateEntryUuidOnce(entryIdOverride?: string): string {
   const id = (entryIdOverride ?? crypto.randomUUID()).toLowerCase();
-  if (!ENTRY_ID_UUID_REGEX.test(id)) {
+  if (!ENTRY_UUID_REGEX.test(id)) {
     throw new EntrySealError('ENTRY_ID_INVALID', 'Entry ID must be a lowercase hyphenated UUID.');
   }
   return id;
 }
-
 export interface SealNewEntryInput {
   readonly text: string;
   readonly itemId: string;
@@ -241,10 +334,10 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
   const itemId = input.itemId;
 
   // Step 2: capture opGeneration BEFORE the first await
-  const { client, opGeneration, isCurrent, keyId } = resolveOpFromVault(input.vault);
+  const { client, opGeneration, isCurrent, onReset, keyId } = resolveOpFromVault(input.vault);
 
   // Step 3: seal once in the Worker
-  const sealed = await client.sealEntry({
+  const sealed = await sealWithMappedErrors(client, {
     entryId,
     keyId,
     plaintext: input.text,
@@ -257,7 +350,6 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
       'Vault locked or changed while sealing entry.',
     );
   }
-
   const envelope: EntryEnvelopeV1 = Object.freeze({
     v: sealed.envelope.v,
     alg: sealed.envelope.alg,
@@ -278,6 +370,7 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
   const op: EntryOpHandle = Object.freeze({
     opGeneration,
     isCurrent,
+    ...(onReset ? { onReset } : {}),
   });
 
   return Object.freeze({
@@ -334,9 +427,9 @@ export async function sealEntryImportJson(
   const itemId = input.itemId;
   const source = input.source;
 
-  const { client, opGeneration, isCurrent, keyId } = resolveOpFromVault(input.vault);
+  const { client, opGeneration, isCurrent, onReset, keyId } = resolveOpFromVault(input.vault);
 
-  const sealed = await client.sealEntry({
+  const sealed = await sealWithMappedErrors(client, {
     entryId,
     keyId,
     plaintext: input.text,
@@ -371,6 +464,7 @@ export async function sealEntryImportJson(
   const op: EntryOpHandle = Object.freeze({
     opGeneration,
     isCurrent,
+    ...(onReset ? { onReset } : {}),
   });
 
   return Object.freeze({
@@ -436,9 +530,9 @@ export async function sealEntryUpdate(
   const itemId = input.itemId;
   const version = input.version;
 
-  const { client, opGeneration, isCurrent, keyId } = resolveOpFromVault(input.vault);
+  const { client, opGeneration, isCurrent, onReset, keyId } = resolveOpFromVault(input.vault);
 
-  const sealed = await client.sealEntry({
+  const sealed = await sealWithMappedErrors(client, {
     entryId,
     keyId,
     plaintext: input.text,
@@ -470,6 +564,7 @@ export async function sealEntryUpdate(
   const op: EntryOpHandle = Object.freeze({
     opGeneration,
     isCurrent,
+    ...(onReset ? { onReset } : {}),
   });
 
   return Object.freeze({
