@@ -491,6 +491,12 @@ export interface RunChangesFeedCycleOptions {
  * - Subsequent calls pass `since = watermark - 120 s` (`RFC3339Nano`) and follow `next_cursor` across all pages.
  * - If any page fails, the old watermark is preserved so the next wake re-reads from the start.
  * - On `410 changes_window_expired`, drops the watermark and relies on the canonical refetch.
+ * - Page-cap exhaustion (`maxPages` pages read while `next_cursor` is still pending) is treated like a failed cycle:
+ *   the previous watermark is KEPT and nothing from the partial batch is applied. The next wake therefore re-reads from
+ *   the same `since` until a terminal page is reached (watermark advances) or the server answers `410` (watermark dropped).
+ *   Why: a partial apply could publish tombstones/updates from an incomplete window and then advance the watermark past
+ *   unread changes; and the canonical entries refetch that follows every wake already converges the visible list, so
+ *   skipping the apply costs correctness nothing.
  */
 export async function runChangesFeedCycle(options: RunChangesFeedCycleOptions): Promise<void> {
   const {
