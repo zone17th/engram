@@ -2527,14 +2527,26 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
     });
 
+    // Unmount ItemDetailPage FIRST so user replacement happens away from the detail route (IP15-BE2-5)
+    h.rerenderPage(<div data-testid="away-for-user-switch">Away</div>);
     failPutWithSessionInvalid = false;
     h.setCurrentMe(makeMe(USER_B_ID, 'present'));
     await h.loginSession('b@example.test', 'pw');
 
+    // Store clears BEFORE any detail page mounts
     await waitFor(() => {
       expect(getUnconfirmedSavesSnapshot()).toEqual([]);
-      expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
     });
+
+    // Log User A back in and remount ItemDetailPage -> User A's prior record does NOT return
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+    });
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    h.rerenderPage();
+    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
   });
 
   it('"+ Văn bản" creates a new text entry via sealNewEntry + POST /items/{id}/entries and renders it in position order', async () => {

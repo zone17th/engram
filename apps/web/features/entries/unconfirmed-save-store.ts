@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 
 /**
@@ -24,6 +25,13 @@ let lastSeenUserId: string | null = null;
 const listeners = new Set<() => void>();
 let broadcastSubscribed = false;
 
+function reconcileWithKnownSessionUser(): void {
+  const knownUserId = getKnownDeviceSessionUserId();
+  if (knownUserId) {
+    reconcileUnconfirmedSavesUser(knownUserId);
+  }
+}
+
 function ensureSessionBroadcastSubscription(): void {
   if (broadcastSubscribed) return;
   broadcastSubscribed = true;
@@ -33,6 +41,10 @@ function ensureSessionBroadcastSubscription(): void {
       if (reason === 'logout') {
         clearAllUnconfirmedSaves();
       }
+      return;
+    }
+    if (message.type === 'session_changed') {
+      reconcileWithKnownSessionUser();
     }
   });
 }
@@ -53,6 +65,7 @@ export function subscribeUnconfirmedSaves(listener: () => void): () => void {
 }
 
 export function getUnconfirmedSavesSnapshot(): readonly UnconfirmedSaveRecord[] {
+  reconcileWithKnownSessionUser();
   return records;
 }
 
