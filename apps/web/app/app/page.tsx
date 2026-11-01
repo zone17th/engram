@@ -183,6 +183,10 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
       errorCode === 'invalid_request' ||
       errorStatus === 404 ||
       errorStatus === 400);
+  // Show full-page error only when no items are cached; failed background refetches keep the
+  // stale-while-error grid visible, and load-more failures surface an inline retry in RecentItems.
+  const showFullPageError = itemsQuery.isError && !itemsQuery.data && errorCode !== null;
+
   return (
     <main className="mx-auto grid max-w-container gap-8 px-5 py-8 lg:grid-cols-[236px_minmax(0,1fr)]">
       <Rail
@@ -224,8 +228,7 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
             tagDisplay={activeTag?.display}
             onClearFilter={() => handleSelectTag(null)}
           />
-        /* Show full-page error only when no items are cached; failed background refetches keep the stale-while-error grid visible, and load-more failures surface an inline retry in RecentItems (HM19-R1-8, HM19-R2-5). */
-        ) : itemsQuery.isError && !itemsQuery.data && errorCode ? (
+        ) : showFullPageError && errorCode ? (
           <div
             role="alert"
             data-testid="recent-items-error"

@@ -32,6 +32,7 @@ export interface RailTagChipProps {
   readonly selected: boolean;
   readonly onSelect: (tagId: string) => void;
   readonly onTagDeleted?: (tagId: string) => void;
+  readonly onTagMutated?: () => void;
   /**
    * Required callback invoked when an Undo `tagRestore` fails after this chip has already unmounted
    * following `tagDelete`, so the parent container (e.g. `Rail`) can surface the mapped `content.errors.*`
@@ -106,6 +107,7 @@ export function RailTagChip({
   selected,
   onSelect,
   onTagDeleted,
+  onTagMutated,
   onRestoreError,
 }: RailTagChipProps) {
   const tRail = useTranslations('content.home.rail');
@@ -290,6 +292,7 @@ export function RailTagChip({
       focusAfterRenameCloseRef.current = 'filter';
       setRenaming(false);
       setErrorCode(null);
+      onTagMutated?.();
     } catch (error) {
       const i18nKey = getContentErrorI18nKey(error);
       setErrorCode(i18nKey.replace(/^content\.errors\./, '') as ContentErrorCode);
@@ -318,6 +321,7 @@ export function RailTagChip({
         idempotencyKey: deleteIdempotencyKey,
       });
       onTagDeleted?.(tag.id);
+      onTagMutated?.();
       undoToast?.pushUndoToast({
         message: tRail('deleteToastMessage', { display: tag.display }),
         detail: tRail('deleteToastDetail'),
@@ -328,6 +332,7 @@ export function RailTagChip({
             id: tag.id,
             idempotencyKey: createIdempotencyKey(),
           });
+          onTagMutated?.();
           resolveFocusOnRestore(tag.id, stableFocusTarget)?.focus();
         },
         onError: (error) => {

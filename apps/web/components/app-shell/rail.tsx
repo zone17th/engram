@@ -25,10 +25,11 @@ export function Rail({
 }: RailProps) {
   const tRail = useTranslations('content.home.rail');
   const tErrors = useTranslations('content.errors');
-  const { tags, hasMore, isLoadingMore, loadMoreError, loadMore } = usePaginatedTagsList({
-    sort: 'recent',
-    enabled,
-  });
+  const { tags, hasMore, isLoadingMore, loadMoreError, loadMore, resetExtraPages } =
+    usePaginatedTagsList({
+      sort: 'recent',
+      enabled,
+    });
   const [restoreErrorCode, setRestoreErrorCode] = useState<ContentErrorCode | null>(null);
 
   const loadMoreErrorCode = loadMoreError
@@ -99,6 +100,7 @@ export function Rail({
                 selected={selectedTagId === tag.id}
                 onSelect={handleChipSelect}
                 onTagDeleted={handleTagDeleted}
+                onTagMutated={resetExtraPages}
                 onRestoreError={(code) => setRestoreErrorCode(code)}
               />
             ))}
