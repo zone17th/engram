@@ -162,6 +162,35 @@ func runNoticeMailForLatestNotification(t *testing.T, h *harness) {
 	}
 }
 
+type asyncHTTPResult struct {
+	status int
+	body   string
+}
+
+func doAsAsyncResult(h *harness, j jar, method, path, body string, withCSRF bool, xff string) asyncHTTPResult {
+	resp := h.doAs(j, method, path, body, withCSRF, xff)
+	raw := h.body(resp)
+	_ = resp.Body.Close()
+	return asyncHTTPResult{status: resp.StatusCode, body: raw}
+}
+
+func requireAsyncProblem(t *testing.T, res asyncHTTPResult, status int, code string) string {
+	t.Helper()
+	if res.status != status {
+		t.Fatalf("want %s/%d, got %d %s", code, status, res.status, res.body)
+	}
+	var p struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(res.body), &p); err != nil {
+		t.Fatalf("problem JSON: %v (%s)", err, res.body)
+	}
+	if p.Code != code {
+		t.Fatalf("problem code = %q, want %q (%s)", p.Code, code, res.body)
+	}
+	return res.body
+}
+
 // 1. D1: mail_delivery_available capability flag (unset/false vs true with SinkMailer).
 func TestPasswordForgotCapabilityFlagAndConfig(t *testing.T) {
 	t.Setenv("AUTH_MAIL_CAPTURE_AS_DELIVERY", "false")
@@ -289,6 +318,7 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 		body := fmt.Sprintf(`{"email":%q,"locale":%q}`, tc.email, tc.locale)
 		resp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", body, true, tc.xff)
 		raw := h.body(resp)
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusAccepted || raw != "" {
 			t.Fatalf("forgot %s = %d %q, want 202 empty body", tc.email, resp.StatusCode, raw)
 		}
@@ -315,7 +345,9 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 	jOverflow := jar{}
 	h.csrfJar(jOverflow)
 	resp := h.doAs(jOverflow, http.MethodPost, "/api/v1/auth/password/forgot", `{"email":"overflow-http@example.com"}`, true, "198.51.100.99")
-	if resp.StatusCode != http.StatusAccepted || h.body(resp) != "" {
+	rawOverflow := h.body(resp)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted || rawOverflow != "" {
 		t.Fatalf("overflow forgot status = %d, want 202 empty", resp.StatusCode)
 	}
 	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
@@ -500,6 +532,7 @@ func TestPasswordResetHappyPathSingleUseSessionRevokeNoticeAndVaultUntouched(t *
 		xff := fmt.Sprintf("198.51.100.%d", 100+i)
 		r := h.doAs(jarA1, http.MethodPost, "/api/v1/auth/login", `{"email":"alice-reset@example.com","password":"wrongpassword"}`, true, xff)
 		_ = h.body(r)
+		_ = r.Body.Close()
 	}
 
 	// Request password reset for Alice.
@@ -717,10 +750,10 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	h.svc.SetOnResetLocked(func() {
 		onceExpiry.Do(func() { close(resetLockedExpiry) })
 	})
-	resetWaitDone := make(chan *http.Response, 1)
+	resetWaitDone := make(chan asyncHTTPResult, 1)
 	var joinResetWaitOnce sync.Once
-	var respWait *http.Response
-	joinResetWait := func() *http.Response {
+	var respWait asyncHTTPResult
+	joinResetWait := func() asyncHTTPResult {
 		joinResetWaitOnce.Do(func() {
 			respWait = <-resetWaitDone
 		})
@@ -730,14 +763,12 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 		h.svc.SetOnResetAttempt(nil)
 		h.svc.SetOnResetLocked(nil)
 		_ = holdTokTx.Rollback(ctx)
-		if r := joinResetWait(); r != nil && r.Body != nil {
-			_ = r.Body.Close()
-		}
+		_ = joinResetWait()
 	})
 	go func() {
 		jExp := jar{}
 		h.csrfJar(jExp)
-		resetWaitDone <- h.doAs(jExp, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokWait+`","new_password":"expiredwhilewaiting12"}`, true, "198.51.100.31")
+		resetWaitDone <- doAsAsyncResult(h, jExp, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokWait+`","new_password":"expiredwhilewaiting12"}`, true, "198.51.100.31")
 	}()
 
 	<-resetLockedExpiry
@@ -779,8 +810,7 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	respWait = joinResetWait()
 	h.svc.SetOnResetAttempt(nil)
 	h.svc.SetOnResetLocked(nil)
-	requireAcceptanceProblem(t, h, respWait, http.StatusBadRequest, "reset_token_invalid")
-	_ = respWait.Body.Close()
+	requireAsyncProblem(t, respWait, http.StatusBadRequest, "reset_token_invalid")
 	// Verify the early RevokeAllUserSessions was rolled back: refresh and /auth/me still succeed, and old password still works.
 	resp = h.do(http.MethodPost, "/api/v1/auth/refresh", "", true)
 	if resp.StatusCode != http.StatusNoContent {
@@ -1148,10 +1178,10 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 		verifiedOnce.Do(func() { close(loginVerified) })
 		<-releaseLogin
 	})
-	loginDone := make(chan *http.Response, 1)
+	loginDone := make(chan asyncHTTPResult, 1)
 	var joinLoginOnce sync.Once
-	var respLogin *http.Response
-	joinLogin := func() *http.Response {
+	var respLogin asyncHTTPResult
+	joinLogin := func() asyncHTTPResult {
 		joinLoginOnce.Do(func() {
 			respLogin = <-loginDone
 		})
@@ -1160,15 +1190,13 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 	t.Cleanup(func() {
 		h.svc.SetOnLoginVerified(nil)
 		unblockLogin()
-		if r := joinLogin(); r != nil && r.Body != nil {
-			_ = r.Body.Close()
-		}
+		_ = joinLogin()
 	})
 
 	go func() {
 		jLogin := jar{}
 		h.csrfJar(jLogin)
-		loginDone <- h.doAs(jLogin, http.MethodPost, "/api/v1/auth/login", `{"email":"d2-race@example.com","password":"correcthorse"}`, true, "203.0.113.88")
+		loginDone <- doAsAsyncResult(h, jLogin, http.MethodPost, "/api/v1/auth/login", `{"email":"d2-race@example.com","password":"correcthorse"}`, true, "203.0.113.88")
 	}()
 
 	// Wait until Login has verified the old password outside the transaction.
@@ -1191,8 +1219,7 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 	unblockLogin()
 	respLogin = joinLogin()
 	h.svc.SetOnLoginVerified(nil)
-	requireAcceptanceProblem(t, h, respLogin, http.StatusUnauthorized, "invalid_credentials")
-	_ = respLogin.Body.Close()
+	requireAsyncProblem(t, respLogin, http.StatusUnauthorized, "invalid_credentials")
 
 	// Assert 0 live sessions exist for the user.
 	var aliveSessions int
@@ -1439,10 +1466,10 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		discOnce.Do(func() { close(ownerDiscovered) })
 		<-releaseComplete
 	})
-	completeDone := make(chan *http.Response, 1)
+	completeDone := make(chan asyncHTTPResult, 1)
 	var joinCompleteOnce sync.Once
-	var respComplete *http.Response
-	joinComplete := func() *http.Response {
+	var respComplete asyncHTTPResult
+	joinComplete := func() asyncHTTPResult {
 		joinCompleteOnce.Do(func() {
 			respComplete = <-completeDone
 		})
@@ -1451,14 +1478,12 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	t.Cleanup(func() {
 		h.oa.SetOnOwnerDiscovered(nil)
 		unblockComplete()
-		if r := joinComplete(); r != nil && r.Body != nil {
-			_ = r.Body.Close()
-		}
+		_ = joinComplete()
 	})
 
 	go func() {
 		h.csrfJar(jarAttacker)
-		completeDone <- h.doAs(jarAttacker, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.200")
+		completeDone <- doAsAsyncResult(h, jarAttacker, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.200")
 	}()
 
 	select {
@@ -1480,8 +1505,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	unblockComplete()
 	respComplete = joinComplete()
 	h.oa.SetOnOwnerDiscovered(nil)
-	requireAcceptanceProblem(t, h, respComplete, http.StatusBadRequest, "oauth_state_invalid")
-	_ = respComplete.Body.Close()
+	requireAsyncProblem(t, respComplete, http.StatusBadRequest, "oauth_state_invalid")
 	// Assert pending link/reauth flows and unconsumed reauth receipts for victim were all cancelled by reset!
 	var uncancelledUserOAuth, uncancelledReceipts int
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM oauth_transaction WHERE expected_user_id = $1 AND consumed_at IS NULL`, victimID).Scan(&uncancelledUserOAuth); err != nil {
@@ -1589,10 +1613,10 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		disc2Once.Do(func() { close(disc2) })
 		<-rel2
 	})
-	comp2Done := make(chan *http.Response, 1)
+	comp2Done := make(chan asyncHTTPResult, 1)
 	var joinComp2Once sync.Once
-	var respComp2 *http.Response
-	joinComp2 := func() *http.Response {
+	var respComp2 asyncHTTPResult
+	joinComp2 := func() asyncHTTPResult {
 		joinComp2Once.Do(func() {
 			respComp2 = <-comp2Done
 		})
@@ -1601,13 +1625,11 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	t.Cleanup(func() {
 		h.oa.SetOnOwnerDiscovered(nil)
 		unblock2()
-		if r := joinComp2(); r != nil && r.Body != nil {
-			_ = r.Body.Close()
-		}
+		_ = joinComp2()
 	})
 	go func() {
 		h.csrfJar(jarRecheck)
-		comp2Done <- h.doAs(jarRecheck, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.209")
+		comp2Done <- doAsAsyncResult(h, jarRecheck, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.209")
 	}()
 	select {
 	case <-disc2:
@@ -1621,8 +1643,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	unblock2()
 	respComp2 = joinComp2()
 	h.oa.SetOnOwnerDiscovered(nil)
-	requireAcceptanceProblem(t, h, respComp2, http.StatusBadRequest, "oauth_state_invalid")
-	_ = respComp2.Body.Close()
+	requireAsyncProblem(t, respComp2, http.StatusBadRequest, "oauth_state_invalid")
 	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM session WHERE user_id = $1 AND revoked_at IS NULL`, victimID).Scan(&sessionCount); err != nil {
 		t.Fatal(err)
 	}
@@ -1675,8 +1696,8 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 		onceLogoutLocked.Do(func() { close(logoutLockedSession) })
 	})
 
-	resetDone := make(chan *http.Response, 1)
-	logoutDone := make(chan *http.Response, 1)
+	resetDone := make(chan asyncHTTPResult, 1)
+	logoutDone := make(chan asyncHTTPResult, 1)
 	t.Cleanup(func() {
 		h.svc.SetOnResetAttempt(nil)
 		h.svc.SetOnResetLocked(nil)
@@ -1687,12 +1708,12 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 	go func() {
 		jReset := jar{}
 		h.csrfJar(jReset)
-		resetDone <- h.doAs(jReset, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok+`","new_password":"aftercollision12"}`, true, "203.0.113.91")
+		resetDone <- doAsAsyncResult(h, jReset, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok+`","new_password":"aftercollision12"}`, true, "203.0.113.91")
 	}()
 	<-resetLocked
 
 	go func() {
-		logoutDone <- h.doAs(jarLogout, http.MethodPost, "/api/v1/auth/logout", "", true, "203.0.113.92")
+		logoutDone <- doAsAsyncResult(h, jarLogout, http.MethodPost, "/api/v1/auth/logout", "", true, "203.0.113.92")
 	}()
 	// Prove Logout holds its session lock before releasing ResetPassword!
 	<-logoutLockedSession
@@ -1708,13 +1729,11 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 	unblockReset()
 
 	respReset := <-resetDone
-	if respReset.StatusCode != http.StatusNoContent {
-		t.Fatalf("ResetPassword under Logout collision = %d %s, want 204", respReset.StatusCode, h.body(respReset))
+	if respReset.status != http.StatusNoContent {
+		t.Fatalf("ResetPassword under Logout collision = %d %s, want 204", respReset.status, respReset.body)
 	}
-	_ = respReset.Body.Close()
 
-	respLogout := <-logoutDone
-	_ = respLogout.Body.Close()
+	<-logoutDone
 	h.svc.SetOnResetLocked(nil)
 	h.svc.SetOnLogoutRevoked(nil)
 	h.svc.SetOnResetAttempt(nil)
