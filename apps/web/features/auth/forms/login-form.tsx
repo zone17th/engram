@@ -344,7 +344,7 @@ export function LoginForm() {
             </p>
           </form>
 
-          {!webLocksAvailable && (
+          {hydrated && !webLocksAvailable && (
             <p className="t-caption mb-3 text-muted">{t('errors.webLocksDegraded')}</p>
           )}
           <p className="t-caption m-0 text-body">{t('login.passwordHint')}</p>
