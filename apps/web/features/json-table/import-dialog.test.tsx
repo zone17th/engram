@@ -4,11 +4,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Omnibox } from '@/components/app-shell/omnibox';
 import { ThemeProvider } from '@/components/theme-provider';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
-import * as entriesModule from '@/features/entries';
 import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
@@ -260,10 +258,12 @@ interface ServerSimulator {
   }>;
   openServerEntryPlaintext: (entryId: string) => Promise<string>;
   overrideRoute: (
-    fn: (
-      url: string,
-      init: RequestInit | undefined,
-    ) => Promise<Response | null> | Response | null,
+    fn:
+      | ((
+          url: string,
+          init: RequestInit | undefined,
+        ) => Promise<Response | null> | Response | null)
+      | null,
   ) => void;
 }
 
@@ -323,6 +323,7 @@ interface ImportHarness {
   vault: () => VaultContextValue;
   server: ServerSimulator;
   unlock: () => Promise<void>;
+  unlockWithoutReload: () => Promise<void>;
   lock: () => Promise<void>;
   setCurrentMe: (nextMe: Me | null) => void;
   rerenderPage: (node?: ReactNode) => void;
@@ -339,7 +340,6 @@ async function setupImportHarness(options?: {
     version?: number;
   }>;
   lookupItems?: ItemSummary[];
-  renderOmniboxToo?: boolean;
 }): Promise<ImportHarness> {
   const locale = options?.locale ?? 'vi';
   let vaultCtx!: VaultContextValue;
@@ -636,10 +636,7 @@ async function setupImportHarness(options?: {
       node !== undefined ? (
         node
       ) : (
-        <>
-          {options?.renderOmniboxToo ? <Omnibox /> : null}
-          <ItemDetailPage itemId={ITEM_ID} lazyCards={false} />
-        </>
+        <ItemDetailPage itemId={ITEM_ID} lazyCards={false} />
       );
     return (
       <NextIntlClientProvider locale={locale} messages={messages}>
@@ -767,6 +764,19 @@ async function setupImportHarness(options?: {
       });
       await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
     },
+    unlockWithoutReload: async () => {
+      const op = vaultCtx.beginOp();
+      await act(async () => {
+        await vaultCtx.unlockPassphrase({
+          passphrase: PASSPHRASE,
+          kdf: createdVault!.kdf,
+          vaultKeyWrappedByKek: createdVault!.vault_key_wrapped_by_kek,
+          privateKeysWrapped: createdVault!.private_keys_wrapped,
+          opGeneration: op.opGeneration,
+        });
+      });
+      await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+    },
     lock: async () => {
       await act(async () => {
         await vaultCtx.lockNow();
@@ -800,7 +810,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('imports a UTF-8 BOM .json file and saves exact bytes minus at most one leading BOM, keeping a second BOM for strict parser rejection or Save as text', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -839,12 +849,49 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     const savedPlaintext = await h.server.openServerEntryPlaintext(reqBody.id);
     expect(savedPlaintext).toBe(jsonPayload);
     expect(savedPlaintext.charCodeAt(0)).not.toBe(0xfeff);
+
+    // 2. Double UTF-8 BOM (EF BB BF EF BB BF) -> strips at most one BOM, leaving the second U+FEFF
+    //    so strict JSON parser rejects it while "Lưu dạng văn bản" (Save as text) preserves the second BOM verbatim
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialogDoubleBom = screen.getByTestId('import-json-dialog');
+    const doubleBomBytes = new Uint8Array([
+      0xef, 0xbb, 0xbf,
+      0xef, 0xbb, 0xbf,
+      ...utf8Encoder.encode(jsonPayload),
+    ]);
+    await act(async () => {
+      fireEvent.change(within(dialogDoubleBom).getByTestId('import-json-file-input'), {
+        target: { files: [makeFileFromBytes(doubleBomBytes, 'double-bom.json')] },
+      });
+    });
+
+    await waitFor(() => {
+      expect(within(dialogDoubleBom).getByTestId('import-json-parse-error')).toBeInTheDocument();
+    });
+    expect(within(dialogDoubleBom).getByTestId('import-json-submit-btn')).toBeDisabled();
+
+    const saveAsTextBtn = within(dialogDoubleBom).getByTestId('import-json-save-as-text-btn');
+    expect(saveAsTextBtn).toBeEnabled();
+    fireEvent.click(saveAsTextBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    });
+
+    const textCreateReqs = h.server.requests.filter(
+      (r) => r.url.endsWith(`/items/${ITEM_ID}/entries`) && r.method === 'POST',
+    );
+    expect(textCreateReqs).toHaveLength(1);
+    const textReqBody = JSON.parse(textCreateReqs[0]!.rawBody) as { id: string; type: string };
+    expect(textReqBody.type).toBe('text');
+    const savedDoubleBomText = await h.server.openServerEntryPlaintext(textReqBody.id);
+    expect(savedDoubleBomText).toBe(`\uFEFF${jsonPayload}`);
   });
 
   it('pasting JSON with CRLF via a simulated paste event preserves the exact clipboardData string as the saved source (rule 3)', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -881,7 +928,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('importing a CRLF .json file preserves CRLF byte-for-byte in the sealed entry and displays pasteExactHint', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -929,7 +976,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('rejects corrupt UTF-8 .json files with fatal decoding and never inserts U+FFFD replacement characters', async () => {
     await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -960,7 +1007,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('accepts a 262,144-byte UTF-8 JSON payload and rejects a 262,145-byte payload with 413 over-cap error', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -1014,7 +1061,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('shows parse error line/column and saves verbatim as a text entry when clicking "Lưu dạng văn bản" (Save as text)', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -1049,7 +1096,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('preserves pasted text in the dialog when POST /entries/import-json returns 409 item_entry_limit at 200 entries', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -1082,7 +1129,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('retries after a network/503 failure with the exact same Idempotency-Key and sealed ciphertext without creating a duplicate entry, and never sends plaintext over the network', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -1144,7 +1191,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('passes assertNoPlaintextAttrs and assertVaultSecretElementAttributes when unlocked, after a failed save, and after vault lock', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
@@ -1190,9 +1237,9 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   });
 
   it('advisor-dec-209: omnibox JSON banner handoff never touches location, history.state, or Web Storage, and wipes on lock between click and open, logout, user switch, and dialog close', async () => {
-    const h = await setupImportHarness({ renderOmniboxToo: true });
+    const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     const handoffSecret = 'DEC_209_HANDOFF_SECRET_884422';
@@ -1282,7 +1329,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('wipes the plaintext holder synchronously and performs zero seal or POST calls when locked or unmounted during a held reloadVaultMeta or POST', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     const holder: { current: JsonImportPlaintextHolder } = {
@@ -1316,7 +1363,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
 
-    // Lock while POST is held in flight -> holder is wiped synchronously
+    // 1. Lock while POST is held in flight -> holder is wiped synchronously
     await h.lock();
     expect(holder.current).toEqual({
       draftText: '',
@@ -1334,29 +1381,47 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     ).length;
     expect(reqCountAfterRelease).toBe(reqCountAtLock);
 
-    // Also verify lock during held reloadVaultMeta (before crypto seal): zero sealEntry calls and zero POST calls
-    await h.unlock();
-    const { promise: metaGate, resolve: releaseMeta } = createDeferred<void>();
-    const { promise: metaEntered, resolve: notifyMetaEntered } = createDeferred();
-
-    const realSeal = entriesModule.sealEntryImportJson;
-    const sealSpy = vi.spyOn(entriesModule, 'sealEntryImportJson').mockImplementation(async (input) => {
-      notifyMetaEntered();
-      await metaGate;
-      return realSeal(input);
+    // 2. Lock during held route-level GET /vault (reloadVaultMeta when vaultMeta is null):
+    //    holder.submittedText stays empty before and after release, and zero sealEntry or POST calls occur
+    await h.unlockWithoutReload();
+    expect(h.vault().vaultMeta).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
+
+    let holdVaultGet = false;
+    const { promise: vaultGate, resolve: releaseVaultGet } = createDeferred();
+    const { promise: vaultEntered, resolve: notifyVaultEntered } = createDeferred();
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault') && holdVaultGet) {
+        notifyVaultEntered();
+        await vaultGate;
+      }
+      return null;
+    });
+
+    const clientSealSpy = vi.spyOn(h.vault().getClient(), 'sealEntry');
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
     const dialog2 = screen.getByTestId('import-json-dialog');
     const textarea2 = within(dialog2).getByTestId('import-json-source-textarea');
     fireEvent.change(textarea2, { target: { value: '{"pre_seal":"lock_before_seal"}' } });
+    expect(holder.current.draftText).toBe('{"pre_seal":"lock_before_seal"}');
+    expect(holder.current.submittedText).toBe('');
 
+    holdVaultGet = true;
+    clientSealSpy.mockClear();
     const postCountBeforePreSeal = h.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
 
     fireEvent.click(within(dialog2).getByTestId('import-json-submit-btn'));
-    await metaEntered;
+    await vaultEntered;
+
+    // While reloadVaultMeta (GET /vault) is held in flight, submittedText was NOT populated yet
+    expect(holder.current.submittedText).toBe('');
 
     await h.lock();
     expect(holder.current).toEqual({
@@ -1364,22 +1429,79 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       submittedText: '',
     });
 
-    releaseMeta();
+    holdVaultGet = false;
+    h.server.overrideRoute(null);
+    releaseVaultGet();
     await act(async () => {
       await flushMacrotask();
     });
 
+    expect(clientSealSpy).not.toHaveBeenCalled();
     const postCountAfterPreSeal = h.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
     expect(postCountAfterPreSeal).toBe(postCountBeforePreSeal);
-    sealSpy.mockRestore();
+
+    // 3. Unmount during held reloadVaultMeta -> holder wiped synchronously on unmount, zero sealEntry or POST after release
+    await h.unlockWithoutReload();
+    expect(h.vault().vaultMeta).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    const { promise: unmountVaultGate, resolve: releaseUnmountVaultGet } = createDeferred();
+    const { promise: unmountVaultEntered, resolve: notifyUnmountVaultEntered } = createDeferred();
+    holdVaultGet = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault') && holdVaultGet) {
+        notifyUnmountVaultEntered();
+        await unmountVaultGate;
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog3 = screen.getByTestId('import-json-dialog');
+    const textarea3 = within(dialog3).getByTestId('import-json-source-textarea');
+    fireEvent.change(textarea3, { target: { value: '{"unmount_race":"wipe_on_unmount"}' } });
+    expect(holder.current.draftText).toBe('{"unmount_race":"wipe_on_unmount"}');
+
+    clientSealSpy.mockClear();
+    const postCountBeforeUnmount = h.server.requests.filter((r) =>
+      r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
+    ).length;
+
+    fireEvent.click(within(dialog3).getByTestId('import-json-submit-btn'));
+    await unmountVaultEntered;
+
+    // Unmount page while reloadVaultMeta is held in flight
+    h.rerenderPage(<div data-testid="page-unmounted" />);
+    expect(screen.getByTestId('page-unmounted')).toBeInTheDocument();
+    expect(holder.current).toEqual({
+      draftText: '',
+      submittedText: '',
+    });
+
+    holdVaultGet = false;
+    h.server.overrideRoute(null);
+    releaseUnmountVaultGet();
+    await act(async () => {
+      await flushMacrotask();
+    });
+
+    expect(clientSealSpy).not.toHaveBeenCalled();
+    const postCountAfterUnmount = h.server.requests.filter((r) =>
+      r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
+    ).length;
+    expect(postCountAfterUnmount).toBe(postCountBeforeUnmount);
+    clientSealSpy.mockRestore();
   });
 
   it('formats JSON before saving when "Định dạng trước khi lưu" is checked and refuses when depth exceeds 20 levels', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
-      expect(screen.getByTestId('btn-import-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
     fireEvent.click(screen.getByTestId('btn-import-json'));

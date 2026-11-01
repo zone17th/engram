@@ -1089,7 +1089,9 @@ export function ImportJsonDialog({
       try {
         let plan = unconfirmedSaveState?.plan ?? null;
         if (!plan) {
-          // Read plaintext synchronously from holder/state only after verifying lock epoch + vault state
+          // IP16-FE1-2 / advisor-dec-200: Do not hold any plaintext local across an await.
+          // sealEntryImportJson / sealNewEntry reload vaultMeta themselves when null and invoke
+          // getText() synchronously AFTER any reloadVaultMeta await and op-token check.
           if (
             lockEpochRef.current !== capturedEpoch ||
             saveOwnerIdRef.current !== ownerId ||
@@ -1100,12 +1102,23 @@ export function ImportJsonDialog({
             setSavingInFlight(false);
             return;
           }
-          const currentRawSource = holderRef.current.draftText;
-          const payloadText =
-            mode === 'json' && formatBeforeSave && formattedBytesPreview?.ok
-              ? formattedBytesPreview.text
-              : currentRawSource;
-          holderRef.current.submittedText = payloadText;
+
+          const readPlaintextForSeal = (): string => {
+            if (
+              lockEpochRef.current !== capturedEpoch ||
+              saveOwnerIdRef.current !== ownerId ||
+              (vault.state !== undefined && vault.state !== 'unlocked')
+            ) {
+              return '';
+            }
+            const currentRawSource = holderRef.current.draftText;
+            const payloadText =
+              mode === 'json' && formatBeforeSave && formattedBytesPreview?.ok
+                ? formattedBytesPreview.text
+                : currentRawSource;
+            holderRef.current.submittedText = payloadText;
+            return payloadText;
+          };
 
           const entryId = crypto.randomUUID().toLowerCase();
           const entryIdempotencyKey = createIdempotencyKey();
@@ -1114,7 +1127,7 @@ export function ImportJsonDialog({
           let sealedText: SealedNewEntryPayload | undefined;
           if (mode === 'json') {
             sealedJson = await sealEntryImportJson({
-              text: payloadText,
+              getText: readPlaintextForSeal,
               itemId: resolvedItemId,
               entryId,
               source: sourceKind,
@@ -1123,7 +1136,7 @@ export function ImportJsonDialog({
             });
           } else {
             sealedText = await sealNewEntry({
-              text: payloadText,
+              getText: readPlaintextForSeal,
               itemId: resolvedItemId,
               entryId,
               type: 'text',
