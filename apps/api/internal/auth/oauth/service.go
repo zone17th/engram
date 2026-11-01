@@ -468,7 +468,7 @@ func (s *Service) Complete(ctx context.Context, binding, ip, ua string) (auth.Me
 	if row.IdentityProvider == nil || row.IdentityProviderUid == nil || row.IdentityEmail == nil {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
-	provider, uid, email := *row.IdentityProvider, *row.IdentityProviderUid, *row.IdentityEmail
+	provider, uid := *row.IdentityProvider, *row.IdentityProviderUid
 
 	ident, identErr := s.q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: provider, ProviderUid: &uid})
 	if identErr != nil && !errors.Is(identErr, pgx.ErrNoRows) {
@@ -552,7 +552,7 @@ func (s *Service) Complete(ctx context.Context, binding, ip, ua string) (auth.Me
 	if locked.IdentityProvider == nil || locked.IdentityProviderUid == nil || locked.IdentityEmail == nil {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
-	provider, uid, email = *locked.IdentityProvider, *locked.IdentityProviderUid, *locked.IdentityEmail
+	provider, uid, email := *locked.IdentityProvider, *locked.IdentityProviderUid, *locked.IdentityEmail
 	if _, err := q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: provider, ProviderUid: &uid}); err == nil {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrIdentityConflict
 	} else if !errors.Is(err, pgx.ErrNoRows) {
