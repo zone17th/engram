@@ -1010,7 +1010,7 @@
     "reauthNote": {
       "badge": "Confirm your account first",
       "title": "Re-authenticate your account before entering a recovery key",
-      "body": "Starting recovery asks you to confirm your account (login password or Google, valid for 5 minutes) before you paste your recovery key, so a sign-in redirect never clears the vault key you just opened."
+      "body": "Clicking Use a recovery key asks you to confirm your account (login password or Google, valid for 5 minutes) before you paste your recovery key, so a sign-in redirect never clears the vault key you just opened."
     },
     "lastResort": {
       "title": "If every unlock path is gone: check your encrypted backups first.",
