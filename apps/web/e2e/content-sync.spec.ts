@@ -84,6 +84,29 @@ async function triggerFocusWake(page: Page): Promise<void> {
   });
 }
 
+async function gotoItemPageAndUnlockIfLocked(
+  page: Page,
+  itemId: string,
+  passphrase = VAULT_PASSPHRASE,
+): Promise<void> {
+  await page.goto(`/app/items/${itemId}`);
+  const pill = page.locator('.vault-pill').first();
+  await expect(pill).toBeVisible({ timeout: UI_WAIT_MS });
+  const state = await pill.getAttribute('data-vault-state');
+  if (state !== 'unlocked') {
+    await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+    await page.getByTestId('vault-locked-unlock-cta').click({ timeout: UI_WAIT_MS });
+    await expectOnUnlockPage(page);
+    await fillSecret(page.getByTestId('unlock-passphrase-input'), passphrase, CRYPTO_WAIT_MS);
+    await page.getByTestId('unlock-submit-button').click();
+    await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), { timeout: CRYPTO_WAIT_MS });
+    await expect(page.locator('.vault-pill').first()).toHaveAttribute(
+      'data-vault-state',
+      'unlocked',
+      { timeout: CRYPTO_WAIT_MS },
+    );
+  }
+}
 async function createTextEntryViaUi(page: Page, text: string): Promise<string> {
   await page.getByTestId('btn-add-text').click();
   const textarea = page.getByTestId('new-entry-textarea');
@@ -150,22 +173,32 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
       );
       expect(assignRes.status).toBe(200);
 
-      await pageA.goto(`/app/items/${itemId}`);
+      // Open the item page in Context A via client-side navigation (or unlock if full navigation locked the Worker)
+      await triggerFocusWake(pageA);
+      const itemCardA = pageA.locator(`[data-item-card="${itemId}"]`);
+      await expect(itemCardA).toBeVisible({ timeout: UI_WAIT_MS });
+      await itemCardA.click();
+      await expect(pageA).toHaveURL(new RegExp(`/app/items/${itemId}$`), { timeout: UI_WAIT_MS });
       await expect(pageA.getByTestId('btn-add-text')).toBeEnabled({ timeout: UI_WAIT_MS });
+
       const entry1Id = await createTextEntryViaUi(pageA, 'entry-1-v1-from-A');
       await expect(
         pageA.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
       ).toHaveText('entry-1-v1-from-A', { timeout: UI_WAIT_MS });
 
-      // 2. Setup Context B (same user): login, unlock, open same item, wait for bootstrap feed call
+      // 2. Setup Context B (same user): login, navigate to the item page, unlock via locked banner,
+      //    and trigger a focus wake on the open item page to bootstrap B's changes watermark (F1/F3)
       const contextB = await newContext(browser);
       contexts.push(contextB);
       const pageB = await contextB.newPage();
 
       await loginViaUiSecret(pageB, email);
       await expectOnUnlockPage(pageB);
-      await pageB.goto('/app');
-      await expectLockedListOnApp(pageB);
+      await gotoItemPageAndUnlockIfLocked(pageB, itemId, VAULT_PASSPHRASE);
+      await expect(pageB.getByTestId('btn-add-text')).toBeEnabled({ timeout: UI_WAIT_MS });
+      await expect(
+        pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
+      ).toHaveText('entry-1-v1-from-A', { timeout: UI_WAIT_MS });
 
       const bootstrapFeedPromiseB = pageB.waitForResponse(
         (res) =>
@@ -174,15 +207,8 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
           res.status() === 200,
         { timeout: UI_WAIT_MS },
       );
-      await unlockFromLockedList(pageB, VAULT_PASSPHRASE);
+      await triggerFocusWake(pageB);
       await bootstrapFeedPromiseB;
-
-      await pageB.goto(`/app/items/${itemId}`);
-      await expect(
-        pageB.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
-      ).toHaveText('entry-1-v1-from-A', { timeout: UI_WAIT_MS });
-
-      // -----------------------------------------------------------------------
       // Case 1: A edits an entry; B (same item open, not editing) refocuses -> sees new content
       // -----------------------------------------------------------------------
       await pageA.getByTestId(`entry-edit-btn-${entry1Id}`).click();
@@ -249,12 +275,11 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
 
       // Verify A's saved v3 was NOT overwritten on the server
       await pageA.reload();
-      await unlockFromLockedList(pageA, VAULT_PASSPHRASE);
-      await pageA.goto(`/app/items/${itemId}`);
+      await gotoItemPageAndUnlockIfLocked(pageA, itemId, VAULT_PASSPHRASE);
+      await expect(pageA.getByTestId('btn-add-text')).toBeEnabled({ timeout: UI_WAIT_MS });
       await expect(
         pageA.getByTestId(`entry-card-${entry1Id}`).getByTestId('entry-body'),
       ).toHaveText('entry-1-v3-saved-first-by-A', { timeout: UI_WAIT_MS });
-
       // In B, discard conflict draft and load latest so B returns to clean state showing v3
       await pageB.getByTestId(`entry-conflict-load-latest-${entry1Id}`).click();
       await pageB.getByTestId(`entry-conflict-reload-confirm-btn-${entry1Id}`).click();
