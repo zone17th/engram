@@ -147,3 +147,17 @@ func (c *Content) ChainItemTagWrite(d httpx.Deps, requireIfMatch bool, fn http.H
 func (c *Content) ChainEntryWrite(d httpx.Deps, requireIfMatch bool, fn http.HandlerFunc) http.Handler {
 	return c.ChainWrite(d, ContentRouteEntry, requireIfMatch, fn)
 }
+
+// ContentPool trả về pool Postgres dùng chung của content P04. Các gói `itemhttp`, `taghttp`, `entryhttp`
+// không import được `compose` (vòng import), nên chúng đọc phụ thuộc qua interface cục bộ trên các accessor này
+// (advisor-dec-149).
+func (c *Content) ContentPool() *pgxpool.Pool { return c.Pool }
+
+// ContentClock trả về đồng hồ của content P04 (advisor-dec-149).
+func (c *Content) ContentClock() clock.Clock { return c.Clock }
+
+// ContentAudit trả về audit store của content P04 (advisor-dec-149).
+func (c *Content) ContentAudit() *audit.Store { return c.Audit }
+
+// ContentLogger trả về logger của content P04 (advisor-dec-149).
+func (c *Content) ContentLogger() *slog.Logger { return c.Logger }
