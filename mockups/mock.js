@@ -614,7 +614,7 @@
     input.removeAttribute('role');
     input.removeAttribute('aria-expanded');
     input.removeAttribute('aria-autocomplete');
-    input.setAttribute('aria-controls', listboxId);
+    input.removeAttribute('aria-controls');
     input.setAttribute('data-vault-secret', '');
     input.setAttribute('spellcheck', 'false');
     input.setAttribute('autocomplete', 'off');
@@ -727,6 +727,7 @@
       activeIdx = -1;
       pop.hidden = true;
       pop.innerHTML = '';
+      input.removeAttribute('aria-controls');
       input.removeAttribute('aria-activedescendant');
       if (clearLive) setLiveText('');
     }
@@ -792,6 +793,7 @@
 
       pop.innerHTML = `${headerHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả tìm kiếm · Search results">${optionsHtml}</div>`;
       pop.hidden = false;
+      input.setAttribute('aria-controls', listboxId);
       input.removeAttribute('aria-activedescendant');
     }
 
@@ -827,6 +829,7 @@
 
       pop.innerHTML = `${headerHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả lọc tag · Tag filter results">${optionsHtml}</div>`;
       pop.hidden = false;
+      input.setAttribute('aria-controls', listboxId);
       syncActiveOption();
     }
 
@@ -1551,8 +1554,6 @@
       }
     });
     window.addEventListener('resize', syncTextareaHeight);
-
-
     function onVaultStateChange(isLocked, wasLocked) {
       if (isLocked && !wasLocked) {
         const hasText = input.value.trim().length > 0;
@@ -2327,14 +2328,11 @@
         }
         prevLocked = state.locked;
       };
-      window.SAK && (window.SAK._syncVault = syncVault);
+      window.SAK._syncVault = syncVault;
       const toggle = () => { state.locked = !state.locked; syncVault(); };
       pills.forEach((b) => b.addEventListener('click', toggle));
       unlockBtns.forEach((b) => b.addEventListener('click', toggle));
-      requestAnimationFrame(() => {
-        if (window.SAK) window.SAK._syncVault = syncVault;
-        syncVault();
-      });
+      syncVault();
     }
     document.querySelectorAll('[data-sem-toggle]').forEach((btn) => {
       const sync = () => btn.setAttribute('aria-checked', String(state.semantic));

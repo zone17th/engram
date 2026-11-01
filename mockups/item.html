@@ -130,7 +130,7 @@
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <textarea rows="1" class="omnibox-input !text-[15px]" placeholder="Tìm / “tên:…” · Search"
+        <textarea rows="1" class="omnibox-input !text-[15px]" placeholder="Tìm, hoặc “tên: nội dung” để lưu · Search, or “name: content” to save"
                   data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
                   aria-label="Tìm hoặc lưu · Search or save"></textarea>
         <span class="kbd">/</span>
@@ -139,7 +139,7 @@
     </div>
 
     <div class="ml-auto flex items-center gap-2">
-      <button type="button" class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <button type="button" class="vault-pill vault-open" data-vault><span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body hidden sm:inline-flex">Cài đặt</a>
       <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
     </div>
