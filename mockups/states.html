@@ -51,7 +51,7 @@
   <!-- ============================================================= -->
   <!-- RỖNG                                                           -->
   <!-- ============================================================= -->
-  <section data-view="empty" class="flex flex-col gap-4">
+  <section data-view="empty" class="flex flex-col gap-4 scope-vault">
 
     <div class="panel p-8 text-center">
       <p class="t-label mb-3" style="color:var(--muted)">Vault trống · lần đầu</p>
@@ -99,7 +99,7 @@
   <!-- ============================================================= -->
   <!-- ĐANG TẢI                                                       -->
   <!-- ============================================================= -->
-  <section data-view="load" hidden class="flex flex-col gap-4">
+  <section data-view="load" hidden class="flex flex-col gap-4 scope-vault">
     <div class="card p-6">
       <p class="t-label mb-4" style="color:var(--muted)">Danh sách đang tải · khung xám, không nhảy layout</p>
       <div class="flex flex-col gap-3">
@@ -127,7 +127,7 @@
   <!-- ============================================================= -->
   <!-- LỖI                                                            -->
   <!-- ============================================================= -->
-  <section data-view="err" hidden class="flex flex-col gap-3">
+  <section data-view="err" hidden class="flex flex-col gap-3 scope-vault">
 
     <div class="card card-error p-5" id="err-version-mismatch">
       <span class="badge-type badge-error mb-2 inline-block">412</span>
@@ -168,21 +168,24 @@
     <div class="card card-error p-5" id="err-json-invalid">
       <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">JSON không hợp lệ</p>
       <p class="text-[13px] m-0 mb-1 text-muted">
-        Dòng 14, cột 3 (offset 248): thiếu dấu phẩy giữa hai khoá. Khi sửa tab JSON gốc, nút <strong>Lưu</strong> bị khoá cho tới khi cú pháp hợp lệ; khi nhập JSON mới, bạn có thể sửa lại hoặc chọn <strong>Lưu dạng văn bản</strong>.
+        Dòng 14, cột 3 (offset 248): thiếu dấu phẩy giữa hai khoá. Khi sửa tab JSON gốc, nút <strong>Lưu</strong> bị khoá cho tới khi cú pháp hợp lệ và có nút <strong>Đi tới lỗi</strong> nhảy con trỏ tới đúng vị trí lỗi; khi nhập JSON mới, bạn có thể sửa lại hoặc chọn <strong>Lưu dạng văn bản</strong>.
       </p>
       <p class="text-[12px] text-muted m-0 mb-2" lang="en">
-        <strong>Invalid JSON — Line 14, column 3 (offset 248):</strong> Missing comma between two properties. In Raw JSON edit mode, Save is disabled until valid; during JSON Import, you can fix the JSON or save verbatim as a plain text entry.
+        <strong>Invalid JSON — Line 14, column 3 (offset 248):</strong> Missing comma between two properties. In Raw JSON edit mode, Save is disabled until valid and <strong>Go to error</strong> moves the caret to the error offset; during JSON Import, you can fix the JSON or save verbatim as a plain text entry.
       </p>
       <div class="rounded-md p-3 mono text-[12px] bg-surface text-muted">
         "amount": 1200<br>"currency": "VND"
       </div>
-      <button type="button" class="btn btn-tertiary btn-sm mt-3" onclick="SAK.toast('Đã lưu nguyên văn thành 1 entry văn bản · Saved verbatim as text entry','Hoàn tác')">Lưu dạng văn bản · <span lang="en">Save as text</span></button>
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã đưa con trỏ tới dòng 14, cột 3 · Moved caret to line 14, column 3')">Đi tới lỗi · <span lang="en">Go to error</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã lưu nguyên văn thành 1 entry văn bản · Saved verbatim as text entry','Hoàn tác')">Lưu dạng văn bản · <span lang="en">Save as text</span></button>
+      </div>
     </div>
 
     <div class="card card-error p-5" id="err-import-utf8">
       <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Tệp nhập vào không phải UTF-8 hợp lệ</p>
       <p class="text-[13px] text-muted m-0 mb-1">
-        Phát hiện chuỗi byte không hợp lệ khi đọc tệp <span class="mono">.json</span> (<span class="mono">TextDecoder('utf-8', { fatal: true })</span>). Ứng dụng từ chối nhận thay vì âm thầm thay bằng ký tự <span class="mono">U+FFFD</span> (<span class="mono"></span>) làm hỏng dữ liệu. Hãy lưu lại tệp ở bảng mã UTF-8 rồi thử lại.
+        Phát hiện chuỗi byte không hợp lệ khi đọc tệp <span class="mono">.json</span> (<span class="mono">TextDecoder('utf-8', { fatal: true })</span>). Ứng dụng từ chối nhận thay vì âm thầm thay bằng ký tự thay thế <span class="mono">U+FFFD</span> làm hỏng dữ liệu. Hãy lưu lại tệp ở bảng mã UTF-8 rồi thử lại.
       </p>
       <p class="text-[12px] text-muted m-0" lang="en">
         <strong>Invalid UTF-8 file in JSON import.</strong> Strict UTF-8 decoding rejects invalid byte sequences instead of silently inserting <span class="mono">U+FFFD</span> replacement characters. Re-save the file as UTF-8 and try again.
@@ -303,7 +306,7 @@
   <!-- VAULT / P03                                                    -->
   <!-- ============================================================= -->
   <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
-  <section data-view="vault" hidden class="flex flex-col gap-3">
+  <section data-view="vault" hidden class="flex flex-col gap-3 scope-vault">
 
     <!-- 1. 412 version_mismatch -->
     <div class="card p-5" id="vault-version-mismatch" style="border-color:var(--error)">
@@ -426,7 +429,7 @@
   <!-- ============================================================= -->
   <!-- NGOẠI TUYẾN                                                    -->
   <!-- ============================================================= -->
-  <section data-view="off" hidden class="flex flex-col gap-3">
+  <section data-view="off" hidden class="flex flex-col gap-3 scope-vault">
 
     <div class="rounded-md p-4" style="background:var(--pale-orange)">
       <p class="text-[13px] m-0" style="color:var(--body)">
@@ -460,7 +463,7 @@
   <!-- ============================================================= -->
   <!-- GIẢM CHỨC NĂNG                                                 -->
   <!-- ============================================================= -->
-  <section data-view="degr" hidden class="flex flex-col gap-3">
+  <section data-view="degr" hidden class="flex flex-col gap-3 scope-vault">
 
     <div class="rounded-md p-4" style="background:var(--surface)">
       <p class="text-[13px] m-0 mb-1" style="color:var(--body)">

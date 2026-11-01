@@ -347,8 +347,9 @@ textarea.omnibox-input::placeholder {
 }
 .json-table td {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
-  vertical-align: top; color: var(--body);
+  vertical-align: top; color: var(--body); min-width: 88px;
 }
+.json-table td.k, .json-table td.json-col-act { min-width: 0; }
 .json-table tr:last-child td { border-bottom: 0; }
 .json-table .k { font-family: 'Sometype Mono', monospace; color: var(--muted); white-space: nowrap; }
 .json-table .k-occ { font-family: 'Sometype Mono', monospace; font-size: 11px; color: var(--accent); margin-left: 4px; font-weight: 600; }
@@ -383,9 +384,9 @@ textarea.omnibox-input::placeholder {
   border-color: var(--error);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--error) 18%, transparent);
 }
-.json-cell-wrap {
-  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 6px 8px;
-  min-width: 0;
+.json-cell-edit-wrap {
+  display: flex; flex-direction: column; gap: 6px;
+  min-width: 180px; max-width: 100%;
 }
 .json-cell-btn {
   display: inline-flex; align-items: flex-start; gap: 6px;
@@ -393,16 +394,16 @@ textarea.omnibox-input::placeholder {
   background: transparent; color: var(--body); cursor: pointer;
   padding: 2px 6px; margin: -2px -6px; text-align: left;
   font-family: 'Inter', sans-serif; font-size: 14px; line-height: 1.4;
-  max-width: 100%; word-break: break-word;
+  max-width: 100%; word-break: normal; overflow-wrap: break-word;
 }
 .json-cell-btn:hover { background: var(--surface); border-color: var(--border); }
 .json-cell-readonly {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 6px; border-radius: var(--r-sm);
   background: var(--surface-alt); border: 1px dashed var(--border-strong);
-  color: var(--muted); opacity: .88; cursor: not-allowed;
+  color: var(--body); cursor: not-allowed;
   font-family: 'Sometype Mono', monospace; font-size: 13px;
-  max-width: 100%; word-break: break-all;
+  max-width: 100%; word-break: normal; overflow-wrap: break-word;
 }
 .json-cell-input {
   width: 100%; min-width: 120px; border: 1px solid var(--accent);
@@ -415,9 +416,6 @@ textarea.omnibox-input::placeholder {
   border-color: var(--error);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--error) 18%, transparent);
 }
-.json-cell-actions {
-  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px;
-}
 .json-type-btn {
   display: inline-flex; align-items: center; gap: 4px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -426,24 +424,21 @@ textarea.omnibox-input::placeholder {
   white-space: nowrap;
 }
 .json-type-btn:hover { background: var(--surface-alt); color: var(--body); border-color: var(--border-strong); }
-.json-toolbar {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+.json-table-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center;
   gap: 8px 12px; padding: 8px 12px; background: var(--surface);
-  border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
 }
-.json-foot-bar {
+.json-page-bar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   gap: 8px 12px; padding: 8px 12px; background: var(--surface);
   border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
 }
 .json-readonly-note {
-  padding: 8px 12px; background: var(--surface-alt);
+  margin: 0; padding: 8px 12px; background: var(--surface-alt);
   border-top: 1px solid var(--border); font-size: 12px; color: var(--body);
 }
-.json-dup-banner {
-  font-size: 12px; color: var(--warning-ink); margin-bottom: 6px;
-}
-.json-col-idx { width: 44px; }
+.json-col-idx { width: 44px; min-width: 44px; }
 
 /* ---------- misc ---------- */
 
@@ -676,12 +671,14 @@ dialog { border: 0; padding: 0; background: transparent; max-width: calc(100vw -
 #passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg, #importDlg { color: var(--body); }
 #passDlg .btn, #rkDlg .btn, #rotateDlg .btn, #passkeyAddDlg .btn, #resetDlg .btn,
 #dupDialog .btn, #tagRenameDlg .btn, #importDlg .btn,
-section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='enroll']):not([data-view='oauth']):not([data-view='reauth']):not([data-view='auth']) .btn {
+section.scope-vault .btn,
+section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='enroll']):not([data-view='oauth']):not([data-view='reauth']):not([data-view='err']):not([data-view='auth']) .btn {
   white-space: normal; text-align: center;
 }
 #passDlg .t-label, #rkDlg .t-label, #rotateDlg .t-label, #passkeyAddDlg .t-label, #resetDlg .t-label,
 #dupDialog .t-label, #tagRenameDlg .t-label, #importDlg .t-label,
-section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='enroll']):not([data-view='oauth']):not([data-view='reauth']):not([data-view='auth']) .t-label {
+section.scope-vault .t-label,
+section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='enroll']):not([data-view='oauth']):not([data-view='reauth']):not([data-view='err']):not([data-view='auth']) .t-label {
   overflow-wrap: anywhere;
 }
 

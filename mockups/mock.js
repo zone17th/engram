@@ -2318,16 +2318,19 @@
     let lfCount = 0;
     let crlfCount = 0;
     let crCount = 0;
+    let firstBreak = null;
     for (let i = 0; i < s.length; i++) {
       const ch = s.charCodeAt(i);
       if (ch === 0x0d) {
         if (i + 1 < s.length && s.charCodeAt(i + 1) === 0x0a) {
+          if (!firstBreak) firstBreak = 'crlf';
           crlfCount++;
           i++;
         } else {
           crCount++;
         }
       } else if (ch === 0x0a) {
+        if (!firstBreak) firstBreak = 'lf';
         lfCount++;
       }
     }
@@ -2340,9 +2343,10 @@
       else if (crCount > 0) kind = 'cr';
     }
     let majority = 'lf';
-    if (crlfCount > lfCount && crlfCount >= crCount) majority = 'crlf';
-    else if (crCount > lfCount && crCount > crlfCount) majority = 'cr';
-    const majoritySeq = majority === 'crlf' ? '\r\n' : majority === 'cr' ? '\r' : '\n';
+    if (crlfCount > lfCount) majority = 'crlf';
+    else if (lfCount > crlfCount) majority = 'lf';
+    else if (crlfCount > 0 && lfCount === crlfCount && firstBreak === 'crlf') majority = 'crlf';
+    const majoritySeq = majority === 'crlf' ? '\r\n' : '\n';
     return {
       kind,
       majority,
@@ -3056,10 +3060,39 @@
 
   /* ---------- Interactive JSON Entry Card Controller ---------- */
 
+  const jsonCardInstances = [];
+  const SUP_DIGITS = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+  function toSuperscriptNum(n) {
+    return String(n).split('').map((d) => SUP_DIGITS[d.charCodeAt(0) - 48] || d).join('');
+  }
+
+  function mapSourceOffsetToLfOffset(source, offset) {
+    const s = String(source || '');
+    const clamped = Math.max(0, Math.min(offset || 0, s.length));
+    let lfOffset = 0;
+    for (let i = 0; i < clamped; i++) {
+      if (s.charCodeAt(i) === 0x0d && i + 1 < s.length && s.charCodeAt(i + 1) === 0x0a) {
+        if (i + 1 < clamped) {
+          i++;
+        }
+      }
+      lfOffset++;
+    }
+    return lfOffset;
+  }
+
   function initJsonEntryCard(config) {
     const tableHost = typeof config.tableHost === 'string' ? document.getElementById(config.tableHost) : config.tableHost;
     const rawHost = typeof config.rawHost === 'string' ? document.getElementById(config.rawHost) : config.rawHost;
     if (!tableHost) return null;
+
+    const hostIdPrefix = (tableHost.id && tableHost.id.trim()) || ('json-tbl-' + (jsonCardInstances.length + 1));
+    const readOnlyNoteId = `${hostIdPrefix}-ro-note`;
+    const rawErrorId = (rawHost && rawHost.querySelector('[data-json-raw-error]')?.id) || `${hostIdPrefix}-raw-error`;
+    if (rawHost) {
+      const errEl = rawHost.querySelector('[data-json-raw-error]');
+      if (errEl && !errEl.id) errEl.id = rawErrorId;
+    }
 
     let currentSource = String(config.initialSource || '{}');
     let parsedRes = parseJsonStrict(currentSource);
@@ -3071,8 +3104,10 @@
     let activeCellError = null;
     let activeAddFormPath = null;
     let activeAddKeyError = null;
-    let formatNotice = null;
     let eolConfirmPending = false;
+    let renderedHasReadOnlyCells = false;
+    let lastRawErrorOffset = 0;
+    let validateRawDraftFn = null;
 
     function getNodeByPath(root, path) {
       if (!root) return null;
@@ -3108,11 +3143,18 @@
       return { parent, prop: parent.properties[idx], index: idx, parentPath };
     }
 
+    function makePositionalAriaLabel(rowNum, colNum) {
+      const r = Number.isFinite(rowNum) && rowNum >= 1 ? rowNum : 1;
+      const c = Number.isFinite(colNum) && colNum >= 1 ? colNum : 1;
+      return `Hàng ${r}, cột ${c} · Row ${r}, column ${c}`;
+    }
+
     function renderPrimitiveCellHtml(node, path, cellOpts) {
       cellOpts = cellOpts || {};
+      const posLabel = makePositionalAriaLabel(cellOpts.rowNum, cellOpts.colNum);
       if (!node) {
-        if (!readOnlyCard && cellOpts.missingObjPath && cellOpts.missingColKey != null) {
-          return `<button type="button" class="json-cell-btn v-null" data-json-act="init-missing" data-obj-path="${esc(cellOpts.missingObjPath)}" data-col-key="${esc(cellOpts.missingColKey)}" title="Nhấp để thêm trường · Click to add field">—</button>`;
+        if (!readOnlyCard && cellOpts.missingObjPath && cellOpts.missingColIndex != null) {
+          return `<button type="button" class="json-cell-btn v-null" data-json-act="init-missing" data-obj-path="${esc(cellOpts.missingObjPath)}" data-arr-path="${esc(cellOpts.missingArrPath || 'root')}" data-col-index="${Number(cellOpts.missingColIndex)}" aria-label="${esc(posLabel)}" title="Nhấp để thêm trường · Click to add field">—</button>`;
         }
         return '<span class="v-null">—</span>';
       }
@@ -3120,28 +3162,21 @@
       const isKeyCell = !!cellOpts.isKey;
       const isReadOnlyString = node.kind === 'string' && (node.hasLoneSurrogate || node.hasCarriageReturn);
       if (isReadOnlyString) {
-        const reasonVi = node.hasLoneSurrogate ? 'chứa lone surrogate' : 'chứa ký tự \\r';
+        renderedHasReadOnlyCells = true;
         const displaySafe = node.hasLoneSurrogate
           ? Array.from(node.value).map((ch) => {
               const c = ch.charCodeAt(0);
               return (c >= 0xd800 && c <= 0xdfff) ? `\\u${c.toString(16).padStart(4, '0')}` : ch;
             }).join('')
           : node.value.replace(/\r/g, '\\r');
-        return `<span class="json-cell-readonly" title="Ô chỉ đọc trong Bảng (${esc(reasonVi)}) — sửa ở tab JSON gốc · Read-only in Table — edit in Raw JSON">
-          <span>${esc(displaySafe)}</span>
-          <span class="badge-type badge-warn">chỉ đọc · sửa ở JSON gốc</span>
-        </span>`;
+        return `<span class="json-cell-readonly" tabindex="0" role="textbox" aria-readonly="true" aria-label="${esc(posLabel)}" aria-describedby="${esc(readOnlyNoteId)}">${esc(displaySafe)}</span>`;
       }
 
       if (!readOnlyCard && activeEditCellKey === path) {
-        let curVal = '';
-        if (node.kind === 'string') curVal = node.value;
-        else if (node.kind === 'number') curVal = node.lexeme;
-        else curVal = node.raw;
-        const isMultiline = node.kind === 'string' && node.value.includes('\n') && !isKeyCell;
+        const isMultiline = node.kind === 'string' && node.value.includes('\n');
         const inputControl = isMultiline
-          ? `<textarea rows="2" class="json-cell-input" data-json-edit-input="${esc(path)}" data-vault-secret spellcheck="false">${esc(curVal)}</textarea>`
-          : `<input type="text" class="json-cell-input" data-json-edit-input="${esc(path)}" value="${esc(curVal)}" data-vault-secret spellcheck="false">`;
+          ? `<textarea rows="2" class="json-cell-input" data-json-edit-input="${esc(path)}" aria-label="${esc(posLabel)}" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>`
+          : `<input type="text" class="json-cell-input" data-json-edit-input="${esc(path)}" aria-label="${esc(posLabel)}" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">`;
 
         const typeSelector = !isKeyCell ? `
           <label class="inline-flex items-center gap-1 text-[12px] text-muted">
@@ -3152,17 +3187,23 @@
               <option value="true" ${node.kind === 'boolean' && node.value === true ? 'selected' : ''}>true</option>
               <option value="false" ${node.kind === 'boolean' && node.value === false ? 'selected' : ''}>false</option>
               <option value="null" ${node.kind === 'null' ? 'selected' : ''}>null</option>
+              <option value="object">object ({})</option>
+              <option value="array">array ([])</option>
             </select>
           </label>` : '';
 
+        const replaceHint = !isKeyCell
+          ? `<p class="text-[11px] text-muted m-0">Chọn <span class="mono">object</span> hoặc <span class="mono">array</span> sẽ thay thế giá trị hiện tại của ô. · <span lang="en">Choosing <span class="mono">object</span> or <span class="mono">array</span> replaces the current cell value.</span></p>`
+          : '';
         const errHtml = activeCellError ? `<p role="alert" class="field-error mt-1 mb-0 text-[12px]">${esc(activeCellError)}</p>` : '';
         return `<div class="json-cell-edit-wrap" data-json-active-editor="${esc(path)}">
           <div class="flex flex-wrap items-center gap-1.5">
             ${inputControl}
             ${typeSelector}
             <button type="button" class="btn btn-primary btn-sm" data-json-act="commit-cell" data-path="${esc(path)}">Lưu ô · <span lang="en">OK</span></button>
-            <button type="button" class="btn btn-tertiary btn-sm" data-json-act="cancel-cell">Huỷ · <span lang="en">Esc</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm" data-json-act="cancel-cell" data-path="${esc(path)}">Huỷ · <span lang="en">Esc</span></button>
           </div>
+          ${replaceHint}
           ${errHtml}
         </div>`;
       }
@@ -3180,8 +3221,7 @@
 
       if (readOnlyCard) return valSpan;
 
-      const typeTag = !isKeyCell ? `<span class="mono text-[11px] text-muted ml-1.5">${esc(node.kind)}</span>` : '';
-      return `<button type="button" class="json-cell-btn" data-json-act="edit-cell" data-path="${esc(path)}" title="Nhấp để sửa · Click to edit">${valSpan}${typeTag}</button>`;
+      return `<button type="button" class="json-cell-btn" data-json-act="edit-cell" data-path="${esc(path)}" aria-label="${esc(posLabel)}" title="Nhấp để sửa · Click to edit">${valSpan}</button>`;
     }
 
     function renderCellHtml(node, path, cellOpts) {
@@ -3221,16 +3261,18 @@
         if (activeAddFormPath === path) {
           const errHtml = activeAddKeyError ? `<span role="alert" class="text-[12px] text-error-ink font-medium">${esc(activeAddKeyError)}</span>` : '';
           return `<div class="json-table-toolbar" data-json-add-field-form="${esc(path)}">
-            <input type="text" class="json-cell-input !w-[160px]" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false">
+            <input type="text" class="json-cell-input !w-[160px]" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
             <select class="json-type-btn" data-json-new-type="${esc(path)}" aria-label="Kiểu giá trị mới · New value type">
               <option value="string">string ("")</option>
               <option value="number">number (0)</option>
               <option value="true">true</option>
               <option value="false">false</option>
               <option value="null" selected>null</option>
+              <option value="object">object ({})</option>
+              <option value="array">array ([])</option>
             </select>
             <button type="button" class="btn btn-primary btn-sm" data-json-act="confirm-add-field" data-path="${esc(path)}">Thêm · <span lang="en">Add</span></button>
-            <button type="button" class="btn btn-tertiary btn-sm" data-json-act="cancel-add-field">Huỷ · <span lang="en">Cancel</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm" data-json-act="cancel-add-field" data-path="${esc(path)}">Huỷ · <span lang="en">Cancel</span></button>
             ${errHtml}
           </div>`;
         }
@@ -3258,24 +3300,21 @@
         return `<div class="p-3 text-[13px] text-muted mono">Object rỗng <span class="mono">{}</span> · <span lang="en">Empty object</span></div>` + renderContainerToolbar(objNode, path);
       }
 
-      const keyTotals = new Map();
-      props.forEach((p) => keyTotals.set(p.key, (keyTotals.get(p.key) || 0) + 1));
-
       let rowsHtml = '';
       for (let i = start; i < end; i++) {
         const p = props[i];
+        const rowNum = i + 1;
         const keyPath = `${path}.k${i}`;
         const valPath = `${path}.p${i}`;
-        const isDup = (keyTotals.get(p.key) || 0) > 1;
         const occBadge = p.occurrenceIndex >= 1
-          ? `<span class="k-occ" title="Khoá trùng trong cùng object (lần xuất hiện #${p.occurrenceIndex + 1}) · Duplicate key occurrence #${p.occurrenceIndex + 1}">(${p.occurrenceIndex + 1})</span>`
-          : (isDup ? `<span class="k-occ" title="Khoá trùng trong cùng object (lần xuất hiện #1) · Duplicate key occurrence #1">(1)</span>` : '');
+          ? `<span class="k-occ" aria-label="Lần xuất hiện thứ ${p.occurrenceIndex + 1} · Occurrence ${p.occurrenceIndex + 1}">⁽${toSuperscriptNum(p.occurrenceIndex + 1)}⁾</span>`
+          : '';
         const delBtn = !readOnlyCard
-          ? `<td class="w-[44px] text-right"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-field" data-path="${esc(path)}" data-prop-idx="${i}" aria-label="Xoá trường ${esc(p.key)} · Remove field ${esc(p.key)}" title="Xoá trường · Remove field">×</button></td>`
+          ? `<td class="w-[44px] text-right json-col-act"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-field" data-path="${esc(path)}" data-prop-idx="${i}" aria-label="Xoá hàng ${rowNum} · Remove row ${rowNum}" title="Xoá hàng · Remove row">×</button></td>`
           : '';
         rowsHtml += `<tr>
-          <td class="k">${renderPrimitiveCellHtml(p.keyNode, keyPath, { isKey: true })}${occBadge}</td>
-          <td>${renderCellHtml(p.valueNode, valPath)}</td>
+          <td class="k">${renderPrimitiveCellHtml(p.keyNode, keyPath, { isKey: true, rowNum, colNum: 1 })}${occBadge}</td>
+          <td>${renderCellHtml(p.valueNode, valPath, { rowNum, colNum: 2 })}</td>
           ${delBtn}
         </tr>`;
       }
@@ -3309,19 +3348,20 @@
         let rowsHtml = '';
         for (let i = start; i < end; i++) {
           const rowObj = elements[i];
+          const rowNum = i + 1;
           const rowPath = `${path}.e${i}`;
           const delCell = !readOnlyCard
-            ? `<td class="w-[44px] text-right"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-row" data-path="${esc(path)}" data-elem-idx="${i}" aria-label="Xoá hàng ${i} · Remove row ${i}" title="Xoá hàng · Remove row">×</button></td>`
+            ? `<td class="w-[44px] text-right json-col-act"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-row" data-path="${esc(path)}" data-elem-idx="${i}" aria-label="Xoá hàng ${rowNum} · Remove row ${rowNum}" title="Xoá hàng · Remove row">×</button></td>`
             : '';
 
           if (rowObj.hasDuplicateKeys) {
             const colSpan = Math.max(1, columns.length + (overflowColumnCount > 0 ? 1 : 0));
             rowsHtml += `<tr>
-              <td class="k">${i}</td>
+              <td class="k">${rowNum}</td>
               <td colspan="${colSpan}">
                 <div class="text-[12px] text-muted mb-1.5">
                   <span class="badge-type badge-warn">khoá trùng · duplicate keys</span>
-                  <span>Hàng #${i} có khoá trùng nên hiển thị bảng khoá/giá trị kèm nhãn thứ tự <span class="mono">(2)</span> để sửa đúng từng occurrence. · <span lang="en">Row #${i} has duplicate keys; shown as field/value with occurrence badges.</span></span>
+                  <span>Hàng ${rowNum} có khoá trùng nên hiển thị bảng khoá/giá trị kèm nhãn thứ tự <span class="mono">⁽²⁾</span> để sửa đúng từng occurrence. · <span lang="en">Row ${rowNum} has duplicate keys; shown as field/value with occurrence badges.</span></span>
                 </div>
                 <div class="json-nest">${renderObjectTableHtml(rowObj, rowPath)}</div>
               </td>
@@ -3332,20 +3372,21 @@
 
           const propIdxByKey = new Map();
           rowObj.properties.forEach((p, pIdx) => propIdxByKey.set(p.key, pIdx));
-          const cellsHtml = columns.map((colKey) => {
+          const cellsHtml = columns.map((colKey, colIdx) => {
+            const colNum = colIdx + 1;
             const pIdx = propIdxByKey.get(colKey);
             if (pIdx === undefined) {
-              return `<td>${renderPrimitiveCellHtml(null, `${rowPath}.missing`, { missingObjPath: rowPath, missingColKey: colKey })}</td>`;
+              return `<td>${renderPrimitiveCellHtml(null, `${rowPath}.missing.${colIdx}`, { missingObjPath: rowPath, missingArrPath: path, missingColIndex: colIdx, rowNum, colNum })}</td>`;
             }
             const prop = rowObj.properties[pIdx];
-            return `<td>${renderCellHtml(prop.valueNode, `${rowPath}.p${pIdx}`)}</td>`;
+            return `<td>${renderCellHtml(prop.valueNode, `${rowPath}.p${pIdx}`, { rowNum, colNum })}</td>`;
           }).join('');
 
           let overflowCell = '';
           if (overflowColumnCount > 0) {
-            overflowCell = `<td>${renderCellHtml(rowObj, rowPath)}</td>`;
+            overflowCell = `<td>${renderCellHtml(rowObj, rowPath, { rowNum, colNum: columns.length + 1 })}</td>`;
           }
-          rowsHtml += `<tr><td class="k">${i}</td>${cellsHtml}${overflowCell}${delCell}</tr>`;
+          rowsHtml += `<tr><td class="k">${rowNum}</td>${cellsHtml}${overflowCell}${delCell}</tr>`;
         }
 
         return `<table class="json-table"><thead><tr><th class="json-col-idx">#</th>${headCols}</tr></thead><tbody>${rowsHtml}</tbody></table>` +
@@ -3357,11 +3398,12 @@
       let rowsHtml = '';
       for (let i = start; i < end; i++) {
         const el = elements[i];
+        const rowNum = i + 1;
         const elPath = `${path}.e${i}`;
         const delCell = !readOnlyCard
-          ? `<td class="w-[44px] text-right"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-row" data-path="${esc(path)}" data-elem-idx="${i}" aria-label="Xoá phần tử ${i} · Remove item ${i}" title="Xoá hàng · Remove row">×</button></td>`
+          ? `<td class="w-[44px] text-right json-col-act"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-row" data-path="${esc(path)}" data-elem-idx="${i}" aria-label="Xoá hàng ${rowNum} · Remove row ${rowNum}" title="Xoá hàng · Remove row">×</button></td>`
           : '';
-        rowsHtml += `<tr><td class="k">${i}</td><td>${renderCellHtml(el, elPath)}</td>${delCell}</tr>`;
+        rowsHtml += `<tr><td class="k">${rowNum}</td><td>${renderCellHtml(el, elPath, { rowNum, colNum: 1 })}</td>${delCell}</tr>`;
       }
       return `<table class="json-table"><thead><tr><th class="json-col-idx">#</th><th>Giá trị · <span lang="en">Value</span></th>${!readOnlyCard ? '<th class="w-[44px]"></th>' : ''}</tr></thead><tbody>${rowsHtml}</tbody></table>` +
         renderPaginationBar(path, totalRows, page) +
@@ -3374,8 +3416,19 @@
       if (node.kind === 'array') return renderArrayTableHtml(node, path);
       /* Root primitive: 1-row Value table */
       return `<table class="json-table"><thead><tr><th>Giá trị gốc (primitive) · <span lang="en">Root primitive value</span></th></tr></thead><tbody>
-        <tr><td>${renderPrimitiveCellHtml(node, path)}</td></tr>
+        <tr><td>${renderPrimitiveCellHtml(node, path, { rowNum: 1, colNum: 1 })}</td></tr>
       </tbody></table>`;
+    }
+
+    function updateEolBanner(eolBanner, eolInfo) {
+      if (!eolBanner) return;
+      if (!eolInfo.requiresConversionWarning) {
+        eolBanner.hidden = true;
+        return;
+      }
+      const targetLabel = eolInfo.majority === 'crlf' ? 'CRLF' : 'LF';
+      eolBanner.innerHTML = `<span>Tài liệu có kiểu xuống dòng hỗn hợp; lưu từ ô này sẽ đổi về <strong class="mono">${targetLabel}</strong>.</span> · <span lang="en">Document has mixed line endings; saving from this box will convert to <strong class="mono">${targetLabel}</strong>.</span>`;
+      eolBanner.hidden = false;
     }
 
     function syncRawHost() {
@@ -3394,24 +3447,103 @@
       const eolBanner = rawHost.querySelector('[data-json-eol-warning]');
       if (eolBanner) {
         const eolInfo = detectEol(currentSource);
-        eolBanner.hidden = !eolInfo.requiresConversionWarning;
+        updateEolBanner(eolBanner, eolInfo);
       }
     }
 
-    function paint() {
+    function captureFocusTarget() {
+      const active = document.activeElement;
+      if (!active || !tableHost.contains(active)) return null;
+      if (active.dataset && active.dataset.jsonEditInput) {
+        return { kind: 'edit-input', path: active.dataset.jsonEditInput };
+      }
+      if (active.dataset && active.dataset.jsonTypeSelect) {
+        return { kind: 'type-select', path: active.dataset.jsonTypeSelect };
+      }
+      if (active.dataset && active.dataset.jsonNewKey) {
+        return { kind: 'new-key', path: active.dataset.jsonNewKey };
+      }
+      const actBtn = active.closest('[data-json-act]');
+      if (actBtn) {
+        return {
+          kind: 'act',
+          act: actBtn.dataset.jsonAct,
+          path: actBtn.dataset.path || '',
+          propIdx: actBtn.dataset.propIdx,
+          elemIdx: actBtn.dataset.elemIdx
+        };
+      }
+      return null;
+    }
+
+    function restoreFocusTarget(focusTarget) {
+      if (!focusTarget) return;
+      let el = null;
+      if (focusTarget.kind === 'edit-input' && focusTarget.path) {
+        el = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(focusTarget.path)}"]`) ||
+             tableHost.querySelector(`[data-json-act="edit-cell"][data-path="${CSS.escape(focusTarget.path)}"]`);
+      } else if (focusTarget.kind === 'type-select' && focusTarget.path) {
+        el = tableHost.querySelector(`[data-json-type-select="${CSS.escape(focusTarget.path)}"]`) ||
+             tableHost.querySelector(`[data-json-act="edit-cell"][data-path="${CSS.escape(focusTarget.path)}"]`) ||
+             tableHost.querySelector(`[data-json-act="toggle-nest"][data-path="${CSS.escape(focusTarget.path)}"]`);
+      } else if (focusTarget.kind === 'new-key' && focusTarget.path) {
+        el = tableHost.querySelector(`[data-json-new-key="${CSS.escape(focusTarget.path)}"]`) ||
+             tableHost.querySelector(`[data-json-act="open-add-field"][data-path="${CSS.escape(focusTarget.path)}"]`);
+      } else if (focusTarget.kind === 'act') {
+        const act = focusTarget.act;
+        const p = focusTarget.path;
+        if ((act === 'commit-cell' || act === 'cancel-cell') && p) {
+          el = tableHost.querySelector(`[data-json-act="edit-cell"][data-path="${CSS.escape(p)}"]`);
+        } else if (act === 'confirm-add-field' || act === 'cancel-add-field') {
+          el = tableHost.querySelector(`[data-json-act="open-add-field"][data-path="${CSS.escape(p || 'root')}"]`);
+        } else if (act === 'remove-field' && p) {
+          el = tableHost.querySelector(`[data-json-act="remove-field"][data-path="${CSS.escape(p)}"][data-prop-idx="${CSS.escape(String(focusTarget.propIdx || 0))}"]`) ||
+               tableHost.querySelector(`[data-json-act="open-add-field"][data-path="${CSS.escape(p)}"]`);
+        } else if (act === 'remove-row' && p) {
+          el = tableHost.querySelector(`[data-json-act="remove-row"][data-path="${CSS.escape(p)}"][data-elem-idx="${CSS.escape(String(focusTarget.elemIdx || 0))}"]`) ||
+               tableHost.querySelector(`[data-json-act="add-row"][data-path="${CSS.escape(p)}"]`);
+        } else if (p) {
+          el = tableHost.querySelector(`[data-json-act="${CSS.escape(act)}"][data-path="${CSS.escape(p)}"]`);
+        } else {
+          el = tableHost.querySelector(`[data-json-act="${CSS.escape(act)}"]`);
+        }
+      }
+      if (el && typeof el.focus === 'function' && !el.disabled) {
+        el.focus();
+      }
+    }
+
+    function paint(explicitFocusTarget) {
+      const prevFocus = explicitFocusTarget !== undefined ? explicitFocusTarget : captureFocusTarget();
       if (!currentDoc) {
         tableHost.innerHTML = `<div class="p-4 text-[13px] text-error-ink">Chưa thể hiển thị bảng vì JSON đang có lỗi cú pháp. Hãy sửa ở tab JSON gốc. · <span lang="en">Cannot render table while JSON is invalid. Fix in Raw JSON tab.</span></div>`;
         return;
       }
-      tableHost.innerHTML = renderNodeTableHtml(currentDoc.root, 'root');
+      renderedHasReadOnlyCells = false;
+      let html = renderNodeTableHtml(currentDoc.root, 'root');
+      if (renderedHasReadOnlyCells) {
+        html += `<p id="${esc(readOnlyNoteId)}" class="json-readonly-note">
+          <span>Ô mờ có ký tự xuống dòng đặc biệt, sửa ở tab JSON gốc</span> ·
+          <span lang="en">Dimmed cells contain special line breaks; edit them in the Raw JSON tab</span>
+        </p>`;
+      }
+      tableHost.innerHTML = html;
+      if (activeEditCellKey) {
+        const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(activeEditCellKey)}"]`);
+        const node = getNodeByPath(currentDoc.root, activeEditCellKey);
+        if (inp && node) {
+          if (node.kind === 'string') inp.value = node.value;
+          else if (node.kind === 'number') inp.value = node.lexeme;
+          else inp.value = node.raw;
+        }
+      }
       syncRawHost();
-      const secretWrap = tableHost.closest('[data-secret]');
-      if (secretWrap && !state.locked) {
-        secretWrap.dataset.plain = secretWrap.innerHTML;
+      if (prevFocus) {
+        restoreFocusTarget(prevFocus);
       }
     }
 
-    function applySourceSplice(edit, toastMsg) {
+    function applySourceSplice(edit, toastMsg, nextFocusTarget) {
       const nextSource = spliceJsonSource(currentSource, edit);
       const nextBytes = measureUtf8Bytes(nextSource);
       if (nextBytes > JSON_MAX_UTF8_BYTES) {
@@ -3431,9 +3563,79 @@
       activeCellError = null;
       activeAddFormPath = null;
       activeAddKeyError = null;
-      paint();
+      paint(nextFocusTarget);
       if (toastMsg) toast(toastMsg);
       return true;
+    }
+
+    function commitCellEdit(path) {
+      if (!currentDoc || !path || activeEditCellKey !== path) return false;
+      const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(path)}"]`);
+      const newVal = inp ? inp.value : '';
+      const node = getNodeByPath(currentDoc.root, path);
+      if (!node) return false;
+      const isKey = path.split('.').pop().startsWith('k');
+      const focusAfterCommit = { kind: 'act', act: 'edit-cell', path };
+
+      if (node.kind === 'string') {
+        if (node.value === newVal) {
+          /* Rule 2: No-op commit = no edit (preserves escapes like \u00e9) */
+          activeEditCellKey = null;
+          activeCellError = null;
+          paint(focusAfterCommit);
+          return true;
+        }
+        if (isKey) {
+          const propInfo = getPropByPath(currentDoc.root, path);
+          if (propInfo && propInfo.parent.properties.some((p, idx) => idx !== propInfo.index && p.key === newVal)) {
+            activeCellError = 'Key đã có trong object · Key already exists in object';
+            paint({ kind: 'edit-input', path });
+            return false;
+          }
+        }
+        const escaped = escapeJsonStringMinimal(newVal);
+        return applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: escaped }, 'Đã cập nhật ô JSON · Updated JSON cell', focusAfterCommit);
+      }
+      if (node.kind === 'number') {
+        if (node.lexeme === newVal) {
+          activeEditCellKey = null;
+          activeCellError = null;
+          paint(focusAfterCommit);
+          return true;
+        }
+        if (!isValidJsonNumberLexeme(newVal)) {
+          activeCellError = 'Số không đúng cú pháp JSON (RFC 8259) · Invalid JSON number lexeme';
+          paint({ kind: 'edit-input', path });
+          return false;
+        }
+        return applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: newVal }, 'Đã cập nhật số (giữ nguyên chữ số) · Updated number lexeme', focusAfterCommit);
+      }
+      if (node.kind === 'boolean') {
+        if (newVal !== 'true' && newVal !== 'false') {
+          activeCellError = 'Ô boolean chỉ nhận true hoặc false · Expected true or false';
+          paint({ kind: 'edit-input', path });
+          return false;
+        }
+        if (node.raw === newVal) {
+          activeEditCellKey = null;
+          activeCellError = null;
+          paint(focusAfterCommit);
+          return true;
+        }
+        return applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: newVal }, 'Đã cập nhật ô boolean · Updated boolean cell', focusAfterCommit);
+      }
+      if (node.kind === 'null') {
+        if (newVal !== 'null') {
+          activeCellError = 'Đổi kiểu ở menu Kiểu để nhập giá trị khác null · Use Type menu to change from null';
+          paint({ kind: 'edit-input', path });
+          return false;
+        }
+        activeEditCellKey = null;
+        activeCellError = null;
+        paint(focusAfterCommit);
+        return true;
+      }
+      return false;
     }
 
     tableHost.addEventListener('click', (e) => {
@@ -3446,109 +3648,57 @@
         e.stopPropagation();
         if (openContainers.has(path)) openContainers.delete(path);
         else openContainers.add(path);
-        paint();
+        paint({ kind: 'act', act: 'toggle-nest', path });
         return;
       }
       if (act === 'page-prev' || act === 'page-next') {
         const cur = pageByNodePath.get(path) || 1;
         pageByNodePath.set(path, act === 'page-prev' ? Math.max(1, cur - 1) : cur + 1);
-        paint();
+        paint({ kind: 'act', act, path });
         return;
       }
       if (act === 'edit-cell') {
+        if (activeEditCellKey && activeEditCellKey !== path) {
+          commitCellEdit(activeEditCellKey);
+        }
         activeEditCellKey = path;
         activeCellError = null;
-        paint();
+        paint({ kind: 'edit-input', path });
         const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(path)}"]`);
         if (inp) { inp.focus(); if (inp.select) inp.select(); }
         return;
       }
       if (act === 'cancel-cell') {
+        const cancelPath = path || activeEditCellKey;
         activeEditCellKey = null;
         activeCellError = null;
-        paint();
+        paint(cancelPath ? { kind: 'act', act: 'edit-cell', path: cancelPath } : undefined);
         return;
       }
       if (act === 'commit-cell') {
-        const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(path)}"]`);
-        const newVal = inp ? inp.value : '';
-        const node = getNodeByPath(currentDoc.root, path);
-        if (!node) return;
-        const isKey = path.split('.').pop().startsWith('k');
-        if (node.kind === 'string') {
-          if (node.value === newVal) {
-            /* Rule 2: No-op commit = no edit (preserves escapes like \u00e9) */
-            activeEditCellKey = null;
-            activeCellError = null;
-            paint();
-            return;
-          }
-          if (isKey) {
-            const propInfo = getPropByPath(currentDoc.root, path);
-            if (propInfo && propInfo.parent.properties.some((p, idx) => idx !== propInfo.index && p.key === newVal)) {
-              activeCellError = 'Key đã có trong object · Key already exists in object';
-              paint();
-              return;
-            }
-          }
-          const escaped = escapeJsonStringMinimal(newVal);
-          applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: escaped }, 'Đã cập nhật ô JSON · Updated JSON cell');
-          return;
-        }
-        if (node.kind === 'number') {
-          if (node.lexeme === newVal) {
-            activeEditCellKey = null;
-            activeCellError = null;
-            paint();
-            return;
-          }
-          if (!isValidJsonNumberLexeme(newVal)) {
-            activeCellError = 'Số không đúng cú pháp JSON (RFC 8259) · Invalid JSON number lexeme';
-            paint();
-            return;
-          }
-          applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: newVal }, 'Đã cập nhật số (giữ nguyên chữ số) · Updated number lexeme');
-          return;
-        }
-        if (node.kind === 'boolean') {
-          if (newVal !== 'true' && newVal !== 'false') {
-            activeCellError = 'Ô boolean chỉ nhận true hoặc false · Expected true or false';
-            paint();
-            return;
-          }
-          if (node.raw === newVal) {
-            activeEditCellKey = null;
-            activeCellError = null;
-            paint();
-            return;
-          }
-          applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: newVal }, 'Đã cập nhật ô boolean · Updated boolean cell');
-          return;
-        }
-        if (node.kind === 'null') {
-          if (newVal !== 'null') {
-            activeCellError = 'Đổi kiểu ở menu Kiểu để nhập giá trị khác null · Use Type menu to change from null';
-            paint();
-            return;
-          }
-          activeEditCellKey = null;
-          activeCellError = null;
-          paint();
-        }
+        commitCellEdit(path || activeEditCellKey);
         return;
       }
       if (act === 'init-missing') {
         const objPath = btn.dataset.objPath;
-        const colKey = btn.dataset.colKey;
+        const arrPath = btn.dataset.arrPath || 'root';
+        const colIdx = parseInt(btn.dataset.colIndex, 10);
+        const arrNode = getNodeByPath(currentDoc.root, arrPath);
         const objNode = getNodeByPath(currentDoc.root, objPath);
-        if (!objNode || objNode.kind !== 'object') return;
+        if (!objNode || objNode.kind !== 'object' || !arrNode || arrNode.kind !== 'array' || isNaN(colIdx)) return;
+        const { columns } = deriveArrayColumns(arrNode);
+        const colKey = columns[colIdx];
+        if (colKey === undefined) return;
         const propText = `${escapeJsonStringMinimal(colKey)}: ""`;
         const edit = computeInsertionSpan(currentSource, objNode.span, objNode.properties, objNode.properties.length, propText);
         if (applySourceSplice(edit)) {
           const updatedObj = getNodeByPath(currentDoc.root, objPath);
           if (updatedObj && updatedObj.properties.length) {
-            activeEditCellKey = `${objPath}.p${updatedObj.properties.length - 1}`;
-            paint();
+            const newCellPath = `${objPath}.p${updatedObj.properties.length - 1}`;
+            activeEditCellKey = newCellPath;
+            paint({ kind: 'edit-input', path: newCellPath });
+            const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(newCellPath)}"]`);
+            if (inp) { inp.focus(); if (inp.select) inp.select(); }
           }
         }
         return;
@@ -3556,15 +3706,16 @@
       if (act === 'open-add-field') {
         activeAddFormPath = path;
         activeAddKeyError = null;
-        paint();
+        paint({ kind: 'new-key', path });
         const keyInp = tableHost.querySelector(`[data-json-new-key="${CSS.escape(path)}"]`);
         if (keyInp) keyInp.focus();
         return;
       }
       if (act === 'cancel-add-field') {
+        const p = path || activeAddFormPath || 'root';
         activeAddFormPath = null;
         activeAddKeyError = null;
-        paint();
+        paint({ kind: 'act', act: 'open-add-field', path: p });
         return;
       }
       if (act === 'confirm-add-field') {
@@ -3576,18 +3727,24 @@
         if (!objNode || objNode.kind !== 'object') return;
         if (!newKey) {
           activeAddKeyError = 'Nhập tên khoá · Enter a key name';
-          paint();
+          paint({ kind: 'new-key', path });
           return;
         }
         if (objNode.properties.some((p) => p.key === newKey)) {
           activeAddKeyError = 'Key đã có · Key already exists';
-          paint();
+          paint({ kind: 'new-key', path });
           return;
         }
-        const valLex = newType === 'string' ? '""' : newType === 'number' ? '0' : newType === 'true' ? 'true' : newType === 'false' ? 'false' : 'null';
+        const valLex = newType === 'string' ? '""'
+          : newType === 'number' ? '0'
+          : newType === 'true' ? 'true'
+          : newType === 'false' ? 'false'
+          : newType === 'object' ? '{}'
+          : newType === 'array' ? '[]'
+          : 'null';
         const propText = `${escapeJsonStringMinimal(newKey)}: ${valLex}`;
         const edit = computeInsertionSpan(currentSource, objNode.span, objNode.properties, objNode.properties.length, propText);
-        applySourceSplice(edit, `Đã thêm trường “${newKey}” · Added field “${newKey}”`);
+        applySourceSplice(edit, 'Đã thêm trường · Added field', { kind: 'act', act: 'open-add-field', path });
         return;
       }
       if (act === 'remove-field') {
@@ -3595,7 +3752,8 @@
         const objNode = getNodeByPath(currentDoc.root, path);
         if (!objNode || objNode.kind !== 'object' || isNaN(propIdx)) return;
         const edit = computeRemovalSpan(currentSource, objNode.span, objNode.properties, propIdx);
-        applySourceSplice(edit, 'Đã xoá trường · Removed field');
+        const nextIdx = Math.max(0, Math.min(propIdx, objNode.properties.length - 2));
+        applySourceSplice(edit, 'Đã xoá trường · Removed field', { kind: 'act', act: 'remove-field', path, propIdx: nextIdx });
         return;
       }
       if (act === 'add-row') {
@@ -3607,7 +3765,7 @@
           itemLex = columns.length ? `{ ${columns.map((c) => `${escapeJsonStringMinimal(c)}: null`).join(', ')} }` : '{}';
         }
         const edit = computeInsertionSpan(currentSource, arrNode.span, arrNode.elements, arrNode.elements.length, itemLex);
-        applySourceSplice(edit, 'Đã thêm hàng mới · Added new row');
+        applySourceSplice(edit, 'Đã thêm hàng mới · Added new row', { kind: 'act', act: 'add-row', path });
         return;
       }
       if (act === 'remove-row') {
@@ -3615,7 +3773,8 @@
         const arrNode = getNodeByPath(currentDoc.root, path);
         if (!arrNode || arrNode.kind !== 'array' || isNaN(elemIdx)) return;
         const edit = computeRemovalSpan(currentSource, arrNode.span, arrNode.elements, elemIdx);
-        applySourceSplice(edit, 'Đã xoá hàng · Removed row');
+        const nextIdx = Math.max(0, Math.min(elemIdx, arrNode.elements.length - 2));
+        applySourceSplice(edit, 'Đã xoá hàng · Removed row', { kind: 'act', act: 'remove-row', path, elemIdx: nextIdx });
       }
     });
 
@@ -3626,13 +3785,46 @@
       const targetType = sel.value;
       const node = getNodeByPath(currentDoc.root, path);
       if (!node) return;
+      const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(path)}"]`);
+      const typedText = inp ? inp.value : null;
       let lex = 'null';
-      if (targetType === 'string') lex = '""';
-      else if (targetType === 'number') {
-        lex = (node.kind === 'string' && isValidJsonNumberLexeme(node.value)) ? node.value : '0';
-      } else if (targetType === 'true') lex = 'true';
-      else if (targetType === 'false') lex = 'false';
-      applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: lex }, `Đã đổi kiểu sang ${targetType} · Changed type to ${targetType}`);
+      if (targetType === 'string') {
+        if (typedText != null && typedText !== '') {
+          lex = escapeJsonStringMinimal(typedText);
+        } else if (node.kind === 'number') {
+          lex = escapeJsonStringMinimal(node.lexeme);
+        } else if (node.kind === 'boolean') {
+          lex = escapeJsonStringMinimal(node.raw);
+        } else if (node.kind === 'string') {
+          lex = escapeJsonStringMinimal(node.value);
+        } else {
+          lex = '""';
+        }
+      } else if (targetType === 'number') {
+        if (typedText != null && isValidJsonNumberLexeme(typedText)) {
+          lex = typedText;
+        } else if (node.kind === 'string' && isValidJsonNumberLexeme(node.value)) {
+          lex = node.value;
+        } else if (node.kind === 'number') {
+          lex = node.lexeme;
+        } else {
+          lex = '0';
+        }
+      } else if (targetType === 'true') {
+        lex = 'true';
+      } else if (targetType === 'false') {
+        lex = 'false';
+      } else if (targetType === 'object') {
+        lex = '{}';
+        openContainers.add(path);
+      } else if (targetType === 'array') {
+        lex = '[]';
+        openContainers.add(path);
+      }
+      const nextFocus = (targetType === 'object' || targetType === 'array')
+        ? { kind: 'act', act: 'toggle-nest', path }
+        : { kind: 'act', act: 'edit-cell', path };
+      applySourceSplice({ offset: node.span.start, length: node.span.end - node.span.start, content: lex }, `Đã đổi kiểu sang ${targetType} · Changed type to ${targetType}`, nextFocus);
     });
 
     tableHost.addEventListener('keydown', (e) => {
@@ -3643,12 +3835,25 @@
         e.preventDefault();
         activeEditCellKey = null;
         activeCellError = null;
-        paint();
-      } else if (e.key === 'Enter' && inp.tagName !== 'TEXTAREA') {
+        paint({ kind: 'act', act: 'edit-cell', path });
+      } else if (e.key === 'Enter') {
+        if (inp.tagName === 'TEXTAREA' && e.shiftKey) {
+          /* Shift+Enter inserts a newline in multiline string cells */
+          return;
+        }
         e.preventDefault();
-        const commitBtn = tableHost.querySelector(`[data-json-act="commit-cell"][data-path="${CSS.escape(path)}"]`);
-        if (commitBtn) commitBtn.click();
+        commitCellEdit(path);
       }
+    });
+
+    tableHost.addEventListener('focusout', (e) => {
+      const wrap = e.target.closest('[data-json-active-editor]');
+      if (!wrap) return;
+      const path = wrap.dataset.jsonActiveEditor;
+      if (!path || activeEditCellKey !== path) return;
+      const next = e.relatedTarget;
+      if (next && wrap.contains(next)) return;
+      commitCellEdit(path);
     });
 
     /* Wire Raw JSON editor panel if rawHost is an interactive container */
@@ -3659,6 +3864,19 @@
       const errBox = rawHost.querySelector('[data-json-raw-error]');
       const eolWarn = rawHost.querySelector('[data-json-eol-warning]');
       const formatMsgEl = rawHost.querySelector('[data-json-format-msg]');
+
+      function setRawInvalidState(isInvalid) {
+        if (!ta) return;
+        if (isInvalid) {
+          ta.setAttribute('aria-invalid', 'true');
+          if (errBox && errBox.id) ta.setAttribute('aria-describedby', errBox.id);
+        } else {
+          ta.removeAttribute('aria-invalid');
+          if (errBox && errBox.id && ta.getAttribute('aria-describedby') === errBox.id) {
+            ta.removeAttribute('aria-describedby');
+          }
+        }
+      }
 
       function validateRawDraft() {
         if (!ta) return;
@@ -3672,6 +3890,7 @@
             errBox.hidden = false;
             errBox.innerHTML = `<strong>Chuỗi chứa lone surrogate (UTF-16 không hợp lệ)</strong> — Không thể mã hoá UTF-8. · <span lang="en">Input contains an unpaired UTF-16 surrogate and cannot be encoded as UTF-8.</span>`;
           }
+          setRawInvalidState(true);
           if (saveBtn) saveBtn.disabled = true;
           if (formatBtn) formatBtn.disabled = true;
           return;
@@ -3681,24 +3900,76 @@
             errBox.hidden = false;
             errBox.innerHTML = `<strong>Nội dung vượt quá 256 KiB (262.144 B UTF-8; 413 entry_too_large).</strong> Hãy rút gọn trước khi lưu. · <span lang="en">Exceeds 256 KiB (262,144 UTF-8 bytes). Shorten before saving.</span>`;
           }
+          setRawInvalidState(true);
           if (saveBtn) saveBtn.disabled = true;
           if (formatBtn) formatBtn.disabled = true;
           return;
         }
         const res = parseJsonStrict(draft);
         if (!res.ok) {
+          lastRawErrorOffset = res.error.offset || 0;
           if (errBox) {
             errBox.hidden = false;
-            errBox.innerHTML = `<p class="font-semibold m-0 mb-0.5">JSON không hợp lệ — Dòng ${res.error.line}, cột ${res.error.column} (offset ${res.error.offset})</p>
-              <p class="m-0">${esc(res.error.messageVi)} · <span lang="en">${esc(res.error.messageEn)}</span></p>`;
+            errBox.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p class="font-semibold m-0 mb-0.5">JSON không hợp lệ — Dòng ${res.error.line}, cột ${res.error.column} (offset ${res.error.offset})</p>
+                <p class="m-0">${esc(res.error.messageVi)} · <span lang="en">${esc(res.error.messageEn)}</span></p>
+              </div>
+              <button type="button" class="btn btn-tertiary btn-sm" data-json-raw-goto>Đi tới lỗi · <span lang="en">Go to error</span></button>
+            </div>`;
           }
+          setRawInvalidState(true);
           if (saveBtn) saveBtn.disabled = true;
           if (formatBtn) formatBtn.disabled = true;
         } else {
           if (errBox) errBox.hidden = true;
+          setRawInvalidState(false);
           if (saveBtn) saveBtn.disabled = false;
           if (formatBtn) formatBtn.disabled = false;
         }
+      }
+      validateRawDraftFn = validateRawDraft;
+
+      if (errBox && ta) {
+        errBox.addEventListener('click', (e) => {
+          const gotoBtn = e.target.closest('[data-json-raw-goto]');
+          if (!gotoBtn) return;
+          const normText = ta.value;
+          const pos = Math.max(0, Math.min(mapSourceOffsetToLfOffset(normText, lastRawErrorOffset), normText.length));
+          ta.focus();
+          ta.setSelectionRange(pos, Math.min(pos + 1, normText.length));
+        });
+      }
+
+      function triggerRawSave() {
+        if (!ta || (saveBtn && saveBtn.disabled)) return;
+        const normDraft = ta.value.replace(/\r\n?/g, '\n');
+        const normSource = currentSource.replace(/\r\n?/g, '\n');
+        if (normDraft === normSource) {
+          /* Plan 2.10 EOL rule 2: normalized draft unchanged -> keep original source bytes untouched, no PUT */
+          eolConfirmPending = false;
+          toast('Không có thay đổi (giữ nguyên chuỗi nguồn) · No changes (source bytes kept)');
+          return;
+        }
+        const eolInfo = detectEol(currentSource);
+        if (eolInfo.requiresConversionWarning && !eolConfirmPending) {
+          eolConfirmPending = true;
+          updateEolBanner(eolWarn, eolInfo);
+          toast('Xác nhận chuẩn hoá xuống dòng (EOL) trước khi lưu · Confirm EOL normalization before saving');
+          return;
+        }
+        eolConfirmPending = false;
+        const targetSeq = eolInfo.majoritySeq;
+        const nextSrc = normDraft.replace(/\n/g, targetSeq);
+        const reparsed = parseJsonStrict(nextSrc);
+        if (!reparsed.ok) {
+          validateRawDraft();
+          return;
+        }
+        currentSource = nextSrc;
+        currentDoc = reparsed.document;
+        paint();
+        toast('Đã lưu JSON gốc · Saved Raw JSON');
       }
 
       if (ta) {
@@ -3706,6 +3977,12 @@
         ta.addEventListener('input', () => {
           if (formatMsgEl) formatMsgEl.hidden = true;
           validateRawDraft();
+        });
+        ta.addEventListener('keydown', (e) => {
+          if ((e.key || '').toLowerCase() === 's' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            triggerRawSave();
+          }
         });
       }
 
@@ -3726,44 +4003,50 @@
             }
             return;
           }
-          currentSource = fmtRes.text;
-          currentDoc = fmtRes.document;
-          ta.value = currentSource.replace(/\r\n?/g, '\n');
+          /* S3RV1-23: Format only rewrites the textarea draft; Save commits to currentSource */
+          ta.value = fmtRes.text.replace(/\r\n?/g, '\n');
           if (formatMsgEl) formatMsgEl.hidden = true;
           validateRawDraft();
-          paint();
-          toast('Đã định dạng JSON (chỉ đổi khoảng trắng ngoài chuỗi) · Formatted JSON (whitespace only)');
+          toast('Đã định dạng bản nháp JSON (chỉ đổi khoảng trắng ngoài chuỗi) · Formatted JSON draft (whitespace only)');
         });
       }
 
       if (saveBtn && ta) {
-        saveBtn.addEventListener('click', () => {
-          const eolInfo = detectEol(currentSource);
-          if (eolInfo.requiresConversionWarning && !eolConfirmPending) {
-            eolConfirmPending = true;
-            if (eolWarn) eolWarn.hidden = false;
-            toast('Xác nhận chuẩn hoá xuống dòng (EOL) trước khi lưu · Confirm EOL normalization before saving');
-            return;
-          }
-          eolConfirmPending = false;
-          const targetSeq = eolInfo.majoritySeq;
-          const nextSrc = ta.value.replace(/\r\n?/g, '\n').replace(/\n/g, targetSeq);
-          const reparsed = parseJsonStrict(nextSrc);
-          if (!reparsed.ok) {
-            validateRawDraft();
-            return;
-          }
-          currentSource = nextSrc;
-          currentDoc = reparsed.document;
-          paint();
-          toast('Đã lưu JSON gốc · Saved Raw JSON');
-        });
+        saveBtn.addEventListener('click', triggerRawSave);
+      }
+
+      /* Plan 2.10 EOL rule 5: switching from Raw tab to Table tab applies valid edited text as new source with re-applied EOL */
+      const cardScope = tableHost.closest('[data-seg-scope]');
+      if (cardScope && ta) {
+        const cardSeg = cardScope.querySelector('[data-seg]');
+        if (cardSeg) {
+          cardSeg.addEventListener('click', (e) => {
+            const segBtn = e.target.closest('button[data-target]');
+            if (!segBtn) return;
+            const targetView = segBtn.dataset.target;
+            if (targetView && tableHost.dataset.view === targetView) {
+              const normDraft = ta.value.replace(/\r\n?/g, '\n');
+              const normSource = currentSource.replace(/\r\n?/g, '\n');
+              if (normDraft !== normSource && isWellFormedUtf16(normDraft) && measureUtf8Bytes(normDraft) <= JSON_MAX_UTF8_BYTES) {
+                const eolInfo = detectEol(currentSource);
+                const nextSrc = normDraft.replace(/\n/g, eolInfo.majoritySeq);
+                const reparsed = parseJsonStrict(nextSrc);
+                if (reparsed.ok) {
+                  currentSource = nextSrc;
+                  currentDoc = reparsed.document;
+                  paint();
+                }
+              }
+            }
+          });
+        }
       }
 
       /* Simulation buttons for Raw JSON states (mixed EOL, format > 256 KiB, format > depth, invalid JSON) */
       rawHost.querySelectorAll('[data-json-raw-sim]').forEach((simBtn) => {
         simBtn.addEventListener('click', () => {
           const mode = simBtn.dataset.jsonRawSim;
+          eolConfirmPending = false;
           if (mode === 'valid') {
             currentSource = config.initialSource;
             const p = parseJsonStrict(currentSource);
@@ -3783,7 +4066,7 @@
             const p = parseJsonStrict(currentSource);
             if (p.ok) currentDoc = p.document;
             if (ta) ta.value = currentSource.replace(/\r\n?/g, '\n');
-            if (eolWarn) eolWarn.hidden = false;
+            updateEolBanner(eolWarn, detectEol(currentSource));
             validateRawDraft();
           } else if (mode === 'format-over-cap') {
             if (formatMsgEl) {
@@ -3803,7 +4086,8 @@
     }
 
     paint();
-    return {
+
+    const cardController = {
       paint,
       setSource(newSrc, openPaths) {
         currentSource = String(newSrc || '');
@@ -3816,11 +4100,42 @@
         activeCellError = null;
         activeAddFormPath = null;
         activeAddKeyError = null;
+        eolConfirmPending = false;
         paint();
+        if (validateRawDraftFn) {
+          const ta = rawHost && rawHost.querySelector('[data-json-raw-textarea]');
+          if (ta) ta.value = currentSource.replace(/\r\n?/g, '\n');
+          const formatMsgEl = rawHost && rawHost.querySelector('[data-json-format-msg]');
+          if (formatMsgEl) formatMsgEl.hidden = true;
+          validateRawDraftFn();
+        }
+      },
+      onVaultStateChange(isLocked) {
+        activeEditCellKey = null;
+        activeCellError = null;
+        activeAddFormPath = null;
+        activeAddKeyError = null;
+        eolConfirmPending = false;
+        if (rawHost) {
+          const ta = rawHost.querySelector('[data-json-raw-textarea]');
+          if (ta) {
+            /* Plan 2.10 Lock: drop unsaved raw draft on lock and restore clean source on unlock */
+            ta.value = isLocked ? '' : currentSource.replace(/\r\n?/g, '\n');
+          }
+          const formatMsgEl = rawHost.querySelector('[data-json-format-msg]');
+          if (formatMsgEl) formatMsgEl.hidden = true;
+        }
+        if (!isLocked) {
+          paint();
+          if (validateRawDraftFn) validateRawDraftFn();
+        }
       },
       getSource() { return currentSource; },
       getDocument() { return currentDoc; }
     };
+
+    jsonCardInstances.push(cardController);
+    return cardController;
   }
 
   /* ---------- chrome chung: theme, khoá vault, tab ---------- */
@@ -3857,11 +4172,34 @@
         document.body.classList.toggle('is-locked', state.locked);
         document.querySelectorAll('[data-secret]').forEach((el) => {
           if (state.locked) {
-            if (!el.dataset.locked) el.dataset.plain = el.innerHTML;
-            el.dataset.locked = '1';
-            el.innerHTML = '<div class="lock-veil">•••• •••• •••• ••••</div>';
+            if (!el.dataset.locked) {
+              el.dataset.locked = '1';
+              Array.from(el.children).forEach((child) => {
+                if (child.hasAttribute('data-lock-veil')) return;
+                if (child.hidden) child.dataset.wasHiddenBeforeLock = '1';
+                child.hidden = true;
+              });
+              let veil = el.querySelector(':scope > [data-lock-veil]');
+              if (!veil) {
+                veil = document.createElement('div');
+                veil.className = 'lock-veil';
+                veil.setAttribute('data-lock-veil', '1');
+                veil.textContent = '•••• •••• •••• ••••';
+                el.appendChild(veil);
+              }
+              veil.hidden = false;
+            }
           } else if (el.dataset.locked) {
-            el.innerHTML = el.dataset.plain ?? el.innerHTML;
+            const veil = el.querySelector(':scope > [data-lock-veil]');
+            if (veil) veil.remove();
+            Array.from(el.children).forEach((child) => {
+              if (child.dataset.wasHiddenBeforeLock === '1') {
+                delete child.dataset.wasHiddenBeforeLock;
+                child.hidden = true;
+              } else {
+                child.hidden = false;
+              }
+            });
             delete el.dataset.locked;
           }
         });
@@ -3870,6 +4208,11 @@
           omniboxInstances.forEach((inst) => {
             if (inst && typeof inst.onVaultStateChange === 'function') {
               inst.onVaultStateChange(state.locked, prevLocked);
+            }
+          });
+          jsonCardInstances.forEach((cardInst) => {
+            if (cardInst && typeof cardInst.onVaultStateChange === 'function') {
+              cardInst.onVaultStateChange(state.locked, prevLocked);
             }
           });
         }
