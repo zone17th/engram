@@ -86,6 +86,19 @@ Chốt API/grammar → storage/text → quick-add → parser/view/edit JSON → 
 | P04-A11 | Idempotency và write limit | Retry `POST /entries` và `import-json` với cùng key trả response gốc, không tạo bản thứ hai; cùng key khác payload trả `409`; bản ghi hết hạn sau 24 giờ; vượt 10 rps ghi bị chặn mà không mất mutation đã commit |
 | P04-A12 | Size metadata | `plaintext_len_bucket` luôn là bội số 256 và ≥ độ dài thật; quá 262144 hoặc ciphertext quá 263168 B bị từ chối trước khi lưu; server không suy ra độ dài chính xác từ bucket |
 
+## Ghi chú lệch (Task 1, không đổi acceptance)
+
+Các điểm dưới đây chốt cách làm theo [plan P04](../plans/2026-11-01-P04-content.md) mục 2–3 và [ADR 0005](../adr/0005-content-lossless-va-concurrency.md); acceptance P04-A1…A12 giữ nguyên.
+
+- **Concurrency:** `If-Match: "<version>"` theo cột `version` của entry/item thay cho "version/timestamp" (Q1, Q2). Timestamp không phải validator đáng tin; reorder không tăng `version` nên không gây 412 giả.
+- **Import:** bỏ `filename` (Q7); request chỉ có `source: paste|file`, audit chỉ ghi `import_source`. File giữ nguyên byte UTF-8 (bỏ đúng một BOM); dán giữ đúng chuỗi trình duyệt trả về.
+- **Thư mục web:** `apps/web/features/items/**` (mở rộng thư mục P03, giữ seam `entry-body.tsx`) thay cho `features/item` ở mục "File dự kiến".
+- **Feed nhiều thiết bị:** `/entries/changes` dùng watermark + overlap 120 giây chỉ là heuristic; hội tụ đến từ quy tắc bắt buộc refetch nguồn chuẩn mỗi lần client thức dậy; `since` quá 29 ngày → `410`. Đúng tinh thần "không hứa timestamp feed là durable sync".
+- **Undo quick-add:** chỉ xoá entry vừa lưu (Q18). Phase doc cho phép dọn mục/tag vừa tạo khi còn rỗng; P04 chọn **không** dọn vì server không chứng minh được thiết bị khác chưa dùng chúng. Toast nói rõ phạm vi.
+- **Conflict:** chỉ "Tải bản mới" / "Giữ bản của tôi" / "Chép bản của tôi", **không** màn so sánh (Q11) — thay cho "reload/compare/retry" ở mục JSON lossless.
+- **Recent card preview:** không preview body trên lưới gần đây (Q6), nên không có gì phải decrypt lazy hay xoá khi lock ở lưới; decrypt lazy áp cho card entry trên trang mục.
+- **Mảng lớn:** trang 50 hàng + mở lazy, không virtualize (Q10).
+
 ## Bàn giao
 
 P05 nhận corpus name/tag thật, exact lookup, metadata counters và mutation hooks; P06 nhận exportable ciphertext/vault dataset. Recovery/lock/reset cùng P03 phải được chạy bằng entry thực. Migration lỗi không chữa bằng reset vault; giữ ciphertext/envelope để restore DB hoặc sửa forward.
