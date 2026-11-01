@@ -1,5 +1,5 @@
 // Package entryhttp cung cấp HTTP handlers và đăng ký route cho `/api/v1/entries*`
-// và `/api/v1/items/{id}/entries*` (plan P04 mục 2.3–2.6, mục 3, Task 6a).
+// và `/api/v1/items/{id}/entries*` (plan P04 mục 2.3–2.8, mục 3, Task 6a–6b).
 //
 // Ràng buộc bảo mật (user-dec-016):
 //   - Không bao giờ log hay đưa vào thông báo lỗi / metric / audit: ciphertext, các trường
@@ -53,11 +53,14 @@ type ContentDeps interface {
 	ChainEntryWrite(d httpx.Deps, requireIfMatch bool, fn http.HandlerFunc) http.Handler
 }
 
-// Mount đăng ký các route `/api/v1/items/{id}/entries` và `/api/v1/entries/{id}` của Task 6a:
-//   - GET  /items/{id}/entries (`itemEntriesList`): S
-//   - POST /items/{id}/entries (`entryCreate`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
-//   - GET  /entries/{id}       (`entryGet`): S
-//   - PUT  /entries/{id}       (`entryUpdate`): S + C + I + R + M (qua `ChainEntryWrite(d, true, ...)`)
+// Mount đăng ký các route `/api/v1/items/{id}/entries*` và `/api/v1/entries/{id}*` của Task 6a–6b:
+//   - GET    /items/{id}/entries         (`itemEntriesList`): S
+//   - POST   /items/{id}/entries         (`entryCreate`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - PATCH  /items/{id}/entries/reorder (`itemEntriesReorder`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - GET    /entries/{id}               (`entryGet`): S
+//   - PUT    /entries/{id}               (`entryUpdate`): S + C + I + R + M (qua `ChainEntryWrite(d, true, ...)`)
+//   - DELETE /entries/{id}               (`entryDelete`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - POST   /entries/{id}/restore       (`entryRestore`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
 func Mount(c ContentDeps) func(v1 chi.Router, d httpx.Deps) {
 	return func(v1 chi.Router, d httpx.Deps) {
 		if c == nil || c.ContentPool() == nil {
@@ -82,6 +85,9 @@ func Mount(c ContentDeps) func(v1 chi.Router, d httpx.Deps) {
 		// Các route ghi (cột S+C+I+R[+M]) bắt buộc đi qua ChainEntryWrite (trần 400 KiB -> 413 entry_too_large).
 		v1.Method(http.MethodPost, "/items/{id}/entries", c.ChainEntryWrite(d, false, h.entryCreate))
 		v1.Method(http.MethodPut, "/entries/{id}", c.ChainEntryWrite(d, true, h.entryUpdate))
+		v1.Method(http.MethodDelete, "/entries/{id}", c.ChainEntryWrite(d, false, h.entryDelete))
+		v1.Method(http.MethodPost, "/entries/{id}/restore", c.ChainEntryWrite(d, false, h.entryRestore))
+		v1.Method(http.MethodPatch, "/items/{id}/entries/reorder", c.ChainEntryWrite(d, false, h.itemEntriesReorder))
 	}
 }
 
@@ -552,6 +558,7 @@ func (h *handler) entryUpdate(w http.ResponseWriter, r *http.Request) {
 
 	writeRawJSON(w, http.StatusOK, respBytes)
 }
+
 func (h *handler) recordEntryCreated(entryType string) {
 	// user-dec-016 / advisor-dec-149: chỉ ghi nhận label `type` thuộc tập giới hạn {text, json},
 	// không bao giờ đưa dữ liệu người dùng.
@@ -724,6 +731,14 @@ func walkStrictTopJSON(dec *json.Decoder, targetType reflect.Type) error {
 	}
 	d, isDelim := tok.(json.Delim)
 	if !isDelim {
+		if t != nil && t.Kind() == reflect.Struct {
+			return errors.New("expected JSON object")
+		}
+		if t != nil && t.Kind() == reflect.String {
+			if _, ok := tok.(string); !ok {
+				return errors.New("expected JSON string")
+			}
+		}
 		return nil
 	}
 	switch d {
@@ -766,6 +781,9 @@ func walkStrictTopJSON(dec *json.Decoder, targetType reflect.Type) error {
 			return errors.New("unclosed object")
 		}
 	case '[':
+		if t != nil && t.Kind() == reflect.Struct {
+			return errors.New("expected JSON object, got array")
+		}
 		var elemType reflect.Type
 		if t != nil && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
 			elemType = t.Elem()

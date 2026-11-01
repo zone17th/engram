@@ -1,5 +1,5 @@
 // Package entry cung cấp domain types và các hàm kiểm tra hợp lệ cho entry P04
-// (SPEC §5.5, §8, §9.1–§9.3; plan mục 2.3, 2.5, 2.6, 3, Task 6a).
+// (SPEC §3.8, §5.5, §8, §9.1–§9.3; plan mục 2.3, 2.5, 2.6, 2.8, 3, Task 6a–6b).
 //
 // Ràng buộc bảo mật (user-dec-016):
 //   - Server chỉ nhận, kiểm tra và lưu envelope + ciphertext + metadata kích thước làm tròn.
@@ -72,6 +72,67 @@ type Entry struct {
 type MetaList struct {
 	Items      []Meta  `json:"items"`
 	NextCursor *string `json:"next_cursor"`
+}
+
+// Position là DTO `EntryPosition` theo OpenAPI (`{id, position}`).
+type Position struct {
+	ID       string `json:"id"`
+	Position int32  `json:"position"`
+}
+
+// ReorderResponse là DTO `ItemEntriesReorderResponse` theo OpenAPI (`{entries: [{id, position}]}`).
+type ReorderResponse struct {
+	Entries []Position `json:"entries"`
+}
+
+// DeletedViaEntry và DeletedViaItem là hai giá trị provenance của `entry.deleted_via` (plan mục 2.1, 2.8).
+const (
+	DeletedViaEntry = "entry"
+	DeletedViaItem  = "item"
+)
+
+// ValidateReorderIDs kiểm tra danh sách `rawIDs` gửi tới `PATCH /items/{id}/entries/reorder` (plan mục 2.8, 3, Task 6b):
+//   - Mọi phần tử phải là UUID chữ thường `8-4-4-4-12` hợp lệ (`EntryIdValue`) và không trùng lặp (`400 invalid_request`).
+//   - Tối đa 200 phần tử (`MaxLiveEntriesPerItem`; > 200 mà không trùng thì chắc chắn thừa so với tối đa 200 entry sống -> `409 reorder_mismatch`).
+func ValidateReorderIDs(rawIDs []string) ([]uuid.UUID, string) {
+	seen := make(map[uuid.UUID]struct{}, len(rawIDs))
+	parsed := make([]uuid.UUID, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		id, ok := ParseEntryUUID(raw)
+		if !ok {
+			return nil, "invalid_request"
+		}
+		if _, dup := seen[id]; dup {
+			return nil, "invalid_request"
+		}
+		seen[id] = struct{}{}
+		parsed = append(parsed, id)
+	}
+	if len(parsed) > int(MaxLiveEntriesPerItem) {
+		return nil, "reorder_mismatch"
+	}
+	return parsed, ""
+}
+
+// MatchLiveEntrySet kiểm tra danh sách `requestedIDs` (đã qua `ValidateReorderIDs`, không trùng)
+// có phải là đúng một hoán vị của tập `liveIDs` của mục hay không (thiếu, thừa, ID đã xoá hoặc của user khác -> `false`).
+func MatchLiveEntrySet(requestedIDs, liveIDs []uuid.UUID) bool {
+	if len(requestedIDs) != len(liveIDs) {
+		return false
+	}
+	if len(liveIDs) == 0 {
+		return true
+	}
+	liveSet := make(map[uuid.UUID]struct{}, len(liveIDs))
+	for _, id := range liveIDs {
+		liveSet[id] = struct{}{}
+	}
+	for _, id := range requestedIDs {
+		if _, ok := liveSet[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidatedPayload giữ dữ liệu envelope + ciphertext + bucket đã qua kiểm tra hợp lệ trước khi mở transaction.
@@ -237,6 +298,34 @@ func MetaFromUpdateRow(r gen.UpdateEntryBodyRow) Meta {
 		PlaintextLenBucket: r.PlaintextLenBucket,
 		CreatedAt:          formatTimestamp(r.CreatedAt),
 		UpdatedAt:          formatTimestamp(r.UpdatedAt),
+	}
+}
+
+// MetaFromRestoreRow chuyển dòng trả về của `RestoreEntry` thành DTO `Meta`.
+func MetaFromRestoreRow(r gen.RestoreEntryRow) Meta {
+	return Meta{
+		ID:                 r.ID.String(),
+		ItemID:             r.ItemID.String(),
+		Type:               r.Type,
+		Position:           r.Position,
+		Version:            r.Version,
+		PlaintextLenBucket: r.PlaintextLenBucket,
+		CreatedAt:          formatTimestamp(r.CreatedAt),
+		UpdatedAt:          formatTimestamp(r.UpdatedAt),
+	}
+}
+
+// MetaFromModel chuyển dòng `gen.Entry` thành DTO `Meta` (chỉ metadata, không envelope/ciphertext).
+func MetaFromModel(m gen.Entry) Meta {
+	return Meta{
+		ID:                 m.ID.String(),
+		ItemID:             m.ItemID.String(),
+		Type:               m.Type,
+		Position:           m.Position,
+		Version:            m.Version,
+		PlaintextLenBucket: m.PlaintextLenBucket,
+		CreatedAt:          formatTimestamp(m.CreatedAt),
+		UpdatedAt:          formatTimestamp(m.UpdatedAt),
 	}
 }
 
