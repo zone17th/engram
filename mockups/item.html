@@ -232,7 +232,7 @@
           + Tag · <span lang="en">Add tag</span>
         </button>
         <span class="mono text-[13px] text-muted ml-auto">
-          <span class="whitespace-nowrap">4 entries</span> · <span class="whitespace-nowrap">tạo 04/01/2026</span> · <span lang="en" class="whitespace-nowrap">created 04/01/2026</span>
+          <span class="whitespace-nowrap">5 entries</span> · <span class="whitespace-nowrap">tạo 04/01/2026</span> · <span lang="en" class="whitespace-nowrap">created 04/01/2026</span>
         </span>
       </div>
 
@@ -278,7 +278,7 @@
         + Văn bản · <span lang="en">Text</span>
       </button>
       <button type="button" id="btn-add-json" class="btn btn-secondary btn-sm"
-              onclick="SAK.toast('Đã thêm khung bảng JSON mới · Added new JSON table entry')">
+              onclick="const c=document.getElementById('card-json-1');if(c)c.scrollIntoView({behavior:'smooth',block:'center'});SAK.toast('Đã mở khung bảng JSON · Focused JSON table entry')">
         + JSON / bảng · <span lang="en">JSON / table</span>
       </button>
       <button type="button" id="btn-import-json" class="btn btn-tertiary btn-sm" data-open-dialog="importDlg">
@@ -364,7 +364,43 @@
           </div>
           <div data-secret>
             <div data-view="tbl" id="cfgTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
-            <pre data-view="raw" hidden class="json-raw" id="cfgRaw"></pre>
+            <div data-view="raw" hidden id="cfgRaw" data-json-raw-interactive="1" class="p-4 bg-surface">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button type="button" class="btn btn-secondary btn-sm" data-json-raw-format id="cfg-format-btn">
+                    Định dạng · <span lang="en">Format</span>
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm" data-json-raw-save id="cfg-raw-save-btn">
+                    Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                  </button>
+                </div>
+                <span class="mono text-[12px] text-muted" data-json-raw-bytes id="cfg-raw-bytes">412 / 262.144 B</span>
+              </div>
+
+              <!-- Thanh thử nhanh các trạng thái JSON gốc (U13: lỗi cú pháp, EOL hỗn hợp, Định dạng > 256 KiB / quá sâu) -->
+              <div class="flex flex-wrap items-center gap-1.5 mb-2.5 text-[12px]" aria-label="Thử trạng thái JSON gốc · Simulate Raw JSON states">
+                <span class="text-muted">Thử · <span lang="en">Sim</span>:</span>
+                <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-json-raw-sim="valid" id="cfg-sim-valid">Hợp lệ · <span lang="en">Valid</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-json-raw-sim="syntax-error" id="cfg-sim-syntax-err">Lỗi cú pháp · <span lang="en">Syntax error</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-json-raw-sim="mixed-eol" id="cfg-sim-mixed-eol">EOL hỗn hợp · <span lang="en">Mixed EOL</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-json-raw-sim="format-over-cap" id="cfg-sim-fmt-cap">Định dạng &gt; 256 KiB · <span lang="en">Format &gt; 256 KiB</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-json-raw-sim="format-deep" id="cfg-sim-fmt-deep">Quá sâu · <span lang="en">Too deep</span></button>
+              </div>
+
+              <div data-json-eol-warning id="cfg-eol-warning" hidden role="status" class="auth-status mb-2.5 text-[13px]">
+                <strong>Cảnh báo EOL hỗn hợp / <span class="mono">\r</span> đơn:</strong> Tài liệu gốc có kiểu xuống dòng trộn lẫn (<span class="mono">\r\n</span>, <span class="mono">\n</span>, <span class="mono">\r</span>). Trình duyệt chuẩn hoá <span class="mono">&lt;textarea&gt;</span> về <span class="mono">\n</span> nên khi bấm Lưu lần nữa ứng dụng sẽ thống nhất toàn bộ xuống dòng theo kiểu đa số của tài liệu (sửa từng ô ở tab Bảng thì giữ nguyên EOL của các dòng không đụng tới). ·
+                <span lang="en">Mixed or lone-CR line endings detected. Saving from the textarea normalizes line endings to the document's majority EOL.</span>
+              </div>
+
+              <div data-json-format-msg id="cfg-format-msg" hidden role="alert" class="field-error mt-0 mb-2.5"></div>
+
+              <label for="cfg-raw-textarea" class="sr-only">JSON gốc entry 2 · Raw JSON entry 2</label>
+              <textarea id="cfg-raw-textarea" data-json-raw-textarea rows="10"
+                        class="json-raw-editor"
+                        data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+
+              <div data-json-raw-error id="cfg-raw-error" hidden role="alert" class="field-error mt-2.5 mb-0"></div>
+            </div>
           </div>
         </article>
 
@@ -389,7 +425,26 @@
           </div>
           <div data-secret>
             <div data-view="gtbl" id="guestTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
-            <pre data-view="graw" hidden class="json-raw" id="guestRaw"></pre>
+            <div data-view="graw" hidden id="guestRaw" data-json-raw-interactive="1" class="p-4 bg-surface">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button type="button" class="btn btn-secondary btn-sm" data-json-raw-format>
+                    Định dạng · <span lang="en">Format</span>
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm" data-json-raw-save>
+                    Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                  </button>
+                </div>
+                <span class="mono text-[12px] text-muted" data-json-raw-bytes>214 / 262.144 B</span>
+              </div>
+              <div data-json-eol-warning hidden role="status" class="auth-status mb-2.5 text-[13px]"></div>
+              <div data-json-format-msg hidden role="alert" class="field-error mt-0 mb-2.5"></div>
+              <label for="guest-raw-textarea" class="sr-only">JSON gốc entry 3 · Raw JSON entry 3</label>
+              <textarea id="guest-raw-textarea" data-json-raw-textarea rows="7"
+                        class="json-raw-editor"
+                        data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+              <div data-json-raw-error hidden role="alert" class="field-error mt-2.5 mb-0"></div>
+            </div>
           </div>
         </article>
 
@@ -415,6 +470,59 @@
           </div>
         </article>
 
+
+        <!-- entry 5: Khung thử các hình thái bảng JSON đặc biệt (U13: phân trang 50 hàng, khoá trùng (2), ô chỉ đọc \r/lone surrogate, root primitive, mảng rỗng [], mảng hỗn hợp) -->
+        <article class="card min-w-0" data-seg-scope id="card-json-edge" data-entry-card="5">
+          <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
+            <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
+            <span class="badge-type badge-json">json</span>
+            <span class="mono text-[12px] text-muted" data-entry-pos>#5</span>
+            <span class="text-[13px] text-muted">Hình thái bảng JSON (U13) · <span lang="en">JSON table edge shapes</span></span>
+            <div class="ml-auto flex flex-wrap items-center gap-1.5 relative" data-card-menu-host>
+              <div class="seg" data-seg role="group" aria-label="Chế độ xem JSON entry 5 · JSON view mode entry 5">
+                <button type="button" data-target="etbl" aria-pressed="true">Bảng · <span lang="en">Table</span></button>
+                <button type="button" data-target="eraw" aria-pressed="false">JSON gốc · <span lang="en">Raw JSON</span></button>
+              </div>
+              <button type="button" class="btn btn-tertiary btn-sm"
+                      onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">Chép · <span lang="en">Copy</span></button>
+              <button type="button" id="card-menu-btn-5" class="btn btn-tertiary btn-sm btn-icon"
+                      data-card-menu-trigger="5"
+                      aria-label="Thao tác entry 5 · Entry 5 actions"
+                      aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu-pop">⋯</button>
+            </div>
+          </div>
+          <div class="px-4 py-2.5 border-top-line bg-surface flex flex-wrap items-center gap-1.5 text-[12px]" id="json-edge-switcher" role="group" aria-label="Chọn hình thái JSON để xem · Select JSON shape">
+            <span class="text-muted">Mẫu · <span lang="en">Preset</span>:</span>
+            <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="dup-and-readonly" id="edge-preset-dup">Khoá trùng <span class="mono">(2)</span> &amp; Ô chỉ đọc · <span lang="en">Dup key &amp; Read-only</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="pagination-65" id="edge-preset-page">Phân trang 65 hàng (50/trang) · <span lang="en">65 rows (50/page)</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="root-primitive" id="edge-preset-prim">Root primitive · <span lang="en">Scalar root</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="empty-array" id="edge-preset-empty">Mảng rỗng <span class="mono">[]</span> · <span lang="en">Empty array</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="mixed-array" id="edge-preset-mixed">Mảng hỗn hợp · <span lang="en">Mixed array</span></button>
+          </div>
+          <div data-secret>
+            <div data-view="etbl" id="edgeTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
+            <div data-view="eraw" hidden id="edgeRaw" data-json-raw-interactive="1" class="p-4 bg-surface">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button type="button" class="btn btn-secondary btn-sm" data-json-raw-format>
+                    Định dạng · <span lang="en">Format</span>
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm" data-json-raw-save>
+                    Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                  </button>
+                </div>
+                <span class="mono text-[12px] text-muted" data-json-raw-bytes>180 / 262.144 B</span>
+              </div>
+              <div data-json-eol-warning hidden role="status" class="auth-status mb-2.5 text-[13px]"></div>
+              <div data-json-format-msg hidden role="alert" class="field-error mt-0 mb-2.5"></div>
+              <label for="edge-raw-textarea" class="sr-only">JSON gốc entry 5 · Raw JSON entry 5</label>
+              <textarea id="edge-raw-textarea" data-json-raw-textarea rows="7"
+                        class="json-raw-editor"
+                        data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+              <div data-json-raw-error hidden role="alert" class="field-error mt-2.5 mb-0"></div>
+            </div>
+          </div>
+        </article>
       </div>
 
       <!-- ===== cột phụ: tóm tắt phím tắt trang mục (đã bỏ Xuất P06, Liên quan P05, Mục cùng tên, đếm theo type) ===== -->
@@ -868,49 +976,104 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
 
 </main>
 
-<!-- ================= modal nhập JSON (SPEC §7.5 — nội dung chi tiết thuộc Bước 3) ================= -->
+<!-- ================= modal nhập JSON (SPEC §3.6, §7.5 — U14) ================= -->
 <dialog id="importDlg" aria-labelledby="importTitle">
   <div class="panel import-panel">
-    <div class="p-7 pb-0">
-      <h2 id="importTitle" class="t-title-sm mb-1">Nhập JSON vào “wifi”</h2>
-      <p class="t-body mb-6 text-muted">Dán, kéo thả file, hoặc chọn từ máy. Bản gốc được giữ nguyên từng ký tự.</p>
+    <div class="p-4 sm:p-6 pb-0">
+      <div class="flex items-start justify-between gap-2 mb-1">
+        <h2 id="importTitle" class="t-title-sm m-0">
+          Nhập JSON vào “wifi” · <span lang="en" class="font-normal text-muted">Import JSON into “wifi”</span>
+        </h2>
+        <span class="badge-type badge-json shrink-0">1 entry JSON</span>
+      </div>
+      <p class="t-body mb-2 text-muted" id="importSubtitle">
+        Dán nội dung hoặc chọn file <span class="mono">.json</span> từ máy để tạo <strong>1 entry JSON</strong> mới trong mục này. ·
+        <span lang="en">Paste JSON or choose a <span class="mono">.json</span> file to add <strong>1 JSON entry</strong> to this item.</span>
+      </p>
+      <p id="importPasteExactHint" class="text-[12px] text-muted m-0 mb-3 p-2.5 rounded-md bg-surface border-line">
+        Tệp <span class="mono">.json</span> tải lên giữ nguyên từng byte; ô dán bên dưới đi qua vùng văn bản của trình duyệt nên xuống dòng <span class="mono">\r\n</span> / <span class="mono">\r</span> được đổi thành <span class="mono">\n</span>. Cần giữ từng byte, hãy chọn tệp <span class="mono">.json</span>. ·
+        <span lang="en">Uploaded <span class="mono">.json</span> files preserve every byte; the paste box normalizes <span class="mono">\r\n</span> / <span class="mono">\r</span> to <span class="mono">\n</span>.</span>
+      </p>
+
+      <!-- Thanh chuyển trạng thái modal nhập JSON (U14: Hợp lệ, Lỗi UTF-8, Lỗi cú pháp + Lưu dạng văn bản, Chặn ở 200 entry) -->
+      <div class="flex flex-wrap items-center gap-1.5 mb-3 text-[12px]" id="importStateBar" role="group" aria-label="Trạng thái modal nhập JSON · Import modal states">
+        <span class="text-muted">Trạng thái · <span lang="en">State</span>:</span>
+        <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-import-state="valid" id="import-sim-valid" aria-pressed="true">Hợp lệ · <span lang="en">Valid</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-import-state="utf8-err" id="import-sim-utf8" aria-pressed="false">Lỗi UTF-8 · <span lang="en">UTF-8 error</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-import-state="parse-err" id="import-sim-parse" aria-pressed="false">Lỗi JSON · <span lang="en">Parse error</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-import-state="limit-200" id="import-sim-limit" aria-pressed="false">Đủ 200 entry · <span lang="en">200-entry cap</span></button>
+      </div>
     </div>
 
-    <div class="px-7">
-      <textarea id="importSrc" rows="7"
+    <div class="px-4 sm:px-6">
+      <!-- Cảnh báo đạt trần 200 entry (chặn nhập) -->
+      <div id="importLimitBanner" hidden role="alert" class="card card-warning p-3.5 mb-3">
+        <div class="flex items-center justify-between gap-2 flex-wrap mb-1">
+          <span class="text-[13px] font-semibold text-body">Mục này đã đạt tối đa 200 entry · <span lang="en">Item already at 200 entries</span></span>
+          <span class="badge-type badge-warn">200 / 200 · 409 item_entry_limit</span>
+        </div>
+        <p class="text-[12px] text-muted m-0">
+          Không thể nhập thêm entry mới vào “wifi”. Hãy xoá bớt một entry cũ hoặc tạo mục mới trước khi nhập JSON. ·
+          <span lang="en">Cannot import into an item with 200 entries. Delete an entry or create a new item first.</span>
+        </p>
+      </div>
+
+      <!-- Lỗi giải mã UTF-8 (strict fatal: true, không âm thầm thay bằng U+FFFD) -->
+      <div id="importUtf8Error" hidden role="alert" class="card card-error p-3.5 mb-3">
+        <p class="text-[13px] font-semibold text-error-ink m-0 mb-1">
+          Tệp không phải UTF-8 hợp lệ · <span lang="en">File is not valid UTF-8</span>
+        </p>
+        <p class="text-[12px] text-body m-0">
+          Phát hiện chuỗi byte không hợp lệ ở byte <span class="mono">0x1A4</span> (ví dụ tệp mã hoá UTF-16 hoặc Windows-1252). Ứng dụng từ chối nhận thay vì âm thầm thay bằng ký tự <span class="mono">U+FFFD</span> (<span class="mono"></span>) làm hỏng dữ liệu. Hãy lưu lại tệp ở bảng mã <strong>UTF-8</strong> rồi chọn lại. ·
+          <span lang="en">Invalid byte sequence at offset <span class="mono">0x1A4</span>. Strict UTF-8 decoding rejects invalid bytes instead of silently inserting <span class="mono">U+FFFD</span> replacement characters. Re-save the file as UTF-8 and try again.</span>
+        </p>
+      </div>
+
+      <!-- Lỗi cú pháp JSON + nút Lưu dạng văn bản -->
+      <div id="importParseError" hidden role="alert" class="card card-error p-3.5 mb-3">
+        <p class="text-[13px] font-semibold text-error-ink m-0 mb-1" id="importParseErrorTitle">
+          JSON không hợp lệ — Dòng 4, cột 3 (offset 68) · <span lang="en">Invalid JSON — Line 4, column 3</span>
+        </p>
+        <p class="text-[12px] text-body m-0 mb-2.5" id="importParseErrorDetail">
+          Thiếu dấu phẩy (<span class="mono">,</span>) hoặc dấu đóng ngoặc nhọn (<span class="mono">}</span>) giữa hai khoá. Bạn có thể sửa lại JSON bên dưới hoặc lưu nguyên văn nội dung này thành entry văn bản (<span class="mono">text</span>). ·
+          <span lang="en">Expected <span class="mono">,</span> or <span class="mono">}</span> after property value. Fix the JSON below or save the raw text as a plain text entry.</span>
+        </p>
+        <button type="button" id="importSaveAsTextBtn" class="btn btn-secondary btn-sm">
+          Lưu dạng văn bản · <span lang="en">Save as text entry</span>
+        </button>
+      </div>
+
+      <label for="importSrc" class="field-label">
+        Nội dung JSON (dán hoặc nạp từ file <span class="mono">.json</span>) · <span lang="en" class="font-normal text-muted">JSON source (paste or loaded from <span class="mono">.json</span>)</span>
+      </label>
+      <textarea id="importSrc" rows="6"
         data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
         class="w-full mono text-[13px] leading-relaxed resize-y import-textarea"></textarea>
 
-      <div class="flex items-center gap-3 mt-3 flex-wrap">
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Mở hộp chọn file… · Opening file picker…')">Chọn file… · <span lang="en">Choose file…</span></button>
-        <span id="importStatus" class="text-[13px] mono text-body">JSON hợp lệ · 6 khoá · 1 mảng lồng</span>
+      <div class="flex items-center justify-between gap-2 mt-2.5 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap">
+          <input type="file" id="importFileInput" accept=".json,application/json" hidden>
+          <button type="button" id="importChooseFileBtn" class="btn btn-tertiary btn-sm">
+            Chọn file <span class="mono">.json</span>… · <span lang="en">Choose <span class="mono">.json</span> file…</span>
+          </button>
+          <span id="importSourceBadge" class="badge-type badge-ok">Nguồn: dán (<span class="mono">paste</span>) · 412 / 262.144 B</span>
+        </div>
+        <span id="importStatus" class="text-[12px] mono text-body">JSON hợp lệ · 7 khoá · giữ nguyên thứ tự khoá &amp; chữ số</span>
       </div>
 
-      <p class="t-label mt-6 mb-2 text-muted">Xem trước</p>
-      <div class="card overflow-hidden mb-6">
-        <div id="importPreview" class="overflow-x-auto max-h-[240px] overflow-y-auto"></div>
+      <p class="t-label mt-4 mb-1.5 text-muted">Xem trước bảng JSON · <span lang="en">Table preview</span></p>
+      <div class="card overflow-hidden mb-4">
+        <div id="importPreview" class="overflow-x-auto max-h-[200px] overflow-y-auto"></div>
       </div>
-
-      <fieldset class="border-0 p-0 m-0 mb-6">
-        <legend class="t-label mb-2 p-0 text-muted">Lưu thành</legend>
-        <label class="flex gap-3 items-start p-3 rounded-md cursor-pointer import-option">
-          <input type="radio" name="mode" checked class="mt-1">
-          <span><span class="text-[15px] font-semibold">Một entry json</span>
-            <span class="block text-[13px] text-muted">Giữ nguyên cả tài liệu, xem dạng bảng.</span></span>
-        </label>
-        <label class="flex gap-3 items-start p-3 rounded-md cursor-pointer mt-2 import-option">
-          <input type="radio" name="mode" class="mt-1">
-          <span><span class="text-[15px] font-semibold">Tách mảng thành 3 entry</span>
-            <span class="block text-[13px] text-muted">Mỗi phần tử của <span class="mono">vlans</span> thành một entry riêng.</span></span>
-        </label>
-      </fieldset>
     </div>
 
-    <div class="flex items-center gap-3 px-7 py-5 flex-wrap import-foot">
-      <span class="text-[12px] text-muted">Mã hoá trước khi rời máy bạn.</span>
-      <div class="ml-auto flex gap-2">
-        <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
-        <button type="button" class="btn btn-primary" data-toast="Đã nhập 1 entry json vào “wifi” · Imported 1 JSON entry into “wifi”" data-toast-action="Hoàn tác">Nhập · <span lang="en">Import</span></button>
+    <div class="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 flex-wrap import-foot">
+      <span class="text-[12px] text-muted">Mã hoá đầu-cuối trước khi rời máy bạn · <span lang="en">Encrypted before leaving your device</span></span>
+      <div class="ml-auto flex flex-wrap gap-2">
+        <button type="button" class="btn btn-tertiary btn-sm" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
+        <button type="button" id="importSubmitBtn" class="btn btn-primary btn-sm">
+          Nhập 1 entry JSON · <span lang="en">Import 1 JSON entry</span>
+        </button>
       </div>
     </div>
   </div>
@@ -920,20 +1083,6 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
 <script>
 SAK.initChrome();
 SAK.initOmnibox(document.getElementById('omni'));
-
-const routerCfg = {
-  ssid: 'Zone17th-5G',
-  band: '5GHz',
-  channel: 36,
-  wpa: 3,
-  guest: { ssid: 'Zone17th-Guest', isolate: true, expires: null },
-  vlans: [
-    { id: 10, name: 'trusted', cidr: '10.0.10.0/24', dhcp: true },
-    { id: 20, name: 'iot',     cidr: '10.0.20.0/24', dhcp: true },
-    { id: 30, name: 'guest',   cidr: '10.0.30.0/24', dhcp: false }
-  ],
-  note_id: '9007199254740993'
-};
 
 const routerRaw = `{
   "ssid": "Zone17th-5G",
@@ -949,45 +1098,228 @@ const routerRaw = `{
   "note_id": 9007199254740993
 }`;
 
-const guests = [
-  { name: 'An',          mac: 'a4:83:e7:1c:90:22', lease: '24h' },
-  { name: 'Bảo — iPad',  mac: 'f0:18:98:44:0b:71', lease: '7d' },
-  { name: 'Chi',         mac: '8c:85:90:2e:ff:10', lease: null }
-];
-
 const guestsRaw = `[
   { "name": "An",  "mac": "a4:83:e7:1c:90:22", "lease": "24h" },
   { "name": "Bảo", "mac": "f0:18:98:44:0b:71", "name": "Bảo — iPad", "lease": "7d" },
   { "name": "Chi", "mac": "8c:85:90:2e:ff:10", "lease": null }
 ]`;
 
-SAK.renderJsonTable(document.getElementById('cfgTable'), routerCfg);
-document.getElementById('cfgRaw').textContent = routerRaw;
-SAK.renderJsonTable(document.getElementById('guestTable'), guests);
-document.getElementById('guestRaw').textContent = guestsRaw;
+const edgePresets = {
+  'dup-and-readonly': `{
+  "key": "primary-token",
+  "key": "backup-token",
+  "legacy_cr": "dòng 1\\rdòng 2 (có \\\\r)",
+  "surrogate_ cell": "ký tự lẻ \\ud800 cuối chuỗi",
+  "big_int": 9007199254740993,
+  "neg_zero": -0
+}`,
+  'pagination-65': '[\n' + Array.from({ length: 65 }, (_, i) =>
+    `  { "port": ${i + 1}, "vlan": ${(i % 3 + 1) * 10}, "label": "eth0.${i + 1}", "up": ${i % 2 === 0} }`
+  ).join(',\n') + '\n]',
+  'root-primitive': `"agi-2026-root-scalar-value"`,
+  'empty-array': `[]`,
+  'mixed-array': `[
+  "chuỗi đầu tiên",
+  42,
+  { "host": "nas.local", "port": 5001 },
+  true,
+  null
+]`
+};
 
-/* modal nhập: gõ lại nguồn thì cập nhật xem trước + trạng thái */
-const src = document.getElementById('importSrc');
-const status = document.getElementById('importStatus');
-const preview = document.getElementById('importPreview');
-src.value = routerRaw;
-SAK.renderJsonTable(preview, routerCfg);
-
-src.addEventListener('input', () => {
-  try {
-    const parsed = JSON.parse(src.value);
-    const n = Array.isArray(parsed) ? parsed.length : Object.keys(parsed).length;
-    status.textContent = `JSON hợp lệ · ${n} ${Array.isArray(parsed) ? 'phần tử' : 'khoá'}`;
-    SAK.renderJsonTable(preview, parsed);
-  } catch (err) {
-    const m = /position (\d+)/.exec(err.message);
-    status.textContent = m
-      ? `Thiếu hoặc thừa ký tự ở vị trí ${m[1]}. Sửa rồi thử lại.`
-      : 'Chưa phải JSON hợp lệ. Kiểm tra dấu ngoặc và dấu phẩy.';
-    preview.innerHTML = '<p class="t-body p-5 m-0 text-muted">Xem trước hiện lại khi JSON hợp lệ.</p>';
-  }
+const cfgCardCtrl = SAK.initJsonEntryCard({
+  tableHost: 'cfgTable',
+  rawHost: 'cfgRaw',
+  initialSource: routerRaw
 });
 
+const guestCardCtrl = SAK.initJsonEntryCard({
+  tableHost: 'guestTable',
+  rawHost: 'guestRaw',
+  initialSource: guestsRaw
+});
+
+const edgeCardCtrl = SAK.initJsonEntryCard({
+  tableHost: 'edgeTable',
+  rawHost: 'edgeRaw',
+  initialSource: edgePresets['dup-and-readonly']
+});
+
+document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.edgePreset;
+    if (edgePresets[key] && edgeCardCtrl) {
+      edgeCardCtrl.setSource(edgePresets[key]);
+      const rawTa = document.getElementById('edge-raw-textarea');
+      if (rawTa) rawTa.value = edgePresets[key];
+    }
+  });
+});
+
+/* Modal nhập JSON (#importDlg — SPEC §3.6, §7.5, U14) */
+(function () {
+  const src = document.getElementById('importSrc');
+  const status = document.getElementById('importStatus');
+  const preview = document.getElementById('importPreview');
+  const sourceBadge = document.getElementById('importSourceBadge');
+  const limitBanner = document.getElementById('importLimitBanner');
+  const utf8Err = document.getElementById('importUtf8Error');
+  const parseErr = document.getElementById('importParseError');
+  const parseErrTitle = document.getElementById('importParseErrorTitle');
+  const parseErrDetail = document.getElementById('importParseErrorDetail');
+  const saveAsTextBtn = document.getElementById('importSaveAsTextBtn');
+  const submitBtn = document.getElementById('importSubmitBtn');
+  const chooseFileBtn = document.getElementById('importChooseFileBtn');
+  const fileInput = document.getElementById('importFileInput');
+  const stateBar = document.getElementById('importStateBar');
+  if (!src || !preview) return;
+
+  let importSourceKind = 'paste';
+  let blockedAt200 = false;
+  let forcedUtf8Error = false;
+
+  const previewCtrl = SAK.initJsonEntryCard({
+    tableHost: preview,
+    initialSource: routerRaw,
+    readOnly: true
+  });
+  src.value = routerRaw;
+
+  function syncImportUi() {
+    const text = src.value;
+    const bytes = SAK.measureUtf8Bytes(text);
+    if (sourceBadge) {
+      sourceBadge.textContent = `Nguồn: ${importSourceKind === 'file' ? 'tệp (.json)' : 'dán (paste)'} · ${bytes.toLocaleString('vi-VN')} / 262.144 B`;
+    }
+    if (limitBanner) limitBanner.hidden = !blockedAt200;
+    if (utf8Err) utf8Err.hidden = !forcedUtf8Error;
+    src.disabled = blockedAt200;
+    if (chooseFileBtn) chooseFileBtn.disabled = blockedAt200;
+
+    if (blockedAt200) {
+      if (parseErr) parseErr.hidden = true;
+      if (submitBtn) submitBtn.disabled = true;
+      status.textContent = 'Đã chặn nhập do mục đạt 200/200 entry · Import blocked at 200 entries';
+      return;
+    }
+    if (forcedUtf8Error) {
+      if (parseErr) parseErr.hidden = true;
+      if (submitBtn) submitBtn.disabled = true;
+      status.textContent = 'Từ chối tệp không phải UTF-8 hợp lệ (không thay bằng U+FFFD) · Invalid UTF-8 rejected';
+      preview.innerHTML = '<p class="t-body p-4 m-0 text-muted">Chọn lại tệp mã hoá UTF-8 hợp lệ để xem trước bảng. · <span lang="en">Choose a valid UTF-8 file to preview.</span></p>';
+      return;
+    }
+    if (bytes > 262144) {
+      if (parseErr) {
+        parseErr.hidden = false;
+        parseErrTitle.textContent = 'Nội dung vượt quá 256 KiB (262.144 B UTF-8; 413 entry_too_large)';
+        parseErrDetail.textContent = 'Một entry tối đa 262.144 byte UTF-8. Hãy rút gọn trước khi nhập.';
+      }
+      if (submitBtn) submitBtn.disabled = true;
+      return;
+    }
+
+    const parsed = SAK.parseJsonStrict(text);
+    if (!parsed.ok) {
+      if (parseErr) {
+        parseErr.hidden = false;
+        parseErrTitle.textContent = `JSON không hợp lệ — Dòng ${parsed.error.line}, cột ${parsed.error.column} (offset ${parsed.error.offset})`;
+        parseErrDetail.textContent = `${parsed.error.messageVi} Bạn có thể sửa lại JSON bên dưới hoặc lưu nguyên văn thành 1 entry văn bản (text).`;
+      }
+      if (submitBtn) submitBtn.disabled = true;
+      status.textContent = `Lỗi cú pháp ở dòng ${parsed.error.line}, cột ${parsed.error.column} · Syntax error at line ${parsed.error.line}, col ${parsed.error.column}`;
+      preview.innerHTML = '<p class="t-body p-4 m-0 text-muted">Xem trước bảng sẽ hiện lại khi JSON hợp lệ. · <span lang="en">Table preview returns once JSON is valid.</span></p>';
+      return;
+    }
+
+    if (parseErr) parseErr.hidden = true;
+    if (submitBtn) submitBtn.disabled = false;
+    const root = parsed.document.root;
+    const summary = root.kind === 'object'
+      ? `${root.properties.length} khoá`
+      : root.kind === 'array'
+        ? `${root.elements.length} phần tử`
+        : `giá trị đơn (${root.kind})`;
+    status.textContent = `JSON hợp lệ · ${summary} · giữ nguyên thứ tự khoá & chữ số`;
+    previewCtrl.setSource(text);
+  }
+
+  src.addEventListener('input', () => {
+    importSourceKind = 'paste';
+    forcedUtf8Error = false;
+    syncImportUi();
+  });
+
+  if (chooseFileBtn && fileInput) {
+    chooseFileBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      importSourceKind = 'file';
+      f.arrayBuffer().then((buf) => {
+        const dec = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+        try {
+          let decoded = dec.decode(buf);
+          if (decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+          forcedUtf8Error = false;
+          src.value = decoded;
+          syncImportUi();
+        } catch (_) {
+          forcedUtf8Error = true;
+          syncImportUi();
+        }
+      });
+    });
+  }
+
+  if (saveAsTextBtn) {
+    saveAsTextBtn.addEventListener('click', () => {
+      document.getElementById('importDlg')?.close();
+      SAK.toast('Đã lưu nguyên văn thành 1 entry văn bản (text) · Saved verbatim as 1 text entry', 'Hoàn tác');
+    });
+  }
+
+  if (submitBtn) {
+    submitBtn.addEventListener('click', () => {
+      if (submitBtn.disabled) return;
+      document.getElementById('importDlg')?.close();
+      SAK.toast(`Đã nhập 1 entry JSON (${importSourceKind}) vào “wifi” · Imported 1 JSON entry into “wifi”`, 'Hoàn tác');
+    });
+  }
+
+  if (stateBar) {
+    stateBar.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-import-state]');
+      if (!b) return;
+      stateBar.querySelectorAll('[data-import-state]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      const st = b.dataset.importState;
+      if (st === 'valid') {
+        blockedAt200 = false;
+        forcedUtf8Error = false;
+        importSourceKind = 'paste';
+        src.value = routerRaw;
+        syncImportUi();
+      } else if (st === 'utf8-err') {
+        blockedAt200 = false;
+        forcedUtf8Error = true;
+        importSourceKind = 'file';
+        syncImportUi();
+      } else if (st === 'parse-err') {
+        blockedAt200 = false;
+        forcedUtf8Error = false;
+        importSourceKind = 'paste';
+        src.value = `{\n  "ssid": "Zone17th-5G",\n  "channel": 36\n  "wpa": 3\n}`;
+        syncImportUi();
+      } else if (st === 'limit-200') {
+        blockedAt200 = true;
+        forcedUtf8Error = false;
+        syncImportUi();
+      }
+    });
+  }
+
+  syncImportUi();
+})();
 /* Menu ⋯ dùng chung cho các card entry (RV1-8, RV1-17) */
 (function () {
   const menuPop = document.getElementById('card-menu-pop');

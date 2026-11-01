@@ -165,13 +165,39 @@
       </p>
     </div>
 
-    <div class="card card-error p-5">
+    <div class="card card-error p-5" id="err-json-invalid">
       <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">JSON không hợp lệ</p>
-      <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">Dòng 14, cột 3: thiếu dấu phẩy giữa hai khoá.</p>
-      <div class="rounded-md p-3 mono text-[12px]" style="background:var(--surface);color:var(--muted)">
+      <p class="text-[13px] m-0 mb-1 text-muted">
+        Dòng 14, cột 3 (offset 248): thiếu dấu phẩy giữa hai khoá. Khi sửa tab JSON gốc, nút <strong>Lưu</strong> bị khoá cho tới khi cú pháp hợp lệ; khi nhập JSON mới, bạn có thể sửa lại hoặc chọn <strong>Lưu dạng văn bản</strong>.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-2" lang="en">
+        <strong>Invalid JSON — Line 14, column 3 (offset 248):</strong> Missing comma between two properties. In Raw JSON edit mode, Save is disabled until valid; during JSON Import, you can fix the JSON or save verbatim as a plain text entry.
+      </p>
+      <div class="rounded-md p-3 mono text-[12px] bg-surface text-muted">
         "amount": 1200<br>"currency": "VND"
       </div>
-      <button class="btn btn-tertiary btn-sm mt-3">Lưu dạng văn bản</button>
+      <button type="button" class="btn btn-tertiary btn-sm mt-3" onclick="SAK.toast('Đã lưu nguyên văn thành 1 entry văn bản · Saved verbatim as text entry','Hoàn tác')">Lưu dạng văn bản · <span lang="en">Save as text</span></button>
+    </div>
+
+    <div class="card card-error p-5" id="err-import-utf8">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Tệp nhập vào không phải UTF-8 hợp lệ</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Phát hiện chuỗi byte không hợp lệ khi đọc tệp <span class="mono">.json</span> (<span class="mono">TextDecoder('utf-8', { fatal: true })</span>). Ứng dụng từ chối nhận thay vì âm thầm thay bằng ký tự <span class="mono">U+FFFD</span> (<span class="mono"></span>) làm hỏng dữ liệu. Hãy lưu lại tệp ở bảng mã UTF-8 rồi thử lại.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Invalid UTF-8 file in JSON import.</strong> Strict UTF-8 decoding rejects invalid byte sequences instead of silently inserting <span class="mono">U+FFFD</span> replacement characters. Re-save the file as UTF-8 and try again.
+      </p>
+    </div>
+
+    <div class="card card-warning p-5" id="err-json-format-refused">
+      <span class="badge-type badge-warn mb-2 inline-block">BYTE_LIMIT_EXCEEDED / DEPTH_LIMIT_EXCEEDED</span>
+      <p class="text-[14px] font-semibold m-0 mb-1">Từ chối định dạng JSON (vượt 256 KiB hoặc quá 1.000 cấp lồng)</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Nút <strong>Định dạng</strong> chỉ đổi khoảng trắng ngoài chuỗi và kiểm tra trước độ sâu (&le; 1.000 cấp) cùng độ dài byte kết quả (&le; 262.144 B UTF-8) trước khi cấp phát chuỗi mới. Khi vượt ngưỡng, ứng dụng giữ nguyên nội dung gốc và báo lý do.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>JSON formatting refused (&gt; 256 KiB or &gt; 1,000 nesting depth).</strong> Format only modifies whitespace outside strings and pre-checks both depth and output byte length before allocating. When either limit is exceeded, the original source is kept intact.
+      </p>
     </div>
 
     <div class="card p-5" id="err-dup-name-picker">
