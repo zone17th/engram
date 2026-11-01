@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 )
 
 func TestProbeHealthOK(t *testing.T) {
@@ -106,4 +108,21 @@ func serveTestServer(t *testing.T, srv *http.Server, ln net.Listener) {
 			t.Errorf("serve: %v", err)
 		}
 	})
+}
+
+func TestRunClosesAuthWorkerOnErrorAfterConstruction(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+
+	t.Chdir(t.TempDir())
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://localhost:3000")
+	t.Setenv("APP_ENV", "development")
+	// Invalid HTTP_ADDR causes srv.ListenAndServe() inside run() to fail after compose.NewAuth,
+	// exercising the defer svc.Close() path before defer pool.Close().
+	t.Setenv("HTTP_ADDR", "127.0.0.1:invalid-port")
+
+	if err := run(); err == nil {
+		t.Fatal("expected run() to fail on invalid HTTP_ADDR after constructing auth service")
+	}
 }
