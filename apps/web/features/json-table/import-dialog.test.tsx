@@ -1766,9 +1766,13 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     fireEvent.click(within(dialog3).getByTestId('import-json-submit-btn'));
 
     const picker = await screen.findByTestId('dup-picker-dialog');
-    const secondOption = within(picker).getByRole('option', { name: /Second duplicate picked/i });
+    const pickerListbox = within(picker).getByRole('listbox', {
+      name: 'Chọn mục đích cho wifi',
+    });
+    const secondOption = await within(pickerListbox).findByRole('option', {
+      name: /Second duplicate picked/i,
+    });
     fireEvent.click(secondOption);
-
     await waitFor(() => {
       expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     });
