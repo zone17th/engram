@@ -298,6 +298,70 @@ func requireAsyncProblem(t *testing.T, res asyncHTTPResult, status int, code str
 	return res.body
 }
 
+func oauthCallbackURLAs(t *testing.T, h *harness, startPath, xff string) string {
+	t.Helper()
+	client := noRedirect()
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+startPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if xff != "" {
+		req.Header.Set("X-Forwarded-For", xff)
+	}
+	h.jar.apply(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.jar.capture(resp)
+	loc := resp.Header.Get("Location")
+	raw := h.body(resp)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || loc == "" {
+		t.Fatalf("oauth start = %d %s", resp.StatusCode, raw)
+	}
+	req2, err := http.NewRequest(http.MethodGet, loc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := resp2.Header.Get("Location")
+	_ = resp2.Body.Close()
+	if cb == "" {
+		t.Fatal("fake authorize did not redirect to callback")
+	}
+	return cb
+}
+
+func followOAuthAs(t *testing.T, h *harness, startPath, xff string) string {
+	t.Helper()
+	cb := oauthCallbackURLAs(t, h, startPath, xff)
+	client := noRedirect()
+	req, err := http.NewRequest(http.MethodGet, cb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if xff != "" {
+		req.Header.Set("X-Forwarded-For", xff)
+	}
+	h.jar.apply(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.jar.capture(resp)
+	loc := resp.Header.Get("Location")
+	raw := h.body(resp)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("callback = %d %s", resp.StatusCode, raw)
+	}
+	return loc
+}
+
 // 1. D1: mail_delivery_available capability flag (unset/false vs true with SinkMailer).
 func TestPasswordForgotCapabilityFlagAndConfig(t *testing.T) {
 	t.Setenv("AUTH_MAIL_CAPTURE_AS_DELIVERY", "false")
@@ -804,18 +868,20 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 	_ = resp.Body.Close()
 
-	// Advance clock > 30 minutes: tok2 expires.
+	// Advance clock > 30 minutes: tok2 expires (and anonymous CSRF TTL 10m also elapses, so bootstrap fresh CSRF).
 	h.clk.Advance(auth.PasswordResetTTL + time.Second)
+	j = jar{}
+	h.csrfJar(j)
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok2+`","new_password":"newpassword123"}`, true, "198.51.100.3")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 	_ = resp.Body.Close()
 	// Refresh session after clock advance.
-	resp = h.do(http.MethodPost, "/api/v1/auth/refresh", "", true)
+	resp = h.doAs(h.jar, http.MethodPost, "/api/v1/auth/refresh", "", true, "198.51.100.21")
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("refresh = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
-
+	h.csrf()
 	// (a2) AU3-BE1-2: Token expiry boundary while waiting on token lock after user lock + RevokeAllUserSessions.
 	// Issue tokWait, advance clock to 1s before expiry, hold FOR UPDATE on password_reset_token in an external tx,
 	// let ResetPassword acquire app_user FOR UPDATE and execute RevokeAllUserSessions, advance clock past expiry while
@@ -907,12 +973,13 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	h.svc.SetOnResetLocked(nil)
 	requireAsyncProblem(t, respWait, http.StatusBadRequest, "reset_token_invalid")
 	// Verify the early RevokeAllUserSessions was rolled back: refresh and /auth/me still succeed, and old password still works.
-	resp = h.do(http.MethodPost, "/api/v1/auth/refresh", "", true)
+	resp = h.doAs(h.jar, http.MethodPost, "/api/v1/auth/refresh", "", true, "198.51.100.22")
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("session must survive rolled-back expired reset: refresh = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
-	resp = h.do(http.MethodGet, "/api/v1/auth/me", "", false)
+	h.csrf()
+	resp = h.doAs(h.jar, http.MethodGet, "/api/v1/auth/me", "", false, "198.51.100.22")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("session must remain usable after rolled-back expired reset: me = %d %s", resp.StatusCode, h.body(resp))
 	}
@@ -920,13 +987,16 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 
 	// (b) Invalidation on ChangePassword.
 	tokBeforePwChange := issueResetTokenForTest(t, h, "inv-a@example.com")
-	grant := h.grant("account.password_change", "correcthorse")
-	resp = h.withGrant(http.MethodPost, "/api/v1/me/password", `{"new_password":"changedpassword12"}`, grant)
+	grant := h.grantAs("198.51.100.23", "account.password_change", "correcthorse")
+	resp = h.withGrantAs("198.51.100.23", http.MethodPost, "/api/v1/me/password", `{"new_password":"changedpassword12"}`, grant)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("password change = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
+	h.csrf()
 
+	j = jar{}
+	h.csrfJar(j)
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokBeforePwChange+`","new_password":"otherpassword12"}`, true, "198.51.100.4")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 	_ = resp.Body.Close()
@@ -934,44 +1004,48 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	tokAtEmailA := issueResetTokenForTest(t, h, "inv-a@example.com")
 
 	// Change email A -> B.
-	grantEmail1 := h.grant("account.email_change", "changedpassword12")
-	resp = h.withGrant(http.MethodPost, "/api/v1/me/email", `{"new_email":"inv-b@example.com"}`, grantEmail1)
+	grantEmail1 := h.grantAs("198.51.100.24", "account.email_change", "changedpassword12")
+	resp = h.withGrantAs("198.51.100.24", http.MethodPost, "/api/v1/me/email", `{"new_email":"inv-b@example.com"}`, grantEmail1)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("email change to B = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
 	confirmTokB := acceptanceToken(t, h, "inv-b@example.com", "email_change")
-	resp = h.do(http.MethodPost, "/api/v1/auth/verify-email/confirm", `{"token":"`+confirmTokB+`"}`, true)
+	resp = h.doAs(h.jar, http.MethodPost, "/api/v1/auth/verify-email/confirm", `{"token":"`+confirmTokB+`"}`, true, "198.51.100.25")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("confirm email B = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
+	h.csrf()
 
 	// Change email B -> A (via service to avoid 1/min HTTP mail limiter on same user).
 	principalNow, err := h.svc.Sessions().Authenticate(ctx, h.jar[authhttp.CookieSession].Value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantEmail2 := h.grant("account.email_change", "changedpassword12")
+	grantEmail2 := h.grantAs("198.51.100.26", "account.email_change", "changedpassword12")
 	if err := h.svc.RequestEmailChange(ctx, principalNow, "inv-a@example.com", grantEmail2); err != nil {
 		t.Fatalf("RequestEmailChange back to A: %v", err)
 	}
 	confirmTokA := acceptanceToken(t, h, "inv-a@example.com", "email_change")
-	resp = h.do(http.MethodPost, "/api/v1/auth/verify-email/confirm", `{"token":"`+confirmTokA+`"}`, true)
+	resp = h.doAs(h.jar, http.MethodPost, "/api/v1/auth/verify-email/confirm", `{"token":"`+confirmTokA+`"}`, true, "198.51.100.27")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("confirm email A = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
+	h.csrf()
 
 	// Now email is inv-a@example.com again and password is still changedpassword12,
 	// but tokAtEmailA MUST be rejected because ConfirmEmailToken expired pending reset tokens!
+	j = jar{}
+	h.csrfJar(j)
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokAtEmailA+`","new_password":"revivedpassword12"}`, true, "198.51.100.5")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 	_ = resp.Body.Close()
 	// (d) Unlink password identity expires pending reset tokens.
 	tokBeforeUnlink := issueResetTokenForTest(t, h, "inv-a@example.com")
-	grantLink := h.grant("account.identity_link", "changedpassword12")
-	resp = h.withGrant(http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
+	grantLink := h.grantAs("198.51.100.28", "account.identity_link", "changedpassword12")
+	resp = h.withGrantAs("198.51.100.28", http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("link google = %d %s", resp.StatusCode, h.body(resp))
 	}
@@ -983,13 +1057,16 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	if got := h.followOAuthURL(linkStart.URL); got != "linked" {
 		t.Fatalf("follow link = %s", got)
 	}
-	grantUnlink := h.grant("account.identity_unlink", "changedpassword12")
-	resp = h.withGrant(http.MethodDelete, "/api/v1/auth/identities/password", "", grantUnlink)
+	grantUnlink := h.grantAs("198.51.100.29", "account.identity_unlink", "changedpassword12")
+	resp = h.withGrantAs("198.51.100.29", http.MethodDelete, "/api/v1/auth/identities/password", "", grantUnlink)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("unlink password = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
+	h.csrf()
 
+	j = jar{}
+	h.csrfJar(j)
 	resp = h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokBeforeUnlink+`","new_password":"afterunlinkpassword12"}`, true, "198.51.100.6")
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 	_ = resp.Body.Close()
@@ -1331,15 +1408,15 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	// (a) D3: Unverified account cannot link OAuth via StartLink (403 email_not_verified)
 	// or Callback if email becomes unverified before callback ("invalid_flow").
 	signupAcceptance(t, h, "victim-d3@example.com")
-	grantLink := h.grant("account.identity_link", "correcthorse")
-	resp := h.withGrant(http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
+	grantLink := h.grantAs("198.51.100.191", "account.identity_link", "correcthorse")
+	resp := h.withGrantAs("198.51.100.191", http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
 	requireAcceptanceProblem(t, h, resp, http.StatusForbidden, "email_not_verified")
 	_ = resp.Body.Close()
 	// Temporarily mark verified to start link flow, then set email_verified_at = NULL before callback.
 	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE email = 'victim-d3@example.com'`); err != nil {
 		t.Fatal(err)
 	}
-	resp = h.withGrant(http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
+	resp = h.withGrantAs("198.51.100.192", http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("link start = %d %s", resp.StatusCode, h.body(resp))
 	}
@@ -1386,7 +1463,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	h.csrfJar(jarAttacker)
 	oldJar := h.jar
 	h.jar = jarAttacker
-	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/google/start")); got != "login_ready" {
+	if got := statusFromCallback(followOAuthAs(t, h, "/api/v1/auth/oauth/google/start", "198.51.100.193")); got != "login_ready" {
 		t.Fatalf("attacker oauth callback = %s", got)
 	}
 	jarAttacker = cloneAcceptanceJar(h.jar)
@@ -1523,7 +1600,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		h.csrfJar(jFlow)
 		saved := h.jar
 		h.jar = jFlow
-		cbURL := oauthCallbackURL(t, h, "/api/v1/auth/oauth/"+provider+"/start")
+		cbURL := oauthCallbackURLAs(t, h, "/api/v1/auth/oauth/"+provider+"/start", xff)
 		jFlow = cloneAcceptanceJar(h.jar)
 		h.jar = saved
 
@@ -1543,7 +1620,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		h.csrfJar(jEarly)
 		saved := h.jar
 		h.jar = jEarly
-		earlyCbURL := oauthCallbackURL(t, h, "/api/v1/auth/oauth/google/start")
+		earlyCbURL := oauthCallbackURLAs(t, h, "/api/v1/auth/oauth/google/start", "198.51.100.204")
 		h.jar = saved
 		// (i) Pass an empty jar (no binding cookie) so OAuth Callback rejects before calling fakeGoogle.Exchange!
 		enteredEarly, earlyStatus, _, releaseEarly := tryStartClaimedCallback("google", fakeGoogle, earlyCbURL, jar{}, "198.51.100.204")
@@ -1727,7 +1804,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	h.csrfJar(jarRecheck)
 	oldJar = h.jar
 	h.jar = jarRecheck
-	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/google/start")); got != "login_ready" {
+	if got := statusFromCallback(followOAuthAs(t, h, "/api/v1/auth/oauth/google/start", "198.51.100.208")); got != "login_ready" {
 		t.Fatalf("recheck oauth callback = %s", got)
 	}
 	jarRecheck = cloneAcceptanceJar(h.jar)
