@@ -23,7 +23,7 @@ export interface UnconfirmedSaveRecord {
 let records: UnconfirmedSaveRecord[] = [];
 let lastSeenUserId: string | null = null;
 const listeners = new Set<() => void>();
-let broadcastSubscribed = false;
+let broadcastUnsubscribe: (() => void) | null = null;
 
 function reconcileWithKnownSessionUser(): void {
   const knownUserId = getKnownDeviceSessionUserId();
@@ -33,9 +33,9 @@ function reconcileWithKnownSessionUser(): void {
 }
 
 function ensureSessionBroadcastSubscription(): void {
-  if (broadcastSubscribed) return;
-  broadcastSubscribed = true;
-  subscribeSessionBroadcast((message) => {
+  if (typeof window === 'undefined') return;
+  if (broadcastUnsubscribe) return;
+  broadcastUnsubscribe = subscribeSessionBroadcast((message) => {
     if (message.type === 'signed_out') {
       const reason = message.reason ?? 'logout';
       if (reason === 'logout') {
@@ -48,9 +48,6 @@ function ensureSessionBroadcastSubscription(): void {
     }
   });
 }
-
-ensureSessionBroadcastSubscription();
-
 function emitChange(): void {
   for (const listener of listeners) {
     listener();
@@ -58,6 +55,7 @@ function emitChange(): void {
 }
 
 export function subscribeUnconfirmedSaves(listener: () => void): () => void {
+  ensureSessionBroadcastSubscription();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -144,7 +142,7 @@ export function useUnconfirmedSavesForUser(
   userId: string | null | undefined,
   itemId?: string,
 ): readonly UnconfirmedSaveRecord[] {
-  ensureSessionBroadcastSubscription();
+
   const all = useSyncExternalStore(
     subscribeUnconfirmedSaves,
     getUnconfirmedSavesSnapshot,

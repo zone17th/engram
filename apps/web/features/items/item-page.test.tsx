@@ -320,6 +320,10 @@ function findCacheSentinelLeaks(
 
 describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder, EOL, conflicts, security', () => {
   const shims: Array<{ close: () => void }> = [];
+  const originalVisibilityStateDescriptor = Object.getOwnPropertyDescriptor(
+    document,
+    'visibilityState',
+  );
 
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
@@ -340,6 +344,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    if (originalVisibilityStateDescriptor) {
+      Object.defineProperty(document, 'visibilityState', originalVisibilityStateDescriptor);
+    } else {
+      Reflect.deleteProperty(document, 'visibilityState');
+    }
   });
 
   interface ServerSimulator {
@@ -2210,28 +2219,49 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('tag-suggest-option-mạng-nhà')).toBeInTheDocument();
     });
 
-    // IP15-FE1-7: ArrowDown/Home/End + Enter selects the highlighted suggestion via aria-activedescendant
-    expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-tag-3');
-    fireEvent.keyDown(tagInput, { key: 'ArrowDown' });
+    // IP15-FE2-3 & FE1-7: With no exact match, highlight defaults to Create ('tag-suggest-opt-create');
+    // Home/ArrowUp/ArrowDown navigate between suggestions and Create, and Enter on a highlighted suggestion attaches it
     expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-create');
     fireEvent.keyDown(tagInput, { key: 'Home' });
     expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-tag-3');
+    fireEvent.keyDown(tagInput, { key: 'ArrowDown' });
+    expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-create');
+    fireEvent.keyDown(tagInput, { key: 'ArrowUp' });
+    expect(tagInput).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-tag-3');
 
-    // Create and attach a brand new tag "mạng-mới" via Enter / Add button
-    fireEvent.change(tagInput, { target: { value: 'mạng-mới' } });
-    fireEvent.click(screen.getByTestId('tag-attach-submit'));
+    // Pressing Enter while an existing suggestion is highlighted attaches that suggestion
+    fireEvent.keyDown(tagInput, { key: 'Enter' });
     await waitFor(() => {
-      expect(screen.getByTestId('item-tag-chip-mạng-mới')).toBeInTheDocument();
+      expect(screen.getByTestId('item-tag-chip-mạng-nhà')).toBeInTheDocument();
     });
-    expect(
-      h.server.requests.some((r) => r.method === 'POST' && r.url.endsWith('/api/v1/tags')),
-    ).toBe(true);
-    expect(
-      h.server.requests.some(
-        (r) => r.method === 'POST' && r.url.endsWith(`/api/v1/items/${ITEM_ID}/tags`),
-      ),
-    ).toBe(true);
 
+    // IP15-FE2-3: Re-open tag popover, have suggestion 'workout' in catalog, type 'work' (prefix, no exact match)
+    // -> Enter defaults to Create option and sends POST /tags { display: 'work' }
+    h.server.catalogTags.push({
+      id: 'tag-workout',
+      display: 'workout',
+      item_count: 3,
+      created_at: '2026-11-01T00:00:00Z',
+      last_used_at: '2026-11-01T00:00:00Z',
+    });
+    fireEvent.click(screen.getByTestId('tag-add-chip'));
+    const tagInput2 = screen.getByTestId('tag-suggest-input');
+    fireEvent.change(tagInput2, { target: { value: 'work' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('tag-suggest-option-workout')).toBeInTheDocument();
+      expect(screen.getByTestId('tag-suggest-create-option')).toBeInTheDocument();
+    });
+    expect(tagInput2).toHaveAttribute('aria-activedescendant', 'tag-suggest-opt-create');
+    fireEvent.keyDown(tagInput2, { key: 'Enter' });
+    await waitFor(() => {
+      expect(screen.getByTestId('item-tag-chip-work')).toBeInTheDocument();
+    });
+    const tagCreateReqs = h.server.requests.filter(
+      (r) => r.method === 'POST' && r.url.endsWith('/api/v1/tags'),
+    );
+    expect(tagCreateReqs).toHaveLength(1);
+    expect(JSON.parse(tagCreateReqs[0].rawBody)).toEqual({ display: 'work' });
+    expect(screen.queryByTestId('item-tag-chip-workout')).toBeNull();
     // Remove tag "office" via × button
     fireEvent.click(screen.getByTestId('item-tag-remove-office'));
     await waitFor(() => {

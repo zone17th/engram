@@ -434,7 +434,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   const [tagQueryInput, setTagQueryInput] = useState('');
   const [tagError, setTagError] = useState<string | null>(null);
   const [tagBusy, setTagBusy] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState<number>(0);
+  const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const addTagChipRef = useRef<HTMLButtonElement | null>(null);
   const tagInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -495,9 +495,23 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
 
   const hasCreateOption = Boolean(parsedNewTag && !parsedNewTag.exactMatchInAll);
   const totalPopoverOptions = suggestions.length + (hasCreateOption ? 1 : 0);
+  // IP15-FE2-3: Default highlight to the Create option when there is no exact match;
+  // only auto-highlight an existing suggestion by default on exact match (or when there is no Create option).
+  const defaultHighlightIndex = useMemo(() => {
+    if (totalPopoverOptions === 0) return -1;
+    if (hasCreateOption) {
+      return suggestions.length;
+    }
+    if (parsedNewTag?.exactMatchInAll) {
+      const exactIdx = suggestions.findIndex((s) => s.id === parsedNewTag.exactMatchInAll?.id);
+      if (exactIdx !== -1) return exactIdx;
+    }
+    return 0;
+  }, [hasCreateOption, parsedNewTag, suggestions, totalPopoverOptions]);
+  const effectiveHighlightIndex = highlightedIndex ?? defaultHighlightIndex;
   const boundedHighlightIndex =
     totalPopoverOptions > 0
-      ? Math.max(0, Math.min(highlightedIndex, totalPopoverOptions - 1))
+      ? Math.max(0, Math.min(effectiveHighlightIndex, totalPopoverOptions - 1))
       : -1;
   const activeOptionId =
     boundedHighlightIndex >= 0
@@ -663,7 +677,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
     if (e.key === 'ArrowDown') {
       if (totalPopoverOptions > 0) {
         e.preventDefault();
-        setHighlightedIndex((prev) => (prev + 1) % totalPopoverOptions);
+        setHighlightedIndex((boundedHighlightIndex + 1) % totalPopoverOptions);
       }
       return;
     }
@@ -671,7 +685,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       if (totalPopoverOptions > 0) {
         e.preventDefault();
         setHighlightedIndex(
-          (prev) => (prev - 1 + totalPopoverOptions) % totalPopoverOptions,
+          (boundedHighlightIndex - 1 + totalPopoverOptions) % totalPopoverOptions,
         );
       }
       return;
@@ -921,7 +935,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
             onClick={() => {
               if (atTagLimit) return;
               setTagError(null);
-              setHighlightedIndex(0);
+              setHighlightedIndex(null);
               setTagPopoverOpen((prev) => !prev);
             }}
           >
@@ -976,7 +990,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
                 className="field-input"
                 onChange={(e) => {
                   setTagQueryInput(e.target.value);
-                  setHighlightedIndex(0);
+                  setHighlightedIndex(null);
                   if (tagError) setTagError(null);
                 }}
                 onKeyDown={handleTagInputKeyDown}
