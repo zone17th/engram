@@ -39,6 +39,7 @@ import {
   getKnownDeviceSessionUserId,
   resetVaultBroadcastForTests,
   useVault,
+  vaultBodyQueryKey,
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
@@ -3480,14 +3481,33 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Initial card body v1');
     });
 
+    let holdCardVaultGet = false;
+    let failCardVaultGet500 = false;
+    let cardVaultGetEntered = Promise.withResolvers<void>();
+    let cardVaultGetRelease = Promise.withResolvers<void>();
+
+    hCard.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (failCardVaultGet500) {
+          return problemResponse('internal_error', 500);
+        }
+        if (holdCardVaultGet) {
+          cardVaultGetEntered.resolve();
+          await cardVaultGetRelease.promise;
+        }
+      }
+      return null;
+    });
+
     // Helper to reset vaultMeta to null while unlocked (signOut clears ['vault','meta'] and sets vaultMeta=null;
-    // login + unlockWithoutReload leaves vault unlocked with vaultMeta === null while entry-body is already in QueryCache
-    // if we re-prime or wait, wait: signOut clears private cache! So we can instead open the editor first or re-seed
-    // the body query cache so Edit button is immediately available while vaultMeta === null).
+    // login + unlockWithoutReload with failCardVaultGet500=true leaves vaultMeta === null after useEntryBody's
+    // single reload attempt fails; then seeding the body query cache makes the Edit button immediately available).
     const enterUnlockedWithNullVaultMetaAndCachedBody = async (
       cachedBody: string,
       version: number,
     ) => {
+      failCardVaultGet500 = true;
       await hCard.signOutSession();
       await waitFor(() => {
         expect(hCard.vault().inFlight).toBe(false);
@@ -3508,24 +3528,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       await waitFor(() => {
         expect(screen.getByTestId('entry-body')).toHaveTextContent(cachedBody);
       });
+      failCardVaultGet500 = false;
     };
 
     // 2a. Regular Save with vaultMeta === null:
     // First hold GET /vault, lock + unlock before releasing -> STALE_GENERATION, holder wiped, zero seal, zero PUT.
     await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
-    let holdCardVaultGet = true;
-    let cardVaultGetEntered = Promise.withResolvers<void>();
-    let cardVaultGetRelease = Promise.withResolvers<void>();
-
-    hCard.server.overrideRoute(async (url, init) => {
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'GET' && url.endsWith('/vault') && holdCardVaultGet) {
-        cardVaultGetEntered.resolve();
-        await cardVaultGetRelease.promise;
-      }
-      return null;
-    });
-
+    holdCardVaultGet = true;
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     fireEvent.change(screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`), {
       target: { value: 'SENTINEL-REGULAR-SAVE-HELD-RELOAD' },
@@ -3760,6 +3769,69 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent(
         'Rescued via 404 Save as new entry with null vaultMeta',
       );
+    });
+  });
+
+  it('IP15-FE4-3: unlocked item page with vaultKeyId === null makes one reloadVaultMeta() attempt and shows the error/Retry card instead of an endless skeleton if it fails or stays null, then decrypts on Retry', async () => {
+    let failVaultMetaMode: 'network_500' | 'invalid_key_id' | 'ok' = 'network_500';
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Decrypted after Retry', position: 0 }],
+      skipInitialVaultMetaReload: true,
+    });
+
+    // First lock, configure /vault to fail with 500, and unlockWithoutReload so useEntryBody enters
+    // unlocked state with vaultKeyId === null against the failing /vault endpoint.
+    await h.lock();
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (failVaultMetaMode === 'network_500') {
+          return problemResponse('internal_error', 500);
+        }
+        if (failVaultMetaMode === 'invalid_key_id') {
+          return jsonResponse({
+            vault_key_id: '',
+            version: 1,
+          });
+        }
+      }
+      return null;
+    });
+    h.server.requests.splice(0);
+
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+
+    // 1. One reloadVaultMeta() attempt fails (500) -> shows entry-body-error with Retry instead of endless loading skeleton
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body-error')).toBeInTheDocument();
+      expect(screen.getByTestId('entry-body-retry')).toBeEnabled();
+    });
+    expect(screen.queryByTestId('entry-body-loading')).toBeNull();
+    expect(
+      h.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+    ).toHaveLength(1);
+
+    // 2. Click Retry when reloadVaultMeta returns an empty/invalid key_id -> still shows entry-body-error with Retry
+    failVaultMetaMode = 'invalid_key_id';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+    await waitFor(() => {
+      expect(
+        h.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+      ).toHaveLength(2);
+      expect(screen.getByTestId('entry-body-error')).toBeInTheDocument();
+      expect(screen.getByTestId('entry-body-retry')).toBeEnabled();
+    });
+    expect(screen.queryByTestId('entry-body-loading')).toBeNull();
+
+    // 3. Click Retry when reloadVaultMeta succeeds -> resolves vault_key_id and decrypts the entry body
+    failVaultMetaMode = 'ok';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+    await waitFor(() => {
+      expect(h.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId('entry-body-error')).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Decrypted after Retry');
     });
   });
 
