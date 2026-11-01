@@ -2307,16 +2307,21 @@
         pills.forEach((btn) => {
           btn.className = 'vault-pill ' + (state.locked ? 'vault-shut' : 'vault-open');
           // Nhãn ngắn trên mobile: pill nằm trong header chật, không được đẩy tràn.
+          btn.setAttribute('aria-label', state.locked ? 'Vault đã khoá' : 'Vault mở · 15 phút');
           btn.innerHTML = state.locked
             ? '<span aria-hidden="true">🔒</span> <span class="sm:hidden">Đã khoá</span><span class="hidden sm:inline">Vault đã khoá</span>'
             : '<span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span>';
         });
         document.body.classList.toggle('is-locked', state.locked);
         document.querySelectorAll('[data-secret]').forEach((el) => {
-          if (!el.dataset.plain) el.dataset.plain = el.innerHTML;
-          el.innerHTML = state.locked
-            ? '<div class="lock-veil">•••• •••• •••• ••••</div>'
-            : el.dataset.plain;
+          if (state.locked) {
+            if (!el.dataset.locked) el.dataset.plain = el.innerHTML;
+            el.dataset.locked = '1';
+            el.innerHTML = '<div class="lock-veil">•••• •••• •••• ••••</div>';
+          } else if (el.dataset.locked) {
+            el.innerHTML = el.dataset.plain ?? el.innerHTML;
+            delete el.dataset.locked;
+          }
         });
         document.querySelectorAll('[data-locked-banner]').forEach((el) => { el.hidden = !state.locked; });
         if (!syncOpts.keepDraftForDemo && prevLocked !== state.locked) {
