@@ -29,6 +29,10 @@ import {
   type SealAttemptObservation,
 } from '@/features/entries/seal';
 import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
+import {
+  postSessionBroadcast,
+  type SessionBroadcast,
+} from '@/lib/auth/broadcast';
 import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
@@ -403,6 +407,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     loginSession: (email: string, password: string) => Promise<void>;
     signupSession: (email: string, password: string) => Promise<void>;
     completeOAuthSession: () => Promise<void>;
+    refetchMeSession: () => Promise<void>;
     unlock: () => Promise<void>;
     unlockWithoutReload: () => Promise<void>;
     lock: () => Promise<void>;
@@ -426,6 +431,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     let loginFn!: (args: { email: string; password: string }) => Promise<unknown>;
     let signupFn!: (args: { email: string; password: string }) => Promise<unknown>;
     let oauthCompleteFn!: () => Promise<unknown>;
+    let refetchMeFn!: () => Promise<void>;
     function Probe() {
       vaultCtx = useVault();
       const sess = useSession();
@@ -433,6 +439,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       loginFn = (args) => sess.login(args);
       signupFn = (args) => sess.signup(args);
       oauthCompleteFn = () => sess.completeOAuthLogin();
+      refetchMeFn = () => sess.refetchMe();
       return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
     }
 
@@ -940,6 +947,11 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       completeOAuthSession: async () => {
         await act(async () => {
           await oauthCompleteFn();
+        });
+      },
+      refetchMeSession: async () => {
+        await act(async () => {
+          await refetchMeFn();
         });
       },
       setCurrentMe: (nextMe) => {
@@ -3225,6 +3237,187 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       ]);
       expect(storeEmitCount).toBeGreaterThan(emitsBeforeOAuth);
       expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+    } finally {
+      unsubUserChanged();
+      unsubStore();
+    }
+  });
+
+  it('advisor-dec-199 / IP15-FE5-5 / BE5-3 (a first commit): initial SessionProvider bootstrap commit with no known user emits no userChanged event, keeps pre-existing User A record, and sets lastCommittedUserId = A', async () => {
+    userChangedTesting.resetCommittedUserForTests();
+    expect(userChangedTesting.getLastCommittedUserId()).toBeNull();
+
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_ID,
+      itemName: 'wifi-first-commit',
+      source: 'entry',
+    });
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
+    });
+
+    try {
+      const h = await setupItemPageHarness({
+        initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+      });
+
+      expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_A_ID);
+      expect(userChangedEvents).toEqual([]);
+      expect(storeEmitCount).toBe(0);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()[0].userId).toBe(USER_A_ID);
+      expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent(
+        'wifi-first-commit',
+      );
+      expect(h.vault().state).toBe('unlocked');
+    } finally {
+      unsubUserChanged();
+      unsubStore();
+    }
+  });
+
+  it('advisor-dec-199 / IP15-FE5-5 / BE5-3 (b same-user refetch & local session_changed): same-user /auth/me refetch and local session_changed carrying the same user emit no userChanged event and preserve User A record', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+    expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_A_ID);
+
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_ID,
+      itemName: 'wifi-same-user-effect',
+      source: 'entry',
+    });
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
+    });
+
+    try {
+      const meGetsBefore = h.server.requests.filter(
+        (r) => r.method === 'GET' && r.url.endsWith('/auth/me'),
+      ).length;
+
+      // 1. Direct refetchMe() returning the same user A
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.refetchMeSession();
+      await waitFor(() => {
+        const meGetsAfterRefetch = h.server.requests.filter(
+          (r) => r.method === 'GET' && r.url.endsWith('/auth/me'),
+        ).length;
+        expect(meGetsAfterRefetch).toBeGreaterThan(meGetsBefore);
+      });
+
+      // 2. Local session_changed broadcast carrying the same user A into the revalidated query
+      const meGetsBeforeBroadcast = h.server.requests.filter(
+        (r) => r.method === 'GET' && r.url.endsWith('/auth/me'),
+      ).length;
+      await act(async () => {
+        postSessionBroadcast({ type: 'session_changed' });
+      });
+      await waitFor(() => {
+        const meGetsAfterBroadcast = h.server.requests.filter(
+          (r) => r.method === 'GET' && r.url.endsWith('/auth/me'),
+        ).length;
+        expect(meGetsAfterBroadcast).toBeGreaterThan(meGetsBeforeBroadcast);
+      });
+
+      expect(userChangedEvents).toEqual([]);
+      expect(storeEmitCount).toBe(0);
+      expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_A_ID);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()[0].userId).toBe(USER_A_ID);
+    } finally {
+      unsubUserChanged();
+      unsubStore();
+    }
+  });
+
+  it('advisor-dec-199 / IP15-FE5-5 / BE5-3 (d cross-tab session_changed): remote session_changed resolving /auth/me as User B commits B via the me?.user.id effect with exactly one A->B event, one store emit, and an empty pure snapshot before any detail mount', async () => {
+    // Stub BroadcastChannel BEFORE mounting SessionProvider so subscribeSessionBroadcast attaches its 'remote' listener
+    type BroadcastMessageListener = (event: MessageEvent<SessionBroadcast>) => void;
+    const channelListeners = new Set<BroadcastMessageListener>();
+    class CrossTabBroadcastChannelStub {
+      addEventListener(type: string, listener: BroadcastMessageListener): void {
+        if (type === 'message') channelListeners.add(listener);
+      }
+      removeEventListener(type: string, listener: BroadcastMessageListener): void {
+        if (type === 'message') channelListeners.delete(listener);
+      }
+      postMessage(): void {}
+      close(): void {}
+    }
+    vi.stubGlobal('BroadcastChannel', CrossTabBroadcastChannelStub);
+
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+    expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_A_ID);
+
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_ID,
+      itemName: 'wifi-cross-tab-a',
+      source: 'entry',
+    });
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+
+    // Unmount ItemDetailPage so the cross-tab switch happens away from the detail route (before any detail remount/reconcile)
+    h.rerenderPage(<div data-testid="away-for-cross-tab-switch">Away</div>);
+
+    const userChangedEvents: Array<{ prev: string; next: string }> = [];
+    const unsubUserChanged = subscribeUserChanged((prev, next) => {
+      userChangedEvents.push({ prev, next });
+    });
+    let storeEmitCount = 0;
+    const unsubStore = subscribeUnconfirmedSaves(() => {
+      storeEmitCount += 1;
+    });
+
+    try {
+      // Another tab switches to User B: /auth/me now resolves to User B and session_changed broadcast arrives.
+      // Emit through both the remote BroadcastChannel listener (if channel was not yet cached) and postSessionBroadcast
+      // so even two session_changed notifications for the same B snapshot result in exactly one A->B commit event.
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await act(async () => {
+        for (const listener of [...channelListeners]) {
+          listener({ data: { type: 'session_changed' } } as MessageEvent<SessionBroadcast>);
+        }
+        postSessionBroadcast({ type: 'session_changed' });
+      });
+
+      await waitFor(() => {
+        expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_B_ID);
+        expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
+        expect(storeEmitCount).toBe(1);
+        expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+      });
     } finally {
       unsubUserChanged();
       unsubStore();
