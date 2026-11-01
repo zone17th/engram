@@ -40,6 +40,14 @@ const (
 	DefaultListLimit = 200
 	MinListLimit     = 1
 	MaxListLimit     = 200
+
+	DefaultChangesLimit = 100
+	MinChangesLimit     = 1
+	MaxChangesLimit     = 200
+
+	// ChangesRetentionWindow là cửa sổ tối đa mà `GET /entries/changes?since=` chấp nhận
+	// (`now() - 29 days`; tombstone có thể bị job `content_purge` xoá sau 30 ngày — plan mục 2.9, Task 7).
+	ChangesRetentionWindow = 29 * 24 * time.Hour
 )
 
 // Meta là DTO `EntryMeta` theo OpenAPI (chỉ metadata, không có envelope hay ciphertext).
@@ -83,6 +91,28 @@ type Position struct {
 // ReorderResponse là DTO `ItemEntriesReorderResponse` theo OpenAPI (`{entries: [{id, position}]}`).
 type ReorderResponse struct {
 	Entries []Position `json:"entries"`
+}
+
+// Change là DTO `EntryChange` theo OpenAPI (gồm cả tombstone `deleted_at != nil`;
+// không bao giờ có `envelope` hay `ciphertext` — plan mục 2.9, user-dec-016).
+type Change struct {
+	ID                 string  `json:"id"`
+	ItemID             string  `json:"item_id"`
+	Type               string  `json:"type"`
+	Position           int32   `json:"position"`
+	Version            int32   `json:"version"`
+	PlaintextLenBucket int32   `json:"plaintext_len_bucket"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
+	DeletedAt          *string `json:"deleted_at"`
+}
+
+// ChangesPage là DTO `EntryChangesPage` theo OpenAPI (`{changes, next_cursor, watermark}`).
+// `Changes` luôn là slice không-nil (`[]` khi rỗng).
+type ChangesPage struct {
+	Changes    []Change `json:"changes"`
+	NextCursor *string  `json:"next_cursor"`
+	Watermark  string   `json:"watermark"`
 }
 
 // DeletedViaEntry và DeletedViaItem là hai giá trị provenance của `entry.deleted_via` (plan mục 2.1, 2.8).
@@ -264,6 +294,86 @@ func DecodeListCursor(raw string, expectedItemID uuid.UUID) (int32, uuid.UUID, b
 	return int32(pos64), entryID, true
 }
 
+type changesCursorPayload struct {
+	V               int    `json:"v"`
+	UserID          string `json:"u"`
+	Since           string `json:"s"`
+	Watermark       string `json:"w"`
+	CursorUpdatedAt string `json:"t"`
+	CursorID        string `json:"id"`
+}
+
+// DecodedChangesCursor chứa dữ liệu đã giải mã và xác thực từ cursor của `GET /entries/changes`.
+type DecodedChangesCursor struct {
+	Watermark       time.Time
+	CursorUpdatedAt time.Time
+	CursorID        uuid.UUID
+}
+
+// EncodeChangesCursor mã hoá opaque base64url cursor của `GET /entries/changes` (plan mục 2.9, Task 7).
+// Cursor mang theo `user_id`, mốc `since` đã chuẩn hoá UTC `RFC3339Nano`, `watermark` (chụp ở trang đầu)
+// và keyset `(updated_at, id)` của hàng cuối trang trước.
+func EncodeChangesCursor(userID uuid.UUID, since, watermark, cursorUpdatedAt time.Time, cursorID uuid.UUID) string {
+	p := changesCursorPayload{
+		V:               1,
+		UserID:          userID.String(),
+		Since:           since.UTC().Format(time.RFC3339Nano),
+		Watermark:       watermark.UTC().Format(time.RFC3339Nano),
+		CursorUpdatedAt: cursorUpdatedAt.UTC().Format(time.RFC3339Nano),
+		CursorID:        cursorID.String(),
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// DecodeChangesCursor giải mã và kiểm tra cursor của `GET /entries/changes`:
+//   - Phải là base64url strict không padding, đúng định dạng `v=1`.
+//   - `user_id` trong cursor phải khớp đúng `expectedUserID` (cursor của user khác -> `false`).
+//   - `since` trong cursor phải khớp đúng `expectedSince` theo thời điểm (`Equal`; cursor lệch `since` -> `false`).
+func DecodeChangesCursor(raw string, expectedUserID uuid.UUID, expectedSince time.Time) (DecodedChangesCursor, bool) {
+	b, err := vault.DecodeBase64URLStrict(raw, 0)
+	if err != nil {
+		return DecodedChangesCursor{}, false
+	}
+	var p changesCursorPayload
+	if err := json.Unmarshal(b, &p); err != nil || p.V != 1 {
+		return DecodedChangesCursor{}, false
+	}
+	uid, err := uuid.Parse(p.UserID)
+	if err != nil || uid != expectedUserID {
+		return DecodedChangesCursor{}, false
+	}
+	sinceTime, err := time.Parse(time.RFC3339Nano, p.Since)
+	if err != nil || !sinceTime.Equal(expectedSince) {
+		return DecodedChangesCursor{}, false
+	}
+	wmTime, err := time.Parse(time.RFC3339Nano, p.Watermark)
+	if err != nil {
+		return DecodedChangesCursor{}, false
+	}
+	curUpdated, err := time.Parse(time.RFC3339Nano, p.CursorUpdatedAt)
+	if err != nil {
+		return DecodedChangesCursor{}, false
+	}
+	curID, err := uuid.Parse(p.CursorID)
+	if err != nil {
+		return DecodedChangesCursor{}, false
+	}
+	return DecodedChangesCursor{
+		Watermark:       wmTime.UTC(),
+		CursorUpdatedAt: curUpdated.UTC(),
+		CursorID:        curID,
+	}, true
+}
+
+// FormatTimestamp chuẩn hoá `pgtype.Timestamptz` sang chuỗi UTC `RFC3339Nano`.
+func FormatTimestamp(ts pgtype.Timestamptz) string {
+	return formatTimestamp(ts)
+}
+
 func formatTimestamp(ts pgtype.Timestamptz) string {
 	if !ts.Valid {
 		return ""
@@ -338,6 +448,27 @@ func MetaFromModel(m gen.Entry) Meta {
 		PlaintextLenBucket: m.PlaintextLenBucket,
 		CreatedAt:          formatTimestamp(m.CreatedAt),
 		UpdatedAt:          formatTimestamp(m.UpdatedAt),
+	}
+}
+
+// ChangeFromRow chuyển dòng trả về của `ListEntryChangesSince` thành DTO `Change` (`EntryChange`,
+// gồm cả `deleted_at` cho tombstone, không bao giờ có envelope hay ciphertext).
+func ChangeFromRow(r gen.ListEntryChangesSinceRow) Change {
+	var deletedAt *string
+	if r.DeletedAt.Valid {
+		s := formatTimestamp(r.DeletedAt)
+		deletedAt = &s
+	}
+	return Change{
+		ID:                 r.ID.String(),
+		ItemID:             r.ItemID.String(),
+		Type:               r.Type,
+		Position:           r.Position,
+		Version:            r.Version,
+		PlaintextLenBucket: r.PlaintextLenBucket,
+		CreatedAt:          formatTimestamp(r.CreatedAt),
+		UpdatedAt:          formatTimestamp(r.UpdatedAt),
+		DeletedAt:          deletedAt,
 	}
 }
 

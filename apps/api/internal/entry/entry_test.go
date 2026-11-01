@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -157,6 +158,47 @@ func TestIsAllowedImportSource(t *testing.T) {
 	for _, bad := range []string{"", "url", "clipboard", "PASTE", "FILE", "file.json"} {
 		if entry.IsAllowedImportSource(bad) {
 			t.Fatalf("IsAllowedImportSource(%q) = true, want false", bad)
+		}
+	}
+}
+
+func TestChangesCursorRoundTripAndBinding(t *testing.T) {
+	userA := uuid.New()
+	userB := uuid.New()
+	entryID := uuid.New()
+	since := time.Date(2026, 11, 1, 10, 0, 0, 123456000, time.UTC)
+	watermark := time.Date(2026, 11, 1, 10, 5, 0, 789000000, time.UTC)
+	curUpdated := time.Date(2026, 11, 1, 10, 2, 0, 456000000, time.UTC)
+
+	cur := entry.EncodeChangesCursor(userA, since, watermark, curUpdated, entryID)
+	decoded, ok := entry.DecodeChangesCursor(cur, userA, since)
+	if !ok {
+		t.Fatal("DecodeChangesCursor valid = false, want true")
+	}
+	if !decoded.Watermark.Equal(watermark) || !decoded.CursorUpdatedAt.Equal(curUpdated) || decoded.CursorID != entryID {
+		t.Fatalf("DecodeChangesCursor = %+v, want wm=%v updated=%v id=%s", decoded, watermark, curUpdated, entryID)
+	}
+
+	// Same instant represented in a non-UTC zone should still match since.Equal.
+	sincePlus7 := since.In(time.FixedZone("UTC+7", 7*3600))
+	if _, ok := entry.DecodeChangesCursor(cur, userA, sincePlus7); !ok {
+		t.Fatal("DecodeChangesCursor rejected equivalent instant in different timezone")
+	}
+
+	// Foreign user -> false.
+	if _, ok := entry.DecodeChangesCursor(cur, userB, since); ok {
+		t.Fatal("DecodeChangesCursor accepted foreign user cursor")
+	}
+
+	// Mismatched since -> false.
+	if _, ok := entry.DecodeChangesCursor(cur, userA, since.Add(time.Nanosecond)); ok {
+		t.Fatal("DecodeChangesCursor accepted mismatched since")
+	}
+
+	// Malformed or padded base64url -> false.
+	for _, bad := range []string{"", "not-base64url===", "e30="} {
+		if _, ok := entry.DecodeChangesCursor(bad, userA, since); ok {
+			t.Fatalf("DecodeChangesCursor accepted invalid cursor %q", bad)
 		}
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/compose"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/entry"
 	"github.com/zone17th/engram/apps/api/internal/entry/entryhttp"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/item/itemhttp"
@@ -113,7 +114,7 @@ func run() error {
 	}
 	defer svc.Close()
 	authn, csrfv, reauth := compose.Adapters(svc)
-	_, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, nil, nil, metrics, nil, logger)
+	_, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, nil, nil, metrics, entry.ResetHook, logger)
 	if err != nil {
 		return fmt.Errorf("compose vault: %w", err)
 	}

@@ -81,6 +81,7 @@ func Mount(c ContentDeps) func(v1 chi.Router, d httpx.Deps) {
 		v1.Group(func(g chi.Router) {
 			g.Use(httpx.RequireSession(d.Authenticator))
 			g.Get("/items/{id}/entries", h.itemEntriesList)
+			g.Get("/entries/changes", h.entriesChanges)
 			g.Get("/entries/{id}", h.entryGet)
 		})
 
