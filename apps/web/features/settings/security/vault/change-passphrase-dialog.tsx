@@ -686,7 +686,7 @@ export function ChangePassphraseDialog({
           {step === 'oom' && (
             <section data-view="pass-oom">
               <div className="card mb-5 border-error p-5">
-                <p className="t-label mb-2 text-muted">Argon2id 64 MiB · derive error</p>
+                <p className="t-label mb-2 text-muted">{t('errors.oomBadge')}</p>
                 <AuthStatus tone="error" className="mb-0">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">{t('errors.oomTitle')}</p>
                   <p className="m-0 text-[13px] text-body">{t('errors.oomBody')}</p>
