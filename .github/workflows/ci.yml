@@ -693,3 +693,26 @@ jobs:
       - name: Tear down Compose resources
         if: always()
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  content-perf:
+    name: Content perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: '1'
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Run content performance tests
+        run: go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v
