@@ -21,7 +21,7 @@ export function Button({ variant = 'primary', size = 'md', className, type = 'bu
   return (
     <button
       type={type}
-      className={cn('btn', VARIANT_CLASS[variant], size === 'sm' && 'btn-sm', className)}
+      className={cn('btn touch-target', VARIANT_CLASS[variant], size === 'sm' && 'btn-sm', className)}
       {...props}
     />
   );

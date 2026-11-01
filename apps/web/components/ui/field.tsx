@@ -78,7 +78,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
           {input}
           <button
             type="button"
-            className="field-toggle"
+            className="field-toggle touch-target"
             disabled={disabled}
             aria-label={visible ? resolvedToggleLabels.hide : resolvedToggleLabels.show}
             onClick={() => setVisible((v) => !v)}

@@ -711,6 +711,143 @@ describe('lib/api/content', () => {
       });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
+
+    it('FU9 (F-2, advisor-dec-212): sends the exact sealed serializedBody string on first send and across CSRF/refresh/network replays, and rejects before fetch if body is mutated between seal and send', async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const idempotencyKey = createIdempotencyKey();
+
+      // 1) When serializedBody is provided (and consistent with body), contentMutate forwards that exact
+      //    pre-serialized string to fetch init.body without calling JSON.stringify again to produce the wire body,
+      //    on initial send AND on csrf_invalid / access_expired / network-timeout replays.
+      const basePayload: EntryCreateRequest = {
+        ...SAMPLE_ENTRY_CREATE,
+        envelope: { ...SAMPLE_ENVELOPE },
+      };
+      const sealedSerializedBody = JSON.stringify(basePayload);
+      let toJsonCalls = 0;
+      const trackedBody = Object.freeze({
+        ...basePayload,
+        toJSON() {
+          toJsonCalls += 1;
+          return basePayload;
+        },
+      }) as unknown as EntryCreateRequest;
+
+      // Attempt 1 -> 403 csrf_invalid, GET /auth/csrf -> 204
+      // Attempt 2 -> 401 access_expired, GET /auth/me -> 401, POST /auth/refresh -> 204, replay -> TimeoutError
+      // Attempt 3 -> 201 Created
+      fetchMock
+        .mockResolvedValueOnce(problemResponse('csrf_invalid', 403))
+        .mockResolvedValueOnce(emptyResponse(204))
+        .mockResolvedValueOnce(problemResponse('access_expired', 401))
+        .mockResolvedValueOnce(problemResponse('access_expired', 401))
+        .mockResolvedValueOnce(emptyResponse(204))
+        .mockRejectedValueOnce(new DOMException('Timed out on refresh replay', 'TimeoutError'))
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              id: SAMPLE_ENTRY_ID,
+              item_id: SAMPLE_ITEM_ID,
+              type: 'text',
+              position: 0,
+              version: 1,
+              plaintext_len_bucket: 256,
+              created_at: '2026-11-01T00:00:00Z',
+              updated_at: '2026-11-01T00:00:00Z',
+            },
+            201,
+          ),
+        );
+
+      const created = await entryCreate(SAMPLE_ITEM_ID, trackedBody, {
+        idempotencyKey,
+        serializedBody: sealedSerializedBody,
+      });
+      expect(created.id).toBe(SAMPLE_ENTRY_ID);
+      // Consistency verification invokes JSON.stringify(opts.body) exactly once before any send.
+      expect(toJsonCalls).toBe(1);
+
+      const entryPostCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes(`/items/${SAMPLE_ITEM_ID}/entries`),
+      );
+      expect(entryPostCalls).toHaveLength(4);
+      for (const [, init] of entryPostCalls) {
+        const reqInit = init as RequestInit;
+        expect(reqInit.body).toBe(sealedSerializedBody);
+        expect(new Headers(reqInit.headers).get('Idempotency-Key')).toBe(idempotencyKey);
+      }
+
+      // 2) Mutating the body object (or a nested property on an unfrozen test object) between seal and send
+      //    cannot alter the sent bytes: contentMutate verifies JSON.stringify(body) === serializedBody and throws
+      //    a programming error BEFORE issuing any fetch call.
+      fetchMock.mockReset();
+      const mutableEnvelope: EntryEnvelopeV1 = { ...SAMPLE_ENVELOPE };
+      const unfrozenBody: EntryCreateRequest = {
+        ...SAMPLE_ENTRY_CREATE,
+        envelope: mutableEnvelope,
+      };
+      const originalSealedBytes = JSON.stringify(unfrozenBody);
+      // Simulate post-seal mutation of a nested field or top-level field before transport call
+      mutableEnvelope.nonce = 'TAMPERED_NONCE_AFTER_SEAL_______________________';
+      await expect(
+        entryCreate(SAMPLE_ITEM_ID, unfrozenBody, {
+          idempotencyKey: createIdempotencyKey(),
+          serializedBody: originalSealedBytes,
+        }),
+      ).rejects.toThrow(/serializedBody does not match JSON\.stringify\(body\)/);
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+
+      // Also verify entryUpdate and entryImportJson forward serializedBody and reject mismatches before fetch
+      const unfrozenUpdate: EntryUpdateRequest = {
+        envelope: { ...SAMPLE_ENVELOPE },
+        ciphertext: 'BBBBBBBBBBBBBBBBBBBBBBBB',
+        plaintext_len_bucket: 256,
+      };
+      const sealedUpdateBytes = JSON.stringify(unfrozenUpdate);
+      unfrozenUpdate.ciphertext = 'TAMPERED_CIPHERTEXT_AFTER_SEAL';
+      await expect(
+        entryUpdate(SAMPLE_ENTRY_ID, unfrozenUpdate, {
+          idempotencyKey: createIdempotencyKey(),
+          ifMatch: 1,
+          serializedBody: sealedUpdateBytes,
+        }),
+      ).rejects.toThrow(/serializedBody does not match JSON\.stringify\(body\)/);
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+
+      const unfrozenImport: EntryImportJsonRequest = {
+        ...SAMPLE_ENTRY_CREATE,
+        type: 'json',
+        source: 'paste',
+      };
+      const sealedImportBytes = JSON.stringify(unfrozenImport);
+      unfrozenImport.ciphertext = 'TAMPERED_IMPORT_CIPHERTEXT';
+      await expect(
+        entryImportJson(SAMPLE_ITEM_ID, unfrozenImport, {
+          idempotencyKey: createIdempotencyKey(),
+          serializedBody: sealedImportBytes,
+        }),
+      ).rejects.toThrow(/serializedBody does not match JSON\.stringify\(body\)/);
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+
+      // Rejects serializedBody when body is undefined (e.g. DELETE) before fetch
+      await expect(
+        entryDelete(SAMPLE_ENTRY_ID, {
+          idempotencyKey: createIdempotencyKey(),
+          serializedBody: '{}',
+        }),
+      ).rejects.toThrow(/cannot accept serializedBody without a body object/);
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+
+      // Still enforces assertNotPlaintextBody when serializedBody is passed
+      const plaintextDisguised = { plaintext: 'secret' } as unknown as EntryCreateRequest;
+      await expect(
+        entryCreate(SAMPLE_ITEM_ID, plaintextDisguised, {
+          idempotencyKey: createIdempotencyKey(),
+          serializedBody: JSON.stringify(plaintextDisguised),
+        }),
+      ).rejects.toThrow(/does not accept plaintext/);
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+    });
   });
 
   describe('pre-lookup 401/403 split (SPEC §3.4, advisor-dec-098/119/121, CFE5-3, CBE4-1)', () => {

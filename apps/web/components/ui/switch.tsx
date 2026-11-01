@@ -27,7 +27,7 @@ export function Switch({ checked, onCheckedChange, label, disabled = false, hint
         disabled={disabled}
         aria-label={label}
         aria-describedby={hint ? hintId : undefined}
-        className={cn('switch', disabled && 'opacity-40 cursor-not-allowed')}
+        className={cn('switch touch-target', disabled && 'opacity-40 cursor-not-allowed')}
       />
       <span aria-hidden="true">{label}</span>
       {hint && (

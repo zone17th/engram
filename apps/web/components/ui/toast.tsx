@@ -25,7 +25,7 @@ export function Toast({
     <div role="status" aria-live="polite" className={cn('toast', className)}>
       <span>{message}</span>
       {action && (
-        <button type="button" onClick={action.onAction}>
+        <button type="button" className="touch-target" onClick={action.onAction}>
           {action.label}
         </button>
       )}

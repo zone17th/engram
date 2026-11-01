@@ -13,7 +13,7 @@ export interface ChipProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>,
  */
 export function Chip({ children, count, selected = false, className, ...props }: ChipProps) {
   return (
-    <button type="button" aria-pressed={selected} className={cn('chip', className)} {...props}>
+    <button type="button" aria-pressed={selected} className={cn('chip touch-target', className)} {...props}>
       <span>{children}</span>
       {count !== undefined && <span className="text-muted">{count}</span>}
     </button>

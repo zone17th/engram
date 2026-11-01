@@ -59,7 +59,7 @@ export function AppHeader({
   return (
     <header className="sticky top-0 z-30 h-[68px] border-b border-line bg-surface/80 backdrop-blur">
       <div className="mx-auto flex h-full min-w-0 max-w-container items-center gap-2 px-5 sm:gap-4">
-        <Link href="/app" className="min-w-0 shrink-0 no-underline" aria-label={tHeader('logoLabel')}>
+        <Link href="/app" className="touch-target min-w-0 shrink-0 no-underline" aria-label={tHeader('logoLabel')}>
           <Logo wordmarkClassName="hidden min-[480px]:inline" />
         </Link>
         {showSearch ? <Omnibox compact className="hidden max-w-[420px] md:flex" /> : null}
@@ -73,9 +73,9 @@ export function AppHeader({
               aria-label={lockNowName}
               aria-keyshortcuts="L"
               title={tHeader('lockNow')}
-              className="hidden cursor-pointer border-0 bg-transparent p-0 sm:inline-flex"
+              className="touch-target hidden cursor-pointer items-center border-0 bg-transparent p-0 sm:inline-flex [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
             >
-              <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} />
+              <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} className="[@media(pointer:coarse)]:min-h-[44px]" />
             </button>
           ) : (
             <VaultPill
@@ -89,7 +89,7 @@ export function AppHeader({
               type="button"
               data-testid="vault-lock-button-mobile"
               onClick={handleLockClick}
-              className="grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
+              className="touch-target grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
               aria-label={tHeader('openAndLockNow')}
               title={tHeader('openAndLockNow')}
             >
@@ -97,7 +97,7 @@ export function AppHeader({
             </button>
           ) : (
             <span
-              className="grid h-[38px] w-[38px] place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
+              className="grid h-[38px] w-[38px] place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
               aria-label={mobilePillLabel}
               title={mobilePillLabel}
             >
@@ -106,7 +106,7 @@ export function AppHeader({
           )}
           <Link
             href={settingsActive ? '/app' : '/app/settings'}
-            className="btn btn-tertiary no-underline !text-body"
+            className="btn btn-tertiary touch-target no-underline !text-body"
             aria-current={settingsActive ? 'page' : undefined}
           >
             {settingsActive ? tHeader('settingsDone') : tHeader('settings')}
