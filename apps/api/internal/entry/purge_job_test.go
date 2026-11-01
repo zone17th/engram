@@ -389,12 +389,71 @@ jobCompleted:
 		t.Fatal("expected liveEntry and recentTombstone to survive content_purge job")
 	}
 
-	// Verify direct `ContentPurgeWorker.Work` with a fixed clock (`now - 30d`).
+	// EA7-R1-4: Verify `ContentPurgeWorker.Work` with empty `ContentPurgeArgs{}` (no explicit `Cutoff`)
+	// computes `cutoff = w.clk.Now().UTC() - 30 days` from the injected Go `clock.Clock` (`clock.NewFixed(now)`):
+	//   - Fresh 31-day tombstones (`entry`, `item`, `tag`) are permanently deleted.
+	//   - Fresh 29-day tombstones, exact-30-day boundary tombstones (`deleted_at == now - 30d`), and live rows survive.
+	//   - Counter invariants (`contenttest.AssertInvariants`) hold before and after.
+	del31d := now.Add(-31 * 24 * time.Hour)
+	del29d := now.Add(-29 * 24 * time.Hour)
+	delExact30d := cutoff // exact 30-day boundary (`now - 30d`): `deleted_at < cutoff` is strict so it must survive
+
+	noCutoffExpEntry31d := insertPurgeTestEntry(t, ctx, pool, userA, liveItem, 2, &del31d, entry.DeletedViaEntry)
+	noCutoffExact30dEntry := insertPurgeTestEntry(t, ctx, pool, userA, liveItem, 3, &delExact30d, entry.DeletedViaEntry)
+	noCutoffRecent29dEntry := insertPurgeTestEntry(t, ctx, pool, userA, liveItem, 4, &del29d, entry.DeletedViaEntry)
+
+	noCutoffExpItem31d := insertPurgeTestItem(t, ctx, pool, userA, "NoCutoff Expired Item 31d", 0, &del31d)
+	noCutoffCascadedEntry := insertPurgeTestEntry(t, ctx, pool, userA, noCutoffExpItem31d, 0, &del31d, entry.DeletedViaItem)
+	noCutoffExact30dItem := insertPurgeTestItem(t, ctx, pool, userA, "NoCutoff Boundary Item 30d", 0, &delExact30d)
+	noCutoffRecent29dItem := insertPurgeTestItem(t, ctx, pool, userA, "NoCutoff Recent Item 29d", 0, &del29d)
+
+	noCutoffLiveTag := insertPurgeTestTag(t, ctx, pool, userA, "nocutoff-live-tag", 1, nil)
+	linkPurgeItemTag(t, ctx, pool, liveItem, noCutoffLiveTag)
+	noCutoffExpTag31d := insertPurgeTestTag(t, ctx, pool, userA, "nocutoff-exp-tag-31d", 1, &del31d)
+	linkPurgeItemTag(t, ctx, pool, liveItem, noCutoffExpTag31d)
+	noCutoffExact30dTag := insertPurgeTestTag(t, ctx, pool, userA, "nocutoff-exact-tag-30d", 1, &delExact30d)
+	linkPurgeItemTag(t, ctx, pool, liveItem, noCutoffExact30dTag)
+	noCutoffRecent29dTag := insertPurgeTestTag(t, ctx, pool, userA, "nocutoff-recent-tag-29d", 1, &del29d)
+	linkPurgeItemTag(t, ctx, pool, liveItem, noCutoffRecent29dTag)
+
+	contenttest.AssertInvariants(t, pool, userA)
+
 	fixedClk := clock.NewFixed(now)
 	w := entry.NewContentPurgeWorker(pool, fixedClk)
 	if err := w.Work(ctx, &river.Job[entry.ContentPurgeArgs]{Args: entry.ContentPurgeArgs{}}); err != nil {
-		t.Fatalf("ContentPurgeWorker.Work: %v", err)
+		t.Fatalf("ContentPurgeWorker.Work (empty args, fixed clock): %v", err)
 	}
+
+	// 31-day tombstones must be deleted by the job's computed cutoff (`now - 30d`).
+	for _, id := range []uuid.UUID{noCutoffExpEntry31d, noCutoffCascadedEntry} {
+		if rowExists(t, ctx, pool, "entry", id) {
+			t.Fatalf("expected 31-day entry tombstone %s to be deleted by empty-args Work", id)
+		}
+	}
+	if rowExists(t, ctx, pool, "item", noCutoffExpItem31d) {
+		t.Fatalf("expected 31-day item tombstone %s to be deleted by empty-args Work", noCutoffExpItem31d)
+	}
+	if rowExists(t, ctx, pool, "tag", noCutoffExpTag31d) {
+		t.Fatalf("expected 31-day tag tombstone %s to be deleted by empty-args Work", noCutoffExpTag31d)
+	}
+
+	// 29-day tombstones, exact-30-day boundary tombstones, and live rows must survive.
+	for _, id := range []uuid.UUID{liveEntry, recentTombstone, noCutoffExact30dEntry, noCutoffRecent29dEntry} {
+		if !rowExists(t, ctx, pool, "entry", id) {
+			t.Fatalf("expected entry %s (live / 29d / exact 30d boundary) to survive empty-args Work", id)
+		}
+	}
+	for _, id := range []uuid.UUID{liveItem, noCutoffExact30dItem, noCutoffRecent29dItem} {
+		if !rowExists(t, ctx, pool, "item", id) {
+			t.Fatalf("expected item %s (live / 29d / exact 30d boundary) to survive empty-args Work", id)
+		}
+	}
+	for _, id := range []uuid.UUID{noCutoffLiveTag, noCutoffExact30dTag, noCutoffRecent29dTag} {
+		if !rowExists(t, ctx, pool, "tag", id) {
+			t.Fatalf("expected tag %s (live / 29d / exact 30d boundary) to survive empty-args Work", id)
+		}
+	}
+
 	contenttest.AssertInvariants(t, pool, userA)
 	_ = gen.New(pool)
 }
