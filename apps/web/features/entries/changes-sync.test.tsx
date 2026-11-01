@@ -1357,17 +1357,44 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       }),
     ]);
     expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(true);
-    // Now test 410 changes_window_expired on wake: drops watermark and relies on canonical refetch
+    // Now test 410 changes_window_expired on wake: asserts the 410 request happened with since = watermark - 120s,
+    // drops the watermark to null, and the next wake bootstraps with no `since` parameter (T3c / FER1-5c).
     changesSyncTesting.setWatermarkForUser(USER_A_ID, '2026-11-01T12:00:00.123456789Z');
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).not.toBeNull();
-    h.setChangesHandler(() => problemResponse('changes_window_expired', 410));
+    const seen410SinceParams: Array<string | null> = [];
+    h.setChangesHandler((params) => {
+      seen410SinceParams.push(params.get('since'));
+      return problemResponse('changes_window_expired', 410);
+    });
 
     await act(async () => {
-      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('online'));
     });
 
     await waitFor(() => {
+      expect(seen410SinceParams).toEqual(['2026-11-01T11:58:00.123456789Z']);
       expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
+    });
+
+    const seenBootstrapSinceParams: Array<string | null> = [];
+    h.setChangesHandler((params) => {
+      seenBootstrapSinceParams.push(params.get('since'));
+      return jsonResponse({
+        changes: [],
+        next_cursor: null,
+        watermark: '2026-11-01T12:30:00.000000000Z',
+      } satisfies EntryChangesPage);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+
+    await waitFor(() => {
+      expect(seenBootstrapSinceParams).toEqual([null]);
+      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(
+        '2026-11-01T12:30:00.000000000Z',
+      );
     });
   });
 
@@ -1551,42 +1578,51 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(true);
   });
 
-  it('removes ["content","entries"] cache and clears watermark + tombstones while keeping items/tags on vault_key_id change or vault absent, and clears on logout and user switch', async () => {
+  interface ResetTestHarness {
+    readonly qc: QueryClient;
+  }
+
+  function seedResetCachesAndSyncState(h: ResetTestHarness, userId = USER_A_ID) {
+    h.qc.setQueryData(contentQueryKeys.items({ sort: 'recent' }), {
+      items: [makeItemSummary()],
+      next_cursor: null,
+    });
+    h.qc.setQueryData(contentQueryKeys.item(ITEM_ID), makeItemSummary());
+    h.qc.setQueryData(contentQueryKeys.tags(), {
+      items: [{ id: 'tag-1', display: 'nhà', item_count: 1, created_at: '', last_used_at: '' }],
+      next_cursor: null,
+    });
+    h.qc.setQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID), {
+      items: [
+        {
+          id: ENTRY_ID_1,
+          item_id: ITEM_ID,
+          type: 'text',
+          position: 0,
+          version: 1,
+          plaintext_len_bucket: 256,
+          created_at: '2026-11-01T10:00:00Z',
+          updated_at: '2026-11-01T10:00:00Z',
+        },
+      ],
+      next_cursor: null,
+    });
+    h.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'stale-plaintext-before-reset');
+    changesSyncTesting.setWatermarkForUser(userId, '2026-11-01T13:00:00Z');
+    changesSyncTesting.publishRemoteTombstonesForTests([ENTRY_ID_2]);
+  }
+
+  function assertItemsAndTagsKeptAndSyncStateCleared(h: ResetTestHarness, userId = USER_A_ID) {
+    expect(h.qc.getQueryData(contentQueryKeys.items({ sort: 'recent' }))).toBeDefined();
+    expect(h.qc.getQueryData(contentQueryKeys.item(ITEM_ID))).toBeDefined();
+    expect(h.qc.getQueryData(contentQueryKeys.tags())).toBeDefined();
+    expect(changesSyncTesting.getWatermarkForUser(userId)).toBeNull();
+    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
+  }
+
+  it('T1a: purges ["content","entries"] and ["vault","body"] to undefined and clears watermark + tombstones while keeping items/tags on vault_key_id change with an inactive observer', async () => {
     const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
-
-    const populateCachesAndSyncState = () => {
-      h.qc.setQueryData(contentQueryKeys.items({ sort: 'recent' }), {
-        items: [makeItemSummary()],
-        next_cursor: null,
-      });
-      h.qc.setQueryData(contentQueryKeys.item(ITEM_ID), makeItemSummary());
-      h.qc.setQueryData(contentQueryKeys.tags(), {
-        items: [{ id: 'tag-1', display: 'nhà', item_count: 1, created_at: '', last_used_at: '' }],
-        next_cursor: null,
-      });
-      h.qc.setQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID), {
-        items: [
-          {
-            id: ENTRY_ID_1,
-            item_id: ITEM_ID,
-            type: 'text',
-            position: 0,
-            version: 1,
-            plaintext_len_bucket: 256,
-            created_at: '2026-11-01T10:00:00Z',
-            updated_at: '2026-11-01T10:00:00Z',
-          },
-        ],
-        next_cursor: null,
-      });
-      h.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'stale-plaintext-before-reset');
-      changesSyncTesting.setWatermarkForUser(USER_A_ID, '2026-11-01T13:00:00Z');
-      changesSyncTesting.publishRemoteTombstonesForTests([ENTRY_ID_2]);
-    };
-
-    // 1a. Inactive entries cache: vault_key_id changes -> reloadVaultMeta -> removeQueries drops ['content','entries'] to undefined,
-    //     while items/tags stay intact and watermark + tombstones are cleared.
-    populateCachesAndSyncState();
+    seedResetCachesAndSyncState(h);
     expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeDefined();
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T13:00:00Z');
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(true);
@@ -1600,127 +1636,166 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
     });
-    expect(h.qc.getQueryData(contentQueryKeys.items({ sort: 'recent' }))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.item(ITEM_ID))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.tags())).toBeDefined();
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
-    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
+    assertItemsAndTagsKeptAndSyncStateCleared(h);
+  });
 
-    // 1b. Active entries observer mounted (item page open): when vault_key_id changes on wake,
-    //     removeQueries evicts the stale entries cache and the active observer refetches fresh data from the server
-    //     after reset (so old ENTRY_ID_1 is absent and a GET /items/{id}/entries request occurs after reset).
-    await h.unlock();
-    await h.setObserveEntriesQuery(true);
-    populateCachesAndSyncState();
+  it('T1b: proves ["content","entries"] and ["vault","body"] are purged BEFORE the canonical entries refetch resolves on vault_key_id change with an active observer (FER1-3b)', async () => {
+    const h = await setupSyncHarness({
+      initialUnlocked: true,
+      observeEntriesQuery: true,
+      initialEntries: [{ id: ENTRY_ID_1, text: 'stale-plaintext-before-reset', version: 1 }],
+    });
+    seedResetCachesAndSyncState(h);
     expect(
       h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items.map((e) => e.id),
     ).toEqual([ENTRY_ID_1]);
 
-    const entriesRequestsBeforeKeyChangeWake = h.requests.filter(
-      (r) => r.pathname === `/api/v1/items/${ITEM_ID}/entries`,
-    ).length;
-    h.setActiveVaultKeyId(KEY_ID_3);
+    // Hold the canonical GET /api/v1/items/{id}/entries refetch so we can observe the cache state
+    // after reloadVaultMeta() detects the key change but BEFORE the entries refetch resolves.
+    const heldEntriesRefetch = createDeferred<Response>();
+    let entriesRefetchIntercepted = false;
+    h.overrideRoute((url, init) => {
+      const parsed = new URL(url, 'http://localhost');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (parsed.pathname === `/api/v1/items/${ITEM_ID}/entries` && method === 'GET') {
+        entriesRefetchIntercepted = true;
+        return heldEntriesRefetch.promise;
+      }
+      return null;
+    });
+
+    h.setActiveVaultKeyId(KEY_ID_2);
     await act(async () => {
-      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('online'));
     });
+
+    // While the entries refetch is still held in flight, reloadVaultMeta() has resolved with KEY_ID_2
+    // and purgeEntriesCacheOnVaultReset MUST have already evicted the old ENTRY_ID_1 metadata and body.
     await waitFor(() => {
-      expect(
-        h.requests.filter((r) => r.pathname === `/api/v1/items/${ITEM_ID}/entries`).length,
-      ).toBeGreaterThan(entriesRequestsBeforeKeyChangeWake);
-      const refetched = h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID));
-      expect(refetched?.items.map((e) => e.id) ?? []).not.toContain(ENTRY_ID_1);
-      expect(refetched?.items ?? []).toEqual([]);
-      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
-    });
-    expect(h.qc.getQueryData(contentQueryKeys.items({ sort: 'recent' }))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.item(ITEM_ID))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.tags())).toBeDefined();
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
-    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
-
-    // 2a. Vault becomes absent (404 on reloadVaultMeta while observer inactive, even BEFORE GET /auth/me updates
-    //     session me.vault.status to 'absent') -> reloadVaultMeta clears vaultMeta to null and locks; entries cache
-    //     is purged to undefined, items/tags kept, watermark + tombstones cleared.
-    await h.unlock();
-    await h.setObserveEntriesQuery(false);
-    populateCachesAndSyncState();
-    h.setActiveVaultKeyId(null);
-
-    await act(async () => {
-      await h.vault().reloadVaultMeta();
-    });
-
-    await waitFor(() => {
+      expect(entriesRefetchIntercepted).toBe(true);
       expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
-    });
-    expect(h.qc.getQueryData(contentQueryKeys.items({ sort: 'recent' }))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.item(ITEM_ID))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.tags())).toBeDefined();
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
-    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
-
-    // 2a-bis. After vault became absent (vaultMeta === null, serverVaultStatus === 'absent'), a replacement vault
-    //         KEY_ID_4 appears (e.g. null -> KEY_ID_4 transition after intermediate absent/null state, including across
-    //         a transient non-authenticated sessionStatus === 'loading' when remote session_changed bumps sessionEpoch):
-    //         remembered lastNonNullVaultKeyId was never overwritten with null or cleared by the transient status,
-    //         so seeing KEY_ID_4 !== KEY_ID_3 purges again.
-    h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
-    await h.refetchMeSession();
-    populateCachesAndSyncState();
-    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    h.setActiveVaultKeyId(KEY_ID_4);
-    await act(async () => {
-      const sender = new BroadcastChannel('sabk.auth.session');
-      sender.postMessage({ type: 'session_changed' });
-      sender.close();
-    });
-    await h.refetchMeSession();
-    await act(async () => {
-      await h.vault().reloadVaultMeta();
-    });
-    await waitFor(() => {
-      expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
-      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
-    });
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
-    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
-    // 2b. Also verify with active observer on focus wake when vault transitions from present (unlocked) to absent:
-    //     state transitions to no_vault, old ENTRY_ID_1 is purged, and active observer refetches [] after reset
-    await h.unlock();
-    await h.setObserveEntriesQuery(true);
-    populateCachesAndSyncState();
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T13:00:00Z');
-    const entriesRequestsBeforeAbsentWake = h.requests.filter(
-      (r) => r.pathname === `/api/v1/items/${ITEM_ID}/entries`,
-    ).length;
-
-    h.setActiveVaultKeyId(null);
-    h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    await waitFor(() => {
-      // r7: after a 404/absent reloadVaultMeta the P03 provider locks (reason vault_absent) and only
-      // reaches 'no_vault' once /auth/me says absent; focus wake does not guarantee that /auth/me refetch.
-      expect(['locked', 'no_vault']).toContain(h.vault().state);
       expect(h.qc.getQueryCache().findAll({ queryKey: ['vault', 'body'] })).toHaveLength(0);
-      expect(document.body.textContent ?? '').not.toContain('stale-plaintext-before-reset');
-      expect(
-        h.requests.filter((r) => r.pathname === `/api/v1/items/${ITEM_ID}/entries`).length,
-      ).toBeGreaterThan(entriesRequestsBeforeAbsentWake);
+    });
+    assertItemsAndTagsKeptAndSyncStateCleared(h);
+
+    // Release the held refetch -> settles cleanly
+    h.entriesMap.delete(ENTRY_ID_1);
+    await act(async () => {
+      heldEntriesRefetch.resolve(jsonResponse({ items: [], next_cursor: null }));
+    });
+    await waitFor(() => {
       expect(
         h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items ?? [],
       ).toEqual([]);
+    });
+  });
+
+  it('T1c: purges ["content","entries"] and ["vault","body"] to undefined and clears watermark + tombstones while keeping items/tags when vault becomes absent (404) with an inactive observer', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
+    seedResetCachesAndSyncState(h);
+    h.setActiveVaultKeyId(null);
+
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+
+    await waitFor(() => {
+      expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
     });
-    expect(h.qc.getQueryData(contentQueryKeys.items({ sort: 'recent' }))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.item(ITEM_ID))).toBeDefined();
-    expect(h.qc.getQueryData(contentQueryKeys.tags())).toBeDefined();
-    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
-    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
+    assertItemsAndTagsKeptAndSyncStateCleared(h);
+  });
 
-    // 3. User switch (commitAuthenticatedUser A -> B) clears watermark + tombstones immediately
+  it('T1d: purges ["content","entries"] and ["vault","body"] with 0 body queries and no stale DOM plaintext when vault becomes absent on a focus wake with an active item page', async () => {
+    const STALE_DOM_SENTINEL = 'STALE_PLAINTEXT_BEFORE_ABSENT_WAKE_9101';
+    const h = await setupSyncHarness({
+      initialUnlocked: true,
+      renderItemPage: true,
+      initialEntries: [{ id: ENTRY_ID_1, text: STALE_DOM_SENTINEL, type: 'text', version: 1 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-card-${ENTRY_ID_1}`)).toBeInTheDocument();
+      expect(document.body.textContent ?? '').toContain(STALE_DOM_SENTINEL);
+    });
+
+    seedResetCachesAndSyncState(h);
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T13:00:00Z');
+
+    // Hold the canonical entries refetch during the focus wake so we prove the purge clears ENTRY_ID_1
+    // metadata before the empty server response arrives, then release to verify final convergence.
+    const heldEntriesRefetch = createDeferred<Response>();
+    let entriesRefetchIntercepted = false;
+    h.overrideRoute((url, init) => {
+      const parsed = new URL(url, 'http://localhost');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (parsed.pathname === `/api/v1/items/${ITEM_ID}/entries` && method === 'GET') {
+        entriesRefetchIntercepted = true;
+        return heldEntriesRefetch.promise;
+      }
+      return null;
+    });
+
+    h.setActiveVaultKeyId(null);
+    h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    await waitFor(() => {
+      expect(['locked', 'no_vault']).toContain(h.vault().state);
+      expect(entriesRefetchIntercepted).toBe(true);
+      expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
+      expect(h.qc.getQueryCache().findAll({ queryKey: ['vault', 'body'] })).toHaveLength(0);
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+      expect(document.body.textContent ?? '').not.toContain(STALE_DOM_SENTINEL);
+    });
+    assertItemsAndTagsKeptAndSyncStateCleared(h);
+
+    h.entriesMap.delete(ENTRY_ID_1);
+    await act(async () => {
+      heldEntriesRefetch.resolve(jsonResponse({ items: [], next_cursor: null }));
+    });
+    await waitFor(() => {
+      expect(
+        h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items ?? [],
+      ).toEqual([]);
+    });
+  });
+
+  it('T1e: purges ["content","entries"] and ["vault","body"] when a fresh replacement vault key appears after an intermediate null/absent transition', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
+
+    // Transition KEY_ID_1 -> null (absent)
+    h.setActiveVaultKeyId(null);
+    h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+    await h.refetchMeSession();
+
+    // Re-seed stale cache while vaultMeta is null, then install fresh replacement KEY_ID_2 (null -> KEY_ID_2)
+    seedResetCachesAndSyncState(h);
+    expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeDefined();
+
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    h.setActiveVaultKeyId(KEY_ID_2);
+    await h.refetchMeSession();
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+
+    await waitFor(() => {
+      expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+    });
+    assertItemsAndTagsKeptAndSyncStateCleared(h);
+  });
+
+  it('T1f: clears watermark and remote tombstones immediately on user switch', async () => {
+    await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
+
     commitAuthenticatedUser(USER_A_ID);
     changesSyncTesting.setWatermarkForUser(USER_A_ID, '2026-11-01T14:00:00Z');
     changesSyncTesting.publishRemoteTombstonesForTests([ENTRY_ID_1]);
@@ -1733,13 +1808,143 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
     expect(changesSyncTesting.getWatermarkForUser(USER_B_ID)).toBeNull();
     expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(false);
+  });
 
-    // 4. Logout clears watermark + tombstones immediately
-    changesSyncTesting.setWatermarkForUser(USER_B_ID, '2026-11-01T15:00:00Z');
+  it('T1g: clears watermark and remote tombstones immediately on logout', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
+
+    changesSyncTesting.setWatermarkForUser(USER_A_ID, '2026-11-01T15:00:00Z');
     changesSyncTesting.publishRemoteTombstonesForTests([ENTRY_ID_3]);
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T15:00:00Z');
+    expect(isEntryRemotelyDeleted(ENTRY_ID_3)).toBe(true);
+
     await h.signOutSession();
-    expect(changesSyncTesting.getWatermarkForUser(USER_B_ID)).toBeNull();
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
     expect(isEntryRemotelyDeleted(ENTRY_ID_3)).toBe(false);
+  });
+
+  it('T2: preserves remembered vault_key_id across observed transient loading/unavailable session states so recovery with a replacement key purges seeded entries and bodies (FER1-4 / BER1-6)', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
+
+    // Establish KEY_ID_3 as the current live key, then transition to null/absent so vaultMeta is null
+    // and the ONLY record of KEY_ID_3 is lastSeenVaultByUserRef.current.lastNonNullVaultKeyId.
+    h.setActiveVaultKeyId(KEY_ID_3);
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+    h.setActiveVaultKeyId(null);
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+    expect(h.vault().vaultMeta).toBeNull();
+
+    // 1. Hold /auth/me response and trigger a remote session_changed broadcast -> sessionEpoch increments
+    //    with no cached me data for the new epoch, driving sessionStatus to 'loading'.
+    const heldLoadingMe = createDeferred<Response>();
+    h.overrideRoute((url) => {
+      const parsed = new URL(url, 'http://localhost');
+      if (parsed.pathname.endsWith('/auth/me')) {
+        return heldLoadingMe.promise;
+      }
+      return null;
+    });
+
+    await act(async () => {
+      const sender = new BroadcastChannel('sabk.auth.session');
+      sender.postMessage({ type: 'session_changed' });
+      sender.close();
+    });
+
+    // Deterministically observe sessionStatus === 'loading' while /auth/me is held
+    await waitFor(() => {
+      expect(h.sessionStatus()).toBe('loading');
+      expect(screen.getByTestId('session-status-probe')).toHaveTextContent('loading');
+    });
+
+    // Resolve with a 500 error so meQuery enters isError and sessionStatus is observed as 'unavailable'
+    await act(async () => {
+      heldLoadingMe.resolve(problemResponse('internal_error', 500));
+    });
+    await waitFor(() => {
+      expect(h.sessionStatus()).toBe('unavailable');
+      expect(screen.getByTestId('session-status-probe')).toHaveTextContent('unavailable');
+    });
+
+    // 2. Recover with the same user (USER_A_ID) and a brand-new replacement vault key KEY_ID_4 while entries/bodies are seeded.
+    //    If the f4beb96 preservation branch were reverted (clearing lastSeenVaultByUserRef on non-authenticated status),
+    //    recovery would enter the first-observation (!prev) branch with serverVaultStatus === 'present' and FAIL to purge.
+    h.overrideRoute(null);
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    h.setActiveVaultKeyId(KEY_ID_4);
+    seedResetCachesAndSyncState(h);
+    expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeDefined();
+    expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBe(
+      'stale-plaintext-before-reset',
+    );
+
+    await h.refetchMeSession();
+    await waitFor(() => {
+      expect(h.sessionStatus()).toBe('authenticated_with_vault');
+    });
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+
+    await waitFor(() => {
+      expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+    });
+    assertItemsAndTagsKeptAndSyncStateCleared(h);
+  });
+
+  it('T3a/T3b: clears the remote-tombstone store on a real vault lock (lockNow) while preserving ["content","entries"] metadata and the feed watermark across a plain lock and re-unlock (FER1-5a,b)', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: false });
+
+    function TombstoneProbe({ entryId }: { readonly entryId: string }) {
+      const deleted = useEntryRemotelyDeleted(entryId);
+      return <output data-testid="lock-tombstone-probe">{String(deleted)}</output>;
+    }
+    const probeView = render(<TombstoneProbe entryId={ENTRY_ID_1} />);
+    expect(screen.getByTestId('lock-tombstone-probe')).toHaveTextContent('false');
+
+    // Seed ['content','entries'] metadata, watermark, and a published remote tombstone
+    seedResetCachesAndSyncState(h);
+    act(() => {
+      changesSyncTesting.publishRemoteTombstonesForTests([ENTRY_ID_1]);
+    });
+    expect(screen.getByTestId('lock-tombstone-probe')).toHaveTextContent('true');
+    expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(true);
+    expect(
+      h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items.map((e) => e.id),
+    ).toEqual([ENTRY_ID_1]);
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T13:00:00Z');
+
+    // Trigger a real vault lock via lockNow() (NOT clearAllChangesSyncState directly)
+    await h.lock();
+
+    // T3a: real lock clears the remote-tombstone store and updates useEntryRemotelyDeleted subscribers,
+    //      and decrypted body cache is cleared by P03 lock.
+    await waitFor(() => {
+      expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(false);
+      expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
+      expect(screen.getByTestId('lock-tombstone-probe')).toHaveTextContent('false');
+    });
+    expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+
+    // T3b: a plain lock does NOT purge ['content','entries'] metadata or drop the user's watermark,
+    //      and re-unlocking the same vault key preserves them too.
+    expect(
+      h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items.map((e) => e.id),
+    ).toEqual([ENTRY_ID_1]);
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T13:00:00Z');
+
+    await h.unlock();
+    expect(
+      h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items.map((e) => e.id),
+    ).toEqual([ENTRY_ID_1]);
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe('2026-11-01T13:00:00Z');
+
+    probeView.unmount();
   });
 
   it('advisor-dec-211: keeps an open edited card (text and JSON) mounted with its draft and deletedRemotely banner when a remote tombstone removes it from the list, while an unedited card disappears, and wipes the kept-mounted card draft on lock, logout, and user switch', async () => {
@@ -1959,7 +2164,7 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(false);
   });
 
-  it('exposes useEntryRemotelyDeleted via useSyncExternalStore and updates subscribers on publish and lock', async () => {
+  it('exposes useEntryRemotelyDeleted via useSyncExternalStore and updates subscribers on publish and clearAllChangesSyncState', async () => {
     function Consumer({ entryId }: { readonly entryId: string }) {
       const deleted = useEntryRemotelyDeleted(entryId);
       return <output data-testid="remotely-deleted-flag">{String(deleted)}</output>;
