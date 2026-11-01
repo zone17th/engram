@@ -226,6 +226,12 @@ var p04OperationIDs = []string{
 	"entriesChanges",
 }
 
+// p04AuthUIOperationIDs là các operation đặt lại mật khẩu tài khoản của ADR 0006 (lane authui).
+var p04AuthUIOperationIDs = []string{
+	"authPasswordForgot",
+	"authPasswordReset",
+}
+
 // p04ProblemStatus là bảng mã lỗi mới của plan P04 mục 3, đúng thứ tự thêm cuối catalog.
 var p04ProblemStatus = []struct {
 	code   string
@@ -290,23 +296,36 @@ func TestOpenAPIHasUniqueP04OperationIDs(t *testing.T) {
 	if len(p04OperationIDs) != 23 {
 		t.Fatalf("catalog test phải đủ 23 operation P04 (plan P04 mục 3), có %d", len(p04OperationIDs))
 	}
-	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + 3; len(seen) != total {
-		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04) có %d", len(seen), total)
+	for _, id := range p04AuthUIOperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui) có %d", len(seen), total)
 	}
 }
 
 func TestProblemCatalogP04AppendedAtEnd(t *testing.T) {
 	n := len(p04ProblemStatus)
-	if len(httpx.ProblemCodes) < n {
+	const authUITail = 1 // reset_token_invalid (ADR 0006) nối sau khối P04 content.
+	if len(httpx.ProblemCodes) < n+authUITail {
 		t.Fatalf("catalog quá ngắn: %d", len(httpx.ProblemCodes))
 	}
-	tail := httpx.ProblemCodes[len(httpx.ProblemCodes)-n:]
+	if got := httpx.ProblemCodes[len(httpx.ProblemCodes)-1]; got != "reset_token_invalid" {
+		t.Errorf("mã cuối catalog phải là reset_token_invalid (ADR 0006), có %s", got)
+	}
+	p04Start := len(httpx.ProblemCodes) - n - authUITail
+	tail := httpx.ProblemCodes[p04Start : p04Start+n]
 	for i, want := range p04ProblemStatus {
 		if tail[i] != want.code {
-			t.Errorf("mã P04 thứ %d phải là %s ở cuối catalog, có %s", i, want.code, tail[i])
+			t.Errorf("mã P04 thứ %d phải là %s, có %s", i, want.code, tail[i])
 		}
 	}
-	if httpx.ProblemCodes[len(httpx.ProblemCodes)-n-1] != "passkey_not_found" {
+	if httpx.ProblemCodes[p04Start-1] != "passkey_not_found" {
 		t.Error("mã P04 phải nối ngay sau passkey_not_found (mã cuối của P03), không chèn giữa catalog")
 	}
 }

@@ -41,7 +41,7 @@ export default defineConfig({
   projects: [
     {
       name: 'auth',
-      testMatch: /auth\.spec\.ts|account\.spec\.ts|oauth\.spec\.ts/,
+      testMatch: /(^|[\\/])(auth|account|oauth)\.spec\.ts$/,
       fullyParallel: false,
       timeout: 60_000,
       use: {
@@ -54,23 +54,36 @@ export default defineConfig({
     },
     {
       name: 'mobile-390',
-      testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
+      testMatch: /(^|[\\/])(smoke|a11y)\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } },
     },
     {
       name: 'tablet-768',
-      testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
+      testMatch: /(^|[\\/])(smoke|a11y)\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 } },
     },
     {
       name: 'desktop-1440',
-      testMatch: /smoke\.spec\.ts|a11y\.spec\.ts/,
+      testMatch: /(^|[\\/])(smoke|a11y)\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
     {
       name: 'vault',
       testMatch:
-        /(?:^|[\\/])(?:lock|lock-epoch|vault-onboarding|vault-unlock|vault-web-visual|vault-real-api|recovery|vault-settings|vault-settings-visual|vault-locked(?:-visual)?|vault-devkey|vault-devkey-real-api|vault-passkey|vault-passkey-visual|vault-b-[a-z-]+|vault-journey|vault-a11y-sweep)\.spec\.ts$/,
+        /(?:^|[\\/])(?:lock|lock-epoch|vault-onboarding|vault-unlock|vault-web-visual|vault-real-api|recovery|vault-settings|vault-settings-visual|vault-locked-(?:list|item|search)|vault-locked-visual-(?:list|item)|vault-devkey|vault-devkey-real-api|vault-passkey|vault-passkey-visual|vault-b-[a-z-]+|vault-journey|vault-a11y-sweep)\.spec\.ts$/,
+      fullyParallel: false,
+      timeout: 90_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 900 },
+        trace: 'off',
+        video: 'off',
+        screenshot: 'off',
+      },
+    },
+    {
+      name: 'content',
+      testMatch: /(^|[\\/])content-[a-z0-9-]+\.spec\.ts$/,
       fullyParallel: false,
       timeout: 90_000,
       use: {

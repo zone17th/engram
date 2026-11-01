@@ -62,6 +62,7 @@ export const ERROR_CODES = [
   'entry_restore_via_item',
   'reorder_mismatch',
   'changes_window_expired',
+  'reset_token_invalid',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
