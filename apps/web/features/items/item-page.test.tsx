@@ -24,9 +24,15 @@ import {
   resetEntryBodyLoadLimiterForTests,
   subscribeUnconfirmedSaves,
 } from '@/features/entries';
-import {
-  __testing as sealTesting,
-  type SealAttemptObservation,
+import type * as SealModule from '@/features/entries/seal';
+import type {
+  EntrySealErrorCode,
+  SealEntryImportJsonInput,
+  SealEntryUpdateInput,
+  SealNewEntryInput,
+  SealedEntryUpdatePayload,
+  SealedImportJsonEntryPayload,
+  SealedNewEntryPayload,
 } from '@/features/entries/seal';
 import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
 import {
@@ -68,6 +74,27 @@ import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
 import en from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 
+interface SealAttemptRecord {
+  readonly helper: 'sealNewEntry' | 'sealEntryUpdate' | 'sealEntryImportJson';
+  readonly getTextCalls: number;
+  readonly settled: Promise<{
+    readonly status: 'fulfilled' | 'rejected';
+    readonly errorName: string | null;
+    readonly errorCode: EntrySealErrorCode | string | null;
+  }>;
+}
+
+const testHarnessHoisted = vi.hoisted(() => {
+  let sealRecorderListener: ((record: SealAttemptRecord) => void) | null = null;
+
+  return {
+    getSealRecorderListener: () => sealRecorderListener,
+    setSealRecorderListener: (listener: ((record: SealAttemptRecord) => void) | null) => {
+      sealRecorderListener = listener;
+    },
+  };
+});
+
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
@@ -77,6 +104,98 @@ const routerMocks = vi.hoisted(() => ({
   pathname: '/app/items/11111111-1111-4111-8111-111111111111',
 }));
 
+vi.mock('@/features/entries/seal', async (importOriginal) => {
+  const real = await importOriginal<typeof SealModule>();
+
+  function extractErrorOutcome(err: unknown): {
+    readonly errorName: string | null;
+    readonly errorCode: EntrySealErrorCode | string | null;
+  } {
+    const errorName =
+      err instanceof Error
+        ? err.name
+        : typeof err === 'object' &&
+            err !== null &&
+            'name' in err &&
+            typeof err.name === 'string'
+          ? err.name
+          : null;
+    const errorCode =
+      typeof err === 'object' &&
+      err !== null &&
+      'code' in err &&
+      typeof err.code === 'string'
+        ? err.code
+        : null;
+    return { errorName, errorCode };
+  }
+
+  function wrapSealHelper<
+    TInput extends { readonly getText?: () => string },
+    TResult,
+  >(
+    helper: SealAttemptRecord['helper'],
+    realFn: (input: TInput) => Promise<TResult>,
+  ): (input: TInput) => Promise<TResult> {
+    return (input: TInput): Promise<TResult> => {
+      const listener = testHarnessHoisted.getSealRecorderListener();
+      if (!listener) {
+        return realFn(input);
+      }
+      let getTextCalls = 0;
+      const wrappedInput: TInput =
+        typeof input.getText === 'function'
+          ? {
+              ...input,
+              getText: () => {
+                getTextCalls += 1;
+                return input.getText!();
+              },
+            }
+          : input;
+      const realPromise = realFn(wrappedInput);
+      const settled = realPromise.then(
+        () => ({
+          status: 'fulfilled' as const,
+          errorName: null,
+          errorCode: null,
+        }),
+        (err: unknown) => {
+          const { errorName, errorCode } = extractErrorOutcome(err);
+          return {
+            status: 'rejected' as const,
+            errorName,
+            errorCode,
+          };
+        },
+      );
+      listener({
+        helper,
+        get getTextCalls() {
+          return getTextCalls;
+        },
+        settled,
+      });
+      return realPromise;
+    };
+  }
+
+  return {
+    ...real,
+    sealNewEntry: wrapSealHelper<SealNewEntryInput, SealedNewEntryPayload>(
+      'sealNewEntry',
+      real.sealNewEntry,
+    ),
+    sealEntryUpdate: wrapSealHelper<SealEntryUpdateInput, SealedEntryUpdatePayload>(
+      'sealEntryUpdate',
+      real.sealEntryUpdate,
+    ),
+    sealEntryImportJson: wrapSealHelper<SealEntryImportJsonInput, SealedImportJsonEntryPayload>(
+      'sealEntryImportJson',
+      real.sealEntryImportJson,
+    ),
+  };
+});
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: routerMocks.push,
@@ -361,7 +480,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     clearAllUnconfirmedSaves();
     userChangedTesting.resetCommittedUserForTests();
     textEntryCardTesting.setEditorPlaintextHolderForTests(null);
-    sealTesting.setSealAttemptListenerForTests(null);
+    testHarnessHoisted.setSealRecorderListener(null);
   });
 
   afterEach(() => {
@@ -372,7 +491,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     clearAllUnconfirmedSaves();
     userChangedTesting.resetCommittedUserForTests();
     textEntryCardTesting.setEditorPlaintextHolderForTests(null);
-    sealTesting.setSealAttemptListenerForTests(null);
+    testHarnessHoisted.setSealRecorderListener(null);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalVisibilityStateDescriptor) {
@@ -3535,9 +3654,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return null;
     });
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -3559,9 +3677,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain('SENTINEL-COMPOSER-HELD-RELOAD-LOCK-ONLY');
 
     vaultGetReleaseGate.resolve();
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: 'STALE_GENERATION',
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: 'STALE_GENERATION',
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
@@ -3597,9 +3716,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return null;
     });
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -3624,9 +3742,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.getByTestId('draft-cleared-on-lock-banner')).toBeInTheDocument();
 
     vaultGetReleaseGate.resolve();
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: 'STALE_GENERATION',
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: 'STALE_GENERATION',
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     await waitFor(() => {
@@ -3668,9 +3787,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return null;
     });
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -3685,9 +3803,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(observedAttempts).toHaveLength(1);
       expect(screen.getByTestId('new-entry-save-error')).toBeInTheDocument();
     });
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: 'VAULT_KEY_MISSING',
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: 'VAULT_KEY_MISSING',
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
@@ -3719,9 +3838,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return null;
     });
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -3738,9 +3856,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     // In VaultProvider, 404 vault_absent triggers void lock() before returning null, so by the time
     // reloadVaultMeta resolves null, isCurrent() is already false (or keyId is null); either way zero getText/seal/POST.
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: expect.stringMatching(/^(?:STALE_GENERATION|VAULT_KEY_MISSING)$/),
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: expect.stringMatching(/^(?:STALE_GENERATION|VAULT_KEY_MISSING)$/),
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     expect(h.workerCalls.filter((c) => c.type === 'sealEntry').length).toBe(sealsBefore);
@@ -3824,9 +3943,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     expect(holderProbeRef.current.draftValue).toBe('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -3852,9 +3970,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hCard.vault().vaultMeta).toBeNull();
 
     cardVaultGetRelease.resolve();
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: 'STALE_GENERATION',
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: 'STALE_GENERATION',
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     await waitFor(() => {
@@ -3878,7 +3997,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hCard.container.textContent).not.toContain('SENTINEL-REGULAR-SAVE-HELD-RELOAD');
 
     // Now regular Save happy path with vaultMeta === null -> reloads GET /vault then sends PUT -> v2
-    sealTesting.setSealAttemptListenerForTests(null);
+    testHarnessHoisted.setSealRecorderListener(null);
     holdCardVaultGet = false;
     await enterUnlockedWithNullVaultMetaAndCachedBody('Initial card body v1', 1);
     hCard.server.requests.splice(0);
@@ -3958,9 +4077,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       configurable: true,
     });
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -3988,9 +4106,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     forceNullMetaForKeepMine = false;
 
     cardVaultGetRelease.resolve();
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: 'STALE_GENERATION',
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: 'STALE_GENERATION',
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     await flushMacrotask();
@@ -4011,7 +4130,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hCard.container.textContent).not.toContain('SENTINEL-KEEP-MINE-HELD-RELOAD');
 
     // Happy path: trigger 412 conflict again, then with vaultMeta === null click Keep mine -> reloads GET /vault then PUTs
-    sealTesting.setSealAttemptListenerForTests(null);
+    testHarnessHoisted.setSealRecorderListener(null);
     holdCardVaultGet = false;
     act(() => {
       hCard.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'Initial card body v1');
@@ -4116,9 +4235,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       configurable: true,
     });
 
-    const observedAttempts: SealAttemptObservation[] = [];
-    sealTesting.setSealAttemptListenerForTests((obs) => {
-      void obs.promise.catch(() => undefined);
+    const observedAttempts: SealAttemptRecord[] = [];
+    testHarnessHoisted.setSealRecorderListener((obs) => {
       observedAttempts.push(obs);
     });
 
@@ -4144,9 +4262,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     forceNullMetaForSaveAsNew = false;
 
     cardVaultGetRelease.resolve();
-    await expect(observedAttempts[0].promise).rejects.toMatchObject({
-      name: 'EntrySealError',
-      code: 'STALE_GENERATION',
+    await expect(observedAttempts[0].settled).resolves.toEqual({
+      status: 'rejected',
+      errorName: 'EntrySealError',
+      errorCode: 'STALE_GENERATION',
     });
     expect(observedAttempts[0].getTextCalls).toBe(0);
     await flushMacrotask();
@@ -4167,7 +4286,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(hCard.container.textContent).not.toContain('SENTINEL-SAVE-AS-NEW-HELD-RELOAD');
 
     // Now 404 "Save as new entry" happy path with vaultMeta === null -> reloads GET /vault then POSTs /items/{id}/entries
-    sealTesting.setSealAttemptListenerForTests(null);
+    testHarnessHoisted.setSealRecorderListener(null);
     holdCardVaultGet = false;
     hCard.server.entries.get(ENTRY_ID_1)!.deleted = false;
     act(() => {

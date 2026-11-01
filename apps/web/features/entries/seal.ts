@@ -46,22 +46,6 @@ export type EntrySealErrorCode =
   | 'VAULT_KEY_MISSING'
   | 'STALE_GENERATION'
   | 'SEAL_FAILED';
-export interface SealAttemptObservation {
-  readonly helper: 'sealNewEntry' | 'sealEntryUpdate' | 'sealEntryImportJson';
-  readonly getTextCalls: number;
-  readonly promise: Promise<unknown>;
-}
-
-let sealAttemptListenerForTests: ((obs: SealAttemptObservation) => void) | null = null;
-
-export const __testing = {
-  setSealAttemptListenerForTests(
-    listener: ((obs: SealAttemptObservation) => void) | null,
-  ): void {
-    sealAttemptListenerForTests = listener;
-  },
-};
-
 /**
  * Typed client-side validation/lifecycle error thrown by `sealNewEntry` / `sealEntryUpdate`
  * BEFORE or after calling the crypto Worker. Never includes or echoes the plaintext string.
@@ -392,12 +376,10 @@ export interface SealedNewEntryPayload {
  * 6. Returns an immutable payload that does NOT retain the plaintext string.
  */
 export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewEntryPayload> {
-  let getTextCalls = 0;
-  const run = async (): Promise<SealedNewEntryPayload> => {
-    const entryType: EntryType = input.type ?? 'text';
-    if (entryType !== 'text' && entryType !== 'json') {
-      throw new EntrySealError('ENTRY_TYPE_INVALID', 'Entry type must be "text" or "json".');
-    }
+  const entryType: EntryType = input.type ?? 'text';
+  if (entryType !== 'text' && entryType !== 'json') {
+    throw new EntrySealError('ENTRY_TYPE_INVALID', 'Entry type must be "text" or "json".');
+  }
 
   if (typeof input.text === 'string') {
     validateAndMeasureEntryText(input.text);
@@ -415,10 +397,7 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
   let plaintextToSeal: string;
   let plaintextLenBucket: PlaintextLenBucket;
   try {
-    plaintextToSeal =
-      typeof input.getText === 'function'
-        ? (getTextCalls += 1, input.getText())
-        : (input.text ?? '');
+    plaintextToSeal = typeof input.getText === 'function' ? input.getText() : (input.text ?? '');
     ({ plaintextLenBucket } = validateAndMeasureEntryText(plaintextToSeal));
   } catch (err) {
     dispose();
@@ -482,18 +461,6 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
     opGeneration,
     isCurrent,
   });
-  };
-  const promise = run();
-  if (sealAttemptListenerForTests) {
-    sealAttemptListenerForTests({
-      helper: 'sealNewEntry',
-      get getTextCalls() {
-        return getTextCalls;
-      },
-      promise,
-    });
-  }
-  return promise;
 }
 
 export interface SealEntryImportJsonInput {
@@ -529,11 +496,9 @@ export interface SealedImportJsonEntryPayload {
 export async function sealEntryImportJson(
   input: SealEntryImportJsonInput,
 ): Promise<SealedImportJsonEntryPayload> {
-  let getTextCalls = 0;
-  const run = async (): Promise<SealedImportJsonEntryPayload> => {
-    if (typeof input.text === 'string') {
-      validateAndMeasureEntryText(input.text);
-    }
+  if (typeof input.text === 'string') {
+    validateAndMeasureEntryText(input.text);
+  }
   const entryId = generateEntryUuidOnce(input.entryId);
   const idempotencyKey = input.idempotencyKey ?? createIdempotencyKey();
   const itemId = input.itemId;
@@ -546,10 +511,7 @@ export async function sealEntryImportJson(
   let plaintextToSeal: string;
   let plaintextLenBucket: PlaintextLenBucket;
   try {
-    plaintextToSeal =
-      typeof input.getText === 'function'
-        ? (getTextCalls += 1, input.getText())
-        : (input.text ?? '');
+    plaintextToSeal = typeof input.getText === 'function' ? input.getText() : (input.text ?? '');
     ({ plaintextLenBucket } = validateAndMeasureEntryText(plaintextToSeal));
   } catch (err) {
     dispose();
@@ -615,18 +577,6 @@ export async function sealEntryImportJson(
     opGeneration,
     isCurrent,
   });
-  };
-  const promise = run();
-  if (sealAttemptListenerForTests) {
-    sealAttemptListenerForTests({
-      helper: 'sealEntryImportJson',
-      get getTextCalls() {
-        return getTextCalls;
-      },
-      promise,
-    });
-  }
-  return promise;
 }
 
 export interface SealEntryUpdateInput {
@@ -670,11 +620,9 @@ export interface SealedEntryUpdatePayload {
 export async function sealEntryUpdate(
   input: SealEntryUpdateInput,
 ): Promise<SealedEntryUpdatePayload> {
-  let getTextCalls = 0;
-  const run = async (): Promise<SealedEntryUpdatePayload> => {
-    if (typeof input.text === 'string') {
-      validateAndMeasureEntryText(input.text);
-    }
+  if (typeof input.text === 'string') {
+    validateAndMeasureEntryText(input.text);
+  }
   const entryId = generateEntryUuidOnce(input.entryId);
   const idempotencyKey = input.idempotencyKey ?? createIdempotencyKey();
   const itemId = input.itemId;
@@ -687,10 +635,7 @@ export async function sealEntryUpdate(
   let plaintextToSeal: string;
   let plaintextLenBucket: PlaintextLenBucket;
   try {
-    plaintextToSeal =
-      typeof input.getText === 'function'
-        ? (getTextCalls += 1, input.getText())
-        : (input.text ?? '');
+    plaintextToSeal = typeof input.getText === 'function' ? input.getText() : (input.text ?? '');
     ({ plaintextLenBucket } = validateAndMeasureEntryText(plaintextToSeal));
   } catch (err) {
     dispose();
@@ -752,16 +697,4 @@ export async function sealEntryUpdate(
     opGeneration,
     isCurrent,
   });
-  };
-  const promise = run();
-  if (sealAttemptListenerForTests) {
-    sealAttemptListenerForTests({
-      helper: 'sealEntryUpdate',
-      get getTextCalls() {
-        return getTextCalls;
-      },
-      promise,
-    });
-  }
-  return promise;
 }
