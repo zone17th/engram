@@ -1403,7 +1403,11 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       window.dispatchEvent(new Event('focus'));
     });
     await waitFor(() => {
-      expect(h.vault().state).toBe('no_vault');
+      // r7: after a 404/absent reloadVaultMeta the P03 provider locks (reason vault_absent) and only
+      // reaches 'no_vault' once /auth/me says absent; focus wake does not guarantee that /auth/me refetch.
+      expect(['locked', 'no_vault']).toContain(h.vault().state);
+      expect(h.qc.getQueryCache().findAll({ queryKey: ['vault', 'body'] })).toHaveLength(0);
+      expect(document.body.textContent ?? '').not.toContain('stale-plaintext-before-reset');
       expect(
         h.requests.filter((r) => r.pathname === `/api/v1/items/${ITEM_ID}/entries`).length,
       ).toBeGreaterThan(entriesRequestsBeforeAbsentWake);
