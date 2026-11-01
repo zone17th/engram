@@ -1836,6 +1836,78 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     ).toBe(true);
   });
 
+  it('IP15-BE1-5: delayed tag response carrying an older version does not lower latestVersionRef or overwrite newer committed name/hint', async () => {
+    const h = await setupItemPageHarness();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-name-input')).toHaveValue('wifi');
+    });
+
+    const { promise: tagGate, resolve: releaseTagResponse } = createDeferred();
+    let capturedStaleTagSummary: ItemSummary | null = null;
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}/tags/tag-2`) && method === 'DELETE') {
+        // Snapshot stale item summary at version 1 before the name PATCH commits
+        capturedStaleTagSummary = {
+          ...h.server.item,
+          version: 1,
+          name: 'wifi',
+          tags: h.server.item.tags.filter((t) => t.id !== 'tag-2'),
+        };
+        h.server.item.tags = capturedStaleTagSummary.tags;
+        await tagGate;
+        return jsonResponse(capturedStaleTagSummary, 200);
+      }
+      return null;
+    });
+
+    // 1. Trigger tag removal (held in flight with snapshot at version 1)
+    fireEvent.click(screen.getByTestId('item-tag-remove-office'));
+    await waitFor(() => {
+      expect(capturedStaleTagSummary).not.toBeNull();
+    });
+
+    // 2. Complete a name PATCH while the tag response is still in flight -> advances item to version 2
+    const nameInput = screen.getByTestId('item-name-input');
+    fireEvent.change(nameInput, { target: { value: 'wifi-v2-committed' } });
+    fireEvent.blur(nameInput);
+
+    await waitFor(() => {
+      expect(h.server.item.version).toBe(2);
+      expect(h.server.item.name).toBe('wifi-v2-committed');
+    });
+
+    // 3. Release the delayed tag response carrying version 1 and old name 'wifi'
+    releaseTagResponse();
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-tag-chip-office')).toBeNull();
+    });
+
+    // Committed name 'wifi-v2-committed' is preserved in the input and cache
+    expect(screen.getByTestId('item-name-input')).toHaveValue('wifi-v2-committed');
+
+    // 4. Now edit and blur hint -> must send If-Match: "2" (not "1"!) and succeed without 412
+    const hintInput = screen.getByTestId('item-hint-input');
+    fireEvent.change(hintInput, { target: { value: 'hint-after-stale-tag-response' } });
+    fireEvent.blur(hintInput);
+
+    await waitFor(() => {
+      expect(h.server.item.version).toBe(3);
+      expect(h.server.item.hint).toBe('hint-after-stale-tag-response');
+    });
+
+    const patches = h.server.requests.filter(
+      (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+    );
+    expect(patches).toHaveLength(2);
+    expect(patches[0].headers['if-match']).toBe('"1"');
+    expect(patches[1].headers['if-match']).toBe('"2"');
+    expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+  });
+
   it('409 reorder_mismatch refetches list and re-applies the last move once if both entries still exist, or shows "Danh sách đã đổi ở thiết bị khác" if an entry was removed', async () => {
     const h = await setupItemPageHarness({
       initialPlaintexts: [

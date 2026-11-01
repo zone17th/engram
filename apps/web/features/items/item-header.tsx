@@ -100,11 +100,15 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   useEffect(() => {
     if (item.version > latestVersionRef.current) {
       latestVersionRef.current = item.version;
+      latestCommittedNameRef.current = item.name;
+      latestCommittedHintRef.current = item.hint ?? null;
+    } else if (item.version === latestVersionRef.current) {
+      latestCommittedNameRef.current = item.name;
+      latestCommittedHintRef.current = item.hint ?? null;
     }
-    latestCommittedNameRef.current = item.name;
-    latestCommittedHintRef.current = item.hint ?? null;
 
     if (
+      item.version >= latestVersionRef.current &&
       !conflictRef.current &&
       !uncertainStepPausedRef.current &&
       !drainingRef.current &&
@@ -120,11 +124,42 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   }, [item.id, item.name, item.hint, item.version, nameDirty, hintDirty]);
 
   const applyItemSummaryToCache = useCallback(
-    (updated: ItemSummary) => {
-      latestVersionRef.current = updated.version;
+    (updated: ItemSummary, source: 'patch' | 'tag' | 'fetch' = 'patch') => {
+      if (source === 'tag' && updated.version < latestVersionRef.current) {
+        // Tag assignment/removal does not bump item version (openapi.yaml:1684).
+        // Never lower latestVersionRef or overwrite newer committed name/hint with an older tag summary (IP15-BE1-5).
+        queryClient.setQueryData<ItemSummary | undefined>(
+          contentQueryKeys.item(updated.id),
+          (prev) =>
+            prev
+              ? {
+                  ...prev,
+                  version: latestVersionRef.current,
+                  name: latestCommittedNameRef.current,
+                  hint: latestCommittedHintRef.current,
+                  tags: updated.tags,
+                }
+              : {
+                  ...updated,
+                  version: latestVersionRef.current,
+                  name: latestCommittedNameRef.current,
+                  hint: latestCommittedHintRef.current,
+                },
+        );
+        return;
+      }
+
+      if (updated.version < latestVersionRef.current && source !== 'fetch') {
+        return;
+      }
+
+      latestVersionRef.current = Math.max(latestVersionRef.current, updated.version);
       latestCommittedNameRef.current = updated.name;
       latestCommittedHintRef.current = updated.hint ?? null;
-      queryClient.setQueryData<ItemSummary>(contentQueryKeys.item(updated.id), updated);
+      queryClient.setQueryData<ItemSummary>(contentQueryKeys.item(updated.id), {
+        ...updated,
+        version: latestVersionRef.current,
+      });
     },
     [queryClient],
   );
@@ -310,7 +345,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       conflictRef.current = false;
       patchQueueRef.current = [];
       uncertainStepPausedRef.current = false;
-      applyItemSummaryToCache(latest);
+      applyItemSummaryToCache(latest, 'fetch');
       if (mountedRef.current) {
         setConflict412(null);
         setUncertainPatchError(null);
@@ -453,7 +488,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           { tag_ids: [tag.id] },
           { idempotencyKey: createIdempotencyKey() },
         );
-        applyItemSummaryToCache(updated);
+        applyItemSummaryToCache(updated, 'tag');
         void queryClient.invalidateQueries({ queryKey: contentQueryKeys.tagsAll() });
         if (mountedRef.current) {
           setTagQueryInput('');
@@ -505,7 +540,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
         { tag_ids: [upserted.id] },
         { idempotencyKey: createIdempotencyKey() },
       );
-      applyItemSummaryToCache(updated);
+      applyItemSummaryToCache(updated, 'tag');
       void queryClient.invalidateQueries({ queryKey: contentQueryKeys.tagsAll() });
       if (mountedRef.current) {
         setTagQueryInput('');
@@ -542,7 +577,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
         const updated = await itemTagRemove(item.id, tag.id, {
           idempotencyKey: createIdempotencyKey(),
         });
-        applyItemSummaryToCache(updated);
+        applyItemSummaryToCache(updated, 'tag');
         void queryClient.invalidateQueries({ queryKey: contentQueryKeys.tagsAll() });
         undoToast?.pushUndoToast({
           message: tItem('tagRemovedToast', { tag: tag.display }),
@@ -554,7 +589,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
               { tag_ids: [tag.id] },
               { idempotencyKey: createIdempotencyKey() },
             );
-            applyItemSummaryToCache(restored);
+            applyItemSummaryToCache(restored, 'tag');
             void queryClient.invalidateQueries({ queryKey: contentQueryKeys.tagsAll() });
           },
         });
