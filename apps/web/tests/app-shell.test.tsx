@@ -11,6 +11,7 @@ import { PreviewNotice } from '../components/app-shell/preview-notice';
 import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
 import { DEMO_TAGS } from '../lib/demo-fixtures';
+import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
 
 function renderWithTheme(ui: ReactNode) {
@@ -153,9 +154,27 @@ describe('Omnibox', () => {
 
 describe('PreviewNotice', () => {
   it('nói rõ bản xem trước chỉ đọc và dùng dữ liệu mẫu', () => {
-    render(<PreviewNotice />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <PreviewNotice />
+      </NextIntlClientProvider>,
+    );
     expect(screen.getByRole('status')).toHaveTextContent(/dữ liệu mẫu/i);
     expect(screen.getByRole('status')).toHaveTextContent(/thay đổi không được lưu/i);
+  });
+
+  // UIA-1: the en shell must not show the Vietnamese notice.
+  it('uses the en copy under the en locale', () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PreviewNotice />
+      </NextIntlClientProvider>,
+    );
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(/^Preview/);
+    expect(status).toHaveTextContent(/sample data/i);
+    expect(status).toHaveTextContent(/read-only: changes are not saved/i);
+    expect(status).not.toHaveTextContent(/dữ liệu mẫu/i);
   });
 });
 

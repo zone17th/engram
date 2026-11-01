@@ -52,6 +52,10 @@
       "lockNowNamed": "{state} — Lock vault now (L)",
       "settings": "Settings",
       "settingsDone": "Done"
+    },
+    "preview": {
+      "label": "Preview",
+      "body": "This is sample data to show the interface. The preview is read-only: changes are not saved and nothing is sent to the server."
     }
   },
   "states": {

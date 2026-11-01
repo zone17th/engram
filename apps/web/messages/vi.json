@@ -52,6 +52,10 @@
       "lockNowNamed": "{state} — Khoá vault ngay (L)",
       "settings": "Cài đặt",
       "settingsDone": "Xong"
+    },
+    "preview": {
+      "label": "Bản xem trước",
+      "body": "Đây là dữ liệu mẫu để xem giao diện. Bản xem trước chỉ đọc: thay đổi không được lưu và nội dung không được gửi tới máy chủ."
     }
   },
   "states": {
