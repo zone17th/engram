@@ -1,7 +1,16 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  entryBodyLoadLimiter,
+  type ConcurrencyLimiter,
+} from '@/features/entries/concurrency-limiter';
+import {
+  classifyEntryOpenError,
+  type EntryOpenErrorKind,
+} from '@/features/entries/real-body-loader';
 import { useOptionalVault, vaultBodyQueryKey } from '@/features/vault/vault-provider';
 import type { CryptoClient } from '@/lib/crypto/client';
 import { cn } from '@/lib/cn';
@@ -10,47 +19,228 @@ import { cn } from '@/lib/cn';
 export interface EntryBodyLoadContext {
   client: CryptoClient;
   opGeneration: number;
+  version?: number;
+  itemId?: string;
+  vaultKeyId?: string | null;
+  isCurrent?: () => boolean;
+  signal?: AbortSignal;
+  queryClient?: QueryClient;
+  onResolvedVersion?: (resolvedVersion: number) => void;
 }
 
 /**
  * Produces one entry's decrypted body. The Entries API is P04, so the loader is the seam: the P03 preview pages pass the
- * public demo loader, tests pass a loader that opens fixture ciphertext through the crypto client, and P04 will pass the
- * real fetch + `client.openEntry`.
+ * public demo loader, tests pass a loader that opens fixture ciphertext through the crypto client, and P04 passes the
+ * real fetch + `client.openEntry` (`loadRealEntryBody`).
  */
 export type EntryBodyLoader = (entryId: string, ctx: EntryBodyLoadContext) => Promise<string>;
+
+export interface UseEntryBodyOptions {
+  readonly enabled?: boolean;
+  readonly itemId?: string;
+  readonly limiter?: ConcurrencyLimiter;
+}
+
+export interface UseEntryBodyResult {
+  readonly unlocked: boolean;
+  readonly body: string | undefined;
+  readonly pending: boolean;
+  readonly failed: boolean;
+  readonly oldKey: boolean;
+  readonly decryptFailed: boolean;
+  readonly errorKind: EntryOpenErrorKind | null;
+  readonly resolvedVersion: number | undefined;
+  readonly refetch: () => Promise<unknown>;
+}
 
 /** The mask shown wherever a body would be. It never depends on the body, so it cannot leak its length or kind. */
 export const LOCK_MASK_TEXT = '🔒 ••••••';
 
 /**
+ * Tracks whether a DOM element has entered the viewport via `IntersectionObserver` (plan Task 14 item 5).
+ * Once an element intersects the viewport, `inView` stays `true` so scrolling back and forth does not
+ * tear down or re-decrypt already-visible cards while the vault remains unlocked.
+ * Falls back to `true` in environments without `IntersectionObserver`.
+ */
+export function useEntryInViewport(
+  target: HTMLElement | null,
+  options?: { readonly disabled?: boolean; readonly rootMargin?: string },
+): boolean {
+  const disabled = options?.disabled === true;
+  const rootMargin = options?.rootMargin ?? '100px';
+  const [inView, setInView] = useState<boolean>(() => {
+    if (disabled) return true;
+    return typeof IntersectionObserver === 'undefined';
+  });
+
+  useEffect(() => {
+    if (disabled) {
+      setInView(true);
+      return;
+    }
+    if (inView) {
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return;
+    }
+    if (!target) {
+      return;
+    }
+    let active = true;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!active) return;
+        for (const entry of entries) {
+          if (entry.isIntersecting || entry.intersectionRatio > 0) {
+            setInView(true);
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin },
+    );
+    observer.observe(target);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [target, disabled, inView, rootMargin]);
+
+  return disabled || inView;
+}
+
+/**
  * Decrypted body for one entry, or `undefined` while the vault is not unlocked.
  *
- * - The text lives ONLY in the TanStack Query cache under `vaultBodyQueryKey(entryId)`; the provider removes that
+ * - The text lives ONLY in the TanStack Query cache under `vaultBodyQueryKey(entryId, version)` (or
+ *   `vaultBodyQueryKey(entryId)` for P03 call sites that omit `version`); the provider removes that
  *   namespace synchronously on every lock, logout, user switch and reset.
- * - The query is enabled only while `useVault().state === 'unlocked'`, and the returned body is additionally gated on
- *   the same live state, so a locked frame can never render a stale body even for one commit.
+ * - The query is enabled only while `useVault().state === 'unlocked'` AND `options.enabled !== false`
+ *   (viewport gate), and the returned body is additionally gated on the live unlocked state, so a
+ *   locked frame can never render a stale body even for one commit.
+ * - Loads are bounded by a 4-slot concurrency limiter (`entryBodyLoadLimiter`, Task 14 item 4).
  * - A result that finishes after a lock (generation moved) is discarded instead of cached.
  */
 export function useEntryBody(
   entryId: string,
+  version: number | undefined,
   load: EntryBodyLoader,
-): { unlocked: boolean; body: string | undefined; pending: boolean; failed: boolean } {
+  options?: UseEntryBodyOptions,
+): UseEntryBodyResult;
+export function useEntryBody(
+  entryId: string,
+  load: EntryBodyLoader,
+  options?: UseEntryBodyOptions,
+): UseEntryBodyResult;
+export function useEntryBody(
+  entryId: string,
+  versionOrLoad: number | undefined | EntryBodyLoader,
+  loadOrOptions?: EntryBodyLoader | UseEntryBodyOptions,
+  maybeOptions?: UseEntryBodyOptions,
+): UseEntryBodyResult {
+  const isLegacyCall = typeof versionOrLoad === 'function';
+  const initialVersion: number | undefined = isLegacyCall ? undefined : versionOrLoad;
+  const load: EntryBodyLoader = isLegacyCall
+    ? versionOrLoad
+    : (loadOrOptions as EntryBodyLoader);
+  const options: UseEntryBodyOptions | undefined = isLegacyCall
+    ? (loadOrOptions as UseEntryBodyOptions | undefined)
+    : maybeOptions;
+
+  const [resolvedVersionOverride, setResolvedVersionOverride] = useState<{
+    readonly entryId: string;
+    readonly fromVersion: number | undefined;
+    readonly toVersion: number;
+  } | null>(null);
+
+  const effectiveVersion =
+    resolvedVersionOverride &&
+    resolvedVersionOverride.entryId === entryId &&
+    resolvedVersionOverride.fromVersion === initialVersion
+      ? resolvedVersionOverride.toVersion
+      : initialVersion;
+
   const vault = useOptionalVault();
+  const queryClient = useQueryClient();
   const unlocked = vault?.state === 'unlocked';
   const getClient = vault?.getClient;
   const captureOpGeneration = vault?.captureOpGeneration;
+  const beginOp = vault?.beginOp;
+  const vaultKeyId = vault?.vaultMeta?.vault_key_id ?? null;
+
+  const viewportEnabled = options?.enabled ?? true;
+  const queryEnabled = unlocked && viewportEnabled;
+  const limiter = options?.limiter ?? entryBodyLoadLimiter;
+  const itemId = options?.itemId;
+
+  const queryKey =
+    effectiveVersion !== undefined
+      ? vaultBodyQueryKey(entryId, effectiveVersion)
+      : vaultBodyQueryKey(entryId);
 
   const query = useQuery({
-    queryKey: vaultBodyQueryKey(entryId),
-    queryFn: async () => {
-      if (!getClient || !captureOpGeneration) throw new Error('vault_unavailable');
-      const opGeneration = captureOpGeneration();
-      const client = getClient();
-      const body = await load(entryId, { client, opGeneration });
-      if (client.getGeneration() !== opGeneration) throw new Error('vault_locked_during_load');
+    queryKey,
+    queryFn: async ({ signal }) => {
+      if (!getClient || !captureOpGeneration) {
+        throw new Error('vault_unavailable');
+      }
+      const started = beginOp ? beginOp() : null;
+      const opGeneration = started ? started.opGeneration : captureOpGeneration();
+      const client = started ? started.client : getClient();
+      const isCurrent = () => {
+        if (started && !started.isCurrent()) return false;
+        return client.getGeneration() === opGeneration;
+      };
+
+      let discoveredVersion: number | undefined;
+
+      const body = await limiter.run(
+        async () => {
+          if (!isCurrent()) {
+            throw new Error('vault_locked_during_load');
+          }
+          return load(entryId, {
+            client,
+            opGeneration,
+            version: effectiveVersion,
+            itemId,
+            vaultKeyId,
+            isCurrent,
+            signal,
+            queryClient,
+            onResolvedVersion: (nextVer: number) => {
+              discoveredVersion = nextVer;
+            },
+          });
+        },
+        { signal },
+      );
+
+      if (!isCurrent()) {
+        throw new Error('vault_locked_during_load');
+      }
+
+      if (
+        discoveredVersion !== undefined &&
+        effectiveVersion !== undefined &&
+        discoveredVersion !== effectiveVersion
+      ) {
+        // Store the decrypted plaintext under the newly discovered version key and switch to it
+        // while keeping the old version key clean.
+        queryClient.setQueryData(vaultBodyQueryKey(entryId, discoveredVersion), body);
+        setResolvedVersionOverride({
+          entryId,
+          fromVersion: initialVersion,
+          toVersion: discoveredVersion,
+        });
+      }
+
       return body;
     },
-    enabled: unlocked,
+    enabled: queryEnabled,
     retry: false,
     staleTime: Infinity,
     // Keep decrypted text in memory only as long as a view needs it; locking clears it earlier regardless.
@@ -59,11 +249,28 @@ export function useEntryBody(
     refetchOnReconnect: false,
   });
 
+  const classifiedError =
+    unlocked && query.status === 'error' ? classifyEntryOpenError(query.error) : null;
+  const oldKey = classifiedError?.kind === 'old_key';
+  const failed =
+    unlocked &&
+    query.status === 'error' &&
+    classifiedError?.kind !== 'stale_generation' &&
+    classifiedError?.kind !== 'vault_locked';
+  const decryptFailed = failed && !oldKey;
+
+  const refetch = useCallback(() => query.refetch(), [query]);
+
   return {
     unlocked,
     body: unlocked ? query.data : undefined,
-    pending: unlocked && query.data === undefined && query.status === 'pending',
-    failed: unlocked && query.status === 'error',
+    pending: unlocked && query.data === undefined && (query.status === 'pending' || query.isFetching),
+    failed,
+    oldKey,
+    decryptFailed,
+    errorKind: classifiedError?.kind ?? null,
+    resolvedVersion: effectiveVersion,
+    refetch,
   };
 }
 
@@ -79,49 +286,127 @@ export function LockMask({ className, testId = 'entry-body-locked' }: { classNam
 }
 
 /**
- * One entry body. Locked (or unlocking, recovering, error, no provider): `LockMask`. Unlocked: the decrypted text,
- * rendered only as a React text node (never an attribute, never `dataset`, never `innerHTML`).
+ * One entry body.
+ * - Locked (or unlocking, recovering, error, no provider): `LockMask`.
+ * - Unlocked + not yet in viewport: lightweight placeholder (`entry-body-loading`) with `IntersectionObserver`
+ *   that enables `useEntryBody` once scrolled into view (plan Task 14 item 5).
+ * - Unlocked + `oldKey`: warning state (`entry-body-old-key`) without Retry, Worker `openEntry` never called.
+ * - Unlocked + `decryptFailed` / `failed`: error state (`entry-body-error`) with a working Retry button (`entry-body-retry`).
+ * - Unlocked + decrypted: rendered only as a React text node (never an attribute, never `dataset`, never `innerHTML`).
  */
 export function EntryBody({
   entryId,
+  version,
+  itemId,
   load,
+  enabled,
+  lazy = true,
+  limiter,
   variant = 'full',
   kind = 'text',
   className,
 }: {
   entryId: string;
+  version?: number;
+  itemId?: string;
   load: EntryBodyLoader;
+  enabled?: boolean;
+  lazy?: boolean;
+  limiter?: ConcurrencyLimiter;
   variant?: 'summary' | 'full';
   kind?: 'text' | 'json';
   className?: string;
 }) {
-  const t = useTranslations('vault.locked');
-  const { unlocked, body, pending, failed } = useEntryBody(entryId, load);
+  const tLocked = useTranslations('vault.locked');
+  const tEntry = useTranslations('content.entry');
+  const [hostEl, setHostEl] = useState<HTMLElement | null>(null);
+  const inViewport = useEntryInViewport(hostEl, {
+    disabled: !lazy || enabled !== undefined,
+  });
+  const effectiveEnabled = enabled ?? inViewport;
+
+  const { unlocked, body, pending, failed, oldKey, refetch } = useEntryBody(
+    entryId,
+    version,
+    load,
+    {
+      enabled: effectiveEnabled,
+      itemId,
+      limiter,
+    },
+  );
 
   if (!unlocked) return <LockMask className={className} />;
+
+  if (oldKey) {
+    return (
+      <div
+        ref={setHostEl}
+        className={cn('auth-status mb-0 flex flex-col gap-1', className)}
+        role="alert"
+        data-testid="entry-body-old-key"
+      >
+        <span className="badge-type badge-warn self-start">{tEntry('oldKeyBadge')}</span>
+        <p className="m-0 text-[14px] font-semibold text-body">{tEntry('oldKeyTitle')}</p>
+        <p className="m-0 text-[13px] text-muted">{tEntry('oldKeyBody')}</p>
+      </div>
+    );
+  }
+
   if (failed) {
     return (
-      <p className={cn('t-caption m-0 text-muted', className)} role="alert" data-testid="entry-body-error">
-        {t('bodyError')}
-      </p>
+      <div
+        ref={setHostEl}
+        className={cn('flex flex-wrap items-center justify-between gap-2', className)}
+        role="alert"
+        data-testid="entry-body-error"
+      >
+        <div className="min-w-0">
+          <p className="t-caption m-0 font-semibold text-body">{tEntry('decryptFailedTitle')}</p>
+          <p className="t-caption m-0 text-muted">{tLocked('bodyError')}</p>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm shrink-0"
+          data-testid="entry-body-retry"
+          onClick={() => {
+            void refetch();
+          }}
+        >
+          {tEntry('retry')}
+        </button>
+      </div>
     );
   }
-  if (pending || body === undefined) {
+
+  if (!effectiveEnabled || pending || body === undefined) {
     return (
-      <p className={cn('t-caption m-0 text-muted', className)} role="status" data-testid="entry-body-loading">
-        {t('bodyLoading')}
+      <p
+        ref={setHostEl}
+        className={cn('t-caption m-0 text-muted', className)}
+        role="status"
+        data-testid="entry-body-loading"
+      >
+        {tLocked('bodyLoading')}
       </p>
     );
   }
+
   if (kind === 'json' && variant === 'full') {
     return (
-      <pre className={cn('json-raw overflow-x-auto rounded-md', className)} data-testid="entry-body">
+      <pre
+        ref={setHostEl}
+        className={cn('json-raw overflow-x-auto rounded-md', className)}
+        data-testid="entry-body"
+      >
         {body}
       </pre>
     );
   }
+
   return (
     <p
+      ref={setHostEl}
       className={cn(
         variant === 'summary' ? 't-legal text-muted' : 'm-0 text-[15px] leading-relaxed text-body',
         className,

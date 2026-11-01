@@ -1034,6 +1034,15 @@
     "privacy": {
       "notice": "Item names, tags and hints are not encrypted; only the content is end-to-end encrypted",
       "hintServerReadable": "visible to the server"
+    },
+    "entry": {
+      "loading": "Decrypting entry content…",
+      "decryptFailedTitle": "Could not decrypt this entry",
+      "decryptFailedBody": "Authenticated decryption failed, so corrupted content is not shown. Other entries in this item still open normally.",
+      "oldKeyBadge": "entry_key_mismatch",
+      "oldKeyTitle": "This entry was encrypted with an older vault key",
+      "oldKeyBody": "The entry's envelope.key_id does not match your current vault_key_id, so decryption was skipped. This happens after a vault reset or key change on another device.",
+      "retry": "Retry"
     }
   }
 }
