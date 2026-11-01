@@ -1034,6 +1034,58 @@
     "privacy": {
       "notice": "Item names, tags and hints are not encrypted; only the content is end-to-end encrypted",
       "hintServerReadable": "visible to the server"
+    },
+    "home": {
+      "hero": {
+        "title": "Type to search. Keep typing to save.",
+        "subtitle": "One input for both."
+      },
+      "rail": {
+        "ariaLabel": "Tag filters",
+        "heading": "Tag",
+        "clearFilter": "Clear",
+        "empty": "No tags yet.",
+        "menuAriaLabel": "Tag actions for #{display}",
+        "renameMenuItem": "Rename…",
+        "deleteMenuItem": "Delete",
+        "renameLabel": "Rename tag",
+        "renameSave": "Save",
+        "renameSaving": "Saving…",
+        "renameCancel": "Cancel",
+        "deleteToastMessage": "Deleted tag #{display}",
+        "deleteToastDetail": "Items with this tag are kept",
+        "undoAction": "Undo"
+      },
+      "recent": {
+        "heading": "Recent items",
+        "subtitle": "Single recent list. Cards show item name, up to 3 tag chips, and entry count only — entry bodies are never fetched or decrypted on the home grid.",
+        "entryCount": "{count, plural, one {# entry} other {# entries}}",
+        "moreTagsAria": "{count, plural, one {# more tag} other {# more tags}}",
+        "loading": "Loading recent items…",
+        "loadMore": "Load more",
+        "loadingMore": "Loading…",
+        "retry": "Retry"
+      },
+      "empty": {
+        "eyebrow": "Empty vault · first time",
+        "title": "Nothing here yet",
+        "body": "Type idea: first sentence or import JSON. Save your first note, JSON block, or anything you might forget — name it by a keyword you will remember.",
+        "examplesLabel": "Try typing:",
+        "example1": "idea: first sentence",
+        "example2": "wifi #home: SSID Zone17th / pass 8chars",
+        "example3": "api-config #ops: https://engram.zone17.click"
+      },
+      "filteredEmpty": {
+        "eyebrow": "Unused tag",
+        "title": "No items tagged #{display} yet",
+        "titleFallback": "No items with this tag",
+        "body": "Assign this tag to an item, or clear the filter to view all recent items.",
+        "clearFilter": "Clear filter"
+      },
+      "flagOff": {
+        "title": "Nothing here yet",
+        "body": "Content management is not enabled in this build yet."
+      }
     }
   }
 }
