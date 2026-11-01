@@ -1,8 +1,7 @@
 'use client';
 
 import { ProblemError } from '@engram/shared-types';
-import { useMessages } from 'next-intl';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   type Me,
   type ReauthAction,
@@ -14,7 +13,7 @@ import {
 import { grantStillValid } from '@/lib/auth/audit-catalog';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 
-type AuthMessagesSlice = {
+export type ReauthMessagesSlice = {
   reauth?: { failed?: string };
   errors?: {
     invalidCredentialsTitle?: string;
@@ -24,28 +23,38 @@ type AuthMessagesSlice = {
   };
 };
 
-const intlHookAccess = {
-  messages: useMessages as unknown as () => { auth?: AuthMessagesSlice },
-};
+/**
+ * Optional context carrying only the `auth` message slice needed by `useReauth`.
+ * `use-intl` 4.14.5 does not export `IntlContext` from `use-intl/react`, and calling
+ * `useMessages()` without a provider throws before any fallback (`features/vault/vault-provider.test.tsx`
+ * is under the crypto gate and mounts `SessionProvider` without `NextIntlClientProvider`).
+ * Reading this standard React context via `useContext` is rules-of-hooks-safe, never throws
+ * without a provider, and imports no message catalogs into the client bundle.
+ */
+const ReauthMessagesContext = createContext<ReauthMessagesSlice | null>(null);
+
+export function ReauthMessagesProvider({
+  auth,
+  children,
+}: {
+  auth: ReauthMessagesSlice | null | undefined;
+  children: ReactNode;
+}) {
+  return <ReauthMessagesContext.Provider value={auth ?? null}>{children}</ReauthMessagesContext.Provider>;
+}
 
 function useReauthCopy() {
-  let messages: { auth?: AuthMessagesSlice } | null = null;
-  try {
-    messages = intlHookAccess.messages();
-  } catch {
-    // Providerless unit tests (e.g. vault-provider.test.tsx) mount SessionProvider without NextIntlClientProvider.
-    messages = null;
-  }
-  return useMemo(() => {
-    const auth = messages?.auth;
-    return {
+  const auth = useContext(ReauthMessagesContext);
+  return useMemo(
+    () => ({
       failed: auth?.reauth?.failed ?? '',
       invalidCredentials: auth?.errors?.invalidCredentialsTitle ?? '',
       rateLimited: auth?.errors?.rateLimitedTitle ?? '',
       generic: auth?.errors?.genericTitle ?? '',
       network: auth?.errors?.network ?? '',
-    };
-  }, [messages]);
+    }),
+    [auth],
+  );
 }
 
 const REAUTH_STORAGE_KEY = 'sabk.reauth.pending';

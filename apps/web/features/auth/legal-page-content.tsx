@@ -134,57 +134,64 @@ export async function LegalPageContent({
                     </div>
                   </div>
 
-                  <div
-                    className="card mb-6 overflow-x-auto p-0 focus:outline-2 focus:outline-accent"
-                    tabIndex={0}
-                    role="region"
-                    aria-label={t('privacy.tableAriaLabel')}
-                  >
-                    <table className="w-full min-w-[540px] border-collapse text-[13.5px]">
-                      <thead>
-                        <tr className="bg-surface">
-                          <th scope="col" className="t-label p-3 text-left text-muted">
-                            {t('privacy.tableColData')}
-                          </th>
-                          <th scope="col" className="t-label p-3 text-left text-muted">
-                            {t('privacy.tableColServer')}
-                          </th>
-                          <th scope="col" className="t-label p-3 text-left text-muted">
-                            {t('privacy.tableColPurpose')}
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr className="border-t border-line">
-                          <td className="p-3 font-semibold">{t('privacy.row1Data')}</td>
-                          <td className="p-3">
-                            <span className="badge-type bg-paleAccent text-accent">{t('privacy.row1Server')}</span>
-                          </td>
-                          <td className="p-3 text-muted">{t('privacy.row1Purpose')}</td>
-                        </tr>
-                        <tr className="border-t border-line">
-                          <td className="p-3 font-semibold">{t('privacy.row2Data')}</td>
-                          <td className="p-3">
-                            <span className="badge-type badge-json">{t('privacy.row2Server')}</span>
-                          </td>
-                          <td className="p-3 text-muted">{t('privacy.row2Purpose')}</td>
-                        </tr>
-                        <tr className="border-t border-line">
-                          <td className="p-3 font-semibold">{t('privacy.row3Data')}</td>
-                          <td className="p-3">
-                            <span className="badge-type badge-json">{t('privacy.row3Server')}</span>
-                          </td>
-                          <td className="p-3 text-muted">{t('privacy.row3Purpose')}</td>
-                        </tr>
-                        <tr className="border-t border-line">
-                          <td className="p-3 font-semibold">{t('privacy.row4Data')}</td>
-                          <td className="p-3">
-                            <span className="badge-type badge-text">{t('privacy.row4Server')}</span>
-                          </td>
-                          <td className="p-3 text-muted">{t('privacy.row4Purpose')}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                  <div className="relative mb-6">
+                    <div
+                      className="card overflow-x-auto p-0"
+                      tabIndex={0}
+                      role="region"
+                      aria-label={t('privacy.tableAriaLabel')}
+                    >
+                      <table className="w-full min-w-[540px] border-collapse text-[13.5px]">
+                        <thead>
+                          <tr className="bg-surface">
+                            <th scope="col" className="t-label p-3 text-left text-muted">
+                              {t('privacy.tableColData')}
+                            </th>
+                            <th scope="col" className="t-label p-3 text-left text-muted">
+                              {t('privacy.tableColServer')}
+                            </th>
+                            <th scope="col" className="t-label p-3 text-left text-muted">
+                              {t('privacy.tableColPurpose')}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="border-t border-line">
+                            <td className="p-3 font-semibold">{t('privacy.row1Data')}</td>
+                            <td className="p-3">
+                              <span className="badge-type bg-paleAccent text-accent">{t('privacy.row1Server')}</span>
+                            </td>
+                            <td className="p-3 text-muted">{t('privacy.row1Purpose')}</td>
+                          </tr>
+                          <tr className="border-t border-line">
+                            <td className="p-3 font-semibold">{t('privacy.row2Data')}</td>
+                            <td className="p-3">
+                              <span className="badge-type badge-json">{t('privacy.row2Server')}</span>
+                            </td>
+                            <td className="p-3 text-muted">{t('privacy.row2Purpose')}</td>
+                          </tr>
+                          <tr className="border-t border-line">
+                            <td className="p-3 font-semibold">{t('privacy.row3Data')}</td>
+                            <td className="p-3">
+                              <span className="badge-type badge-json">{t('privacy.row3Server')}</span>
+                            </td>
+                            <td className="p-3 text-muted">{t('privacy.row3Purpose')}</td>
+                          </tr>
+                          <tr className="border-t border-line">
+                            <td className="p-3 font-semibold">{t('privacy.row4Data')}</td>
+                            <td className="p-3">
+                              <span className="badge-type badge-text">{t('privacy.row4Server')}</span>
+                            </td>
+                            <td className="p-3 text-muted">{t('privacy.row4Purpose')}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-y-px right-px w-8 rounded-r-[inherit] sm:hidden"
+                      style={{ background: 'linear-gradient(to left, var(--surface-elevated), transparent)' }}
+                    />
                   </div>
 
                   <div className="card p-5">
@@ -231,7 +238,7 @@ export async function LegalPageContent({
                 {t('contact.generalPrefix')}
                 <a
                   href="https://github.com/zone17th/engram/issues"
-                  className="mono break-all text-[14px] underline"
+                  className="mono break-words text-[14px] underline"
                   style={{ color: 'var(--link-ink)', overflowWrap: 'anywhere' }}
                 >
                   https://github.com/zone17th/engram/issues
@@ -242,7 +249,7 @@ export async function LegalPageContent({
                 {t('contact.securityPrefix')}
                 <a
                   href="https://github.com/zone17th/engram/security/advisories/new"
-                  className="mono break-all text-[14px] underline"
+                  className="mono break-words text-[14px] underline"
                   style={{ color: 'var(--link-ink)', overflowWrap: 'anywhere' }}
                 >
                   https://github.com/zone17th/engram/security/advisories/new

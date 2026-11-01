@@ -155,6 +155,7 @@ export async function waitForAuthPageReady(page: Page) {
   const enrollSend = page.getByRole('button', { name: /Send setup email|Gửi email đặt mật khẩu/ });
   const forgotUnavailable = page.getByTestId('forgot-unavailable');
   const resetInvalid = page.getByTestId('reset-invalid-token');
+  const oauthCallbackError = page.getByTestId('oauth-callback-error');
   await expect
     .poll(
       async () => {
@@ -164,6 +165,7 @@ export async function waitForAuthPageReady(page: Page) {
         if (await enrollSend.isVisible().catch(() => false)) return 'enroll-send';
         if (await forgotUnavailable.isVisible().catch(() => false)) return 'forgot-unavailable';
         if (await resetInvalid.isVisible().catch(() => false)) return 'reset-invalid';
+        if (await oauthCallbackError.isVisible().catch(() => false)) return 'oauth-callback-error';
         return '';
       },
       { timeout: 45_000 },
@@ -364,4 +366,34 @@ export async function fillSecret(
     setter.call(field, next);
     field.dispatchEvent(new Event('input', { bubbles: true }));
   }, value);
+}
+
+/**
+ * Confirms the account email via the mail sink (reusing the quiet hash injection pattern
+ * from `vault-journey-support.confirmEmailIfRequired` so it works both when verification
+ * is required and when `E2E_VERIFY=false` / optional verification).
+ */
+export async function confirmAccountEmailViaSink(page: Page, email: string): Promise<void> {
+  await page.goto('/app/auth/verify-email');
+  await page.getByRole('button', { name: /Resend|Gửi lại/ }).click();
+  const mail = await waitForMail(email, 'signup');
+  const token = tokenFromLink(mail.link);
+  await page.evaluate((rawToken) => {
+    window.location.hash = `token=${encodeURIComponent(rawToken)}`;
+  }, token);
+  await expect
+    .poll(() => page.evaluate(() => window.location.hash.includes('token=')), {
+      timeout: 15_000,
+    })
+    .toBe(false);
+  const confirmation = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/api/v1/auth/verify-email/confirm'),
+    { timeout: 15_000 },
+  );
+  await page.getByRole('button', { name: /Confirm email|Xác minh email/ }).click();
+  expect((await confirmation).status()).toBe(200);
+  await expect(page).toHaveURL(/\/app\/onboarding/, { timeout: 15_000 });
+  await expectSignedIn(page);
 }

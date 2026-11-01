@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   completeFakeOAuth,
+  confirmAccountEmailViaSink,
   expectSignedIn,
   fetchMeViaPage,
+  fillSecret,
   isolateRateLimit,
   signupViaUi,
   waitForAuthPageReady,
@@ -82,6 +84,7 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
   test('password account links Google after password re-authentication', async ({ page }) => {
     const email = uniqueEmail('oauth-link');
     await signupViaUi(page, email);
+    await confirmAccountEmailViaSink(page, email);
     await linkGoogleFromSettings(page, email, `link-${email}`);
 
     const me = (await fetchMeViaPage(page)).body as { identities?: Array<{ provider: string }> };
@@ -93,6 +96,7 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
     const subject = `collision-${Date.now()}`;
     const firstEmail = uniqueEmail('oauth-owner');
     await signupViaUi(page, firstEmail);
+    await confirmAccountEmailViaSink(page, firstEmail);
     await linkGoogleFromSettings(page, firstEmail, subject);
 
     await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
@@ -100,6 +104,7 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
 
     const secondEmail = uniqueEmail('oauth-conflict');
     await signupViaUi(page, secondEmail);
+    await confirmAccountEmailViaSink(page, secondEmail);
     await page.goto('/app/settings');
     await expectSignedIn(page);
     await page.getByRole('button', { name: /Link Google|Liên kết Google/ }).click();
@@ -112,6 +117,37 @@ test.describe('P02 fake OAuth (not Google/GitHub production)', () => {
     await expect(page).toHaveURL(/\/app\/auth\/callback\/google\?status=identity_conflict/, { timeout: 20_000 });
     await expect(page.getByText(/Identity conflict|Tài khoản provider này đã liên kết user khác/)).toBeVisible();
     await expect(page.getByRole('link', { name: /Back to sign in|Về đăng nhập/ })).toBeVisible();
+  });
+
+  test('unverified password account trying to link Google sees settings.account.linkRequiresVerifiedEmail and no raw server text (ADR 0006 D3)', async ({
+    page,
+  }) => {
+    const origin = new URL(process.env.BASE_URL ?? 'http://127.0.0.1:3000').origin;
+    await page.context().addCookies([{ name: 'sabk_locale', value: 'en', url: `${origin}/` }]);
+
+    const email = uniqueEmail('oauth-unverified');
+    await signupViaUi(page, email);
+    await page.goto('/app/settings');
+    await expectSignedIn(page);
+    await page.getByRole('radio', { name: 'English' }).click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en', { timeout: 10_000 });
+
+    await page.getByRole('button', { name: 'Link Google' }).click();
+    await page.locator('#linkProviderDlg').getByRole('button', { name: 'Continue' }).click();
+
+    const reauth = page.locator('#reauthDlg');
+    await expect(reauth).toBeVisible();
+    await fillSecret(reauth.getByLabel('Login password'), PASSWORD);
+    await reauth.getByRole('button', { name: /^Confirm$/ }).click();
+
+    await expect(
+      reauth.getByText('Verify your current account email address before linking a new sign-in method.'),
+    ).toBeVisible({ timeout: 15_000 });
+    const dlgText = await reauth.innerText();
+    expect(dlgText).not.toMatch(/email_not_verified/i);
+    expect(dlgText).not.toMatch(
+      /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/,
+    );
   });
 
   test('OAuth-only account does not expose last-method unlink', async ({ page }) => {

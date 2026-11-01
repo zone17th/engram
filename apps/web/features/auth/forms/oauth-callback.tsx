@@ -128,8 +128,10 @@ export function OAuthCallbackView({ provider }: { provider: string }) {
 
   if (status === 'identity_conflict') {
     return (
-      <div className="card border-error p-5">
-        <p className="mb-1 text-[14px] font-semibold text-error">{t('oauthCallback.conflictTitle')}</p>
+      <div className="card border-error p-5" data-testid="oauth-callback-error">
+        <p className="mb-1 text-[14px] font-semibold text-error" style={{ color: 'var(--error-ink)' }}>
+          {t('oauthCallback.conflictTitle')}
+        </p>
         <p className="mb-3 text-[13px] text-muted">{t('oauthCallback.conflictBody')}</p>
         {/* Retrying the same provider always conflicts again; the only way out is
             signing in as the owning account. */}
@@ -158,8 +160,10 @@ export function OAuthCallbackView({ provider }: { provider: string }) {
 
   if (phase === 'error' || status === 'provider_error' || status === 'invalid_flow' || status === 'reauth_unavailable') {
     return (
-      <div className="card border-error p-5">
-        <p className="mb-1 text-[14px] font-semibold text-error">{t('oauthCallback.errorTitle')}</p>
+      <div className="card border-error p-5" data-testid="oauth-callback-error">
+        <p className="mb-1 text-[14px] font-semibold text-error" style={{ color: 'var(--error-ink)' }}>
+          {t('oauthCallback.errorTitle')}
+        </p>
         <p className="mb-3 text-[13px] text-muted">{message ?? t('oauthCallback.errorBody')}</p>
         <Link href="/app/auth/login" className="btn btn-tertiary btn-sm no-underline">
           {t('oauthCallback.backToLogin')}
