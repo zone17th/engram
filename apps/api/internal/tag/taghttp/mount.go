@@ -13,16 +13,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"io"
 	"net/http"
 	"slices"
 	"strconv"
 	"sync/atomic"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
+	"unicode/utf8"
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
@@ -282,7 +282,43 @@ func (a *API) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type tagDisplayRequest struct {
-	Display *string `json:"display"`
+	Display json.RawMessage `json:"display"`
+}
+
+func decodeSingleJSONString(trimmedRaw []byte, dst *string) error {
+	dec := json.NewDecoder(bytes.NewReader(trimmedRaw))
+	if err := dec.Decode(dst); err != nil {
+		return tag.ErrInvalidRequest
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return tag.ErrInvalidRequest
+	}
+	return nil
+}
+
+// parseRequiredDisplayField phân tích trường `display` bắt buộc của `POST /tags` và `PATCH /tags/{id}`:
+//   - Bỏ qua (`len == 0`), `null` tường minh, hoặc kiểu không phải string -> `400 invalid_request`.
+//   - Byte UTF-8 không hợp lệ trong chuỗi JSON thô (trước khi `encoding/json` thay bằng U+FFFD)
+//     hoặc vi phạm quy tắc `textnorm.NormalizeTag` (1..50 rune sau chuẩn hoá) -> `400 tag_display_invalid`.
+//   - Ký tự U+FFFD hợp lệ trong UTF-8 vẫn được chấp nhận.
+func parseRequiredDisplayField(raw json.RawMessage) (string, string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || trimmed[0] != '"' {
+		return "", "", tag.ErrInvalidRequest
+	}
+	if !utf8.Valid(trimmed) {
+		return "", "", tag.ErrTagDisplayInvalid
+	}
+	var rawDisplay string
+	if err := decodeSingleJSONString(trimmed, &rawDisplay); err != nil {
+		return "", "", tag.ErrInvalidRequest
+	}
+	display, normalized, err := textnorm.NormalizeTag(rawDisplay)
+	if err != nil {
+		return "", "", tag.ErrTagDisplayInvalid
+	}
+	return display, normalized, nil
 }
 
 // Upsert xử lý `POST /api/v1/tags` (`tagUpsert`, plan mục 2.5, 2.7, 3, Task 5).
@@ -294,17 +330,17 @@ func (a *API) Upsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req tagDisplayRequest
-	if _, ok := itemhttp.DecodeStrictJSON(w, r, &req); !ok {
+	rawBody, ok := itemhttp.DecodeStrictJSON(w, r, &req)
+	if !ok {
 		return
 	}
-	if req.Display == nil {
-		WriteDomainError(w, r, tag.ErrInvalidRequest)
-		return
-	}
-
-	display, normalized, err := textnorm.NormalizeTag(*req.Display)
+	display, normalized, err := parseRequiredDisplayField(req.Display)
 	if err != nil {
-		WriteDomainError(w, r, tag.ErrTagDisplayInvalid)
+		WriteDomainError(w, r, err)
+		return
+	}
+	if !utf8.Valid(rawBody) {
+		WriteDomainError(w, r, tag.ErrInvalidRequest)
 		return
 	}
 
@@ -392,17 +428,17 @@ func (a *API) Rename(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req tagDisplayRequest
-	if _, ok := itemhttp.DecodeStrictJSON(w, r, &req); !ok {
+	rawBody, ok := itemhttp.DecodeStrictJSON(w, r, &req)
+	if !ok {
 		return
 	}
-	if req.Display == nil {
-		WriteDomainError(w, r, tag.ErrInvalidRequest)
-		return
-	}
-
-	display, normalized, err := textnorm.NormalizeTag(*req.Display)
+	display, normalized, err := parseRequiredDisplayField(req.Display)
 	if err != nil {
-		WriteDomainError(w, r, tag.ErrTagDisplayInvalid)
+		WriteDomainError(w, r, err)
+		return
+	}
+	if !utf8.Valid(rawBody) {
+		WriteDomainError(w, r, tag.ErrInvalidRequest)
 		return
 	}
 
