@@ -28,10 +28,11 @@ const SCREENS: readonly CaptureScreen[] = [
   {
     name: 'landing',
     path: { en: '/', vi: '/vi' },
-    // Same state as the P01 visual baselines: the hero demo searches the public `ghi` fixture,
-    // which also leaves the omnibox focused (shows the focus ring, audit UIA-8).
+    // The hero demo searches `wif`, the seed of mockups/landing.html, so the grouped popover
+    // (Tags / Items / similar meaning) shows as in the mockup; it also leaves the omnibox focused
+    // (shows the focus ring, audit UIA-8). Before UI2 (UIA-5) this was `ghi` on the shared fixture.
     prepare: async (page) => {
-      await page.getByRole('combobox').fill('ghi');
+      await page.getByRole('combobox').fill('wif');
       await expect(page.getByRole('listbox')).toBeVisible();
     },
   },

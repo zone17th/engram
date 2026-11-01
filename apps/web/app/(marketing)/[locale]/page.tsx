@@ -23,14 +23,19 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
     <>
       <SiteHeader />
 
-      {/* hero */}
-      <section className="max-w-container mx-auto px-5 pb-16 pt-14">
-        <h1 className="t-hero mb-4">
-          {t('heroTitle')}
-          <br />
-          <span className="text-muted">{t('heroTitleSecond')}</span>
-        </h1>
-        <p className="t-body-lg mb-8 max-w-[56ch] text-muted">{t('heroSub')}</p>
+      {/* hero — theo mockups/landing.html: tiêu đề hai dòng cùng màu ink, rồi panel demo (UIA-5) */}
+      <section className="max-w-container mx-auto px-5 pb-6 pt-16 md:pt-24">
+        <div className="max-w-[1000px]">
+          <h1 className="t-hero mb-5">
+            {t('heroTitle')}
+            <br />
+            {t('heroTitleSecond')}
+          </h1>
+          <p className="t-body-lg max-w-[62ch] text-muted">{t('heroSub')}</p>
+        </div>
+      </section>
+
+      <section className="max-w-container mx-auto px-5 pb-16">
         <HeroDemo />
       </section>
 
@@ -40,7 +45,8 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
         <p className="t-body-lg mb-7 text-muted">{t('wallSub')}</p>
         <div className="flex flex-wrap gap-2">
           {wallTags.map((tag) => (
-            <span key={tag} className="chip chip-lg">
+            // 40px như chip mono của mockup (16px × 1.375 + 2×8px + viền); min-h giữ mốc đó (UIA-5).
+            <span key={tag} className="chip chip-lg min-h-10">
               {tag}
             </span>
           ))}

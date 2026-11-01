@@ -7,7 +7,8 @@ import { useTheme } from '@/components/theme-provider';
 
 /**
  * Nav pill của landing — chép rhythm từ mockups/landing.html.
- * Theme toggle dùng ThemeProvider (Task 11); CTA mở /app (preview UI).
+ * Theme toggle dùng ThemeProvider (Task 11). Hai CTA như mockup: "Đăng nhập" (ẩn dưới sm)
+ * và "Tạo tài khoản", mở các trang auth thật (advisor-dec-186/187, audit UIA-5).
  */
 export function SiteHeader() {
   const t = useTranslations('nav');
@@ -52,8 +53,14 @@ export function SiteHeader() {
           >
             {theme === 'dark' ? '☀' : '☾'}
           </button>
-          <Link href="/app" className="btn btn-primary no-underline">
-            {t('openApp')}
+          <Link
+            href="/app/auth/login"
+            className="btn btn-tertiary no-underline !text-body hidden sm:inline-flex"
+          >
+            {t('signIn')}
+          </Link>
+          <Link href="/app/auth/signup" className="btn btn-primary no-underline">
+            {t('signUp')}
           </Link>
         </div>
       </nav>
