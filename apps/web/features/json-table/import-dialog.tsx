@@ -1579,6 +1579,7 @@ export function ImportJsonDialog({
                       line: parseError.line,
                       column: parseError.column,
                     })}
+                    {': '}
                   </button>
                   <p className="m-0 text-[13px] text-body">
                     {tJson('importParseErrorBody', {

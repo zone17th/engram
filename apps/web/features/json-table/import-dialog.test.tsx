@@ -42,6 +42,7 @@ import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
 import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
+import { JSON_FORMAT_MAX_DEPTH } from '@/lib/json';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 
@@ -323,7 +324,6 @@ interface ImportHarness {
   vault: () => VaultContextValue;
   server: ServerSimulator;
   unlock: () => Promise<void>;
-  unlockWithoutReload: () => Promise<void>;
   lock: () => Promise<void>;
   setCurrentMe: (nextMe: Me | null) => void;
   rerenderPage: (node?: ReactNode) => void;
@@ -340,6 +340,7 @@ async function setupImportHarness(options?: {
     version?: number;
   }>;
   lookupItems?: ItemSummary[];
+  skipInitialReloadVaultMeta?: boolean;
 }): Promise<ImportHarness> {
   const locale = options?.locale ?? 'vi';
   let vaultCtx!: VaultContextValue;
@@ -680,10 +681,12 @@ async function setupImportHarness(options?: {
   });
   await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
 
-  await act(async () => {
-    await vaultCtx.reloadVaultMeta();
-  });
-  await waitFor(() => expect(vaultCtx.vaultMeta?.vault_key_id).toBe(KEY_ID));
+  if (!options?.skipInitialReloadVaultMeta) {
+    await act(async () => {
+      await vaultCtx.reloadVaultMeta();
+    });
+    await waitFor(() => expect(vaultCtx.vaultMeta?.vault_key_id).toBe(KEY_ID));
+  }
 
   const initialList = options?.initialEntries ?? [
     {
@@ -761,19 +764,6 @@ async function setupImportHarness(options?: {
           opGeneration: op.opGeneration,
         });
         await vaultCtx.reloadVaultMeta();
-      });
-      await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
-    },
-    unlockWithoutReload: async () => {
-      const op = vaultCtx.beginOp();
-      await act(async () => {
-        await vaultCtx.unlockPassphrase({
-          passphrase: PASSPHRASE,
-          kdf: createdVault!.kdf,
-          vaultKeyWrappedByKek: createdVault!.vault_key_wrapped_by_kek,
-          privateKeysWrapped: createdVault!.private_keys_wrapped,
-          opGeneration: op.opGeneration,
-        });
       });
       await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
     },
@@ -1072,7 +1062,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     fireEvent.change(textarea, { target: { value: brokenJson } });
 
     const parseAlert = within(dialog).getByTestId('import-json-parse-error');
-    expect(parseAlert).toHaveTextContent('3');
+    expect(parseAlert).toHaveTextContent('Dòng 2, cột 17: dấu phẩy thừa');
     expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
 
     const saveAsTextBtn = within(dialog).getByTestId('import-json-save-as-text-btn');
@@ -1145,7 +1135,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       if (url.endsWith(`/items/${ITEM_ID}/entries/import-json`) && init?.method === 'POST') {
         importAttempts += 1;
         if (importAttempts <= 3) {
-          return problemResponse('dependency_unavailable', 503);
+          return problemResponse('dependency_unavailable', 503, { retry_after: 60 });
         }
       }
       return null;
@@ -1167,7 +1157,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     const importReqs = h.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     );
-    expect(importReqs.length).toBeGreaterThanOrEqual(4);
+    expect(importReqs).toHaveLength(2);
 
     const firstKey = importReqs[0]!.headers['idempotency-key'];
     const firstBody = importReqs[0]!.rawBody;
@@ -1214,7 +1204,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     // 2. After failed save
     h.server.overrideRoute((url, init) => {
       if (url.endsWith(`/items/${ITEM_ID}/entries/import-json`) && init?.method === 'POST') {
-        return problemResponse('dependency_unavailable', 503);
+        return problemResponse('dependency_unavailable', 503, { retry_after: 60 });
       }
       return null;
     });
@@ -1381,10 +1371,15 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     ).length;
     expect(reqCountAfterRelease).toBe(reqCountAtLock);
 
-    // 2. Lock during held route-level GET /vault (reloadVaultMeta when vaultMeta is null):
+    // 2. Lock during held route-level GET /vault (reloadVaultMeta when vaultMeta is genuinely null):
+    //    Mount a fresh harness with skipInitialReloadVaultMeta: true so vaultMeta is null when Submit is clicked;
     //    holder.submittedText stays empty before and after release, and zero sealEntry or POST calls occur
-    await h.unlockWithoutReload();
-    expect(h.vault().vaultMeta).toBeNull();
+    cleanup();
+    const hPreSeal = await setupImportHarness({
+      initialEntries: [],
+      skipInitialReloadVaultMeta: true,
+    });
+    expect(hPreSeal.vault().vaultMeta).toBeNull();
     await waitFor(() => {
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
@@ -1393,7 +1388,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     const { promise: vaultGate, resolve: releaseVaultGet } = createDeferred();
     const { promise: vaultEntered, resolve: notifyVaultEntered } = createDeferred();
 
-    h.server.overrideRoute(async (url, init) => {
+    hPreSeal.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (method === 'GET' && url.endsWith('/vault') && holdVaultGet) {
         notifyVaultEntered();
@@ -1402,7 +1397,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       return null;
     });
 
-    const clientSealSpy = vi.spyOn(h.vault().getClient(), 'sealEntry');
+    const clientSealSpy = vi.spyOn(hPreSeal.vault().getClient(), 'sealEntry');
 
     fireEvent.click(screen.getByTestId('btn-import-json'));
     const dialog2 = screen.getByTestId('import-json-dialog');
@@ -1413,7 +1408,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
 
     holdVaultGet = true;
     clientSealSpy.mockClear();
-    const postCountBeforePreSeal = h.server.requests.filter((r) =>
+    const postCountBeforePreSeal = hPreSeal.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
 
@@ -1423,36 +1418,42 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     // While reloadVaultMeta (GET /vault) is held in flight, submittedText was NOT populated yet
     expect(holder.current.submittedText).toBe('');
 
-    await h.lock();
+    await hPreSeal.lock();
     expect(holder.current).toEqual({
       draftText: '',
       submittedText: '',
     });
 
     holdVaultGet = false;
-    h.server.overrideRoute(null);
+    hPreSeal.server.overrideRoute(null);
     releaseVaultGet();
     await act(async () => {
       await flushMacrotask();
     });
 
     expect(clientSealSpy).not.toHaveBeenCalled();
-    const postCountAfterPreSeal = h.server.requests.filter((r) =>
+    const postCountAfterPreSeal = hPreSeal.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
     expect(postCountAfterPreSeal).toBe(postCountBeforePreSeal);
+    clientSealSpy.mockRestore();
 
     // 3. Unmount during held reloadVaultMeta -> holder wiped synchronously on unmount, zero sealEntry or POST after release
-    await h.unlockWithoutReload();
-    expect(h.vault().vaultMeta).toBeNull();
+    cleanup();
+    const hUnmount = await setupImportHarness({
+      initialEntries: [],
+      skipInitialReloadVaultMeta: true,
+    });
+    expect(hUnmount.vault().vaultMeta).toBeNull();
     await waitFor(() => {
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
+    const unmountSealSpy = vi.spyOn(hUnmount.vault().getClient(), 'sealEntry');
     const { promise: unmountVaultGate, resolve: releaseUnmountVaultGet } = createDeferred();
     const { promise: unmountVaultEntered, resolve: notifyUnmountVaultEntered } = createDeferred();
     holdVaultGet = true;
-    h.server.overrideRoute(async (url, init) => {
+    hUnmount.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (method === 'GET' && url.endsWith('/vault') && holdVaultGet) {
         notifyUnmountVaultEntered();
@@ -1467,8 +1468,8 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     fireEvent.change(textarea3, { target: { value: '{"unmount_race":"wipe_on_unmount"}' } });
     expect(holder.current.draftText).toBe('{"unmount_race":"wipe_on_unmount"}');
 
-    clientSealSpy.mockClear();
-    const postCountBeforeUnmount = h.server.requests.filter((r) =>
+    unmountSealSpy.mockClear();
+    const postCountBeforeUnmount = hUnmount.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
 
@@ -1476,7 +1477,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     await unmountVaultEntered;
 
     // Unmount page while reloadVaultMeta is held in flight
-    h.rerenderPage(<div data-testid="page-unmounted" />);
+    hUnmount.rerenderPage(<div data-testid="page-unmounted" />);
     expect(screen.getByTestId('page-unmounted')).toBeInTheDocument();
     expect(holder.current).toEqual({
       draftText: '',
@@ -1484,21 +1485,21 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     });
 
     holdVaultGet = false;
-    h.server.overrideRoute(null);
+    hUnmount.server.overrideRoute(null);
     releaseUnmountVaultGet();
     await act(async () => {
       await flushMacrotask();
     });
 
-    expect(clientSealSpy).not.toHaveBeenCalled();
-    const postCountAfterUnmount = h.server.requests.filter((r) =>
+    expect(unmountSealSpy).not.toHaveBeenCalled();
+    const postCountAfterUnmount = hUnmount.server.requests.filter((r) =>
       r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
     ).length;
     expect(postCountAfterUnmount).toBe(postCountBeforeUnmount);
-    clientSealSpy.mockRestore();
+    unmountSealSpy.mockRestore();
   });
 
-  it('formats JSON before saving when "Định dạng trước khi lưu" is checked and refuses when depth exceeds 20 levels', async () => {
+  it('formats JSON before saving when "Định dạng trước khi lưu" is checked and refuses when depth exceeds JSON_FORMAT_MAX_DEPTH (1000 levels)', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
@@ -1508,14 +1509,16 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     const dialog = screen.getByTestId('import-json-dialog');
     const textarea = within(dialog).getByTestId('import-json-source-textarea');
 
-    // 1. Depth 21 -> format checkbox refuses with depth warning and keeps original text
-    const deepJson = `${'{"a":'.repeat(21)}1${'}'.repeat(21)}`;
+    // 1. Depth = JSON_FORMAT_MAX_DEPTH + 1 (1001) -> format checkbox refuses with depth warning and keeps original text
+    const exceedDepth = JSON_FORMAT_MAX_DEPTH + 1;
+    const deepJson = `${'{"a":'.repeat(exceedDepth)}1${'}'.repeat(exceedDepth)}`;
     fireEvent.change(textarea, { target: { value: deepJson } });
     const formatCheckbox = within(dialog).getByTestId('import-json-format-checkbox') as HTMLInputElement;
     fireEvent.click(formatCheckbox);
     expect(formatCheckbox.checked).toBe(false);
-    expect(within(dialog).getByTestId('import-json-format-warning')).toBeInTheDocument();
-
+    expect(within(dialog).getByTestId('import-json-format-warning')).toHaveTextContent(
+      String(JSON_FORMAT_MAX_DEPTH),
+    );
     // 2. Minified valid JSON with depth 2 -> checking Format before saving formats the saved bytes
     const minified = '{"alpha":1,"beta":[true,false]}';
     fireEvent.change(textarea, { target: { value: minified } });
