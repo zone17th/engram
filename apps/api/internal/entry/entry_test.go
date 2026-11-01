@@ -86,3 +86,63 @@ func TestListCursorRoundTripAndItemBinding(t *testing.T) {
 		t.Fatal("DecodeListCursor accepted padded/invalid base64url")
 	}
 }
+
+func TestValidateReorderIDsAndMatchLiveEntrySet(t *testing.T) {
+	id1 := uuid.New()
+	id2 := uuid.New()
+	id3 := uuid.New()
+
+	// Empty slice -> valid (permitted when item has 0 live entries).
+	parsedEmpty, code := entry.ValidateReorderIDs([]string{})
+	if code != "" || len(parsedEmpty) != 0 {
+		t.Fatalf("ValidateReorderIDs([]) = (%v, %q), want empty and \"\"", parsedEmpty, code)
+	}
+	if !entry.MatchLiveEntrySet(parsedEmpty, nil) {
+		t.Fatal("MatchLiveEntrySet([], []) = false, want true")
+	}
+	if entry.MatchLiveEntrySet(parsedEmpty, []uuid.UUID{id1}) {
+		t.Fatal("MatchLiveEntrySet([], [id1]) = true, want false")
+	}
+
+	// Valid permutation of 3 IDs.
+	parsed, code := entry.ValidateReorderIDs([]string{id3.String(), id1.String(), id2.String()})
+	if code != "" || len(parsed) != 3 {
+		t.Fatalf("ValidateReorderIDs valid = (%v, %q), want 3 IDs and \"\"", parsed, code)
+	}
+	if !entry.MatchLiveEntrySet(parsed, []uuid.UUID{id1, id2, id3}) {
+		t.Fatal("MatchLiveEntrySet valid permutation = false, want true")
+	}
+
+	// Missing, extra, or different ID -> MatchLiveEntrySet false.
+	if entry.MatchLiveEntrySet(parsed[:2], []uuid.UUID{id1, id2, id3}) {
+		t.Fatal("MatchLiveEntrySet missing ID = true, want false")
+	}
+	if entry.MatchLiveEntrySet(parsed, []uuid.UUID{id1, id2}) {
+		t.Fatal("MatchLiveEntrySet extra ID = true, want false")
+	}
+	if entry.MatchLiveEntrySet([]uuid.UUID{id1, id2, uuid.New()}, []uuid.UUID{id1, id2, id3}) {
+		t.Fatal("MatchLiveEntrySet wrong ID = true, want false")
+	}
+
+	// Duplicate ID -> 400 invalid_request.
+	if _, code := entry.ValidateReorderIDs([]string{id1.String(), id1.String()}); code != "invalid_request" {
+		t.Fatalf("ValidateReorderIDs duplicate = %q, want invalid_request", code)
+	}
+
+	// Non-lowercase or malformed UUID -> 400 invalid_request.
+	if _, code := entry.ValidateReorderIDs([]string{strings.ToUpper(id1.String())}); code != "invalid_request" {
+		t.Fatalf("ValidateReorderIDs uppercase UUID = %q, want invalid_request", code)
+	}
+	if _, code := entry.ValidateReorderIDs([]string{"not-a-uuid"}); code != "invalid_request" {
+		t.Fatalf("ValidateReorderIDs malformed UUID = %q, want invalid_request", code)
+	}
+
+	// > 200 distinct IDs -> 409 reorder_mismatch.
+	over200 := make([]string, 201)
+	for i := range over200 {
+		over200[i] = uuid.NewString()
+	}
+	if _, code := entry.ValidateReorderIDs(over200); code != "reorder_mismatch" {
+		t.Fatalf("ValidateReorderIDs(201 IDs) = %q, want reorder_mismatch", code)
+	}
+}
