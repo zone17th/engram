@@ -528,6 +528,86 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 	}
 }
 
+// KS-PSL (P04 Task 9, P4BE1-8): RP ID là public suffix của phần ICANN hoặc phần private của PSL bị từ chối lúc boot,
+// kể cả khi origin là subdomain khớp. Mọi ca từ chối dưới đây đều boot được trước KS-PSL (RP ID bằng host hoặc là hậu
+// tố của host), nên chúng chỉ đỏ nhờ kiểm PSL. Ngoại lệ tường minh duy nhất là localhost.
+func TestWebAuthnRPIDPublicSuffixBoot(t *testing.T) {
+	prodSecrets := map[string]string{
+		"APP_ENV":            "production",
+		"AUTH_JWT_SECRET":    b64(32),
+		"AUTH_CSRF_SECRET":   b64(33),
+		"AUTH_REAUTH_SECRET": b64(34),
+		"AUTH_IP_PEPPER":     b64(35),
+		"AUTH_EMAIL_PEPPER":  b64(36),
+	}
+	prod := func(origin, rpID string) map[string]string {
+		m := make(map[string]string, len(prodSecrets)+2)
+		for k, v := range prodSecrets {
+			m[k] = v
+		}
+		m["APP_ORIGIN"] = origin
+		if rpID != "" {
+			m["WEBAUTHN_RP_ID"] = rpID
+		}
+		return m
+	}
+	dev := func(origin, rpID string) map[string]string {
+		m := map[string]string{"APP_ENV": "development", "APP_ORIGIN": origin}
+		if rpID != "" {
+			m["WEBAUTHN_RP_ID"] = rpID
+		}
+		return m
+	}
+
+	rejectCases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"ICANN co.uk as parent of the origin host", prod("https://app.example.co.uk", "co.uk")},
+		{"ICANN co.uk equal to the origin host", prod("https://co.uk", "co.uk")},
+		{"ICANN co.uk derived from APP_ORIGIN", prod("https://co.uk", "")},
+		{"private github.io as parent of the origin host", prod("https://zone17.github.io", "github.io")},
+		{"private github.io equal to the origin host", prod("https://github.io", "github.io")},
+		{"TLD click derived from a single-label dev origin", dev("http://click:3000", "")},
+		{"TLD click explicit with a single-label dev origin", dev("http://click:3000", "click")},
+		{"TLD click as parent of the production origin", prod("https://engram.zone17.click", "click")},
+	}
+	for _, tc := range rejectCases {
+		t.Run("reject "+tc.name, func(t *testing.T) {
+			setEnv(t, tc.env)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load() muốn lỗi public suffix cho %s, nhận nil", tc.name)
+			}
+		})
+	}
+
+	acceptCases := []struct {
+		name   string
+		env    map[string]string
+		wantID string
+	}{
+		{"registrable zone17.click as parent of the production origin", prod("https://engram.zone17.click", "zone17.click"), "zone17.click"},
+		{"production engram.zone17.click explicit (ADR 0003, user-dec-013)", prod("https://engram.zone17.click", "engram.zone17.click"), "engram.zone17.click"},
+		{"production engram.zone17.click derived from APP_ORIGIN", prod("https://engram.zone17.click", ""), "engram.zone17.click"},
+		{"registrable label under private github.io", prod("https://zone17.github.io", "zone17.github.io"), "zone17.github.io"},
+		{"dev localhost derived from APP_ORIGIN", dev("http://localhost:3000", ""), "localhost"},
+		{"dev localhost explicit", dev("http://localhost:3000", "localhost"), "localhost"},
+		{"dev IP origin keeps exact-match path", dev("http://127.0.0.1:3000", ""), "127.0.0.1"},
+	}
+	for _, tc := range acceptCases {
+		t.Run("accept "+tc.name, func(t *testing.T) {
+			setEnv(t, tc.env)
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.WebAuthnRPID != tc.wantID {
+				t.Fatalf("WebAuthnRPID = %q, muốn %q", cfg.WebAuthnRPID, tc.wantID)
+			}
+		})
+	}
+}
+
 func fmtMap(m map[string]any) string {
 	var b strings.Builder
 	for k, v := range m {
