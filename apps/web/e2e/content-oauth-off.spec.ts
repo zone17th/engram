@@ -48,11 +48,14 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     expect(Array.isArray(meBody.features?.oauth_reauth_providers)).toBe(true);
     expect(meBody.features?.oauth_reauth_providers).toEqual([]);
 
-    // TODO(P04 Tasks 4-7): Once content list endpoints merge, assert OpenAPI-required arrays on an empty user/item:
-    // - GET /api/v1/items -> ItemList.items (and ItemSummary.tags on returned items)
-    // - GET /api/v1/items/lookup?name=x -> ItemLookupResult.items
-    // - GET /api/v1/tags -> TagList.items
-    // - GET /api/v1/entries/changes?since=<now> -> EntryChangesPage.changes
-    // - GET /api/v1/items/{id}/entries -> EntryMetaList.items
+    // Follow-up ownership (advisor-dec-127 Q4):
+    // - W2 lane `itemtag` extends this spec with items/tags list arrays when its endpoints land:
+    //   GET /api/v1/items -> ItemList.items (and ItemSummary.tags on returned items),
+    //   GET /api/v1/items/lookup?name=x -> ItemLookupResult.items,
+    //   GET /api/v1/tags -> TagList.items.
+    // - W2 lane `entryapi` extends this spec with entries/changes arrays when its endpoints land:
+    //   GET /api/v1/items/{id}/entries -> EntryMetaList.items,
+    //   GET /api/v1/entries/changes?since=<now> -> EntryChangesPage.changes.
+    // - Task 21a verifies full required-array coverage across all merged content endpoints.
   });
 });

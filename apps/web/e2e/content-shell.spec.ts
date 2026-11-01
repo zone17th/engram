@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { contentEnabled } from '../lib/flags';
 import { uniqueEmail } from './helpers';
 import { VAULT_PASSPHRASE } from './vault-passkey-support';
 import { createVaultViaOnboarding, expectUnlockedOnApp, signupPasswordUser } from './vault-journey-support';
@@ -16,8 +15,9 @@ test.describe('P04-T11 content shell skeleton', () => {
 
   test('signs up, completes onboarding, and renders /app shell with content flag enabled', async ({ page }) => {
     test.setTimeout(SHELL_TIMEOUT_MS);
-
-    expect(contentEnabled()).toBe(true);
+    // Build-time proof for NEXT_PUBLIC_CONTENT_ENABLED is enforced by scripts/e2e-infra.test.mjs
+    // until W3 renders a flag-dependent element on /app (calling contentEnabled() here would only
+    // read the Playwright runner's process.env, not the Next bundle built into the container).
 
     const email = uniqueEmail('content-shell');
     await signupPasswordUser(page, email);
