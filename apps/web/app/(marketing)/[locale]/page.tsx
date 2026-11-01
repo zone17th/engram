@@ -5,7 +5,7 @@ import { HeroDemo } from '@/components/landing/hero-demo';
 import { JsonTable } from '@/components/landing/json-table';
 import { SiteHeader } from '@/components/landing/site-header';
 import { SiteFooter } from '@/components/landing/site-footer';
-import { DEMO_JSON } from '@/lib/demo-fixtures';
+import { LANDING_ROUTER_JSON } from '@/components/landing/landing-fixtures';
 
 // Landing phải là SSG để đạt TTFB < 200 ms (Global Constraints).
 export function generateStaticParams() {
@@ -56,7 +56,7 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
             <p className="t-body text-muted">{t('jsonNote')}</p>
           </div>
           <JsonTable
-            data={DEMO_JSON}
+            data={LANDING_ROUTER_JSON}
             title={t('jsonCardTitle')}
             labels={{ table: t('jsonViewTable'), raw: t('jsonViewRaw') }}
           />
