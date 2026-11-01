@@ -450,7 +450,6 @@ export function Omnibox({
       const controller = new AbortController();
       searchAbortRef.current = controller;
       setActionErrorCode(null);
-
       const searchKey: ContentItemsQueryKey = contentQueryKeys.items({
         sort: 'alpha',
         q,
@@ -465,9 +464,7 @@ export function Omnibox({
               staleTime: 0,
             })
           : await itemsList({ sort: 'alpha', q, signal: controller.signal });
-
-        if (controller.signal.aborted) return;
-
+        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
         const items = data.items ?? [];
         setSearchResults({ query: q, items });
         setListKind('search');
@@ -480,7 +477,7 @@ export function Omnibox({
             : tOmni('searchEmptyTitle', { query: q }),
         );
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
         const code = getContentErrorI18nKey(error).replace(
           /^content\.errors\./,
           '',
@@ -517,9 +514,7 @@ export function Omnibox({
               q: token || undefined,
               signal: controller.signal,
             });
-
-        if (controller.signal.aborted) return;
-
+        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
         const matched = data.items ?? [];
         setTagFilterState({
           token,
@@ -535,7 +530,7 @@ export function Omnibox({
             : tOmni('tagEmptyTitle', { query: token }),
         );
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
         const code = getContentErrorI18nKey(error).replace(
           /^content\.errors\./,
           '',
@@ -552,6 +547,10 @@ export function Omnibox({
     setGuardKind(null);
     setActionErrorCode(null);
     syncTextareaHeight(event.target);
+
+    // Always cancel any in-flight search or server tag request when the user edits the input (HM18A-R1-6).
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
 
     const nextParsed = parseQuickAdd(nextValue);
     if (nextParsed.mode === 'tag-filter') {
@@ -690,6 +689,8 @@ export function Omnibox({
       }
       if (inputValue.length > 0) {
         event.preventDefault();
+        searchAbortRef.current?.abort();
+        searchAbortRef.current = null;
         setInputValue('');
         setGuardKind(null);
         setActionErrorCode(null);
@@ -713,6 +714,7 @@ export function Omnibox({
   const showTagHint = parsed.mode === 'tag-filter' && hasNonEmptyInput && guardKind === null;
   const showHint = showSearchHint || showTagHint;
   const isSearchInvalid = parsed.mode === 'search' && hasNonEmptyInput && !parsed.searchable;
+  const hasOptionChildren = options.length > 0;
 
   return (
     <div
@@ -736,14 +738,15 @@ export function Omnibox({
           value={inputValue}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
-          placeholder={compact ? tOmni('placeholderCompact') : tOmni('placeholder')}
+          placeholder={tOmni('placeholder')}
+          data-omnibox-input=""
           aria-label={tOmni('ariaLabel')}
           aria-describedby={hintId}
-          aria-controls={listOpen ? listboxId : undefined}
+          aria-controls={listOpen && hasOptionChildren ? listboxId : undefined}
           aria-activedescendant={activeDescendantId}
           aria-invalid={isSearchInvalid || guardKind !== null ? true : undefined}
           className={cn(
-            'omnibox-input m-0 block max-h-[132px] resize-none overflow-y-hidden p-0 leading-[1.4] placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap',
+            'omnibox-input m-0 block max-h-[132px] resize-none overflow-y-hidden p-0 leading-[1.4]',
             compact && '!text-[15px]',
           )}
           {...getVaultSecretInputProps()}
@@ -767,7 +770,13 @@ export function Omnibox({
             !showHint && 'hidden',
           )}
         >
-          {showSearchHint ? tOmni('searchHint') : showTagHint ? tOmni('tagHint') : ''}
+          {showSearchHint
+            ? tOmni.rich('searchHint', {
+                mono: (chunks) => <span className="mono">{chunks}</span>,
+              })
+            : showTagHint
+              ? tOmni('tagHint')
+              : ''}
         </div>
 
         <div
@@ -816,6 +825,11 @@ export function Omnibox({
         <div
           id={popId}
           data-pop=""
+          onMouseDown={(event) => {
+            // Keep focus on the textarea when clicking inside the popover so `handleRootBlur`
+            // does not close the listbox before `onClick` fires (HM18A-R1-2).
+            event.preventDefault();
+          }}
           className="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"
         >
           {listKind === 'search' && searchResults ? (
@@ -864,6 +878,7 @@ export function Omnibox({
                         }}
                         id={option.id}
                         role="option"
+                        aria-label={`${option.item.name} — ${tOmni('searchEntryCount', { count: option.item.entry_count })}`}
                         aria-selected={isSelected}
                         data-opt-idx={index}
                         onMouseMove={() => {
@@ -965,44 +980,47 @@ export function Omnibox({
                 </div>
               ) : null}
 
-              <div
-                id={listboxId}
-                role="listbox"
-                aria-label={tOmni('tagListboxAriaLabel')}
-                className="omni-listbox"
-              >
-                {options.map((option, index) => {
-                  if (option.kind !== 'tag') return null;
-                  const isSelected = activeIndex === index;
-                  return (
-                    <div
-                      key={option.id}
-                      ref={(el) => {
-                        optionRefs.current[option.id] = el;
-                      }}
-                      id={option.id}
-                      role="option"
-                      aria-selected={isSelected}
-                      data-opt-idx={index}
-                      onMouseMove={() => {
-                        if (activeIndex !== index) {
-                          setActiveIndex(index);
-                        }
-                      }}
-                      onClick={() => executeOption(option)}
-                      className="sugg-row"
-                    >
-                      <span className="mono text-accent">#</span>
-                      <span>
-                        <MarkedPrefixText text={option.tag.display} query={option.query} />
-                      </span>
-                      <span className="sugg-meta mono">
-                        {tOmni('tagItemCount', { count: option.tag.item_count })}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
+              {options.length > 0 ? (
+                <div
+                  id={listboxId}
+                  role="listbox"
+                  aria-label={tOmni('tagListboxAriaLabel')}
+                  className="omni-listbox"
+                >
+                  {options.map((option, index) => {
+                    if (option.kind !== 'tag') return null;
+                    const isSelected = activeIndex === index;
+                    return (
+                      <div
+                        key={option.id}
+                        ref={(el) => {
+                          optionRefs.current[option.id] = el;
+                        }}
+                        id={option.id}
+                        role="option"
+                        aria-label={`#${option.tag.display} — ${tOmni('tagItemCount', { count: option.tag.item_count })}`}
+                        aria-selected={isSelected}
+                        data-opt-idx={index}
+                        onMouseMove={() => {
+                          if (activeIndex !== index) {
+                            setActiveIndex(index);
+                          }
+                        }}
+                        onClick={() => executeOption(option)}
+                        className="sugg-row"
+                      >
+                        <span className="mono text-accent">#</span>
+                        <span>
+                          <MarkedPrefixText text={option.tag.display} query={option.query} />
+                        </span>
+                        <span className="sugg-meta mono">
+                          {tOmni('tagItemCount', { count: option.tag.item_count })}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </>
           ) : null}
         </div>
