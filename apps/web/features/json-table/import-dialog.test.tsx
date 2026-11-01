@@ -798,15 +798,28 @@ async function setupImportHarness(options?: {
   };
 }
 
-function makeFileFromBytes(bytes: Uint8Array, name = 'test.json'): File {
+function makeFileFromBytes(
+  bytes: Uint8Array,
+  name = 'test.json',
+  options?: {
+    arrayBufferImpl?: () => Promise<ArrayBuffer>;
+    sizeOverride?: number;
+  },
+): File {
   const exactBuffer = bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
   const file = new File([exactBuffer], name, { type: 'application/json' });
-  if (typeof file.arrayBuffer !== 'function') {
-    Object.defineProperty(file, 'arrayBuffer', {
-      value: async () => exactBuffer,
+  Object.defineProperty(file, 'arrayBuffer', {
+    configurable: true,
+    writable: true,
+    value: options?.arrayBufferImpl ?? (async () => exactBuffer),
+  });
+  if (typeof options?.sizeOverride === 'number') {
+    Object.defineProperty(file, 'size', {
+      configurable: true,
+      value: options.sizeOverride,
     });
   }
   return file;
@@ -1041,24 +1054,20 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
 
     // 1b. IP17-R1-8: file with size > 4 MiB is rejected by checking file.size before reading arrayBuffer()
-    const hugeFile = makeFileFromBytes(new Uint8Array([0x7b, 0x7d]), 'huge.json');
-    Object.defineProperty(hugeFile, 'size', { value: 5 * 1024 * 1024 });
-    const arrayBufferSpy = vi
-      .spyOn(File.prototype, 'arrayBuffer')
-      .mockResolvedValue(new ArrayBuffer(0));
-    try {
-      await act(async () => {
-        fireEvent.change(fileInput, {
-          target: { files: [hugeFile] },
-        });
+    const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0));
+    const hugeFile = makeFileFromBytes(new Uint8Array([0x7b, 0x7d]), 'huge.json', {
+      arrayBufferImpl: arrayBufferSpy,
+      sizeOverride: 5 * 1024 * 1024,
+    });
+    await act(async () => {
+      fireEvent.change(fileInput, {
+        target: { files: [hugeFile] },
       });
+    });
 
-      expect(arrayBufferSpy).not.toHaveBeenCalled();
-      expect(within(dialog).getByTestId('import-json-over-cap-error')).toBeInTheDocument();
-      expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
-    } finally {
-      arrayBufferSpy.mockRestore();
-    }
+    expect(arrayBufferSpy).not.toHaveBeenCalled();
+    expect(within(dialog).getByTestId('import-json-over-cap-error')).toBeInTheDocument();
+    expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
     // 2. 262,144 B -> accepted and saves 201
     await act(async () => {
       fireEvent.change(fileInput, {
