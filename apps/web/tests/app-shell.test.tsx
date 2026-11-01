@@ -1,16 +1,19 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '../components/app-shell/app-header';
 import { EmptyState } from '../components/app-shell/empty-state';
 import { Omnibox } from '../components/app-shell/omnibox';
 import { PreviewNotice } from '../components/app-shell/preview-notice';
 import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
-import { DEMO_TAGS } from '../lib/demo-fixtures';
+import { UndoToastProvider } from '../components/ui/undo-toast';
+import { contentQueryKeys } from '../features/items/query-keys';
+import type { Tag } from '../lib/api/content';
 import viMessages from '../messages/vi.json';
 
 function renderWithTheme(ui: ReactNode) {
@@ -52,26 +55,76 @@ describe('AppHeader', () => {
 });
 
 describe('Rail', () => {
-  it('liệt kê tag kèm số lượng', () => {
-    render(<Rail tags={DEMO_TAGS} semanticAvailable={false} />);
-    expect(screen.getByText(DEMO_TAGS[0].name)).toBeInTheDocument();
-    expect(screen.getByText(String(DEMO_TAGS[0].count))).toBeInTheDocument();
-  });
+  const SAMPLE_TAGS: Tag[] = [
+    {
+      id: '11111111-1111-4111-8111-111111111111',
+      display: 'nhà',
+      item_count: 12,
+      last_used_at: '2026-11-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: '22222222-2222-4222-8222-222222222222',
+      display: 'ops',
+      item_count: 7,
+      last_used_at: '2026-11-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z',
+    },
+  ];
 
-  // SPEC §7 (sơ đồ omnibox): toggle semantic_suggest **ẩn** khi
-  // semantic_available = false. Không render disabled — disabled vẫn là một lời
-  // quảng cáo tính năng chưa có.
-  it('ẩn hẳn toggle Gần nghĩa khi semantic không khả dụng', () => {
-    render(<Rail tags={DEMO_TAGS} semanticAvailable={false} />);
+  function renderRailWithTags(ui: ReactNode, tags: Tag[] = SAMPLE_TAGS) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(contentQueryKeys.tags({ sort: 'recent' }), {
+      items: tags,
+      next_cursor: null,
+    });
+    return render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>{ui}</UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+  }
+
+  it('liệt kê tag kèm số lượng và không còn danh sách Gần đây hay công tắc Gần nghĩa demo', () => {
+    renderRailWithTags(<Rail />);
+    expect(screen.getByRole('navigation', { name: 'Bộ lọc tag' })).toBeInTheDocument();
+    expect(screen.getByText('#nhà')).toBeInTheDocument();
+    expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.queryByRole('switch', { name: /Gần nghĩa/ })).not.toBeInTheDocument();
-    expect(screen.queryByText(/Gần nghĩa/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Gần đây')).not.toBeInTheDocument();
   });
 
-  it('hiện toggle Gần nghĩa khi semantic khả dụng', () => {
-    render(<Rail tags={DEMO_TAGS} semanticAvailable />);
-    const sw = screen.getByRole('switch', { name: /Gần nghĩa/ });
-    expect(sw).not.toHaveAttribute('aria-disabled');
-    expect(sw).toHaveAttribute('aria-checked', 'false');
+  it('chọn và bỏ lọc tag theo ID', () => {
+    const onSelectTag = vi.fn();
+    const { rerender } = renderRailWithTags(
+      <Rail selectedTagId={null} onSelectTag={onSelectTag} />,
+    );
+    fireEvent.click(screen.getByTestId(`rail-tag-filter-${SAMPLE_TAGS[0].id}`));
+    expect(onSelectTag).toHaveBeenCalledWith(SAMPLE_TAGS[0].id);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(contentQueryKeys.tags({ sort: 'recent' }), {
+      items: SAMPLE_TAGS,
+      next_cursor: null,
+    });
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Rail selectedTagId={SAMPLE_TAGS[0].id} onSelectTag={onSelectTag} />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    const clearBtn = screen.getByTestId('rail-clear-filter');
+    fireEvent.click(clearBtn);
+    expect(onSelectTag).toHaveBeenLastCalledWith(null);
   });
 });
 

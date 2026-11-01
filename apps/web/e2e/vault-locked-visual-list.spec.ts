@@ -1,8 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { THEMES, WIDTHS, capture, gotoLocked, installVisualApiMocks, prepare } from './vault-locked-support';
+import { gotoLockedHomeList, installHomeContentMetadataRoutes } from './content-home-support';
+import { THEMES, WIDTHS, capture, installVisualApiMocks, prepare } from './vault-locked-support';
 
 /**
- * P03-T21 visual captures for the U5 locked list (`/app`), split from `vault-locked-visual.spec.ts` (P4FE3-1, P4FE4-1).
+ * P03-T21 visual captures for the U5 locked list (`/app`), split from `vault-locked-visual.spec.ts` (P4FE3-1, P4FE4-1)
+ * and ported to P04 Task 19 home metadata grid.
  */
 test.describe('P03-T21 Locked state U5 visual captures (AC VISUAL)', () => {
   for (const theme of THEMES) {
@@ -12,8 +14,9 @@ test.describe('P03-T21 Locked state U5 visual captures (AC VISUAL)', () => {
       test(`locked list (${label})`, async ({ context, page }, testInfo) => {
         test.setTimeout(90_000);
         await installVisualApiMocks(context, theme);
+        await installHomeContentMetadataRoutes(context);
         await prepare(page, theme, viewport.width, viewport.height);
-        await gotoLocked(page, '/app', theme);
+        await gotoLockedHomeList(page, '/app', theme);
         await expect(page.locator('.vault-pill, [data-vault-state="locked"]').first()).toBeAttached();
         await capture(page, testInfo, 'locked-list', theme, viewport.width);
       });
