@@ -105,7 +105,7 @@ describe('problem', () => {
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
   });
 
-  it('nối đủ code P04 content ở cuối catalog, đúng thứ tự plan P04 mục 3', () => {
+  it('nối đủ code P04 content và reset_token_invalid ở cuối catalog, đúng thứ tự plan P04 mục 3 và ADR 0006', () => {
     const p04 = [
       'name_invalid',
       'hint_invalid',
@@ -124,8 +124,9 @@ describe('problem', () => {
       'reorder_mismatch',
       'changes_window_expired',
     ] as const;
-    expect(ERROR_CODES.slice(-p04.length)).toEqual([...p04]);
-    expect(ERROR_CODES[ERROR_CODES.length - p04.length - 1]).toBe('passkey_not_found');
+    const tail = [...p04, 'reset_token_invalid'] as const;
+    expect(ERROR_CODES.slice(-tail.length)).toEqual([...tail]);
+    expect(ERROR_CODES[ERROR_CODES.length - tail.length - 1]).toBe('passkey_not_found');
   });
 
   it('đồng bộ hai chiều giữa ERROR_CODES và danh sách ProblemCode trong openapi.yaml', () => {

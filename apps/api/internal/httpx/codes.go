@@ -63,6 +63,8 @@ var ProblemCodes = []string{
 	"entry_restore_via_item",
 	"reorder_mismatch",
 	"changes_window_expired",
+	// P04 authui (ADR 0006): đặt lại mật khẩu tài khoản, nối cuối catalog.
+	"reset_token_invalid",
 }
 
 // SessionInvalidReason là extension `reason` khi code = session_invalid.
