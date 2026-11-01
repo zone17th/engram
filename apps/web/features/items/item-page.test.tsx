@@ -1152,7 +1152,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.getByTestId('item-not-found-back')).toHaveAttribute('href', '/app');
   });
 
-  it('renders content.privacy notice in the item header and in the tag popover, and hides + JSON / Import JSON in Milestone A', async () => {
+  it('renders content.privacy notice in the item header and in the tag popover, and shows + Text / + JSON / Import JSON in Milestone C', async () => {
     await setupItemPageHarness();
     await waitFor(() => {
       expect(screen.getByTestId('item-privacy-note')).toHaveTextContent(
@@ -1171,14 +1171,15 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       );
     });
 
-    // + Text and + JSON / table exist in Milestone C (Task 16); Import JSON stays hidden until Task 17
+    // + Text, + JSON / table, and Import JSON… exist in Milestone C (Tasks 16-17)
     const actionBar = screen.getByTestId('entry-composer');
     expect(within(actionBar).getByTestId('btn-add-text')).toBeInTheDocument();
     expect(within(actionBar).getByTestId('btn-add-json')).toHaveTextContent(
       viMessages.content.json.addJsonCta,
     );
-    expect(within(actionBar).queryByText(/Import JSON/i)).toBeNull();
-    expect(screen.queryByText(/Import JSON/i)).toBeNull();
+    expect(within(actionBar).getByTestId('btn-import-json')).toHaveTextContent(
+      viMessages.content.json.importJsonCta,
+    );
   });
 
   it('renders javascript:alert(1) and URLs as plain text with NO <a> links and NO innerHTML, and shows no entry title or edit date on cards (Q19)', async () => {
@@ -2507,6 +2508,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       const addTextBtn = screen.getByTestId('btn-add-text');
       expect(addTextBtn).toBeDisabled();
       expect(addTextBtn).toHaveAttribute('title', viMessages.content.item.entryLimitHint);
+      const importJsonBtn = screen.getByTestId('btn-import-json');
+      expect(importJsonBtn).toBeDisabled();
+      expect(importJsonBtn).toHaveAttribute('title', viMessages.content.item.entryLimitHint);
       expect(screen.getByTestId('entry-limit-hint')).toHaveTextContent(
         viMessages.content.item.entryLimitHint,
       );

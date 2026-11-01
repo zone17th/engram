@@ -897,7 +897,13 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     fireEvent.change(textarea, { target: { value: 'wifi: {"ssid":"Zone17","vlan":10}' } });
     const jsonBanner = screen.getByTestId('omnibox-json-banner');
     expect(jsonBanner).toHaveTextContent('Phát hiện JSON — Lưu như bảng');
-    expect(screen.getByTestId('omnibox-json-banner-action')).toHaveAttribute('hidden');
+    // advisor-dec-209 (Milestone C Task 17): banner action is visible and opens the Import JSON dialog with the pasted text.
+    const jsonBannerAction = screen.getByTestId('omnibox-json-banner-action');
+    expect(jsonBannerAction).not.toHaveAttribute('hidden');
+    fireEvent.click(jsonBannerAction);
+    expect(screen.getByTestId('import-json-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('import-json-source-textarea')).toHaveValue('{"ssid":"Zone17","vlan":10}');
+    fireEvent.click(screen.getByTestId('import-json-close-btn'));
     expect(preview).toHaveTextContent('text · E2E');
 
     // 6. Locked vault -> shows "Mở khoá để lưu" button, Enter does not fire lookup
