@@ -1,0 +1,482 @@
+{
+  "version": 1,
+  "schema": "engram-content-normalize-v1",
+  "description": "Shared normalization and validation test fixtures for item name, tag display, item hint, and list/lookup query (P04 plan muc 2.2 & 2.3, SPEC 2.4). Input is either 'input' (valid UTF-8 string; control/bidi/non-ASCII written with \\uXXXX escapes) or 'input_bytes' (lowercase hex of raw bytes for invalid UTF-8 cases, since JSON strings cannot hold ill-formed UTF-8). Reading of muc 2.2 step 1 ('C0/C1 tru space'): only ASCII space U+0020 is excepted among C0/C1; U+0009 TAB, LF, CR, VT, FF, and NEL (U+0085) are C0/C1 controls and are rejected in step 1.",
+  "cases": [
+    {
+      "name": "basic-ascii-lowercase-and-trim",
+      "kind": "name",
+      "input": "  Hello World  ",
+      "trimmed": "Hello World",
+      "normalized": "hello world"
+    },
+    {
+      "name": "collapse-multiple-ascii-spaces",
+      "kind": "name",
+      "input": "wifi    nh\u00e0   l\u1ea7u   2",
+      "trimmed": "wifi    nh\u00e0   l\u1ea7u   2",
+      "normalized": "wifi nh\u00e0 l\u1ea7u 2"
+    },
+    {
+      "name": "unicode-spaces-nbsp-en-em-thin-ideographic",
+      "kind": "name",
+      "input": "\u00a0wifi\u00a0\u2000nh\u00e0\u2003c\u00f4ng\u2009ty\u202f\u205f\u3000v\u0103n\u1680ph\u00f2ng\u3000",
+      "trimmed": "wifi\u00a0\u2000nh\u00e0\u2003c\u00f4ng\u2009ty\u202f\u205f\u3000v\u0103n\u1680ph\u00f2ng",
+      "normalized": "wifi nh\u00e0 c\u00f4ng ty v\u0103n ph\u00f2ng"
+    },
+    {
+      "name": "unicode-line-and-paragraph-separator-spaces",
+      "kind": "name",
+      "input": "alpha\u2028beta\u2029gamma",
+      "trimmed": "alpha\u2028beta\u2029gamma",
+      "normalized": "alpha beta gamma"
+    },
+    {
+      "name": "tab-rejected-as-c0-control-in-name",
+      "kind": "name",
+      "input": "wifi\tnha",
+      "error": "name_invalid"
+    },
+    {
+      "name": "tab-rejected-as-c0-control-in-tag",
+      "kind": "tag",
+      "input": "work\ttag",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "nfd-decomposed-vietnamese-to-nfc",
+      "kind": "name",
+      "input": "Ti\u0065\u0302\u0301ng Vi\u0065\u0323\u0302t m\u0061\u0303 ho\u0061\u0301",
+      "trimmed": "Ti\u0065\u0302\u0301ng Vi\u0065\u0323\u0302t m\u0061\u0303 ho\u0061\u0301",
+      "normalized": "ti\u1ebfng vi\u1ec7t m\u00e3 ho\u00e1"
+    },
+    {
+      "name": "nfc-precomposed-vietnamese-matches-nfd",
+      "kind": "name",
+      "input": "Ti\u1ebfng Vi\u1ec7t M\u00e3 Ho\u00e1",
+      "trimmed": "Ti\u1ebfng Vi\u1ec7t M\u00e3 Ho\u00e1",
+      "normalized": "ti\u1ebfng vi\u1ec7t m\u00e3 ho\u00e1"
+    },
+    {
+      "name": "vietnamese-marks-preserved-ma-tilde-not-equal-ma",
+      "kind": "name",
+      "input": "M\u00e3",
+      "trimmed": "M\u00e3",
+      "normalized": "m\u00e3"
+    },
+    {
+      "name": "vietnamese-plain-ma-distinct",
+      "kind": "name",
+      "input": "Ma",
+      "trimmed": "Ma",
+      "normalized": "ma"
+    },
+    {
+      "name": "vietnamese-d-stroke-and-tones",
+      "kind": "tag",
+      "input": "\u0110\u1ed3ng-\u0110\u1ed9i",
+      "trimmed": "\u0110\u1ed3ng-\u0110\u1ed9i",
+      "normalized": "\u0111\u1ed3ng-\u0111\u1ed9i"
+    },
+    {
+      "name": "turkish-capital-i-with-dot-above-per-rune-tolower",
+      "kind": "name",
+      "input": "\u0130STANBUL",
+      "trimmed": "\u0130STANBUL",
+      "normalized": "istanbul"
+    },
+    {
+      "name": "turkish-dotless-i-and-ascii-I-no-locale-casing",
+      "kind": "name",
+      "input": "I\u0131",
+      "trimmed": "I\u0131",
+      "normalized": "i\u0131"
+    },
+    {
+      "name": "decomposed-I-with-combining-dot-above-nfc-then-tolower",
+      "kind": "name",
+      "input": "I\u0307stanbul",
+      "trimmed": "I\u0307stanbul",
+      "normalized": "istanbul"
+    },
+    {
+      "name": "german-capital-sharp-s-per-rune-tolower",
+      "kind": "name",
+      "input": "STRA\u1e9eE",
+      "trimmed": "STRA\u1e9eE",
+      "normalized": "stra\u00dfe"
+    },
+    {
+      "name": "greek-capital-sigma-and-final-sigma-per-rune-tolower",
+      "kind": "name",
+      "input": "\u03a3\u039f\u03a6\u039f\u03a3 \u03c3\u03bf\u03c6\u03cc\u03c2",
+      "trimmed": "\u03a3\u039f\u03a6\u039f\u03a3 \u03c3\u03bf\u03c6\u03cc\u03c2",
+      "normalized": "\u03c3\u03bf\u03c6\u03bf\u03c3 \u03c3\u03bf\u03c6\u03cc\u03c2"
+    },
+    {
+      "name": "punctuation-middle-preserved-c-plus-plus",
+      "kind": "name",
+      "input": "C++",
+      "trimmed": "C++",
+      "normalized": "c++"
+    },
+    {
+      "name": "punctuation-middle-preserved-wi-fi",
+      "kind": "name",
+      "input": "Wi-Fi",
+      "trimmed": "Wi-Fi",
+      "normalized": "wi-fi"
+    },
+    {
+      "name": "punctuation-quotes-stripped-both-ends-wifi",
+      "kind": "name",
+      "input": "\"wifi\"",
+      "trimmed": "\"wifi\"",
+      "normalized": "wifi"
+    },
+    {
+      "name": "punctuation-leading-and-trailing-repeated-strip",
+      "kind": "name",
+      "input": "...(((\u201cWi-Fi \u2014 Nh\u00e0!\u201d)))...",
+      "trimmed": "...(((\u201cWi-Fi \u2014 Nh\u00e0!\u201d)))...",
+      "normalized": "wi-fi \u2014 nh\u00e0"
+    },
+    {
+      "name": "punctuation-with-interleaved-spaces-at-edges",
+      "kind": "name",
+      "input": "  ! ?  wi-fi  . !  ",
+      "trimmed": "! ?  wi-fi  . !",
+      "normalized": "wi-fi"
+    },
+    {
+      "name": "tag-leading-hash-and-brackets-stripped",
+      "kind": "tag",
+      "input": "##[Work_2026]!!",
+      "trimmed": "##[Work_2026]!!",
+      "normalized": "work_2026"
+    },
+    {
+      "name": "emoji-with-text-and-trailing-punct",
+      "kind": "name",
+      "input": "\ud83d\udd10 Key Vault!",
+      "trimmed": "\ud83d\udd10 Key Vault!",
+      "normalized": "\ud83d\udd10 key vault"
+    },
+    {
+      "name": "emoji-only-preserved-as-symbol-category-So",
+      "kind": "tag",
+      "input": "  \ud83d\ude80\ud83d\udd25  ",
+      "trimmed": "\ud83d\ude80\ud83d\udd25",
+      "normalized": "\ud83d\ude80\ud83d\udd25"
+    },
+    {
+      "name": "punctuation-only-ascii-exclamations-rejected-Q12",
+      "kind": "name",
+      "input": "!!!",
+      "error": "name_invalid"
+    },
+    {
+      "name": "punctuation-only-unicode-brackets-and-dashes-rejected-tag",
+      "kind": "tag",
+      "input": " \u00ab\u2014\u2026\u00bb ",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "empty-string-rejected-name",
+      "kind": "name",
+      "input": "",
+      "error": "name_invalid"
+    },
+    {
+      "name": "whitespace-only-spaces-and-nbsp-rejected-name",
+      "kind": "name",
+      "input": "   \u00a0\u2003\u3000  ",
+      "error": "name_invalid"
+    },
+    {
+      "name": "whitespace-only-rejected-tag",
+      "kind": "tag",
+      "input": "  \u00a0 ",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "name-exact-200-runes-accepted",
+      "kind": "name",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "trimmed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "normalized": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "name-exact-200-vietnamese-runes-accepted",
+      "kind": "name",
+      "input": "\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3",
+      "trimmed": "\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3",
+      "normalized": "\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3\u00e3"
+    },
+    {
+      "name": "name-201-runes-rejected",
+      "kind": "name",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "error": "name_invalid"
+    },
+    {
+      "name": "name-201-runes-trimmed-with-punct-rejected-because-trimmed-exceeds-200",
+      "kind": "name",
+      "input": "!aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "error": "name_invalid"
+    },
+    {
+      "name": "tag-exact-50-runes-accepted",
+      "kind": "tag",
+      "input": "tttttttttttttttttttttttttttttttttttttttttttttttttt",
+      "trimmed": "tttttttttttttttttttttttttttttttttttttttttttttttttt",
+      "normalized": "tttttttttttttttttttttttttttttttttttttttttttttttttt"
+    },
+    {
+      "name": "tag-51-runes-rejected",
+      "kind": "tag",
+      "input": "ttttttttttttttttttttttttttttttttttttttttttttttttttt",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "tag-51-runes-trimmed-with-punct-rejected-because-trimmed-exceeds-50",
+      "kind": "tag",
+      "input": "#tttttttttttttttttttttttttttttttttttttttttttttttttt",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "hint-empty-accepted",
+      "kind": "hint",
+      "input": "",
+      "trimmed": ""
+    },
+    {
+      "name": "hint-whitespace-only-trimmed-to-empty",
+      "kind": "hint",
+      "input": "   \u00a0  ",
+      "trimmed": ""
+    },
+    {
+      "name": "hint-preserves-case-and-punctuation",
+      "kind": "hint",
+      "input": "  Production K8s \u2014 Cluster #1 (AP-Southeast)!  ",
+      "trimmed": "Production K8s \u2014 Cluster #1 (AP-Southeast)!"
+    },
+    {
+      "name": "hint-exact-120-runes-accepted",
+      "kind": "hint",
+      "input": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "trimmed": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
+    },
+    {
+      "name": "hint-121-runes-rejected",
+      "kind": "hint",
+      "input": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+      "error": "hint_invalid"
+    },
+    {
+      "name": "hint-tab-rejected",
+      "kind": "hint",
+      "input": "hint\twith\ttab",
+      "error": "hint_invalid"
+    },
+    {
+      "name": "hint-newline-rejected",
+      "kind": "hint",
+      "input": "line1\nline2",
+      "error": "hint_invalid"
+    },
+    {
+      "name": "hint-bidi-rejected",
+      "kind": "hint",
+      "input": "hint\u202eoverride",
+      "error": "hint_invalid"
+    },
+    {
+      "name": "query-empty-returns-empty",
+      "kind": "query",
+      "input": "   ",
+      "normalized": ""
+    },
+    {
+      "name": "query-normalized-prefix",
+      "kind": "query",
+      "input": "  \"Wi-Fi   Nh\u00e0\"  ",
+      "normalized": "wi-fi nh\u00e0"
+    },
+    {
+      "name": "query-punctuation-only-rejected",
+      "kind": "query",
+      "input": "???",
+      "error": "name_invalid"
+    },
+    {
+      "name": "query-200-runes-accepted",
+      "kind": "query",
+      "input": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "normalized": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+    },
+    {
+      "name": "query-201-runes-rejected",
+      "kind": "query",
+      "input": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-lre-u202a-rejected",
+      "kind": "name",
+      "input": "wifi\u202anh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-rle-u202b-rejected",
+      "kind": "name",
+      "input": "wifi\u202bnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-pdf-u202c-rejected",
+      "kind": "name",
+      "input": "wifi\u202cnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-lro-u202d-rejected",
+      "kind": "name",
+      "input": "wifi\u202dnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-rlo-u202e-rejected",
+      "kind": "name",
+      "input": "wifi\u202enh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-lri-u2066-rejected",
+      "kind": "name",
+      "input": "wifi\u2066nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-rli-u2067-rejected",
+      "kind": "name",
+      "input": "wifi\u2067nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-fsi-u2068-rejected",
+      "kind": "name",
+      "input": "wifi\u2068nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-pdi-u2069-rejected",
+      "kind": "name",
+      "input": "wifi\u2069nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "bidi-rlo-u202e-rejected-in-tag",
+      "kind": "tag",
+      "input": "tag\u202e1",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "c0-nul-u0000-rejected",
+      "kind": "name",
+      "input": "wifi\u0000nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-bel-u0007-rejected",
+      "kind": "name",
+      "input": "wifi\u0007nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-lf-u000a-rejected",
+      "kind": "name",
+      "input": "wifi\nnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-vt-u000b-rejected",
+      "kind": "name",
+      "input": "wifi\u000bnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-ff-u000c-rejected",
+      "kind": "name",
+      "input": "wifi\u000cnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-cr-u000d-rejected",
+      "kind": "name",
+      "input": "wifi\rnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-us-u001f-rejected",
+      "kind": "name",
+      "input": "wifi\u001fnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c0-del-u007f-rejected",
+      "kind": "name",
+      "input": "wifi\u007fnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c1-pad-u0080-rejected",
+      "kind": "name",
+      "input": "wifi\u0080nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c1-nel-u0085-rejected",
+      "kind": "name",
+      "input": "wifi\u0085nh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c1-apc-u009f-rejected",
+      "kind": "name",
+      "input": "wifi\u009fnh\u00e0",
+      "error": "name_invalid"
+    },
+    {
+      "name": "c1-control-rejected-in-tag",
+      "kind": "tag",
+      "input": "tag\u0085name",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "invalid-utf8-lone-continuation-byte-name",
+      "kind": "name",
+      "input_bytes": "7769666980",
+      "error": "name_invalid"
+    },
+    {
+      "name": "invalid-utf8-truncated-multibyte-tag",
+      "kind": "tag",
+      "input_bytes": "746167e282",
+      "error": "tag_display_invalid"
+    },
+    {
+      "name": "invalid-utf8-overlong-slash-hint",
+      "kind": "hint",
+      "input_bytes": "68696e74c0af",
+      "error": "hint_invalid"
+    },
+    {
+      "name": "invalid-utf8-surrogate-half-ed-a0-80-query",
+      "kind": "query",
+      "input_bytes": "eda080",
+      "error": "name_invalid"
+    }
+  ]
+}
