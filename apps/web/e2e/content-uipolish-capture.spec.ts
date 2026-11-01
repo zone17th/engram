@@ -35,12 +35,10 @@ const SCREENS: readonly CaptureScreen[] = [
   {
     name: 'landing',
     path: { en: '/', vi: '/vi' },
-    // Same state as the P01 visual baselines: the hero demo searches the public `ghi` fixture,
-    // which also leaves the omnibox focused (shows the focus ring, audit UIA-8).
-    // Unit UI2 ports the landing hero (advisor-dec-187 D1): it must re-check this prepare step
-    // (combobox + listbox roles in hero-demo) when it changes the hero markup.
+    // The hero demo on the mockup seed `wif` (grouped popover); typing also leaves the omnibox
+    // focused (shows the focus ring, audit UIA-8).
     prepare: async (page) => {
-      await page.getByRole('combobox').fill('ghi', { timeout: PREPARE_TIMEOUT_MS });
+      await page.getByRole('combobox').fill('wif', { timeout: PREPARE_TIMEOUT_MS });
       await page.getByRole('listbox').waitFor({ state: 'visible', timeout: PREPARE_TIMEOUT_MS });
     },
   },
