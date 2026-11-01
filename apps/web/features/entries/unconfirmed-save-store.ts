@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 
 /**
  * In-memory store for unconfirmed saves that hit a terminal logout boundary
@@ -21,6 +22,22 @@ export interface UnconfirmedSaveRecord {
 let records: UnconfirmedSaveRecord[] = [];
 let lastSeenUserId: string | null = null;
 const listeners = new Set<() => void>();
+let broadcastSubscribed = false;
+
+function ensureSessionBroadcastSubscription(): void {
+  if (broadcastSubscribed) return;
+  broadcastSubscribed = true;
+  subscribeSessionBroadcast((message) => {
+    if (message.type === 'signed_out') {
+      const reason = message.reason ?? 'logout';
+      if (reason === 'logout') {
+        clearAllUnconfirmedSaves();
+      }
+    }
+  });
+}
+
+ensureSessionBroadcastSubscription();
 
 function emitChange(): void {
   for (const listener of listeners) {
@@ -46,6 +63,7 @@ export function recordUnconfirmedSave(record: {
   readonly source?: 'entry' | 'omnibox';
 }): void {
   if (!record.userId || !record.itemId) return;
+  ensureSessionBroadcastSubscription();
   lastSeenUserId = record.userId;
   const filtered = records.filter(
     (existing) =>
@@ -89,6 +107,7 @@ export function clearAllUnconfirmedSaves(): void {
 }
 
 export function reconcileUnconfirmedSavesUser(activeUserId: string | null | undefined): void {
+  ensureSessionBroadcastSubscription();
   if (!activeUserId) {
     return;
   }
@@ -112,6 +131,7 @@ export function useUnconfirmedSavesForUser(
   userId: string | null | undefined,
   itemId?: string,
 ): readonly UnconfirmedSaveRecord[] {
+  ensureSessionBroadcastSubscription();
   const all = useSyncExternalStore(
     subscribeUnconfirmedSaves,
     getUnconfirmedSavesSnapshot,

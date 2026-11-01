@@ -19,7 +19,6 @@ import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
   getUnconfirmedSavesSnapshot,
-  reconcileUnconfirmedSavesUser,
   resetEntryBodyLoadLimiterForTests,
 } from '@/features/entries';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
@@ -352,6 +351,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     qc: QueryClient;
     vault: () => VaultContextValue;
     server: ServerSimulator;
+    signOutSession: () => Promise<void>;
+    loginSession: (email: string, password: string) => Promise<void>;
     unlock: () => Promise<void>;
     lock: () => Promise<void>;
     setCurrentMe: (me: Me) => void;
@@ -368,9 +369,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const locale = options?.locale ?? 'vi';
     const lazyCards = options?.lazyCards ?? false;
     let vaultCtx!: VaultContextValue;
+    let signOutFn!: () => Promise<void>;
+    let loginFn!: (args: { email: string; password: string }) => Promise<unknown>;
     function Probe() {
       vaultCtx = useVault();
-      useSession();
+      const sess = useSession();
+      signOutFn = () => sess.signOut();
+      loginFn = (args) => sess.login(args);
       return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
     }
 
@@ -478,6 +483,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       }
       if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
       if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/login')) return jsonResponse(currentMe);
       if (url.endsWith('/vault')) {
         if (!createdVault) return problemResponse('vault_absent', 404);
         return jsonResponse(makeVaultGetResponse(createdVault, KEY_ID, 1));
@@ -825,6 +831,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       },
       unlock,
       lock,
+      signOutSession: async () => {
+        await act(async () => {
+          await signOutFn();
+        });
+      },
+      loginSession: async (email, password) => {
+        await act(async () => {
+          await loginFn({ email, password });
+        });
+      },
       setCurrentMe: (nextMe) => {
         currentMe = nextMe;
       },
@@ -2164,7 +2180,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
   });
 
-  it('session_invalid on uncertain entry PUT drops draft without replay, records saveUnconfirmed for user A only, and clears it when user B signs in (advisor-dec-120)', async () => {
+  it('session_invalid on uncertain entry PUT drops draft without replay, records saveUnconfirmed across terminal error until same-user re-login, and clears on explicit logout or user switch through real SessionProvider (advisor-dec-120, IP15-BE1-8, FE1-9)', async () => {
     const h = await setupItemPageHarness({
       initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
     });
@@ -2173,8 +2189,9 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
     });
 
+    let failPutWithSessionInvalid = true;
     h.server.overrideRoute(async (url, init) => {
-      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPutWithSessionInvalid) {
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -2185,17 +2202,51 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.change(textarea, { target: { value: 'Uncertain draft before session_invalid' } });
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
-    // Editor closes, draft is dropped, and saveUnconfirmed banner appears for User A
+    // 1. Terminal session_invalid boundary: editor closes, draft dropped, and record survives signed_out(reason='invalid')
+    // so when User A re-logs in, the saveUnconfirmed banner is shown
     await waitFor(() => {
-      expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
+      expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
+      expect(getUnconfirmedSavesSnapshot()[0].userId).toBe(USER_A_ID);
+    });
+
+    // Re-login as User A via real SessionProvider.login
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
       expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
     });
-    // Switch active user to User B -> reconcileUnconfirmedSavesUser wipes User A's unconfirmed save record
-    act(() => {
-      reconcileUnconfirmedSavesUser(USER_B_ID);
-    });
+
+    // 2. Navigate away from the item page (unmount ItemDetailPage) and call explicit SessionProvider.signOut()
+    // -> clears the unconfirmed-save store even when no item page is mounted
+    h.rerenderPage(<div data-testid="away-from-item-page">Away</div>);
+    await h.signOutSession();
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+    // Re-login as User A and remount ItemDetailPage -> banner is gone because explicit logout cleared it
+    await h.loginSession('a@example.test', 'pw');
+    h.rerenderPage();
+    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
+
+    // 3. Trigger another session_invalid for User A, then log in as User B via real SessionProvider.login
+    await h.unlock();
     await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+    fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
+    const textarea2 = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
+    fireEvent.change(textarea2, { target: { value: 'Second uncertain draft for User A' } });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+
+    await waitFor(() => {
+      expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
+    });
+
+    failPutWithSessionInvalid = false;
+    h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+    await h.loginSession('b@example.test', 'pw');
+
+    await waitFor(() => {
+      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
       expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
     });
   });
