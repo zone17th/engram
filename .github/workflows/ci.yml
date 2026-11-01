@@ -663,6 +663,7 @@ jobs:
             --env NEXT_PUBLIC_CONTENT_ENABLED \
             --env MAIL_SINK_DIR \
             --env PLAYWRIGHT_NO_COPY_PROMPT \
+            --env E2E_CONTENT_A11Y \
             --env CI \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
