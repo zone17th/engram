@@ -291,27 +291,31 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
       });
 
       await timedJourneyStep('4. (c) recovery with onboarding recovery key -> unlock with new passphrase -> entry created BEFORE recovery decrypts with the exact same body', async () => {
-        // Step 3 fast-forwarded the page clock past the auto-lock timeout. The recovery flow compares the server-issued
-        // reauth grant expiry with the page's Date.now() (recovery-flow.tsx grantStillValid), so a skewed clock makes a
-        // fresh grant look expired and the flow silently returns to reauth. Put the page clock back on real time.
-        await contextA.clock.setSystemTime(new Date());
-        await freshRateBucket(page);
-        await page.getByTestId('vault-locked-unlock-cta').click();
-        await expectOnUnlockPageAllowingReturnTo(page);
+        // Recovery runs in a fresh context without the fake clock: step 3 fast-forwarded contextA's clock past auto-lock,
+        // and the recovery flow compares server-issued expiries (reauth grant) and runs timers against the page clock, so
+        // the skewed clock stalled it on CI (41354780944, 41355773958). The vault in contextA is already locked by step 3.
+        await contextA.close();
+        const contextR = await newContextWithRateLimit(browser);
+        contexts.push(contextR);
+        monitor.attachContext(contextR);
+        const pageR = await contextR.newPage();
+        await loginViaUiSecret(pageR, email);
+        await expectOnUnlockPageAllowingReturnTo(pageR);
+        await freshRateBucket(pageR);
 
-        const metaBeforeRecovery = await fetchVaultMetaViaPage(page);
+        const metaBeforeRecovery = await fetchVaultMetaViaPage(pageR);
         expect(metaBeforeRecovery.status).toBe(200);
         expect(typeof metaBeforeRecovery.version).toBe('number');
 
-        await openRecoveryFromUnlock(page, { kind: 'password' });
-        const lookupRes = await submitRecoveryKey(page, recoveryKeySlot1);
+        await openRecoveryFromUnlock(pageR, { kind: 'password' });
+        const lookupRes = await submitRecoveryKey(pageR, recoveryKeySlot1);
         expect(lookupRes.ok()).toBe(true);
-        const newVaultVersion = await completeRecoveryWithNewPassphrase(page, RECOVERED_PASSPHRASE);
+        const newVaultVersion = await completeRecoveryWithNewPassphrase(pageR, RECOVERED_PASSPHRASE);
         expect(newVaultVersion).toBe((metaBeforeRecovery.version ?? 1) + 1);
 
-        // Lock and explicitly unlock with the new passphrase in a fresh browser context to prove end-to-end persistence
-        await lockVault(page);
-        await contextA.close();
+        // Lock and explicitly unlock with the new passphrase in another fresh browser context to prove end-to-end persistence
+        await lockVault(pageR);
+        await contextR.close();
 
         const contextB = await newContextWithRateLimit(browser);
         contexts.push(contextB);
