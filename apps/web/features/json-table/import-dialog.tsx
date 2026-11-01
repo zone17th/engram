@@ -18,6 +18,7 @@ import { useOptionalUndoToast } from '@/components/ui/undo-toast';
 import {
   ENTRY_MAX_PLAINTEXT_BYTES,
   ENTRY_NEAR_CAP_BYTES,
+  EntrySealError,
   VAULT_SECRET_INPUT_PROPS,
   applyCommittedEntryMetaToCache,
   captureUnconfirmedSaveClearGeneration,
@@ -85,6 +86,7 @@ import {
 } from '@/lib/json';
 
 const ITEM_MAX_ENTRIES = 200;
+const FILE_PRE_READ_SIZE_CAP_BYTES = 4 * 1024 * 1024;
 export type EntryImportJsonSource = 'paste' | 'file';
 
 export type JsonImportPreviewMode = 'table' | 'raw';
@@ -282,6 +284,7 @@ export function ImportJsonDialog({
   const [sourceKind, setSourceKind] = useState<EntryImportJsonSource>('paste');
   const [hasLoadedFile, setHasLoadedFile] = useState<boolean>(false);
   const [utf8FileError, setUtf8FileError] = useState<boolean>(false);
+  const [fileSizeOverCapBytes, setFileSizeOverCapBytes] = useState<number | null>(null);
   const [formatBeforeSave, setFormatBeforeSave] = useState<boolean>(false);
   const [formatWarning, setFormatWarning] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<JsonImportPreviewMode>('table');
@@ -345,6 +348,7 @@ export function ImportJsonDialog({
     setSourceKind('paste');
     setHasLoadedFile(false);
     setUtf8FileError(false);
+    setFileSizeOverCapBytes(null);
     setFormatBeforeSave(false);
     setFormatWarning(null);
     setPreviewMode('table');
@@ -401,6 +405,7 @@ export function ImportJsonDialog({
     setSourceKind(sourceToLoad);
     setHasLoadedFile(sourceToLoad === 'file');
     setUtf8FileError(false);
+    setFileSizeOverCapBytes(null);
     setFormatBeforeSave(false);
     setFormatWarning(null);
     setPreviewMode('table');
@@ -502,12 +507,18 @@ export function ImportJsonDialog({
       saveLockRef.current = false;
       holder.current.draftText = '';
       holder.current.submittedText = '';
+      if (listenToHandoff) {
+        wipeJsonImportHandoff();
+      }
     };
-  }, [holderRef]);
+  }, [holderRef, listenToHandoff]);
 
   const utf8ByteLength = useMemo(
-    () => (utf8FileError ? 0 : measureUtf8Bytes(exactSourceText)),
-    [exactSourceText, utf8FileError],
+    () =>
+      utf8FileError
+        ? 0
+        : (fileSizeOverCapBytes ?? measureUtf8Bytes(exactSourceText)),
+    [exactSourceText, fileSizeOverCapBytes, utf8FileError],
   );
   const isNearCap = !utf8FileError && utf8ByteLength >= ENTRY_NEAR_CAP_BYTES;
   const isOverCap = !utf8FileError && utf8ByteLength > ENTRY_MAX_PLAINTEXT_BYTES;
@@ -611,9 +622,10 @@ export function ImportJsonDialog({
 
   const handleTextareaChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
-      if (savingInFlight || atEntryLimit) return;
+      if (savingInFlight || atEntryLimit || unconfirmedSaveState !== null) return;
       const next = e.target.value;
       setUtf8FileError(false);
+      setFileSizeOverCapBytes(null);
       if (!hasLoadedFile) {
         setSourceKind('paste');
       }
@@ -624,14 +636,14 @@ export function ImportJsonDialog({
       setExactSourceText(next);
       setDraftText(next);
     },
-    [atEntryLimit, hasLoadedFile, holderRef, savingInFlight],
+    [atEntryLimit, hasLoadedFile, holderRef, savingInFlight, unconfirmedSaveState],
   );
 
   // Rule 3 paste handler (`clipboardData.getData('text/plain')` as exact source when pasting over whole field,
   // preserving CR if the browser returns it; P4FE2-6)
   const handlePaste = useCallback(
     (e: ClipboardEvent<HTMLTextAreaElement>) => {
-      if (savingInFlight || atEntryLimit) return;
+      if (savingInFlight || atEntryLimit || unconfirmedSaveState !== null) return;
       const clipboardText = e.clipboardData?.getData('text/plain');
       if (typeof clipboardText !== 'string') return;
       e.preventDefault();
@@ -646,6 +658,7 @@ export function ImportJsonDialog({
       const nextExactSource = isFullReplace ? clipboardText : nextDisplayValue;
       const nextCursor = start + normalizedClip.length;
       setUtf8FileError(false);
+      setFileSizeOverCapBytes(null);
       if (!hasLoadedFile) {
         setSourceKind('paste');
       }
@@ -661,14 +674,29 @@ export function ImportJsonDialog({
         }
       });
     },
-    [atEntryLimit, draftText, hasLoadedFile, holderRef, savingInFlight],
+    [atEntryLimit, draftText, hasLoadedFile, holderRef, savingInFlight, unconfirmedSaveState],
   );
 
   // Choose `.json` file -> `arrayBuffer()` -> `decodeUtf8FileStrict` (fatal TextDecoder, BOM stripped, <= 262,144 B)
   const handleFileChange = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file || savingInFlight || atEntryLimit) return;
+      if (!file || savingInFlight || atEntryLimit || unconfirmedSaveState !== null) return;
+
+      // IP17-R1-8: Reject files far over cap by checking `file.size` before calling `file.arrayBuffer()`.
+      if (typeof file.size === 'number' && file.size > FILE_PRE_READ_SIZE_CAP_BYTES) {
+        holderRef.current.draftText = '';
+        setExactSourceText('');
+        setDraftText('');
+        setFormatWarning(null);
+        setSaveError(null);
+        setTargetTagLimitCount(null);
+        setSourceKind('file');
+        setHasLoadedFile(true);
+        setUtf8FileError(false);
+        setFileSizeOverCapBytes(file.size);
+        return;
+      }
 
       const capturedEpoch = lockEpochRef.current;
       try {
@@ -686,7 +714,7 @@ export function ImportJsonDialog({
         setTargetTagLimitCount(null);
         setSourceKind('file');
         setHasLoadedFile(true);
-
+        setFileSizeOverCapBytes(null);
         if (!result.ok) {
           if (
             result.error.code === 'ILL_FORMED_UTF16' ||
@@ -734,14 +762,15 @@ export function ImportJsonDialog({
         setDraftText('');
         setSourceKind('file');
         setHasLoadedFile(true);
+        setFileSizeOverCapBytes(null);
         setUtf8FileError(true);
       }
     },
-    [atEntryLimit, holderRef, savingInFlight],
+    [atEntryLimit, holderRef, savingInFlight, unconfirmedSaveState],
   );
 
   const handleClearFile = useCallback(() => {
-    if (savingInFlight) return;
+    if (savingInFlight || unconfirmedSaveState !== null) return;
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -751,15 +780,17 @@ export function ImportJsonDialog({
     setSourceKind('paste');
     setHasLoadedFile(false);
     setUtf8FileError(false);
+    setFileSizeOverCapBytes(null);
     setFormatBeforeSave(false);
     setFormatWarning(null);
     setSaveError(null);
     setTargetTagLimitCount(null);
     textareaRef.current?.focus();
-  }, [holderRef, savingInFlight]);
+  }, [holderRef, savingInFlight, unconfirmedSaveState]);
 
   const handleToggleFormatBeforeSave = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
+      if (savingInFlight || atEntryLimit || unconfirmedSaveState !== null) return;
       const checked = e.target.checked;
       setFormatWarning(null);
       if (!checked) {
@@ -797,7 +828,7 @@ export function ImportJsonDialog({
       }
       setFormatBeforeSave(true);
     },
-    [exactSourceText, format, tJson, validDoc],
+    [atEntryLimit, exactSourceText, format, savingInFlight, tJson, unconfirmedSaveState, validDoc],
   );
 
   const handleFocusErrorLine = useCallback(() => {
@@ -973,11 +1004,6 @@ export function ImportJsonDialog({
         onSaved?.(committedMeta, savedItemId, savedItemName);
         handleClose({ skipFocusRestore: Boolean(onSaved) });
       } catch (err) {
-        if (isStale()) return;
-        saveOwnerIdRef.current = 0;
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-
         const classified: ClassifiedContentMutationError = classifyContentMutationError(
           err,
           { hadUncertainSend: currentStepHadUncertainSend },
@@ -995,9 +1021,17 @@ export function ImportJsonDialog({
             });
           }
           wipeInternalBuffers();
+          if (listenToHandoff) {
+            wipeJsonImportHandoff({ bumpLockEpoch: true });
+          }
+          onClose?.();
           return;
         }
 
+        if (isStale()) return;
+        saveOwnerIdRef.current = 0;
+        saveLockRef.current = false;
+        setSavingInFlight(false);
         if (
           classified.kind === 'entry_key_mismatch' ||
           classified.kind === 'vault_absent'
@@ -1034,7 +1068,9 @@ export function ImportJsonDialog({
       activeHandoff,
       handleClose,
       invalidateAllContentMetadataCaches,
+      listenToHandoff,
       onAnnounce,
+      onClose,
       onSaved,
       queryClient,
       restoreFocusRef,
@@ -1195,11 +1231,39 @@ export function ImportJsonDialog({
         }
 
         await executePlan(plan, ownerId, capturedEpoch);
-      } catch {
-        if (lockEpochRef.current !== capturedEpoch) return;
+      } catch (err) {
+        if (
+          lockEpochRef.current !== capturedEpoch ||
+          saveOwnerIdRef.current !== ownerId ||
+          (vault.state !== undefined && vault.state !== 'unlocked')
+        ) {
+          if (saveOwnerIdRef.current === ownerId) {
+            saveOwnerIdRef.current = 0;
+            saveLockRef.current = false;
+            setSavingInFlight(false);
+          }
+          return;
+        }
         saveOwnerIdRef.current = 0;
         saveLockRef.current = false;
         setSavingInFlight(false);
+        if (err instanceof EntrySealError) {
+          if (err.code === 'STALE_GENERATION' || err.code === 'VAULT_LOCKED') {
+            return;
+          }
+          const i18nKey: ContentErrorI18nKey =
+            err.code === 'ENTRY_TOO_LARGE'
+              ? 'content.errors.entry_too_large'
+              : 'content.errors.entry_invalid';
+          const msg = translateContentError(i18nKey);
+          setSaveError(msg);
+          onAnnounce?.(msg);
+          return;
+        }
+        const classified = classifyContentMutationError(err);
+        const msg = translateContentError(classified.i18nKey);
+        setSaveError(msg);
+        onAnnounce?.(msg);
       }
     },
     [
@@ -1213,6 +1277,7 @@ export function ImportJsonDialog({
       onAnnounce,
       sourceKind,
       tEntry,
+      translateContentError,
       unconfirmedSaveState,
       unlocked,
       vault,
@@ -1476,8 +1541,9 @@ export function ImportJsonDialog({
           }
         }}
       >
-        <div className="panel import-panel p-5 pb-6 sm:p-6">
-          {/* Header */}
+        <div className="panel import-panel flex max-h-[calc(100dvh-24px)] w-[min(720px,94vw)] flex-col overflow-hidden p-0">
+          <div className="min-h-0 flex-1 overflow-y-auto p-5 pb-4 sm:p-6 sm:pb-4">
+            {/* Header */}
           <div className="mb-1 flex items-start justify-between gap-2">
             <h2 id="importTitle" className="t-title-sm m-0">
               {tJson('importTitle', { name: effectiveItemName })}
@@ -1665,7 +1731,7 @@ export function ImportJsonDialog({
                   data-testid="import-json-file-input"
                   accept=".json,application/json"
                   className="sr-only"
-                  disabled={atEntryLimit || savingInFlight}
+                  disabled={atEntryLimit || savingInFlight || unconfirmedSaveState !== null}
                   onChange={(e) => {
                     void handleFileChange(e);
                   }}
@@ -1675,7 +1741,7 @@ export function ImportJsonDialog({
                   id="importChooseFileBtn"
                   data-testid="import-json-choose-file-btn"
                   className="btn btn-secondary btn-sm"
-                  disabled={atEntryLimit || savingInFlight}
+                  disabled={atEntryLimit || savingInFlight || unconfirmedSaveState !== null}
                   onClick={() => fileInputRef.current?.click()}
                 >
                   {tJson('importChooseFileBtn')}
@@ -1686,7 +1752,7 @@ export function ImportJsonDialog({
                     id="importClearFileBtn"
                     data-testid="import-json-clear-file-btn"
                     className="btn btn-tertiary btn-sm"
-                    disabled={savingInFlight}
+                    disabled={savingInFlight || unconfirmedSaveState !== null}
                     onClick={handleClearFile}
                   >
                     {tJson('importClearFileBtn')}
@@ -1714,7 +1780,8 @@ export function ImportJsonDialog({
               data-testid="import-json-source-textarea"
               rows={5}
               value={draftText}
-              disabled={atEntryLimit || savingInFlight}
+              disabled={atEntryLimit || savingInFlight || unconfirmedSaveState !== null}
+              readOnly={unconfirmedSaveState !== null}
               aria-invalid={utf8FileError || isOverCap || parseError !== null}
               placeholder={tJson('importSourcePlaceholder')}
               className="field-input raw-json-editor"
@@ -1739,7 +1806,12 @@ export function ImportJsonDialog({
                   id="importFormatBeforeSave"
                   data-testid="import-json-format-checkbox"
                   checked={formatBeforeSave}
-                  disabled={atEntryLimit || savingInFlight || !validDoc}
+                  disabled={
+                    atEntryLimit ||
+                    savingInFlight ||
+                    unconfirmedSaveState !== null ||
+                    !validDoc
+                  }
                   onChange={handleToggleFormatBeforeSave}
                   className="accent-[var(--accent)]"
                 />
@@ -1835,9 +1907,10 @@ export function ImportJsonDialog({
               )}
             </div>
           </div>
+        </div>
 
-          {/* Footer */}
-          <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Footer */}
+          <div className="import-foot flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-line bg-surface px-5 py-3.5 sm:px-6">
             <span className="mono text-[12px] text-muted">
               {tJson('importFooterNote')} · <span className="kbd">Ctrl+S</span>
             </span>

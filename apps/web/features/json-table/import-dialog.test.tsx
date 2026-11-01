@@ -8,10 +8,13 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import {
+  EntrySealError,
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
+  getUnconfirmedSavesSnapshot,
   resetEntryBodyLoadLimiterForTests,
 } from '@/features/entries';
+import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
@@ -325,8 +328,10 @@ interface ImportHarness {
   server: ServerSimulator;
   unlock: () => Promise<void>;
   lock: () => Promise<void>;
+  signOutSession: () => Promise<void>;
   setCurrentMe: (nextMe: Me | null) => void;
   rerenderPage: (node?: ReactNode) => void;
+  setLookupItems: (items: ItemSummary[]) => void;
 }
 
 async function setupImportHarness(options?: {
@@ -344,9 +349,11 @@ async function setupImportHarness(options?: {
 }): Promise<ImportHarness> {
   const locale = options?.locale ?? 'vi';
   let vaultCtx!: VaultContextValue;
+  let signOutFn!: () => Promise<void>;
   function Probe() {
     vaultCtx = useVault();
-    useSession();
+    const sess = useSession();
+    signOutFn = () => sess.signOut();
     return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
   }
 
@@ -375,6 +382,7 @@ async function setupImportHarness(options?: {
     last_used_at: '2026-11-01T00:00:00Z',
     ...(options?.initialItem ?? {}),
   };
+  let currentLookupItems: ItemSummary[] = options?.lookupItems ?? [serverItem];
 
   const catalogTags: Tag[] = [
     {
@@ -440,7 +448,7 @@ async function setupImportHarness(options?: {
     const pathname = parsedUrl.pathname;
 
     if (pathname === '/api/v1/items/lookup' && method === 'GET') {
-      const items = options?.lookupItems ?? [serverItem];
+      const items = currentLookupItems;
       return rnJsonResponse({
         items,
         total: items.length,
@@ -773,11 +781,19 @@ async function setupImportHarness(options?: {
       });
       await waitFor(() => expect(vaultCtx.state).toBe('locked'));
     },
+    signOutSession: async () => {
+      await act(async () => {
+        await signOutFn();
+      });
+    },
     setCurrentMe: (nextMe: Me | null) => {
       currentMe = nextMe;
     },
     rerenderPage: (node?: ReactNode) => {
       rendered.rerender(buildTree(node));
+    },
+    setLookupItems: (items: ItemSummary[]) => {
+      currentLookupItems = items;
     },
   };
 }
@@ -994,7 +1010,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
   });
 
-  it('accepts a 262,144-byte UTF-8 JSON payload and rejects a 262,145-byte payload with 413 over-cap error', async () => {
+  it('accepts a 262,144-byte UTF-8 JSON payload, rejects a 262,145-byte payload with client over-cap state, and rejects files > 4 MiB via file.size before calling arrayBuffer()', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
@@ -1024,6 +1040,21 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     });
     expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
 
+    // 1b. IP17-R1-8: file with size > 4 MiB is rejected by checking file.size before reading arrayBuffer()
+    const hugeFile = makeFileFromBytes(new Uint8Array([0x7b, 0x7d]), 'huge.json');
+    Object.defineProperty(hugeFile, 'size', { value: 5 * 1024 * 1024 });
+    const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0));
+    Object.defineProperty(hugeFile, 'arrayBuffer', { value: arrayBufferSpy });
+
+    await act(async () => {
+      fireEvent.change(fileInput, {
+        target: { files: [hugeFile] },
+      });
+    });
+
+    expect(arrayBufferSpy).not.toHaveBeenCalled();
+    expect(within(dialog).getByTestId('import-json-over-cap-error')).toBeInTheDocument();
+    expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
     // 2. 262,144 B -> accepted and saves 201
     await act(async () => {
       fireEvent.change(fileInput, {
@@ -1114,6 +1145,24 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     // Dialog stays open and the pasted text is preserved intact
     expect(screen.getByTestId('import-json-dialog')).toBeInTheDocument();
     expect(textarea.value).toBe(candidateJson);
+
+    // IP17-R1-10c: When the dialog opens for an item already at 200 entries (via handoff entryCount or cache),
+    // it renders the 200-entry notice (`import-json-limit-notice`) and disables controls
+    fireEvent.click(within(dialog).getByTestId('import-json-close-btn'));
+    act(() => {
+      openJsonImportFromHandoff({
+        name: 'wifi',
+        tags: [],
+        body: '{"at_cap":200}',
+        userId: USER_A_ID,
+        entryCount: 200,
+      });
+    });
+    const capDialog = await screen.findByTestId('import-json-dialog');
+    const limitNotice = within(capDialog).getByTestId('import-json-limit-notice');
+    expect(limitNotice).toHaveTextContent(viMessages.content.json.importLimitTitle);
+    expect(within(capDialog).getByTestId('import-json-source-textarea')).toBeDisabled();
+    expect(within(capDialog).getByTestId('import-json-submit-btn')).toBeDisabled();
   });
 
   it('retries after a network/503 failure with the exact same Idempotency-Key and sealed ciphertext without creating a duplicate entry, and never sends plaintext over the network', async () => {
@@ -1146,6 +1195,14 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     await waitFor(() => {
       expect(within(dialog).getByTestId('import-json-retry-banner')).toBeInTheDocument();
     });
+    // IP17-R1-5: While unconfirmedSaveState is set (retry banner visible), textarea, file picker, and Format checkbox are disabled/readOnly so the user cannot edit the draft while retrying the sealed payload
+    expect(textarea).toBeDisabled();
+    expect(textarea).toHaveAttribute('readonly');
+    expect(within(dialog).getByTestId('import-json-file-input')).toBeDisabled();
+    expect(within(dialog).getByTestId('import-json-choose-file-btn')).toBeDisabled();
+    expect(within(dialog).getByTestId('import-json-format-checkbox')).toBeDisabled();
+    fireEvent.change(textarea, { target: { value: '{"tampered":true}' } });
+    expect(textarea).toHaveValue(jsonPayload);
 
     // Click Retry -> replays the exact same Idempotency-Key and sealed body
     fireEvent.click(within(dialog).getByTestId('import-json-retry-btn'));
@@ -1264,18 +1321,48 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     expect(getJsonImportHandoffSnapshot()).toBeNull();
     expect(holderRef.text).toBe('');
 
-    // 3. Lock between handoff creation and dialog open drops the handoff immediately
-    openJsonImportFromHandoff({
-      name: 'wifi',
-      tags: ['nhà'],
-      body: `{"between_lock":"${handoffSecret}"}`,
-      userId: USER_A_ID,
+    // 3a. IP17-R1-1(b) & IP17-R1-7: Open via banner, then trigger real `h.lock()` (registerSecretFormReset wiring, not the store primitive) -> snapshot null, holder '', and after `h.unlock()` no dialog reopens
+    fireEvent.change(omniTextarea, {
+      target: { value: `wifi #nhà: {"real_lock":"${handoffSecret}"}` },
     });
-    const directHolderRef = getJsonImportHandoffSnapshot()!.bodyHolder;
-    wipeJsonImportHandoff({ bumpLockEpoch: true });
-    expect(getJsonImportHandoffSnapshot()).toBeNull();
-    expect(directHolderRef.text).toBe('');
+    fireEvent.click(screen.getByTestId('omnibox-json-banner-action'));
+    const dialogBeforeRealLock = await screen.findByTestId('import-json-dialog');
+    expect(within(dialogBeforeRealLock).getByTestId('import-json-source-textarea')).toHaveValue(
+      `{"real_lock":"${handoffSecret}"}`,
+    );
+    const realLockHolderRef = getJsonImportHandoffSnapshot()!.bodyHolder;
+    expect(realLockHolderRef.text).toContain(handoffSecret);
 
+    await h.lock();
+    expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    expect(getJsonImportHandoffSnapshot()).toBeNull();
+    expect(realLockHolderRef.text).toBe('');
+
+    await h.unlock();
+    expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    expect(getJsonImportHandoffSnapshot()).toBeNull();
+
+    // 3b. IP17-R1-1(a): Open via banner, unmount the page -> handoff store snapshot is null and holder text is ''
+    const omniTextareaAfterUnlock = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(omniTextareaAfterUnlock, {
+      target: { value: `wifi #nhà: {"unmount_handoff":"${handoffSecret}"}` },
+    });
+    fireEvent.click(screen.getByTestId('omnibox-json-banner-action'));
+    await screen.findByTestId('import-json-dialog');
+    const unmountHandoffHolder = getJsonImportHandoffSnapshot()!.bodyHolder;
+    expect(unmountHandoffHolder.text).toContain(handoffSecret);
+
+    h.rerenderPage(<div data-testid="handoff-page-unmounted" />);
+    expect(screen.getByTestId('handoff-page-unmounted')).toBeInTheDocument();
+    expect(getJsonImportHandoffSnapshot()).toBeNull();
+    expect(unmountHandoffHolder.text).toBe('');
+
+    // Re-mount the page and verify no stale handoff dialog reopens
+    h.rerenderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+    expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     // 4. User switch (User A -> User B) wipes the open handoff
     act(() => {
       openJsonImportFromHandoff({
@@ -1539,4 +1626,314 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     const savedPlaintext = await h.server.openServerEntryPlaintext(reqBody.id);
     expect(savedPlaintext).toBe('{\n  "alpha": 1,\n  "beta": [\n    true,\n    false\n  ]\n}');
   });
+
+  it('IP17-R1-2: submits from the omnibox JSON banner handoff across 1 lookup match (with retry & omnibox clear), 0 matches (POST /items -> tags -> entry in order with idempotency keys), >=2 matches (U9 picker), and target 20-tag cap alert', async () => {
+    const matchedItemId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const matchedItem: ItemSummary = {
+      id: matchedItemId,
+      name: 'wifi',
+      hint: 'Existing matched item',
+      tags: [{ id: 'tag-1', display: 'nhà' }],
+      entry_count: 2,
+      version: 1,
+      created_at: '2026-11-01T00:00:00Z',
+      updated_at: '2026-11-01T00:00:00Z',
+      last_used_at: '2026-11-01T00:00:00Z',
+    };
+
+    const h = await setupImportHarness({
+      lookupItems: [matchedItem],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    // (i) 1 lookup match -> POST /items/{matchedItemId}/entries/import-json with source="paste", same Idempotency-Key on retry, omnibox cleared via onSavedEntry
+    const omniTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+    fireEvent.change(omniTextarea, {
+      target: { value: 'wifi: {"Port":8080,"mode":"match1"}' },
+    });
+    fireEvent.click(screen.getByTestId('omnibox-json-banner-action'));
+
+    const dialog1 = await screen.findByTestId('import-json-dialog');
+    expect(within(dialog1).getByTestId('import-json-source-textarea')).toHaveValue(
+      '{"Port":8080,"mode":"match1"}',
+    );
+
+    let match1ImportAttempts = 0;
+    h.server.overrideRoute((url, init) => {
+      if (url.endsWith(`/items/${matchedItemId}/entries/import-json`) && init?.method === 'POST') {
+        match1ImportAttempts += 1;
+        if (match1ImportAttempts === 1) {
+          return problemResponse('dependency_unavailable', 503, { retry_after: 60 });
+        }
+      }
+      return null;
+    });
+
+    fireEvent.click(within(dialog1).getByTestId('import-json-submit-btn'));
+    await waitFor(() => {
+      expect(within(dialog1).getByTestId('import-json-retry-banner')).toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog1).getByTestId('import-json-retry-btn'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    });
+
+    const match1Reqs = h.server.requests.filter((r) =>
+      r.url.endsWith(`/items/${matchedItemId}/entries/import-json`),
+    );
+    expect(match1Reqs).toHaveLength(2);
+    expect(match1Reqs[0]!.headers['idempotency-key']).toBeTruthy();
+    expect(match1Reqs[1]!.headers['idempotency-key']).toBe(
+      match1Reqs[0]!.headers['idempotency-key'],
+    );
+    expect(match1Reqs[1]!.rawBody).toBe(match1Reqs[0]!.rawBody);
+    const match1Parsed = JSON.parse(match1Reqs[0]!.rawBody) as { id: string; source: string };
+    expect(match1Parsed.source).toBe('paste');
+    expect(await h.server.openServerEntryPlaintext(match1Parsed.id)).toBe(
+      '{"Port":8080,"mode":"match1"}',
+    );
+    // Omnibox was cleared by onSavedEntry
+    expect(omniTextarea.value).toBe('');
+    h.server.overrideRoute(null);
+
+    // (ii) 0 lookup matches -> POST /items -> POST /tags -> POST /items/{id}/tags -> POST /items/{id}/entries/import-json in order with idempotency keys
+    h.setLookupItems([]);
+    h.server.requests.splice(0);
+
+    fireEvent.change(omniTextarea, {
+      target: { value: 'brand-new-service #ops #prod: {"ZeroMatch":true}' },
+    });
+    fireEvent.click(screen.getByTestId('omnibox-json-banner-action'));
+    const dialog2 = await screen.findByTestId('import-json-dialog');
+    fireEvent.click(within(dialog2).getByTestId('import-json-submit-btn'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    });
+
+    const writeReqs = h.server.requests.filter((r) => r.method === 'POST');
+    expect(writeReqs.map((r) => new URL(r.url, 'http://localhost').pathname)).toEqual([
+      '/api/v1/items',
+      '/api/v1/tags',
+      '/api/v1/tags',
+      expect.stringMatching(/^\/api\/v1\/items\/[^/]+\/tags$/),
+      expect.stringMatching(/^\/api\/v1\/items\/[^/]+\/entries\/import-json$/),
+    ]);
+    for (const req of writeReqs) {
+      expect(req.headers['idempotency-key']).toBeTruthy();
+    }
+    const createdItemBody = JSON.parse(writeReqs[0]!.rawBody) as { id: string; name: string };
+    expect(createdItemBody.name).toBe('brand-new-service');
+    expect(writeReqs[3]!.url).toContain(`/items/${createdItemBody.id}/tags`);
+    expect(writeReqs[4]!.url).toContain(`/items/${createdItemBody.id}/entries/import-json`);
+    expect(omniTextarea.value).toBe('');
+
+    // (iii) >= 2 lookup matches -> U9 DupPickerDialog opens -> pick second item -> entry imported into picked item
+    const dupItem1: ItemSummary = {
+      ...matchedItem,
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      hint: 'First duplicate',
+    };
+    const dupItem2: ItemSummary = {
+      ...matchedItem,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      hint: 'Second duplicate picked',
+    };
+    h.setLookupItems([dupItem1, dupItem2]);
+    h.server.requests.splice(0);
+
+    fireEvent.change(omniTextarea, {
+      target: { value: 'wifi: {"DupPicked":2}' },
+    });
+    fireEvent.click(screen.getByTestId('omnibox-json-banner-action'));
+    const dialog3 = await screen.findByTestId('import-json-dialog');
+    fireEvent.click(within(dialog3).getByTestId('import-json-submit-btn'));
+
+    const picker = await screen.findByTestId('dup-picker-dialog');
+    const secondOption = within(picker).getByRole('option', { name: /Second duplicate picked/i });
+    fireEvent.click(secondOption);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    });
+    const dupImportReqs = h.server.requests.filter((r) =>
+      r.url.endsWith(`/items/${dupItem2.id}/entries/import-json`),
+    );
+    expect(dupImportReqs).toHaveLength(1);
+    expect(omniTextarea.value).toBe('');
+
+    // (iv) Target 20-tag cap alert when target item already has 20 tags and a new tag is requested
+    const twentyTags = Array.from({ length: 20 }, (_, idx) => ({
+      id: `tag-cap-${idx + 1}`,
+      display: `t${idx + 1}`,
+    }));
+    const fullTagItem: ItemSummary = {
+      ...matchedItem,
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      tags: twentyTags,
+    };
+    h.setLookupItems([fullTagItem]);
+    h.server.requests.splice(0);
+
+    fireEvent.change(omniTextarea, {
+      target: { value: 'wifi #extra-21st-tag: {"TagCapBlocked":true}' },
+    });
+    fireEvent.click(screen.getByTestId('omnibox-json-banner-action'));
+    const dialog4 = await screen.findByTestId('import-json-dialog');
+    fireEvent.click(within(dialog4).getByTestId('import-json-submit-btn'));
+
+    const tagCapAlert = await within(dialog4).findByTestId('import-json-tag-limit-error');
+    expect(tagCapAlert).toHaveTextContent('20');
+    expect(
+      h.server.requests.filter((r) => r.url.includes('/entries/import-json')),
+    ).toHaveLength(0);
+  }, 30_000);
+
+  it('IP17-R1-3: maps EntrySealError codes to a visible error message and announcement while keeping lock/stale errors silent', async () => {
+    const announcements: string[] = [];
+    const h = await setupImportHarness();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    // Render ItemDetailPage or observe the item-page-live-region for announcements
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog = screen.getByTestId('import-json-dialog');
+    const textarea = within(dialog).getByTestId('import-json-source-textarea');
+    fireEvent.change(textarea, { target: { value: '{"seal_err":1}' } });
+
+    // 1. Non-lock EntrySealError (e.g. SEAL_FAILED / ENTRY_TOO_LARGE) -> sets visible saveError alert and announces
+    const sealSpy = vi
+      .spyOn(h.vault().getClient(), 'sealEntry')
+      .mockRejectedValueOnce(new EntrySealError('SEAL_FAILED', 'Simulated worker seal failure'));
+
+    fireEvent.click(within(dialog).getByTestId('import-json-submit-btn'));
+
+    await waitFor(() => {
+      expect(within(dialog).getByTestId('import-json-save-error')).toHaveTextContent(
+        viMessages.content.errors.entry_invalid,
+      );
+    });
+    expect(screen.getByTestId('item-page-live-region')).toHaveTextContent(
+      viMessages.content.errors.entry_invalid,
+    );
+
+    // 2. EntrySealError('ENTRY_TOO_LARGE') -> maps to content.errors.entry_too_large
+    sealSpy.mockRejectedValueOnce(new EntrySealError('ENTRY_TOO_LARGE', 'Simulated over cap'));
+    fireEvent.click(within(dialog).getByTestId('import-json-submit-btn'));
+
+    await waitFor(() => {
+      expect(within(dialog).getByTestId('import-json-save-error')).toHaveTextContent(
+        viMessages.content.errors.entry_too_large,
+      );
+    });
+
+    // 3. EntrySealError('VAULT_LOCKED') -> stays silent (no error banner update)
+    fireEvent.change(textarea, { target: { value: '{"seal_err":2}' } });
+    expect(within(dialog).queryByTestId('import-json-save-error')).toBeNull();
+    sealSpy.mockRejectedValueOnce(new EntrySealError('VAULT_LOCKED', 'Simulated lock'));
+    fireEvent.click(within(dialog).getByTestId('import-json-submit-btn'));
+
+    await act(async () => {
+      await flushMacrotask();
+    });
+    expect(within(dialog).queryByTestId('import-json-save-error')).toBeNull();
+    expect(announcements).toEqual([]);
+    sealSpy.mockRestore();
+  });
+
+  it('IP17-R1-4: records one entry unconfirmed-save notice on same-user terminal 401 (dec-120) and drops late 401 after explicit signOut() via clearGeneration', async () => {
+    const h = await setupImportHarness();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    // 1. Held POST -> explicit signOut() -> late 401 session_invalid -> clearGeneration drops the record (snapshot [])
+    const { promise: logoutPostGate, resolve: releaseLogoutPost } = createDeferred();
+    const { promise: logoutPostEntered, resolve: notifyLogoutPostEntered } = createDeferred();
+    const { promise: logoutPostFinished, resolve: notifyLogoutPostFinished } = createDeferred();
+    let holdLogoutPost = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (
+        url.endsWith(`/items/${ITEM_ID}/entries/import-json`) &&
+        init?.method === 'POST' &&
+        holdLogoutPost
+      ) {
+        notifyLogoutPostEntered();
+        await logoutPostGate;
+        queueMicrotask(() => notifyLogoutPostFinished());
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    const genBeforeLogout = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog1 = screen.getByTestId('import-json-dialog');
+    fireEvent.change(within(dialog1).getByTestId('import-json-source-textarea'), {
+      target: { value: '{"logout_401":1}' },
+    });
+    fireEvent.click(within(dialog1).getByTestId('import-json-submit-btn'));
+    await logoutPostEntered;
+
+    await h.signOutSession();
+    expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(
+      genBeforeLogout,
+    );
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+    holdLogoutPost = false;
+    releaseLogoutPost();
+    await logoutPostFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+    // 2. Same-user terminal 401 session_invalid (even if vault locks while the POST is in flight, before explicit signOut) -> records one `entry` unconfirmed save (dec-120)
+    cleanup();
+    const hSameUser = await setupImportHarness();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    const { promise: sameUserGate, resolve: releaseSameUser } = createDeferred();
+    const { promise: sameUserEntered, resolve: notifySameUserEntered } = createDeferred();
+    hSameUser.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/items/${ITEM_ID}/entries/import-json`) && init?.method === 'POST') {
+        notifySameUserEntered();
+        await sameUserGate;
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog2 = screen.getByTestId('import-json-dialog');
+    fireEvent.change(within(dialog2).getByTestId('import-json-source-textarea'), {
+      target: { value: '{"same_user_401":1}' },
+    });
+    fireEvent.click(within(dialog2).getByTestId('import-json-submit-btn'));
+    await sameUserEntered;
+
+    // Simulate vault reset/lock when session ends before the 401 catch runs (bumps lockEpochRef so isStale() is true)
+    await hSameUser.lock();
+    releaseSameUser();
+
+    await waitFor(() => {
+      expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
+    });
+    expect(getUnconfirmedSavesSnapshot()[0]).toMatchObject({
+      userId: USER_A_ID,
+      itemId: ITEM_ID,
+      itemName: 'wifi',
+      source: 'entry',
+    });
+  }, 30_000);
 });

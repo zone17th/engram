@@ -30,7 +30,8 @@ import {
   contentQueryKeys,
   type ContentItemsQueryKey,
 } from '@/features/items/query-keys';
-import { ImportJsonDialog, openJsonImportFromHandoff } from '@/features/json-table';
+import { ImportJsonDialog } from '@/features/json-table/import-dialog';
+import { openJsonImportFromHandoff } from '@/features/json-table/import-handoff-store';
 import {
   DupPickerDialog,
   type DupPickerSelection,
