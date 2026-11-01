@@ -994,5 +994,46 @@
         "reloadCta": "Reload & retry"
       }
     }
+  },
+  "content": {
+    "errors": {
+      "name_invalid": "Item name must be 1–200 characters after normalization and contain no control characters.",
+      "hint_invalid": "Item hint must be at most 120 characters and contain no control characters.",
+      "tag_display_invalid": "Tag name must be 1–50 characters without whitespace or control characters.",
+      "item_id_conflict": "This item ID is already in use by another item.",
+      "item_deleted": "This item was deleted. Restore the item first before restoring its entry.",
+      "item_tag_limit": "An item can have at most 20 active tags.",
+      "item_entry_limit": "An item can hold at most 200 active entries.",
+      "tag_conflict": "A tag with this normalized name already exists.",
+      "entry_invalid": "The entry envelope or encrypted payload is invalid.",
+      "entry_too_large": "An entry can be at most 256 KiB. Split it into smaller entries.",
+      "entry_id_conflict": "This entry ID is already in use.",
+      "entry_key_mismatch": "This entry was encrypted with an older vault key. Reload your vault state.",
+      "entry_nonce_reused": "Encryption nonce cannot be reused. Please save again to generate a fresh nonce.",
+      "entry_restore_via_item": "This entry was deleted along with its item. Restore the item instead.",
+      "reorder_mismatch": "The entry list changed on another device. Reloading the latest order.",
+      "changes_window_expired": "Sync history expired after 29 days. Reloading the full list.",
+      "not_found": "This item, tag, or entry was deleted or does not belong to your account.",
+      "invalid_request": "The request is invalid. Please check your input and try again.",
+      "rate_limited": "Too many requests. Wait a moment and try again — your save will not be duplicated.",
+      "precondition_required": "Missing version precondition. Reload the latest version and try again.",
+      "version_mismatch": "This was edited on another device. Load the latest version or keep your draft.",
+      "idempotency_conflict": "Request key conflict with different payload. Please start the action again.",
+      "idempotency_in_progress": "Your previous save is still being processed. Retrying shortly with the same key.",
+      "vault_absent": "Your vault has not been set up or was reset. Set up your vault before saving entries.",
+      "dependency_unavailable": "The server is temporarily busy. Your draft is safe — please retry.",
+      "unauthenticated": "Your session has ended. Sign in again to continue.",
+      "access_expired": "Your access token expired. Refreshing your session…",
+      "session_invalid": "Your session is no longer valid. Please sign in again.",
+      "csrf_invalid": "Security token expired. Refreshing token and retrying…",
+      "forbidden": "You do not have permission to perform this action.",
+      "internal_error": "We could not process the request right now. Your draft is still here — please retry.",
+      "network": "Could not reach the server. Your draft stays in this tab until the vault locks — please retry.",
+      "offline": "You are offline. Cannot save right now — your draft stays in this input until the vault locks."
+    },
+    "privacy": {
+      "notice": "Item names, tags and hints are not encrypted; only the content is end-to-end encrypted",
+      "hintServerReadable": "visible to the server"
+    }
   }
 }
