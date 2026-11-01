@@ -297,6 +297,8 @@ export function Omnibox({
     },
     [queryClient],
   );
+  // Note (RV-C-FE-3): preferring `getKnownDeviceSessionUserId()` before `['auth', 'me']` depends on the restored
+  // QueryCache subscription above, because `login()`/`signup()` call `commitAuthenticatedUser` before `setKnownDeviceSessionUserId`.
   const getActiveUserIdSnapshot = useCallback((): string | null => {
     const knownUserId = getKnownDeviceSessionUserId();
     if (knownUserId) {
@@ -1026,7 +1028,7 @@ export function Omnibox({
       }
 
       if (activeUserId) {
-        dismissUnconfirmedSave({ userId: activeUserId });
+        dismissUnconfirmedSave({ userId: activeUserId, source: 'omnibox' });
       }
       clearLockClearedNotice();
       setTargetTagLimitCount(null);

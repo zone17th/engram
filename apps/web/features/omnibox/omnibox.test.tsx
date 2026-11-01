@@ -2385,6 +2385,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       next_cursor: null,
     });
 
+    // Hook probe (RV-C-FE-2): the real `ItemDetailPage` banner uses the same `useUnconfirmedSavesForUser` hook.
     function ItemPageNoticeProbe({
       userId,
       itemId,
@@ -2522,5 +2523,55 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
     expect(screen.queryByTestId('entry-save-unconfirmed-banner')).not.toBeInTheDocument();
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+  });
+
+  it('dismisses only source: "omnibox" unconfirmed records on quick-add submit and preserves item-page source: "entry" records for the same user (RV-C-FE-1)', async () => {
+    vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+      items: [ITEM_WIFI],
+      total: 1,
+      next_cursor: null,
+    });
+    vi.spyOn(contentApi, 'entryCreate').mockImplementation(async (itemId, body) =>
+      makeEntryMeta(itemId, body.id),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
+
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI_GUEST.id,
+      itemName: ITEM_WIFI_GUEST.name,
+      source: 'entry',
+    });
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI.id,
+      itemName: ITEM_WIFI.name,
+      source: 'omnibox',
+    });
+    expect(getUnconfirmedSavesSnapshot()).toHaveLength(2);
+
+    renderOmnibox(<Omnibox />, { queryClient });
+
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(textarea, { target: { value: 'wifi: quick-add submit preserves entry notice' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    const toast = await screen.findByTestId('undo-toast-item');
+    expect(within(toast).getByText(/Đã lưu vào “wifi”/)).toBeInTheDocument();
+
+    const remaining = getUnconfirmedSavesSnapshot();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toMatchObject({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI_GUEST.id,
+      itemName: ITEM_WIFI_GUEST.name,
+      source: 'entry',
+    });
   });
 });

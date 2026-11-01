@@ -126,10 +126,12 @@ export function recordUnconfirmedSave(record: {
 export function dismissUnconfirmedSave(params: {
   readonly userId: string;
   readonly itemId?: string;
+  readonly source?: 'entry' | 'omnibox';
 }): void {
   const next = records.filter((existing) => {
     if (existing.userId !== params.userId) return true;
     if (params.itemId !== undefined && existing.itemId !== params.itemId) return true;
+    if (params.source !== undefined && existing.source !== params.source) return true;
     return false;
   });
   if (next.length !== records.length) {
