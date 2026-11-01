@@ -880,7 +880,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(getVault().vaultMeta?.version).toBe(1);
   }, CRYPTO_TEST_TIMEOUT);
 
-  it('FU2 (advisor-dec-200): stale/aborted submit or user switch or lock during post-create reloadVaultMeta never commits meta for the wrong user or navigates to /app', async () => {
+  it('FU2 (advisor-dec-200): stale/aborted submit or user switch during post-create reloadVaultMeta never commits meta for the wrong user or navigates to /app, while a lock during finish keeps pre-FU2 /app navigation', async () => {
     // 1. User switch during the held post-create GET /vault reload -> does not commit meta for the new user or navigate to /app
     let holdGetVault = true;
     let heldGetVault = Promise.withResolvers<void>();
@@ -919,7 +919,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(getVault().vaultMeta).toBeNull();
     expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
 
-    // 2. Lock during the held post-create GET /vault reload -> does not navigate to /app when reload settles
+    // 2. Lock during the held post-create GET /vault reload -> provider stays locked and finish still routes to /app (RouteGuard sends locked vault to unlock, matching pre-FU2 behaviour)
     cleanup();
     routerMocks.replace.mockReset();
     holdGetVault = true;
@@ -945,8 +945,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       await Promise.resolve();
     });
     expect(hLock.getVault().workerState).toBe('locked');
-    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
-
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app');
     // 3. User switch while POST /vault is in flight (stale submit) -> does not call reloadVaultMeta or commit meta for the wrong user
     cleanup();
     routerMocks.replace.mockReset();
@@ -1068,7 +1067,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(routerMocks.replace).not.toHaveBeenCalled();
   }, CRYPTO_TEST_TIMEOUT);
 
-  it('FU2 fix2 (CI-41336756651 regression): when GET /vault is mocked to return 404 vault_absent (as in e2e/vault-onboarding.spec.ts), Step 3 stays mounted and unlocked after POST /vault so Skip is clickable', async () => {
+  it('FU2 fix2/fix3 (CI-41336756651 & CI-41339550930): when GET /vault is mocked to return 404 vault_absent, Step 3 stays mounted after POST /vault and clicking Skip still navigates to /app even when the post-create reload locks', async () => {
     const { getVault, getVaultCallsCount } = await advanceToStep3('en', {
       getVaultMode: 'absent_404',
     });
@@ -1086,5 +1085,16 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(getVault().state).toBe('unlocked');
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
     expect(screen.getByTestId('onboarding-skip-passkey-button')).toBeEnabled();
+
+    // Clicking Skip when GET /vault returns 404 fails closed (locks in VaultProvider),
+    // and still navigates to /app (pre-FU2 finish navigation) rather than hanging on a blank onboarding screen.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    }, CRYPTO_WAIT);
+    expect(getVaultCallsCount()).toBe(1);
+    expect(getVault().workerState).toBe('locked');
   }, CRYPTO_TEST_TIMEOUT);
 });

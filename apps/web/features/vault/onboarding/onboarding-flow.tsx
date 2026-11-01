@@ -546,13 +546,10 @@ export function VaultOnboardingFlow() {
     if (finishingStep3Ref.current) return;
     finishingStep3Ref.current = true;
     setFinishingStep3(true);
-    const client = vault.getClient();
-    const finishOpGeneration = client.getGeneration();
     const finishUserId = currentUserIdRef.current;
     clearRecoveryKeysAndSecrets();
     finishingStep3Ref.current = true;
     setFinishingStep3(true);
-    const finishSeq = postSubmitSeqRef.current;
     const shouldLoadVaultMeta = !vault.vaultMeta?.vault_key_id;
     await Promise.all([
       shouldLoadVaultMeta
@@ -562,8 +559,6 @@ export function VaultOnboardingFlow() {
     ]);
     if (
       isMountedRef.current &&
-      postSubmitSeqRef.current === finishSeq &&
-      client.getGeneration() === finishOpGeneration &&
       currentUserIdRef.current !== null &&
       currentUserIdRef.current === finishUserId
     ) {
