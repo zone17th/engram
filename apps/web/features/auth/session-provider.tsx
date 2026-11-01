@@ -48,6 +48,8 @@ export type SessionState = {
   status: SessionStatus;
   me: Me | null;
   config: Awaited<ReturnType<typeof fetchAuthConfig>> | null;
+  configLoading: boolean;
+  configError: boolean;
   bootstrapComplete: boolean;
   sessionEpoch: number;
   webLocksAvailable: boolean;
@@ -275,6 +277,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       status,
       me,
       config: configQuery.data ?? null,
+      configLoading: configQuery.isLoading,
+      configError: configQuery.isError,
       bootstrapComplete,
       sessionEpoch,
       webLocksAvailable: hasWebLocks(),
@@ -291,6 +295,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       status,
       me,
       configQuery.data,
+      configQuery.isLoading,
+      configQuery.isError,
       bootstrapComplete,
       sessionEpoch,
       lastSessionEndReason,
@@ -309,6 +315,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
 export function useSession() {
   const ctx = useContext(SessionContext);
-  if (!ctx) throw new Error('useSession phải nằm trong SessionProvider');
+  if (!ctx) throw new Error('useSession must be used within SessionProvider');
   return ctx;
 }

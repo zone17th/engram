@@ -64,7 +64,19 @@ export function OAuthCallbackView({ provider }: { provider: string }) {
         .then(() => router.replace(sanitizeReturnTo('/app/onboarding')))
         .catch((err) => {
           setPhase('error');
-          setMessage(err instanceof ProblemError ? err.problem.detail ?? err.problem.title : t('errors.network'));
+          if (err instanceof ProblemError) {
+            if (err.problem.code === 'oauth_state_invalid') {
+              setMessage(t('oauthCallback.invalidFlow'));
+            } else if (err.problem.code === 'email_taken') {
+              setMessage(t('errors.emailTaken'));
+            } else if (err.problem.code === 'rate_limited') {
+              setMessage(t('errors.rateLimitedTitle'));
+            } else {
+              setMessage(t('errors.genericTitle'));
+            }
+          } else {
+            setMessage(t('errors.network'));
+          }
         });
       return;
     }
@@ -84,7 +96,15 @@ export function OAuthCallbackView({ provider }: { provider: string }) {
         })
         .catch((err) => {
           setPhase('error');
-          setMessage(err instanceof ProblemError ? err.problem.detail ?? err.problem.title : t('errors.network'));
+          if (err instanceof ProblemError) {
+            if (err.problem.code === 'oauth_state_invalid') {
+              setMessage(t('oauthCallback.invalidFlow'));
+            } else {
+              setMessage(t('errors.genericTitle'));
+            }
+          } else {
+            setMessage(t('errors.network'));
+          }
         });
       return;
     }

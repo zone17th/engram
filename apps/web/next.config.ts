@@ -84,6 +84,16 @@ const nextConfig: NextConfig = {
           { key: 'X-Frame-Options', value: 'DENY' },
         ],
       },
+      {
+        source: '/app/auth/reset-password',
+        headers: [
+          { key: 'Content-Security-Policy', value: csp },
+          { key: 'Referrer-Policy', value: 'no-referrer' },
+          { key: 'Cache-Control', value: 'no-store' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+        ],
+      },
     ];
   },
 };

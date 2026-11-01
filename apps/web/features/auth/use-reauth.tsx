@@ -12,6 +12,19 @@ import {
 } from '@/lib/api/auth';
 import { grantStillValid } from '@/lib/auth/audit-catalog';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
+import enMessages from '@/messages/en.json';
+import viMessages from '@/messages/vi.json';
+
+function resolveReauthCopy(locale: 'en' | 'vi' | undefined) {
+  const auth = (locale === 'vi' ? viMessages : enMessages).auth;
+  return {
+    failed: auth.reauth.failed,
+    invalidCredentials: auth.errors.invalidCredentialsTitle,
+    rateLimited: auth.errors.rateLimitedTitle,
+    generic: auth.errors.genericTitle,
+    network: auth.errors.network,
+  };
+}
 
 const REAUTH_STORAGE_KEY = 'sabk.reauth.pending';
 
@@ -33,6 +46,7 @@ export function useReauth(me: Me | null) {
   const [submitting, setSubmitting] = useState(false);
   const resolverRef = useRef<((value: ReauthGrant) => void) | null>(null);
   const rejectRef = useRef<((reason?: unknown) => void) | null>(null);
+  const copy = useMemo(() => resolveReauthCopy(me?.settings.locale), [me?.settings.locale]);
 
   const capabilities: ReauthCapabilities = useMemo(
     () => ({
@@ -121,15 +135,25 @@ export function useReauth(me: Me | null) {
         completeWithGrant(result);
         return result;
       } catch (e) {
-        const message =
-          e instanceof ProblemError ? e.problem.detail ?? e.problem.title : 'Không xác thực được.';
+        let message = copy.failed;
+        if (e instanceof ProblemError) {
+          if (e.problem.code === 'invalid_credentials') {
+            message = copy.invalidCredentials;
+          } else if (e.problem.code === 'rate_limited') {
+            message = copy.rateLimited;
+          } else {
+            message = copy.generic;
+          }
+        } else {
+          message = copy.network;
+        }
         setError(message);
         throw e;
       } finally {
         setSubmitting(false);
       }
     },
-    [pendingAction, completeWithGrant],
+    [pendingAction, completeWithGrant, copy],
   );
 
   const startOauthReauth = useCallback(
@@ -159,15 +183,19 @@ export function useReauth(me: Me | null) {
         completeWithGrant(result);
         return result;
       } catch (e) {
-        const message =
-          e instanceof ProblemError ? e.problem.detail ?? e.problem.title : 'Không xác thực được.';
+        let message = copy.failed;
+        if (e instanceof ProblemError) {
+          message = copy.generic;
+        } else {
+          message = copy.network;
+        }
         setError(message);
         throw e;
       } finally {
         setSubmitting(false);
       }
     },
-    [completeWithGrant],
+    [completeWithGrant, copy],
   );
 
   const readStoredPending = useCallback((): PendingReauth | null => {
