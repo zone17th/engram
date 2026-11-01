@@ -2,6 +2,9 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { NextIntlClientProvider } from 'next-intl';
+import en from '../messages/en.json';
+import viMessages from '../messages/vi.json';
 import { Button } from '../components/ui/button';
 import {
   AuthStatus,
@@ -51,6 +54,28 @@ describe('Field', () => {
     expect(toggle).toHaveAttribute('type', 'button');
     await userEvent.click(toggle);
     expect(screen.getByLabelText('Mật khẩu')).toHaveAttribute('type', 'text');
+    expect(screen.getByRole('button', { name: 'Ẩn' })).toBeInTheDocument();
+  });
+
+  it('password toggle lấy nhãn i18n theo locale hiện tại (không trộn tiếng Việt sang tiếng Anh)', async () => {
+    const { unmount } = render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <Field label="Login password" type="password" defaultValue="secret" />
+      </NextIntlClientProvider>,
+    );
+    const enToggle = screen.getByRole('button', { name: 'Show' });
+    expect(screen.queryByRole('button', { name: 'Hiện' })).not.toBeInTheDocument();
+    await userEvent.click(enToggle);
+    expect(screen.getByRole('button', { name: 'Hide' })).toBeInTheDocument();
+    unmount();
+
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field label="Mật khẩu đăng nhập" type="password" defaultValue="secret" />
+      </NextIntlClientProvider>,
+    );
+    const viToggle = screen.getByRole('button', { name: 'Hiện' });
+    await userEvent.click(viToggle);
     expect(screen.getByRole('button', { name: 'Ẩn' })).toBeInTheDocument();
   });
 

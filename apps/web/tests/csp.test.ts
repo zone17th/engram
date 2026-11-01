@@ -130,6 +130,30 @@ describe('header bảo mật khác', () => {
     expect((await effectiveHeadersFor('/app/auth/login')).get('X-Content-Type-Options')).toBe('nosniff');
   });
 
+  it('áp dụng CSP chặt hơn trên /app/auth/reset-password (không có challenges.cloudflare.com)', async () => {
+    const resetCsp = await cspFor('/app/auth/reset-password');
+    expect(resetCsp).not.toContain('challenges.cloudflare.com');
+    expect(resetCsp).toBe(
+      [
+        "default-src 'self'",
+        "script-src 'self' 'wasm-unsafe-eval'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "worker-src 'self' blob:",
+      ].join('; '),
+    );
+    const resetHeaders = await effectiveHeadersFor('/app/auth/reset-password');
+    expect(resetHeaders.get('Referrer-Policy')).toBe('no-referrer');
+    expect(resetHeaders.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(resetHeaders.get('X-Frame-Options')).toBe('DENY');
+  });
+
   it('đặt baseline Referrer-Policy cho các route khác', async () => {
     const headers = await effectiveHeadersFor('/');
     expect(headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');

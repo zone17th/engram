@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Browser, type BrowserContext, type Page, type Route } from '@playwright/test';
+import { expect, type APIRequestContext, type Browser, type BrowserContext, type Locator, type Page, type Route } from '@playwright/test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -43,6 +43,8 @@ function isCredLimitedPath(url: string): boolean {
       path === '/api/v1/auth/refresh' ||
       path === '/api/v1/auth/reauth' ||
       path === '/api/v1/auth/verify-email/confirm' ||
+      path === '/api/v1/auth/password/forgot' ||
+      path === '/api/v1/auth/password/reset' ||
       /\/api\/v1\/auth\/oauth\/[^/]+\/link$/.test(path) ||
       /\/api\/v1\/auth\/oauth\/[^/]+\/start$/.test(path) ||
       /\/api\/v1\/auth\/oauth\/[^/]+\/reauth$/.test(path)
@@ -148,9 +150,11 @@ async function assertNotRateLimited(page: Page) {
 export async function waitForAuthPageReady(page: Page) {
   // Login/signup show Email and OAuth together — never union those locators (strict mode).
   const email = page.getByRole('textbox', { name: 'Email', exact: true });
-  const newPassword = page.getByLabel(/New password|Mật khẩu mới/);
+  const newPassword = page.getByLabel(/^(New password|Mật khẩu mới|New login password|Mật khẩu đăng nhập mới)$/);
   const confirmEmail = page.getByRole('button', { name: /Confirm email|Xác minh email/ });
   const enrollSend = page.getByRole('button', { name: /Send setup email|Gửi email đặt mật khẩu/ });
+  const forgotUnavailable = page.getByTestId('forgot-unavailable');
+  const resetInvalid = page.getByTestId('reset-invalid-token');
   await expect
     .poll(
       async () => {
@@ -158,6 +162,8 @@ export async function waitForAuthPageReady(page: Page) {
         if (await newPassword.isVisible().catch(() => false)) return 'new-password';
         if (await confirmEmail.isVisible().catch(() => false)) return 'confirm-email';
         if (await enrollSend.isVisible().catch(() => false)) return 'enroll-send';
+        if (await forgotUnavailable.isVisible().catch(() => false)) return 'forgot-unavailable';
+        if (await resetInvalid.isVisible().catch(() => false)) return 'reset-invalid';
         return '';
       },
       { timeout: 45_000 },
@@ -184,7 +190,11 @@ export async function signupViaUi(page: Page, email: string, password = PASSWORD
   await page.goto('/app/auth/signup');
   await waitForAuthPageReady(page);
   await page.getByLabel('Email').fill(email);
-  await page.getByLabel(/Login password|Mật khẩu đăng nhập/).fill(password);
+  await fillSecret(page.getByLabel(/^(Login password|Mật khẩu đăng nhập)$/), password);
+  const confirmPw = page.getByLabel(/^(Confirm password|Nhập lại mật khẩu|Confirm login password|Nhập lại mật khẩu đăng nhập)$/);
+  if ((await confirmPw.count()) > 0) {
+    await fillSecret(confirmPw, password);
+  }
   await page.getByRole('checkbox', { name: /agree|terms|điều khoản/i }).check();
   await page.getByRole('button', { name: /Create account|Tạo tài khoản/ }).click();
   const outcome = await Promise.race([
@@ -206,7 +216,7 @@ export async function loginViaUi(page: Page, email: string, password = PASSWORD)
   await page.goto('/app/auth/login');
   await waitForAuthPageReady(page);
   await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
-  await page.getByLabel(/Login password|Mật khẩu đăng nhập/).fill(password);
+  await fillSecret(page.getByLabel(/^(Login password|Mật khẩu đăng nhập)$/), password);
   const loginResponsePromise = page.waitForResponse(
     (res) =>
       res.request().method() === 'POST' && /\/api\/v1\/auth\/login$/.test(new URL(res.url()).pathname),
@@ -328,4 +338,24 @@ export async function patchSettingsViaPage(
 
 export async function newContextWithRateLimit(browser: Browser): Promise<BrowserContext> {
   return newContext(browser);
+}
+
+/**
+ * Quiet secret setter for Playwright E2E (PKW-R2-2, advisor-dec-045):
+ * never calls locator.fill(secret), which logs plaintext on timeout into public CI logs.
+ */
+export async function fillSecret(
+  input: Locator,
+  value: string,
+  timeout = 30_000,
+): Promise<void> {
+  await expect(input).toBeVisible({ timeout });
+  await expect(input).toBeEditable({ timeout });
+  await input.evaluate((element, next) => {
+    const field = element as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (!setter) throw new Error('HTMLInputElement value setter is missing');
+    setter.call(field, next);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  }, value);
 }

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
   cookieMap,
   expectSignedIn,
+  fillSecret,
   isolateRateLimit,
   loginViaUi,
   newContext,
@@ -104,7 +105,7 @@ test.describe('P02 auth (real API)', () => {
       await page.goto('/app/auth/login');
       await waitForAuthPageReady(page);
       await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
-      await page.getByLabel(/Login password|Mật khẩu đăng nhập/).fill(password);
+      await fillSecret(page.getByLabel(/^(Login password|Mật khẩu đăng nhập)$/), password);
       await page.getByRole('button', { name: /Sign in|Đăng nhập/ }).click();
       try {
         await expect(card).toBeVisible();
@@ -174,5 +175,248 @@ test.describe('P02 auth (real API)', () => {
     expect(rejected.status()).toBe(400);
     expect((await rejected.json() as { code: string }).code).toBe('verification_invalid');
     await expectSignedIn(page);
+  });
+
+  test('forgot password shows unavailable state when mail delivery is disabled (E2E_VERIFY=false)', async ({ page }) => {
+    test.skip(verifyRequired(), 'runs in e2e-browser where AUTH_MAIL_CAPTURE_AS_DELIVERY is off');
+    await page.goto('/app/auth/forgot-password');
+    await waitForAuthPageReady(page);
+    const unavailable = page.getByTestId('forgot-unavailable');
+    await expect(unavailable).toBeVisible();
+    await expect(unavailable.getByRole('link', { name: /contact channel|kênh liên hệ/i })).toHaveAttribute(
+      'href',
+      /^(?:\/vi)?\/privacy#contact$/,
+    );
+    await expect(unavailable.getByRole('link', { name: /Back to sign in|Quay lại đăng nhập/ })).toHaveAttribute(
+      'href',
+      '/app/auth/login',
+    );
+  });
+
+  test('forgot -> sink mail -> reset -> login banner, token single-use, and old password rejected (E2E_VERIFY=true)', async ({
+    page,
+  }) => {
+    test.skip(!verifyRequired(), 'only when AUTH_MAIL_CAPTURE_AS_DELIVERY=true in e2e-auth-verify-true');
+    const email = uniqueEmail('pw-reset');
+    const newPassword = 'reset-login-password-2026!';
+
+    await signupViaUi(page, email, PASSWORD);
+    await expectSignedIn(page);
+    await page.getByRole('button', { name: /^(Sign out|Đăng xuất)$/ }).click();
+    await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
+
+    await page.getByRole('link', { name: /Forgot password\?|Quên mật khẩu\?/ }).click();
+    await expect(page).toHaveURL(/\/app\/auth\/forgot-password/);
+    await waitForAuthPageReady(page);
+
+    await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
+    await page.getByRole('button', { name: /Send reset instructions|Gửi hướng dẫn đặt lại/ }).click();
+    await expect(page.getByTestId('forgot-sent')).toBeVisible({ timeout: 15_000 });
+
+    const mail = await waitForMail(email, 'password_reset');
+    const token = tokenFromLink(mail.link);
+
+    await page.goto(`/app/auth/reset-password#token=${token}`);
+    await waitForAuthPageReady(page);
+    await expect(page).not.toHaveURL(/token=/);
+
+    await fillSecret(page.getByLabel(/^(New login password|Mật khẩu đăng nhập mới)$/), newPassword);
+    await fillSecret(page.getByLabel(/^(Confirm new password|Nhập lại mật khẩu mới)$/), newPassword);
+    await page.getByRole('button', { name: /Save new password|Lưu mật khẩu mới/ }).click();
+
+    await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
+    await expect(page.getByTestId('login-reset-banner')).toBeVisible();
+    await expect(page).not.toHaveURL(/reset=done/);
+
+    // Old password must fail with 401 invalid_credentials.
+    await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
+    await fillSecret(page.getByLabel(/^(Login password|Mật khẩu đăng nhập)$/), PASSWORD);
+    await page.getByRole('button', { name: /Sign in|Đăng nhập/ }).click();
+    await expect(page.getByTestId('auth-error-card')).toBeVisible();
+    await expect(page.getByTestId('login-reset-banner')).toHaveCount(0);
+
+    // Replaying the same reset token must fail with reset_token_invalid and show the invalid-token card.
+    await page.goto(`/app/auth/reset-password#token=${token}`);
+    await waitForAuthPageReady(page);
+    await fillSecret(page.getByLabel(/^(New login password|Mật khẩu đăng nhập mới)$/), 'another-new-password-2026!');
+    await fillSecret(page.getByLabel(/^(Confirm new password|Nhập lại mật khẩu mới)$/), 'another-new-password-2026!');
+    await page.getByRole('button', { name: /Save new password|Lưu mật khẩu mới/ }).click();
+    await expect(page.getByTestId('reset-invalid-token')).toBeVisible({ timeout: 15_000 });
+
+    // New password signs in cleanly.
+    await loginViaUi(page, email, newPassword);
+    await expectSignedIn(page);
+  });
+});
+
+test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flows', () => {
+  const VIETNAMESE_DIACRITIC_RE =
+    /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/;
+
+  test('login <-> signup <-> forgot cross-links, confirm-password mismatch, strength meter, and zero language mixing', async ({
+    page,
+  }) => {
+    const origin = new URL(process.env.BASE_URL ?? 'http://127.0.0.1:3000').origin;
+    await page.context().addCookies([{ name: 'sabk_locale', value: 'en', url: `${origin}/` }]);
+
+    await page.goto('/app/auth/login');
+    await waitForAuthPageReady(page);
+    await expect(page.getByTestId('auth-explainer-aside')).toBeAttached();
+
+    // Password toggle in English must be "Show"/"Hide", never "Hiện"/"Ẩn".
+    await expect(page.getByRole('button', { name: 'Show' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Hiện' })).toHaveCount(0);
+    const enLoginBody = await page.locator('body').innerText();
+    expect(enLoginBody).not.toMatch(VIETNAMESE_DIACRITIC_RE);
+
+    // Cross-link Login -> Signup
+    await page.getByRole('link', { name: 'Create one' }).click();
+    await expect(page).toHaveURL(/\/app\/auth\/signup/);
+    await waitForAuthPageReady(page);
+
+    // Local strength meter updates as password changes without network traffic.
+    const meter = page.locator('#signup-password-meter');
+    await expect(meter).toHaveAttribute('aria-valuenow', '0');
+    await fillSecret(page.getByLabel('Login password', { exact: true }), 'StrongAccountPass!2026');
+    await expect(meter).toHaveAttribute('aria-valuenow', '4');
+
+    // Confirm password mismatch validation
+    await page.getByLabel('Email', { exact: true }).fill('mismatch@example.test');
+    await fillSecret(page.getByLabel('Confirm password', { exact: true }), 'DifferentPass!2026');
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: 'Create account', exact: true }).click();
+    await expect(page.getByText('Passwords do not match.')).toBeVisible();
+
+    // Cross-link Signup -> Login -> Forgot
+    await page.getByRole('link', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(/\/app\/auth\/login/);
+    await page.getByRole('link', { name: 'Forgot password?' }).click();
+    await expect(page).toHaveURL(/\/app\/auth\/forgot-password/);
+  });
+
+  test('legal pages /terms and /privacy render in en and vi with working anchor navigation', async ({ page }) => {
+    await page.goto('/terms');
+    await expect(page.getByRole('heading', { name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+    await expect(page.locator('#terms')).toBeVisible();
+    await expect(page.locator('#privacy')).toBeVisible();
+    await expect(page.locator('#contact')).toBeVisible();
+    await expect(page.locator('body')).not.toContainText('Điều khoản sử dụng');
+
+    await page.goto('/privacy#contact');
+    await expect(page.getByRole('heading', { name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+    await expect(page.locator('#contact')).toBeVisible();
+
+    await page.goto('/vi/terms');
+    await expect(page.getByRole('heading', { name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
+    await expect(page.locator('#terms')).toBeVisible();
+
+    await page.goto('/vi/privacy#contact');
+    await expect(page.getByRole('heading', { name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
+    await expect(page.locator('#contact')).toBeVisible();
+  });
+
+  test('mocked forgot/reset states: mail_delivery_available=false, 429 countdown, missing/invalid token, and 204 hard navigation to /app/auth/login?reset=done', async ({
+    page,
+  }) => {
+    const origin = new URL(process.env.BASE_URL ?? 'http://127.0.0.1:3000').origin;
+    await page.context().addCookies([{ name: 'sabk_locale', value: 'en', url: `${origin}/` }]);
+
+    let mailAvailable = false;
+    let forgotOutcome: '202' | '429' = '429';
+    let resetOutcome: '204' | '400' = '400';
+
+    await page.route('**/api/v1/auth/config', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          oauth_providers: ['google'],
+          email_verification_required: false,
+          captcha_site_key: null,
+          mail_delivery_available: mailAvailable,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/auth/password/forgot', async (route) => {
+      if (forgotOutcome === '429') {
+        await route.fulfill({
+          status: 429,
+          contentType: 'application/problem+json',
+          headers: { 'Retry-After': '3' },
+          body: JSON.stringify({
+            type: 'https://engram.zone17.click/problems/rate-limited',
+            title: 'Too Many Requests',
+            status: 429,
+            code: 'rate_limited',
+            retry_after: 3,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 202, body: '' });
+    });
+
+    await page.route('**/api/v1/auth/password/reset', async (route) => {
+      if (resetOutcome === '400') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/problem+json',
+          body: JSON.stringify({
+            type: 'https://engram.zone17.click/problems/reset-token-invalid',
+            title: 'Bad Request',
+            status: 400,
+            code: 'reset_token_invalid',
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 204, body: '' });
+    });
+
+    // 1. mail_delivery_available === false renders unavailable card
+    await page.goto('/app/auth/forgot-password');
+    await expect(page.getByTestId('forgot-unavailable')).toBeVisible();
+
+    // 2. mail_delivery_available === true + 429 countdown -> 202 sent -> Try another email
+    mailAvailable = true;
+    await page.reload();
+    await waitForAuthPageReady(page);
+    await page.getByRole('textbox', { name: 'Email', exact: true }).fill('person@example.test');
+    await page.getByRole('button', { name: 'Send reset instructions' }).click();
+    await expect(page.getByTestId('auth-error-card')).toContainText(/Too many attempts/i);
+
+    forgotOutcome = '202';
+    await expect(page.getByRole('button', { name: 'Send reset instructions' })).toBeEnabled({ timeout: 6_000 });
+    await page.getByRole('button', { name: 'Send reset instructions' }).click();
+    await expect(page.getByTestId('forgot-sent')).toBeVisible();
+    await page.getByRole('button', { name: 'Try another email' }).click();
+    await expect(page.getByRole('textbox', { name: 'Email', exact: true })).toBeVisible();
+
+    // 3. Reset page without #token shows missing-token card
+    await page.goto('/app/auth/reset-password');
+    await expect(page.getByTestId('reset-invalid-token')).toBeVisible();
+
+    // 4. Reset page with valid 43-char #token strips hash immediately; 400 reset_token_invalid shows invalid card
+    const validToken = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq';
+    await page.goto(`/app/auth/reset-password#token=${validToken}`);
+    await waitForAuthPageReady(page);
+    await expect(page).not.toHaveURL(/token=/);
+    await fillSecret(page.getByLabel('New login password', { exact: true }), 'ValidReplacementPass!2026');
+    await fillSecret(page.getByLabel('Confirm new password', { exact: true }), 'ValidReplacementPass!2026');
+    await page.getByRole('button', { name: 'Save new password' }).click();
+    await expect(page.getByTestId('reset-invalid-token')).toBeVisible();
+
+    // 5. Reset page 204 hard-navigates to /app/auth/login?reset=done and shows one-shot banner
+    resetOutcome = '204';
+    await page.goto(`/app/auth/reset-password#token=${validToken}`);
+    await waitForAuthPageReady(page);
+    await fillSecret(page.getByLabel('New login password', { exact: true }), 'ValidReplacementPass!2026');
+    await fillSecret(page.getByLabel('Confirm new password', { exact: true }), 'ValidReplacementPass!2026');
+    await page.getByRole('button', { name: 'Save new password' }).click();
+
+    await expect(page).toHaveURL(/\/app\/auth\/login/, { timeout: 15_000 });
+    await expect(page.getByTestId('login-reset-banner')).toBeVisible();
+    await expect(page).not.toHaveURL(/reset=done/);
   });
 });
