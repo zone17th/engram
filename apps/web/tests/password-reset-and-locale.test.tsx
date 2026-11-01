@@ -17,6 +17,7 @@ import { evaluateAccountPasswordStrength } from '@/features/auth/password-streng
 import { RouteGuard } from '@/features/auth/route-guard';
 import { ReauthMessagesProvider, useReauth } from '@/features/auth/use-reauth';
 import { AccountDialogs } from '@/features/settings/account/account-dialogs';
+import type { PasswordForgotRequest, PasswordResetRequest } from '@/lib/api/auth';
 import en from '../messages/en.json';
 import viMessages from '../messages/vi.json';
 
@@ -29,6 +30,13 @@ const turnstileMocks = vi.hoisted(() => ({
 }));
 
 let tokenCallback: ((token: string) => void) | undefined;
+
+const realAuthApi = vi.hoisted(() => ({
+  authPasswordForgot: null as ((body: PasswordForgotRequest) => Promise<void>) | null,
+  authPasswordReset: null as ((body: PasswordResetRequest) => Promise<void>) | null,
+  bootstrapCsrf: null as (() => Promise<void>) | null,
+  ensureCsrf: null as (() => Promise<void>) | null,
+}));
 
 const mocks = vi.hoisted(() => {
   const authPasswordForgot = vi.fn();
@@ -161,6 +169,9 @@ vi.mock('@/features/vault/vault-provider', () => ({
 
 vi.mock('@/lib/api/auth', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
+  realAuthApi.authPasswordForgot = actual.authPasswordForgot as (body: PasswordForgotRequest) => Promise<void>;
+  realAuthApi.authPasswordReset = actual.authPasswordReset as (body: PasswordResetRequest) => Promise<void>;
+  realAuthApi.bootstrapCsrf = actual.bootstrapCsrf as () => Promise<void>;
   return {
     ...actual,
     authPasswordForgot: mocks.authPasswordForgot,
@@ -177,6 +188,7 @@ vi.mock('@/lib/api/auth', async (importOriginal) => {
 
 vi.mock('@/lib/api/auth-fetch', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
+  realAuthApi.ensureCsrf = actual.ensureCsrf as () => Promise<void>;
   return {
     ...actual,
     ensureCsrf: mocks.ensureCsrf,
@@ -200,6 +212,35 @@ function problem(code: string, overrides: Partial<ProblemDetails> = {}): Problem
     code,
     ...overrides,
   });
+}
+
+function makeAnonCsrfToken(subject: string, nonce: number): string {
+  const payload = btoa(`v1|anon|${subject}|n${nonce}|4102444800`)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+  return `${payload}.sig`;
+}
+
+function setCsrfCookie(value: string) {
+  document.cookie = `sabk_csrf=${encodeURIComponent(value)}; path=/`;
+}
+
+function clearCsrfCookie() {
+  document.cookie = 'sabk_csrf=; path=/; max-age=0';
+}
+
+function problemResponse(code: string, status: number): Response {
+  return new Response(
+    JSON.stringify({
+      type: `https://engram.zone17.click/problems/${code}`,
+      title: 'SERIOUSLY_RAW_SERVER_TITLE_DO_NOT_RENDER',
+      detail: 'SERIOUSLY_RAW_SERVER_DETAIL_DO_NOT_RENDER',
+      status,
+      code,
+    }),
+    { status, headers: { 'content-type': 'application/problem+json' } },
+  );
 }
 
 function renderWithLocale(ui: React.ReactNode, locale: 'en' | 'vi' = 'en') {
@@ -254,6 +295,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   Reflect.deleteProperty(window, 'turnstile');
+  clearCsrfCookie();
 });
 
 describe('PasswordStrengthMeter estimator (local-only)', () => {
@@ -336,10 +378,56 @@ describe('ForgotPasswordForm states and problem-code mapping (ADR 0006 §9.2)', 
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
   });
 
-  it('retries once after 403 csrf_invalid via ensureCsrf()', async () => {
-    mocks.authPasswordForgot
-      .mockRejectedValueOnce(problem('csrf_invalid', { status: 403 }))
-      .mockResolvedValueOnce(undefined);
+  it('repairs a readable rejected anonymous CSRF cookie via GET /auth/csrf and retries once with a fresh header; retries at most once on repeated rejection (AU4-BEW1-1)', async () => {
+    const staleAnonToken = makeAnonCsrfToken('stale-anon-subject', 1);
+    const freshAnonToken = makeAnonCsrfToken('fresh-anon-subject', 2);
+    setCsrfCookie(staleAnonToken);
+
+    mocks.authPasswordForgot.mockImplementation((body) => realAuthApi.authPasswordForgot!(body));
+    mocks.bootstrapCsrf.mockImplementation(() => realAuthApi.bootstrapCsrf!());
+    mocks.ensureCsrf.mockImplementation(() => realAuthApi.ensureCsrf!());
+
+    const requestLog: string[] = [];
+    const postHeaders: Array<string | null> = [];
+    let rejectAllPosts = false;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input).replace('/api/v1', '');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const csrfHeader = new Headers(init?.headers).get('X-CSRF-Token');
+      requestLog.push(`${method} ${path}`);
+
+      if (path === '/auth/csrf' && method === 'GET') {
+        setCsrfCookie(freshAnonToken);
+        return new Response(null, { status: 204 });
+      }
+      if (path === '/auth/password/forgot' && method === 'POST') {
+        postHeaders.push(csrfHeader);
+        if (rejectAllPosts || csrfHeader !== freshAnonToken) {
+          return problemResponse('csrf_invalid', 403);
+        }
+        return new Response(null, { status: 202 });
+      }
+      return problemResponse('not_found', 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { unmount } = renderWithLocale(<ForgotPasswordForm />);
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'user@example.com' } });
+    await act(async () => {
+      fireEvent.submit(screen.getByLabelText('Email').closest('form')!);
+    });
+
+    expect(requestLog).toEqual(['POST /auth/password/forgot', 'GET /auth/csrf', 'POST /auth/password/forgot']);
+    expect(postHeaders).toEqual([staleAnonToken, freshAnonToken]);
+    expect(screen.getByTestId('forgot-sent')).toBeInTheDocument();
+    unmount();
+
+    // Repeated rejection retries at most once (2 POSTs + 1 GET total) and surfaces generic error.
+    requestLog.length = 0;
+    postHeaders.length = 0;
+    rejectAllPosts = true;
+    setCsrfCookie(staleAnonToken);
 
     renderWithLocale(<ForgotPasswordForm />);
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'user@example.com' } });
@@ -347,9 +435,10 @@ describe('ForgotPasswordForm states and problem-code mapping (ADR 0006 §9.2)', 
       fireEvent.submit(screen.getByLabelText('Email').closest('form')!);
     });
 
-    expect(mocks.ensureCsrf).toHaveBeenCalledTimes(1);
-    expect(mocks.authPasswordForgot).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId('forgot-sent')).toBeInTheDocument();
+    expect(requestLog).toEqual(['POST /auth/password/forgot', 'GET /auth/csrf', 'POST /auth/password/forgot']);
+    expect(postHeaders).toEqual([staleAnonToken, freshAnonToken]);
+    expect(screen.getByText(en.auth.errors.genericTitle)).toBeInTheDocument();
+    expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -705,6 +794,108 @@ describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mappi
     expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
 
+  it('repairs a readable rejected anonymous CSRF cookie on reset via GET /auth/csrf and retries once with a fresh header; retries at most once on repeated rejection (AU4-BEW1-1)', async () => {
+    const staleAnonToken = makeAnonCsrfToken('stale-anon-reset', 1);
+    const freshAnonToken = makeAnonCsrfToken('fresh-anon-reset', 2);
+    const postResetAnonToken = makeAnonCsrfToken('post-reset-anon', 3);
+    setCsrfCookie(staleAnonToken);
+
+    mocks.authPasswordReset.mockImplementation((body) => realAuthApi.authPasswordReset!(body));
+    mocks.bootstrapCsrf.mockImplementation(() => realAuthApi.bootstrapCsrf!());
+    mocks.ensureCsrf.mockImplementation(() => realAuthApi.ensureCsrf!());
+
+    const requestLog: string[] = [];
+    const postHeaders: Array<string | null> = [];
+    let rejectAllPosts = false;
+    let csrfGetCount = 0;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input).replace('/api/v1', '');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const csrfHeader = new Headers(init?.headers).get('X-CSRF-Token');
+      requestLog.push(`${method} ${path}`);
+
+      if (path === '/auth/csrf' && method === 'GET') {
+        csrfGetCount += 1;
+        setCsrfCookie(csrfGetCount === 1 ? freshAnonToken : postResetAnonToken);
+        return new Response(null, { status: 204 });
+      }
+      if (path === '/auth/password/reset' && method === 'POST') {
+        postHeaders.push(csrfHeader);
+        if (rejectAllPosts || csrfHeader !== freshAnonToken) {
+          return problemResponse('csrf_invalid', 403);
+        }
+        return new Response(null, { status: 204 });
+      }
+      return problemResponse('not_found', 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const assignMock = vi.fn();
+    window.history.replaceState(null, '', `/app/auth/reset-password#token=${VALID_TOKEN_43}`);
+    vi.stubGlobal('location', {
+      ...window.location,
+      hash: `#token=${VALID_TOKEN_43}`,
+      pathname: '/app/auth/reset-password',
+      search: '',
+      assign: assignMock,
+    });
+
+    const { unmount } = renderWithLocale(<ResetPasswordForm />);
+    fireEvent.change(screen.getByLabelText(en.auth.fields.newLoginPassword), {
+      target: { value: 'StrongReplacementPassword!2026' },
+    });
+    fireEvent.change(screen.getByLabelText(en.auth.fields.confirmNewPassword), {
+      target: { value: 'StrongReplacementPassword!2026' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByLabelText(en.auth.fields.newLoginPassword).closest('form')!);
+    });
+
+    expect(requestLog).toEqual([
+      'POST /auth/password/reset',
+      'GET /auth/csrf',
+      'POST /auth/password/reset',
+      'GET /auth/csrf',
+    ]);
+    expect(postHeaders).toEqual([staleAnonToken, freshAnonToken]);
+    expect(assignMock).toHaveBeenCalledWith('/app/auth/login?reset=done');
+    unmount();
+
+    // Repeated rejection retries at most once (2 POSTs + 1 repair GET) and surfaces generic error without navigating.
+    requestLog.length = 0;
+    postHeaders.length = 0;
+    csrfGetCount = 0;
+    rejectAllPosts = true;
+    assignMock.mockClear();
+    setCsrfCookie(staleAnonToken);
+    window.history.replaceState(null, '', `/app/auth/reset-password#token=${VALID_TOKEN_43}`);
+    vi.stubGlobal('location', {
+      ...window.location,
+      hash: `#token=${VALID_TOKEN_43}`,
+      pathname: '/app/auth/reset-password',
+      search: '',
+      assign: assignMock,
+    });
+
+    renderWithLocale(<ResetPasswordForm />);
+    fireEvent.change(screen.getByLabelText(en.auth.fields.newLoginPassword), {
+      target: { value: 'StrongReplacementPassword!2026' },
+    });
+    fireEvent.change(screen.getByLabelText(en.auth.fields.confirmNewPassword), {
+      target: { value: 'StrongReplacementPassword!2026' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByLabelText(en.auth.fields.newLoginPassword).closest('form')!);
+    });
+
+    expect(requestLog).toEqual(['POST /auth/password/reset', 'GET /auth/csrf', 'POST /auth/password/reset']);
+    expect(postHeaders).toEqual([staleAnonToken, freshAnonToken]);
+    expect(assignMock).not.toHaveBeenCalled();
+    expect(screen.getByText(en.auth.errors.genericTitle)).toBeInTheDocument();
+    expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
+  });
+
   it.each([
     ['password_weak', 400, en.auth.validation.password.weak],
     ['rate_limited', 429, 'Too many attempts. Try again in 4 seconds.'],
@@ -941,6 +1132,25 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
     return result;
   }
 
+  function collectAllLeaves(obj: Record<string, unknown>): string[] {
+    const result: string[] = [];
+    const walk = (node: unknown) => {
+      if (typeof node === 'string') {
+        result.push(node);
+        return;
+      }
+      if (node && typeof node === 'object') {
+        for (const value of Object.values(node as Record<string, unknown>)) {
+          walk(value);
+        }
+      }
+    };
+    walk(obj);
+    return result;
+  }
+
+  const ALL_EN_LEAVES = collectAllLeaves(en as unknown as Record<string, unknown>);
+
   const EN_ONLY_STRINGS = [
     ...collectDifferingEnLeaves(
       en.auth as unknown as Record<string, unknown>,
@@ -952,7 +1162,7 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
     ),
   ];
 
-  const VI_ONLY_STRINGS = [
+  const RAW_VI_ONLY_STRINGS = [
     ...collectDifferingEnLeaves(
       viMessages.auth as unknown as Record<string, unknown>,
       en.auth as unknown as Record<string, unknown>,
@@ -962,6 +1172,14 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
       en.legal as unknown as Record<string, unknown>,
     ),
   ];
+
+  const VI_SUBSTRING_EXCLUSIONS = RAW_VI_ONLY_STRINGS.filter((viPhrase) =>
+    ALL_EN_LEAVES.some((enLeaf) => enLeaf.includes(viPhrase)),
+  );
+
+  const VI_ONLY_STRINGS = RAW_VI_ONLY_STRINGS.filter(
+    (viPhrase) => !ALL_EN_LEAVES.some((enLeaf) => enLeaf.includes(viPhrase)),
+  );
 
   function assertLocalePurity(container: HTMLElement, locale: 'en' | 'vi', contextLabel: string) {
     const text = container.textContent ?? '';
@@ -994,6 +1212,7 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
   it.each(['en', 'vi'] as const)(
     'renders every auth screen and interactive/error state in %s with positive state assertions and strict catalog purity',
     async (locale) => {
+      expect(VI_SUBSTRING_EXCLUSIONS).toEqual(['10 recovery key']);
       expect(EN_ONLY_STRINGS.length).toBeGreaterThan(80);
       expect(VI_ONLY_STRINGS.length).toBeGreaterThan(80);
       const copy = (locale === 'en' ? en : viMessages).auth;
