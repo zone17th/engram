@@ -100,9 +100,11 @@ services:
       args:
         NODE_IMAGE: ${NODE_IMAGE}
         API_UPSTREAM: ${COMPOSE_API_UPSTREAM:-http://api:8080}
+        NEXT_PUBLIC_CONTENT_ENABLED: ${NEXT_PUBLIC_CONTENT_ENABLED:-false}
     environment:
       # Browser vẫn chỉ nói chuyện với web trên một origin; Next proxy tiếp sang api.
       API_UPSTREAM: ${COMPOSE_API_UPSTREAM:-http://api:8080}
+      NEXT_PUBLIC_CONTENT_ENABLED: ${NEXT_PUBLIC_CONTENT_ENABLED:-false}
     ports: ['3000:3000']
     depends_on: [api]
 
