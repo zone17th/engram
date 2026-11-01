@@ -2221,8 +2221,18 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await h.signOutSession();
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
 
+    // Wait for VaultProvider's async lock() on signed_out to settle before re-logging in
+    await waitFor(() => {
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().state).toBe('no_vault');
+    });
+
     // Re-login as User A and remount ItemDetailPage -> banner is gone because explicit logout cleared it
     await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
     h.rerenderPage();
     expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
 
@@ -2358,10 +2368,10 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       return null;
     });
 
-    act(() => {
-      h.qc.removeQueries({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX });
+    await act(async () => {
+      await h.lock();
+      await h.unlock();
     });
-
     await waitFor(() => {
       const errBox = screen.getByTestId('entry-body-error');
       expect(errBox).toHaveTextContent(viMessages.content.entry.networkFailedTitle);
