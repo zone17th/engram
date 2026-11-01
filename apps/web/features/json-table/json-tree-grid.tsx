@@ -97,6 +97,7 @@ export interface JsonTreeGridProps {
   readonly onApplyEdit: (outcome: JsonEditOutcome & { readonly ok: true }) => boolean;
   readonly resetEpoch?: number;
   readonly commitControlRef?: { current: JsonTreeGridCommitControlRef | null };
+  readonly onCellEditActiveChange?: (active: boolean) => void;
 }
 
 export function JsonTreeGrid({
@@ -111,6 +112,7 @@ export function JsonTreeGrid({
   onApplyEdit,
   resetEpoch = 0,
   commitControlRef,
+  onCellEditActiveChange,
 }: JsonTreeGridProps) {
   const tJson = useTranslations('content.json');
 
@@ -136,6 +138,26 @@ export function JsonTreeGrid({
   }, [resetEpoch]);
 
   const activeCellEditKey = activeCellEdit?.cellKey ?? null;
+  const activeCellEditBool = activeCellEdit !== null;
+  const onCellEditActiveChangeRef = useRef(onCellEditActiveChange);
+  onCellEditActiveChangeRef.current = onCellEditActiveChange;
+  const notifiedCellEditActiveRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (notifiedCellEditActiveRef.current !== activeCellEditBool) {
+      notifiedCellEditActiveRef.current = activeCellEditBool;
+      onCellEditActiveChangeRef.current?.(activeCellEditBool);
+    }
+  }, [activeCellEditBool]);
+
+  useEffect(() => {
+    return () => {
+      if (notifiedCellEditActiveRef.current) {
+        notifiedCellEditActiveRef.current = false;
+        onCellEditActiveChangeRef.current?.(false);
+      }
+    };
+  }, []);
   const activeAddFieldPath = activeAddField?.containerPath ?? null;
 
   // Focus the cell edit input when it opens

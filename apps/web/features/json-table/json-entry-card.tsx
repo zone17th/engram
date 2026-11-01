@@ -234,6 +234,7 @@ export function JsonEntryCard({
     readonly reloadConfirmOpen: boolean;
   } | null>(null);
   const [deletedRemotely, setDeletedRemotely] = useState<boolean>(false);
+  const [cellEditActive, setCellEditActive] = useState<boolean>(false);
   const remotelyDeletedFromFeed = useEntryRemotelyDeleted(entry.id);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState<boolean>(false);
@@ -288,6 +289,7 @@ export function JsonEntryCard({
     if (!unlocked || body === undefined) return;
     const hasUnsavedWork =
       (originalSource !== '' && tableSource !== originalSource) ||
+      cellEditActive ||
       rawEditedSinceSwitch ||
       unconfirmedSave !== null ||
       conflictState !== null ||
@@ -306,6 +308,7 @@ export function JsonEntryCard({
     }
   }, [
     body,
+    cellEditActive,
     conflictState,
     originalSource,
     plaintextHolderRef,
@@ -362,12 +365,14 @@ export function JsonEntryCard({
   const shouldKeepCardMounted =
     unlocked &&
     (isDirty ||
+      cellEditActive ||
       savingInFlight ||
       unconfirmedSave !== null ||
       conflictState !== null ||
       deletedRemotely);
   hasActiveDraftOrStateRef.current =
     isDirty ||
+    cellEditActive ||
     unconfirmedSave !== null ||
     conflictState !== null ||
     deletedRemotely;
@@ -383,12 +388,12 @@ export function JsonEntryCard({
   useEffect(() => {
     if (
       remotelyDeletedFromFeed &&
-      (hasActiveDraftOrStateRef.current || savingInFlight) &&
+      (hasActiveDraftOrStateRef.current || cellEditActive || savingInFlight) &&
       !deletedRemotely
     ) {
       setDeletedRemotely(true);
     }
-  }, [deletedRemotely, remotelyDeletedFromFeed, savingInFlight]);
+  }, [cellEditActive, deletedRemotely, remotelyDeletedFromFeed, savingInFlight]);
   // Register secret form reset on vault lock / auto-lock / user switch / logout (plan §2.10, P4FE1-8)
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
@@ -411,6 +416,7 @@ export function JsonEntryCard({
       setUnconfirmedSave(null);
       setConflictState(null);
       setDeletedRemotely(false);
+      setCellEditActive(false);
       setSaveError(null);
       setMenuOpen(false);
       setResetEpoch((prev) => prev + 1);
@@ -440,6 +446,7 @@ export function JsonEntryCard({
       setUnconfirmedSave(null);
       setConflictState(null);
       setDeletedRemotely(false);
+      setCellEditActive(false);
       setSaveError(null);
       setMenuOpen(false);
       setResetEpoch((prev) => prev + 1);
@@ -453,6 +460,7 @@ export function JsonEntryCard({
     const token = cardKeepMountedTokenRef.current;
     return () => {
       setEntryCardKeepMounted(itemId, entry.id, token, false);
+      hasActiveDraftOrStateRef.current = false;
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       saveOwnerIdRef.current = 0;
@@ -467,6 +475,7 @@ export function JsonEntryCard({
   // When a card is kept mounted with an unsaved draft or remote-tombstone / conflict / retry state,
   // fall back to `originalSource` if the query cache body was evicted by a remote tombstone (advisor-dec-211).
   const hasRetainedEditorState =
+    cellEditActive ||
     isDirty ||
     savingInFlight ||
     unconfirmedSave !== null ||
@@ -707,6 +716,7 @@ export function JsonEntryCard({
     setUnconfirmedSave(null);
     setConflictState(null);
     setDeletedRemotely(false);
+    setCellEditActive(false);
     setSaveError(null);
     setResetEpoch((prev) => prev + 1);
   }, [body, entry.id, itemId, originalSource, plaintextHolderRef]);
@@ -1150,6 +1160,7 @@ export function JsonEntryCard({
     setUnconfirmedSave(null);
     setConflictState(null);
     setDeletedRemotely(false);
+    setCellEditActive(false);
     setSaveError(null);
     setResetEpoch((prev) => prev + 1);
 
@@ -1625,6 +1636,7 @@ export function JsonEntryCard({
                 onToggleExpand={handleToggleExpand}
                 onPageChange={handlePageChange}
                 onApplyEdit={handleApplyTableEdit}
+                onCellEditActiveChange={setCellEditActive}
                 resetEpoch={resetEpoch}
               />
             ) : (
