@@ -101,6 +101,20 @@ test.describe('P02 a11y', () => {
           await page.getByRole('textbox', { name: 'Email', exact: true }).fill('visual.forgot@example.test');
           await page.getByRole('button', { name: /Send reset instructions|Gửi hướng dẫn đặt lại/ }).click();
           await expect(page.getByTestId('forgot-sent')).toBeVisible();
+        } else if (route.name.startsWith('login-reset-done-')) {
+          await expect(page.getByTestId('login-reset-banner')).toBeVisible();
+        } else if (route.name === 'forgot-en' || route.name === 'forgot-vi') {
+          await expect(page.getByRole('textbox', { name: 'Email', exact: true })).toBeVisible();
+          await expect(page.getByTestId('forgot-unavailable')).toHaveCount(0);
+        } else if (route.name.startsWith('forgot-unavailable-')) {
+          await expect(page.getByTestId('forgot-unavailable')).toBeVisible();
+        } else if (route.name === 'reset-en' || route.name === 'reset-vi') {
+          await expect(
+            page.getByLabel(route.locale === 'vi' ? 'Mật khẩu đăng nhập mới' : 'New login password', { exact: true }),
+          ).toBeVisible();
+          await expect(page.getByTestId('reset-invalid-token')).toHaveCount(0);
+        } else if (route.name.startsWith('reset-invalid-')) {
+          await expect(page.getByTestId('reset-invalid-token')).toBeVisible();
         }
         await noOverflow(page);
         const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();

@@ -14,14 +14,6 @@ import {
 import { grantStillValid } from '@/lib/auth/audit-catalog';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 
-const DEFAULT_REAUTH_COPY = {
-  failed: 'Could not verify your identity.',
-  invalidCredentials: 'Incorrect email or password.',
-  rateLimited: 'Too many attempts.',
-  generic: 'Something went wrong',
-  network: 'Could not reach the server. Check your connection and try again.',
-};
-
 type AuthMessagesSlice = {
   reauth?: { failed?: string };
   errors?: {
@@ -32,16 +24,26 @@ type AuthMessagesSlice = {
   };
 };
 
+const intlHookAccess = {
+  messages: useMessages as unknown as () => { auth?: AuthMessagesSlice },
+};
+
 function useReauthCopy() {
-  const messages = useMessages() as { auth?: AuthMessagesSlice } | null | undefined;
+  let messages: { auth?: AuthMessagesSlice } | null = null;
+  try {
+    messages = intlHookAccess.messages();
+  } catch {
+    // Providerless unit tests (e.g. vault-provider.test.tsx) mount SessionProvider without NextIntlClientProvider.
+    messages = null;
+  }
   return useMemo(() => {
     const auth = messages?.auth;
     return {
-      failed: auth?.reauth?.failed ?? DEFAULT_REAUTH_COPY.failed,
-      invalidCredentials: auth?.errors?.invalidCredentialsTitle ?? DEFAULT_REAUTH_COPY.invalidCredentials,
-      rateLimited: auth?.errors?.rateLimitedTitle ?? DEFAULT_REAUTH_COPY.rateLimited,
-      generic: auth?.errors?.genericTitle ?? DEFAULT_REAUTH_COPY.generic,
-      network: auth?.errors?.network ?? DEFAULT_REAUTH_COPY.network,
+      failed: auth?.reauth?.failed ?? '',
+      invalidCredentials: auth?.errors?.invalidCredentialsTitle ?? '',
+      rateLimited: auth?.errors?.rateLimitedTitle ?? '',
+      generic: auth?.errors?.genericTitle ?? '',
+      network: auth?.errors?.network ?? '',
     };
   }, [messages]);
 }

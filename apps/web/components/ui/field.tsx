@@ -95,7 +95,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
         </span>
       )}
       {error && (
-        <span id={errorId} className="field-error" role="alert">
+        <span id={errorId} className="field-error" style={{ color: 'var(--error-ink)' }} role="alert">
           {error}
         </span>
       )}

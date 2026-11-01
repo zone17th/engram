@@ -93,6 +93,7 @@
       "plainBadge": "KHÔNG mã hoá",
       "plainTitle": "Tên mục (name), tag, gợi nhớ (hint) & nội dung tìm kiếm",
       "plainBody": "Tên mục, nhãn (tag), gợi nhớ (hint) và chuỗi bạn gõ tìm kiếm KHÔNG được mã hoá để tính năng tìm kiếm và gợi ý hoạt động. Máy chủ cũng thấy loại entry, thời điểm sửa, số lượng và có thể suy ra độ dài bản rõ từ kích thước bản mã. Tuyệt đối không đặt mật khẩu hay bí mật vào tên mục, tag hoặc gợi nhớ.",
+      "tableAriaLabel": "Bảng tóm tắt phạm vi mã hoá và dữ liệu trên máy chủ",
       "tableColData": "Dữ liệu",
       "tableColServer": "Trạng thái trên máy chủ",
       "tableColPurpose": "Mục đích",

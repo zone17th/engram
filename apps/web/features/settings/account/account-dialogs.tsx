@@ -145,7 +145,9 @@ export function AccountDialogs({
               err instanceof ProblemError
                 ? err.problem.code === 'email_not_verified'
                   ? t('account.linkRequiresVerifiedEmail')
-                  : (err.problem.detail ?? err.problem.title)
+                  : kind === 'link'
+                    ? t('errors.generic')
+                    : (err.problem.detail ?? err.problem.title)
                 : t('errors.generic'),
             );
           } finally {

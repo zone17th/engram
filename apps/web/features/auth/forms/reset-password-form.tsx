@@ -131,10 +131,12 @@ export function ResetPasswordForm() {
         setConfirmPassword('');
         postSessionBroadcast({ type: 'signed_out', reason: 'logout' });
         try {
-          const timeout = Promise.withResolvers<void>();
-          const timer = setTimeout(timeout.resolve, 1500);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timeout = new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, 1500);
+          });
           try {
-            await Promise.race([bootstrapCsrf(), timeout.promise]);
+            await Promise.race([bootstrapCsrf(), timeout]);
           } finally {
             clearTimeout(timer);
           }
