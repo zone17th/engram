@@ -157,6 +157,14 @@ describe('component rules (advisor-dec-129, P04 UIA-11)', () => {
     expect(webCss).toMatch(/\.omnibox-input:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
     expect(webCss).toMatch(/\.omnibox-shell:focus-within\s*\{[^}]*border-color:\s*var\(--accent\)/);
   });
+
+  it('keeps the darker light-only vault-open text on the app header (RV-UI1-1)', () => {
+    expect(webCss).toMatch(
+      /:root:not\(\[data-theme='dark'\]\) \.vault-open\s*\{\s*color:\s*#117A4B;\s*\}/,
+    );
+    // Dark keeps the mockup token rule.
+    expect(webCss).toMatch(/\.vault-open\s*\{[^}]*color:\s*var\(--success-ink\)/);
+  });
 });
 
 describe('token thương hiệu', () => {

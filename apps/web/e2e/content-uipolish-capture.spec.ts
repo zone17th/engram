@@ -20,9 +20,16 @@ type Theme = 'light' | 'dark';
 type CaptureScreen = {
   name: string;
   path: Record<Locale, string>;
-  /** Optional: put the page in the state the capture should show (runs after load). */
+  /**
+   * Optional: put the page in the state the capture should show (runs after load).
+   * Best effort, never gating (RV-UI1-2): this spec runs in the gating content job, so if the
+   * state is not reached the error is recorded as a `capture-prepare` annotation and the
+   * screenshot is still taken. Use explicit timeouts so a missing element cannot eat the test budget.
+   */
   prepare?: (page: Page) => Promise<void>;
 };
+
+const PREPARE_TIMEOUT_MS = 5_000;
 
 const SCREENS: readonly CaptureScreen[] = [
   {
@@ -30,9 +37,11 @@ const SCREENS: readonly CaptureScreen[] = [
     path: { en: '/', vi: '/vi' },
     // Same state as the P01 visual baselines: the hero demo searches the public `ghi` fixture,
     // which also leaves the omnibox focused (shows the focus ring, audit UIA-8).
+    // Unit UI2 ports the landing hero (advisor-dec-187 D1): it must re-check this prepare step
+    // (combobox + listbox roles in hero-demo) when it changes the hero markup.
     prepare: async (page) => {
-      await page.getByRole('combobox').fill('ghi');
-      await expect(page.getByRole('listbox')).toBeVisible();
+      await page.getByRole('combobox').fill('ghi', { timeout: PREPARE_TIMEOUT_MS });
+      await page.getByRole('listbox').waitFor({ state: 'visible', timeout: PREPARE_TIMEOUT_MS });
     },
   },
 ];
@@ -69,7 +78,19 @@ test.describe('P04 uipolish capture (CI artifacts only)', () => {
             await page.goto(screen.path[locale], { waitUntil: 'networkidle' });
             await expect(page.locator('html')).toHaveAttribute('data-theme', theme, { timeout: 15_000 });
             await expect(page.locator('html')).toHaveAttribute('lang', locale, { timeout: 15_000 });
-            if (screen.prepare) await screen.prepare(page);
+            if (screen.prepare) {
+              try {
+                await screen.prepare(page);
+              } catch (error) {
+                // Evidence only: record that the capture shows the unprepared state, do not fail the job.
+                testInfo.annotations.push({
+                  type: 'capture-prepare',
+                  description: `${screen.name}-${locale}-${theme}-${viewport.width}: prepare state not reached (${
+                    error instanceof Error ? error.message.split('\n')[0] : String(error)
+                  })`,
+                });
+              }
+            }
             await page.evaluate(async () => {
               await document.fonts.ready;
             });
