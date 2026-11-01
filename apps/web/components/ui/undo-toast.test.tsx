@@ -1044,3 +1044,371 @@ describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions 
     useOptionalVaultSpy.mockRestore();
   });
 });
+
+describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clamp with full accessible name/title, and focus-ring avoidance', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    stubNavigatorPlatform({ userAgentDataPlatform: 'Windows', platform: 'Win32' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('applies .toast-stack and narrow (<640px) bottom-anchored near-full-width classes, .toast-body with 2-line clamp, and preserves full 200-rune item name in title and live region', () => {
+    let api!: UndoToastContextValue;
+    render(
+      <UndoToastProvider>
+        <TestHarness
+          onPushReady={(ctx) => {
+            api = ctx;
+          }}
+        />
+      </UndoToastProvider>,
+    );
+
+    const long200RuneName = 'long-item-segment-'.repeat(11) + 'end';
+    expect(Array.from(long200RuneName).length).toBeGreaterThanOrEqual(200);
+    const fullMessage = `Saved to “${long200RuneName}”`;
+    const fullDetail =
+      'Undo only removes the saved entry; the item and tags stay';
+
+    act(() => {
+      api.pushUndoToast({
+        id: 'fu10-long',
+        message: fullMessage,
+        detail: fullDetail,
+        actionLabel: 'Undo',
+        onUndo: vi.fn(),
+      });
+    });
+
+    const stackEl = screen.getByTestId('undo-toast-stack');
+    expect(stackEl).toHaveClass('toast-stack', '!flex-col');
+    expect(stackEl.className).toContain('max-[639px]:!left-4');
+    expect(stackEl.className).toContain('max-[639px]:!right-4');
+    expect(stackEl.className).toContain('max-[639px]:!w-auto');
+    expect(stackEl.className).toContain('max-[639px]:!max-w-none');
+    expect(stackEl.className).toContain('max-[639px]:!translate-x-0');
+    expect(stackEl.className).toContain(
+      'max-[639px]:!bottom-[calc(16px+env(safe-area-inset-bottom,0px))]',
+    );
+
+    const cardEl = screen.getByTestId('undo-toast-item');
+    expect(cardEl).toHaveClass('toast', '!static', '!translate-x-0');
+    expect(cardEl.className).toContain('max-[639px]:!w-full');
+    expect(cardEl.className).toContain('max-[639px]:!max-w-none');
+
+    const bodyEl = cardEl.querySelector('.toast-body');
+    expect(bodyEl).not.toBeNull();
+    expect(bodyEl).toHaveClass('toast-body', 'min-w-0', 'flex-1');
+
+    const messageEl = screen.getByTestId('undo-toast-message');
+    expect(messageEl).toHaveClass('line-clamp-2', 'break-words');
+    expect(messageEl.className).toContain('[overflow-wrap:anywhere]');
+    expect(messageEl).toHaveAttribute('title', fullMessage);
+    expect(messageEl).toHaveTextContent(fullMessage);
+
+    const detailEl = screen.getByTestId('undo-toast-detail');
+    expect(detailEl).toHaveClass('toast-sub', 'line-clamp-2', 'break-words');
+    expect(detailEl).toHaveAttribute('title', fullDetail);
+    expect(detailEl).toHaveTextContent(fullDetail);
+
+    // Live region retains the full untruncated 200-rune message and detail
+    const statusEl = screen.getByRole('status');
+    expect(statusEl.textContent).toContain(fullMessage);
+    expect(statusEl.textContent).toContain(fullDetail);
+    expect(statusEl.textContent).toContain('Undo (Ctrl+Z)');
+  });
+
+  it('ACC-TV1-5 (RV-FU10-1, RV-FU10-5, RV-FU10-R2-1, RV-FU10-R2-3): exposes --undo-stack-h and scroll-padding-bottom on <html> plus padding-bottom on <body>, scrolls keyboard-focused overlapped controls into view, ignores pointer focus and tabIndex=-1 containers, and cleans up on empty/unmount', () => {
+    const rafCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
+
+    let resizeCallback: ResizeObserverCallback | null = null;
+    const disconnectSpy = vi.fn();
+    const observeSpy = vi.fn();
+    class MockResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        resizeCallback = cb;
+      }
+      observe = observeSpy;
+      unobserve = vi.fn();
+      disconnect = disconnectSpy;
+    }
+    vi.stubGlobal('ResizeObserver', MockResizeObserver);
+
+    const removeEventListenerSpy = vi.spyOn(window, 'removeEventListener');
+
+    let api!: UndoToastContextValue;
+    const { unmount } = render(
+      <UndoToastProvider>
+        <div>
+          <TestHarness
+            onPushReady={(ctx) => {
+              api = ctx;
+            }}
+          />
+          <article tabIndex={-1} data-testid="programmatic-host">
+            Programmatic container
+          </article>
+          <header style={{ position: 'sticky' }}>
+            <button type="button" data-testid="sticky-btn">
+              Sticky Header Button
+            </button>
+          </header>
+        </div>
+      </UndoToastProvider>,
+    );
+
+    const flushRaf = () => {
+      while (rafCallbacks.length > 0) {
+        const cb = rafCallbacks.shift()!;
+        cb(performance.now());
+      }
+    };
+
+    const originBtn = screen.getByTestId('origin-btn');
+    const outsideBtn = screen.getByTestId('outside-btn');
+    const programmaticHost = screen.getByTestId('programmatic-host');
+    const stickyBtn = screen.getByTestId('sticky-btn');
+    const stackEl = screen.getByTestId('undo-toast-stack');
+    const htmlEl = document.documentElement;
+    const bodyEl = document.body;
+
+    // Before any toast is shown, --undo-stack-h and body padding-bottom are not set
+    expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('');
+    expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe('');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBeNull();
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe('');
+    let stackHeight = 64;
+    vi.spyOn(stackEl, 'getBoundingClientRect').mockImplementation(
+      () =>
+        ({
+          x: 200,
+          y: 840 - stackHeight,
+          left: 200,
+          top: 840 - stackHeight,
+          right: 560,
+          bottom: 840,
+          width: 360,
+          height: stackHeight,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+
+    // Origin button overlaps the stack's box
+    let originScrolledClear = false;
+    vi.spyOn(originBtn, 'getBoundingClientRect').mockImplementation(
+      () =>
+        ({
+          x: 220,
+          y: originScrolledClear ? 680 : 790,
+          left: 220,
+          top: originScrolledClear ? 680 : 790,
+          right: 340,
+          bottom: originScrolledClear ? 720 : 830,
+          width: 120,
+          height: 40,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+    const originScrollSpy = vi.fn(() => {
+      originScrolledClear = true;
+    });
+    Object.defineProperty(originBtn, 'scrollIntoView', {
+      value: originScrollSpy,
+      configurable: true,
+    });
+
+    // Outside button is near the top of the viewport, well above the stack
+    vi.spyOn(outsideBtn, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 20,
+      left: 20,
+      top: 20,
+      right: 120,
+      bottom: 60,
+      width: 100,
+      height: 40,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const outsideScrollSpy = vi.fn();
+    Object.defineProperty(outsideBtn, 'scrollIntoView', {
+      value: outsideScrollSpy,
+      configurable: true,
+    });
+
+    // Programmatic host (`tabIndex={-1}`) spans the whole page and overlaps the stack,
+    // but must be ignored so container focus never triggers a scroll jump.
+    vi.spyOn(programmaticHost, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 100,
+      left: 0,
+      top: 100,
+      right: 600,
+      bottom: 840,
+      width: 600,
+      height: 740,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const hostScrollSpy = vi.fn();
+    Object.defineProperty(programmaticHost, 'scrollIntoView', {
+      value: hostScrollSpy,
+      configurable: true,
+    });
+
+    // Sticky header button overlaps in mock geometry, but fixed/sticky ancestors are ignored
+    vi.spyOn(stickyBtn, 'getBoundingClientRect').mockReturnValue({
+      x: 220,
+      y: 790,
+      left: 220,
+      top: 790,
+      right: 340,
+      bottom: 830,
+      width: 120,
+      height: 40,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const stickyScrollSpy = vi.fn();
+    Object.defineProperty(stickyBtn, 'scrollIntoView', {
+      value: stickyScrollSpy,
+      configurable: true,
+    });
+
+    const undoFn = vi.fn();
+    act(() => {
+      originBtn.focus();
+      api.pushUndoToast({
+        id: 'fu10-focus-overlap',
+        message: 'Saved to “service-config-vault”',
+        actionLabel: 'Undo',
+        onUndo: undoFn,
+      });
+    });
+
+    expect(observeSpy).toHaveBeenCalledWith(stackEl);
+    expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('64px');
+    expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe(
+      'calc(var(--undo-stack-h) + 8px)',
+    );
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBe('true');
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe(
+      'calc(var(--undo-stack-h) + 8px)',
+    );
+    expect(originScrollSpy).toHaveBeenCalledWith({ block: 'nearest' });
+
+    // Pointer/mouse focus (`:focus-visible === false` after pointerdown) does NOT trigger scrollIntoView (RV-FU10-R2-3)
+    originScrolledClear = false;
+    originScrollSpy.mockClear();
+    const matchesSpy = vi.spyOn(originBtn, 'matches').mockImplementation((sel: string) => {
+      if (sel === ':focus-visible') return false;
+      return HTMLElement.prototype.matches.call(originBtn, sel);
+    });
+    act(() => {
+      fireEvent.pointerDown(originBtn);
+      originBtn.focus();
+      fireEvent.focusIn(originBtn);
+      flushRaf();
+    });
+    expect(originScrollSpy).not.toHaveBeenCalled();
+    matchesSpy.mockRestore();
+
+    // Subsequent keyboard focus (`keydown` / `:focus-visible`) DOES trigger scrollIntoView
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' });
+      originBtn.focus();
+      fireEvent.focusIn(originBtn);
+      flushRaf();
+    });
+    expect(originScrollSpy).toHaveBeenCalledWith({ block: 'nearest' });
+    // Non-overlapping button does not call scrollIntoView
+    act(() => {
+      outsideBtn.focus();
+      fireEvent.focusIn(outsideBtn);
+      flushRaf();
+    });
+    expect(outsideScrollSpy).not.toHaveBeenCalled();
+
+    // tabIndex={-1} container host does not call scrollIntoView
+    act(() => {
+      programmaticHost.focus();
+      fireEvent.focusIn(programmaticHost);
+      flushRaf();
+    });
+    expect(hostScrollSpy).not.toHaveBeenCalled();
+
+    // Sticky/fixed element does not call scrollIntoView
+    act(() => {
+      stickyBtn.focus();
+      fireEvent.focusIn(stickyBtn);
+      flushRaf();
+    });
+    expect(stickyScrollSpy).not.toHaveBeenCalled();
+
+    // Toast's own Undo button does not trigger scrollIntoView
+    const toastUndoBtn = screen.getByRole('button', { name: 'Undo (Ctrl+Z)' });
+    const toastBtnScrollSpy = vi.fn();
+    Object.defineProperty(toastUndoBtn, 'scrollIntoView', {
+      value: toastBtnScrollSpy,
+      configurable: true,
+    });
+    act(() => {
+      toastUndoBtn.focus();
+      fireEvent.focusIn(toastUndoBtn);
+      flushRaf();
+    });
+    expect(toastBtnScrollSpy).not.toHaveBeenCalled();
+
+    // ResizeObserver stack growth updates --undo-stack-h and scrolls newly overlapped focused control
+    originScrolledClear = false;
+    originScrollSpy.mockClear();
+    act(() => {
+      originBtn.focus();
+      stackHeight = 128;
+      resizeCallback?.([], {} as ResizeObserver);
+      flushRaf();
+    });
+    expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('128px');
+    expect(originScrollSpy).toHaveBeenCalledWith({ block: 'nearest' });
+
+    // Keyboard Ctrl+Z while overlapped control is focused triggers Undo and clears html CSS var + listeners
+    act(() => {
+      fireEvent.keyDown(originBtn, { key: 'z', ctrlKey: true });
+    });
+    expect(undoFn).toHaveBeenCalledTimes(1);
+    expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('');
+    expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe('');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBeNull();
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe('');
+    expect(disconnectSpy).toHaveBeenCalled();
+    expect(removeEventListenerSpy).toHaveBeenCalledWith('focusin', expect.any(Function), true);
+    expect(removeEventListenerSpy).toHaveBeenCalledWith('resize', expect.any(Function));
+
+    // Re-push a toast and unmount -> cleans up styles and observers
+    act(() => {
+      api.pushUndoToast({
+        id: 'fu10-unmount',
+        message: 'Saved again',
+        actionLabel: 'Undo',
+        onUndo: vi.fn(),
+      });
+    });
+    expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('128px');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBe('true');
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe(
+      'calc(var(--undo-stack-h) + 8px)',
+    );
+    unmount();
+    expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('');
+    expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe('');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBeNull();
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe('');
+  });
+});

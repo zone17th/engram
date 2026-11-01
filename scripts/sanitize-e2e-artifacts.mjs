@@ -507,6 +507,12 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'content-item-json-error-light-1440.png',
   'content-item-json-error-dark-390.png',
   'content-item-json-error-dark-1440.png',
+  // w4fix FU10
+  'fu10-undo-toast-en-light-390.png',
+  'fu10-undo-toast-stack-en-light-390.png',
+  'fu10-undo-toast-vi-dark-390.png',
+  'fu10-undo-toast-en-light-768.png',
+  'fu10-undo-toast-vi-dark-768.png',
   // P04 itempage Task 17 U14 (e2e/content-itempage-visual.spec.ts)
   'content-item-import-valid-light-390.png',
   'content-item-import-valid-light-1440.png',
