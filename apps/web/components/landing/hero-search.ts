@@ -35,19 +35,23 @@ function rank(text: string, needle: string): number {
   return 0;
 }
 
+/**
+ * Như mockups/mock.js search(): bậc của tên, hoặc 2 nếu gợi ý khớp;
+ * tag của mục không tính (RV-UI2-3).
+ */
 function itemTier(item: HeroItem, needle: string): number {
-  const byName = rank(item.name, needle);
-  if (byName > 0) return byName;
-  if (rank(item.hint, needle) > 0) return 2;
-  if (item.tags.some((tag) => rank(tag, needle) > 0)) return 1;
-  return 0;
+  return Math.max(rank(item.name, needle), rank(item.hint, needle) > 0 ? 2 : 0);
 }
 
-function byTier<T>(list: T[], tier: (value: T) => number): T[] {
+/**
+ * Lọc bậc > 0, xếp theo bậc giảm dần rồi theo khoá phụ giảm dần (mock.js: items theo
+ * `touched`, tags theo `count`), cuối cùng giữ thứ tự fixture (RV-UI2-3).
+ */
+function byTier<T>(list: T[], tier: (value: T) => number, secondary: (value: T) => number): T[] {
   return list
-    .map((value, index) => ({ value, index, tier: tier(value) }))
+    .map((value, index) => ({ value, index, tier: tier(value), key: secondary(value) }))
     .filter((entry) => entry.tier > 0)
-    .sort((a, b) => b.tier - a.tier || a.index - b.index)
+    .sort((a, b) => b.tier - a.tier || b.key - a.key || a.index - b.index)
     .map((entry) => entry.value);
 }
 
@@ -64,8 +68,9 @@ export function searchHero(locale: LandingLocale, query: string): HeroGroup[] {
     tags = [...fixture.tags].sort((a, b) => b.count - a.count).slice(0, EMPTY_TAGS);
     items = [...fixture.items].sort((a, b) => b.touched - a.touched).slice(0, MAX_ITEMS);
   } else {
-    tags = byTier(fixture.tags, (tag) => rank(tag.name, needle)).slice(0, MAX_TAGS);
-    items = byTier(fixture.items, (item) => itemTier(item, needle)).slice(0, MAX_ITEMS);
+    tags = byTier(fixture.tags, (tag) => rank(tag.name, needle), (tag) => tag.count).slice(0, MAX_TAGS);
+    items = byTier(fixture.items, (item) => itemTier(item, needle), (item) => item.touched);
+    items = items.slice(0, MAX_ITEMS);
 
     const seen = new Set(items.map((item) => item.id));
     const scores = new Map<string, number>();
