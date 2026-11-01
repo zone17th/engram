@@ -942,10 +942,7 @@ export function Omnibox({
             return;
           }
           if (!loadedMeta?.vault_key_id) {
-            // If the session signed out or user changed during reloadVaultMeta, return silently (HM18-R3-2).
-            if (activeUserIdRef.current === null && startUserId !== null) {
-              return;
-            }
+            // If reloadVaultMeta resolves without a vault key (e.g. session signed out, user changed, or provider 404 locked the vault), return silently (HM18-R3-2, HM18-R4-4).
             return;
           }
           effectiveVault = { ...vault, vaultMeta: loadedMeta };
@@ -996,8 +993,8 @@ export function Omnibox({
       } finally {
         if (savePlanStartAbortRef.current === startController) {
           savePlanStartAbortRef.current = null;
+          savePlanStartingRef.current = false;
         }
-        savePlanStartingRef.current = false;
       }
     },
     [runPlanExecution, vault],

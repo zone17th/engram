@@ -2248,7 +2248,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     mockReloadVaultMeta.mockReset();
     mockReloadVaultMeta.mockRejectedValueOnce(new TypeError('Failed to fetch /api/v1/vault'));
 
-    renderOmnibox();
+    const rejectView = renderOmnibox();
     const rejectTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
     fireEvent.change(rejectTextarea, { target: { value: 'reject-meta-item: secret-body' } });
     fireEvent.keyDown(rejectTextarea, { key: 'Enter', ctrlKey: true });
@@ -2257,6 +2257,60 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(actionErr).toHaveTextContent(viMessages.content.errors.network);
     expect(mockSealEntryCalls).toHaveLength(0);
     expect(itemCreateSpy).not.toHaveBeenCalled();
+    rejectView.unmount();
+
+    // 4. Superseded start A resolving while newer start B is still awaiting reloadVaultMeta must NOT clear B's savePlanStartingRef guard (HM18-R4-3)
+    mockVaultMetaOverride = null;
+    mockReloadVaultMeta.mockReset();
+    const { promise: heldReloadA, resolve: resolveHeldReloadA } =
+      Promise.withResolvers<{ vault_key_id: string; version: number } | null>();
+    const { promise: heldReloadB, resolve: resolveHeldReloadB } =
+      Promise.withResolvers<{ vault_key_id: string; version: number } | null>();
+    mockReloadVaultMeta
+      .mockImplementationOnce(() => heldReloadA)
+      .mockImplementationOnce(() => heldReloadB);
+
+    const raceView = renderOmnibox();
+    const raceTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(raceTextarea, { target: { value: 'race-item-a: secret-a' } });
+    fireEvent.keyDown(raceTextarea, { key: 'Enter', ctrlKey: true });
+    expect(mockReloadVaultMeta).toHaveBeenCalledTimes(1);
+
+    // Lock and re-unlock while start A's reloadVaultMeta is still pending
+    act(() => {
+      triggerVaultLockReset();
+    });
+    triggerVaultUnlock();
+    raceView.rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={raceView.queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+
+    // Start B begins and awaits heldReloadB
+    fireEvent.change(raceTextarea, { target: { value: 'race-item-b: secret-b' } });
+    fireEvent.keyDown(raceTextarea, { key: 'Enter', ctrlKey: true });
+    expect(mockReloadVaultMeta).toHaveBeenCalledTimes(2);
+
+    // Superseded start A resolves while B is still awaiting heldReloadB
+    await act(async () => {
+      resolveHeldReloadA({ vault_key_id: TEST_KEY_ID, version: 1 });
+    });
+
+    // A duplicate Ctrl+Enter while B is still awaiting heldReloadB must be ignored because B's savePlanStartingRef stays true
+    fireEvent.keyDown(raceTextarea, { key: 'Enter', ctrlKey: true });
+    expect(mockReloadVaultMeta).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolveHeldReloadB(null);
+    });
+    expect(mockSealEntryCalls).toHaveLength(0);
+    expect(itemCreateSpy).not.toHaveBeenCalled();
+    raceView.unmount();
   });
 
   it('reactively hides and clears lock-cleared notice and saveUnconfirmed line immediately when [\'auth\', \'me\', ...] cache switches from user A to user B without unmount or parent rerender (HM18-CI-10, dec-120)', () => {

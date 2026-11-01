@@ -94,10 +94,12 @@ async function collectOmniboxFailureDiagnostics(
 
 function isOmniboxRelevantRequest(rec: CapturedRequestRecord): boolean {
   const { method, url } = rec;
+  // Match only omnibox-initiated reads (`sort=alpha` search/tag lookups and `/items/lookup`),
+  // excluding background `/app` home-list or rail refetches (`sort=recent`; HM18-R4-6).
   if (
-    url.includes('/items?') ||
+    (url.includes('/items?') && url.includes('sort=alpha')) ||
     url.includes('/items/lookup') ||
-    url.includes('/tags?')
+    (url.includes('/tags?') && url.includes('sort=alpha'))
   ) {
     return true;
   }
