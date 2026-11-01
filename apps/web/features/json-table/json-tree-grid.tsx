@@ -83,6 +83,7 @@ export interface ActiveAddFieldState {
 
 export interface JsonTreeGridCommitControlRef {
   commitOrFlushPendingEdit: () => boolean;
+  restoreFocusAfterSave: () => boolean;
 }
 
 export interface JsonTreeGridProps {
@@ -119,6 +120,7 @@ export function JsonTreeGrid({
   const addFieldInputRef = useRef<HTMLInputElement | null>(null);
   const skipBlurCommitRef = useRef<boolean>(false);
   const pendingFocusKeyRef = useRef<string | null>(null);
+  const lastEditedFocusKeyRef = useRef<string | null>(null);
   const [activeCellEdit, setActiveCellEdit] = useState<ActiveCellEditState | null>(null);
   const [activeAddField, setActiveAddField] = useState<ActiveAddFieldState | null>(null);
 
@@ -133,6 +135,7 @@ export function JsonTreeGrid({
     setActiveCellEdit(null);
     setActiveAddField(null);
     pendingFocusKeyRef.current = null;
+    lastEditedFocusKeyRef.current = null;
   }, [resetEpoch]);
 
   const activeCellEditKey = activeCellEdit?.cellKey ?? null;
@@ -260,6 +263,7 @@ export function JsonTreeGrid({
         editInputRef.current.value = '';
       }
       setActiveCellEdit(null);
+      lastEditedFocusKeyRef.current = editState.cellKey;
       if (focusAfterKey !== undefined) {
         pendingFocusKeyRef.current = focusAfterKey;
       }
@@ -274,6 +278,19 @@ export function JsonTreeGrid({
       commitOrFlushPendingEdit: () => {
         if (!activeCellEdit) return true;
         return commitActiveCellEdit(activeCellEdit, activeCellEdit.cellKey);
+      },
+      restoreFocusAfterSave: () => {
+        const key = lastEditedFocusKeyRef.current;
+        if (!key || !hostRef.current) return false;
+        const candidates = hostRef.current.querySelectorAll<HTMLElement>('[data-json-focus-key]');
+        for (let i = 0; i < candidates.length; i++) {
+          const el = candidates[i]!;
+          if (el.getAttribute('data-json-focus-key') === key && !el.hasAttribute('disabled')) {
+            el.focus();
+            return document.activeElement === el;
+          }
+        }
+        return false;
       },
     };
     return () => {
@@ -355,6 +372,7 @@ export function JsonTreeGrid({
           editInputRef.current.value = '';
         }
         setActiveCellEdit(null);
+        lastEditedFocusKeyRef.current = editState.cellKey;
         pendingFocusKeyRef.current = editState.cellKey;
       }
     },
@@ -374,6 +392,7 @@ export function JsonTreeGrid({
       if (!outcome.ok) return;
       if (measureUtf8Bytes(outcome.source) > ENTRY_MAX_PLAINTEXT_BYTES) return;
       if (onApplyEdit(outcome)) {
+        lastEditedFocusKeyRef.current = focusKey;
         pendingFocusKeyRef.current = focusKey;
       }
     },
@@ -431,6 +450,7 @@ export function JsonTreeGrid({
           addFieldInputRef.current.value = '';
         }
         setActiveAddField(null);
+        lastEditedFocusKeyRef.current = `${formState.containerPath}:open-add-field`;
         pendingFocusKeyRef.current = `${formState.containerPath}:open-add-field`;
       }
     },
@@ -447,10 +467,12 @@ export function JsonTreeGrid({
       if (!outcome.ok) return;
       if (onApplyEdit(outcome)) {
         const nextRowIdx = Math.max(0, Math.min(row.propertyIndex, totalRows - 2));
-        pendingFocusKeyRef.current =
+        const nextFocusKey =
           totalRows > 1
             ? `${containerPath}:remove-field:${nextRowIdx}`
             : `${containerPath}:open-add-field`;
+        lastEditedFocusKeyRef.current = nextFocusKey;
+        pendingFocusKeyRef.current = nextFocusKey;
       }
     },
     [activeCellEdit, disabled, doc, onApplyEdit, readOnly],
@@ -467,6 +489,7 @@ export function JsonTreeGrid({
       if (!outcome.ok) return;
       if (measureUtf8Bytes(outcome.source) > ENTRY_MAX_PLAINTEXT_BYTES) return;
       if (onApplyEdit(outcome)) {
+        lastEditedFocusKeyRef.current = `${containerPath}:add-row`;
         pendingFocusKeyRef.current = `${containerPath}:add-row`;
       }
     },
@@ -483,10 +506,12 @@ export function JsonTreeGrid({
       if (!outcome.ok) return;
       if (onApplyEdit(outcome)) {
         const nextRowIdx = Math.max(0, Math.min(rowIndex, totalRows - 2));
-        pendingFocusKeyRef.current =
+        const nextFocusKey =
           totalRows > 1
             ? `${containerPath}:remove-row:${nextRowIdx}`
             : `${containerPath}:add-row`;
+        lastEditedFocusKeyRef.current = nextFocusKey;
+        pendingFocusKeyRef.current = nextFocusKey;
       }
     },
     [activeCellEdit, disabled, doc, onApplyEdit, readOnly],

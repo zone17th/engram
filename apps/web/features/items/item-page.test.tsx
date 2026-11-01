@@ -4796,11 +4796,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 1. Explicit signOut() while PUT is held in flight -> release PUT with 401 session_invalid -> pure snapshot stays []
     const { promise: putLogoutGate, resolve: releasePutLogout } = createDeferred();
     const { promise: putLogoutEntered, resolve: notifyPutLogoutEntered } = createDeferred();
+    const { promise: putLogoutFinished, resolve: notifyPutLogoutFinished } = createDeferred();
     let holdPutForLogout = true;
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdPutForLogout) {
         notifyPutLogoutEntered();
         await putLogoutGate;
+        queueMicrotask(() => notifyPutLogoutFinished());
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -4823,10 +4825,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // Release the held PUT with 401 session_invalid -> stale clearGeneration drops the record
     holdPutForLogout = false;
     releasePutLogout();
-    const logoutSettle = Promise.withResolvers<void>();
-    setTimeout(logoutSettle.resolve, 25);
-    await logoutSettle.promise;
-
+    await putLogoutFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
     expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
 
@@ -4850,11 +4854,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 2. User switch A -> B committed while User A's PUT is held in flight -> release PUT with 401 session_invalid -> pure snapshot stays []
     const { promise: putSwitchGate, resolve: releasePutSwitch } = createDeferred();
     const { promise: putSwitchEntered, resolve: notifyPutSwitchEntered } = createDeferred();
+    const { promise: putSwitchFinished, resolve: notifyPutSwitchFinished } = createDeferred();
     let holdPutForSwitch = true;
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdPutForSwitch) {
         notifyPutSwitchEntered();
         await putSwitchGate;
+        queueMicrotask(() => notifyPutSwitchFinished());
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -4878,9 +4884,68 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // Release User A's late 401 session_invalid -> stale clearGeneration drops User A's record
     holdPutForSwitch = false;
     releasePutSwitch();
-    const switchSettle = Promise.withResolvers<void>();
-    setTimeout(switchSettle.resolve, 25);
-    await switchSettle.promise;
+    await putSwitchFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
+
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+    // 3. Text composer POST held across explicit signOut() -> release POST with 401 session_invalid -> pure snapshot stays [] (IP16-R3-3)
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    await h.loginSession('a@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.vault().state).toBe('locked');
+      expect(h.vault().inFlight).toBe(false);
+    });
+    await h.unlock();
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+    });
+
+    const { promise: compPostGate, resolve: releaseCompPost } = createDeferred();
+    const { promise: compPostEntered, resolve: notifyCompPostEntered } = createDeferred();
+    const { promise: compPostFinished, resolve: notifyCompPostFinished } = createDeferred();
+    let holdCompPost = true;
+    h.server.overrideRoute(async (url, init) => {
+      if (
+        url.endsWith(`/items/${ITEM_ID}/entries`) &&
+        init?.method === 'POST' &&
+        holdCompPost
+      ) {
+        notifyCompPostEntered();
+        await compPostGate;
+        queueMicrotask(() => notifyCompPostFinished());
+        return problemResponse('session_invalid', 401);
+      }
+      return null;
+    });
+
+    const genBeforeCompLogout = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'New text composer draft held across signOut' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+    await compPostEntered;
+
+    await h.signOutSession();
+    expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(
+      genBeforeCompLogout,
+    );
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+    holdCompPost = false;
+    releaseCompPost();
+    await compPostFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
 
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
     expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
