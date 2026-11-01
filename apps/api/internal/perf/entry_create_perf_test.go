@@ -90,6 +90,7 @@ type requestTraceCtxKey struct{}
 type requestLockTrace struct {
 	mu          sync.Mutex
 	recorded    bool
+	skipDelay   bool
 	backendPID  uint32
 	startWaitAt time.Time
 	grantedAt   time.Time
@@ -125,6 +126,7 @@ type activeCommitSpan struct {
 //  3. Record the exact timestamp when the purge transaction finishes COMMIT on the DB connection.
 type perfQueryTracer struct {
 	createLockHeldDelayNanos atomic.Int64
+	delayedCreateLockGrants  atomic.Int64
 
 	commitMu       sync.Mutex
 	trackPurgePID  uint32
@@ -136,6 +138,13 @@ func (tr *perfQueryTracer) setCreateLockHeldDelay(d time.Duration) {
 	tr.createLockHeldDelayNanos.Store(int64(d))
 }
 
+func (tr *perfQueryTracer) resetDelayedCreateLockGrants() {
+	tr.delayedCreateLockGrants.Store(0)
+}
+
+func (tr *perfQueryTracer) delayedCreateLockGrantCount() int64 {
+	return tr.delayedCreateLockGrants.Load()
+}
 func (tr *perfQueryTracer) armPurgeCommitTracker(purgePID uint32) {
 	tr.commitMu.Lock()
 	defer tr.commitMu.Unlock()
@@ -195,8 +204,9 @@ func (tr *perfQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, da
 		span.reqTrace.err = data.Err
 		span.reqTrace.mu.Unlock()
 
-		if data.Err == nil {
+		if data.Err == nil && !span.reqTrace.skipDelay {
 			if delayNanos := tr.createLockHeldDelayNanos.Load(); delayNanos > 0 {
+				tr.delayedCreateLockGrants.Add(1)
 				time.Sleep(time.Duration(delayNanos))
 			}
 		}
@@ -371,10 +381,13 @@ func (h *perfHarness) doServeHTTPWithRemoteAddr(
 	if body != "" {
 		rdr = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, h.Origin+path, rdr)
-	if ctx != nil {
-		req = req.WithContext(ctx)
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	if _, ok := ctx.Value(requestTraceCtxKey{}).(*requestLockTrace); !ok {
+		ctx = context.WithValue(ctx, requestTraceCtxKey{}, &requestLockTrace{})
+	}
+	req := httptest.NewRequest(method, h.Origin+path, rdr).WithContext(ctx)
 	req.RequestURI = path
 	if remoteAddr != "" {
 		req.RemoteAddr = remoteAddr
@@ -967,17 +980,18 @@ func nearestRankPercentile(samples []time.Duration, p int) time.Duration {
 
 // populationStats summarizes the empirical latency distribution and verification counts of a population.
 type populationStats struct {
-	Name               string
-	Samples            int
-	Status201Count     int
-	NewRowsCount       int
-	SizeCountsKiB      map[int]int
-	P50                time.Duration
-	P95                time.Duration
-	P99                time.Duration
-	DiscardedRounds    int
-	ObservationLagP95  time.Duration
-	HasObservationInfo bool
+	Name                    string
+	Samples                 int
+	Status201Count          int
+	NewRowsCount            int
+	SizeCountsKiB           map[int]int
+	P50                     time.Duration
+	P95                     time.Duration
+	P99                     time.Duration
+	DiscardedRounds         int
+	ObservationLagP95       time.Duration
+	HasObservationInfo      bool
+	ConfirmedPurgeDelayRuns int
 }
 
 func (s populationStats) passesCeiling(ceiling time.Duration) bool {
@@ -1102,7 +1116,8 @@ func runPopulation1Sequential(
 	latencies = append(latencies, dur0)
 	advanceIfNeeded()
 	// Next request into the same item (now at 200 live entries) must return 409 item_entry_limit and is excluded from the sample.
-	code409, raw409, _ := h.doServeHTTP(context.Background(), user.Jar, http.MethodPost, path199, overflowReqs[0].BodyJSON, overflowReqs[0].IdemKey)
+	overflowCtx := context.WithValue(context.Background(), requestTraceCtxKey{}, &requestLockTrace{skipDelay: true})
+	code409, raw409, _ := h.doServeHTTP(overflowCtx, user.Jar, http.MethodPost, path199, overflowReqs[0].BodyJSON, overflowReqs[0].IdemKey)
 	if code409 != http.StatusConflict {
 		t.Fatalf("Population 1 overflow req into 200-entry item = %d %s, want 409 item_entry_limit", code409, raw409)
 	}
@@ -1385,6 +1400,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 	observationLags := make([]time.Duration, 0, pop3TargetRounds)
 	confirmedRounds := 0
 	discardedRounds := 0
+	confirmedPurgeDelayRuns := 0
 	totalStatus201 := 0
 	totalExpectedNewRows := 0
 
@@ -1421,6 +1437,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 			snapshotWaiterPIDs []uint32
 			purgeReleasedAt    time.Time
 			all10Blocked       bool
+			purgeDelayApplied  bool
 		)
 
 		burstGate := make(chan struct{})
@@ -1489,6 +1506,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 				}
 			}
 			if extraPurgeHoldDelay > 0 {
+				purgeDelayApplied = true
 				time.Sleep(extraPurgeHoldDelay)
 			}
 		})
@@ -1575,6 +1593,9 @@ func runPopulation3ConfirmedPurgeOverlap(
 
 		// Round is confirmed! Record all 10 samples and the round's observation lag.
 		confirmedRounds++
+		if purgeDelayApplied {
+			confirmedPurgeDelayRuns++
+		}
 		observationLags = append(observationLags, obsLag)
 		for _, out := range outcomes {
 			confirmedLatencies = append(confirmedLatencies, out.dur)
@@ -1597,17 +1618,18 @@ func runPopulation3ConfirmedPurgeOverlap(
 	// For the 100 confirmed samples (10 confirmed rounds × 10 requests), report exact confirmed counts.
 	confirmedSamples := len(confirmedLatencies)
 	stats := populationStats{
-		Name:               prefix,
-		Samples:            confirmedSamples,
-		Status201Count:     confirmedSamples,
-		NewRowsCount:       confirmedSamples,
-		SizeCountsKiB:      confirmedSizeCounts,
-		P50:                nearestRankPercentile(confirmedLatencies, 50),
-		P95:                nearestRankPercentile(confirmedLatencies, 95),
-		P99:                nearestRankPercentile(confirmedLatencies, 99),
-		DiscardedRounds:    discardedRounds,
-		ObservationLagP95:  nearestRankPercentile(observationLags, 95),
-		HasObservationInfo: true,
+		Name:                    prefix,
+		Samples:                 confirmedSamples,
+		Status201Count:          confirmedSamples,
+		NewRowsCount:            confirmedSamples,
+		SizeCountsKiB:           confirmedSizeCounts,
+		P50:                     nearestRankPercentile(confirmedLatencies, 50),
+		P95:                     nearestRankPercentile(confirmedLatencies, 95),
+		P99:                     nearestRankPercentile(confirmedLatencies, 99),
+		DiscardedRounds:         discardedRounds,
+		ObservationLagP95:       nearestRankPercentile(observationLags, 95),
+		HasObservationInfo:      true,
+		ConfirmedPurgeDelayRuns: confirmedPurgeDelayRuns,
 	}
 	logPopulationStats(t, stats)
 
@@ -1682,23 +1704,35 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	t.Run("SelfCheckA_Inject20msInCreateLock_Pop2FailsWhilePop1Passes", func(t *testing.T) {
 		item199CheckA := prepareItemAt199Entries(t, h.Pool, user, checkAItem199BaseID, 1)
 
+		h.Tracer.resetDelayedCreateLockGrants()
 		h.Tracer.setCreateLockHeldDelay(20 * time.Millisecond)
 		defer h.Tracer.setCreateLockHeldDelay(0)
 
 		h.refreshSession(user.Jar)
 		pop1CheckA := runPopulation1Sequential(t, h, user, item199CheckA, checkAPop1Items, "selfcheck_a_pop1_20ms")
+		gotPop1Delays := h.Tracer.delayedCreateLockGrantCount()
+		const wantPop1Delays = int64(pop1TargetSamples)
+		if gotPop1Delays != wantPop1Delays {
+			t.Fatalf("Self-Check A: Population 1 delayed LockUserContent grants = %d, want %d (injection did not fire on every create request)", gotPop1Delays, wantPop1Delays)
+		}
 		if !pop1CheckA.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check A: expected Population 1 to PASS with 20 ms lock hold, got p95=%s (ceiling=%s)", pop1CheckA.P95, p95Ceiling)
 		}
 
 		h.refreshSession(user.Jar)
 		pop2CheckA := runPopulation2BurstNoPurge(t, h, user, checkAPop2Items, "selfcheck_a_pop2_20ms")
+		gotTotalDelays := h.Tracer.delayedCreateLockGrantCount()
+		gotPop2Delays := gotTotalDelays - gotPop1Delays
+		const wantPop2Delays = int64(pop2TargetSamples)
+		const wantTotalDelays = int64(pop1TargetSamples + pop2TargetSamples)
+		if gotPop2Delays != wantPop2Delays || gotTotalDelays != wantTotalDelays {
+			t.Fatalf("Self-Check A: delayed LockUserContent grants = %d (pop1=%d, pop2=%d), want %d (%d+%d)", gotTotalDelays, gotPop1Delays, gotPop2Delays, wantTotalDelays, wantPop1Delays, wantPop2Delays)
+		}
 		if pop2CheckA.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check A: expected Population 2 to FAIL ceiling %s when 20 ms is injected in create lock (10 serialized * 20 ms >= 180 ms), but got p95=%s", p95Ceiling, pop2CheckA.P95)
 		}
-		t.Logf("SELF-CHECK A VERIFIED: 20 ms injected in create lock -> Pop1 PASS (p95=%s < %s) and Pop2 FAIL (p95=%s >= %s)",
-			pop1CheckA.P95, p95Ceiling, pop2CheckA.P95, p95Ceiling)
-
+		t.Logf("SELF-CHECK A VERIFIED: 20 ms injected in create lock (delayed_grants=%d=%d+%d) -> Pop1 PASS (p95=%s < %s) and Pop2 FAIL (p95=%s >= %s)",
+			gotTotalDelays, gotPop1Delays, gotPop2Delays, pop1CheckA.P95, p95Ceiling, pop2CheckA.P95, p95Ceiling)
 		contenttest.AssertInvariants(t, h.Pool, user.UserID)
 	})
 
@@ -1713,12 +1747,14 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 
 		h.refreshSession(user.Jar)
 		pop3CheckB := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, checkBPop3Items, 200*time.Millisecond, "selfcheck_b_pop3_200ms_purge")
+		if pop3CheckB.ConfirmedPurgeDelayRuns != pop3TargetRounds {
+			t.Fatalf("Self-Check B: confirmed rounds with 200 ms purge hook delay = %d, want %d", pop3CheckB.ConfirmedPurgeDelayRuns, pop3TargetRounds)
+		}
 		if pop3CheckB.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check B: expected Population 3 to FAIL ceiling %s when 200 ms is injected in purge lock, but got p95=%s", p95Ceiling, pop3CheckB.P95)
 		}
-		t.Logf("SELF-CHECK B VERIFIED: 200 ms injected in purge lock -> Pop2 PASS (p95=%s < %s) and Pop3 FAIL (p95=%s >= %s)",
-			pop2CheckB.P95, p95Ceiling, pop3CheckB.P95, p95Ceiling)
-
+		t.Logf("SELF-CHECK B VERIFIED: 200 ms injected in purge lock (confirmed_delayed_rounds=%d) -> Pop2 PASS (p95=%s < %s) and Pop3 FAIL (p95=%s >= %s)",
+			pop3CheckB.ConfirmedPurgeDelayRuns, pop2CheckB.P95, p95Ceiling, pop3CheckB.P95, p95Ceiling)
 		contenttest.AssertInvariants(t, h.Pool, user.UserID)
 	})
 
