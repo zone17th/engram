@@ -338,7 +338,8 @@ body {
 .json-table .k { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
 .json-table .k-occ { font-family: var(--font-mono); font-size: 11px; color: var(--accent); margin-left: 4px; font-weight: 600; }
 .json-table .v-num { font-family: var(--font-mono); color: var(--accent); }
-.json-table .v-bool { font-family: var(--font-mono); color: var(--product-teal); }
+.json-table .v-bool { font-family: var(--font-mono); color: var(--success-ink); }
+[data-theme='dark'] .json-table .v-bool { color: var(--product-teal); }
 .json-table .v-null { font-family: var(--font-mono); color: var(--muted); font-style: italic; }
 .json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
 .json-toggle {

@@ -1229,12 +1229,17 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
       card.hidden = false;
       if (newJsonCtrl) newJsonCtrl.setSource('{}');
     }
+    if (window.SAK && typeof window.SAK._syncVault === 'function') {
+      window.SAK._syncVault({ keepDraftForDemo: true });
+    }
     Array.from(cardList.querySelectorAll('[data-entry-card]')).filter((c) => !c.hidden).forEach((c, idx) => {
       const pos = c.querySelector('[data-entry-pos]');
       if (pos) pos.textContent = '#' + (idx + 1);
     });
-    const addFieldBtn = card.querySelector('[data-json-act="open-add-field"]');
-    if (addFieldBtn) addFieldBtn.click();
+    if (!window.SAK || !window.SAK.state || !window.SAK.state.locked) {
+      const addFieldBtn = card.querySelector('[data-json-act="open-add-field"]');
+      if (addFieldBtn) addFieldBtn.click();
+    }
     SAK.toast('Đã tạo entry JSON mới · Created new JSON entry', 'Hoàn tác', {
       originEl: addJsonBtn,
       onAction: () => {
@@ -1295,7 +1300,11 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
     const text = getEffectiveImportText();
     const bytes = SAK.measureUtf8Bytes(text);
     if (sourceBadge) {
-      sourceBadge.textContent = `Nguồn: ${importSourceKind === 'file' ? 'tệp (.json)' : 'dán (paste)'} · ${bytes.toLocaleString('vi-VN')} / 262.144 B`;
+      if (forcedUtf8Error) {
+        sourceBadge.textContent = 'Nguồn: tệp (.json) · UTF-8 lỗi (0 B nạp) / 262.144 B';
+      } else {
+        sourceBadge.textContent = `Nguồn: ${importSourceKind === 'file' ? 'tệp (.json)' : 'dán (paste)'} · ${bytes.toLocaleString('vi-VN')} / 262.144 B`;
+      }
     }
     if (limitBanner) limitBanner.hidden = !blockedAt200;
     if (utf8Err) utf8Err.hidden = !forcedUtf8Error;
@@ -1400,6 +1409,8 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
           syncImportUi();
         } catch (_) {
           forcedUtf8Error = true;
+          importSource = '';
+          src.value = '';
           syncImportUi();
         }
       });
@@ -1449,6 +1460,8 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
         blockedAt200 = false;
         forcedUtf8Error = true;
         importSourceKind = 'file';
+        importSource = '';
+        src.value = '';
         syncImportUi();
       } else if (st === 'parse-err') {
         blockedAt200 = false;

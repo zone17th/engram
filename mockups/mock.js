@@ -3262,7 +3262,7 @@
         if (activeAddFormPath === path) {
           const errHtml = activeAddKeyError ? `<span role="alert" class="text-[12px] text-error-ink font-medium">${esc(activeAddKeyError)}</span>` : '';
           return `<div class="json-table-toolbar" data-json-add-field-form="${esc(path)}">
-            <input type="text" class="json-cell-input !w-[160px]" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" class="json-cell-input !w-[192px]" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
             <select class="json-type-btn" data-json-new-type="${esc(path)}" aria-label="Kiểu giá trị mới · New value type">
               <option value="string">string ("")</option>
               <option value="number">number (0)</option>
@@ -3452,29 +3452,40 @@
       }
     }
 
-    function captureFocusTarget() {
-      const active = document.activeElement;
-      if (!active || !tableHost.contains(active)) return null;
-      if (active.dataset && active.dataset.jsonEditInput) {
-        return { kind: 'edit-input', path: active.dataset.jsonEditInput };
+    function describeElementFocusTarget(el) {
+      if (!el || !tableHost.contains(el)) return null;
+      if (el.dataset && el.dataset.jsonEditInput) {
+        return { kind: 'edit-input', path: el.dataset.jsonEditInput };
       }
-      if (active.dataset && active.dataset.jsonTypeSelect) {
-        return { kind: 'type-select', path: active.dataset.jsonTypeSelect };
+      if (el.dataset && el.dataset.jsonTypeSelect) {
+        return { kind: 'type-select', path: el.dataset.jsonTypeSelect };
       }
-      if (active.dataset && active.dataset.jsonNewKey) {
-        return { kind: 'new-key', path: active.dataset.jsonNewKey };
+      if (el.dataset && el.dataset.jsonNewKey) {
+        return { kind: 'new-key', path: el.dataset.jsonNewKey };
       }
-      const actBtn = active.closest('[data-json-act]');
+      if (el.dataset && el.dataset.jsonNewType) {
+        return { kind: 'new-type', path: el.dataset.jsonNewType };
+      }
+      if (el.classList && el.classList.contains('json-cell-readonly') && el.getAttribute('aria-label')) {
+        return { kind: 'readonly', label: el.getAttribute('aria-label') };
+      }
+      const actBtn = el.closest('[data-json-act]');
       if (actBtn) {
         return {
           kind: 'act',
           act: actBtn.dataset.jsonAct,
           path: actBtn.dataset.path || '',
           propIdx: actBtn.dataset.propIdx,
-          elemIdx: actBtn.dataset.elemIdx
+          elemIdx: actBtn.dataset.elemIdx,
+          objPath: actBtn.dataset.objPath,
+          colIndex: actBtn.dataset.colIndex
         };
       }
       return null;
+    }
+
+    function captureFocusTarget() {
+      return describeElementFocusTarget(document.activeElement);
     }
 
     function restoreFocusTarget(focusTarget) {
@@ -3490,6 +3501,11 @@
       } else if (focusTarget.kind === 'new-key' && focusTarget.path) {
         el = tableHost.querySelector(`[data-json-new-key="${CSS.escape(focusTarget.path)}"]`) ||
              tableHost.querySelector(`[data-json-act="open-add-field"][data-path="${CSS.escape(focusTarget.path)}"]`);
+      } else if (focusTarget.kind === 'new-type' && focusTarget.path) {
+        el = tableHost.querySelector(`[data-json-new-type="${CSS.escape(focusTarget.path)}"]`) ||
+             tableHost.querySelector(`[data-json-act="open-add-field"][data-path="${CSS.escape(focusTarget.path)}"]`);
+      } else if (focusTarget.kind === 'readonly' && focusTarget.label) {
+        el = tableHost.querySelector(`.json-cell-readonly[aria-label="${CSS.escape(focusTarget.label)}"]`);
       } else if (focusTarget.kind === 'act') {
         const act = focusTarget.act;
         const p = focusTarget.path;
@@ -3503,6 +3519,8 @@
         } else if (act === 'remove-row' && p) {
           el = tableHost.querySelector(`[data-json-act="remove-row"][data-path="${CSS.escape(p)}"][data-elem-idx="${CSS.escape(String(focusTarget.elemIdx || 0))}"]`) ||
                tableHost.querySelector(`[data-json-act="add-row"][data-path="${CSS.escape(p)}"]`);
+        } else if (act === 'init-missing' && focusTarget.objPath != null && focusTarget.colIndex != null) {
+          el = tableHost.querySelector(`[data-json-act="init-missing"][data-obj-path="${CSS.escape(focusTarget.objPath)}"][data-col-index="${CSS.escape(String(focusTarget.colIndex))}"]`);
         } else if (p) {
           el = tableHost.querySelector(`[data-json-act="${CSS.escape(act)}"][data-path="${CSS.escape(p)}"]`);
         } else {
@@ -3581,7 +3599,7 @@
       const node = getNodeByPath(currentDoc.root, path);
       if (!node) return false;
       const isKey = path.split('.').pop().startsWith('k');
-      const focusAfterCommit = opts.skipFocus ? null : { kind: 'act', act: 'edit-cell', path };
+      const focusAfterCommit = opts.focusTarget !== undefined ? opts.focusTarget : (opts.skipFocus ? null : { kind: 'act', act: 'edit-cell', path });
 
       if (node.kind === 'string') {
         if (node.value === newVal) {
@@ -3912,8 +3930,12 @@
       }
       const next = e.relatedTarget;
       if (next && wrap.contains(next)) return;
-      /* S3RV2-2: if focus moves to another interactive control inside tableHost, let its click handler commit first */
-      if (next && tableHost.contains(next)) return;
+      /* S3RV3-2: keyboard Tab/Shift+Tab to another control inside tableHost commits and restores focus on that control */
+      if (next && tableHost.contains(next)) {
+        const nextTarget = describeElementFocusTarget(next);
+        commitCellEdit(path, { focusTarget: nextTarget, skipFocus: !nextTarget });
+        return;
+      }
       commitCellEdit(path, { skipFocus: true });
     });
 
@@ -4034,7 +4056,7 @@
       }
 
       if (ta) {
-        ta.value = currentSource.replace(/\r\n?/g, '\n');
+        ta.value = state.locked ? '' : currentSource.replace(/\r\n?/g, '\n');
         ta.addEventListener('input', () => {
           if (formatMsgEl) formatMsgEl.hidden = true;
           validateRawDraft();
