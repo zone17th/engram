@@ -275,12 +275,20 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     await waitForAuthPageReady(page);
 
     // Local strength meter updates as password changes without network traffic.
-    const meter = page.locator('#signup-password-meter');
+    const meter = page.locator('#signup-password-meter [role="meter"]');
     await expect(meter).toHaveAttribute('aria-valuenow', '0');
     await fillSecret(page.getByLabel('Login password', { exact: true }), 'StrongAccountPass!2026');
     await expect(meter).toHaveAttribute('aria-valuenow', '4');
 
-    // Confirm password mismatch validation
+    // Legal links on signup open in a new tab (AU4-FE1-15, AU4-FE2-8)
+    const termsLink = page.getByRole('link', { name: 'Terms of Service' });
+    await expect(termsLink).toHaveAttribute('href', '/terms');
+    await expect(termsLink).toHaveAttribute('target', '_blank');
+    await expect(termsLink).toHaveAttribute('rel', 'noopener noreferrer');
+    const privacyLink = page.getByRole('link', { name: 'Privacy Policy' });
+    await expect(privacyLink).toHaveAttribute('href', '/privacy');
+    await expect(privacyLink).toHaveAttribute('target', '_blank');
+    await expect(privacyLink).toHaveAttribute('rel', 'noopener noreferrer');
     await page.getByLabel('Email', { exact: true }).fill('mismatch@example.test');
     await fillSecret(page.getByLabel('Confirm password', { exact: true }), 'DifferentPass!2026');
     await page.getByRole('checkbox').check();
@@ -298,6 +306,7 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     await page.goto('/terms');
     await expect(page.getByRole('heading', { level: 1, name: 'Terms of Service & Privacy Policy' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: 'Terms of Service' })).toBeVisible();
+    await expect(page.locator('main section').first()).toHaveAttribute('id', 'terms');
     await expect(page.locator('#terms')).toBeVisible();
     await expect(page.locator('#privacy')).toBeVisible();
     await expect(page.locator('#contact')).toBeVisible();
@@ -306,16 +315,19 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     await page.goto('/privacy#contact');
     await expect(page.getByRole('heading', { level: 1, name: 'Terms of Service & Privacy Policy' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: 'Privacy Policy & End-to-End Scope' })).toBeVisible();
+    await expect(page.locator('main section').first()).toHaveAttribute('id', 'privacy');
     await expect(page.locator('#contact')).toBeVisible();
 
     await page.goto('/vi/terms');
     await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: 'Điều khoản sử dụng' })).toBeVisible();
+    await expect(page.locator('main section').first()).toHaveAttribute('id', 'terms');
     await expect(page.locator('#terms')).toBeVisible();
 
     await page.goto('/vi/privacy#contact');
     await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: 'Chính sách quyền riêng tư & Phạm vi mã hoá đầu-cuối' })).toBeVisible();
+    await expect(page.locator('main section').first()).toHaveAttribute('id', 'privacy');
     await expect(page.locator('#contact')).toBeVisible();
   });
 

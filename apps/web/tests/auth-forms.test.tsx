@@ -225,8 +225,15 @@ describe('SignupForm retry behavior', () => {
 
     expect(screen.getByText('Passwords do not match.')).toBeInTheDocument();
     expect(mocks.signup).not.toHaveBeenCalled();
-    expect(screen.getByRole('link', { name: 'Terms of Service' })).toHaveAttribute('href', '/terms');
-    expect(screen.getByRole('link', { name: 'Privacy Policy' })).toHaveAttribute('href', '/privacy');
+    const termsLink = screen.getByRole('link', { name: 'Terms of Service' });
+    expect(termsLink).toHaveAttribute('href', '/terms');
+    expect(termsLink).toHaveAttribute('target', '_blank');
+    expect(termsLink).toHaveAttribute('rel', 'noopener noreferrer');
+
+    const privacyLink = screen.getByRole('link', { name: 'Privacy Policy' });
+    expect(privacyLink).toHaveAttribute('href', '/privacy');
+    expect(privacyLink).toHaveAttribute('target', '_blank');
+    expect(privacyLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
 });
 
