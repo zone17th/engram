@@ -112,7 +112,7 @@ export function subscribeSaveUnconfirmed(listener: Listener): () => void {
 export type LockClearedNoticeKind = 'draft' | 'plan';
 
 export interface LockClearedNoticeRecord {
-  readonly userId: string;
+  readonly userId: string | null;
   readonly kind: LockClearedNoticeKind;
 }
 
@@ -126,11 +126,13 @@ function emitLockNoticeChange(): void {
 }
 
 /**
- * Records a pending post-unlock "draft cleared on lock" notice for `userId`.
+ * Records a pending post-unlock "draft cleared on lock" notice (`userId` may be `null` if unknown at lock time,
+ * in which case it is adopted by the next reconciled user or cleared on `signed_out` — HM18B-R2-6).
  */
 export function recordLockClearedNotice(record: LockClearedNoticeRecord): void {
-  const userId = record.userId.trim();
-  if (!userId || (record.kind !== 'draft' && record.kind !== 'plan')) {
+  const rawUserId = typeof record.userId === 'string' ? record.userId.trim() : '';
+  const userId = rawUserId.length > 0 ? rawUserId : null;
+  if (record.kind !== 'draft' && record.kind !== 'plan') {
     return;
   }
   currentLockNoticeRecord = Object.freeze({ userId, kind: record.kind });
@@ -138,7 +140,7 @@ export function recordLockClearedNotice(record: LockClearedNoticeRecord): void {
 }
 
 /**
- * Clears the in-memory lock-cleared notice (on dismiss, new input/save, voluntary logout, or test reset).
+ * Clears the in-memory lock-cleared notice (on dismiss, new input/save, any `signed_out`, or test reset).
  */
 export function clearLockClearedNotice(): void {
   if (currentLockNoticeRecord === null) {
@@ -149,7 +151,8 @@ export function clearLockClearedNotice(): void {
 }
 
 /**
- * Reconciles the stored lock-cleared notice against the active session's `userId` (HM18B-R1-4, advisor-dec-120):
+ * Reconciles the stored lock-cleared notice against the active session's `userId` (HM18B-R1-4, HM18B-R2-6, advisor-dec-120):
+ * - If the pending notice had `userId === null` (recorded when user ID was not yet cached), adopts the first known `activeUserId`.
  * - If another user signs in (`activeUserId` is non-empty and differs from `currentLockNoticeRecord.userId`),
  *   the notice is immediately cleared so User B never sees User A's lock notice.
  */
@@ -157,11 +160,19 @@ export function reconcileLockClearedNoticeUser(activeUserId: string | null | und
   if (!currentLockNoticeRecord) {
     return;
   }
-  if (
-    typeof activeUserId === 'string' &&
-    activeUserId.length > 0 &&
-    activeUserId !== currentLockNoticeRecord.userId
-  ) {
+  const normalizedActive = typeof activeUserId === 'string' ? activeUserId.trim() : '';
+  if (!normalizedActive) {
+    return;
+  }
+  if (currentLockNoticeRecord.userId === null) {
+    currentLockNoticeRecord = Object.freeze({
+      userId: normalizedActive,
+      kind: currentLockNoticeRecord.kind,
+    });
+    emitLockNoticeChange();
+    return;
+  }
+  if (normalizedActive !== currentLockNoticeRecord.userId) {
     currentLockNoticeRecord = null;
     emitLockNoticeChange();
   }

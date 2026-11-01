@@ -285,9 +285,11 @@ export function Omnibox({
 
   useEffect(() => {
     return subscribeSessionBroadcast((message) => {
-      if (message.type === 'signed_out' && (!message.reason || message.reason === 'logout')) {
-        clearSaveUnconfirmed();
+      if (message.type === 'signed_out') {
         clearLockClearedNotice();
+        if (!message.reason || message.reason === 'logout') {
+          clearSaveUnconfirmed();
+        }
       }
     });
   }, []);
@@ -301,8 +303,8 @@ export function Omnibox({
 
   const visibleLockClearedNoticeKind =
     isVaultUnlocked &&
-    activeUserId !== null &&
-    lockNoticeSnapshot?.userId === activeUserId
+    lockNoticeSnapshot !== null &&
+    (lockNoticeSnapshot.userId === null || lockNoticeSnapshot.userId === activeUserId)
       ? lockNoticeSnapshot.kind
       : null;
   const parsed = useMemo(() => parseQuickAdd(inputValue), [inputValue]);
@@ -433,7 +435,7 @@ export function Omnibox({
         activePlanRef.current = null;
       }
 
-      if (hadDraftOrPlan && activeUserIdRef.current) {
+      if (hadDraftOrPlan) {
         recordLockClearedNotice({
           userId: activeUserIdRef.current,
           kind: hadCommittedMeta ? 'plan' : 'draft',
@@ -886,13 +888,23 @@ export function Omnibox({
       }
 
       try {
+        let effectiveVault = vault;
+        if (!vault.vaultMeta?.vault_key_id && typeof vault.reloadVaultMeta === 'function') {
+          const loadedMeta = await vault.reloadVaultMeta();
+          if (!loadedMeta?.vault_key_id) {
+            setActionErrorCode('vault_absent');
+            return;
+          }
+          effectiveVault = { ...vault, vaultMeta: loadedMeta };
+        }
+
         const plan = await createQuickAddSavePlan({
           name,
           tags,
           body,
           targetItem,
           isNewItem,
-          vault,
+          vault: effectiveVault,
         });
 
         if (!plan.op.isCurrent()) {

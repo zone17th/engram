@@ -253,6 +253,61 @@ function isAbortOrStale(error: unknown, signal: AbortSignal, op: EntryOpHandle):
 }
 
 /**
+ * Executes `action()` while observing `globalThis.fetch` calls to detect whether an earlier
+ * attempt inside `contentMutate` / `authMutate` rejected or returned 5xx before a subsequent
+ * retry settled (HM18B-R2-3, SPEC §3.4 case b).
+ */
+async function runStepWithRetryObservation<T>(
+  action: () => Promise<T>,
+): Promise<{ readonly value: T } | { readonly error: unknown; readonly hadInternalUncertainRetry: boolean }> {
+  const currentFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch : undefined;
+  if (!currentFetch) {
+    try {
+      const value = await action();
+      return { value };
+    } catch (error) {
+      return { error, hadInternalUncertainRetry: false };
+    }
+  }
+
+  let fetchAttempts = 0;
+  let sawEarlierUncertainOutcome = false;
+  let lastAttemptFollowedUncertain = false;
+
+  const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+    fetchAttempts += 1;
+    if (fetchAttempts > 1 && sawEarlierUncertainOutcome) {
+      lastAttemptFollowedUncertain = true;
+    }
+    try {
+      const res = await currentFetch(input, init);
+      if (res.status >= 500 && res.status <= 599) {
+        sawEarlierUncertainOutcome = true;
+      }
+      return res;
+    } catch (err) {
+      sawEarlierUncertainOutcome = true;
+      throw err;
+    }
+  };
+
+  globalThis.fetch = wrappedFetch;
+  try {
+    const value = await action();
+    return { value };
+  } catch (error) {
+    return {
+      error,
+      hadInternalUncertainRetry: lastAttemptFollowedUncertain,
+    };
+  } finally {
+    if (globalThis.fetch === wrappedFetch) {
+      globalThis.fetch = currentFetch;
+    }
+  }
+}
+
+/**
  * Executes (or resumes) a `QuickAddSavePlan` from its first non-`done` step using the
  * pre-generated `Idempotency-Key`s and sealed entry bytes (SPEC §3.4, plan §2.11 step 3, A3).
  *
@@ -286,49 +341,52 @@ export async function executeQuickAddSavePlan(
     onStepUpdate?.();
 
     if (step.key === 'item') {
-      const priorUncertain = plan.itemCreateUncertainSend;
+      const initialPriorUncertain = plan.itemCreateUncertainSend;
       plan.itemCreateUncertainSend = true;
-      try {
-        const created = await itemCreate(
+      const outcome = await runStepWithRetryObservation(() =>
+        itemCreate(
           { id: plan.itemId, name: plan.itemName },
           {
             idempotencyKey: plan.itemCreateIdempotencyKey ?? createIdempotencyKey(),
             signal,
-            uncertainPriorSend: priorUncertain,
+            uncertainPriorSend: initialPriorUncertain,
           },
-        );
+        ),
+      );
+      if ('value' in outcome) {
         if (!op.isCurrent() || signal.aborted) {
           plan.running = false;
           return { status: 'aborted_or_stale' };
         }
-        plan.itemCreated = created;
+        plan.itemCreated = outcome.value;
         plan.itemCreateUncertainSend = false;
         step.status = 'done';
         onStepUpdate?.();
-      } catch (error) {
-        if (isAbortOrStale(error, signal, op)) {
-          plan.running = false;
-          return { status: 'aborted_or_stale' };
-        }
-        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
-        if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
-          plan.itemCreateUncertainSend = false;
-        }
-        step.status = 'failed';
-        plan.running = false;
-        plan.failedStepKey = 'item';
-        plan.lastError = classified;
-        onStepUpdate?.();
-        return {
-          status: 'failed',
-          stepKey: 'item',
-          classifiedError: classified,
-          rawError: error,
-          priorUncertain,
-          hadUncertainSend: priorUncertain,
-        };
+        continue;
       }
-      continue;
+      const { error, hadInternalUncertainRetry } = outcome;
+      const priorUncertain = initialPriorUncertain || hadInternalUncertainRetry;
+      if (isAbortOrStale(error, signal, op)) {
+        plan.running = false;
+        return { status: 'aborted_or_stale' };
+      }
+      const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
+      if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
+        plan.itemCreateUncertainSend = false;
+      }
+      step.status = 'failed';
+      plan.running = false;
+      plan.failedStepKey = 'item';
+      plan.lastError = classified;
+      onStepUpdate?.();
+      return {
+        status: 'failed',
+        stepKey: 'item',
+        classifiedError: classified,
+        rawError: error,
+        priorUncertain,
+        hadUncertainSend: priorUncertain,
+      };
     }
 
     if (step.key === 'tags') {
@@ -340,46 +398,50 @@ export async function executeQuickAddSavePlan(
           plan.running = false;
           return { status: 'aborted_or_stale' };
         }
-        const priorUncertain = tagTask.uncertainSend;
+        const initialPriorUncertain = tagTask.uncertainSend;
         tagTask.uncertainSend = true;
-        try {
-          const tag = await tagUpsert(
+        const outcome = await runStepWithRetryObservation(() =>
+          tagUpsert(
             { display: tagTask.display },
             {
               idempotencyKey: tagTask.idempotencyKey,
               signal,
-              uncertainPriorSend: priorUncertain,
+              uncertainPriorSend: initialPriorUncertain,
             },
-          );
+          ),
+        );
+        if ('value' in outcome) {
           if (!op.isCurrent() || signal.aborted) {
             plan.running = false;
             return { status: 'aborted_or_stale' };
           }
-          tagTask.upsertedTag = tag;
+          tagTask.upsertedTag = outcome.value;
           tagTask.uncertainSend = false;
-        } catch (error) {
-          if (isAbortOrStale(error, signal, op)) {
-            plan.running = false;
-            return { status: 'aborted_or_stale' };
-          }
-          const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
-          if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
-            tagTask.uncertainSend = false;
-          }
-          step.status = 'failed';
-          plan.running = false;
-          plan.failedStepKey = 'tags';
-          plan.lastError = classified;
-          onStepUpdate?.();
-          return {
-            status: 'failed',
-            stepKey: 'tags',
-            classifiedError: classified,
-            rawError: error,
-            priorUncertain,
-            hadUncertainSend: priorUncertain,
-          };
+          continue;
         }
+        const { error, hadInternalUncertainRetry } = outcome;
+        const priorUncertain = initialPriorUncertain || hadInternalUncertainRetry;
+        if (isAbortOrStale(error, signal, op)) {
+          plan.running = false;
+          return { status: 'aborted_or_stale' };
+        }
+        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
+        if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
+          tagTask.uncertainSend = false;
+        }
+        step.status = 'failed';
+        plan.running = false;
+        plan.failedStepKey = 'tags';
+        plan.lastError = classified;
+        onStepUpdate?.();
+        return {
+          status: 'failed',
+          stepKey: 'tags',
+          classifiedError: classified,
+          rawError: error,
+          priorUncertain,
+          hadUncertainSend: priorUncertain,
+        };
       }
       step.status = 'done';
       onStepUpdate?.();
@@ -391,18 +453,20 @@ export async function executeQuickAddSavePlan(
         .map((t) => t.upsertedTag?.id)
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
 
-      const priorUncertain = plan.assignTagsUncertainSend;
+      const initialPriorUncertain = plan.assignTagsUncertainSend;
       plan.assignTagsUncertainSend = true;
-      try {
-        await itemTagsAdd(
+      const outcome = await runStepWithRetryObservation(() =>
+        itemTagsAdd(
           plan.itemId,
           { tag_ids: tagIds },
           {
             idempotencyKey: plan.assignTagsIdempotencyKey ?? createIdempotencyKey(),
             signal,
-            uncertainPriorSend: priorUncertain,
+            uncertainPriorSend: initialPriorUncertain,
           },
-        );
+        ),
+      );
+      if ('value' in outcome) {
         if (!op.isCurrent() || signal.aborted) {
           plan.running = false;
           return { status: 'aborted_or_stale' };
@@ -410,54 +474,56 @@ export async function executeQuickAddSavePlan(
         plan.assignTagsUncertainSend = false;
         step.status = 'done';
         onStepUpdate?.();
-      } catch (error) {
-        if (isAbortOrStale(error, signal, op)) {
-          plan.running = false;
-          return { status: 'aborted_or_stale' };
-        }
-        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
-        if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
-          plan.assignTagsUncertainSend = false;
-        }
-        step.status = 'failed';
-        plan.running = false;
-        plan.failedStepKey = 'assign';
-        plan.lastError = classified;
-        onStepUpdate?.();
-        return {
-          status: 'failed',
-          stepKey: 'assign',
-          classifiedError: classified,
-          rawError: error,
-          priorUncertain,
-          hadUncertainSend: priorUncertain,
-        };
+        continue;
       }
-      continue;
+      const { error, hadInternalUncertainRetry } = outcome;
+      const priorUncertain = initialPriorUncertain || hadInternalUncertainRetry;
+      if (isAbortOrStale(error, signal, op)) {
+        plan.running = false;
+        return { status: 'aborted_or_stale' };
+      }
+      const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
+      if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
+        plan.assignTagsUncertainSend = false;
+      }
+      step.status = 'failed';
+      plan.running = false;
+      plan.failedStepKey = 'assign';
+      plan.lastError = classified;
+      onStepUpdate?.();
+      return {
+        status: 'failed',
+        stepKey: 'assign',
+        classifiedError: classified,
+        rawError: error,
+        priorUncertain,
+        hadUncertainSend: priorUncertain,
+      };
     }
 
     if (step.key === 'entry') {
-      const priorUncertain = plan.entryCreateUncertainSend;
+      const initialPriorUncertain = plan.entryCreateUncertainSend;
       plan.entryCreateUncertainSend = true;
-      try {
-        let meta: EntryMeta;
+      const outcome = await runStepWithRetryObservation(async () => {
         if (queryClient) {
           const res = await mutateSealedEntryCreate(
             queryClient,
             toEntryCreateVariables(plan.sealedEntry, {
               signal,
-              uncertainPriorSend: priorUncertain,
+              uncertainPriorSend: initialPriorUncertain,
             }),
           );
-          meta = res.meta;
-        } else {
-          meta = await entryCreate(plan.itemId, plan.sealedEntry.requestBody, {
-            idempotencyKey: plan.sealedEntry.idempotencyKey,
-            signal,
-            uncertainPriorSend: priorUncertain,
-          });
+          return res.meta;
         }
+        return entryCreate(plan.itemId, plan.sealedEntry.requestBody, {
+          idempotencyKey: plan.sealedEntry.idempotencyKey,
+          signal,
+          uncertainPriorSend: initialPriorUncertain,
+        });
+      });
 
+      if ('value' in outcome) {
+        const meta = outcome.value;
         if (!op.isCurrent() || signal.aborted) {
           plan.running = false;
           return { status: 'aborted_or_stale' };
@@ -484,29 +550,30 @@ export async function executeQuickAddSavePlan(
           itemId: plan.itemId,
           itemName: plan.itemName,
         };
-      } catch (error) {
-        if (isAbortOrStale(error, signal, op)) {
-          plan.running = false;
-          return { status: 'aborted_or_stale' };
-        }
-        const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
-        if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
-          plan.entryCreateUncertainSend = false;
-        }
-        step.status = 'failed';
-        plan.running = false;
-        plan.failedStepKey = 'entry';
-        plan.lastError = classified;
-        onStepUpdate?.();
-        return {
-          status: 'failed',
-          stepKey: 'entry',
-          classifiedError: classified,
-          rawError: error,
-          priorUncertain,
-          hadUncertainSend: priorUncertain,
-        };
       }
+      const { error, hadInternalUncertainRetry } = outcome;
+      const priorUncertain = initialPriorUncertain || hadInternalUncertainRetry;
+      if (isAbortOrStale(error, signal, op)) {
+        plan.running = false;
+        return { status: 'aborted_or_stale' };
+      }
+      const classified = classifyContentMutationError(error, { hadUncertainSend: priorUncertain });
+      if (!classified.canRetrySameBytes && classified.preLookupRecovery === 'not_pre_lookup') {
+        plan.entryCreateUncertainSend = false;
+      }
+      step.status = 'failed';
+      plan.running = false;
+      plan.failedStepKey = 'entry';
+      plan.lastError = classified;
+      onStepUpdate?.();
+      return {
+        status: 'failed',
+        stepKey: 'entry',
+        classifiedError: classified,
+        rawError: error,
+        priorUncertain,
+        hadUncertainSend: priorUncertain,
+      };
     }
   }
 

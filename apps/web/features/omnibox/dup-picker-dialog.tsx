@@ -360,6 +360,7 @@ export function DupPickerDialog({
             data-pick="new"
             data-opt-idx={createNewOptionIndex}
             onClick={() => handleSelectIndex(createNewOptionIndex)}
+            className="dup-row dup-row-new flex w-full cursor-pointer items-center gap-2 rounded-lg border border-dashed border-line bg-canvas px-3.5 py-3 text-left text-body"
           >
             <span className="mono text-accent">+</span>
             <span>
