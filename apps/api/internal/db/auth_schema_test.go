@@ -110,7 +110,7 @@ func TestAuthMigrationDownOnEphemeralDB(t *testing.T) {
 func TestVaultMigration0005TablesConstraintsAndDown(t *testing.T) {
 	ctx := context.Background()
 	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
+	migrateToVersion(t, dsn, 5)
 
 	v, dirty, err := db.Version(dsn)
 	if err != nil {
