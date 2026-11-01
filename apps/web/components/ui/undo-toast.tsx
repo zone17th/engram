@@ -682,7 +682,7 @@ export function UndoToastProvider({
             data-testid="undo-toast-overflow"
             aria-label={overflowButtonAriaLabel}
             onClick={expandStack}
-            className="toast !static !translate-x-0 cursor-pointer border-0 font-mono text-[13px] font-bold"
+            className="toast touch-target !static !translate-x-0 cursor-pointer border-0 font-mono text-[13px] font-bold"
           >
             {overflowButtonText}
           </button>
@@ -715,7 +715,7 @@ export function UndoToastCard({
           </span>
         ) : null}
       </div>
-      <button type="button" onClick={onAction}>
+      <button type="button" className="touch-target" onClick={onAction}>
         {formattedLabel}
       </button>
     </div>
