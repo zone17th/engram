@@ -46,6 +46,7 @@ import type {
   EntryCreateRequest,
   EntryChangesPage,
   EntryMeta,
+  EntryUpdateRequest,
   ItemSummary,
   Tag,
 } from '@/lib/api/content';
@@ -275,6 +276,7 @@ function makeEntryChange(overrides: Partial<EntryChange> & { id: string }): Entr
 
 describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft retention and lock wipe', () => {
   const shims: Array<{ close: () => void }> = [];
+  let originalClipboardDesc: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
@@ -290,6 +292,7 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
     changesSyncTesting.resetAllForTests();
     userChangedTesting.resetCommittedUserForTests();
     jsonTableTesting.setJsonEditorPlaintextHolderForTests(null);
+    originalClipboardDesc = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
   });
 
   afterEach(() => {
@@ -302,6 +305,11 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
     changesSyncTesting.resetAllForTests();
     userChangedTesting.resetCommittedUserForTests();
     jsonTableTesting.setJsonEditorPlaintextHolderForTests(null);
+    if (originalClipboardDesc) {
+      Object.defineProperty(navigator, 'clipboard', originalClipboardDesc);
+    } else {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
     vi.restoreAllMocks();
   });
 
@@ -335,6 +343,8 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
     ];
 
     const createPosts: EntryCreateRequest[] = [];
+    const updatePuts: Array<{ ifMatch: string | null; req: EntryUpdateRequest }> = [];
+    let putConflict = false;
 
     let changesHandler: (params: URLSearchParams) => Promise<Response> | Response = () =>
       jsonResponse({
@@ -448,6 +458,19 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
           void _deleted;
           return jsonResponse(clean, 200);
         }
+        if (method === 'PUT') {
+          const reqHeaders = new Headers(init?.headers);
+          const req = JSON.parse(String(init?.body ?? '{}')) as EntryUpdateRequest;
+          updatePuts.push({ ifMatch: reqHeaders.get('if-match'), req });
+          if (putConflict) {
+            return problemResponse('version_mismatch', 412, { current_version: rec.version + 1 });
+          }
+          rec.envelope = req.envelope;
+          rec.ciphertext = req.ciphertext;
+          rec.plaintext_len_bucket = req.plaintext_len_bucket;
+          rec.version += 1;
+          return jsonResponse(toEntryMeta(rec), 200);
+        }
       }
 
       return jsonResponse({});
@@ -544,6 +567,20 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
       qc,
       entriesMap,
       createPosts,
+      updatePuts,
+      setPutConflict: (value: boolean) => {
+        putConflict = value;
+      },
+      openUpdatedPlaintext: async (req: EntryUpdateRequest): Promise<string> => {
+        const op = vaultCtx.beginOp();
+        const opened = await op.client.openEntry({
+          entryId: ENTRY_ID_JSON,
+          envelope: req.envelope,
+          ciphertext: req.ciphertext,
+          opGeneration: op.opGeneration,
+        });
+        return opened.plaintext;
+      },
       openCreatedPlaintext: async (req: EntryCreateRequest): Promise<string> => {
         const op = vaultCtx.beginOp();
         const opened = await op.client.openEntry({
@@ -689,6 +726,144 @@ describe('P04-T20 SYNC-BER1-5 (advisor-dec-220): uncommitted JSON-cell draft ret
     const created = h.createPosts[0]!;
     expect(created.type).toBe('json');
     expect(await h.openCreatedPlaintext(created)).toBe('{"n":2}');
+  });
+
+  // SYNC-BER3-1 helpers: reach a 412 conflict panel, then leave an incomplete number pending.
+  async function enter412WithPendingDash(
+    h: Awaited<ReturnType<typeof setupJsonRetentionHarness>>,
+  ) {
+    h.setPutConflict(true);
+    const card = screen.getByTestId(`entry-card-${ENTRY_ID_JSON}`);
+    fireEvent.click(within(card).getByTestId('json-cell-btn-root.p0'));
+    const editInput = within(card).getByTestId('json-cell-input-root.p0') as HTMLInputElement;
+    fireEvent.change(editInput, { target: { value: '5' } });
+    fireEvent.keyDown(editInput, { key: 'Enter' });
+    fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-conflict-box-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+      expect(h.updatePuts).toHaveLength(1);
+    });
+    h.setPutConflict(false);
+    fireEvent.click(within(card).getByTestId('json-cell-btn-root.p0'));
+    const pending = within(card).getByTestId('json-cell-input-root.p0') as HTMLInputElement;
+    // Incomplete number: not committed, the holder still carries the prior valid source.
+    fireEvent.change(pending, { target: { value: '-' } });
+    expect(pending.value).toBe('-');
+    return pending;
+  }
+
+  function installClipboardMock() {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    return writeText;
+  }
+
+  function expectNoCopiedMineAnnouncement() {
+    expect(screen.getByTestId('item-page-live-region')).not.toHaveTextContent(
+      viMessages.content.entry.copiedMine,
+    );
+  }
+
+  it('412 Keep mine flushes a pending cell edit first: an invalid number sends no PUT and keeps the draft, a corrected cell seals the corrected source (SYNC-BER3-1)', async () => {
+    const h = await setupJsonRetentionHarness('{"n":1}');
+    const pending = await enter412WithPendingDash(h);
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('json-cell-error-root.p0')).toBeInTheDocument();
+    });
+    await act(async () => {});
+    expect(h.updatePuts).toHaveLength(1);
+    expect((screen.getByTestId('json-cell-input-root.p0') as HTMLInputElement).value).toBe('-');
+    expect(screen.getByTestId(`entry-conflict-box-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_JSON}`)).toBeEnabled();
+
+    fireEvent.change(pending, { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(h.updatePuts).toHaveLength(2);
+    });
+    expect(await h.openUpdatedPlaintext(h.updatePuts[1]!.req)).toBe('{"n":2}');
+  });
+
+  it('412 Copy mine flushes a pending cell edit first: an invalid number copies and announces nothing, a corrected cell copies the corrected source (SYNC-BER3-1)', async () => {
+    const writeText = installClipboardMock();
+    const h = await setupJsonRetentionHarness('{"n":1}');
+    const pending = await enter412WithPendingDash(h);
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-copy-mine-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('json-cell-error-root.p0')).toBeInTheDocument();
+    });
+    await act(async () => {});
+    expect(writeText).not.toHaveBeenCalled();
+    expectNoCopiedMineAnnouncement();
+    expect((screen.getByTestId('json-cell-input-root.p0') as HTMLInputElement).value).toBe('-');
+    expect(screen.getByTestId(`entry-conflict-box-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+
+    fireEvent.change(pending, { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId(`entry-conflict-copy-mine-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    expect(writeText).toHaveBeenLastCalledWith('{"n":2}');
+    await waitFor(() => {
+      expect(screen.getByTestId('item-page-live-region')).toHaveTextContent(
+        viMessages.content.entry.copiedMine,
+      );
+    });
+    expect(h.updatePuts).toHaveLength(1);
+  });
+
+  it('412 Copy mine on a card retained by a remote tombstone still flushes a pending cell edit first (SYNC-BER3-1)', async () => {
+    const writeText = installClipboardMock();
+    const h = await setupJsonRetentionHarness('{"n":1}');
+    const pending = await enter412WithPendingDash(h);
+
+    h.entriesMap.get(ENTRY_ID_JSON)!.deleted = true;
+    h.setChangesHandler(() =>
+      jsonResponse({
+        changes: [
+          makeEntryChange({
+            id: ENTRY_ID_JSON,
+            item_id: ITEM_ID,
+            type: 'json',
+            version: 1,
+            updated_at: '2026-11-01T12:40:00Z',
+            deleted_at: '2026-11-01T12:40:00Z',
+          }),
+        ],
+        next_cursor: null,
+        watermark: '2026-11-01T12:41:00Z',
+      } satisfies EntryChangesPage),
+    );
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-deleted-remotely-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`entry-conflict-box-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId(`entry-conflict-copy-mine-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('json-cell-error-root.p0')).toBeInTheDocument();
+    });
+    await act(async () => {});
+    expect(writeText).not.toHaveBeenCalled();
+    expectNoCopiedMineAnnouncement();
+    expect((screen.getByTestId('json-cell-input-root.p0') as HTMLInputElement).value).toBe('-');
+    expect(screen.getByTestId(`entry-card-${ENTRY_ID_JSON}`)).toBeInTheDocument();
+
+    fireEvent.change(pending, { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId(`entry-conflict-copy-mine-${ENTRY_ID_JSON}`));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    expect(writeText).toHaveBeenLastCalledWith('{"n":2}');
   });
 
   it('wipes the uncommitted cell input value and grid draft and drops the retained card when the vault locks', async () => {

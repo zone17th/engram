@@ -1063,6 +1063,13 @@ export function JsonEntryCard({
   // 412 action 1: Keep mine
   const handleConflictKeepMine = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
+    // SYNC-BER3-1: flush a pending table cell edit before taking the save lock or reading the holder,
+    // exactly as ordinary Save / Save as new do. A failed flush (invalid number, over-cap cell) keeps
+    // the grid's inline error, input and card, and neither PUTs nor copies the stale pre-edit source.
+    if (modeRef.current === 'table' && gridCommitControlRef.current &&
+        !gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+      return;
+    }
     const guard = captureEntrySaveOpGuard(vault, lockEpochRef);
 
     const submittedRevision = editorRevisionRef.current;
@@ -1203,6 +1210,13 @@ export function JsonEntryCard({
 
   // 412 action 3: Copy mine
   const handleConflictCopyMine = useCallback(async () => {
+    // SYNC-BER3-1: flush a pending table cell edit before taking the save lock or reading the holder,
+    // exactly as ordinary Save / Save as new do. A failed flush (invalid number, over-cap cell) keeps
+    // the grid's inline error, input and card, and neither PUTs nor copies the stale pre-edit source.
+    if (modeRef.current === 'table' && gridCommitControlRef.current &&
+        !gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+      return;
+    }
     const candidate = readCurrentCandidateFromHolder();
     await copyEntryPlaintextToClipboard(candidate);
     onAnnounce?.(tEntry('copiedMine'));
