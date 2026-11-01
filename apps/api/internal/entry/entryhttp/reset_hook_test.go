@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zone17th/engram/apps/api/internal/auth"
@@ -281,8 +282,13 @@ func assertRowLockedByPurgeAtStep(t *testing.T, ctx context.Context, h *contentt
 
 	var dummy uuid.UUID
 	query := fmt.Sprintf(`SELECT id FROM %s WHERE id = $1 FOR UPDATE NOWAIT`, table)
-	if err := probeTx.QueryRow(ctx, query, rowID).Scan(&dummy); err == nil {
-		t.Fatalf("expected %s row %s to be locked FOR UPDATE by purge tx at step %s", table, rowID, step)
+	err = probeTx.QueryRow(ctx, query, rowID).Scan(&dummy)
+	if err == nil {
+		t.Fatalf("expected %s row %s to be locked FOR UPDATE by purge tx at step %s, but NOWAIT query succeeded", table, rowID, step)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("expected %s row %s probe at step %s to fail with SQLSTATE 55P03 (lock_not_available), got %v", table, rowID, step, err)
 	}
 }
 
