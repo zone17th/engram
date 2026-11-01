@@ -1,11 +1,14 @@
 import { expect, test } from '@playwright/test';
 import { DEMO_ITEMS } from '../lib/demo-fixtures';
-import { installHomeContentMetadataRoutes } from './content-home-support';
+import {
+  installHomeContentMetadataRoutes,
+  installItemPageMetadataRoutes,
+} from './content-home-support';
 import { UI_WAIT_MS, findBodyLeaks, installApiMocks } from './vault-locked-support';
 
 /**
  * P03-T21 locked state U5 search (`list search on /app` and `item header search`), split from `vault-locked.spec.ts`
- * (P4FE3-1, P4FE4-1).
+ * and migrated in Task 18a to Enter-only prefix search (P4FE3-1, P4FE4-1, P4FE5-4).
  */
 const BODIES = DEMO_ITEMS.map((item) => item.preview);
 
@@ -20,25 +23,29 @@ test.describe('P03-T21 Locked state U5', () => {
       await installApiMocks(context);
       await installHomeContentMetadataRoutes(context);
       const page = await context.newPage();
-      const bodyOnly = DEMO_ITEMS[0]; // "phin" is only in this item's body, never in a title or tag
+      const bodyOnly = DEMO_ITEMS[0]!; // "phin" is only in this item's body, never in a title or tag
 
       await page.goto('/app');
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
-      const input = page.getByRole('combobox');
+      const input = page.locator('#omni textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // Name query: the item is suggested, with the popover open the page still holds no body.
-      await input.fill('ca phe');
+      // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
+      await input.fill('Cà phê');
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await input.press('Enter');
       const listbox = page.getByRole('listbox');
       await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
-      await expect(listbox.locator(`[data-search-option="${bodyOnly.id}"]`)).toBeVisible();
+      await expect(listbox.getByRole('option', { name: new RegExp(bodyOnly.title) })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
 
-      // Body-only query: nothing matches while locked, and still nothing leaks.
+      // Body-only query: nothing matches while locked (only "Create item" option is offered), and nothing leaks.
       await input.fill('phin');
-      await expect(listbox).toBeVisible();
-      await expect(listbox.locator('[data-search-option]')).toHaveCount(0);
-      await expect(listbox.getByText('Không có mục mẫu phù hợp.')).toBeVisible();
+      await expect(listbox).toHaveCount(0);
+      await input.press('Enter');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('omnibox-search-empty')).toBeVisible();
+      await expect(listbox.getByRole('option', { name: /Create item “phin”|Tạo mục “phin”/ })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
     } finally {
       await context.close();
@@ -52,25 +59,32 @@ test.describe('P03-T21 Locked state U5', () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
       await installApiMocks(context);
+      await installHomeContentMetadataRoutes(context);
+      await installItemPageMetadataRoutes(context, DEMO_ITEMS[1]!.id);
       const page = await context.newPage();
-      const bodyOnly = DEMO_ITEMS[0]; // "phin" is only in this item's body, never in a title or tag
+      const bodyOnly = DEMO_ITEMS[0]!; // "phin" is only in this item's body, never in a title or tag
 
-      await page.goto(`/app/items/${DEMO_ITEMS[1].id}`);
+      await page.goto(`/app/items/${DEMO_ITEMS[1]!.id}`);
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
-      const input = page.getByRole('combobox');
+      const input = page.locator('header textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // Name query: the item is suggested, with the popover open the page still holds no body.
-      await input.fill('ca phe');
-      await expect(page.getByRole('listbox')).toBeVisible({ timeout: UI_WAIT_MS });
-      await expect(page.locator(`[data-search-option="${bodyOnly.id}"]`)).toBeVisible();
+      // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
+      await input.fill('Cà phê');
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await input.press('Enter');
+      const listbox = page.getByRole('listbox');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(listbox.getByRole('option', { name: new RegExp(bodyOnly.title) })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
 
       // Body-only query: nothing matches while locked, and still nothing leaks.
       await input.fill('phin');
-      await expect(page.getByRole('listbox')).toBeVisible();
-      await expect(page.locator('[data-search-option]')).toHaveCount(0);
-      await expect(page.getByText('Không có mục mẫu phù hợp.')).toBeVisible();
+      await expect(listbox).toHaveCount(0);
+      await input.press('Enter');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('omnibox-search-empty')).toBeVisible();
+      await expect(listbox.getByRole('option', { name: /Create item “phin”|Tạo mục “phin”/ })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
     } finally {
       await context.close();

@@ -2,6 +2,7 @@ import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { DEMO_ITEMS, DEMO_TAGS } from '../lib/demo-fixtures';
 import type { ItemSummary, Tag } from '../lib/api/content';
 import { STEP_TIMEOUT, type Theme } from './vault-locked-support';
+import { normalizeForPrefixMatch } from '../features/omnibox/search-helpers';
 
 /**
  * Shared mocked content metadata for `/app` locked-list E2E specs (`vault-locked-list.spec.ts` and
@@ -44,11 +45,17 @@ export async function installHomeContentMetadataRoutes(context: BrowserContext):
       await route.fallback();
       return;
     }
+    const url = new URL(route.request().url());
+    const rawQ = url.searchParams.get('q') ?? '';
+    const normQ = normalizeForPrefixMatch(rawQ);
+    const filteredTags = normQ
+      ? MOCKED_HOME_TAGS.filter((tag) => normalizeForPrefixMatch(tag.display).startsWith(normQ))
+      : MOCKED_HOME_TAGS;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        items: MOCKED_HOME_TAGS,
+        items: filteredTags,
         next_cursor: null,
       }),
     });
@@ -61,9 +68,17 @@ export async function installHomeContentMetadataRoutes(context: BrowserContext):
     }
     const url = new URL(route.request().url());
     const tagId = url.searchParams.get('tag_id');
-    const filtered = tagId
-      ? MOCKED_HOME_ITEMS.filter((item) => item.tags.some((t) => t.id === tagId))
-      : MOCKED_HOME_ITEMS;
+    const rawQ = url.searchParams.get('q') ?? '';
+    const normQ = normalizeForPrefixMatch(rawQ);
+    const filtered = MOCKED_HOME_ITEMS.filter((item) => {
+      if (tagId && !item.tags.some((t) => t.id === tagId)) {
+        return false;
+      }
+      if (normQ && !normalizeForPrefixMatch(item.name).startsWith(normQ)) {
+        return false;
+      }
+      return true;
+    });
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -83,4 +98,54 @@ export async function gotoLockedHomeList(page: Page, route: string, theme: Theme
   await expect(page.getByTestId('item-card').first()).toBeVisible({ timeout: STEP_TIMEOUT });
   await expect(page.getByTestId('entry-body')).toHaveCount(0);
   await expect(page.getByTestId('entry-body-locked')).toHaveCount(0);
+}
+
+export async function installItemPageMetadataRoutes(
+  context: BrowserContext,
+  itemId: string = DEMO_ITEMS[1]!.id,
+): Promise<void> {
+  const fallbackItem = MOCKED_HOME_ITEMS[1] ?? MOCKED_HOME_ITEMS[0]!;
+  const itemSummary: ItemSummary = {
+    ...fallbackItem,
+    id: itemId,
+    name: DEMO_ITEMS.find((it) => it.id === itemId)?.title ?? fallbackItem.name,
+  };
+
+  await context.route(`**/api/v1/items/${itemId}`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(itemSummary),
+    });
+  });
+
+  await context.route(`**/api/v1/items/${itemId}/entries*`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: '00000000-0000-4000-8000-000000000401',
+            item_id: itemId,
+            type: 'text',
+            position: 0,
+            version: 1,
+            plaintext_len_bucket: 256,
+            created_at: '2026-10-30T00:00:00Z',
+            updated_at: '2026-10-30T00:00:00Z',
+          },
+        ],
+        next_cursor: null,
+      }),
+    });
+  });
 }

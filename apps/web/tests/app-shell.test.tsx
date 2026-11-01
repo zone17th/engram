@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +18,19 @@ import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
 import viMessages from '../messages/vi.json';
 
+
+const mockRouterPush = vi.fn();
+const mockRouterReplace = vi.fn();
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: mockRouterPush,
+    replace: mockRouterReplace,
+    prefetch: vi.fn(),
+  }),
+  usePathname: () => '/app',
+  useSearchParams: () => new URLSearchParams(),
+}));
 function renderWithTheme(ui: ReactNode) {
   return render(
     <NextIntlClientProvider locale="vi" messages={viMessages}>
@@ -275,68 +288,137 @@ describe('EmptyState', () => {
 });
 
 describe('Omnibox', () => {
-  it('focus bằng Ctrl K và lọc dữ liệu mẫu cục bộ', async () => {
-    render(<Omnibox />);
-    const input = screen.getByRole('combobox', { name: 'Tìm hoặc lưu' });
+  const SAMPLE_ITEMS: contentApi.ItemSummary[] = [
+    {
+      id: 'd1111111-1111-4111-8111-111111111111',
+      name: 'Cà phê sữa đá tỉ lệ 1:2',
+      hint: null,
+      tags: [{ id: 't1', display: 'công-thức' }],
+      entry_count: 2,
+      version: 1,
+      created_at: '2026-11-01T00:00:00Z',
+      updated_at: '2026-11-01T00:00:00Z',
+      last_used_at: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'd2222222-2222-4222-8222-222222222222',
+      name: 'Ghi chú họp thứ Ba',
+      hint: null,
+      tags: [{ id: 't2', display: 'ghi-chú' }],
+      entry_count: 1,
+      version: 1,
+      created_at: '2026-11-01T00:00:00Z',
+      updated_at: '2026-11-01T00:00:00Z',
+      last_used_at: '2026-11-01T00:00:00Z',
+    },
+  ];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockRouterPush.mockClear();
+    mockRouterReplace.mockClear();
+  });
+
+  function renderOmnibox(ui: ReactNode = <Omnibox />) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>{ui}</UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+  }
+
+  it('focus bằng Ctrl K, không gửi request khi gõ, và chỉ tìm khi nhấn Enter', async () => {
+    const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
+      items: [SAMPLE_ITEMS[0]!],
+      next_cursor: null,
+    });
+    renderOmnibox();
+    const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
     expect(input).toHaveFocus();
 
-    fireEvent.change(input, { target: { value: 'ca phe' } });
-    expect(await screen.findByRole('option', { name: /Cà phê sữa đá tỉ lệ 1:2/ })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Cà phê sữa đá tỉ lệ 1:2/ })).toHaveAttribute(
-      'href',
-      '/app/items/d1',
+    fireEvent.change(input, { target: { value: 'Cà phê' } });
+    expect(itemsSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(itemsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: 'alpha', q: 'Cà phê' }),
     );
+    expect(await screen.findByRole('option', { name: /Cà phê sữa đá tỉ lệ 1:2/ })).toBeInTheDocument();
   });
 
-  it('hỗ trợ Cmd K và Escape đóng gợi ý', () => {
-    render(<Omnibox />);
-    const input = screen.getByRole('combobox', { name: 'Tìm hoặc lưu' });
+  it('hỗ trợ Cmd K và Escape đóng danh sách kết quả tìm kiếm', async () => {
+    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
+      items: [SAMPLE_ITEMS[1]!],
+      next_cursor: null,
+    });
+    renderOmnibox();
+    const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
     fireEvent.keyDown(window, { key: 'k', metaKey: true });
     expect(input).toHaveFocus();
 
-    fireEvent.change(input, { target: { value: 'ghi' } });
-    expect(screen.getByRole('listbox', { name: 'Gợi ý' })).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'Ghi' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' })).toBeInTheDocument();
+    expect(input).toHaveAttribute('aria-controls', 'omni-listbox');
+
     fireEvent.keyDown(input, { key: 'Escape' });
-    expect(screen.queryByRole('listbox', { name: 'Gợi ý' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox', { name: 'Kết quả tìm kiếm' })).not.toBeInTheDocument();
+    expect(input).not.toHaveAttribute('aria-controls');
   });
 
-  it('xoá lựa chọn và aria-activedescendant khi mất focus hoặc đóng danh sách', () => {
-    render(<Omnibox />);
-    const input = screen.getByRole('combobox', { name: 'Tìm hoặc lưu' });
+  it('xoá lựa chọn và aria-activedescendant khi mất focus hoặc đóng danh sách', async () => {
+    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
+      items: [SAMPLE_ITEMS[1]!],
+      next_cursor: null,
+    });
+    renderOmnibox();
+    const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
-    fireEvent.change(input, { target: { value: 'ghi' } });
+    fireEvent.change(input, { target: { value: 'Ghi' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
+    expect(input).not.toHaveAttribute('aria-activedescendant');
+
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     expect(input).toHaveAttribute('aria-activedescendant');
 
     fireEvent.blur(input, { relatedTarget: document.body });
     expect(input).not.toHaveAttribute('aria-activedescendant');
-    expect(screen.queryByRole('listbox', { name: 'Gợi ý' })).not.toBeInTheDocument();
-
-    const enter = createEvent.keyDown(input, { key: 'Enter' });
-    fireEvent(input, enter);
-    expect(enter.defaultPrevented).toBe(false);
+    expect(input).not.toHaveAttribute('aria-controls');
+    expect(screen.queryByRole('listbox', { name: 'Kết quả tìm kiếm' })).not.toBeInTheDocument();
   });
 
-  it('xoá lựa chọn khi mở một mục từ danh sách', () => {
-    render(<Omnibox />);
-    const input = screen.getByRole('combobox', { name: 'Tìm hoặc lưu' });
+  it('xoá lựa chọn khi mở một mục từ danh sách', async () => {
+    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
+      items: [SAMPLE_ITEMS[1]!],
+      next_cursor: null,
+    });
+    renderOmnibox();
+    const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
-    fireEvent.change(input, { target: { value: 'ghi' } });
+    fireEvent.change(input, { target: { value: 'Ghi' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    const item = await screen.findByRole('option', { name: /Ghi chú họp thứ Ba/ });
     fireEvent.keyDown(input, { key: 'ArrowDown' });
-    fireEvent.keyDown(input, { key: 'ArrowDown' });
-    const item = screen.getByRole('option', { name: /Ghi chú họp thứ Ba/ });
-    const click = createEvent.click(item);
-    click.preventDefault();
-    fireEvent(item, click);
+    expect(input).toHaveAttribute('aria-activedescendant');
 
+    fireEvent.click(item);
+
+    expect(mockRouterPush).toHaveBeenCalledWith(`/app/items/${SAMPLE_ITEMS[1]!.id}`);
     expect(input).not.toHaveAttribute('aria-activedescendant');
-    expect(screen.queryByRole('listbox', { name: 'Gợi ý' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox', { name: 'Kết quả tìm kiếm' })).not.toBeInTheDocument();
   });
 
   it('hiển thị phím tắt Ctrl K ở ô tìm kiếm thu gọn', () => {
-    render(<Omnibox compact />);
+    renderOmnibox(<Omnibox compact />);
     expect(screen.getByText('Ctrl K')).toBeInTheDocument();
     expect(screen.queryByText('/')).not.toBeInTheDocument();
   });
