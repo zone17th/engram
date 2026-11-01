@@ -14,6 +14,7 @@ import {
 } from 'react';
 import { AppHeader } from '@/components/app-shell/app-header';
 import {
+  ImportJsonDialog,
   JsonEntryCard,
   NewJsonEntryComposer,
 } from '@/features/json-table';
@@ -234,6 +235,7 @@ export function ItemDetailPage({
   const cardElementsRef = useRef<Map<string, HTMLElement>>(new Map());
   const addTextBtnRef = useRef<HTMLButtonElement | null>(null);
   const addJsonBtnRef = useRef<HTMLButtonElement | null>(null);
+  const importJsonBtnRef = useRef<HTMLButtonElement | null>(null);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const pendingFocusIdRef = useRef<string | null>(null);
 
@@ -740,13 +742,15 @@ export function ItemDetailPage({
   // Add new text entry state
   const [creatingText, setCreatingText] = useState(false);
   const [creatingJson, setCreatingJson] = useState(false);
+  const [importJsonOpen, setImportJsonOpen] = useState(false);
 
   useEffect(() => {
     if (!unlocked) {
       if (creatingText) setCreatingText(false);
       if (creatingJson) setCreatingJson(false);
+      if (importJsonOpen) setImportJsonOpen(false);
     }
-  }, [creatingJson, creatingText, unlocked]);
+  }, [creatingJson, creatingText, importJsonOpen, unlocked]);
 
   const handleCancelCreatingText = useCallback(() => {
     setCreatingText(false);
@@ -766,6 +770,7 @@ export function ItemDetailPage({
     (created: EntryMeta) => {
       setCreatingText(false);
       setCreatingJson(false);
+      setImportJsonOpen(false);
       const nextList = sortEntriesByPosition([
         ...orderedEntriesRef.current.filter((e) => e.id !== created.id),
         created,
@@ -957,7 +962,7 @@ export function ItemDetailPage({
               onAnnounce={announce}
             />
 
-            {/* Entry composer toolbar: "+ Text" only in Milestone A; "+ JSON / table" and "Import JSON…" hidden until Milestone C (Tasks 16-17) */}
+            {/* Entry composer toolbar: "+ Text", "+ JSON / table", and "Import JSON…" */}
             <div
               id="entry-composer"
               data-testid="entry-composer"
@@ -997,6 +1002,23 @@ export function ItemDetailPage({
                 }}
               >
                 {tJson('addJsonCta')}
+              </button>
+
+              <button
+                ref={importJsonBtnRef}
+                type="button"
+                id="btn-import-json"
+                data-testid="btn-import-json"
+                className="btn btn-tertiary btn-sm"
+                disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
+                title={atEntryLimit ? tItem('entryLimitHint') : undefined}
+                aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
+                onClick={() => {
+                  if (atEntryLimit || !unlocked || !entriesQuery.isSuccess) return;
+                  setImportJsonOpen(true);
+                }}
+              >
+                {tJson('importJsonCta')}
               </button>
 
               <button
@@ -1110,6 +1132,16 @@ export function ItemDetailPage({
                         >
                           {tJson('addJsonCta')}
                         </button>
+                        <button
+                          type="button"
+                          data-testid="empty-import-json-btn"
+                          className="btn btn-tertiary btn-sm"
+                          onClick={() => {
+                            setImportJsonOpen(true);
+                          }}
+                        >
+                          {tJson('importJsonCta')}
+                        </button>
                       </div>
                     ) : null}
                   </div>
@@ -1216,6 +1248,19 @@ export function ItemDetailPage({
                 </div>
               </aside>
             </div>
+
+            <ImportJsonDialog
+              open={importJsonOpen}
+              itemId={itemId}
+              itemName={itemQuery.data.name}
+              isCurrentItem
+              entryCount={totalEntriesCount}
+              onClose={() => setImportJsonOpen(false)}
+              onSaved={(created) => handleCreatedEntry(created)}
+              onAnnounce={announce}
+              onDraftClearedOnLock={handleDraftClearedOnLock}
+              restoreFocusRef={importJsonBtnRef}
+            />
           </>
         )}
       </main>
