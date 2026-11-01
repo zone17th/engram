@@ -266,9 +266,25 @@ export function Omnibox({
   const isVaultUnlocked = vault ? vault.state === 'unlocked' : true;
   const isVaultLocked = !isVaultUnlocked;
 
-  // Resolve active user ID from QueryClient's `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`.
-  // Never fall back to a shared constant (advisor-dec-120, HM18B-R1-5).
-  const activeUserId = ((): string | null => {
+  // Resolve active user ID reactively from QueryClient's `['auth', 'me', ...]` cache or `getKnownDeviceSessionUserId()`.
+  // Subscribe to `QueryCache` updates matching `['auth', 'me', ...]` so user switches hide/clear User A's
+  // `lockClearedNotice` and `saveUnconfirmed` line immediately without requiring an unmount or unrelated re-render
+  // (advisor-dec-120, HM18B-R1-5, HM18-CI-10).
+  const subscribeAuthMeUserId = useCallback(
+    (onStoreChange: () => void): (() => void) => {
+      if (!queryClient) {
+        return () => {};
+      }
+      return queryClient.getQueryCache().subscribe((event) => {
+        const key = event.query?.queryKey;
+        if (Array.isArray(key) && key[0] === 'auth' && key[1] === 'me') {
+          onStoreChange();
+        }
+      });
+    },
+    [queryClient],
+  );
+  const getAuthMeUserIdSnapshot = useCallback((): string | null => {
     if (queryClient) {
       const meQueries = queryClient.getQueriesData<Me | null>({ queryKey: ['auth', 'me'] });
       for (let i = meQueries.length - 1; i >= 0; i -= 1) {
@@ -279,7 +295,12 @@ export function Omnibox({
       }
     }
     return getKnownDeviceSessionUserId() ?? null;
-  })();
+  }, [queryClient]);
+  const activeUserId = useSyncExternalStore(
+    subscribeAuthMeUserId,
+    getAuthMeUserIdSnapshot,
+    () => null,
+  );
   activeUserIdRef.current = activeUserId;
 
   useEffect(() => {
