@@ -57,6 +57,7 @@ import type {
   ItemSummary,
   Tag,
 } from '@/lib/api/content';
+import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import { commitAuthenticatedUser, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
@@ -1850,9 +1851,10 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     });
 
     await act(async () => {
-      const sender = new BroadcastChannel('sabk.auth.session');
-      sender.postMessage({ type: 'session_changed' });
-      sender.close();
+      postSessionBroadcast({ type: 'session_changed' });
+      // Clear the carried me cache for the new epoch so meQuery is in loading state
+      h.qc.removeQueries({ queryKey: ['auth', 'me'] });
+      void h.refetchMeSession();
     });
 
     // Deterministically observe sessionStatus === 'loading' while /auth/me is held
@@ -1869,7 +1871,6 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       expect(h.sessionStatus()).toBe('unavailable');
       expect(screen.getByTestId('session-status-probe')).toHaveTextContent('unavailable');
     });
-
     // 2. Recover with the same user (USER_A_ID) and a brand-new replacement vault key KEY_ID_4 while entries/bodies are seeded.
     //    If the f4beb96 preservation branch were reverted (clearing lastSeenVaultByUserRef on non-authenticated status),
     //    recovery would enter the first-observation (!prev) branch with serverVaultStatus === 'present' and FAIL to purge.

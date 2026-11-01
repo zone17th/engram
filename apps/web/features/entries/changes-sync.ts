@@ -129,7 +129,6 @@ function emitActiveCardChange(): void {
  */
 export function clearChangesWatermark(): void {
   syncEpoch += 1;
-  reloadEpoch += 1;
   watermarkState = { userId: null, watermark: null };
 }
 
@@ -195,12 +194,14 @@ function ensureGlobalSyncLifecycleSubscriptions(): void {
   globalSubscriptionsInstalled = true;
 
   subscribeUserChanged((_prevUserId, nextUserId) => {
+    reloadEpoch += 1;
     clearAllChangesSyncState();
     watermarkState = { userId: nextUserId, watermark: null };
   });
 
   subscribeSessionBroadcast((message) => {
     if (message.type === 'signed_out') {
+      reloadEpoch += 1;
       clearAllChangesSyncState();
     }
   });
@@ -654,6 +655,9 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
   useEffect(() => {
     const prevUser = prevUserIdRef.current;
     if (sessionStatus === 'signed_out' || !userId) {
+      if (prevUser !== null) {
+        reloadEpoch += 1;
+      }
       if (prevUser !== null || watermarkState.watermark !== null || remoteTombstoneIds.size > 0) {
         clearAllChangesSyncState();
       }
@@ -661,10 +665,12 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       return;
     }
     if (prevUser !== null && prevUser !== userId) {
+      reloadEpoch += 1;
       clearAllChangesSyncState();
     }
     prevUserIdRef.current = userId;
     if (watermarkState.userId !== null && watermarkState.userId !== userId) {
+      reloadEpoch += 1;
       clearAllChangesSyncState();
     }
   }, [sessionStatus, userId]);
@@ -727,7 +733,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     lastSeenVaultByUserRef.current = {
       userId,
       lastNonNullVaultKeyId: vaultKeyId ?? prev.lastNonNullVaultKeyId,
-      hadPresentVault: isPresent,
+      hadPresentVault: prev.hadPresentVault || isPresent || hasNonNullMeta,
       hadNonNullVaultMeta: hasNonNullMeta,
     };
   }, [
@@ -758,7 +764,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       }
       const activeUserId = userIdRef.current;
       const wakeEpoch = syncEpoch;
-      const wakeReloadEpoch = reloadEpoch;
+      const wakeSessionEpoch = reloadEpoch;
       const hasActiveEntries = hasActiveContentEntriesQuery(queryClient);
       const keyAtWakeStart = lastSeenVaultByUserRef.current?.lastNonNullVaultKeyId ?? null;
       const wasUnlockedAtWakeStart =
@@ -781,7 +787,6 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
             .then((freshMeta) => {
               if (
                 disposed ||
-                reloadEpoch !== wakeReloadEpoch ||
                 !isAuthenticatedRef.current ||
                 userIdRef.current !== activeUserId ||
                 lastSeenVaultByUserRef.current?.userId !== activeUserId
@@ -790,11 +795,13 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
               }
               const rememberedKey =
                 lastSeenVaultByUserRef.current?.lastNonNullVaultKeyId ?? keyAtWakeStart;
-              if (
-                freshMeta === null ||
-                (keyAtWakeStart !== null && freshMeta.vault_key_id !== keyAtWakeStart) ||
-                (rememberedKey !== null && freshMeta.vault_key_id !== rememberedKey)
-              ) {
+              const keyMismatched =
+                freshMeta !== null &&
+                ((keyAtWakeStart !== null && freshMeta.vault_key_id !== keyAtWakeStart) ||
+                  (rememberedKey !== null && freshMeta.vault_key_id !== rememberedKey));
+              const sameSessionAbsent =
+                freshMeta === null && reloadEpoch === wakeSessionEpoch;
+              if (keyMismatched || sameSessionAbsent) {
                 purgeEntriesCacheOnVaultReset(queryClient);
               }
               return freshMeta;
@@ -921,6 +928,7 @@ export const __testing = {
   },
   resetAllForTests(): void {
     maxChangesPagesPerCycleOverride = null;
+    reloadEpoch += 1;
     clearAllChangesSyncState();
     activeCardTrackerByItem.clear();
   },
