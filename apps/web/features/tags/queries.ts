@@ -55,19 +55,63 @@ export function usePaginatedTagsList(
   const [extraPages, setExtraPages] = useState<TagList[]>([]);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<unknown>(null);
-  const prevDataUpdatedAtRef = useRef(query.dataUpdatedAt);
+  const prevDataRef = useRef<TagList | undefined>(query.data);
+  const prevKeyRef = useRef({ sort, q, limit, enabled });
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (prevDataUpdatedAtRef.current !== query.dataUpdatedAt) {
-      prevDataUpdatedAtRef.current = query.dataUpdatedAt;
+    const prevKey = prevKeyRef.current;
+    if (
+      prevKey.sort !== sort ||
+      prevKey.q !== q ||
+      prevKey.limit !== limit ||
+      prevKey.enabled !== enabled
+    ) {
+      prevKeyRef.current = { sort, q, limit, enabled };
+      prevDataRef.current = query.data;
       abortRef.current?.abort();
       abortRef.current = null;
       setExtraPages([]);
       setIsLoadingMore(false);
       setLoadMoreError(null);
+      return;
     }
-  }, [query.dataUpdatedAt]);
+
+    if (prevDataRef.current === query.data) {
+      return;
+    }
+    prevDataRef.current = query.data;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsLoadingMore(false);
+    setLoadMoreError(null);
+
+    if (!query.data) {
+      setExtraPages([]);
+      return;
+    }
+
+    const firstIds = new Set(query.data.items.map((tag) => tag.id));
+    setExtraPages((prev) => {
+      if (prev.length === 0) return prev;
+      const seen = new Set(firstIds);
+      const nextPages: TagList[] = [];
+      for (const page of prev) {
+        const remainingItems = page.items.filter((tag) => {
+          if (seen.has(tag.id)) return false;
+          seen.add(tag.id);
+          return true;
+        });
+        if (remainingItems.length > 0 || page.next_cursor !== null) {
+          nextPages.push({
+            items: remainingItems,
+            next_cursor: page.next_cursor,
+          });
+        }
+      }
+      return nextPages;
+    });
+  }, [enabled, limit, q, query.data, sort]);
 
   useEffect(() => {
     return () => {

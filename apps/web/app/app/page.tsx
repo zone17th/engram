@@ -224,6 +224,7 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
             tagDisplay={activeTag?.display}
             onClearFilter={() => handleSelectTag(null)}
           />
+        /* Show full-page error only when no items are cached; failed background refetches keep the stale-while-error grid visible, and load-more failures surface an inline retry in RecentItems (HM19-R1-8, HM19-R2-5). */
         ) : itemsQuery.isError && !itemsQuery.data && errorCode ? (
           <div
             role="alert"

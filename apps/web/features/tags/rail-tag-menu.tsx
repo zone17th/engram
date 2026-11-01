@@ -32,7 +32,12 @@ export interface RailTagChipProps {
   readonly selected: boolean;
   readonly onSelect: (tagId: string) => void;
   readonly onTagDeleted?: (tagId: string) => void;
-  readonly onRestoreError?: (errorCode: ContentErrorCode) => void;
+  /**
+   * Required callback invoked when an Undo `tagRestore` fails after this chip has already unmounted
+   * following `tagDelete`, so the parent container (e.g. `Rail`) can surface the mapped `content.errors.*`
+   * alert in a persistent `role="alert"` region (HM19-R1-3, HM19-R2-5).
+   */
+  readonly onRestoreError: (errorCode: ContentErrorCode) => void;
 }
 
 function resolveStableFocusBeforeDelete(
@@ -226,7 +231,9 @@ export function RailTagChip({
 
   const handleMenuBlur = (event: ReactFocusEvent<HTMLDivElement>) => {
     const nextTarget = event.relatedTarget as Node | null;
-    if (nextTarget && groupRef.current?.contains(nextTarget)) {
+    // In Safari and macOS Firefox, pressing a button does not move focus to it (`relatedTarget === null`);
+    // outside pointer clicks are already handled by the document `mousedown` listener (HM19-R2-3).
+    if (!nextTarget || groupRef.current?.contains(nextTarget)) {
       return;
     }
     setMenuOpen(false);
@@ -326,11 +333,7 @@ export function RailTagChip({
         onError: (error) => {
           const i18nKey = getContentErrorI18nKey(error);
           const code = i18nKey.replace(/^content\.errors\./, '') as ContentErrorCode;
-          if (onRestoreError) {
-            onRestoreError(code);
-          } else {
-            setErrorCode(code);
-          }
+          onRestoreError(code);
         },
       });
     } catch (error) {
