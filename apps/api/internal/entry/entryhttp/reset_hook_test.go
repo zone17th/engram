@@ -106,16 +106,65 @@ func waitForPgLocksCondition(t *testing.T, timeout time.Duration, desc string, c
 	t.Fatalf("timed out waiting for pg_locks condition: %s", desc)
 }
 
-func hasVaultShareLockWaiter(ctx context.Context, h *contenttest.Harness) bool {
-	var waiting int
-	err := h.Pool.QueryRow(ctx, `
-		SELECT count(*)::int
-		FROM pg_locks
-		WHERE relation = 'vault'::regclass
-		  AND mode = 'RowShareLock'
-		  AND NOT granted
-	`).Scan(&waiting)
-	return err == nil && waiting >= 1
+func waitForPostEntriesVaultRowLockWaiter(
+	t *testing.T,
+	ctx context.Context,
+	h *contenttest.Harness,
+	resetHoldPID int32,
+	earlyPostDone <-chan struct{},
+	formatEarlyPost func() string,
+) int32 {
+	t.Helper()
+	if resetHoldPID == 0 {
+		t.Fatal("reset transaction backend PID is 0")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiterPID int32
+		if err := h.Pool.QueryRow(ctx, `
+			SELECT COALESCE((
+				SELECT a.pid
+				FROM pg_stat_activity AS a
+				WHERE a.datname = current_database()
+				  AND a.pid <> $1
+				  AND $1 = ANY(pg_blocking_pids(a.pid))
+				  AND EXISTS (
+					SELECT 1
+					FROM pg_locks AS l
+					WHERE l.pid = a.pid
+					  AND l.locktype = 'transactionid'
+					  AND NOT l.granted
+				  )
+				  AND EXISTS (
+					SELECT 1
+					FROM pg_locks AS vr
+					WHERE vr.pid = a.pid
+					  AND vr.relation = 'vault'::regclass
+					  AND vr.mode = 'RowShareLock'
+					  AND vr.granted
+				  )
+				LIMIT 1
+			), 0)
+		`, resetHoldPID).Scan(&waiterPID); err != nil {
+			t.Fatalf("query pg_blocking_pids / pg_locks for resetHoldPID=%d: %v", resetHoldPID, err)
+		}
+		if waiterPID != 0 {
+			return waiterPID
+		}
+		select {
+		case <-earlyPostDone:
+			detail := ""
+			if formatEarlyPost != nil {
+				detail = ": " + formatEarlyPost()
+			}
+			t.Fatalf("POST entries finished early before blocking on vault row lock held by resetPID=%d%s", resetHoldPID, detail)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for POST entries backend to block on vault row lock held by resetPID=%d", resetHoldPID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func hasAdvisoryContentLockWaiter(ctx context.Context, h *contenttest.Harness, userID uuid.UUID) bool {
@@ -777,20 +826,18 @@ func TestVaultResetHookDeletesEntriesKeepsItemsTagsReplayRollbackNewKeyAndCrossU
 
 // TestVaultResetRacingPostEntriesBarrier covers Task 8 bullet 3 (and P04-A9):
 //   - POST /api/v1/items/{id}/entries racing DELETE /api/v1/vault with a deterministic barrier:
-//     the reset transaction locks the vault row FOR UPDATE and enters ResetHook; while reset holds
-//     FOR UPDATE, the concurrent POST entries transaction attempts SELECT vault_key_id FROM vault FOR SHARE
-//     and blocks on the vault row lock (observed via pg_locks where relation = 'vault'::regclass,
-//     mode = 'RowShareLock', and NOT granted — no sleep races).
-//   - Subcase A (reset commits delete): once reset commits, the unblocked POST entries sees 0 vault rows
-//     and returns 404 vault_absent; 0 entries exist.
-//   - Subcase B (reset rolls back after rotating vault_key_id in-place, or a new vault is created before
-//     the blocked FOR SHARE is evaluated): the entry request carrying the old key_id returns 409 entry_key_mismatch;
-//     in all cases, an in-flight entry sealed under the pre-reset key_id NEVER creates an entry row.
+//     the reset transaction locks the vault row FOR UPDATE, captures its backend PID via pg_backend_pid(),
+//     and pauses inside ResetHook; while reset holds FOR UPDATE, the concurrent POST entries transaction
+//     attempts SELECT vault_key_id FROM vault FOR SHARE and blocks on the vault row lock (observed via
+//     pg_stat_activity + pg_blocking_pids + ungranted transactionid lock in pg_locks with a granted
+//     RowShareLock on vault::regclass, scoped to current_database() and the reset holder PID — no sleep races).
+//   - Once reset is released and commits, the unblocked POST entries returns 404 vault_absent (or 409
+//     entry_key_mismatch), and never creates an entry row; 0 entries exist and AssertInvariants passes.
 func TestVaultResetRacingPostEntriesBarrier(t *testing.T) {
 	var (
 		mu             sync.Mutex
 		barrierActive  bool
-		resetEntered   = make(chan struct{}, 1)
+		resetEntered   = make(chan int32, 1)
 		releaseReset   = make(chan struct{})
 		closeResetOnce sync.Once
 	)
@@ -806,8 +853,12 @@ func TestVaultResetRacingPostEntriesBarrier(t *testing.T) {
 		active := barrierActive
 		mu.Unlock()
 		if active {
+			var holdPID int32
+			if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holdPID); err != nil {
+				return fmt.Errorf("query reset backend pid: %w", err)
+			}
 			select {
-			case resetEntered <- struct{}{}:
+			case resetEntered <- holdPID:
 			default:
 			}
 			select {
@@ -850,6 +901,8 @@ func TestVaultResetRacingPostEntriesBarrier(t *testing.T) {
 	}
 	resetDone := make(chan httpRes, 1)
 	postDone := make(chan httpRes, 1)
+	earlyPostDone := make(chan struct{}, 1)
+	var earlyPostRes httpRes
 
 	// Start DELETE /api/v1/vault -> acquires vault FOR UPDATE and pauses at the start of ResetHook.
 	go func() {
@@ -861,8 +914,9 @@ func TestVaultResetRacingPostEntriesBarrier(t *testing.T) {
 		resetDone <- httpRes{resp: resp, raw: raw}
 	}()
 
+	var resetHoldPID int32
 	select {
-	case <-resetEntered:
+	case resetHoldPID = <-resetEntered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for DELETE /vault to enter ResetHook while holding vault FOR UPDATE")
 	}
@@ -876,12 +930,16 @@ func TestVaultResetRacingPostEntriesBarrier(t *testing.T) {
 		resp, raw := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries", raceBody, contenttest.ReqOptions{
 			IdemKey: "idem_t8_race_post_create_01",
 		})
-		postDone <- httpRes{resp: resp, raw: raw}
+		res := httpRes{resp: resp, raw: raw}
+		earlyPostRes = res
+		postDone <- res
+		close(earlyPostDone)
 	}()
 
-	// Observe via pg_locks that the POST entries transaction is blocked waiting for RowShareLock (FOR SHARE) on vault.
-	waitForPgLocksCondition(t, 10*time.Second, "POST entries waiting on vault FOR SHARE while reset holds FOR UPDATE", func() bool {
-		return hasVaultShareLockWaiter(ctx, h)
+	// Observe via pg_stat_activity + pg_blocking_pids + pg_locks that the POST entries backend
+	// is blocked by resetHoldPID on an ungranted transactionid lock while holding RowShareLock on vault.
+	waitForPostEntriesVaultRowLockWaiter(t, ctx, h, resetHoldPID, earlyPostDone, func() string {
+		return fmt.Sprintf("status=%d body=%s", earlyPostRes.resp.StatusCode, earlyPostRes.raw)
 	})
 
 	// Release the reset barrier so ResetHook runs and DELETE /vault commits.
