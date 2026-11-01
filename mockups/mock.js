@@ -4249,7 +4249,7 @@
       const syncVault = (syncOpts) => {
         syncOpts = syncOpts || {};
         pills.forEach((btn) => {
-          btn.className = 'vault-pill ' + (state.locked ? 'vault-shut' : 'vault-open') + ' !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3';
+          btn.className = 'vault-pill ' + (state.locked ? 'vault-shut' : 'vault-open') + ' btn-icon !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3 [@media(pointer:coarse)]:!h-[44px]';
           // Nhãn ngắn trên mobile: pill nằm trong header chật, không được đẩy tràn.
           btn.setAttribute('aria-label', state.locked ? 'Vault đã khoá · Vault locked' : 'Vault mở · 15 phút · Vault open · 15 min');
           btn.innerHTML = state.locked

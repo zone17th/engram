@@ -365,9 +365,6 @@ textarea.omnibox-input::placeholder {
 [data-theme='dark'] .json-table .v-bool { color: var(--product-teal); }
 .json-table .v-null { font-family: 'Sometype Mono', monospace; color: var(--muted); font-style: italic; }
 .json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
-@media (max-width: 639px) {
-  .json-nest { max-width: calc(100vw - 208px); }
-}
 .json-toggle {
   display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
   background: transparent; border: 0; padding: 0; color: var(--body);
@@ -978,12 +975,15 @@ section[data-view] .t-label {
   display: none !important;
 }
 
-/* Zero-specificity base so it can never paint body links #0091FF (3.2:1 on white) over the AA rule below. */
+/* Zero-specificity base so it can never paint body links #0091FF (3.2:1 on white) over the AA rule below.
+   Note (RV-UI1-3 / FURV1-1): in the mockups Tailwind Play CDN injects preflight (`a { color: inherit;
+   text-decoration: inherit }`, specificity 0,0,1) after tokens.css, which outranks zero-specificity :where().
+   Keep :where(a) selector parity with apps/web/styles/tokens.css; standalone mockup links give their
+   explicit AA link utility (`text-[color:var(--link-ink)] underline`). */
 :where(a) { color: var(--link); }
 /* Brand --link fails WCAG AA as text on white; unstyled links use the AA-safe ink token.
    Explicit text utilities and button links keep their component colours. */
 :where(a:not(.btn):not([class*='text-'])) { color: var(--link-ink); }
-
 @media (pointer: coarse) {
   .btn, .btn-sm, .btn-tertiary, .btn-danger,
   .seg button, .chip, .tag-pill-btn, .tag-menu-trigger,
