@@ -146,3 +146,17 @@ func TestValidateReorderIDsAndMatchLiveEntrySet(t *testing.T) {
 		t.Fatalf("ValidateReorderIDs(201 IDs) = %q, want reorder_mismatch", code)
 	}
 }
+
+func TestIsAllowedImportSource(t *testing.T) {
+	if !entry.IsAllowedImportSource(entry.ImportSourcePaste) {
+		t.Fatal("IsAllowedImportSource(paste) = false, want true")
+	}
+	if !entry.IsAllowedImportSource(entry.ImportSourceFile) {
+		t.Fatal("IsAllowedImportSource(file) = false, want true")
+	}
+	for _, bad := range []string{"", "url", "clipboard", "PASTE", "FILE", "file.json"} {
+		if entry.IsAllowedImportSource(bad) {
+			t.Fatalf("IsAllowedImportSource(%q) = true, want false", bad)
+		}
+	}
+}
