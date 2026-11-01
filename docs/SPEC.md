@@ -1307,9 +1307,9 @@ Luôn giữ document gốc trong memory sau decrypt. Hai tab: **Bảng** | **JSO
 - Đích cố định (mục đang mở, hoặc mục quick-add đã resolve khi mở từ banner "Phát hiện JSON"); không có dropdown chọn mục hay tag trong dialog (§3.6 bước 4).
 - Mặc định giữ text gốc; "Định dạng trước khi lưu" là tuỳ chọn, mặc định **tắt** (thay checkbox "Giữ nguyên định dạng gốc" cũ).
 - Không hỏi và không gửi tên file (`filename`); request chỉ có `source: paste|file`.
-- File giữ nguyên byte UTF-8 (bỏ đúng một BOM); dán giữ đúng chuỗi `text/plain` trình duyệt trả về, không hứa byte CR (§3.6).
+- File giữ nguyên byte UTF-8 (đọc `TextDecoder` `fatal: true`, bỏ đúng một BOM; byte UTF-8 lỗi bị từ chối, không thay bằng `U+FFFD`); dán lấy `clipboardData.getData("text/plain")`, giữ đúng chuỗi trình duyệt trả về, không hứa byte CR (§3.6).
 
-Lỗi: JSON invalid (pointer dòng), quá 256 KiB, item đã đủ 200 entry.
+Lỗi: UTF-8 không hợp lệ, JSON invalid (dòng/cột + nút Lưu dạng văn bản), quá 256 KiB, item đã đủ 200 entry.
 
 ### 7.6 Unlock / onboarding / Settings
 
