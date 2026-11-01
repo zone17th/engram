@@ -192,11 +192,12 @@ test.describe('P04-T16 Unlocked JSON card U13 visual captures (CI artifacts only
 
         await captureContentItemJson(page, testInfo, 'raw', theme, viewport.width);
 
-        // 3. Invalid-JSON error state capture (type invalid JSON in Raw, wait for the line/col error box)
+        // 3. Invalid-JSON error state capture (type invalid JSON in Raw, wait for the line/col error box).
+        // In '{"service": "postgres-prod",}' (29 chars), ',' is at 0-based UTF-16 offset 27 -> 1-based column 28 ('}' is 29).
         await setTextareaValue(rawTextarea, '{"service": "postgres-prod",}');
         const errorBox = card.getByTestId(`json-raw-error-${jsonEntryId}`);
         await expect(errorBox).toBeVisible({ timeout: UI_WAIT_MS });
-        await expect(errorBox).toContainText(/Line 1, column 29:/);
+        await expect(errorBox).toContainText(/Line 1, column 28:/);
         await expect(errorBox).toContainText(/trailing comma is not allowed in RFC 8259 JSON/i);
         await expect(card.getByTestId(`json-raw-goto-btn-${jsonEntryId}`)).toBeVisible();
         await expect(card.getByTestId(`json-raw-save-btn-${jsonEntryId}`)).toBeDisabled();
