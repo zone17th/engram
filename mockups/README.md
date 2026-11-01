@@ -23,8 +23,8 @@ Rồi mở <http://localhost:5178/landing.html>. Trong Claude Code có sẵn lau
 | File | Mục SPEC | Nội dung |
 |---|---|---|
 | `landing.html` | §11.1 | Trang giới thiệu. Hero **là ô omnibox chạy được**, tự gõ `wif` khi tải trang. |
-| `index.html` | §7.2 | Vỏ ứng dụng: rail tag, omnibox tìm/lưu, lưới mục gần đây. |
-| `item.html` | §7.3, §7.4, §7.5 | Chi tiết mục: tên + tag + entry; entry `json` xem dạng bảng; modal nhập JSON. |
+| `index.html` | §7.2 | Vỏ ứng dụng: rail tag (`#rail-tags`, lọc tag, menu đổi tên `#tagRenameDlg` / xoá có Undo), omnibox tìm/lưu, picker trùng tên U9 (`#dupDialog` do `SAK.openDupDialog` tạo), lưới mục gần đây (`#recent-grid`, danh sách gần đây duy nhất, không preview nội dung entry). |
+| `item.html` | §7.3, §7.4, §7.5 | Chi tiết mục (`default`, `editing`, `saving`, `conflict`, `crypto-err`, `limits`): tên + gợi ý inline + dòng privacy + chip tag (`#tag-add-chip`); thanh thêm entry (`+ Văn bản`, `+ JSON / bảng`, `Import JSON…`); entry text/JSON (`Bảng` / `JSON gốc`), sửa văn bản, trạng thái lưu, xung đột 412, lỗi khoá cũ / giải mã, giới hạn 20 tag / 200 entry; modal nhập JSON (`#importDlg`). |
 | `settings.html` | §7.6 | Tài khoản (email, mật khẩu, provider, locale, theme), phiên/audit/thông báo P02; `#baomat` P03 (passphrase `#passDlg`, RK còn N/10 + `#rkDlg` regenerate + `#rotateDlg` xoay cả 10, passkey + `#passkeyAddDlg`, auto-lock 5/15/60/Never + nhớ thiết bị, `#resetDlg` đặt lại vault 5 bước); tìm kiếm `#timkiem` P05. |
 | `auth.html` | §3.1, §3.16, §10.2 | Đăng nhập/đăng ký (kèm khung giải thích sản phẩm, liên kết chéo, đo độ mạnh mật khẩu cục bộ 0–4 với thanh trống dùng `--border-strong` lùi nền — màu thanh đầy dưới 3:1 do giới hạn token nên nhãn chữ `--body` + `aria-valuetext` là tín hiệu chính, và UX hoàn tất đặt lại mật khẩu duy nhất hiển thị qua banner `#login-reset-success-banner` phía trên form đăng nhập sau redirect `204` về `/app/auth/login?reset=done` — đã bỏ khung hoàn tất độc lập `#forgot-done`), quên mật khẩu tài khoản (`forgot`: yêu cầu `#forgot-request` khi `mail_delivery_available=true` kèm ô xác minh bảo mật `#forgot-request-captcha-slot`, trạng thái chưa bật mail hiển thị ngay khi tải trang `#forgot-unavailable` khi `mail_delivery_available=false`, đã gửi hướng dẫn trung tính `#forgot-sent`, fallback `503 mail_delivery_unavailable` sau submit `#forgot-mail-unavailable`, giới hạn `429` có nút gửi khoá đếm ngược & fallback CAPTCHA `403` có `role="alert"` giữ nguyên email, đặt mật khẩu mới kèm gợi ý cấm dùng passphrase vault và báo mật khẩu gửi tới máy chủ + lỗi `password_weak`/không khớp, link thiếu/không hợp lệ khi tải trang hoặc sau submit `#forgot-invalid`), xác minh email, đặt mật khẩu OAuth-only, OAuth return, re-auth, lỗi auth (CAPTCHA, lockout, session). |
 | `onboarding.html` | §3.2, §5.2 | Ba bước tạo vault: passphrase (`pp`, lỗi thiếu bộ nhớ `pp-oom`) → lưới 10 recovery key (`rk`, `409 vault_exists` `rk-exists`) → passkey tuỳ chọn & nhớ thiết bị (`pk`, lỗi PRF/cancel/missing/orphan). |
@@ -62,6 +62,14 @@ P07/P08 phải thêm mockup riêng trước khi implement.
 | `passkeyAddDlg` | `pk-start`, `pk-prf-unsupported`, `pk-cancelled`, `pk-prf-missing`, `pk-orphan`, `pk-reauth-expired` | Đăng ký passkey mở vault (kiểm PRF, xử lý credential thừa khi POST lỗi) |
 | `resetDlg` | `rst-s1`, `rst-s2`, `rst-s3`, `rst-s4` (`#rst-confirm-word`, `#rstConfirmBtn`), `rst-s5`, `rst-reauth-expired`, `rst-mismatch` | Đặt lại vault 5 bước (thử đường mở khoá → kiểm backup → re-auth → gõ xác nhận → xong) |
 
+### Màn nội dung P04 (`index.html`, `item.html`, `mock.js`) — view `data-target`, dialog & neo chính
+
+| File | Target / Dialog | Nội dung & neo chính |
+|---|---|---|
+| `index.html` | `#rail-tags`, `#recent-grid`, `#tagRenameDlg`, `#dupDialog` (JS) | Rail tag (`#rail-tags`, `#rail-tag-list`, `#rail-clear-filter`, menu tag `⋯` Đổi tên / Xoá có Undo toast); dialog đổi tên tag (`#tagRenameDlg`, `#tagRenameInput`, `#tagRenameConflict` `409 tag_conflict`); picker trùng tên U9 (`#dupDialog`, `#dupListbox`, `#dup-opt-new` do `SAK.openDupDialog` tạo động, phân trang `Xem thêm`); lưới mục gần đây (`#recent-items-header`, `#recent-grid`, không preview body) |
+| `item.html` | `default`, `editing`, `saving`, `conflict`, `crypto-err`, `limits`, `#importDlg` | Mặc định (`default` / `#item-default`: `#item-name-input`, `#item-hint-input`, `#item-privacy-note`, `#tag-add-chip`, `#tag-add-popover`, `#tag-suggest-input`, `#entry-composer`, `#card-menu-pop`, tab `Bảng` / `JSON gốc`); đang sửa text (`editing` / `#item-editing`: `#card-text-editing`, `#entry-edit-textarea`, `#entry-byte-counter`, `#entry-discard-confirm`); trạng thái lưu (`saving` / `#item-saving`: `#card-saving`, `#card-saved`, `#card-save-error`); xung đột 412 (`conflict` / `#item-conflict`: `#card-conflict-412`, `#conflict-reload-confirm`, `#item-header-conflict-412`); lỗi giải mã / khoá cũ (`crypto-err` / `#item-crypto-err`: `#card-key-mismatch`, `#card-decrypt-fail`); giới hạn (`limits` / `#item-limits`: `#item-tag-limit-20`, `#item-entry-limit-200`); modal nhập JSON (`#importDlg`) |
+| `mock.js` | `#toastStack` (`#toastLiveRegion`), `#dupDialog` (JS) | Chồng toast Undo (`#toastStack` kèm `#toastLiveRegion` một `role="status"` chung do `SAK.initChrome` / `SAK.toast` tạo, tối đa 3 hiện + nút `+N` `[data-toast-expand]`, dừng đếm khi hover/focus, ≥ 10 s sau focus, `Ctrl+Z` / `⌘Z`); hàm `SAK.openDupDialog` tạo và mở picker U9 (`#dupDialog`) trả về item ID |
+
 ### Màn auth (`auth.html`) — view `data-target`
 
 | Target | Nội dung |
@@ -82,7 +90,7 @@ P07/P08 phải thêm mockup riêng trước khi implement.
 | `onboarding.html` | `pp`, `pp-oom`, `rk`, `rk-exists`, `pk` | Bước 1 passphrase (`pp`) + thiếu bộ nhớ Argon2id (`pp-oom`, `#onboard-oom`); bước 2 lưới 10 RK (`rk`, `#rkOk`, `#createVault`) + `409 vault_exists` (`rk-exists`, `#onboard-vault-exists`); bước 3 passkey & nhớ thiết bị (`pk`: `#pk-prf-unsupported`, `#pk-cancelled`, `#pk-prf-missing`, `#pk-orphan`) |
 | `unlock.html` | `new`, `pk`, `known`, `err`, `err-pk` | Thiết bị mới (`new`); ưu tiên passkey (`pk`, `#unlock-passkey-not-found`); thiết bị đã nhớ (`known`); lỗi passphrase/phiên (`err`: `#err-passphrase-aead`, `#err-insufficient-memory`, `#err-session-expired`); lỗi passkey (`err-pk`: `#err-prf-unsupported`, `#err-pk-cancelled`, `#err-prf-missing`, `#err-pk-aead`, `#err-rate-limited`, `#err-pk-not-found`) |
 | `recovery.html` | `s1`, `s2`, `s3`, `s3-err`, `s4-reauth`, `s4` | Thử đường khác + re-auth đầu luồng (`s1`, `#recovery-reauth-start`); nhập 1 RK (`s2`: `#s2-err-invalid`, `#s2-err-rate`, `#s2-err-aead`); đặt passphrase mới ở state `recovering` (`s3`, `#s3-recovering-note`); lỗi bước 3 (`s3-err`: `#s3-reauth-expired-password`, `#s3-reauth-expired-oauth`, `#s3-err-oom`, `#s3-err-version`, `#s3-err-rate`); xác nhận lại trước khi tạo key bù (`s4-reauth`: `#s4-regenerate-reauth`); tạo key bù slot trống (`s4`: `#s4-replacement-card`) |
-| `states.html` | `empty`, `load`, `err`, `auth`, `vault`, `off`, `degr` | Rỗng (`empty`); đang tải (`load`); lỗi chung (`err`); Auth/P02 (`auth`); Vault/P03 (`vault`: `#vault-version-mismatch`, `#vault-reauth-expired-password`, `#vault-reauth-expired-oauth`, `#vault-rate-limited`, `#vault-mutations-disabled`, `#vault-locked-broadcast`, `#vault-insufficient-memory`); ngoại tuyến (`off`); giảm chức năng (`degr`) |
+| `states.html` | `empty`, `load`, `err`, `auth`, `vault`, `off`, `degr` | Rỗng (`empty`); đang tải (`load`); lỗi chung & P04 (`err`: `#err-version-mismatch` 412 ba nút + `#err-conflict-confirm`, `#err-entry-too-large` 256 KiB, `#err-dup-name-picker` mở U9 `#dupDialog`, `#err-decrypt-fail` có Thử lại, `#err-entry-key-mismatch` `entry_key_mismatch`); Auth/P02 (`auth`); Vault/P03 (`vault`: `#vault-version-mismatch`, `#vault-reauth-expired-password`, `#vault-reauth-expired-oauth`, `#vault-rate-limited`, `#vault-mutations-disabled`, `#vault-locked-broadcast`, `#vault-insufficient-memory`); ngoại tuyến (`off`: `#off-save-deferred` giữ trong ô cho tới khi vault khoá); giảm chức năng (`degr`) |
 
 - **Quy ước song ngữ vi/en (`advisor-dec-002`, option A):** tiếng Việt là ngôn ngữ chính; mọi chuỗi hoặc trạng thái mới bổ sung đều kèm bản tiếng Anh inline (`lang="en"`), không thêm nút chuyển ngôn ngữ trên khung mockup.
 - **Cặp song ngữ là công cụ đối chiếu review (review aid):** một cặp `vi · en` trong mockup chỉ phục vụ rà soát hai ngôn ngữ trên cùng khung hình; ứng dụng web thực tế chỉ hiển thị **MỘT ngôn ngữ trên mỗi màn hình** theo `user.locale` (không ghép cặp inline ở nhãn, placeholder, `aria-label`, nút Hiện/Ẩn hay thông báo lỗi, và dòng tiếng Anh không bị giảm cỡ chữ/độ đậm so với tiếng Việt — bài test ở U4 bắt buộc kiểm tra điều này; xem mẫu đơn ngữ tiếng Anh `#login-pure-en-reference`).
@@ -100,19 +108,16 @@ Screenshot revision (Task 24): chụp `auth.html` và `settings.html` ở 390/76
 
 ## Những chỗ mockup cố tình thể hiện đúng spec
 
-- **Gần nghĩa là nhóm riêng, nằm dưới nhóm lexical** (§6.4). Bật/tắt semantic không xáo trộn thứ tự kết quả
-  lexical — gõ `mật khẩu` ở `index.html` sẽ thấy *chỉ* nhóm "Gần nghĩa"; gõ `wif` thì không có nhóm đó chen lên trên.
-- **Trùng tên mục là hợp lệ** (§3.4). Gõ `wifi #nhà: nội dung` rồi Enter → hộp thoại chọn mục nào, kèm lựa chọn
-  "Tạo mục mới cùng tên".
+- **Gần nghĩa là nhóm riêng, nằm dưới nhóm lexical** (§6.4, thuộc P05; ở P04 công tắc "Gần nghĩa" và cột "Liên quan" đã bỏ khỏi khung trang chủ/trang mục, còn dropdown gợi ý omnibox cũ giữ tạm tới bước 2 sẽ thay bằng `searchHint` + kết quả sau Enter).
+- **Trùng tên mục là hợp lệ** — quick-add mở picker U9 (`#dupDialog`: mỗi dòng hiện tên, tối đa 3 chip tag, `created_at`, `entry_count`, nút "Xem thêm" khi còn trang, và dòng cuối "Tạo mục mới cùng tên") trả về đúng item ID (§3.4).
 - **JSON không bị mất mát** (§7.4). Cột lấy theo **thứ tự khoá trong nguồn**, không theo thứ tự JS liệt kê;
   hàng có **khoá trùng** rơi về bảng field/value để giữ đủ mọi occurrence; số lớn (`9007199254740993`) hiện
-  nguyên văn chứ không bị làm tròn.
-- **Chỉ nội dung entry được mã hoá.** Khoá vault ở `index.html`/`item.html`: tên mục, tag, số entry vẫn đọc được;
-  chỉ phần nội dung bị che. Đây là lý do tìm kiếm hoạt động.
+  nguyên văn chứ không bị làm tròn; tab xem nguồn dùng tên thống nhất **"JSON gốc"**.
+- **Chỉ nội dung entry được mã hoá; tên mục, tag và gợi ý không được mã hoá** (§5.1). Khoá vault ở `index.html`/`item.html`: tên mục, tag, số entry vẫn đọc được; lưới mục gần đây trên trang chủ là danh sách gần đây duy nhất và không tải hay preview nội dung entry.
 - **Đổi passphrase không cần passphrase cũ** (§7.6) — cần đăng nhập lại + một đường mở vault đang dùng được.
   "Đặt lại vault" nằm sau danh sách các đường mở khoá phải thử trước.
 - **Tạo lại (regenerate) và xoay (rotate) recovery key đúng ngữ nghĩa live server** (§3.12, §5.9): tạo lại chỉ sinh và hiển thị key mới cho các slot đang trống (từ slot nhỏ nhất); "Xoay cả 10" (`#rotateDlg`) thay cho nút thu hồi cũ để cấp bộ 10 key mới trên live server; đổi passphrase chỉ bọc lại `wrapK` nên các recovery key, bản in cũ và passkey vẫn mở được vault.
 
 ## Phím tắt
 
-`Ctrl K` hoặc `/` — vào ô tìm · `↑ ↓` — chọn · `Enter` — mở / lưu · `Tab` — điền gợi ý · `Esc` — đóng
+`Ctrl K` hoặc `/` — vào ô tìm · `↑ ↓` — chọn · `Enter` — mở / lưu · `Tab` — điền gợi ý (dropdown omnibox cũ, giữ tạm tới bước 2) · `Ctrl Z` (`⌘Z` trên Apple) — hoàn tác toast mới nhất · `Esc` — đóng
