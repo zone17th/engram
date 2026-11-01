@@ -63,15 +63,18 @@
       <button class="btn btn-primary" onclick="SAK.toast('Mở ô thêm nhanh')">Thêm mục đầu tiên</button>
     </div>
 
-    <div class="card p-6 text-center">
-      <p class="t-label mb-2" style="color:var(--muted)">Tìm không ra</p>
-      <h2 class="t-title-sm mb-2">Không có mục nào khớp “thuế 2024”</h2>
-      <p class="t-body mb-4" style="color:var(--muted)">
-        Thử bớt từ, bỏ dấu, hoặc tìm theo tag. Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry.
+    <div class="card p-6 text-center" id="empty-search-no-match">
+      <p class="t-label mb-2 text-muted">Tìm không ra · <span lang="en">No prefix match</span></p>
+      <h2 class="t-title-sm mb-2">Không có mục bắt đầu bằng “thuế 2024”</h2>
+      <p class="t-body mb-1 text-muted">
+        Tìm kiếm theo tiền tố tên mục đã chuẩn hoá (<span class="mono">GET /items?q=</span>, chỉ gửi khi nhấn Enter). Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-4" lang="en">
+        <strong>No items starting with “thuế 2024”.</strong> Prefix search runs only on Enter against normalized item names (<span class="mono">GET /items?q=</span>) and never inspects encrypted entry bodies.
       </p>
       <div class="flex gap-2 justify-center flex-wrap">
-        <button class="btn btn-secondary btn-sm">Tạo mục “thuế 2024”</button>
-        <button class="btn btn-tertiary btn-sm">Xoá bộ lọc</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đã tạo mục “thuế 2024” (chưa có entry) · Created item “thuế 2024” (no entries)','Hoàn tác')">Tạo mục “thuế 2024” · <span lang="en">Create item “thuế 2024”</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Xoá bộ lọc · <span lang="en">Clear filter</span></button>
       </div>
     </div>
 
@@ -362,14 +365,14 @@
       </p>
     </div>
 
-    <!-- 5. Vault locked by another tab / auto-lock (BroadcastChannel lock) -->
+    <!-- 5. Vault locked by another tab / auto-lock (BroadcastChannel lock + Q15 draft cleared) -->
     <div class="rounded-md p-4" id="vault-locked-broadcast" role="status" style="background:var(--pale-accent)">
       <p class="t-label mb-1.5" style="color:var(--muted)">Đồng bộ đa tab / tự khoá · BroadcastChannel sabk.vault</p>
       <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
-        <strong>Vault đã tự khoá hoặc vừa được khoá từ một tab khác.</strong> Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem hoặc sửa nội dung entry.
+        <strong>Vault đã tự khoá hoặc vừa được khoá từ một tab khác.</strong> Khoá giải mã, nội dung entry trong bộ nhớ và bản nháp chưa lưu đã được xoá (sau khi mở khoá lại hiện thông báo “Bản nháp chưa lưu đã bị xoá khi khoá vault; mục/tag đã tạo vẫn còn”). Bạn vẫn duyệt và tìm được tên mục cùng tag.
       </p>
       <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
-        <strong>Vault locked by another tab or auto-lock.</strong> Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view or edit entry contents.
+        <strong>Vault locked by another tab or auto-lock.</strong> Decryption keys, cached entry contents, and unsaved drafts/in-progress quick-add plans were cleared (unlocking shows “Unsaved draft was cleared when the vault locked; any item/tags already created were kept”).
       </p>
       <a href="unlock.html" class="btn btn-primary no-underline">Mở khoá lại · <span lang="en">Unlock vault</span></a>
     </div>
