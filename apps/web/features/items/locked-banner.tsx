@@ -22,7 +22,7 @@ export function LockedBanner() {
     <div
       role="status"
       data-testid="vault-locked-banner"
-      className="locked-banner vault-shut border-b border-line"
+      className="locked-banner"
     >
       <div className="mx-auto flex max-w-container flex-wrap items-center gap-3 px-5 py-3">
         <p className="t-body m-0 min-w-0 flex-1">
