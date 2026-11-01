@@ -2091,40 +2091,75 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const cardsAfterOverlap = getRenderedEntryCardIds(h.container);
     expect(cardsAfterOverlap).toEqual([ENTRY_ID_3, ENTRY_ID_1, ENTRY_ID_2]);
 
-    // Part 2: Flush immediately on visibilitychange (hidden) before 400 ms debounce expires
-    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
-    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      value: 'hidden',
-    });
-    fireEvent(document, new Event('visibilitychange'));
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      value: 'visible',
-    });
+    // Part 2 (IP15-BE3-5): Flush immediately on visibilitychange (hidden) WITHOUT advancing the 400 ms debounce timer
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
+      // Pending debounce only -> no PATCH sent yet
+      expect(reorderCallCount).toBe(2);
 
-    await waitFor(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      });
+      await act(async () => {
+        fireEvent(document, new Event('visibilitychange'));
+        await Promise.resolve();
+      });
       expect(reorderCallCount).toBe(3);
-    });
+      const reqsAfterVis = h.server.requests.filter((r) => r.url.endsWith('/entries/reorder'));
+      expect(JSON.parse(reqsAfterVis[2].rawBody)).toEqual({
+        entry_ids: [ENTRY_ID_3, ENTRY_ID_2, ENTRY_ID_1],
+      });
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'visible',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
 
-    // Part 3: Flush immediately on pagehide before 400 ms debounce expires
-    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
-    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
-    fireEvent(window, new Event('pagehide'));
+    // Part 3 (IP15-BE3-5): Flush immediately on pagehide WITHOUT advancing the 400 ms debounce timer
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_2}`));
+      expect(reorderCallCount).toBe(3);
 
-    await waitFor(() => {
+      await act(async () => {
+        fireEvent(window, new Event('pagehide'));
+        await Promise.resolve();
+      });
       expect(reorderCallCount).toBe(4);
-    });
+      const reqsAfterPagehide = h.server.requests.filter((r) =>
+        r.url.endsWith('/entries/reorder'),
+      );
+      expect(JSON.parse(reqsAfterPagehide[3].rawBody)).toEqual({
+        entry_ids: [ENTRY_ID_2, ENTRY_ID_3, ENTRY_ID_1],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
 
-    // Part 4: Flush immediately on vault lock before 400 ms debounce expires
-    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_1}`));
-    fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_1}`));
-    await h.lock();
+    // Part 4 (IP15-BE3-5): Flush immediately on vault lock WITHOUT advancing the 400 ms debounce timer
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_1}`));
+      fireEvent.click(screen.getByTestId(`entry-menu-up-${ENTRY_ID_1}`));
+      expect(reorderCallCount).toBe(4);
 
-    await waitFor(() => {
+      await act(async () => {
+        await h.vault().lockNow();
+      });
       expect(reorderCallCount).toBe(5);
-    });
+      const reqsAfterLock = h.server.requests.filter((r) => r.url.endsWith('/entries/reorder'));
+      expect(JSON.parse(reqsAfterLock[4].rawBody)).toEqual({
+        entry_ids: [ENTRY_ID_2, ENTRY_ID_1, ENTRY_ID_3],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('disables + Tag chip at 20 tags with tooltip, and disables + Text at 200 entries', async () => {
