@@ -614,8 +614,10 @@ export interface ContentMutateOptions<TBody extends ContentMutationBody | undefi
    */
   readonly uncertainPriorSend?: boolean;
   /**
-   * Optional per-attempt outcome observer invoked once per real send after the outcome is classified
-   * (advisor-dec-203, HM18-R3-3). Never receives body, headers, URL, or entry data.
+   * Optional per-attempt outcome observer invoked once per `contentMutate` attempt after the
+   * outcome is classified, not per underlying HTTP send (an internal silent-refresh replay inside
+   * `authMutate` and the `/auth/csrf` bootstrap GET are not reported separately; advisor-dec-203,
+   * HM18-R3-3, HM18-R4-5). Never receives body, headers, URL, or entry data.
    */
   readonly onAttempt?: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void;
 }
@@ -838,6 +840,12 @@ export interface ContentIdempotentOptions {
    */
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
+  /**
+   * Optional per-attempt outcome observer invoked once per `contentMutate` attempt after the
+   * outcome is classified, not per underlying HTTP send (an internal silent-refresh replay inside
+   * `authMutate` and the `/auth/csrf` bootstrap GET are not reported separately; advisor-dec-203,
+   * HM18-R3-3, HM18-R4-5). Never receives body, headers, URL, or entry data.
+   */
   readonly onAttempt?: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void;
 }
 
