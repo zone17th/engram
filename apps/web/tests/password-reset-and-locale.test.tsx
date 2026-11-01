@@ -15,7 +15,7 @@ import { SignupForm } from '@/features/auth/forms/signup-form';
 import { VerifyEmailForm } from '@/features/auth/forms/verify-email-form';
 import { evaluateAccountPasswordStrength } from '@/features/auth/password-strength-meter';
 import { RouteGuard } from '@/features/auth/route-guard';
-import { useReauth } from '@/features/auth/use-reauth';
+import { ReauthMessagesProvider, useReauth } from '@/features/auth/use-reauth';
 import { AccountDialogs } from '@/features/settings/account/account-dialogs';
 import en from '../messages/en.json';
 import viMessages from '../messages/vi.json';
@@ -203,9 +203,10 @@ function problem(code: string, overrides: Partial<ProblemDetails> = {}): Problem
 }
 
 function renderWithLocale(ui: React.ReactNode, locale: 'en' | 'vi' = 'en') {
+  const messages = locale === 'en' ? en : viMessages;
   return render(
-    <NextIntlClientProvider locale={locale} messages={locale === 'en' ? en : viMessages}>
-      {ui}
+    <NextIntlClientProvider locale={locale} messages={messages}>
+      <ReauthMessagesProvider auth={messages.auth}>{ui}</ReauthMessagesProvider>
     </NextIntlClientProvider>,
   );
 }
@@ -429,7 +430,7 @@ describe('ForgotPasswordForm states and problem-code mapping (ADR 0006 §9.2)', 
     },
   );
 
-  it('resets Turnstile when clicking tryAnotherEmail after 202 sent (AU4-FE1-8, AU4-FE2-2)', async () => {
+  it('clears the Turnstile token and mounts a fresh widget when clicking tryAnotherEmail after 202 sent (AU4-FE1-8, AU4-FE2-2, AU4-FE3-1)', async () => {
     mocks.session.config = {
       oauth_providers: ['google'],
       email_verification_required: false,
@@ -450,8 +451,18 @@ describe('ForgotPasswordForm states and problem-code mapping (ADR 0006 §9.2)', 
     });
 
     expect(screen.getByTestId('forgot-sent')).toBeInTheDocument();
+    expect(turnstileMocks.remove).toHaveBeenCalledTimes(1);
+
     fireEvent.click(screen.getByRole('button', { name: en.auth.forgot.tryAnotherEmail }));
-    expect(turnstileMocks.reset).toHaveBeenCalledTimes(1);
+    expect(turnstileMocks.render).toHaveBeenCalledTimes(2);
+    expect(turnstileMocks.remove).toHaveBeenCalledTimes(1);
+
+    // Submitting again without a fresh tokenCallback must be blocked by captcha_required
+    await act(async () => {
+      fireEvent.submit(screen.getByLabelText('Email').closest('form')!);
+    });
+    expect(mocks.authPasswordForgot).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(en.auth.errors.captchaRequiredTitle)).toBeInTheDocument();
   });
 });
 
@@ -861,7 +872,7 @@ describe('OAuthCallbackView problem-code mapping (AU2-FE3-6) and AccountDialogs 
     expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
 
-  it('useReauth resolves localized Vietnamese error copy under a vi NextIntlClientProvider and does not throw without a provider (AU4-FE2-1)', async () => {
+  it('useReauth resolves localized Vietnamese error copy under ReauthMessagesProvider and does not throw without a provider (AU4-FE2-1, AU4-FE3-4)', async () => {
     function ReauthProbe() {
       const reauth = useReauth(null);
       return (
@@ -941,6 +952,17 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
     ),
   ];
 
+  const VI_ONLY_STRINGS = [
+    ...collectDifferingEnLeaves(
+      viMessages.auth as unknown as Record<string, unknown>,
+      en.auth as unknown as Record<string, unknown>,
+    ),
+    ...collectDifferingEnLeaves(
+      viMessages.legal as unknown as Record<string, unknown>,
+      en.legal as unknown as Record<string, unknown>,
+    ),
+  ];
+
   function assertLocalePurity(container: HTMLElement, locale: 'en' | 'vi', contextLabel: string) {
     const text = container.textContent ?? '';
     const attrs = Array.from(container.querySelectorAll('[aria-label], [title]')).flatMap((el) => [
@@ -952,6 +974,12 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
       expect(text, `${contextLabel} (en) contained Vietnamese diacritics`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
       for (const attr of attrs) {
         expect(attr, `${contextLabel} (en) attr contained Vietnamese diacritics`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
+      }
+      for (const viPhrase of VI_ONLY_STRINGS) {
+        expect(text, `${contextLabel} (en) leaked Vietnamese string "${viPhrase}"`).not.toContain(viPhrase);
+        for (const attr of attrs) {
+          expect(attr, `${contextLabel} (en) attr leaked Vietnamese string "${viPhrase}"`).not.toContain(viPhrase);
+        }
       }
     } else {
       for (const enPhrase of EN_ONLY_STRINGS) {
@@ -967,6 +995,7 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
     'renders every auth screen and interactive/error state in %s with positive state assertions and strict catalog purity',
     async (locale) => {
       expect(EN_ONLY_STRINGS.length).toBeGreaterThan(80);
+      expect(VI_ONLY_STRINGS.length).toBeGreaterThan(80);
       const copy = (locale === 'en' ? en : viMessages).auth;
 
       const resetConfig = () => {
@@ -1229,6 +1258,13 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
           name: 'oauth-callback-invalid',
           path: '/app/auth/callback/google',
           search: 'status=invalid_flow',
+          expectedText: copy.oauthCallback.errorBody,
+          node: <OAuthCallbackView provider="google" />,
+        },
+        {
+          name: 'oauth-callback-bogus',
+          path: '/app/auth/callback/google',
+          search: 'status=bogus',
           expectedText: copy.oauthCallback.invalidFlow,
           node: <OAuthCallbackView provider="google" />,
         },

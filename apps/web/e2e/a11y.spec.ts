@@ -31,6 +31,8 @@ const AUTH_PAGES: readonly AuthPageCapture[] = [
   { name: 'reset-vi', path: `/app/auth/reset-password#token=${DUMMY_RESET_TOKEN}`, locale: 'vi' },
   { name: 'reset-invalid-en', path: '/app/auth/reset-password', locale: 'en' },
   { name: 'reset-invalid-vi', path: '/app/auth/reset-password', locale: 'vi' },
+  { name: 'oauth-callback-invalid-en', path: '/app/auth/callback/google?status=invalid_flow', locale: 'en' },
+  { name: 'oauth-callback-invalid-vi', path: '/app/auth/callback/google?status=invalid_flow', locale: 'vi' },
   { name: 'terms-en', path: '/terms', locale: 'en' },
   { name: 'terms-vi', path: '/vi/terms', locale: 'vi' },
   { name: 'privacy-en', path: '/privacy', locale: 'en' },
@@ -115,6 +117,8 @@ test.describe('P02 a11y', () => {
           await expect(page.getByTestId('reset-invalid-token')).toHaveCount(0);
         } else if (route.name.startsWith('reset-invalid-')) {
           await expect(page.getByTestId('reset-invalid-token')).toBeVisible();
+        } else if (route.name.startsWith('oauth-callback-invalid-')) {
+          await expect(page.getByTestId('oauth-callback-error')).toBeVisible();
         }
         await noOverflow(page);
         const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
