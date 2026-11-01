@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/entry"
@@ -41,6 +43,47 @@ func issueReauthGrant(t *testing.T, h *contenttest.Harness, jar contenttest.Cook
 
 func formatVaultIfMatch(vaultKeyID string, version int32) string {
 	return fmt.Sprintf(`"%s:%d"`, vaultKeyID, version)
+}
+
+func doDeleteVaultCtx(
+	ctx context.Context,
+	h *contenttest.Harness,
+	jar contenttest.CookieJar,
+	idemKey, ifMatch, grant string,
+) (contenttest.TestResponse, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, h.Server.URL+"/api/v1/vault", nil)
+	if err != nil {
+		return contenttest.TestResponse{}, "", err
+	}
+	req.Header.Set("Origin", h.Origin)
+	if jar != nil {
+		jar.Apply(req)
+		if c := jar[authhttp.CookieCSRF]; c != nil {
+			req.Header.Set(authhttp.HeaderCSRF, c.Value)
+		}
+	}
+	if idemKey != "" {
+		req.Header.Set(httpx.HeaderIdempotencyKey, idemKey)
+	}
+	if ifMatch != "" {
+		req.Header.Set(httpx.HeaderIfMatch, ifMatch)
+	}
+	if grant != "" {
+		req.Header.Set(authhttp.HeaderReauth, grant)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return contenttest.TestResponse{}, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return contenttest.TestResponse{}, "", err
+	}
+	return contenttest.TestResponse{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header,
+	}, string(b), nil
 }
 
 func insertTestTagForReset(t *testing.T, ctx context.Context, q *gen.Queries, userID uuid.UUID, display string) gen.Tag {
@@ -253,7 +296,7 @@ func softDeleteItemInTx(
 	ctx context.Context,
 	h *contenttest.Harness,
 	userID, itemID uuid.UUID,
-	onStep func(step string),
+	onStep func(ctx context.Context, step string) error,
 ) error {
 	tx, err := httpx.BeginMutationTx(ctx, h.Pool)
 	if err != nil {
@@ -266,7 +309,9 @@ func softDeleteItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_user_content_lock")
+		if err := onStep(ctx, "after_user_content_lock"); err != nil {
+			return err
+		}
 	}
 
 	lockedItem, err := q.LockItemForUpdate(ctx, gen.LockItemForUpdateParams{
@@ -277,7 +322,9 @@ func softDeleteItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_item_lock")
+		if err := onStep(ctx, "after_item_lock"); err != nil {
+			return err
+		}
 	}
 
 	if lockedItem.DeletedAt.Valid {
@@ -291,7 +338,9 @@ func softDeleteItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_tags_lock")
+		if err := onStep(ctx, "after_tags_lock"); err != nil {
+			return err
+		}
 	}
 
 	if _, err := q.LockLiveEntriesOfItemForUpdate(ctx, gen.LockLiveEntriesOfItemForUpdateParams{
@@ -301,9 +350,10 @@ func softDeleteItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_entries_lock")
+		if err := onStep(ctx, "after_entries_lock"); err != nil {
+			return err
+		}
 	}
-
 	batch := uuid.New()
 	if _, err := q.SoftDeleteLiveEntriesByItem(ctx, gen.SoftDeleteLiveEntriesByItemParams{
 		DeleteBatch: &batch,
@@ -340,7 +390,7 @@ func restoreItemInTx(
 	ctx context.Context,
 	h *contenttest.Harness,
 	userID, itemID uuid.UUID,
-	onStep func(step string),
+	onStep func(ctx context.Context, step string) error,
 ) error {
 	tx, err := httpx.BeginMutationTx(ctx, h.Pool)
 	if err != nil {
@@ -353,7 +403,9 @@ func restoreItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_user_content_lock")
+		if err := onStep(ctx, "after_user_content_lock"); err != nil {
+			return err
+		}
 	}
 
 	lockedItem, err := q.LockItemForUpdate(ctx, gen.LockItemForUpdateParams{
@@ -364,7 +416,9 @@ func restoreItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_item_lock")
+		if err := onStep(ctx, "after_item_lock"); err != nil {
+			return err
+		}
 	}
 
 	if !lockedItem.DeletedAt.Valid {
@@ -378,9 +432,10 @@ func restoreItemInTx(
 		return err
 	}
 	if onStep != nil {
-		onStep("after_tags_lock")
+		if err := onStep(ctx, "after_tags_lock"); err != nil {
+			return err
+		}
 	}
-
 	liveTags, err := q.CountLiveTagsByItem(ctx, gen.CountLiveTagsByItemParams{
 		UserID: userID,
 		ItemID: itemID,
@@ -1069,25 +1124,105 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 	ctx := context.Background()
 	q := gen.New(h.Pool)
 
-	// Helper to run DELETE /api/v1/vault with a per-request ResetHook wrapper.
-	runReset := func(vf vaultFixture, idemKey string, hook vault.ResetHook) {
+	// prepareReset advances the harness clock, refreshes the session, sets the ResetHook, and issues a fresh
+	// reauth grant on the owning test goroutine before launching concurrent workers.
+	prepareReset := func(t *testing.T, hook vault.ResetHook) string {
 		t.Helper()
 		h.Clock.Advance(61 * time.Second) // keep vault_sensitive (1/min) and reauth limiters clean
 		h.RefreshSession(jarA)            // keep 15m access token fresh across sub-scenarios
 		h.VaultSvc.SetResetHook(hook)
-		defer h.VaultSvc.SetResetHook(entry.ResetHook)
-
-		grant := issueReauthGrant(t, h, jarA, "vault.reset", password)
-		resp, raw := h.DoReq(jarA, http.MethodDelete, "/api/v1/vault", "", contenttest.ReqOptions{
-			IdemKey: idemKey,
-			IfMatch: formatVaultIfMatch(vf.VaultKeyID, vf.Version),
-			Grant:   grant,
+		t.Cleanup(func() {
+			h.VaultSvc.SetResetHook(entry.ResetHook)
 		})
-		if resp.StatusCode != http.StatusNoContent || raw != "" {
-			t.Fatalf("DELETE /vault (%s) = %d %q, want 204 empty", idemKey, resp.StatusCode, raw)
-		}
+		return issueReauthGrant(t, h, jarA, "vault.reset", password)
 	}
 
+	// runReset executes DELETE /api/v1/vault using a cancellable worker context and returns a result/error
+	// to the owning test rather than calling fatal assertions from inside its worker goroutine.
+	runReset := func(wCtx context.Context, vf vaultFixture, idemKey, grant string) error {
+		resp, raw, err := doDeleteVaultCtx(
+			wCtx,
+			h,
+			jarA,
+			idemKey,
+			formatVaultIfMatch(vf.VaultKeyID, vf.Version),
+			grant,
+		)
+		if err != nil {
+			return fmt.Errorf("DELETE /vault (%s): %w", idemKey, err)
+		}
+		if resp.StatusCode != http.StatusNoContent || raw != "" {
+			return fmt.Errorf("DELETE /vault (%s) = %d %q, want 204 empty", idemKey, resp.StatusCode, raw)
+		}
+		return nil
+	}
+
+	// setupBarrierScenario registers an idempotent barrier release, worker-context cancellation, and bounded
+	// worker-channel joins on subtest t.Cleanup immediately after creation (before launching workers), so that
+	// any error/timeout path releases and joins workers before the parent harness closes httptest.Server.
+	setupBarrierScenario := func(t *testing.T) (
+		wCtx context.Context,
+		stepReached chan struct{},
+		releaseStep chan struct{},
+		closeRel func(),
+		op1ErrCh chan error,
+		op2ErrCh chan error,
+		awaitWorker func(desc string, ch <-chan error),
+	) {
+		t.Helper()
+		wCtx, cancelWorkers := context.WithCancel(ctx)
+		stepReached = make(chan struct{}, 1)
+		releaseStep = make(chan struct{})
+		var closeOnce sync.Once
+		closeRel = func() { closeOnce.Do(func() { close(releaseStep) }) }
+		op1ErrCh = make(chan error, 1)
+		op2ErrCh = make(chan error, 1)
+
+		var joinMu sync.Mutex
+		var op1Joined, op2Joined bool
+
+		t.Cleanup(func() {
+			closeRel()
+			cancelWorkers()
+			joinMu.Lock()
+			needOp1 := !op1Joined
+			needOp2 := !op2Joined
+			joinMu.Unlock()
+			if needOp1 {
+				select {
+				case <-op1ErrCh:
+				case <-time.After(5 * time.Second):
+				}
+			}
+			if needOp2 {
+				select {
+				case <-op2ErrCh:
+				case <-time.After(5 * time.Second):
+				}
+			}
+		})
+
+		awaitWorker = func(desc string, ch <-chan error) {
+			t.Helper()
+			select {
+			case err := <-ch:
+				joinMu.Lock()
+				switch ch {
+				case op1ErrCh:
+					op1Joined = true
+				case op2ErrCh:
+					op2Joined = true
+				}
+				joinMu.Unlock()
+				if err != nil {
+					t.Fatalf("%s: %v", desc, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for %s", desc)
+			}
+		}
+		return wCtx, stepReached, releaseStep, closeRel, op1ErrCh, op2ErrCh, awaitWorker
+	}
 	resetSteps := []entry.ResetHookStep{
 		entry.ResetHookStepAfterUserContentLock,
 		entry.ResetHookStepAfterItemsLocked,
@@ -1101,96 +1236,93 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 	// 1A. Reset acquires LockUserContent first (testing barrier at every ResetHookStep) -> Item Delete waits on LockUserContent.
 	// Serial equivalence: Reset then Item Delete -> item is soft-deleted (entry_count=0), tag.item_count=0, 0 entries in DB.
 	for idx, pauseStep := range resetSteps {
-		vf := createVaultForUser(t, h, jarA, byte(0x10+idx))
-		item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("ResetFirst-DelItem-%d", idx))
-		tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("rf-del-tag-%d", idx))
-		assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
+		t.Run("ResetFirst_ItemDelete/"+string(pauseStep), func(t *testing.T) {
+			vf := createVaultForUser(t, h, jarA, byte(0x10+idx))
+			item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("ResetFirst-DelItem-%d", idx))
+			tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("rf-del-tag-%d", idx))
+			assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
 
-		entryID := uuid.NewString()
-		sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry before reset+delete"), seqBytes(vault.WrapNonceBytes, byte(0x20+idx)))
-		respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
-			makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
-			contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_rf_del_seed_%d", idx)})
-		if respC.StatusCode != http.StatusCreated {
-			t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
-		}
+			entryID := uuid.NewString()
+			sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry before reset+delete"), seqBytes(vault.WrapNonceBytes, byte(0x20+idx)))
+			respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
+				makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
+				contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_rf_del_seed_%d", idx)})
+			if respC.StatusCode != http.StatusCreated {
+				t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
+			}
 
-		stepReached := make(chan struct{}, 1)
-		releaseStep := make(chan struct{})
-		var closeOnce sync.Once
-		closeRel := func() { closeOnce.Do(func() { close(releaseStep) }) }
+			wCtx, stepReached, releaseStep, closeRel, resetErrCh, delErrCh, awaitWorker := setupBarrierScenario(t)
 
-		hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
-			cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
-				if step == pauseStep {
-					stepReached <- struct{}{}
-					select {
-					case <-releaseStep:
-					case <-cbCtx.Done():
-						return cbCtx.Err()
+			hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
+				cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
+					if step == pauseStep {
+						select {
+						case stepReached <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releaseStep:
+						case <-cbCtx.Done():
+							return cbCtx.Err()
+						}
+						select {
+						case <-wCtx.Done():
+							return wCtx.Err()
+						default:
+						}
 					}
-				}
-				return nil
+					return nil
+				})
+				return entry.ResetHook(cbCtx, tx, uid)
+			}
+			grant := prepareReset(t, hook)
+
+			go func() {
+				resetErrCh <- runReset(wCtx, vf, fmt.Sprintf("idem_t8_rf_del_reset_%d", idx), grant)
+			}()
+
+			select {
+			case <-stepReached:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for ResetHook step %s", pauseStep)
+			}
+
+			go func() {
+				delErrCh <- softDeleteItemInTx(wCtx, h, meA.User.ID, item.ID, nil)
+			}()
+
+			waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("item delete waiting on LockUserContent at reset step %s", pauseStep), func() bool {
+				return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
 			})
-			return entry.ResetHook(cbCtx, tx, uid)
-		}
 
-		resetErrCh := make(chan bool, 1)
-		delErrCh := make(chan error, 1)
-
-		go func() {
-			runReset(vf, fmt.Sprintf("idem_t8_rf_del_reset_%d", idx), hook)
-			resetErrCh <- true
-		}()
-
-		select {
-		case <-stepReached:
-		case <-time.After(10 * time.Second):
 			closeRel()
-			t.Fatalf("timed out waiting for ResetHook step %s", pauseStep)
-		}
 
-		go func() {
-			delErrCh <- softDeleteItemInTx(ctx, h, meA.User.ID, item.ID, nil)
-		}()
+			awaitWorker(fmt.Sprintf("reset (%s)", pauseStep), resetErrCh)
+			awaitWorker(fmt.Sprintf("softDeleteItemInTx after reset (%s)", pauseStep), delErrCh)
 
-		waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("item delete waiting on LockUserContent at reset step %s", pauseStep), func() bool {
-			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+			// Serial result (Reset -> Item Delete): 0 entries, item is soft-deleted with entry_count=0, tag.item_count=0.
+			totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
+			if totalE != 0 {
+				t.Fatalf("entries after Reset->ItemDelete (step %s) = %d, want 0", pauseStep, totalE)
+			}
+			gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
+			if err != nil || !gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
+				t.Fatalf("item after Reset->ItemDelete (step %s) = (%+v, %v), want deleted with entry_count=0", pauseStep, gotItem, err)
+			}
+			gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
+			if err != nil || gotTag.ItemCount != 0 {
+				t.Fatalf("tag after Reset->ItemDelete (step %s) = (%+v, %v), want item_count=0", pauseStep, gotTag, err)
+			}
+			contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+			// Clean up soft-deleted item & tag so next iteration starts clean.
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
+				t.Fatal(err)
+			}
 		})
-
-		closeRel()
-
-		select {
-		case <-resetErrCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for reset")
-		}
-		if err := <-delErrCh; err != nil {
-			t.Fatalf("softDeleteItemInTx after reset (step %s): %v", pauseStep, err)
-		}
-
-		// Serial result (Reset -> Item Delete): 0 entries, item is soft-deleted with entry_count=0, tag.item_count=0.
-		totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
-		if totalE != 0 {
-			t.Fatalf("entries after Reset->ItemDelete (step %s) = %d, want 0", pauseStep, totalE)
-		}
-		gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
-		if err != nil || !gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
-			t.Fatalf("item after Reset->ItemDelete (step %s) = (%+v, %v), want deleted with entry_count=0", pauseStep, gotItem, err)
-		}
-		gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
-		if err != nil || gotTag.ItemCount != 0 {
-			t.Fatalf("tag after Reset->ItemDelete (step %s) = (%+v, %v), want item_count=0", pauseStep, gotTag, err)
-		}
-		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
-
-		// Clean up soft-deleted item & tag so next iteration starts clean.
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
-			t.Fatal(err)
-		}
 	}
 
 	// 1B. Item Delete acquires LockUserContent first (testing barrier at every item-delete lock step) -> Reset waits on LockUserContent.
@@ -1203,85 +1335,82 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 		"after_entries_lock",
 	}
 	for idx, pauseStep := range itemDeleteSteps {
-		vf := createVaultForUser(t, h, jarA, byte(0x30+idx))
-		item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("DelFirst-Item-%d", idx))
-		tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("df-del-tag-%d", idx))
-		assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
+		t.Run("ItemDeleteFirst/"+pauseStep, func(t *testing.T) {
+			vf := createVaultForUser(t, h, jarA, byte(0x30+idx))
+			item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("DelFirst-Item-%d", idx))
+			tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("df-del-tag-%d", idx))
+			assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
 
-		entryID := uuid.NewString()
-		sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry before delete+reset"), seqBytes(vault.WrapNonceBytes, byte(0x40+idx)))
-		respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
-			makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
-			contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_df_del_seed_%d", idx)})
-		if respC.StatusCode != http.StatusCreated {
-			t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
-		}
+			entryID := uuid.NewString()
+			sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry before delete+reset"), seqBytes(vault.WrapNonceBytes, byte(0x40+idx)))
+			respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
+				makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
+				contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_df_del_seed_%d", idx)})
+			if respC.StatusCode != http.StatusCreated {
+				t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
+			}
 
-		stepReached := make(chan struct{}, 1)
-		releaseStep := make(chan struct{})
-		var closeOnce sync.Once
-		closeRel := func() { closeOnce.Do(func() { close(releaseStep) }) }
+			wCtx, stepReached, releaseStep, closeRel, delErrCh, resetErrCh, awaitWorker := setupBarrierScenario(t)
+			grant := prepareReset(t, entry.ResetHook)
 
-		delErrCh := make(chan error, 1)
-		resetDoneCh := make(chan struct{}, 1)
+			go func() {
+				delErrCh <- softDeleteItemInTx(wCtx, h, meA.User.ID, item.ID, func(sCtx context.Context, step string) error {
+					if step == pauseStep {
+						select {
+						case stepReached <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releaseStep:
+						case <-sCtx.Done():
+							return sCtx.Err()
+						}
+					}
+					return nil
+				})
+			}()
 
-		go func() {
-			delErrCh <- softDeleteItemInTx(ctx, h, meA.User.ID, item.ID, func(step string) {
-				if step == pauseStep {
-					stepReached <- struct{}{}
-					<-releaseStep
-				}
+			select {
+			case <-stepReached:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for item delete step %s", pauseStep)
+			}
+
+			go func() {
+				resetErrCh <- runReset(wCtx, vf, fmt.Sprintf("idem_t8_df_del_reset_%d", idx), grant)
+			}()
+
+			waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("reset waiting on LockUserContent while item delete paused at %s", pauseStep), func() bool {
+				return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
 			})
-		}()
 
-		select {
-		case <-stepReached:
-		case <-time.After(10 * time.Second):
 			closeRel()
-			t.Fatalf("timed out waiting for item delete step %s", pauseStep)
-		}
 
-		go func() {
-			runReset(vf, fmt.Sprintf("idem_t8_df_del_reset_%d", idx), entry.ResetHook)
-			resetDoneCh <- struct{}{}
-		}()
+			awaitWorker(fmt.Sprintf("softDeleteItemInTx (%s)", pauseStep), delErrCh)
+			awaitWorker(fmt.Sprintf("reset after item delete (%s)", pauseStep), resetErrCh)
 
-		waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("reset waiting on LockUserContent while item delete paused at %s", pauseStep), func() bool {
-			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+			// Serial result (Item Delete -> Reset): item is soft-deleted (entry_count=0), tag.item_count=0, 0 entries in DB.
+			totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
+			if totalE != 0 {
+				t.Fatalf("entries after ItemDelete->Reset (step %s) = %d, want 0", pauseStep, totalE)
+			}
+			gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
+			if err != nil || !gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
+				t.Fatalf("item after ItemDelete->Reset (step %s) = (%+v, %v), want deleted with entry_count=0", pauseStep, gotItem, err)
+			}
+			gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
+			if err != nil || gotTag.ItemCount != 0 {
+				t.Fatalf("tag after ItemDelete->Reset (step %s) = (%+v, %v), want item_count=0", pauseStep, gotTag, err)
+			}
+			contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
+				t.Fatal(err)
+			}
 		})
-
-		closeRel()
-
-		if err := <-delErrCh; err != nil {
-			t.Fatalf("softDeleteItemInTx (step %s): %v", pauseStep, err)
-		}
-		select {
-		case <-resetDoneCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for reset")
-		}
-
-		// Serial result (Item Delete -> Reset): item is soft-deleted (entry_count=0), tag.item_count=0, 0 entries in DB.
-		totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
-		if totalE != 0 {
-			t.Fatalf("entries after ItemDelete->Reset (step %s) = %d, want 0", pauseStep, totalE)
-		}
-		gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
-		if err != nil || !gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
-			t.Fatalf("item after ItemDelete->Reset (step %s) = (%+v, %v), want deleted with entry_count=0", pauseStep, gotItem, err)
-		}
-		gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
-		if err != nil || gotTag.ItemCount != 0 {
-			t.Fatalf("tag after ItemDelete->Reset (step %s) = (%+v, %v), want item_count=0", pauseStep, gotTag, err)
-		}
-		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
-
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
-			t.Fatal(err)
-		}
 	}
 
 	// =========================================================================
@@ -1294,97 +1423,94 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 	//   then Reset hard-deletes all entries and zeroes item.entry_count = 0 while keeping the restored item live and tag.item_count = 1.
 	// 2A. Reset acquires LockUserContent first (testing barrier at every ResetHookStep) -> Item Restore waits on LockUserContent.
 	for idx, pauseStep := range resetSteps {
-		vf := createVaultForUser(t, h, jarA, byte(0x50+idx))
-		item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("ResetFirst-RestoreItem-%d", idx))
-		tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("rf-restore-tag-%d", idx))
-		assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
+		t.Run("ResetFirst_ItemRestore/"+string(pauseStep), func(t *testing.T) {
+			vf := createVaultForUser(t, h, jarA, byte(0x50+idx))
+			item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("ResetFirst-RestoreItem-%d", idx))
+			tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("rf-restore-tag-%d", idx))
+			assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
 
-		entryID := uuid.NewString()
-		sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry in deleted item"), seqBytes(vault.WrapNonceBytes, byte(0x60+idx)))
-		respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
-			makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
-			contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_rf_rest_seed_%d", idx)})
-		if respC.StatusCode != http.StatusCreated {
-			t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
-		}
-		if err := softDeleteItemInTx(ctx, h, meA.User.ID, item.ID, nil); err != nil {
-			t.Fatal(err)
-		}
+			entryID := uuid.NewString()
+			sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry in deleted item"), seqBytes(vault.WrapNonceBytes, byte(0x60+idx)))
+			respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
+				makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
+				contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_rf_rest_seed_%d", idx)})
+			if respC.StatusCode != http.StatusCreated {
+				t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
+			}
+			if err := softDeleteItemInTx(ctx, h, meA.User.ID, item.ID, nil); err != nil {
+				t.Fatal(err)
+			}
 
-		stepReached := make(chan struct{}, 1)
-		releaseStep := make(chan struct{})
-		var closeOnce sync.Once
-		closeRel := func() { closeOnce.Do(func() { close(releaseStep) }) }
+			wCtx, stepReached, releaseStep, closeRel, resetErrCh, restErrCh, awaitWorker := setupBarrierScenario(t)
 
-		hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
-			cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
-				if step == pauseStep {
-					stepReached <- struct{}{}
-					select {
-					case <-releaseStep:
-					case <-cbCtx.Done():
-						return cbCtx.Err()
+			hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
+				cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
+					if step == pauseStep {
+						select {
+						case stepReached <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releaseStep:
+						case <-cbCtx.Done():
+							return cbCtx.Err()
+						}
+						select {
+						case <-wCtx.Done():
+							return wCtx.Err()
+						default:
+						}
 					}
-				}
-				return nil
+					return nil
+				})
+				return entry.ResetHook(cbCtx, tx, uid)
+			}
+			grant := prepareReset(t, hook)
+
+			go func() {
+				resetErrCh <- runReset(wCtx, vf, fmt.Sprintf("idem_t8_rf_rest_reset_%d", idx), grant)
+			}()
+
+			select {
+			case <-stepReached:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for ResetHook step %s", pauseStep)
+			}
+
+			go func() {
+				restErrCh <- restoreItemInTx(wCtx, h, meA.User.ID, item.ID, nil)
+			}()
+
+			waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("item restore waiting on LockUserContent at reset step %s", pauseStep), func() bool {
+				return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
 			})
-			return entry.ResetHook(cbCtx, tx, uid)
-		}
 
-		resetDoneCh := make(chan struct{}, 1)
-		restErrCh := make(chan error, 1)
-
-		go func() {
-			runReset(vf, fmt.Sprintf("idem_t8_rf_rest_reset_%d", idx), hook)
-			resetDoneCh <- struct{}{}
-		}()
-
-		select {
-		case <-stepReached:
-		case <-time.After(10 * time.Second):
 			closeRel()
-			t.Fatalf("timed out waiting for ResetHook step %s", pauseStep)
-		}
 
-		go func() {
-			restErrCh <- restoreItemInTx(ctx, h, meA.User.ID, item.ID, nil)
-		}()
+			awaitWorker(fmt.Sprintf("reset (%s)", pauseStep), resetErrCh)
+			awaitWorker(fmt.Sprintf("restoreItemInTx after reset (%s)", pauseStep), restErrCh)
 
-		waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("item restore waiting on LockUserContent at reset step %s", pauseStep), func() bool {
-			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+			totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
+			if totalE != 0 {
+				t.Fatalf("entries after Reset->ItemRestore (step %s) = %d, want 0", pauseStep, totalE)
+			}
+			gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
+			if err != nil || gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
+				t.Fatalf("item after Reset->ItemRestore (step %s) = (%+v, %v), want live with entry_count=0", pauseStep, gotItem, err)
+			}
+			gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
+			if err != nil || gotTag.ItemCount != 1 {
+				t.Fatalf("tag after Reset->ItemRestore (step %s) = (%+v, %v), want item_count=1", pauseStep, gotTag, err)
+			}
+			contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
+				t.Fatal(err)
+			}
 		})
-
-		closeRel()
-
-		select {
-		case <-resetDoneCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for reset")
-		}
-		if err := <-restErrCh; err != nil {
-			t.Fatalf("restoreItemInTx after reset (step %s): %v", pauseStep, err)
-		}
-
-		totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
-		if totalE != 0 {
-			t.Fatalf("entries after Reset->ItemRestore (step %s) = %d, want 0", pauseStep, totalE)
-		}
-		gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
-		if err != nil || gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
-			t.Fatalf("item after Reset->ItemRestore (step %s) = (%+v, %v), want live with entry_count=0", pauseStep, gotItem, err)
-		}
-		gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
-		if err != nil || gotTag.ItemCount != 1 {
-			t.Fatalf("tag after Reset->ItemRestore (step %s) = (%+v, %v), want item_count=1", pauseStep, gotTag, err)
-		}
-		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
-
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
-			t.Fatal(err)
-		}
 	}
 
 	// 2B. Item Restore acquires LockUserContent first (testing barrier at every item-restore lock step) -> Reset waits on LockUserContent.
@@ -1394,87 +1520,84 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 		"after_tags_lock",
 	}
 	for idx, pauseStep := range itemRestoreSteps {
-		vf := createVaultForUser(t, h, jarA, byte(0x70+idx))
-		item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("RestoreFirst-Item-%d", idx))
-		tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("rf2-restore-tag-%d", idx))
-		assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
+		t.Run("ItemRestoreFirst/"+pauseStep, func(t *testing.T) {
+			vf := createVaultForUser(t, h, jarA, byte(0x70+idx))
+			item := insertTestItem(t, h, meA.User.ID, fmt.Sprintf("RestoreFirst-Item-%d", idx))
+			tag := insertTestTagForReset(t, ctx, q, meA.User.ID, fmt.Sprintf("rf2-restore-tag-%d", idx))
+			assignTestTagToLiveItem(t, ctx, q, h.Clock.Now(), meA.User.ID, item.ID, tag.ID)
 
-		entryID := uuid.NewString()
-		sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry in deleted item 2"), seqBytes(vault.WrapNonceBytes, byte(0x80+idx)))
-		respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
-			makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
-			contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_restf_seed_%d", idx)})
-		if respC.StatusCode != http.StatusCreated {
-			t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
-		}
-		if err := softDeleteItemInTx(ctx, h, meA.User.ID, item.ID, nil); err != nil {
-			t.Fatal(err)
-		}
+			entryID := uuid.NewString()
+			sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry in deleted item 2"), seqBytes(vault.WrapNonceBytes, byte(0x80+idx)))
+			respC, rawC := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+item.ID.String()+"/entries",
+				makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
+				contenttest.ReqOptions{IdemKey: fmt.Sprintf("idem_t8_restf_seed_%d", idx)})
+			if respC.StatusCode != http.StatusCreated {
+				t.Fatalf("seed entry = %d %s", respC.StatusCode, rawC)
+			}
+			if err := softDeleteItemInTx(ctx, h, meA.User.ID, item.ID, nil); err != nil {
+				t.Fatal(err)
+			}
 
-		stepReached := make(chan struct{}, 1)
-		releaseStep := make(chan struct{})
-		var closeOnce sync.Once
-		closeRel := func() { closeOnce.Do(func() { close(releaseStep) }) }
+			wCtx, stepReached, releaseStep, closeRel, restErrCh, resetErrCh, awaitWorker := setupBarrierScenario(t)
+			grant := prepareReset(t, entry.ResetHook)
 
-		restErrCh := make(chan error, 1)
-		resetDoneCh := make(chan struct{}, 1)
+			go func() {
+				restErrCh <- restoreItemInTx(wCtx, h, meA.User.ID, item.ID, func(sCtx context.Context, step string) error {
+					if step == pauseStep {
+						select {
+						case stepReached <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releaseStep:
+						case <-sCtx.Done():
+							return sCtx.Err()
+						}
+					}
+					return nil
+				})
+			}()
 
-		go func() {
-			restErrCh <- restoreItemInTx(ctx, h, meA.User.ID, item.ID, func(step string) {
-				if step == pauseStep {
-					stepReached <- struct{}{}
-					<-releaseStep
-				}
+			select {
+			case <-stepReached:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for item restore step %s", pauseStep)
+			}
+
+			go func() {
+				resetErrCh <- runReset(wCtx, vf, fmt.Sprintf("idem_t8_restf_reset_%d", idx), grant)
+			}()
+
+			waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("reset waiting on LockUserContent while item restore paused at %s", pauseStep), func() bool {
+				return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
 			})
-		}()
 
-		select {
-		case <-stepReached:
-		case <-time.After(10 * time.Second):
 			closeRel()
-			t.Fatalf("timed out waiting for item restore step %s", pauseStep)
-		}
 
-		go func() {
-			runReset(vf, fmt.Sprintf("idem_t8_restf_reset_%d", idx), entry.ResetHook)
-			resetDoneCh <- struct{}{}
-		}()
+			awaitWorker(fmt.Sprintf("restoreItemInTx (%s)", pauseStep), restErrCh)
+			awaitWorker(fmt.Sprintf("reset after item restore (%s)", pauseStep), resetErrCh)
 
-		waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("reset waiting on LockUserContent while item restore paused at %s", pauseStep), func() bool {
-			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+			totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
+			if totalE != 0 {
+				t.Fatalf("entries after ItemRestore->Reset (step %s) = %d, want 0", pauseStep, totalE)
+			}
+			gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
+			if err != nil || gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
+				t.Fatalf("item after ItemRestore->Reset (step %s) = (%+v, %v), want live with entry_count=0", pauseStep, gotItem, err)
+			}
+			gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
+			if err != nil || gotTag.ItemCount != 1 {
+				t.Fatalf("tag after ItemRestore->Reset (step %s) = (%+v, %v), want item_count=1", pauseStep, gotTag, err)
+			}
+			contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
+				t.Fatal(err)
+			}
 		})
-
-		closeRel()
-
-		if err := <-restErrCh; err != nil {
-			t.Fatalf("restoreItemInTx (step %s): %v", pauseStep, err)
-		}
-		select {
-		case <-resetDoneCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for reset")
-		}
-
-		totalE, _, _ := countEntriesForUser(t, ctx, h, meA.User.ID)
-		if totalE != 0 {
-			t.Fatalf("entries after ItemRestore->Reset (step %s) = %d, want 0", pauseStep, totalE)
-		}
-		gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{UserID: meA.User.ID, ID: item.ID})
-		if err != nil || gotItem.DeletedAt.Valid || gotItem.EntryCount != 0 {
-			t.Fatalf("item after ItemRestore->Reset (step %s) = (%+v, %v), want live with entry_count=0", pauseStep, gotItem, err)
-		}
-		gotTag, err := q.GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{UserID: meA.User.ID, ID: tag.ID})
-		if err != nil || gotTag.ItemCount != 1 {
-			t.Fatalf("tag after ItemRestore->Reset (step %s) = (%+v, %v), want item_count=1", pauseStep, gotTag, err)
-		}
-		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
-
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := h.Pool.Exec(ctx, `DELETE FROM tag WHERE id = $1`, tag.ID); err != nil {
-			t.Fatal(err)
-		}
 	}
 
 	// =========================================================================
@@ -1605,65 +1728,62 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 
 	// 3A. Reset acquires LockUserContent first (at each ResetHookStep) -> PurgeExpiredContent waits on LockUserContent.
 	for idx, pauseStep := range resetSteps {
-		vf := createVaultForUser(t, h, jarA, byte(0x90+idx*8))
-		liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID, cutoff := seedPurgeRaceFixture(byte(0x90+idx*8), vf)
+		t.Run("ResetFirst_Purge/"+string(pauseStep), func(t *testing.T) {
+			vf := createVaultForUser(t, h, jarA, byte(0x90+idx*8))
+			liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID, cutoff := seedPurgeRaceFixture(byte(0x90+idx*8), vf)
 
-		stepReached := make(chan struct{}, 1)
-		releaseStep := make(chan struct{})
-		var closeOnce sync.Once
-		closeRel := func() { closeOnce.Do(func() { close(releaseStep) }) }
+			wCtx, stepReached, releaseStep, closeRel, resetErrCh, purgeErrCh, awaitWorker := setupBarrierScenario(t)
 
-		hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
-			cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
-				if step == pauseStep {
-					stepReached <- struct{}{}
-					select {
-					case <-releaseStep:
-					case <-cbCtx.Done():
-						return cbCtx.Err()
+			hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
+				cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
+					if step == pauseStep {
+						select {
+						case stepReached <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releaseStep:
+						case <-cbCtx.Done():
+							return cbCtx.Err()
+						}
+						select {
+						case <-wCtx.Done():
+							return wCtx.Err()
+						default:
+						}
 					}
-				}
-				return nil
+					return nil
+				})
+				return entry.ResetHook(cbCtx, tx, uid)
+			}
+			grant := prepareReset(t, hook)
+
+			go func() {
+				resetErrCh <- runReset(wCtx, vf, fmt.Sprintf("idem_t8_rf_purge_reset_%d", idx), grant)
+			}()
+
+			select {
+			case <-stepReached:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for ResetHook step %s", pauseStep)
+			}
+
+			go func() {
+				_, err := entry.PurgeExpiredContent(wCtx, h.Pool, cutoff)
+				purgeErrCh <- err
+			}()
+
+			waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("PurgeExpiredContent waiting on LockUserContent at reset step %s", pauseStep), func() bool {
+				return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
 			})
-			return entry.ResetHook(cbCtx, tx, uid)
-		}
 
-		resetDoneCh := make(chan struct{}, 1)
-		purgeErrCh := make(chan error, 1)
-
-		go func() {
-			runReset(vf, fmt.Sprintf("idem_t8_rf_purge_reset_%d", idx), hook)
-			resetDoneCh <- struct{}{}
-		}()
-
-		select {
-		case <-stepReached:
-		case <-time.After(10 * time.Second):
 			closeRel()
-			t.Fatalf("timed out waiting for ResetHook step %s", pauseStep)
-		}
 
-		go func() {
-			_, err := entry.PurgeExpiredContent(ctx, h.Pool, cutoff)
-			purgeErrCh <- err
-		}()
+			awaitWorker(fmt.Sprintf("reset (%s)", pauseStep), resetErrCh)
+			awaitWorker(fmt.Sprintf("PurgeExpiredContent after reset (%s)", pauseStep), purgeErrCh)
 
-		waitForPgLocksCondition(t, 10*time.Second, fmt.Sprintf("PurgeExpiredContent waiting on LockUserContent at reset step %s", pauseStep), func() bool {
-			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+			assertPostResetAndPurgeState(fmt.Sprintf("Reset->Purge(%s)", pauseStep), liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID)
 		})
-
-		closeRel()
-
-		select {
-		case <-resetDoneCh:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for reset")
-		}
-		if err := <-purgeErrCh; err != nil {
-			t.Fatalf("PurgeExpiredContent after reset (step %s): %v", pauseStep, err)
-		}
-
-		assertPostResetAndPurgeState(fmt.Sprintf("Reset->Purge(%s)", pauseStep), liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID)
 	}
 
 	// 3B. PurgeExpiredContent acquires LockUserContent first (at each purge lock step:
@@ -1682,16 +1802,14 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 			liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID, cutoff := seedPurgeRaceFixture(seed, vf)
 			var observedPurgeSteps []entry.PurgeBatchStep
 			var stepMu sync.Mutex
-			purgeEntered := make(chan struct{}, 1)
-			releasePurge := make(chan struct{})
-			var closeOnce sync.Once
-			closeRel := func() { closeOnce.Do(func() { close(releasePurge) }) }
-			t.Cleanup(closeRel)
+
+			wCtx, purgeEntered, releasePurge, closeRel, purgeErrCh, resetErrCh, awaitWorker := setupBarrierScenario(t)
+			grant := prepareReset(t, entry.ResetHook)
 
 			var purgeCtx context.Context
 			if pauseStep == entry.PurgeBatchStepAfterUserContentLock {
 				// Preserve explicit WithPurgeLockHeldHook coverage at the content-lock boundary while also recording PurgeBatchSteps.
-				baseCtx := entry.WithPurgeLockHeldHook(ctx, func(pCtx context.Context, uid uuid.UUID) {
+				baseCtx := entry.WithPurgeLockHeldHook(wCtx, func(pCtx context.Context, uid uuid.UUID) {
 					if uid != meA.User.ID {
 						return
 					}
@@ -1704,8 +1822,11 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 					case <-pCtx.Done():
 					}
 				})
-				purgeCtx = entry.WithPurgeBatchStepCallback(baseCtx, func(_ context.Context, uid uuid.UUID, step entry.PurgeBatchStep) error {
+				purgeCtx = entry.WithPurgeBatchStepCallback(baseCtx, func(pCtx context.Context, uid uuid.UUID, step entry.PurgeBatchStep) error {
 					if uid == meA.User.ID {
+						if err := pCtx.Err(); err != nil {
+							return err
+						}
 						stepMu.Lock()
 						observedPurgeSteps = append(observedPurgeSteps, step)
 						stepMu.Unlock()
@@ -1713,7 +1834,7 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 					return nil
 				})
 			} else {
-				purgeCtx = entry.WithPurgeBatchStepCallback(ctx, func(pCtx context.Context, uid uuid.UUID, step entry.PurgeBatchStep) error {
+				purgeCtx = entry.WithPurgeBatchStepCallback(wCtx, func(pCtx context.Context, uid uuid.UUID, step entry.PurgeBatchStep) error {
 					if uid != meA.User.ID {
 						return nil
 					}
@@ -1735,8 +1856,7 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 				})
 			}
 
-			purgeErrCh := make(chan error, 1)
-			resetDoneCh := make(chan struct{}, 1)
+			resetDoneCh := make(chan struct{})
 
 			go func() {
 				_, err := entry.PurgeExpiredContent(purgeCtx, h.Pool, cutoff)
@@ -1746,12 +1866,11 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 			select {
 			case <-purgeEntered:
 			case <-time.After(10 * time.Second):
-				closeRel()
 				t.Fatalf("timed out waiting for PurgeExpiredContent to reach step %s", pauseStep)
 			}
 
 			go func() {
-				runReset(vf, fmt.Sprintf("idem_t8_purgef_reset_%d", idx), entry.ResetHook)
+				resetErrCh <- runReset(wCtx, vf, fmt.Sprintf("idem_t8_purgef_reset_%d", idx), grant)
 				close(resetDoneCh)
 			}()
 
@@ -1808,14 +1927,8 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 
 			closeRel()
 
-			if err := <-purgeErrCh; err != nil {
-				t.Fatalf("PurgeExpiredContent (%s): %v", pauseStep, err)
-			}
-			select {
-			case <-resetDoneCh:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("timed out waiting for reset after purge (%s)", pauseStep)
-			}
+			awaitWorker(fmt.Sprintf("PurgeExpiredContent (%s)", pauseStep), purgeErrCh)
+			awaitWorker(fmt.Sprintf("reset after purge (%s)", pauseStep), resetErrCh)
 
 			stepMu.Lock()
 			gotSteps := slices.Clone(observedPurgeSteps)
@@ -1826,6 +1939,79 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 
 			assertPostResetAndPurgeState(fmt.Sprintf("Purge(%s)->Reset", pauseStep), liveItemID, expItemLowID, expItemHighID, liveTagID, expTagLowID, expTagHighID)
 		})
+	}
+
+	// 4. Verify EA8-R1-3 cleanup invariant: when an error occurs while a worker is parked on a barrier
+	//    (after stepReached, before manual closeRel), the subtest t.Cleanup registered by setupBarrierScenario
+	//    releases the barrier channel, cancels worker contexts, and joins both worker goroutines before
+	//    httptest.Server.Close runs.
+	var cleanupVerifyResetErrCh, cleanupVerifyDelErrCh chan error
+	t.Run("BarrierErrorCleanupReleasesAndJoinsWorkers", func(t *testing.T) {
+		vf := createVaultForUser(t, h, jarA, 0xF8)
+		item := insertTestItem(t, h, meA.User.ID, "CleanupVerify-Item")
+		t.Cleanup(func() {
+			_, _ = h.Pool.Exec(ctx, `DELETE FROM item WHERE id = $1`, item.ID)
+		})
+
+		wCtx, stepReached, releaseStep, _, resetErrCh, delErrCh, _ := setupBarrierScenario(t)
+		cleanupVerifyResetErrCh = resetErrCh
+		cleanupVerifyDelErrCh = delErrCh
+
+		hook := func(hCtx context.Context, tx pgx.Tx, uid uuid.UUID) error {
+			cbCtx := entry.WithResetHookStepCallback(hCtx, func(cbCtx context.Context, _ uuid.UUID, step entry.ResetHookStep) error {
+				if step == entry.ResetHookStepAfterUserContentLock {
+					select {
+					case stepReached <- struct{}{}:
+					default:
+					}
+					select {
+					case <-releaseStep:
+					case <-cbCtx.Done():
+						return cbCtx.Err()
+					}
+					select {
+					case <-wCtx.Done():
+						return wCtx.Err()
+					default:
+					}
+				}
+				return nil
+			})
+			return entry.ResetHook(cbCtx, tx, uid)
+		}
+		grant := prepareReset(t, hook)
+
+		go func() {
+			resetErrCh <- runReset(wCtx, vf, "idem_t8_cleanup_verify_reset", grant)
+		}()
+
+		select {
+		case <-stepReached:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for ResetHook step in BarrierErrorCleanupReleasesAndJoinsWorkers")
+		}
+
+		go func() {
+			delErrCh <- softDeleteItemInTx(wCtx, h, meA.User.ID, item.ID, nil)
+		}()
+
+		waitForPgLocksCondition(t, 10*time.Second, "item delete waiting on LockUserContent in cleanup verification", func() bool {
+			return hasAdvisoryContentLockWaiter(ctx, h, meA.User.ID)
+		})
+
+		// Return from the subtest WITHOUT calling closeRel() or awaitWorker():
+		// setupBarrierScenario's registered t.Cleanup must release releaseStep, cancel wCtx,
+		// and drain both resetErrCh and delErrCh promptly without hanging server shutdown.
+	})
+	select {
+	case err := <-cleanupVerifyResetErrCh:
+		t.Fatalf("expected setupBarrierScenario t.Cleanup to have already drained resetErrCh, got residual %v", err)
+	default:
+	}
+	select {
+	case err := <-cleanupVerifyDelErrCh:
+		t.Fatalf("expected setupBarrierScenario t.Cleanup to have already drained delErrCh, got residual %v", err)
+	default:
 	}
 }
 
