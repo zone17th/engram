@@ -1,11 +1,14 @@
 package taghttp_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,8 +17,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/item"
 	"github.com/zone17th/engram/apps/api/internal/tag"
 	"github.com/zone17th/engram/apps/api/internal/tag/taghttp"
@@ -86,6 +91,169 @@ func assertNoPlaintextInLogs(t testing.TB, logs *contenttest.SafeBuffer, forbidd
 	}
 }
 
+func assertUUIDSliceEqual(t testing.TB, label string, got, want []uuid.UUID) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s IDs = %v, want %v", label, got, want)
+	}
+}
+
+// asyncReqResult chứa kết quả của một HTTP request bất đồng bộ (IT5-R1-4).
+// Không bao giờ gọi `t.Fatal` từ goroutine con; mọi lỗi được đẩy qua channel về goroutine cha.
+type asyncReqResult struct {
+	resp contenttest.TestResponse
+	body string
+	err  error
+}
+
+// asyncGroup quản lý các HTTP request bất đồng bộ trong một test với context deadline trên từng
+// request, huỷ context và `wg.Wait()` trong `t.Cleanup` trước khi `h.Server.Close` chạy (IT5-R1-4).
+type asyncGroup struct {
+	h      *contenttest.Harness
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+func newAsyncGroup(t testing.TB, h *contenttest.Harness) *asyncGroup {
+	ctx, cancel := context.WithCancel(context.Background())
+	g := &asyncGroup{
+		h:      h,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	t.Cleanup(func() {
+		cancel()
+		g.wg.Wait()
+	})
+	return g
+}
+
+func cloneCookieJar(j contenttest.CookieJar) contenttest.CookieJar {
+	if j == nil {
+		return nil
+	}
+	cp := make(contenttest.CookieJar, len(j))
+	for k, c := range j {
+		if c != nil {
+			cCopy := *c
+			cp[k] = &cCopy
+		}
+	}
+	return cp
+}
+
+func doReqNonFatal(
+	parentCtx context.Context,
+	h *contenttest.Harness,
+	j contenttest.CookieJar,
+	method, path, body string,
+	opt contenttest.ReqOptions,
+) asyncReqResult {
+	reqCtx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
+	defer cancel()
+
+	var rdr io.Reader
+	switch {
+	case opt.BodyReader != nil:
+		rdr = opt.BodyReader
+	case opt.Chunked:
+		rdr = io.NopCloser(struct{ io.Reader }{Reader: bytes.NewBufferString(body)})
+	case body != "":
+		rdr = bytes.NewBufferString(body)
+	}
+
+	req, err := http.NewRequestWithContext(reqCtx, method, h.Server.URL+path, rdr)
+	if err != nil {
+		return asyncReqResult{err: err}
+	}
+	if opt.Chunked || opt.BodyReader != nil {
+		req.ContentLength = -1
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		if opt.ContentType != "" {
+			req.Header.Set("Content-Type", opt.ContentType)
+		} else if body != "" || opt.BodyReader != nil || method != http.MethodDelete {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Origin", h.Origin)
+	}
+	if j != nil {
+		j.Apply(req)
+	}
+	if !opt.NoCSRF && j != nil {
+		if c := j[authhttp.CookieCSRF]; c != nil {
+			req.Header.Set(authhttp.HeaderCSRF, c.Value)
+		}
+	}
+	if opt.IdemKey != "" {
+		req.Header.Set(httpx.HeaderIdempotencyKey, opt.IdemKey)
+	}
+	if opt.IfMatch != "" {
+		req.Header.Set(httpx.HeaderIfMatch, opt.IfMatch)
+	}
+	if opt.Grant != "" {
+		req.Header.Set(authhttp.HeaderReauth, opt.Grant)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return asyncReqResult{err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return asyncReqResult{err: err}
+	}
+	return asyncReqResult{
+		resp: contenttest.TestResponse{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+		},
+		body: string(b),
+	}
+}
+
+func (g *asyncGroup) startReq(
+	jar contenttest.CookieJar,
+	method, path, body string,
+	opt contenttest.ReqOptions,
+) <-chan asyncReqResult {
+	if method != http.MethodGet && method != http.MethodHead && opt.IdemKey == "" {
+		opt.IdemKey = newIdemKey()
+	}
+	jarCopy := cloneCookieJar(jar)
+	ch := make(chan asyncReqResult, 1)
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		ch <- doReqNonFatal(g.ctx, g.h, jarCopy, method, path, body, opt)
+	}()
+	return ch
+}
+
+func (g *asyncGroup) startWrite(
+	jar contenttest.CookieJar,
+	method, path, body string,
+) <-chan asyncReqResult {
+	return g.startReq(jar, method, path, body, contenttest.ReqOptions{
+		IdemKey: newIdemKey(),
+	})
+}
+
+func awaitAsyncResult(t testing.TB, label string, ch <-chan asyncReqResult) asyncReqResult {
+	t.Helper()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatalf("%s request failed: %v", label, res.err)
+		}
+		return res
+	case <-time.After(15 * time.Second):
+		t.Fatalf("timed out waiting for async request %s", label)
+		return asyncReqResult{}
+	}
+}
 func awaitUserContentLockWaiter(t testing.TB, h *contenttest.Harness, userID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
@@ -162,6 +330,7 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 	}
 
 	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	async := newAsyncGroup(t, h)
 	t.Cleanup(func() {
 		setBarrier(0)
 	})
@@ -238,21 +407,45 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 		t.Fatalf("POST /tags unknown field: status=%d body=%s, want 400 invalid_request", rUnknown.StatusCode, bUnknown)
 	}
 
+	// 1b. IT5-R1-1: từ chối `display:null` tường minh (`400 invalid_request`), từ chối byte UTF-8
+	// không hợp lệ (`0xff`) trong `display` (`400 tag_display_invalid`, không ghi DB), nhưng chấp nhận
+	// ký tự U+FFFD hợp lệ (`\xef\xbf\xbd`).
+	advanceRateLimitWindow(h)
+	ctx := context.Background()
+	countUserATags := func() int {
+		var n int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*)::int FROM tag WHERE user_id = $1`, userA.User.ID).Scan(&n); err != nil {
+			t.Fatalf("count userA tags: %v", err)
+		}
+		return n
+	}
+	beforeTagCount := countUserATags()
+
+	rNullDisp, bNullDisp := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":null}`)
+	if rNullDisp.StatusCode != http.StatusBadRequest || contenttest.DecodeProblem(t, bNullDisp).Code != "invalid_request" {
+		t.Fatalf("POST /tags {display:null}: status=%d body=%s, want 400 invalid_request", rNullDisp.StatusCode, bNullDisp)
+	}
+	rBadUTF8Post, bBadUTF8Post := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", "{\"display\":\"bad\xfftag\"}")
+	if rBadUTF8Post.StatusCode != http.StatusBadRequest || contenttest.DecodeProblem(t, bBadUTF8Post).Code != "tag_display_invalid" {
+		t.Fatalf("POST /tags raw 0xff in display: status=%d body=%s, want 400 tag_display_invalid", rBadUTF8Post.StatusCode, bBadUTF8Post)
+	}
+	if got := countUserATags(); got != beforeTagCount {
+		t.Fatalf("rejected POST /tags (null / raw 0xff) must not create rows: count=%d, want %d", got, beforeTagCount)
+	}
+
+	validFFFDTagDisplay := "Thẻ hợp lệ \xef\xbf\xbd kiểm chứng"
+	rFFFDPost, bFFFDPost := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":"`+validFFFDTagDisplay+`"}`)
+	if rFFFDPost.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /tags valid U+FFFD status = %d, want 201 (body=%s)", rFFFDPost.StatusCode, bFFFDPost)
+	}
+	if gotFFFD := decodeTag(t, bFFFDPost); gotFFFD.Display != validFFFDTagDisplay {
+		t.Fatalf("POST /tags valid U+FFFD display = %q, want %q", gotFFFD.Display, validFFFDTagDisplay)
+	}
 	advanceRateLimitWindow(h)
 
 	// 2. Hai upsert song song cùng normalized chỉ tạo một hàng (barrier giữa hai bước của upsert #1).
 	bPar := setBarrier(1)
-	type reqRes struct {
-		resp contenttest.TestResponse
-		body string
-	}
-	chPar1 := make(chan reqRes, 1)
-	chPar2 := make(chan reqRes, 1)
-
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":"Song Song"}`)
-		chPar1 <- reqRes{resp: resp, body: body}
-	}()
+	chPar1 := async.startWrite(jarA, http.MethodPost, "/api/v1/tags", `{"display":"Song Song"}`)
 
 	select {
 	case <-bPar.enteredCh:
@@ -260,16 +453,13 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 		t.Fatal("timed out waiting for parallel upsert #1 to reach OnBetweenUpsertSteps barrier")
 	}
 
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":"  SONG SONG! "}`)
-		chPar2 <- reqRes{resp: resp, body: body}
-	}()
+	chPar2 := async.startWrite(jarA, http.MethodPost, "/api/v1/tags", `{"display":"  SONG SONG! "}`)
 
 	awaitUserContentLockWaiter(t, h, userA.User.ID)
 	setBarrier(0)
 
-	resPar1 := <-chPar1
-	resPar2 := <-chPar2
+	resPar1 := awaitAsyncResult(t, "parallel upsert #1", chPar1)
+	resPar2 := awaitAsyncResult(t, "parallel upsert #2", chPar2)
 	if resPar1.resp.StatusCode != http.StatusCreated || resPar2.resp.StatusCode != http.StatusOK {
 		t.Fatalf("parallel upserts: req1=%d (%s) req2=%d (%s), want 201 and 200",
 			resPar1.resp.StatusCode, resPar1.body, resPar2.resp.StatusCode, resPar2.body)
@@ -281,7 +471,7 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 	}
 
 	var countSongSong int
-	if err := h.Pool.QueryRow(context.Background(),
+	if err := h.Pool.QueryRow(ctx,
 		`SELECT count(*) FROM tag WHERE user_id = $1 AND normalized = 'song song'`,
 		userA.User.ID,
 	).Scan(&countSongSong); err != nil {
@@ -295,15 +485,10 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 
 	// 3. P4BE1-6 (a): Upsert đang ở barrier giữa bước SELECT (đã thấy `tPar1`) và trả về,
 	// trong khi `PATCH /tags/{id}` (rename) chạy song song -> PATCH phải đợi `LockUserContent`
-	// trên `pg_locks`, không thể xen vào giữa hai bước của upsert; cả hai trả kết quả hợp lệ.
+	// trên `pg_locks`, không thể xen vào giữa hai bước của upsert; cả hai trả kết quả hợp lệ
+	// với đúng ID và display tương ứng tại từng điểm tuần tự hoá (IT5-R1-3).
 	bRaceA := setBarrier(2)
-	chUpsertRace := make(chan reqRes, 1)
-	chRenameRace := make(chan reqRes, 1)
-
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":"song song"}`)
-		chUpsertRace <- reqRes{resp: resp, body: body}
-	}()
+	chUpsertRace := async.startWrite(jarA, http.MethodPost, "/api/v1/tags", `{"display":"song song"}`)
 
 	select {
 	case <-bRaceA.enteredCh:
@@ -311,32 +496,81 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 		t.Fatal("timed out waiting for upsert in P4BE1-6(a) to enter barrier")
 	}
 
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPatch, "/api/v1/tags/"+tPar1.ID.String(), `{"display":"Đã Đổi Tên"}`)
-		chRenameRace <- reqRes{resp: resp, body: body}
-	}()
+	chRenameRace := async.startWrite(jarA, http.MethodPatch, "/api/v1/tags/"+tPar1.ID.String(), `{"display":"Đã Đổi Tên"}`)
 
 	awaitUserContentLockWaiter(t, h, userA.User.ID)
 	setBarrier(0)
 
-	resUpsertRace := <-chUpsertRace
-	resRenameRace := <-chRenameRace
+	resUpsertRace := awaitAsyncResult(t, "P4BE1-6(a) upsert", chUpsertRace)
+	resRenameRace := awaitAsyncResult(t, "P4BE1-6(a) rename", chRenameRace)
 	if resUpsertRace.resp.StatusCode != http.StatusOK || resRenameRace.resp.StatusCode != http.StatusOK {
 		t.Fatalf("P4BE1-6(a) statuses: upsert=%d (%s) rename=%d (%s), want 200 and 200",
 			resUpsertRace.resp.StatusCode, resUpsertRace.body, resRenameRace.resp.StatusCode, resRenameRace.body)
 	}
+	gotUpsertRaceTag := decodeTag(t, resUpsertRace.body)
+	gotRenameRaceTag := decodeTag(t, resRenameRace.body)
+	if gotUpsertRaceTag.ID != tPar1.ID || gotUpsertRaceTag.Display != "Song Song" {
+		t.Fatalf("P4BE1-6(a) upsert response = %+v, want id=%s display='Song Song'", gotUpsertRaceTag, tPar1.ID)
+	}
+	if gotRenameRaceTag.ID != tPar1.ID || gotRenameRaceTag.Display != "Đã Đổi Tên" {
+		t.Fatalf("P4BE1-6(a) rename response = %+v, want id=%s display='Đã Đổi Tên'", gotRenameRaceTag, tPar1.ID)
+	}
 
-	// 4. P4BE1-6 (b): `DELETE /tags/{id}` giữ `LockUserContent` trong khi `POST /tags` (cùng normalized
-	// `"đã đổi tên"`) chạy song song -> sau khi DELETE xong, `POST /tags` tạo tag sống mới (201),
-	// không bao giờ trả về tag đã xoá hay 500.
+	// 4. P4BE1-6 (b1 — upsert-first, IT5-R1-3): Upsert cho `"đã đổi tên"` đang dừng ở
+	// `OnBetweenUpsertSteps` (giữa bước SELECT và bước trả về) trong khi `DELETE /tags/{id}`
+	// xếp hàng chờ `LockUserContent` trên `pg_locks`. Khi nhả barrier:
+	//   - Upsert hoàn tất trước điểm tuần tự hoá với `200 OK` và trả đúng tag đang sống lúc đó (`tPar1`, `"Đã Đổi Tên"`).
+	//   - DELETE hoàn tất ngay sau đó với `204 No Content`, chuyển `tPar1` sang trạng thái đã xoá mềm trong DB.
+	bRaceBUpsertFirst := setBarrier(2)
+	chUpsertBeforeDel := async.startWrite(jarA, http.MethodPost, "/api/v1/tags", `{"display":"ĐÃ ĐỔI TÊN"}`)
+
+	select {
+	case <-bRaceBUpsertFirst.enteredCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for upsert in P4BE1-6(b1) to enter OnBetweenUpsertSteps barrier")
+	}
+
+	chDelWaitingOnUpsert := async.startWrite(jarA, http.MethodDelete, "/api/v1/tags/"+tPar1.ID.String(), "")
+
+	awaitUserContentLockWaiter(t, h, userA.User.ID)
+	setBarrier(0)
+
+	resUpsertBeforeDel := awaitAsyncResult(t, "P4BE1-6(b1) upsert-first", chUpsertBeforeDel)
+	resDelWaiting := awaitAsyncResult(t, "P4BE1-6(b1) delete-after-upsert", chDelWaitingOnUpsert)
+	if resUpsertBeforeDel.resp.StatusCode != http.StatusOK {
+		t.Fatalf("P4BE1-6(b1) upsert status = %d (%s), want 200", resUpsertBeforeDel.resp.StatusCode, resUpsertBeforeDel.body)
+	}
+	gotUpsertBeforeDelTag := decodeTag(t, resUpsertBeforeDel.body)
+	if gotUpsertBeforeDelTag.ID != tPar1.ID || gotUpsertBeforeDelTag.Display != "Đã Đổi Tên" {
+		t.Fatalf("P4BE1-6(b1) upsert tag = %+v, want id=%s display='Đã Đổi Tên'", gotUpsertBeforeDelTag, tPar1.ID)
+	}
+	if resDelWaiting.resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("P4BE1-6(b1) delete status = %d (%s), want 204", resDelWaiting.resp.StatusCode, resDelWaiting.body)
+	}
+	tPar1AfterB1, err := gen.New(h.Pool).GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{
+		UserID: userA.User.ID,
+		ID:     tPar1.ID,
+	})
+	if err != nil {
+		t.Fatalf("P4BE1-6(b1) GetTagByUserAndID: %v", err)
+	}
+	if !tPar1AfterB1.DeletedAt.Valid {
+		t.Fatalf("P4BE1-6(b1) expected tag %s to be soft-deleted after queued DELETE committed", tPar1.ID)
+	}
+
+	advanceRateLimitWindow(h)
+
+	// Khôi phục `tPar1` để kiểm tra tiếp kịch bản P4BE1-6 (b2 — delete-first).
+	rRestForB2, bRestForB2 := doWrite(h, jarA, http.MethodPost, "/api/v1/tags/"+tPar1.ID.String()+"/restore", `{}`)
+	if rRestForB2.StatusCode != http.StatusOK {
+		t.Fatalf("restore tPar1 before P4BE1-6(b2): status=%d body=%s", rRestForB2.StatusCode, bRestForB2)
+	}
+
+	// 4b. P4BE1-6 (b2 — delete-first): `DELETE /tags/{id}` giữ `LockUserContent` trong khi `POST /tags`
+	// (cùng normalized `"đã đổi tên"`) chạy song song -> sau khi DELETE xong, `POST /tags` tạo tag sống mới (201),
+	// không bao giờ trả về tag đã xoá hay 500, và ID trả về đúng là hàng sống hiện tại của `(user_id, normalized)` (IT5-R1-3).
 	bRaceB := setBarrier(3)
-	chDelRace := make(chan reqRes, 1)
-	chUpsertAfterDel := make(chan reqRes, 1)
-
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodDelete, "/api/v1/tags/"+tPar1.ID.String(), "")
-		chDelRace <- reqRes{resp: resp, body: body}
-	}()
+	chDelRace := async.startWrite(jarA, http.MethodDelete, "/api/v1/tags/"+tPar1.ID.String(), "")
 
 	select {
 	case <-bRaceB.enteredCh:
@@ -344,25 +578,32 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 		t.Fatal("timed out waiting for DELETE /tags/{id} to enter LockUserContent barrier")
 	}
 
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":"Đã Đổi Tên"}`)
-		chUpsertAfterDel <- reqRes{resp: resp, body: body}
-	}()
+	chUpsertAfterDel := async.startWrite(jarA, http.MethodPost, "/api/v1/tags", `{"display":"Đã Đổi Tên"}`)
 
 	awaitUserContentLockWaiter(t, h, userA.User.ID)
 	setBarrier(0)
 
-	resDelRace := <-chDelRace
-	resUpsertAfterDel := <-chUpsertAfterDel
+	resDelRace := awaitAsyncResult(t, "P4BE1-6(b2) delete-first", chDelRace)
+	resUpsertAfterDel := awaitAsyncResult(t, "P4BE1-6(b2) upsert-after-delete", chUpsertAfterDel)
 	if resDelRace.resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("P4BE1-6(b) delete status = %d (%s), want 204", resDelRace.resp.StatusCode, resDelRace.body)
+		t.Fatalf("P4BE1-6(b2) delete status = %d (%s), want 204", resDelRace.resp.StatusCode, resDelRace.body)
 	}
 	if resUpsertAfterDel.resp.StatusCode != http.StatusCreated {
-		t.Fatalf("P4BE1-6(b) upsert status = %d (%s), want 201 new live tag", resUpsertAfterDel.resp.StatusCode, resUpsertAfterDel.body)
+		t.Fatalf("P4BE1-6(b2) upsert status = %d (%s), want 201 new live tag", resUpsertAfterDel.resp.StatusCode, resUpsertAfterDel.body)
 	}
 	newLiveTag := decodeTag(t, resUpsertAfterDel.body)
-	if newLiveTag.ID == tPar1.ID {
-		t.Fatalf("P4BE1-6(b) upsert returned soft-deleted tag ID %s", tPar1.ID)
+	if newLiveTag.ID == tPar1.ID || newLiveTag.Display != "Đã Đổi Tên" {
+		t.Fatalf("P4BE1-6(b2) upsert returned unexpected tag %+v (deleted id=%s)", newLiveTag, tPar1.ID)
+	}
+	liveRowAfterB2, err := gen.New(h.Pool).GetLiveTagByUserAndNormalized(ctx, gen.GetLiveTagByUserAndNormalizedParams{
+		UserID:     userA.User.ID,
+		Normalized: "đã đổi tên",
+	})
+	if err != nil {
+		t.Fatalf("P4BE1-6(b2) GetLiveTagByUserAndNormalized: %v", err)
+	}
+	if liveRowAfterB2.ID != newLiveTag.ID || liveRowAfterB2.Display != "Đã Đổi Tên" || liveRowAfterB2.DeletedAt.Valid {
+		t.Fatalf("P4BE1-6(b2) live DB row = %+v, want id=%s display='Đã Đổi Tên' live", liveRowAfterB2, newLiveTag.ID)
 	}
 
 	advanceRateLimitWindow(h)
@@ -372,22 +613,15 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 	// trả `200 OK` với đúng tag sống đã chèn.
 	b23505 := setBarrier(4)
 	idem23505 := newIdemKey()
-	ch23505 := make(chan reqRes, 1)
-
-	go func() {
-		resp, body := h.DoReq(jarA, http.MethodPost, "/api/v1/tags", `{"display":"SafetyNetTag"}`, contenttest.ReqOptions{
-			IdemKey: idem23505,
-		})
-		ch23505 <- reqRes{resp: resp, body: body}
-	}()
+	ch23505 := async.startReq(jarA, http.MethodPost, "/api/v1/tags", `{"display":"SafetyNetTag"}`, contenttest.ReqOptions{
+		IdemKey: idem23505,
+	})
 
 	select {
 	case <-b23505.enteredCh:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for 23505 safety-net upsert to reach barrier")
 	}
-
-	// Chèn trực tiếp một hàng sống có cùng `(user_id, normalized)` trước khi bước InsertTag của handler chạy.
 	seededTag, err := gen.New(h.Pool).InsertTag(context.Background(), gen.InsertTagParams{
 		UserID:     userA.User.ID,
 		Display:    "SafetyNetTag",
@@ -399,7 +633,7 @@ func TestTagUpsertSameNormalizedParallelBarrierAndP4BE1_6(t *testing.T) {
 
 	setBarrier(0)
 
-	res23505 := <-ch23505
+	res23505 := awaitAsyncResult(t, "P4BE1-6(c) 23505 upsert", ch23505)
 	if res23505.resp.StatusCode != http.StatusServiceUnavailable || res23505.resp.Header.Get("Retry-After") != "1" {
 		t.Fatalf("23505 on tag_user_norm_uq: status=%d Retry-After=%q body=%s, want 503 with Retry-After=1",
 			res23505.resp.StatusCode, res23505.resp.Header.Get("Retry-After"), res23505.body)
@@ -488,6 +722,46 @@ func TestTagRenameAndConflict(t *testing.T) {
 		t.Fatalf("rename soft-deleted tag: status=%d body=%s, want 404 not_found", rRenDel.StatusCode, bRenDel)
 	}
 
+	// 5. Đổi tên `tagWork` sang `"shared-norm"` (normalized đang được User B sử dụng) -> 200 OK.
+	rSharedNorm, bSharedNorm := doWrite(h, jarA, http.MethodPatch, "/api/v1/tags/"+tagWork.ID.String(), `{"display":"shared-norm"}`)
+	if rSharedNorm.StatusCode != http.StatusOK {
+		t.Fatalf("rename to User B normalized status = %d, want 200 (body=%s)", rSharedNorm.StatusCode, bSharedNorm)
+	}
+	if got := decodeTag(t, bSharedNorm); got.ID != tagWork.ID || got.Display != "shared-norm" {
+		t.Fatalf("rename to shared-norm got %+v", got)
+	}
+
+	// 6. IT5-R1-1 trên PATCH /tags/{id}: `display:null` -> `400 invalid_request`; byte `0xff` thô trong
+	// `display` -> `400 tag_display_invalid` (không làm đổi tên trong DB); ký tự U+FFFD hợp lệ -> `200 OK`.
+	advanceRateLimitWindow(h)
+	rPatchNull, bPatchNull := doWrite(h, jarA, http.MethodPatch, "/api/v1/tags/"+tagWork.ID.String(), `{"display":null}`)
+	if rPatchNull.StatusCode != http.StatusBadRequest || contenttest.DecodeProblem(t, bPatchNull).Code != "invalid_request" {
+		t.Fatalf("PATCH /tags/{id} {display:null}: status=%d body=%s, want 400 invalid_request", rPatchNull.StatusCode, bPatchNull)
+	}
+	rPatchBadUTF8, bPatchBadUTF8 := doWrite(h, jarA, http.MethodPatch, "/api/v1/tags/"+tagWork.ID.String(), "{\"display\":\"bad\xffrename\"}")
+	if rPatchBadUTF8.StatusCode != http.StatusBadRequest || contenttest.DecodeProblem(t, bPatchBadUTF8).Code != "tag_display_invalid" {
+		t.Fatalf("PATCH /tags/{id} raw 0xff in display: status=%d body=%s, want 400 tag_display_invalid", rPatchBadUTF8.StatusCode, bPatchBadUTF8)
+	}
+	workRowAfterReject, err := gen.New(h.Pool).GetTagByUserAndID(context.Background(), gen.GetTagByUserAndIDParams{
+		UserID: userA.User.ID,
+		ID:     tagWork.ID,
+	})
+	if err != nil {
+		t.Fatalf("GetTagByUserAndID tagWork after rejected PATCH: %v", err)
+	}
+	if workRowAfterReject.Display != "shared-norm" || workRowAfterReject.Normalized != "shared-norm" {
+		t.Fatalf("tagWork mutated after rejected PATCH: got display=%q normalized=%q, want 'shared-norm'",
+			workRowAfterReject.Display, workRowAfterReject.Normalized)
+	}
+
+	validFFFDRename := "Đổi tên \xef\xbf\xbd hợp lệ"
+	rPatchFFFD, bPatchFFFD := doWrite(h, jarA, http.MethodPatch, "/api/v1/tags/"+tagWork.ID.String(), `{"display":"`+validFFFDRename+`"}`)
+	if rPatchFFFD.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /tags/{id} valid U+FFFD status = %d, want 200 (body=%s)", rPatchFFFD.StatusCode, bPatchFFFD)
+	}
+	if got := decodeTag(t, bPatchFFFD); got.ID != tagWork.ID || got.Display != validFFFDRename {
+		t.Fatalf("PATCH /tags/{id} valid U+FFFD got %+v, want display=%q", got, validFFFDRename)
+	}
 	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
 	contenttest.AssertInvariants(t, h.Pool, userB.User.ID)
 }
@@ -511,8 +785,8 @@ func TestAssignItemTagsLimit20ParallelFrom19AndAdditiveSnapshot(t *testing.T) {
 		})
 	}
 	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	async := newAsyncGroup(t, h)
 	t.Cleanup(closeRelease)
-
 	taghttp.RegisterTestHooks(t, &taghttp.TestHooks{
 		OnLockUserContent: func(ctx context.Context, _ uuid.UUID, op string) {
 			if parallelAssignBarrier.Load() && op == "itemTagsAdd" {
@@ -587,18 +861,8 @@ func TestAssignItemTagsLimit20ParallelFrom19AndAdditiveSnapshot(t *testing.T) {
 	}
 
 	parallelAssignBarrier.Store(true)
-	type reqRes struct {
-		resp contenttest.TestResponse
-		body string
-	}
-	chA := make(chan reqRes, 1)
-	chB := make(chan reqRes, 1)
-
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPost, "/api/v1/items/"+item2.ID.String()+"/tags",
-			fmt.Sprintf(`{"tag_ids":[%q]}`, tags[19].ID.String()))
-		chA <- reqRes{resp: resp, body: body}
-	}()
+	chA := async.startWrite(jarA, http.MethodPost, "/api/v1/items/"+item2.ID.String()+"/tags",
+		fmt.Sprintf(`{"tag_ids":[%q]}`, tags[19].ID.String()))
 
 	select {
 	case <-enteredCh:
@@ -606,18 +870,15 @@ func TestAssignItemTagsLimit20ParallelFrom19AndAdditiveSnapshot(t *testing.T) {
 		t.Fatal("timed out waiting for first parallel assign to acquire LockUserContent")
 	}
 
-	go func() {
-		resp, body := doWrite(h, jarA, http.MethodPost, "/api/v1/items/"+item2.ID.String()+"/tags",
-			fmt.Sprintf(`{"tag_ids":[%q]}`, tags[20].ID.String()))
-		chB <- reqRes{resp: resp, body: body}
-	}()
+	chB := async.startWrite(jarA, http.MethodPost, "/api/v1/items/"+item2.ID.String()+"/tags",
+		fmt.Sprintf(`{"tag_ids":[%q]}`, tags[20].ID.String()))
 
 	awaitUserContentLockWaiter(t, h, userA.User.ID)
 	parallelAssignBarrier.Store(false)
 	closeRelease()
 
-	resA := <-chA
-	resB := <-chB
+	resA := awaitAsyncResult(t, "parallel assign A", chA)
+	resB := awaitAsyncResult(t, "parallel assign B", chB)
 	if !((resA.resp.StatusCode == http.StatusOK && resB.resp.StatusCode == http.StatusConflict) ||
 		(resA.resp.StatusCode == http.StatusConflict && resB.resp.StatusCode == http.StatusOK)) {
 		t.Fatalf("parallel assigns from 19 tags: A=%d (%s) B=%d (%s), want one 200 and one 409",
@@ -982,7 +1243,7 @@ func TestTagsListPrefixQuerySortAndPagination(t *testing.T) {
 		}
 	}
 
-	// 3. Phân trang keyset `sort=recent` và `sort=alpha` + kiểm tra cursor gắn chặt tham số.
+	// 3. Phân trang keyset `sort=recent` và `sort=alpha` + kiểm tra cursor gắn chặt tham số (IT5-R1-2).
 	p1Resp, p1Body := h.DoReq(jarA, http.MethodGet, "/api/v1/tags?sort=recent&limit=3", "", contenttest.ReqOptions{})
 	if p1Resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /tags page 1 status = %d, body=%s", p1Resp.StatusCode, p1Body)
@@ -1004,33 +1265,144 @@ func TestTagsListPrefixQuerySortAndPagination(t *testing.T) {
 		t.Fatalf("cursor with changed q: status=%d body=%s, want 400 invalid_request", badQResp.StatusCode, badQBody)
 	}
 
-	// Duyệt hết tất cả các trang với `sort=alpha&limit=3` -> đủ 10 tag sống, không trùng.
-	seen := map[uuid.UUID]bool{}
-	cursor := ""
-	for range 10 {
-		path := "/api/v1/tags?sort=alpha&limit=3"
-		if cursor != "" {
-			path += "&cursor=" + url.QueryEscape(cursor)
+	// IT5-R1-2: Đặt `last_used_at` tất định cho 10 tag sống của User A sao cho có cả mốc thời gian
+	// phân biệt lẫn các mốc trùng nhau (`last_used_at` tie) vắt qua ranh giới trang khi `limit=3`,
+	// qua đó kiểm chứng thứ tự `(last_used_at DESC, id DESC)` ở `sort=recent` và `(normalized ASC, id ASC)`
+	// ở `sort=alpha`, kích thước từng trang (`3, 3, 3, 1`), và `next_cursor == nil` ở trang cuối.
+	ctx := context.Background()
+	alphaDisplays := []string{
+		"công nghệ",       // normalized: "công nghệ"
+		"env_prod",        // normalized: "env_prod"
+		"envXprod",        // normalized: "envxprod"
+		"Nha Khoa",        // normalized: "nha khoa"
+		"nhà cửa",         // normalized: "nhà cửa"
+		"nhân sự",         // normalized: "nhân sự"
+		`path\sub`,        // normalized: "path\sub"
+		`pathXsub`,        // normalized: "pathxsub"
+		"rate 100% max",   // normalized: "rate 100% max"
+		"rate 100abc max", // normalized: "rate 100abc max"
+	}
+	type liveTagMeta struct {
+		id         uuid.UUID
+		normalized string
+		lastUsedAt time.Time
+	}
+	liveMetas := make([]liveTagMeta, len(alphaDisplays))
+	for i, d := range alphaDisplays {
+		tg := createdByDisplay[d]
+		row, err := gen.New(h.Pool).GetTagByUserAndID(ctx, gen.GetTagByUserAndIDParams{
+			UserID: userA.User.ID,
+			ID:     tg.ID,
+		})
+		if err != nil {
+			t.Fatalf("GetTagByUserAndID %q: %v", d, err)
 		}
-		pr, pb := h.DoReq(jarA, http.MethodGet, path, "", contenttest.ReqOptions{})
-		if pr.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s: %d %s", path, pr.StatusCode, pb)
+		liveMetas[i] = liveTagMeta{
+			id:         row.ID,
+			normalized: row.Normalized,
 		}
-		pg := decodeTagList(t, pb)
-		for _, tg := range pg.Items {
-			if seen[tg.ID] {
-				t.Fatalf("duplicate tag %s across pages", tg.ID)
+	}
+	// Sắp theo ID tăng dần để gán `last_used_at` có tie trên nhiều ID đã biết thứ tự.
+	slices.SortFunc(liveMetas, func(a, b liveTagMeta) int {
+		return bytes.Compare(a.id[:], b.id[:])
+	})
+	// liveMetas[0].id < liveMetas[1].id < ... < liveMetas[9].id:
+	//   - liveMetas[9], [8]:         T0 + 50m (2-way tie)
+	//   - liveMetas[7], [6], [5]:    T0 + 40m (3-way tie vắt qua ranh giới trang 1 -> trang 2 khi limit=3)
+	//   - liveMetas[4]:              T0 + 30m (distinct)
+	//   - liveMetas[3], [2], [1]:    T0 + 20m (3-way tie vắt qua ranh giới trang 2 -> trang 3 khi limit=3)
+	//   - liveMetas[0]:              T0 + 10m (distinct, rơi vào trang 4 cuối cùng kích thước 1)
+	baseLU := time.Date(2026, 11, 1, 16, 0, 0, 0, time.UTC)
+	luOffsets := []time.Duration{
+		10 * time.Minute, // liveMetas[0]
+		20 * time.Minute, // liveMetas[1]
+		20 * time.Minute, // liveMetas[2]
+		20 * time.Minute, // liveMetas[3]
+		30 * time.Minute, // liveMetas[4]
+		40 * time.Minute, // liveMetas[5]
+		40 * time.Minute, // liveMetas[6]
+		40 * time.Minute, // liveMetas[7]
+		50 * time.Minute, // liveMetas[8]
+		50 * time.Minute, // liveMetas[9]
+	}
+	for i := range liveMetas {
+		lu := baseLU.Add(luOffsets[i])
+		liveMetas[i].lastUsedAt = lu
+		if _, err := h.Pool.Exec(ctx, `UPDATE tag SET last_used_at = $1 WHERE id = $2 AND user_id = $3`, lu, liveMetas[i].id, userA.User.ID); err != nil {
+			t.Fatalf("set last_used_at for liveMetas[%d]: %v", i, err)
+		}
+	}
+
+	collectTagPages := func(baseQuery string, expectedPageSizes []int) []uuid.UUID {
+		var collected []uuid.UUID
+		cur := ""
+		for pageIdx, wantSize := range expectedPageSizes {
+			path := "/api/v1/tags"
+			if baseQuery != "" || cur != "" {
+				var parts []string
+				if baseQuery != "" {
+					parts = append(parts, baseQuery)
+				}
+				if cur != "" {
+					parts = append(parts, "cursor="+url.QueryEscape(cur))
+				}
+				path += "?" + strings.Join(parts, "&")
 			}
-			seen[tg.ID] = true
+			pr, pb := h.DoReq(jarA, http.MethodGet, path, "", contenttest.ReqOptions{})
+			if pr.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s (page %d) status = %d, body=%s", path, pageIdx+1, pr.StatusCode, pb)
+			}
+			pg := decodeTagList(t, pb)
+			if len(pg.Items) != wantSize {
+				t.Fatalf("GET %s (page %d) len(items) = %d, want %d (items=%+v)", path, pageIdx+1, len(pg.Items), wantSize, pg.Items)
+			}
+			for _, tg := range pg.Items {
+				collected = append(collected, tg.ID)
+			}
+			isLast := pageIdx == len(expectedPageSizes)-1
+			if isLast {
+				if pg.NextCursor != nil {
+					t.Fatalf("GET %s (last page %d) next_cursor = %q, want nil", path, pageIdx+1, *pg.NextCursor)
+				}
+			} else {
+				if pg.NextCursor == nil || *pg.NextCursor == "" {
+					t.Fatalf("GET %s (page %d) expected non-empty next_cursor", path, pageIdx+1)
+				}
+				cur = *pg.NextCursor
+			}
 		}
-		if pg.NextCursor == nil {
-			break
+		return collected
+	}
+
+	// 3a. Duyệt toàn bộ các trang ở chế độ mặc định `sort=recent` (`limit=3`, 4 trang: 3 + 3 + 3 + 1 = 10).
+	wantRecentIDs := []uuid.UUID{
+		liveMetas[9].id, liveMetas[8].id, liveMetas[7].id, // trang 1
+		liveMetas[6].id, liveMetas[5].id, liveMetas[4].id, // trang 2 (tie 40m vắt từ trang 1 sang trang 2)
+		liveMetas[3].id, liveMetas[2].id, liveMetas[1].id, // trang 3 (tie 20m)
+		liveMetas[0].id, // trang 4 (next_cursor: null)
+	}
+	gotRecentIDs := collectTagPages("sort=recent&limit=3", []int{3, 3, 3, 1})
+	assertUUIDSliceEqual(t, "GET /tags?sort=recent&limit=3", gotRecentIDs, wantRecentIDs)
+
+	// Kiểm tra mặc định khi không truyền `sort` cũng đi qua đúng thứ tự `recent`.
+	gotDefaultSortIDs := collectTagPages("limit=3", []int{3, 3, 3, 1})
+	assertUUIDSliceEqual(t, "GET /tags?limit=3 (default recent)", gotDefaultSortIDs, wantRecentIDs)
+
+	// 3b. Duyệt toàn bộ các trang với `sort=alpha&limit=3` (4 trang: 3 + 3 + 3 + 1 = 10)
+	// và đối chiếu chính xác thứ tự `ORDER BY normalized ASC, id ASC`.
+	alphaMetas := slices.Clone(liveMetas)
+	slices.SortFunc(alphaMetas, func(a, b liveTagMeta) int {
+		if c := strings.Compare(a.normalized, b.normalized); c != 0 {
+			return c
 		}
-		cursor = *pg.NextCursor
+		return bytes.Compare(a.id[:], b.id[:])
+	})
+	wantAlphaIDs := make([]uuid.UUID, len(alphaMetas))
+	for i, m := range alphaMetas {
+		wantAlphaIDs[i] = m.id
 	}
-	if len(seen) != 10 {
-		t.Fatalf("paginated live tags total = %d, want 10", len(seen))
-	}
+	gotAlphaIDs := collectTagPages("sort=alpha&limit=3", []int{3, 3, 3, 1})
+	assertUUIDSliceEqual(t, "GET /tags?sort=alpha&limit=3", gotAlphaIDs, wantAlphaIDs)
 
 	// 4. `q` 51 rune hoặc chỉ dấu câu -> 400 tag_display_invalid.
 	q51 := strings.Repeat("a", 51)
@@ -1038,8 +1410,12 @@ func TestTagsListPrefixQuerySortAndPagination(t *testing.T) {
 	if rQ51.StatusCode != http.StatusBadRequest || contenttest.DecodeProblem(t, bQ51).Code != "tag_display_invalid" {
 		t.Fatalf("GET /tags?q=51-runes: status=%d body=%s, want 400 tag_display_invalid", rQ51.StatusCode, bQ51)
 	}
+	rQPunct, bQPunct := h.DoReq(jarA, http.MethodGet, "/api/v1/tags?q="+url.QueryEscape("###!!!"), "", contenttest.ReqOptions{})
+	if rQPunct.StatusCode != http.StatusBadRequest || contenttest.DecodeProblem(t, bQPunct).Code != "tag_display_invalid" {
+		t.Fatalf("GET /tags?q=punct-only: status=%d body=%s, want 400 tag_display_invalid", rQPunct.StatusCode, bQPunct)
+	}
 
-	assertNoPlaintextInLogs(t, h.Logs, "nhà cửa", "Nha Khoa", "nhân sự")
+	assertNoPlaintextInLogs(t, h.Logs, "nhà cửa", "Nha Khoa", "nhân sự", "q=nh")
 	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
 	contenttest.AssertInvariants(t, h.Pool, userB.User.ID)
 }
@@ -1179,7 +1555,131 @@ func TestCrossTenantIsolationUserB404OnEveryTagAndItemTagRoute(t *testing.T) {
 				tc.name, tc.method, tc.path, resp.StatusCode, body)
 		}
 	}
+	// 3. IT5-R1-5: Trên một item sống thuộc quyền sở hữu của Alice (`aliceItem`, đang gắn `aliceTag1`),
+	// `DELETE /items/{id}/tags/{X}` với X lần lượt là:
+	//   (a) UUID không tồn tại,
+	//   (b) tag của Bob (`bobTag`),
+	//   (c) tag sống của chính Alice nhưng chưa gắn (`aliceTag2`)
+	// đều phải trả về `200 OK` + `ItemSummary` JSON y hệt trạng thái trước đó (không phân biệt),
+	// và giữ nguyên tuyệt đối counters, timestamps (`item`/`tag`), cùng các hàng `item_tag` của cả Alice và Bob.
+	advanceRateLimitWindow(h)
+	ctx := context.Background()
 
-	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
-	contenttest.AssertInvariants(t, h.Pool, userB.User.ID)
+	rBaseSummary, bBaseSummary := h.DoReq(jarA, http.MethodGet, "/api/v1/items/"+aliceItem.ID.String(), "", contenttest.ReqOptions{})
+	if rBaseSummary.StatusCode != http.StatusOK {
+		t.Fatalf("Alice GET item baseline: %d %s", rBaseSummary.StatusCode, bBaseSummary)
+	}
+
+	type dbStateSnapshot struct {
+		items    []string
+		tags     []string
+		itemTags []string
+	}
+	snapshotBothUsers := func() dbStateSnapshot {
+		var snap dbStateSnapshot
+		itemRows, err := h.Pool.Query(ctx, `
+			SELECT user_id::text, id::text, name, name_normalized, COALESCE(hint, ''), entry_count, version,
+			       created_at::text, updated_at::text, last_used_at::text, COALESCE(deleted_at::text, '')
+			FROM item
+			WHERE user_id = ANY($1::uuid[])
+			ORDER BY user_id ASC, id ASC
+		`, []uuid.UUID{userA.User.ID, userB.User.ID})
+		if err != nil {
+			t.Fatalf("query item snapshot: %v", err)
+		}
+		for itemRows.Next() {
+			var uID, id, name, norm, hint, cAt, uAt, luAt, dAt string
+			var entryCount, version int32
+			if err := itemRows.Scan(&uID, &id, &name, &norm, &hint, &entryCount, &version, &cAt, &uAt, &luAt, &dAt); err != nil {
+				itemRows.Close()
+				t.Fatalf("scan item snapshot: %v", err)
+			}
+			snap.items = append(snap.items, fmt.Sprintf("%s|%s|%s|%s|%s|%d|%d|%s|%s|%s|%s",
+				uID, id, name, norm, hint, entryCount, version, cAt, uAt, luAt, dAt))
+		}
+		itemRows.Close()
+		if err := itemRows.Err(); err != nil {
+			t.Fatalf("itemRows err: %v", err)
+		}
+
+		tagRows, err := h.Pool.Query(ctx, `
+			SELECT user_id::text, id::text, display, normalized, item_count,
+			       created_at::text, last_used_at::text, COALESCE(deleted_at::text, '')
+			FROM tag
+			WHERE user_id = ANY($1::uuid[])
+			ORDER BY user_id ASC, id ASC
+		`, []uuid.UUID{userA.User.ID, userB.User.ID})
+		if err != nil {
+			t.Fatalf("query tag snapshot: %v", err)
+		}
+		for tagRows.Next() {
+			var uID, id, disp, norm, cAt, luAt, dAt string
+			var itemCount int32
+			if err := tagRows.Scan(&uID, &id, &disp, &norm, &itemCount, &cAt, &luAt, &dAt); err != nil {
+				tagRows.Close()
+				t.Fatalf("scan tag snapshot: %v", err)
+			}
+			snap.tags = append(snap.tags, fmt.Sprintf("%s|%s|%s|%s|%d|%s|%s|%s",
+				uID, id, disp, norm, itemCount, cAt, luAt, dAt))
+		}
+		tagRows.Close()
+		if err := tagRows.Err(); err != nil {
+			t.Fatalf("tagRows err: %v", err)
+		}
+
+		pairRows, err := h.Pool.Query(ctx, `
+			SELECT it.item_id::text, it.tag_id::text, it.created_at::text
+			FROM item_tag AS it
+			JOIN item AS i ON i.id = it.item_id
+			WHERE i.user_id = ANY($1::uuid[])
+			ORDER BY it.item_id ASC, it.tag_id ASC
+		`, []uuid.UUID{userA.User.ID, userB.User.ID})
+		if err != nil {
+			t.Fatalf("query item_tag snapshot: %v", err)
+		}
+		for pairRows.Next() {
+			var itID, tgID, cAt string
+			if err := pairRows.Scan(&itID, &tgID, &cAt); err != nil {
+				pairRows.Close()
+				t.Fatalf("scan item_tag snapshot: %v", err)
+			}
+			snap.itemTags = append(snap.itemTags, fmt.Sprintf("%s|%s|%s", itID, tgID, cAt))
+		}
+		pairRows.Close()
+		if err := pairRows.Err(); err != nil {
+			t.Fatalf("pairRows err: %v", err)
+		}
+		return snap
+	}
+
+	baseSnap := snapshotBothUsers()
+	absentCases := []struct {
+		name  string
+		tagID uuid.UUID
+	}{
+		{name: "nonexistent UUID", tagID: uuid.New()},
+		{name: "Bob foreign tag", tagID: bobTag.ID},
+		{name: "Alice own unlinked tag", tagID: aliceTag2.ID},
+	}
+	for _, ac := range absentCases {
+		h.Clock.Advance(5 * time.Minute)
+		resp, body := doWrite(h, jarA, http.MethodDelete, "/api/v1/items/"+aliceItem.ID.String()+"/tags/"+ac.tagID.String(), "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("DELETE absent tag (%s): status=%d body=%s, want 200", ac.name, resp.StatusCode, body)
+		}
+		contenttest.AssertJSONEqual(t, bBaseSummary, body)
+
+		afterSnap := snapshotBothUsers()
+		if !slices.Equal(afterSnap.items, baseSnap.items) {
+			t.Fatalf("DELETE absent tag (%s) mutated item rows:\ngot:  %v\nwant: %v", ac.name, afterSnap.items, baseSnap.items)
+		}
+		if !slices.Equal(afterSnap.tags, baseSnap.tags) {
+			t.Fatalf("DELETE absent tag (%s) mutated tag rows (counters/timestamps):\ngot:  %v\nwant: %v", ac.name, afterSnap.tags, baseSnap.tags)
+		}
+		if !slices.Equal(afterSnap.itemTags, baseSnap.itemTags) {
+			t.Fatalf("DELETE absent tag (%s) mutated item_tag rows:\ngot:  %v\nwant: %v", ac.name, afterSnap.itemTags, baseSnap.itemTags)
+		}
+		contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
+		contenttest.AssertInvariants(t, h.Pool, userB.User.ID)
+	}
 }
