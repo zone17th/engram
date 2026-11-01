@@ -2590,6 +2590,85 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
     );
     expect(allItemPatches[allItemPatches.length - 1].headers['if-match']).toBe('"5"');
+
+    // IP15-BE3-4: Held Load latest GET(v7) -> concurrent Keep mine hits 412 with current_version=8 (and NO v8 summary)
+    // -> releasing GET(v7) must NOT synthesize a v8 ItemSummary from older fields, must NOT overwrite the typed Keep mine
+    // inputs, and must NOT clear the newer unresolved v8 conflict.
+    h.server.item.version = 7;
+    h.server.item.name = 'remote-v7-name';
+    h.server.item.hint = 'remote-v7-hint';
+
+    fireEvent.change(nameInput, { target: { value: 'local-keep-mine-candidate' } });
+    fireEvent.blur(nameInput);
+    await waitFor(() => {
+      expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    });
+
+    const { promise: loadV7Gate, resolve: releaseLoadV7 } = createDeferred();
+    const { promise: loadV7Entered, resolve: notifyLoadV7Entered } = createDeferred();
+    const { promise: loadV7Finished, resolve: notifyLoadV7Finished } = createDeferred();
+    let holdLoadV7 = true;
+    const fetchedV7Summary: ItemSummary = {
+      ...h.server.item,
+      version: 7,
+      name: 'remote-v7-name',
+      hint: 'remote-v7-hint',
+    };
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && holdLoadV7) {
+        notifyLoadV7Entered();
+        await loadV7Gate;
+        queueMicrotask(() => notifyLoadV7Finished());
+        return jsonResponse(fetchedV7Summary, 200);
+      }
+      return null;
+    });
+
+    // Click Load latest and hold its GET(v7)
+    fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await loadV7Entered;
+
+    // While GET(v7) is pending, another device advances the server to v8; user clicks Keep mine -> PATCH returns 412 with current_version=8 (no v8 summary)
+    h.server.item.version = 8;
+    h.server.item.name = 'remote-v8-authoritative-name';
+    h.server.item.hint = 'remote-v8-authoritative-hint';
+    fireEvent.click(screen.getByTestId('item-conflict-keep-mine'));
+
+    await waitFor(() => {
+      const patchesAfterKeepMine = h.server.requests.filter(
+        (r) => r.method === 'PATCH' && r.url.endsWith(`/items/${ITEM_ID}`),
+      );
+      expect(patchesAfterKeepMine[patchesAfterKeepMine.length - 1].headers['if-match']).toBe('"7"');
+      expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    });
+
+    // Release the older GET(v7)
+    holdLoadV7 = false;
+    h.server.overrideRoute(null);
+    releaseLoadV7();
+    await loadV7Finished;
+    await act(async () => {
+      await flushMacrotask();
+    });
+
+    // The newer v8 conflict remains active, inputs keep the user's typed candidate (not overwritten by v6 or v7),
+    // and the item cache is NOT fabricated with version 8 + older v6/v7 fields
+    expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
+    expect(screen.getByTestId('item-name-input')).toHaveValue('local-keep-mine-candidate');
+    const cachedAfterStaleRelease = h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID]);
+    expect(cachedAfterStaleRelease?.version).toBe(7);
+    expect(cachedAfterStaleRelease?.name).toBe('remote-v7-name');
+
+    // Clicking Load latest now fetches the real v8 summary and resolves the conflict cleanly
+    fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
+      expect(screen.getByTestId('item-name-input')).toHaveValue('remote-v8-authoritative-name');
+      expect(screen.getByTestId('item-hint-input')).toHaveValue('remote-v8-authoritative-hint');
+    });
+    expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(8);
   });
 
   it('409 reorder_mismatch refetches list and re-applies the last move once if both entries still exist, or shows "Danh sách đã đổi ở thiết bị khác" if an entry was removed', async () => {

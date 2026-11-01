@@ -79,16 +79,17 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   } | null>(null);
 
   const [uncertainPatchError, setUncertainPatchError] = useState<string | null>(null);
-  // Sequential PATCH queue state (P4FE2-4)
+  // Sequential PATCH queue and authoritative snapshot vs observed conflict validator state (P4FE2-4, IP15-BE3-4)
   const latestVersionRef = useRef<number>(item.version);
+  const latestAcceptedSnapshotRef = useRef<ItemSummary>(item);
   const latestCommittedNameRef = useRef<string>(item.name);
   const latestCommittedHintRef = useRef<string | null>(item.hint ?? null);
+  const conflictEpochRef = useRef<number>(0);
   const patchQueueRef = useRef<QueuedPatchStep[]>([]);
   const drainingRef = useRef<boolean>(false);
   const conflictRef = useRef<boolean>(false);
   const uncertainStepPausedRef = useRef<boolean>(false);
   const mountedRef = useRef<boolean>(true);
-
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -98,17 +99,20 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
 
   // Sync external server updates when not dirty and not in 412 conflict
   useEffect(() => {
-    if (item.version > latestVersionRef.current) {
-      latestVersionRef.current = item.version;
+    if (item.version > latestAcceptedSnapshotRef.current.version) {
+      latestAcceptedSnapshotRef.current = item;
+      latestVersionRef.current = Math.max(latestVersionRef.current, item.version);
       latestCommittedNameRef.current = item.name;
       latestCommittedHintRef.current = item.hint ?? null;
-    } else if (item.version === latestVersionRef.current) {
+    } else if (item.version === latestAcceptedSnapshotRef.current.version) {
+      latestAcceptedSnapshotRef.current = item;
       latestCommittedNameRef.current = item.name;
       latestCommittedHintRef.current = item.hint ?? null;
     }
 
     if (
       item.version >= latestVersionRef.current &&
+      item.version >= latestAcceptedSnapshotRef.current.version &&
       !conflictRef.current &&
       !uncertainStepPausedRef.current &&
       !drainingRef.current &&
@@ -121,58 +125,37 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
         setHintInput(item.hint ?? '');
       }
     }
-  }, [item.id, item.name, item.hint, item.version, nameDirty, hintDirty]);
+  }, [item, nameDirty, hintDirty]);
 
   const applyItemSummaryToCache = useCallback(
     (updated: ItemSummary, source: 'patch' | 'tag' | 'fetch' = 'patch'): ItemSummary => {
-      if (source === 'tag' && updated.version < latestVersionRef.current) {
+      const prevAccepted = latestAcceptedSnapshotRef.current;
+      if (source === 'tag' && updated.version < prevAccepted.version) {
         // Tag assignment/removal does not bump item version (openapi.yaml:1684).
-        // Never lower latestVersionRef or overwrite newer committed name/hint with an older tag summary (IP15-BE1-5).
+        // Never lower latestAcceptedSnapshotRef or overwrite newer committed name/hint with an older tag summary (IP15-BE1-5).
         const mergedTagSummary: ItemSummary = {
-          ...updated,
-          version: latestVersionRef.current,
-          name: latestCommittedNameRef.current,
-          hint: latestCommittedHintRef.current,
+          ...prevAccepted,
           tags: updated.tags,
         };
-        queryClient.setQueryData<ItemSummary | undefined>(
+        latestAcceptedSnapshotRef.current = mergedTagSummary;
+        queryClient.setQueryData<ItemSummary>(
           contentQueryKeys.item(updated.id),
-          (prev) =>
-            prev
-              ? {
-                  ...prev,
-                  version: latestVersionRef.current,
-                  name: latestCommittedNameRef.current,
-                  hint: latestCommittedHintRef.current,
-                  tags: updated.tags,
-                }
-              : mergedTagSummary,
+          mergedTagSummary,
         );
         return mergedTagSummary;
       }
 
-      if (updated.version < latestVersionRef.current) {
-        // IP15-BE2-6: Reject stale full summaries regardless of source ('patch' or 'fetch') so an older
-        // Load latest GET is never relabelled with a newer item version or allowed to overwrite newer name/hint.
-        const existing = queryClient.getQueryData<ItemSummary>(contentQueryKeys.item(updated.id));
-        if (existing && existing.version >= latestVersionRef.current) {
-          return existing;
-        }
-        return {
-          ...updated,
-          version: latestVersionRef.current,
-          name: latestCommittedNameRef.current,
-          hint: latestCommittedHintRef.current,
-        };
+      if (updated.version < prevAccepted.version) {
+        // IP15-BE2-6 / BE3-4: Reject summaries older than the highest accepted full snapshot;
+        // return the accepted full snapshot without synthesizing fields at an unrelated conflict validator.
+        return prevAccepted;
       }
 
-      latestVersionRef.current = updated.version;
-      latestCommittedNameRef.current = updated.name;
-      latestCommittedHintRef.current = updated.hint ?? null;
-      const accepted: ItemSummary = {
-        ...updated,
-        version: latestVersionRef.current,
-      };
+      const accepted: ItemSummary = { ...updated };
+      latestAcceptedSnapshotRef.current = accepted;
+      latestVersionRef.current = Math.max(latestVersionRef.current, accepted.version);
+      latestCommittedNameRef.current = accepted.name;
+      latestCommittedHintRef.current = accepted.hint ?? null;
       queryClient.setQueryData<ItemSummary>(contentQueryKeys.item(updated.id), accepted);
       return accepted;
     },
@@ -225,9 +208,13 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
             // Stop queue on 412 and preserve typed values in the inputs (plan §2.10, P4FE2-4)
             patchQueueRef.current = [];
             conflictRef.current = true;
+            conflictEpochRef.current += 1;
             uncertainStepPausedRef.current = false;
             if (classified.currentVersion !== undefined) {
-              latestVersionRef.current = classified.currentVersion;
+              latestVersionRef.current = Math.max(
+                latestVersionRef.current,
+                classified.currentVersion,
+              );
             }
             if (mountedRef.current) {
               setUncertainPatchError(null);
@@ -355,12 +342,22 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   }, [enqueuePatch, hintInput, onAnnounce, translateContentError]);
 
   const handleLoadLatestItem = useCallback(async () => {
+    const startedConflictEpoch = conflictEpochRef.current;
     try {
       const latest = await itemGet(item.id);
+      const accepted = applyItemSummaryToCache(latest, 'fetch');
+      // IP15-BE3-4: An older Load latest completion must never clear a newer conflict that occurred while
+      // this GET was in flight, nor clear the conflict when its returned snapshot is still older than an
+      // already-observed conflict validator (latestVersionRef) with no authoritative newer full summary.
+      if (
+        conflictEpochRef.current !== startedConflictEpoch ||
+        accepted.version < latestVersionRef.current
+      ) {
+        return;
+      }
       conflictRef.current = false;
       patchQueueRef.current = [];
       uncertainStepPausedRef.current = false;
-      const accepted = applyItemSummaryToCache(latest, 'fetch');
       if (mountedRef.current) {
         setConflict412(null);
         setUncertainPatchError(null);
@@ -380,6 +377,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   }, [applyItemSummaryToCache, item.id, translateContentError]);
 
   const handleKeepMineItem = useCallback(async () => {
+    const startedConflictEpoch = conflictEpochRef.current;
     setNameError(null);
     setHintError(null);
 
@@ -400,7 +398,10 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
       if (baseVersion === undefined) {
         const latest = await itemGet(item.id);
         const accepted = applyItemSummaryToCache(latest, 'fetch');
-        baseVersion = accepted.version;
+        if (conflictEpochRef.current !== startedConflictEpoch) {
+          return;
+        }
+        baseVersion = Math.max(accepted.version, latestVersionRef.current);
       } else {
         latestVersionRef.current = Math.max(latestVersionRef.current, baseVersion);
       }
@@ -420,6 +421,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           hint: nextHint,
         },
         idempotencyKey: createIdempotencyKey(),
+        ifMatch: baseVersion,
       });
     } catch (err) {
       const classified = classifyContentMutationError(err);
