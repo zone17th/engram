@@ -22,10 +22,18 @@ import {
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
+import {
+  TEST_VECTOR_KDF,
+  TEST_VECTOR_PASSPHRASE,
+  TEST_VECTOR_VAULT_KEY_ID,
+  TEST_VECTOR_WRAPPED_PRIV,
+  TEST_VECTOR_WRAPPED_VK,
+} from '@/e2e/vault-locked-support';
+import lockedItemFixture from '@/e2e/fixtures/locked-item-entries.json';
 import { DEMO_ITEMS } from '@/lib/demo-fixtures';
 import type { Me } from '@/lib/api/auth';
 import type { Entry, EntryEnvelopeV1, EntryMeta, ItemSummary } from '@/lib/api/content';
-import type { CreateVaultResult } from '@/lib/crypto/client';
+import { CryptoClient, type CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
 import { createWorkerShim, type ShimmedWorkerInstance } from '@/lib/crypto/test/worker-shim';
@@ -950,4 +958,38 @@ describe('P03-T21 Locked state U5', () => {
     expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
     expect(load).not.toHaveBeenCalled();
   });
+
+  it('advisor-dec-183: committed e2e/fixtures/locked-item-entries.json opens every entry with the test-vector vault key through the real CryptoClient and Worker shim', async () => {
+    expect(lockedItemFixture.entries.length).toBeGreaterThan(0);
+
+    const shim = createWorkerShim();
+    shims.push(shim);
+    const client = new CryptoClient({ createWorker: () => shim.port });
+
+    const unlockGeneration = client.captureGeneration();
+    const unlocked = await client.unlockPassphrase({
+      passphrase: TEST_VECTOR_PASSPHRASE,
+      kdf: TEST_VECTOR_KDF,
+      vaultKeyWrappedByKek: TEST_VECTOR_WRAPPED_VK,
+      privateKeysWrapped: TEST_VECTOR_WRAPPED_PRIV,
+      opGeneration: unlockGeneration,
+    });
+    expect(unlocked).toEqual({ unlocked: true });
+    expect(client.getState()).toBe('unlocked');
+
+    const openGeneration = client.captureGeneration();
+    for (const record of lockedItemFixture.entries) {
+      expect(record.entry.id).toBe(record.meta.id);
+      expect(record.entry.item_id).toBe(lockedItemFixture.item.id);
+      expect(record.entry.envelope.key_id).toBe(TEST_VECTOR_VAULT_KEY_ID);
+
+      const opened = await client.openEntry({
+        entryId: record.entry.id,
+        envelope: record.entry.envelope,
+        ciphertext: record.entry.ciphertext,
+        opGeneration: openGeneration,
+      });
+      expect(opened.plaintext).toBe(record.plaintext);
+    }
+  }, 60_000);
 });
