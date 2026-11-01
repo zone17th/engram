@@ -465,9 +465,8 @@
       "navLabel": "Settings sections",
       "nav": { "account": "Account", "security": "Security", "search": "Search", "data": "Data" },
       "searchHeading": "Search",
-      "searchTitle": "Similar-meaning search",
-      "comingLater": "Coming later",
-      "searchBody": "Item names and tags may be sent to our embedding server. Entry content is not sent. This setting is coming later.",
+      "searchTitle": "What search can see",
+      "searchBody": "Item names, hints and tags are not encrypted, so the server can search item names and tags. Entry content stays encrypted.",
       "dataHeading": "Data",
       "dataTitle": "Export and delete",
       "dataBody": "Decrypted export needs an unlocked vault. Export and delete are coming later."

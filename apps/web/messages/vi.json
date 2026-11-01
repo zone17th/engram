@@ -465,9 +465,8 @@
       "navLabel": "Mục cài đặt",
       "nav": { "account": "Tài khoản", "security": "Bảo mật", "search": "Tìm kiếm", "data": "Dữ liệu" },
       "searchHeading": "Tìm kiếm",
-      "searchTitle": "Tìm gần nghĩa",
-      "comingLater": "Sắp có",
-      "searchBody": "Tên mục và tag có thể được gửi tới máy chủ nhúng của chúng tôi. Nội dung entry thì không. Tuỳ chọn này sẽ có sau.",
+      "searchTitle": "Tìm kiếm thấy được gì",
+      "searchBody": "Tên mục, gợi ý và tag không được mã hoá, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.",
       "dataHeading": "Dữ liệu",
       "dataTitle": "Xuất và xoá",
       "dataBody": "Xuất đã giải mã cần vault đang mở. Xuất và xoá sẽ có sau."

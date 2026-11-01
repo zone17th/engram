@@ -64,10 +64,8 @@ export default function SettingsPage() {
             <h2 id="search-heading" className="t-title-md mb-5 text-ink">
               {t('page.searchHeading')}
             </h2>
-            <div className="card p-5 control-disabled" aria-disabled="true">
-              <div className="text-[15px] font-semibold text-body">
-                {t('page.searchTitle')} <span className="phase-badge">{t('page.comingLater')}</span>
-              </div>
+            <div className="card p-5">
+              <div className="text-[15px] font-semibold text-body">{t('page.searchTitle')}</div>
               <p className="t-body mt-1 m-0 text-muted">{t('page.searchBody')}</p>
             </div>
           </section>
