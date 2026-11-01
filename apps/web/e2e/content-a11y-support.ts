@@ -521,6 +521,33 @@ async function expectNoHorizontalOverflowAtWidth(
       const clientWidth = document.documentElement.clientWidth;
       const innerWidth = window.innerWidth;
       const overflowingContainers: string[] = [];
+      const hasEllipsisOrLineClamp = (st: CSSStyleDeclaration): boolean => {
+        const ox = st.overflowX;
+        const isHiddenOrClip = ox === 'hidden' || ox === 'clip';
+        if (!isHiddenOrClip) return false;
+        if (st.textOverflow === 'ellipsis' && st.whiteSpace === 'nowrap') {
+          return true;
+        }
+        const clamp = st.getPropertyValue('-webkit-line-clamp').trim();
+        return Boolean(clamp && clamp !== 'none' && Number.parseInt(clamp, 10) > 0);
+      };
+
+      const isIntentionalTruncation = (el: HTMLElement, st: CSSStyleDeclaration): boolean => {
+        if (hasEllipsisOrLineClamp(st)) return true;
+        const children = Array.from(el.children).filter((child): child is HTMLElement => {
+          if (!(child instanceof HTMLElement)) return false;
+          if (child.classList.contains('sr-only') || child.getAttribute('aria-hidden') === 'true') {
+            return false;
+          }
+          const cs = getComputedStyle(child);
+          return cs.display !== 'none' && cs.visibility !== 'hidden';
+        });
+        if (children.length === 1) {
+          return hasEllipsisOrLineClamp(getComputedStyle(children[0]!));
+        }
+        return false;
+      };
+
       for (const sel of selectors) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
           const style = getComputedStyle(el);
@@ -538,13 +565,16 @@ async function expectNoHorizontalOverflowAtWidth(
             }
             continue;
           }
-          if (el.scrollWidth > el.clientWidth + 1) {
-            overflowingContainers.push(
-              `${sel} (overflow-x=${overflowX} cuts off or overflows content: scrollWidth=${el.scrollWidth} > clientWidth=${el.clientWidth})`,
-            );
-          } else if (rect.left < -1 || rect.right > clientWidth + 1) {
+          if (rect.left < -1 || rect.right > clientWidth + 1) {
             overflowingContainers.push(
               `${sel} (overflow-x=${overflowX} spills past viewport: left=${Math.round(rect.left)} right=${Math.round(rect.right)} > clientWidth=${clientWidth})`,
+            );
+          } else if (el.scrollWidth > el.clientWidth + 1) {
+            if (isIntentionalTruncation(el, style)) {
+              continue;
+            }
+            overflowingContainers.push(
+              `${sel} (overflow-x=${overflowX} cuts off or overflows content: scrollWidth=${el.scrollWidth} > clientWidth=${el.clientWidth})`,
             );
           }
         }
@@ -768,34 +798,58 @@ export async function measureCoarseTouchTargets(
         let pseudoHitOk = false;
 
         if (w < 43.5 || h < 43.5) {
-          const afterStyle = getComputedStyle(el, '::after');
-          const beforeStyle = getComputedStyle(el, '::before');
-          const hasAfter =
-            afterStyle.content !== 'none' &&
-            afterStyle.content !== 'normal' &&
-            afterStyle.display !== 'none';
-          const hasBefore =
-            beforeStyle.content !== 'none' &&
-            beforeStyle.content !== 'normal' &&
-            beforeStyle.display !== 'none';
-          const pseudoW = Math.max(
-            hasAfter ? Number.parseFloat(afterStyle.width) || 0 : 0,
-            hasBefore ? Number.parseFloat(beforeStyle.width) || 0 : 0,
-          );
-          const pseudoH = Math.max(
-            hasAfter ? Number.parseFloat(afterStyle.height) || 0 : 0,
-            hasBefore ? Number.parseFloat(beforeStyle.height) || 0 : 0,
-          );
-          const candW = Math.max(w, pseudoW);
-          const candH = Math.max(h, pseudoH);
+          const parsePx = (val: string): number => {
+            const n = Number.parseFloat(val);
+            return Number.isFinite(n) ? n : 0;
+          };
+          const expandWithPseudo = (
+            r: DOMRect,
+            st: CSSStyleDeclaration,
+          ): { left: number; top: number; right: number; bottom: number } => {
+            if (
+              !st.content ||
+              st.content === 'none' ||
+              st.content === 'normal' ||
+              st.display === 'none'
+            ) {
+              return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+            }
+            const wPx = parsePx(st.width);
+            const hPx = parsePx(st.height);
+            const topInset = parsePx(st.top);
+            const rightInset = parsePx(st.right);
+            const bottomInset = parsePx(st.bottom);
+            const leftInset = parsePx(st.left);
+            const effWFromBox = Math.max(r.width, wPx, r.width - leftInset - rightInset);
+            const effHFromBox = Math.max(r.height, hPx, r.height - topInset - bottomInset);
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            return {
+              left: Math.min(r.left, r.left + leftInset, cx - effWFromBox / 2),
+              top: Math.min(r.top, r.top + topInset, cy - effHFromBox / 2),
+              right: Math.max(r.right, r.right - rightInset, cx + effWFromBox / 2),
+              bottom: Math.max(r.bottom, r.bottom - bottomInset, cy + effHFromBox / 2),
+            };
+          };
+
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          rect = el.getBoundingClientRect();
+          const afterBounds = expandWithPseudo(rect, getComputedStyle(el, '::after'));
+          const beforeBounds = expandWithPseudo(rect, getComputedStyle(el, '::before'));
+          const effLeft = Math.min(rect.left, afterBounds.left, beforeBounds.left);
+          const effTop = Math.min(rect.top, afterBounds.top, beforeBounds.top);
+          const effRight = Math.max(rect.right, afterBounds.right, beforeBounds.right);
+          const effBottom = Math.max(rect.bottom, afterBounds.bottom, beforeBounds.bottom);
+          const candW = effRight - effLeft;
+          const candH = effBottom - effTop;
 
           if (candW >= 43.5 && candH >= 43.5) {
-            el.scrollIntoView({ block: 'center', inline: 'center' });
-            rect = el.getBoundingClientRect();
-            const cx = rect.left + rect.width / 2;
-            const cy = rect.top + rect.height / 2;
-            const halfW = candW / 2 - 1;
-            const halfH = candH / 2 - 1;
+            const cx = (effLeft + effRight) / 2;
+            const cy = (effTop + effBottom) / 2;
+            // Inset 1.5 px from the 44x44 effective box edges so subpixel flex centering
+            // (e.g. cy = 33.5 in the 68px sticky header) stays strictly inside the control's hit box.
+            const halfW = candW / 2 - 1.5;
+            const halfH = candH / 2 - 1.5;
             const corners: Array<[number, number]> = [
               [cx - halfW, cy - halfH],
               [cx + halfW, cy - halfH],
@@ -813,6 +867,48 @@ export async function measureCoarseTouchTargets(
               effW = Math.round(candW * 100) / 100;
               effH = Math.round(candH * 100) / 100;
               pseudoHitOk = true;
+            }
+          }
+
+          // Generic label/wrapper hit target for a text field (`input`, `textarea`, `select`) whose
+          // associated `<label>` wrapper focuses it on click/tap (`label.control === el`):
+          // verify with the 4-corner `elementFromPoint` hit test on the label's bounding box that every
+          // corner reaches `label` or a descendant without hitting a separate nested interactive control.
+          if (
+            (effW < 43.5 || effH < 43.5) &&
+            (el instanceof HTMLTextAreaElement ||
+              el instanceof HTMLInputElement ||
+              el instanceof HTMLSelectElement)
+          ) {
+            const labelWrapper = el.closest('label');
+            if (labelWrapper && labelWrapper.control === el) {
+              labelWrapper.scrollIntoView({ block: 'center', inline: 'center' });
+              const lRect = labelWrapper.getBoundingClientRect();
+              const lw = Math.round(lRect.width * 100) / 100;
+              const lh = Math.round(lRect.height * 100) / 100;
+              if (lw >= 43.5 && lh >= 43.5) {
+                const corners: Array<[number, number]> = [
+                  [lRect.left + 1, lRect.top + 1],
+                  [lRect.right - 1, lRect.top + 1],
+                  [lRect.left + 1, lRect.bottom - 1],
+                  [lRect.right - 1, lRect.bottom - 1],
+                ];
+                const labelCornersHit = corners.every(([px, py]) => {
+                  if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) {
+                    return false;
+                  }
+                  const hit = document.elementFromPoint(px, py);
+                  if (!hit || !labelWrapper.contains(hit)) return false;
+                  const interactiveHit = hit.closest(
+                    'button, a[href], input, select, textarea, [role="button"], [role="menuitem"], [role="tab"]',
+                  );
+                  return !interactiveHit || interactiveHit === el;
+                });
+                if (labelCornersHit) {
+                  effW = lw;
+                  effH = lh;
+                }
+              }
             }
           }
         }
@@ -856,12 +952,6 @@ export async function measureCoarseTouchTargets(
  * logged on every sweep and not failed; any other control below 44x44 px fails the sweep.
  */
 export const KNOWN_UI_TOUCH_44: ReadonlyArray<{ readonly unit: string; readonly control: string; readonly descriptor: RegExp }> = [
-  {
-    unit: 'w4fix FU3',
-    control: 'mobile vault lock button 38x38',
-    descriptor: /^button\[data-testid="vault-lock-button-mobile"\]\.grid\.h-\[38px\]\.w-\[38px\]$/,
-  },
-  { unit: 'w4fix FU3', control: 'header logo link', descriptor: /^a\[href="\/app"\]\.min-w-0\.shrink-0\.no-underline$/ },
   { unit: 'w4fix FU11', control: 'item tag chip #tag link', descriptor: /^a\[href="\/app\?tag=[^"]+"\]\.text-body\.no-underline$/ },
   {
     unit: 'w4fix FU11',

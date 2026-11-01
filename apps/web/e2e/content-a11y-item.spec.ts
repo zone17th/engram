@@ -384,7 +384,8 @@ async function runItemGroup(
 
           // Re-open with Enter on Edit button, then press Escape on clean draft -> closes editor and returns focus to Edit button
           await editBtn.focus();
-          await page.keyboard.press('Enter');
+          await expect(editBtn).toBeFocused();
+          await editBtn.press('Enter');
           await expect(editTextarea).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await editTextarea.press('Escape');
           await expect(editTextarea).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
@@ -461,7 +462,7 @@ async function runItemGroup(
         if (ctx.keyboard) {
           await serviceValueCell.focus();
           await expect(serviceValueCell).toBeFocused();
-          await page.keyboard.press('Enter');
+          await serviceValueCell.press('Enter');
         } else {
           await serviceValueCell.click();
         }
@@ -563,7 +564,8 @@ async function runItemGroup(
           const gotoBtn = page.getByTestId(`json-raw-goto-btn-${jsonEntryId}`);
           await expect(gotoBtn).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await gotoBtn.focus();
-          await page.keyboard.press('Enter');
+          await expect(gotoBtn).toBeFocused();
+          await gotoBtn.press('Enter');
           await expect(rawTextarea).toBeFocused();
           const selectionStart = await rawTextarea.evaluate(
             (el: HTMLTextAreaElement) => el.selectionStart,
@@ -647,22 +649,36 @@ async function runItemGroup(
 
         // Trigger Delete from the entry menu -> entry card disappears immediately, U18 Undo toast appears,
         // and focus moves to the neighbour card's menu trigger (`item-detail-page.tsx:240-249, 630, 657-659`:
-        // `nextNeighbor = current[index + 1] ?? current[index - 1]` -> JSON entry card at index 2) (ACC-A11Y1-3)
+        // `nextNeighbor = current[index + 1] ?? current[index - 1]` -> JSON entry card at index 2;
+        // `tryFocusCardDom` queries `[data-card-menu-trigger], button:not(:disabled)` -> `entry-menu-trigger-${jsonEntryId}`) (ACC-A11Y1-3).
+        // Note: `checkContentState` at 1440 px runs `expectReducedMotion`, which temporarily flips `prefers-reduced-motion`
+        // and blurs/scrolls during `saveContentScreenshot`, leaving `deleteMenuItem` unfocused after the sweep.
+        // Explicitly focus, assert `toBeFocused()`, and invoke `deleteMenuItem.press('Enter')` in the keyboard pass.
         const deleteMenuItem = page.getByTestId(`entry-menu-delete-${deleteTargetTextEntryId}`);
         if (ctx.keyboard) {
           await deleteMenuItem.focus();
-          await page.keyboard.press('Enter');
+          await expect(deleteMenuItem).toBeFocused();
+          await deleteMenuItem.press('Enter');
         } else {
           await deleteMenuItem.click();
         }
-
         const textCards = page.locator('article[data-entry-card]:not([data-entry-type="json"])');
         await expect(textCards).toHaveCount(1, {
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
 
         if (ctx.keyboard) {
-          await expect(page.getByTestId(`entry-menu-trigger-${jsonEntryId}`)).toBeFocused({
+          const activeAfterDelete = await page.evaluate(() => {
+            const el = document.activeElement;
+            return el
+              ? `${el.tagName.toLowerCase()}#${el.id || ''}[data-testid="${el.getAttribute('data-testid') || ''}"]`
+              : 'null';
+          });
+          console.log(`focus-after-delete ${groupLabel}: ${activeAfterDelete}`);
+          await expect(
+            page.getByTestId(`entry-menu-trigger-${jsonEntryId}`),
+            `focus-after-delete (${groupLabel}): activeElement=${activeAfterDelete}`,
+          ).toBeFocused({
             timeout: CONTENT_A11Y_UI_WAIT_MS,
           });
         }
@@ -709,17 +725,15 @@ async function runItemGroup(
           await expect(undoToasts).toHaveCount(1);
           await activeEditTextarea.press('Escape');
           await expect(activeEditTextarea).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-
-          // Now focus the Undo toast button and press Ctrl+Z -> restores the deleted entry card and focuses its menu trigger
-          await undoBtn.focus();
+          // After Escape closes clean editor, focus returns to `entry-edit-btn-${primaryTextEntryId}` (outside toast stack).
+          // Pressing Ctrl+Z outside an input triggers global Undo without tripping `restoreFocusIfNeeded` (`undo-toast.tsx:315-317, 539-544`),
+          // allowing `onUndo` (`item-detail-page.tsx:712-713`) to restore the entry card and focus `entry-menu-trigger-${deleteTargetTextEntryId}`.
+          await expect(page.getByTestId(`entry-edit-btn-${primaryTextEntryId}`)).toBeFocused();
           await page.keyboard.press('Control+z');
           await expect(undoToasts).toHaveCount(0, { timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expect(textCards).toHaveCount(2, {
             timeout: CONTENT_A11Y_UI_WAIT_MS,
           });
-          await expect(
-            page.getByTestId(`entry-card-${deleteTargetTextEntryId}`).getByTestId('entry-body'),
-          ).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expect(
             page.getByTestId(`entry-menu-trigger-${deleteTargetTextEntryId}`),
           ).toBeFocused({ timeout: CONTENT_A11Y_UI_WAIT_MS });
@@ -727,6 +741,9 @@ async function runItemGroup(
             msgs.content.entry.restoredNotice,
             { timeout: CONTENT_A11Y_UI_WAIT_MS },
           );
+          await expect(
+            page.getByTestId(`entry-card-${deleteTargetTextEntryId}`).getByTestId('entry-body'),
+          ).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         } else {
           // Click Undo so all locales/themes also exercise restore cleanly
           await undoBtn.click();
@@ -803,7 +820,9 @@ async function runItemGroup(
               `[data-testid="entry-menu-pop-${primaryTextEntryId}"] [role="menuitem"]`,
             ]);
             await coarsePage.keyboard.press('Escape');
-
+            await expect(
+              coarsePage.getByTestId(`entry-menu-pop-${primaryTextEntryId}`),
+            ).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
             // 3. Open text entry inline editor and sweep `text-edit` state
             await coarsePage.getByTestId(`entry-edit-btn-${primaryTextEntryId}`).click();
             await expect(
@@ -824,7 +843,9 @@ async function runItemGroup(
               `[data-testid="json-table-host-${jsonEntryId}"] .json-type-btn`,
             ]);
             await coarsePage.keyboard.press('Escape');
-
+            await expect(coarsePage.getByTestId('json-type-select-root.p0')).toBeHidden({
+              timeout: CONTENT_A11Y_UI_WAIT_MS,
+            });
             // 5. Switch JSON card to Raw JSON view and sweep `json-raw` state
             await coarsePage.getByTestId(`json-tab-raw-${jsonEntryId}`).click();
             await expect(

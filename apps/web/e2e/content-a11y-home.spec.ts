@@ -329,6 +329,7 @@ async function runHomeGroup(
 
         // Escape closes listbox, removes aria-controls and aria-activedescendant, and keeps focus on omnibox
         await omnibox.focus();
+        await expect(omnibox).toBeFocused();
         await page.keyboard.press('Escape');
         await expect(listbox).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         await expect(omnibox).not.toHaveAttribute('aria-controls');
@@ -403,10 +404,12 @@ async function runHomeGroup(
         if (ctx.keyboard) {
           const firstOpt = pickerListbox.getByRole('option').first();
           await firstOpt.focus();
+          await expect(firstOpt).toBeFocused();
           await page.keyboard.press('ArrowDown');
           const secondOpt = page.locator(`#dup-opt-${secondDupId}`);
           await expect(secondOpt).toHaveAttribute('aria-selected', 'true');
-          await page.keyboard.press('Enter');
+          await expect(secondOpt).toBeFocused();
+          await secondOpt.press('Enter');
         } else {
           await page.locator(`#dup-opt-${secondDupId}`).click();
         }
@@ -461,8 +464,11 @@ async function runHomeGroup(
           await expect(pickerDialog).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           const firstOpt = pickerListbox.getByRole('option').first();
           await firstOpt.focus();
+          await expect(firstOpt).toBeFocused();
           await page.keyboard.press('ArrowDown');
-          await page.keyboard.press('Enter');
+          const secondOpt2 = page.locator(`#dup-opt-${secondDupId}`);
+          await expect(secondOpt2).toBeFocused();
+          await secondOpt2.press('Enter');
           await expect(pickerDialog).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expectInputEmpty(omnibox);
           await expect(omnibox).toBeFocused();
