@@ -77,8 +77,8 @@ export function useTagDeleteMutation() {
   return useContentMutation<void, unknown, TagDeleteVariables>({
     mutationFn: ({ id, idempotencyKey }) =>
       tagDelete(id, { idempotencyKey: idempotencyKey ?? createIdempotencyKey() }),
-    onSuccess: async () => {
-      await invalidateTagAndItemQueries(queryClient);
+    onSuccess: () => {
+      void invalidateTagAndItemQueries(queryClient);
     },
   });
 }

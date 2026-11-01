@@ -1054,11 +1054,13 @@
         "renameCancel": "Cancel",
         "deleteToastMessage": "Deleted tag #{display}",
         "deleteToastDetail": "Items with this tag are kept",
-        "undoAction": "Undo"
+        "undoAction": "Undo",
+        "loadMore": "Show more",
+        "loadingMore": "Loading…"
       },
       "recent": {
         "heading": "Recent items",
-        "subtitle": "Single recent list. Cards show item name, up to 3 tag chips, and entry count only — entry bodies are never fetched or decrypted on the home grid.",
+        "subtitle": "Most recently used items in your vault.",
         "entryCount": "{count, plural, one {# entry} other {# entries}}",
         "moreTagsAria": "{count, plural, one {# more tag} other {# more tags}}",
         "loading": "Loading recent items…",

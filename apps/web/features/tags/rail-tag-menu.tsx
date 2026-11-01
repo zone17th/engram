@@ -6,6 +6,7 @@ import {
   useId,
   useRef,
   useState,
+  type FocusEvent as ReactFocusEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
@@ -31,16 +32,77 @@ export interface RailTagChipProps {
   readonly selected: boolean;
   readonly onSelect: (tagId: string) => void;
   readonly onTagDeleted?: (tagId: string) => void;
+  readonly onRestoreError?: (errorCode: ContentErrorCode) => void;
+}
+
+function resolveStableFocusBeforeDelete(
+  deletedTagId: string,
+  groupElement: HTMLElement | null,
+): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const nav =
+    groupElement?.closest<HTMLElement>('nav') ??
+    document.querySelector<HTMLElement>('[data-testid="rail-tags"]') ??
+    null;
+  const scope: ParentNode = nav ?? document;
+  const filterButtons = Array.from(
+    scope.querySelectorAll<HTMLElement>('[data-tag-filter]'),
+  );
+  const currentIndex = filterButtons.findIndex(
+    (btn) => btn.getAttribute('data-tag-filter') === deletedTagId,
+  );
+  if (currentIndex >= 0) {
+    const nextBtn = filterButtons[currentIndex + 1] ?? filterButtons[currentIndex - 1];
+    if (nextBtn) return nextBtn;
+  }
+  if (nav) {
+    if (!nav.hasAttribute('tabindex')) {
+      nav.setAttribute('tabindex', '-1');
+    }
+    return nav;
+  }
+  return null;
+}
+
+function resolveFocusOnRestore(
+  restoredTagId: string,
+  fallbackElement: HTMLElement | null,
+): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const filterButtons = Array.from(
+    document.querySelectorAll<HTMLElement>('[data-tag-filter]'),
+  );
+  const restoredBtn = filterButtons.find(
+    (btn) => btn.getAttribute('data-tag-filter') === restoredTagId,
+  );
+  if (restoredBtn) return restoredBtn;
+  if (fallbackElement && document.contains(fallbackElement)) {
+    return fallbackElement;
+  }
+  const nav = document.querySelector<HTMLElement>('[data-testid="rail-tags"]');
+  if (nav) {
+    if (!nav.hasAttribute('tabindex')) {
+      nav.setAttribute('tabindex', '-1');
+    }
+    return nav;
+  }
+  return null;
 }
 
 /**
  * Interactive tag pill for the home rail (`mockups/index.html` `#rail-tag-list`):
  * - Filter button sets/clears `?tag=<id>` (ID only in the URL)
- * - Actions menu (`⋯`, keyboard reachable with Arrow/Home/End/Escape)
+ * - Actions menu (`⋯`, keyboard reachable with Arrow/Home/End/Escape/Tab)
  * - Inline rename form (`PATCH /tags/{id}` via `useContentMutation`; maps `tag_conflict` and validation errors via `getContentErrorI18nKey`)
  * - Delete (`DELETE /tags/{id}` + Undo toast calling `POST /tags/{id}/restore`; items are kept)
  */
-export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagChipProps) {
+export function RailTagChip({
+  tag,
+  selected,
+  onSelect,
+  onTagDeleted,
+  onRestoreError,
+}: RailTagChipProps) {
   const tRail = useTranslations('content.home.rail');
   const tErrors = useTranslations('content.errors');
   const undoToast = useOptionalUndoToast();
@@ -56,10 +118,12 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
   const [errorCode, setErrorCode] = useState<ContentErrorCode | null>(null);
 
   const groupRef = useRef<HTMLDivElement | null>(null);
+  const filterButtonRef = useRef<HTMLButtonElement | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const pendingRenameKeyRef = useRef<{ display: string; key: string } | null>(null);
+  const focusAfterRenameCloseRef = useRef<'filter' | 'trigger' | null>(null);
 
   const errorId = useId();
   const renameInputId = useId();
@@ -100,11 +164,20 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
   }, [menuOpen, closeMenu]);
 
   useEffect(() => {
-    if (!renaming) return;
-    const input = renameInputRef.current;
-    if (input) {
-      input.focus();
-      input.select();
+    if (renaming) {
+      const input = renameInputRef.current;
+      if (input) {
+        input.focus();
+        input.select();
+      }
+      return;
+    }
+    if (focusAfterRenameCloseRef.current === 'filter') {
+      focusAfterRenameCloseRef.current = null;
+      filterButtonRef.current?.focus();
+    } else if (focusAfterRenameCloseRef.current === 'trigger') {
+      focusAfterRenameCloseRef.current = null;
+      menuTriggerRef.current?.focus();
     }
   }, [renaming]);
 
@@ -123,6 +196,10 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
   };
 
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Tab') {
+      closeMenu(false);
+      return;
+    }
     const items = Array.from(
       menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [],
     );
@@ -147,6 +224,14 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
     }
   };
 
+  const handleMenuBlur = (event: ReactFocusEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && groupRef.current?.contains(nextTarget)) {
+      return;
+    }
+    setMenuOpen(false);
+  };
+
   const startRename = () => {
     setMenuOpen(false);
     setDraftDisplay(tag.display);
@@ -156,12 +241,10 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
   };
 
   const cancelRename = () => {
+    focusAfterRenameCloseRef.current = 'trigger';
     setRenaming(false);
     setErrorCode(null);
     pendingRenameKeyRef.current = null;
-    requestAnimationFrame(() => {
-      menuTriggerRef.current?.focus();
-    });
   };
 
   const handleRenameSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -176,6 +259,7 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
     }
 
     if (trimmed === tag.display) {
+      focusAfterRenameCloseRef.current = 'filter';
       setRenaming(false);
       setErrorCode(null);
       pendingRenameKeyRef.current = null;
@@ -196,6 +280,7 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
         idempotencyKey,
       });
       pendingRenameKeyRef.current = null;
+      focusAfterRenameCloseRef.current = 'filter';
       setRenaming(false);
       setErrorCode(null);
     } catch (error) {
@@ -215,8 +300,10 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
 
   const handleDelete = async () => {
     if (deleteMutation.isPending) return;
-    const originTrigger = menuTriggerRef.current;
+    const stableFocusTarget = resolveStableFocusBeforeDelete(tag.id, groupRef.current);
     setMenuOpen(false);
+    stableFocusTarget?.focus();
+
     const deleteIdempotencyKey = createIdempotencyKey();
     try {
       await deleteMutation.mutateAsync({
@@ -228,12 +315,22 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
         message: tRail('deleteToastMessage', { display: tag.display }),
         detail: tRail('deleteToastDetail'),
         actionLabel: tRail('undoAction'),
-        returnFocusTo: originTrigger,
+        returnFocusTo: () => resolveFocusOnRestore(tag.id, stableFocusTarget),
         onUndo: async () => {
           await restoreMutation.mutateAsync({
             id: tag.id,
             idempotencyKey: createIdempotencyKey(),
           });
+          resolveFocusOnRestore(tag.id, stableFocusTarget)?.focus();
+        },
+        onError: (error) => {
+          const i18nKey = getContentErrorI18nKey(error);
+          const code = i18nKey.replace(/^content\.errors\./, '') as ContentErrorCode;
+          if (onRestoreError) {
+            onRestoreError(code);
+          } else {
+            setErrorCode(code);
+          }
         },
       });
     } catch (error) {
@@ -241,7 +338,6 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
       setErrorCode(i18nKey.replace(/^content\.errors\./, '') as ContentErrorCode);
     }
   };
-
   if (renaming) {
     return (
       <div
@@ -263,7 +359,6 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
               if (errorCode) setErrorCode(null);
             }}
             onKeyDown={handleRenameKeyDown}
-            maxLength={MAX_TAG_DISPLAY_RUNES}
             autoComplete="off"
             spellCheck={false}
             aria-label={tRail('renameLabel')}
@@ -320,6 +415,7 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
       )}
     >
       <button
+        ref={filterButtonRef}
         type="button"
         onClick={() => {
           closeMenu(false);
@@ -358,6 +454,7 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
           ref={menuRef}
           role="menu"
           onKeyDown={handleMenuKeyDown}
+          onBlur={handleMenuBlur}
           data-tag-menu={tag.id}
           data-testid={`rail-tag-menu-${tag.id}`}
           className={cn(
@@ -390,7 +487,11 @@ export function RailTagChip({ tag, selected, onSelect, onTagDeleted }: RailTagCh
       ) : null}
 
       {errorCode !== null ? (
-        <p role="alert" className="field-error w-full px-2 pb-1">
+        <p
+          role="alert"
+          data-testid={`rail-tag-error-${tag.id}`}
+          className="field-error w-full px-2 pb-1"
+        >
           {tErrors(errorCode)}
         </p>
       ) : null}

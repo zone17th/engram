@@ -84,6 +84,8 @@ export interface RecentItemsGridProps {
   readonly items: readonly ItemSummary[];
   readonly hasNextPage?: boolean;
   readonly isFetchingNextPage?: boolean;
+  readonly isFetchNextPageError?: boolean;
+  readonly loadMoreErrorMessage?: string | null;
   readonly onLoadMore?: () => void;
 }
 
@@ -95,13 +97,15 @@ export function RecentItems({
   items,
   hasNextPage = false,
   isFetchingNextPage = false,
+  isFetchNextPageError = false,
+  loadMoreErrorMessage = null,
   onLoadMore,
 }: RecentItemsGridProps) {
   const tRecent = useTranslations('content.home.recent');
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!hasNextPage || isFetchingNextPage || !onLoadMore) return;
+    if (!hasNextPage || isFetchingNextPage || isFetchNextPageError || !onLoadMore) return;
     if (typeof IntersectionObserver === 'undefined') return;
     const node = sentinelRef.current;
     if (!node) return;
@@ -118,7 +122,7 @@ export function RecentItems({
     return () => {
       observer.disconnect();
     };
-  }, [hasNextPage, isFetchingNextPage, onLoadMore]);
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, onLoadMore]);
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
@@ -132,7 +136,24 @@ export function RecentItems({
         ))}
       </div>
 
-      {hasNextPage && onLoadMore ? (
+      {isFetchNextPageError && loadMoreErrorMessage && onLoadMore ? (
+        <div
+          role="alert"
+          data-testid="recent-items-load-more-error"
+          className="card card-error flex flex-wrap items-center justify-between gap-3 p-4"
+        >
+          <p className="m-0 text-[14px] text-body">{loadMoreErrorMessage}</p>
+          <button
+            type="button"
+            onClick={onLoadMore}
+            disabled={isFetchingNextPage}
+            data-testid="recent-items-load-more-retry"
+            className="btn btn-secondary btn-sm"
+          >
+            {tRecent('retry')}
+          </button>
+        </div>
+      ) : hasNextPage && onLoadMore ? (
         <div
           ref={sentinelRef}
           className="flex justify-center pt-2"

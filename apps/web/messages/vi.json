@@ -1054,11 +1054,13 @@
         "renameCancel": "Huỷ",
         "deleteToastMessage": "Đã xoá tag #{display}",
         "deleteToastDetail": "Các mục gắn tag này vẫn giữ nguyên",
-        "undoAction": "Hoàn tác"
+        "undoAction": "Hoàn tác",
+        "loadMore": "Xem thêm",
+        "loadingMore": "Đang tải…"
       },
       "recent": {
         "heading": "Mục gần đây",
-        "subtitle": "Danh sách gần đây duy nhất. Chỉ hiển thị tên mục, tối đa 3 chip tag và số entry — không tải hay giải mã nội dung entry trên lưới.",
+        "subtitle": "Các mục bạn mở hoặc cập nhật gần nhất.",
         "entryCount": "{count, plural, other {# entry}}",
         "moreTagsAria": "{count, plural, other {Còn # tag nữa}}",
         "loading": "Đang tải mục gần đây…",

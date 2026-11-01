@@ -1,5 +1,6 @@
 'use client';
 
+import { ProblemError } from '@engram/shared-types';
 import { Suspense, useCallback, useMemo } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useInfiniteQuery } from '@tanstack/react-query';
@@ -172,7 +173,16 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
   const errorCode = itemsQuery.isError
     ? (getContentErrorI18nKey(itemsQuery.error).replace(/^content\.errors\./, '') as ContentErrorCode)
     : null;
-
+  const errorStatus =
+    itemsQuery.error instanceof ProblemError ? itemsQuery.error.problem.status : undefined;
+  const isStaleOrMissingTagFilterError =
+    Boolean(selectedTagId) &&
+    itemsQuery.isError &&
+    !itemsQuery.data &&
+    (errorCode === 'not_found' ||
+      errorCode === 'invalid_request' ||
+      errorStatus === 404 ||
+      errorStatus === 400);
   return (
     <main className="mx-auto grid max-w-container gap-8 px-5 py-8 lg:grid-cols-[236px_minmax(0,1fr)]">
       <Rail
@@ -209,7 +219,12 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
           >
             {tRecent('loading')}
           </div>
-        ) : itemsQuery.isError && errorCode ? (
+        ) : isStaleOrMissingTagFilterError ? (
+          <HomeFilteredEmptyState
+            tagDisplay={activeTag?.display}
+            onClearFilter={() => handleSelectTag(null)}
+          />
+        ) : itemsQuery.isError && !itemsQuery.data && errorCode ? (
           <div
             role="alert"
             data-testid="recent-items-error"
@@ -238,6 +253,10 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
             items={allItems}
             hasNextPage={Boolean(itemsQuery.hasNextPage)}
             isFetchingNextPage={itemsQuery.isFetchingNextPage}
+            isFetchNextPageError={itemsQuery.isFetchNextPageError}
+            loadMoreErrorMessage={
+              itemsQuery.isFetchNextPageError && errorCode ? tErrors(errorCode) : null
+            }
             onLoadMore={() => {
               if (itemsQuery.hasNextPage && !itemsQuery.isFetchingNextPage) {
                 void itemsQuery.fetchNextPage();

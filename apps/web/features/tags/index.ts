@@ -3,7 +3,9 @@
  * Kept minimal so `itempage` (Task 15) and `omnibox` (Task 18) can import tag query/mutation hooks cleanly.
  */
 export {
+  usePaginatedTagsList,
   useTagsList,
+  type UsePaginatedTagsListResult,
   type UseTagsListOptions,
   type Tag,
   type TagList,
