@@ -91,6 +91,36 @@ async function installOnboardingApiMocks(
   await context.route('**/api/v1/vault', async (route) => {
     const req = route.request();
     if (req.method() !== 'POST') {
+      if (state.vaultStatus === 'present') {
+        const lastCreated = state.postVaultCalls.at(-1);
+        const parsed = lastCreated ? (JSON.parse(lastCreated.body) as Record<string, unknown>) : null;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            version: 1,
+            vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d',
+            kdf: parsed?.kdf ?? {
+              alg: 'argon2id13',
+              ops: 3,
+              mem: 67_108_864,
+              parallelism: 1,
+              salt: 'oKGio6SlpqeoqaqrrK2urw',
+            },
+            vault_key_wrapped_by_kek:
+              parsed?.vault_key_wrapped_by_kek ??
+              'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA',
+            x25519_public: parsed?.x25519_public ?? 'EIT5fcwxJb3Sw8y-V9yHL-JGU5pDVlgw9H5ueCV7OnI',
+            ed25519_public: parsed?.ed25519_public ?? '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+            private_keys_wrapped:
+              parsed?.private_keys_wrapped ??
+              'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-',
+            recovery_keys_remaining: 10,
+            passkeys: [],
+          }),
+        });
+        return;
+      }
       await route.fulfill({
         status: 404,
         contentType: 'application/problem+json',

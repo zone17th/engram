@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LoginForm } from '@/features/auth/forms/login-form';
 import { SignupForm } from '@/features/auth/forms/signup-form';
+import { hasWebLocks } from '@/lib/auth/session-lock';
 import en from '../messages/en.json';
 
 vi.mock('next/navigation', () => ({
@@ -27,7 +28,7 @@ vi.mock('@/features/auth/session-provider', () => ({
     bootstrapComplete: true,
     status: 'signed_out',
     lastSessionEndReason: null,
-    webLocksAvailable: true,
+    webLocksAvailable: hasWebLocks(),
   }),
 }));
 
@@ -41,6 +42,8 @@ afterEach(() => {
   container?.remove();
   root = null;
   container = null;
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function withIntl(ui: React.ReactNode) {
@@ -79,5 +82,65 @@ describe.each([
     for (const control of Array.from(container.querySelectorAll('input, button[type="submit"]'))) {
       expect((control as HTMLInputElement | HTMLButtonElement).disabled).toBe(false);
     }
+  });
+});
+
+describe('LoginForm web-locks hydration parity (FU5, dec-213)', () => {
+  it('hydrates without recoverable errors when SSR has navigator.locks absent and client has navigator.locks present', async () => {
+    (globalThis as Record<string, unknown>)[IS_REACT_ACT_ENVIRONMENT] = true;
+
+    vi.stubGlobal('navigator', { ...navigator, locks: undefined });
+    const html = renderToString(withIntl(<LoginForm />));
+    expect(html).not.toContain(en.auth.errors.webLocksDegraded);
+    expect(html).toContain(en.auth.login.passwordHint);
+
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      locks: { request: vi.fn(async (_name: string, fn: () => unknown) => fn()) },
+    });
+
+    container = document.createElement('div');
+    container.innerHTML = html;
+    document.body.appendChild(container);
+
+    const onRecoverableError = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => {
+      root = hydrateRoot(container as HTMLElement, withIntl(<LoginForm />), {
+        onRecoverableError,
+      });
+    });
+
+    expect(onRecoverableError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain(en.auth.errors.webLocksDegraded);
+    expect(container.textContent).toContain(en.auth.login.passwordHint);
+  });
+
+  it('hydrates cleanly and then renders the degraded web-locks notice post-hydration when navigator.locks remains absent on the client', async () => {
+    (globalThis as Record<string, unknown>)[IS_REACT_ACT_ENVIRONMENT] = true;
+
+    vi.stubGlobal('navigator', { ...navigator, locks: undefined });
+    const html = renderToString(withIntl(<LoginForm />));
+    expect(html).not.toContain(en.auth.errors.webLocksDegraded);
+
+    container = document.createElement('div');
+    container.innerHTML = html;
+    document.body.appendChild(container);
+
+    const onRecoverableError = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => {
+      root = hydrateRoot(container as HTMLElement, withIntl(<LoginForm />), {
+        onRecoverableError,
+      });
+    });
+
+    expect(onRecoverableError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(en.auth.errors.webLocksDegraded);
+    expect(container.textContent).toContain(en.auth.login.passwordHint);
   });
 });

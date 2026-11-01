@@ -50,11 +50,11 @@ function jsonResponse(body: unknown, status = 200) {
 
 function makeMeFixture(
   vaultStatus: 'absent' | 'present' = 'absent',
-  options: { oauthOnly?: boolean } = {},
+  options: { oauthOnly?: boolean; userId?: string } = {},
 ): Me {
   return {
     user: {
-      id: 'user-onboarding-step3-test-1',
+      id: options.userId ?? 'user-onboarding-step3-test-1',
       email: 'minh@zone17th.click',
       email_verified: true,
       created_at: '2026-10-30T00:00:00Z',
@@ -303,11 +303,15 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
 
   async function advanceToStep3(
     locale: 'en' | 'vi' = 'en',
-    options: { oauthOnly?: boolean } = {},
+    options: {
+      oauthOnly?: boolean;
+      onBeforeGetVault?: () => Promise<void> | void;
+      getVaultMode?: 'present' | 'absent_404';
+    } = {},
   ) {
     let currentMe = makeMeFixture('absent', options);
     let vaultCtx!: VaultContextValue;
-    let sessionCtx!: Pick<SessionState, 'status' | 'me'>;
+    let sessionCtx!: Pick<SessionState, 'status' | 'me'> & { refetchMe: () => Promise<void> };
     const oauthReauthCalls: Array<{ url: string; body: string }> = [];
     let getVaultCalls = 0;
     // Armed by a test AFTER step 3 rendered: runs on every later GET /vault (the in-lock Remember verification and any
@@ -337,6 +341,21 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       }
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
         getVaultCalls += 1;
+        await options.onBeforeGetVault?.();
+        if (options.getVaultMode === 'absent_404') {
+          return new Response(
+            JSON.stringify({
+              type: 'https://engram.zone17.click/problems/vault_absent',
+              title: 'vault_absent',
+              status: 404,
+              code: 'vault_absent',
+            }),
+            {
+              status: 404,
+              headers: { 'content-type': 'application/problem+json' },
+            },
+          );
+        }
         const vkId = vaultGetHook?.() ?? 'vk:7f3a9b2c4d5e6f7a8b9c0d';
         return jsonResponse({
           version: 1,
@@ -482,6 +501,10 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       setVaultGetHook: (hook: (() => string | undefined) | null) => {
         vaultGetHook = hook;
       },
+      setCurrentMe: (nextMe: Me) => {
+        currentMe = nextMe;
+      },
+      getSession: () => sessionCtx,
     };
   }
 
@@ -818,5 +841,260 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(JSON.parse(oauthReauthCalls[0]!.body)).toEqual({ action: 'vault.passkey_register' });
     expect(screen.queryByTestId('onboarding-passkey-added-status')).not.toBeInTheDocument();
     expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+  }, CRYPTO_TEST_TIMEOUT);
+
+  it('FU2 (advisor-dec-200): completing onboarding to step 3 and clicking Skip populates vaultMeta with the new vault_key_id before routing to /app without any manual reloadVaultMeta call', async () => {
+    let holdGetVault = true;
+    const heldGetVault = Promise.withResolvers<void>();
+    const { getVault, getVaultCallsCount } = await advanceToStep3('en', {
+      onBeforeGetVault: async () => {
+        if (holdGetVault) {
+          await heldGetVault.promise;
+        }
+      },
+    });
+
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    // Step 2 -> Step 3 transition does NOT eagerly fire GET /vault (avoiding any post-create reload race on Step 3)
+    expect(getVaultCallsCount()).toBe(0);
+    expect(getVault().vaultMeta).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+
+    // Clicking Skip starts GET /vault (reloadVaultMeta) and waits before navigating to /app
+    expect(getVaultCallsCount()).toBe(1);
+    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+
+    await act(async () => {
+      holdGetVault = false;
+      heldGetVault.resolve();
+    });
+
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    }, CRYPTO_WAIT);
+    expect(getVault().vaultMeta).not.toBeNull();
+    expect(getVault().vaultMeta?.vault_key_id).toBe('vk:7f3a9b2c4d5e6f7a8b9c0d');
+    expect(getVault().vaultMeta?.version).toBe(1);
+  }, CRYPTO_TEST_TIMEOUT);
+
+  it('FU2 (advisor-dec-200): stale/aborted submit or user switch during post-create reloadVaultMeta never commits meta for the wrong user or navigates to /app, while a lock during finish keeps pre-FU2 /app navigation', async () => {
+    // 1. User switch during the held post-create GET /vault reload -> does not commit meta for the new user or navigate to /app
+    let holdGetVault = true;
+    let heldGetVault = Promise.withResolvers<void>();
+    const { getVault, getSession, setCurrentMe } = await advanceToStep3('en', {
+      onBeforeGetVault: async () => {
+        if (holdGetVault) {
+          await heldGetVault.promise;
+        }
+      },
+    });
+
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+
+    // Switch to another user while GET /vault is in flight
+    setCurrentMe(makeMeFixture('absent', { userId: 'user-onboarding-step3-test-2' }));
+    await act(async () => {
+      await getSession().refetchMe();
+    });
+    await waitFor(() => {
+      expect(getSession().me?.user.id).toBe('user-onboarding-step3-test-2');
+    }, CRYPTO_WAIT);
+
+    // Release user 1's held GET /vault response -> foreign response is discarded; user 2's vaultMeta stays null and no /app navigation
+    await act(async () => {
+      holdGetVault = false;
+      heldGetVault.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getVault().vaultMeta).toBeNull();
+    expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
+
+    // 2. Lock during the held post-create GET /vault reload -> provider stays locked and finish still routes to /app (RouteGuard sends locked vault to unlock, matching pre-FU2 behaviour)
+    cleanup();
+    routerMocks.replace.mockReset();
+    holdGetVault = true;
+    heldGetVault = Promise.withResolvers<void>();
+    const hLock = await advanceToStep3('en', {
+      onBeforeGetVault: async () => {
+        if (holdGetVault) {
+          await heldGetVault.promise;
+        }
+      },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+    await act(async () => {
+      await hLock.getVault().lock({ broadcast: false, reason: 'lock_during_step3_reload' });
+    });
+    await act(async () => {
+      holdGetVault = false;
+      heldGetVault.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(hLock.getVault().workerState).toBe('locked');
+    expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    // 3. User switch while POST /vault is in flight (stale submit) -> does not call reloadVaultMeta or commit meta for the wrong user
+    cleanup();
+    routerMocks.replace.mockReset();
+    let holdPostVault = true;
+    const heldPostVault = Promise.withResolvers<void>();
+    let getVaultCallsDuringStaleSubmit = 0;
+    let currentMe3 = makeMeFixture('absent', { userId: 'user-onboarding-step3-test-1' });
+    let vaultCtx3!: VaultContextValue;
+    let sessionCtx3!: SessionState & { refetchMe: () => Promise<void> };
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({
+          oauth_providers: [],
+          email_verification_required: false,
+          captcha_site_key: null,
+        });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(currentMe3);
+      if (url.endsWith('/vault') && init?.method === 'POST') {
+        if (holdPostVault) {
+          await heldPostVault.promise;
+        }
+        return jsonResponse({ vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d', version: 1 }, 201);
+      }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        getVaultCallsDuringStaleSubmit += 1;
+        return jsonResponse({
+          version: 1,
+          vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d',
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67_108_864,
+            parallelism: 1,
+            salt: 'oKGio6SlpqeoqaqrrK2urw',
+          },
+          vault_key_wrapped_by_kek:
+            'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA',
+          x25519_public: '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff',
+          ed25519_public: 'ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211',
+          private_keys_wrapped:
+            'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-',
+          recovery_keys_remaining: 10,
+          passkeys: [],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    function Probe3() {
+      vaultCtx3 = useVault();
+      sessionCtx3 = useSession();
+      return null;
+    }
+
+    const qc3 = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc3}>
+            <SessionProvider>
+              <VaultProvider
+                createWorker={makeOnboardingStep3WorkerFactory()}
+                lockEpochEnv={makeSimpleLockEpochEnv()}
+              >
+                <Probe3 />
+                <VaultOnboardingFlow />
+              </VaultProvider>
+            </SessionProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(sessionCtx3.status).toBe('authenticated_without_vault');
+      expect(screen.getByTestId('onboarding-step-passphrase')).toBeInTheDocument();
+    }, CRYPTO_WAIT);
+
+    fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm passphrase/i), {
+      target: { value: STRONG_PASSPHRASE },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('rule-min-length')).toHaveAttribute('data-satisfied', 'true');
+      expect(screen.getByTestId('rule-min-score')).toHaveAttribute('data-satisfied', 'true');
+    }, CRYPTO_WAIT);
+    fireEvent.click(screen.getByTestId('onboarding-continue-button'));
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-step-recovery-keys')).toBeInTheDocument();
+    }, CRYPTO_WAIT);
+
+    fireEvent.click(screen.getByTestId('recovery-keys-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('onboarding-create-vault-button'));
+
+    // Switch user while POST /vault for user 1 is in flight
+    currentMe3 = makeMeFixture('absent', { userId: 'user-onboarding-step3-test-2' });
+    await act(async () => {
+      await sessionCtx3.refetchMe();
+    });
+    await waitFor(() => {
+      expect(sessionCtx3.me?.user.id).toBe('user-onboarding-step3-test-2');
+    }, CRYPTO_WAIT);
+
+    // Release user 1's POST /vault -> stale submit is ignored before notifyVaultChanged / reloadVaultMeta
+    await act(async () => {
+      holdPostVault = false;
+      heldPostVault.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getVaultCallsDuringStaleSubmit).toBe(0);
+    expect(vaultCtx3.vaultMeta).toBeNull();
+    expect(routerMocks.replace).not.toHaveBeenCalled();
+  }, CRYPTO_TEST_TIMEOUT);
+
+  it('FU2 fix2/fix3 (CI-41336756651 & CI-41339550930): when GET /vault is mocked to return 404 vault_absent, Step 3 stays mounted after POST /vault and clicking Skip still navigates to /app even when the post-create reload locks', async () => {
+    const { getVault, getVaultCallsCount } = await advanceToStep3('en', {
+      getVaultMode: 'absent_404',
+    });
+
+    // Allow microtasks/effects after POST /vault to flush
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // If POST /vault eagerly called reloadVaultMeta(), the 404 response would trigger VaultProvider.loadVaultMeta()
+    // row 1a -> lock() -> registerSecretFormReset -> setStep('done'), unmounting Step 3 before Skip can be clicked!
+    expect(getVaultCallsCount()).toBe(0);
+    expect(getVault().workerState).toBe('unlocked');
+    expect(getVault().state).toBe('unlocked');
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-skip-passkey-button')).toBeEnabled();
+
+    // Clicking Skip when GET /vault returns 404 fails closed (locks in VaultProvider),
+    // and still navigates to /app (pre-FU2 finish navigation) rather than hanging on a blank onboarding screen.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
+    });
+    await waitFor(() => {
+      expect(routerMocks.replace).toHaveBeenCalledWith('/app');
+    }, CRYPTO_WAIT);
+    expect(getVaultCallsCount()).toBe(1);
+    expect(getVault().workerState).toBe('locked');
   }, CRYPTO_TEST_TIMEOUT);
 });
