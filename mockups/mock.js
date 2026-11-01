@@ -3262,7 +3262,7 @@
         if (activeAddFormPath === path) {
           const errHtml = activeAddKeyError ? `<span role="alert" class="text-[12px] text-error-ink font-medium">${esc(activeAddKeyError)}</span>` : '';
           return `<div class="json-table-toolbar" data-json-add-field-form="${esc(path)}">
-            <input type="text" class="json-cell-input !w-[192px]" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" class="json-cell-input !w-[192px] shrink-0" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
             <select class="json-type-btn" data-json-new-type="${esc(path)}" aria-label="Kiểu giá trị mới · New value type">
               <option value="string">string ("")</option>
               <option value="number">number (0)</option>
@@ -3360,7 +3360,7 @@
             rowsHtml += `<tr>
               <td class="k">${rowNum}</td>
               <td colspan="${colSpan}">
-                <div class="text-[12px] text-muted mb-1.5">
+                <div class="text-[12px] text-muted mb-1.5 json-dup-row-note">
                   <span class="badge-type badge-warn">khoá trùng · duplicate keys</span>
                   <span>Hàng ${rowNum} có khoá trùng nên hiển thị bảng khoá/giá trị kèm nhãn thứ tự <span class="mono">⁽²⁾</span> để sửa đúng từng occurrence. · <span lang="en">Row ${rowNum} has duplicate keys; shown as field/value with occurrence badges.</span></span>
                 </div>

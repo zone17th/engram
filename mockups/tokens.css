@@ -351,6 +351,9 @@ textarea.omnibox-input::placeholder {
 }
 .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 112px; }
 .json-table td.k, .json-table td.json-col-act, .json-table td[colspan] { min-width: 0; }
+@media (max-width: 639px) {
+  .json-dup-row-note { max-width: calc(100vw - 134px); }
+}
 .json-table tr:last-child td { border-bottom: 0; }
 .json-table .k { font-family: 'Sometype Mono', monospace; color: var(--muted); white-space: nowrap; }
 .json-table .k-occ { font-family: 'Sometype Mono', monospace; font-size: 11px; color: var(--accent); margin-left: 4px; font-weight: 600; }
@@ -677,15 +680,15 @@ textarea.omnibox-input::placeholder {
 
 dialog::backdrop { background: rgba(9,12,29,.45); }
 dialog { border: 0; padding: 0; background: transparent; max-width: calc(100vw - 16px); }
-#passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg, #importDlg { color: var(--body); }
+#passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg, #importDlg, #jsonImportStubDlg { color: var(--body); }
 #passDlg .btn, #rkDlg .btn, #rotateDlg .btn, #passkeyAddDlg .btn, #resetDlg .btn,
-#dupDialog .btn, #tagRenameDlg .btn, #importDlg .btn,
+#dupDialog .btn, #tagRenameDlg .btn, #importDlg .btn, #jsonImportStubDlg .btn,
 section.scope-vault .btn,
 section[data-view] .btn {
   white-space: normal; text-align: center;
 }
 #passDlg .t-label, #rkDlg .t-label, #rotateDlg .t-label, #passkeyAddDlg .t-label, #resetDlg .t-label,
-#dupDialog .t-label, #tagRenameDlg .t-label, #importDlg .t-label,
+#dupDialog .t-label, #tagRenameDlg .t-label, #importDlg .t-label, #jsonImportStubDlg .t-label,
 section.scope-vault .t-label,
 section[data-view] .t-label {
   overflow-wrap: anywhere;
