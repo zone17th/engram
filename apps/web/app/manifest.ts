@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: '/app',
     display: 'standalone',
     background_color: '#FFFFFF',
-    theme_color: '#202020',
+    theme_color: '#FFFFFF',
     icons: [
       {
         src: '/icon.svg',
@@ -18,11 +18,6 @@ export default function manifest(): MetadataRoute.Manifest {
         src: '/apple-icon.png',
         sizes: '180x180',
         type: 'image/png',
-      },
-      {
-        src: '/favicon.ico',
-        sizes: '16x16 32x32 48x48',
-        type: 'image/x-icon',
       },
     ],
   };
