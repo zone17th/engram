@@ -1,10 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ItemPage from '@/app/app/items/[id]/page';
-import { Omnibox } from '@/components/app-shell/omnibox';
 import { ThemeProvider } from '@/components/theme-provider';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { VaultPill } from '@/components/ui/vault-pill';
@@ -32,7 +31,6 @@ import {
   TEST_VECTOR_WRAPPED_VK,
 } from '@/e2e/vault-locked-support';
 import lockedItemFixture from '@/e2e/fixtures/locked-item-entries.json';
-import { DEMO_ITEMS } from '@/lib/demo-fixtures';
 import type { Me } from '@/lib/api/auth';
 import type { Entry, EntryEnvelopeV1, EntryMeta, ItemSummary } from '@/lib/api/content';
 import { CryptoClient, type CreateVaultResult } from '@/lib/crypto/client';
@@ -682,191 +680,6 @@ describe('P03-T21 Locked state U5', () => {
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
     expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
   }, 30_000);
-
-  describe('FE1-2: the Omnibox never shows or matches body previews unless the vault is unlocked', () => {
-    const D1 = DEMO_ITEMS[0]; // title "Cà phê sữa đá tỉ lệ 1:2"; its preview contains "phin" and nowhere else.
-    const DEMO_BODIES = DEMO_ITEMS.map((item) => item.preview);
-    const search = (value: string) => fireEvent.change(screen.getByRole('combobox'), { target: { value } });
-    const itemOptions = () => document.querySelectorAll('[data-search-option]');
-
-    it('locked: names and tags still match and list, no preview text anywhere, and a body-only query finds nothing', async () => {
-      await mountLockedWithFixture(() => <Omnibox />);
-
-      search('ca phe'); // name match
-      expect(await screen.findByRole('option', { name: new RegExp(D1.title) })).toHaveAttribute('href', `/app/items/${D1.id}`);
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-
-      search('cong-thuc'); // tag match: tag row plus the item carrying that tag
-      expect(screen.getByRole('option', { name: /công-thức/ })).toBeInTheDocument();
-      expect(itemOptions().length).toBeGreaterThan(0);
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-
-      search('phin'); // appears only in the d1 body
-      expect(itemOptions()).toHaveLength(0);
-      expect(screen.getByText('Không có mục mẫu phù hợp.')).toBeInTheDocument();
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-    }, 30_000);
-
-    it('unlocked: the same suggestions show the body preview and a body-only query matches', async () => {
-      const h = await mountLockedWithFixture(() => <Omnibox />);
-      await h.unlock();
-
-      search('ca phe');
-      expect(await screen.findByText(D1.preview)).toBeInTheDocument();
-
-      search('phin');
-      expect(itemOptions()).toHaveLength(1);
-      expect(screen.getByText(D1.preview)).toBeInTheDocument();
-    }, 30_000);
-
-    it('suggestions that are already open drop their previews the moment the vault locks, and stop matching bodies', async () => {
-      const h = await mountLockedWithFixture(() => <Omnibox />);
-      await h.unlock();
-
-      search('phin');
-      expect(await screen.findByText(D1.preview)).toBeInTheDocument();
-
-      await act(async () => {
-        await h.vault().lockNow();
-      });
-      await waitFor(() => expect(h.vault().state).toBe('locked'));
-      expect(screen.queryByText(D1.preview)).toBeNull();
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-      expect(itemOptions()).toHaveLength(0); // "phin" was a body-only match
-
-      search('ca phe'); // the name match survives, without its body
-      expect(screen.getByRole('option', { name: new RegExp(D1.title) })).toBeInTheDocument();
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-    }, 30_000);
-
-    it('while locked no entry body reaches any surface: omnibox, results, list, attributes, query cache', async () => {
-      const everyCachedValue = (qc: QueryClient) =>
-        JSON.stringify(
-          qc
-            .getQueryCache()
-            .getAll()
-            .map((query) => query.state.data ?? null),
-        );
-      const h = await mountLockedWithFixture(({ loadFixtureBody }) => (
-        <>
-          <Omnibox />
-          <ItemList items={DEMO_ITEMS} load={loadFixtureBody} openLabel="Open" />
-        </>
-      ));
-
-      for (const value of ['ca phe', 'cong-thuc', 'ghi', 'phin', 'localhost']) {
-        search(value);
-        fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' }); // sets aria-activedescendant
-        // findLeaks covers text, markup, every attribute (aria-label, title, alt, href, ...) and dataset.
-        expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-      }
-      expect(screen.getAllByTestId('item-card')).toHaveLength(DEMO_ITEMS.length); // the list is up, with masked bodies
-      expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(DEMO_ITEMS.length);
-      expect(bodyDataInCache(h.qc)).toEqual([]);
-      // JSON.stringify escapes quotes, so compare against the escaped form of each body.
-      for (const body of DEMO_BODIES) expect(everyCachedValue(h.qc)).not.toContain(JSON.stringify(body).slice(1, -1));
-      expect(h.opened).toEqual([]);
-    }, 30_000);
-
-    it('FE2-1: while unlock is held in flight (unlocking) and after it fails (error), Omnibox, ItemList and EntryBody fail closed', async () => {
-      const nonCryptoLoader = vi.fn<EntryBodyLoader>(async (entryId) => {
-        const item = FIXTURE_ITEMS.find((candidate) => candidate.id === entryId);
-        if (!item) throw new Error('fixture_missing');
-        return item.secret;
-      });
-      const h = await mountLockedWithFixture(() => (
-        <>
-          <Omnibox />
-          <ItemList items={FIXTURE_ITEMS} load={nonCryptoLoader} openLabel="Open" />
-        </>
-      ));
-      nonCryptoLoader.mockClear();
-
-      const assertAllSurfacesMasked = async () => {
-        search('ca phe');
-        expect(await screen.findByRole('option', { name: new RegExp(D1.title) })).toHaveAttribute(
-          'href',
-          `/app/items/${D1.id}`,
-        );
-        expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-
-        search('phin');
-        expect(itemOptions()).toHaveLength(0);
-        expect(screen.getByText('Không có mục mẫu phù hợp.')).toBeInTheDocument();
-        expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-
-        expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
-        expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length);
-        expect(screen.queryAllByTestId('entry-body')).toHaveLength(0);
-        expect(nonCryptoLoader).not.toHaveBeenCalled();
-        expect(bodyDataInCache(h.qc)).toEqual([]);
-        expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
-      };
-
-      const gate = h.holdNextKdf();
-      const op = h.vault().beginOp();
-      let unlockPromise!: Promise<{ unlocked: true }>;
-      act(() => {
-        unlockPromise = h.vault().unlockPassphrase({
-          passphrase: PASSPHRASE,
-          kdf: h.created.kdf,
-          vaultKeyWrappedByKek: h.created.vault_key_wrapped_by_kek,
-          privateKeysWrapped: h.created.private_keys_wrapped,
-          opGeneration: op.opGeneration,
-        });
-        unlockPromise.catch(() => undefined);
-      });
-      await act(async () => {
-        await gate.entered;
-      });
-      expect(h.vault().state).toBe('unlocking');
-      await assertAllSurfacesMasked();
-
-      await act(async () => {
-        h.crashWorker();
-        gate.release();
-        await expect(unlockPromise).rejects.toMatchObject({ code: 'WORKER_CRASHED' });
-      });
-      expect(h.vault().state).toBe('error');
-      await assertAllSurfacesMasked();
-    }, 30_000);
-
-    it('FE2-1: without a VaultProvider, Omnibox, ItemList and EntryBody fail closed', async () => {
-      const nonCryptoLoader = vi.fn<EntryBodyLoader>(async (entryId) => {
-        const item = FIXTURE_ITEMS.find((candidate) => candidate.id === entryId);
-        if (!item) throw new Error('fixture_missing');
-        return item.secret;
-      });
-      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      render(
-        <NextIntlClientProvider locale="en" messages={en}>
-          <QueryClientProvider client={qc}>
-            <Omnibox />
-            <ItemList items={FIXTURE_ITEMS} load={nonCryptoLoader} openLabel="Open" />
-          </QueryClientProvider>
-        </NextIntlClientProvider>,
-      );
-
-      search('ca phe');
-      expect(await screen.findByRole('option', { name: new RegExp(D1.title) })).toHaveAttribute(
-        'href',
-        `/app/items/${D1.id}`,
-      );
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-
-      search('phin');
-      expect(itemOptions()).toHaveLength(0);
-      expect(screen.getByText('Không có mục mẫu phù hợp.')).toBeInTheDocument();
-      expect(findLeaks(document.body, DEMO_BODIES)).toEqual([]);
-
-      expect(screen.getAllByTestId('item-card')).toHaveLength(FIXTURE_ITEMS.length);
-      expect(screen.getAllByTestId('entry-body-locked')).toHaveLength(FIXTURE_ITEMS.length);
-      expect(screen.queryAllByTestId('entry-body')).toHaveLength(0);
-      expect(nonCryptoLoader).not.toHaveBeenCalled();
-      expect(bodyDataInCache(qc)).toEqual([]);
-      expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
-    });
-  });
 
   describe('route guard while locked (advisor-dec-048: U5 over plan 15A for /app and /app/items/** only)', () => {
     function renderGuardedList({ loadFixtureBody }: Pick<Harness, 'loadFixtureBody'>) {

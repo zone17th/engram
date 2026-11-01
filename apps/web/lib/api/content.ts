@@ -613,6 +613,19 @@ export interface ContentMutateOptions<TBody extends ContentMutationBody | undefi
    * (e.g. caller is replaying after an earlier timeout/network drop).
    */
   readonly uncertainPriorSend?: boolean;
+  /**
+   * Optional per-attempt outcome observer invoked once per real send after the outcome is classified
+   * (advisor-dec-203, HM18-R3-3). Never receives body, headers, URL, or entry data.
+   */
+  readonly onAttempt?: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void;
+}
+
+function isUncertainMutationOutcomeError(error: unknown): boolean {
+  if (error instanceof ProblemError) {
+    const { status, code } = error.problem;
+    return status >= 500 || code === 'dependency_unavailable' || code === 'internal_error';
+  }
+  return isNetworkOrTimeoutError(error) || isNonProblem5xxError(error);
 }
 
 function assertNotPlaintextBody(body: unknown): void {
@@ -761,18 +774,32 @@ export async function contentMutate<
   let csrfRecoveredOnce = false;
 
   for (let retryCount = 0; ; retryCount += 1) {
+    const attempt = retryCount + 1;
     try {
-      return await authMutate<TResponse>(opts.path, {
+      const response = await authMutate<TResponse>(opts.path, {
         method,
         body: serializedBody,
         headers,
         signal: opts.signal,
       });
+      try {
+        opts.onAttempt?.({ attempt, uncertainOutcome: false });
+      } catch {
+        // Never let a throwing observer callback turn a committed 2xx response into a retry or failure (advisor-dec-203).
+      }
+      return response;
     } catch (error) {
       if (isAbortFromCaller(error, opts.signal)) {
         throw error;
       }
-
+      try {
+        opts.onAttempt?.({
+          attempt,
+          uncertainOutcome: isUncertainMutationOutcomeError(error),
+        });
+      } catch {
+        // Never let a throwing observer callback alter retry or error classification (advisor-dec-203).
+      }
       // Pre-lookup recovery: if the server rejected before idempotency lookup with `403 csrf_invalid`
       // (either on the first send or after an uncertain prior send — CCFE8), bootstrap the CSRF
       // cookie in-session once within the 2-retry budget and replay the exact same bytes + key.
@@ -811,6 +838,7 @@ export interface ContentIdempotentOptions {
    */
   readonly signal?: AbortSignal;
   readonly uncertainPriorSend?: boolean;
+  readonly onAttempt?: (outcome: { readonly attempt: number; readonly uncertainOutcome: boolean }) => void;
 }
 
 export interface ContentConditionalOptions extends ContentIdempotentOptions {
@@ -889,6 +917,7 @@ export function itemCreate(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -917,6 +946,7 @@ export function itemUpdate(
     ifMatch: resolveVersionIfMatch(opts.ifMatch),
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -931,6 +961,7 @@ export function itemDelete(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -947,6 +978,7 @@ export function itemRestore(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -963,6 +995,7 @@ export function itemTagsAdd(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -978,6 +1011,7 @@ export function itemTagRemove(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -994,6 +1028,7 @@ export function itemEntriesReorder(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1031,6 +1066,7 @@ export function tagUpsert(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1047,6 +1083,7 @@ export function tagRename(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1061,6 +1098,7 @@ export function tagDelete(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1077,6 +1115,7 @@ export function tagRestore(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1114,6 +1153,7 @@ export function entryCreate(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1130,6 +1170,7 @@ export function entryImportJson(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1158,6 +1199,7 @@ export function entryUpdate(
     ifMatch: resolveVersionIfMatch(opts.ifMatch),
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1172,6 +1214,7 @@ export function entryDelete(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 
@@ -1188,6 +1231,7 @@ export function entryRestore(
     idempotencyKey: opts.idempotencyKey,
     signal: opts.signal,
     uncertainPriorSend: opts.uncertainPriorSend,
+    onAttempt: opts.onAttempt,
   });
 }
 

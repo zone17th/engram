@@ -1,12 +1,16 @@
 import { expect, test } from '@playwright/test';
 import { DEMO_ITEMS } from '../lib/demo-fixtures';
-import { installHomeContentMetadataRoutes } from './content-home-support';
+import {
+  MOCKED_HOME_ITEMS,
+  installHomeContentMetadataRoutes,
+  installItemPageMetadataRoutes,
+} from './content-home-support';
 import { LOCKED_ITEM_FIXTURE, installItemPageContentMocks } from './content-itempage-support';
 import { UI_WAIT_MS, findBodyLeaks, installApiMocks } from './vault-locked-support';
 
 /**
  * P03-T21 locked state U5 search (`list search on /app` and `item header search`), split from `vault-locked.spec.ts`
- * (P4FE3-1, P4FE4-1).
+ * and migrated in Task 18a to Enter-only prefix search (P4FE3-1, P4FE4-1, P4FE5-4).
  */
 const BODIES = DEMO_ITEMS.map((item) => item.preview);
 
@@ -20,27 +24,76 @@ test.describe('P03-T21 Locked state U5', () => {
     try {
       await installApiMocks(context);
       await installHomeContentMetadataRoutes(context);
+      const mockedFirstItem = MOCKED_HOME_ITEMS[0]!;
+      await installItemPageMetadataRoutes(context, mockedFirstItem.id);
       const page = await context.newPage();
-      const bodyOnly = DEMO_ITEMS[0]; // "phin" is only in this item's body, never in a title or tag
-
+      const bodyOnly = DEMO_ITEMS[0]!; // "phin" is only in this item's body, never in a title or tag
       await page.goto('/app');
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
-      const input = page.getByRole('combobox');
+      const input = page.locator('#omni textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // Name query: the item is suggested, with the popover open the page still holds no body.
-      await input.fill('ca phe');
+      // UIA-20 / HM18A-R1-11 / HM18A-R2-3: measure placeholder text width (en and vi) via canvas measureText
+      // with the textarea's computed font against its content box width at 390 px viewport.
+      await page.setViewportSize({ width: 390, height: 844 });
+      const placeholderMetrics = await input.evaluate((el) => {
+        const style = window.getComputedStyle(el);
+        const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+        const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+        const contentBoxWidth = el.clientWidth - paddingLeft - paddingRight;
+        const font =
+          style.font && style.font.trim().length > 0
+            ? style.font
+            : `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('2d canvas context unavailable');
+        }
+        ctx.font = font;
+        const enPlaceholder = 'Search or name: content';
+        const viPlaceholder = 'Tìm hoặc tên: nội dung';
+        const activePlaceholder = el.getAttribute('placeholder') ?? '';
+        return {
+          contentBoxWidth,
+          enWidth: ctx.measureText(enPlaceholder).width,
+          viWidth: ctx.measureText(viPlaceholder).width,
+          activeWidth: ctx.measureText(activePlaceholder).width,
+        };
+      });
+      expect(placeholderMetrics.contentBoxWidth).toBeGreaterThanOrEqual(140);
+      expect(placeholderMetrics.enWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
+      expect(placeholderMetrics.viWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
+      expect(placeholderMetrics.activeWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
+      await page.setViewportSize({ width: 1280, height: 800 });
+
+      // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
+      await input.fill('Cà phê');
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await input.press('Enter');
       const listbox = page.getByRole('listbox');
       await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
-      await expect(listbox.locator(`[data-search-option="${bodyOnly.id}"]`)).toBeVisible();
+      const matchedOption = listbox.getByRole('option', { name: new RegExp(bodyOnly.title) });
+      await expect(matchedOption).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
 
-      // Body-only query: nothing matches while locked, and still nothing leaks.
+      // Body-only query: nothing matches while locked (only "Create item" option is offered), and nothing leaks.
       await input.fill('phin');
-      await expect(listbox).toBeVisible();
-      await expect(listbox.locator('[data-search-option]')).toHaveCount(0);
-      await expect(listbox.getByText('Không có mục mẫu phù hợp.')).toBeVisible();
+      await expect(listbox).toHaveCount(0);
+      await input.press('Enter');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('omnibox-search-empty')).toBeVisible();
+      await expect(listbox.getByRole('option', { name: /Create item “phin”|Tạo mục “phin”/ })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
+
+      // HM18A-R1-2: real mouse click on a search result option navigates to `/app/items/<id>` without blur closing the popover first.
+      await input.fill('Cà phê');
+      await input.press('Enter');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await listbox.getByRole('option', { name: new RegExp(bodyOnly.title) }).click();
+      await expect(page).toHaveURL(new RegExp(`/app/items/${mockedFirstItem.id}$`), {
+        timeout: UI_WAIT_MS,
+      });
     } finally {
       await context.close();
     }
@@ -53,26 +106,32 @@ test.describe('P03-T21 Locked state U5', () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
       await installApiMocks(context);
+      await installHomeContentMetadataRoutes(context);
       await installItemPageContentMocks(context);
       const page = await context.newPage();
-      const bodyOnly = DEMO_ITEMS[0]; // "phin" is only in this item's body, never in a title or tag
+      const bodyOnly = DEMO_ITEMS[0]!; // "phin" is only in this item's body, never in a title or tag
 
       await page.goto(`/app/items/${LOCKED_ITEM_FIXTURE.item.id}`);
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
-      const input = page.getByRole('combobox');
+      const input = page.locator('header textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // Name query: the item is suggested, with the popover open the page still holds no body.
-      await input.fill('ca phe');
-      await expect(page.getByRole('listbox')).toBeVisible({ timeout: UI_WAIT_MS });
-      await expect(page.locator(`[data-search-option="${bodyOnly.id}"]`)).toBeVisible();
+      // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
+      await input.fill('Cà phê');
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await input.press('Enter');
+      const listbox = page.getByRole('listbox');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(listbox.getByRole('option', { name: new RegExp(bodyOnly.title) })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
 
       // Body-only query: nothing matches while locked, and still nothing leaks.
       await input.fill('phin');
-      await expect(page.getByRole('listbox')).toBeVisible();
-      await expect(page.locator('[data-search-option]')).toHaveCount(0);
-      await expect(page.getByText('Không có mục mẫu phù hợp.')).toBeVisible();
+      await expect(listbox).toHaveCount(0);
+      await input.press('Enter');
+      await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(page.getByTestId('omnibox-search-empty')).toBeVisible();
+      await expect(listbox.getByRole('option', { name: /Create item “phin”|Tạo mục “phin”/ })).toBeVisible();
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
     } finally {
       await context.close();

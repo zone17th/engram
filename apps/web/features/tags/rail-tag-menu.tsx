@@ -32,6 +32,7 @@ export interface RailTagChipProps {
   readonly selected: boolean;
   readonly onSelect: (tagId: string) => void;
   readonly onTagDeleted?: (tagId: string) => void;
+  /** Fired after a successful rename, delete, or Undo restore so the parent can drop stale extra tag pages (HM19-R3-1, HM19-R4-2). */
   readonly onTagMutated?: () => void;
   /**
    * Required callback invoked when an Undo `tagRestore` fails after this chip has already unmounted

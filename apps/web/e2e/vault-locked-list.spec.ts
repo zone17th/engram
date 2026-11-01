@@ -38,7 +38,8 @@ test.describe('P03-T21 Locked state U5', () => {
       }
       await expect(page.getByTestId('item-card').first()).toContainText(`#${MOCKED_HOME_ITEMS[0].tags[0].display}`);
       await expect(page.getByTestId('item-card').first()).toContainText('1 entry');
-      expect(await page.locator('textarea, [contenteditable]:not([contenteditable="false"])').count()).toBe(0);
+      expect(await page.locator('textarea:not([data-omnibox-input]), [contenteditable]:not([contenteditable="false"])').count()).toBe(0);
+      await expect(page.locator('textarea[data-omnibox-input]').first()).toHaveValue('');
 
       // Unlock (real Worker): home grid still holds no bodies (Q6), and no attribute or dataset carries a body.
       await unlockFromBanner(page);

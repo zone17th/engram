@@ -43,9 +43,8 @@ test.describe('P03-T21 Locked state U5', () => {
         await expect(page.getByTestId('item-tags')).toContainText(`#${tag.display}`);
       }
       expect(await findBodyLeaks(page, BODIES)).toEqual([]);
-      expect(
-        await page.locator('#entry-card-list textarea, #entry-card-list [contenteditable]:not([contenteditable="false"])').count(),
-      ).toBe(0);
+      expect(await page.locator('textarea:not([data-omnibox-input]), [contenteditable]:not([contenteditable="false"])').count()).toBe(0);
+      await expect(page.locator('textarea[data-omnibox-input]').first()).toHaveValue('');
       await expect(page.getByTestId('btn-add-text')).toBeDisabled();
 
       await unlockFromBanner(page);
