@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { JSON_MAX_UTF8_BYTES, measureUtf8Bytes } from '../../lib/json/utf8';
 import {
   QUICK_ADD_MAX_TAGS,
   QUICK_ADD_SEARCHABLE_MAX_RUNES,
@@ -46,7 +47,7 @@ function loadQuickAddFixtureSuite(): QuickAddFixtureSuite {
   const suite = JSON.parse(raw) as QuickAddFixtureSuite;
   expect(suite.version).toBe(1);
   expect(suite.schema).toBe('engram-content-quick-add-v1');
-  expect(suite.cases.length).toBeGreaterThanOrEqual(40);
+  expect(suite.cases.length).toBeGreaterThanOrEqual(60);
   return suite;
 }
 
@@ -185,6 +186,50 @@ describe('features/omnibox/quick-add-parse — security & boundary invariants', 
       jsonCandidate: false,
       searchable: false,
       error: 'tag_display_invalid',
+    });
+  });
+
+  it('rejects a ~100k-rune "! ! ! …:" name before punctuation-strip loop (QA1-3)', () => {
+    // 50,000 "! " pairs + "!" = 100,001 runes trimmed (> 200 rune limit)
+    const hugePunctName = `${'! '.repeat(50_000)}!`;
+    expect(hugePunctName.length).toBe(100_001);
+    const res = parseQuickAdd(`${hugePunctName}: secret`);
+    expect(res).toEqual({
+      mode: 'add-invalid',
+      name: hugePunctName,
+      tags: [],
+      body: 'secret',
+      jsonCandidate: false,
+      searchable: false,
+      error: 'name_invalid',
+    });
+  });
+
+  it('enforces the 262,144-byte UTF-8 limit on jsonCandidate bodies (QA1-4)', () => {
+    expect(JSON_MAX_UTF8_BYTES).toBe(262_144);
+
+    // '{"a":"' is 6 ASCII bytes, '"}' is 2 ASCII bytes -> 262,136 'x' bytes = 262,144 bytes total
+    const body262144 = `{"a":"${'x'.repeat(JSON_MAX_UTF8_BYTES - 8)}"}`;
+    expect(measureUtf8Bytes(body262144)).toBe(262_144);
+    expect(parseQuickAdd(`cfg: ${body262144}`)).toEqual({
+      mode: 'add',
+      name: 'cfg',
+      tags: [],
+      body: body262144,
+      jsonCandidate: true,
+      searchable: false,
+    });
+
+    // 1 byte over the 262,144-byte limit -> jsonCandidate: false (still valid add mode as text)
+    const body262145 = `{"a":"${'x'.repeat(JSON_MAX_UTF8_BYTES - 7)}"}`;
+    expect(measureUtf8Bytes(body262145)).toBe(262_145);
+    expect(parseQuickAdd(`cfg: ${body262145}`)).toEqual({
+      mode: 'add',
+      name: 'cfg',
+      tags: [],
+      body: body262145,
+      jsonCandidate: false,
+      searchable: false,
     });
   });
 });
