@@ -104,11 +104,15 @@ export async function installItemPageMetadataRoutes(
   context: BrowserContext,
   itemId: string = DEMO_ITEMS[1]!.id,
 ): Promise<void> {
-  const fallbackItem = MOCKED_HOME_ITEMS[1] ?? MOCKED_HOME_ITEMS[0]!;
+  const matchedMocked = MOCKED_HOME_ITEMS.find((it) => it.id === itemId);
+  const fallbackItem = matchedMocked ?? MOCKED_HOME_ITEMS[1] ?? MOCKED_HOME_ITEMS[0]!;
   const itemSummary: ItemSummary = {
     ...fallbackItem,
     id: itemId,
-    name: DEMO_ITEMS.find((it) => it.id === itemId)?.title ?? fallbackItem.name,
+    name:
+      matchedMocked?.name ??
+      DEMO_ITEMS.find((it) => it.id === itemId)?.title ??
+      fallbackItem.name,
   };
 
   await context.route(`**/api/v1/items/${itemId}`, async (route) => {

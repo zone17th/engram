@@ -11,7 +11,10 @@ import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { assertVaultSecretElementAttributes } from '@/features/entries/secret-input-props';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { contentQueryKeys } from '@/features/items/query-keys';
-import { clearSaveUnconfirmed } from '@/features/omnibox/unconfirmed-save-store';
+import {
+  clearLockClearedNotice,
+  clearSaveUnconfirmed,
+} from '@/features/omnibox/unconfirmed-save-store';
 import { setKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import * as contentApi from '@/lib/api/content';
 import type { EntryEnvelopeV1, EntryMeta, ItemSummary, Tag } from '@/lib/api/content';
@@ -191,6 +194,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     mockVaultState = 'unlocked';
     mockVaultGeneration = 1;
     clearSaveUnconfirmed();
+    clearLockClearedNotice();
     setKnownDeviceSessionUserId(USER_A_ID);
   });
 
@@ -687,6 +691,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     mockVaultState = 'unlocked';
     mockVaultGeneration = 1;
     clearSaveUnconfirmed();
+    clearLockClearedNotice();
     setKnownDeviceSessionUserId(USER_A_ID);
     document.cookie = 'sabk_csrf=v1.sess.test; path=/';
   });
@@ -894,6 +899,20 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
     expect(textarea).toHaveFocus();
+    // Case C2: 2 matches -> Escape closes the dialog before unmount and restores focus to the omnibox (HM18B-R1-2)
+    lookupSpy.mockResolvedValueOnce({
+      items: [dupItem1, dupItem2],
+      total: 2,
+      next_cursor: null,
+    });
+    fireEvent.change(textarea, { target: { value: 'wifi: nội dung thử đóng bằng Esc' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    const pickerDialogEsc = await screen.findByTestId('dup-picker-dialog');
+    fireEvent.keyDown(pickerDialogEsc, { key: 'Escape' });
+    expect(screen.queryByTestId('dup-picker-dialog')).not.toBeInTheDocument();
+    expect(textarea).toHaveFocus();
+    expect(textarea).toHaveValue('wifi: nội dung thử đóng bằng Esc');
 
     // Case D: 2 matches -> choose "Tạo mục mới cùng tên" -> creates a 3rd item with entry
     itemCreateSpy.mockClear();
@@ -907,9 +926,10 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
     const pickerDialog2 = await screen.findByTestId('dup-picker-dialog');
-    const createSameNameBtn = within(pickerDialog2).getByRole('option', {
-      name: /Tạo mục mới cùng tên/,
-    });
+    const createSameNameBtn = within(pickerDialog2).getByTestId('dup-picker-create-same-name');
+    expect(createSameNameBtn).toHaveTextContent('Tạo mục mới cùng tên');
+    fireEvent.click(createSameNameBtn);
+    // A duplicate click while the pick/plan is already starting does not start a second plan (HM18B-R1-8)
     fireEvent.click(createSameNameBtn);
 
     await waitFor(() => {
@@ -1100,57 +1120,34 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(await screen.findByText(/Đã lưu vào “router”/)).toBeInTheDocument();
   });
 
-  it('Undo deletes ONLY the entry (Q18, P4BE1-2), keeping the created item, tag, assignment, and any concurrent changes made by device B', async () => {
+  it('Undo calls ONLY entryDelete for the saved entry ID and never calls itemDelete, tagDelete, or itemTagRemove (Q18, P4BE1-2, HM18B-R1-6)', async () => {
     vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
       items: [],
       total: 0,
       next_cursor: null,
     });
 
-    const dbItems = new Map<
-      string,
-      { name: string; hint: string | null; tags: string[]; entries: string[] }
-    >();
-
     const itemCreateSpy = vi
       .spyOn(contentApi, 'itemCreate')
-      .mockImplementation(async (body) => {
-        const id = body.id ?? 'new-item-id';
-        dbItems.set(id, { name: body.name, hint: null, tags: [], entries: [] });
-        return {
-          ...ITEM_WIFI,
-          id,
-          name: body.name,
-          tags: [],
-          entry_count: 0,
-        };
-      });
+      .mockImplementation(async (body) => ({
+        ...ITEM_WIFI,
+        id: body.id ?? 'new-item-id',
+        name: body.name,
+        tags: [],
+        entry_count: 0,
+      }));
     const itemDeleteSpy = vi.spyOn(contentApi, 'itemDelete');
     const tagDeleteSpy = vi.spyOn(contentApi, 'tagDelete');
     const itemTagRemoveSpy = vi.spyOn(contentApi, 'itemTagRemove');
 
     vi.spyOn(contentApi, 'tagUpsert').mockResolvedValue(TAG_NHA);
-    vi.spyOn(contentApi, 'itemTagsAdd').mockImplementation(async (itemId, body) => {
-      const rec = dbItems.get(itemId);
-      if (rec) {
-        for (const tid of body.tag_ids) {
-          if (!rec.tags.includes(tid)) rec.tags.push(tid);
-        }
-      }
-      return ITEM_WIFI;
-    });
-    vi.spyOn(contentApi, 'entryCreate').mockImplementation(async (itemId, body) => {
-      const rec = dbItems.get(itemId);
-      if (rec) rec.entries.push(body.id);
-      return makeEntryMeta(itemId, body.id);
-    });
+    vi.spyOn(contentApi, 'itemTagsAdd').mockResolvedValue(ITEM_WIFI);
+    const entryCreateSpy = vi
+      .spyOn(contentApi, 'entryCreate')
+      .mockImplementation(async (itemId, body) => makeEntryMeta(itemId, body.id));
     const entryDeleteSpy = vi
       .spyOn(contentApi, 'entryDelete')
-      .mockImplementation(async (entryId) => {
-        for (const rec of dbItems.values()) {
-          rec.entries = rec.entries.filter((e) => e !== entryId);
-        }
-      });
+      .mockResolvedValue(undefined);
 
     renderOmnibox();
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
@@ -1164,18 +1161,11 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       'Hoàn tác chỉ xoá nội dung vừa lưu; mục và tag vẫn giữ',
     );
 
-    const createdItemId = itemCreateSpy.mock.calls[0]?.[0]?.id ?? '';
-    const record = dbItems.get(createdItemId)!;
-    expect(record).toBeDefined();
-    const entryAId = record.entries[0]!;
+    expect(itemCreateSpy).toHaveBeenCalledTimes(1);
+    expect(entryCreateSpy).toHaveBeenCalledTimes(1);
+    const entryAId = entryCreateSpy.mock.calls[0]?.[1]?.id ?? '';
+    expect(entryAId).toMatch(/^[0-9a-f-]{36}$/);
 
-    // Device B renames item, edits hint, attaches another tag, and adds its own entry before A clicks Undo
-    record.name = 'wifi-đổi-tên-bởi-B';
-    record.hint = 'hint từ thiết bị B';
-    record.tags.push(TAG_OPS.id);
-    record.entries.push('entry-from-device-B');
-
-    // Device A clicks Undo
     fireEvent.click(within(toast).getByRole('button', { name: /Hoàn tác/ }));
 
     await waitFor(() => {
@@ -1188,13 +1178,46 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(itemDeleteSpy).not.toHaveBeenCalled();
     expect(tagDeleteSpy).not.toHaveBeenCalled();
     expect(itemTagRemoveSpy).not.toHaveBeenCalled();
-
-    // All of Device B's changes and the created item/tags remain intact
-    expect(record.name).toBe('wifi-đổi-tên-bởi-B');
-    expect(record.hint).toBe('hint từ thiết bị B');
-    expect(record.tags).toEqual([TAG_NHA.id, TAG_OPS.id]);
-    expect(record.entries).toEqual(['entry-from-device-B']);
     expect(textarea).toHaveFocus();
+  });
+
+  it('makes the textarea readOnly + aria-busy while the save plan is in flight and never silently destroys text if the textarea value diverges before completion (HM18B-R1-3)', async () => {
+    vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+      items: [ITEM_WIFI],
+      total: 1,
+      next_cursor: null,
+    });
+
+    const { promise: entryPromise, resolve: resolveEntry } = Promise.withResolvers<EntryMeta>();
+    vi.spyOn(contentApi, 'entryCreate').mockImplementation(() => entryPromise);
+
+    renderOmnibox();
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: 'wifi: đang lưu bản nháp 1' } });
+    expect(textarea).not.toHaveAttribute('readonly');
+    expect(textarea).not.toHaveAttribute('aria-busy');
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    // Wait until plan is running
+    await screen.findByTestId('omnibox-save-plan');
+    expect(textarea).toHaveAttribute('readonly');
+    expect(textarea).toHaveAttribute('aria-busy', 'true');
+
+    // Attempting to type via onChange while running is ignored and keeps the submitted draft intact
+    fireEvent.change(textarea, { target: { value: 'wifi: gõ đè khi đang chạy' } });
+    expect(textarea).toHaveValue('wifi: đang lưu bản nháp 1');
+
+    // Even if a script or external setter mutates `textarea.value` to new text before completion,
+    // completion will NOT wipe the diverged text.
+    textarea.value = 'ghi chú mới gõ thêm';
+    resolveEntry(makeEntryMeta(ITEM_WIFI.id, '00000000-0000-4000-8000-000000000099'));
+
+    await screen.findByTestId('undo-toast-item');
+    expect(textarea).not.toHaveAttribute('readonly');
+    expect(textarea).not.toHaveAttribute('aria-busy');
+    expect(textarea.value).toBe('ghi chú mới gõ thêm');
   });
 
   it('supports Ctrl+Z right after quick-add save, keeps native undo after typing a character, gives >= 10 s toast duration on keyboard save, and supports 4 consecutive saves via both "+1" overflow and repeated Ctrl+Z', async () => {
@@ -1409,7 +1432,84 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(new Set(seenUnauthEntryKeys).size).toBe(1);
     unauthFetchSpy.mockRestore();
 
-    // Part 2: Lost response on first send, then `session_invalid` on retry -> no replay, drops plan/draft, shows `saveUnconfirmed` after re-login/unlock for User A, and hides it for User B
+    // Part 2a (HM18B-R1-5): A first-attempt `session_invalid` (no prior uncertain send, `priorUncertain === false`)
+    // drops the plan and draft, and does NOT record `saveUnconfirmed` (SPEC §3.4 case b requires an uncertain earlier send).
+    const firstAttemptSessionInvalidSpy = vi
+      .spyOn(contentApi, 'entryCreate')
+      .mockRejectedValueOnce(
+        new ProblemError({
+          type: 'https://engram.zone17.click/problems/session_invalid',
+          title: 'Session invalid on first send',
+          status: 401,
+          code: 'session_invalid',
+        }),
+      );
+
+    setKnownDeviceSessionUserId(USER_A_ID);
+    fireEvent.change(textarea, { target: { value: 'wifi: first-attempt session_invalid' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(textarea).toHaveValue('');
+    });
+    expect(firstAttemptSessionInvalidSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    firstAttemptSessionInvalidSpy.mockRestore();
+
+    // Part 2b (HM18B-R1-5): When no real user ID is known (`['auth','me']` cache empty and `getKnownDeviceSessionUserId() === null`),
+    // even a retry `session_invalid` after an uncertain send does NOT record or render `saveUnconfirmed` (no shared fallback ID).
+    queryClient.removeQueries({ queryKey: ['auth', 'me'] });
+    setKnownDeviceSessionUserId(null);
+    let noUserAttempt = 0;
+    const noUserEntrySpy = vi
+      .spyOn(contentApi, 'entryCreate')
+      .mockImplementation(async () => {
+        noUserAttempt += 1;
+        if (noUserAttempt === 1) {
+          throw new TypeError('Failed to fetch: lost POST /entries response without user id');
+        }
+        throw new ProblemError({
+          type: 'https://engram.zone17.click/problems/session_invalid',
+          title: 'Session invalid',
+          status: 401,
+          code: 'session_invalid',
+        });
+      });
+
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    fireEvent.change(textarea, { target: { value: 'wifi: uncertain send without user id' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    await screen.findByTestId('omnibox-retry-plan-btn');
+    fireEvent.click(screen.getByTestId('omnibox-retry-plan-btn'));
+    await waitFor(() => {
+      expect(textarea).toHaveValue('');
+    });
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    // Even after User A signs in later, nothing was recorded under a fallback ID
+    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_A_ID } });
+    setKnownDeviceSessionUserId(USER_A_ID);
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    noUserEntrySpy.mockRestore();
+
+    // Part 2c: Lost response on first send (`priorUncertain === true`), then `session_invalid` on retry with known User A ->
+    // no replay, drops plan/draft, shows `saveUnconfirmed` after re-login/unlock for User A, and hides it for User B
     let entryAttempt = 0;
     const entryCreateSpy = vi
       .spyOn(contentApi, 'entryCreate')
@@ -1487,9 +1587,9 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     });
   });
 
-  it('drops save plan and draft when vault locks mid-plan (after POST /items, before POST /entries), shows notice after unlock, keeps item, and never leaks plaintext in DOM or MutationCache', async () => {
+  it('drops save plan and draft when vault locks mid-plan (after POST /items, before POST /entries), preserves the user-scoped lock notice across Omnibox unmount/remount on the unlock route (HM18B-R1-4), keeps item, and never leaks plaintext', async () => {
     const secretPlaintext = 'SENTINEL_MID_PLAN_LOCK_SECRET_999';
-    vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+    const lookupSpy = vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
       items: [],
       total: 0,
       next_cursor: null,
@@ -1497,13 +1597,14 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const itemCreateSpy = vi.spyOn(contentApi, 'itemCreate').mockResolvedValue(ITEM_WIFI);
 
     const { promise: tagUpsertPromise, resolve: resolveTagUpsert } = Promise.withResolvers<Tag>();
-    vi.spyOn(contentApi, 'tagUpsert').mockImplementation(() => tagUpsertPromise);
+    const tagUpsertSpy = vi.spyOn(contentApi, 'tagUpsert').mockImplementation(() => tagUpsertPromise);
     const entryCreateSpy = vi.spyOn(contentApi, 'entryCreate');
 
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const { container, rerender } = renderOmnibox(<Omnibox />, { queryClient });
+    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_A_ID } });
+    const { container, unmount } = renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
     fireEvent.change(textarea, {
@@ -1522,15 +1623,6 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     act(() => {
       triggerVaultLockReset();
     });
-    rerender(
-      <NextIntlClientProvider locale="vi" messages={viMessages}>
-        <QueryClientProvider client={queryClient}>
-          <UndoToastProvider>
-            <Omnibox />
-          </UndoToastProvider>
-        </QueryClientProvider>
-      </NextIntlClientProvider>,
-    );
 
     // Draft and plan are dropped immediately; no plaintext attributes while locked
     expect(textarea).toHaveValue('');
@@ -1538,16 +1630,34 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(container.innerHTML).not.toContain(secretPlaintext);
     assertNoPlaintextAttrs(container, [secretPlaintext], { locked: true });
 
-    // Even if in-flight tagUpsert resolves after lock, nothing proceeds to POST /entries
+    // Simulate navigating away to `/app/unlock` where Omnibox unmounts completely (HM18B-R1-4)
+    unmount();
+
+    // Even if in-flight tagUpsert resolves after lock/unmount, nothing proceeds to POST /entries
     resolveTagUpsert(TAG_NHA);
     await act(async () => {
       await Promise.resolve();
     });
     expect(entryCreateSpy).not.toHaveBeenCalled();
+    for (const spy of [lookupSpy, itemCreateSpy, tagUpsertSpy, entryCreateSpy]) {
+      expect(JSON.stringify(spy.mock.calls)).not.toContain(secretPlaintext);
+    }
 
-    // Unlock the vault -> shows post-unlock notice that draft was cleared and created item/tags were kept; nothing auto-sent
+    // Unlock the vault and mount a fresh `<Omnibox />` instance (as when returning from `/app/unlock` to `/app`) ->
+    // shows post-unlock notice that draft was cleared and created item/tags were kept; nothing auto-sent
     triggerVaultUnlock();
-    rerender(
+    const remounted = renderOmnibox(<Omnibox />, { queryClient });
+
+    const lockNotice = await screen.findByTestId('omnibox-lock-cleared-notice');
+    expect(lockNotice).toHaveTextContent(
+      'Bản nháp chưa lưu đã bị xoá khi khoá vault; mục/tag đã tạo vẫn còn',
+    );
+    expect(entryCreateSpy).not.toHaveBeenCalled();
+
+    // Switching to User B clears User A's lock notice so User B never sees it
+    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_B_ID } });
+    setKnownDeviceSessionUserId(USER_B_ID);
+    remounted.rerender(
       <NextIntlClientProvider locale="vi" messages={viMessages}>
         <QueryClientProvider client={queryClient}>
           <UndoToastProvider>
@@ -1556,22 +1666,19 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
         </QueryClientProvider>
       </NextIntlClientProvider>,
     );
-
-    const lockNotice = await screen.findByTestId('omnibox-lock-cleared-notice');
-    expect(lockNotice).toHaveTextContent(
-      'Bản nháp chưa lưu đã bị xoá khi khoá vault; mục/tag đã tạo vẫn còn',
-    );
-    expect(entryCreateSpy).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+    });
   });
 
-  it('never leaks plaintext in DOM attributes or MutationCache (variables, context, data, error) on unlocked, locked, or failed save (P4FE1-2, P4FE2-2)', async () => {
+  it('sends only sealed ciphertext to entryCreate and never leaks plaintext in spy arguments, DOM attributes, QueryCache, or MutationCache on unlocked, locked, or failed save (P4FE1-2, P4FE2-2, HM18B-R1-6)', async () => {
     const secretPlaintext = 'SENTINEL_MUTATION_CACHE_SECRET_4455';
-    vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+    const lookupSpy = vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
       items: [ITEM_WIFI],
       total: 1,
       next_cursor: null,
     });
-    vi.spyOn(contentApi, 'entryCreate').mockRejectedValue(
+    const entryCreateSpy = vi.spyOn(contentApi, 'entryCreate').mockRejectedValue(
       new ProblemError({
         type: 'https://engram.zone17.click/problems/internal_error',
         title: 'Internal error',
@@ -1583,6 +1690,13 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    // Seed a non-empty entry in MutationCache as a positive control so the cache scan is non-vacuous (HM18B-R1-6)
+    const seededMutation = queryClient.getMutationCache().build(queryClient, {
+      mutationKey: ['content', 'entries', 'create'],
+    });
+    expect(queryClient.getMutationCache().getAll().length).toBeGreaterThanOrEqual(1);
+    expect(seededMutation).toBeDefined();
+
     const { container } = renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
@@ -1594,11 +1708,38 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     fireEvent.keyDown(textarea, { key: 'Enter' });
     await screen.findByTestId('omnibox-plan-error');
 
+    // Positive control (HM18B-R1-6): `entryCreate` was called with the opaque ciphertext and envelope,
+    // and the plaintext sentinel is absent from every spy argument.
+    expect(entryCreateSpy).toHaveBeenCalledTimes(1);
+    const [calledItemId, calledBody, calledOpts] = entryCreateSpy.mock.calls[0]!;
+    expect(calledItemId).toBe(ITEM_WIFI.id);
+    expect(calledBody).toEqual(
+      expect.objectContaining({
+        type: 'text',
+        ciphertext: 'Q0lQSEVSVEVYVF9PUEFRVUVfQllURVM',
+        envelope: expect.objectContaining({
+          v: 1,
+          alg: 'xchacha20poly1305-ietf',
+          key_id: TEST_KEY_ID,
+        }),
+      }),
+    );
+    expect(calledOpts).toEqual(
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+      }),
+    );
+    for (const spy of [lookupSpy, entryCreateSpy]) {
+      expect(JSON.stringify(spy.mock.calls)).not.toContain(secretPlaintext);
+    }
+
     // Check DOM attributes after failed save
     assertNoPlaintextAttrs(container, [secretPlaintext]);
 
     // Scan MutationCache and QueryCache for the secret plaintext
-    for (const mutation of queryClient.getMutationCache().getAll()) {
+    const allMutations = queryClient.getMutationCache().getAll();
+    expect(allMutations.length).toBeGreaterThanOrEqual(1);
+    for (const mutation of allMutations) {
       const serialized = JSON.stringify({
         variables: mutation.state.variables,
         context: mutation.state.context,
@@ -1617,10 +1758,18 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     }
   });
 
-  it('ignores Enter and Ctrl+Enter while IME isComposing or keyCode === 229 in add mode (0 POST /items or POST /entries)', () => {
-    const lookupSpy = vi.spyOn(contentApi, 'itemsLookupExact');
+  it('ignores Enter and Ctrl+Enter while IME isComposing or keyCode === 229 in add mode (0 POST /items or POST /entries), then submits normally once composition ends (HM18B-R1-6)', async () => {
+    const lookupSpy = vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+      items: [ITEM_WIFI],
+      total: 1,
+      next_cursor: null,
+    });
     const itemCreateSpy = vi.spyOn(contentApi, 'itemCreate');
-    const entryCreateSpy = vi.spyOn(contentApi, 'entryCreate');
+    const tagUpsertSpy = vi.spyOn(contentApi, 'tagUpsert').mockResolvedValue(TAG_NHA);
+    const itemTagsAddSpy = vi.spyOn(contentApi, 'itemTagsAdd').mockResolvedValue(ITEM_WIFI);
+    const entryCreateSpy = vi
+      .spyOn(contentApi, 'entryCreate')
+      .mockImplementation(async (itemId, body) => makeEntryMeta(itemId, body.id));
 
     renderOmnibox();
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
@@ -1634,5 +1783,14 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(lookupSpy).not.toHaveBeenCalled();
     expect(itemCreateSpy).not.toHaveBeenCalled();
     expect(entryCreateSpy).not.toHaveBeenCalled();
+
+    // Positive control (HM18B-R1-6): the exact same draft without `isComposing` / `229` submits and saves
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    await waitFor(() => {
+      expect(lookupSpy).toHaveBeenCalledTimes(1);
+      expect(tagUpsertSpy).toHaveBeenCalledTimes(1);
+      expect(itemTagsAddSpy).toHaveBeenCalledTimes(1);
+      expect(entryCreateSpy).toHaveBeenCalledTimes(1);
+    });
   });
 });

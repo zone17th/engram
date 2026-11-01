@@ -2,8 +2,10 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import { uniqueEmail } from './helpers';
 import {
   createVaultViaOnboarding,
+  expectLockedListOnApp,
   expectUnlockedOnApp,
   signupPasswordUser,
+  unlockFromLockedList,
 } from './vault-journey-support';
 import { VAULT_PASSPHRASE } from './vault-passkey-support';
 
@@ -11,10 +13,9 @@ import { VAULT_PASSPHRASE } from './vault-passkey-support';
 // so a failure while a recovery-key sheet or secret input is mounted can never serialize secrets to disk.
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 
-const QUICK_ADD_TIMEOUT_MS = 300_000;
+const QUICK_ADD_TIMEOUT_MS = 240_000;
 const UI_WAIT_MS = 30_000;
 const G1_MEDIAN_BUDGET_MS = 3_000;
-
 /**
  * Writes a value into a `<textarea>` or `<input>` without appearing in Playwright's `fill()` call logs.
  */
@@ -74,12 +75,12 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     'needs the compose stack (E2E_STACK=1): real API, real database',
   );
 
-  test('executes A3 response-loss retry without duplicate items/entries, U9 duplicate picker selection & 3rd item creation, Ctrl+Z quick-add Undo vs native undo after typing, and G1 median <= 3 s latency', async ({
+  test('measures G1 latency (Enter -> saved toast <= 3 s median of 5 runs) and executes A3 response-loss retry on POST /items and POST /entries without duplicates (HM18B-R1-1, HM18B-R1-7)', async ({
     page,
   }) => {
     test.setTimeout(QUICK_ADD_TIMEOUT_MS);
 
-    const email = uniqueEmail('content-omni-add');
+    const email = uniqueEmail('content-omni-a3');
     await signupPasswordUser(page, email);
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
     await expectUnlockedOnApp(page);
@@ -102,9 +103,12 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
       expect(firstMedianMs).toBeLessThanOrEqual(G1_MEDIAN_BUDGET_MS);
     }
 
-    // --- 2. A3: Drop response after server commits `POST /items` -> Retry reuses Idempotency-Key -> 1 item + 1 entry;
-    //         Drop response after server commits `POST /items/{id}/entries` -> Retry reuses Idempotency-Key -> 1 entry ---
-    let interceptPostItemsOnce = true;
+    // --- 2. A3: Drop response after server commits `POST /items` -> Retry button reuses Idempotency-Key -> 1 item + 1 entry;
+    //         Drop response after server commits `POST /items/{id}/entries` -> Retry button reuses Idempotency-Key -> 1 entry ---
+    // Note: `contentMutate` automatically retries a network failure once (`maxNetworkRetries = 1`), so we abort the first 2
+    // attempts after forwarding the first to the real backend; this deterministically surfaces `omnibox-retry-plan-btn` (HM18B-R1-7).
+    let postItemsAbortRemaining = 2;
+    let postItemsForwardedToBackend = false;
     const seenPostItemsKeys: string[] = [];
     await page.route('**/api/v1/items', async (route) => {
       if (route.request().method() !== 'POST') {
@@ -113,17 +117,20 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
       }
       const key = route.request().headers()['idempotency-key'] ?? '';
       seenPostItemsKeys.push(key);
-      if (interceptPostItemsOnce) {
-        interceptPostItemsOnce = false;
-        // Forward to the real backend so the item is committed in Postgres, then abort the browser response!
-        await route.fetch();
+      if (postItemsAbortRemaining > 0) {
+        postItemsAbortRemaining -= 1;
+        if (!postItemsForwardedToBackend) {
+          postItemsForwardedToBackend = true;
+          await route.fetch();
+        }
         await route.abort('failed');
         return;
       }
       await route.continue();
     });
 
-    let interceptPostEntriesOnce = false;
+    let postEntriesAbortRemaining = 0;
+    let postEntriesForwardedToBackend = false;
     const seenPostEntriesKeys: string[] = [];
     await page.route('**/api/v1/items/*/entries', async (route) => {
       if (route.request().method() !== 'POST') {
@@ -132,10 +139,12 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
       }
       const key = route.request().headers()['idempotency-key'] ?? '';
       seenPostEntriesKeys.push(key);
-      if (interceptPostEntriesOnce) {
-        interceptPostEntriesOnce = false;
-        // Forward to the real backend so the entry is committed in Postgres, then abort the browser response!
-        await route.fetch();
+      if (postEntriesAbortRemaining > 0) {
+        postEntriesAbortRemaining -= 1;
+        if (!postEntriesForwardedToBackend) {
+          postEntriesForwardedToBackend = true;
+          await route.fetch();
+        }
         await route.abort('failed');
         return;
       }
@@ -145,27 +154,14 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await setSecretTextareaValue(omnibox, 'a3-item #nhà: a3-secret-payload');
     await omnibox.press('Enter');
 
-    // First failure at POST /items (auto-retried once inside contentMutate or surfaced to plan error if still failing)
-    // Wait for either the toast (if contentMutate's built-in 1x retry recovered transparently!) or the manual Retry button.
-    const toastOrRetry = await Promise.race([
-      page
-        .getByTestId('undo-toast-item')
-        .filter({ hasText: 'a3-item' })
-        .first()
-        .waitFor({ state: 'visible', timeout: UI_WAIT_MS })
-        .then(() => 'toast' as const),
-      page
-        .getByTestId('omnibox-retry-plan-btn')
-        .waitFor({ state: 'visible', timeout: UI_WAIT_MS })
-        .then(() => 'retry' as const),
-    ]);
-    if (toastOrRetry === 'retry') {
-      await page.getByTestId('omnibox-retry-plan-btn').click();
-      await expect(
-        page.getByTestId('undo-toast-item').filter({ hasText: 'a3-item' }).first(),
-      ).toBeVisible({ timeout: UI_WAIT_MS });
-    }
-    expect(seenPostItemsKeys.length).toBeGreaterThanOrEqual(2);
+    const retryBtn = page.getByTestId('omnibox-retry-plan-btn');
+    await expect(retryBtn).toBeVisible({ timeout: UI_WAIT_MS });
+    await retryBtn.click();
+    await expect(
+      page.getByTestId('undo-toast-item').filter({ hasText: 'a3-item' }).first(),
+    ).toBeVisible({ timeout: UI_WAIT_MS });
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    expect(seenPostItemsKeys.length).toBeGreaterThanOrEqual(3);
     expect(new Set(seenPostItemsKeys).size).toBe(1);
 
     // Verify via real backend lookup that exactly 1 'a3-item' with entry_count === 1 exists
@@ -176,34 +172,17 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     expect(lookupA3Item1.total).toBe(1);
     expect(lookupA3Item1.items[0]?.entry_count).toBe(1);
 
-    // Now test dropping the response on `POST /items/{id}/entries`
+    // Now test dropping the response on `POST /items/{id}/entries` -> deterministically wait for Retry button and click it
     seenPostEntriesKeys.length = 0;
-    interceptPostEntriesOnce = true;
+    postEntriesAbortRemaining = 2;
+    postEntriesForwardedToBackend = false;
     await setSecretTextareaValue(omnibox, 'a3-item: second-entry-payload');
     await omnibox.press('Enter');
 
-    const entryToastOrRetry = await Promise.race([
-      page
-        .getByTestId('omnibox-retry-plan-btn')
-        .waitFor({ state: 'visible', timeout: 5_000 })
-        .then(() => 'retry' as const)
-        .catch(() => 'toast' as const),
-      page
-        .waitForFunction(
-          () => {
-            const el = document.querySelector('#omni textarea[data-vault-secret]') as HTMLTextAreaElement | null;
-            return el != null && el.value === '';
-          },
-          undefined,
-          { timeout: UI_WAIT_MS },
-        )
-        .then(() => 'toast' as const),
-    ]);
-    if (entryToastOrRetry === 'retry') {
-      await page.getByTestId('omnibox-retry-plan-btn').click();
-    }
+    await expect(retryBtn).toBeVisible({ timeout: UI_WAIT_MS });
+    await retryBtn.click();
     await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
-    expect(seenPostEntriesKeys.length).toBeGreaterThanOrEqual(2);
+    expect(seenPostEntriesKeys.length).toBeGreaterThanOrEqual(3);
     expect(new Set(seenPostEntriesKeys).size).toBe(1);
 
     const lookupA3Item2 = await page.evaluate(async () => {
@@ -215,38 +194,110 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
 
     await page.unroute('**/api/v1/items');
     await page.unroute('**/api/v1/items/*/entries');
+  });
 
-    // --- 3. Ctrl+Enter creates a 2nd item with the same name 'a3-item', then Enter opens Picker U9 ---
-    await setSecretTextareaValue(omnibox, 'a3-item #ops: second-same-name-item-entry');
+  test('opens U9 duplicate picker on >=2 matches, restores focus to the omnibox after Escape and after a pick, selects 2nd item, and creates a 3rd same-name item (HM18B-R1-1, HM18B-R1-2)', async ({
+    page,
+  }) => {
+    test.setTimeout(QUICK_ADD_TIMEOUT_MS);
+
+    const email = uniqueEmail('content-omni-picker');
+    await signupPasswordUser(page, email);
+    await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
+    await expectUnlockedOnApp(page);
+
+    await page.goto('/app');
+    const omnibox = page.locator('#omni textarea[data-vault-secret]');
+    await expect(omnibox).toBeVisible({ timeout: UI_WAIT_MS });
+
+    // Create 1st item 'dup-target'
+    await setSecretTextareaValue(omnibox, 'dup-target #nhà: first-dup-entry');
+    await omnibox.press('Enter');
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+
+    // Ctrl+Enter creates a 2nd item with the same name 'dup-target'
+    await setSecretTextareaValue(omnibox, 'dup-target #ops: second-dup-entry');
     await omnibox.press('Control+Enter');
     await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
 
-    const lookupTwoSameName = await page.evaluate(async () => {
-      const res = await fetch('/api/v1/items/lookup?name=a3-item', { credentials: 'include' });
+    const lookupTwo = await page.evaluate(async () => {
+      const res = await fetch('/api/v1/items/lookup?name=dup-target', { credentials: 'include' });
       return (await res.json()) as { items: Array<{ id: string; entry_count: number }>; total: number };
     });
-    expect(lookupTwoSameName.total).toBe(2);
+    expect(lookupTwo.total).toBe(2);
+    const secondItemId = lookupTwo.items[1]!.id;
 
-    // Enter with 2 matches opens Picker U9 -> choose "Create a new item with the same name" -> creates 3rd item
-    await setSecretTextareaValue(omnibox, 'a3-item: third-same-name-item-entry');
+    // 1. Enter with 2 matches opens Picker U9 -> Escape closes dialog and restores focus to omnibox (HM18B-R1-2)
+    await setSecretTextareaValue(omnibox, 'dup-target: append-to-second-item');
     await omnibox.press('Enter');
 
     const pickerDialog = page.getByTestId('dup-picker-dialog');
     await expect(pickerDialog).toBeVisible({ timeout: UI_WAIT_MS });
-    await page.getByTestId('dup-picker-create-same-name').click();
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await page.keyboard.press('Escape');
+    await expect(pickerDialog).toBeHidden({ timeout: UI_WAIT_MS });
+    await expect(omnibox).toBeFocused({ timeout: UI_WAIT_MS });
+    await expect(omnibox).toHaveValue('dup-target: append-to-second-item');
 
-    const lookupThreeSameName = await page.evaluate(async () => {
-      const res = await fetch('/api/v1/items/lookup?name=a3-item', { credentials: 'include' });
+    // 2. Press Enter again -> choose the 2nd item -> entry lands on `secondItemId` and focus returns to omnibox (HM18B-R1-2)
+    await omnibox.press('Enter');
+    await expect(pickerDialog).toBeVisible({ timeout: UI_WAIT_MS });
+    await page.locator(`#dup-opt-${secondItemId}`).click();
+    await expect(pickerDialog).toBeHidden({ timeout: UI_WAIT_MS });
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expect(omnibox).toBeFocused({ timeout: UI_WAIT_MS });
+
+    const lookupAfterPick2nd = await page.evaluate(async () => {
+      const res = await fetch('/api/v1/items/lookup?name=dup-target', { credentials: 'include' });
       return (await res.json()) as { items: Array<{ id: string; entry_count: number }>; total: number };
     });
-    expect(lookupThreeSameName.total).toBe(3);
+    expect(lookupAfterPick2nd.total).toBe(2);
+    const updatedSecondItem = lookupAfterPick2nd.items.find((it) => it.id === secondItemId);
+    expect(updatedSecondItem?.entry_count).toBe(2);
 
-    // --- 4. Ctrl+Z right after save deletes ONLY the entry (item stays with entry_count === 0);
-    //         Typing 1 character in the omnibox then pressing Ctrl+Z performs native text undo instead of deleting entry ---
+    // 3. Enter with 2 matches -> click `dup-picker-create-same-name` -> creates 3rd item and restores focus to omnibox (HM18B-R1-1, HM18B-R1-2)
+    await setSecretTextareaValue(omnibox, 'dup-target: third-same-name-item-entry');
+    await omnibox.press('Enter');
+    await expect(pickerDialog).toBeVisible({ timeout: UI_WAIT_MS });
+    await page.getByTestId('dup-picker-create-same-name').click();
+    await expect(pickerDialog).toBeHidden({ timeout: UI_WAIT_MS });
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expect(omnibox).toBeFocused({ timeout: UI_WAIT_MS });
+
+    const lookupThree = await page.evaluate(async () => {
+      const res = await fetch('/api/v1/items/lookup?name=dup-target', { credentials: 'include' });
+      return (await res.json()) as { items: Array<{ id: string; entry_count: number }>; total: number };
+    });
+    expect(lookupThree.total).toBe(3);
+  });
+
+  test('supports Ctrl+Z quick-add Undo right after save vs native textarea undo after typing a character, and preserves lock-cleared notice across the real unlock route (HM18B-R1-1, HM18B-R1-4, HM18B-R1-7)', async ({
+    page,
+  }) => {
+    test.setTimeout(QUICK_ADD_TIMEOUT_MS);
+
+    const deleteRequestUrls: string[] = [];
+    page.context().on('request', (req) => {
+      if (req.method() === 'DELETE' && req.url().includes('/api/v1/')) {
+        deleteRequestUrls.push(req.url());
+      }
+    });
+
+    const email = uniqueEmail('content-omni-undo');
+    await signupPasswordUser(page, email);
+    await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
+    await expectUnlockedOnApp(page);
+
+    await page.goto('/app');
+    const omnibox = page.locator('#omni textarea[data-vault-secret]');
+    await expect(omnibox).toBeVisible({ timeout: UI_WAIT_MS });
+
+    // 1. Ctrl+Z right after save deletes ONLY the entry (item stays with entry_count === 0)
     await setSecretTextareaValue(omnibox, 'undo-target #nhà: secret-to-undo');
     await omnibox.press('Enter');
     await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expect(
+      page.getByTestId('undo-toast-item').filter({ hasText: 'undo-target' }).first(),
+    ).toBeVisible({ timeout: UI_WAIT_MS });
 
     const beforeUndoLookup = await page.evaluate(async () => {
       const res = await fetch('/api/v1/items/lookup?name=undo-target', { credentials: 'include' });
@@ -255,7 +306,6 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     expect(beforeUndoLookup.total).toBe(1);
     expect(beforeUndoLookup.items[0]?.entry_count).toBe(1);
 
-    // Press Ctrl+Z while omnibox is still empty right after save -> triggers quick-add Undo (DELETE /entries/{id})
     await omnibox.focus();
     await page.keyboard.press('Control+z');
 
@@ -268,7 +318,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
             });
             return (await r.json()) as {
               items: Array<{ id: string; entry_count: number }>;
-              total: number,
+              total: number;
             };
           });
           return res.items[0]?.entry_count ?? -1;
@@ -276,24 +326,72 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
         { timeout: UI_WAIT_MS },
       )
       .toBe(0);
+    expect(deleteRequestUrls).toHaveLength(1);
+    expect(deleteRequestUrls[0]).toMatch(/\/api\/v1\/entries\/[0-9a-f-]{36}$/);
 
-    // Save another entry into 'undo-target', then type a character into the omnibox and press Ctrl+Z -> entry is NOT deleted
+    // 2. Save another entry into 'undo-target', then type a character into the omnibox and press Ctrl+Z ->
+    //    native textarea undo reverts the typed character to '' and fires 0 DELETE requests (HM18B-R1-7)
+    deleteRequestUrls.length = 0;
     await setSecretTextareaValue(omnibox, 'undo-target: keep-this-entry');
     await omnibox.press('Enter');
     await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expect(
+      page.getByTestId('undo-toast-item').filter({ hasText: 'undo-target' }).first(),
+    ).toBeVisible({ timeout: UI_WAIT_MS });
 
     await omnibox.focus();
     await omnibox.pressSequentially('x');
     await expect(omnibox).toHaveValue('x');
     await page.keyboard.press('Control+z');
 
-    // Wait briefly and verify the entry on 'undo-target' was NOT deleted by Ctrl+Z when omnibox had text
-    await page.waitForTimeout(400);
+    // Native undo reverts 'x' to '' while the toast remains visible and no DELETE request is sent
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expect(
+      page.getByTestId('undo-toast-item').filter({ hasText: 'undo-target' }).first(),
+    ).toBeVisible({ timeout: UI_WAIT_MS });
+    expect(deleteRequestUrls).toHaveLength(0);
+
     const afterTypingCtrlZLookup = await page.evaluate(async () => {
       const res = await fetch('/api/v1/items/lookup?name=undo-target', { credentials: 'include' });
       return (await res.json()) as { items: Array<{ id: string; entry_count: number }>; total: number };
     });
     expect(afterTypingCtrlZLookup.total).toBe(1);
     expect(afterTypingCtrlZLookup.items[0]?.entry_count).toBe(1);
+
+    // 3. Lock mid-plan -> unlock via the real `/app/unlock` route -> post-unlock notice is visible (HM18B-R1-4)
+    const { promise: postEntriesEntered, resolve: resolvePostEntriesEntered } =
+      Promise.withResolvers<void>();
+    const { promise: heldPostEntriesGate, resolve: releaseHeldPostEntries } =
+      Promise.withResolvers<void>();
+    await page.route('**/api/v1/items/*/entries', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      resolvePostEntriesEntered();
+      await heldPostEntriesGate;
+      await route.abort('aborted');
+    });
+
+    await setSecretTextareaValue(omnibox, 'lock-mid-plan-item #nhà: secret-dropped-on-lock');
+    await omnibox.press('Enter');
+    await postEntriesEntered;
+
+    // Lock the vault while `POST /items` + `POST /tags` + `POST /items/{id}/tags` have committed and `POST /entries` is in flight
+    await page.getByTestId('vault-lock-button').click();
+    releaseHeldPostEntries();
+    await page.unroute('**/api/v1/items/*/entries');
+
+    await expectLockedListOnApp(page);
+    await expect(omnibox).toHaveValue('');
+
+    // Unlock through the real `/app/unlock` route (Omnibox unmounts on `/app/unlock` and remounts on `/app`)
+    await unlockFromLockedList(page, VAULT_PASSPHRASE);
+
+    const lockClearedNotice = page.getByTestId('omnibox-lock-cleared-notice');
+    await expect(lockClearedNotice).toBeVisible({ timeout: UI_WAIT_MS });
+    await expect(lockClearedNotice).toContainText(
+      /Bản nháp chưa lưu đã bị xoá khi khoá vault|Unsaved draft was cleared when the vault locked/,
+    );
   });
 });

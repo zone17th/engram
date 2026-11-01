@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { DEMO_ITEMS } from '../lib/demo-fixtures';
 import {
+  MOCKED_HOME_ITEMS,
   installHomeContentMetadataRoutes,
   installItemPageMetadataRoutes,
 } from './content-home-support';
@@ -22,10 +23,10 @@ test.describe('P03-T21 Locked state U5', () => {
     try {
       await installApiMocks(context);
       await installHomeContentMetadataRoutes(context);
-      await installItemPageMetadataRoutes(context, DEMO_ITEMS[0]!.id);
+      const mockedFirstItem = MOCKED_HOME_ITEMS[0]!;
+      await installItemPageMetadataRoutes(context, mockedFirstItem.id);
       const page = await context.newPage();
       const bodyOnly = DEMO_ITEMS[0]!; // "phin" is only in this item's body, never in a title or tag
-
       await page.goto('/app');
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
       const input = page.locator('#omni textarea[data-vault-secret]');
@@ -63,7 +64,7 @@ test.describe('P03-T21 Locked state U5', () => {
       await input.press('Enter');
       await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
       await listbox.getByRole('option', { name: new RegExp(bodyOnly.title) }).click();
-      await expect(page).toHaveURL(new RegExp(`/app/items/${bodyOnly.id}$`), {
+      await expect(page).toHaveURL(new RegExp(`/app/items/${mockedFirstItem.id}$`), {
         timeout: UI_WAIT_MS,
       });
     } finally {
