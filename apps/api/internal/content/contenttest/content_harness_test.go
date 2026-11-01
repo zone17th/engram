@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1121,4 +1123,339 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
 	contenttest.AssertInvariants(t, h.Pool, meB.User.ID)
+}
+
+// fakeBarrierTB embeds testing.TB to capture Cleanup registrations in order and simulate
+// testing.T's Fatal/Fatalf behavior (recording the diagnostic and calling runtime.Goexit
+// in its own goroutine) before executing registered cleanups in LIFO order.
+type fakeBarrierTB struct {
+	testing.TB
+	mu       sync.Mutex
+	cleanups []func()
+	failed   bool
+	fatalMsg string
+}
+
+func (f *fakeBarrierTB) Helper() {}
+
+func (f *fakeBarrierTB) Cleanup(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleanups = append(f.cleanups, fn)
+}
+
+func (f *fakeBarrierTB) Fatal(args ...any) {
+	f.mu.Lock()
+	f.failed = true
+	f.fatalMsg = fmt.Sprint(args...)
+	f.mu.Unlock()
+	runtime.Goexit()
+}
+
+func (f *fakeBarrierTB) Fatalf(format string, args ...any) {
+	f.mu.Lock()
+	f.failed = true
+	f.fatalMsg = fmt.Sprintf(format, args...)
+	f.mu.Unlock()
+	runtime.Goexit()
+}
+
+func (f *fakeBarrierTB) status() (bool, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.failed, f.fatalMsg
+}
+
+func (f *fakeBarrierTB) runCleanupsLIFO() {
+	f.mu.Lock()
+	fns := make([]func(), len(f.cleanups))
+	copy(fns, f.cleanups)
+	f.cleanups = nil
+	f.mu.Unlock()
+	for i := len(fns) - 1; i >= 0; i-- {
+		fns[i]()
+	}
+}
+
+func newBarrierProbeServer(b *barrierController, activeHandlers *atomic.Int32) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/serial/a", func(w http.ResponseWriter, r *http.Request) {
+		activeHandlers.Add(1)
+		defer activeHandlers.Add(-1)
+		b.onLockHeld(r.Context(), b.userATarget)
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("/serial/b", func(w http.ResponseWriter, r *http.Request) {
+		activeHandlers.Add(1)
+		defer activeHandlers.Add(-1)
+		b.onLockHeld(r.Context(), b.userBTarget)
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("/deadlock", func(w http.ResponseWriter, r *http.Request) {
+		activeHandlers.Add(1)
+		defer activeHandlers.Add(-1)
+		if err := b.waitDeadlockStep2(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+	return httptest.NewServer(mux)
+}
+
+func startBarrierProbeRequest(srv *httptest.Server, path string, wg *sync.WaitGroup) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(`{}`))
+		if err != nil {
+			return
+		}
+		resp, err := srv.Client().Do(req)
+		if err == nil && resp != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+}
+
+// TestContentBarrierCleanupFailurePaths proves in-repository (without requiring DB or skipping under -short)
+// that the shared barrierController + attachBarrierServer / registerBarrierRelease cleanup releases held
+// HTTP handlers before httptest.Server.Close runs when a barrier wait fails with Fatal/Fatalf:
+//   - missing_same_user_waiter: User A tx 1 is held on LockUserContent while User A tx 2 waiter is absent.
+//   - missing_cross_user_notification: User A and User B handlers are both held while User B's notification is withheld.
+//   - missing_deadlock_participant: Deadlock participant 1 is held at step 1 while participant 2 is absent.
+//   - omitted_cleanup_exceeds_bound & wrong_order_cleanup_exceeds_bound: Negative controls proving that
+//     omitting registerBarrierRelease or registering it before srv.Close (so LIFO runs srv.Close first)
+//     causes teardown to exceed the bound, then force-releasing so CI never hangs.
+func TestContentBarrierCleanupFailurePaths(t *testing.T) {
+	const (
+		injectWaitTimeout = 40 * time.Millisecond
+		pollInterval      = 5 * time.Millisecond
+		cleanupBound      = 2 * time.Second
+		negativeHangBound = 150 * time.Millisecond
+	)
+
+	runFixedFailureCase := func(
+		t *testing.T,
+		wantHeldAtFatal int32,
+		wantDiagnostic string,
+		scenario func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup),
+	) {
+		t.Helper()
+		ft := &fakeBarrierTB{TB: t}
+		b := newBarrierController()
+		b.userATarget = uuid.New()
+		b.userBTarget = uuid.New()
+
+		var activeHandlers atomic.Int32
+		var srv *httptest.Server
+		attachBarrierServer(ft, b, func(tb testing.TB) {
+			srv = newBarrierProbeServer(b, &activeHandlers)
+			tb.Cleanup(srv.Close)
+		})
+
+		var reqWG sync.WaitGroup
+		var completedNormally atomic.Bool
+		bodyDone := make(chan struct{})
+		go func() {
+			defer close(bodyDone)
+			scenario(ft, b, srv, &reqWG)
+			completedNormally.Store(true)
+		}()
+
+		select {
+		case <-bodyDone:
+		case <-time.After(cleanupBound):
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("scenario goroutine did not exit via Fatal within %s", cleanupBound)
+		}
+
+		failed, fatalMsg := ft.status()
+		if !failed || completedNormally.Load() {
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("expected Fatal Goexit, got failed=%v completedNormally=%v msg=%q", failed, completedNormally.Load(), fatalMsg)
+		}
+		if !strings.Contains(fatalMsg, wantDiagnostic) {
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("fatal diagnostic = %q, want substring %q", fatalMsg, wantDiagnostic)
+		}
+		if held := activeHandlers.Load(); held != wantHeldAtFatal {
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("active held handlers at Fatal = %d, want %d", held, wantHeldAtFatal)
+		}
+
+		cleanupDone := make(chan time.Duration, 1)
+		go func() {
+			start := time.Now()
+			ft.runCleanupsLIFO()
+			reqWG.Wait()
+			cleanupDone <- time.Since(start)
+		}()
+
+		select {
+		case elapsed := <-cleanupDone:
+			if active := activeHandlers.Load(); active != 0 {
+				t.Fatalf("active handlers after LIFO cleanup = %d, want 0", active)
+			}
+			t.Logf("diagnostic=%q goexited=true held_at_fatal=%d cleanup_elapsed=%s bound=%s",
+				fatalMsg, wantHeldAtFatal, elapsed, cleanupBound)
+		case <-time.After(cleanupBound):
+			// Ensure CI never hangs even when the regression test fails because cleanup was broken.
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("LIFO barrier cleanup + srv.Close exceeded %s bound (diagnostic=%q)", cleanupBound, fatalMsg)
+		}
+	}
+
+	t.Run("missing_same_user_waiter", func(t *testing.T) {
+		runFixedFailureCase(
+			t,
+			1,
+			"expected User A tx 2 to wait on ungranted advisory lock in pg_locks",
+			func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+				b.serialBarrierActive.Store(true)
+				startBarrierProbeRequest(srv, "/serial/a", reqWG)
+				select {
+				case <-b.userAEntered:
+				case <-time.After(cleanupBound):
+					t.Error("timed out waiting for User A probe handler to enter barrier")
+					return
+				}
+				// Intentionally omit User A tx 2 and run the real waiter poll helper.
+				b.awaitAdvisoryLockWaiter(ft, injectWaitTimeout, pollInterval, func() bool {
+					return false
+				})
+			},
+		)
+	})
+
+	t.Run("missing_cross_user_notification", func(t *testing.T) {
+		runFixedFailureCase(
+			t,
+			2,
+			"User B transaction was blocked by User A LockUserContent",
+			func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+				b.serialBarrierActive.Store(true)
+				b.withholdUserBNotify.Store(true)
+				startBarrierProbeRequest(srv, "/serial/a", reqWG)
+				startBarrierProbeRequest(srv, "/serial/b", reqWG)
+				select {
+				case <-b.userAEntered:
+				case <-time.After(cleanupBound):
+					t.Error("timed out waiting for User A probe handler to enter barrier")
+					return
+				}
+				select {
+				case <-b.userBHeld:
+				case <-time.After(cleanupBound):
+					t.Error("timed out waiting for User B probe handler to enter barrier")
+					return
+				}
+				// Both User A and User B handlers are held; User B's notification was withheld.
+				b.awaitUserBEntered(ft, injectWaitTimeout)
+			},
+		)
+	})
+
+	t.Run("missing_deadlock_participant", func(t *testing.T) {
+		runFixedFailureCase(
+			t,
+			1,
+			"timed out waiting for deadlock participant 2 to acquire first lock",
+			func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+				b.deadlockBarrierActive.Store(true)
+				// Start only participant 1; intentionally omit participant 2.
+				startBarrierProbeRequest(srv, "/deadlock", reqWG)
+				b.awaitDeadlockParticipants(ft, injectWaitTimeout)
+			},
+		)
+	})
+
+	runBrokenCleanupControl := func(t *testing.T, mode string, registerBroken func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server)) {
+		t.Helper()
+		ft := &fakeBarrierTB{TB: t}
+		b := newBarrierController()
+		b.userATarget = uuid.New()
+		b.userBTarget = uuid.New()
+
+		var activeHandlers atomic.Int32
+		srv := newBarrierProbeServer(b, &activeHandlers)
+		registerBroken(ft, b, srv)
+
+		var reqWG sync.WaitGroup
+		bodyDone := make(chan struct{})
+		go func() {
+			defer close(bodyDone)
+			b.serialBarrierActive.Store(true)
+			startBarrierProbeRequest(srv, "/serial/a", &reqWG)
+			<-b.userAEntered
+			b.awaitAdvisoryLockWaiter(ft, injectWaitTimeout, pollInterval, func() bool {
+				return false
+			})
+		}()
+
+		select {
+		case <-bodyDone:
+		case <-time.After(cleanupBound):
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("%s: scenario goroutine did not exit via Fatal within %s", mode, cleanupBound)
+		}
+
+		if held := activeHandlers.Load(); held != 1 {
+			b.releaseAll()
+			srv.Close()
+			t.Fatalf("%s: active held handlers at Fatal = %d, want 1", mode, held)
+		}
+
+		cleanupDone := make(chan time.Duration, 1)
+		go func() {
+			start := time.Now()
+			ft.runCleanupsLIFO()
+			reqWG.Wait()
+			cleanupDone <- time.Since(start)
+		}()
+
+		select {
+		case elapsed := <-cleanupDone:
+			t.Fatalf("%s: expected srv.Close to remain blocked past %s, but finished in %s", mode, negativeHangBound, elapsed)
+		case <-time.After(negativeHangBound):
+			// Confirmed that omitting cleanup or registering it in wrong LIFO order hangs srv.Close past negativeHangBound.
+			if held := activeHandlers.Load(); held != 1 {
+				b.releaseAll()
+				srv.Close()
+				t.Fatalf("%s: expected handler to still be held at %s, got active=%d", mode, negativeHangBound, held)
+			}
+			recoverStart := time.Now()
+			b.releaseAll()
+			select {
+			case <-cleanupDone:
+				t.Logf("mode=%s confirmed_hang_past=%s recovered_after_force_release=%s",
+					mode, negativeHangBound, time.Since(recoverStart))
+			case <-time.After(cleanupBound):
+				srv.Close()
+				t.Fatalf("%s: failed to recover srv.Close within %s after force release", mode, cleanupBound)
+			}
+		}
+	}
+
+	t.Run("omitted_cleanup_exceeds_bound", func(t *testing.T) {
+		runBrokenCleanupControl(t, "omitted_cleanup", func(ft *fakeBarrierTB, _ *barrierController, srv *httptest.Server) {
+			// Only register srv.Close; omit registerBarrierRelease.
+			ft.Cleanup(srv.Close)
+		})
+	})
+
+	t.Run("wrong_order_cleanup_exceeds_bound", func(t *testing.T) {
+		runBrokenCleanupControl(t, "wrong_order_cleanup", func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server) {
+			// Register barrier release BEFORE srv.Close so LIFO executes srv.Close first (wrong order).
+			registerBarrierRelease(ft, b)
+			ft.Cleanup(srv.Close)
+		})
+	})
 }
