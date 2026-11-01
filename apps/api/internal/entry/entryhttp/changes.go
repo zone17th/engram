@@ -2,6 +2,7 @@ package entryhttp
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -41,7 +42,11 @@ func (h *handler) entriesChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	qParams := r.URL.Query()
+	qParams, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeContentProblem(w, r, "invalid_request")
+		return
+	}
 
 	limit := entry.DefaultChangesLimit
 	if rawLimits, hasLimit := qParams["limit"]; hasLimit {

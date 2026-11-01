@@ -518,6 +518,10 @@ func TestEntriesChangesWindowExpired410Validation400AndCrossUserIsolation(t *tes
 		{name: "limit_negative", query: "since=" + url.QueryEscape(validSince) + "&limit=-1"},
 		{name: "limit_empty", query: "since=" + url.QueryEscape(validSince) + "&limit="},
 		{name: "limit_alpha", query: "since=" + url.QueryEscape(validSince) + "&limit=abc"},
+		{name: "malformed_escape_since", query: "since=%ZZ"},
+		{name: "malformed_escape_cursor", query: "since=" + url.QueryEscape(validSince) + "&cursor=%ZZ"},
+		{name: "malformed_escape_limit", query: "since=" + url.QueryEscape(validSince) + "&limit=%ZZ"},
+		{name: "malformed_escape_duplicate_since", query: "since=" + url.QueryEscape(validSince) + "&since=%ZZ"},
 	}
 
 	for _, tc := range badQueries {
