@@ -721,7 +721,7 @@ func TestVaultResetHookDeletesEntriesKeepsItemsTagsReplayRollbackNewKeyAndCrossU
 	//    - content idempotency_key rows of Alice are preserved and replay returns historical responses.
 	// -------------------------------------------------------------------------
 	h.VaultSvc.SetResetHook(entry.ResetHook)
-	h.Clock.Advance(61 * time.Second) // advance past vault_sensitive 1/min rate limit window
+	h.Clock.Advance(61 * time.Second) // advance past vault_sensitive (10/min) 1-minute sliding window
 
 	grantResetOK := issueReauthGrant(t, h, jarA, "vault.reset", passwordA)
 	respReset, rawReset := h.DoReq(jarA, http.MethodDelete, "/api/v1/vault", "", contenttest.ReqOptions{
@@ -1133,13 +1133,16 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 		t.Fatalf("Authenticate initial session: %v", err)
 	}
 
-	// prepareReset advances the harness clock past vault_sensitive (1/min), refreshes the session only when
-	// approaching the 15m access-token TTL (avoiding authhttp.credLimit's 5/min wall-clock IP limiter across
-	// the 24 rapid sub-scenarios), sets the ResetHook, and issues a fresh reauth grant for principalA.
+	// prepareReset advances the harness clock by 61s (clearing the 1-minute vault_sensitive 10/min sliding window),
+	// refreshes the session before crossing auth.AccessTTL (10m) using a 2m safety margin (refreshing at >= 8m:
+	// scenarios 8, 16, and 24 -> 3 refreshes + 1 initial signup = 4 calls total against authhttp.credLimit's
+	// 5/min wall-clock IP limiter across all 24 sub-scenarios), sets the ResetHook, and issues a signed reauth grant.
+	const refreshSafetyMargin = 2 * time.Minute
+	const refreshAfter = auth.AccessTTL - refreshSafetyMargin // 8m (< 10m auth.AccessTTL; 30d auth.SessionTTL)
 	prepareReset := func(t *testing.T, hook vault.ResetHook) string {
 		t.Helper()
-		h.Clock.Advance(61 * time.Second) // keep vault_sensitive (1/min) limiter clean
-		if h.Clock.Now().Sub(sessionIssuedAt) >= 12*time.Minute {
+		h.Clock.Advance(61 * time.Second) // clear 1-minute vault_sensitive (10/min) sliding window
+		if h.Clock.Now().Sub(sessionIssuedAt) >= refreshAfter {
 			h.RefreshSession(jarA)
 			sessionIssuedAt = h.Clock.Now()
 		}
