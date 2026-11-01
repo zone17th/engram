@@ -116,7 +116,8 @@ describe('lib/json/utf8', () => {
       expect(res.ok, tc.name).toBe(false);
       if (!res.ok) {
         expect(res.error.code).toBe('INVALID_UTF8');
-        expect(res.error.message).not.toContain('\uFFFD');
+        expect('text' in res).toBe(false);
+        expect(Object.keys(res)).toEqual(['ok', 'error']);
       }
     }
   });
@@ -181,12 +182,26 @@ describe('lib/json/utf8', () => {
     }
   });
 
-  it('rejects ill-formed UTF-16 strings in validatePastedTextStrict and encodeUtf8Bytes', () => {
-    const badRes = validatePastedTextStrict('{"a":"\ud800"}');
+  it('rejects ill-formed UTF-16 strings in validatePastedTextStrict and encodeUtf8Bytes without echoing body text', () => {
+    const sentinel = 'sentinel-secret-\ud800-payload';
+    const badRes = validatePastedTextStrict(`{"a":"${sentinel}"}`);
     expect(badRes.ok).toBe(false);
     if (!badRes.ok) {
       expect(badRes.error.code).toBe('ILL_FORMED_UTF16');
+      expect('text' in badRes).toBe(false);
+      expect(badRes.error.message).not.toContain('sentinel-secret');
     }
-    expect(() => encodeUtf8Bytes('bad\udc00')).toThrow(/unpaired UTF-16 surrogate/);
+    expect(() => encodeUtf8Bytes(`bad\udc00-${sentinel}`)).toThrow(/unpaired UTF-16 surrogate/);
+
+    const overLimitSentinel = `sentinel-secret-${'x'.repeat(300)}`;
+    const overRes = validatePastedTextStrict(overLimitSentinel, { limitBytes: 64 });
+    expect(overRes.ok).toBe(false);
+    if (!overRes.ok) {
+      expect(overRes.error.code).toBe('BYTE_LIMIT_EXCEEDED');
+      expect(overRes.error.byteLength).toBe(overLimitSentinel.length);
+      expect(overRes.error.limitBytes).toBe(64);
+      expect(overRes.error.message).not.toContain('sentinel-secret');
+      expect('text' in overRes).toBe(false);
+    }
   });
 });

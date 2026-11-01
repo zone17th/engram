@@ -197,8 +197,8 @@ export function areNonWhitespaceTokensIdentical(
  *    `DEPTH_LIMIT_EXCEEDED` BEFORE allocating formatted output (e.g., 10,000-deep
  *    arrays would otherwise expand to ~100 MB of indentation).
  * 3. Precomputes the exact UTF-8 byte length of the formatted output from the token stream
- *    and rejects if `> maxBytes` (default 262,144 B) with `BYTE_LIMIT_EXCEEDED` ("Định dạng
- *    làm vượt 256 KiB") before materializing the formatted string.
+ *    and rejects if `> maxBytes` (default 262,144 B) with `BYTE_LIMIT_EXCEEDED`
+ *    before materializing the formatted string.
  * 4. Emits 2-space indented JSON modifying ONLY whitespace outside strings (preserving
  *    key order, duplicate keys, number lexemes, and string escapes verbatim).
  * 5. Verifies that the non-whitespace token sequence before and after formatting is identical.
@@ -216,11 +216,11 @@ export function formatJsonStrict(
     if (!parsed.ok) {
       return {
         ok: false,
-        error: new JsonFormatError(
-          'PARSE_ERROR',
-          `Cannot format invalid JSON: ${parsed.error.message}`,
-          { parseError: parsed.error },
-        ),
+      error: new JsonFormatError(
+        'PARSE_ERROR',
+        'Cannot format invalid JSON',
+        { parseError: parsed.error },
+      ),
       };
     }
     doc = parsed.document;
@@ -233,14 +233,14 @@ export function formatJsonStrict(
       ok: false,
       error: new JsonFormatError(
         'DEPTH_LIMIT_EXCEEDED',
-        `JSON nesting depth ${doc.maxDepth} exceeds maximum formatting depth of ${maxDepth}`,
+        'JSON nesting depth exceeds maximum formatting depth',
         { depth: doc.maxDepth, maxDepth },
       ),
     };
   }
 
   const eolKind = options?.eol ?? detectEol(doc.source).majority;
-  const eolSeq = eolKind === 'crlf' ? '\r\n' : '\n';
+  const eolSeq = eolKind === 'crlf' ? '\r\n' : eolKind === 'cr' ? '\r' : '\n';
   const eolBytes = eolSeq.length;
 
   const tokens = scanNonWhitespaceTokens(doc.source);
@@ -266,7 +266,7 @@ export function formatJsonStrict(
             ok: false,
             error: new JsonFormatError(
               'DEPTH_LIMIT_EXCEEDED',
-              `JSON nesting depth ${currentDepth} exceeds maximum formatting depth of ${maxDepth}`,
+              'JSON nesting depth exceeds maximum formatting depth',
               { depth: currentDepth, maxDepth },
             ),
           };
@@ -289,7 +289,7 @@ export function formatJsonStrict(
         ok: false,
         error: new JsonFormatError(
           'BYTE_LIMIT_EXCEEDED',
-          `Formatted JSON exceeds ${maxBytes} bytes (Định dạng làm vượt 256 KiB)`,
+          'Formatted JSON exceeds maximum allowed UTF-8 byte length',
           { byteLength: predictedBytes, limitBytes: maxBytes },
         ),
       };
@@ -339,7 +339,7 @@ export function formatJsonStrict(
       ok: false,
       error: new JsonFormatError(
         'BYTE_LIMIT_EXCEEDED',
-        `Formatted JSON byte length ${actualBytes} exceeds limit of ${maxBytes} bytes`,
+        'Formatted JSON exceeds maximum allowed UTF-8 byte length',
         { byteLength: actualBytes, limitBytes: maxBytes },
       ),
     };
@@ -365,7 +365,7 @@ export function formatJsonStrict(
         ok: false,
         error: new JsonFormatError(
           'TOKEN_MISMATCH',
-          `Formatted output token mismatch at index ${i}`,
+          'Formatted output token sequence differs from input',
         ),
       };
     }
@@ -377,7 +377,7 @@ export function formatJsonStrict(
       ok: false,
       error: new JsonFormatError(
         'PARSE_ERROR',
-        `Formatted JSON failed strict re-parse: ${reparsed.error.message}`,
+        'Formatted JSON failed strict re-parse',
         { parseError: reparsed.error },
       ),
     };

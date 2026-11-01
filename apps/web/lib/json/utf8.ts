@@ -107,9 +107,9 @@ export function encodeUtf8Bytes(text: string): Uint8Array {
 
 /**
  * Measures the UTF-8 byte length of a string via `TextEncoder`.
- * Note: for strings that may come from decoded JSON literals containing `\ud800`,
- * measuring via `TextEncoder` still works (each lone surrogate would be 3 UTF-8 bytes,
- * matching the raw JSON text's UTF-8 byte count where the literal is ASCII `\ud800`).
+ * Note: `TextEncoder` replaces any lone UTF-16 surrogate with U+FFFD (3 UTF-8 bytes)
+ * rather than throwing; use `isWellFormedUtf16` or `encodeUtf8Bytes` when lone surrogates
+ * must be rejected.
  */
 export function measureUtf8Bytes(text: string): number {
   return utf8Encoder.encode(text).byteLength;
@@ -127,7 +127,7 @@ export function assertUtf8ByteLimit(
   if (byteLength > limitBytes) {
     throw new JsonUtf8Error(
       'BYTE_LIMIT_EXCEEDED',
-      `UTF-8 byte length ${byteLength} exceeds limit of ${limitBytes} bytes`,
+      'UTF-8 byte length exceeds maximum allowed size',
       { byteLength, limitBytes },
     );
   }
@@ -197,7 +197,7 @@ export function decodeUtf8FileStrict(
       ok: false,
       error: new JsonUtf8Error(
         'BYTE_LIMIT_EXCEEDED',
-        `UTF-8 byte length ${byteLength} exceeds limit of ${limitBytes} bytes`,
+        'UTF-8 byte length exceeds maximum allowed size',
         { byteLength, limitBytes },
       ),
     };
@@ -243,7 +243,7 @@ export function validatePastedTextStrict(
       ok: false,
       error: new JsonUtf8Error(
         'BYTE_LIMIT_EXCEEDED',
-        `UTF-8 byte length ${byteLength} exceeds limit of ${limitBytes} bytes`,
+        'UTF-8 byte length exceeds maximum allowed size',
         { byteLength, limitBytes },
       ),
     };

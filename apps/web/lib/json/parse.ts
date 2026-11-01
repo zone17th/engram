@@ -369,6 +369,8 @@ type StackFrame =
       elements: JsonNode[];
     };
 
+let nextDefaultRevision = 1;
+
 /**
  * Iterative (explicit-stack, zero-recursion) strict RFC 8259 JSON parser with UTF-16 spans.
  *
@@ -386,7 +388,7 @@ export function parseJsonStrict(
   source: string,
   options?: { revision?: number },
 ): JsonParseResult {
-  const revision = options?.revision ?? 1;
+  const revision = options?.revision ?? nextDefaultRevision++;
   const len = source.length;
   let pos = 0;
   let nextId = 1;
@@ -469,7 +471,7 @@ export function parseJsonStrict(
         return makeError(
           pos,
           'UNESCAPED_CONTROL_CHAR',
-          `Unescaped control character U+${ch.toString(16).padStart(4, '0').toUpperCase()} in string`,
+          'Unescaped control character in JSON string',
         );
       }
 
@@ -537,7 +539,7 @@ export function parseJsonStrict(
             return makeError(
               escapeStart,
               'INVALID_ESCAPE',
-              `Invalid escape sequence \\${String.fromCharCode(esc)} in JSON string`,
+              'Invalid escape sequence in JSON string',
             );
         }
         chunkStart = pos;
@@ -807,7 +809,7 @@ export function parseJsonStrict(
           expectingValue = false;
           continue;
         }
-        return makeError(pos, 'UNEXPECTED_TOKEN', 'Invalid literal starting with "t"');
+        return makeError(pos, 'UNEXPECTED_TOKEN', 'Unexpected token while expecting a JSON value');
       }
 
       if (ch === 0x66 /* f */) {
@@ -828,7 +830,7 @@ export function parseJsonStrict(
           expectingValue = false;
           continue;
         }
-        return makeError(pos, 'UNEXPECTED_TOKEN', 'Invalid literal starting with "f"');
+        return makeError(pos, 'UNEXPECTED_TOKEN', 'Unexpected token while expecting a JSON value');
       }
 
       if (ch === 0x6e /* n */) {
@@ -849,13 +851,13 @@ export function parseJsonStrict(
           expectingValue = false;
           continue;
         }
-        return makeError(pos, 'UNEXPECTED_TOKEN', 'Invalid literal starting with "n"');
+        return makeError(pos, 'UNEXPECTED_TOKEN', 'Unexpected token while expecting a JSON value');
       }
 
       return makeError(
         pos,
         'UNEXPECTED_TOKEN',
-        `Unexpected character "${source[pos]}" while expecting a JSON value`,
+        'Unexpected token while expecting a JSON value',
       );
     }
 
@@ -966,6 +968,7 @@ export function parseJsonStrict(
             hasDuplicateKeys: top.hasDuplicateKeys,
           };
           for (let i = 0; i < top.properties.length; i++) {
+            parentById.set(top.properties[i]!.keyNode.id, objNode);
             parentById.set(top.properties[i]!.valueNode.id, objNode);
           }
           const err = attachCompletedValue(objNode);
@@ -1051,6 +1054,7 @@ export function parseJsonStrict(
             hasDuplicateKeys: top.hasDuplicateKeys,
           };
           for (let i = 0; i < top.properties.length; i++) {
+            parentById.set(top.properties[i]!.keyNode.id, objNode);
             parentById.set(top.properties[i]!.valueNode.id, objNode);
           }
           const err = attachCompletedValue(objNode);

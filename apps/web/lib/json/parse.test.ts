@@ -90,6 +90,44 @@ describe('lib/json/parse', () => {
     }
   });
 
+  it('never embeds source body text into any JsonParseError field (JL1-3)', () => {
+    const sentinel = 'hunter2-secret-token';
+    const failingInputs = [
+      `{"pw": ${sentinel}}`,
+      `{"pw": "bad\\q${sentinel}"}`,
+      `{"pw": "ctrl\u0007${sentinel}"}`,
+      `{"pw": "bad\\u12G4${sentinel}"}`,
+      `{"pw": "${sentinel}`,
+      `{"pw": 0123} ${sentinel}`,
+      `{${sentinel}: 1}`,
+      `{"${sentinel}" 1}`,
+      `{"a": 1 "${sentinel}": 2}`,
+      `// ${sentinel}\n{"a":1}`,
+    ];
+
+    for (const input of failingInputs) {
+      const res = parseJsonStrict(input);
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        const serialized = JSON.stringify(res.error);
+        expect(res.error.message).not.toContain(sentinel);
+        expect(res.error.message).not.toContain('hunter2');
+        expect(serialized).not.toContain(sentinel);
+        expect(serialized).not.toContain('hunter2');
+      }
+    }
+  });
+
+  it('assigns monotonically increasing default revisions across parses (JL1-9)', () => {
+    const first = parseJsonStrict('[1, 2]');
+    const second = parseJsonStrict('[1, 9]');
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (first.ok && second.ok) {
+      expect(second.document.revision).toBeGreaterThan(first.document.revision);
+    }
+  });
+
   it('computes UTF-16 line and column accurately with CRLF, lone CR, and astral characters', () => {
     // Line 1: {"emoji": "😀",\r\n
     // Note: "😀" is 2 UTF-16 code units!
