@@ -915,6 +915,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Updated secret note v2');
     });
 
+    // IP15-FE1-5: Save success restores focus to the card's Edit button after the editor unmounts
+    expect(document.activeElement).toBe(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     // Simulate reload by clearing body cache and re-fetching
     act(() => {
       h.qc.removeQueries({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX });
@@ -1736,7 +1738,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
   });
 
   it('delete entry -> focuses next card -> Undo -> restores entry back at the same position and focuses restored card', async () => {
-    await setupItemPageHarness({
+    const h = await setupItemPageHarness({
       initialPlaintexts: [
         { id: ENTRY_ID_1, text: 'First card', position: 0 },
         { id: ENTRY_ID_2, text: 'Second card', position: 1 },
@@ -1764,10 +1766,41 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(card3.contains(document.activeElement)).toBe(true);
     });
 
-    // Click Undo on the Undo toast
-    const undoBtn = await screen.findByRole('button', { name: /Hoàn tác/i });
-    fireEvent.click(undoBtn);
 
+    // Click Undo on the Undo toast while neutralizing queueMicrotask during the restore response
+    // so microtask-only focus attempts fail and only post-commit ref/effect focus succeeds (IP15-FE1-5)
+    const undoBtn = await screen.findByRole('button', { name: /Hoàn tác/i });
+    const origQueueMicrotask = globalThis.queueMicrotask;
+    const { promise: restoreGate, resolve: releaseRestore } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_2}/restore`) && init?.method === 'POST') {
+        await restoreGate;
+      }
+      return null;
+    });
+    fireEvent.click(undoBtn);
+    await waitFor(() => {
+      expect(
+        h.server.requests.some((r) => r.url.endsWith(`/entries/${ENTRY_ID_2}/restore`)),
+      ).toBe(true);
+    });
+    const microtaskSpy = vi
+      .spyOn(globalThis, 'queueMicrotask')
+      .mockImplementation((cb: VoidFunction) => {
+        // Drop focusEntryCard microtasks scheduled before React commits the restored card
+        if (cb.toString().includes('focusEntryCard') || cb.toString().includes('tryFocus')) {
+          return;
+        }
+        origQueueMicrotask(cb);
+      });
+    try {
+      releaseRestore();
+      await waitFor(() => {
+        expect(screen.getByTestId(`entry-card-${ENTRY_ID_2}`)).toBeInTheDocument();
+      });
+    } finally {
+      microtaskSpy.mockRestore();
+    }
     // ENTRY_ID_2 is back at position #2 (index 1, between ENTRY_ID_1 and ENTRY_ID_3)
     await waitFor(() => {
       expect(screen.getByTestId(`entry-card-${ENTRY_ID_2}`)).toBeInTheDocument();

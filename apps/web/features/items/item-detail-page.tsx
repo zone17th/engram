@@ -229,40 +229,62 @@ export function ItemDetailPage({
     };
   }, [orderedEntries.length, visibleBatchCount]);
 
-  // Card element registry for focus management after Delete / Undo
+  // Card element registry for focus management after Delete / Undo / Create (IP15-FE1-5)
   const cardElementsRef = useRef<Map<string, HTMLElement>>(new Map());
   const addTextBtnRef = useRef<HTMLButtonElement | null>(null);
-  const registerCardElement = useCallback((entryId: string, el: HTMLElement | null) => {
-    if (el) {
-      cardElementsRef.current.set(entryId, el);
+  const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
+  const pendingFocusIdRef = useRef<string | null>(null);
+
+  const tryFocusCardDom = useCallback((card: HTMLElement) => {
+    const focusable = card.querySelector<HTMLElement>(
+      '[data-card-menu-trigger], button:not(:disabled)',
+    );
+    if (focusable) {
+      focusable.focus();
     } else {
-      cardElementsRef.current.delete(entryId);
+      card.focus();
     }
   }, []);
 
-  const focusEntryCard = useCallback((entryId: string) => {
-    const tryFocus = () => {
+  const registerCardElement = useCallback(
+    (entryId: string, el: HTMLElement | null) => {
+      if (el) {
+        cardElementsRef.current.set(entryId, el);
+        if (pendingFocusIdRef.current === entryId) {
+          pendingFocusIdRef.current = null;
+          tryFocusCardDom(el);
+        }
+      } else {
+        cardElementsRef.current.delete(entryId);
+      }
+    },
+    [tryFocusCardDom],
+  );
+
+  const focusEntryCard = useCallback(
+    (entryId: string) => {
       const card = cardElementsRef.current.get(entryId);
       if (card) {
-        const focusable = card.querySelector<HTMLElement>(
-          '[data-card-menu-trigger], button:not(:disabled)',
-        );
-        if (focusable) {
-          focusable.focus();
-        } else {
-          card.focus();
-        }
-        return true;
+        pendingFocusIdRef.current = null;
+        setPendingFocusId(null);
+        tryFocusCardDom(card);
+        return;
       }
-      return false;
-    };
-    if (!tryFocus()) {
-      queueMicrotask(() => {
-        tryFocus();
-      });
-    }
-  }, []);
+      pendingFocusIdRef.current = entryId;
+      setPendingFocusId(entryId);
+    },
+    [tryFocusCardDom],
+  );
 
+  useEffect(() => {
+    if (!pendingFocusId) return;
+    const card = cardElementsRef.current.get(pendingFocusId);
+    if (card) {
+      pendingFocusIdRef.current = null;
+      setPendingFocusId(null);
+      tryFocusCardDom(card);
+    }
+  }, [orderedEntries, pendingFocusId, tryFocusCardDom, visibleBatchCount]);
   // Reorder flush implementation (P4FE1-9)
   const flushPendingReorder = useCallback(
     async (allowMismatchRetry = true) => {
@@ -630,13 +652,11 @@ export function ItemDetailPage({
       );
 
       // Focus next card (or previous if last, or "+ Text" button if empty)
-      queueMicrotask(() => {
-        if (nextNeighbor) {
-          focusEntryCard(nextNeighbor.id);
-        } else {
-          addTextBtnRef.current?.focus();
-        }
-      });
+      if (nextNeighbor) {
+        focusEntryCard(nextNeighbor.id);
+      } else {
+        addTextBtnRef.current?.focus();
+      }
 
       try {
         await entryDelete(entry.id, {
@@ -688,9 +708,7 @@ export function ItemDetailPage({
             }
 
             announce(tEntry('restoredNotice'));
-            queueMicrotask(() => {
-              focusEntryCard(restored.id);
-            });
+            focusEntryCard(restored.id);
           },
         });
       } catch (err) {
@@ -746,9 +764,7 @@ export function ItemDetailPage({
         setVisibleBatchCount(nextList.length);
       }
 
-      queueMicrotask(() => {
-        focusEntryCard(created.id);
-      });
+      focusEntryCard(created.id);
     },
     [focusEntryCard, itemId, queryClient, visibleBatchCount],
   );

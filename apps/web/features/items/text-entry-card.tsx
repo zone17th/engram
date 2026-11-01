@@ -185,6 +185,7 @@ export function TextEntryCard({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const editBtnRef = useRef<HTMLButtonElement | null>(null);
   const saveLockRef = useRef<boolean>(false);
+  const pendingFocusEditBtnRef = useRef<boolean>(false);
 
   const lockEpochRef = useRef<number>(0);
   const editorRevisionRef = useRef<number>(0);
@@ -208,6 +209,7 @@ export function TextEntryCard({
         textareaRef.current.value = '';
       }
       saveLockRef.current = false;
+      pendingFocusEditBtnRef.current = false;
       setEditing(false);
       setOriginalSource('');
       setDraftValue('');
@@ -235,6 +237,7 @@ export function TextEntryCard({
         textareaRef.current.value = '';
       }
       saveLockRef.current = false;
+      pendingFocusEditBtnRef.current = false;
       setEditing(false);
       setOriginalSource('');
       setDraftValue('');
@@ -327,12 +330,32 @@ export function TextEntryCard({
     });
   }, [body, unlocked]);
 
+  const focusEditOrMenuTrigger = useCallback(() => {
+    if (editBtnRef.current) {
+      editBtnRef.current.focus();
+    } else if (menuTriggerRef.current) {
+      menuTriggerRef.current.focus();
+    } else {
+      cardEl?.focus();
+    }
+  }, [cardEl]);
+
+  useEffect(() => {
+    if (!editing && pendingFocusEditBtnRef.current) {
+      if (editBtnRef.current || (!pending && body !== undefined) || !unlocked) {
+        pendingFocusEditBtnRef.current = false;
+        focusEditOrMenuTrigger();
+      }
+    }
+  }, [body, editing, focusEditOrMenuTrigger, pending, unlocked]);
+
   const closeEditorCleanly = useCallback(() => {
     if (textareaRef.current) {
       textareaRef.current.value = '';
     }
     saveLockRef.current = false;
     editorRevisionRef.current = 0;
+    pendingFocusEditBtnRef.current = true;
     setEditing(false);
     setOriginalSource('');
     setDraftValue('');
@@ -342,9 +365,6 @@ export function TextEntryCard({
     setConflictState(null);
     setDeletedRemotely(false);
     setSaveError(null);
-    queueMicrotask(() => {
-      editBtnRef.current?.focus();
-    });
   }, []);
 
   const requestCancelEdit = useCallback(() => {
@@ -394,6 +414,7 @@ export function TextEntryCard({
           setEditing(false);
           setOriginalSource('');
           setDraftValue('');
+          pendingFocusEditBtnRef.current = true;
         }
         setSavedFlash(true);
         onAnnounce?.(tEntry('savedAnnounce'));
