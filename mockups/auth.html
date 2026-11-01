@@ -78,6 +78,27 @@
           This step only opens your account. Unlocking the vault is a separate step right after.
         </p>
 
+        <!-- Trạng thái sau khi đặt lại mật khẩu thành công (redirect từ POST /auth/password/reset -> 204, hiển thị phía trên form) -->
+        <!-- [mockup note: shown above the login form card on /app/auth/login after successful password reset redirect] -->
+        <div class="card p-5 mb-4" id="login-reset-success-banner">
+          <div role="status" class="auth-status mb-3">
+            <p class="text-[14px] font-semibold m-0 mb-1">Đã đặt mật khẩu đăng nhập mới — hãy đăng nhập lại</p>
+            <p class="text-[13px] m-0" lang="en" style="color:var(--body)">
+              Your login password has been reset — sign in again with your new password.
+            </p>
+          </div>
+          <div class="rounded-md p-3.5" style="background:var(--pale-orange);border:1px solid var(--border)">
+            <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
+              <strong>Mọi phiên đăng nhập, kể cả trên thiết bị này, đã được đăng xuất — hãy đăng nhập lại bằng mật khẩu mới.</strong>
+              Đặt lại mật khẩu tài khoản <strong>không mở khoá dữ liệu đã mã hoá</strong>: sau khi đăng nhập, bạn vẫn cần <strong>passphrase của vault, một recovery key, passkey</strong> (luôn mở được), hoặc <strong>thiết bị đã nhớ (nếu trình duyệt này vẫn còn nhớ)</strong> để mở vault.
+            </p>
+            <p class="text-[13px] m-0" lang="en" style="color:var(--body)">
+              <strong>All sessions, including this device, were signed out — sign in again with your new password.</strong>
+              Resetting your account password <strong>does not open your vault</strong>: after signing in, you still need your <strong>vault passphrase, a recovery key, a passkey</strong> (which always work), or <strong>a remembered device (only if this browser still remembers it; a reset can clear it)</strong> to unlock your entries.
+            </p>
+          </div>
+        </div>
+
         <div class="card p-6 mb-4">
           <button type="button" class="btn btn-secondary w-full !justify-center mb-3">
             Tiếp tục với Google · <span lang="en" class="font-normal">Continue with Google</span>
@@ -85,17 +106,14 @@
           <button type="button" class="btn btn-secondary w-full !justify-center mb-3">
             Tiếp tục với GitHub · <span lang="en" class="font-normal">Continue with GitHub</span>
           </button>
-          <p class="t-caption mt-0 mb-3" style="color:var(--muted)">
-            Nút Google/GitHub chỉ hiển thị khi máy chủ bật provider tương ứng (<span class="mono">oauth_providers</span>).
-            <span lang="en" class="block">Shown only when the provider is configured on the server.</span>
-          </p>
+          <!-- [mockup note: Google/GitHub buttons are shown only when the corresponding provider is enabled in /auth/config oauth_providers] -->
           <div class="flex items-center gap-3 mb-4">
             <hr class="rule flex-1 m-0"><span class="t-caption" style="color:var(--muted)">hoặc · <span lang="en">or</span></span><hr class="rule flex-1 m-0">
           </div>
 
           <div class="field mb-4">
             <label class="field-label" for="login-email">Email</label>
-            <input id="login-email" type="email" value="minh@zone17th.click" placeholder="ban@vidu.vn · you@example.com" autocomplete="email" class="field-input">
+            <input id="login-email" type="email" value="ban@vidu.vn" placeholder="ban@vidu.vn · you@example.com" autocomplete="email" class="field-input">
           </div>
 
           <div class="field field-password mb-5">
@@ -125,27 +143,6 @@
             · <span lang="en">No account? <a href="#auth-signup" class="font-semibold underline" style="color:var(--link)"
                onclick="document.querySelector('[data-seg] [data-target=signup]').click(); return false;">Create one</a></span>
           </p>
-        </div>
-
-        <!-- Trạng thái sau khi đặt lại mật khẩu thành công (redirect từ POST /auth/password/reset -> 204) -->
-        <!-- [mockup note: shown on /app/auth/login after successful password reset redirect] -->
-        <div class="card p-5 mb-4" id="login-reset-success-banner">
-          <div role="status" class="auth-status mb-3">
-            <p class="text-[14px] font-semibold m-0 mb-1">Đã đặt mật khẩu đăng nhập mới — hãy đăng nhập lại</p>
-            <p class="text-[13px] m-0" lang="en" style="color:var(--body)">
-              Your login password has been reset — sign in again with your new password.
-            </p>
-          </div>
-          <div class="rounded-md p-3.5" style="background:var(--pale-orange);border:1px solid var(--border)">
-            <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
-              <strong>Mọi phiên đăng nhập, kể cả trên thiết bị này, đã được đăng xuất — hãy đăng nhập lại bằng mật khẩu mới.</strong>
-              Đặt lại mật khẩu tài khoản <strong>không mở khoá dữ liệu đã mã hoá</strong>: sau khi đăng nhập, bạn vẫn cần <strong>passphrase của vault, một recovery key, passkey</strong> (luôn mở được), hoặc <strong>thiết bị đã nhớ (nếu trình duyệt này vẫn còn nhớ)</strong> để mở vault.
-            </p>
-            <p class="text-[13px] m-0" lang="en" style="color:var(--body)">
-              <strong>All sessions, including this device, were signed out — sign in again with your new password.</strong>
-              Resetting your account password <strong>does not open your vault</strong>: after signing in, you still need your <strong>vault passphrase, a recovery key, a passkey</strong> (which always work), or <strong>a remembered device (only if this browser still remembers it; a reset can clear it)</strong> to unlock your entries.
-            </p>
-          </div>
         </div>
 
         <!-- submitting -->
@@ -183,7 +180,7 @@
           <div class="pt-3" lang="en" id="login-pure-en-reference" style="border-top:1px solid var(--border)">
             <div class="field mb-3">
               <label class="field-label" for="login-email-en-ref">Email</label>
-              <input id="login-email-en-ref" type="email" value="minh@zone17th.click" placeholder="you@example.com" autocomplete="email" class="field-input">
+              <input id="login-email-en-ref" type="email" value="you@example.com" placeholder="you@example.com" autocomplete="email" class="field-input">
             </div>
             <div class="field field-password mb-3">
               <label class="field-label" for="login-password-short-en">Login password</label>
@@ -312,7 +309,7 @@
 
           <div class="field mb-4">
             <label class="field-label" for="signup-email">Email</label>
-            <input id="signup-email" type="email" value="minh@zone17th.click" placeholder="ban@vidu.vn · you@example.com" autocomplete="email" class="field-input">
+            <input id="signup-email" type="email" value="ban@vidu.vn" placeholder="ban@vidu.vn · you@example.com" autocomplete="email" class="field-input">
           </div>
 
           <div class="field field-password mb-3">
@@ -342,7 +339,7 @@
               <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
               <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
               <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
-              <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
+              <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
             </div>
             <p id="signup-meter-note" class="text-[12px] m-0" style="color:var(--muted)">
               Kiểm tra ngay trên thiết bị này, không gửi gì đi. ·
@@ -413,10 +410,10 @@
                 <span class="text-[12px] font-semibold" style="color:var(--body)">Chưa nhập · <span lang="en">Enter a password</span></span>
               </div>
               <div class="grid grid-cols-4 gap-1.5" role="meter" aria-label="Độ mạnh mật khẩu (mức 0)" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0" aria-valuetext="Chưa nhập (0/4)">
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
               </div>
             </div>
             <!-- State 1: Weak / Too short (<12 chars) -->
@@ -427,9 +424,9 @@
               </div>
               <div class="grid grid-cols-4 gap-1.5" role="meter" aria-label="Độ mạnh mật khẩu (mức 1)" aria-valuemin="0" aria-valuemax="4" aria-valuenow="1" aria-valuetext="Quá ngắn hoặc yếu (1/4)">
                 <div style="height:4px;border-radius:var(--r-pill);background:var(--error)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
               </div>
             </div>
             <!-- State 2: Fair / OK -->
@@ -441,8 +438,8 @@
               <div class="grid grid-cols-4 gap-1.5" role="meter" aria-label="Độ mạnh mật khẩu (mức 2)" aria-valuemin="0" aria-valuemax="4" aria-valuenow="2" aria-valuetext="Trung bình (2/4)">
                 <div style="height:4px;border-radius:var(--r-pill);background:var(--warning)"></div>
                 <div style="height:4px;border-radius:var(--r-pill);background:var(--warning)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
               </div>
             </div>
             <!-- State 3: Strong -->
@@ -455,7 +452,7 @@
                 <div style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
                 <div style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
                 <div style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
-                <div style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
+                <div style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
               </div>
             </div>
             <!-- State 4: Very strong -->
@@ -489,9 +486,10 @@
             </span>
           </div>
 
+          <!-- [mockup note: post-click state when submitting with unticked terms — CTA stays enabled; submit validates, shows field-error, and moves focus to #signup-terms] -->
           <div class="pt-3" id="signup-terms-blocked" style="border-top:1px solid var(--border)">
             <label class="flex gap-3 items-start mb-1.5 cursor-pointer" for="signup-terms-err-input">
-              <input id="signup-terms-err-input" type="checkbox" class="mt-1" aria-invalid="true" aria-describedby="signup-terms-err">
+              <input id="signup-terms-err-input" type="checkbox" class="mt-1" aria-invalid="true" aria-describedby="signup-terms-err" style="outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-sm)">
               <span class="text-[14px]">
                 Tôi đồng ý với <a href="legal.html#terms" class="underline" style="color:var(--link)">Điều khoản sử dụng</a> và
                 <a href="legal.html#privacy" class="underline" style="color:var(--link)">Chính sách quyền riêng tư</a>.
@@ -504,7 +502,7 @@
             <span id="signup-terms-err" class="field-error block mb-3">
               Bạn cần đồng ý với điều khoản để tiếp tục. · <span lang="en" class="font-normal">Accept the terms to continue.</span>
             </span>
-            <button type="button" class="btn btn-primary w-full !justify-center" disabled>
+            <button type="button" class="btn btn-primary w-full !justify-center">
               Tạo tài khoản · <span lang="en" class="font-normal">Create account</span>
             </button>
           </div>
@@ -607,28 +605,38 @@
     </p>
 
     <div class="seg mb-6 flex-wrap" data-seg aria-label="Các bước đặt lại mật khẩu · Password reset frames">
-      <button data-target="forgot-request"   aria-pressed="true">1 · Yêu cầu · <span lang="en" class="font-normal">Request</span></button>
-      <button data-target="forgot-sent"      aria-pressed="false">2 · Đã gửi · <span lang="en" class="font-normal">Sent</span></button>
-      <button data-target="forgot-mail-err"  aria-pressed="false">2b · Lỗi gửi mail · <span lang="en" class="font-normal">Mail unavailable</span></button>
-      <button data-target="forgot-ratelimit" aria-pressed="false">2c · Giới hạn &amp; CAPTCHA · <span lang="en" class="font-normal">429 &amp; CAPTCHA</span></button>
-      <button data-target="forgot-reset"     aria-pressed="false">3 · Đặt mật khẩu mới · <span lang="en" class="font-normal">Set new</span></button>
-      <button data-target="forgot-invalid"   aria-pressed="false">4 · Link không hợp lệ · <span lang="en" class="font-normal">Expired/used</span></button>
-      <button data-target="forgot-done"      aria-pressed="false">5 · Hoàn tất · <span lang="en" class="font-normal">Success</span></button>
+      <button data-target="forgot-request"     aria-pressed="true">1 · Yêu cầu · <span lang="en" class="font-normal">Request</span></button>
+      <button data-target="forgot-unavailable" aria-pressed="false">1b · Chưa bật mail (khi tải) · <span lang="en" class="font-normal">Unavailable (on load)</span></button>
+      <button data-target="forgot-sent"        aria-pressed="false">2 · Đã gửi · <span lang="en" class="font-normal">Sent</span></button>
+      <button data-target="forgot-mail-err"    aria-pressed="false">2b · Chưa bật mail (sau gửi 503) · <span lang="en" class="font-normal">503 fallback</span></button>
+      <button data-target="forgot-ratelimit"   aria-pressed="false">2c · Giới hạn &amp; CAPTCHA · <span lang="en" class="font-normal">429 &amp; CAPTCHA</span></button>
+      <button data-target="forgot-reset"       aria-pressed="false">3 · Đặt mật khẩu mới · <span lang="en" class="font-normal">Set new</span></button>
+      <button data-target="forgot-invalid"     aria-pressed="false">4 · Link không hợp lệ · <span lang="en" class="font-normal">Expired/used</span></button>
+      <button data-target="forgot-done"        aria-pressed="false">5 · Hoàn tất · <span lang="en" class="font-normal">Success</span></button>
     </div>
 
-    <!-- 1. REQUEST: nhập email -->
+    <!-- 1. REQUEST: nhập email (chỉ hiển thị khi /auth/config mail_delivery_available=true) -->
+    <!-- [mockup note: shown when /auth/config mail_delivery_available=true; when false, the form is replaced on load by #forgot-unavailable] -->
     <div data-view="forgot-request" id="forgot-request">
       <div class="card p-6 mb-4">
         <p class="text-[13.5px] mt-0 mb-4" style="color:var(--body)">
-          Nhập địa chỉ email của bạn. Nếu địa chỉ email này có tài khoản, chúng tôi sẽ gửi hướng dẫn tiếp theo qua email.
+          Nhập địa chỉ email của bạn. Nếu địa chỉ email này có tài khoản, chúng tôi sẽ gửi hướng dẫn tiếp theo.
           <span lang="en" class="block text-[13px] mt-1" style="color:var(--body)">
-            Enter your email address. If an account exists for this email, we will send the next steps by email.
+            Enter your email address. If an account exists for this email, we will send the next steps.
           </span>
         </p>
 
-        <div class="field mb-5">
+        <div class="field mb-4">
           <label class="field-label" for="forgot-email">Email</label>
-          <input id="forgot-email" type="email" value="minh@zone17th.click" placeholder="ban@vidu.vn · you@example.com" autocomplete="email" class="field-input">
+          <input id="forgot-email" type="email" value="ban@vidu.vn" placeholder="ban@vidu.vn · you@example.com" autocomplete="email" class="field-input">
+        </div>
+
+        <!-- [mockup note: Turnstile slot — rendered when CAPTCHA is configured (/auth/config captcha_site_key != null); submit stays disabled until widget resolves] -->
+        <div class="rounded-md p-3.5 mb-4 text-[13px]" id="forgot-request-captcha-slot" style="background:var(--surface);border:1px dashed var(--border-strong);color:var(--muted)">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <span>Ô xác minh bảo mật · <span lang="en">Security verification challenge</span></span>
+            <span class="phase-badge !ml-0">rendered when CAPTCHA is configured</span>
+          </div>
         </div>
 
         <button type="button" class="btn btn-primary w-full !justify-center mb-4"
@@ -644,7 +652,6 @@
              onclick="document.querySelector('[data-seg] [data-target=login]').click(); return false;">Back to sign in</a></span>
         </p>
       </div>
-
       <!-- Kiểm tra định dạng email tại trình duyệt / 400 invalid_request -->
       <div class="card p-5 mb-4" id="forgot-request-email-error">
         <div class="field mb-0">
@@ -666,7 +673,34 @@
       </div>
     </div>
 
-    <!-- 2. SENT: thông báo trung tính chống dò email (anti-enumeration: identical for existing password, OAuth-only, and non-existing emails) -->
+    <!-- 1b. CONFIG-DRIVEN UNAVAILABLE ON LOAD: hiển thị ngay khi tải trang nếu /auth/config mail_delivery_available=false (thay cho form) -->
+    <!-- [mockup note: shown ON LOAD when GET /auth/config returns mail_delivery_available=false (advisor-dec-140 D1); replaces the request form — calm status, not error-red, no role="alert", no "try again later" button] -->
+    <div data-view="forgot-unavailable" id="forgot-unavailable" hidden>
+      <div class="card p-6 mb-4">
+        <div role="status" class="auth-status mb-4">
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">
+            Gửi email đặt lại mật khẩu hiện chưa khả dụng
+          </p>
+          <p class="text-[13px] m-0" lang="en" style="color:var(--body)">
+            Email delivery is not available yet.
+          </p>
+        </div>
+        <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+          Máy chủ hiện chưa bật dịch vụ gửi email nên chưa thể đặt lại mật khẩu đăng nhập qua email lúc này. Nếu bạn nhớ mật khẩu hoặc có liên kết Google/GitHub, hãy quay lại đăng nhập; nếu cần hỗ trợ về tài khoản, vui lòng xem <a href="legal.html#contact" class="underline font-semibold" style="color:var(--link)">kênh liên hệ</a>.
+        </p>
+        <p class="text-[13px] m-0 mb-5" lang="en" style="color:var(--body)">
+          Password reset by email is not possible right now because outbound email delivery is not enabled on this server. If you remember your password or have a linked Google/GitHub account, sign in; if you need account assistance, use the <a href="legal.html#contact" class="underline font-semibold" style="color:var(--link)">contact channel</a>.
+        </p>
+        <div class="pt-3" style="border-top:1px solid var(--border)">
+          <a href="#auth-login" class="text-[13.5px] font-semibold underline" style="color:var(--link)"
+             onclick="document.querySelector('[data-seg] [data-target=login]').click(); return false;">
+            Quay lại đăng nhập · <span lang="en" class="font-normal">Back to sign in</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. SENT: thông báo trung tính chống dò email (chỉ đạt tới khi mail_delivery_available=true; anti-enumeration: identical for existing password, OAuth-only, and non-existing emails) -->
     <div data-view="forgot-sent" id="forgot-sent" hidden>
       <div class="card p-6 mb-4">
         <div role="status" class="auth-status mb-4">
@@ -696,26 +730,28 @@
       </div>
     </div>
 
-    <!-- 2b. MAIL UNAVAILABLE: 503 mail_delivery_unavailable (global deployment state; no "check your inbox"; OAuth mentioned only when oauth_providers is non-empty) -->
+    <!-- 2b. POST-SUBMIT 503 FALLBACK: khi cấu hình thay đổi giữa lúc tải trang và lúc bấm gửi (POST /auth/password/forgot -> 503 mail_delivery_unavailable) -->
+    <!-- [mockup note: post-submit 503 mail_delivery_unavailable fallback when config changes between load and submit — same calm copy as #forgot-unavailable, not error-red, no role="alert", no dead button] -->
     <div data-view="forgot-mail-err" id="forgot-mail-unavailable" hidden>
-      <div class="card p-5 mb-4" style="border-color:var(--error)">
-        <div role="alert" class="auth-alert mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Không gửi được email lúc này</p>
-          <p class="text-[13px] m-0" style="color:var(--body)">
-            Tính năng gửi email hiện không khả dụng, chưa có liên kết nào được gửi đi. Vui lòng thử lại sau.
+      <div class="card p-6 mb-4">
+        <div role="status" class="auth-status mb-4">
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">
+            Gửi email đặt lại mật khẩu hiện chưa khả dụng
+          </p>
+          <p class="text-[13px] m-0" lang="en" style="color:var(--body)">
+            Email delivery is not available yet.
           </p>
         </div>
-        <div class="rounded-md p-3 mb-4 text-[13px]" lang="en" style="background:var(--surface);color:var(--body)">
-          <strong>Email delivery is not available right now, no link was sent.</strong>
-          Please try again later.
-        </div>
-        <div class="flex items-center gap-2 flex-wrap">
-          <button type="button" class="btn btn-secondary btn-sm">
-            Thử lại sau · <span lang="en" class="font-normal">Try again later</span>
-          </button>
-          <a href="#auth-login" class="btn btn-tertiary btn-sm no-underline"
+        <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+          Hiện chưa thể đặt lại mật khẩu đăng nhập qua email và chưa có email nào được gửi đi. Nếu bạn nhớ mật khẩu, hãy quay lại đăng nhập; nếu cần hỗ trợ về tài khoản, vui lòng xem <a href="legal.html#contact" class="underline font-semibold" style="color:var(--link)">kênh liên hệ</a>.
+        </p>
+        <p class="text-[13px] m-0 mb-5" lang="en" style="color:var(--body)">
+          Password reset by email is not possible right now and no email was sent. If you remember your password, sign in; if you need account assistance, use the <a href="legal.html#contact" class="underline font-semibold" style="color:var(--link)">contact channel</a>.
+        </p>
+        <div class="pt-3" style="border-top:1px solid var(--border)">
+          <a href="#auth-login" class="text-[13.5px] font-semibold underline" style="color:var(--link)"
              onclick="document.querySelector('[data-seg] [data-target=login]').click(); return false;">
-            Về đăng nhập · <span lang="en" class="font-normal">Back to sign in</span>
+            Quay lại đăng nhập · <span lang="en" class="font-normal">Back to sign in</span>
           </a>
         </div>
       </div>
@@ -738,19 +774,24 @@
         </p>
       </div>
 
+      <!-- [mockup note: 403 captcha_required fallback when CAPTCHA token is missing or expired on submit — widget is shown again with the submit button] -->
       <div class="card p-5 mb-4" id="forgot-err-captcha" style="border-color:var(--warning)">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">
-          Cần xác minh bảo mật · <span lang="en" class="font-normal" style="color:var(--muted)">Verification required</span>
+          Cần xác minh bảo mật lại · <span lang="en" class="font-normal" style="color:var(--muted)">Verification required</span>
         </p>
         <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
-          Hoàn tất bước xác minh bên dưới để gửi yêu cầu đặt lại mật khẩu.
+          Phiên xác minh bảo mật đã hết hạn hoặc chưa hoàn tất. Vui lòng xác minh lại bên dưới rồi gửi yêu cầu.
         </p>
         <p class="text-[13px] m-0 mb-3" lang="en" style="color:var(--body)">
-          Complete the verification challenge below to send your password reset request.
+          The security check expired or was not completed. Please complete the challenge below again and submit your request.
         </p>
-        <div class="rounded-md p-4 text-[13px]" style="background:var(--surface);border:1px dashed var(--border-strong);color:var(--muted)">
-          Ô xác minh (Turnstile) · <span lang="en">Turnstile verification challenge</span>
+        <!-- [mockup note: Turnstile widget re-rendered on 403 captcha_required] -->
+        <div class="rounded-md p-3.5 mb-4 text-[13px]" style="background:var(--surface);border:1px dashed var(--border-strong);color:var(--muted)">
+          Ô xác minh bảo mật · <span lang="en">Security verification challenge</span>
         </div>
+        <button type="button" class="btn btn-primary w-full !justify-center">
+          Gửi hướng dẫn đặt lại · <span lang="en" class="font-normal">Send reset instructions</span>
+        </button>
       </div>
     </div>
 
@@ -803,7 +844,7 @@
             <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
             <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
             <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--success)"></div>
-            <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--border-strong)"></div>
+            <div data-meter-bar style="height:4px;border-radius:var(--r-pill);background:var(--muted)"></div>
           </div>
           <p id="reset-meter-note" class="text-[12px] m-0" style="color:var(--muted)">
             Kiểm tra ngay trên thiết bị này, không gửi gì đi. ·
@@ -927,8 +968,8 @@
 
     <div class="card p-6 mb-4">
       <div role="status" class="auth-status">
-        Đã gửi email xác minh tới minh@zone17th.click
-        <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)">Verification email sent to minh@zone17th.click</span>
+        Đã gửi email xác minh tới ban@vidu.vn
+        <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)">Verification email sent to you@example.com</span>
       </div>
       <p class="text-[13px] m-0 mb-4" style="color:var(--muted)">
         Chưa thấy? Kiểm tra thư rác hoặc gửi lại sau 60 giây. ·
@@ -1014,8 +1055,8 @@
     <div data-view="enroll-sent" hidden>
       <div class="card p-6">
         <div role="status" class="auth-status">
-          Đã gửi email đặt mật khẩu tới minh@zone17th.click
-          <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)">Password setup email sent to minh@zone17th.click</span>
+          Đã gửi email đặt mật khẩu tới ban@vidu.vn
+          <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)">Password setup email sent to you@example.com</span>
         </div>
         <p class="text-[13px] m-0" style="color:var(--muted)">
           Mở link trong vòng 10 phút, trên cùng phiên đăng nhập. ·
@@ -1067,7 +1108,8 @@
         <div role="alert" class="auth-alert mb-0">
           <p class="text-[14px] font-semibold m-0 mb-1">Gửi lại quá nhanh · <span lang="en" class="font-normal">Too many attempts</span></p>
           <p class="text-[13px] m-0">
-            Thử lại sau <span class="mono">42</span> giây. (Countdown hiển thị tĩnh — app không đọc to mỗi giây.) ·
+            <!-- [mockup note: static countdown display — app does not announce every second] -->
+            Thử lại sau <span class="mono">42</span> giây. ·
             <span lang="en">Try again in <span class="mono">42</span> seconds.</span>
           </p>
         </div>
@@ -1213,18 +1255,20 @@
     <div class="card p-5" style="border-color:var(--warning)">
       <p class="text-[14px] font-semibold m-0 mb-1">Cần xác minh thêm · <span lang="en" class="font-normal" style="color:var(--muted)">Additional verification needed</span></p>
       <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Sau 5 lần sai, mỗi lần đăng nhập cần qua Turnstile. · <span lang="en">After repeated failed attempts, each sign-in needs Turnstile.</span>
+        <!-- [mockup note: Turnstile challenge widget] -->
+        Sau 5 lần sai, mỗi lần đăng nhập cần qua bước xác minh bảo mật. · <span lang="en">After repeated failed attempts, each sign-in requires a security check.</span>
       </p>
       <div class="rounded-md p-4 text-[13px]" style="background:var(--surface);border:1px dashed var(--border-strong);color:var(--muted)">
-        Ô xác minh (Turnstile) · <span lang="en">Turnstile verification challenge</span>
+        Ô xác minh bảo mật · <span lang="en">Security verification challenge</span>
       </div>
     </div>
 
     <div class="card p-5">
       <p class="text-[14px] font-semibold m-0 mb-1">Đăng nhập tạm khoá · <span lang="en" class="font-normal" style="color:var(--muted)">Sign-in temporarily locked</span></p>
       <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">
-        Thử quá nhiều lần. Thử lại sau <span class="mono">4:32</span> (hiển thị tĩnh, không đếm ngược mỗi giây). ·
-        <span lang="en">Too many attempts. Try again after <span class="mono">4:32</span> (static display).</span>
+        <!-- [mockup note: static Retry-After display, no per-second live countdown] -->
+        Thử quá nhiều lần. Thử lại sau <span class="mono">4:32</span>. ·
+        <span lang="en">Too many attempts. Try again after <span class="mono">4:32</span>.</span>
       </p>
       <p class="text-[12px] m-0" style="color:var(--muted)">
         Giới hạn 5 lần mỗi phút trên mỗi địa chỉ mạng. · <span lang="en">Limit is 5 attempts per minute per network address.</span>
@@ -1263,7 +1307,7 @@
     <div class="card p-5" lang="en">
       <div role="alert" class="auth-alert mb-0">
         <p class="text-[14px] font-semibold m-0 mb-1">Too many sign-in attempts</p>
-        <p class="text-[13px] m-0">Please wait before trying again. We use the same response whether or not an account exists for that email address, and additional verification may be required after repeated failures.</p>
+        <p class="text-[13px] m-0">Please wait before trying again. Additional verification may be required after repeated failures.</p>
       </div>
     </div>
 
@@ -1335,7 +1379,7 @@
     var meterEl = meterBox.querySelector('[role="meter"]');
     var bars = meterBox.querySelectorAll('[data-meter-bar]');
     var levels = [
-      { score: 0, vi: 'Chưa nhập', en: 'Enter a password', vt: 'Chưa nhập (0/4)', color: 'var(--border-strong)' },
+      { score: 0, vi: 'Chưa nhập', en: 'Enter a password', vt: 'Chưa nhập (0/4)', color: 'var(--muted)' },
       { score: 1, vi: 'Quá ngắn / Yếu', en: 'Too short / Weak', vt: 'Quá ngắn hoặc yếu (1/4)', color: 'var(--error)' },
       { score: 2, vi: 'Trung bình', en: 'Fair', vt: 'Trung bình (2/4)', color: 'var(--warning)' },
       { score: 3, vi: 'Mạnh', en: 'Strong', vt: 'Mạnh (3/4)', color: 'var(--success)' },
@@ -1358,7 +1402,7 @@
         meterEl.setAttribute('aria-valuetext', lv.vt);
       }
       bars.forEach(function (bar, idx) {
-        bar.style.background = idx < lv.score ? lv.color : 'var(--border-strong)';
+        bar.style.background = idx < lv.score ? lv.color : 'var(--muted)';
       });
     });
   }
