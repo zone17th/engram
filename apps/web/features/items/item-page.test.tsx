@@ -406,6 +406,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     initialPlaintexts?: Array<{ id: string; text: string; position?: number; version?: number }>;
     itemNotFound?: boolean;
     lazyCards?: boolean;
+    skipInitialVaultMetaReload?: boolean;
   }): Promise<Harness> {
     const locale = options?.locale ?? 'vi';
     const lazyCards = options?.lazyCards ?? false;
@@ -788,11 +789,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
 
-    await act(async () => {
-      await vaultCtx.reloadVaultMeta();
-    });
-    await waitFor(() => expect(vaultCtx.vaultMeta?.vault_key_id).toBe(KEY_ID));
-
+    if (!options?.skipInitialVaultMetaReload) {
+      await act(async () => {
+        await vaultCtx.reloadVaultMeta();
+      });
+      await waitFor(() => expect(vaultCtx.vaultMeta?.vault_key_id).toBe(KEY_ID));
+    }
     const sealTextForEntry = async (
       entryId: string,
       plaintext: string,
@@ -3082,6 +3084,36 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     assertNoPlaintextAttrs(h.container, ['First entry', 'Brand new second entry']);
     expect(findCacheSentinelLeaks(h.qc, ['Brand new second entry'])).toEqual([]);
+
+    // advisor-dec-200: Onboarding step 3 skipped leaves vault.vaultMeta === null while vault.state === 'unlocked';
+    // the first entry save via + Text composer and 404 Save as new entry must call vault.reloadVaultMeta() and succeed
+    cleanup();
+    const hOnboardingSkip = await setupItemPageHarness({
+      initialPlaintexts: [],
+      skipInitialVaultMetaReload: true,
+    });
+    expect(hOnboardingSkip.vault().state).toBe('unlocked');
+    expect(hOnboardingSkip.vault().vaultMeta).toBeNull();
+
+    const reloadMetaSpy = vi.spyOn(hOnboardingSkip.vault(), 'reloadVaultMeta');
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    fireEvent.change(screen.getByTestId('new-entry-textarea'), {
+      target: { value: 'First entry after onboarding step 3 skip' },
+    });
+    fireEvent.click(screen.getByTestId('new-entry-save-btn'));
+
+    await waitFor(() => {
+      expect(reloadMetaSpy).toHaveBeenCalledTimes(1);
+      expect(hOnboardingSkip.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId('new-text-entry-composer')).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'First entry after onboarding step 3 skip',
+      );
+    });
+    const postOnboardingCreateReqs = hOnboardingSkip.server.requests.filter(
+      (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+    );
+    expect(postOnboardingCreateReqs).toHaveLength(1);
   });
 
   it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {

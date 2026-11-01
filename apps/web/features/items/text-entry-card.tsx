@@ -296,6 +296,7 @@ export function TextEntryCard({
   // away while a fallback GET is held never leaves plaintext in the holder or allows a stale completion.
   useEffect(() => {
     const holderToWipe = plaintextHolderRef;
+    const textareaRefToWipe = textareaRef;
     return () => {
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
@@ -305,8 +306,8 @@ export function TextEntryCard({
       holderToWipe.current.originalSource = '';
       holderToWipe.current.draftValue = '';
       holderToWipe.current.submittedCandidateSource = '';
-      if (textareaRef.current) {
-        textareaRef.current.value = '';
+      if (textareaRefToWipe.current) {
+        textareaRefToWipe.current.value = '';
       }
     };
   }, [plaintextHolderRef]);
@@ -637,7 +638,6 @@ export function TextEntryCard({
       const submittedRevision = editorRevisionRef.current;
       const ownerId = ++nextSaveOwnerIdRef.current;
       saveOwnerIdRef.current = ownerId;
-      plaintextHolderRef.current.submittedCandidateSource = savePlan.text;
       setMixedEolWarningTarget(null);
       saveLockRef.current = true;
       setSavingInFlight(true);
@@ -648,7 +648,15 @@ export function TextEntryCard({
           entryId: entry.id,
           itemId,
           version: effectiveVersion,
-          text: savePlan.text,
+          getText: () => {
+            const currentHolder = plaintextHolderRef.current;
+            const candidate = applyTextareaEol(
+              currentHolder.originalSource,
+              currentHolder.draftValue,
+            ).text;
+            plaintextHolderRef.current.submittedCandidateSource = candidate;
+            return candidate;
+          },
           vault,
         });
         if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
@@ -763,21 +771,19 @@ export function TextEntryCard({
       // created in the same render can share a lexical context with sibling handlers; the effective security
       // guarantees are the synchronous op-token/epoch/owner check, synchronous holder + DOM wipe on reset/unmount,
       // and the absence of any network/cache/DOM/storage sink after reset.
-      const currentHolder = plaintextHolderRef.current;
-      const textToSeal = applyTextareaEol(
-        currentHolder.originalSource,
-        currentHolder.draftValue,
-      ).text;
-      if (utf8Encoder.encode(textToSeal).byteLength === 0) {
-        releaseSaveGuardIfOwner(ownerId);
-        return;
-      }
-      plaintextHolderRef.current.submittedCandidateSource = textToSeal;
       const resealed = await sealEntryUpdate({
         entryId: entry.id,
         itemId,
         version: targetVersion,
-        text: textToSeal,
+        getText: () => {
+          const currentHolder = plaintextHolderRef.current;
+          const candidate = applyTextareaEol(
+            currentHolder.originalSource,
+            currentHolder.draftValue,
+          ).text;
+          plaintextHolderRef.current.submittedCandidateSource = candidate;
+          return candidate;
+        },
         vault,
       });
 
@@ -785,7 +791,6 @@ export function TextEntryCard({
         releaseSaveGuardIfOwner(ownerId);
         return;
       }
-
       setConflictState(null);
       await executePut(resealed, targetVersion, false, submittedRevision, ownerId);
     } catch (err) {
@@ -860,7 +865,10 @@ export function TextEntryCard({
       const sealedNew = await sealNewEntry({
         itemId,
         type: 'text',
-        text: savePlan.text,
+        getText: () => {
+          const currentHolder = plaintextHolderRef.current;
+          return applyTextareaEol(currentHolder.originalSource, currentHolder.draftValue).text;
+        },
         vault,
       });
       if (!sealedNew.isCurrent() || saveOwnerIdRef.current !== ownerId) {
@@ -894,9 +902,9 @@ export function TextEntryCard({
     isOverCap,
     itemId,
     onAnnounce,
+    plaintextHolderRef,
     queryClient,
     releaseSaveGuardIfOwner,
-    savePlan.text,
     savingInFlight,
     tEntry,
     translateContentError,
@@ -1636,13 +1644,15 @@ export function NewTextEntryComposer({
 
   // Unmount cleanup (IP15-BE3-2): synchronously wipe composer holder and invalidate save ownership on unmount.
   useEffect(() => {
+    const holderToWipe = composerHolderRef;
+    const textareaRefToWipe = textareaRef;
     return () => {
       lockEpochRef.current += 1;
       saveOwnerIdRef.current = 0;
       saveLockRef.current = false;
-      composerHolderRef.current.draftValue = '';
-      if (textareaRef.current) {
-        textareaRef.current.value = '';
+      holderToWipe.current.draftValue = '';
+      if (textareaRefToWipe.current) {
+        textareaRefToWipe.current.value = '';
       }
     };
   }, []);
@@ -1794,7 +1804,7 @@ export function NewTextEntryComposer({
       const sealed = await sealNewEntry({
         itemId,
         type: 'text',
-        text: composerHolderRef.current.draftValue,
+        getText: () => composerHolderRef.current.draftValue,
         vault,
       });
       if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {

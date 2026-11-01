@@ -81,12 +81,12 @@ export interface EntrySealStartedOp {
 export interface EntrySealVaultContext {
   readonly state?: string;
   readonly vaultMeta: { readonly vault_key_id: string } | null;
+  readonly reloadVaultMeta?: () => Promise<{ readonly vault_key_id: string } | null>;
   readonly beginOp?: () => EntrySealStartedOp;
   readonly getClient?: () => CryptoClient;
   readonly captureOpGeneration?: () => number;
   readonly registerSecretFormReset?: (resetFn: () => void) => () => void;
 }
-
 export interface EntryOpHandle {
   readonly opGeneration: number;
   readonly isCurrent: () => boolean;
@@ -161,23 +161,16 @@ export function validateAndMeasureEntryText(text: string): {
   return { byteLength, plaintextLenBucket };
 }
 
-function resolveOpFromVault(vault: EntrySealVaultContext): {
+async function resolveOpFromVault(vault: EntrySealVaultContext): Promise<{
   readonly client: CryptoClient;
   readonly opGeneration: number;
   readonly isCurrent: () => boolean;
   readonly onReset?: (listener: () => void) => () => void;
   readonly dispose: () => void;
   readonly keyId: string;
-} {
+}> {
   if (vault.state !== undefined && vault.state !== 'unlocked') {
     throw new EntrySealError('VAULT_LOCKED', 'Vault must be unlocked before sealing an entry.');
-  }
-  const keyId = vault.vaultMeta?.vault_key_id;
-  if (typeof keyId !== 'string' || !ENTRY_KEY_ID_REGEX.test(keyId)) {
-    throw new EntrySealError(
-      'VAULT_KEY_MISSING',
-      'Vault metadata (vault_key_id) is missing or invalid.',
-    );
   }
   let resetObserved = false;
   let unsubInitialReset: (() => void) | undefined;
@@ -199,6 +192,10 @@ function resolveOpFromVault(vault: EntrySealVaultContext): {
     });
   }
 
+  let client: CryptoClient;
+  let opGeneration: number;
+  let isCurrent: () => boolean;
+
   if (typeof vault.beginOp === 'function') {
     let started: EntrySealStartedOp;
     try {
@@ -207,24 +204,14 @@ function resolveOpFromVault(vault: EntrySealVaultContext): {
       dispose();
       throw err;
     }
-    const client = started.client;
-    const opGeneration = started.opGeneration;
-    return {
-      client,
-      opGeneration,
-      isCurrent: () =>
-        !resetObserved &&
-        started.isCurrent() &&
-        client.getState() === 'unlocked' &&
-        client.getGeneration() === opGeneration,
-      ...(registerReset ? { onReset: registerReset } : {}),
-      dispose,
-      keyId,
-    };
-  }
-  if (typeof vault.getClient === 'function') {
-    let client: CryptoClient;
-    let opGeneration: number;
+    client = started.client;
+    opGeneration = started.opGeneration;
+    isCurrent = () =>
+      !resetObserved &&
+      started.isCurrent() &&
+      client.getState() === 'unlocked' &&
+      client.getGeneration() === opGeneration;
+  } else if (typeof vault.getClient === 'function') {
     try {
       client = vault.getClient();
       opGeneration =
@@ -235,20 +222,55 @@ function resolveOpFromVault(vault: EntrySealVaultContext): {
       dispose();
       throw err;
     }
-    return {
-      client,
-      opGeneration,
-      isCurrent: () =>
-        !resetObserved &&
-        client.getState() === 'unlocked' &&
-        client.getGeneration() === opGeneration,
-      ...(registerReset ? { onReset: registerReset } : {}),
-      dispose,
-      keyId,
-    };
+    isCurrent = () =>
+      !resetObserved &&
+      client.getState() === 'unlocked' &&
+      client.getGeneration() === opGeneration;
+  } else {
+    dispose();
+    throw new EntrySealError('VAULT_LOCKED', 'Vault client is unavailable.');
   }
-  dispose();
-  throw new EntrySealError('VAULT_LOCKED', 'Vault client is unavailable.');
+
+  // advisor-dec-200: When vaultMeta is null (e.g. onboarding step 3 skipped), call the public
+  // vault.reloadVaultMeta() AFTER capturing opGeneration and re-verify isCurrent() before sealing.
+  let keyId = vault.vaultMeta?.vault_key_id;
+  if (
+    (typeof keyId !== 'string' || !ENTRY_KEY_ID_REGEX.test(keyId)) &&
+    typeof vault.reloadVaultMeta === 'function'
+  ) {
+    let reloaded: { readonly vault_key_id: string } | null = null;
+    try {
+      reloaded = await vault.reloadVaultMeta();
+    } catch (err) {
+      dispose();
+      throw err;
+    }
+    if (!isCurrent()) {
+      dispose();
+      throw new EntrySealError(
+        'STALE_GENERATION',
+        'Vault locked or changed while reloading vault metadata.',
+      );
+    }
+    keyId = reloaded?.vault_key_id ?? vault.vaultMeta?.vault_key_id;
+  }
+
+  if (typeof keyId !== 'string' || !ENTRY_KEY_ID_REGEX.test(keyId)) {
+    dispose();
+    throw new EntrySealError(
+      'VAULT_KEY_MISSING',
+      'Vault metadata (vault_key_id) is missing or invalid.',
+    );
+  }
+
+  return {
+    client,
+    opGeneration,
+    isCurrent,
+    ...(registerReset ? { onReset: registerReset } : {}),
+    dispose,
+    keyId,
+  };
 }
 
 function mapWorkerSealError(err: unknown): EntrySealError {
@@ -315,7 +337,8 @@ function generateEntryUuidOnce(entryIdOverride?: string): string {
   return id;
 }
 export interface SealNewEntryInput {
-  readonly text: string;
+  readonly text?: string;
+  readonly getText?: () => string;
   readonly itemId: string;
   readonly vault: EntrySealVaultContext;
   readonly type?: EntryType;
@@ -358,16 +381,28 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
     throw new EntrySealError('ENTRY_TYPE_INVALID', 'Entry type must be "text" or "json".');
   }
 
-  // Step 1: validate and measure BEFORE touching the Worker
-  const { plaintextLenBucket } = validateAndMeasureEntryText(input.text);
+  if (typeof input.text === 'string') {
+    validateAndMeasureEntryText(input.text);
+  }
   const entryId = generateEntryUuidOnce(input.entryId);
   const idempotencyKey = input.idempotencyKey ?? createIdempotencyKey();
   const itemId = input.itemId;
 
-  // Step 2: capture opGeneration BEFORE the first await
-  const { client, opGeneration, isCurrent, onReset, dispose, keyId } = resolveOpFromVault(
+  // Step 1: capture opGeneration BEFORE the first await (and reloadVaultMeta if vaultMeta is null — advisor-dec-200)
+  const { client, opGeneration, isCurrent, onReset, dispose, keyId } = await resolveOpFromVault(
     input.vault,
   );
+
+  // Step 2: read and validate plaintext AFTER any async reloadVaultMeta and op-token check
+  let plaintextToSeal: string;
+  let plaintextLenBucket: PlaintextLenBucket;
+  try {
+    plaintextToSeal = typeof input.getText === 'function' ? input.getText() : (input.text ?? '');
+    ({ plaintextLenBucket } = validateAndMeasureEntryText(plaintextToSeal));
+  } catch (err) {
+    dispose();
+    throw err;
+  }
 
   // Step 3: seal once in the Worker
   let sealed: { readonly envelope: EntryEnvelopeV1; readonly ciphertext: string };
@@ -375,14 +410,13 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
     sealed = await sealWithMappedErrors(client, {
       entryId,
       keyId,
-      plaintext: input.text,
+      plaintext: plaintextToSeal,
       opGeneration,
     });
   } catch (err) {
     dispose();
     throw err;
   }
-
   if (!isCurrent()) {
     dispose();
     throw new EntrySealError(
@@ -430,7 +464,8 @@ export async function sealNewEntry(input: SealNewEntryInput): Promise<SealedNewE
 }
 
 export interface SealEntryImportJsonInput {
-  readonly text: string;
+  readonly text?: string;
+  readonly getText?: () => string;
   readonly itemId: string;
   readonly source: 'paste' | 'file';
   readonly vault: EntrySealVaultContext;
@@ -461,29 +496,40 @@ export interface SealedImportJsonEntryPayload {
 export async function sealEntryImportJson(
   input: SealEntryImportJsonInput,
 ): Promise<SealedImportJsonEntryPayload> {
-  const { plaintextLenBucket } = validateAndMeasureEntryText(input.text);
+  if (typeof input.text === 'string') {
+    validateAndMeasureEntryText(input.text);
+  }
   const entryId = generateEntryUuidOnce(input.entryId);
   const idempotencyKey = input.idempotencyKey ?? createIdempotencyKey();
   const itemId = input.itemId;
   const source = input.source;
 
-  const { client, opGeneration, isCurrent, onReset, dispose, keyId } = resolveOpFromVault(
+  const { client, opGeneration, isCurrent, onReset, dispose, keyId } = await resolveOpFromVault(
     input.vault,
   );
+
+  let plaintextToSeal: string;
+  let plaintextLenBucket: PlaintextLenBucket;
+  try {
+    plaintextToSeal = typeof input.getText === 'function' ? input.getText() : (input.text ?? '');
+    ({ plaintextLenBucket } = validateAndMeasureEntryText(plaintextToSeal));
+  } catch (err) {
+    dispose();
+    throw err;
+  }
 
   let sealed: { readonly envelope: EntryEnvelopeV1; readonly ciphertext: string };
   try {
     sealed = await sealWithMappedErrors(client, {
       entryId,
       keyId,
-      plaintext: input.text,
+      plaintext: plaintextToSeal,
       opGeneration,
     });
   } catch (err) {
     dispose();
     throw err;
   }
-
   if (!isCurrent()) {
     dispose();
     throw new EntrySealError(
@@ -535,7 +581,8 @@ export async function sealEntryImportJson(
 
 export interface SealEntryUpdateInput {
   readonly entryId: string;
-  readonly text: string;
+  readonly text?: string;
+  readonly getText?: () => string;
   readonly vault: EntrySealVaultContext;
   readonly itemId?: string;
   readonly version?: number;
@@ -573,29 +620,40 @@ export interface SealedEntryUpdatePayload {
 export async function sealEntryUpdate(
   input: SealEntryUpdateInput,
 ): Promise<SealedEntryUpdatePayload> {
-  const { plaintextLenBucket } = validateAndMeasureEntryText(input.text);
+  if (typeof input.text === 'string') {
+    validateAndMeasureEntryText(input.text);
+  }
   const entryId = generateEntryUuidOnce(input.entryId);
   const idempotencyKey = input.idempotencyKey ?? createIdempotencyKey();
   const itemId = input.itemId;
   const version = input.version;
 
-  const { client, opGeneration, isCurrent, onReset, dispose, keyId } = resolveOpFromVault(
+  const { client, opGeneration, isCurrent, onReset, dispose, keyId } = await resolveOpFromVault(
     input.vault,
   );
+
+  let plaintextToSeal: string;
+  let plaintextLenBucket: PlaintextLenBucket;
+  try {
+    plaintextToSeal = typeof input.getText === 'function' ? input.getText() : (input.text ?? '');
+    ({ plaintextLenBucket } = validateAndMeasureEntryText(plaintextToSeal));
+  } catch (err) {
+    dispose();
+    throw err;
+  }
 
   let sealed: { readonly envelope: EntryEnvelopeV1; readonly ciphertext: string };
   try {
     sealed = await sealWithMappedErrors(client, {
       entryId,
       keyId,
-      plaintext: input.text,
+      plaintext: plaintextToSeal,
       opGeneration,
     });
   } catch (err) {
     dispose();
     throw err;
   }
-
   if (!isCurrent()) {
     dispose();
     throw new EntrySealError(
