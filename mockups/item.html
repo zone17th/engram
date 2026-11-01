@@ -48,6 +48,9 @@
     background: var(--surface);
     border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
   }
+  .card-table-clip {
+    border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
+  }
   .import-panel {
     width: min(720px, 94vw);
     max-height: 88vh;
@@ -77,6 +80,29 @@
     overflow: visible;
     text-overflow: clip;
   }
+  #omni .omni-hint-line { display: none; }
+  #omni:focus-within .omni-hint-line:not([hidden]) {
+    display: block;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 25;
+    background: var(--canvas);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 8px 12px;
+    box-shadow: var(--sh-card);
+  }
+  #omni .omni-add-panel,
+  #omni .omni-guard-alert,
+  #omni .omni-lock-notice {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 30;
+  }
 </style>
 </head>
 <body class="bg-canvas">
@@ -98,22 +124,22 @@
       <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
     </a>
 
-    <div class="relative flex-1 max-w-[420px] hidden md:block" data-omnibox id="omni">
+    <div class="relative flex-1 max-w-[440px] hidden md:block" data-omnibox id="omni">
       <label class="omnibox-shell !py-2.5 !px-3.5">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
-        <input class="omnibox-input !text-[15px]" placeholder="Tìm hoặc lưu… · Search or save…"
-               data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
-               aria-label="Tìm hoặc lưu · Search or save">
+        <textarea rows="1" class="omnibox-input !text-[15px]" placeholder="Tìm hoặc tên: nội dung"
+                  data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+                  aria-label="Tìm hoặc lưu · Search or save"></textarea>
         <span class="kbd">/</span>
       </label>
-      <div data-pop hidden class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto" role="listbox" aria-label="Gợi ý · Suggestions"></div>
+      <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto"></div>
     </div>
 
     <div class="ml-auto flex items-center gap-2">
-      <button type="button" class="vault-pill vault-open" data-vault>🔓 Vault mở · 15 phút</button>
+      <button type="button" class="vault-pill vault-open" data-vault aria-label="Vault mở · 15 phút"><span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body hidden sm:inline-flex">Cài đặt</a>
       <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
     </div>
@@ -206,7 +232,7 @@
           + Tag · <span lang="en">Add tag</span>
         </button>
         <span class="mono text-[13px] text-muted ml-auto">
-          4 entries · tạo 04/01/2026 · <span lang="en">created 2026-01-04</span>
+          <span class="whitespace-nowrap">4 entries</span> · <span class="whitespace-nowrap">tạo 04/01/2026</span> · <span lang="en" class="whitespace-nowrap">created 04/01/2026</span>
         </span>
       </div>
 
@@ -337,7 +363,7 @@
             </div>
           </div>
           <div data-secret>
-            <div data-view="tbl" id="cfgTable" class="overflow-x-auto overflow-hidden rounded-b-[15px]"></div>
+            <div data-view="tbl" id="cfgTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
             <pre data-view="raw" hidden class="json-raw" id="cfgRaw"></pre>
           </div>
         </article>
@@ -362,7 +388,7 @@
             </div>
           </div>
           <div data-secret>
-            <div data-view="gtbl" id="guestTable" class="overflow-x-auto overflow-hidden rounded-b-[15px]"></div>
+            <div data-view="gtbl" id="guestTable" class="overflow-x-auto overflow-hidden card-table-clip"></div>
             <pre data-view="graw" hidden class="json-raw" id="guestRaw"></pre>
           </div>
         </article>
