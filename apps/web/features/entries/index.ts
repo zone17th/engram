@@ -11,6 +11,7 @@ export {
   validateAndMeasureEntryText,
   type EntryOpHandle,
   type EntrySealErrorCode,
+  type EntrySealStartedOp,
   type EntrySealVaultContext,
   type SealEntryImportJsonInput,
   type SealEntryUpdateInput,

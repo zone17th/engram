@@ -153,6 +153,7 @@ async function executeWithOpLifetimeSignal<T>(params: {
   } finally {
     unsubOpReset?.();
     unsubProviderReset?.();
+    op.dispose?.();
     if (callerSignal) {
       callerSignal.removeEventListener('abort', abortForCaller);
     }

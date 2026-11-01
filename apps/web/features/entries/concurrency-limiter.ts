@@ -89,6 +89,7 @@ export function createConcurrencyLimiter(
       active += 1;
       return Promise.resolve(resetGeneration);
     }
+    let grantedGeneration = resetGeneration;
     const { promise, resolve, reject } = createDeferredVoid();
     let settled = false;
     const abortCleanup = () => {
@@ -98,6 +99,7 @@ export function createConcurrencyLimiter(
       grant: () => {
         if (settled) return;
         settled = true;
+        grantedGeneration = resetGeneration;
         resolve();
       },
       cancel: (err: Error) => {
@@ -116,7 +118,7 @@ export function createConcurrencyLimiter(
     }
     signal?.addEventListener('abort', onAbort, { once: true });
     queue.push(waiter);
-    return promise.then(() => resetGeneration);
+    return promise.then(() => grantedGeneration);
   };
 
   return {
