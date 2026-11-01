@@ -1,5 +1,13 @@
 'use client';
 
+/*
+ * Undo toast system (P04, plan §2.8): a provider-managed stack with timers, hover/focus pause,
+ * Ctrl/⌘+Z, a "+N" overflow and ONE shared live region. Use it for every reversible action.
+ * The separate `ui/toast.tsx` is a static, single, caller-placed notice with no timer or
+ * keyboard handling; the two are kept apart on purpose because their behaviour differs.
+ * Both share the `.toast` look from styles/tokens.css.
+ */
+
 import {
   createContext,
   useCallback,
@@ -702,7 +710,7 @@ export function UndoToastCard({
       <div className="flex flex-col gap-0.5">
         <span>{item.message}</span>
         {item.detail ? (
-          <span className="text-[12px] text-[#A3A3A3]" data-testid="undo-toast-detail">
+          <span className="toast-sub" data-testid="undo-toast-detail">
             {item.detail}
           </span>
         ) : null}
