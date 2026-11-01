@@ -78,6 +78,22 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     expect(emptyTagsBody.items).toEqual([]);
     expect(emptyTagsBody.next_cursor).toBeNull();
 
+    // 2b. No-match lookup (before any write) serializes `items` as `[]`, total 0, next_cursor null (IT5-FE1-1).
+    const emptyLookupRes = await request.get(
+      `/api/v1/items/lookup?name=${encodeURIComponent(itemName)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(emptyLookupRes.status()).toBe(200);
+    const emptyLookupBody = (await emptyLookupRes.json()) as {
+      items?: unknown;
+      total?: unknown;
+      next_cursor?: unknown;
+    };
+    expect(Array.isArray(emptyLookupBody.items)).toBe(true);
+    expect(emptyLookupBody.items).toEqual([]);
+    expect(emptyLookupBody.total).toBe(0);
+    expect(emptyLookupBody.next_cursor).toBeNull();
+
     // 3. Create a tag, create an item, and attach the tag via same-origin page fetch (carries cookies + CSRF + Idempotency-Key).
     const itemtagWriteProbe = await page.evaluate(
       async (input) => {
@@ -176,6 +192,7 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     };
     expect(Array.isArray(itemsBody.items)).toBe(true);
     expect(itemsBody.items).toHaveLength(1);
+    expect(itemsBody.next_cursor).toBeNull();
     expect(itemsBody.items?.[0]?.id).toBe(itemtagWriteProbe.itemId);
     expect(itemsBody.items?.[0]?.name).toBe(itemName);
     expect(Array.isArray(itemsBody.items?.[0]?.tags)).toBe(true);
@@ -197,6 +214,7 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     expect(Array.isArray(lookupBody.items)).toBe(true);
     expect(lookupBody.items).toHaveLength(1);
     expect(lookupBody.total).toBe(1);
+    expect(lookupBody.next_cursor).toBeNull();
     expect(lookupBody.items?.[0]?.id).toBe(itemtagWriteProbe.itemId);
     expect(Array.isArray(lookupBody.items?.[0]?.tags)).toBe(true);
     expect(lookupBody.items?.[0]?.tags).toEqual([
@@ -214,6 +232,7 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     };
     expect(Array.isArray(tagsBody.items)).toBe(true);
     expect(tagsBody.items).toHaveLength(1);
+    expect(tagsBody.next_cursor).toBeNull();
     expect(tagsBody.items?.[0]?.id).toBe(itemtagWriteProbe.tagId);
     expect(tagsBody.items?.[0]?.display).toBe(tagDisplay);
     expect(tagsBody.items?.[0]?.item_count).toBe(1);
