@@ -52,12 +52,12 @@ export function getUndoShortcutText(nav?: NavigatorWithUserAgentData): '⌘Z' | 
  * If the caller already included `(Ctrl+Z)` or `(⌘Z)`, normalizes it to the current platform's shortcut.
  */
 export function formatUndoActionLabel(
-  baseActionLabel = 'Hoàn tác',
+  baseActionLabel: string,
   nav?: NavigatorWithUserAgentData,
 ): string {
   const shortcut = getUndoShortcutText(nav);
   const stripped = baseActionLabel.replace(/\s*\((?:Ctrl\+Z|⌘Z)\)\s*$/i, '').trim();
-  return `${stripped || 'Hoàn tác'} (${shortcut})`;
+  return `${stripped} (${shortcut})`;
 }
 
 export interface UndoToastOptions {
@@ -67,14 +67,24 @@ export interface UndoToastOptions {
   /** Optional secondary line (e.g. quick-add Undo scope note, P4FE2-13), also included in the live region. */
   readonly detail?: string;
   /**
-   * Action button text (default `'Hoàn tác'`). If it does not already end with `(Ctrl+Z)` or `(⌘Z)`,
-   * the platform shortcut is appended automatically; if it does, the shortcut is normalized to the active platform.
+   * Required localized action button text (caller passes from i18n, e.g. `t('undo')` — CCFE10).
+   * If it does not already end with `(Ctrl+Z)` or `(⌘Z)`, the platform shortcut is appended
+   * automatically; if it does, the shortcut is normalized to the active platform.
    */
-  readonly actionLabel?: string;
-  /** Format function or prefix for the collapsed overflow button (default `"+{count}"`). */
+  readonly actionLabel: string;
+  /** Format function for the collapsed overflow button visible text (default `"+{count}"`). */
   readonly overflowLabel?: (hiddenCount: number) => string;
+  /**
+   * Accessible name (`aria-label`) or formatter for the collapsed `"+N"` overflow button (CCFE10).
+   * Defaults to a descriptive label when omitted so assistive tech knows the button reveals hidden Undos.
+   */
+  readonly overflowAriaLabel?: string | ((hiddenCount: number) => string);
   /** Callback invoked when the user triggers Undo (button click or Ctrl/⌘+Z). */
   readonly onUndo: () => void | Promise<void>;
+  /**
+   * Optional callback invoked if `onUndo` throws or returns a rejected Promise (CCFE10).
+   */
+  readonly onError?: (error: unknown) => void;
   /**
    * Optional origin element or resolver to restore focus to when this toast disappears while holding focus,
    * or after keyboard Undo. Defaults to the active element at the moment `pushUndoToast` was called.
@@ -95,9 +105,10 @@ export interface UndoToastItem {
   readonly detail?: string;
   readonly actionLabel: string;
   readonly overflowLabel?: (hiddenCount: number) => string;
+  readonly overflowAriaLabel?: string | ((hiddenCount: number) => string);
   readonly onUndo: () => void | Promise<void>;
+  readonly onError?: (error: unknown) => void;
   readonly returnFocusTo: HTMLElement | null | (() => HTMLElement | null);
-  remainingMs: number;
 }
 
 export interface UndoToastContextValue {
@@ -157,13 +168,27 @@ interface ActiveTimerRecord {
 
 let nextToastAutoId = 1;
 
-export function UndoToastProvider({ children }: { readonly children: ReactNode }) {
+export function UndoToastProvider({
+  children,
+  onError,
+  overflowAriaLabel,
+}: {
+  readonly children: ReactNode;
+  /** Optional provider-level fallback error handler when a toast's `onUndo` rejects and has no per-toast `onError` (CCFE10). */
+  readonly onError?: (error: unknown, item: UndoToastItem) => void;
+  /** Optional provider-level accessible name formatter for the `+N` overflow button (CCFE10). */
+  readonly overflowAriaLabel?: string | ((hiddenCount: number) => string);
+}) {
   const [toasts, setToasts] = useState<UndoToastItem[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocusedInside, setIsFocusedInside] = useState(false);
+  const [announcementSeq, setAnnouncementSeq] = useState(0);
 
   const stackRef = useRef<HTMLDivElement | null>(null);
+  const isExpandingFocusMoveRef = useRef(false);
+  const providerOnErrorRef = useRef(onError);
+  providerOnErrorRef.current = onError;
   const timersRef = useRef<Map<string, ActiveTimerRecord>>(new Map());
   const toastsRef = useRef<UndoToastItem[]>([]);
   toastsRef.current = toasts;
@@ -224,6 +249,27 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
     return () => {
       window.removeEventListener('input', onInput, true);
     };
+  }, []);
+
+  const invokeUndoSafely = useCallback((item: UndoToastItem) => {
+    try {
+      const result = item.onUndo();
+      if (result && typeof result.then === 'function') {
+        void result.then(undefined, (err: unknown) => {
+          if (item.onError) {
+            item.onError(err);
+          } else if (providerOnErrorRef.current) {
+            providerOnErrorRef.current(err, item);
+          }
+        });
+      }
+    } catch (err) {
+      if (item.onError) {
+        item.onError(err);
+      } else if (providerOnErrorRef.current) {
+        providerOnErrorRef.current(err, item);
+      }
+    }
   }, []);
 
   const restoreFocusIfNeeded = useCallback(
@@ -341,13 +387,13 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
         id,
         message: options.message,
         detail: options.detail,
-        actionLabel: options.actionLabel ?? 'Hoàn tác',
+        actionLabel: options.actionLabel,
         overflowLabel: options.overflowLabel,
+        overflowAriaLabel: options.overflowAriaLabel,
         onUndo: options.onUndo,
+        onError: options.onError,
         returnFocusTo: options.returnFocusTo !== undefined ? options.returnFocusTo : defaultOrigin,
-        remainingMs: initialDurationMs,
       };
-
       const existingRecord = timersRef.current.get(id);
       clearTimeout(existingRecord?.timerId);
 
@@ -367,7 +413,7 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
       const nextList = [item, ...toastsRef.current.filter((t) => t.id !== id)];
       toastsRef.current = nextList;
       setToasts(nextList);
-
+      setAnnouncementSeq((prev) => prev + 1);
       if (!pausedRef.current) {
         const now = performance.now();
         record.startedAtMs = now;
@@ -417,16 +463,42 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
         Boolean(stackRef.current && activeEl && stackRef.current.contains(activeEl));
 
       removeToastInternal(target.id, 'undo', focusInStack);
-      void target.onUndo();
+      invokeUndoSafely(target);
     },
-    [removeToastInternal],
+    [removeToastInternal, invokeUndoSafely],
   );
 
   const expandStack = useCallback(() => {
-    pauseAllTimers(isFocusedInsideRef.current);
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    const wasFocusedInStack =
+      isFocusedInsideRef.current ||
+      Boolean(stackRef.current && activeEl && stackRef.current.contains(activeEl));
+
+    pauseAllTimers(wasFocusedInStack);
     pausedRef.current = true;
+    if (wasFocusedInStack) {
+      isExpandingFocusMoveRef.current = true;
+    }
     setExpanded(true);
   }, [pauseAllTimers]);
+
+  // When the stack expands while focus was inside (e.g. keyboard Enter/Space on "+N"),
+  // move focus to the first newly revealed Undo button (index UNDO_TOAST_MAX_VISIBLE)
+  // so keyboard focus never drops to <body> or freezes timers (CCFE4).
+  useEffect(() => {
+    if (!expanded || !isExpandingFocusMoveRef.current) return;
+    isExpandingFocusMoveRef.current = false;
+    const stackEl = stackRef.current;
+    if (!stackEl) return;
+    const itemEls = stackEl.querySelectorAll<HTMLElement>('[data-testid="undo-toast-item"]');
+    const firstRevealedCard = itemEls[UNDO_TOAST_MAX_VISIBLE] ?? itemEls[itemEls.length - 1];
+    const targetButton = firstRevealedCard?.querySelector<HTMLButtonElement>('button') ?? null;
+    if (targetButton) {
+      targetButton.focus();
+      isFocusedInsideRef.current = true;
+      setIsFocusedInside(true);
+    }
+  }, [expanded]);
 
   // Global Ctrl+Z / ⌘Z listener per plan §2.8 (P4FE2-3, P4FE4-6, P4FE5-1).
   useEffect(() => {
@@ -456,16 +528,19 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
       e.preventDefault();
       const newest = toastsRef.current[0];
       if (!newest) return;
+      const focusInStack =
+        isFocusedInsideRef.current ||
+        Boolean(stackRef.current && activeEl && stackRef.current.contains(activeEl));
 
-      removeToastInternal(newest.id, 'undo', true);
-      void newest.onUndo();
+      removeToastInternal(newest.id, 'undo', focusInStack);
+      invokeUndoSafely(newest);
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [removeToastInternal]);
+  }, [removeToastInternal, invokeUndoSafely]);
 
   const handleMouseEnter = useCallback(() => {
     pauseAllTimers(false);
@@ -490,6 +565,9 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
   const handleBlurCapture = useCallback(() => {
     // Check on next microtask/frame whether focus moved outside the stack container.
     queueMicrotask(() => {
+      if (isExpandingFocusMoveRef.current) {
+        return;
+      }
       const stackEl = stackRef.current;
       const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
       const stillInside = Boolean(stackEl && activeEl && stackEl.contains(activeEl));
@@ -513,8 +591,11 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
       parts.push(newestToast.detail);
     }
     parts.push(actionWithShortcut);
-    return parts.join(' — ');
-  }, [newestToast]);
+    // Append a toggled zero-width space on odd announcements so consecutive identical toasts
+    // (e.g. "Đã lưu vào wifi" twice) trigger a DOM text mutation and are re-announced by screen readers (CCFE10).
+    const zeroWidthSuffix = announcementSeq % 2 === 1 ? '\u200B' : '';
+    return `${parts.join(' — ')}${zeroWidthSuffix}`;
+  }, [newestToast, announcementSeq]);
 
   const contextValue = useMemo<UndoToastContextValue>(
     () => ({
@@ -547,6 +628,19 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
     return customFormatter ? customFormatter(hiddenCount) : `+${hiddenCount}`;
   }, [hiddenCount, toasts]);
 
+  const overflowButtonAriaLabel = useMemo(() => {
+    if (hiddenCount <= 0) return '';
+    const itemSource = toasts.find((t) => t.overflowAriaLabel !== undefined)?.overflowAriaLabel;
+    const source = itemSource ?? overflowAriaLabel;
+    if (typeof source === 'function') {
+      return source(hiddenCount);
+    }
+    if (typeof source === 'string' && source.trim().length > 0) {
+      return source;
+    }
+    const sampleAction = newestToast ? newestToast.actionLabel : 'Undo';
+    return `${overflowButtonText} (${sampleAction})`;
+  }, [hiddenCount, toasts, overflowAriaLabel, newestToast, overflowButtonText]);
   return (
     <UndoToastContext.Provider value={contextValue}>
       {children}
@@ -577,6 +671,8 @@ export function UndoToastProvider({ children }: { readonly children: ReactNode }
           <button
             type="button"
             data-testid="undo-toast-overflow"
+            aria-expanded={expanded}
+            aria-label={overflowButtonAriaLabel}
             onClick={expandStack}
             className="toast !static !translate-x-0 cursor-pointer border-0 font-mono text-[13px] font-bold"
           >
