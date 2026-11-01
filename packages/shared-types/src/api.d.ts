@@ -64,7 +64,7 @@ export interface paths {
         };
         /**
          * Cấu hình auth công khai
-         * @description Provider đang bật, cờ verification, site key CAPTCHA. Không lộ secret.
+         * @description Provider đang bật, cờ verification, site key CAPTCHA, khả năng gửi mail thực tế (mail_delivery_available). Không lộ secret.
          */
         get: operations["authConfig"];
         put?: never;
@@ -216,7 +216,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Bắt đầu liên kết provider */
+        /**
+         * Bắt đầu liên kết provider
+         * @description Yêu cầu session + CSRF + re-auth grant account.identity_link và email tài khoản hiện tại đã xác minh (chưa xác minh trả 403 email_not_verified, ADR 0006 / advisor-dec-140 D3).
+         */
         post: operations["authOauthLinkStart"];
         delete?: never;
         options?: never;
@@ -370,11 +373,13 @@ export interface paths {
         put?: never;
         /**
          * Yêu cầu đặt lại mật khẩu tài khoản qua email
-         * @description Chống dò tài khoản (anti-enumeration, ADR 0006): mọi email hợp lệ cú pháp đều nhận
-         *     cùng response 202 (body rỗng, cùng lớp thời gian phản hồi, gửi mail bất đồng bộ).
-         *     Khi dịch vụ gửi thư tắt, trả 503 mail_delivery_unavailable cho mọi email để UI không
-         *     hứa hẹn kiểm tra hộp thư (advisor-dec-086). Tài khoản OAuth-only không sinh reset token
-         *     (chỉ gửi mail nhắc dùng US1b). Không mở khoá hay đụng tới vault (user-dec-016).
+         * @description Chống dò tài khoản (anti-enumeration, ADR 0006, advisor-dec-140): khi mail_delivery_available == false,
+         *     trả ngay 503 mail_delivery_unavailable trước khi kiểm tra CAPTCHA/quota hay tra cứu DB để UI không hứa hẹn
+         *     kiểm tra hộp thư (advisor-dec-086). Khi mail_delivery_available == true, sau cú pháp, IP quota, Turnstile
+         *     CAPTCHA đồng nhất (khi bật) và HMAC email quota (1/phút, 3/giờ đếm trước khi tra DB), handler đưa yêu cầu
+         *     vào hàng đợi worker có giới hạn trong bộ nhớ (forgotQueueSize = 128) và trả ngay 202 (body rỗng, cùng lớp
+         *     thời gian phản hồi). Tài khoản OAuth-only không sinh reset token (chỉ gửi mail nhắc dùng US1b theo locale).
+         *     Không mở khoá hay đụng tới vault (user-dec-016).
          */
         post: operations["authPasswordForgot"];
         delete?: never;
@@ -394,11 +399,13 @@ export interface paths {
         put?: never;
         /**
          * Đặt lại mật khẩu tài khoản bằng token từ email
-         * @description Tiêu thụ token một lần (TTL 30 phút, gắn với user_id, target_email và SHA-256 của
-         *     password_hash hiện tại), cập nhật password_hash mới, thu hồi toàn bộ session và refresh
-         *     token, ghi secevent auth.password.reset và gửi notice mail (ADR 0006). Không tự động
-         *     đăng nhập (trả 204 và xoá cookie auth hiện tại nếu có). Tuyệt đối không mở khoá,
-         *     re-key hay reset vault (user-dec-016). Mọi lỗi token (không tồn tại, đã dùng, hết hạn,
+         * @description Tiêu thụ token một lần (43 ký tự base64url = 32 byte CSPRNG, TTL 30 phút, gắn với user_id, target_email và
+         *     SHA-256 của password_hash hiện tại dưới khoá app_user FOR UPDATE), cập nhật password_hash mới, thu hồi toàn bộ
+         *     session và refresh token, ghi secevent auth.password.reset và gửi notice mail chuyên biệt password_reset_notice
+         *     theo locale của tài khoản (ADR 0006, advisor-dec-140). Nếu tài khoản chưa xác minh email lúc phát hành token,
+         *     đồng thời đánh dấu email đã xác minh và gỡ toàn bộ danh tính OAuth trong cùng transaction (D3). Không tự động
+         *     đăng nhập (trả 204 và xoá toàn bộ cookie auth bằng ClearAuthCookies). Tuyệt đối không mở khoá, re-key hay reset
+         *     vault (user-dec-016). Mọi lỗi giá trị token (sai định dạng base64url/độ dài, không tồn tại, đã dùng, hết hạn,
          *     lệch trạng thái) đều trả 400 reset_token_invalid.
          */
         post: operations["authPasswordReset"];
@@ -1262,6 +1269,8 @@ export interface components {
             oauth_providers: components["schemas"]["OauthProvider"][];
             email_verification_required: boolean;
             captcha_site_key: string | null;
+            /** @description True chỉ khi máy chủ cấu hình adapter gửi thư ra ngoài thực sự (hoặc sink kèm cờ chỉ dùng cho test AUTH_MAIL_CAPTURE_AS_DELIVERY=true bị cấm ở production, advisor-dec-140 D1). */
+            mail_delivery_available: boolean;
         };
         Me: {
             user: {
@@ -1353,9 +1362,10 @@ export interface components {
             /** Format: email */
             email: string;
             captcha_token?: string;
+            locale?: components["schemas"]["Locale"];
         };
         PasswordResetRequest: {
-            /** @description Token 32 byte CSPRNG mã hoá base64url không padding đọc từ URL fragment (#token=...). */
+            /** @description Token 32 byte CSPRNG mã hoá base64url không padding (đúng 43 ký tự) đọc từ URL fragment (#token=...). Giá trị chuỗi token sai quy cách trả 400 reset_token_invalid. */
             token: string;
             /** @description Không trim/normalize. Tối thiểu 12 ký tự Unicode; tối đa 1024 byte UTF-8. */
             new_password: string;

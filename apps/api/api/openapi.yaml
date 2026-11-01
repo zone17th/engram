@@ -82,7 +82,7 @@ paths:
       operationId: authConfig
       tags: [auth]
       summary: Cấu hình auth công khai
-      description: Provider đang bật, cờ verification, site key CAPTCHA. Không lộ secret.
+      description: Provider đang bật, cờ verification, site key CAPTCHA, khả năng gửi mail thực tế (mail_delivery_available). Không lộ secret.
       security: []
       responses:
         '200':
@@ -262,6 +262,7 @@ paths:
       operationId: authOauthLinkStart
       tags: [auth]
       summary: Bắt đầu liên kết provider
+      description: Yêu cầu session + CSRF + re-auth grant account.identity_link và email tài khoản hiện tại đã xác minh (chưa xác minh trả 403 email_not_verified, ADR 0006 / advisor-dec-140 D3).
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -496,11 +497,13 @@ paths:
       tags: [auth]
       summary: Yêu cầu đặt lại mật khẩu tài khoản qua email
       description: |
-        Chống dò tài khoản (anti-enumeration, ADR 0006): mọi email hợp lệ cú pháp đều nhận
-        cùng response 202 (body rỗng, cùng lớp thời gian phản hồi, gửi mail bất đồng bộ).
-        Khi dịch vụ gửi thư tắt, trả 503 mail_delivery_unavailable cho mọi email để UI không
-        hứa hẹn kiểm tra hộp thư (advisor-dec-086). Tài khoản OAuth-only không sinh reset token
-        (chỉ gửi mail nhắc dùng US1b). Không mở khoá hay đụng tới vault (user-dec-016).
+        Chống dò tài khoản (anti-enumeration, ADR 0006, advisor-dec-140): khi mail_delivery_available == false,
+        trả ngay 503 mail_delivery_unavailable trước khi kiểm tra CAPTCHA/quota hay tra cứu DB để UI không hứa hẹn
+        kiểm tra hộp thư (advisor-dec-086). Khi mail_delivery_available == true, sau cú pháp, IP quota, Turnstile
+        CAPTCHA đồng nhất (khi bật) và HMAC email quota (1/phút, 3/giờ đếm trước khi tra DB), handler đưa yêu cầu
+        vào hàng đợi worker có giới hạn trong bộ nhớ (forgotQueueSize = 128) và trả ngay 202 (body rỗng, cùng lớp
+        thời gian phản hồi). Tài khoản OAuth-only không sinh reset token (chỉ gửi mail nhắc dùng US1b theo locale).
+        Không mở khoá hay đụng tới vault (user-dec-016).
       security:
         - csrfHeader: []
       requestBody:
@@ -530,11 +533,13 @@ paths:
       tags: [auth]
       summary: Đặt lại mật khẩu tài khoản bằng token từ email
       description: |
-        Tiêu thụ token một lần (TTL 30 phút, gắn với user_id, target_email và SHA-256 của
-        password_hash hiện tại), cập nhật password_hash mới, thu hồi toàn bộ session và refresh
-        token, ghi secevent auth.password.reset và gửi notice mail (ADR 0006). Không tự động
-        đăng nhập (trả 204 và xoá cookie auth hiện tại nếu có). Tuyệt đối không mở khoá,
-        re-key hay reset vault (user-dec-016). Mọi lỗi token (không tồn tại, đã dùng, hết hạn,
+        Tiêu thụ token một lần (43 ký tự base64url = 32 byte CSPRNG, TTL 30 phút, gắn với user_id, target_email và
+        SHA-256 của password_hash hiện tại dưới khoá app_user FOR UPDATE), cập nhật password_hash mới, thu hồi toàn bộ
+        session và refresh token, ghi secevent auth.password.reset và gửi notice mail chuyên biệt password_reset_notice
+        theo locale của tài khoản (ADR 0006, advisor-dec-140). Nếu tài khoản chưa xác minh email lúc phát hành token,
+        đồng thời đánh dấu email đã xác minh và gỡ toàn bộ danh tính OAuth trong cùng transaction (D3). Không tự động
+        đăng nhập (trả 204 và xoá toàn bộ cookie auth bằng ClearAuthCookies). Tuyệt đối không mở khoá, re-key hay reset
+        vault (user-dec-016). Mọi lỗi giá trị token (sai định dạng base64url/độ dài, không tồn tại, đã dùng, hết hạn,
         lệch trạng thái) đều trả 400 reset_token_invalid.
       security:
         - csrfHeader: []
@@ -3003,6 +3008,7 @@ components:
         - oauth_providers
         - email_verification_required
         - captcha_site_key
+        - mail_delivery_available
       properties:
         oauth_providers:
           type: array
@@ -3012,6 +3018,9 @@ components:
           type: boolean
         captcha_site_key:
           type: [string, 'null']
+        mail_delivery_available:
+          type: boolean
+          description: True chỉ khi máy chủ cấu hình adapter gửi thư ra ngoài thực sự (hoặc sink kèm cờ chỉ dùng cho test AUTH_MAIL_CAPTURE_AS_DELIVERY=true bị cấm ở production, advisor-dec-140 D1).
     Me:
       type: object
       additionalProperties: false
@@ -3223,6 +3232,8 @@ components:
           format: email
         captcha_token:
           type: string
+        locale:
+          $ref: '#/components/schemas/Locale'
     PasswordResetRequest:
       type: object
       additionalProperties: false
@@ -3230,8 +3241,10 @@ components:
       properties:
         token:
           type: string
-          minLength: 1
-          description: Token 32 byte CSPRNG mã hoá base64url không padding đọc từ URL fragment (#token=...).
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: Token 32 byte CSPRNG mã hoá base64url không padding (đúng 43 ký tự) đọc từ URL fragment (#token=...). Giá trị chuỗi token sai quy cách trả 400 reset_token_invalid.
         new_password:
           type: string
           minLength: 12
