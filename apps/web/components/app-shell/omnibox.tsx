@@ -213,6 +213,7 @@ export function Omnibox({
   const searchAbortRef = useRef<AbortController | null>(null);
   const planAbortRef = useRef<AbortController | null>(null);
   const createPendingRef = useRef(false);
+  const createAbortRef = useRef<AbortController | null>(null);
   const lookupPendingRef = useRef(false);
   const inputValueRef = useRef('');
   const activePlanRef = useRef<QuickAddSavePlan | null>(null);
@@ -414,6 +415,9 @@ export function Omnibox({
     return vault.registerSecretFormReset(() => {
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
+      createAbortRef.current?.abort();
+      createAbortRef.current = null;
+      createPendingRef.current = false;
       planAbortRef.current?.abort();
       planAbortRef.current = null;
 
@@ -463,6 +467,7 @@ export function Omnibox({
   useEffect(() => {
     return () => {
       searchAbortRef.current?.abort();
+      createAbortRef.current?.abort();
       planAbortRef.current?.abort();
     };
   }, []);
@@ -571,11 +576,19 @@ export function Omnibox({
       const nameToCreate = trimUnicodeWhiteSpace(rawName);
       if (!nameToCreate || createPendingRef.current) return;
       createPendingRef.current = true;
+      const controller = new AbortController();
+      createAbortRef.current = controller;
       setActionErrorCode(null);
       const idempotencyKey = createIdempotencyKey();
 
       try {
-        const created = await itemCreate({ name: nameToCreate }, { idempotencyKey });
+        const created = await itemCreate(
+          { name: nameToCreate },
+          { idempotencyKey, signal: controller.signal },
+        );
+        if (controller.signal.aborted || createAbortRef.current !== controller) {
+          return;
+        }
         closeListbox(false);
         setInputValue('');
         inputValueRef.current = '';
@@ -605,13 +618,19 @@ export function Omnibox({
           },
         });
       } catch (error) {
+        if (controller.signal.aborted || createAbortRef.current !== controller) {
+          return;
+        }
         const code = getContentErrorI18nKey(error).replace(
           /^content\.errors\./,
           '',
         ) as ContentErrorCode;
         setActionErrorCode(code);
       } finally {
-        createPendingRef.current = false;
+        if (createAbortRef.current === controller) {
+          createAbortRef.current = null;
+          createPendingRef.current = false;
+        }
       }
     },
     [closeListbox, invalidateAllContentMetadataCaches, syncTextareaHeight, tOmni, undoToast],
@@ -1197,7 +1216,7 @@ export function Omnibox({
 
     syncTextareaHeight(event.target);
 
-    // Always cancel any in-flight search or server tag request when the user edits the input (HM18A-R1-6).
+    // Always discard any in-flight search or server tag lookup result when the user edits the input (HM18A-R1-6, HM18A-R2-4).
     searchAbortRef.current?.abort();
     searchAbortRef.current = null;
 
@@ -1869,6 +1888,20 @@ export function Omnibox({
                       0,
                       option.item.tags.length - MAX_VISIBLE_OPTION_TAG_CHIPS,
                     );
+                    const shownTagChipsLabel = shownTags
+                      .map((tag) => `#${tag.display}`)
+                      .join(' ');
+                    const extraTagsLabel =
+                      extraTags > 0
+                        ? tOmni('searchMoreTagsAria', { count: extraTags })
+                        : '';
+                    const optionMainLabel = [
+                      option.item.name,
+                      shownTagChipsLabel,
+                      extraTagsLabel,
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
                     return (
                       <div
                         key={option.id}
@@ -1877,7 +1910,7 @@ export function Omnibox({
                         }}
                         id={option.id}
                         role="option"
-                        aria-label={`${option.item.name} — ${tOmni('searchEntryCount', { count: option.item.entry_count })}`}
+                        aria-label={`${optionMainLabel} — ${tOmni('searchEntryCount', { count: option.item.entry_count })}`}
                         aria-selected={isSelected}
                         data-opt-idx={index}
                         onMouseMove={() => {
