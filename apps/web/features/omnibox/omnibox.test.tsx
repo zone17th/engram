@@ -306,7 +306,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(mockRouterPush).not.toHaveBeenCalled();
     expect(mockRouterReplace).not.toHaveBeenCalled();
 
-    // Up to 3 tag chips + +1 overflow and entry count rendered inside the first option (HM18A-R1-3)
+    // Up to 3 tag chips + +1 overflow and entry count rendered inside the first option and included in its accessible name for WCAG 2.5.3 label-in-name (HM18A-R1-3, HM18A-R2-5)
     const firstOption = within(listbox).getAllByRole('option')[0]!;
     expect(within(firstOption).getByText('#nhà')).toBeInTheDocument();
     expect(within(firstOption).getByText('#ops')).toBeInTheDocument();
@@ -314,8 +314,16 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(within(firstOption).queryByText('#backup')).not.toBeInTheDocument();
     expect(within(firstOption).getByText('+1')).toBeInTheDocument();
     expect(within(firstOption).getByText('12 entry')).toBeInTheDocument();
+    expect(firstOption).toHaveAttribute(
+      'aria-label',
+      'wifi #nhà #ops #home-lab Còn 1 tag nữa — 12 entry',
+    );
+    expect(
+      within(listbox).getByRole('option', {
+        name: 'wifi #nhà #ops #home-lab Còn 1 tag nữa — 12 entry',
+      }),
+    ).toBe(firstOption);
     expect(screen.getByTestId('omnibox-live')).toHaveTextContent('2 kết quả');
-
     // No option active after Enter -> pressing Enter a second time searches again
     expect(textarea).not.toHaveAttribute('aria-activedescendant');
     fireEvent.keyDown(textarea, { key: 'Enter' });
@@ -545,7 +553,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     assertNoPlaintextAttrs(container, [sentinelSearch, sentinelAdd]);
   });
 
-  it('aborts in-flight search or server tag requests when the user edits the input or presses Escape so stale results never open (HM18A-R1-6)', async () => {
+  it('discards in-flight search or server tag lookup results when the user edits the input or presses Escape so stale results never open (HM18A-R1-6, HM18A-R2-4)', async () => {
     const { promise: heldSearch, resolve: resolveHeldSearch } =
       Promise.withResolvers<contentApi.ItemList>();
     vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldSearch);
@@ -564,11 +572,11 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       await Promise.resolve();
     });
 
-    // Stale response for 'old-query' must NOT open the listbox
+    // Stale response for 'old-query' is discarded and must NOT open the listbox
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(textarea).toHaveValue('new-edited-query');
 
-    // 2. Start another Enter search, press Escape to clear while in-flight -> resolving must NOT open the listbox
+    // 2. Start another Enter search, press Escape to clear while in-flight -> resolving must be discarded and NOT open the listbox
     const { promise: heldEscSearch, resolve: resolveEscSearch } =
       Promise.withResolvers<contentApi.ItemList>();
     vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldEscSearch);
@@ -582,9 +590,47 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       await Promise.resolve();
     });
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    // 3. Server tag lookup path (`GET /tags?q=` on Enter when tag is not in cache):
+    // resolving after the user edits the input is discarded and ignored (HM18A-R2-4).
+    const { promise: heldTagLookup, resolve: resolveHeldTagLookup } =
+      Promise.withResolvers<contentApi.TagList>();
+    const tagsSpy = vi.spyOn(contentApi, 'tagsList').mockImplementation(() => heldTagLookup);
+
+    fireEvent.change(textarea, { target: { value: '#clo' } });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(tagsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: 'alpha', q: 'clo' }),
+    );
+
+    // User changes input to search mode before `GET /tags?q=clo` resolves
+    fireEvent.change(textarea, { target: { value: 'changed-after-tag-enter' } });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveHeldTagLookup({
+        items: [
+          {
+            id: 'cccc3333-3333-4333-8333-333333333333',
+            display: 'cloud',
+            item_count: 4,
+            last_used_at: '2026-11-01T00:00:00Z',
+            created_at: '2026-11-01T00:00:00Z',
+          },
+        ],
+        next_cursor: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /#cloud/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('');
+    expect(textarea).toHaveValue('changed-after-tag-enter');
   });
 
-  it('clears textarea, closes listbox, clears live region, and removes seeded & in-flight search queries from QueryCache on vault lock (P4FE3-5, P4FE4-8, HM18A-R1-7)', async () => {
+  it('clears textarea, closes listbox, clears live region, and removes seeded search queries from QueryCache on vault lock (P4FE3-5, P4FE4-8, HM18A-R1-7, HM18A-R2-6)', async () => {
     const secretQuery = 'pasted-secret-token-7788';
     const seededSecretQuery = 'seeded-cache-secret-8899';
     vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
@@ -630,6 +676,78 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(serializedCache).not.toContain(seededSecretQuery);
   });
 
+  it('discards in-flight search and in-flight Ctrl+Enter itemCreate when the vault locks so nothing opens, shows a toast, or appears in the DOM after lock (HM18A-R2-6)', async () => {
+    const inFlightQuery = 'in-flight-lock-query-6611';
+    const inFlightCreateName = 'in-flight-lock-create-7722';
+
+    const { promise: heldSearch, resolve: resolveHeldSearch } =
+      Promise.withResolvers<contentApi.ItemList>();
+    const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldSearch);
+
+    const { promise: heldCreate, resolve: resolveHeldCreate } =
+      Promise.withResolvers<ItemSummary>();
+    const createSpy = vi.spyOn(contentApi, 'itemCreate').mockImplementation(() => heldCreate);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    });
+    const { container } = renderOmnibox(<Omnibox />, { queryClient });
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+    // 1. Start search (`GET /items?q=`), then lock while the search promise is still in flight
+    fireEvent.change(textarea, { target: { value: inFlightQuery } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(itemsSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    act(() => {
+      triggerVaultLockReset();
+    });
+    expect(textarea).toHaveValue('');
+
+    await act(async () => {
+      resolveHeldSearch({
+        items: [{ ...ITEM_WIFI, name: inFlightQuery }],
+        next_cursor: null,
+      });
+      await Promise.resolve();
+    });
+
+    // Nothing opens or shows afterwards
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('');
+    expect(container.innerHTML).not.toContain(inFlightQuery);
+    assertNoPlaintextAttrs(container, [inFlightQuery], { locked: true });
+
+    // 2. Unlock, start `Ctrl+Enter` itemCreate (`POST /items`), then lock while the create promise is still in flight
+    triggerVaultUnlock();
+    fireEvent.change(textarea, { target: { value: inFlightCreateName } });
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      triggerVaultLockReset();
+    });
+    expect(textarea).toHaveValue('');
+
+    await act(async () => {
+      resolveHeldCreate({
+        ...ITEM_WIFI,
+        id: '88888888-8888-4888-8888-888888888888',
+        name: inFlightCreateName,
+        tags: [],
+        entry_count: 0,
+      });
+      await Promise.resolve();
+    });
+
+    // Resolving after lock produces no listbox, no Undo toast with the name, and nothing in the DOM
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('undo-toast-item')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(inFlightCreateName);
+    expect(container.innerHTML).not.toContain(inFlightCreateName);
+    assertNoPlaintextAttrs(document.body, [inFlightCreateName], { locked: true });
+  });
   it('renders English strings with zero hard-coded Vietnamese in en locale (UIA-2, UIA-20, HM18A-R1-1, HM18A-R1-3, HM18A-R1-10, HM18A-R1-11)', async () => {
     vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
       items: [],

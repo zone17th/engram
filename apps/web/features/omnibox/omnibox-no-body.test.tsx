@@ -545,6 +545,88 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS])).toEqual([]);
   }, 30_000);
 
+  it('locking during an in-flight search or in-flight Ctrl+Enter create discards the result when it resolves after lock: no listbox, no toast with the name, nothing in the DOM (HM18A-R2-6)', async () => {
+    const h = await mountLockedWithFixture(() => <Omnibox />);
+    await h.unlock();
+
+    const inFlightQuery = 'in-flight-nobody-query-3311';
+    const inFlightCreateName = 'in-flight-nobody-create-4422';
+
+    const { promise: heldSearch, resolve: resolveHeldSearch } =
+      Promise.withResolvers<contentApi.ItemList>();
+    const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldSearch);
+
+    const { promise: heldCreate, resolve: resolveHeldCreate } =
+      Promise.withResolvers<ItemSummary>();
+    const createSpy = vi.spyOn(contentApi, 'itemCreate').mockImplementation(() => heldCreate);
+
+    const input = screen.getByRole('textbox', { name: 'Search or save' });
+
+    // 1. Start search (`GET /items?q=`), then lock while the search promise is still in flight
+    searchOnEnter(inFlightQuery);
+    expect(itemsSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('listbox')).toBeNull();
+
+    await act(async () => {
+      await h.vault().lockNow();
+    });
+    await waitFor(() => expect(h.vault().state).toBe('locked'));
+    expect(input).toHaveValue('');
+
+    await act(async () => {
+      resolveHeldSearch({
+        items: [{ ...MOCKED_API_ITEMS[0]!, name: inFlightQuery }],
+        next_cursor: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('');
+    expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS, inFlightQuery])).toEqual(
+      [],
+    );
+    assertNoPlaintextAttrs(
+      document.body,
+      [...DEMO_BODIES, ...SECRET_FRAGMENTS, inFlightQuery],
+      { locked: true },
+    );
+
+    // 2. Unlock, start `Ctrl+Enter` create (`POST /items`), then lock while the create promise is still in flight
+    await h.unlock();
+    fireEvent.change(input, { target: { value: inFlightCreateName } });
+    fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await h.vault().lockNow();
+    });
+    await waitFor(() => expect(h.vault().state).toBe('locked'));
+    expect(input).toHaveValue('');
+
+    await act(async () => {
+      resolveHeldCreate({
+        ...MOCKED_API_ITEMS[0]!,
+        id: '77777777-7777-4777-8777-777777777777',
+        name: inFlightCreateName,
+        tags: [],
+        entry_count: 0,
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.queryByTestId('undo-toast-item')).toBeNull();
+    expect(
+      findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS, inFlightCreateName]),
+    ).toEqual([]);
+    assertNoPlaintextAttrs(
+      document.body,
+      [...DEMO_BODIES, ...SECRET_FRAGMENTS, inFlightCreateName],
+      { locked: true },
+    );
+  }, 30_000);
+
   it('while locked no entry body reaches any surface: omnibox, results, list, attributes, query cache', async () => {
     const everyCachedValue = (qc: QueryClient) =>
       JSON.stringify(

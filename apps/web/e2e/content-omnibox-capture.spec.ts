@@ -186,6 +186,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await omnibox.press('Enter');
     await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
     await page.waitForTimeout(300);
+    await recorder.flushPending();
     expect(recorder.countSince(mark3)).toBe(0);
     recorder.assertNeverContains(allSentinels);
 
@@ -195,9 +196,9 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await omnibox.press('Enter');
     await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
     await page.waitForTimeout(300);
+    await recorder.flushPending();
     expect(recorder.countSince(mark4)).toBe(0);
     recorder.assertNeverContains(allSentinels);
-
     // 5. Type an add draft then delete the `:` -> nothing sent.
     const mark5 = recorder.records.length;
     await setSecretTextareaValue(omnibox, `wifi #home: ${draftDeletedColonSecret}`);
@@ -208,7 +209,8 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     expect(recorder.countSince(mark5)).toBe(0);
     recorder.assertNeverContains(allSentinels);
 
-    // 5b. Add-mode invalid draft (`a:` with empty body) on Enter -> sends 0 requests (HM18A-R1-8).
+    // 5b. Add-mode invalid draft (`a:` with empty body) on Enter -> sends 0 requests;
+    // valid add-mode Enter (`name #home: secret-body-123`) sends only `GET /items/lookup?name=name` + metadata/sealed writes, never the body (HM18A-R1-8, HM18A-R2-5).
     const markAddInvalid = recorder.records.length;
     await setSecretTextareaValue(omnibox, 'a:   ');
     await omnibox.press('Enter');
@@ -216,36 +218,9 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await recorder.flushPending();
     expect(recorder.countSince(markAddInvalid)).toBe(0);
     recorder.assertNeverContains(allSentinels);
-    // 6. Tag mode (`#secret` typed without Enter, Enter on >50-rune tag token, Ctrl+Enter in `#` mode) -> nothing sent (HM18A-R1-8).
-    const markTag = recorder.records.length;
-    await setSecretTextareaValue(omnibox, `#${typedTagSecret}`);
-    await page.waitForTimeout(500);
-    await omnibox.press('Control+Enter');
-    await page.waitForTimeout(300);
-    await setSecretTextareaValue(omnibox, `#${longTagSecret}`);
-    await omnibox.press('Enter');
-    await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
-    await page.waitForTimeout(300);
-    await recorder.flushPending();
-    expect(recorder.countSince(markTag)).toBe(0);
-    recorder.assertNeverContains(allSentinels);
 
-    // 7. Positive control (HM18A-R1-8): a valid one-line search + Enter records `GET /api/v1/items?...q=positive-probe` and no sentinel leaks.
-    const markPos = recorder.records.length;
-    await setSecretTextareaValue(omnibox, 'positive-probe');
-    await omnibox.press('Enter');
-    await expect(page.getByRole('listbox')).toBeVisible({ timeout: UI_WAIT_MS });
-    await recorder.flushPending();
-    expect(recorder.countSince(markPos)).toBeGreaterThanOrEqual(1);
-    const positiveSearchRecords = recorder.records
-      .slice(markPos)
-      .filter((r) => r.method === 'GET' && r.url.includes('/api/v1/items') && r.url.includes('q=positive-probe'));
-    expect(positiveSearchRecords).toHaveLength(1);
-    recorder.assertNeverContains(allSentinels);
-
-    // 8. A4 add side (18b): type `name: secret-body-123` and press Enter -> saves entry, body never appears in any request (URL, headers, or body); only ciphertext leaves.
     const markSave = recorder.records.length;
-    await setSecretTextareaValue(omnibox, `name: ${secretBody123}`);
+    await setSecretTextareaValue(omnibox, `name #home: ${secretBody123}`);
     await omnibox.press('Enter');
 
     const savedToast = page.getByTestId('undo-toast-item').first();
@@ -253,6 +228,16 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await expect(savedToast).toContainText('name');
     await recorder.flushPending();
     expect(recorder.countSince(markSave)).toBeGreaterThan(0);
+
+    const addLookupRecords = recorder.records
+      .slice(markSave)
+      .filter(
+        (rec) =>
+          rec.method === 'GET' &&
+          rec.url.includes('/api/v1/items/lookup') &&
+          rec.url.includes('name=name'),
+      );
+    expect(addLookupRecords).toHaveLength(1);
 
     const entryPostRecord = recorder.records
       .slice(markSave)
@@ -268,7 +253,70 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     expect(parsedPostBody.ciphertext!.length).toBeGreaterThan(16);
     expect(parsedPostBody.envelope?.v).toBe(1);
     expect(parsedPostBody.envelope?.alg).toBe('xchacha20poly1305-ietf');
+    recorder.assertNeverContains(allSentinels);
 
+    // 6. Tag mode (`#secret` typed without Enter, Enter on >50-rune tag token, Ctrl+Enter in `#` mode) -> nothing sent (HM18A-R1-8).
+    const markTag = recorder.records.length;
+    await setSecretTextareaValue(omnibox, `#${typedTagSecret}`);
+    await page.waitForTimeout(500);
+    await omnibox.press('Control+Enter');
+    await page.waitForTimeout(300);
+    await setSecretTextareaValue(omnibox, `#${longTagSecret}`);
+    await omnibox.press('Enter');
+    await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
+    await page.waitForTimeout(300);
+    await recorder.flushPending();
+    expect(recorder.countSince(markTag)).toBe(0);
+    recorder.assertNeverContains(allSentinels);
+
+    // 7. Positive controls (HM18A-R1-8, HM18A-R2-5):
+    // 7a. Valid one-line search + Enter records `GET /api/v1/items?...q=positive-probe` and no sentinel leaks.
+    const markPos = recorder.records.length;
+    await setSecretTextareaValue(omnibox, 'positive-probe');
+    await omnibox.press('Enter');
+    await expect(page.getByRole('listbox')).toBeVisible({ timeout: UI_WAIT_MS });
+    await recorder.flushPending();
+    expect(recorder.countSince(markPos)).toBeGreaterThanOrEqual(1);
+    const positiveSearchRecords = recorder.records
+      .slice(markPos)
+      .filter((r) => r.method === 'GET' && r.url.includes('/api/v1/items') && r.url.includes('q=positive-probe'));
+    expect(positiveSearchRecords).toHaveLength(1);
+    recorder.assertNeverContains(allSentinels);
+
+    // 7b. Valid tag-mode Enter (`#positive-tag`) when not in cache records `GET /api/v1/tags?...q=positive-tag` (HM18A-R2-5).
+    const markPosTag = recorder.records.length;
+    await setSecretTextareaValue(omnibox, '#positive-tag');
+    await omnibox.press('Enter');
+    await expect(page.getByTestId('omnibox-tag-empty')).toBeVisible({ timeout: UI_WAIT_MS });
+    await recorder.flushPending();
+    const positiveTagRecords = recorder.records
+      .slice(markPosTag)
+      .filter(
+        (r) =>
+          r.method === 'GET' &&
+          r.url.includes('/api/v1/tags') &&
+          r.url.includes('q=positive-tag'),
+      );
+    expect(positiveTagRecords).toHaveLength(1);
+    recorder.assertNeverContains(allSentinels);
+
+    // 7c. Valid `Ctrl+Enter` create in search mode (`positive-created-item`) records `POST /api/v1/items` with `{ name }` only and no entry (HM18A-R2-5).
+    const markPosCreate = recorder.records.length;
+    await setSecretTextareaValue(omnibox, 'positive-created-item');
+    await omnibox.press('Control+Enter');
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await recorder.flushPending();
+    const positiveCreateRecords = recorder.records
+      .slice(markPosCreate)
+      .filter((r) => r.method === 'POST' && /\/api\/v1\/items$/.test(r.url));
+    expect(positiveCreateRecords).toHaveLength(1);
+    expect(JSON.parse(positiveCreateRecords[0]!.postData)).toEqual({
+      name: 'positive-created-item',
+    });
+    const createSliceEntries = recorder.records
+      .slice(markPosCreate)
+      .filter((r) => r.method === 'POST' && r.url.includes('/entries'));
+    expect(createSliceEntries).toHaveLength(0);
     recorder.assertNeverContains(allSentinels);
   });
 });

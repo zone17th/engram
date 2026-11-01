@@ -32,12 +32,38 @@ test.describe('P03-T21 Locked state U5', () => {
       const input = page.locator('#omni textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // UIA-20 / HM18A-R1-11: verify placeholder fits at 390 px without horizontal overflow
+      // UIA-20 / HM18A-R1-11 / HM18A-R2-3: measure placeholder text width (en and vi) via canvas measureText
+      // with the textarea's computed font against its content box width at 390 px viewport.
       await page.setViewportSize({ width: 390, height: 844 });
-      const fitsAt390 = await input.evaluate(
-        (el) => el.clientWidth >= 140 && el.scrollWidth <= el.clientWidth + 1,
-      );
-      expect(fitsAt390).toBe(true);
+      const placeholderMetrics = await input.evaluate((el) => {
+        const style = window.getComputedStyle(el);
+        const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+        const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+        const contentBoxWidth = el.clientWidth - paddingLeft - paddingRight;
+        const font =
+          style.font && style.font.trim().length > 0
+            ? style.font
+            : `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('2d canvas context unavailable');
+        }
+        ctx.font = font;
+        const enPlaceholder = 'Search or name: content';
+        const viPlaceholder = 'Tìm hoặc tên: nội dung';
+        const activePlaceholder = el.getAttribute('placeholder') ?? '';
+        return {
+          contentBoxWidth,
+          enWidth: ctx.measureText(enPlaceholder).width,
+          viWidth: ctx.measureText(viPlaceholder).width,
+          activeWidth: ctx.measureText(activePlaceholder).width,
+        };
+      });
+      expect(placeholderMetrics.contentBoxWidth).toBeGreaterThanOrEqual(140);
+      expect(placeholderMetrics.enWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
+      expect(placeholderMetrics.viWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
+      expect(placeholderMetrics.activeWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
       await page.setViewportSize({ width: 1280, height: 800 });
 
       // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
