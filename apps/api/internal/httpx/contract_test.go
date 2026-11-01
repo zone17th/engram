@@ -193,11 +193,216 @@ func TestOpenAPIP03ContractInvariants(t *testing.T) {
 		t.Errorf("phải có đúng 7 operation có A ghi nhận reauth_required, reauth_invalid dưới 401, tìm thấy %d", got)
 	}
 
-	if got := strings.Count(spec, "$ref: '#/components/responses/IdempotencyConflict'"); got != 7 {
-		t.Errorf("phải có đúng 7 operation có I tham chiếu IdempotencyConflict cho 409, tìm thấy %d", got)
-	}
+	// Số operation có I tham chiếu IdempotencyConflict (P03 7 + P04 16) kiểm ở TestOpenAPIP04ContractInvariants.
 	reIdemRetry := regexp.MustCompile(`(?s)IdempotencyConflict:.*?headers:.*?Retry-After:`)
 	if !reIdemRetry.MatchString(spec) {
 		t.Error("IdempotencyConflict phải khai báo header Retry-After")
+	}
+}
+
+var p04OperationIDs = []string{
+	"itemsList",
+	"itemsLookupExact",
+	"itemCreate",
+	"itemGet",
+	"itemUpdate",
+	"itemDelete",
+	"itemRestore",
+	"itemTagsAdd",
+	"itemTagRemove",
+	"itemEntriesReorder",
+	"tagsList",
+	"tagUpsert",
+	"tagRename",
+	"tagDelete",
+	"tagRestore",
+	"itemEntriesList",
+	"entryCreate",
+	"entryImportJson",
+	"entryGet",
+	"entryUpdate",
+	"entryDelete",
+	"entryRestore",
+	"entriesChanges",
+}
+
+// p04ProblemStatus là bảng mã lỗi mới của plan P04 mục 3, đúng thứ tự thêm cuối catalog.
+var p04ProblemStatus = []struct {
+	code   string
+	status int
+}{
+	{"name_invalid", 400},
+	{"hint_invalid", 400},
+	{"tag_display_invalid", 400},
+	{"item_id_conflict", 409},
+	{"item_deleted", 409},
+	{"item_tag_limit", 409},
+	{"item_entry_limit", 409},
+	{"tag_conflict", 409},
+	{"entry_invalid", 400},
+	{"entry_too_large", 413},
+	{"entry_id_conflict", 409},
+	{"entry_key_mismatch", 409},
+	{"entry_nonce_reused", 400},
+	{"entry_restore_via_item", 409},
+	{"reorder_mismatch", 409},
+	{"changes_window_expired", 410},
+}
+
+// openAPIBlock trả block YAML bắt đầu ở dòng `header` (đúng indent) tới trước dòng kế tiếp
+// có indent nhỏ hơn hoặc bằng. Chuẩn hoá CRLF để test chạy được trên checkout Windows.
+func openAPIBlock(t *testing.T, spec, header string) string {
+	t.Helper()
+	spec = strings.ReplaceAll(spec, "\r\n", "\n")
+	start := strings.Index(spec, "\n"+header+"\n")
+	if start < 0 {
+		t.Fatalf("openapi.yaml thiếu block %q", strings.TrimSpace(header))
+	}
+	indent := len(header) - len(strings.TrimLeft(header, " "))
+	rest := spec[start+1+len(header)+1:]
+	var b strings.Builder
+	for _, line := range strings.Split(rest, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed != "" && len(line)-len(trimmed) <= indent {
+			break
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func TestOpenAPIHasUniqueP04OperationIDs(t *testing.T) {
+	spec := readOpenAPI(t)
+	seen := map[string]int{}
+	re := regexp.MustCompile(`(?m)^[ \t]*operationId: ([A-Za-z][A-Za-z0-9]+)\s*$`)
+	for _, m := range re.FindAllStringSubmatch(spec, -1) {
+		seen[m[1]]++
+	}
+	for _, id := range p04OperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if len(p04OperationIDs) != 23 {
+		t.Fatalf("catalog test phải đủ 23 operation P04 (plan P04 mục 3), có %d", len(p04OperationIDs))
+	}
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04) có %d", len(seen), total)
+	}
+}
+
+func TestProblemCatalogP04AppendedAtEnd(t *testing.T) {
+	n := len(p04ProblemStatus)
+	if len(httpx.ProblemCodes) < n {
+		t.Fatalf("catalog quá ngắn: %d", len(httpx.ProblemCodes))
+	}
+	tail := httpx.ProblemCodes[len(httpx.ProblemCodes)-n:]
+	for i, want := range p04ProblemStatus {
+		if tail[i] != want.code {
+			t.Errorf("mã P04 thứ %d phải là %s ở cuối catalog, có %s", i, want.code, tail[i])
+		}
+	}
+	if httpx.ProblemCodes[len(httpx.ProblemCodes)-n-1] != "passkey_not_found" {
+		t.Error("mã P04 phải nối ngay sau passkey_not_found (mã cuối của P03), không chèn giữa catalog")
+	}
+}
+
+func TestContentProblemStatusMatchesPlan(t *testing.T) {
+	for _, want := range p04ProblemStatus {
+		if got := httpx.ContentProblemStatus(want.code); got != want.status {
+			t.Errorf("ContentProblemStatus(%s) = %d, plan P04 mục 3 = %d", want.code, got, want.status)
+		}
+	}
+	reused := map[string]int{
+		"not_found":               404,
+		"invalid_request":         400,
+		"rate_limited":            429,
+		"precondition_required":   428,
+		"version_mismatch":        412,
+		"idempotency_conflict":    409,
+		"idempotency_in_progress": 409,
+		"vault_absent":            404,
+		"dependency_unavailable":  503,
+	}
+	for code, status := range reused {
+		if got := httpx.ContentProblemStatus(code); got != status {
+			t.Errorf("ContentProblemStatus(%s) = %d, muốn %d", code, got, status)
+		}
+	}
+	if got := httpx.ContentProblemStatus("passkey_exists"); got != 500 {
+		t.Errorf("code ngoài API content phải trả 500, có %d", got)
+	}
+}
+
+func TestOpenAPIP04ContractInvariants(t *testing.T) {
+	spec := readOpenAPI(t)
+
+	// Mọi operation có Idempotency-Key (P03 7 + P04 16) khai báo 409 qua IdempotencyConflict.
+	keyRefs := strings.Count(spec, "$ref: '#/components/parameters/IdempotencyKey'")
+	conflictRefs := strings.Count(spec, "$ref: '#/components/responses/IdempotencyConflict'")
+	if keyRefs != 23 || conflictRefs != 23 {
+		t.Errorf("phải có đúng 23 operation có I (P03 7 + P04 16) tham chiếu IdempotencyKey và IdempotencyConflict, có %d / %d", keyRefs, conflictRefs)
+	}
+
+	// If-Match version của content tách khỏi pattern vault.
+	versionIfMatch := openAPIBlock(t, spec, "    VersionIfMatch:")
+	if !strings.Contains(versionIfMatch, `pattern: '^"[1-9][0-9]{0,9}"$'`) {
+		t.Error(`VersionIfMatch phải có pattern '^"[1-9][0-9]{0,9}"$'`)
+	}
+	if got := strings.Count(spec, "$ref: '#/components/parameters/VersionIfMatch'"); got != 2 {
+		t.Errorf("chỉ itemUpdate và entryUpdate dùng VersionIfMatch, có %d tham chiếu", got)
+	}
+
+	// Mảng bắt buộc không bao giờ nullable (bài học HOTFIX-OAUTH-NULL, advisor-dec-089).
+	arrays := map[string][]string{
+		"ItemSummary":                {"tags"},
+		"ItemList":                   {"items"},
+		"ItemLookupResult":           {"items"},
+		"TagList":                    {"items"},
+		"EntryMetaList":              {"items"},
+		"EntryChangesPage":           {"changes"},
+		"ItemEntriesReorderResponse": {"entries"},
+		"ItemTagsAddRequest":         {"tag_ids"},
+		"ItemEntriesReorderRequest":  {"entry_ids"},
+	}
+	for schema, fields := range arrays {
+		block := openAPIBlock(t, spec, "    "+schema+":")
+		required := regexp.MustCompile(`(?m)^      required: \[([^\]]*)\]`).FindStringSubmatch(block)
+		if required == nil {
+			t.Errorf("%s thiếu required", schema)
+			continue
+		}
+		for _, field := range fields {
+			if !slices.Contains(strings.Split(strings.ReplaceAll(required[1], " ", ""), ","), field) {
+				t.Errorf("%s.%s phải nằm trong required", schema, field)
+			}
+			prop := openAPIBlock(t, block, "        "+field+":")
+			if !strings.Contains(prop, "          type: array\n") {
+				t.Errorf("%s.%s phải là `type: array` không nullable", schema, field)
+			}
+		}
+		if strings.Contains(block, "array, 'null'") || strings.Contains(block, "'null', array") {
+			t.Errorf("%s có mảng nullable", schema)
+		}
+	}
+
+	// Metadata entry (list, feed, response ghi) không mang envelope/ciphertext.
+	for _, schema := range []string{"EntryMeta", "EntryChange"} {
+		block := openAPIBlock(t, spec, "    "+schema+":")
+		if strings.Contains(block, "\n        envelope:") || strings.Contains(block, "\n        ciphertext:") {
+			t.Errorf("%s không được có envelope/ciphertext", schema)
+		}
+	}
+
+	// Import không nhận filename; không có PUT thay cả bộ tag.
+	if block := openAPIBlock(t, spec, "    EntryImportJsonRequest:"); strings.Contains(block, "filename") {
+		t.Error("EntryImportJsonRequest không được có filename (Q7)")
+	}
+	if block := openAPIBlock(t, spec, "  /items/{id}/tags:"); strings.Contains(block, "\n    put:") {
+		t.Error("không được có PUT /items/{id}/tags (Q3)")
 	}
 }
