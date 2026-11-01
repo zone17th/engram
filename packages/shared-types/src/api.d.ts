@@ -64,7 +64,7 @@ export interface paths {
         };
         /**
          * Cấu hình auth công khai
-         * @description Provider đang bật, cờ verification, site key CAPTCHA. Không lộ secret.
+         * @description Provider đang bật, cờ verification, site key CAPTCHA, khả năng gửi mail thực tế (mail_delivery_available). Không lộ secret.
          */
         get: operations["authConfig"];
         put?: never;
@@ -216,7 +216,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Bắt đầu liên kết provider */
+        /**
+         * Bắt đầu liên kết provider
+         * @description Yêu cầu session + CSRF + re-auth grant account.identity_link và email tài khoản hiện tại đã xác minh (chưa xác minh trả 403 email_not_verified, ADR 0006 / advisor-dec-140 D3).
+         */
         post: operations["authOauthLinkStart"];
         delete?: never;
         options?: never;
@@ -353,6 +356,64 @@ export interface paths {
          * @description Chỉ khi chưa có password và email hiện tại đã verified. Không phải reset.
          */
         post: operations["authPasswordEnrollSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/forgot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Yêu cầu đặt lại mật khẩu tài khoản qua email
+         * @description Chống dò tài khoản (anti-enumeration, ADR 0006, advisor-dec-140): khi mail_delivery_available == false,
+         *     trả ngay 503 mail_delivery_unavailable trước khi kiểm tra CAPTCHA/quota hay tra cứu DB để UI không hứa hẹn
+         *     kiểm tra hộp thư (advisor-dec-086). Khi mail_delivery_available == true, sau cú pháp, IP quota, Turnstile
+         *     CAPTCHA đồng nhất (khi bật) và HMAC email quota (1/phút, 3/giờ đếm trước khi tra DB), handler đưa yêu cầu
+         *     vào hàng đợi worker có giới hạn trong bộ nhớ (forgotQueueSize = 128) và trả ngay 202 (body rỗng, cùng lớp
+         *     thời gian phản hồi). Tài khoản OAuth-only không sinh reset token (chỉ gửi mail nhắc dùng US1b theo locale).
+         *     Không mở khoá hay đụng tới vault (user-dec-016).
+         */
+        post: operations["authPasswordForgot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Đặt lại mật khẩu tài khoản bằng token từ email
+         * @description Tiêu thụ token một lần (43 ký tự base64url = 32 byte CSPRNG, TTL 30 phút, gắn với user_id, target_email,
+         *     SHA-256 của password_hash hiện tại và bản chụp was_email_unverified; khoá theo thứ tự app_user FOR UPDATE ->
+         *     RevokeAllUserSessions trên session -> password_reset_token FOR UPDATE), cập nhật password_hash mới, thu hồi
+         *     toàn bộ session và refresh token, ghi secevent auth.password.reset và gửi notice mail chuyên biệt
+         *     password_reset_notice theo locale của tài khoản (ADR 0006, advisor-dec-140, advisor-dec-146). Nếu tài khoản
+         *     chưa xác minh email lúc phát hành token (was_email_unverified) hoặc hiện tại, đồng thời đánh dấu email đã xác
+         *     minh, huỷ các luồng OAuth login ready của các danh tính bị gỡ cùng các luồng link/reauth đang chờ, và gỡ toàn
+         *     bộ danh tính OAuth trong cùng transaction (D3, E1 A). Không tự động đăng nhập (trả 204 và xoá toàn bộ cookie
+         *     auth bằng ClearAuthCookies). Tuyệt đối không mở khoá, re-key hay reset vault (user-dec-016). Thiếu trường,
+         *     giá trị null hoặc sai kiểu JSON trả 400 invalid_request; mọi lỗi giá trị chuỗi token (rỗng, sai định dạng
+         *     base64url/độ dài, không tồn tại, đã dùng, hết hạn, lệch trạng thái) đều trả 400 reset_token_invalid. Khi gặp
+         *     SQLSTATE 40P01/55P03, server rollback và tự động retry 1 lần; nếu vẫn xung đột khoá thì trả 503
+         *     dependency_unavailable kèm Retry-After: 1 (E2 B).
+         */
+        post: operations["authPasswordReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1171,7 +1232,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired";
+        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired" | "reset_token_invalid";
         Problem: {
             /**
              * Format: uri
@@ -1184,7 +1245,7 @@ export interface components {
             /** @description Request ID, không phải URL. */
             instance?: string;
             code: components["schemas"]["ProblemCode"];
-            /** @description Giây; khớp header Retry-After (trên 429 rate_limited hoặc 409 idempotency_in_progress với giá trị 1). */
+            /** @description Giây; khớp header Retry-After (trên 429 rate_limited, 409 idempotency_in_progress hoặc 503 dependency_unavailable với giá trị 1). */
             retry_after?: number;
             /**
              * @description Chỉ khi code=session_invalid. Token lạ dùng invalid.
@@ -1213,6 +1274,8 @@ export interface components {
             oauth_providers: components["schemas"]["OauthProvider"][];
             email_verification_required: boolean;
             captcha_site_key: string | null;
+            /** @description True chỉ khi máy chủ cấu hình adapter gửi thư ra ngoài thực sự (hoặc sink kèm cờ chỉ dùng cho test AUTH_MAIL_CAPTURE_AS_DELIVERY=true bị cấm ở production, advisor-dec-140 D1). */
+            mail_delivery_available: boolean;
         };
         Me: {
             user: {
@@ -1299,6 +1362,18 @@ export interface components {
         } | {
             new_password: string;
             enrollment_token: string;
+        };
+        PasswordForgotRequest: {
+            /** Format: email */
+            email: string;
+            captcha_token?: string;
+            locale?: components["schemas"]["Locale"];
+        };
+        PasswordResetRequest: {
+            /** @description Token 32 byte CSPRNG mã hoá base64url không padding (đúng 43 ký tự) đọc từ URL fragment (#token=...). Giá trị chuỗi token sai quy cách trả 400 reset_token_invalid. */
+            token: string;
+            /** @description Không trim/normalize. Tối thiểu 12 ký tự Unicode; tối đa 1024 byte UTF-8. */
+            new_password: string;
         };
         SessionList: {
             items: components["schemas"]["SessionItem"][];
@@ -2403,6 +2478,70 @@ export interface operations {
             403: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["Problem"];
+        };
+    };
+    authPasswordForgot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordForgotRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã tiếp nhận yêu cầu (nếu tài khoản tồn tại, hướng dẫn sẽ được gửi qua email) */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    authPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã đặt lại mật khẩu tài khoản và thu hồi mọi phiên đăng nhập; người dùng đăng nhập lại */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            /** @description Deadlock hoặc lock timeout tạm thời sau khi đã tự động retry 1 lần (40P01/55P03); transaction đã rollback sạch sẽ, client thử lại sau Retry-After: 1 (dependency_unavailable) */
+            503: {
+                headers: {
+                    "Retry-After": components["headers"]["RetryAfter"];
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     authSessionsList: {

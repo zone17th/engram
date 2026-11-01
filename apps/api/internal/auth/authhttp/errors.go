@@ -52,7 +52,7 @@ func WriteDomainError(w http.ResponseWriter, r *http.Request, err error) {
 
 func statusFor(code string) int {
 	switch code {
-	case "invalid_request", "password_weak", "verification_invalid", "oauth_state_invalid":
+	case "invalid_request", "password_weak", "verification_invalid", "reset_token_invalid", "oauth_state_invalid":
 		return http.StatusBadRequest
 	case "unauthenticated", "access_expired", "session_invalid", "invalid_credentials", "reauth_required", "reauth_invalid":
 		return http.StatusUnauthorized
