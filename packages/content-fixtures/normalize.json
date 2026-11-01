@@ -100,6 +100,34 @@
       "normalized": "istanbul"
     },
     {
+      "name": "uppercase-J-with-combining-caron-recomposed-after-tolower",
+      "kind": "name",
+      "input": "J\u030c",
+      "trimmed": "J\u030c",
+      "normalized": "\u01f0"
+    },
+    {
+      "name": "lowercase-j-with-combining-caron-composed-to-u01f0",
+      "kind": "name",
+      "input": "j\u030c",
+      "trimmed": "j\u030c",
+      "normalized": "\u01f0"
+    },
+    {
+      "name": "precomposed-j-caron-u01f0-preserved",
+      "kind": "name",
+      "input": "\u01f0",
+      "trimmed": "\u01f0",
+      "normalized": "\u01f0"
+    },
+    {
+      "name": "tag-uppercase-J-with-combining-caron-recomposed-to-u01f0",
+      "kind": "tag",
+      "input": "J\u030c",
+      "trimmed": "J\u030c",
+      "normalized": "\u01f0"
+    },
+    {
       "name": "german-capital-sharp-s-per-rune-tolower",
       "kind": "name",
       "input": "STRA\u1e9eE",

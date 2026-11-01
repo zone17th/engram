@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,6 +294,37 @@ func TestNormalizeDirectUnits(t *testing.T) {
 		}
 	})
 
+	t.Run("J+U+030C, j+U+030C, and precomposed U+01F0 yield equal keys (advisor-dec-125)", func(t *testing.T) {
+		inputs := []string{"J\u030c", "j\u030c", "\u01f0"}
+		const want = "\u01f0"
+		var keys []string
+		for _, in := range inputs {
+			got, err := Normalize(in)
+			if err != nil {
+				t.Fatalf("Normalize(%q): %v", in, err)
+			}
+			if got != want {
+				t.Fatalf("Normalize(%q) = %q, want %q", in, got, want)
+			}
+			_, nameKey, err := NormalizeName(in)
+			if err != nil || nameKey != want {
+				t.Fatalf("NormalizeName(%q) = (%q, %v), want (%q, nil)", in, nameKey, err, want)
+			}
+			lookupKey, err := NormalizeLookupName(in)
+			if err != nil || lookupKey != want {
+				t.Fatalf("NormalizeLookupName(%q) = (%q, %v), want (%q, nil)", in, lookupKey, err, want)
+			}
+			_, tagKey, err := NormalizeTag(in)
+			if err != nil || tagKey != want {
+				t.Fatalf("NormalizeTag(%q) = (%q, %v), want (%q, nil)", in, tagKey, err, want)
+			}
+			keys = append(keys, got)
+		}
+		if keys[0] != keys[1] || keys[1] != keys[2] {
+			t.Fatalf("expected equal keys across %q, got %q", inputs, keys)
+		}
+	})
+
 	t.Run("AsError and Error.Is semantics", func(t *testing.T) {
 		_, _, err := NormalizeName("")
 		te, ok := AsError(err)
@@ -304,6 +336,26 @@ func TestNormalizeDirectUnits(t *testing.T) {
 		}
 		if _, ok := AsError(errors.New("plain")); ok {
 			t.Fatalf("AsError should return false for non-textnorm error")
+		}
+
+		wrapped := fmt.Errorf("context: %w", ErrNameInvalid)
+		if !errors.Is(wrapped, ErrNameInvalid) {
+			t.Fatalf("wrapped source %v should match sentinel ErrNameInvalid", wrapped)
+		}
+		if errors.Is(wrapped, ErrTagDisplayInvalid) {
+			t.Fatalf("wrapped source %v should not match ErrTagDisplayInvalid", wrapped)
+		}
+		if errors.Is(ErrNameInvalid, wrapped) {
+			t.Fatalf("sentinel should not match wrapped target %v in reverse", wrapped)
+		}
+
+		var nilTarget *Error
+		if errors.Is(ErrNameInvalid, nilTarget) {
+			t.Fatalf("errors.Is(ErrNameInvalid, typed-nil *Error) = true, want false")
+		}
+		var nilReceiver *Error
+		if nilReceiver.Is(ErrNameInvalid) {
+			t.Fatalf("((*Error)(nil)).Is(ErrNameInvalid) = true, want false")
 		}
 	})
 }
@@ -341,6 +393,9 @@ func FuzzNormalizeIdempotent(f *testing.F) {
 		"!!!",
 		"",
 		"a\u00a0\u2003\u3000b",
+		"J\u030c",
+		"j\u030c",
+		"\u01f0",
 	}
 	for _, s := range seeds {
 		f.Add(s)
