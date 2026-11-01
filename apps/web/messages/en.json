@@ -1259,6 +1259,7 @@
       "conflictTitle": "Modified on another device",
       "conflictSubtitle": "Item name or hint changed on another device",
       "conflictBody": "Your typed value is preserved in the field. Choose Load latest to discard your edit, or Keep mine to overwrite using the latest server version.",
+      "staleLatestNotice": "A newer version was saved on another device while loading. Reloading the latest version.",
       "loadLatest": "Load latest",
       "keepMine": "Keep mine",
       "tagsLabel": "Item tags",

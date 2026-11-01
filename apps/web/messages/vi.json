@@ -1259,6 +1259,7 @@
       "conflictTitle": "Đã được sửa ở thiết bị khác",
       "conflictSubtitle": "Tên hoặc gợi ý mục vừa đổi ở thiết bị khác",
       "conflictBody": "Giá trị bạn vừa gõ vẫn được giữ trong ô. Chọn Tải bản mới để lấy tên/gợi ý mới nhất từ máy chủ, hoặc Giữ bản của tôi để ghi đè với phiên bản mới nhất.",
+      "staleLatestNotice": "Đã có phiên bản mới hơn từ thiết bị khác trong lúc tải. Đang tải lại bản mới nhất.",
       "loadLatest": "Tải bản mới",
       "keepMine": "Giữ bản của tôi",
       "tagsLabel": "Tag của mục",

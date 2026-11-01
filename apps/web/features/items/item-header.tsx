@@ -354,14 +354,14 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           // IP15-FE4-5: When a newer conflict superseded this Load latest, announce and refetch once
           // instead of silently doing nothing.
           if (!isAutoRetryAfterStale && mountedRef.current && conflictRef.current) {
-            onAnnounce?.(tItem('conflictBody'));
+            onAnnounce?.(tItem('staleLatestNotice'));
             await runLoadLatestItem(true);
           }
           return;
         }
         if (accepted.version < latestVersionRef.current) {
           if (!isAutoRetryAfterStale && mountedRef.current) {
-            onAnnounce?.(tItem('conflictBody'));
+            onAnnounce?.(tItem('staleLatestNotice'));
             await runLoadLatestItem(true);
           }
           return;

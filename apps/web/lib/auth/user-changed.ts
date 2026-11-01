@@ -13,23 +13,6 @@ export function subscribeUserChanged(cb: UserChangedListener): () => void {
   };
 }
 
-export function notifyUserChanged(prevUserId: string, nextUserId: string): void {
-  if (!prevUserId || !nextUserId || prevUserId === nextUserId) {
-    if (nextUserId) {
-      lastCommittedUserId = nextUserId;
-    }
-    return;
-  }
-  lastCommittedUserId = nextUserId;
-  for (const listener of [...listeners]) {
-    try {
-      listener(prevUserId, nextUserId);
-    } catch {
-      // Never let a listener exception abort a successful login/signup/OAuth flow (IP15-FE4-4).
-    }
-  }
-}
-
 export function commitAuthenticatedUser(nextUserId: string): void {
   if (!nextUserId) {
     return;

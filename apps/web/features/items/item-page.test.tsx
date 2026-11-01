@@ -2863,7 +2863,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // IP15-FE4-5: Verify it announced and refetched exactly once (1 initial GET + 1 auto-refetch = 2 GETs)
     expect(getCallsDuringStaleLoadLatest).toBe(2);
     expect(screen.getByTestId('item-page-live-region')).toHaveTextContent(
-      viMessages.content.item.conflictBody,
+      viMessages.content.item.staleLatestNotice,
     );
 
     // IP15-BE3-4: Because the auto-refetch also returned stale v7 (< v8), the v8 conflict remains active,
