@@ -277,11 +277,13 @@ function getRenderedEntryCardIds(container: HTMLElement): string[] {
 function findCacheSentinelLeaks(
   qc: QueryClient,
   sentinels: readonly string[],
+  options?: { readonly locked?: boolean },
 ): string[] {
   const leaks: string[] = [];
 
   for (const query of qc.getQueryCache().getAll()) {
     const isPermittedVaultBodyCache =
+      !options?.locked &&
       Array.isArray(query.queryKey) &&
       query.queryKey[0] === VAULT_BODY_QUERY_KEY_PREFIX[0] &&
       query.queryKey[1] === VAULT_BODY_QUERY_KEY_PREFIX[1];
@@ -1111,8 +1113,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(puts[0].headers['if-match']).toBe('"1"');
     expect(puts[1].headers['if-match']).toBe('"2"');
 
-    // IP15-BE2-3: Hold PUT #3 (submitting 'Draft C'), revert textarea back to 'Draft B typed while A in flight'
-    // while PUT #3 is in flight, release PUT #3 -> editor stays open, Esc asks discard confirmation, and Save sends PUT #4 with If-Match: "3"
+    // IP15-BE2-3: Hold PUT #3 (submitting 'Draft C' with If-Match: "3"), revert textarea back to 'Draft B typed while A in flight'
+    // while PUT #3 is in flight, release PUT #3 (commits v4) -> editor stays open, Esc asks discard confirmation, and Save sends PUT #4 with If-Match: "4"
     const { promise: put3Gate, resolve: releasePut3 } = createDeferred();
     const { promise: put3Entered, resolve: notifyPut3Entered } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
@@ -1145,7 +1147,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(screen.getByTestId(`entry-discard-confirm-${ENTRY_ID_1}`)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`entry-keep-editing-btn-${ENTRY_ID_1}`));
 
-    // Clicking Save sends PUT #4 with If-Match: "3" and restores 'Draft B typed while A in flight' on the server
+    // Clicking Save sends PUT #4 with If-Match: "4" and restores 'Draft B typed while A in flight' on the server
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
     await waitFor(() => {
       expect(screen.queryByTestId(`entry-edit-textarea-${ENTRY_ID_1}`)).toBeNull();
@@ -1155,8 +1157,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
     const allPutsAfterReversion = h.server.requests.filter((r) => r.method === 'PUT');
     expect(allPutsAfterReversion).toHaveLength(4);
-    expect(allPutsAfterReversion[2].headers['if-match']).toBe('"2"');
-    expect(allPutsAfterReversion[3].headers['if-match']).toBe('"3"');
+    expect(allPutsAfterReversion[2].headers['if-match']).toBe('"3"');
+    expect(allPutsAfterReversion[3].headers['if-match']).toBe('"4"');
   });
 
   it('412 on entry PUT keeps draft; Copy mine copies draft; Keep mine writes with the new version and fresh nonce; Load latest drops draft after inline confirm', async () => {
@@ -2118,8 +2120,14 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain(SENTINEL_BODY);
     expect(h.container.textContent).not.toContain(SENTINEL_DRAFT);
     assertNoPlaintextAttrs(h.container, [SENTINEL_BODY, SENTINEL_DRAFT], { locked: true });
-    expect(h.qc.getQueriesData({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })).toEqual([]);
-    expect(findCacheSentinelLeaks(h.qc, [SENTINEL_BODY, SENTINEL_DRAFT])).toEqual([]);
+    expect(
+      h.qc
+        .getQueriesData({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX })
+        .filter(([, data]) => data !== undefined),
+    ).toEqual([]);
+    expect(
+      findCacheSentinelLeaks(h.qc, [SENTINEL_BODY, SENTINEL_DRAFT], { locked: true }),
+    ).toEqual([]);
 
     // 4. Unlock again -> shows "Bản nháp chưa lưu đã bị xoá khi khoá vault"
     await h.unlock();
@@ -2546,7 +2554,20 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     // 3. Trigger another session_invalid for User A, then log in as User B via real SessionProvider.login
     await h.unlock();
     await waitFor(() => {
-      expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
+      const bodyEl = screen.queryByTestId('entry-body');
+      if (!bodyEl) {
+        const cardListHtml =
+          h.container.querySelector('[data-testid="entry-card-list"]')?.innerHTML ?? 'none';
+        const cacheSummary = h.qc
+          .getQueryCache()
+          .getAll()
+          .map((q) => `${JSON.stringify(q.queryKey)}:${q.state.status}/${q.state.fetchStatus}`)
+          .join(', ');
+        throw new Error(
+          `entry-body missing (vaultState=${h.vault().state}, keyId=${String(h.vault().vaultMeta?.vault_key_id)}, queries=[${cacheSummary}], list=${cardListHtml.slice(0, 240)})`,
+        );
+      }
+      expect(bodyEl).toHaveTextContent('Secret for User A');
     });
     fireEvent.click(screen.getByTestId(`entry-edit-btn-${ENTRY_ID_1}`));
     const textarea2 = screen.getByTestId(`entry-edit-textarea-${ENTRY_ID_1}`);
@@ -2842,10 +2863,27 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
           (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
         ),
       ).toBe(true);
-      expect(screen.getAllByTestId('entry-body')).toHaveLength(2);
+      const bodiesText = screen
+        .getAllByTestId('entry-body')
+        .map((el) => el.textContent);
+      expect(bodiesText).toEqual([
+        'Entry 2 body',
+        'Draft rescued via Save as new entry',
+      ]);
     });
-
-    const bodiesText = screen.getAllByTestId('entry-body').map((el) => el.textContent);
-    expect(bodiesText).toContain('Draft rescued via Save as new entry');
+    const postCreateRequests = h.server.requests.filter(
+      (r) => r.method === 'POST' && r.url.endsWith(`/items/${ITEM_ID}/entries`),
+    );
+    const parsedPostCreate: unknown = JSON.parse(
+      postCreateRequests[postCreateRequests.length - 1].rawBody,
+    );
+    const rescuedEntryId =
+      parsedPostCreate !== null &&
+      typeof parsedPostCreate === 'object' &&
+      'id' in parsedPostCreate &&
+      typeof parsedPostCreate.id === 'string'
+        ? parsedPostCreate.id
+        : '';
+    expect(getRenderedEntryCardIds(h.container)).toEqual([ENTRY_ID_2, rescuedEntryId]);
   });
 });
