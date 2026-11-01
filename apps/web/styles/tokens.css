@@ -336,8 +336,10 @@ body {
 }
 .json-table tr:last-child td { border-bottom: 0; }
 .json-table .k { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
+.json-table .k-occ { font-family: var(--font-mono); font-size: 11px; color: var(--accent); margin-left: 4px; font-weight: 600; }
 .json-table .v-num { font-family: var(--font-mono); color: var(--accent); }
-.json-table .v-bool { font-family: var(--font-mono); color: var(--product-teal); }
+.json-table .v-bool { font-family: var(--font-mono); color: var(--success-ink); }
+[data-theme='dark'] .json-table .v-bool { color: var(--product-teal); }
 .json-table .v-null { font-family: var(--font-mono); color: var(--muted); font-style: italic; }
 .json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
 .json-toggle {
@@ -352,6 +354,11 @@ body {
   white-space: pre; overflow-x: auto; padding: 16px;
   background: var(--surface); color: var(--body); margin: 0;
 }
+.json-raw-editor { font-family: var(--font-mono); }
+.json-cell-btn { font-family: var(--font-sans); }
+.json-cell-readonly { font-family: var(--font-mono); }
+.json-cell-input { font-family: var(--font-mono); }
+.json-type-btn { font-family: var(--font-mono); }
 
 /* ---------- misc ---------- */
 
