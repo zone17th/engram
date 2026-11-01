@@ -43,6 +43,7 @@ import {
 import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
+import { contentQueryKeys } from '@/features/items/query-keys';
 import {
   TextEntryCard,
   __testing as textEntryCardTesting,
@@ -4954,4 +4955,46 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(getUnconfirmedSavesSnapshot()).toEqual([]);
     expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
   }, 30_000);
+
+  it('advisor-dec-215: invalidates CONTENT_ITEMS_QUERY_KEY_PREFIX home list queries after both item name PATCH and item hint PATCH', async () => {
+    const h = await setupItemPageHarness();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-name-input')).toHaveValue('wifi');
+    });
+
+    const recentItemsKey = contentQueryKeys.items({ sort: 'recent' });
+    const nameInput = screen.getByTestId('item-name-input');
+    const hintInput = screen.getByTestId('item-hint-input');
+
+    // 1. Seed a fresh home list query ['content', 'items', { sort: 'recent', ... }] -> PATCH item name -> assert list query is invalidated
+    h.qc.setQueryData(recentItemsKey, {
+      items: [{ ...h.server.item }],
+      next_cursor: null,
+    });
+    expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(false);
+
+    fireEvent.change(nameInput, { target: { value: 'wifi-renamed-dec-215' } });
+    fireEvent.blur(nameInput);
+
+    await waitFor(() => {
+      expect(h.server.item.name).toBe('wifi-renamed-dec-215');
+      expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(true);
+    });
+
+    // 2. Re-seed a fresh home list query -> PATCH item hint -> assert list query is invalidated
+    h.qc.setQueryData(recentItemsKey, {
+      items: [{ ...h.server.item }],
+      next_cursor: null,
+    });
+    expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(false);
+
+    fireEvent.change(hintInput, { target: { value: 'updated-hint-dec-215' } });
+    fireEvent.blur(hintInput);
+
+    await waitFor(() => {
+      expect(h.server.item.hint).toBe('updated-hint-dec-215');
+      expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(true);
+    });
+  });
 });
