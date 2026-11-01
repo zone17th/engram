@@ -92,6 +92,30 @@ async function installPublicAuthMocks(context: BrowserContext) {
   });
 }
 
+async function installExtraSignedInAppMocks(context: BrowserContext) {
+  await context.route('**/api/v1/auth/sessions', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [] }),
+    });
+  });
+  await context.route('**/api/v1/auth/audit*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], next_cursor: null }),
+    });
+  });
+  await context.route('**/api/v1/me/notifications*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], unread_count: 0, next_cursor: null }),
+    });
+  });
+}
+
 async function checkRouteHydration(
   browser: Browser,
   routeLabel: string,
@@ -115,7 +139,7 @@ async function checkRouteHydration(
     }
     return [];
   } finally {
-    await context.close();
+    await context.close().catch(() => undefined);
   }
 }
 
@@ -230,6 +254,7 @@ test.describe('FU5 React #418 hydration console diagnostic guard', () => {
       ...(await checkRouteHydration(browser, 'GET /app (installApiMocks + installHomeContentMetadataRoutes)', {
         setupContext: async (context) => {
           await installApiMocks(context);
+          await installExtraSignedInAppMocks(context);
           await installHomeContentMetadataRoutes(context);
           await installItemPageMetadataRoutes(context, mockedFirstItem.id);
         },
@@ -249,6 +274,7 @@ test.describe('FU5 React #418 hydration console diagnostic guard', () => {
         {
           setupContext: async (context) => {
             await installApiMocks(context);
+            await installExtraSignedInAppMocks(context);
             await installHomeContentMetadataRoutes(context);
             await installItemPageContentMocks(context);
           },
@@ -270,6 +296,7 @@ test.describe('FU5 React #418 hydration console diagnostic guard', () => {
           setupContext: async (context) => {
             await context.setExtraHTTPHeaders({ 'accept-language': 'vi-VN,vi;q=0.9' });
             await installApiMocks(context);
+            await installExtraSignedInAppMocks(context);
             await installHomeContentMetadataRoutes(context);
           },
           navigateAndWait: async (page) => {
@@ -322,6 +349,7 @@ test.describe('FU5 React #418 hydration console diagnostic guard', () => {
           setupContext: async (context) => {
             if (route.path === '/app/settings') {
               await installVisualApiMocks(context, 'light');
+              await installExtraSignedInAppMocks(context);
               await context.route('**/api/v1/vault', async (r) => {
                 await r.fulfill({
                   status: 200,
@@ -341,14 +369,9 @@ test.describe('FU5 React #418 hydration console diagnostic guard', () => {
                   }),
                 });
               });
-              await context.route('**/api/v1/auth/sessions', async (r) => {
-                await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sessions: [] }) });
-              });
-              await context.route('**/api/v1/auth/audit*', async (r) => {
-                await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [] }) });
-              });
             } else {
               await installApiMocks(context);
+              await installExtraSignedInAppMocks(context);
               await installHomeContentMetadataRoutes(context);
             }
           },
