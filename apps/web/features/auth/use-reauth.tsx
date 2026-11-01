@@ -1,6 +1,7 @@
 'use client';
 
 import { ProblemError } from '@engram/shared-types';
+import { useMessages } from 'next-intl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type Me,
@@ -12,18 +13,37 @@ import {
 } from '@/lib/api/auth';
 import { grantStillValid } from '@/lib/auth/audit-catalog';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
-import enMessages from '@/messages/en.json';
-import viMessages from '@/messages/vi.json';
 
-function resolveReauthCopy(locale: 'en' | 'vi' | undefined) {
-  const auth = (locale === 'vi' ? viMessages : enMessages).auth;
-  return {
-    failed: auth.reauth.failed,
-    invalidCredentials: auth.errors.invalidCredentialsTitle,
-    rateLimited: auth.errors.rateLimitedTitle,
-    generic: auth.errors.genericTitle,
-    network: auth.errors.network,
+const DEFAULT_REAUTH_COPY = {
+  failed: 'Could not verify your identity.',
+  invalidCredentials: 'Incorrect email or password.',
+  rateLimited: 'Too many attempts.',
+  generic: 'Something went wrong',
+  network: 'Could not reach the server. Check your connection and try again.',
+};
+
+type AuthMessagesSlice = {
+  reauth?: { failed?: string };
+  errors?: {
+    invalidCredentialsTitle?: string;
+    rateLimitedTitle?: string;
+    genericTitle?: string;
+    network?: string;
   };
+};
+
+function useReauthCopy() {
+  const messages = useMessages() as { auth?: AuthMessagesSlice } | null | undefined;
+  return useMemo(() => {
+    const auth = messages?.auth;
+    return {
+      failed: auth?.reauth?.failed ?? DEFAULT_REAUTH_COPY.failed,
+      invalidCredentials: auth?.errors?.invalidCredentialsTitle ?? DEFAULT_REAUTH_COPY.invalidCredentials,
+      rateLimited: auth?.errors?.rateLimitedTitle ?? DEFAULT_REAUTH_COPY.rateLimited,
+      generic: auth?.errors?.genericTitle ?? DEFAULT_REAUTH_COPY.generic,
+      network: auth?.errors?.network ?? DEFAULT_REAUTH_COPY.network,
+    };
+  }, [messages]);
 }
 
 const REAUTH_STORAGE_KEY = 'sabk.reauth.pending';
@@ -46,7 +66,7 @@ export function useReauth(me: Me | null) {
   const [submitting, setSubmitting] = useState(false);
   const resolverRef = useRef<((value: ReauthGrant) => void) | null>(null);
   const rejectRef = useRef<((reason?: unknown) => void) | null>(null);
-  const copy = useMemo(() => resolveReauthCopy(me?.settings.locale), [me?.settings.locale]);
+  const copy = useReauthCopy();
 
   const capabilities: ReauthCapabilities = useMemo(
     () => ({

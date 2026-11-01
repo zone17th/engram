@@ -322,7 +322,7 @@ export function ForgotPasswordForm() {
           <div className="rounded-md bg-surface p-4">
             <p className="m-0 text-[13px] text-body">
               <strong>{t('forgot.vaultForgotStrong')}</strong> {t('forgot.vaultForgotBody')}
-              <Link href="/app/recovery" className="text-link underline">
+              <Link href="/app/recovery" className="underline" style={{ color: 'var(--link-ink)' }}>
                 {t('forgot.vaultRecoveryLink')}
               </Link>
               {t('forgot.vaultForgotSuffix')}

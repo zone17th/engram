@@ -32,7 +32,7 @@ export function AuthExplainerAside({ mode }: { mode: 'login' | 'signup' }) {
 
       <div className="mb-5 flex flex-col gap-2.5">
         <div className="rounded-md border border-line bg-canvas p-3.5">
-          <p className="t-label mb-1 text-success">{t('encryptedBadge')}</p>
+          <p className="t-label mb-1" style={{ color: 'var(--success-ink)' }}>{t('encryptedBadge')}</p>
           <p className="m-0 text-[13px] text-body">{t('encryptedBody')}</p>
         </div>
 

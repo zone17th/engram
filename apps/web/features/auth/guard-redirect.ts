@@ -44,8 +44,6 @@ export function isPublicAuthRoute(path: string): boolean {
 export function keepAuthFormMountedWhileLoading(path: string): boolean {
   return (
     isPublicAuthRoute(path) ||
-    path === `${AUTH_PREFIX}/forgot-password` ||
-    path === `${AUTH_PREFIX}/reset-password` ||
     path === `${AUTH_PREFIX}/verify-email` ||
     path === `${AUTH_PREFIX}/password-enroll` ||
     path.startsWith(`${AUTH_PREFIX}/callback/`)

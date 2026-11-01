@@ -263,7 +263,7 @@
       }
     },
     "strength": {
-      "label": "Password strength",
+      "label": "Password strength (hint)",
       "localNote": "Checked on this device, nothing is sent.",
       "level0": "Enter a password",
       "level1": "Too short / Weak",
@@ -318,7 +318,6 @@
       "subtitle": "After this step you will set your vault passphrase and receive 10 recovery keys.",
       "passphraseNoteStrong": "Your account password is not your vault passphrase.",
       "passphraseNoteBody": "The passphrase comes next and is what protects your entries.",
-      "terms": "I agree to the terms and how data is handled.",
       "termsPrefix": "I agree to the ",
       "termsLink": "Terms of Service",
       "termsMiddle": " and ",
@@ -329,7 +328,7 @@
       "submitting": "Creating account…",
       "haveAccount": "Have an account?",
       "signInLink": "Sign in",
-      "privacyNote": "We cannot read what you store. If you lose every way to unlock, we cannot recover it for you."
+      "privacyNote": "We cannot read the contents of your entries. If you lose every way to unlock, we cannot recover them for you."
     },
     "forgot": {
       "title": "Reset login password",

@@ -46,7 +46,7 @@ export function LoginForm() {
   const params = useSearchParams();
   const returnTo = sanitizeReturnTo(params.get('returnTo'));
 
-  const [resetDone] = useState<boolean>(() => {
+  const [resetDone, setResetDone] = useState<boolean>(() => {
     if (params.get('reset') === 'done') return true;
     if (typeof window !== 'undefined') {
       return new URLSearchParams(window.location.search).get('reset') === 'done';
@@ -121,6 +121,7 @@ export function LoginForm() {
         return;
       }
       setFieldErrors({});
+      setResetDone(false);
       setSubmitting(true);
       setAlert({ kind: 'submitting' });
       setRetryUntil(null);
@@ -231,7 +232,7 @@ export function LoginForm() {
             <div
               className="card mb-4 p-5"
               id="login-reset-success-banner"
-              data-testid="login-reset-success-banner"
+              data-testid="login-reset-banner"
             >
               <AuthStatus tone="sent" className="mb-3">
                 <p className="m-0 font-semibold text-[14px]">{t('login.resetSuccessTitle')}</p>

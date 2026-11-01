@@ -74,6 +74,7 @@ export function PasswordStrengthMeter({
         className="mb-2 grid grid-cols-4 gap-1.5"
         role="meter"
         aria-label={t('label')}
+        aria-describedby={noteId}
         aria-valuemin={0}
         aria-valuemax={4}
         aria-valuenow={score}
