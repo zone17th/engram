@@ -1043,18 +1043,22 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     // 1b. IP17-R1-8: file with size > 4 MiB is rejected by checking file.size before reading arrayBuffer()
     const hugeFile = makeFileFromBytes(new Uint8Array([0x7b, 0x7d]), 'huge.json');
     Object.defineProperty(hugeFile, 'size', { value: 5 * 1024 * 1024 });
-    const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0));
-    Object.defineProperty(hugeFile, 'arrayBuffer', { value: arrayBufferSpy });
-
-    await act(async () => {
-      fireEvent.change(fileInput, {
-        target: { files: [hugeFile] },
+    const arrayBufferSpy = vi
+      .spyOn(File.prototype, 'arrayBuffer')
+      .mockResolvedValue(new ArrayBuffer(0));
+    try {
+      await act(async () => {
+        fireEvent.change(fileInput, {
+          target: { files: [hugeFile] },
+        });
       });
-    });
 
-    expect(arrayBufferSpy).not.toHaveBeenCalled();
-    expect(within(dialog).getByTestId('import-json-over-cap-error')).toBeInTheDocument();
-    expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
+      expect(arrayBufferSpy).not.toHaveBeenCalled();
+      expect(within(dialog).getByTestId('import-json-over-cap-error')).toBeInTheDocument();
+      expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
+    } finally {
+      arrayBufferSpy.mockRestore();
+    }
     // 2. 262,144 B -> accepted and saves 201
     await act(async () => {
       fireEvent.change(fileInput, {
@@ -1903,12 +1907,15 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
-    const { promise: sameUserGate, resolve: releaseSameUser } = createDeferred();
-    const { promise: sameUserEntered, resolve: notifySameUserEntered } = createDeferred();
+    let failImportWithSessionInvalid = true;
     hSameUser.server.overrideRoute(async (url, init) => {
-      if (url.endsWith(`/items/${ITEM_ID}/entries/import-json`) && init?.method === 'POST') {
-        notifySameUserEntered();
-        await sameUserGate;
+      if (
+        url.endsWith(`/items/${ITEM_ID}/entries/import-json`) &&
+        init?.method === 'POST' &&
+        failImportWithSessionInvalid
+      ) {
+        failImportWithSessionInvalid = false;
+        hSameUser.setCurrentMe(null);
         return problemResponse('session_invalid', 401);
       }
       return null;
@@ -1920,11 +1927,6 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       target: { value: '{"same_user_401":1}' },
     });
     fireEvent.click(within(dialog2).getByTestId('import-json-submit-btn'));
-    await sameUserEntered;
-
-    // Simulate vault reset/lock when session ends before the 401 catch runs (bumps lockEpochRef so isStale() is true)
-    await hSameUser.lock();
-    releaseSameUser();
 
     await waitFor(() => {
       expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);

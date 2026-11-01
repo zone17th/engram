@@ -126,6 +126,7 @@ export interface ImportJsonDialogProps {
 interface PendingMultiStepImportPlan {
   readonly mode: 'json' | 'text';
   readonly source: EntryImportJsonSource;
+  readonly userId: string | null;
   readonly itemId: string;
   readonly itemName: string;
   readonly isNewItem: boolean;
@@ -867,7 +868,7 @@ export function ImportJsonDialog({
         saveOwnerIdRef.current !== ownerId ||
         !op.isCurrent();
 
-      let currentStepHadUncertainSend = false;
+      let currentStepHadUncertainSend = true;
       try {
         // Step 1: Create new item if needed
         if (plan.isNewItem && !plan.itemCreated) {
@@ -1010,8 +1011,8 @@ export function ImportJsonDialog({
         );
 
         if (classified.isLogoutBoundary) {
-          const userId = activeUserIdRef.current;
-          if (userId && currentStepHadUncertainSend) {
+          const userId = plan.userId ?? activeUserIdRef.current;
+          if (userId) {
             recordUnconfirmedSave({
               userId,
               itemId: plan.itemId,
@@ -1208,6 +1209,7 @@ export function ImportJsonDialog({
           plan = {
             mode,
             source: sourceKind,
+            userId: activeUserIdRef.current ?? activeHandoff?.userId ?? null,
             itemId: resolvedItemId,
             itemName: resolvedItemName,
             isNewItem,
@@ -1267,6 +1269,7 @@ export function ImportJsonDialog({
       }
     },
     [
+      activeHandoff?.userId,
       effectiveItemId,
       effectiveItemName,
       effectiveTags,
