@@ -923,7 +923,10 @@ func TestAssignItemTagsLimit20ParallelFrom19AndAdditiveSnapshot(t *testing.T) {
 	}
 
 	// Thiết bị A (nhìn snapshot cũ chỉ có tags[0]) gửi `[tags[0], tags[2]]`.
+	// Sau khi tiến đồng hồ 10 phút để kiểm chứng `last_used_at` touch, làm mới phiên đăng nhập
+	// để access token (TTL 10 phút) không hết hạn trước khi gửi request (IT5-R2-1).
 	h.Clock.Advance(10 * time.Minute)
+	h.RefreshSession(jarA)
 	wantTouchTime := h.Clock.Now().UTC()
 	rDevA, bDevA := doWrite(h, jarA, http.MethodPost, "/api/v1/items/"+item3.ID.String()+"/tags",
 		fmt.Sprintf(`{"tag_ids":[%q,%q]}`, tags[0].ID.String(), tags[2].ID.String()))
@@ -1389,17 +1392,33 @@ func TestTagsListPrefixQuerySortAndPagination(t *testing.T) {
 	assertUUIDSliceEqual(t, "GET /tags?limit=3 (default recent)", gotDefaultSortIDs, wantRecentIDs)
 
 	// 3b. Duyệt toàn bộ các trang với `sort=alpha&limit=3` (4 trang: 3 + 3 + 3 + 1 = 10)
-	// và đối chiếu chính xác thứ tự `ORDER BY normalized ASC, id ASC`.
-	alphaMetas := slices.Clone(liveMetas)
-	slices.SortFunc(alphaMetas, func(a, b liveTagMeta) int {
-		if c := strings.Compare(a.normalized, b.normalized); c != 0 {
-			return c
+	// và đối chiếu chính xác thứ tự `ORDER BY normalized ASC, id ASC` trực tiếp từ DB
+	// (khớp mệnh đề `ORDER BY` của `ListLiveTagsAlpha` trong `tag.sql`, tránh giả định byte-collation của Go `strings.Compare` — IT5-R2-2).
+	var wantAlphaIDs []uuid.UUID
+	alphaRows, err := h.Pool.Query(ctx, `
+		SELECT id
+		FROM tag
+		WHERE user_id = $1
+		  AND deleted_at IS NULL
+		ORDER BY normalized ASC, id ASC
+	`, userA.User.ID)
+	if err != nil {
+		t.Fatalf("query expected alpha tag order: %v", err)
+	}
+	for alphaRows.Next() {
+		var id uuid.UUID
+		if err := alphaRows.Scan(&id); err != nil {
+			alphaRows.Close()
+			t.Fatalf("scan expected alpha tag ID: %v", err)
 		}
-		return bytes.Compare(a.id[:], b.id[:])
-	})
-	wantAlphaIDs := make([]uuid.UUID, len(alphaMetas))
-	for i, m := range alphaMetas {
-		wantAlphaIDs[i] = m.id
+		wantAlphaIDs = append(wantAlphaIDs, id)
+	}
+	alphaRows.Close()
+	if err := alphaRows.Err(); err != nil {
+		t.Fatalf("alphaRows err: %v", err)
+	}
+	if len(wantAlphaIDs) != len(liveMetas) {
+		t.Fatalf("expected %d live tags in alpha order, got %d", len(liveMetas), len(wantAlphaIDs))
 	}
 	gotAlphaIDs := collectTagPages("sort=alpha&limit=3", []int{3, 3, 3, 1})
 	assertUUIDSliceEqual(t, "GET /tags?sort=alpha&limit=3", gotAlphaIDs, wantAlphaIDs)
@@ -1604,7 +1623,7 @@ func TestCrossTenantIsolationUserB404OnEveryTagAndItemTagRoute(t *testing.T) {
 
 		tagRows, err := h.Pool.Query(ctx, `
 			SELECT user_id::text, id::text, display, normalized, item_count,
-			       created_at::text, last_used_at::text, COALESCE(deleted_at::text, '')
+			       created_at::text, updated_at::text, last_used_at::text, COALESCE(deleted_at::text, '')
 			FROM tag
 			WHERE user_id = ANY($1::uuid[])
 			ORDER BY user_id ASC, id ASC
@@ -1613,14 +1632,14 @@ func TestCrossTenantIsolationUserB404OnEveryTagAndItemTagRoute(t *testing.T) {
 			t.Fatalf("query tag snapshot: %v", err)
 		}
 		for tagRows.Next() {
-			var uID, id, disp, norm, cAt, luAt, dAt string
+			var uID, id, disp, norm, cAt, uAt, luAt, dAt string
 			var itemCount int32
-			if err := tagRows.Scan(&uID, &id, &disp, &norm, &itemCount, &cAt, &luAt, &dAt); err != nil {
+			if err := tagRows.Scan(&uID, &id, &disp, &norm, &itemCount, &cAt, &uAt, &luAt, &dAt); err != nil {
 				tagRows.Close()
 				t.Fatalf("scan tag snapshot: %v", err)
 			}
-			snap.tags = append(snap.tags, fmt.Sprintf("%s|%s|%s|%s|%d|%s|%s|%s",
-				uID, id, disp, norm, itemCount, cAt, luAt, dAt))
+			snap.tags = append(snap.tags, fmt.Sprintf("%s|%s|%s|%s|%d|%s|%s|%s|%s",
+				uID, id, disp, norm, itemCount, cAt, uAt, luAt, dAt))
 		}
 		tagRows.Close()
 		if err := tagRows.Err(); err != nil {
@@ -1662,7 +1681,7 @@ func TestCrossTenantIsolationUserB404OnEveryTagAndItemTagRoute(t *testing.T) {
 		{name: "Alice own unlinked tag", tagID: aliceTag2.ID},
 	}
 	for _, ac := range absentCases {
-		h.Clock.Advance(5 * time.Minute)
+		advanceRateLimitWindow(h)
 		resp, body := doWrite(h, jarA, http.MethodDelete, "/api/v1/items/"+aliceItem.ID.String()+"/tags/"+ac.tagID.String(), "")
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("DELETE absent tag (%s): status=%d body=%s, want 200", ac.name, resp.StatusCode, body)
