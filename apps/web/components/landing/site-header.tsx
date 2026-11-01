@@ -9,6 +9,8 @@ import { useTheme } from '@/components/theme-provider';
  * Nav pill của landing — chép rhythm từ mockups/landing.html.
  * Theme toggle dùng ThemeProvider (Task 11). Hai CTA như mockup: "Đăng nhập" (ẩn dưới sm)
  * và "Tạo tài khoản", mở các trang auth thật (advisor-dec-186/187, audit UIA-5).
+ * Ba link mục hiện từ `lg` (mockup: `md`): ở 768 pill không đủ chỗ cho cả link lẫn hai CTA
+ * (RV-UI2-2). 390 và 1440 không đổi.
  */
 export function SiteHeader() {
   const t = useTranslations('nav');
@@ -24,7 +26,7 @@ export function SiteHeader() {
         <a href={locale === 'en' ? '/' : `/${locale}`} className="no-underline">
           <Logo />
         </a>
-        <div className="ml-4 hidden items-center gap-1 md:flex">
+        <div className="ml-4 hidden items-center gap-1 lg:flex">
           <a
             href="#cachdung"
             className="no-underline !text-body rounded-md px-3 py-2 text-[15px] hover:bg-surface"
