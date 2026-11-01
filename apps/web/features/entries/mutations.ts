@@ -319,6 +319,7 @@ export async function mutateSealedEntryCreate(
     run: (signal) =>
       entryCreate(variables.itemId, variables.requestBody, {
         idempotencyKey: variables.idempotencyKey,
+        serializedBody: variables.serializedBody,
         signal,
         uncertainPriorSend: variables.uncertainPriorSend,
         onAttempt: variables.onAttempt,
@@ -351,6 +352,7 @@ export async function mutateSealedEntryImportJson(
     run: (signal) =>
       entryImportJson(variables.itemId, variables.requestBody, {
         idempotencyKey: variables.idempotencyKey,
+        serializedBody: variables.serializedBody,
         signal,
         uncertainPriorSend: variables.uncertainPriorSend,
       }),
@@ -383,6 +385,7 @@ export async function mutateSealedEntryUpdate(
       entryUpdate(variables.entryId, variables.requestBody, {
         idempotencyKey: variables.idempotencyKey,
         ifMatch: variables.ifMatch,
+        serializedBody: variables.serializedBody,
         signal,
         uncertainPriorSend: variables.uncertainPriorSend,
       }),
@@ -455,6 +458,7 @@ export function useCreateEntryMutation(
         run: (signal) =>
           entryCreate(variables.itemId, variables.requestBody, {
             idempotencyKey: variables.idempotencyKey,
+            serializedBody: variables.serializedBody,
             signal,
             uncertainPriorSend: variables.uncertainPriorSend,
             onAttempt: variables.onAttempt,
@@ -527,6 +531,7 @@ export function useUpdateEntryMutation(
           entryUpdate(variables.entryId, variables.requestBody, {
             idempotencyKey: variables.idempotencyKey,
             ifMatch: variables.ifMatch,
+            serializedBody: variables.serializedBody,
             signal,
             uncertainPriorSend: variables.uncertainPriorSend,
           }),
@@ -592,6 +597,7 @@ export function useImportJsonEntryMutation(
         run: (signal) =>
           entryImportJson(variables.itemId, variables.requestBody, {
             idempotencyKey: variables.idempotencyKey,
+            serializedBody: variables.serializedBody,
             signal,
             uncertainPriorSend: variables.uncertainPriorSend,
           }),

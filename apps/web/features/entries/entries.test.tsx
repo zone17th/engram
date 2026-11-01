@@ -22,12 +22,14 @@ import {
   createRealEntryBodyLoader,
   entryBodyLoadLimiter,
   mutateSealedEntryCreate,
+  mutateSealedEntryImportJson,
   mutateSealedEntryUpdate,
   resetEntryBodyLoadLimiterForTests,
   sealEntryImportJson,
   sealEntryUpdate,
   sealNewEntry,
   toEntryCreateVariables,
+  toEntryImportJsonVariables,
   toEntryUpdateVariables,
   useCreateEntryMutation,
   useUpdateEntryMutation,
@@ -57,6 +59,7 @@ import {
   type VaultContextValue,
 } from '@/features/vault';
 import type { Me } from '@/lib/api/auth';
+import * as contentApi from '@/lib/api/content';
 import type { Entry, EntryMeta, EntryMetaList } from '@/lib/api/content';
 import {
   CryptoClientError,
@@ -749,13 +752,30 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         code: 'SEAL_FAILED',
       });
 
-      // 5) serializedBody mismatch guard in executeWithOpLifetimeSignal rejects before issuing any network request (IP14-FE2-2).
+      // 5) serializedBody mismatch guard in executeWithOpLifetimeSignal & contentMutate rejects before issuing any network request,
+      //    and valid sealed mutations forward serializedBody to the transport so fetch init.body === sealed.serializedBody
+      //    on first send AND on replay (IP14-FE2-2, FU9, F-2, advisor-dec-212).
       await h.unlock();
       let contentRequests = 0;
+      const seenRequestBodies: string[] = [];
       h.setRouteHandler((url, init) => {
         if (url.endsWith(`/items/${ITEM_ID}/entries`) && init?.method === 'POST') {
           contentRequests += 1;
+          seenRequestBodies.push(String(init.body ?? ''));
+          if (contentRequests === 1) {
+            return problemResponse('dependency_unavailable', 503, { retry_after: 0 });
+          }
           return jsonResponse(makeEntryMeta({ id: ENTRY_ID_2, version: 1 }), 201);
+        }
+        if (url.endsWith(`/entries/${ENTRY_ID_2}`) && init?.method === 'PUT') {
+          contentRequests += 1;
+          seenRequestBodies.push(String(init.body ?? ''));
+          return jsonResponse(makeEntryMeta({ id: ENTRY_ID_2, version: 2 }), 200);
+        }
+        if (url.endsWith(`/items/${ITEM_ID}/entries/import-json`) && init?.method === 'POST') {
+          contentRequests += 1;
+          seenRequestBodies.push(String(init.body ?? ''));
+          return jsonResponse(makeEntryMeta({ id: ENTRY_ID_2, type: 'json', version: 1 }), 201);
         }
         return null;
       });
@@ -774,6 +794,95 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         /Sealed requestBody was mutated after initial serialization/,
       );
       expect(contentRequests).toBe(0);
+
+      // Mutating a crafted requestBody object between seal and send while keeping validSealed.serializedBody
+      // is rejected before any fetch call.
+      const reSealedForTamper = await sealNewEntry({
+        text: 'SENTINEL-SERIALIZED-GUARD-2',
+        itemId: ITEM_ID,
+        entryId: ENTRY_ID_2,
+        vault: h.vault(),
+      });
+      const mutatedBodyVars: SealedEntryCreateVariables = {
+        ...toEntryCreateVariables(reSealedForTamper),
+        requestBody: {
+          ...reSealedForTamper.requestBody,
+          ciphertext: 'MUTATED_AFTER_SEAL',
+        },
+      };
+      await expect(mutateSealedEntryCreate(h.qc, mutatedBodyVars)).rejects.toThrow(
+        /Sealed requestBody was mutated after initial serialization/,
+      );
+      expect(contentRequests).toBe(0);
+
+      // Valid sealed payloads forward serializedBody into entryCreate / entryUpdate / entryImportJson -> contentMutate,
+      // sending exact sealed bytes on first send and 503 replay
+      const reSealedValid = await sealNewEntry({
+        text: 'SENTINEL-SERIALIZED-FORWARD',
+        itemId: ITEM_ID,
+        entryId: ENTRY_ID_2,
+        vault: h.vault(),
+      });
+      const sealedUpdateValid = await sealEntryUpdate({
+        entryId: ENTRY_ID_2,
+        text: 'SENTINEL-SERIALIZED-UPDATE-FORWARD',
+        itemId: ITEM_ID,
+        version: 1,
+        vault: h.vault(),
+      });
+      const sealedImportValid = await sealEntryImportJson({
+        text: '{"k":"v"}',
+        itemId: ITEM_ID,
+        entryId: ENTRY_ID_2,
+        source: 'paste',
+        vault: h.vault(),
+      });
+      const entryCreateSpy = vi.spyOn(contentApi, 'entryCreate');
+      const entryUpdateSpy = vi.spyOn(contentApi, 'entryUpdate');
+      const entryImportSpy = vi.spyOn(contentApi, 'entryImportJson');
+      try {
+        await mutateSealedEntryCreate(h.qc, toEntryCreateVariables(reSealedValid));
+        expect(entryCreateSpy).toHaveBeenCalledWith(
+          ITEM_ID,
+          reSealedValid.requestBody,
+          expect.objectContaining({
+            idempotencyKey: reSealedValid.idempotencyKey,
+            serializedBody: reSealedValid.serializedBody,
+          }),
+        );
+
+        await mutateSealedEntryUpdate(h.qc, toEntryUpdateVariables(sealedUpdateValid, 1));
+        expect(entryUpdateSpy).toHaveBeenCalledWith(
+          ENTRY_ID_2,
+          sealedUpdateValid.requestBody,
+          expect.objectContaining({
+            idempotencyKey: sealedUpdateValid.idempotencyKey,
+            ifMatch: 1,
+            serializedBody: sealedUpdateValid.serializedBody,
+          }),
+        );
+
+        await mutateSealedEntryImportJson(h.qc, toEntryImportJsonVariables(sealedImportValid));
+        expect(entryImportSpy).toHaveBeenCalledWith(
+          ITEM_ID,
+          sealedImportValid.requestBody,
+          expect.objectContaining({
+            idempotencyKey: sealedImportValid.idempotencyKey,
+            serializedBody: sealedImportValid.serializedBody,
+          }),
+        );
+      } finally {
+        entryCreateSpy.mockRestore();
+        entryUpdateSpy.mockRestore();
+        entryImportSpy.mockRestore();
+      }
+      expect(contentRequests).toBe(4);
+      expect(seenRequestBodies).toEqual([
+        reSealedValid.serializedBody,
+        reSealedValid.serializedBody,
+        sealedUpdateValid.serializedBody,
+        sealedImportValid.serializedBody,
+      ]);
     }, 30_000);
 
     it('unsubscribes the seal-time reset listener once a sealed mutation settles (IP14-FE2-5)', async () => {
