@@ -916,8 +916,8 @@
       }
 
       if (parsed.mode === 'search') {
-        hintEl.hidden = !hasNonEmptyInput || !guardEl.hidden;
-        hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SEARCH_HINT_VI}<span class="mono">tên: nội dung</span></span>
+        hintEl.hidden = !guardEl.hidden;
+        hintEl.innerHTML = `<span class="omni-hint-vi"${hasNonEmptyInput ? '' : ' hidden'}>${COPY_SEARCH_HINT_VI}<span class="mono">tên: nội dung</span></span>
           <span class="omni-hint-en" lang="en">${COPY_SEARCH_HINT_EN}<span class="mono">name: content</span></span>`;
         addPanelEl.hidden = true;
         lastErrorAlertSig = '';
@@ -4164,7 +4164,7 @@
         pills.forEach((btn) => {
           btn.className = 'vault-pill ' + (state.locked ? 'vault-shut' : 'vault-open');
           // Nhãn ngắn trên mobile: pill nằm trong header chật, không được đẩy tràn.
-          btn.setAttribute('aria-label', state.locked ? 'Vault đã khoá' : 'Vault mở · 15 phút');
+          btn.setAttribute('aria-label', state.locked ? 'Vault đã khoá · Vault locked' : 'Vault mở · 15 phút · Vault open · 15 min');
           btn.innerHTML = state.locked
             ? '<span aria-hidden="true">🔒</span> <span class="sm:hidden">Đã khoá</span><span class="hidden sm:inline">Vault đã khoá</span>'
             : '<span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span>';

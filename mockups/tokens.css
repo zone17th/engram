@@ -949,7 +949,7 @@ section[data-view]:not([id^='auth-']):not([data-view='verify']):not([data-view='
   flex: 1 1 180px;
   line-height: 1.35;
 }
-.omni-hint-line[hidden] {
+.omni-hint-line[hidden], .omni-hint-vi[hidden] {
   display: none !important;
 }
 
