@@ -844,8 +844,8 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(nonFullIDs) < 900 {
-		t.Fatalf("non-full items found = %d, want >= 900", len(nonFullIDs))
+	if len(nonFullIDs) < 995 {
+		t.Fatalf("non-full items found = %d, want >= 995", len(nonFullIDs))
 	}
 
 	totalMiB := float64(totalCiphertextBytes) / (1024.0 * 1024.0)
@@ -985,7 +985,7 @@ func nearestRankPercentile(samples []time.Duration, p int) time.Duration {
 	return sorted[rank-1]
 }
 
-// pop3DiscardCounts tracks discarded rounds per reason in Population 3 (PF-R1-1 / PF-R1-2).
+// pop3DiscardCounts tracks discarded rounds per reason in Population 3 (PF-R1-1 / PF-R1-2 / PF-R2-1).
 type pop3DiscardCounts struct {
 	NotAllBlocked        int
 	ObservationTimeout   int
@@ -994,21 +994,112 @@ type pop3DiscardCounts struct {
 	MissingTrace         int
 }
 
+// pop3TraceSample holds the per-request lock trace fields inspected by classifyPop3Round.
+type pop3TraceSample struct {
+	Recorded    bool
+	PID         uint32
+	StartWaitAt time.Time
+	GrantedAt   time.Time
+	Err         error
+}
+
+// classifyPop3Round validates all request traces in a Population 3 round against the pg_locks
+// waiter snapshot, conservative purge COMMIT-completion timestamps, and observation-lag bound.
+// If the round is discarded, it increments the exact discard reason on counts with deterministic
+// precedence (missing_trace -> not_all_blocked -> commit_order_ambiguous -> lag_gt_5ms) regardless
+// of which slot in traces triggered the failure (PF-R2-1).
+func classifyPop3Round(
+	traces []pop3TraceSample,
+	snapshotWaiterPIDs []uint32,
+	purgeCommitStartedAt time.Time,
+	purgeCommitCompletedAt time.Time,
+	commitRecorded bool,
+	purgeReleasedAt time.Time,
+	maxObservationLag time.Duration,
+	counts *pop3DiscardCounts,
+) (confirmed bool, obsLag time.Duration) {
+	if !commitRecorded || purgeCommitStartedAt.IsZero() || purgeCommitCompletedAt.IsZero() || len(traces) == 0 {
+		counts.MissingTrace++
+		return false, 0
+	}
+
+	waiterSet := make(map[uint32]struct{}, len(snapshotWaiterPIDs))
+	for _, pid := range snapshotWaiterPIDs {
+		waiterSet[pid] = struct{}{}
+	}
+
+	var latestStartWait time.Time
+	missingTrace := false
+	notAllBlocked := false
+	commitOrderAmbiguous := false
+
+	for _, tr := range traces {
+		if !tr.Recorded || tr.Err != nil || tr.PID == 0 || tr.StartWaitAt.IsZero() || tr.GrantedAt.IsZero() {
+			missingTrace = true
+			continue
+		}
+		if latestStartWait.IsZero() || tr.StartWaitAt.After(latestStartWait) {
+			latestStartWait = tr.StartWaitAt
+		}
+		if _, ok := waiterSet[tr.PID]; !ok {
+			notAllBlocked = true
+		}
+		if !tr.StartWaitAt.Before(purgeCommitStartedAt) || !purgeCommitCompletedAt.Before(tr.GrantedAt) {
+			commitOrderAmbiguous = true
+		}
+	}
+
+	if missingTrace {
+		counts.MissingTrace++
+		return false, 0
+	}
+	if notAllBlocked {
+		counts.NotAllBlocked++
+		return false, 0
+	}
+	if commitOrderAmbiguous {
+		counts.CommitOrderAmbiguous++
+		return false, 0
+	}
+	if latestStartWait.IsZero() {
+		counts.MissingTrace++
+		return false, 0
+	}
+
+	obsLag = purgeReleasedAt.Sub(latestStartWait)
+	if obsLag < 0 {
+		obsLag = 0
+	}
+	if obsLag > maxObservationLag {
+		counts.LagGT5ms++
+		return false, obsLag
+	}
+	return true, obsLag
+}
+
 // populationStats summarizes the empirical latency distribution and verification counts of a population.
 type populationStats struct {
-	Name                    string
-	Samples                 int
-	Status201Count          int
-	NewRowsCount            int
-	SizeCountsKiB           map[int]int
-	P50                     time.Duration
-	P95                     time.Duration
-	P99                     time.Duration
-	DiscardedRounds         int
-	DiscardByReason         pop3DiscardCounts
-	ObservationLagP95       time.Duration
-	HasObservationInfo      bool
-	ConfirmedPurgeDelayRuns int
+	Name                     string
+	Samples                  int
+	Status201Count           int
+	NewRowsCount             int
+	SizeCountsKiB            map[int]int
+	P50                      time.Duration
+	P95                      time.Duration
+	P99                      time.Duration
+	DiscardedRounds          int
+	DiscardByReason          pop3DiscardCounts
+	ObservationLagP95        time.Duration
+	HasObservationInfo       bool
+	ConfirmedPurgeDelayRuns  int
+	TimedOutHookHoldDuration time.Duration
+	TimedOutRoundPurgeRows   int
+	TimedOutRoundStatus201   int
+	LateSnapshotsRejected    int
+	ObsConnReacquisitions    int
+	TotalPurgeDeleted        int
+	TotalStatus201AllRounds  int
+	TotalNewLiveRowsAll      int
 }
 
 func (s populationStats) passesCeiling(ceiling time.Duration) bool {
@@ -1370,6 +1461,18 @@ func queryContentAdvisoryLockSnapshot(
 	return holderPID, waiterPIDs, nil
 }
 
+type observerQueryFunc func(
+	ctx context.Context,
+	obsConn *pgxpool.Conn,
+	userID uuid.UUID,
+) (holderPID uint32, waiterPIDs []uint32, err error)
+
+type pop3RunOptions struct {
+	targetRounds        int
+	extraPurgeHoldDelay time.Duration
+	observerQuery       observerQueryFunc
+}
+
 // runPopulation3ConfirmedPurgeOverlap executes Population 3 (Task 21b bullet 3, P4BE3-1, P4BE4-1):
 //   - Runs rounds until 10 confirmed rounds (100 confirmed samples) are collected.
 //   - Each round seeds >= 500 expired tombstones for the user, starts a real `entry.PurgeUserExpiredContentBatch`
@@ -1398,8 +1501,34 @@ func runPopulation3ConfirmedPurgeOverlap(
 	prefix string,
 ) populationStats {
 	t.Helper()
+	return runPopulation3WithOptions(t, h, user, tombstoneItemID, nonFullItemIDs, pop3RunOptions{
+		targetRounds:        pop3TargetRounds,
+		extraPurgeHoldDelay: extraPurgeHoldDelay,
+	}, prefix)
+}
+
+func runPopulation3WithOptions(
+	t *testing.T,
+	h *perfHarness,
+	user perfUser,
+	tombstoneItemID uuid.UUID,
+	nonFullItemIDs []uuid.UUID,
+	opts pop3RunOptions,
+	prefix string,
+) populationStats {
+	t.Helper()
 	if len(nonFullItemIDs) < pop3BurstSize {
 		t.Fatalf("Population 3 requires >= %d non-full items, got %d", pop3BurstSize, len(nonFullItemIDs))
+	}
+
+	targetRounds := opts.targetRounds
+	if targetRounds <= 0 {
+		targetRounds = pop3TargetRounds
+	}
+	targetSamples := targetRounds * pop3BurstSize
+	obsQuery := opts.observerQuery
+	if obsQuery == nil {
+		obsQuery = queryContentAdvisoryLockSnapshot
 	}
 
 	ctx := context.Background()
@@ -1413,6 +1542,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 		}
 	}()
 
+	obsConnReacquisitions := 0
 	reacquireObsConn := func() {
 		if obsConn != nil {
 			obsConn.Release()
@@ -1423,7 +1553,10 @@ func runPopulation3ConfirmedPurgeOverlap(
 		if acqErr != nil {
 			t.Fatalf("re-acquire observation conn: %v", acqErr)
 		}
-		_, _, _ = queryContentAdvisoryLockSnapshot(ctx, obsConn, user.UserID)
+		if _, _, wErr := queryContentAdvisoryLockSnapshot(ctx, obsConn, user.UserID); wErr != nil {
+			t.Fatalf("warmup re-acquired observation conn: %v", wErr)
+		}
+		obsConnReacquisitions++
 	}
 
 	// Warm up prepared statement cache on the dedicated observation connection before timed rounds.
@@ -1433,15 +1566,20 @@ func runPopulation3ConfirmedPurgeOverlap(
 	cutoff := now.Add(-entry.ContentPurgeRetentionWindow)
 	del35d := now.Add(-35 * 24 * time.Hour)
 
-	confirmedLatencies := make([]time.Duration, 0, pop3TargetSamples)
+	confirmedLatencies := make([]time.Duration, 0, targetSamples)
 	confirmedSizeCounts := map[int]int{1: 0, 16: 0, 64: 0}
-	observationLags := make([]time.Duration, 0, pop3TargetRounds)
+	observationLags := make([]time.Duration, 0, targetRounds)
 	confirmedRounds := 0
 	discardedRounds := 0
 	var discardCounts pop3DiscardCounts
 	confirmedPurgeDelayRuns := 0
 	totalStatus201 := 0
 	totalExpectedNewRows := 0
+	totalPurgeDeleted := 0
+	lateSnapshotsRejected := 0
+	var timedOutHookHoldDuration time.Duration
+	timedOutRoundPurgeRows := 0
+	timedOutRoundStatus201 := 0
 
 	beforeLiveRows := countUserLiveEntries(t, h.Pool, user.UserID)
 
@@ -1454,7 +1592,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 	}
 
 	const maxAttempts = 240
-	for attempt := 1; confirmedRounds < pop3TargetRounds; attempt++ {
+	for attempt := 1; confirmedRounds < targetRounds; attempt++ {
 		if attempt > maxAttempts {
 			t.Fatalf(
 				"Population 3 (%s) exceeded %d attempts (confirmed_rounds=%d, discarded_rounds=%d: not_all_blocked=%d observation_timeout=%d lag_gt_5ms=%d commit_order_ambiguous=%d missing_trace=%d)",
@@ -1480,6 +1618,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 			snapshotHolderPID  uint32
 			snapshotWaiterPIDs []uint32
 			purgeReleasedAt    time.Time
+			hookHoldDuration   time.Duration
 			all10Blocked       bool
 			obsTimedOut        bool
 			obsQueryFailed     bool
@@ -1521,12 +1660,13 @@ func runPopulation3ConfirmedPurgeOverlap(
 		}
 
 		hookCtx := entry.WithPurgeLockHeldHook(ctx, func(_ context.Context, _ uuid.UUID) {
+			hookEnteredAt := time.Now()
 			// Purge batch now holds LockUserContent(user.UserID). Release the 10 concurrent create requests.
 			close(burstGate)
 
 			// Bound all observation queries by the round's 1 s deadline on an independent context
 			// (NOT derived from the purge transaction's context, so an observer deadline never cancels the purge).
-			deadline := time.Now().Add(pop3MaxWaitForBlocked)
+			deadline := hookEnteredAt.Add(pop3MaxWaitForBlocked)
 			obsDeadlineCtx, cancelObsDeadline := context.WithDeadline(context.Background(), deadline)
 			defer cancelObsDeadline()
 
@@ -1537,13 +1677,16 @@ func runPopulation3ConfirmedPurgeOverlap(
 					purgeReleasedAt = time.Now()
 					break
 				}
-				holder, waiters, qErr := queryContentAdvisoryLockSnapshot(obsDeadlineCtx, obsConn, user.UserID)
+				holder, waiters, qErr := obsQuery(obsDeadlineCtx, obsConn, user.UserID)
 				nowAfterQuery := time.Now()
 				if qErr != nil {
 					obsQueryFailed = true
 				}
 				// Check the 1 s deadline BEFORE accepting any snapshot; reject snapshots received at/after deadline.
 				if !nowAfterQuery.Before(deadline) || obsDeadlineCtx.Err() != nil {
+					if qErr == nil && holder != 0 && len(waiters) >= pop3BurstSize {
+						lateSnapshotsRejected++
+					}
 					obsTimedOut = true
 					purgeReleasedAt = nowAfterQuery
 					break
@@ -1579,10 +1722,11 @@ func runPopulation3ConfirmedPurgeOverlap(
 					break
 				}
 			}
-			if all10Blocked && extraPurgeHoldDelay > 0 {
+			if all10Blocked && opts.extraPurgeHoldDelay > 0 {
 				purgeDelayApplied = true
-				time.Sleep(extraPurgeHoldDelay)
+				time.Sleep(opts.extraPurgeHoldDelay)
 			}
+			hookHoldDuration = time.Since(hookEnteredAt)
 		})
 
 		purgeRes, purgeErr := entry.PurgeUserExpiredContentBatch(
@@ -1598,6 +1742,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 		if purgeRes.EntriesDeleted != pop3SeedTombstone {
 			t.Fatalf("Population 3 attempt %d EntriesDeleted = %d, want %d", attempt, purgeRes.EntriesDeleted, pop3SeedTombstone)
 		}
+		totalPurgeDeleted += int(purgeRes.EntriesDeleted)
 
 		reqWG.Wait()
 
@@ -1614,6 +1759,12 @@ func runPopulation3ConfirmedPurgeOverlap(
 			totalExpectedNewRows++
 		}
 
+		if obsTimedOut {
+			timedOutHookHoldDuration = hookHoldDuration
+			timedOutRoundPurgeRows = int(purgeRes.EntriesDeleted)
+			timedOutRoundStatus201 = len(outcomes)
+		}
+
 		if !all10Blocked || snapshotHolderPID == 0 || len(snapshotWaiterPIDs) < pop3BurstSize {
 			discardedRounds++
 			if obsTimedOut {
@@ -1625,65 +1776,30 @@ func runPopulation3ConfirmedPurgeOverlap(
 		}
 
 		purgeCommitStartedAt, purgeCommitCompletedAt, commitRecorded := h.Tracer.readPurgeCommitTimestamps()
-		if !commitRecorded || purgeCommitStartedAt.IsZero() || purgeCommitCompletedAt.IsZero() {
-			discardedRounds++
-			discardCounts.MissingTrace++
-			continue
-		}
-
-		waiterSet := make(map[uint32]struct{}, len(snapshotWaiterPIDs))
-		for _, pid := range snapshotWaiterPIDs {
-			waiterSet[pid] = struct{}{}
-		}
-
-		// Verify every single request has a complete trace, PID in waiterSet, and conservative
-		// commit-completion ordering:
-		//   startWaitAt < purgeCommitStartedAt AND purgeCommitCompletedAt < grantedAt
-		var latestStartWait time.Time
-		missingTrace := false
-		notAllBlocked := false
-		commitOrderAmbiguous := false
-		for _, out := range outcomes {
+		traceSamples := make([]pop3TraceSample, len(outcomes))
+		for j, out := range outcomes {
 			rec, pid, startWait, granted, lErr := out.trace.snapshot()
-			if !rec || lErr != nil || pid == 0 || startWait.IsZero() || granted.IsZero() {
-				missingTrace = true
-				break
+			traceSamples[j] = pop3TraceSample{
+				Recorded:    rec,
+				PID:         pid,
+				StartWaitAt: startWait,
+				GrantedAt:   granted,
+				Err:         lErr,
 			}
-			if _, ok := waiterSet[pid]; !ok {
-				notAllBlocked = true
-				break
-			}
-			if !startWait.Before(purgeCommitStartedAt) || !purgeCommitCompletedAt.Before(granted) {
-				commitOrderAmbiguous = true
-				break
-			}
-			if latestStartWait.IsZero() || startWait.After(latestStartWait) {
-				latestStartWait = startWait
-			}
-		}
-		if missingTrace || latestStartWait.IsZero() {
-			discardedRounds++
-			discardCounts.MissingTrace++
-			continue
-		}
-		if notAllBlocked {
-			discardedRounds++
-			discardCounts.NotAllBlocked++
-			continue
-		}
-		if commitOrderAmbiguous {
-			discardedRounds++
-			discardCounts.CommitOrderAmbiguous++
-			continue
 		}
 
-		obsLag := purgeReleasedAt.Sub(latestStartWait)
-		if obsLag < 0 {
-			obsLag = 0
-		}
-		if obsLag > pop3MaxObservationLag {
+		confirmed, obsLag := classifyPop3Round(
+			traceSamples,
+			snapshotWaiterPIDs,
+			purgeCommitStartedAt,
+			purgeCommitCompletedAt,
+			commitRecorded,
+			purgeReleasedAt,
+			pop3MaxObservationLag,
+			&discardCounts,
+		)
+		if !confirmed {
 			discardedRounds++
-			discardCounts.LagGT5ms++
 			continue
 		}
 
@@ -1711,27 +1827,34 @@ func runPopulation3ConfirmedPurgeOverlap(
 		t.Fatalf("Population 3 total 201 count = %d, want %d", totalStatus201, totalExpectedNewRows)
 	}
 
-	// For the 100 confirmed samples (10 confirmed rounds × 10 requests), report exact confirmed counts.
 	confirmedSamples := len(confirmedLatencies)
 	stats := populationStats{
-		Name:                    prefix,
-		Samples:                 confirmedSamples,
-		Status201Count:          confirmedSamples,
-		NewRowsCount:            confirmedSamples,
-		SizeCountsKiB:           confirmedSizeCounts,
-		P50:                     nearestRankPercentile(confirmedLatencies, 50),
-		P95:                     nearestRankPercentile(confirmedLatencies, 95),
-		P99:                     nearestRankPercentile(confirmedLatencies, 99),
-		DiscardedRounds:         discardedRounds,
-		DiscardByReason:         discardCounts,
-		ObservationLagP95:       nearestRankPercentile(observationLags, 95),
-		HasObservationInfo:      true,
-		ConfirmedPurgeDelayRuns: confirmedPurgeDelayRuns,
+		Name:                     prefix,
+		Samples:                  confirmedSamples,
+		Status201Count:           confirmedSamples,
+		NewRowsCount:             confirmedSamples,
+		SizeCountsKiB:            confirmedSizeCounts,
+		P50:                      nearestRankPercentile(confirmedLatencies, 50),
+		P95:                      nearestRankPercentile(confirmedLatencies, 95),
+		P99:                      nearestRankPercentile(confirmedLatencies, 99),
+		DiscardedRounds:          discardedRounds,
+		DiscardByReason:          discardCounts,
+		ObservationLagP95:        nearestRankPercentile(observationLags, 95),
+		HasObservationInfo:       true,
+		ConfirmedPurgeDelayRuns:  confirmedPurgeDelayRuns,
+		TimedOutHookHoldDuration: timedOutHookHoldDuration,
+		TimedOutRoundPurgeRows:   timedOutRoundPurgeRows,
+		TimedOutRoundStatus201:   timedOutRoundStatus201,
+		LateSnapshotsRejected:    lateSnapshotsRejected,
+		ObsConnReacquisitions:    obsConnReacquisitions,
+		TotalPurgeDeleted:        totalPurgeDeleted,
+		TotalStatus201AllRounds:  totalStatus201,
+		TotalNewLiveRowsAll:      actualNewLiveRows,
 	}
 	logPopulationStats(t, stats)
 
-	if stats.Samples != pop3TargetSamples {
-		t.Fatalf("Population 3 confirmed samples = %d, want %d", stats.Samples, pop3TargetSamples)
+	if stats.Samples != targetSamples {
+		t.Fatalf("Population 3 confirmed samples = %d, want %d", stats.Samples, targetSamples)
 	}
 	return stats
 }
@@ -1762,8 +1885,10 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	//   - nonFull[430..439] (10 items):  Self-Check A Population 2 (+30 entries/item -> max 34)
 	//   - nonFull[440..449] (10 items):  Self-Check B Population 2 (+30 entries/item -> max 34)
 	//   - nonFull[450..809] (360 items): Self-Check B Population 3 (rotates 10 items/attempt; <= 7 entries/item across 240 attempts)
-	//   - nonFull[810]: dedicated parent item for Population 3's 500 expired tombstones
-	//   - nonFull[811]: dedicated item topped up to 199 live entries for Self-Check A's Population 1
+	//   - nonFull[810]:      dedicated parent item for Population 3's 500 expired tombstones
+	//   - nonFull[811]:      dedicated item topped up to 199 live entries for Self-Check A's Population 1
+	//   - nonFull[812..991] (180 items): Self-Check C observer-timeout negative control & recovery
+	//   - nonFull[992]:      dedicated parent item for Self-Check C's 500 expired tombstones
 	pop1Items := seeded.NonFullItemIDs[0:30]
 	pop2Items := seeded.NonFullItemIDs[30:40]
 	pop3Items := seeded.NonFullItemIDs[40:400]
@@ -1773,7 +1898,8 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	checkBPop3Items := seeded.NonFullItemIDs[450:810]
 	tombstoneItemID := seeded.NonFullItemIDs[810]
 	checkAItem199BaseID := seeded.NonFullItemIDs[811]
-
+	checkCPop3Items := seeded.NonFullItemIDs[812:992]
+	checkCTombstoneItemID := seeded.NonFullItemIDs[992]
 	t.Run("RealPopulations_1_2_3", func(t *testing.T) {
 		h.Tracer.setCreateLockHeldDelay(0)
 
@@ -1854,6 +1980,122 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 			pop3CheckB.ConfirmedPurgeDelayRuns, pop2CheckB.P95, p95Ceiling, pop3CheckB.P95, p95Ceiling)
 		contenttest.AssertInvariants(t, h.Pool, user.UserID)
 	})
+	t.Run("SelfCheckC_ObserverTimeout_RoundDiscardedAndRecovered", func(t *testing.T) {
+		h.Tracer.setCreateLockHeldDelay(0)
+
+		var (
+			armTimeoutOnce          atomic.Bool
+			observerDelayFired      atomic.Int32
+			obsSleepCanceled        atomic.Int32
+			lateSnapshotSynthesized atomic.Int32
+		)
+		armTimeoutOnce.Store(true)
+
+		obsQueryWrapper := func(
+			obsCtx context.Context,
+			obsConn *pgxpool.Conn,
+			uID uuid.UUID,
+		) (uint32, []uint32, error) {
+			holder, waiters, err := queryContentAdvisoryLockSnapshot(obsCtx, obsConn, uID)
+			if err != nil {
+				return 0, nil, err
+			}
+			// When armed for the first round, wait until all 10 create backends are waiting in pg_locks
+			// (so a complete 10-waiter snapshot exists), then block on the observer connection past the
+			// round's 1 s deadline via pg_sleep(3.0) using obsCtx.
+			if holder != 0 && len(waiters) >= pop3BurstSize && armTimeoutOnce.CompareAndSwap(true, false) {
+				observerDelayFired.Add(1)
+				if _, sleepErr := obsConn.Exec(obsCtx, `SELECT pg_sleep(3.0)`); sleepErr != nil {
+					obsSleepCanceled.Add(1)
+				}
+				// Return the complete 10-waiter snapshot after the 1 s deadline so the caller's
+				// post-query deadline check must explicitly reject the late snapshot.
+				lateSnapshotSynthesized.Add(1)
+				return holder, waiters, nil
+			}
+			return holder, waiters, nil
+		}
+
+		h.refreshSession(user.Jar)
+		pop3CheckC := runPopulation3WithOptions(
+			t,
+			h,
+			user,
+			checkCTombstoneItemID,
+			checkCPop3Items,
+			pop3RunOptions{
+				targetRounds:  1,
+				observerQuery: obsQueryWrapper,
+			},
+			"selfcheck_c_observer_timeout_recovery",
+		)
+
+		if got := observerDelayFired.Load(); got != 1 {
+			t.Fatalf("Self-Check C: observerDelayFired = %d, want 1", got)
+		}
+		if got := obsSleepCanceled.Load(); got != 1 {
+			t.Fatalf("Self-Check C: obsSleepCanceled = %d, want 1 (pg_sleep(3.0) must be canceled by 1 s obsCtx)", got)
+		}
+		if got := lateSnapshotSynthesized.Load(); got != 1 {
+			t.Fatalf("Self-Check C: lateSnapshotSynthesized = %d, want 1", got)
+		}
+
+		const maxHookRelease = pop3MaxWaitForBlocked + 350*time.Millisecond
+		if pop3CheckC.TimedOutHookHoldDuration < pop3MaxWaitForBlocked-5*time.Millisecond || pop3CheckC.TimedOutHookHoldDuration > maxHookRelease {
+			t.Fatalf(
+				"Self-Check C: timed-out hook release duration = %s, want within [%s, %s] (pg_sleep(3.0) must be bounded by 1 s deadline)",
+				pop3CheckC.TimedOutHookHoldDuration, pop3MaxWaitForBlocked-5*time.Millisecond, maxHookRelease,
+			)
+		}
+		if pop3CheckC.TimedOutRoundPurgeRows != pop3SeedTombstone {
+			t.Fatalf("Self-Check C: timed-out round EntriesDeleted = %d, want %d", pop3CheckC.TimedOutRoundPurgeRows, pop3SeedTombstone)
+		}
+		if pop3CheckC.TimedOutRoundStatus201 != pop3BurstSize {
+			t.Fatalf("Self-Check C: timed-out round 201 creates = %d, want %d", pop3CheckC.TimedOutRoundStatus201, pop3BurstSize)
+		}
+		if pop3CheckC.DiscardByReason.ObservationTimeout != 1 {
+			t.Fatalf("Self-Check C: DiscardByReason.ObservationTimeout = %d, want 1", pop3CheckC.DiscardByReason.ObservationTimeout)
+		}
+		if pop3CheckC.LateSnapshotsRejected != 1 {
+			t.Fatalf("Self-Check C: LateSnapshotsRejected = %d, want 1 (late snapshot must be rejected)", pop3CheckC.LateSnapshotsRejected)
+		}
+		if pop3CheckC.ObsConnReacquisitions != 1 {
+			t.Fatalf("Self-Check C: ObsConnReacquisitions = %d, want 1", pop3CheckC.ObsConnReacquisitions)
+		}
+		wantTotalAttempts := 1 + pop3CheckC.DiscardedRounds
+		if pop3CheckC.TotalPurgeDeleted != wantTotalAttempts*pop3SeedTombstone {
+			t.Fatalf("Self-Check C: TotalPurgeDeleted = %d, want %d", pop3CheckC.TotalPurgeDeleted, wantTotalAttempts*pop3SeedTombstone)
+		}
+		if pop3CheckC.TotalStatus201AllRounds != wantTotalAttempts*pop3BurstSize || pop3CheckC.TotalNewLiveRowsAll != pop3CheckC.TotalStatus201AllRounds {
+			t.Fatalf(
+				"Self-Check C: total 201s = %d, total new live rows = %d, want %d",
+				pop3CheckC.TotalStatus201AllRounds, pop3CheckC.TotalNewLiveRowsAll, wantTotalAttempts*pop3BurstSize,
+			)
+		}
+		if pop3CheckC.Samples != pop3BurstSize {
+			t.Fatalf("Self-Check C: confirmed samples on recovered observer = %d, want %d", pop3CheckC.Samples, pop3BurstSize)
+		}
+		if !pop3CheckC.passesCeiling(p95Ceiling) {
+			t.Fatalf("Self-Check C: expected recovered round to PASS ceiling %s, got p95=%s", p95Ceiling, pop3CheckC.P95)
+		}
+		t.Logf(
+			"SELF-CHECK C VERIFIED: observer timeout in round 1 released hook in %s (bound <= %s, pg_sleep=3s canceled at 1s deadline) -> timed_out_round_purge_deleted=%d total_purge_deleted=%d timed_out_round_201=%d total_201=%d total_new_rows=%d observation_timeout=%d late_snapshots_rejected=%d obs_conn_reacquired=%d next_round_confirmed_samples=%d (p95=%s < %s)",
+			pop3CheckC.TimedOutHookHoldDuration,
+			maxHookRelease,
+			pop3CheckC.TimedOutRoundPurgeRows,
+			pop3CheckC.TotalPurgeDeleted,
+			pop3CheckC.TimedOutRoundStatus201,
+			pop3CheckC.TotalStatus201AllRounds,
+			pop3CheckC.TotalNewLiveRowsAll,
+			pop3CheckC.DiscardByReason.ObservationTimeout,
+			pop3CheckC.LateSnapshotsRejected,
+			pop3CheckC.ObsConnReacquisitions,
+			pop3CheckC.Samples,
+			pop3CheckC.P95,
+			p95Ceiling,
+		)
+		contenttest.AssertInvariants(t, h.Pool, user.UserID)
+	})
 	// Security check (user-dec-016): ensure server logs remained free of any envelope nonces or vault_key_id.
 	if strings.Contains(h.Logs.String(), user.VaultKeyID) {
 		t.Fatalf("server logs leaked vault_key_id %q", user.VaultKeyID)
@@ -1924,4 +2166,171 @@ func prepareItemAt199Entries(t *testing.T, pool *pgxpool.Pool, user perfUser, it
 	}
 	contenttest.AssertInvariants(t, pool, user.UserID)
 	return itemID
+}
+
+// TestClassifyPop3Round_Precedence unit-checks Population 3 per-round trace classification
+// without a database (PF-R2-1), verifying that first-slot and later-slot failures for
+// not_all_blocked and commit_order_ambiguous increment their exact reason counter while
+// MissingTrace stays 0 whenever traces are complete.
+func TestClassifyPop3Round_Precedence(t *testing.T) {
+	baseTime := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	purgeReleasedAt := baseTime.Add(12 * time.Millisecond)
+	commitStartedAt := baseTime.Add(20 * time.Millisecond)
+	commitCompletedAt := baseTime.Add(25 * time.Millisecond)
+
+	makeValidRound := func() ([]pop3TraceSample, []uint32) {
+		traces := make([]pop3TraceSample, pop3BurstSize)
+		waiters := make([]uint32, pop3BurstSize)
+		for i := range pop3BurstSize {
+			pid := uint32(1000 + i)
+			waiters[i] = pid
+			traces[i] = pop3TraceSample{
+				Recorded:    true,
+				PID:         pid,
+				StartWaitAt: baseTime.Add(time.Duration(i+1) * time.Millisecond), // latest is baseTime + 10ms (lag = 2ms <= 5ms)
+				GrantedAt:   commitCompletedAt.Add(time.Duration(i+1) * time.Millisecond),
+			}
+		}
+		return traces, waiters
+	}
+
+	tests := []struct {
+		name          string
+		mutate        func(traces []pop3TraceSample, waiters []uint32) (commitStart, commitEnd time.Time, commitRec bool, releasedAt time.Time)
+		wantConfirmed bool
+		wantCounts    pop3DiscardCounts
+	}{
+		{
+			name: "all_valid_confirmed",
+			mutate: func(_ []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: true,
+			wantCounts:    pop3DiscardCounts{},
+		},
+		{
+			name: "missing_commit_timestamps",
+			mutate: func(_ []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				return time.Time{}, time.Time{}, false, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{MissingTrace: 1},
+		},
+		{
+			name: "first_slot_missing_trace",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[0].Recorded = false
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{MissingTrace: 1},
+		},
+		{
+			name: "later_slot_missing_trace",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[7].GrantedAt = time.Time{}
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{MissingTrace: 1},
+		},
+		{
+			name: "first_slot_not_in_waiter_snapshot_keeps_missing_trace_zero",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[0].PID = 9999
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{NotAllBlocked: 1},
+		},
+		{
+			name: "later_slot_not_in_waiter_snapshot_keeps_missing_trace_zero",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[5].PID = 9999
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{NotAllBlocked: 1},
+		},
+		{
+			name: "first_slot_commit_order_ambiguous_grant_before_commit_end_keeps_missing_trace_zero",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[0].GrantedAt = commitCompletedAt
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{CommitOrderAmbiguous: 1},
+		},
+		{
+			name: "first_slot_commit_order_ambiguous_start_wait_at_commit_start_keeps_missing_trace_zero",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[0].StartWaitAt = commitStartedAt
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{CommitOrderAmbiguous: 1},
+		},
+		{
+			name: "later_slot_commit_order_ambiguous_keeps_missing_trace_zero",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[8].GrantedAt = commitCompletedAt.Add(-1 * time.Microsecond)
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{CommitOrderAmbiguous: 1},
+		},
+		{
+			name: "mixed_first_slot_ambiguous_and_later_slot_not_blocked_prefers_not_all_blocked",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[0].GrantedAt = commitCompletedAt
+				traces[6].PID = 8888
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{NotAllBlocked: 1},
+		},
+		{
+			name: "mixed_first_slot_ambiguous_and_later_slot_missing_trace_prefers_missing_trace",
+			mutate: func(traces []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				traces[0].GrantedAt = commitCompletedAt
+				traces[4].Recorded = false
+				return commitStartedAt, commitCompletedAt, true, purgeReleasedAt
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{MissingTrace: 1},
+		},
+		{
+			name: "observation_lag_gt_5ms_discarded",
+			mutate: func(_ []pop3TraceSample, _ []uint32) (time.Time, time.Time, bool, time.Time) {
+				// latestStartWait is baseTime + 10ms; release at baseTime + 16ms -> lag = 6ms > 5ms
+				return commitStartedAt, commitCompletedAt, true, baseTime.Add(16 * time.Millisecond)
+			},
+			wantConfirmed: false,
+			wantCounts:    pop3DiscardCounts{LagGT5ms: 1},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			traces, waiters := makeValidRound()
+			cStart, cEnd, cRec, relAt := tc.mutate(traces, waiters)
+			var gotCounts pop3DiscardCounts
+			gotConfirmed, _ := classifyPop3Round(
+				traces,
+				waiters,
+				cStart,
+				cEnd,
+				cRec,
+				relAt,
+				pop3MaxObservationLag,
+				&gotCounts,
+			)
+			if gotConfirmed != tc.wantConfirmed {
+				t.Fatalf("classifyPop3Round confirmed = %v, want %v", gotConfirmed, tc.wantConfirmed)
+			}
+			if gotCounts != tc.wantCounts {
+				t.Fatalf("classifyPop3Round counts = %+v, want %+v", gotCounts, tc.wantCounts)
+			}
+		})
+	}
 }
