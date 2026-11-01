@@ -4,7 +4,7 @@ import { AuthChrome } from '@/features/auth/auth-chrome';
 
 export const metadata: Metadata = {
   robots: { index: false, follow: false },
-  other: { 'Referrer-Policy': 'no-referrer' },
+  referrer: 'no-referrer',
 };
 
 export default function AuthLayout({ children }: { children: ReactNode }) {

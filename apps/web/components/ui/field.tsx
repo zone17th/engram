@@ -7,6 +7,7 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
 } from 'react';
+import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/cn';
 
 export type FieldInputType = 'text' | 'email' | 'password';
@@ -31,7 +32,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
     error,
     type = 'text',
     passwordToggle = type === 'password',
-    passwordToggleLabels = { show: 'Hiện', hide: 'Ẩn' },
+    passwordToggleLabels,
     className,
     wrapperClassName,
     disabled,
@@ -39,6 +40,11 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
   },
   ref,
 ) {
+  const t = useTranslations('auth.fields');
+  const resolvedToggleLabels = passwordToggleLabels ?? {
+    show: t('showPassword'),
+    hide: t('hidePassword'),
+  };
   const autoId = useId();
   const inputId = idProp ?? autoId;
   const hintId = hint ? `${inputId}-hint` : undefined;
@@ -74,10 +80,10 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
             type="button"
             className="field-toggle"
             disabled={disabled}
-            aria-label={visible ? passwordToggleLabels.hide : passwordToggleLabels.show}
+            aria-label={visible ? resolvedToggleLabels.hide : resolvedToggleLabels.show}
             onClick={() => setVisible((v) => !v)}
           >
-            {visible ? passwordToggleLabels.hide : passwordToggleLabels.show}
+            {visible ? resolvedToggleLabels.hide : resolvedToggleLabels.show}
           </button>
         </div>
       ) : (
@@ -89,7 +95,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
         </span>
       )}
       {error && (
-        <span id={errorId} className="field-error" role="alert">
+        <span id={errorId} className="field-error" style={{ color: 'var(--error-ink)' }} role="alert">
           {error}
         </span>
       )}

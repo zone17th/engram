@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page, type Response } from '@playwright/test';
-import { PASSWORD, isolateRateLimit, uniqueEmail, waitForAuthPageReady } from './helpers';
+import { PASSWORD, fillSignupConfirmIfPresent, isolateRateLimit, uniqueEmail, waitForAuthPageReady } from './helpers';
 
 // LANE-AC real-API spec for Remember device (plan Task 18, silent unlock after reload). The browser talks to the compose
 // stack's real API and database: no page.route / context.route for /api/v1/vault* or /api/v1/auth* lives in this file
@@ -85,6 +85,7 @@ async function quietSignupViaUi(page: Page, email: string, password = PASSWORD) 
   await waitForAuthPageReady(page);
   await page.getByLabel('Email').fill(email);
   await fillSecret(page.getByLabel(/Login password|Mật khẩu đăng nhập/), password);
+  await fillSignupConfirmIfPresent(page, password);
   await page.getByRole('checkbox', { name: /agree|terms|điều khoản/i }).check();
   await page.getByRole('button', { name: /Create account|Tạo tài khoản/ }).click();
   const outcome = await Promise.race([

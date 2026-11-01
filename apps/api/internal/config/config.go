@@ -52,7 +52,8 @@ type Config struct {
 	TurnstileSiteKey string `envconfig:"TURNSTILE_SITE_KEY"`
 	TurnstileSecret  string `envconfig:"TURNSTILE_SECRET"`
 
-	MailSinkDir string `envconfig:"AUTH_MAIL_SINK_DIR"`
+	MailSinkDir           string `envconfig:"AUTH_MAIL_SINK_DIR"`
+	MailCaptureAsDelivery bool   `envconfig:"AUTH_MAIL_CAPTURE_AS_DELIVERY" default:"false"`
 
 	TrustedProxyCIDRs []net.IPNet `ignored:"true"`
 
@@ -222,6 +223,9 @@ func (c *Config) validateAuthPolicy() error {
 		}
 		if c.MailSinkDir != "" {
 			return fmt.Errorf("AUTH_MAIL_SINK_DIR không dùng được ở %s", c.Env)
+		}
+		if c.MailCaptureAsDelivery {
+			return fmt.Errorf("AUTH_MAIL_CAPTURE_AS_DELIVERY không dùng được ở %s", c.Env)
 		}
 	}
 	if c.GoogleReauthEnabled && !c.GoogleLoginEnabled() && !c.FakeOAuth {
@@ -513,6 +517,7 @@ func (c *Config) Redacted() map[string]any {
 		"auth_fake_oauth":                 c.FakeOAuth,
 		"turnstile":                       c.TurnstileEnabled(),
 		"mail_sink_configured":            c.MailSinkDir != "",
+		"auth_mail_capture_as_delivery":   c.MailCaptureAsDelivery,
 		"ephemeral_secrets":               c.EphemeralSecrets,
 		"audit_retention_days":            c.AuditRetentionDays,
 		"trusted_proxy_cidrs":             len(c.TrustedProxyCIDRs),

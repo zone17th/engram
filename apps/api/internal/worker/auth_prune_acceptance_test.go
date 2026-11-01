@@ -52,6 +52,11 @@ func TestAuthPruneHonorsBoundariesAndIsIdempotent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for i, expiresAt := range verificationTimes {
+		if _, err := pool.Exec(ctx, `INSERT INTO password_reset_token (user_id, target_email, token_hash, password_hash_sha256, was_email_unverified, expires_at, created_at) VALUES ($1, 'prune@example.com', $2, $3, false, $4, $5)`, userID, pruneHash(byte(15+i)), pruneHash(byte(80+i)), expiresAt, now); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	oauthTimes := []time.Time{expiredCut.Add(-time.Second), expiredCut, expiredCut.Add(time.Second)}
 	for i, expiresAt := range oauthTimes {
@@ -104,6 +109,7 @@ func TestAuthPruneHonorsBoundariesAndIsIdempotent(t *testing.T) {
 		{name: "audit_log", want: 2},
 		{name: "user_notification", want: 2},
 		{name: "email_verification", want: 2},
+		{name: "password_reset_token", want: 2},
 		{name: "oauth_transaction", want: 2},
 		{name: "oauth_reauth_receipt", want: 2},
 		{name: "auth_throttle", want: 2},
