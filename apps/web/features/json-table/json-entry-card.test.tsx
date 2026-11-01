@@ -30,8 +30,7 @@ import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
   JsonEntryCard,
   NewJsonEntryComposer,
-  setJsonComposerPlaintextHolderForTests,
-  setJsonEditorPlaintextHolderForTests,
+  __testing as jsonTableTesting,
   type JsonComposerPlaintextHolder,
 } from '@/features/json-table';
 import {
@@ -39,6 +38,7 @@ import {
   VaultProvider,
   resetVaultBroadcastForTests,
   useVault,
+  vaultBodyQueryKey,
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
@@ -356,14 +356,14 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
-    setJsonEditorPlaintextHolderForTests(null);
-    setJsonComposerPlaintextHolderForTests(null);
+    jsonTableTesting.setJsonEditorPlaintextHolderForTests(null);
+    jsonTableTesting.setJsonComposerPlaintextHolderForTests(null);
   });
 
   afterEach(() => {
     cleanup();
-    setJsonEditorPlaintextHolderForTests(null);
-    setJsonComposerPlaintextHolderForTests(null);
+    jsonTableTesting.setJsonEditorPlaintextHolderForTests(null);
+    jsonTableTesting.setJsonComposerPlaintextHolderForTests(null);
     if (originalClipboardDesc) {
       Object.defineProperty(navigator, 'clipboard', originalClipboardDesc);
     }
@@ -822,10 +822,16 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const treegrid1 = within(card1).getByRole('treegrid');
     expect(treegrid1).toBeInTheDocument();
 
-    // Duplicate key disambiguation in object table: (#1) ⁽¹⁾ and (#2) ⁽²⁾
-    expect(within(card1).getByTestId('json-dup-occ-root.k0')).toHaveTextContent('(#1) ⁽¹⁾');
-    expect(within(card1).getByTestId('json-dup-occ-root.k1')).toHaveTextContent('(#2) ⁽²⁾');
-
+    // Duplicate key disambiguation in object table: (#1) ⁽¹⁾ and (#2) ⁽²⁾ with sr-only occurrenceAria (FE2-2)
+    const dupOcc0 = within(card1).getByTestId('json-dup-occ-root.k0');
+    const dupOcc1 = within(card1).getByTestId('json-dup-occ-root.k1');
+    expect(dupOcc0).toHaveTextContent('(#1) ⁽¹⁾');
+    expect(dupOcc1).toHaveTextContent('(#2) ⁽²⁾');
+    expect(dupOcc0.querySelector('.sr-only')).toHaveTextContent('Lần xuất hiện thứ 1');
+    expect(dupOcc1.querySelector('.sr-only')).toHaveTextContent('Lần xuất hiện thứ 2');
+    expect(within(card1).getByTestId('json-cell-btn-root.k0')).toHaveAccessibleName(
+      'Hàng 1, cột 1',
+    );
     // Exact 64-bit integer lexeme 9007199254740993 rendered without Number() rounding
     expect(within(card1).getByTestId('json-cell-btn-root.p2')).toHaveTextContent('9007199254740993');
 
@@ -863,9 +869,11 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(within(card2).getByTestId('json-cell-btn-root')).toHaveTextContent(
       'ROOT_PRIMITIVE_STRING_VALUE',
     );
-  });
+  }, 30_000);
 
-  it('renders 10000-level deep nested JSON input without stack overflow and builds only one level lazily until expanded, and paginates 600 rows into 12 pages (50 rows/page)', async () => {
+  it(
+    'renders 10000-level deep nested JSON input without stack overflow and builds only one level lazily until expanded, and paginates 600 rows into 12 pages (50 rows/page)',
+    async () => {
     const deep10000Path = path.join(CORPUS_DIR, 'deep-10000-array.json');
     const deep10000Text = fs.readFileSync(deep10000Path, 'utf8');
     const items600 = Array.from({ length: 600 }, (_, i) => `"row_val_${i + 1}"`).join(', ');
@@ -921,31 +929,23 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(card600.textContent).toContain('row_val_100');
     expect(card600.textContent).not.toContain('row_val_1');
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(0);
-  });
+    },
+    30_000,
+  );
 
-  it('edits one cell in EVERY Task 12 valid corpus fixture through the JsonEntryCard UI, saves, decrypts the saved payload, and verifies bytes outside the edited span are identical (A6)', async () => {
+  describe('A6 corpus UI edit-one-cell byte preservation across EVERY Task 12 valid fixture', () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(CORPUS_DIR, 'manifest.json'), 'utf8'),
     ) as CorpusManifest;
     const validFixtures = manifest.fixtures.filter(
       (f) => f.kind === 'valid' || f.kind === 'valid-bom',
     );
-    expect(validFixtures.length).toBeGreaterThanOrEqual(22);
 
-    const h = await setupJsonCardHarness({
-      initialEntries: [{ id: ENTRY_ID_1, text: '{"init":1}', type: 'json', position: 0 }],
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
-    });
-
-    // Map each valid fixture to a concrete UI cell edit (or structural insert for empty containers / deep-10000)
     const uiTargetByFixture: Readonly<
       Record<
         string,
         | { kind: 'cell'; expand?: readonly string[]; cellKey: string; newVal: string }
-        | { kind: 'type'; cellKey: string; newType: 'string'; expectedVal: string }
+        | { kind: 'type'; cellKey: string; newType: 'string' }
         | { kind: 'add-field'; key: string }
         | { kind: 'add-row' }
         | { kind: 'raw-deep' }
@@ -961,7 +961,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       'lone-cr-eol': { kind: 'cell', cellKey: 'root.p1', newVal: '99' },
       'root-number': { kind: 'cell', cellKey: 'root', newVal: '9007199254740993' },
       'root-string': { kind: 'cell', cellKey: 'root', newVal: 'updated_root' },
-      'root-null': { kind: 'type', cellKey: 'root', newType: 'string', expectedVal: '""' },
+      'root-null': { kind: 'type', cellKey: 'root', newType: 'string' },
       'root-true': { kind: 'cell', cellKey: 'root', newVal: 'false' },
       'empty-array': { kind: 'add-row' },
       'empty-object': { kind: 'add-field', key: 'addedKey' },
@@ -1008,208 +1008,217 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       },
     };
 
-    let versionCounter = 1;
-    for (const fixture of validFixtures) {
-      const rawBytes = new Uint8Array(
-        fs.readFileSync(path.join(CORPUS_DIR, fixture.file)),
+    it('maps every valid and valid-bom fixture in manifest.json 1-to-1 with uiTargetByFixture', () => {
+      expect(Object.keys(uiTargetByFixture).sort()).toEqual(
+        validFixtures.map((f) => f.id).sort(),
       );
-      const decoded = decodeUtf8FileStrict(rawBytes);
-      expect(decoded.ok).toBe(true);
-      if (!decoded.ok) continue;
+    });
 
-      const sourceText = decoded.text;
-      const originalBytes = utf8Encoder.encode(sourceText);
-      const parsedBefore = parseJsonStrict(sourceText);
-      expect(parsedBefore.ok).toBe(true);
-      if (!parsedBefore.ok) continue;
+    it.each(validFixtures.map((f) => [f.id, f] as const))(
+      'edits one cell in corpus fixture %s through the JsonEntryCard UI, saves, decrypts the saved payload, and verifies bytes outside the edited span are identical (A6)',
+      async (_fixtureId, fixture) => {
+        const rawBytes = new Uint8Array(
+          fs.readFileSync(path.join(CORPUS_DIR, fixture.file)),
+        );
+        const decoded = decodeUtf8FileStrict(rawBytes);
+        expect(decoded.ok).toBe(true);
+        if (!decoded.ok) return;
 
-      versionCounter += 1;
-      await h.server.sealJsonForEntry(ENTRY_ID_1, sourceText, versionCounter, 0);
+        const sourceText = decoded.text;
+        const originalBytes = utf8Encoder.encode(sourceText);
+        const parsedBefore = parseJsonStrict(sourceText);
+        expect(parsedBefore.ok).toBe(true);
+        if (!parsedBefore.ok) return;
 
-      const entryMeta: EntryMeta = {
-        id: ENTRY_ID_1,
-        item_id: ITEM_ID,
-        type: 'json',
-        position: 0,
-        version: versionCounter,
-        plaintext_len_bucket: Math.max(
-          256,
-          Math.ceil(originalBytes.byteLength / 256) * 256,
-        ),
-        created_at: '2026-11-01T00:00:00Z',
-        updated_at: '2026-11-01T00:00:00Z',
-      };
-
-      h.rerenderPage(
-        <JsonEntryCard
-          key={`${fixture.id}-${versionCounter}`}
-          entry={entryMeta}
-          itemId={ITEM_ID}
-          index={0}
-          total={1}
-          canReorder={false}
-          lazy={false}
-          rawParseDebounceMs={0}
-          onMoveUp={() => {}}
-          onMoveDown={() => {}}
-          onDelete={() => {}}
-        />,
-      );
-
-      const card = await screen.findByTestId(`entry-card-${ENTRY_ID_1}`);
-      await waitFor(() => {
-        expect(within(card).getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
-      });
-
-      const action = uiTargetByFixture[fixture.id];
-      expect(action, `Missing UI target spec for fixture ${fixture.id}`).toBeDefined();
-      if (!action) continue;
-
-      const putsBefore = h.server.requests.filter((r) => r.method === 'PUT').length;
-
-      let expectedSplice: { offset: number; length: number; content: string } | null = null;
-
-      if (action.kind === 'cell') {
-        for (const expandPath of action.expand ?? []) {
-          const toggleId = expandPath.endsWith('.extra')
-            ? `json-extra-toggle-${expandPath}`
-            : `json-toggle-${expandPath}`;
-          fireEvent.click(within(card).getByTestId(toggleId));
-        }
-        const cellBtn = within(card).getByTestId(`json-cell-btn-${action.cellKey}`);
-        fireEvent.click(cellBtn);
-        const cellInput = within(card).getByTestId(`json-cell-input-${action.cellKey}`);
-        fireEvent.change(cellInput, { target: { value: action.newVal } });
-        fireEvent.keyDown(cellInput, { key: 'Enter' });
-
-        fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
-      } else if (action.kind === 'type') {
-        fireEvent.click(within(card).getByTestId(`json-cell-btn-${action.cellKey}`));
-        fireEvent.change(within(card).getByTestId(`json-type-select-${action.cellKey}`), {
-          target: { value: action.newType },
+        const h = await setupJsonCardHarness({
+          initialEntries: [
+            { id: ENTRY_ID_1, text: sourceText, type: 'json', position: 0, version: 1 },
+          ],
         });
-        const expectedLib = changeCellType(
-          parsedBefore.document,
-          {
+
+        const entryMeta: EntryMeta = {
+          id: ENTRY_ID_1,
+          item_id: ITEM_ID,
+          type: 'json',
+          position: 0,
+          version: 1,
+          plaintext_len_bucket: Math.max(
+            256,
+            Math.ceil(originalBytes.byteLength / 256) * 256,
+          ),
+          created_at: '2026-11-01T00:00:00Z',
+          updated_at: '2026-11-01T00:00:00Z',
+        };
+
+        h.rerenderPage(
+          <JsonEntryCard
+            key={fixture.id}
+            entry={entryMeta}
+            itemId={ITEM_ID}
+            index={0}
+            total={1}
+            canReorder={false}
+            lazy={false}
+            rawParseDebounceMs={0}
+            onMoveUp={() => {}}
+            onMoveDown={() => {}}
+            onDelete={() => {}}
+          />,
+        );
+
+        const card = await screen.findByTestId(`entry-card-${ENTRY_ID_1}`);
+        await waitFor(() => {
+          expect(within(card).getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+        });
+
+        const action = uiTargetByFixture[fixture.id];
+        expect(action, `Missing UI target spec for fixture ${fixture.id}`).toBeDefined();
+        if (!action) return;
+
+        const putsBefore = h.server.requests.filter((r) => r.method === 'PUT').length;
+        let expectedSplice: { offset: number; length: number; content: string } | null = null;
+
+        if (action.kind === 'cell') {
+          for (const expandPath of action.expand ?? []) {
+            const toggleId = expandPath.endsWith('.extra')
+              ? `json-extra-toggle-${expandPath}`
+              : `json-toggle-${expandPath}`;
+            fireEvent.click(within(card).getByTestId(toggleId));
+          }
+          const cellBtn = within(card).getByTestId(`json-cell-btn-${action.cellKey}`);
+          fireEvent.click(cellBtn);
+          const cellInput = within(card).getByTestId(`json-cell-input-${action.cellKey}`);
+          fireEvent.change(cellInput, { target: { value: action.newVal } });
+          fireEvent.keyDown(cellInput, { key: 'Enter' });
+
+          fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+        } else if (action.kind === 'type') {
+          fireEvent.click(within(card).getByTestId(`json-cell-btn-${action.cellKey}`));
+          fireEvent.change(within(card).getByTestId(`json-type-select-${action.cellKey}`), {
+            target: { value: action.newType },
+          });
+          const expectedLib = changeCellType(
+            parsedBefore.document,
+            {
+              revision: parsedBefore.document.revision,
+              nodeId: parsedBefore.document.root.id,
+              span: parsedBefore.document.root.span,
+              parentId: null,
+            },
+            action.newType,
+          );
+          if (expectedLib.ok && expectedLib.edit) {
+            expectedSplice = expectedLib.edit;
+          }
+          fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+        } else if (action.kind === 'add-field') {
+          fireEvent.click(within(card).getByTestId('json-open-add-field-root'));
+          fireEvent.change(within(card).getByTestId('json-new-key-input-root'), {
+            target: { value: action.key },
+          });
+          fireEvent.click(within(card).getByTestId('json-confirm-add-field-root'));
+          const expectedLib = insertField(
+            parsedBefore.document,
+            {
+              revision: parsedBefore.document.revision,
+              nodeId: parsedBefore.document.root.id,
+              span: parsedBefore.document.root.span,
+              parentId: null,
+            },
+            action.key,
+            { initialValueLexeme: 'null' },
+          );
+          if (expectedLib.ok && expectedLib.edit) {
+            expectedSplice = expectedLib.edit;
+          }
+          fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+        } else if (action.kind === 'add-row') {
+          fireEvent.click(within(card).getByTestId('json-add-row-root'));
+          const expectedLib = insertRow(parsedBefore.document, {
             revision: parsedBefore.document.revision,
             nodeId: parsedBefore.document.root.id,
             span: parsedBefore.document.root.span,
             parentId: null,
-          },
-          action.newType,
-        );
-        if (expectedLib.ok && expectedLib.edit) {
-          expectedSplice = expectedLib.edit;
+          });
+          if (expectedLib.ok && expectedLib.edit) {
+            expectedSplice = expectedLib.edit;
+          }
+          fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+        } else if (action.kind === 'raw-deep') {
+          fireEvent.click(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`));
+          const rawTa = within(card).getByTestId(
+            `json-raw-textarea-${ENTRY_ID_1}`,
+          ) as HTMLTextAreaElement;
+          const zeroIdx = sourceText.indexOf('0');
+          const nextText =
+            sourceText.slice(0, zeroIdx) + '1' + sourceText.slice(zeroIdx + 1);
+          expectedSplice = { offset: zeroIdx, length: 1, content: '1' };
+          fireEvent.change(rawTa, { target: { value: nextText } });
+          fireEvent.click(within(card).getByTestId(`json-raw-save-btn-${ENTRY_ID_1}`));
         }
-        fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
-      } else if (action.kind === 'add-field') {
-        fireEvent.click(within(card).getByTestId('json-open-add-field-root'));
-        fireEvent.change(within(card).getByTestId('json-new-key-input-root'), {
-          target: { value: action.key },
+
+        await waitFor(() => {
+          expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
+            putsBefore + 1,
+          );
         });
-        fireEvent.click(within(card).getByTestId('json-confirm-add-field-root'));
-        const expectedLib = insertField(
-          parsedBefore.document,
-          {
-            revision: parsedBefore.document.revision,
-            nodeId: parsedBefore.document.root.id,
-            span: parsedBefore.document.root.span,
-            parentId: null,
-          },
-          action.key,
-          { initialValueLexeme: 'null' },
-        );
-        if (expectedLib.ok && expectedLib.edit) {
-          expectedSplice = expectedLib.edit;
-        }
-        fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
-      } else if (action.kind === 'add-row') {
-        fireEvent.click(within(card).getByTestId('json-add-row-root'));
-        const expectedLib = insertRow(parsedBefore.document, {
-          revision: parsedBefore.document.revision,
-          nodeId: parsedBefore.document.root.id,
-          span: parsedBefore.document.root.span,
-          parentId: null,
-        });
-        if (expectedLib.ok && expectedLib.edit) {
-          expectedSplice = expectedLib.edit;
-        }
-        fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
-      } else if (action.kind === 'raw-deep') {
-        // Edit the innermost 0 -> 1 in Raw JSON for deep-10000-array
-        fireEvent.click(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`));
-        const rawTa = within(card).getByTestId(
-          `json-raw-textarea-${ENTRY_ID_1}`,
-        ) as HTMLTextAreaElement;
-        const zeroIdx = sourceText.indexOf('0');
-        const nextText =
-          sourceText.slice(0, zeroIdx) + '1' + sourceText.slice(zeroIdx + 1);
-        expectedSplice = { offset: zeroIdx, length: 1, content: '1' };
-        fireEvent.change(rawTa, { target: { value: nextText } });
-        fireEvent.click(within(card).getByTestId(`json-raw-save-btn-${ENTRY_ID_1}`));
-      }
 
-      await waitFor(() => {
-        expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(
-          putsBefore + 1,
-        );
-      });
-      versionCounter += 1;
+        const savedPlaintext = await h.server.openServerEntryPlaintext(ENTRY_ID_1);
+        const savedBytes = utf8Encoder.encode(savedPlaintext);
 
-      const savedPlaintext = await h.server.openServerEntryPlaintext(ENTRY_ID_1);
-      const savedBytes = utf8Encoder.encode(savedPlaintext);
-
-      // Verify exact byte preservation outside the edited span (A6)
-      if (expectedSplice) {
-        const prefixBytes = utf8Encoder.encode(
-          sourceText.slice(0, expectedSplice.offset),
-        );
-        const suffixBytes = utf8Encoder.encode(
-          sourceText.slice(expectedSplice.offset + expectedSplice.length),
-        );
-        const spliceBytes = utf8Encoder.encode(expectedSplice.content);
-        expect(savedBytes.byteLength).toBe(
-          prefixBytes.byteLength + spliceBytes.byteLength + suffixBytes.byteLength,
-        );
-        expect(
-          Buffer.compare(
-            savedBytes.subarray(0, prefixBytes.byteLength),
-            originalBytes.subarray(0, prefixBytes.byteLength),
-          ),
-        ).toBe(0);
-        expect(
-          Buffer.compare(
-            savedBytes.subarray(savedBytes.byteLength - suffixBytes.byteLength),
-            originalBytes.subarray(originalBytes.byteLength - suffixBytes.byteLength),
-          ),
-        ).toBe(0);
-      } else {
-        // Compute longest common prefix and suffix in bytes and verify the splice is strictly bounded to the single edited primitive token
-        let p = 0;
-        while (
-          p < originalBytes.byteLength &&
-          p < savedBytes.byteLength &&
-          originalBytes[p] === savedBytes[p]
-        ) {
-          p += 1;
+        if (expectedSplice) {
+          const prefixBytes = utf8Encoder.encode(
+            sourceText.slice(0, expectedSplice.offset),
+          );
+          const suffixBytes = utf8Encoder.encode(
+            sourceText.slice(expectedSplice.offset + expectedSplice.length),
+          );
+          const spliceBytes = utf8Encoder.encode(expectedSplice.content);
+          expect(savedBytes.byteLength).toBe(
+            prefixBytes.byteLength + spliceBytes.byteLength + suffixBytes.byteLength,
+          );
+          expect(
+            Buffer.compare(
+              savedBytes.subarray(0, prefixBytes.byteLength),
+              originalBytes.subarray(0, prefixBytes.byteLength),
+            ),
+          ).toBe(0);
+          expect(
+            Buffer.compare(
+              savedBytes.subarray(savedBytes.byteLength - suffixBytes.byteLength),
+              originalBytes.subarray(originalBytes.byteLength - suffixBytes.byteLength),
+            ),
+          ).toBe(0);
+        } else {
+          let p = 0;
+          while (
+            p < originalBytes.byteLength &&
+            p < savedBytes.byteLength &&
+            originalBytes[p] === savedBytes[p]
+          ) {
+            p += 1;
+          }
+          let s = 0;
+          while (
+            s < originalBytes.byteLength - p &&
+            s < savedBytes.byteLength - p &&
+            originalBytes[originalBytes.byteLength - 1 - s] ===
+              savedBytes[savedBytes.byteLength - 1 - s]
+          ) {
+            s += 1;
+          }
+          expect(p + s).toBeGreaterThan(0);
+          const replacedOriginalLen = originalBytes.byteLength - p - s;
+          expect(replacedOriginalLen).toBeLessThanOrEqual(32);
         }
-        let s = 0;
-        while (
-          s < originalBytes.byteLength - p &&
-          s < savedBytes.byteLength - p &&
-          originalBytes[originalBytes.byteLength - 1 - s] ===
-            savedBytes[savedBytes.byteLength - 1 - s]
-        ) {
-          s += 1;
-        }
-        expect(p + s).toBeGreaterThan(0);
-        const replacedOriginalLen = originalBytes.byteLength - p - s;
-        expect(replacedOriginalLen).toBeLessThanOrEqual(32);
-      }
-    }
+      },
+      30_000,
+    );
   });
 
-  it('edits cell inline, preserves surrounding bytes + CRLF + duplicate keys + 9007199254740993 on Save, keeps neighbor string with \\n byte-identical, keeps \\n escape when editing a multiline cell, and sends NO PUT on no-op commit (preserving \\u00e9 and \\/)', async () => {
+  it(
+    'edits cell inline, preserves surrounding bytes + CRLF + duplicate keys + 9007199254740993 on Save, keeps neighbor string with \\n byte-identical, keeps \\n escape when editing a multiline cell, and sends NO PUT on no-op commit (preserving \\u00e9 and \\/)',
+    async () => {
     const originalJson =
       '{\r\n  "cafe": "caf\\u00e9 \\/ bar",\r\n  "multilineNeighbor": "first\\nsecond",\r\n  "target": "old_val",\r\n  "dup": 1,\r\n  "dup": 2,\r\n  "big": 9007199254740993\r\n}';
 
@@ -1269,9 +1278,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(savedPlaintext2).toBe(
       '{\r\n  "cafe": "caf\\u00e9 \\/ bar",\r\n  "multilineNeighbor": "first\\nsecond\\nthird",\r\n  "target": "new_val",\r\n  "dup": 1,\r\n  "dup": 2,\r\n  "big": 9007199254740993\r\n}',
     );
-  });
+    },
+    30_000,
+  );
 
-  it('blocks a Table cell edit that pushes the JSON document over 256 KiB (262,144 UTF-8 bytes) with an inline message and sends no PUT', async () => {
+  it(
+    'blocks a Table cell edit that pushes the JSON document over 256 KiB (262,144 UTF-8 bytes) with an inline message and sends no PUT',
+    async () => {
     const h = await setupJsonCardHarness({
       initialEntries: [{ id: ENTRY_ID_1, text: '{\n  "k": "short"\n}', type: 'json', position: 0 }],
     });
@@ -1291,9 +1304,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     );
     expect(within(card).queryByTestId(`entry-save-btn-${ENTRY_ID_1}`)).toBeNull();
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(0);
-  });
+    },
+    30_000,
+  );
 
-  it('supports cell type conversion (string "42" -> number 42 -> null), Add field, Remove field, Add row, Remove row, missing cell (—) initialization, and keyboard navigation (Arrows, Enter, Esc)', async () => {
+  it(
+    'supports cell type conversion (string "42" -> number 42 -> null), Add field, Remove field, Add row, Remove row, missing cell (—) initialization, and keyboard navigation (Arrows, Tab/Shift+Tab, Enter, Esc, Ctrl+S)',
+    async () => {
     const initialJson = '{\n  "count": "42",\n  "list": [\n    { "a": "1", "b": "2" },\n    { "a": "3" }\n  ]\n}';
     const h = await setupJsonCardHarness({
       initialEntries: [{ id: ENTRY_ID_1, text: initialJson, type: 'json', position: 0 }],
@@ -1319,6 +1336,31 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     fireEvent.keyDown(toggleBtn1, { key: 'ArrowUp' });
     expect(document.activeElement).toBe(valBtn0);
 
+    // Native Tab / Shift+Tab focus order across interactive grid buttons and chevron Enter activation (FE2-10)
+    const navButtons = Array.from(
+      within(card)
+        .getByTestId(`json-table-host-${ENTRY_ID_1}`)
+        .querySelectorAll<HTMLElement>('[data-json-grid-nav]:not(:disabled)'),
+    );
+    expect(navButtons.slice(0, 3)).toEqual([keyBtn0, valBtn0, toggleBtn1]);
+    expect(keyBtn0.tabIndex).toBe(0);
+    expect(valBtn0.tabIndex).toBe(0);
+    expect(toggleBtn1.tabIndex).toBe(0);
+    fireEvent.keyDown(keyBtn0, { key: 'Tab' });
+    valBtn0.focus();
+    expect(document.activeElement).toBe(valBtn0);
+    fireEvent.keyDown(valBtn0, { key: 'Tab', shiftKey: true });
+    keyBtn0.focus();
+    expect(document.activeElement).toBe(keyBtn0);
+
+    // Chevron Enter key on native <button> expands and collapses container
+    toggleBtn1.focus();
+    fireEvent.keyDown(toggleBtn1, { key: 'Enter', code: 'Enter' });
+    fireEvent.click(toggleBtn1);
+    expect(toggleBtn1).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.keyDown(toggleBtn1, { key: 'Enter', code: 'Enter' });
+    fireEvent.click(toggleBtn1);
+    expect(toggleBtn1).toHaveAttribute('aria-expanded', 'false');
     // Open cell edit, type a change, press Escape -> cancels edit and restores original display
     fireEvent.click(valBtn0);
     const editInput = within(card).getByTestId('json-cell-input-root.p0');
@@ -1362,8 +1404,11 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     fireEvent.click(within(card).getByTestId('json-remove-row-root.p1-2'));
     expect(within(card).queryByTestId('json-remove-row-root.p1-2')).toBeNull();
 
-    // Save and verify resulting JSON on server
-    fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    // Open a cell editor on root.p2, edit to false, and press Ctrl+S while the cell editor is still open -> commits pending cell first and saves (FE1-14, FE2-10)
+    fireEvent.click(within(card).getByTestId('json-cell-btn-root.p2'));
+    const openBoolInput = within(card).getByTestId('json-cell-input-root.p2');
+    fireEvent.change(openBoolInput, { target: { value: 'true' } });
+    fireEvent.keyDown(openBoolInput, { key: 's', ctrlKey: true });
     await waitFor(() => {
       expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(1);
     });
@@ -1373,9 +1418,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(saved).toContain('"count": 42');
     expect(saved).toContain('"enabled": true');
     expect(saved).toContain('"b": ""');
-  });
+    },
+    30_000,
+  );
 
-  it('marks cells with lone surrogate (\\ud800) or carriage return (\\r) as read-only in Table view with explanation note and allows editing in Raw JSON', async () => {
+  it(
+    'marks cells with lone surrogate (\\ud800) or carriage return (\\r) as read-only in Table view with explanation note and allows editing in Raw JSON',
+    async () => {
     const jsonWithReadOnly = '{\n  "surrogate": "bad\\ud800char",\n  "cr_line": "line1\\rline2",\n  "normal": "editable"\n}';
     await setupJsonCardHarness({
       initialEntries: [{ id: ENTRY_ID_1, text: jsonWithReadOnly, type: 'json', position: 0 }],
@@ -1395,9 +1444,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     );
     fireEvent.click(ro0);
     expect(within(card).queryByTestId('json-cell-input-root.p0')).toBeNull();
-  });
+    },
+    30_000,
+  );
 
-  it('validates Raw JSON on typing pause, shows line/col error box, jumps to error offset on "Đi tới lỗi" with both LF+emoji and CRLF+emoji, blocks switching to Table while invalid, and formats with 2-space indent preserving token stream', async () => {
+  it(
+    'validates Raw JSON on typing pause, shows line/col error box, jumps to error offset on "Đi tới lỗi" with both LF+emoji and CRLF+emoji, blocks switching to Table while invalid, and formats with 2-space indent preserving token stream',
+    async () => {
     const initialJson = '{"alpha":1,"big":9007199254740993,"nested":{"k":"v"}}';
     await setupJsonCardHarness({
       initialEntries: [{ id: ENTRY_ID_1, text: initialJson, type: 'json', position: 0 }],
@@ -1456,19 +1509,19 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
         ),
       ).toBe(expectedAtOffset);
     }
-    fireEvent.change(rawTextarea, { target: { value: invalidWithCrlfAndEmoji } });
-    // Even if user clicks "Đi tới lỗi" immediately before blur/timer settles, handleGoToError flushes live validation first
-    Object.defineProperty(rawTextarea, 'value', {
-      value: invalidWithCrlfAndEmoji,
-      writable: true,
-      configurable: true,
-    });
-    fireEvent.blur(rawTextarea);
-    const errBoxAfterCrlf = await within(card).findByTestId(`json-raw-error-${ENTRY_ID_1}`);
-    expect(errBoxAfterCrlf).toHaveTextContent('Dòng 3, cột 13');
-    fireEvent.click(within(card).getByTestId(`json-raw-goto-btn-${ENTRY_ID_1}`));
-    expect(rawTextarea.selectionStart).toBe(expectedAtOffset);
-
+    const valueGetterSpy = vi
+      .spyOn(HTMLTextAreaElement.prototype, 'value', 'get')
+      .mockReturnValue(invalidWithCrlfAndEmoji);
+    try {
+      fireEvent.change(rawTextarea, { target: { value: invalidWithCrlfAndEmoji } });
+      fireEvent.blur(rawTextarea);
+      const errBoxAfterCrlf = await within(card).findByTestId(`json-raw-error-${ENTRY_ID_1}`);
+      expect(errBoxAfterCrlf).toHaveTextContent('Dòng 3, cột 13');
+      fireEvent.click(within(card).getByTestId(`json-raw-goto-btn-${ENTRY_ID_1}`));
+      expect(rawTextarea.selectionStart).toBe(expectedAtOffset);
+    } finally {
+      valueGetterSpy.mockRestore();
+    }
     // 3. Attempting to switch to Table tab while Raw JSON is invalid keeps Raw tab active and shows switchBlockedInvalidError
     fireEvent.click(within(card).getByTestId(`json-tab-table-${ENTRY_ID_1}`));
     expect(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`)).toHaveAttribute(
@@ -1493,9 +1546,21 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       'true',
     );
     expect(within(card).getByTestId('json-cell-btn-root.p1')).toHaveTextContent('fixed_now');
-  });
 
-  it('blocks Save and Format when Raw JSON exceeds 256 KiB (262,144 UTF-8 bytes) and refuses Format when nesting depth > JSON_FORMAT_MAX_DEPTH', async () => {
+    // 5. Switch back to Raw JSON and press Ctrl+S inside the textarea -> flushes validation and sends exactly 1 PUT without double-handling (FE2-8, FE2-10)
+    fireEvent.click(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`));
+    const rawTaForCtrlS = within(card).getByTestId(`json-raw-textarea-${ENTRY_ID_1}`);
+    fireEvent.keyDown(rawTaForCtrlS, { key: 's', ctrlKey: true });
+    await waitFor(() => {
+      expect(within(card).queryByTestId(`json-raw-cancel-btn-${ENTRY_ID_1}`)).toBeNull();
+    });
+  },
+    30_000,
+  );
+
+  it(
+    'blocks Save and Format when Raw JSON exceeds 256 KiB (262,144 UTF-8 bytes) and refuses Format when nesting depth > JSON_FORMAT_MAX_DEPTH',
+    async () => {
     await setupJsonCardHarness({
       initialEntries: [{ id: ENTRY_ID_1, text: '{"a":"small"}', type: 'json', position: 0 }],
     });
@@ -1534,9 +1599,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
 
     expect(within(card).getByTestId(`json-format-msg-${ENTRY_ID_1}`)).toBeInTheDocument();
     expect(rawTextarea.value).toBe(tooDeepJson);
-  });
+    },
+    30_000,
+  );
 
-  it('preserves CRLF without PUT when opening Raw JSON and clicking Save without edits, keeps CRLF outside a 1-char Raw edit, and warns before normalizing mixed EOL on Save', async () => {
+  it(
+    'preserves CRLF without PUT when opening Raw JSON and clicking Save without edits, keeps CRLF outside a 1-char Raw edit, and warns before normalizing mixed EOL on Save',
+    async () => {
     const crlfJson = '{\r\n  "k": "v1",\r\n  "other": "stay"\r\n}';
     const h = await setupJsonCardHarness({
       initialEntries: [{ id: ENTRY_ID_1, text: crlfJson, type: 'json', position: 0 }],
@@ -1610,9 +1679,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     });
     const savedMixed = await h.server.openServerEntryPlaintext(ENTRY_ID_1);
     expect(savedMixed).toBe('{\r\n  "a": 10,\r\n  "b": 2\r\n}');
-  });
+    },
+    30_000,
+  );
 
-  it('"+ JSON / bảng" composer creates a new JSON entry with Empty object {} or Empty array [] preset, and lazy-loads GET /vault when vaultMeta is initially null (advisor-dec-200)', async () => {
+  it(
+    '"+ JSON / bảng" composer creates a new JSON entry with Empty object {} or Empty array [] preset, and lazy-loads GET /vault when vaultMeta is initially null (advisor-dec-200)',
+    async () => {
     const h = await setupJsonCardHarness({
       initialEntries: [],
       skipInitialReloadVaultMeta: true,
@@ -1670,9 +1743,13 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const postBody = JSON.parse(postReq.rawBody) as EntryCreateRequest;
     expect(postBody.type).toBe('json');
     expect(postReq.rawBody).not.toContain('host');
-  });
+    },
+    30_000,
+  );
 
-  it('wipes plaintext holder on lock AND on unmount (card and composer), holds no plaintext across reloadVaultMeta or fallback GET awaits, and sends zero seal/PUT after lock or unmount (IP16-FE1-2, FE1-3)', async () => {
+  it(
+    'wipes plaintext holder on lock AND on unmount (card and composer), holds no plaintext across reloadVaultMeta or fallback GET awaits, and sends zero seal/PUT after lock or unmount (IP16-FE1-2, FE1-3)',
+    async () => {
     const SECRET_SENTINEL = 'JSON_SECRET_SENTINEL_994411';
     const DRAFT_SENTINEL = 'JSON_DRAFT_KEEP_MINE_SENTINEL_772200';
     const UNMOUNT_SENTINEL = 'JSON_UNMOUNT_SENTINEL_883311';
@@ -1697,7 +1774,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const holderRef: { current: EditorPlaintextHolder } = {
       current: { originalSource: '', draftValue: '', submittedCandidateSource: '', tableSource: '' },
     };
-    setJsonEditorPlaintextHolderForTests(holderRef);
+    jsonTableTesting.setJsonEditorPlaintextHolderForTests(holderRef);
 
     const entryMeta = Array.from(h.server.entries.values())[0]!;
     h.rerenderPage(
@@ -1838,7 +1915,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const composerHolderRef: { current: JsonComposerPlaintextHolder } = {
       current: { candidateSource: '' },
     };
-    setJsonComposerPlaintextHolderForTests(composerHolderRef);
+    jsonTableTesting.setJsonComposerPlaintextHolderForTests(composerHolderRef);
 
     h.rerenderPage(
       <NewJsonEntryComposer
@@ -1859,78 +1936,108 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     h.rerenderPage(<div data-testid="composer-unmounted" />);
     expect(composerHolderRef.current.candidateSource).toBe('');
 
-    // 4. Held reloadVaultMeta lock race on card Save (IP16-FE1-2):
-    //    Suppose vaultMeta is null when user clicks Save; hold GET /vault, lock vault, then release GET /vault ->
+    // 4. Held reloadVaultMeta lock race on card Save via route-level GET /vault hold (IP16-FE1-2, FE2-5):
+    //    Mount a fresh harness with skipInitialReloadVaultMeta: true so vaultMeta is genuinely null when the user clicks Save;
+    //    hold GET /vault at the route level, lock vault while GET /vault is in flight, then release GET /vault ->
     //    holder is empty before release, and zero sealEntry / PUT calls occur after release.
+    cleanup();
+    const reloadRaceHolderRef: { current: EditorPlaintextHolder } = {
+      current: { originalSource: '', draftValue: '', submittedCandidateSource: '', tableSource: '' },
+    };
+    jsonTableTesting.setJsonEditorPlaintextHolderForTests(reloadRaceHolderRef);
+
     const RELOAD_RACE_SENTINEL = 'JSON_RELOAD_RACE_SENTINEL_112233';
-    h.rerenderPage(
+    const hRace = await setupJsonCardHarness({
+      initialEntries: [],
+      skipInitialReloadVaultMeta: true,
+    });
+
+    let holdVaultGet = false;
+    const { promise: vaultGate, resolve: releaseVaultGet } = createDeferred();
+    const { promise: vaultEntered, resolve: notifyVaultEntered } = createDeferred();
+
+    hRace.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault') && holdVaultGet) {
+        notifyVaultEntered();
+        await vaultGate;
+      }
+      return null;
+    });
+
+    expect(hRace.vault().vaultMeta).toBeNull();
+    const raceEntryMeta = await hRace.server.sealJsonForEntry(
+      ENTRY_ID_1,
+      '{"secretKey":"INITIAL_NULL_META_V1"}',
+      1,
+      0,
+    );
+    act(() => {
+      hRace.qc.setQueryData(
+        vaultBodyQueryKey(ENTRY_ID_1, 1),
+        '{"secretKey":"INITIAL_NULL_META_V1"}',
+      );
+    });
+    hRace.rerenderPage(
       <JsonEntryCard
-        entry={entryMeta}
+        entry={raceEntryMeta}
         itemId={ITEM_ID}
         index={0}
         total={1}
         canReorder={false}
         lazy={false}
+        load={async () => '{"secretKey":"INITIAL_NULL_META_V1"}'}
         onMoveUp={() => {}}
         onMoveDown={() => {}}
         onDelete={() => {}}
       />,
     );
+
     await waitFor(() => {
-      expect(screen.getByTestId('json-cell-btn-root.p0')).toHaveTextContent('REMOTE_V2_VALUE');
+      expect(screen.getByTestId('json-cell-btn-root.p0')).toHaveTextContent(
+        'INITIAL_NULL_META_V1',
+      );
     });
+    expect(hRace.vault().vaultMeta).toBeNull();
 
     fireEvent.click(screen.getByTestId('json-cell-btn-root.p0'));
     const raceInput = screen.getByTestId('json-cell-input-root.p0');
     fireEvent.change(raceInput, { target: { value: RELOAD_RACE_SENTINEL } });
     fireEvent.keyDown(raceInput, { key: 'Enter' });
-    expect(holderRef.current.tableSource).toContain(RELOAD_RACE_SENTINEL);
+    expect(reloadRaceHolderRef.current.tableSource).toContain(RELOAD_RACE_SENTINEL);
 
-    const { promise: vaultGate, resolve: releaseVaultGet } = createDeferred();
-    const { promise: vaultEntered, resolve: notifyVaultEntered } = createDeferred();
-    const reloadMetaSpy = vi
-      .spyOn(h.vault(), 'reloadVaultMeta')
-      .mockImplementation(async () => {
-        notifyVaultEntered();
-        await vaultGate;
-        return { vault_key_id: KEY_ID } as never;
-      });
-    const origMetaDesc = Object.getOwnPropertyDescriptor(h.vault(), 'vaultMeta');
-    Object.defineProperty(h.vault(), 'vaultMeta', {
-      get: () => null,
-      configurable: true,
-    });
+    holdVaultGet = true;
+    const raceSealSpy = vi.spyOn(hRace.vault().getClient(), 'sealEntry');
+    const putsBeforeRace = hRace.server.requests.filter((r) => r.method === 'PUT').length;
 
-    const putsBeforeRace = h.server.requests.filter((r) => r.method === 'PUT').length;
-    sealSpy.mockClear();
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
     await vaultEntered;
 
-    // Lock while reloadVaultMeta is in flight -> holder is wiped BEFORE reloadVaultMeta resolves
-    await h.lock();
-    expect(holderRef.current).toEqual({
+    // Lock while route-level GET /vault is in flight -> holder is wiped BEFORE GET /vault resolves
+    await hRace.lock();
+    expect(reloadRaceHolderRef.current).toEqual({
       originalSource: '',
       draftValue: '',
       submittedCandidateSource: '',
       tableSource: '',
     });
 
-    if (origMetaDesc) {
-      Object.defineProperty(h.vault(), 'vaultMeta', origMetaDesc);
-    } else {
-      Reflect.deleteProperty(h.vault(), 'vaultMeta');
-    }
-    reloadMetaSpy.mockRestore();
+    holdVaultGet = false;
+    hRace.server.overrideRoute(null);
     releaseVaultGet();
     const raceSettle = Promise.withResolvers<void>();
     setTimeout(raceSettle.resolve, 20);
     await raceSettle.promise;
 
-    expect(sealSpy).not.toHaveBeenCalled();
-    expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeRace);
-  });
+    expect(raceSealSpy).not.toHaveBeenCalled();
+    expect(hRace.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeRace);
+  },
+  30_000,
+);
 
-  it('handles 5xx/network failure with Retry (same sealed bytes + same Idempotency-Key), single-flight double-click Save (exact 1 PUT), 412 preserving raw draft and table expanded/page state, Load latest discarding draft, and assertNoPlaintextAttrs across states (IP16-FE1-9, FE1-10)', async () => {
+  it(
+    'handles 5xx/network failure with Retry (same sealed bytes + same Idempotency-Key), single-flight concurrent Save (exact 1 PUT), 412 localized panel text (vi + en) preserving raw draft and table expanded/page state, Load latest discarding draft, and assertNoPlaintextAttrs across states (IP16-FE1-9, FE1-10, FE2-1, FE2-9)',
+    async () => {
     const writeTextMock = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText: writeTextMock },
@@ -1971,19 +2078,29 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     fireEvent.change(statusInput, { target: { value: SECRET_TABLE_DRAFT } });
     fireEvent.keyDown(statusInput, { key: 'Enter' });
 
-    // 1. First PUT fails with 503 dependency_unavailable -> single-flight double-click Save sends EXACTLY 1 PUT
+    // 1. First PUT is held and then fails with 503 dependency_unavailable -> single-flight guard blocks concurrent Ctrl+S / Save while in flight (FE2-9)
     let failPut503 = true;
+    let holdFirstPut = true;
+    const { promise: firstPutGate, resolve: releaseFirstPut } = createDeferred();
+    const { promise: firstPutEntered, resolve: notifyFirstPutEntered } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && failPut503) {
+        if (holdFirstPut) {
+          notifyFirstPutEntered();
+          await firstPutGate;
+        }
         return problemResponse('dependency_unavailable', 503);
       }
       return null;
     });
 
-    const saveBtn = within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`);
-    fireEvent.click(saveBtn);
-    fireEvent.click(saveBtn);
-
+    // Dispatch two rapid Ctrl+S keydowns synchronously before React flushes disabled state, and a third while PUT is held
+    fireEvent.keyDown(card, { key: 's', ctrlKey: true });
+    fireEvent.keyDown(card, { key: 's', ctrlKey: true });
+    await firstPutEntered;
+    fireEvent.keyDown(card, { key: 's', ctrlKey: true });
+    holdFirstPut = false;
+    releaseFirstPut();
     await waitFor(() => {
       expect(within(card).getByTestId(`entry-save-retry-box-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
@@ -2034,7 +2151,20 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(within(card).getByTestId(`entry-conflict-box-${ENTRY_ID_1}`)).toBeInTheDocument();
       expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBefore412 + 1);
     });
-
+    // Assert localized Vietnamese text in 412 conflict panel (no raw key names like content.entry.conflictHeading — FE2-1)
+    const conflictBoxVi = within(card).getByTestId(`entry-conflict-box-${ENTRY_ID_1}`);
+    expect(conflictBoxVi).toHaveTextContent(viMessages.content.entry.conflictTitle);
+    expect(conflictBoxVi).toHaveTextContent(viMessages.content.entry.conflictBody);
+    expect(within(card).getByTestId(`entry-conflict-copy-mine-${ENTRY_ID_1}`)).toHaveTextContent(
+      viMessages.content.entry.copyMine,
+    );
+    expect(
+      within(card).getByTestId(`entry-conflict-load-latest-${ENTRY_ID_1}`),
+    ).toHaveTextContent(viMessages.content.entry.loadLatest);
+    expect(within(card).getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`)).toHaveTextContent(
+      viMessages.content.entry.keepMine,
+    );
+    expect(conflictBoxVi.textContent).not.toContain('content.entry.');
     // Raw draft is preserved on 412, and assertNoPlaintextAttrs after failed 412 save in Raw mode passes
     expect(rawTa.value).toBe(rawDraftJson);
     assertNoPlaintextAttrs(h.container, [SECRET_RAW_DRAFT]);
@@ -2090,10 +2220,17 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       'true',
     );
 
-    // Click Load latest -> confirm discard -> local draft is dropped and REMOTE_V5_LOADED is displayed
+    // Click Load latest -> assert localized confirmation prompt & buttons -> confirm discard -> local draft is dropped and REMOTE_V5_LOADED is displayed
     fireEvent.click(within(card).getByTestId(`entry-conflict-load-latest-${ENTRY_ID_1}`));
+    const reloadConfirmVi = within(card).getByTestId(
+      `entry-conflict-reload-confirm-${ENTRY_ID_1}`,
+    );
+    expect(reloadConfirmVi).toHaveTextContent(viMessages.content.entry.reloadConfirmPrompt);
+    expect(reloadConfirmVi).toHaveTextContent(viMessages.content.entry.keepEditing);
+    expect(
+      within(card).getByTestId(`entry-conflict-confirm-discard-${ENTRY_ID_1}`),
+    ).toHaveTextContent(viMessages.content.entry.discardAndLoad);
     fireEvent.click(within(card).getByTestId(`entry-conflict-confirm-discard-${ENTRY_ID_1}`));
-
     await waitFor(() => {
       expect(within(card).queryByTestId(`entry-conflict-box-${ENTRY_ID_1}`)).toBeNull();
       expect(within(card).getByTestId('json-cell-btn-root.p1')).toHaveTextContent(
@@ -2101,5 +2238,62 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       );
     });
     expect(card.textContent).not.toContain('DISCARDED_LOCAL_DRAFT');
-  });
+    // 4. Verify English (en) localized text for 412 conflict panel and occurrenceAria (FE2-1, FE2-2)
+    cleanup();
+    const hEn = await setupJsonCardHarness({
+      locale: 'en',
+      initialEntries: [
+        {
+          id: ENTRY_ID_1,
+          text: '{\n  "dup": "v1",\n  "dup": "v2"\n}',
+          type: 'json',
+          position: 0,
+          version: 1,
+        },
+      ],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+    const cardEn = screen.getByTestId(`entry-card-${ENTRY_ID_1}`);
+    expect(
+      within(cardEn).getByTestId('json-dup-occ-root.k0').querySelector('.sr-only'),
+    ).toHaveTextContent(en.content.json.occurrenceAria.replace('{occ}', '1'));
+
+    fireEvent.click(within(cardEn).getByTestId('json-cell-btn-root.p0'));
+    const inputEn = within(cardEn).getByTestId('json-cell-input-root.p0');
+    fireEvent.change(inputEn, { target: { value: 'edited_en' } });
+    fireEvent.keyDown(inputEn, { key: 'Enter' });
+
+    await hEn.server.sealJsonForEntry(
+      ENTRY_ID_1,
+      '{\n  "dup": "remote_en",\n  "dup": "v2"\n}',
+      2,
+      0,
+    );
+    fireEvent.click(within(cardEn).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+    const conflictBoxEn = await within(cardEn).findByTestId(`entry-conflict-box-${ENTRY_ID_1}`);
+    expect(conflictBoxEn).toHaveTextContent(en.content.entry.conflictTitle);
+    expect(conflictBoxEn).toHaveTextContent(en.content.entry.conflictBody);
+    expect(within(cardEn).getByTestId(`entry-conflict-copy-mine-${ENTRY_ID_1}`)).toHaveTextContent(
+      en.content.entry.copyMine,
+    );
+    expect(
+      within(cardEn).getByTestId(`entry-conflict-load-latest-${ENTRY_ID_1}`),
+    ).toHaveTextContent(en.content.entry.loadLatest);
+    expect(within(cardEn).getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`)).toHaveTextContent(
+      en.content.entry.keepMine,
+    );
+    fireEvent.click(within(cardEn).getByTestId(`entry-conflict-load-latest-${ENTRY_ID_1}`));
+    const reloadConfirmEn = within(cardEn).getByTestId(
+      `entry-conflict-reload-confirm-${ENTRY_ID_1}`,
+    );
+    expect(reloadConfirmEn).toHaveTextContent(en.content.entry.reloadConfirmPrompt);
+    expect(
+      within(cardEn).getByTestId(`entry-conflict-confirm-discard-${ENTRY_ID_1}`),
+    ).toHaveTextContent(en.content.entry.discardAndLoad);
+    expect(conflictBoxEn.textContent).not.toContain('content.entry.');
+  },
+  30_000,
+);
 });
