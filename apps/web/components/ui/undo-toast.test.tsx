@@ -901,7 +901,7 @@ describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions 
           <Switch checked={false} onCheckedChange={noop} label="Bật gợi ý" />
           <Field label="Mật khẩu" type="password" />
           <Toast message="Đã sao chép" action={{ label: 'Đóng', onAction: noop }} />
-          <Dialog open>
+          <Dialog defaultOpen={false}>
             <DialogTrigger>Mở hộp thoại</DialogTrigger>
             <DialogContent aria-describedby={undefined}>
               <DialogHeader title="Hộp thoại" />
@@ -917,12 +917,15 @@ describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions 
     expect(screen.getByRole('radio', { name: 'Tab A' })).toHaveClass('touch-target');
     expect(screen.getByRole('radio', { name: 'Tab B' })).toHaveClass('touch-target');
     expect(screen.getByRole('switch', { name: 'Bật gợi ý' })).toHaveClass('switch', 'touch-target');
-    expect(screen.getByRole('button', { name: /Hiện mật khẩu|Show password/i })).toHaveClass(
+    expect(screen.getByRole('button', { name: 'Hiện' })).toHaveClass(
       'field-toggle',
       'touch-target',
     );
     expect(screen.getByRole('button', { name: 'Đóng' })).toHaveClass('touch-target');
-    expect(screen.getByRole('button', { name: 'Mở hộp thoại' })).toHaveClass('touch-target');
+    const dialogTrigger = screen.getByRole('button', { name: 'Mở hộp thoại' });
+    expect(dialogTrigger).toHaveClass('touch-target');
+
+    fireEvent.click(dialogTrigger);
     expect(screen.getByRole('button', { name: 'Huỷ hộp thoại' })).toHaveClass('touch-target');
   });
 
@@ -937,7 +940,7 @@ describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions 
       </NextIntlClientProvider>,
     );
 
-    const logoLink = screen.getByRole('link', { name: /Trang chủ engram/i });
+    const logoLink = screen.getByRole('link', { name: 'engram — Mục gần đây' });
     const settingsLink = screen.getByRole('link', { name: 'Cài đặt' });
     const themeButton = screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' });
     const mobileLockedStandIn = screen.getByLabelText('Vault đang khoá');
