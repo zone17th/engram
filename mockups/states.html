@@ -11,23 +11,29 @@
 </head>
 <body class="bg-canvas">
 
-<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
-  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
-    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
-        <stop offset="0%" stop-color="var(--logo-magenta)"/>
-        <stop offset="100%" stop-color="var(--logo-cyan)"/>
-      </linearGradient></defs>
-      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
-      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
-      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
-            stroke-width="2.6" stroke-linecap="round"
-            stroke-dasharray="0.1 5.2 0.1 4 20"/>
-    </svg>
-    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
-  </a>
-  <span class="vault-pill vault-open" data-vault>🔓 Vault đang mở</span>
-  <button class="btn btn-tertiary btn-icon !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
+    </a>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <button type="button" class="vault-pill vault-open !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
+    </div>
+  </div>
 </header>
 
 <main class="max-w-[840px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
@@ -225,10 +231,10 @@
     <div class="card card-error p-5" id="err-decrypt-fail">
       <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Không giải mã được entry này</p>
       <p class="text-[13px] text-muted m-0 mb-1">
-        Xác thực AEAD thất bại hoặc dữ liệu tải về bị lỗi nên ứng dụng không hiển thị nội dung có thể sai (khác với lỗi sai passphrase lúc mở khoá vault). Các entry khác vẫn mở bình thường.
+        Xác thực dữ liệu không khớp hoặc dữ liệu tải về bị lỗi nên ứng dụng không hiển thị nội dung có thể sai (khác với lỗi sai passphrase lúc mở khoá vault). Các entry khác vẫn mở bình thường.
       </p>
       <p class="text-[12px] text-muted m-0 mb-3" lang="en">
-        <strong>Could not decrypt this entry.</strong> AEAD verification failed or the downloaded payload was corrupted (distinct from an incorrect passphrase during vault unlock). Other entries still open normally.
+        <strong>Could not decrypt this entry.</strong> Authenticated decryption failed, so corrupted content is not shown (distinct from an incorrect passphrase during vault unlock). Other entries still open normally.
       </p>
       <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang tải và giải mã lại entry… · Reloading and decrypting entry…')">Thử lại · <span lang="en">Retry</span></button>
     </div>
@@ -237,10 +243,10 @@
       <span class="badge-type badge-warn mb-2 inline-block">entry_key_mismatch</span>
       <p class="text-[14px] font-semibold m-0 mb-1">Entry này mã hoá bằng khoá cũ</p>
       <p class="text-[13px] text-muted m-0 mb-1">
-        Khoá <span class="mono">key_id</span> trong envelope không khớp với <span class="mono">vault_key_id</span> hiện tại của vault (ứng dụng dừng trước khi gọi Worker). Khác với lỗi giải mã AEAD.
+        Mã khoá trên entry (<span class="mono">key_id</span>) không khớp với khoá hiện tại của vault (<span class="mono">vault_key_id</span>) nên trình duyệt không gọi giải mã. Điều này xảy ra khi vault đã được đặt lại hoặc đổi khoá ở thiết bị khác.
       </p>
       <p class="text-[12px] text-muted m-0" lang="en">
-        <strong>Encrypted with an older key (entry_key_mismatch).</strong> The entry's <span class="mono">key_id</span> does not match the current <span class="mono">vault_key_id</span> (checked before calling the Worker; distinct from AEAD decryption failure).
+        <strong>Encrypted with an older key (entry_key_mismatch).</strong> The encryption key on this entry (<span class="mono">key_id</span>) does not match your current vault key (<span class="mono">vault_key_id</span>), so decryption was skipped.
       </p>
     </div>
 
@@ -329,11 +335,11 @@
       <div role="alert" class="auth-alert mb-3">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Xác thực lại đã hết hạn trước khi lưu</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Grant xác thực còn dưới 60 giây hoặc đã hết hạn. Nhập lại mật khẩu đăng nhập ngay tại đây để tiếp tục — các khoá đang tính trong Worker vẫn được giữ nguyên, không cần bắt đầu lại.
+          Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
         </p>
       </div>
       <p class="text-[12px] m-0 mb-4" style="color:var(--muted)" lang="en">
-        <strong>Re-authentication expired before saving (password account).</strong> Confirm your login password in place to continue; secrets already prepared in the Worker are kept without restarting the flow.
+        <strong>Re-authentication expired before saving (password account).</strong> Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.
       </p>
       <label class="field mb-3">
         <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password (not vault passphrase)</span></span>
@@ -358,7 +364,7 @@
         </p>
       </div>
       <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
-        <strong>Time ran out (OAuth-only account).</strong> Re-authenticating with your OAuth provider navigates away from this page, so entered secrets were dropped and nothing was saved. Restart the flow to get a fresh grant first.
+        <strong>Time ran out (OAuth-only account).</strong> Because Google re-authentication redirects the page, temporary secrets were cleared and nothing was saved on the server. Restart the flow to re-authenticate with Google.
       </p>
       <button type="button" class="btn btn-secondary" onclick="SAK.toast('Bắt đầu lại thao tác từ bước xác thực')">Bắt đầu lại · <span lang="en">Start over</span></button>
     </div>
@@ -369,14 +375,14 @@
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thử quá nhiều lần cho thao tác vault này</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Thử lại sau <span class="mono">48</span> giây (<span class="mono">Retry-After: 48</span>). Chúng tôi không hiển thị số lần thử còn lại hay số recovery key còn dùng được.
+          Thử lại sau <span class="mono">48</span> giây. Chúng tôi không hiển thị số lần thử còn lại hay số recovery key còn dùng được.
         </p>
       </div>
       <p class="text-[12px] m-0 mb-2" style="color:var(--muted)">
         Giới hạn theo tài khoản: khôi phục bằng recovery key 5 lần / 15 phút; lấy tuỳ chọn passkey 20 lần / phút; thao tác đổi khoá nhạy cảm 10 lần / phút. Mở khoá bằng passphrase chạy ngoại tuyến trong trình duyệt nên không có giới hạn từ máy chủ.
       </p>
       <p class="text-[12px] m-0" style="color:var(--muted)" lang="en">
-        <strong>Too many vault requests (429 rate_limited).</strong> Please wait <span class="mono">48</span> seconds (<span class="mono">Retry-After: 48</span>) before trying again. Remaining attempts or remaining recovery keys are never shown. (Passphrase unlock runs offline in the browser and has no server rate limit.)
+        <strong>Too many vault requests (429 rate_limited).</strong> Please wait <span class="mono">48</span> seconds before trying again. Remaining attempts or remaining recovery keys are never shown. (Passphrase unlock runs offline in the browser and has no server rate limit.)
       </p>
     </div>
 
@@ -408,15 +414,15 @@
 
     <!-- 6. Insufficient memory to open the vault (Argon2id 64 MiB derive failure) -->
     <div class="card p-5" id="vault-insufficient-memory" style="border-color:var(--error)">
-      <p class="t-label mb-2" style="color:var(--muted)">Lỗi cấp phát bộ nhớ KDF · Argon2id 64 MiB</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Giới hạn bộ nhớ · 64 MiB · <span lang="en">Memory limit · 64 MiB</span></p>
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để mở vault</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ trong Web Worker để tính khoá từ passphrase. Đây không phải lỗi sai passphrase và chưa có dữ liệu nào bị thay đổi. Hãy đóng bớt tab/ứng dụng, dùng passkey hoặc thiết bị đã nhớ, hoặc mở trên một thiết bị khác.
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ để tính khoá từ passphrase. Đây không phải lỗi sai passphrase và chưa có dữ liệu nào bị thay đổi. Hãy đóng bớt tab/ứng dụng, dùng passkey hoặc thiết bị đã nhớ, hoặc mở trên một thiết bị khác.
         </p>
       </div>
-      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
-        <strong>Not enough memory to open the vault.</strong> Your browser could not allocate 64 MiB in the Web Worker to derive the key from your passphrase. This does not mean your passphrase is wrong. Close other tabs or apps, unlock with a passkey or remembered device, or try another device.
+      <p class="text-[12px] m-0 mb-3 text-muted" lang="en">
+        <strong>Not enough memory to open the vault.</strong> This browser could not set aside the 64 MiB of memory needed to derive the key from your passphrase. This does not mean your passphrase is wrong. Close other tabs or apps, unlock with a passkey or remembered device, or try another device.
       </p>
       <div class="flex gap-2 flex-wrap">
         <button type="button" class="btn btn-secondary" onclick="SAK.toast('Đang thử tính lại khoá…')">Thử lại · <span lang="en">Try again</span></button>

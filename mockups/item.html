@@ -73,8 +73,6 @@
     background: var(--surface);
     border-radius: 0 0 var(--r-section) var(--r-section);
   }
-  .border-top-line { border-top: 1px solid var(--border); }
-  .border-line { border: 1px solid var(--border); }
   #tag-suggest-list .sugg-row > span:nth-child(2) {
     white-space: normal;
     overflow: visible;
@@ -121,10 +119,10 @@
               stroke-width="2.6" stroke-linecap="round"
               stroke-dasharray="0.1 5.2 0.1 4 20"/>
       </svg>
-      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
     </a>
 
-    <div class="relative flex-1 max-w-[440px] hidden md:block" data-omnibox id="omni">
+    <div class="relative flex-1 min-w-0 max-w-[420px] hidden md:block" data-omnibox id="omni">
       <label class="omnibox-shell !py-2.5 !px-3.5">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
@@ -138,10 +136,11 @@
       <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto"></div>
     </div>
 
-    <div class="ml-auto flex items-center gap-2">
-      <button type="button" class="vault-pill vault-open" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span> <span class="sm:hidden">15 phút</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
-      <a href="settings.html" class="btn btn-tertiary no-underline !text-body hidden sm:inline-flex">Cài đặt</a>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <button type="button" class="vault-pill vault-open !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
       <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
     </div>
   </div>
 </header>
@@ -211,7 +210,7 @@
         </div>
       </div>
 
-      <div id="item-privacy-note" class="mt-3 pt-3 text-[13px] text-muted border-top-line">
+      <div id="item-privacy-note" class="mt-3 pt-3 text-[13px] text-muted rule-top-line">
         <p class="m-0 text-body">
           Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối.
         </p>
@@ -251,7 +250,7 @@
                   onclick="SAK.toast('Đã gắn #mạng-nhà · Attached #mạng-nhà')">Gắn · <span lang="en">Add</span></button>
         </div>
 
-        <div id="tag-suggest-list" role="listbox" aria-label="Gợi ý tag theo tiền tố · Tag prefix suggestions" class="mt-2 rounded-md overflow-hidden border-line">
+        <div id="tag-suggest-list" role="listbox" aria-label="Gợi ý tag theo tiền tố · Tag prefix suggestions" class="mt-2 rounded-md overflow-hidden rule-line">
           <button type="button" role="option" aria-selected="true" class="sugg-row" onclick="SAK.toast('Đã gắn #mạng-nhà · Attached #mạng-nhà')">
             <span class="mono text-accent">#</span>
             <span><strong>mạng</strong>-nhà</span>
@@ -490,7 +489,7 @@
                       aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu-pop">⋯</button>
             </div>
           </div>
-          <div class="px-4 py-2.5 border-top-line bg-surface flex flex-wrap items-center gap-1.5 text-[12px]" id="json-edge-switcher" role="group" aria-label="Chọn hình thái JSON để xem · Select JSON shape">
+          <div class="px-4 py-2.5 rule-top-line bg-surface flex flex-wrap items-center gap-1.5 text-[12px]" id="json-edge-switcher" role="group" aria-label="Chọn hình thái JSON để xem · Select JSON shape">
             <span class="text-muted">Mẫu · <span lang="en">Preset</span>:</span>
             <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="dup-and-readonly" id="edge-preset-dup">Khoá trùng <span class="mono">⁽²⁾</span> &amp; Ô chỉ đọc · <span lang="en">Dup key &amp; Read-only</span></button>
             <button type="button" class="btn btn-tertiary btn-sm !py-1 !px-2 text-[12px]" data-edge-preset="pagination-65" id="edge-preset-page">Phân trang 65 hàng (50/trang) · <span lang="en">65 rows (50/page)</span></button>
@@ -883,7 +882,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
       <article class="card card-error overflow-hidden" id="card-decrypt-fail">
         <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
           <span class="badge-type badge-json">json</span>
-          <span class="badge-type badge-err">AEAD decrypt fail</span>
+          <span class="badge-type badge-err">Không giải mã được</span>
         </div>
         <div class="p-4">
           <div role="alert" class="auth-alert mb-3">
@@ -892,7 +891,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
               <span lang="en" class="font-normal text-muted">Could not decrypt this entry</span>
             </p>
             <p class="text-[13px] text-body m-0">
-              Dữ liệu xác thực (AEAD) không khớp nên chúng tôi không hiển thị nội dung có thể sai lệch. Các entry khác trong mục vẫn mở bình thường.
+              Xác thực dữ liệu không khớp nên chúng tôi không hiển thị nội dung có thể sai lệch. Các entry khác trong mục vẫn mở bình thường.
             </p>
             <p class="text-[12px] text-muted m-0 mt-1" lang="en">
               Authenticated decryption failed, so corrupted content is not shown. Other entries in this item still open normally.
@@ -993,7 +992,7 @@ Pass: M4t-Kh4u-M0i-2026</textarea>
         Lưu vào: <strong class="mono">wifi</strong> <span class="text-muted">(mục đang mở)</span> ·
         <span lang="en" class="text-muted">Save into: <strong class="mono">wifi</strong> (current item)</span>
       </p>
-      <p id="importPasteExactHint" class="text-[12px] text-muted m-0 mb-3 p-2.5 rounded-md bg-surface border-line">
+      <p id="importPasteExactHint" class="text-[12px] text-muted m-0 mb-3 p-2.5 rounded-md bg-surface rule-line">
         <span>Cần giữ nguyên 100% nội dung file? Dùng Chọn file.</span> ·
         <span lang="en">Need to keep the file 100% as is? Use Choose file.</span>
       </p>

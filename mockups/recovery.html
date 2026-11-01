@@ -11,23 +11,29 @@
 </head>
 <body class="bg-canvas">
 
-<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
-  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
-    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
-        <stop offset="0%" stop-color="var(--logo-magenta)"/>
-        <stop offset="100%" stop-color="var(--logo-cyan)"/>
-      </linearGradient></defs>
-      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
-      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
-      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
-            stroke-width="2.6" stroke-linecap="round"
-            stroke-dasharray="0.1 5.2 0.1 4 20"/>
-    </svg>
-    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
-  </a>
-  <span class="vault-pill vault-shut">🔒 Vault đã khoá</span>
-  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
+    </a>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <span class="vault-pill vault-shut !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" aria-label="Vault đã khoá · Vault locked"><span aria-hidden="true">🔒</span><span class="hidden sm:inline">Vault đã khoá</span></span>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
+    </div>
+  </div>
 </header>
 
 <main class="max-w-[640px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
@@ -81,14 +87,14 @@
 
     <!-- Re-auth lấy grant vault.recover ngay khi bắt đầu flow (trước khi nhập RK) -->
     <div class="card p-5 mb-6" id="recovery-reauth-start">
-      <p class="t-label mb-2" style="color:var(--muted)">Re-auth ở đầu luồng · action: vault.recover</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Xác nhận tài khoản trước · <span lang="en">Confirm your account first</span></p>
       <p class="text-[14px] font-semibold m-0 mb-1">Xác thực lại tài khoản trước khi nhập recovery key</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Bấm <strong>Dùng key</strong> sẽ yêu cầu xác thực lại tài khoản (bằng <strong>mật khẩu đăng nhập</strong> hoặc OAuth) để lấy grant <span class="mono">vault.recover</span> (TTL 5 phút) <em>trước khi</em> bạn dán recovery key vào trình duyệt — tránh việc chuyển trang OAuth giữa chừng làm mất khoá vừa giải mã trong Worker.
+      <p class="text-[13px] m-0 mb-3 text-muted">
+        Bấm <strong>Đúng key</strong> sẽ yêu cầu xác thực lại tài khoản (bằng mật khẩu đăng nhập hoặc Google, hiệu lực 5 phút) trước khi bạn dán recovery key, để việc chuyển trang đăng nhập không làm mất khoá vừa mở.
       </p>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Re-authenticate before entering your recovery key.</strong>
-        Starting recovery acquires a <span class="mono">vault.recover</span> grant (via your account login password or OAuth) before any recovery key is entered, so an OAuth redirect never wipes the unwrapped key from the Web Worker.
+        <strong style="color:var(--body)">Re-authenticate your account before entering a recovery key.</strong>
+        Starting recovery asks you to confirm your account (login password or Google, valid for 5 minutes) before you paste your recovery key, so a sign-in redirect never clears the vault key you just opened.
       </p>
     </div>
 
@@ -109,7 +115,7 @@
   <!-- BƯỚC 2 — nhập một recovery key                                  -->
   <!-- ============================================================= -->
   <section data-view="s2" hidden>
-    <p class="t-label mb-2" style="color:var(--body)">✓ Đã xác thực tài khoản · grant vault.recover còn hiệu lực</p>
+    <p class="t-label mb-2" style="color:var(--body)">✓ Đã xác thực tài khoản · <span lang="en">✓ Account confirmed</span></p>
     <h1 class="t-title-lg mb-2">Nhập một recovery key</h1>
     <p class="t-body-lg mb-6" style="color:var(--muted)">
       Dán đúng một key. Có hay không dấu gạch, viết hoa hay thường đều được — chúng tôi tự chuẩn hoá.
@@ -149,31 +155,31 @@
         <div role="alert" class="mb-2">
           <p class="text-[14px] font-semibold m-0 mb-1">Thử quá nhiều lần — vui lòng đợi</p>
           <p class="text-[13px] m-0" style="color:var(--muted)">
-            Tra cứu recovery key giới hạn <span class="mono">5 lần / 15 phút</span> cho mỗi tài khoản. Thử lại sau <span class="mono">08:45</span> (525 giây · <span class="mono">Retry-After: 525</span>). Máy chủ không cho biết còn bao nhiêu lần thử hay bao nhiêu recovery key.
+            Kiểm tra recovery key giới hạn <span class="mono">5 lần / 15 phút</span> cho mỗi tài khoản. Thử lại sau <span class="mono">08:45</span> (525 giây). Máy chủ không cho biết còn bao nhiêu lần thử hay bao nhiêu recovery key.
           </p>
         </div>
         <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-          <strong style="color:var(--body)">Too many recovery attempts.</strong> Recovery key lookup is limited to <span class="mono">5 requests per 15 minutes</span> per account. Please wait <span class="mono">08:45</span> (525 s · <span class="mono">Retry-After: 525</span>) before trying again.
+          <strong style="color:var(--body)">Too many recovery attempts — please wait.</strong> Recovery key checks are limited to <span class="mono">5 per 15 minutes</span> per account. Please wait <span class="mono">08:45</span> (525s) before trying again. The server does not say how many attempts or recovery keys are left.
         </p>
       </div>
 
       <!-- 3. RK lookup matched but AEAD open failed (rare; key not consumed) -->
       <div id="s2-err-aead" class="card p-5" style="border-color:var(--error)">
-        <p class="t-label mb-2" style="color:var(--muted)">AEAD open failed · key not consumed</p>
+        <p class="t-label mb-2" style="color:var(--muted)">không mở được · key chưa bị tiêu thụ · <span lang="en">could not open · key not consumed</span></p>
         <div role="alert" class="auth-alert mb-2">
-          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Tìm thấy bản wrap nhưng không giải mã được khoá vault</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Recovery key này không mở được vault</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Máy chủ trả về bản wrap khớp mã tra cứu nhưng giải mã AEAD trên trình duyệt thất bại (trường hợp hiếm). <strong>Recovery key này chưa bị tiêu thụ</strong> — hãy thử lại hoặc dùng một recovery key khác trong bộ 10 key.
+            Máy chủ tìm thấy bản khớp với key này nhưng trình duyệt không mở được vault bằng nó. <strong>Recovery key này chưa bị tiêu thụ</strong> — hãy thử lại hoặc dùng một recovery key khác trong bộ 10 key.
           </p>
         </div>
         <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-          <strong style="color:var(--body)">Could not unwrap the vault key with this recovery key.</strong> The key was found on the server, but local AEAD decryption failed. This recovery key was <strong>not</strong> consumed — try another recovery key from your set.
+          <strong style="color:var(--body)">This recovery key could not open your vault.</strong> The server found a match for this key, but your browser could not open the vault with it. This recovery key was not consumed — try again or use another key from your set of 10.
         </p>
       </div>
     </div>
 
     <p class="t-caption m-0" style="color:var(--muted)">
-      Mỗi tài khoản chỉ được thử 5 lần trong 15 phút. Key bạn gõ không rời trình duyệt — máy chủ chỉ nhận một giá trị băm (<span class="mono">lookup_hash</span>).
+      Mỗi tài khoản chỉ được thử 5 lần trong 15 phút. Key bạn gõ không rời trình duyệt — máy chủ chỉ nhận dấu vân tay của key. · <span lang="en">Limited to 5 attempts per 15 minutes per account. Your key never leaves this browser — the server only receives a fingerprint of the key.</span>
     </p>
   </section>
 
@@ -186,16 +192,16 @@
       Set a new passphrase to finish recovery. (<span class="mono">recovery.need_new_passphrase</span>)
     </p>
     <p class="t-body-lg mb-5" style="color:var(--muted)">
-      Key vừa nhập đã mở được khoá vault trong bộ nhớ tạm (<span class="mono">recovering</span>). Đặt <strong>passphrase mã hoá vault</strong> mới (khác <strong>mật khẩu đăng nhập</strong>) để hoàn tất — bước này bắt buộc, không bỏ qua được.
+      Key vừa nhập đã mở được khoá vault trong bộ nhớ tạm. Đặt <strong>passphrase mã hoá vault</strong> mới (khác <strong>mật khẩu đăng nhập</strong>) để hoàn tất — bước này bắt buộc.
     </p>
 
     <!-- giải thích trạng thái recovering -->
     <div class="rounded-md p-4 mb-5" id="s3-recovering-note" style="background:var(--pale-orange)">
       <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
-        <strong>Trạng thái đang khôi phục (<span class="mono">recovering</span>):</strong> khoá vault vừa mở chỉ dùng để bọc lại bằng passphrase mới — nội dung entry chưa được mở và tuỳ chọn nhớ thiết bị đang tắt cho tới khi bước này hoàn tất. Nếu bạn rời trang hoặc huỷ lúc này, khoá tạm trong Worker sẽ bị xoá và <strong>recovery key vừa nhập chưa bị tiêu thụ</strong>.
+        <strong>Đang khôi phục:</strong> Khoá vault vừa mở chỉ dùng để bảo vệ lại bằng passphrase mới — nội dung entry chưa được mở và tuỳ chọn nhớ thiết bị đang tắt cho tới khi khôi phục xong. Nếu bạn rời trang hoặc huỷ lúc này, khoá sẽ bị xoá khỏi bộ nhớ và <strong>recovery key vừa nhập chưa bị tiêu thụ</strong>.
       </p>
       <p class="text-[12.5px] m-0" lang="en" style="color:var(--muted)">
-        While <span class="mono">recovering</span>, the unwrapped vault key is held only to rewrap with your new passphrase — entry contents are not opened and remember-device stays off until recovery completes. Leaving or cancelling now drops the key and does not consume your recovery key.
+        <strong>Recovery in progress:</strong> The opened vault key is kept only to protect it with your new passphrase — entry contents cannot be opened and remember-device stays off until recovery completes. Leaving or cancelling now clears the key from memory and does not consume your recovery key.
       </p>
     </div>
 
@@ -204,7 +210,7 @@
         <span class="text-[14px] font-semibold block mb-1.5">Passphrase mới cho vault</span>
         <input type="password" value="••••••••••••••" autocomplete="new-password" class="w-full text-[15px]"
                style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
-        <span class="text-[12px] block mt-1.5" style="color:var(--muted)">Khác với mật khẩu đăng nhập tài khoản. Ít nhất 12 ký tự, zxcvbn ≥ 3.</span>
+        <span class="text-[12px] block mt-1.5" style="color:var(--muted)">Khác với mật khẩu đăng nhập tài khoản. Ít nhất 12 ký tự và khó đoán.</span>
       </label>
       <div class="flex items-center gap-2 mb-4">
         <div style="height:4px;flex:1;border-radius:var(--r-pill);background:var(--border)">
@@ -239,7 +245,7 @@
   <section data-view="s3-err" hidden class="flex flex-col gap-3">
     <h1 class="t-title-lg mb-2">Các lỗi khi hoàn tất khôi phục</h1>
     <p class="t-body-lg mb-3" style="color:var(--muted)">
-      Khi grant xác thực hết hạn giữa chừng, thiếu bộ nhớ dẫn xuất khoá, lệch phiên bản vault hoặc chạm giới hạn tốc độ.
+      Khi xác thực tài khoản hết hạn giữa chừng, thiếu bộ nhớ để tính khoá, lệch phiên bản vault hoặc chạm giới hạn tốc độ.
     </p>
 
     <!-- 1. Re-auth grant expired mid-flow: password account -->
@@ -247,7 +253,7 @@
       <p class="t-label mb-2" style="color:var(--muted)">reauth_expired · tài khoản có mật khẩu đăng nhập</p>
       <p class="text-[14px] font-semibold m-0 mb-1">Phiên xác thực lại đã hết hạn — nhập mật khẩu đăng nhập tại chỗ</p>
       <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Grant xác thực từ đầu luồng còn dưới 60 giây hoặc đã hết hạn. Nhập <strong>mật khẩu đăng nhập</strong> ngay tại đây để lấy grant mới mà không chuyển trang — khoá đang mở trong Worker và passphrase mới bạn vừa gõ vẫn được giữ nguyên.
+        Xác thực tài khoản còn dưới 60 giây hoặc đã hết hạn. Nhập mật khẩu đăng nhập ngay tại đây để xác thực lại mà không chuyển trang — khoá đang mở vẫn được giữ nguyên.
       </p>
       <label class="block mb-3">
         <span class="text-[13px] font-semibold block mb-1">Mật khẩu đăng nhập (không phải passphrase vault) · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
@@ -256,7 +262,7 @@
       </label>
       <button type="button" class="btn btn-primary mb-3">Xác nhận và hoàn tất khôi phục · <span lang="en">Verify &amp; finish recovery</span></button>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Re-authentication expired (password account).</strong> Confirm your account <strong>login password</strong> in place to continue without leaving this page. Your unwrapped key in the Worker is preserved.
+        <strong style="color:var(--body)">Re-authentication expired — confirm your login password in place.</strong> Your account confirmation has less than 60 seconds left or has expired. Enter your account login password right here to confirm again without leaving this page — your opened key is kept.
       </p>
     </div>
 
@@ -266,12 +272,12 @@
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Hết thời gian xác thực — cần bắt đầu lại</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Tài khoản chỉ đăng nhập bằng OAuth phải chuyển trang tới nhà cung cấp để xác thực lại, làm xoá bộ nhớ Web Worker.
-          Khoá vừa giải mã đã được xoá khỏi bộ nhớ và <strong>recovery key bạn vừa nhập CHƯA bị tiêu thụ</strong> — bạn có thể dùng lại chính key đó sau khi xác thực lại.
+          Xác thực lại qua nhà cung cấp đăng nhập phải chuyển trang, làm xoá bộ nhớ tạm.
+          Khoá vừa mở đã bị xoá và <strong>recovery key bạn vừa nhập CHƯA bị tiêu thụ</strong> — hãy bắt đầu lại từ bước 1 để xác thực tài khoản và dùng lại chính key đó.
         </p>
       </div>
       <p class="text-[13px] m-0 pt-2 mb-3" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Time ran out (OAuth-only account).</strong> Re-authenticating with your OAuth provider requires a full-page redirect, so the entered recovery key and unwrapped vault key were dropped from memory. Your recovery key was <strong>not</strong> consumed — start again to re-authenticate and reuse it.
+        <strong style="color:var(--body)">Time ran out — please start again.</strong> Confirming again with a sign-in provider needs a full-page redirect, which clears temporary memory. The opened key was cleared and your recovery key was NOT consumed — start again from step 1 to confirm your account and reuse the same key.
       </p>
       <button type="button" class="btn btn-secondary"
               onclick="document.querySelector('[data-seg] [data-target=s1]').click()">Bắt đầu lại từ bước 1 · <span lang="en">Restart from step 1</span></button>
@@ -279,16 +285,16 @@
 
     <!-- 3. Insufficient memory on derive -->
     <div class="card p-5" id="s3-err-oom" style="border-color:var(--error)">
-      <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · derive failed</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Giới hạn bộ nhớ · 64 MiB · <span lang="en">Memory limit · 64 MiB</span></p>
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để dẫn xuất passphrase mới</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Trình duyệt không cấp phát đủ 64 MiB trong Web Worker để tạo khoá từ passphrase mới.
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ để tính khoá từ passphrase mới.
           <strong>Recovery key của bạn chưa bị tiêu thụ.</strong> Hãy đóng bớt tab rồi bấm thử lại, hoặc thực hiện khôi phục trên thiết bị khác.
         </p>
       </div>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Not enough memory to derive the new passphrase key.</strong> Your recovery key has <strong>not</strong> been consumed. Close other tabs and retry, or complete recovery on another device.
+        <strong style="color:var(--body)">Not enough memory to derive the new passphrase key.</strong> This browser could not set aside the 64 MiB of memory needed to derive a key from your new passphrase. Your recovery key has not been consumed. Close other tabs and retry, or complete recovery on another device.
       </p>
     </div>
 
@@ -314,11 +320,11 @@
       <div role="alert" class="mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1">Quá số lần hoàn tất khôi phục — vui lòng đợi</p>
         <p class="text-[13px] m-0" style="color:var(--muted)">
-          Yêu cầu hoàn tất khôi phục giới hạn <span class="mono">5 lần / 15 phút</span> (bucket riêng với bước tra cứu). Thử lại sau <span class="mono">04:10</span> (250 giây · <span class="mono">Retry-After: 250</span>).
+          Yêu cầu hoàn tất khôi phục giới hạn <span class="mono">5 lần / 15 phút</span> (đếm riêng với bước kiểm tra key). Thử lại sau <span class="mono">04:10</span> (250 giây).
         </p>
       </div>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Too many recovery completion requests (<span class="mono">5 / 15 min</span>).</strong> Please wait <span class="mono">04:10</span> (250 s · <span class="mono">Retry-After: 250</span>) before retrying.
+        <strong style="color:var(--body)">Too many recovery completion requests — please wait.</strong> Finishing recovery is limited to <span class="mono">5 requests per 15 minutes</span> (counted separately from key checks). Please wait <span class="mono">04:10</span> (250s) before retrying.
       </p>
     </div>
   </section>
@@ -344,10 +350,10 @@
 
     <!-- Re-auth riêng cho action vault.recovery_keys_regenerate trước khi sinh key mới -->
     <div class="card p-5 mb-5" id="s4-regenerate-reauth">
-      <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại trước khi tạo key bù · action: vault.recovery_keys_regenerate</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại trước khi tạo key bù · <span lang="en">Confirm your account before creating replacement keys</span></p>
       <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
-        Tạo bù recovery key cần một grant xác thực riêng (<span class="mono">vault.recovery_keys_regenerate</span>, tách biệt với <span class="mono">vault.recover</span>) ở đầu bước này trước khi Worker sinh key mới cho slot trống.
-        <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Regenerating replacement keys requires a separate <span class="mono">vault.recovery_keys_regenerate</span> grant (distinct from <span class="mono">vault.recover</span>) before the Worker generates keys for empty slots.</span>
+        Tạo bù recovery key cần một lần xác thực tài khoản riêng (tách biệt với lần xác thực khi khôi phục) trước khi tạo key mới cho slot trống.
+      <span lang="en" class="block text-[12px] mt-1 text-muted">Creating replacement keys needs its own account confirmation (separate from the one used for recovery) before new keys are created for empty slots.</span>
       </p>
       <label class="field field-password mb-3">
         <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>

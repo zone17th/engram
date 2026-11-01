@@ -25,12 +25,13 @@
               stroke-width="2.6" stroke-linecap="round"
               stroke-dasharray="0.1 5.2 0.1 4 20"/>
       </svg>
-      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
     </a>
-    <div class="ml-auto flex items-center gap-2">
-      <span class="vault-pill vault-shut" aria-disabled="true">Chưa tạo kho</span>
-      <a href="index.html" class="btn btn-tertiary no-underline !text-body">Xong</a>
-      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <button type="button" class="vault-pill vault-open !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
+      <a href="index.html" class="btn btn-tertiary no-underline !text-body" aria-current="page">Xong</a>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
     </div>
   </div>
 </header>
@@ -336,8 +337,8 @@
   <div class="panel" style="width:min(560px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
     <h2 id="passDlgTitle" class="t-title-sm mb-1">Đổi passphrase · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Change passphrase</span></h2>
     <p class="t-body mb-4" style="color:var(--muted)">
-      Vault đang mở trong phiên này nên không cần passphrase cũ. Xác thực lại tài khoản ở đầu luồng trước khi bọc lại khoá.
-      <span lang="en" class="block text-[12px] mt-1">Your vault is unlocked in this session, so the old passphrase is not needed. Re-authenticate your account at the start of the flow before rewrapping the vault key.</span>
+      Vault đang mở trong phiên này nên không cần passphrase cũ. Bạn xác nhận tài khoản trước, rồi đặt passphrase mới.
+      <span lang="en" class="block text-[12px] mt-1">Your vault is unlocked in this session, so the old passphrase is not needed. You confirm your account first, then set the new passphrase.</span>
     </p>
 
     <div class="seg mb-5 flex-wrap" data-seg>
@@ -370,7 +371,7 @@
         <div style="height:4px;flex:1;border-radius:var(--r-pill);background:var(--border)">
           <div style="height:4px;width:72%;border-radius:var(--r-pill);background:var(--success)"></div>
         </div>
-        <span class="text-[12px]" style="color:var(--body)">đủ mạnh (zxcvbn ≥ 3) · <span lang="en">strong</span></span>
+        <span class="text-[12px]" style="color:var(--body)">đủ mạnh · <span lang="en">strong</span></span>
       </div>
       <label class="field field-password mb-4">
         <span class="field-label">Nhập lại passphrase mới · <span lang="en" class="font-normal" style="color:var(--muted)">Confirm new passphrase</span></span>
@@ -412,14 +413,14 @@
     <!-- 2. Insufficient memory on derive -->
     <section data-view="pass-oom" hidden>
       <div class="card p-5 mb-5" style="border-color:var(--error)">
-        <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · derive error</p>
+        <p class="t-label mb-2" style="color:var(--muted)">Giới hạn bộ nhớ · 64 MiB · <span lang="en">Memory limit · 64 MiB</span></p>
         <div role="alert" class="auth-alert mb-0">
           <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để tính khoá</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Trình duyệt không cấp phát đủ 64 MiB cho Argon2id trong Worker. Đóng bớt tab hoặc ứng dụng khác rồi thử lại — passphrase hiện tại của bạn chưa thay đổi.
+            Thiết bị không cấp phát đủ 64 MiB bộ nhớ để tính khoá. Đóng bớt tab hoặc ứng dụng khác rồi thử lại — passphrase hiện tại của bạn chưa thay đổi.
           </p>
           <p lang="en" class="text-[12px] m-0 mt-2" style="color:var(--muted)">
-            <strong>Not enough memory to derive key.</strong> This device could not allocate 64 MiB for Argon2id in the Web Worker. Close other tabs or apps and try again — your current passphrase was not changed.
+            <strong>Not enough memory to derive key.</strong> This device could not set aside the 64 MiB of memory needed to derive your key. Close other tabs or apps and try again — your current passphrase was not changed.
           </p>
         </div>
       </div>
@@ -437,8 +438,8 @@
         <div role="alert" class="mb-3">
           <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Xác thực lại đã hết hạn trước khi lưu</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Grant xác thực còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp — không chuyển trang, không mất khoá vừa tính.
-            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your re-authentication grant has less than 60 seconds left. Re-enter your login password in place to finish saving without losing the derived key.</span>
+            Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
+            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.</span>
           </p>
         </div>
         <label class="field field-password mb-3">
@@ -488,14 +489,14 @@
     <!-- 5. 429 rate_limited -->
     <section data-view="pass-ratelimit" hidden>
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
-        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span> · <span class="mono">Retry-After: 45</span></p>
+        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span></p>
         <div role="alert" class="auth-alert mb-0">
           <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thao tác quá nhanh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
              Các thay đổi bảo mật vault giới hạn 10 lần mỗi phút. Đợi <span class="mono">45</span> giây rồi thử lại.
           </p>
           <p lang="en" class="text-[12px] m-0 mt-2" style="color:var(--muted)">
-            <strong>Too many requests.</strong> Sensitive vault mutations are limited to 10 per minute. Please wait <span class="mono">45</span> seconds (<span class="mono">Retry-After</span>) before trying again.
+            <strong>Too many requests.</strong> Sensitive vault mutations are limited to 10 per minute. Please wait <span class="mono">45</span> seconds before trying again.
           </p>
         </div>
       </div>
@@ -509,8 +510,8 @@
       <div class="card p-5 mb-5">
         <div role="status" class="auth-status mb-2">Đã đổi passphrase cho vault · <span lang="en">Vault passphrase updated</span></div>
         <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
-          Khoá bọc <span class="mono">wrapK</span> đã cập nhật với salt mới. 5 recovery key còn lại (kể cả bản in cũ) và 2 passkey vẫn mở được vault. Bạn có muốn đăng xuất các phiên đăng nhập khác không?
-          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">The passphrase wrap (<span class="mono">wrapK</span>) was updated with a new salt. Your 5 remaining recovery keys (including old printouts) and 2 passkeys still work. You can also sign out other sessions.</span>
+          Đã đổi passphrase của vault. 5 recovery key còn lại (kể cả bản in cũ) và 2 passkey vẫn mở được vault. Bạn có muốn đăng xuất các phiên đăng nhập khác không?
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your vault passphrase was changed. Your 5 remaining recovery keys (including old printouts) and 2 passkeys still work. Would you also like to sign out other sessions?</span>
         </p>
         <button type="button" class="btn btn-secondary btn-sm" data-open-dialog="revokeSessionsDlg" data-close-dialog>Đăng xuất phiên khác · <span lang="en">Sign out others</span></button>
       </div>
@@ -544,8 +545,8 @@
       <div class="card p-5 mb-5">
         <p class="t-label mb-2" style="color:var(--muted)">Xác thực lại trước khi sinh key · <span lang="en">Re-auth at flow start</span></p>
         <p class="text-[13px] m-0 mb-4" style="color:var(--body)">
-          Xác nhận tài khoản trước khi Worker sinh recovery key mới cho các slot trống.
-          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Confirm your account before the Worker generates recovery keys for the empty slots.</span>
+          Xác nhận tài khoản trước khi tạo recovery key mới cho các slot trống.
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Confirm your account before new recovery keys are created for the empty slots.</span>
         </p>
         <label class="field field-password mb-4">
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
@@ -609,10 +610,10 @@
       <div class="card p-4 mb-3" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)">Có mật khẩu đăng nhập · xác thực lại tại chỗ · <span lang="en">Password user · re-auth in place</span></p>
         <div role="alert" class="mb-3">
-          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Grant xác thực hết hạn trước khi lưu 5 key mới</p>
+          <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Xác thực lại đã hết hạn trước khi lưu</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Nhập lại mật khẩu đăng nhập để lưu tiếp bộ <span class="mono">rk6</span>…<span class="mono">rk10</span> vừa hiển thị.
-            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-enter your login password in place to save the <span class="mono">rk6</span>…<span class="mono">rk10</span> keys just shown.</span>
+            Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
+            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.</span>
           </p>
         </div>
         <label class="field field-password mb-3">
@@ -660,12 +661,12 @@
     <!-- 5. 429 rate_limited -->
     <section data-view="rk-ratelimit" hidden>
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
-        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span> · <span class="mono">Retry-After: 38</span></p>
+        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span></p>
         <div role="alert" class="auth-alert mb-0">
           <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thao tác quá nhanh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Giới hạn 10 thao tác nhạy cảm mỗi phút. Đợi <span class="mono">38</span> giây rồi bấm lưu lại.
-            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Rate limited (10 sensitive vault mutations per minute). Wait <span class="mono">38</span> seconds (<span class="mono">Retry-After</span>) and try again.</span>
+            Các thay đổi bảo mật vault giới hạn 10 lần mỗi phút. Đợi <span class="mono">38</span> giây rồi thử lại.
+            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Sensitive vault mutations are limited to 10 per minute. Please wait <span class="mono">38</span> seconds before trying again.</span>
           </p>
         </div>
       </div>
@@ -735,8 +736,8 @@
           <strong>Cảnh báo:</strong> Ngay khi lưu bộ mới, toàn bộ recovery key hiện tại và các bản in cũ sẽ <strong>ngừng hoạt động trên máy chủ live</strong>.
         </p>
         <p class="text-[12px] m-0" style="color:var(--body)">
-          Thao tác này không xoay khoá vault (<span class="mono">VK</span>): các bản bọc khoá hoặc bản backup đã chép ra trước đó không bị thu hồi bởi mật mã (xoay VK thuộc P07).
-          <span lang="en" class="block mt-1" style="color:var(--muted)"><strong>Warning:</strong> Once saved, all current recovery keys and their printouts stop working on the live server. Rotating recovery keys does not rotate the vault key (<span class="mono">VK</span>) — previously copied wraps or exported backups are not cryptographically revoked.</span>
+          Xoay recovery key không đổi chính khoá vault: các bản sao hoặc bản backup đã xuất trước đó không bị thu hồi.
+          <span lang="en" class="block mt-1" style="color:var(--muted)"><strong>Warning:</strong> Once saved, all current recovery keys and their printouts stop working on the live server. Rotating recovery keys does not change the vault key itself: copies or exported backups made earlier are not revoked.</span>
         </p>
       </div>
 
@@ -781,8 +782,8 @@
       <div class="card p-4 mb-3" style="border-color:var(--warning)">
         <p class="t-label mb-2" style="color:var(--muted)">Có mật khẩu đăng nhập · xác thực lại tại chỗ · <span lang="en">Password user · re-auth in place</span></p>
         <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
-          Grant xác thực còn dưới 60 giây. Nhập lại mật khẩu đăng nhập tại chỗ để lưu bộ 10 key vừa sinh.
-          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Grant has less than 60s left. Re-enter your login password in place to finish saving this 10-key set.</span>
+          Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.</span>
         </p>
         <label class="field field-password mb-3">
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
@@ -829,12 +830,12 @@
     <!-- 5. 429 rate_limited -->
     <section data-view="rot-ratelimit" hidden>
       <div class="card p-5 mb-5" style="border-color:var(--warning)">
-        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span> · <span class="mono">Retry-After: 52</span></p>
+        <p class="t-label mb-2" style="color:var(--muted)"><span class="mono">429 rate_limited</span></p>
         <div role="alert" class="auth-alert mb-0">
           <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thao tác quá nhanh</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            Giới hạn 10 thao tác nhạy cảm mỗi phút. Đợi <span class="mono">52</span> giây rồi thử lại.
-            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Rate limited (10 sensitive vault mutations per minute). Wait <span class="mono">52</span> seconds (<span class="mono">Retry-After</span>) and try again.</span>
+            Các thay đổi bảo mật vault giới hạn 10 lần mỗi phút. Đợi <span class="mono">52</span> giây rồi thử lại.
+            <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Sensitive vault mutations are limited to 10 per minute. Please wait <span class="mono">52</span> seconds before trying again.</span>
           </p>
         </div>
       </div>
@@ -986,8 +987,8 @@
       <div class="card p-4 mb-3" style="border-color:var(--warning)">
         <p class="t-label mb-2 break-words" style="color:var(--muted)">Có mật khẩu đăng nhập · xác thực lại tại chỗ · <span lang="en">Password user · re-auth in place</span></p>
         <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
-          Grant xác thực còn dưới 60 giây trước khi gửi <span class="mono">POST /vault/passkeys</span>. Nhập lại mật khẩu đăng nhập tại chỗ để hoàn tất lưu passkey vừa chạm.
-          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Re-authentication grant has less than 60s left. Re-enter your login password in place to finish saving the passkey without touching the authenticator again.</span>
+          Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.</span>
         </p>
         <label class="field field-password mb-3">
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
@@ -1088,8 +1089,8 @@
       <div class="card p-5 mb-5">
         <p class="t-label mb-2" style="color:var(--muted)">Bước 3/5 — Xác thực lại tài khoản · <span lang="en">Step 3 of 5 — Re-authenticate</span></p>
         <p class="text-[13px] m-0 mb-4" style="color:var(--body)">
-          Xác nhận bạn là chủ tài khoản trước khi mở bước xác nhận xoá vault (<span class="mono">vault.reset</span>).
-          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Confirm account ownership with your login password or OAuth provider before proceeding to the final confirmation step.</span>
+          Xác nhận bạn là chủ tài khoản bằng mật khẩu đăng nhập hoặc nhà cung cấp đăng nhập trước bước xác nhận cuối cùng.
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Confirm account ownership with your login password or sign-in provider before the final confirmation step.</span>
         </p>
         <label class="field field-password mb-4">
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
@@ -1147,8 +1148,8 @@
       <div class="card p-4 mb-3" style="border-color:var(--warning)">
         <p class="t-label mb-2 break-words" style="color:var(--muted)">Có mật khẩu đăng nhập · xác thực lại tại chỗ · <span lang="en">Password user · re-auth in place</span></p>
         <p class="text-[13px] m-0 mb-3" style="color:var(--body)">
-          Grant xác thực đã hết hạn trước khi gửi <span class="mono">DELETE /vault</span>. Nhập lại mật khẩu đăng nhập ngay tại đây để hoàn tất.
-          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your re-authentication grant expired before <span class="mono">DELETE /vault</span>. Re-enter your login password in place to confirm the reset.</span>
+          Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.</span>
         </p>
         <label class="field field-password mb-3">
           <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password</span></span>
