@@ -98,14 +98,18 @@ export function RouteGuard({ children }: { children: ReactNode }) {
   );
 }
 
-export function AppShellLogoutButton() {
+/**
+ * `size` is presentation only (UIA-9): the app header passes `md` so Sign out matches Settings and the theme toggle;
+ * other callers keep the previous `sm` default.
+ */
+export function AppShellLogoutButton({ size = 'sm' }: { size?: 'sm' | 'md' }) {
   const { signOut } = useSession();
   const vault = useOptionalVault();
   const t = useTranslations('auth.common');
   return (
     <Button
       variant="tertiary"
-      size="sm"
+      size={size}
       onClick={() => {
         void vault?.lock({ broadcast: true, reason: 'logout' });
         void signOut();
