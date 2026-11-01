@@ -18,9 +18,9 @@ import {
 import { setKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import * as contentApi from '@/lib/api/content';
 import type { EntryEnvelopeV1, EntryMeta, ItemSummary, Tag } from '@/lib/api/content';
+import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
-
 const mockRouterPush = vi.fn();
 const mockRouterReplace = vi.fn();
 
@@ -41,6 +41,8 @@ const USER_B_ID = 'bbbb0000-0000-4000-8000-000000000002';
 const registeredResetFns = new Set<() => void>();
 let mockVaultState: 'locked' | 'unlocked' = 'unlocked';
 let mockVaultGeneration = 1;
+let mockVaultMetaOverride: { vault_key_id: string; version: number } | null | undefined = undefined;
+const mockReloadVaultMeta = vi.fn(async () => ({ vault_key_id: TEST_KEY_ID, version: 1 }));
 const mockSealEntryCalls: Array<{
   readonly entryId: string;
   readonly keyId: string;
@@ -94,7 +96,11 @@ vi.mock('@/features/vault/vault-provider', async (importOriginal) => {
     useOptionalVault: () => ({
       state: mockVaultState,
       minutesLeft: 15,
-      vaultMeta: { vault_key_id: TEST_KEY_ID, version: 1 },
+      vaultMeta:
+        mockVaultMetaOverride !== undefined
+          ? mockVaultMetaOverride
+          : { vault_key_id: TEST_KEY_ID, version: 1 },
+      reloadVaultMeta: mockReloadVaultMeta,
       beginOp: () => {
         const capturedGen = mockVaultGeneration;
         return {
@@ -193,6 +199,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     mockSealEntryCalls.length = 0;
     mockVaultState = 'unlocked';
     mockVaultGeneration = 1;
+    mockVaultMetaOverride = undefined;
+    mockReloadVaultMeta.mockReset();
+    mockReloadVaultMeta.mockResolvedValue({ vault_key_id: TEST_KEY_ID, version: 1 });
     clearSaveUnconfirmed();
     clearLockClearedNotice();
     setKnownDeviceSessionUserId(USER_A_ID);
@@ -808,6 +817,9 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     mockSealEntryCalls.length = 0;
     mockVaultState = 'unlocked';
     mockVaultGeneration = 1;
+    mockVaultMetaOverride = undefined;
+    mockReloadVaultMeta.mockReset();
+    mockReloadVaultMeta.mockResolvedValue({ vault_key_id: TEST_KEY_ID, version: 1 });
     clearSaveUnconfirmed();
     clearLockClearedNotice();
     setKnownDeviceSessionUserId(USER_A_ID);
@@ -1581,6 +1593,45 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
     firstAttemptSessionInvalidSpy.mockRestore();
 
+    // Part 2a-bis (HM18B-R2-3): First send inside `contentMutate` fails on network error (uncertain lost response)
+    // and its automatic internal retry receives `401 session_invalid` -> `priorUncertain` is true via intra-call
+    // retry observation, so `saveUnconfirmed` IS recorded for User A even on the first plan attempt.
+    clearSaveUnconfirmed();
+    let internalRetryAttempt = 0;
+    const internalRetryFetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/entries')) {
+        internalRetryAttempt += 1;
+        if (internalRetryAttempt === 1) {
+          throw new TypeError('Failed to fetch: lost response on first send inside contentMutate');
+        }
+        return new Response(
+          JSON.stringify({
+            type: 'https://engram.zone17.click/problems/session_invalid',
+            title: 'Session invalid on internal retry',
+            status: 401,
+            code: 'session_invalid',
+          }),
+          { status: 401, headers: { 'content-type': 'application/problem+json' } },
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+
+    setKnownDeviceSessionUserId(USER_A_ID);
+    fireEvent.change(textarea, { target: { value: 'wifi: internal retry session_invalid' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(textarea).toHaveValue('');
+    });
+    expect(internalRetryAttempt).toBe(2);
+    expect(screen.getByTestId('omnibox-save-unconfirmed-notice')).toHaveTextContent(
+      'Lần lưu trước vào “wifi” chưa xác nhận; kiểm tra mục trước khi lưu lại',
+    );
+    clearSaveUnconfirmed();
+    internalRetryFetchSpy.mockRestore();
+
     // Part 2b (HM18B-R1-5): When no real user ID is known (`['auth','me']` cache empty and `getKnownDeviceSessionUserId() === null`),
     // even a retry `session_invalid` after an uncertain send does NOT record or render `saveUnconfirmed` (no shared fallback ID).
     queryClient.removeQueries({ queryKey: ['auth', 'me'] });
@@ -1794,6 +1845,50 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     await waitFor(() => {
       expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
     });
+
+    // HM18B-R2-6: When user ID is unknown at lock time, lock notice is still recorded as pending,
+    // adopted when User A is reconciled, never shown to User B, and cleared on any `signed_out` reason (incl. `expired`/`revoked`).
+    remounted.unmount();
+    clearLockClearedNotice();
+    queryClient.removeQueries({ queryKey: ['auth', 'me'] });
+    setKnownDeviceSessionUserId(null);
+
+    const unknownUserView = renderOmnibox(<Omnibox />, { queryClient });
+    const unknownTextarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(unknownTextarea, { target: { value: 'nháp khi chưa biết userId: bí mật' } });
+    act(() => {
+      triggerVaultLockReset();
+    });
+    unknownUserView.unmount();
+
+    // Unlock while user ID is still unknown -> generic draft-cleared notice is visible
+    triggerVaultUnlock();
+    const unlockedUnknownView = renderOmnibox(<Omnibox />, { queryClient });
+    expect(screen.getByTestId('omnibox-lock-cleared-notice')).toHaveTextContent(
+      'Bản nháp chưa lưu đã bị xoá khi khoá vault',
+    );
+
+    // Once User A's ID becomes known, notice is adopted by User A; switching to User B clears it
+    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_A_ID } });
+    setKnownDeviceSessionUserId(USER_A_ID);
+    unlockedUnknownView.rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('omnibox-lock-cleared-notice')).toBeInTheDocument();
+
+    // Involuntary `signed_out` broadcast (`reason: 'expired'`) immediately clears the lock notice
+    act(() => {
+      postSessionBroadcast({ type: 'signed_out', reason: 'expired' });
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+    });
   });
 
   it('sends only sealed ciphertext to entryCreate and never leaks plaintext in spy arguments, DOM attributes, QueryCache, or MutationCache on unlocked, locked, or failed save (P4FE1-2, P4FE2-2, HM18B-R1-6)', async () => {
@@ -1917,5 +2012,152 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       expect(itemTagsAddSpy).toHaveBeenCalledTimes(1);
       expect(entryCreateSpy).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('executes the real 4-step save-plan and features/entries seal/mutation helpers (mocking only fetch), lazy-loads GET /vault when vault.vaultMeta is initially null after onboarding, and sends POST /items/{id}/entries with ciphertext only (HM18-CI-7, HM18B-R2-4)', async () => {
+    // Simulate fresh `/app` after onboarding where `vault.state === 'unlocked'` in the Worker
+    // but `vault.vaultMeta` has not been fetched yet (`null`), requiring `reloadVaultMeta()` before sealing.
+    mockVaultMetaOverride = null;
+    mockReloadVaultMeta.mockImplementation(async () => {
+      const loaded = { vault_key_id: TEST_KEY_ID, version: 1 };
+      mockVaultMetaOverride = loaded;
+      return loaded;
+    });
+
+    const secretPlaintext = 'SENTINEL_REAL_STACK_FETCH_ONLY_778899';
+    const fetchRequests: Array<{
+      readonly method: string;
+      readonly url: string;
+      readonly headers: Headers;
+      readonly bodyText: string;
+    }> = [];
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const headers = new Headers(init?.headers);
+      const bodyText = typeof init?.body === 'string' ? init.body : '';
+      fetchRequests.push({ method, url, headers, bodyText });
+
+      if (method === 'GET' && url.includes('/items/lookup')) {
+        return new Response(
+          JSON.stringify({ items: [], total: 0, next_cursor: null }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (method === 'POST' && /\/items$/.test(url)) {
+        const parsed = JSON.parse(bodyText) as { id: string; name: string };
+        return new Response(
+          JSON.stringify({
+            id: parsed.id,
+            name: parsed.name,
+            hint: null,
+            tags: [],
+            entry_count: 0,
+            version: 1,
+            created_at: '2026-11-01T00:00:00Z',
+            updated_at: '2026-11-01T00:00:00Z',
+            last_used_at: '2026-11-01T00:00:00Z',
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (method === 'POST' && /\/tags$/.test(url)) {
+        const parsed = JSON.parse(bodyText) as { display: string };
+        return new Response(
+          JSON.stringify({
+            id: TAG_NHA.id,
+            display: parsed.display,
+            item_count: 1,
+            last_used_at: '2026-11-01T00:00:00Z',
+            created_at: '2026-11-01T00:00:00Z',
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (method === 'POST' && /\/items\/[^/]+\/tags$/.test(url)) {
+        return new Response(
+          JSON.stringify(ITEM_WIFI),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (method === 'POST' && /\/items\/([^/]+)\/entries$/.test(url)) {
+        const match = /\/items\/([^/]+)\/entries$/.exec(url);
+        const itemId = match?.[1] ?? ITEM_WIFI.id;
+        const parsed = JSON.parse(bodyText) as { id: string; plaintext_len_bucket: number };
+        return new Response(
+          JSON.stringify({
+            id: parsed.id,
+            item_id: itemId,
+            type: 'text',
+            position: 0,
+            version: 1,
+            plaintext_len_bucket: parsed.plaintext_len_bucket,
+            created_at: '2026-11-01T00:00:00Z',
+            updated_at: '2026-11-01T00:00:00Z',
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (method === 'GET' && (url.includes('/items') || url.includes('/tags') || url.includes('/entries'))) {
+        return new Response(
+          JSON.stringify({ items: [], next_cursor: null }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      throw new Error(`Unexpected fetch in real-stack save-plan test: ${method} ${url}`);
+    });
+
+    renderOmnibox();
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+    fireEvent.change(textarea, {
+      target: { value: `real-stack-item #nhà: ${secretPlaintext}` },
+    });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    const toast = await screen.findByTestId('undo-toast-item');
+    expect(within(toast).getByText(/Đã lưu vào “real-stack-item”/)).toBeInTheDocument();
+    expect(textarea).toHaveValue('');
+
+    // Verify `reloadVaultMeta` was invoked to populate `vault_key_id` before sealing
+    expect(mockReloadVaultMeta).toHaveBeenCalledTimes(1);
+    expect(mockSealEntryCalls).toHaveLength(1);
+
+    // Verify all 4 write steps were executed in order after `GET /items/lookup`
+    const writePaths = fetchRequests
+      .filter((r) => r.method === 'POST')
+      .map((r) => r.url);
+    expect(writePaths).toHaveLength(4);
+    expect(writePaths[0]).toMatch(/\/api\/v1\/items$/);
+    expect(writePaths[1]).toMatch(/\/api\/v1\/tags$/);
+    expect(writePaths[2]).toMatch(/\/api\/v1\/items\/[0-9a-f-]{36}\/tags$/);
+    expect(writePaths[3]).toMatch(/\/api\/v1\/items\/[0-9a-f-]{36}\/entries$/);
+
+    // Verify the `POST /items/{id}/entries` body carries only sealed ciphertext + envelope, never the plaintext
+    const entryPost = fetchRequests.find((r) => r.method === 'POST' && r.url.endsWith('/entries'));
+    expect(entryPost).toBeDefined();
+    expect(entryPost!.headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/i);
+    const parsedEntryBody = JSON.parse(entryPost!.bodyText) as Record<string, unknown>;
+    expect(parsedEntryBody).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      type: 'text',
+      ciphertext: 'Q0lQSEVSVEVYVF9PUEFRVUVfQllURVM',
+      plaintext_len_bucket: 256,
+      envelope: {
+        v: 1,
+        alg: 'xchacha20poly1305-ietf',
+        key_id: TEST_KEY_ID,
+        nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAA_nonce1',
+        ct_enc: 'utf8',
+      },
+    });
+
+    for (const req of fetchRequests) {
+      expect(req.url).not.toContain(secretPlaintext);
+      expect(req.bodyText).not.toContain(secretPlaintext);
+    }
+
+    fetchSpy.mockRestore();
   });
 });

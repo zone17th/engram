@@ -17,6 +17,83 @@ const QUICK_ADD_TIMEOUT_MS = 240_000;
 const UI_WAIT_MS = 30_000;
 const G1_MEDIAN_BUDGET_MS = 3_000;
 /**
+ * Matches `MAX_AUTO_RETRIES = 2` in `lib/api/content.ts:48` (initial send + 2 automatic retries = 3 sends per call).
+ */
+const CONTENT_MUTATE_MAX_AUTO_RETRIES = 2;
+const CONTENT_MUTATE_ATTEMPTS_PER_CALL = CONTENT_MUTATE_MAX_AUTO_RETRIES + 1;
+
+interface ApiResponseSummary {
+  readonly method: string;
+  readonly pathname: string;
+  readonly status: number;
+}
+
+function attachApiResponseRecorder(page: Page): ApiResponseSummary[] {
+  const responses: ApiResponseSummary[] = [];
+  page.context().on('response', (res) => {
+    const url = res.url();
+    if (url.includes('/api/v1/')) {
+      responses.push({
+        method: res.request().method(),
+        pathname: new URL(url).pathname,
+        status: res.status(),
+      });
+    }
+  });
+  return responses;
+}
+
+async function collectOmniboxFailureDiagnostics(
+  page: Page,
+  apiResponses: readonly ApiResponseSummary[],
+): Promise<string> {
+  const domState = await page
+    .evaluate(() => {
+      const stepNodes = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="omnibox-save-plan"] [data-step-key]'),
+      );
+      const stepStatuses = stepNodes.map(
+        (el) => `${el.getAttribute('data-step-key') ?? '?'}:${el.getAttribute('data-step-status') ?? '?'}`,
+      );
+      const errorTestIds = [
+        'omnibox-plan-error',
+        'omnibox-action-error',
+        'omnibox-add-error',
+        'omnibox-guard-alert',
+      ].filter((id) => Boolean(document.querySelector(`[data-testid="${id}"]:not([hidden])`)));
+      const actionErrorText =
+        document.querySelector('[data-testid="omnibox-action-error"]')?.textContent?.trim() ?? null;
+      return { stepStatuses, errorTestIds, actionErrorText };
+    })
+    .catch(() => ({ stepStatuses: [], errorTestIds: [], actionErrorText: null }));
+
+  const recentResponses = apiResponses
+    .slice(-15)
+    .map((r) => `${r.method} ${r.pathname} -> ${r.status}`);
+  return JSON.stringify({
+    stepStatuses: domState.stepStatuses,
+    errorTestIds: domState.errorTestIds,
+    actionErrorText: domState.actionErrorText,
+    recentResponses,
+  });
+}
+
+async function expectOmniboxClearedOrReport(
+  page: Page,
+  omnibox: Locator,
+  apiResponses: readonly ApiResponseSummary[],
+): Promise<void> {
+  try {
+    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+  } catch (err) {
+    const diag = await collectOmniboxFailureDiagnostics(page, apiResponses);
+    throw new Error(
+      `Quick-add did not clear omnibox textarea. Diagnostics: ${diag}\nOriginal error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
  * Writes a value into a `<textarea>` or `<input>` without appearing in Playwright's `fill()` call logs.
  */
 async function setSecretTextareaValue(locator: Locator, value: string): Promise<void> {
@@ -46,6 +123,7 @@ async function measureFiveSavesMedianMs(
   page: Page,
   omnibox: Locator,
   prefix: string,
+  apiResponses: readonly ApiResponseSummary[],
 ): Promise<number> {
   const samples: number[] = [];
 
@@ -61,7 +139,14 @@ async function measureFiveSavesMedianMs(
       .getByTestId('undo-toast-item')
       .filter({ hasText: itemName })
       .first();
-    await expect(toast).toBeVisible({ timeout: UI_WAIT_MS });
+    try {
+      await expect(toast).toBeVisible({ timeout: UI_WAIT_MS });
+    } catch (err) {
+      const diag = await collectOmniboxFailureDiagnostics(page, apiResponses);
+      throw new Error(
+        `G1 save "${itemName}" did not produce toast. Diagnostics: ${diag}\nOriginal error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const elapsedMs = Date.now() - startMs;
     samples.push(elapsedMs);
   }
@@ -79,7 +164,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     page,
   }) => {
     test.setTimeout(QUICK_ADD_TIMEOUT_MS);
-
+    const apiResponses = attachApiResponseRecorder(page);
     const email = uniqueEmail('content-omni-a3');
     await signupPasswordUser(page, email);
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
@@ -91,9 +176,9 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await expect(page.getByTestId('home-empty-state')).toBeVisible({ timeout: UI_WAIT_MS });
 
     // --- 1. G1: Enter -> "Đã lưu" toast <= 3 s median of 5 runs (1 rerun allowed if runner is slow; log both numbers) ---
-    const firstMedianMs = await measureFiveSavesMedianMs(page, omnibox, 'g1-run1');
+    const firstMedianMs = await measureFiveSavesMedianMs(page, omnibox, 'g1-run1', apiResponses);
     if (firstMedianMs > G1_MEDIAN_BUDGET_MS) {
-      const secondMedianMs = await measureFiveSavesMedianMs(page, omnibox, 'g1-run2');
+      const secondMedianMs = await measureFiveSavesMedianMs(page, omnibox, 'g1-run2', apiResponses);
       console.info(
         `[G1 quick-add latency] run1 median=${firstMedianMs}ms, run2 median=${secondMedianMs}ms`,
       );
@@ -105,9 +190,10 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
 
     // --- 2. A3: Drop response after server commits `POST /items` -> Retry button reuses Idempotency-Key -> 1 item + 1 entry;
     //         Drop response after server commits `POST /items/{id}/entries` -> Retry button reuses Idempotency-Key -> 1 entry ---
-    // Note: `contentMutate` automatically retries a network failure once (`maxNetworkRetries = 1`), so we abort the first 2
-    // attempts after forwarding the first to the real backend; this deterministically surfaces `omnibox-retry-plan-btn` (HM18B-R1-7).
-    let postItemsAbortRemaining = 2;
+    // `contentMutate` automatically retries a network failure up to `MAX_AUTO_RETRIES = 2` times (3 sends per call),
+    // so we abort `CONTENT_MUTATE_ATTEMPTS_PER_CALL` (3) attempts after forwarding the first to the real backend;
+    // this deterministically surfaces `omnibox-retry-plan-btn` and makes the 4th send come from the manual Retry click (HM18B-R2-1).
+    let postItemsAbortRemaining = CONTENT_MUTATE_ATTEMPTS_PER_CALL;
     let postItemsForwardedToBackend = false;
     const seenPostItemsKeys: string[] = [];
     await page.route('**/api/v1/items', async (route) => {
@@ -156,12 +242,13 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
 
     const retryBtn = page.getByTestId('omnibox-retry-plan-btn');
     await expect(retryBtn).toBeVisible({ timeout: UI_WAIT_MS });
+    expect(seenPostItemsKeys).toHaveLength(CONTENT_MUTATE_ATTEMPTS_PER_CALL);
     await retryBtn.click();
     await expect(
       page.getByTestId('undo-toast-item').filter({ hasText: 'a3-item' }).first(),
     ).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
-    expect(seenPostItemsKeys.length).toBeGreaterThanOrEqual(3);
+    await expectOmniboxClearedOrReport(page, omnibox, apiResponses);
+    expect(seenPostItemsKeys).toHaveLength(CONTENT_MUTATE_ATTEMPTS_PER_CALL + 1);
     expect(new Set(seenPostItemsKeys).size).toBe(1);
 
     // Verify via real backend lookup that exactly 1 'a3-item' with entry_count === 1 exists
@@ -174,15 +261,16 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
 
     // Now test dropping the response on `POST /items/{id}/entries` -> deterministically wait for Retry button and click it
     seenPostEntriesKeys.length = 0;
-    postEntriesAbortRemaining = 2;
+    postEntriesAbortRemaining = CONTENT_MUTATE_ATTEMPTS_PER_CALL;
     postEntriesForwardedToBackend = false;
     await setSecretTextareaValue(omnibox, 'a3-item: second-entry-payload');
     await omnibox.press('Enter');
 
     await expect(retryBtn).toBeVisible({ timeout: UI_WAIT_MS });
+    expect(seenPostEntriesKeys).toHaveLength(CONTENT_MUTATE_ATTEMPTS_PER_CALL);
     await retryBtn.click();
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
-    expect(seenPostEntriesKeys.length).toBeGreaterThanOrEqual(3);
+    await expectOmniboxClearedOrReport(page, omnibox, apiResponses);
+    expect(seenPostEntriesKeys).toHaveLength(CONTENT_MUTATE_ATTEMPTS_PER_CALL + 1);
     expect(new Set(seenPostEntriesKeys).size).toBe(1);
 
     const lookupA3Item2 = await page.evaluate(async () => {
@@ -201,6 +289,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
   }) => {
     test.setTimeout(QUICK_ADD_TIMEOUT_MS);
 
+    const apiResponses = attachApiResponseRecorder(page);
     const email = uniqueEmail('content-omni-picker');
     await signupPasswordUser(page, email);
     await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
@@ -213,13 +302,12 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     // Create 1st item 'dup-target'
     await setSecretTextareaValue(omnibox, 'dup-target #nhà: first-dup-entry');
     await omnibox.press('Enter');
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxClearedOrReport(page, omnibox, apiResponses);
 
     // Ctrl+Enter creates a 2nd item with the same name 'dup-target'
     await setSecretTextareaValue(omnibox, 'dup-target #ops: second-dup-entry');
     await omnibox.press('Control+Enter');
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
-
+    await expectOmniboxClearedOrReport(page, omnibox, apiResponses);
     const lookupTwo = await page.evaluate(async () => {
       const res = await fetch('/api/v1/items/lookup?name=dup-target', { credentials: 'include' });
       return (await res.json()) as { items: Array<{ id: string; entry_count: number }>; total: number };
@@ -275,6 +363,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
   }) => {
     test.setTimeout(QUICK_ADD_TIMEOUT_MS);
 
+    const apiResponses = attachApiResponseRecorder(page);
     const deleteRequestUrls: string[] = [];
     page.context().on('request', (req) => {
       if (req.method() === 'DELETE' && req.url().includes('/api/v1/')) {
@@ -294,7 +383,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     // 1. Ctrl+Z right after save deletes ONLY the entry (item stays with entry_count === 0)
     await setSecretTextareaValue(omnibox, 'undo-target #nhà: secret-to-undo');
     await omnibox.press('Enter');
-    await expect(omnibox).toHaveValue('', { timeout: UI_WAIT_MS });
+    await expectOmniboxClearedOrReport(page, omnibox, apiResponses);
     await expect(
       page.getByTestId('undo-toast-item').filter({ hasText: 'undo-target' }).first(),
     ).toBeVisible({ timeout: UI_WAIT_MS });
@@ -390,8 +479,34 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
 
     const lockClearedNotice = page.getByTestId('omnibox-lock-cleared-notice');
     await expect(lockClearedNotice).toBeVisible({ timeout: UI_WAIT_MS });
+    // Exact `plan` variant assertion: item and tags were committed before the lock (HM18B-R2-7)
     await expect(lockClearedNotice).toContainText(
-      /Bản nháp chưa lưu đã bị xoá khi khoá vault|Unsaved draft was cleared when the vault locked/,
+      /Bản nháp chưa lưu đã bị xoá khi khoá vault; mục\/tag đã tạo vẫn còn|Unsaved draft was cleared when the vault locked; any item\/tags already created were kept/,
     );
+
+    // Switching to another user in `['auth', 'me']` immediately hides and clears User A's lock notice (HM18B-R2-7)
+    await page.evaluate(() => {
+      const win = window as unknown as {
+        __engramQueryClient?: {
+          setQueryData: (key: readonly unknown[], updater: (prev: unknown) => unknown) => void;
+        };
+      };
+      win.__engramQueryClient?.setQueryData(['auth', 'me'], (prev) => {
+        if (!prev || typeof prev !== 'object') return prev;
+        const prevObj: Record<string, unknown> = prev as Record<string, unknown>;
+        const prevUser =
+          'user' in prevObj && typeof prevObj.user === 'object' && prevObj.user !== null
+            ? (prevObj.user as Record<string, unknown>)
+            : {};
+        return {
+          ...prevObj,
+          user: {
+            ...prevUser,
+            id: '00000000-0000-4000-8000-000000000999',
+          },
+        };
+      });
+    });
+    await expect(lockClearedNotice).toBeHidden({ timeout: UI_WAIT_MS });
   });
 });

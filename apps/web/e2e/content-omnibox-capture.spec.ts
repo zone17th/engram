@@ -38,15 +38,69 @@ async function setSecretTextareaValue(locator: Locator, value: string): Promise<
   }, value);
 }
 
+interface ApiResponseSummary {
+  readonly method: string;
+  readonly pathname: string;
+  readonly status: number;
+}
+
+async function collectOmniboxFailureDiagnostics(
+  page: Page,
+  apiResponses: readonly ApiResponseSummary[],
+): Promise<string> {
+  const domState = await page
+    .evaluate(() => {
+      const stepNodes = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="omnibox-save-plan"] [data-step-key]'),
+      );
+      const stepStatuses = stepNodes.map(
+        (el) => `${el.getAttribute('data-step-key') ?? '?'}:${el.getAttribute('data-step-status') ?? '?'}`,
+      );
+      const errorTestIds = [
+        'omnibox-plan-error',
+        'omnibox-action-error',
+        'omnibox-add-error',
+        'omnibox-guard-alert',
+      ].filter((id) => Boolean(document.querySelector(`[data-testid="${id}"]:not([hidden])`)));
+      const actionErrorText =
+        document.querySelector('[data-testid="omnibox-action-error"]')?.textContent?.trim() ?? null;
+      return { stepStatuses, errorTestIds, actionErrorText };
+    })
+    .catch(() => ({ stepStatuses: [], errorTestIds: [], actionErrorText: null }));
+
+  const recentResponses = apiResponses
+    .slice(-15)
+    .map((r) => `${r.method} ${r.pathname} -> ${r.status}`);
+  return JSON.stringify({
+    stepStatuses: domState.stepStatuses,
+    errorTestIds: domState.errorTestIds,
+    actionErrorText: domState.actionErrorText,
+    recentResponses,
+  });
+}
+
 function attachNetworkRecorder(page: Page): {
   readonly records: CapturedRequestRecord[];
+  readonly apiResponses: ApiResponseSummary[];
   readonly flushPending: () => Promise<void>;
   readonly countSince: (index: number) => number;
   readonly assertNeverContains: (sentinels: readonly string[]) => void;
 } {
   const records: CapturedRequestRecord[] = [];
+  const apiResponses: ApiResponseSummary[] = [];
   const pendingHeaderTasks = new Set<Promise<void>>();
   const context = page.context();
+
+  context.on('response', (res) => {
+    const url = res.url();
+    if (url.includes('/api/v1/')) {
+      apiResponses.push({
+        method: res.request().method(),
+        pathname: new URL(url).pathname,
+        status: res.status(),
+      });
+    }
+  });
 
   context.on('request', (req) => {
     const method = req.method();
@@ -86,6 +140,7 @@ function attachNetworkRecorder(page: Page): {
 
   return {
     records,
+    apiResponses,
     async flushPending(): Promise<void> {
       if (pendingHeaderTasks.size > 0) {
         await Promise.all([...pendingHeaderTasks]);
@@ -224,7 +279,14 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await omnibox.press('Enter');
 
     const savedToast = page.getByTestId('undo-toast-item').first();
-    await expect(savedToast).toBeVisible({ timeout: UI_WAIT_MS });
+    try {
+      await expect(savedToast).toBeVisible({ timeout: UI_WAIT_MS });
+    } catch (err) {
+      const diag = await collectOmniboxFailureDiagnostics(page, recorder.apiResponses);
+      throw new Error(
+        `Quick-add save did not produce undo-toast-item. Diagnostics: ${diag}\nOriginal error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     await expect(savedToast).toContainText('name');
     await recorder.flushPending();
     expect(recorder.countSince(markSave)).toBeGreaterThan(0);
