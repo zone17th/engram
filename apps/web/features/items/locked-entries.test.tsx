@@ -5,6 +5,8 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ItemPage from '@/app/app/items/[id]/page';
 import { Omnibox } from '@/components/app-shell/omnibox';
+import { ThemeProvider } from '@/components/theme-provider';
+import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { VaultPill } from '@/components/ui/vault-pill';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
@@ -415,32 +417,36 @@ describe('P03-T21 Locked state U5', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const buildTree = (children: ReactNode) => (
       <NextIntlClientProvider locale="en" messages={en}>
-        <QueryClientProvider client={qc}>
-          <SessionProvider>
-            <VaultProvider
-              createWorker={() => {
-                const shim = createWorkerShim({
-                  deriveKek: async (sodium, passphrase, params) => {
-                    if (kdfGate) {
-                      const gate = kdfGate;
-                      kdfGate = null;
-                      gate.notifyEntered();
-                      await gate.waitRelease;
-                    }
-                    return fastTestDeriveKek(sodium, passphrase, params);
-                  },
-                });
-                activeShim = shim;
-                shims.push(shim);
-                return shim.port;
-              }}
-              lockEpochEnv={makeSimpleLockEpochEnv()}
-            >
-              <Probe />
-              {children}
-            </VaultProvider>
-          </SessionProvider>
-        </QueryClientProvider>
+        <ThemeProvider initialTheme="light" initialLocale="en">
+          <QueryClientProvider client={qc}>
+            <UndoToastProvider>
+              <SessionProvider>
+                <VaultProvider
+                  createWorker={() => {
+                    const shim = createWorkerShim({
+                      deriveKek: async (sodium, passphrase, params) => {
+                        if (kdfGate) {
+                          const gate = kdfGate;
+                          kdfGate = null;
+                          gate.notifyEntered();
+                          await gate.waitRelease;
+                        }
+                        return fastTestDeriveKek(sodium, passphrase, params);
+                      },
+                    });
+                    activeShim = shim;
+                    shims.push(shim);
+                    return shim.port;
+                  }}
+                  lockEpochEnv={makeSimpleLockEpochEnv()}
+                >
+                  <Probe />
+                  {children}
+                </VaultProvider>
+              </SessionProvider>
+            </UndoToastProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
       </NextIntlClientProvider>
     );
 

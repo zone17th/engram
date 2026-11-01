@@ -12,6 +12,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ItemPage from '@/app/app/items/[id]/page';
+import { ThemeProvider } from '@/components/theme-provider';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { SessionProvider, useSession } from '@/features/auth/session-provider';
 import {
@@ -326,6 +327,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -694,25 +696,27 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
     const buildTree = (child?: ReactNode) => (
       <NextIntlClientProvider locale={locale} messages={locale === 'vi' ? viMessages : en}>
-        <QueryClientProvider client={qc}>
-          <UndoToastProvider>
-            <SessionProvider>
-              <VaultProvider
-                createWorker={() => {
-                  const shim = createWorkerShim({
-                    deriveKek: fastTestDeriveKek,
-                  });
-                  shims.push(shim);
-                  return shim.port;
-                }}
-                lockEpochEnv={makeSimpleLockEpochEnv()}
-              >
-                <Probe />
-                {child}
-              </VaultProvider>
-            </SessionProvider>
-          </UndoToastProvider>
-        </QueryClientProvider>
+        <ThemeProvider initialTheme="light" initialLocale={locale}>
+          <QueryClientProvider client={qc}>
+            <UndoToastProvider>
+              <SessionProvider>
+                <VaultProvider
+                  createWorker={() => {
+                    const shim = createWorkerShim({
+                      deriveKek: fastTestDeriveKek,
+                    });
+                    shims.push(shim);
+                    return shim.port;
+                  }}
+                  lockEpochEnv={makeSimpleLockEpochEnv()}
+                >
+                  <Probe />
+                  {child}
+                </VaultProvider>
+              </SessionProvider>
+            </UndoToastProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
       </NextIntlClientProvider>
     );
     // First mount without ItemDetailPage so we can create & unlock the vault and seal initial entries
@@ -1008,7 +1012,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
   it('412 on entry PUT keeps draft; Copy mine copies draft; Keep mine writes with the new version and fresh nonce; Load latest drops draft after inline confirm', async () => {
     const writeTextMock = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, {
+    vi.stubGlobal('navigator', {
+      ...navigator,
       clipboard: { writeText: writeTextMock },
     });
 
