@@ -283,7 +283,7 @@ function VaultSecurityPanelInner({
         {/* 10 slot status chips (metadata only — never renders stored RK secrets) */}
         {rkStatusQuery.isError ? (
           <div
-            className="mb-3 flex flex-wrap items-center gap-3 rounded-md bg-surface p-3 text-[13px] text-muted"
+            className="flex flex-wrap items-center gap-3 rounded-md bg-surface p-3 text-[13px] text-muted"
             role="status"
             data-testid="recovery-keys-status-error"
           >
@@ -329,7 +329,7 @@ function VaultSecurityPanelInner({
               })}
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-2 text-[13px] text-muted">
+            <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted">
               <span>
                 {hasEmptySlots
                   ? t('recoveryKeys.summaryWithEmpty', {
@@ -344,7 +344,7 @@ function VaultSecurityPanelInner({
           </>
         ) : (
           <div
-            className="mb-3 text-[13px] text-muted"
+            className="text-[13px] text-muted"
             data-testid="recovery-keys-status-pending"
           >
             {isVaultUnlocked
@@ -360,9 +360,11 @@ function VaultSecurityPanelInner({
           </div>
         )}
 
-        <div className="rounded-md bg-surface p-3 text-[12px] text-muted">
-          {t('recoveryKeys.noViewNotice')}
-        </div>
+        {rkStatusQuery.data && !hasEmptySlots && (
+          <div className="mt-3 rounded-md bg-surface p-3 text-[12px] text-muted">
+            {t('recoveryKeys.noViewNotice')}
+          </div>
+        )}
       </div>
 
       {passkeySlot}

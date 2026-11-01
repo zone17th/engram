@@ -253,7 +253,7 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
     mocks.fetchPasskeysList.mockResolvedValueOnce({ items: [] });
     renderPasskeyCard('vi');
     expect(await screen.findByTestId('settings-passkey-empty')).toHaveTextContent(
-      'Chưa có passkey. Thêm trong Settings sau khi mở vault.',
+      'Chưa có passkey nào.',
     );
     cleanup();
 
