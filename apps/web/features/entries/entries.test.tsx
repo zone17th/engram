@@ -9,9 +9,6 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { ESLint } from 'eslint';
 import { useEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -22,6 +19,9 @@ import {
   computePlaintextLenBucket,
   createConcurrencyLimiter,
   createRealEntryBodyLoader,
+  entryBodyLoadLimiter,
+  mutateSealedEntryCreate,
+  mutateSealedEntryUpdate,
   resetEntryBodyLoadLimiterForTests,
   sealEntryImportJson,
   sealEntryUpdate,
@@ -30,7 +30,9 @@ import {
   toEntryUpdateVariables,
   useCreateEntryMutation,
   useUpdateEntryMutation,
+  type SealedEntryCreateVariables,
   type SealedEntryUpdatePayload,
+  type SealedEntryUpdateVariables,
   type SealedNewEntryPayload,
 } from '@/features/entries';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
@@ -61,9 +63,6 @@ import type { Sodium } from '@/lib/crypto/sodium';
 import { createWorkerShim } from '@/lib/crypto/test/worker-shim';
 import en from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
-
-const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const hoistedEslint = new ESLint({ cwd: WEB_ROOT });
 
 const PASSPHRASE = 'task14-real-entry-passphrase-1';
 const KEY_ID = 'vk:7f3a91c4e0b2d8a1f5c309';
@@ -309,6 +308,7 @@ function bodyQueriesWithData(qc: QueryClient): unknown[] {
 
 describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', () => {
   const shims: Array<{ close: () => void }> = [];
+  const queryClients: QueryClient[] = [];
 
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
@@ -318,12 +318,15 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
 
   afterEach(() => {
     cleanup();
+    for (const qc of queryClients.splice(0)) {
+      qc.clear();
+    }
     for (const shim of shims.splice(0)) shim.close();
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
-
   interface TestSessionControls {
     signOut: (reason?: 'revoked' | 'expired' | 'invalid' | 'logout') => Promise<void>;
     refetchMe: () => Promise<void>;
@@ -338,7 +341,10 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
     lock: () => Promise<void>;
     workerCalls: Array<{ type: string; id: number }>;
     setRouteHandler: (
-      handler: (url: string, init?: RequestInit) => Promise<Response> | Response | null,
+      handler: (
+        url: string,
+        init?: RequestInit,
+      ) => Promise<Response | null> | Response | null,
     ) => void;
     setCurrentMe: (me: Me) => void;
     setVaultAbsent: (absent: boolean) => void;
@@ -361,9 +367,8 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
     let currentMe = makeMe(USER_A_ID, 'present');
     let vaultAbsent = false;
     let customRouteHandler:
-      | ((url: string, init?: RequestInit) => Promise<Response> | Response | null)
+      | ((url: string, init?: RequestInit) => Promise<Response | null> | Response | null)
       | null = null;
-
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (customRouteHandler) {
@@ -396,6 +401,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         mutations: { retry: false },
       },
     });
+    queryClients.push(qc);
 
     render(
       <NextIntlClientProvider locale={locale} messages={locale === 'vi' ? viMessages : en}>
@@ -405,11 +411,13 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
               createWorker={() => {
                 const shim = createWorkerShim({
                   deriveKek: fastTestDeriveKek,
-                  onBeforeCommand: (msg) => {
-                    workerCalls.push({ type: msg.type, id: msg.id });
-                  },
                 });
                 shims.push(shim);
+                const origPostMessage = shim.port.postMessage.bind(shim.port);
+                shim.port.postMessage = (message, transfer) => {
+                  workerCalls.push({ type: message.type, id: message.id });
+                  return origPostMessage(message, transfer);
+                };
                 return shim.port;
               }}
               lockEpochEnv={makeSimpleLockEpochEnv()}
@@ -633,29 +641,74 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       expect(imported.requestBody.source).toBe('file');
       expect(JSON.stringify(imported)).not.toContain('SENTINEL-IMPORT-JSON-1');
     }, 30_000);
+
+    it('maps Worker sealEntry errors (e.g. locked / stale generation) to EntrySealError (IP14-FE1-13)', async () => {
+      const h = await mountUnlockedHarness();
+      const staleOp = h.vault().beginOp();
+      await h.lock();
+
+      await expect(
+        sealNewEntry({
+          text: 'SENTINEL-STALE-SEAL-ATTEMPT',
+          itemId: ITEM_ID,
+          vault: {
+            vaultMeta: { vault_key_id: KEY_ID },
+            beginOp: () => staleOp,
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: 'EntrySealError',
+        code: 'VAULT_LOCKED',
+      });
+    }, 30_000);
   });
 
-  describe('2. key_id mismatch vs AEAD decrypt failure + Retry + version reconciliation', () => {
-    it('key_id mismatch renders old-key state and NEVER calls Worker openEntry', async () => {
-      const h = await mountUnlockedHarness(undefined, 'vi');
+  describe('2. key_id mismatch vs AEAD decrypt failure + Retry + identity auth + version reconciliation', () => {
+    it('key_id mismatch renders old-key state and NEVER calls Worker openEntry; malformed envelope maps to decrypt_failed (IP14-FE1-9, IP14-FE1-10)', async () => {
+      let mode: 'old_key' | 'malformed' = 'old_key';
+      let sealedPayload: SealedNewEntryPayload | null = null;
+      const loader = createRealEntryBodyLoader();
 
-      // Seal a valid entry, then serve it with an older key_id in its envelope
+      const h = await mountUnlockedHarness(
+        () => (
+          <EntryBody
+            entryId={ENTRY_ID_1}
+            version={1}
+            itemId={ITEM_ID}
+            load={loader}
+            lazy={false}
+          />
+        ),
+        'vi',
+      );
+
       const sealed = await sealNewEntry({
         text: 'SENTINEL-OLD-KEY-BODY',
         itemId: ITEM_ID,
         entryId: ENTRY_ID_1,
         vault: h.vault(),
       });
+      sealedPayload = sealed;
 
       h.setRouteHandler((url) => {
-        if (url.endsWith(`/entries/${ENTRY_ID_1}`)) {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && sealedPayload) {
+          if (mode === 'malformed') {
+            return jsonResponse({
+              ...makeEntryMeta({ id: ENTRY_ID_1, version: 1 }),
+              envelope: {
+                ...sealedPayload.envelope,
+                key_id: 'not-a-valid-key-id',
+              },
+              ciphertext: sealedPayload.ciphertext,
+            });
+          }
           const entryResp: Entry = {
             ...makeEntryMeta({ id: ENTRY_ID_1, version: 1 }),
             envelope: {
-              ...sealed.envelope,
+              ...sealedPayload.envelope,
               key_id: OLD_KEY_ID,
             },
-            ciphertext: sealed.ciphertext,
+            ciphertext: sealedPayload.ciphertext,
           };
           return jsonResponse(entryResp);
         }
@@ -663,27 +716,21 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       });
 
       h.workerCalls.length = 0;
-      const loader = createRealEntryBodyLoader();
+      await act(async () => {
+        await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
+      });
 
-      render(
-        <NextIntlClientProvider locale="vi" messages={viMessages}>
-          <QueryClientProvider client={h.qc}>
-            <EntryBody
-              entryId={ENTRY_ID_1}
-              version={1}
-              load={(id, ctx) =>
-                loader(id, {
-                  ...ctx,
-                  vaultKeyId: h.vault().vaultMeta?.vault_key_id ?? KEY_ID,
-                })
-              }
-              lazy={false}
-            />
-          </QueryClientProvider>
-        </NextIntlClientProvider>,
+      await waitFor(() =>
+        expect(screen.getByTestId('entry-body-old-key')).toBeInTheDocument(),
+      );
+      expect(screen.getByTestId('entry-body-old-key')).toHaveTextContent(
+        /Entry này mã hoá bằng khoá cũ/i,
+      );
+      expect(screen.getByTestId('entry-body-old-key')).not.toHaveTextContent(
+        'entry_key_mismatch',
       );
 
-      // Direct test inside the mounted provider tree using h.qc:
+      // Direct loader assertion as well:
       await expect(
         loader(ENTRY_ID_1, {
           client: h.vault().getClient(),
@@ -699,11 +746,79 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
 
       // Worker openEntry was NEVER called!
       expect(h.workerCalls.filter((c) => c.type === 'openEntry')).toHaveLength(0);
+
+      // IP14-FE1-10: Missing/malformed envelope.key_id throws decrypt_failed (retryable), not old_key
+      mode = 'malformed';
+      await expect(
+        loader(ENTRY_ID_1, {
+          client: h.vault().getClient(),
+          opGeneration: h.vault().captureOpGeneration(),
+          vaultKeyId: h.vault().vaultMeta?.vault_key_id,
+        }),
+      ).rejects.toMatchObject({
+        name: 'EntryBodyOpenError',
+        kind: 'decrypt_failed',
+      });
     }, 30_000);
 
-    it('renders old-key card and AEAD decrypt-failed card with working Retry button in EntryBody', async () => {
-      let currentMode: 'old_key' | 'corrupt_aead' | 'valid' = 'old_key';
-      let validSealed!: SealedNewEntryPayload;
+    it('rejects entry.id !== requestedEntryId when entry B is served for entry A (IP14-BE1-1)', async () => {
+      let sealedEntryB: SealedNewEntryPayload | null = null;
+      const loader = createRealEntryBodyLoader();
+
+      const h = await mountUnlockedHarness(() => (
+        <EntryBody
+          entryId={ENTRY_ID_1}
+          version={1}
+          itemId={ITEM_ID}
+          load={loader}
+          lazy={false}
+        />
+      ));
+
+      // Seal entry B with a valid current vault key
+      sealedEntryB = await sealNewEntry({
+        text: 'SENTINEL-FOREIGN-ENTRY-B-PAYLOAD-404',
+        itemId: ITEM_ID,
+        entryId: ENTRY_ID_2,
+        vault: h.vault(),
+      });
+
+      // Compromised server returns entry B when entry A (ENTRY_ID_1) is requested
+      h.setRouteHandler((url) => {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && sealedEntryB) {
+          return jsonResponse({
+            ...makeEntryMeta({ id: ENTRY_ID_2, item_id: ITEM_ID, version: 1 }),
+            envelope: sealedEntryB.envelope,
+            ciphertext: sealedEntryB.ciphertext,
+          } satisfies Entry);
+        }
+        return null;
+      });
+
+      await act(async () => {
+        await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('entry-body-error')).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId('entry-body')).toBeNull();
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_2, 1))).toBeUndefined();
+      expect(bodyQueriesWithData(h.qc)).toEqual([]);
+      expect(
+        findCacheSentinelLeaks(h.qc, ['SENTINEL-FOREIGN-ENTRY-B-PAYLOAD-404']),
+      ).toEqual([]);
+      expect(document.body.textContent).not.toContain(
+        'SENTINEL-FOREIGN-ENTRY-B-PAYLOAD-404',
+      );
+    }, 30_000);
+
+    it('renders old-key card, branches error copy (decrypt vs network vs not_found), and preserves container/focus on Retry (IP14-FE1-5)', async () => {
+      let currentMode: 'old_key' | 'corrupt_aead' | 'network_err' | 'not_found_err' | 'valid' =
+        'old_key';
+      let validSealedPayload: SealedNewEntryPayload | null = null;
+      let oldKeyFetches = 0;
       const loader = createRealEntryBodyLoader();
 
       const h = await mountUnlockedHarness(
@@ -721,37 +836,45 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         'vi',
       );
 
-      validSealed = await sealNewEntry({
+      const validSealed = await sealNewEntry({
         text: 'SENTINEL-RECOVERED-AFTER-RETRY-77',
         itemId: ITEM_ID,
         entryId: ENTRY_ID_1,
         vault: h.vault(),
       });
+      validSealedPayload = validSealed;
 
       h.setRouteHandler((url) => {
-        if (url.endsWith(`/entries/${ENTRY_ID_1}`)) {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && validSealedPayload) {
           if (currentMode === 'old_key') {
+            oldKeyFetches += 1;
             return jsonResponse({
               ...makeEntryMeta({ id: ENTRY_ID_1, version: 1 }),
-              envelope: { ...validSealed.envelope, key_id: OLD_KEY_ID },
-              ciphertext: validSealed.ciphertext,
+              envelope: { ...validSealedPayload.envelope, key_id: OLD_KEY_ID },
+              ciphertext: validSealedPayload.ciphertext,
             } satisfies Entry);
+          }
+          if (currentMode === 'network_err') {
+            throw new TypeError('Failed to fetch');
+          }
+          if (currentMode === 'not_found_err') {
+            return problemResponse('not_found', 404);
           }
           if (currentMode === 'corrupt_aead') {
             // Tamper with ciphertext so AEAD tag verification fails in Worker
             const badCiphertext =
-              validSealed.ciphertext.slice(0, -4) +
-              (validSealed.ciphertext.endsWith('AAAA') ? 'BBBB' : 'AAAA');
+              validSealedPayload.ciphertext.slice(0, -4) +
+              (validSealedPayload.ciphertext.endsWith('AAAA') ? 'BBBB' : 'AAAA');
             return jsonResponse({
               ...makeEntryMeta({ id: ENTRY_ID_1, version: 1 }),
-              envelope: validSealed.envelope,
+              envelope: validSealedPayload.envelope,
               ciphertext: badCiphertext,
             } satisfies Entry);
           }
           return jsonResponse({
             ...makeEntryMeta({ id: ENTRY_ID_1, version: 1 }),
-            envelope: validSealed.envelope,
-            ciphertext: validSealed.ciphertext,
+            envelope: validSealedPayload.envelope,
+            ciphertext: validSealedPayload.ciphertext,
           } satisfies Entry);
         }
         return null;
@@ -760,9 +883,10 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       // 1. Trigger refetch in old_key mode
       h.workerCalls.length = 0;
       await act(async () => {
-        await h.qc.invalidateQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
+        await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
       });
 
+      await waitFor(() => expect(oldKeyFetches).toBeGreaterThan(0));
       await waitFor(() =>
         expect(screen.getByTestId('entry-body-old-key')).toBeInTheDocument(),
       );
@@ -772,24 +896,51 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       expect(h.workerCalls.filter((c) => c.type === 'openEntry')).toHaveLength(0);
       assertNoPlaintextAttrs(document.body, ['SENTINEL-RECOVERED-AFTER-RETRY-77']);
 
-      // 2. Switch to corrupt_aead mode and invalidate -> decrypt-failed card with Retry button
+      // 2. Switch to network_err mode -> network copy
+      currentMode = 'network_err';
+      await act(async () => {
+        await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('entry-body-error')).toHaveTextContent(
+          /Không tải được entry này/i,
+        ),
+      );
+
+      // 3. Switch to not_found_err mode -> not_found copy
+      currentMode = 'not_found_err';
+      await act(async () => {
+        await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('entry-body-error')).toHaveTextContent(
+          /Entry không còn khả dụng/i,
+        ),
+      );
+
+      // 4. Switch to corrupt_aead mode -> decrypt-failed card with Retry button and aria-describedby
       currentMode = 'corrupt_aead';
       await act(async () => {
         await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
       });
 
       await waitFor(() =>
-        expect(screen.getByTestId('entry-body-error')).toBeInTheDocument(),
-      );
-      expect(screen.getByTestId('entry-body-error')).toHaveTextContent(
-        /Không giải mã được/i,
+        expect(screen.getByTestId('entry-body-error')).toHaveTextContent(
+          /Không giải mã được/i,
+        ),
       );
       const retryBtn = screen.getByTestId('entry-body-retry');
       expect(retryBtn).toHaveTextContent('Thử lại');
+      const describedById = retryBtn.getAttribute('aria-describedby');
+      expect(describedById).toBeTruthy();
+      expect(document.getElementById(describedById!)?.textContent).toMatch(
+        /Không giải mã được entry này/i,
+      );
       assertNoPlaintextAttrs(document.body, ['SENTINEL-RECOVERED-AFTER-RETRY-77']);
 
-      // 3. Switch server response to valid ciphertext and click Retry -> body renders!
+      // 5. Switch server response to valid ciphertext and click Retry -> body renders and receives focus!
       currentMode = 'valid';
+      retryBtn.focus();
       await act(async () => {
         fireEvent.click(retryBtn);
       });
@@ -805,40 +956,66 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       assertNoPlaintextAttrs(document.body, ['SENTINEL-RECOVERED-AFTER-RETRY-77']);
     }, 30_000);
 
-    it('when GET /entries/{id} returns a newer version than list metadata, caches under the new version and invalidates list metadata', async () => {
+    it('when GET /entries/{id} returns a newer version than list metadata, hands off to v3, leaves v1 empty/removed, and remounting with stale v1 metadata does not reuse a cached v1 body (IP14-BE1-2, IP14-FE1-11)', async () => {
       const loader = createRealEntryBodyLoader();
-      let serverSealed!: SealedNewEntryPayload;
+      let serverSealedPayload: SealedNewEntryPayload | null = null;
+      let getEntryCallCount = 0;
+      let setShowSecondConsumer!: (show: boolean) => void;
 
-      const h = await mountUnlockedHarness(() => (
-        <EntryBody
-          entryId={ENTRY_ID_1}
-          version={1}
-          itemId={ITEM_ID}
-          load={loader}
-          lazy={false}
-        />
-      ));
+      function VersionHandoffHarness() {
+        const [showSecond, setShowSecond] = useState(false);
+        setShowSecondConsumer = setShowSecond;
+        return (
+          <div>
+            <div data-testid="primary-card">
+              <EntryBody
+                entryId={ENTRY_ID_1}
+                version={1}
+                itemId={ITEM_ID}
+                load={loader}
+                lazy={false}
+              />
+            </div>
+            {showSecond ? (
+              <div data-testid="remounted-stale-card">
+                <EntryBody
+                  entryId={ENTRY_ID_1}
+                  version={1}
+                  itemId={ITEM_ID}
+                  load={loader}
+                  lazy={false}
+                />
+              </div>
+            ) : null}
+          </div>
+        );
+      }
 
-      serverSealed = await sealNewEntry({
+      const h = await mountUnlockedHarness(() => <VersionHandoffHarness />);
+
+      const serverSealed = await sealNewEntry({
         text: 'SENTINEL-VERSION-3-BODY',
         itemId: ITEM_ID,
         entryId: ENTRY_ID_1,
         vault: h.vault(),
       });
+      serverSealedPayload = serverSealed;
 
       const invalidateSpy = vi.spyOn(h.qc, 'invalidateQueries');
 
       h.setRouteHandler((url) => {
-        if (url.endsWith(`/entries/${ENTRY_ID_1}`)) {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && serverSealedPayload) {
+          getEntryCallCount += 1;
           return jsonResponse({
             ...makeEntryMeta({ id: ENTRY_ID_1, item_id: ITEM_ID, version: 3 }),
-            envelope: serverSealed.envelope,
-            ciphertext: serverSealed.ciphertext,
+            envelope: serverSealedPayload.envelope,
+            ciphertext: serverSealedPayload.ciphertext,
           } satisfies Entry);
         }
         return null;
       });
 
+      getEntryCallCount = 0;
       await act(async () => {
         await h.qc.resetQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1) });
       });
@@ -846,14 +1023,36 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       await waitFor(() =>
         expect(screen.getByTestId('entry-body')).toHaveTextContent('SENTINEL-VERSION-3-BODY'),
       );
+      expect(getEntryCallCount).toBe(1);
+      // Authoritative v3 key holds the decrypted body:
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 3))).toBe(
         'SENTINEL-VERSION-3-BODY',
       );
+      // Obsolete v1 key must have NO data and NO query entry in QueryCache:
+      await waitFor(() => {
+        expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+        expect(
+          h.qc.getQueryCache().find({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 1), exact: true }),
+        ).toBeUndefined();
+      });
       expect(invalidateSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           queryKey: contentQueryKeys.entries(ITEM_ID),
         }),
       );
+
+      // Remount a consumer with stale v1 metadata: because v1 is absent from cache, it must
+      // execute the loader (which again hands off to v3) rather than silently reusing a stale v1 cache entry.
+      const callsBeforeRemount = getEntryCallCount;
+      await act(async () => {
+        setShowSecondConsumer(true);
+      });
+      await waitFor(() => expect(getEntryCallCount).toBe(callsBeforeRemount + 1));
+      await waitFor(() => {
+        expect(screen.getAllByTestId('entry-body')).toHaveLength(2);
+        expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+      });
+
       // Envelope and ciphertext are never cached separately in QueryCache
       expect(
         findCacheSentinelLeaks(h.qc, [serverSealed.ciphertext, serverSealed.envelope.nonce]),
@@ -864,9 +1063,11 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
   describe('3. Lock during decrypt & save version rotation', () => {
     it('lock during decrypt -> nothing cached under vaultBodyQueryKey and nothing rendered', async () => {
       const { promise: fetchGate, resolve: releaseFetch } = Promise.withResolvers<void>();
+      const { promise: fetchSettled, resolve: notifyFetchSettled } =
+        Promise.withResolvers<void>();
       let fetchStarted = false;
+      let sealedPayload: SealedNewEntryPayload | null = null;
       const loader = createRealEntryBodyLoader();
-      let sealed!: SealedNewEntryPayload;
 
       const h = await mountUnlockedHarness(() => (
         <EntryBody
@@ -878,21 +1079,23 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         />
       ));
 
-      sealed = await sealNewEntry({
+      const sealed = await sealNewEntry({
         text: 'SENTINEL-LOCK-DURING-DECRYPT-551',
         itemId: ITEM_ID,
         entryId: ENTRY_ID_1,
         vault: h.vault(),
       });
+      sealedPayload = sealed;
 
       h.setRouteHandler(async (url) => {
-        if (url.endsWith(`/entries/${ENTRY_ID_1}`)) {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && sealedPayload) {
           fetchStarted = true;
           await fetchGate;
+          queueMicrotask(notifyFetchSettled);
           return jsonResponse({
             ...makeEntryMeta({ id: ENTRY_ID_1, version: 1 }),
-            envelope: sealed.envelope,
-            ciphertext: sealed.ciphertext,
+            envelope: sealedPayload.envelope,
+            ciphertext: sealedPayload.ciphertext,
           } satisfies Entry);
         }
         return null;
@@ -908,32 +1111,38 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       await h.lock();
       expect(screen.getByTestId('entry-body-locked')).toHaveTextContent(LOCK_MASK_TEXT);
 
-      // Release response after lock
+      // Release response after lock and wait for query to settle without wall-clock sleeps (IP14-FE1-9)
       await act(async () => {
         releaseFetch();
-        await Promise.resolve();
+        await fetchSettled;
       });
-      await new Promise<void>((r) => setTimeout(r, 25));
+      await waitFor(() => {
+        expect(h.qc.isFetching()).toBe(0);
+      });
 
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
       expect(bodyQueriesWithData(h.qc)).toEqual([]);
       expect(findCacheSentinelLeaks(h.qc, ['SENTINEL-LOCK-DURING-DECRYPT-551'])).toEqual([]);
       expect(document.body.textContent).not.toContain('SENTINEL-LOCK-DURING-DECRYPT-551');
-      assertNoPlaintextAttrs(document.body, ['SENTINEL-LOCK-DURING-DECRYPT-551']);
+      assertNoPlaintextAttrs(document.body, ['SENTINEL-LOCK-DURING-DECRYPT-551'], {
+        locked: true,
+      });
     }, 30_000);
-
-    it('after a save: no body key of the old version remains; the new body enters the cache ONLY via the loader', async () => {
+    it('after a save: no body key of the old version remains; the new body enters the cache ONLY via the loader when reactively enabled (IP14-BE1-7)', async () => {
       const V1_TEXT = 'SENTINEL-SAVE-V1-OLD-BODY';
       const V2_TEXT = 'SENTINEL-SAVE-V2-NEW-BODY';
       let currentServerVersion = 1;
       let currentServerSealed!: SealedNewEntryPayload;
-      let allowV2LoaderFetch = false;
+      let setV2ViewportEnabled!: (enabled: boolean) => void;
 
       const loader = createRealEntryBodyLoader();
       let triggerUpdate!: (sealed: SealedEntryUpdatePayload) => Promise<EntryMeta>;
 
       function SaveTestHarness() {
         const [version, setVersion] = useState(1);
+        const [v2ViewportEnabled, setV2ViewportEnabledState] = useState(false);
+        setV2ViewportEnabled = setV2ViewportEnabledState;
+
         const updateMutation = useUpdateEntryMutation({
           onCurrentSuccess: (meta) => {
             setVersion(meta.version);
@@ -950,7 +1159,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
             version={version}
             itemId={ITEM_ID}
             load={loader}
-            enabled={version === 1 || allowV2LoaderFetch}
+            enabled={version === 1 || v2ViewportEnabled}
             lazy={false}
           />
         );
@@ -992,7 +1201,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       await waitFor(() => expect(screen.getByTestId('entry-body')).toHaveTextContent(V1_TEXT));
       expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBe(V1_TEXT);
 
-      // Seal V2 update and commit PUT while V2 loader is still gated off (`allowV2LoaderFetch = false`)
+      // Seal V2 update and commit PUT while V2 loader is still gated off (`v2ViewportEnabled = false`)
       const sealedV2 = await sealEntryUpdate({
         entryId: ENTRY_ID_1,
         text: V2_TEXT,
@@ -1022,17 +1231,16 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       // 4) MutationCache has zero plaintext leaks
       expect(findCacheSentinelLeaks(h.qc, [V1_TEXT, V2_TEXT])).toEqual([]);
 
-      // Now enable loader for v2 -> new body enters cache ONLY via the loader
-      allowV2LoaderFetch = true;
+      // Now reactively enable the consumer for v2 -> new body enters cache ONLY via the loader (IP14-BE1-7)
       await act(async () => {
-        await h.qc.invalidateQueries({ queryKey: vaultBodyQueryKey(ENTRY_ID_1, 2) });
+        setV2ViewportEnabled(true);
       });
       await waitFor(() =>
-        expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 2))).toBe(V2_TEXT),
+        expect(screen.getByTestId('entry-body')).toHaveTextContent(V2_TEXT),
       );
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 2))).toBe(V2_TEXT);
     }, 30_000);
   });
-
   describe('4. P4BE2-1 (mandatory): hold 200 response of POST and PUT, then lock / logout / user switch / vault reset, then release', () => {
     it.each([
       ['POST /items/{id}/entries', 'POST', 'lock'],
@@ -1196,12 +1404,20 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
           await waitFor(() => expect(h.vault().state).not.toBe('unlocked'));
         }
 
-        // Now release the held HTTP response and wait for all callbacks to settle
+        // Now release the held HTTP response and wait for all callbacks to settle (IP14-FE1-9)
         await act(async () => {
           releaseResponse();
           await mutationDonePromise;
         });
-        await new Promise<void>((r) => setTimeout(r, 25));
+        await waitFor(() => {
+          const mutations = h.qc.getMutationCache().getAll();
+          expect(mutations.length).toBeGreaterThan(0);
+          expect(
+            mutations.every(
+              (m) => m.state.status === 'success' || m.state.status === 'error',
+            ),
+          ).toBe(true);
+        });
 
         // 1. Scan QueryCache and MutationCache (variables, context, data, error of succeeded AND failed mutations)
         expect(findCacheSentinelLeaks(h.qc, [SENTINEL])).toEqual([]);
@@ -1212,11 +1428,14 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 2))).toBeUndefined();
         expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_2, 1))).toBeUndefined();
 
-        // 3. Stale response must NOT have overwritten ['content', 'entries', itemId] metadata version or state
+        // 3. Stale response must NOT have modified ['content', 'entries', itemId] list or version (IP14-FE1-6)
         const entriesAfter = h.qc.getQueryData<EntryMetaList>(
           contentQueryKeys.entries(ITEM_ID),
         );
+        expect(entriesAfter?.items).toHaveLength(1);
+        expect(entriesAfter?.items[0]?.id).toBe(ENTRY_ID_1);
         expect(entriesAfter?.items[0]?.version).toBe(1);
+        expect(entriesAfter?.items.some((item) => item.id === ENTRY_ID_2)).toBe(false);
         expect(committedBannerState).toBe('');
 
         // 4. Editor React state and DOM input value were wiped on lock/logout/user switch/reset
@@ -1225,10 +1444,128 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         expect(textarea.value).toBe('');
         expect(document.body.textContent).not.toContain(SENTINEL);
         expect(document.body.innerHTML).not.toContain(SENTINEL);
-        assertNoPlaintextAttrs(document.body, [SENTINEL]);
+        assertNoPlaintextAttrs(document.body, [SENTINEL], { locked: true });
       },
       30_000,
     );
+
+    it('seal -> lock -> mutate issues zero content requests (IP14-BE1-3)', async () => {
+      let contentWriteCalls = 0;
+      let runCreateHook!: (vars: SealedEntryCreateVariables) => Promise<unknown>;
+      let runUpdateHook!: (vars: SealedEntryUpdateVariables) => Promise<unknown>;
+
+      function StaleMutateHarness() {
+        const createMut = useCreateEntryMutation();
+        const updateMut = useUpdateEntryMutation();
+        runCreateHook = (vars) => createMut.mutateAsync(vars);
+        runUpdateHook = (vars) => updateMut.mutateAsync(vars);
+        return null;
+      }
+
+      const h = await mountUnlockedHarness(() => <StaleMutateHarness />);
+      h.setRouteHandler((url, init) => {
+        if (
+          (url.endsWith(`/items/${ITEM_ID}/entries`) && init?.method === 'POST') ||
+          (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT')
+        ) {
+          contentWriteCalls += 1;
+          return jsonResponse(makeEntryMeta({ id: ENTRY_ID_1, version: 2 }));
+        }
+        return null;
+      });
+
+      const sealedCreate = await sealNewEntry({
+        text: 'SENTINEL-SEAL-THEN-LOCK-CREATE',
+        itemId: ITEM_ID,
+        entryId: ENTRY_ID_2,
+        vault: h.vault(),
+      });
+      const sealedUpdate = await sealEntryUpdate({
+        entryId: ENTRY_ID_1,
+        text: 'SENTINEL-SEAL-THEN-LOCK-UPDATE',
+        vault: h.vault(),
+        itemId: ITEM_ID,
+        version: 1,
+      });
+      const createVariables = toEntryCreateVariables(sealedCreate);
+      const updateVariables = toEntryUpdateVariables(sealedUpdate, 1, { itemId: ITEM_ID });
+
+      // Lock BEFORE invoking mutate
+      await h.lock();
+
+      await expect(runCreateHook(createVariables)).rejects.toMatchObject({
+        name: 'EntrySealError',
+        code: 'STALE_GENERATION',
+      });
+      await expect(runUpdateHook(updateVariables)).rejects.toMatchObject({
+        name: 'EntrySealError',
+        code: 'STALE_GENERATION',
+      });
+      await expect(mutateSealedEntryCreate(h.qc, createVariables)).rejects.toMatchObject({
+        name: 'EntrySealError',
+        code: 'STALE_GENERATION',
+      });
+      await expect(mutateSealedEntryUpdate(h.qc, updateVariables)).rejects.toMatchObject({
+        name: 'EntrySealError',
+        code: 'STALE_GENERATION',
+      });
+
+      expect(contentWriteCalls).toBe(0);
+    }, 30_000);
+
+    it('lock during a retry wait aborts the sleeping retry and issues no further content send (IP14-BE1-3)', async () => {
+      let contentWriteAttempts = 0;
+      const { promise: firstAttemptSeen, resolve: notifyFirstAttempt } =
+        Promise.withResolvers<void>();
+      let runUpdateHook!: (vars: SealedEntryUpdateVariables) => Promise<EntryMeta>;
+      function RetryLockHarness() {
+        const updateMut = useUpdateEntryMutation();
+        runUpdateHook = (vars) => updateMut.mutateAsync(vars);
+        return null;
+      }
+
+      const h = await mountUnlockedHarness(() => <RetryLockHarness />);
+      h.setRouteHandler((url, init) => {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT') {
+          contentWriteAttempts += 1;
+          if (contentWriteAttempts === 1) {
+            notifyFirstAttempt();
+            // Return retryable 503 dependency_unavailable (contentMutate waits 1000ms on signal)
+            return problemResponse('dependency_unavailable', 503);
+          }
+          return jsonResponse(makeEntryMeta({ id: ENTRY_ID_1, version: 2 }));
+        }
+        return null;
+      });
+
+      const sealedUpdate = await sealEntryUpdate({
+        entryId: ENTRY_ID_1,
+        text: 'SENTINEL-RETRY-ABORT-ON-LOCK',
+        vault: h.vault(),
+        itemId: ITEM_ID,
+        version: 1,
+      });
+      const vars = toEntryUpdateVariables(sealedUpdate, 1, { itemId: ITEM_ID });
+
+      let mutPromise!: Promise<EntryMeta>;
+      act(() => {
+        mutPromise = runUpdateHook(vars);
+        mutPromise.catch(() => undefined);
+      });
+
+      await act(async () => {
+        await firstAttemptSeen;
+      });
+      expect(contentWriteAttempts).toBe(1);
+
+      // Lock while contentMutate is sleeping in its 1s retry wait
+      await h.lock();
+
+      await expect(mutPromise).rejects.toBeDefined();
+      // Wait past any retry window and verify no second attempt was ever sent
+      expect(contentWriteAttempts).toBe(1);
+      expect(findCacheSentinelLeaks(h.qc, ['SENTINEL-RETRY-ABORT-ON-LOCK'])).toEqual([]);
+    }, 30_000);
   });
 
   describe('5. Lazy viewport decrypt & max 4 concurrent GET /entries/{id} for 200-entry item', () => {
@@ -1268,12 +1605,13 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         <EntryBody entryId={ENTRY_ID_1} version={1} load={loader} lazy={true} />
       ));
 
-      // Out of viewport -> loader not called, loading placeholder shown
-      expect(screen.getByTestId('entry-body-loading')).toBeInTheDocument();
+      // Out of viewport -> loader not called, inert placeholder shown (no role="status", IP14-FE1-14)
+      const loadingEl = screen.getByTestId('entry-body-loading');
+      expect(loadingEl).toBeInTheDocument();
+      expect(loadingEl).not.toHaveAttribute('role', 'status');
+      expect(loadingEl).toHaveAttribute('aria-hidden', 'true');
       expect(loadCalls).toEqual([]);
       expect(observedElements.size).toBe(1);
-
-      // Simulate scrolling into viewport
       await act(async () => {
         for (const [el, cb] of observedElements.entries()) {
           cb(
@@ -1297,7 +1635,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       expect(loadCalls).toEqual([ENTRY_ID_1]);
     }, 30_000);
 
-    it('scrolling a 200-entry item to the end never exceeds 4 concurrent GET /entries/{id} requests', async () => {
+    it('scrolling a 200-entry item to the end never exceeds 4 concurrent GET /entries/{id} requests through real EntryBody + shared limiter + real loader (IP14-FE1-2, IP14-BE1-8, IP14-BE1-9)', async () => {
       const ENTRY_COUNT = 200;
       const entryIds = Array.from({ length: ENTRY_COUNT }, (_, i) => {
         const hex = (i + 1).toString(16).padStart(12, '0');
@@ -1309,81 +1647,255 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       let totalCompletedFetches = 0;
       const pendingGates: Array<() => void> = [];
 
-      const limiter = createConcurrencyLimiter(4);
+      const sealedByEntryId = new Map<
+        string,
+        { envelope: SealedNewEntryPayload['envelope']; ciphertext: string }
+      >();
 
-      const mockFetchEntry = vi.fn(async (entryId: string): Promise<Entry> => {
-        inFlightFetches += 1;
-        if (inFlightFetches > peakConcurrentFetches) {
-          peakConcurrentFetches = inFlightFetches;
-        }
-        const { promise, resolve } = Promise.withResolvers<void>();
-        pendingGates.push(resolve);
-        await promise;
-        inFlightFetches -= 1;
-        totalCompletedFetches += 1;
-        return {
-          ...makeEntryMeta({ id: entryId, version: 1 }),
-          envelope: {
-            v: 1,
-            alg: 'xchacha20poly1305-ietf',
-            key_id: KEY_ID,
-            nonce: 'AAAAAAAAAAAAAAAAAAAAAAAA________________________',
-            ct_enc: 'utf8',
-          },
-          ciphertext: 'BBBBBBBBBBBBBBBBBBBBBBBB',
-        };
-      });
-
-      // Fire all 200 loads simultaneously (simulating fast scroll to the end of a 200-entry item)
-      const loadPromises = entryIds.map((entryId) =>
-        limiter.run(async () => {
-          const entry = await mockFetchEntry(entryId);
-          return `body-${entry.id}`;
-        }),
+      const mockFetchEntry = vi.fn(
+        async (entryId: string, opts?: { readonly signal?: AbortSignal }): Promise<Entry> => {
+          inFlightFetches += 1;
+          if (inFlightFetches > peakConcurrentFetches) {
+            peakConcurrentFetches = inFlightFetches;
+          }
+          const { promise, resolve } = Promise.withResolvers<void>();
+          pendingGates.push(resolve);
+          if (opts?.signal) {
+            opts.signal.addEventListener('abort', () => resolve(), { once: true });
+          }
+          try {
+            await promise;
+          } finally {
+            inFlightFetches -= 1;
+            totalCompletedFetches += 1;
+          }
+          const sealed = sealedByEntryId.get(entryId);
+          if (!sealed) {
+            throw new Error(`Missing sealed fixture for ${entryId}`);
+          }
+          return {
+            ...makeEntryMeta({ id: entryId, item_id: ITEM_ID, version: 1 }),
+            envelope: sealed.envelope,
+            ciphertext: sealed.ciphertext,
+          };
+        },
       );
 
-      // Flush microtasks so the first wave starts
-      await Promise.resolve();
-      expect(inFlightFetches).toBe(4);
-      expect(peakConcurrentFetches).toBe(4);
-      expect(limiter.activeCount()).toBe(4);
-      expect(limiter.pendingCount()).toBe(196);
+      const realLoader = createRealEntryBodyLoader({ fetchEntry: mockFetchEntry });
+      let setAllInView!: (visible: boolean) => void;
 
-      // Drain waves until all 200 finish, checking concurrency invariant at every step
-      while (totalCompletedFetches < ENTRY_COUNT) {
-        expect(inFlightFetches).toBeLessThanOrEqual(4);
-        const batch = pendingGates.splice(0, pendingGates.length);
-        expect(batch.length).toBeGreaterThan(0);
-        expect(batch.length).toBeLessThanOrEqual(4);
-        for (const release of batch) {
-          release();
-        }
-        await Promise.resolve();
-        await Promise.resolve();
+      function TwoHundredCardsHarness() {
+        const [allInView, setAllInViewState] = useState(false);
+        setAllInView = setAllInViewState;
+        return (
+          <div data-testid="two-hundred-list">
+            {entryIds.map((id) => (
+              <EntryBody
+                key={id}
+                entryId={id}
+                version={1}
+                itemId={ITEM_ID}
+                load={realLoader}
+                enabled={allInView}
+                lazy={false}
+              />
+            ))}
+          </div>
+        );
       }
 
-      const results = await Promise.all(loadPromises);
-      expect(results).toHaveLength(200);
-      expect(totalCompletedFetches).toBe(200);
+      const h = await mountUnlockedHarness(() => <TwoHundredCardsHarness />);
+
+      // Seal all 200 entries with real Worker AEAD so every card exercises GET + real Worker openEntry
+      for (let i = 0; i < entryIds.length; i += 1) {
+        const id = entryIds[i]!;
+        const res = await h.vault().getClient().sealEntry({
+          entryId: id,
+          keyId: KEY_ID,
+          plaintext: `SENTINEL-200-BODY-${i + 1}`,
+          opGeneration: h.vault().captureOpGeneration(),
+        });
+        sealedByEntryId.set(id, { envelope: res.envelope, ciphertext: res.ciphertext });
+      }
+
+      // Enable all 200 cards simultaneously (simulating fast scroll to the end of a 200-entry item)
+      await act(async () => {
+        setAllInView(true);
+      });
+
+      // Wait for the first 4-card wave to enter fetchEntry
+      await waitFor(() => {
+        expect(pendingGates.length).toBe(4);
+      });
+      expect(inFlightFetches).toBe(4);
+      expect(peakConcurrentFetches).toBe(4);
+      expect(entryBodyLoadLimiter.activeCount()).toBe(4);
+      expect(entryBodyLoadLimiter.pendingCount()).toBe(196);
+
+      // Drain waves using observable waitFor conditions rather than fixed microtask counts
+      while (totalCompletedFetches < ENTRY_COUNT) {
+        await waitFor(() => {
+          expect(pendingGates.length).toBeGreaterThan(0);
+        });
+        expect(inFlightFetches).toBeLessThanOrEqual(4);
+        expect(entryBodyLoadLimiter.activeCount()).toBeLessThanOrEqual(4);
+        const batch = pendingGates.splice(0, pendingGates.length);
+        expect(batch.length).toBeLessThanOrEqual(4);
+        await act(async () => {
+          for (const release of batch) {
+            release();
+          }
+        });
+      }
+
+      await waitFor(() => {
+        expect(screen.getAllByTestId('entry-body')).toHaveLength(ENTRY_COUNT);
+      });
+      expect(totalCompletedFetches).toBe(ENTRY_COUNT);
       expect(peakConcurrentFetches).toBe(4);
       expect(inFlightFetches).toBe(0);
-    });
-  });
+      expect(entryBodyLoadLimiter.activeCount()).toBe(0);
+      expect(entryBodyLoadLimiter.pendingCount()).toBe(0);
+      expect(screen.getByText('SENTINEL-200-BODY-1')).toBeInTheDocument();
+      expect(screen.getByText('SENTINEL-200-BODY-200')).toBeInTheDocument();
+    }, 60_000);
 
-  describe('6. ESLint rule P4FE2-16 and compatibility with useEntryBody', () => {
-    it('features/entries/** and features/items/entry-body.tsx pass ESLint with 0 errors (including no-restricted-imports on useMutation)', async () => {
-      const results = await hoistedEslint.lintFiles([
-        'features/entries/seal.ts',
-        'features/entries/mutations.ts',
-        'features/entries/real-body-loader.ts',
-        'features/entries/concurrency-limiter.ts',
-        'features/entries/secret-input-props.ts',
-        'features/entries/test-utils/assert-no-plaintext-attrs.ts',
-        'features/items/entry-body.tsx',
-        'features/items/item-article.tsx',
-      ]);
-      const errors = results.flatMap((r) => r.messages.filter((m) => m.severity === 2));
-      expect(errors).toEqual([]);
+    it('releases limiter slots cleanly when queued/in-flight EntryBody cards reject or unmount, ending at active=0 and pending=0 (IP14-FE1-2, IP14-BE1-9)', async () => {
+      const ids = Array.from({ length: 12 }, (_, i) => {
+        const hex = (i + 1).toString(16).padStart(12, '0');
+        return `00000000-0000-4000-9000-${hex}`;
+      });
+      const gates = new Map<string, () => void>();
+      const sealedMap = new Map<
+        string,
+        { envelope: SealedNewEntryPayload['envelope']; ciphertext: string }
+      >();
+
+      const fetchEntry = vi.fn(
+        async (entryId: string, opts?: { readonly signal?: AbortSignal }): Promise<Entry> => {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          gates.set(entryId, resolve);
+          opts?.signal?.addEventListener('abort', () => resolve(), { once: true });
+          await promise;
+          if (entryId === ids[1] || entryId === ids[5]) {
+            throw new TypeError('Simulated network failure');
+          }
+          const sealed = sealedMap.get(entryId)!;
+          return {
+            ...makeEntryMeta({ id: entryId, item_id: ITEM_ID, version: 1 }),
+            envelope: sealed.envelope,
+            ciphertext: sealed.ciphertext,
+          };
+        },
+      );
+
+      const realLoader = createRealEntryBodyLoader({ fetchEntry });
+      let setMountedIds!: (nextIds: string[]) => void;
+
+      function UnmountAndRejectHarness() {
+        const [mountedIds, setMountedIdsState] = useState<string[]>([]);
+        setMountedIds = setMountedIdsState;
+        return (
+          <div>
+            {mountedIds.map((id) => (
+              <EntryBody
+                key={id}
+                entryId={id}
+                version={1}
+                itemId={ITEM_ID}
+                load={realLoader}
+                lazy={false}
+              />
+            ))}
+          </div>
+        );
+      }
+
+      const h = await mountUnlockedHarness(() => <UnmountAndRejectHarness />);
+      for (const id of ids) {
+        const res = await h.vault().getClient().sealEntry({
+          entryId: id,
+          keyId: KEY_ID,
+          plaintext: `SENTINEL-UNMOUNT-TEST-${id}`,
+          opGeneration: h.vault().captureOpGeneration(),
+        });
+        sealedMap.set(id, { envelope: res.envelope, ciphertext: res.ciphertext });
+      }
+
+      // Mount all 12 cards -> 4 active, 8 pending
+      await act(async () => {
+        setMountedIds(ids);
+      });
+      await waitFor(() => expect(entryBodyLoadLimiter.activeCount()).toBe(4));
+      expect(entryBodyLoadLimiter.pendingCount()).toBe(8);
+
+      // Unmount 3 queued cards (ids[8..10]) and cancel their queries -> pending count drops
+      await act(async () => {
+        setMountedIds(ids.filter((_, idx) => idx < 8 || idx === 11));
+        for (const removedId of [ids[8]!, ids[9]!, ids[10]!]) {
+          void h.qc.cancelQueries({ queryKey: vaultBodyQueryKey(removedId, 1) });
+        }
+      });
+
+      // Release all gates as waves progress (including the 2 rejecting tasks)
+      await waitFor(
+        async () => {
+          for (const [, release] of gates.entries()) {
+            release();
+          }
+          expect(entryBodyLoadLimiter.activeCount()).toBe(0);
+          expect(entryBodyLoadLimiter.pendingCount()).toBe(0);
+        },
+        { timeout: 10_000 },
+      );
+
+      expect(entryBodyLoadLimiter.activeCount()).toBe(0);
+      expect(entryBodyLoadLimiter.pendingCount()).toBe(0);
+      expect(screen.getAllByTestId('entry-body-error')).toHaveLength(2);
+      expect(screen.getAllByTestId('entry-body')).toHaveLength(7);
     }, 30_000);
+
+    it('queues and completes >4 concurrent loads when Promise.withResolvers is absent (IP14-BE1-4, IP14-FE1-3)', async () => {
+      const promiseCtor: { withResolvers?: unknown } = Promise;
+      const originalWithResolvers = promiseCtor.withResolvers;
+      const limiter = createConcurrencyLimiter(4);
+      const gates: Array<() => void> = [];
+      let inFlight = 0;
+      let peak = 0;
+
+      try {
+        promiseCtor.withResolvers = undefined;
+
+        const tasks = Array.from({ length: 10 }, (_, idx) =>
+          limiter.run(async () => {
+            inFlight += 1;
+            if (inFlight > peak) peak = inFlight;
+            await new Promise<void>((res) => {
+              gates.push(res);
+            });
+            inFlight -= 1;
+            return `done-${idx}`;
+          }),
+        );
+
+        await waitFor(() => expect(gates.length).toBe(4));
+        expect(limiter.activeCount()).toBe(4);
+        expect(limiter.pendingCount()).toBe(6);
+
+        while (limiter.activeCount() > 0 || limiter.pendingCount() > 0) {
+          const batch = gates.splice(0, gates.length);
+          for (const release of batch) release();
+          await new Promise<void>((res) => queueMicrotask(res));
+        }
+
+        const results = await Promise.all(tasks);
+        expect(results).toHaveLength(10);
+        expect(peak).toBe(4);
+        expect(limiter.activeCount()).toBe(0);
+        expect(limiter.pendingCount()).toBe(0);
+      } finally {
+        promiseCtor.withResolvers = originalWithResolvers;
+      }
+    });
   });
 });

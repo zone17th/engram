@@ -37,8 +37,23 @@ describe('features/entries/test-utils/assert-no-plaintext-attrs', () => {
       assertNoPlaintextAttrs(document.body, [SENTINEL, SECOND_SENTINEL]),
     ).not.toThrow();
     expect(findPlaintextAttrLeaks(document.body, [SENTINEL, SECOND_SENTINEL])).toEqual([]);
-  });
 
+    // IP14-FE1-7: With `{ locked: true }`, even a `[data-vault-secret]` textarea's `.value` is flagged.
+    const lockedLeaks = findPlaintextAttrLeaks(document.body, [SENTINEL, SECOND_SENTINEL], {
+      locked: true,
+    });
+    expect(lockedLeaks).toEqual([
+      expect.objectContaining({
+        tagName: 'textarea',
+        testId: 'secret-editor',
+        attribute: 'value',
+        sentinel: SECOND_SENTINEL,
+      }),
+    ]);
+    expect(() =>
+      assertNoPlaintextAttrs(document.body, [SENTINEL, SECOND_SENTINEL], { locked: true }),
+    ).toThrow(/Plaintext leaked in DOM attributes/);
+  });
   it('catches a sentinel leaked in title, aria-label, data-*, placeholder, alt, href, and non-editing input value', () => {
     const cases: ReadonlyArray<{
       readonly label: string;
@@ -72,7 +87,7 @@ describe('features/entries/test-utils/assert-no-plaintext-attrs', () => {
       },
       {
         label: 'alt',
-        renderNode: () => <img alt={SENTINEL} src="/icon.svg" />,
+        renderNode: () => <input type="image" alt={SENTINEL} src="/icon.svg" />,
         expectedAttr: 'alt',
       },
       {
