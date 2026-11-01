@@ -291,6 +291,10 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
       });
 
       await timedJourneyStep('4. (c) recovery with onboarding recovery key -> unlock with new passphrase -> entry created BEFORE recovery decrypts with the exact same body', async () => {
+        // Step 3 fast-forwarded the page clock past the auto-lock timeout. The recovery flow compares the server-issued
+        // reauth grant expiry with the page's Date.now() (recovery-flow.tsx grantStillValid), so a skewed clock makes a
+        // fresh grant look expired and the flow silently returns to reauth. Put the page clock back on real time.
+        await contextA.clock.setSystemTime(new Date());
         await freshRateBucket(page);
         await page.getByTestId('vault-locked-unlock-cta').click();
         await expectOnUnlockPageAllowingReturnTo(page);
