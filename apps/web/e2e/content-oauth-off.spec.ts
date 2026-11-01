@@ -52,6 +52,7 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     const suffix = `${process.env.TEST_WORKER_INDEX ?? '0'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const tagDisplay = `oauth-off-tag-${suffix}`;
     const itemName = `oauth-off-item-${suffix}`;
+    const untaggedItemName = `oauth-off-untagged-${suffix}`;
 
     // 1-2. Empty ItemList and TagList serialize `items` as `[]` (never null) for a new user.
     const emptyItemsRes = await request.get('/api/v1/items', {
@@ -135,8 +136,21 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
           tags?: unknown;
         } | null;
 
+        // Second item WITHOUT tags: never attached, so its `tags` must serialize as `[]` (IT5-FE1-1).
+        const untaggedRes = await fetch('/api/v1/items', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: makeHeaders(),
+          body: JSON.stringify({ name: input.untaggedItemName }),
+        });
+        const untaggedBody = (await untaggedRes.json().catch(() => null)) as {
+          id?: unknown;
+          tags?: unknown;
+        } | null;
+
         const tagId = typeof tagBody?.id === 'string' ? tagBody.id : '';
         const itemId = typeof itemBody?.id === 'string' ? itemBody.id : '';
+        const untaggedItemId = typeof untaggedBody?.id === 'string' ? untaggedBody.id : '';
 
         let attachStatus = 0;
         let attachTags: unknown = null;
@@ -161,11 +175,14 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
           itemStatus: itemRes.status,
           itemId,
           itemInitialTags: itemBody?.tags ?? null,
+          untaggedItemStatus: untaggedRes.status,
+          untaggedItemId,
+          untaggedItemInitialTags: untaggedBody?.tags ?? null,
           attachStatus,
           attachTags,
         };
       },
-      { tagDisplay, itemName },
+      { tagDisplay, itemName, untaggedItemName },
     );
 
     expect(itemtagWriteProbe.tagStatus).toBe(201);
@@ -175,13 +192,19 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     expect(itemtagWriteProbe.itemId).toBeTruthy();
     expect(Array.isArray(itemtagWriteProbe.itemInitialTags)).toBe(true);
     expect(itemtagWriteProbe.itemInitialTags).toEqual([]);
+    expect(itemtagWriteProbe.untaggedItemStatus).toBe(201);
+    expect(itemtagWriteProbe.untaggedItemId).toBeTruthy();
+    expect(itemtagWriteProbe.untaggedItemId).not.toBe(itemtagWriteProbe.itemId);
+    expect(Array.isArray(itemtagWriteProbe.untaggedItemInitialTags)).toBe(true);
+    expect(itemtagWriteProbe.untaggedItemInitialTags).toEqual([]);
     expect(itemtagWriteProbe.attachStatus).toBe(200);
     expect(Array.isArray(itemtagWriteProbe.attachTags)).toBe(true);
     expect(itemtagWriteProbe.attachTags).toEqual([
       { id: itemtagWriteProbe.tagId, display: tagDisplay },
     ]);
 
-    // 4. GET /api/v1/items -> items array with 1 entry whose `tags` is an array containing {id, display}.
+    // 4. GET /api/v1/items -> items array with 2 entries (found by id, not index): the tagged item's `tags`
+    //    is `[{id, display}]`, the untagged item's `tags` is `[]` (never null/missing).
     const itemsRes = await request.get('/api/v1/items', {
       headers: { cookie: cookieHeader },
     });
@@ -191,14 +214,20 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
       next_cursor?: unknown;
     };
     expect(Array.isArray(itemsBody.items)).toBe(true);
-    expect(itemsBody.items).toHaveLength(1);
+    expect(itemsBody.items).toHaveLength(2);
     expect(itemsBody.next_cursor).toBeNull();
-    expect(itemsBody.items?.[0]?.id).toBe(itemtagWriteProbe.itemId);
-    expect(itemsBody.items?.[0]?.name).toBe(itemName);
-    expect(Array.isArray(itemsBody.items?.[0]?.tags)).toBe(true);
-    expect(itemsBody.items?.[0]?.tags).toEqual([
-      { id: itemtagWriteProbe.tagId, display: tagDisplay },
-    ]);
+    const taggedListItem = itemsBody.items?.find((it) => it.id === itemtagWriteProbe.itemId);
+    expect(taggedListItem).toBeDefined();
+    expect(taggedListItem?.name).toBe(itemName);
+    expect(Array.isArray(taggedListItem?.tags)).toBe(true);
+    expect(taggedListItem?.tags).toEqual([{ id: itemtagWriteProbe.tagId, display: tagDisplay }]);
+    const untaggedListItem = itemsBody.items?.find(
+      (it) => it.id === itemtagWriteProbe.untaggedItemId,
+    );
+    expect(untaggedListItem).toBeDefined();
+    expect(untaggedListItem?.name).toBe(untaggedItemName);
+    expect(Array.isArray(untaggedListItem?.tags)).toBe(true);
+    expect(untaggedListItem?.tags).toEqual([]);
 
     // 5. GET /api/v1/items/lookup?name=<itemName> -> items array (length 1) and total 1.
     const lookupRes = await request.get(
@@ -220,6 +249,25 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     expect(lookupBody.items?.[0]?.tags).toEqual([
       { id: itemtagWriteProbe.tagId, display: tagDisplay },
     ]);
+
+    // 5b. GET /api/v1/items/lookup?name=<untaggedItemName> -> one item whose `tags` is `[]`.
+    const untaggedLookupRes = await request.get(
+      `/api/v1/items/lookup?name=${encodeURIComponent(untaggedItemName)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(untaggedLookupRes.status()).toBe(200);
+    const untaggedLookupBody = (await untaggedLookupRes.json()) as {
+      items?: Array<{ id?: unknown; name?: unknown; tags?: unknown }>;
+      total?: unknown;
+      next_cursor?: unknown;
+    };
+    expect(Array.isArray(untaggedLookupBody.items)).toBe(true);
+    expect(untaggedLookupBody.items).toHaveLength(1);
+    expect(untaggedLookupBody.total).toBe(1);
+    expect(untaggedLookupBody.next_cursor).toBeNull();
+    expect(untaggedLookupBody.items?.[0]?.id).toBe(itemtagWriteProbe.untaggedItemId);
+    expect(Array.isArray(untaggedLookupBody.items?.[0]?.tags)).toBe(true);
+    expect(untaggedLookupBody.items?.[0]?.tags).toEqual([]);
 
     // 6. GET /api/v1/tags -> items array length 1.
     const tagsRes = await request.get('/api/v1/tags', {
