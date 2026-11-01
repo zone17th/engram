@@ -208,15 +208,14 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     expect(recorder.countSince(mark5)).toBe(0);
     recorder.assertNeverContains(allSentinels);
 
-    // 5b. Add-mode Enter stub in 18a -> sends 0 requests (HM18A-R1-8).
-    const markAddStub = recorder.records.length;
-    await setSecretTextareaValue(omnibox, fullColonDraft);
+    // 5b. Add-mode invalid draft (`a:` with empty body) on Enter -> sends 0 requests (HM18A-R1-8).
+    const markAddInvalid = recorder.records.length;
+    await setSecretTextareaValue(omnibox, 'a:   ');
     await omnibox.press('Enter');
     await page.waitForTimeout(300);
     await recorder.flushPending();
-    expect(recorder.countSince(markAddStub)).toBe(0);
+    expect(recorder.countSince(markAddInvalid)).toBe(0);
     recorder.assertNeverContains(allSentinels);
-
     // 6. Tag mode (`#secret` typed without Enter, Enter on >50-rune tag token, Ctrl+Enter in `#` mode) -> nothing sent (HM18A-R1-8).
     const markTag = recorder.records.length;
     await setSecretTextareaValue(omnibox, `#${typedTagSecret}`);
@@ -242,6 +241,34 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
       .slice(markPos)
       .filter((r) => r.method === 'GET' && r.url.includes('/api/v1/items') && r.url.includes('q=positive-probe'));
     expect(positiveSearchRecords).toHaveLength(1);
+    recorder.assertNeverContains(allSentinels);
+
+    // 8. A4 add side (18b): type `name: secret-body-123` and press Enter -> saves entry, body never appears in any request (URL, headers, or body); only ciphertext leaves.
+    const markSave = recorder.records.length;
+    await setSecretTextareaValue(omnibox, `name: ${secretBody123}`);
+    await omnibox.press('Enter');
+
+    const savedToast = page.getByTestId('undo-toast-item').first();
+    await expect(savedToast).toBeVisible({ timeout: UI_WAIT_MS });
+    await expect(savedToast).toContainText('name');
+    await recorder.flushPending();
+    expect(recorder.countSince(markSave)).toBeGreaterThan(0);
+
+    const entryPostRecord = recorder.records
+      .slice(markSave)
+      .find((rec) => rec.method === 'POST' && /\/api\/v1\/items\/[^/]+\/entries$/.test(rec.url));
+    expect(entryPostRecord).toBeDefined();
+    const parsedPostBody = JSON.parse(entryPostRecord!.postData) as {
+      readonly type?: string;
+      readonly ciphertext?: string;
+      readonly envelope?: { readonly v?: number; readonly alg?: string; readonly key_id?: string };
+    };
+    expect(parsedPostBody.type).toBe('text');
+    expect(typeof parsedPostBody.ciphertext).toBe('string');
+    expect(parsedPostBody.ciphertext!.length).toBeGreaterThan(16);
+    expect(parsedPostBody.envelope?.v).toBe(1);
+    expect(parsedPostBody.envelope?.alg).toBe('xchacha20poly1305-ietf');
+
     recorder.assertNeverContains(allSentinels);
   });
 });

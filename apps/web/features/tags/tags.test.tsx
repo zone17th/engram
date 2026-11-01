@@ -183,7 +183,7 @@ describe('features/tags', () => {
     expect(screen.getByTestId('probe-load-more')).toBeInTheDocument();
   });
 
-  it('usePaginatedTagsList resets extra pages when a tag on an extra page is deleted or renamed', async () => {
+  it('usePaginatedTagsList resets extra pages when a tag on an extra page is deleted, restored via Undo, or renamed (HM19-R3-1, HM19-R4-2)', async () => {
     let extraPageItems: Tag[] = [SECOND_TAG, THIRD_TAG];
     vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
       if (params?.cursor === 'cursor-tags-2') {
@@ -193,6 +193,12 @@ describe('features/tags', () => {
     });
     const deleteSpy = vi.spyOn(contentApi, 'tagDelete').mockImplementation(async (id) => {
       extraPageItems = extraPageItems.filter((tag) => tag.id !== id);
+    });
+    const restoreSpy = vi.spyOn(contentApi, 'tagRestore').mockImplementation(async (id) => {
+      if (id === SECOND_TAG.id && !extraPageItems.some((tag) => tag.id === SECOND_TAG.id)) {
+        extraPageItems = [SECOND_TAG, ...extraPageItems];
+      }
+      return SECOND_TAG;
     });
     const renameSpy = vi.spyOn(contentApi, 'tagRename').mockImplementation(async (id, body) => {
       extraPageItems = extraPageItems.map((tag) =>
@@ -222,11 +228,34 @@ describe('features/tags', () => {
       expect(screen.queryByTestId(`rail-tag-filter-${SECOND_TAG.id}`)).not.toBeInTheDocument();
     });
 
-    // (b) Load extra page again, rename a tag on it -> no stale display remains.
+    // (b) Load extra page (now only THIRD_TAG), then click Undo on the delete toast ->
+    //     Undo-restore also calls onTagMutated={resetExtraPages}, dropping the stale extra page
+    //     so reloading the extra page shows the restored SECOND_TAG (HM19-R4-2).
     fireEvent.click(screen.getByTestId('probe-load-more'));
     expect(await screen.findByTestId(`rail-tag-filter-${THIRD_TAG.id}`)).toBeInTheDocument();
     expect(screen.queryByTestId(`rail-tag-filter-${SECOND_TAG.id}`)).not.toBeInTheDocument();
 
+    const toast = await screen.findByTestId('undo-toast-item');
+    fireEvent.click(within(toast).getByRole('button', { name: /Hoàn tác/ }));
+
+    await waitFor(() => {
+      expect(restoreSpy).toHaveBeenCalledWith(
+        SECOND_TAG.id,
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      );
+    });
+    // Extra page was reset by Undo-restore (`onTagMutated`), so THIRD_TAG is collapsed until Load more is clicked.
+    await waitFor(() => {
+      expect(screen.queryByTestId(`rail-tag-filter-${THIRD_TAG.id}`)).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('probe-load-more')).toBeInTheDocument();
+
+    // Reload extra page -> both restored SECOND_TAG and THIRD_TAG appear.
+    fireEvent.click(screen.getByTestId('probe-load-more'));
+    expect(await screen.findByTestId(`rail-tag-filter-${SECOND_TAG.id}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`rail-tag-filter-${THIRD_TAG.id}`)).toBeInTheDocument();
+
+    // (c) Rename a tag on the extra page -> extra page resets and reloading shows the renamed display.
     fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${THIRD_TAG.id}`));
     fireEvent.click(screen.getByTestId(`rail-tag-rename-action-${THIRD_TAG.id}`));
     fireEvent.change(screen.getByTestId(`rail-tag-rename-input-${THIRD_TAG.id}`), {

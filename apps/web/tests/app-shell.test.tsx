@@ -277,6 +277,63 @@ describe('Rail', () => {
       viMessages.content.errors.internal_error,
     );
   });
+
+  it('xoá một tag nằm ở trang tải thêm (extra page) sẽ reset extra pages, ẩn chip vừa xoá và hiện lại nút Xem thêm (HM19-R4-1)', async () => {
+    const extraTag1: Tag = {
+      id: '33333333-3333-4333-8333-333333333333',
+      display: 'trang-hai-1',
+      item_count: 2,
+      last_used_at: '2026-11-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z',
+    };
+    const extraTag2: Tag = {
+      id: '44444444-4444-4444-8444-444444444444',
+      display: 'trang-hai-2',
+      item_count: 1,
+      last_used_at: '2026-11-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z',
+    };
+
+    let extraPageTags: Tag[] = [extraTag1, extraTag2];
+    vi.spyOn(contentApi, 'tagsList').mockImplementation(async (params) => {
+      if (params?.cursor === 'cursor-extra-page') {
+        return {
+          items: extraPageTags.map((t) => ({ ...t })),
+          next_cursor: null,
+        };
+      }
+      return {
+        items: SAMPLE_TAGS.map((t) => ({ ...t })),
+        next_cursor: 'cursor-extra-page',
+      };
+    });
+    const deleteSpy = vi.spyOn(contentApi, 'tagDelete').mockImplementation(async (id) => {
+      extraPageTags = extraPageTags.filter((t) => t.id !== id);
+    });
+
+    renderRailWithTags(<Rail />, SAMPLE_TAGS, 'cursor-extra-page');
+
+    // 1. Click "Xem thêm" to load the extra page -> both extraTag1 and extraTag2 appear, Load More button disappears
+    fireEvent.click(screen.getByTestId('rail-tags-load-more'));
+    expect(await screen.findByText('#trang-hai-1')).toBeInTheDocument();
+    expect(screen.getByText('#trang-hai-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('rail-tags-load-more')).not.toBeInTheDocument();
+
+    // 2. Delete extraTag1 via its chip menu -> `onTagMutated` calls `resetExtraPages()`, extraTag1 disappears, and "Xem thêm" button reappears
+    fireEvent.click(screen.getByTestId(`rail-tag-menu-trigger-${extraTag1.id}`));
+    fireEvent.click(screen.getByTestId(`rail-tag-delete-action-${extraTag1.id}`));
+
+    await waitFor(() => {
+      expect(deleteSpy).toHaveBeenCalledWith(
+        extraTag1.id,
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('#trang-hai-1')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('rail-tags-load-more')).toBeInTheDocument();
+  });
 });
 
 describe('EmptyState', () => {
