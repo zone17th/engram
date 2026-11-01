@@ -25,6 +25,11 @@ export async function timedJourneyStep<T>(name: string, body: () => Promise<T>):
   return test.step(name, async () => {
     try {
       return await body();
+    } catch (error) {
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const firstLine = (rawMessage.split(/\r?\n/)[0] ?? '').slice(0, 300);
+      console.log(`journey-step-failed: ${name}: ${firstLine}`);
+      throw error;
     } finally {
       const elapsedMs = Date.now() - startMs;
       console.log(`journey-step: ${name} (${elapsedMs}ms)`);

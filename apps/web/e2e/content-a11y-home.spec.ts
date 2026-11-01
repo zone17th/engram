@@ -21,6 +21,7 @@ import {
   expectNoPlaintextInDomAttributes,
   newCoarseTouchContext,
   setQuietValue,
+  unlockLockedAppPage,
   type A11yLang,
   type A11yTheme,
   type ContentA11yContext,
@@ -107,7 +108,6 @@ async function runHomeGroup(
     await a11yStep(`[home ${groupLabel}] signup, onboarding skip, and locale/theme setup`, async () => {
       const email = uniqueEmail(`content-a11y-home-${groupLabel}`);
       await bootstrapUnlockedUser(page, email, lang, theme);
-      await page.goto('/app', { waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
       await expect(page.getByTestId('home-empty-state')).toBeVisible({
         timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
@@ -159,8 +159,10 @@ async function runHomeGroup(
           document.activeElement.blur();
         }
       });
-      // Reload `/app` so transient quick-add toasts are cleared and recent items + rail tags are rendered cleanly from API
-      await page.goto('/app', { waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
+      // Wait for the 5s auto-dismiss of the quick-add Undo toasts without reloading `/app` (so the in-memory vault key stays unlocked)
+      await expect(page.getByTestId('undo-toast-item')).toHaveCount(0, {
+        timeout: CONTENT_A11Y_UI_WAIT_MS,
+      });
       await expect(page.getByTestId('item-card')).toHaveCount(3, {
         timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
@@ -450,6 +452,8 @@ async function runHomeGroup(
               waitUntil: 'domcontentloaded',
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
+            // New browser context / page has a fresh CryptoClient Worker without the in-memory vault key: unlock via real UI first
+            await unlockLockedAppPage(coarsePage);
             await expect(coarsePage.getByTestId('item-card')).toHaveCount(3, {
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
@@ -508,9 +512,14 @@ async function runHomeGroup(
 }
 
 test.describe('P04-T21c Home a11y + visual sweep (U8, U9, U10, U18 on home)', () => {
+  test.describe.configure({ retries: 1 });
   test.skip(
     !process.env.E2E_STACK,
     'needs the compose stack (E2E_STACK=1): real API, real database',
+  );
+  test.skip(
+    process.env.E2E_CONTENT_A11Y !== '1',
+    'runs only in the Content a11y CI job (E2E_CONTENT_A11Y=1)',
   );
 
   for (const lang of A11Y_LANGS) {

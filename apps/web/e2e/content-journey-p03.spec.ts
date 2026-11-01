@@ -125,8 +125,13 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         expect(lookup.total).toBe(1);
         itemId = lookup.items[0]!.id;
 
-        // Open item page, set a hint via UI, and create a JSON entry via the item-page composer
-        await page.goto(`/app/items/${itemId}`);
+        // Open item page via client-side card click (keeps vault unlocked in memory), set a hint via UI, and create a JSON entry via the item-page composer
+        const cardOnHome = page.locator(`[data-item-card="${itemId}"]`);
+        await expect(cardOnHome).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardOnHome.click();
+        await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
         const hintInput = page.getByTestId('item-hint-input');
         await expect(hintInput).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
         await hintInput.fill(itemHint);
@@ -178,7 +183,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         expect(await findLabeledDomBodyLeaks(page, labeledSecrets)).toEqual([]);
 
         // On `/app`: locked banner + item card with name, hint, and tag #infra; zero entry bodies in DOM
-        await page.goto('/app');
+        await page.getByRole('link', { name: en.content.item.allItems, exact: true }).click();
         await expectLockedListOnApp(page);
         const itemCard = page.locator(`[data-item-card="${itemId}"]`);
         await expect(itemCard).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
@@ -209,8 +214,15 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
           })
           .toBe(AUTO_LOCK_MINUTES);
 
-        // Open the item page and verify both real entry bodies decrypt
-        await page.goto(`/app/items/${itemId}`);
+        // Leave Settings via the Done link and open the item page via client-side card click so the vault stays unlocked
+        await page.getByRole('link', { name: en.app.header.settingsDone, exact: true }).click();
+        await expect(page).toHaveURL(/\/app$/, { timeout: ACCEPTANCE_UI_WAIT_MS });
+        const cardAfterSettings = page.locator(`[data-item-card="${itemId}"]`);
+        await expect(cardAfterSettings).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardAfterSettings.click();
+        await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
         await expectVaultOpen(page);
         await expect(page.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body')).toHaveText(
           textBodyBeforeRecovery,
@@ -278,8 +290,13 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await submitUnlock(pageB, RECOVERED_PASSPHRASE);
         await expectUnlockedOnApp(pageB);
 
-        // Open the item and verify both entries created BEFORE recovery open with the exact same plaintext
-        await pageB.goto(`/app/items/${itemId}`);
+        // Open the item via client-side card click (keeps vault unlocked) and verify both entries created BEFORE recovery open with the exact same plaintext
+        const cardOnPageB = pageB.locator(`[data-item-card="${itemId}"]`);
+        await expect(cardOnPageB).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardOnPageB.click();
+        await expect(pageB).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
         await expect(pageB.getByTestId(`entry-card-${textEntryId}`).getByTestId('entry-body')).toHaveText(
           textBodyBeforeRecovery,
           { timeout: ACCEPTANCE_UI_WAIT_MS },

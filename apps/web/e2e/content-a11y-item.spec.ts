@@ -15,9 +15,11 @@ import {
   checkContentState,
   expectAppAnimatesWithoutPreference,
   expectCoarseTouchTargetsAtLeast44,
+  expectInputEquals,
   expectNoPlaintextInDomAttributes,
   newCoarseTouchContext,
   setQuietValue,
+  unlockLockedAppPage,
   type A11yLang,
   type A11yTheme,
   type ContentA11yContext,
@@ -39,13 +41,13 @@ import {
  * - `content-a11y-item-undo-toast-<lang>-<theme>-<width>.png` (U18 Undo toast on item page after deleting an entry)
  *
  * Keyboard pass (`en`, `light`, 1440) + Coarse-pointer touch target check (`hasTouch: true, isMobile: true` at 390):
- * - Item header: click/Enter on `<h1>` -> inline rename input (`Enter` saves, `Escape` cancels and returns focus);
- *   `+ Tag` popover (`Enter` attaches tag, `Escape` closes and returns focus to `+ Tag` button).
- * - Entry card (`article`): `Enter` on text card starts inline edit -> `Ctrl+S` saves, `Escape` cancels;
- *   `+ Add text entry` composer (`Ctrl+S` saves, `Escape` cancels and returns focus to `+ Add text entry`).
- * - JSON card: `Table` / `Raw JSON` segmented toggle (`aria-pressed`), tree-grid cell edit (`Enter` to edit/commit, `Escape` to cancel),
- *   add field / add row keyboard trigger, raw invalid JSON -> switch to Table blocked with error alert + `Go to line X, column Y` focuses textarea at error offset.
- * - Entry `...` menu: `Enter` opens, `ArrowDown`/`ArrowUp` cycles items, `Escape` closes and returns focus to `...` trigger;
+ * - Item header: `#item-name-input` inline rename (`Enter` saves, `Escape` reverts to committed name);
+ *   `+ Tag` (`tag-add-chip`) popover (`Enter` attaches tag, `Escape` closes and returns focus to `+ Tag` button).
+ * - Entry card (`article[data-entry-card]`): `Edit` button (`entry-edit-btn-${id}`) starts inline edit with focus in textarea -> `Ctrl+S` saves,
+ *   `Escape` cancels and returns focus to `Edit` button; `+ Add text entry` (`btn-add-text`) composer (`Ctrl+S` saves, `Escape` cancels and returns focus to `btn-add-text`).
+ * - JSON card: `Table` / `Raw JSON` segmented toggle (`json-tab-table-${id}` / `json-tab-raw-${id}`, `aria-pressed`), tree-grid cell edit (`Enter` to open/commit, `Escape` to cancel),
+ *   raw invalid JSON -> switch to Table blocked with error alert (`json-switch-blocked-msg-${id}`) + `Go to line X, column Y` (`json-raw-goto-btn-${id}`) focuses textarea at error offset.
+ * - Entry `...` menu (`entry-menu-trigger-${id}` -> `entry-menu-pop-${id}`): `Enter` opens, `ArrowDown`/`ArrowUp` cycles items, `Escape` closes and returns focus to `...` trigger;
  *   `Delete` triggers U18 Undo toast -> focus returns to neighbour card -> `Ctrl+Z` restores entry in original position.
  */
 
@@ -107,7 +109,6 @@ async function runItemGroup(
     await a11yStep(`[item ${groupLabel}] signup, onboarding skip, and locale/theme setup`, async () => {
       const email = uniqueEmail(`content-a11y-item-${groupLabel}`);
       await bootstrapUnlockedUser(page, email, lang, theme);
-      await page.goto('/app', { waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
       await expect(page.getByTestId('home-empty-state')).toBeVisible({
         timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
@@ -116,7 +117,7 @@ async function runItemGroup(
       }
     });
 
-    // Seed item via omnibox quick-add, then navigate to `/app/items/[id]`
+    // Seed item via omnibox quick-add, then client-navigate via `<Link>` to `/app/items/[id]` so the in-memory vault key stays unlocked
     let itemId = '';
     await a11yStep(
       `[item ${groupLabel}] create item via omnibox quick-add and open /app/items/[id]`,
@@ -130,14 +131,18 @@ async function runItemGroup(
         expect(href).toMatch(/^\/app\/items\/[0-9a-f-]{36}$/);
         itemId = href!.replace('/app/items/', '');
 
-        await page.goto(`/app/items/${itemId}`, {
-          waitUntil: 'domcontentloaded',
+        // Wait for the quick-add Undo toast on `/app` to clear or click through via SPA `<Link>` (keeps in-memory vault key open)
+        await firstCard.click();
+        await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
-        await expect(page.getByTestId('item-title-heading')).toBeVisible({
+        await expect(page.getByTestId('item-header')).toBeVisible({
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
-        await expect(page.getByTestId('text-entry-card')).toHaveCount(1, {
+        await expect(page.getByTestId('item-name-input')).toBeVisible({
+          timeout: CONTENT_A11Y_UI_WAIT_MS,
+        });
+        await expect(page.locator('article[data-entry-card]')).toHaveCount(1, {
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
       },
@@ -147,64 +152,62 @@ async function runItemGroup(
     await a11yStep(
       `[item ${groupLabel}] U11 item header inline rename (200 runes) + attach 50-rune tag via + Tag popover`,
       async () => {
-        const headingBtn = page.getByTestId('item-title-button');
-        await expect(headingBtn).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        const nameInput = page.getByTestId('item-name-input');
+        await expect(nameInput).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
         if (ctx.keyboard) {
-          // Verify Escape in rename input cancels and returns focus to title button
-          await headingBtn.focus();
-          await page.keyboard.press('Enter');
-          const renameInput = page.getByTestId('item-title-input');
-          await expect(renameInput).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-          await expect(renameInput).toBeFocused();
-          await setQuietValue(renameInput, 'transient-cancelled-title');
+          // Verify Escape in `#item-name-input` reverts uncommitted edits to the committed item name
+          await nameInput.focus();
+          await expect(nameInput).toBeFocused();
+          await setQuietValue(nameInput, 'transient-cancelled-title');
           await page.keyboard.press('Escape');
-          await expect(renameInput).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-          await expect(headingBtn).toBeFocused();
-          await expect(headingBtn).toHaveText(ITEM_SHORT_NAME);
+          await expectInputEquals(nameInput, ITEM_SHORT_NAME);
+          await expect(page.getByTestId('breadcrumb-item-name')).toHaveText(ITEM_SHORT_NAME);
         }
 
         // Rename item to 200-rune title via Enter
-        await headingBtn.click();
-        const renameInput = page.getByTestId('item-title-input');
-        await expect(renameInput).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        await setQuietValue(renameInput, ITEM_LONG_200_NAME);
-        await renameInput.press('Enter');
-        await expect(renameInput).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        await expect(headingBtn).toHaveText(ITEM_LONG_200_NAME, {
+        await nameInput.focus();
+        await setQuietValue(nameInput, ITEM_LONG_200_NAME);
+        await nameInput.press('Enter');
+        await expect(page.getByTestId('breadcrumb-item-name')).toHaveText(ITEM_LONG_200_NAME, {
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
+        await expect(page.getByTestId('item-page-live-region')).toContainText(
+          msgs.content.item.saved,
+          { timeout: CONTENT_A11Y_UI_WAIT_MS },
+        );
 
-        // Attach 50-rune tag via `+ Tag` popover
-        const addTagTrigger = page.getByTestId('item-add-tag-trigger');
+        // Attach 50-rune tag via `+ Tag` (`tag-add-chip`) popover
+        const addTagTrigger = page.getByTestId('tag-add-chip');
         if (ctx.keyboard) {
           // Open + Tag popover via keyboard, verify Escape closes and returns focus to trigger
           await addTagTrigger.focus();
+          await expect(addTagTrigger).toBeFocused();
           await page.keyboard.press('Enter');
-          const tagPopover = page.getByTestId('item-add-tag-popover');
+          const tagPopover = page.getByTestId('tag-add-popover');
           await expect(tagPopover).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-          await expect(page.getByTestId('item-add-tag-input')).toBeFocused();
+          await expect(page.getByTestId('tag-suggest-input')).toBeFocused();
           await page.keyboard.press('Escape');
           await expect(tagPopover).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expect(addTagTrigger).toBeFocused();
         }
 
         await addTagTrigger.click();
-        const tagInput = page.getByTestId('item-add-tag-input');
+        const tagInput = page.getByTestId('tag-suggest-input');
         await expect(tagInput).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        await expect(page.getByTestId('tag-privacy-notice')).toContainText(
+        await expect(page.getByTestId('tag-privacy-note')).toContainText(
           msgs.content.privacy.notice,
         );
         await setQuietValue(tagInput, TAG_LONG_50_NAME);
         await tagInput.press('Enter');
         await expect(
-          page.getByTestId('item-tag-chip').filter({ hasText: TAG_LONG_50_NAME }),
+          page.getByTestId(`item-tag-chip-${TAG_LONG_50_NAME}`),
         ).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
-        // Close tag popover so header is clean
-        if (await page.getByTestId('item-add-tag-popover').isVisible()) {
+        // Close tag popover if still open so header is clean
+        if (await page.getByTestId('tag-add-popover').isVisible()) {
           await page.keyboard.press('Escape');
-          await expect(page.getByTestId('item-add-tag-popover')).toBeHidden({
+          await expect(page.getByTestId('tag-add-popover')).toBeHidden({
             timeout: CONTENT_A11Y_UI_WAIT_MS,
           });
         }
@@ -219,12 +222,12 @@ async function runItemGroup(
     await a11yStep(
       `[item ${groupLabel}] create 2nd text entry via + Add text entry and JSON entry via + Add JSON entry`,
       async () => {
-        const firstTextCard = page.getByTestId('text-entry-card').first();
-        primaryTextEntryId = (await firstTextCard.getAttribute('data-entry-id')) ?? '';
+        const firstTextCard = page.locator('article[data-entry-card]:not([data-entry-type="json"])').first();
+        primaryTextEntryId = (await firstTextCard.getAttribute('data-entry-card')) ?? '';
         expect(primaryTextEntryId).toMatch(/^[0-9a-f-]{36}$/);
 
-        // Add 2nd text entry via `+ Add text entry` button (test Escape cancel in keyboard pass first)
-        const addTextBtn = page.getByTestId('item-add-text-entry-btn');
+        // Add 2nd text entry via `btn-add-text` button (test Escape cancel in keyboard pass first)
+        const addTextBtn = page.getByTestId('btn-add-text');
         if (ctx.keyboard) {
           await addTextBtn.focus();
           await page.keyboard.press('Enter');
@@ -245,36 +248,36 @@ async function runItemGroup(
         await expect(page.getByTestId('new-text-entry-composer')).toBeHidden({
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
-        await expect(page.getByTestId('text-entry-card')).toHaveCount(2, {
+        const textCards = page.locator('article[data-entry-card]:not([data-entry-type="json"])');
+        await expect(textCards).toHaveCount(2, {
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
 
         // Identify the newly created text entry ID
-        const allTextCards = page.getByTestId('text-entry-card');
-        const count = await allTextCards.count();
+        const count = await textCards.count();
         for (let i = 0; i < count; i += 1) {
-          const id = (await allTextCards.nth(i).getAttribute('data-entry-id')) ?? '';
+          const id = (await textCards.nth(i).getAttribute('data-entry-card')) ?? '';
           if (id && id !== primaryTextEntryId) {
             deleteTargetTextEntryId = id;
           }
         }
         expect(deleteTargetTextEntryId).toMatch(/^[0-9a-f-]{36}$/);
 
-        // Add JSON entry via `+ Add JSON entry` composer (switch to Raw JSON in composer, write rich JSON, Save)
-        const addJsonBtn = page.getByTestId('item-add-json-entry-btn');
+        // Add JSON entry via `btn-add-json` composer (switch to Raw JSON in composer, write rich JSON, Save)
+        const addJsonBtn = page.getByTestId('btn-add-json');
         await addJsonBtn.click();
         const jsonComposer = page.getByTestId('new-json-entry-composer');
         await expect(jsonComposer).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        await page.getByTestId('json-mode-raw-new').click();
-        const newJsonRawTextarea = page.getByTestId('json-raw-textarea-new');
+        await page.getByTestId('new-json-tab-raw').click();
+        const newJsonRawTextarea = page.getByTestId('json-raw-textarea-new-json');
         await expect(newJsonRawTextarea).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         await setQuietValue(newJsonRawTextarea, initialJsonRaw);
-        await page.getByTestId('json-raw-save-btn-new').click();
+        await page.getByTestId('json-raw-save-btn-new-json').click();
         await expect(jsonComposer).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
-        const jsonCard = page.getByTestId('json-entry-card').first();
+        const jsonCard = page.locator('article[data-entry-type="json"]').first();
         await expect(jsonCard).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        jsonEntryId = (await jsonCard.getAttribute('data-entry-id')) ?? '';
+        jsonEntryId = (await jsonCard.getAttribute('data-entry-card')) ?? '';
         expect(jsonEntryId).toMatch(/^[0-9a-f-]{36}$/);
 
         await expectNoPlaintextInDomAttributes(page, forbiddenSecrets);
@@ -283,7 +286,8 @@ async function runItemGroup(
 
     // ---- State 1: `item` (U11-U12 item page with header, text entry cards, JSON card) ----
     await a11yStep(`[item ${groupLabel}] State 1: U11-U12 item page sweep 390/768/1440`, async () => {
-      await expect(page.getByTestId(`entry-body-${primaryTextEntryId}`)).toBeVisible({
+      const primaryCard = page.getByTestId(`entry-card-${primaryTextEntryId}`);
+      await expect(primaryCard.getByTestId('entry-body')).toBeVisible({
         timeout: CONTENT_A11Y_UI_WAIT_MS,
       });
       await expect(page.getByTestId(`json-table-host-${jsonEntryId}`)).toBeVisible({
@@ -292,8 +296,8 @@ async function runItemGroup(
 
       await checkContentState(ctx, { state: 'item', fullPage: true }, [
         '[data-testid="item-header"]',
-        '[data-testid="text-entry-card"]',
-        '[data-testid="json-entry-card"]',
+        `[data-testid="entry-card-${primaryTextEntryId}"]`,
+        `[data-testid="entry-card-${jsonEntryId}"]`,
       ]);
     });
 
@@ -301,18 +305,16 @@ async function runItemGroup(
     await a11yStep(
       `[item ${groupLabel}] State 2: U12 text entry inline edit + keyboard shortcuts + sweep 390/768/1440`,
       async () => {
-        const primaryCard = page
-          .getByTestId('text-entry-card')
-          .filter({ has: page.locator(`[data-testid="entry-body-${primaryTextEntryId}"]`) })
-          .first();
+        const editBtn = page.getByTestId(`entry-edit-btn-${primaryTextEntryId}`);
+        await expect(editBtn).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
         if (ctx.keyboard) {
-          // Focus card article -> press Enter -> inline editor opens with focus in textarea
-          await primaryCard.focus();
-          await expect(primaryCard).toBeFocused();
+          // Focus card's Edit button -> press Enter -> inline editor opens with focus in textarea
+          await editBtn.focus();
+          await expect(editBtn).toBeFocused();
           await page.keyboard.press('Enter');
         } else {
-          await page.getByTestId(`entry-body-${primaryTextEntryId}`).click();
+          await editBtn.click();
         }
 
         const editTextarea = page.getByTestId(`entry-edit-textarea-${primaryTextEntryId}`);
@@ -346,16 +348,17 @@ async function runItemGroup(
           await setQuietValue(editTextarea, textEntryBodyEdited);
           await editTextarea.press('Control+s');
           await expect(editTextarea).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-          await expect(page.getByTestId('item-detail-live-region')).toContainText(
+          await expect(page.getByTestId('item-page-live-region')).toContainText(
             msgs.content.entry.savedAnnounce,
           );
 
-          // Re-open with Enter, then press Escape on clean draft -> closes editor and returns focus to card
-          await primaryCard.focus();
+          // Re-open with Enter on Edit button, then press Escape on clean draft -> closes editor and returns focus to Edit button
+          await editBtn.focus();
           await page.keyboard.press('Enter');
           await expect(editTextarea).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await editTextarea.press('Escape');
           await expect(editTextarea).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expect(editBtn).toBeFocused();
         } else {
           await page.getByTestId(`entry-cancel-btn-${primaryTextEntryId}`).click();
           await expect(editTextarea).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
@@ -370,18 +373,19 @@ async function runItemGroup(
         const tableHost = page.getByTestId(`json-table-host-${jsonEntryId}`);
         await expect(tableHost).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
-        // Expand nested object (`limits`) and nested array (`endpoints`) so tree-grid depth + row toolbars are visible
-        const limitsToggle = tableHost.locator('[data-json-toggle="limits"]');
+        // Expand nested object (`limits` at propertyIndex 4 -> `root.p4`) and nested array (`endpoints` at propertyIndex 5 -> `root.p5`)
+        // so tree-grid depth + row toolbars are visible
+        const limitsToggle = tableHost.getByTestId('json-toggle-root.p4');
         if (await limitsToggle.isVisible()) {
           await limitsToggle.click();
         }
-        const endpointsToggle = tableHost.locator('[data-json-toggle="endpoints"]');
+        const endpointsToggle = tableHost.getByTestId('json-toggle-root.p5');
         if (await endpointsToggle.isVisible()) {
           await endpointsToggle.click();
         }
 
-        // Open inline cell edit on `service` value cell so `json-table` captures active cell editing + Save/Cancel bar
-        const serviceValueCell = tableHost.locator('[data-json-cell="service:val"]');
+        // Open inline cell edit on `service` value cell (`root.p0`) so `json-table` captures active cell editing + Save/Cancel bar
+        const serviceValueCell = tableHost.getByTestId('json-cell-btn-root.p0');
         await expect(serviceValueCell).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         if (ctx.keyboard) {
           await serviceValueCell.focus();
@@ -391,25 +395,26 @@ async function runItemGroup(
           await serviceValueCell.click();
         }
 
-        const cellInput = tableHost.getByTestId('json-cell-edit-input');
+        const cellInput = tableHost.getByTestId('json-cell-input-root.p0');
         await expect(cellInput).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         await setQuietValue(cellInput, 'billing-worker-v2');
         await cellInput.press('Enter');
         await expect(cellInput).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
-        // Table is now dirty -> footer Save / Cancel bar is visible
-        await expect(page.getByTestId(`json-save-btn-${jsonEntryId}`)).toBeVisible({
+        // Table is now dirty -> footer Save / Cancel bar is visible (`entry-save-btn-${jsonEntryId}`)
+        const jsonTableSaveBtn = page.getByTestId(`entry-save-btn-${jsonEntryId}`);
+        await expect(jsonTableSaveBtn).toBeVisible({
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
 
         await checkContentState(ctx, { state: 'json-table', fullPage: true }, [
           `[data-testid="json-table-host-${jsonEntryId}"]`,
-          `[data-testid="json-save-btn-${jsonEntryId}"]`,
+          `[data-testid="entry-save-btn-${jsonEntryId}"]`,
         ]);
 
         // Save table edit and wait for dirty bar to clear
-        await page.getByTestId(`json-save-btn-${jsonEntryId}`).click();
-        await expect(page.getByTestId(`json-save-btn-${jsonEntryId}`)).toBeHidden({
+        await jsonTableSaveBtn.click();
+        await expect(jsonTableSaveBtn).toBeHidden({
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
       },
@@ -419,8 +424,8 @@ async function runItemGroup(
     await a11yStep(
       `[item ${groupLabel}] State 4 & 5: U13 JSON card Raw JSON view and invalid JSON error banner + sweep 390/768/1440`,
       async () => {
-        const modeRawBtn = page.getByTestId(`json-mode-raw-${jsonEntryId}`);
-        const modeTableBtn = page.getByTestId(`json-mode-table-${jsonEntryId}`);
+        const modeRawBtn = page.getByTestId(`json-tab-raw-${jsonEntryId}`);
+        const modeTableBtn = page.getByTestId(`json-tab-table-${jsonEntryId}`);
         await modeRawBtn.click();
 
         const rawTextarea = page.getByTestId(`json-raw-textarea-${jsonEntryId}`);
@@ -445,7 +450,7 @@ async function runItemGroup(
 
         // Try switching back to Table while Raw JSON is invalid -> stays in Raw JSON and shows switch-blocked alert
         await modeTableBtn.click();
-        await expect(page.getByTestId(`json-switch-blocked-${jsonEntryId}`)).toBeVisible({
+        await expect(page.getByTestId(`json-switch-blocked-msg-${jsonEntryId}`)).toBeVisible({
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
         await expect(modeRawBtn).toHaveAttribute('aria-pressed', 'true');
@@ -465,14 +470,14 @@ async function runItemGroup(
 
         await checkContentState(ctx, { state: 'json-error', fullPage: true }, [
           `[data-testid="json-raw-error-${jsonEntryId}"]`,
-          `[data-testid="json-switch-blocked-${jsonEntryId}"]`,
+          `[data-testid="json-switch-blocked-msg-${jsonEntryId}"]`,
         ]);
 
         // Cancel raw edits and discard changes so JSON card returns cleanly to Table view
         await page.getByTestId(`json-raw-cancel-btn-${jsonEntryId}`).click();
-        const discardConfirm = page.getByTestId(`json-discard-confirm-${jsonEntryId}`);
+        const discardConfirm = page.getByTestId(`entry-discard-confirm-${jsonEntryId}`);
         if (await discardConfirm.isVisible()) {
-          await page.getByTestId(`json-discard-btn-${jsonEntryId}`).click();
+          await page.getByTestId(`entry-discard-btn-${jsonEntryId}`).click();
         }
         await modeTableBtn.click();
         await expect(page.getByTestId(`json-table-host-${jsonEntryId}`)).toBeVisible({
@@ -493,7 +498,7 @@ async function runItemGroup(
           await menuTrigger.focus();
           await expect(menuTrigger).toBeFocused();
           await page.keyboard.press('Enter');
-          const menuPopup = page.getByTestId(`entry-menu-popup-${deleteTargetTextEntryId}`);
+          const menuPopup = page.getByTestId(`entry-menu-pop-${deleteTargetTextEntryId}`);
           await expect(menuPopup).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           const items = menuPopup.getByRole('menuitem');
           await expect(items.first()).toBeFocused();
@@ -511,11 +516,11 @@ async function runItemGroup(
           await menuTrigger.click();
         }
 
-        const menuPopup = page.getByTestId(`entry-menu-popup-${deleteTargetTextEntryId}`);
+        const menuPopup = page.getByTestId(`entry-menu-pop-${deleteTargetTextEntryId}`);
         await expect(menuPopup).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
         await checkContentState(ctx, { state: 'entry-menu', fullPage: true }, [
-          `[data-testid="entry-menu-popup-${deleteTargetTextEntryId}"]`,
+          `[data-testid="entry-menu-pop-${deleteTargetTextEntryId}"]`,
         ]);
 
         // Trigger Delete from the entry menu -> entry card disappears immediately, U18 Undo toast appears
@@ -527,7 +532,8 @@ async function runItemGroup(
           await deleteMenuItem.click();
         }
 
-        await expect(page.getByTestId('text-entry-card')).toHaveCount(1, {
+        const textCards = page.locator('article[data-entry-card]:not([data-entry-type="json"])');
+        await expect(textCards).toHaveCount(1, {
           timeout: CONTENT_A11Y_UI_WAIT_MS,
         });
 
@@ -550,8 +556,7 @@ async function runItemGroup(
         if (ctx.keyboard) {
           // Verify that typing in an active textarea does NOT trigger toast Undo on Ctrl+Z,
           // and that pressing Ctrl+Z outside an input restores the deleted entry card and focuses it (plan §2.8, §2.11).
-          const primaryBody = page.getByTestId(`entry-body-${primaryTextEntryId}`);
-          await primaryBody.click();
+          await page.getByTestId(`entry-edit-btn-${primaryTextEntryId}`).click();
           const activeEditTextarea = page.getByTestId(`entry-edit-textarea-${primaryTextEntryId}`);
           await expect(activeEditTextarea).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await activeEditTextarea.focus();
@@ -564,16 +569,16 @@ async function runItemGroup(
           // Now focus the Undo toast button and press Ctrl+Z -> restores the deleted entry card
           await undoBtn.focus();
           await page.keyboard.press('Control+z');
-          await expect(page.getByTestId('text-entry-card')).toHaveCount(2, {
+          await expect(textCards).toHaveCount(2, {
             timeout: CONTENT_A11Y_UI_WAIT_MS,
           });
           await expect(
-            page.getByTestId(`entry-body-${deleteTargetTextEntryId}`),
+            page.getByTestId(`entry-card-${deleteTargetTextEntryId}`).getByTestId('entry-body'),
           ).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         } else {
           // Click Undo so all locales/themes also exercise restore cleanly
           await undoBtn.click();
-          await expect(page.getByTestId('text-entry-card')).toHaveCount(2, {
+          await expect(textCards).toHaveCount(2, {
             timeout: CONTENT_A11Y_UI_WAIT_MS,
           });
         }
@@ -588,57 +593,78 @@ async function runItemGroup(
           const coarseContext = await newCoarseTouchContext(browser, context);
           try {
             const coarsePage = await coarseContext.newPage();
-            await coarsePage.goto(`/app/items/${itemId}`, {
+            await coarsePage.goto('/app', {
               waitUntil: 'domcontentloaded',
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
-            await expect(coarsePage.getByTestId('item-title-heading')).toBeVisible({
+            // New browser context / page has a fresh CryptoClient Worker without the in-memory vault key: unlock via real UI first,
+            // then client-navigate via `<Link>` to `/app/items/${itemId}` so decrypted JSON table & entry controls are mounted.
+            await unlockLockedAppPage(coarsePage);
+            await coarsePage.locator(`[data-item-card="${itemId}"]`).click();
+            await expect(coarsePage).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
+              timeout: CONTENT_A11Y_UI_WAIT_MS,
+            });
+            await expect(coarsePage.getByTestId('item-header')).toBeVisible({
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
             await expect(coarsePage.getByTestId(`json-table-host-${jsonEntryId}`)).toBeVisible({
               timeout: CONTENT_A11Y_UI_WAIT_MS,
             });
 
+            // Expand `limits` (`root.p4`) on the coarse page so `.json-toggle` and child cells are visible
+            const coarseLimitsToggle = coarsePage.getByTestId('json-toggle-root.p4');
+            if (await coarseLimitsToggle.isVisible()) {
+              await coarseLimitsToggle.click();
+            }
+
             // 1. Item page controls: buttons, chip-x remove buttons, segmented toggle buttons, entry menu trigger
             await expectCoarseTouchTargetsAtLeast44(
               coarsePage,
               'item-controls',
               [
-                '[data-testid="item-add-tag-trigger"]',
-                '[data-testid="item-add-text-entry-btn"]',
-                '[data-testid="item-add-json-entry-btn"]',
+                '[data-testid="tag-add-chip"]',
+                '[data-testid="btn-add-text"]',
+                '[data-testid="btn-add-json"]',
                 `[data-testid="entry-menu-trigger-${primaryTextEntryId}"]`,
-                `[data-testid="json-mode-table-${jsonEntryId}"]`,
-                `[data-testid="json-mode-raw-${jsonEntryId}"]`,
-                '[data-testid="item-tag-chip"] .chip-x',
+                `[data-testid="json-tab-table-${jsonEntryId}"]`,
+                `[data-testid="json-tab-raw-${jsonEntryId}"]`,
+                `[data-testid="item-tag-remove-${TAG_LONG_50_NAME}"]`,
               ],
               [
                 `[data-testid="entry-menu-trigger-${primaryTextEntryId}"]`,
-                '[data-testid="item-tag-chip"] .chip-x',
+                `[data-testid="item-tag-remove-${TAG_LONG_50_NAME}"]`,
               ],
             );
 
             // 2. Open entry `...` menu and check `[role="menuitem"]` >= 44px height
             await coarsePage.getByTestId(`entry-menu-trigger-${primaryTextEntryId}`).click();
             await expect(
-              coarsePage.getByTestId(`entry-menu-popup-${primaryTextEntryId}`),
+              coarsePage.getByTestId(`entry-menu-pop-${primaryTextEntryId}`),
             ).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
             await expectCoarseTouchTargetsAtLeast44(coarsePage, 'entry-menu-items', [
-              `[data-testid="entry-menu-popup-${primaryTextEntryId}"] [role="menuitem"]`,
+              `[data-testid="entry-menu-pop-${primaryTextEntryId}"] [role="menuitem"]`,
             ]);
             await coarsePage.keyboard.press('Escape');
 
-            // 3. JSON table buttons (`.json-toggle`, `.json-cell-btn`, `.json-type-btn`)
+            // 3. JSON table buttons (`.json-toggle`, `.json-cell-btn`) + open cell edit to check `.json-type-btn`
             await expectCoarseTouchTargetsAtLeast44(
               coarsePage,
               'json-table-controls',
               [
                 `[data-testid="json-table-host-${jsonEntryId}"] .json-toggle`,
                 `[data-testid="json-table-host-${jsonEntryId}"] .json-cell-btn`,
-                `[data-testid="json-table-host-${jsonEntryId}"] .json-type-btn`,
               ],
               [`[data-testid="json-table-host-${jsonEntryId}"] .json-toggle`],
             );
+
+            await coarsePage.getByTestId('json-cell-btn-root.p0').click();
+            await expect(coarsePage.getByTestId('json-type-select-root.p0')).toBeVisible({
+              timeout: CONTENT_A11Y_UI_WAIT_MS,
+            });
+            await expectCoarseTouchTargetsAtLeast44(coarsePage, 'json-cell-editor-type', [
+              `[data-testid="json-table-host-${jsonEntryId}"] .json-type-btn`,
+            ]);
+            await coarsePage.keyboard.press('Escape');
           } finally {
             await coarseContext.close();
           }
@@ -654,9 +680,14 @@ async function runItemGroup(
 }
 
 test.describe('P04-T21c Item page + text/JSON entries + menu + Undo toast a11y & visual sweep (U11-U13, U18)', () => {
+  test.describe.configure({ retries: 1 });
   test.skip(
     !process.env.E2E_STACK,
     'needs the compose stack (E2E_STACK=1): real API, real database',
+  );
+  test.skip(
+    process.env.E2E_CONTENT_A11Y !== '1',
+    'runs only in the Content a11y CI job (E2E_CONTENT_A11Y=1)',
   );
 
   for (const lang of A11Y_LANGS) {

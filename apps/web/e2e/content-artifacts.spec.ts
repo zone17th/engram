@@ -103,8 +103,13 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and in-run disk artifact check
         expect(lookupA.total).toBe(1);
         userAItemId = lookupA.items[0]!.id;
 
-        // Open item page, set hint, and add a JSON entry
-        await pageA.goto(`/app/items/${userAItemId}`);
+        // Open item page via client-side card click (keeps vault unlocked in memory), set hint, and add a JSON entry
+        const cardA = pageA.locator(`[data-item-card="${userAItemId}"]`);
+        await expect(cardA).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardA.click();
+        await expect(pageA).toHaveURL(new RegExp(`/app/items/${userAItemId}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
         const hintInput = pageA.getByTestId('item-hint-input');
         await expect(hintInput).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
         await hintInput.fill(userAItemHint);

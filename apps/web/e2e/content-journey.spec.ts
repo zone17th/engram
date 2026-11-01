@@ -205,7 +205,12 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
       });
 
       await timedJourneyStep('3. open item page, edit a text entry while offline (draft preserved + Retry box shown, A10), go online + Retry to save, reload, unlock, and see the updated text', async () => {
-        await pageA.goto(`/app/items/${item1Id}`);
+        const cardItem1OnHome = pageA.locator(`[data-item-card="${item1Id}"]`);
+        await expect(cardItem1OnHome).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardItem1OnHome.click();
+        await expect(pageA).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
         await expect(pageA.getByTestId('item-name-input')).toHaveValue(itemName, {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
@@ -521,8 +526,8 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         const domLeaksOnItem = await findLabeledDomBodyLeaks(pageB, labeledSecrets);
         expect(domLeaksOnItem).toEqual([]);
 
-        // Navigate back to /app locked list and confirm zero DOM leaks there too
-        await pageB.goto('/app');
+        // Navigate back to /app locked list via the breadcrumb link and confirm zero DOM leaks there too
+        await pageB.getByRole('link', { name: en.content.item.allItems, exact: true }).click();
         await expectLockedListOnApp(pageB);
         const domLeaksOnHome = await findLabeledDomBodyLeaks(pageB, labeledSecrets);
         expect(domLeaksOnHome).toEqual([]);

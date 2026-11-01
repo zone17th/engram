@@ -22,11 +22,20 @@ import {
   type A11yTheme,
 } from './vault-journey-a11y';
 import {
-  createVaultViaOnboarding,
+  expectLockedListOnApp,
   expectUnlockedOnApp,
+  readRecoveryKeySlot,
   signupPasswordUser,
+  unlockFromLockedList,
 } from './vault-journey-support';
-import { VAULT_PASSPHRASE } from './vault-passkey-support';
+import {
+  CRYPTO_WAIT_MS,
+  UI_WAIT_MS,
+  VAULT_PASSPHRASE,
+  expectVaultOpen,
+  isApiPost,
+} from './vault-passkey-support';
+import { fillSecret } from './vault-settings-secret';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs,
 // so a failure while a recovery-key sheet or secret input is mounted can never serialize secrets to disk.
@@ -37,7 +46,10 @@ export {
   A11Y_THEMES,
   A11Y_WIDTHS,
   expectAppAnimatesWithoutPreference,
+  expectLockedListOnApp,
   expectReducedMotion,
+  expectUnlockedOnApp,
+  unlockFromLockedList,
   type A11yLang,
   type A11yTheme,
 };
@@ -100,6 +112,11 @@ export async function a11yStep<T>(name: string, body: () => Promise<T>): Promise
   console.log(`journey-step: ${name}`);
   try {
     return await test.step(name, body);
+  } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const firstLine = (rawMessage.split(/\r?\n/)[0] ?? '').slice(0, 300);
+    console.log(`journey-step-failed: ${name}: ${firstLine}`);
+    throw error;
   } finally {
     const elapsed = Date.now() - start;
     console.log(`journey-step-done: ${name} (${elapsed}ms)`);
@@ -255,7 +272,48 @@ export async function applyContentLangAndTheme(
 }
 
 /**
- * Signs up a fresh password user, completes onboarding (with passkey skip), and applies `lang` and `theme`.
+ * Completes onboarding (step 1 passphrase -> step 2 10-slot recovery-key sheet -> POST /vault -> step 3 skip)
+ * using stable `#onboarding-*` IDs and `data-testid` selectors so it works in both `en` and `vi` locales.
+ */
+async function completeOnboardingAnyLocale(page: Page, passphrase: string): Promise<void> {
+  await expect(page).toHaveURL(/\/app\/onboarding$/, { timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('onboarding-step-passphrase')).toBeVisible({
+    timeout: CRYPTO_WAIT_MS,
+  });
+  await fillSecret(page.locator('#onboarding-passphrase'), passphrase, CRYPTO_WAIT_MS);
+  await fillSecret(page.locator('#onboarding-confirm-passphrase'), passphrase, CRYPTO_WAIT_MS);
+  await page.getByTestId('onboarding-continue-button').click();
+
+  await expect(page.getByTestId('onboarding-step-recovery-keys')).toBeVisible({
+    timeout: CRYPTO_WAIT_MS,
+  });
+  await expect(page.getByTestId('recovery-keys-grid').getByRole('listitem')).toHaveCount(10);
+  const slot1 = await readRecoveryKeySlot(page, 1);
+  const slot2 = await readRecoveryKeySlot(page, 2);
+  expect(slot1 !== slot2).toBe(true);
+
+  await page.getByTestId('recovery-keys-confirm-checkbox').check();
+  const created = page.waitForResponse((r) => isApiPost(r, '/api/v1/vault'), {
+    timeout: CRYPTO_WAIT_MS,
+  });
+  await page.getByTestId('onboarding-create-vault-button').click();
+  expect((await created).status()).toBe(201);
+
+  await expect(page.getByTestId('onboarding-step-passkey')).toBeVisible({ timeout: UI_WAIT_MS });
+  await expect(page.getByTestId('onboarding-remember-device-switch')).toHaveAttribute(
+    'aria-checked',
+    'false',
+  );
+  await page.getByTestId('onboarding-skip-passkey-button').click();
+  await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
+  await expectVaultOpen(page);
+}
+
+/**
+ * Signs up a fresh password user, applies `lang` and `theme` cookies + settings BEFORE onboarding,
+ * reloads `/app/onboarding` so NextIntlClientProvider SSRs `messages/<lang>.json`, and completes
+ * onboarding (with passkey skip) so the page lands on `/app` already unlocked in `lang`/`theme`
+ * without needing any post-onboarding full navigation that would lock the in-memory vault key.
  */
 export async function bootstrapUnlockedUser(
   page: Page,
@@ -267,11 +325,26 @@ export async function bootstrapUnlockedUser(
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
   await signupPasswordUser(page, email);
-  await createVaultViaOnboarding(page, passphrase, { kind: 'skip' });
-  await expectUnlockedOnApp(page);
   await applyContentLangAndTheme(page, lang, theme);
+  await page.goto('/app/onboarding', {
+    waitUntil: 'domcontentloaded',
+    timeout: CONTENT_A11Y_UI_WAIT_MS,
+  });
+  await completeOnboardingAnyLocale(page, passphrase);
+  await expectUnlockedOnApp(page);
 }
 
+/**
+ * Unlocks the vault on a page that landed on `/app` in the locked state (e.g. a freshly opened
+ * coarse-pointer context page that inherited session cookies but has a fresh Worker without the in-memory key).
+ */
+export async function unlockLockedAppPage(
+  page: Page,
+  passphrase = VAULT_PASSPHRASE,
+): Promise<void> {
+  await expectLockedListOnApp(page);
+  await unlockFromLockedList(page, passphrase);
+}
 /**
  * Performs an authenticated JSON mutation from the page context using the active session and `sabk_csrf` cookie.
  * Never used to send entry plaintext (entry bodies must be created through the real UI).
