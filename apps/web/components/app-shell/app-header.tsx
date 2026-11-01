@@ -3,16 +3,11 @@
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
-import { useVaultPillLabel, VaultPill, type VaultPillState } from '@/components/ui/vault-pill';
+import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
-import { useOptionalVault, type VaultStateMachineMode } from '@/features/vault/vault-provider';
+import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-function modeToPillState(mode: VaultStateMachineMode): VaultPillState {
-  if (mode === 'no_vault' || mode === 'onboarding') return 'absent';
-  if (mode === 'unlocked' || mode === 'rewrapping') return 'open';
-  return 'locked';
-}
 
 /** Header dính, nền mờ, cao 68px — chép từ mockups/index.html. */
 export function AppHeader({
@@ -30,7 +25,7 @@ export function AppHeader({
   const tVault = useTranslations('vault.state');
   const vaultCtx = useOptionalVault();
   const effectivePillState: VaultPillState = vaultCtx
-    ? modeToPillState(vaultCtx.state)
+    ? vaultModeToPillState(vaultCtx.state)
     : (vault?.state ?? 'locked');
   const effectiveMinutesLeft = vault?.minutesLeft ?? vaultCtx?.minutesLeft;
   const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
