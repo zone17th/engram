@@ -997,13 +997,21 @@ describe('lib/api/content', () => {
         { wrapper },
       );
 
-      await expect(
-        act(async () => {
+      // Never let `act` itself reject (CCFE4-1): a rejecting act() callback makes React report
+      // "overlapping act() calls" and leaves the act environment broken for the next test. Catch the
+      // expected rejection INSIDE the callback so act always resolves, then assert on the captured error.
+      let plaintextError: unknown;
+      await act(async () => {
+        try {
           await result.current.mutateAsync({
             plaintext: 'secret-text',
           } as unknown as EntryCreateRequest);
-        }),
-      ).rejects.toThrow(/forbids plaintext fields/);
+        } catch (e) {
+          plaintextError = e;
+        }
+      });
+      expect(plaintextError).toBeInstanceOf(Error);
+      expect(String(plaintextError)).toMatch(/forbids plaintext fields/);
 
       await act(async () => {
         await result.current.mutateAsync(SAMPLE_ENTRY_CREATE);
