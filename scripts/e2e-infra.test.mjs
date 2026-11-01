@@ -358,7 +358,7 @@ function validateDockerfileContentBuildFlag(dockerfileSource) {
   );
   assert.match(
     envDeclarations[0][1],
-    /^\$\{NEXT_PUBLIC_CONTENT_ENABLED\}|\$NEXT_PUBLIC_CONTENT_ENABLED$/,
+    /^(?:\$\{NEXT_PUBLIC_CONTENT_ENABLED\}|\$NEXT_PUBLIC_CONTENT_ENABLED)$/,
     'build stage ENV NEXT_PUBLIC_CONTENT_ENABLED must reference NEXT_PUBLIC_CONTENT_ENABLED build arg',
   );
   assert.ok(
@@ -679,6 +679,35 @@ test('NEXT_PUBLIC_CONTENT_ENABLED build guards reject runtime-only declarations 
   );
   assert.notEqual(workflowWithPlaywrightComment, workflow);
   validateCiContentAndBrowserJobs(workflowWithPlaywrightComment);
+
+  // (8) Reject build-stage ENV NEXT_PUBLIC_CONTENT_ENABLED with trailing suffix or leading prefix (CCBE2-1).
+  const dockerfileBuildStageEnvSuffix = dockerfile.replace(
+    /FROM \$\{NODE_IMAGE\} AS build[\s\S]*?RUN pnpm --filter @engram\/web build/,
+    (stage) =>
+      stage.replace(
+        /^ENV NEXT_PUBLIC_CONTENT_ENABLED=\$\{NEXT_PUBLIC_CONTENT_ENABLED\}$/m,
+        'ENV NEXT_PUBLIC_CONTENT_ENABLED=${NEXT_PUBLIC_CONTENT_ENABLED}suffix',
+      ),
+  );
+  assert.notEqual(dockerfileBuildStageEnvSuffix, dockerfile);
+  assert.throws(
+    () => validateDockerfileContentBuildFlag(dockerfileBuildStageEnvSuffix),
+    /build stage ENV NEXT_PUBLIC_CONTENT_ENABLED must reference NEXT_PUBLIC_CONTENT_ENABLED build arg/,
+  );
+
+  const dockerfileBuildStageEnvPrefix = dockerfile.replace(
+    /FROM \$\{NODE_IMAGE\} AS build[\s\S]*?RUN pnpm --filter @engram\/web build/,
+    (stage) =>
+      stage.replace(
+        /^ENV NEXT_PUBLIC_CONTENT_ENABLED=\$\{NEXT_PUBLIC_CONTENT_ENABLED\}$/m,
+        'ENV NEXT_PUBLIC_CONTENT_ENABLED=prefix$NEXT_PUBLIC_CONTENT_ENABLED',
+      ),
+  );
+  assert.notEqual(dockerfileBuildStageEnvPrefix, dockerfile);
+  assert.throws(
+    () => validateDockerfileContentBuildFlag(dockerfileBuildStageEnvPrefix),
+    /build stage ENV NEXT_PUBLIC_CONTENT_ENABLED must reference NEXT_PUBLIC_CONTENT_ENABLED build arg/,
+  );
 });
 
 test('every *.test.ts(x) under apps/web runs at runtime exactly once (vitest include XOR one tests/ shim)', () => {
