@@ -1044,3 +1044,161 @@ describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions 
     useOptionalVaultSpy.mockRestore();
   });
 });
+
+describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clamp with full accessible name/title, and focus-ring avoidance', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    stubNavigatorPlatform({ userAgentDataPlatform: 'Windows', platform: 'Win32' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('applies .toast-stack and narrow (<640px) bottom-anchored near-full-width classes, .toast-body with 2-line clamp, and preserves full 200-rune item name in title and live region', () => {
+    let api!: UndoToastContextValue;
+    render(
+      <UndoToastProvider>
+        <TestHarness
+          onPushReady={(ctx) => {
+            api = ctx;
+          }}
+        />
+      </UndoToastProvider>,
+    );
+
+    const long200RuneName = 'long-item-segment-'.repeat(11) + 'end';
+    expect(Array.from(long200RuneName).length).toBeGreaterThanOrEqual(200);
+    const fullMessage = `Saved to “${long200RuneName}”`;
+    const fullDetail =
+      'Undo only removes the saved entry; the item and tags stay';
+
+    act(() => {
+      api.pushUndoToast({
+        id: 'fu10-long',
+        message: fullMessage,
+        detail: fullDetail,
+        actionLabel: 'Undo',
+        onUndo: vi.fn(),
+      });
+    });
+
+    const stackEl = screen.getByTestId('undo-toast-stack');
+    expect(stackEl).toHaveClass('toast-stack', '!flex-col');
+    expect(stackEl.className).toContain('max-[639px]:!left-4');
+    expect(stackEl.className).toContain('max-[639px]:!right-4');
+    expect(stackEl.className).toContain('max-[639px]:!w-auto');
+    expect(stackEl.className).toContain('max-[639px]:!max-w-none');
+    expect(stackEl.className).toContain('max-[639px]:!translate-x-0');
+    expect(stackEl.className).toContain(
+      'max-[639px]:!bottom-[calc(16px+env(safe-area-inset-bottom,0px))]',
+    );
+
+    const cardEl = screen.getByTestId('undo-toast-item');
+    expect(cardEl).toHaveClass('toast', '!static', '!translate-x-0');
+    expect(cardEl.className).toContain('max-[639px]:!w-full');
+    expect(cardEl.className).toContain('max-[639px]:!max-w-none');
+
+    const bodyEl = cardEl.querySelector('.toast-body');
+    expect(bodyEl).not.toBeNull();
+    expect(bodyEl).toHaveClass('toast-body', 'min-w-0', 'flex-1');
+
+    const messageEl = screen.getByTestId('undo-toast-message');
+    expect(messageEl).toHaveClass('line-clamp-2', 'break-words');
+    expect(messageEl.className).toContain('[overflow-wrap:anywhere]');
+    expect(messageEl).toHaveAttribute('title', fullMessage);
+    expect(messageEl).toHaveTextContent(fullMessage);
+
+    const detailEl = screen.getByTestId('undo-toast-detail');
+    expect(detailEl).toHaveClass('toast-sub', 'line-clamp-2', 'break-words');
+    expect(detailEl).toHaveAttribute('title', fullDetail);
+    expect(detailEl).toHaveTextContent(fullDetail);
+
+    // Live region retains the full untruncated 200-rune message and detail
+    const statusEl = screen.getByRole('status');
+    expect(statusEl.textContent).toContain(fullMessage);
+    expect(statusEl.textContent).toContain(fullDetail);
+    expect(statusEl.textContent).toContain('Undo (Ctrl+Z)');
+  });
+
+  it('ACC-TV1-5: shifts the toast stack out of the focused element focus ring path when a focused control overlaps the stack box', () => {
+    let api!: UndoToastContextValue;
+    render(
+      <UndoToastProvider>
+        <TestHarness
+          onPushReady={(ctx) => {
+            api = ctx;
+          }}
+        />
+      </UndoToastProvider>,
+    );
+
+    const originBtn = screen.getByTestId('origin-btn');
+    const outsideBtn = screen.getByTestId('outside-btn');
+    const stackEl = screen.getByTestId('undo-toast-stack');
+
+    vi.spyOn(stackEl, 'getBoundingClientRect').mockReturnValue({
+      x: 200,
+      y: 700,
+      left: 200,
+      top: 700,
+      right: 560,
+      bottom: 760,
+      width: 360,
+      height: 60,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    // Origin button overlaps the stack's box -> focusing it activates focus-ring avoidance classes
+    vi.spyOn(originBtn, 'getBoundingClientRect').mockReturnValue({
+      x: 220,
+      y: 710,
+      left: 220,
+      top: 710,
+      right: 340,
+      bottom: 750,
+      width: 120,
+      height: 40,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    // Outside button is near the top of the viewport, well above the stack
+    vi.spyOn(outsideBtn, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 20,
+      left: 20,
+      top: 20,
+      right: 120,
+      bottom: 60,
+      width: 100,
+      height: 40,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
+
+    act(() => {
+      originBtn.focus();
+      fireEvent.focusIn(originBtn);
+      api.pushUndoToast({
+        id: 'fu10-focus-overlap',
+        message: 'Saved to “service-config-vault”',
+        actionLabel: 'Undo',
+        onUndo: vi.fn(),
+      });
+    });
+
+    expect(stackEl.className).toContain('min-[640px]:!right-6');
+    expect(stackEl.className).toContain('max-[639px]:!-translate-y-14');
+
+    // Moving focus to a non-overlapping control at the top of the page clears the shift
+    act(() => {
+      outsideBtn.focus();
+      fireEvent.focusIn(outsideBtn);
+    });
+
+    expect(stackEl.className).not.toContain('min-[640px]:!right-6');
+    expect(stackEl.className).not.toContain('max-[639px]:!-translate-y-14');
+  });
+});

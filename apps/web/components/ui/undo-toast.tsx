@@ -191,6 +191,7 @@ export function UndoToastProvider({
   const [expanded, setExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocusedInside, setIsFocusedInside] = useState(false);
+  const [avoidsFocusOverlay, setAvoidsFocusOverlay] = useState(false);
   const [announcementSeq, setAnnouncementSeq] = useState(0);
 
   const stackRef = useRef<HTMLDivElement | null>(null);
@@ -587,6 +588,72 @@ export function UndoToastProvider({
     });
   }, [isHovered]);
 
+  // ACC-TV1-5 (FU10, dec-216): Keep the fixed toast stack out of the focused element's focus ring path.
+  // When a page control outside the stack holds focus and its bounding box (plus 8 px focus-ring clearance)
+  // intersects the stack's bounding box, shift the stack out of the focus ring path while keeping it visible.
+  useEffect(() => {
+    if (toasts.length === 0) {
+      setAvoidsFocusOverlay(false);
+      return;
+    }
+
+    const checkFocusOverlap = () => {
+      const stackEl = stackRef.current;
+      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+      if (
+        !stackEl ||
+        !activeEl ||
+        !(activeEl instanceof HTMLElement) ||
+        activeEl === document.body ||
+        activeEl === document.documentElement ||
+        stackEl.contains(activeEl)
+      ) {
+        setAvoidsFocusOverlay(false);
+        return;
+      }
+
+      const focusRect = activeEl.getBoundingClientRect();
+      const stackRect = stackEl.getBoundingClientRect();
+      if (
+        focusRect.width <= 0 ||
+        focusRect.height <= 0 ||
+        stackRect.width <= 0 ||
+        stackRect.height <= 0
+      ) {
+        setAvoidsFocusOverlay(false);
+        return;
+      }
+
+      const pad = 8;
+      const overlaps =
+        focusRect.left - pad < stackRect.right &&
+        focusRect.right + pad > stackRect.left &&
+        focusRect.top - pad < stackRect.bottom &&
+        focusRect.bottom + pad > stackRect.top;
+
+      if (overlaps) {
+        setAvoidsFocusOverlay(true);
+      } else if (
+        typeof window !== 'undefined' &&
+        focusRect.bottom + pad < window.innerHeight - stackRect.height - 32
+      ) {
+        setAvoidsFocusOverlay(false);
+      }
+    };
+
+    checkFocusOverlap();
+    window.addEventListener('focusin', checkFocusOverlap, true);
+    window.addEventListener('focusout', checkFocusOverlap, true);
+    window.addEventListener('scroll', checkFocusOverlap, true);
+    window.addEventListener('resize', checkFocusOverlap);
+    return () => {
+      window.removeEventListener('focusin', checkFocusOverlap, true);
+      window.removeEventListener('focusout', checkFocusOverlap, true);
+      window.removeEventListener('scroll', checkFocusOverlap, true);
+      window.removeEventListener('resize', checkFocusOverlap);
+    };
+  }, [toasts]);
+
   const visibleToasts = expanded ? toasts : toasts.slice(0, UNDO_TOAST_MAX_VISIBLE);
   const hiddenCount = expanded ? 0 : Math.max(0, toasts.length - UNDO_TOAST_MAX_VISIBLE);
   const newestToast = toasts[0];
@@ -662,7 +729,9 @@ export function UndoToastProvider({
         onFocusCapture={handleFocusCapture}
         onBlurCapture={handleBlurCapture}
         className={cn(
-          'fixed bottom-7 left-1/2 z-[80] flex -translate-x-1/2 flex-col items-center gap-2',
+          'toast-stack !flex-col max-[639px]:!left-4 max-[639px]:!right-4 max-[639px]:!w-auto max-[639px]:!max-w-none max-[639px]:!translate-x-0 max-[639px]:!bottom-[calc(16px+env(safe-area-inset-bottom,0px))]',
+          avoidsFocusOverlay &&
+            'min-[640px]:!left-auto min-[640px]:!right-6 min-[640px]:!translate-x-0 min-[640px]:!w-auto min-[640px]:!items-end max-[639px]:!-translate-y-14',
           toasts.length === 0 && 'pointer-events-none',
         )}
       >
@@ -705,12 +774,25 @@ export function UndoToastCard({
   return (
     <div
       data-testid="undo-toast-item"
-      className={cn('toast !static !translate-x-0', className)}
+      className={cn(
+        'toast !static !translate-x-0 max-[639px]:!w-full max-[639px]:!max-w-none',
+        className,
+      )}
     >
-      <div className="flex flex-col gap-0.5">
-        <span>{item.message}</span>
+      <div className="toast-body flex min-w-0 flex-1 flex-col gap-0.5">
+        <span
+          data-testid="undo-toast-message"
+          title={item.message}
+          className="line-clamp-2 break-words [overflow-wrap:anywhere]"
+        >
+          {item.message}
+        </span>
         {item.detail ? (
-          <span className="toast-sub" data-testid="undo-toast-detail">
+          <span
+            className="toast-sub line-clamp-2 break-words"
+            data-testid="undo-toast-detail"
+            title={item.detail}
+          >
             {item.detail}
           </span>
         ) : null}
