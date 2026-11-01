@@ -139,6 +139,8 @@ export function TextEntryCard({
     pending,
     failed,
     oldKey,
+    decryptFailed,
+    errorKind,
     resolvedVersion,
     refetch,
   } = useEntryBody(entry.id, entry.version, load, {
@@ -1365,9 +1367,23 @@ export function TextEntryCard({
           >
             <div className="min-w-0">
               <p className="t-caption m-0 font-semibold text-body">
-                {tEntry('decryptFailedTitle')}
+                {(errorKind ?? (decryptFailed ? 'decrypt_failed' : 'other')) === 'decrypt_failed'
+                  ? tEntry('decryptFailedTitle')
+                  : errorKind === 'network'
+                    ? tEntry('networkFailedTitle')
+                    : errorKind === 'not_found'
+                      ? tEntry('notFoundTitle')
+                      : tEntry('loadFailedTitle')}
               </p>
-              <p className="t-caption m-0 text-muted">{tLocked('bodyError')}</p>
+              <p className="t-caption m-0 text-muted">
+                {(errorKind ?? (decryptFailed ? 'decrypt_failed' : 'other')) === 'decrypt_failed'
+                  ? tEntry('decryptFailedBody')
+                  : errorKind === 'network'
+                    ? tEntry('networkFailedBody')
+                    : errorKind === 'not_found'
+                      ? tEntry('notFoundBody')
+                      : tEntry('loadFailedBody')}
+              </p>
             </div>
             <button
               type="button"

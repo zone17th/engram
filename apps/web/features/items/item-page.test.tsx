@@ -2199,4 +2199,75 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(mainEl.textContent).not.toMatch(/[À-ỹ]/);
     expect(banner.textContent).not.toMatch(/[À-ỹ]/);
   });
+
+  it('IP15-BE1-9: text card maps errorKind to distinct network, not_found, and decrypt_failed i18n states with Retry', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Recovered body text', position: 0 }],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Recovered body text');
+    });
+
+    // 1. Network error on GET /entries/{id} -> shows networkFailedTitle + networkFailedBody
+    let mode: 'network' | 'not_found' | 'malformed' | 'ok' = 'network';
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET') {
+        if (mode === 'network') {
+          throw new TypeError('Failed to fetch');
+        }
+        if (mode === 'not_found') {
+          return problemResponse('not_found', 404);
+        }
+        if (mode === 'malformed') {
+          const existing = h.server.entries.get(ENTRY_ID_1)!;
+          return jsonResponse({
+            ...existing,
+            ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+          });
+        }
+      }
+      return null;
+    });
+
+    act(() => {
+      h.qc.removeQueries({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX });
+    });
+
+    await waitFor(() => {
+      const errBox = screen.getByTestId('entry-body-error');
+      expect(errBox).toHaveTextContent(viMessages.content.entry.networkFailedTitle);
+      expect(errBox).toHaveTextContent(viMessages.content.entry.networkFailedBody);
+      expect(errBox).not.toHaveTextContent(viMessages.content.entry.decryptFailedTitle);
+    });
+
+    // 2. Retry into 404 not_found -> shows notFoundTitle + notFoundBody
+    mode = 'not_found';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+
+    await waitFor(() => {
+      const errBox = screen.getByTestId('entry-body-error');
+      expect(errBox).toHaveTextContent(viMessages.content.entry.notFoundTitle);
+      expect(errBox).toHaveTextContent(viMessages.content.entry.notFoundBody);
+    });
+
+    // 3. Retry into malformed authenticated ciphertext -> shows decryptFailedTitle + decryptFailedBody
+    mode = 'malformed';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+
+    await waitFor(() => {
+      const errBox = screen.getByTestId('entry-body-error');
+      expect(errBox).toHaveTextContent(viMessages.content.entry.decryptFailedTitle);
+      expect(errBox).toHaveTextContent(viMessages.content.entry.decryptFailedBody);
+    });
+
+    // 4. Retry into OK -> recovers plaintext body
+    mode = 'ok';
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body')).toHaveTextContent('Recovered body text');
+    });
+  });
 });
