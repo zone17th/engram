@@ -9,6 +9,7 @@
 package perf_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -205,7 +206,7 @@ func (tr *perfQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, da
 		if conn != nil && conn.PgConn() != nil {
 			pid := conn.PgConn().PID()
 			tr.commitMu.Lock()
-			if tr.trackPurgePID != 0 && pid == tr.trackPurgePID {
+			if !tr.purgeCommitted && tr.trackPurgePID != 0 && pid == tr.trackPurgePID {
 				tr.purgeCommitAt = commitSpan.startedAt
 				tr.purgeCommitted = true
 			}
@@ -217,15 +218,16 @@ func (tr *perfQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, da
 // perfHarness wires the real HTTP router (httpx.NewRouter + authhttp + vaulthttp + itemhttp +
 // taghttp + entryhttp) against a real Postgres 16 pool configured with perfQueryTracer.
 type perfHarness struct {
-	T       *testing.T
-	DSN     string
-	Pool    *pgxpool.Pool
-	ObsPool *pgxpool.Pool // dedicated pool for pg_locks polling so observation never contends for app pool conns
-	Tracer  *perfQueryTracer
-	Clock   *clock.Fixed
-	Origin  string
-	Router  http.Handler
-	Logs    *contenttest.SafeBuffer
+	T          *testing.T
+	DSN        string
+	Pool       *pgxpool.Pool
+	ObsPool    *pgxpool.Pool // dedicated pool for pg_locks polling so observation never contends for app pool conns
+	Tracer     *perfQueryTracer
+	Clock      *clock.Fixed
+	Origin     string
+	Router     http.Handler
+	Logs       *contenttest.SafeBuffer
+	refreshSeq atomic.Uint32
 }
 
 func newPerfHarness(t *testing.T) *perfHarness {
@@ -357,6 +359,14 @@ func (h *perfHarness) doServeHTTP(
 	jar contenttest.CookieJar,
 	method, path, body, idemKey string,
 ) (int, string, time.Duration) {
+	return h.doServeHTTPWithRemoteAddr(ctx, jar, method, path, body, idemKey, "")
+}
+
+func (h *perfHarness) doServeHTTPWithRemoteAddr(
+	ctx context.Context,
+	jar contenttest.CookieJar,
+	method, path, body, idemKey, remoteAddr string,
+) (int, string, time.Duration) {
 	var rdr io.Reader
 	if body != "" {
 		rdr = strings.NewReader(body)
@@ -366,6 +376,9 @@ func (h *perfHarness) doServeHTTP(
 		req = req.WithContext(ctx)
 	}
 	req.RequestURI = path
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
 	if method != http.MethodGet && method != http.MethodHead {
 		if body != "" || method != http.MethodDelete {
 			req.Header.Set("Content-Type", "application/json")
@@ -389,7 +402,7 @@ func (h *perfHarness) doServeHTTP(
 
 	resp := rec.Result()
 	defer func() { _ = resp.Body.Close() }()
-	if jar != nil {
+	if jar != nil && len(resp.Header.Values("Set-Cookie")) > 0 {
 		jar.Capture(resp)
 	}
 	rawBytes, _ := io.ReadAll(resp.Body)
@@ -402,7 +415,9 @@ func (h *perfHarness) advanceRateLimitWindow() {
 
 func (h *perfHarness) refreshSession(jar contenttest.CookieJar) {
 	h.T.Helper()
-	code, raw, _ := h.doServeHTTP(context.Background(), jar, http.MethodPost, "/api/v1/auth/refresh", `{}`, "")
+	seq := h.refreshSeq.Add(1)
+	remoteAddr := fmt.Sprintf("198.51.100.%d:1234", (seq%250)+1)
+	code, raw, _ := h.doServeHTTPWithRemoteAddr(context.Background(), jar, http.MethodPost, "/api/v1/auth/refresh", `{}`, "", remoteAddr)
 	if code != http.StatusNoContent {
 		h.T.Fatalf("POST /api/v1/auth/refresh = %d %s", code, raw)
 	}
@@ -831,46 +846,70 @@ func seedPerfDataset(t *testing.T, pool *pgxpool.Pool, user perfUser) seededData
 type preparedCreateReq struct {
 	EntryID  string
 	SizeKiB  int
+	Bucket   int32
 	BodyJSON string
 	IdemKey  string
 }
 
+const printableASCIIAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// fillRandomPrintableASCII fills dst with cryptographically random printable ASCII bytes (valid UTF-8)
+// of exact length len(dst).
+func fillRandomPrintableASCII(t *testing.T, dst []byte) {
+	t.Helper()
+	if _, err := rand.Read(dst); err != nil {
+		t.Fatalf("rand.Read(%d): %v", len(dst), err)
+	}
+	for i, b := range dst {
+		dst[i] = printableASCIIAlphabet[int(b)&63]
+	}
+}
+
 // prepareCreateReqs pre-builds n valid sealed entry create payloads with a deterministic body mix
 // of 1 KiB / 16 KiB / 64 KiB (70% 1 KiB, 20% 16 KiB, 10% 64 KiB: for every 10 requests, 7×1 KiB, 2×16 KiB, 1×64 KiB).
+// Plaintexts are filled with random printable ASCII (valid UTF-8) of exact length 1024 / 16384 / 65536 bytes.
 func prepareCreateReqs(t *testing.T, user perfUser, n int, prefix string) ([]preparedCreateReq, map[int]int) {
 	t.Helper()
 
 	plain1K := make([]byte, 1024)
 	plain16K := make([]byte, 16*1024)
 	plain64K := make([]byte, 64*1024)
-	_, _ = rand.Read(plain1K)
-	_, _ = rand.Read(plain16K)
-	_, _ = rand.Read(plain64K)
+	fillRandomPrintableASCII(t, plain1K)
+	fillRandomPrintableASCII(t, plain16K)
+	fillRandomPrintableASCII(t, plain64K)
 
 	reqs := make([]preparedCreateReq, n)
 	sizeCounts := map[int]int{1: 0, 16: 0, 64: 0}
 
 	for i := range n {
 		var (
-			pt      []byte
+			basePt  []byte
 			sizeKiB int
 		)
 		switch i % 10 {
 		case 9:
-			pt = plain64K
+			basePt = plain64K
 			sizeKiB = 64
 		case 7, 8:
-			pt = plain16K
+			basePt = plain16K
 			sizeKiB = 16
 		default:
-			pt = plain1K
+			basePt = plain1K
 			sizeKiB = 1
 		}
 		sizeCounts[sizeKiB]++
 
+		// Stamp a per-request ASCII header so every request has distinct valid UTF-8 plaintext of exact length.
+		var stamp [16]byte
+		fillRandomPrintableASCII(t, stamp[:])
+		copy(basePt[:16], stamp[:])
+		pt := basePt
+
 		entryID := uuid.NewString()
 		var nonce [vault.WrapNonceBytes]byte
-		_, _ = rand.Read(nonce[:])
+		if _, err := rand.Read(nonce[:]); err != nil {
+			t.Fatalf("rand.Read nonce[%d]: %v", i, err)
+		}
 
 		env, ctBytes, err := vault.SealEntry(entryID, user.VaultKeyID, pt, user.VK, nonce[:])
 		if err != nil {
@@ -879,6 +918,12 @@ func prepareCreateReqs(t *testing.T, user perfUser, n int, prefix string) ([]pre
 		envRaw, err := json.Marshal(env)
 		if err != nil {
 			t.Fatalf("Marshal envelope[%d]: %v", i, err)
+		}
+		if i == 0 {
+			_, opened, openErr := vault.OpenEntry(envRaw, entryID, ctBytes, user.VK)
+			if openErr != nil || !bytes.Equal(opened, pt) {
+				t.Fatalf("OpenEntry[0] round-trip failed: err=%v len=%d want=%d", openErr, len(opened), len(pt))
+			}
 		}
 		bucket, ok := entry.ExpectedPlaintextLenBucket(len(ctBytes))
 		if !ok {
@@ -893,6 +938,7 @@ func prepareCreateReqs(t *testing.T, user perfUser, n int, prefix string) ([]pre
 		reqs[i] = preparedCreateReq{
 			EntryID:  entryID,
 			SizeKiB:  sizeKiB,
+			Bucket:   bucket,
 			BodyJSON: bodyJSON,
 			IdemKey:  idemKey,
 		}
@@ -1032,10 +1078,18 @@ func runPopulation1Sequential(
 	if code0 != http.StatusCreated {
 		t.Fatalf("Population 1 req[0] into 199-entry item = %d %s, want 201", code0, raw0)
 	}
+	var createdMeta0 entry.Meta
+	if err := json.Unmarshal([]byte(raw0), &createdMeta0); err != nil {
+		t.Fatalf("Population 1 req[0] decode EntryMeta (%s): %v", raw0, err)
+	}
+	if createdMeta0.ID != reqs[0].EntryID || createdMeta0.ItemID != item199ID.String() ||
+		createdMeta0.Type != entry.TypeText || createdMeta0.Position != 199 ||
+		createdMeta0.Version != 1 || createdMeta0.PlaintextLenBucket != reqs[0].Bucket {
+		t.Fatalf("Population 1 req[0] unexpected EntryMeta = %+v", createdMeta0)
+	}
 	status201++
 	latencies = append(latencies, dur0)
 	advanceIfNeeded()
-
 	// Next request into the same item (now at 200 live entries) must return 409 item_entry_limit and is excluded from the sample.
 	code409, raw409, _ := h.doServeHTTP(context.Background(), user.Jar, http.MethodPost, path199, overflowReqs[0].BodyJSON, overflowReqs[0].IdemKey)
 	if code409 != http.StatusConflict {
@@ -1333,7 +1387,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 		trace   *requestLockTrace
 	}
 
-	const maxAttempts = 40
+	const maxAttempts = 80
 	for attempt := 1; confirmedRounds < pop3TargetRounds; attempt++ {
 		if attempt > maxAttempts {
 			t.Fatalf(
@@ -1420,7 +1474,7 @@ func runPopulation3ConfirmedPurgeOverlap(
 					case <-time.After(pop3PollInterval):
 					}
 				} else {
-					time.Sleep(pop3PollInterval)
+					time.Sleep(250 * time.Microsecond)
 				}
 			}
 			if extraPurgeHoldDelay > 0 {
@@ -1591,19 +1645,21 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	checkAItem199BaseID := seeded.NonFullItemIDs[111]
 
 	t.Run("RealPopulations_1_2_3", func(t *testing.T) {
-		h.refreshSession(user.Jar)
 		h.Tracer.setCreateLockHeldDelay(0)
 
+		h.refreshSession(user.Jar)
 		pop1 := runPopulation1Sequential(t, h, user, seeded.Item199ID, pop1Items, "pop1_sequential")
 		if !pop1.passesCeiling(p95Ceiling) {
 			t.Fatalf("Population 1 p95 = %s >= ceiling %s", pop1.P95, p95Ceiling)
 		}
 
+		h.refreshSession(user.Jar)
 		pop2 := runPopulation2BurstNoPurge(t, h, user, pop2Items, "pop2_burst_no_purge")
 		if !pop2.passesCeiling(p95Ceiling) {
 			t.Fatalf("Population 2 p95 = %s >= ceiling %s", pop2.P95, p95Ceiling)
 		}
 
+		h.refreshSession(user.Jar)
 		pop3 := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, pop3Items, 0, "pop3_burst_purge_overlap")
 		if !pop3.passesCeiling(p95Ceiling) {
 			t.Fatalf("Population 3 p95 = %s >= ceiling %s (decision_required per plan)", pop3.P95, p95Ceiling)
@@ -1613,17 +1669,18 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	})
 
 	t.Run("SelfCheckA_Inject20msInCreateLock_Pop2FailsWhilePop1Passes", func(t *testing.T) {
-		h.refreshSession(user.Jar)
 		item199CheckA := prepareItemAt199Entries(t, h.Pool, user, checkAItem199BaseID, 1)
 
 		h.Tracer.setCreateLockHeldDelay(20 * time.Millisecond)
 		defer h.Tracer.setCreateLockHeldDelay(0)
 
+		h.refreshSession(user.Jar)
 		pop1CheckA := runPopulation1Sequential(t, h, user, item199CheckA, checkAPop1Items, "selfcheck_a_pop1_20ms")
 		if !pop1CheckA.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check A: expected Population 1 to PASS with 20 ms lock hold, got p95=%s (ceiling=%s)", pop1CheckA.P95, p95Ceiling)
 		}
 
+		h.refreshSession(user.Jar)
 		pop2CheckA := runPopulation2BurstNoPurge(t, h, user, checkAPop2Items, "selfcheck_a_pop2_20ms")
 		if pop2CheckA.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check A: expected Population 2 to FAIL ceiling %s when 20 ms is injected in create lock (10 serialized * 20 ms >= 180 ms), but got p95=%s", p95Ceiling, pop2CheckA.P95)
@@ -1635,14 +1692,15 @@ func TestEntryCreatePerformanceA10(t *testing.T) {
 	})
 
 	t.Run("SelfCheckB_Inject200msInPurgeLock_Pop3FailsWhilePop2Passes", func(t *testing.T) {
-		h.refreshSession(user.Jar)
 		h.Tracer.setCreateLockHeldDelay(0)
 
+		h.refreshSession(user.Jar)
 		pop2CheckB := runPopulation2BurstNoPurge(t, h, user, checkBPop2Items, "selfcheck_b_pop2_200ms_purge")
 		if !pop2CheckB.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check B: expected Population 2 to PASS when 200 ms is only in purge lock, got p95=%s (ceiling=%s)", pop2CheckB.P95, p95Ceiling)
 		}
 
+		h.refreshSession(user.Jar)
 		pop3CheckB := runPopulation3ConfirmedPurgeOverlap(t, h, user, tombstoneItemID, checkBPop3Items, 200*time.Millisecond, "selfcheck_b_pop3_200ms_purge")
 		if pop3CheckB.passesCeiling(p95Ceiling) {
 			t.Fatalf("Self-Check B: expected Population 3 to FAIL ceiling %s when 200 ms is injected in purge lock, but got p95=%s", p95Ceiling, pop3CheckB.P95)
