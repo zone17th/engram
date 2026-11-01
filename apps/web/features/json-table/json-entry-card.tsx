@@ -17,7 +17,6 @@ import {
   ENTRY_NEAR_CAP_BYTES,
   captureEntrySaveOpGuard,
   copyEntryPlaintextToClipboard,
-  ensureVaultForEntrySeal,
   loadRealEntryBody,
   mutateSealedEntryCreate,
   mutateSealedEntryUpdate,
@@ -28,7 +27,6 @@ import {
   toEntryUpdateVariables,
   type EditorPlaintextHolder,
   type SealedEntryUpdatePayload,
-  type SealedNewEntryPayload,
 } from '@/features/entries';
 import {
   LockMask,
@@ -38,10 +36,23 @@ import {
 } from '@/features/items/entry-body';
 import { contentQueryKeys } from '@/features/items/query-keys';
 import {
+  JSON_NEW_PRESETS,
+  NewJsonEntryComposer,
+  setJsonComposerPlaintextHolderForTests,
+  type JsonCardMode,
+  type JsonComposerPlaintextHolder,
+  type JsonNewPresetId,
+  type NewJsonEntryComposerProps,
+} from '@/features/json-table/json-new-entry-composer';
+import {
   JsonRawEditor,
   validateRawJsonText,
+  type RawValidationIssue,
 } from '@/features/json-table/json-raw-editor';
-import { JsonTreeGrid } from '@/features/json-table/json-tree-grid';
+import {
+  JsonTreeGrid,
+  type JsonTreeGridCommitControlRef,
+} from '@/features/json-table/json-tree-grid';
 import { useOptionalVault, vaultBodyQueryKey } from '@/features/vault/vault-provider';
 import {
   classifyContentMutationError,
@@ -58,14 +69,26 @@ import {
   type JsonEditOutcome,
 } from '@/lib/json';
 
-export type JsonCardMode = 'table' | 'raw';
-
-export type JsonNewPresetId = 'empty-object' | 'empty-array';
-
-export const JSON_NEW_PRESETS: Readonly<Record<JsonNewPresetId, string>> = {
-  'empty-object': '{}',
-  'empty-array': '[]',
+export {
+  JSON_NEW_PRESETS,
+  NewJsonEntryComposer,
+  setJsonComposerPlaintextHolderForTests,
+  type JsonCardMode,
+  type JsonComposerPlaintextHolder,
+  type JsonNewPresetId,
+  type NewJsonEntryComposerProps,
 };
+
+let jsonEditorPlaintextHolderTestHookRef: { current: EditorPlaintextHolder } | null = null;
+
+/**
+ * Module-scoped test hook to observe the JSON card plaintext holder without exposing a public component prop (IP16-FE1-3 / IP15-FE3-7a).
+ */
+export function setJsonEditorPlaintextHolderForTests(
+  holderRef: { current: EditorPlaintextHolder } | null,
+): void {
+  jsonEditorPlaintextHolderTestHookRef = holderRef;
+}
 
 export interface JsonEntryCardProps {
   readonly entry: EntryMeta;
@@ -87,7 +110,6 @@ export interface JsonEntryCardProps {
   readonly onDrop?: (index: number, e: DragEvent<HTMLElement>) => void;
   readonly onDragEnd?: () => void;
   readonly rawParseDebounceMs?: number;
-  readonly editorPlaintextHolderRef?: { current: EditorPlaintextHolder };
 }
 
 export function JsonEntryCard({
@@ -107,10 +129,9 @@ export function JsonEntryCard({
   registerCardElement,
   onDragStart,
   onDragOver,
-  onDrop,
   onDragEnd,
+  onDrop,
   rawParseDebounceMs,
-  editorPlaintextHolderRef,
 }: JsonEntryCardProps) {
   const tEntry = useTranslations('content.entry');
   const tJson = useTranslations('content.json');
@@ -179,6 +200,8 @@ export function JsonEntryCard({
   const [rawDraftValue, setRawDraftValue] = useState<string>('');
   // Track whether rawDraftValue has been edited since entering raw mode
   const [rawEditedSinceSwitch, setRawEditedSinceSwitch] = useState<boolean>(false);
+  // Debounced validation issue reported by JsonRawEditor (IP16-FE1-7: no per-keystroke parse in card)
+  const [rawSettledIssue, setRawSettledIssue] = useState<RawValidationIssue | null>(null);
 
   // Treegrid UI state (expanded containers and pagination per container path)
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(
@@ -212,20 +235,26 @@ export function JsonEntryCard({
   const menuPopRef = useRef<HTMLDivElement | null>(null);
   const tabTableBtnRef = useRef<HTMLButtonElement | null>(null);
   const tabRawBtnRef = useRef<HTMLButtonElement | null>(null);
+  const gridCommitControlRef = useRef<JsonTreeGridCommitControlRef | null>(null);
   const saveLockRef = useRef<boolean>(false);
   const saveOwnerIdRef = useRef<number>(0);
   const nextSaveOwnerIdRef = useRef<number>(0);
   const lockEpochRef = useRef<number>(0);
   const editorRevisionRef = useRef<number>(0);
+  const modeRef = useRef<JsonCardMode>(mode);
+  modeRef.current = mode;
+  const rawEditedSinceSwitchRef = useRef<boolean>(rawEditedSinceSwitch);
+  rawEditedSinceSwitchRef.current = rawEditedSinceSwitch;
 
-  // Resettable holder so Keep mine / Retry / async callbacks never capture stale plaintext in closures (IP15-BE2-1)
+  // Resettable holder so Keep mine / Retry / async callbacks never capture stale plaintext in closures (IP16-FE1-2, IP15-BE2-1)
   const internalPlaintextHolderRef = useRef<EditorPlaintextHolder>({
     originalSource: '',
     draftValue: '',
     submittedCandidateSource: '',
     tableSource: '',
   });
-  const plaintextHolderRef = editorPlaintextHolderRef ?? internalPlaintextHolderRef;
+  const plaintextHolderRef = jsonEditorPlaintextHolderTestHookRef ?? internalPlaintextHolderRef;
+
   const clearEditorPlaintextHolderSync = useCallback(() => {
     plaintextHolderRef.current.originalSource = '';
     plaintextHolderRef.current.draftValue = '';
@@ -235,6 +264,7 @@ export function JsonEntryCard({
     setTableSource('');
     setRawDraftValue('');
     setRawEditedSinceSwitch(false);
+    setRawSettledIssue(null);
   }, [plaintextHolderRef]);
 
   const releaseSaveGuardIfOwner = useCallback((ownerId: number) => {
@@ -263,6 +293,7 @@ export function JsonEntryCard({
       setTableSource(body);
       setRawDraftValue(normalized);
       setRawEditedSinceSwitch(false);
+      setRawSettledIssue(null);
     }
   }, [
     body,
@@ -290,23 +321,11 @@ export function JsonEntryCard({
     }
   }, [body, committedVersion, currentVersion, originalSource, plaintextHolderRef, unlocked]);
 
-  // Compute current candidate JSON source and EOL plan
+  // Compute source EOL analysis for the base document (runs only when tableSource/originalSource changes, not per keystroke)
   const baseForRawEol = tableSource || originalSource || body || '{}';
   const rawEolInfo = useMemo(() => detectEol(baseForRawEol), [baseForRawEol]);
-  const rawSavePlan = useMemo(
-    () => applyTextareaEol(baseForRawEol, rawDraftValue, rawEolInfo),
-    [baseForRawEol, rawDraftValue, rawEolInfo],
-  );
 
-  // If in raw mode and user edited raw textarea, candidate is rawSavePlan.text; otherwise tableSource
-  const candidateSource = useMemo(() => {
-    if (mode === 'raw' && rawEditedSinceSwitch) {
-      return rawSavePlan.text;
-    }
-    return tableSource;
-  }, [mode, rawEditedSinceSwitch, rawSavePlan.text, tableSource]);
-
-  // Keep holder in sync with latest candidate
+  // Keep holder in sync with latest state
   plaintextHolderRef.current.originalSource = originalSource;
   plaintextHolderRef.current.tableSource = tableSource;
   plaintextHolderRef.current.draftValue =
@@ -314,13 +333,16 @@ export function JsonEntryCard({
 
   const isDirty = useMemo(() => {
     if (!unlocked || originalSource === '') return false;
-    return candidateSource !== originalSource;
-  }, [candidateSource, originalSource, unlocked]);
+    if (mode === 'raw' && rawEditedSinceSwitch) {
+      return rawDraftValue !== normalizeEolToLf(originalSource);
+    }
+    return tableSource !== originalSource;
+  }, [mode, originalSource, rawDraftValue, rawEditedSinceSwitch, tableSource, unlocked]);
 
+  // IP16-FE1-19: Only count an actual unsaved draft or active error/conflict state (not merely viewing the Raw tab)
   const hasActiveDraftOrStateRef = useRef<boolean>(false);
   hasActiveDraftOrStateRef.current =
     isDirty ||
-    mode === 'raw' ||
     unconfirmedSave !== null ||
     conflictState !== null ||
     deletedRemotely;
@@ -380,6 +402,22 @@ export function JsonEntryCard({
     }
   }, [clearEditorPlaintextHolderSync, unlocked]);
 
+  // Unmount cleanup (IP16-FE1-3 / IP15-BE3-2): synchronously wipe every plaintext holder field and
+  // invalidate card op/save ownership on unmount, independent of the reset-registration effect.
+  useEffect(() => {
+    const holderToWipe = plaintextHolderRef;
+    return () => {
+      lockEpochRef.current += 1;
+      editorRevisionRef.current = 0;
+      saveOwnerIdRef.current = 0;
+      saveLockRef.current = false;
+      holderToWipe.current.originalSource = '';
+      holderToWipe.current.draftValue = '';
+      holderToWipe.current.submittedCandidateSource = '';
+      holderToWipe.current.tableSource = '';
+    };
+  }, [plaintextHolderRef]);
+
   // Close menu on outside click
   useEffect(() => {
     if (!menuOpen) return;
@@ -417,16 +455,22 @@ export function JsonEntryCard({
   const currentDoc =
     parsedTableDocResult && parsedTableDocResult.ok ? parsedTableDocResult.document : null;
 
-  // Validate candidateSource when in raw mode
-  const rawValidationIssue = useMemo(() => {
-    if (mode !== 'raw') return null;
-    return validateRawJsonText(rawDraftValue);
-  }, [mode, rawDraftValue]);
+  // Prospective UTF-8 byte length: in table mode measure tableSource; in raw mode estimate from rawDraftValue + CRLF delta
+  const utf8ByteLength = useMemo(() => {
+    if (mode === 'raw' && rawEditedSinceSwitch) {
+      const lfBytes = measureUtf8Bytes(rawDraftValue);
+      if (rawEolInfo.majority === 'crlf') {
+        let lfCount = 0;
+        for (let i = 0; i < rawDraftValue.length; i++) {
+          if (rawDraftValue.charCodeAt(i) === 0x0a) lfCount += 1;
+        }
+        return lfBytes + lfCount;
+      }
+      return lfBytes;
+    }
+    return tableSource ? measureUtf8Bytes(tableSource) : 0;
+  }, [mode, rawDraftValue, rawEditedSinceSwitch, rawEolInfo.majority, tableSource]);
 
-  const utf8ByteLength = useMemo(
-    () => (candidateSource ? measureUtf8Bytes(candidateSource) : 0),
-    [candidateSource],
-  );
   const isOverCap = utf8ByteLength > ENTRY_MAX_PLAINTEXT_BYTES;
   const isNearCap = !isOverCap && utf8ByteLength >= ENTRY_NEAR_CAP_BYTES;
   const isEmpty = utf8ByteLength === 0;
@@ -439,19 +483,31 @@ export function JsonEntryCard({
     }
   }, [format, utf8ByteLength]);
 
-  const showEditControls =
-    mode === 'raw' ||
-    isDirty ||
-    savingInFlight ||
+  const hasSharedAlertPanel =
+    mixedEolWarningTarget !== null ||
     unconfirmedSave !== null ||
     conflictState !== null ||
     deletedRemotely ||
-    saveError !== null;
+    saveError !== null ||
+    discardConfirmOpen;
+
+  // IP16-FE1-11: In raw mode, JsonRawEditor renders its own toolbar (Format / Save / Cancel);
+  // the card footer renders the Save/Cancel buttons only in table mode, while keeping conflict/retry/404/discard panels shared.
+  const showTableSaveBar =
+    mode === 'table' &&
+    (isDirty ||
+      savingInFlight ||
+      unconfirmedSave !== null ||
+      conflictState !== null ||
+      deletedRemotely ||
+      saveError !== null);
+
+  const showEditControls = showTableSaveBar || hasSharedAlertPanel;
 
   const saveDisabled =
     isEmpty ||
     isOverCap ||
-    (mode === 'raw' && rawValidationIssue !== null) ||
+    (mode === 'raw' && rawSettledIssue !== null) ||
     (mode === 'table' && !currentDoc) ||
     savingInFlight ||
     unconfirmedSave !== null ||
@@ -484,11 +540,13 @@ export function JsonEntryCard({
         return false;
       }
       editorRevisionRef.current += 1;
+      const normalized = normalizeEolToLf(outcome.source);
       plaintextHolderRef.current.tableSource = outcome.source;
-      plaintextHolderRef.current.draftValue = normalizeEolToLf(outcome.source);
+      plaintextHolderRef.current.draftValue = normalized;
       setTableSource(outcome.source);
-      setRawDraftValue(normalizeEolToLf(outcome.source));
+      setRawDraftValue(normalized);
       setRawEditedSinceSwitch(false);
+      setRawSettledIssue(null);
       setSavedFlash(false);
       if (discardConfirmOpen) setDiscardConfirmOpen(false);
       if (mixedEolWarningTarget) setMixedEolWarningTarget(null);
@@ -501,17 +559,32 @@ export function JsonEntryCard({
   const handleSwitchMode = useCallback(
     (targetMode: JsonCardMode) => {
       if (targetMode === mode) return;
-      if ( targetMode === 'raw') {
-        // Table -> Raw: populate raw textarea with LF-normalized tableSource; keep exact bytes via applyTextareaEol if no edit occurs
-        setRawDraftValue(normalizeEolToLf(tableSource));
+      if (targetMode === 'raw') {
+        if (gridCommitControlRef.current && !gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+          return;
+        }
+        const latestTable = plaintextHolderRef.current.tableSource || tableSource;
+        const normalized = normalizeEolToLf(latestTable);
+        plaintextHolderRef.current.draftValue = normalized;
+        setRawDraftValue(normalized);
         setRawEditedSinceSwitch(false);
+        setRawSettledIssue(null);
         setSwitchBlockedError(null);
         setMode('raw');
         return;
       }
 
       // Raw -> Table: if no raw edits occurred, return to tableSource byte-identically
-      if (!rawEditedSinceSwitch || !rawSavePlan.changed) {
+      if (!rawEditedSinceSwitch) {
+        setSwitchBlockedError(null);
+        setMode('table');
+        return;
+      }
+
+      const rawPlan = applyTextareaEol(baseForRawEol, rawDraftValue, rawEolInfo);
+      if (!rawPlan.changed) {
+        setRawEditedSinceSwitch(false);
+        setRawSettledIssue(null);
         setSwitchBlockedError(null);
         setMode('table');
         return;
@@ -520,27 +593,29 @@ export function JsonEntryCard({
       // Validate rawDraftValue before allowing switch to Table
       const issue = validateRawJsonText(rawDraftValue);
       if (issue !== null) {
+        setRawSettledIssue(issue);
         setSwitchBlockedError(tJson('switchBlockedInvalidError'));
         onAnnounce?.(tJson('switchBlockedInvalidError'));
         return;
       }
 
-      // Valid raw JSON edit -> update tableSource with EOL-preserved rawSavePlan.text and switch to Table
-      const nextSource = rawSavePlan.text;
+      // Valid raw JSON edit -> update tableSource with EOL-preserved rawPlan.text and switch to Table
+      const nextSource = rawPlan.text;
       plaintextHolderRef.current.tableSource = nextSource;
       setTableSource(nextSource);
       setRawEditedSinceSwitch(false);
+      setRawSettledIssue(null);
       setSwitchBlockedError(null);
       setMode('table');
     },
     [
+      baseForRawEol,
       mode,
       onAnnounce,
       plaintextHolderRef,
       rawDraftValue,
       rawEditedSinceSwitch,
-      rawSavePlan.changed,
-      rawSavePlan.text,
+      rawEolInfo,
       tJson,
       tableSource,
     ],
@@ -560,6 +635,7 @@ export function JsonEntryCard({
     setTableSource(base);
     setRawDraftValue(normalized);
     setRawEditedSinceSwitch(false);
+    setRawSettledIssue(null);
     setMode('table');
     setDiscardConfirmOpen(false);
     setMixedEolWarningTarget(null);
@@ -579,6 +655,17 @@ export function JsonEntryCard({
     }
     setDiscardConfirmOpen(true);
   }, [conflictState, isDirty, resetDraftToOriginal, savingInFlight, unconfirmedSave]);
+
+  // Reads the current candidate JSON string synchronously from the resettable holder (never from closure state).
+  const readCurrentCandidateFromHolder = useCallback((): string => {
+    const currentHolder = plaintextHolderRef.current;
+    if (modeRef.current === 'raw' && rawEditedSinceSwitchRef.current) {
+      const base = currentHolder.tableSource || currentHolder.originalSource;
+      if (!base && !currentHolder.draftValue) return '';
+      return applyTextareaEol(base, currentHolder.draftValue).text;
+    }
+    return currentHolder.tableSource || '';
+  }, [plaintextHolderRef]);
 
   const executePut = useCallback(
     async (
@@ -601,11 +688,16 @@ export function JsonEntryCard({
           }),
         );
 
-        if (!applied || !sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        // P4BE2-1 / IP15-BE2-4 / FE3-8: Never update state or release a successor's guard if stale or not owner;
+        // if ownerId still matches, release our own guard before returning.
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        releaseSaveGuardIfOwner(ownerId);
+        if (!applied || !sealed.isCurrent()) {
           return;
         }
 
-        releaseSaveGuardIfOwner(ownerId);
         setUnconfirmedSave(null);
         setConflictState(null);
         setDeletedRemotely(false);
@@ -628,6 +720,7 @@ export function JsonEntryCard({
             setTableSource(committedCandidate);
             setRawDraftValue(normalized);
             setRawEditedSinceSwitch(false);
+            setRawSettledIssue(null);
           }
           setMode('table');
         } else if (committedCandidate.length > 0) {
@@ -643,11 +736,14 @@ export function JsonEntryCard({
           queryKey: vaultBodyQueryKey(entry.id, meta.version),
         });
       } catch (err) {
-        if (!sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        releaseSaveGuardIfOwner(ownerId);
+        if (!sealed.isCurrent()) {
           return;
         }
 
-        releaseSaveGuardIfOwner(ownerId);
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
@@ -737,28 +833,48 @@ export function JsonEntryCard({
       ) {
         return;
       }
-      if (isEmpty || isOverCap || !vault) {
+      // IP16-FE1-14: If a cell editor is open in table mode when Ctrl+S or Save is triggered, commit it first
+      if (modeRef.current === 'table' && gridCommitControlRef.current) {
+        if (!gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+          return;
+        }
+      }
+      if (!vault) {
         return;
       }
 
-      // If in raw mode, ensure JSON is strictly valid before sealing
-      if (mode === 'raw') {
-        const issue = validateRawJsonText(rawDraftValue);
+      const currentHolder = plaintextHolderRef.current;
+      if (modeRef.current === 'raw') {
+        const issue = validateRawJsonText(currentHolder.draftValue);
         if (issue !== null) {
+          setRawSettledIssue(issue);
           return;
         }
       }
 
-      const textToSave = candidateSource;
-      const checkParse = parseJsonStrict(textToSave);
-      if (!checkParse.ok) {
+      const rawPlanForCheck =
+        modeRef.current === 'raw' && rawEditedSinceSwitchRef.current
+          ? applyTextareaEol(
+              currentHolder.tableSource || currentHolder.originalSource,
+              currentHolder.draftValue,
+            )
+          : null;
+      const syncCandidate = rawPlanForCheck
+        ? rawPlanForCheck.text
+        : (currentHolder.tableSource ?? '');
+      const syncBytes = measureUtf8Bytes(syncCandidate);
+      if (syncBytes === 0 || syncBytes > ENTRY_MAX_PLAINTEXT_BYTES) {
+        return;
+      }
+      if (!parseJsonStrict(syncCandidate).ok) {
         return;
       }
 
       // No-op round-trip rule: if bytes are identical to originalSource, do NOT send PUT
-      if (textToSave === originalSource) {
-        if (mode === 'raw') {
+      if (syncCandidate === currentHolder.originalSource) {
+        if (modeRef.current === 'raw') {
           setRawEditedSinceSwitch(false);
+          setRawSettledIssue(null);
           setSwitchBlockedError(null);
           setMode('table');
         }
@@ -766,16 +882,11 @@ export function JsonEntryCard({
       }
 
       // Mixed / lone CR EOL warning when saving from Raw JSON textarea (plan §2.10 rule 2)
-      if (
-        mode === 'raw' &&
-        rawEditedSinceSwitch &&
-        rawSavePlan.requiresWarning &&
-        !bypassMixedEolWarning
-      ) {
+      if (rawPlanForCheck && rawPlanForCheck.requiresWarning && !bypassMixedEolWarning) {
         const targetLabel =
-          rawSavePlan.targetEol === 'crlf'
+          rawPlanForCheck.targetEol === 'crlf'
             ? 'CRLF'
-            : rawSavePlan.targetEol === 'cr'
+            : rawPlanForCheck.targetEol === 'cr'
               ? 'CR'
               : 'LF';
         setMixedEolWarningTarget(targetLabel);
@@ -783,48 +894,46 @@ export function JsonEntryCard({
       }
 
       const submittedRevision = editorRevisionRef.current;
+      const capturedEpoch = lockEpochRef.current;
       const ownerId = ++nextSaveOwnerIdRef.current;
       saveOwnerIdRef.current = ownerId;
-      const guard = captureEntrySaveOpGuard(vault, lockEpochRef);
       setMixedEolWarningTarget(null);
       saveLockRef.current = true;
       setSavingInFlight(true);
       setSaveError(null);
 
       try {
-        const readyVault = await ensureVaultForEntrySeal(vault, guard);
-        if (!readyVault || !guard.isStillCurrent() || saveOwnerIdRef.current !== ownerId) {
-          releaseSaveGuardIfOwner(ownerId);
-          return;
-        }
-        const currentHolder = plaintextHolderRef.current;
-        const currentTextToSeal =
-          mode === 'raw' && rawEditedSinceSwitch
-            ? applyTextareaEol(
-                currentHolder.tableSource || currentHolder.originalSource,
-                currentHolder.draftValue,
-              ).text
-            : currentHolder.tableSource || textToSave;
-        if (measureUtf8Bytes(currentTextToSeal) === 0 || !parseJsonStrict(currentTextToSeal).ok) {
-          releaseSaveGuardIfOwner(ownerId);
-          return;
-        }
-        plaintextHolderRef.current.submittedCandidateSource = currentTextToSeal;
-
+        // IP16-FE1-2 / IP15-BE2-1 / FE3-7b: Do not hold any plaintext local across an await.
+        // sealEntryUpdate reloads vaultMeta itself when null (advisor-dec-200) and invokes getText()
+        // synchronously AFTER any reloadVaultMeta await and op-token check.
         const sealed = await sealEntryUpdate({
           entryId: entry.id,
           itemId,
           version: effectiveVersion,
-          text: currentTextToSeal,
-          vault: readyVault,
+          getText: () => {
+            if (lockEpochRef.current !== capturedEpoch || saveOwnerIdRef.current !== ownerId) {
+              return '';
+            }
+            const candidate = readCurrentCandidateFromHolder();
+            if (measureUtf8Bytes(candidate) === 0 || !parseJsonStrict(candidate).ok) {
+              return '';
+            }
+            plaintextHolderRef.current.submittedCandidateSource = candidate;
+            return candidate;
+          },
+          vault,
         });
-        if (!guard.isStillCurrent() || !sealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+        if (
+          lockEpochRef.current !== capturedEpoch ||
+          !sealed.isCurrent() ||
+          saveOwnerIdRef.current !== ownerId
+        ) {
           releaseSaveGuardIfOwner(ownerId);
           return;
         }
         await executePut(sealed, effectiveVersion, false, submittedRevision, ownerId);
       } catch (err) {
-        if (!guard.isStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+        if (lockEpochRef.current !== capturedEpoch || saveOwnerIdRef.current !== ownerId) {
           releaseSaveGuardIfOwner(ownerId);
           return;
         }
@@ -836,23 +945,15 @@ export function JsonEntryCard({
       }
     },
     [
-      candidateSource,
       conflictState,
       deletedRemotely,
       effectiveVersion,
       entry.id,
       executePut,
-      isEmpty,
-      isOverCap,
       itemId,
-      mode,
       onAnnounce,
-      originalSource,
       plaintextHolderRef,
-      rawDraftValue,
-      rawEditedSinceSwitch,
-      rawSavePlan.requiresWarning,
-      rawSavePlan.targetEol,
+      readCurrentCandidateFromHolder,
       releaseSaveGuardIfOwner,
       savingInFlight,
       translateContentError,
@@ -900,34 +1001,39 @@ export function JsonEntryCard({
         releaseSaveGuardIfOwner(ownerId);
         return;
       }
-      const readyVault = await ensureVaultForEntrySeal(vault, guard);
-      if (!readyVault || !guard.isStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+
+      // IP15-FE3-6: Re-read editorRevisionRef after the fallback GET. If the user edited the card
+      // while the GET was in flight, abort back to the conflict banner with the resolved version.
+      if (editorRevisionRef.current !== submittedRevision) {
         releaseSaveGuardIfOwner(ownerId);
+        setConflictState({
+          currentVersion: targetVersion,
+          reloadConfirmOpen: false,
+        });
         return;
       }
 
-      // Read draft synchronously from the resettable holder AFTER fallback GET, reloadVaultMeta, and op-token check (IP15-BE2-1, advisor-dec-200)
-      const currentHolder = plaintextHolderRef.current;
-      const textToSeal =
-        mode === 'raw' && rawEditedSinceSwitch
-          ? applyTextareaEol(
-              currentHolder.tableSource || currentHolder.originalSource,
-              currentHolder.draftValue,
-            ).text
-          : currentHolder.tableSource || '';
-
-      if (measureUtf8Bytes(textToSeal) === 0 || !parseJsonStrict(textToSeal).ok) {
-        releaseSaveGuardIfOwner(ownerId);
-        return;
-      }
-      plaintextHolderRef.current.submittedCandidateSource = textToSeal;
-
+      // IP16-FE1-2 / IP15-BE2-1 / FE3-7b: Read the draft synchronously from the resettable holder AFTER the fallback GET
+      // and AFTER the op-token/owner/revision checks, immediately before sealing via getText().
+      // Note that in JS/V8, closures created in the same render can share a lexical context with sibling handlers;
+      // the effective security guarantees are the synchronous op-token/epoch/owner check, synchronous holder + DOM wipe
+      // on reset/unmount, and the absence of any network/cache/DOM/storage sink after reset.
       const resealed = await sealEntryUpdate({
         entryId: entry.id,
         itemId,
         version: targetVersion,
-        text: textToSeal,
-        vault: readyVault,
+        getText: () => {
+          if (!guard.isStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+            return '';
+          }
+          const candidate = readCurrentCandidateFromHolder();
+          if (measureUtf8Bytes(candidate) === 0 || !parseJsonStrict(candidate).ok) {
+            return '';
+          }
+          plaintextHolderRef.current.submittedCandidateSource = candidate;
+          return candidate;
+        },
+        vault,
       });
       if (!guard.isStillCurrent() || !resealed.isCurrent() || saveOwnerIdRef.current !== ownerId) {
         releaseSaveGuardIfOwner(ownerId);
@@ -954,10 +1060,9 @@ export function JsonEntryCard({
     isEmpty,
     isOverCap,
     itemId,
-    mode,
     onAnnounce,
     plaintextHolderRef,
-    rawEditedSinceSwitch,
+    readCurrentCandidateFromHolder,
     releaseSaveGuardIfOwner,
     savingInFlight,
     translateContentError,
@@ -979,6 +1084,7 @@ export function JsonEntryCard({
     setConflictState(null);
     setDeletedRemotely(false);
     setSaveError(null);
+    setResetEpoch((prev) => prev + 1);
 
     queryClient.removeQueries({ queryKey: vaultBodyQueryKey(entry.id) });
     if (nextVer !== undefined) {
@@ -1012,48 +1118,45 @@ export function JsonEntryCard({
 
   // 412 action 3: Copy mine
   const handleConflictCopyMine = useCallback(async () => {
-    await copyEntryPlaintextToClipboard(candidateSource);
+    const candidate = readCurrentCandidateFromHolder();
+    await copyEntryPlaintextToClipboard(candidate);
     onAnnounce?.(tEntry('copiedMine'));
-  }, [candidateSource, onAnnounce, tEntry]);
+  }, [onAnnounce, readCurrentCandidateFromHolder, tEntry]);
 
   // 404 action: Save as new entry (type: 'json')
   const handleSaveAsNewEntry = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
-    if (!parseJsonStrict(candidateSource).ok) return;
+    const syncCandidate = readCurrentCandidateFromHolder();
+    if (!parseJsonStrict(syncCandidate).ok) return;
 
+    const capturedEpoch = lockEpochRef.current;
     const ownerId = ++nextSaveOwnerIdRef.current;
     saveOwnerIdRef.current = ownerId;
-    const guard = captureEntrySaveOpGuard(vault, lockEpochRef);
     saveLockRef.current = true;
     setSavingInFlight(true);
     setSaveError(null);
 
     try {
-      const readyVault = await ensureVaultForEntrySeal(vault, guard);
-      if (!readyVault || !guard.isStillCurrent() || saveOwnerIdRef.current !== ownerId) {
-        releaseSaveGuardIfOwner(ownerId);
-        return;
-      }
-      const currentHolder = plaintextHolderRef.current;
-      const textToSeal =
-        mode === 'raw' && rawEditedSinceSwitch
-          ? applyTextareaEol(
-              currentHolder.tableSource || currentHolder.originalSource,
-              currentHolder.draftValue,
-            ).text
-          : currentHolder.tableSource || '';
-      if (measureUtf8Bytes(textToSeal) === 0 || !parseJsonStrict(textToSeal).ok) {
-        releaseSaveGuardIfOwner(ownerId);
-        return;
-      }
-
       const sealedNew = await sealNewEntry({
         itemId,
         type: 'json',
-        text: textToSeal,
-        vault: readyVault,
+        getText: () => {
+          if (lockEpochRef.current !== capturedEpoch || saveOwnerIdRef.current !== ownerId) {
+            return '';
+          }
+          const candidate = readCurrentCandidateFromHolder();
+          if (measureUtf8Bytes(candidate) === 0 || !parseJsonStrict(candidate).ok) {
+            return '';
+          }
+          return candidate;
+        },
+        vault,
       });
-      if (!guard.isStillCurrent() || !sealedNew.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+      if (
+        lockEpochRef.current !== capturedEpoch ||
+        !sealedNew.isCurrent() ||
+        saveOwnerIdRef.current !== ownerId
+      ) {
         releaseSaveGuardIfOwner(ownerId);
         return;
       }
@@ -1061,7 +1164,12 @@ export function JsonEntryCard({
         queryClient,
         toEntryCreateVariables(sealedNew),
       );
-      if (!applied || !guard.isStillCurrent() || !sealedNew.isCurrent() || saveOwnerIdRef.current !== ownerId) {
+      if (
+        !applied ||
+        lockEpochRef.current !== capturedEpoch ||
+        !sealedNew.isCurrent() ||
+        saveOwnerIdRef.current !== ownerId
+      ) {
         releaseSaveGuardIfOwner(ownerId);
         return;
       }
@@ -1069,7 +1177,7 @@ export function JsonEntryCard({
       void queryClient.invalidateQueries({ queryKey: contentQueryKeys.entries(itemId) });
       onAnnounce?.(tEntry('savedAnnounce'));
     } catch (err) {
-      if (!guard.isStillCurrent() || saveOwnerIdRef.current !== ownerId) {
+      if (lockEpochRef.current !== capturedEpoch || saveOwnerIdRef.current !== ownerId) {
         releaseSaveGuardIfOwner(ownerId);
         return;
       }
@@ -1080,15 +1188,12 @@ export function JsonEntryCard({
       onAnnounce?.(msg);
     }
   }, [
-    candidateSource,
     isEmpty,
     isOverCap,
     itemId,
-    mode,
     onAnnounce,
-    plaintextHolderRef,
     queryClient,
-    rawEditedSinceSwitch,
+    readCurrentCandidateFromHolder,
     releaseSaveGuardIfOwner,
     resetDraftToOriginal,
     savingInFlight,
@@ -1099,9 +1204,10 @@ export function JsonEntryCard({
 
   const handleCopyBody = useCallback(async () => {
     if (!unlocked || body === undefined) return;
-    await copyEntryPlaintextToClipboard(candidateSource || body);
+    const candidate = readCurrentCandidateFromHolder() || body;
+    await copyEntryPlaintextToClipboard(candidate);
     onAnnounce?.(tEntry('copied'));
-  }, [body, candidateSource, onAnnounce, tEntry, unlocked]);
+  }, [body, onAnnounce, readCurrentCandidateFromHolder, tEntry, unlocked]);
 
   const handleMenuKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(
@@ -1130,12 +1236,20 @@ export function JsonEntryCard({
     }
   };
 
+  // IP16-FE1-14: Handle Ctrl+S (committing any open cell editor first via handleSave) and Esc in table mode
   const handleCardKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     const keyLower = (e.key || '').toLowerCase();
-    if (keyLower === 's' && (e.ctrlKey || e.metaKey) && isDirty) {
+    if (keyLower === 's' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       void handleSave();
+    } else if (e.key === 'Escape' && mode === 'table' && showTableSaveBar) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName.toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      e.preventDefault();
+      e.stopPropagation();
+      requestCancelEdit();
     }
   };
 
@@ -1148,7 +1262,7 @@ export function JsonEntryCard({
       saveError ||
       failed ||
       switchBlockedError ||
-      (mode === 'raw' && rawValidationIssue !== null),
+      (mode === 'raw' && rawSettledIssue !== null),
   );
 
   return (
@@ -1165,7 +1279,7 @@ export function JsonEntryCard({
       className={`card min-w-0 ${hasCardError ? 'card-error' : ''}`}
     >
       {/* Card Header */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2.5 rounded-t-[calc(var(--r-xl)-1px)]">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
         <span
           draggable={canReorder && !showEditControls}
           onDragStart={(e) => onDragStart?.(index, e)}
@@ -1235,7 +1349,7 @@ export function JsonEntryCard({
         ) : null}
 
         <div className="relative ml-auto flex items-center gap-1.5" data-card-menu-host>
-          {showEditControls && mode === 'table' ? (
+          {showTableSaveBar ? (
             <span
               id={`entry-byte-counter-${entry.id}`}
               data-testid={`entry-byte-counter-${entry.id}`}
@@ -1440,6 +1554,7 @@ export function JsonEntryCard({
                 disabled={savingInFlight}
                 expandedPaths={expandedPaths}
                 pageByPath={pageByPath}
+                commitControlRef={gridCommitControlRef}
                 onToggleExpand={handleToggleExpand}
                 onPageChange={handlePageChange}
                 onApplyEdit={handleApplyTableEdit}
@@ -1460,8 +1575,10 @@ export function JsonEntryCard({
                 }
                 externalError={switchBlockedError}
                 parseDebounceMs={rawParseDebounceMs}
+                onValidationSettled={setRawSettledIssue}
                 onDraftChange={(nextVal: string) => {
                   editorRevisionRef.current += 1;
+                  plaintextHolderRef.current.draftValue = nextVal;
                   setRawDraftValue(nextVal);
                   setRawEditedSinceSwitch(true);
                   setSwitchBlockedError(null);
@@ -1476,7 +1593,7 @@ export function JsonEntryCard({
               />
             )}
 
-            {/* Shared Save / Cancel / Conflict / Retry footer when dirty or in raw mode */}
+            {/* Shared Conflict / Retry / 404 / Discard panels + Table-mode Save/Cancel footer */}
             {showEditControls ? (
               <div
                 data-testid={`entry-editor-${entry.id}`}
@@ -1676,35 +1793,37 @@ export function JsonEntryCard({
                   </p>
                 ) : null}
 
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    data-testid={`entry-cancel-edit-btn-${entry.id}`}
-                    className="btn btn-tertiary btn-sm"
-                    disabled={savingInFlight}
-                    onClick={requestCancelEdit}
-                  >
-                    {tEntry('cancel')} (<span className="mono">Esc</span>)
-                  </button>
-                  <button
-                    type="button"
-                    data-testid={`entry-save-btn-${entry.id}`}
-                    className="btn btn-primary btn-sm"
-                    disabled={saveDisabled}
-                    aria-busy={savingInFlight || undefined}
-                    onClick={() => {
-                      void handleSave();
-                    }}
-                  >
-                    {savingInFlight ? (
-                      tEntry('savingButton')
-                    ) : (
-                      <>
-                        {tEntry('save')} (<span className="mono">Ctrl+S</span>)
-                      </>
-                    )}
-                  </button>
-                </div>
+                {showTableSaveBar ? (
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      data-testid={`entry-cancel-edit-btn-${entry.id}`}
+                      className="btn btn-tertiary btn-sm"
+                      disabled={savingInFlight}
+                      onClick={requestCancelEdit}
+                    >
+                      {tEntry('cancel')} (<span className="mono">Esc</span>)
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`entry-save-btn-${entry.id}`}
+                      className="btn btn-primary btn-sm"
+                      disabled={saveDisabled}
+                      aria-busy={savingInFlight || undefined}
+                      onClick={() => {
+                        void handleSave();
+                      }}
+                    >
+                      {savingInFlight ? (
+                        tEntry('savingButton')
+                      ) : (
+                        <>
+                          {tEntry('save')} (<span className="mono">Ctrl+S</span>)
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : null}
 
                 {/* Inline discard confirmation */}
                 {discardConfirmOpen ? (
@@ -1745,569 +1864,6 @@ export function JsonEntryCard({
             ) : null}
           </div>
         )}
-      </div>
-    </article>
-  );
-}
-
-export interface NewJsonEntryComposerProps {
-  readonly itemId: string;
-  readonly itemName?: string;
-  readonly initialPreset?: JsonNewPresetId;
-  readonly onSaved: (created: EntryMeta) => void;
-  readonly onCancel: () => void;
-  readonly onAnnounce?: (message: string) => void;
-  readonly onDraftClearedOnLock?: () => void;
-  readonly rawParseDebounceMs?: number;
-}
-
-export function NewJsonEntryComposer({
-  itemId,
-  itemName = '',
-  initialPreset = 'empty-object',
-  onSaved,
-  onCancel,
-  onAnnounce,
-  onDraftClearedOnLock,
-  rawParseDebounceMs,
-}: NewJsonEntryComposerProps) {
-  const tEntry = useTranslations('content.entry');
-  const tJson = useTranslations('content.json');
-  const tErrors = useTranslations('content.errors');
-  const queryClient = useQueryClient();
-  const vault = useOptionalVault();
-  const { me } = useSession();
-
-  const translateContentError = useCallback(
-    (key: ContentErrorI18nKey): string => {
-      const code = key.replace(/^content\.errors\./, '');
-      return tErrors(code as Parameters<typeof tErrors>[0]);
-    },
-    [tErrors],
-  );
-
-  const [preset, setPreset] = useState<JsonNewPresetId>(initialPreset);
-  const [mode, setMode] = useState<JsonCardMode>('table');
-  const [tableSource, setTableSource] = useState<string>(() => JSON_NEW_PRESETS[initialPreset]);
-  const [rawDraftValue, setRawDraftValue] = useState<string>(
-    () => JSON_NEW_PRESETS[initialPreset],
-  );
-  const [rawEditedSinceSwitch, setRawEditedSinceSwitch] = useState<boolean>(false);
-  const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-  const [pageByPath, setPageByPath] = useState<ReadonlyMap<string, number>>(
-    () => new Map<string, number>(),
-  );
-
-  const [discardConfirmOpen, setDiscardConfirmOpen] = useState<boolean>(false);
-  const [switchBlockedError, setSwitchBlockedError] = useState<string | null>(null);
-  const [savingInFlight, setSavingInFlight] = useState<boolean>(false);
-  const [unconfirmedCreate, setUnconfirmedCreate] = useState<{
-    readonly sealed: SealedNewEntryPayload;
-    readonly errorMessage: string;
-  } | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [resetEpoch, setResetEpoch] = useState<number>(0);
-
-  const saveLockRef = useRef<boolean>(false);
-  const lockEpochRef = useRef<number>(0);
-  const candidateSource = mode === 'raw' && rawEditedSinceSwitch ? rawDraftValue : tableSource;
-  const isDirty = candidateSource !== JSON_NEW_PRESETS[preset];
-
-  const composerHolderRef = useRef<{ candidateSource: string }>({
-    candidateSource: JSON_NEW_PRESETS[initialPreset],
-  });
-  composerHolderRef.current.candidateSource = candidateSource;
-
-  const composerDirtyRef = useRef<boolean>(false);
-  composerDirtyRef.current = isDirty || unconfirmedCreate !== null;
-
-  useEffect(() => {
-    if (!vault?.registerSecretFormReset) return;
-    return vault.registerSecretFormReset(() => {
-      const hadNonEmptyDraft = composerDirtyRef.current;
-      lockEpochRef.current += 1;
-      composerHolderRef.current.candidateSource = '';
-      saveLockRef.current = false;
-      setTableSource(JSON_NEW_PRESETS[initialPreset]);
-      setRawDraftValue(JSON_NEW_PRESETS[initialPreset]);
-      setRawEditedSinceSwitch(false);
-      setDiscardConfirmOpen(false);
-      setSwitchBlockedError(null);
-      setSavingInFlight(false);
-      setUnconfirmedCreate(null);
-      setSaveError(null);
-      setResetEpoch((prev) => prev + 1);
-      if (hadNonEmptyDraft) {
-        onDraftClearedOnLock?.();
-      }
-      onCancel();
-    });
-  }, [initialPreset, onCancel, onDraftClearedOnLock, vault]);
-
-  const parsedDocResult = useMemo(() => parseJsonStrict(tableSource), [tableSource]);
-  const currentDoc = parsedDocResult.ok ? parsedDocResult.document : null;
-
-  const rawValidationIssue = useMemo(() => {
-    if (mode !== 'raw') return null;
-    return validateRawJsonText(rawDraftValue);
-  }, [mode, rawDraftValue]);
-
-  const utf8ByteLength = useMemo(
-    () => measureUtf8Bytes(candidateSource),
-    [candidateSource],
-  );
-  const isOverCap = utf8ByteLength > ENTRY_MAX_PLAINTEXT_BYTES;
-  const isEmpty = utf8ByteLength === 0;
-  const saveDisabled =
-    isEmpty ||
-    isOverCap ||
-    (mode === 'raw' && rawValidationIssue !== null) ||
-    (mode === 'table' && !currentDoc) ||
-    savingInFlight ||
-    unconfirmedCreate !== null;
-
-  const handleSelectPreset = useCallback((nextPreset: JsonNewPresetId) => {
-    const template = JSON_NEW_PRESETS[nextPreset];
-    setPreset(nextPreset);
-    setTableSource(template);
-    setRawDraftValue(template);
-    setRawEditedSinceSwitch(false);
-    setExpandedPaths(new Set());
-    setPageByPath(new Map());
-    setSwitchBlockedError(null);
-    setDiscardConfirmOpen(false);
-  }, []);
-
-  const handleSwitchMode = useCallback(
-    (targetMode: JsonCardMode) => {
-      if (targetMode === mode) return;
-      if (targetMode === 'raw') {
-        setRawDraftValue(normalizeEolToLf(tableSource));
-        setRawEditedSinceSwitch(false);
-        setSwitchBlockedError(null);
-        setMode('raw');
-        return;
-      }
-
-      if (!rawEditedSinceSwitch) {
-        setSwitchBlockedError(null);
-        setMode('table');
-        return;
-      }
-
-      const issue = validateRawJsonText(rawDraftValue);
-      if (issue !== null) {
-        setSwitchBlockedError(tJson('switchBlockedInvalidError'));
-        return;
-      }
-
-      setTableSource(rawDraftValue);
-      setRawEditedSinceSwitch(false);
-      setSwitchBlockedError(null);
-      setMode('table');
-    },
-    [mode, rawDraftValue, rawEditedSinceSwitch, tJson, tableSource],
-  );
-
-  const requestCancel = useCallback(() => {
-    if (savingInFlight) return;
-    if (!isDirty && unconfirmedCreate === null) {
-      onCancel();
-      return;
-    }
-    setDiscardConfirmOpen(true);
-  }, [isDirty, onCancel, savingInFlight, unconfirmedCreate]);
-
-  const executeCreate = useCallback(
-    async (sealed: SealedNewEntryPayload, hadPriorUncertainSend: boolean) => {
-      setSavingInFlight(true);
-      setSaveError(null);
-      onAnnounce?.(tEntry('saving'));
-
-      try {
-        const { meta, applied } = await mutateSealedEntryCreate(
-          queryClient,
-          toEntryCreateVariables(sealed, {
-            uncertainPriorSend: hadPriorUncertainSend,
-          }),
-        );
-
-        if (!applied || !sealed.isCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
-          return;
-        }
-
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        setUnconfirmedCreate(null);
-        onAnnounce?.(tEntry('savedAnnounce'));
-        onSaved(meta);
-      } catch (err) {
-        if (!sealed.isCurrent()) {
-          saveLockRef.current = false;
-          setSavingInFlight(false);
-          return;
-        }
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-
-        const classified = classifyContentMutationError(err, {
-          hadUncertainSend: true,
-        });
-
-        if (classified.isLogoutBoundary) {
-          if (me?.user?.id) {
-            recordUnconfirmedSave({
-              userId: me.user.id,
-              itemId,
-              itemName: itemName || itemId,
-              source: 'entry',
-            });
-          }
-          onCancel();
-          return;
-        }
-
-        if (classified.kind === 'entry_key_mismatch') {
-          setUnconfirmedCreate(null);
-          void vault?.reloadVaultMeta();
-          return;
-        }
-
-        const msg = translateContentError(classified.i18nKey);
-        if (classified.canRetrySameBytes) {
-          setUnconfirmedCreate({
-            sealed,
-            errorMessage: msg,
-          });
-          onAnnounce?.(msg);
-          return;
-        }
-
-        setUnconfirmedCreate(null);
-        setSaveError(msg);
-        onAnnounce?.(msg);
-      }
-    },
-    [
-      itemId,
-      itemName,
-      me?.user?.id,
-      onAnnounce,
-      onCancel,
-      onSaved,
-      queryClient,
-      tEntry,
-      translateContentError,
-      vault,
-    ],
-  );
-
-  const handleSaveNew = useCallback(async () => {
-    if (saveLockRef.current || savingInFlight || unconfirmedCreate !== null) return;
-    if (isEmpty || isOverCap || !vault) return;
-    if (mode === 'raw' && validateRawJsonText(rawDraftValue) !== null) return;
-    if (!parseJsonStrict(candidateSource).ok) return;
-
-    const guard = captureEntrySaveOpGuard(vault, lockEpochRef);
-    saveLockRef.current = true;
-    setSavingInFlight(true);
-    setSaveError(null);
-
-    try {
-      const readyVault = await ensureVaultForEntrySeal(vault, guard);
-      if (!readyVault || !guard.isStillCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        return;
-      }
-      const textToSeal = composerHolderRef.current.candidateSource;
-      if (measureUtf8Bytes(textToSeal) === 0 || !parseJsonStrict(textToSeal).ok) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        return;
-      }
-      const sealed = await sealNewEntry({
-        itemId,
-        type: 'json',
-        text: textToSeal,
-        vault: readyVault,
-      });
-      if (!guard.isStillCurrent() || !sealed.isCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        return;
-      }
-      await executeCreate(sealed, false);
-    } catch (err) {
-      if (!guard.isStillCurrent()) {
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        return;
-      }
-      saveLockRef.current = false;
-      setSavingInFlight(false);
-      const classified = classifyContentMutationError(err);
-      const msg = translateContentError(classified.i18nKey);
-      setSaveError(msg);
-      onAnnounce?.(msg);
-    }
-  }, [
-    candidateSource,
-    executeCreate,
-    isEmpty,
-    isOverCap,
-    itemId,
-    mode,
-    onAnnounce,
-    rawDraftValue,
-    savingInFlight,
-    translateContentError,
-    unconfirmedCreate,
-    vault,
-  ]);
-
-  const handleRetryNew = useCallback(async () => {
-    if (!unconfirmedCreate || saveLockRef.current || savingInFlight) return;
-    saveLockRef.current = true;
-    await executeCreate(unconfirmedCreate.sealed, true);
-  }, [executeCreate, savingInFlight, unconfirmedCreate]);
-
-  return (
-    <article
-      data-testid="new-json-entry-composer"
-      className={`card overflow-hidden ${unconfirmedCreate || saveError ? 'card-error' : ''}`}
-    >
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
-        <span className="badge-type badge-json">json</span>
-        <span className="text-[14px] font-semibold text-body">
-          {savingInFlight ? tEntry('saving') : tJson('newJsonTitle')}
-        </span>
-
-        {/* Preset chooser: Empty object {} vs Empty array [] (Task 16 item 7) */}
-        <div
-          role="group"
-          aria-label={tJson('newJsonPresetGroupAria')}
-          data-testid="new-json-preset-group"
-          className="ml-2 flex flex-wrap items-center gap-1.5"
-        >
-          <span className="text-[12px] text-muted">{tJson('newJsonPresetLabel')}</span>
-          <button
-            type="button"
-            aria-pressed={preset === 'empty-object'}
-            data-testid="new-json-preset-object"
-            className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-[12px]"
-            onClick={() => handleSelectPreset('empty-object')}
-          >
-            <span className="mono">{'{}'}</span> · {tJson('newJsonPresetEmptyObject')}
-          </button>
-          <button
-            type="button"
-            aria-pressed={preset === 'empty-array'}
-            data-testid="new-json-preset-array"
-            className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-[12px]"
-            onClick={() => handleSelectPreset('empty-array')}
-          >
-            <span className="mono">{'[]'}</span> · {tJson('newJsonPresetEmptyArray')}
-          </button>
-        </div>
-
-        {/* Table / Raw JSON switcher */}
-        <div
-          role="group"
-          aria-label={tJson('viewModeAria')}
-          data-testid="new-json-mode-switcher"
-          className="seg ml-auto"
-        >
-          <button
-            type="button"
-            aria-pressed={mode === 'table'}
-            data-testid="new-json-tab-table"
-            className="seg-btn"
-            onClick={() => handleSwitchMode('table')}
-          >
-            {tJson('tabTable')}
-          </button>
-          <button
-            type="button"
-            aria-pressed={mode === 'raw'}
-            data-testid="new-json-tab-raw"
-            className="seg-btn"
-            onClick={() => handleSwitchMode('raw')}
-          >
-            {tJson('tabRaw')}
-          </button>
-        </div>
-      </div>
-
-      <div>
-        {mode === 'table' ? (
-          <JsonTreeGrid
-            entryId="new-json"
-            document={currentDoc}
-            disabled={savingInFlight}
-            expandedPaths={expandedPaths}
-            pageByPath={pageByPath}
-            onToggleExpand={(p) =>
-              setExpandedPaths((prev) => {
-                const next = new Set(prev);
-                if (next.has(p)) next.delete(p);
-                else next.add(p);
-                return next;
-              })
-            }
-            onPageChange={(p, nextPage) =>
-              setPageByPath((prev) => {
-                const next = new Map(prev);
-                next.set(p, nextPage);
-                return next;
-              })
-            }
-            onApplyEdit={(outcome) => {
-              if (measureUtf8Bytes(outcome.source) > ENTRY_MAX_PLAINTEXT_BYTES) return false;
-              setTableSource(outcome.source);
-              setRawDraftValue(normalizeEolToLf(outcome.source));
-              setRawEditedSinceSwitch(false);
-              if (discardConfirmOpen) setDiscardConfirmOpen(false);
-              return true;
-            }}
-            resetEpoch={resetEpoch}
-          />
-        ) : (
-          <JsonRawEditor
-            entryId="new-json"
-            positionNumber={1}
-            draftValue={rawDraftValue}
-            sourceEol={detectEol(tableSource)}
-            prospectiveByteLength={utf8ByteLength}
-            isOverCap={isOverCap}
-            isDirty={isDirty}
-            savingInFlight={savingInFlight}
-            hasBlockingState={unconfirmedCreate !== null}
-            externalError={switchBlockedError}
-            parseDebounceMs={rawParseDebounceMs}
-            onDraftChange={(nextVal: string) => {
-              setRawDraftValue(nextVal);
-              setRawEditedSinceSwitch(true);
-              setSwitchBlockedError(null);
-              if (discardConfirmOpen) setDiscardConfirmOpen(false);
-            }}
-            onSave={() => {
-              void handleSaveNew();
-            }}
-            onRequestCancel={requestCancel}
-          />
-        )}
-
-        <div className="border-t border-line bg-surface px-4 py-3">
-          {unconfirmedCreate ? (
-            <div
-              role="alert"
-              data-testid="new-json-retry-box"
-              className="auth-alert mb-3"
-            >
-              <p className="m-0 mb-1 text-[14px] font-semibold text-body">
-                {tEntry('saveFailedTitle')}
-              </p>
-              <p className="m-0 text-[13px] text-body">{unconfirmedCreate.errorMessage}</p>
-              <p className="m-0 mt-1 text-[12px] text-muted">{tEntry('saveFailedRetryBody')}</p>
-              <div className="mt-3 flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  className="btn btn-tertiary btn-sm"
-                  onClick={onCancel}
-                >
-                  {tEntry('discardDraft')}
-                </button>
-                <button
-                  type="button"
-                  data-testid="new-json-retry-btn"
-                  className="btn btn-primary btn-sm"
-                  disabled={savingInFlight}
-                  onClick={() => {
-                    void handleRetryNew();
-                  }}
-                >
-                  {tEntry('retry')}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {saveError && !unconfirmedCreate ? (
-            <p role="alert" data-testid="new-json-save-error" className="field-error mb-3 mt-0">
-              {saveError}
-            </p>
-          ) : null}
-
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <button
-              type="button"
-              data-testid="new-json-cancel-btn"
-              className="btn btn-tertiary btn-sm"
-              disabled={savingInFlight}
-              onClick={requestCancel}
-            >
-              {tEntry('cancel')} (<span className="mono">Esc</span>)
-            </button>
-            <button
-              type="button"
-              data-testid="new-json-save-btn"
-              className="btn btn-primary btn-sm"
-              disabled={saveDisabled}
-              aria-busy={savingInFlight || undefined}
-              onClick={() => {
-                void handleSaveNew();
-              }}
-            >
-              {savingInFlight ? (
-                tEntry('savingButton')
-              ) : (
-                <>
-                  {tEntry('save')} (<span className="mono">Ctrl+S</span>)
-                </>
-              )}
-            </button>
-          </div>
-
-          {discardConfirmOpen ? (
-            <div
-              data-testid="new-json-discard-confirm"
-              role="alert"
-              className="auth-status mb-0 mt-3 flex flex-wrap items-center justify-between gap-3"
-            >
-              <div className="min-w-0">
-                <p className="m-0 text-[14px] font-semibold text-body">
-                  {tEntry('discardConfirmTitle')}
-                </p>
-                <p className="m-0 mt-0.5 text-[13px] text-muted">
-                  {tEntry('discardConfirmBody')}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  data-testid="new-json-keep-editing-btn"
-                  className="btn btn-tertiary btn-sm"
-                  onClick={() => setDiscardConfirmOpen(false)}
-                >
-                  {tEntry('keepEditing')}
-                </button>
-                <button
-                  type="button"
-                  data-testid="new-json-discard-btn"
-                  className="btn btn-danger btn-sm"
-                  onClick={onCancel}
-                >
-                  {tEntry('discardChanges')}
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
       </div>
     </article>
   );

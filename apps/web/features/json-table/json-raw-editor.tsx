@@ -66,6 +66,7 @@ export interface JsonRawEditorProps {
   readonly hasBlockingState: boolean;
   readonly externalError?: string | null;
   readonly onDraftChange: (nextValue: string) => void;
+  readonly onValidationSettled?: (issue: RawValidationIssue | null) => void;
   readonly onSave: () => void;
   readonly onRequestCancel?: () => void;
   readonly parseDebounceMs?: number;
@@ -83,6 +84,7 @@ export function JsonRawEditor({
   hasBlockingState,
   externalError = null,
   onDraftChange,
+  onValidationSettled,
   onSave,
   onRequestCancel,
   parseDebounceMs = RAW_PARSE_DEBOUNCE_MS,
@@ -94,48 +96,65 @@ export function JsonRawEditor({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pauseTimerRef = useRef<number | undefined>(undefined);
 
-  // Parse-on-typing-pause state (SPEC §7.7, Task 16 item 4)
-  const [debouncedIssue, setDebouncedIssue] = useState<RawValidationIssue | null>(() =>
-    validateRawJsonText(draftValue),
-  );
+  // Parse-on-typing-pause state (SPEC §7.7, Task 16 item 4, IP16-FE1-7):
+  // Do NOT run parseJsonStrict synchronously on every keystroke; validate only after the typing pause
+  // (or immediately on initial mount, blur, Save, Format, or Ctrl+S).
+  const [validatedState, setValidatedState] = useState<{
+    readonly text: string;
+    readonly issue: RawValidationIssue | null;
+  }>(() => {
+    const initialIssue = validateRawJsonText(draftValue);
+    return { text: draftValue, issue: initialIssue };
+  });
   const [formatErrorMsg, setFormatErrorMsg] = useState<string | null>(null);
 
-  // Synchronous check used to immediately disable Save / Format while typing invalid JSON
-  const liveIssue = useMemo(() => validateRawJsonText(draftValue), [draftValue]);
+  const onValidationSettledRef = useRef(onValidationSettled);
+  onValidationSettledRef.current = onValidationSettled;
 
   useEffect(() => {
-    // If valid immediately (e.g., user fixed the syntax error or initial load is valid), clear error right away
-    if (liveIssue === null || liveIssue.kind === 'over_cap' || liveIssue.kind === 'invalid_unicode') {
+    onValidationSettledRef.current?.(validatedState.issue);
+  }, [validatedState.issue]);
+
+  useEffect(() => {
+    if (validatedState.text === draftValue) {
       clearTimeout(pauseTimerRef.current);
       pauseTimerRef.current = undefined;
-      setDebouncedIssue(liveIssue);
       return;
     }
 
     if (parseDebounceMs <= 0) {
-      setDebouncedIssue(liveIssue);
+      clearTimeout(pauseTimerRef.current);
+      pauseTimerRef.current = undefined;
+      const issue = validateRawJsonText(draftValue);
+      setValidatedState({ text: draftValue, issue });
       return;
     }
 
     clearTimeout(pauseTimerRef.current);
     pauseTimerRef.current = window.setTimeout(() => {
       pauseTimerRef.current = undefined;
-      setDebouncedIssue(liveIssue);
+      const issue = validateRawJsonText(draftValue);
+      setValidatedState({ text: draftValue, issue });
     }, parseDebounceMs);
 
     return () => {
       clearTimeout(pauseTimerRef.current);
       pauseTimerRef.current = undefined;
     };
-  }, [liveIssue, parseDebounceMs]);
+  }, [draftValue, parseDebounceMs, validatedState.text]);
 
   const flushValidationImmediate = useCallback(() => {
     clearTimeout(pauseTimerRef.current);
     pauseTimerRef.current = undefined;
-    const current = validateRawJsonText(textareaRef.current?.value ?? draftValue);
-    setDebouncedIssue(current);
-    return current;
+    const currentText = textareaRef.current?.value ?? draftValue;
+    const currentIssue = validateRawJsonText(currentText);
+    setValidatedState({ text: currentText, issue: currentIssue });
+    onValidationSettledRef.current?.(currentIssue);
+    return currentIssue;
   }, [draftValue]);
+
+  const validationPending = validatedState.text !== draftValue;
+  const debouncedIssue = validatedState.issue;
 
   const displayedIssue = useMemo<RawValidationIssue | null>(
     () =>
@@ -145,12 +164,11 @@ export function JsonRawEditor({
     [debouncedIssue, isOverCap, prospectiveByteLength],
   );
 
-  const isInvalid = liveIssue !== null || isOverCap;
+  const isInvalid = (!validationPending && debouncedIssue !== null) || isOverCap;
   const saveDisabled =
     isInvalid || savingInFlight || hasBlockingState || draftValue.length === 0;
   const formatDisabled =
-    liveIssue !== null || savingInFlight || hasBlockingState || draftValue.length === 0;
-
+    isInvalid || savingInFlight || hasBlockingState || draftValue.length === 0;
   const formattedBytes = useMemo(() => {
     try {
       return format.number(prospectiveByteLength);
@@ -177,8 +195,10 @@ export function JsonRawEditor({
 
   const handleGoToError = useCallback(() => {
     const ta = textareaRef.current;
-    const issue = displayedIssue ?? liveIssue;
-    if (!ta || !issue || issue.kind !== 'parse_error' || !issue.parseError) return;
+    if (!ta) return;
+    // IP16-FE1-15: Re-validate live textarea value immediately before jumping so line/column is never stale
+    const issue = flushValidationImmediate();
+    if (!issue || issue.kind !== 'parse_error' || !issue.parseError) return;
 
     const { line, column } = issue.parseError;
     const currentText = ta.value;
@@ -199,8 +219,7 @@ export function JsonRawEditor({
 
     ta.focus();
     ta.setSelectionRange(clampedStart, clampedEnd);
-  }, [displayedIssue, liveIssue]);
-
+  }, [flushValidationImmediate]);
   const handleFormat = useCallback(() => {
     setFormatErrorMsg(null);
     const currentText = textareaRef.current?.value ?? draftValue;
@@ -234,7 +253,7 @@ export function JsonRawEditor({
     // Format rewrites the textarea draft (normalized to \n for HTML textarea); Save commits
     const normalizedFormatted = res.text.replace(/\r\n|\r/g, '\n');
     onDraftChange(normalizedFormatted);
-    setDebouncedIssue(null);
+    setValidatedState({ text: normalizedFormatted, issue: null });
   }, [draftValue, format, onDraftChange, sourceEol.majority, sourceEol.totalBreaks, tJson]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

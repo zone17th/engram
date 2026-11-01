@@ -81,6 +81,10 @@ export interface ActiveAddFieldState {
   readonly error: string | null;
 }
 
+export interface JsonTreeGridCommitControlRef {
+  commitOrFlushPendingEdit: () => boolean;
+}
+
 export interface JsonTreeGridProps {
   readonly entryId: string;
   readonly document: JsonDocument | null;
@@ -92,6 +96,7 @@ export interface JsonTreeGridProps {
   readonly onPageChange: (path: string, nextPage: number) => void;
   readonly onApplyEdit: (outcome: JsonEditOutcome & { readonly ok: true }) => boolean;
   readonly resetEpoch?: number;
+  readonly commitControlRef?: { current: JsonTreeGridCommitControlRef | null };
 }
 
 export function JsonTreeGrid({
@@ -105,6 +110,7 @@ export function JsonTreeGrid({
   onPageChange,
   onApplyEdit,
   resetEpoch = 0,
+  commitControlRef,
 }: JsonTreeGridProps) {
   const tJson = useTranslations('content.json');
 
@@ -113,7 +119,6 @@ export function JsonTreeGrid({
   const addFieldInputRef = useRef<HTMLInputElement | null>(null);
   const skipBlurCommitRef = useRef<boolean>(false);
   const pendingFocusKeyRef = useRef<string | null>(null);
-
   const [activeCellEdit, setActiveCellEdit] = useState<ActiveCellEditState | null>(null);
   const [activeAddField, setActiveAddField] = useState<ActiveAddFieldState | null>(null);
 
@@ -150,19 +155,24 @@ export function JsonTreeGrid({
     }
   }, [activeAddFieldPath]);
 
-  // Restore focus after commit / cancel / expand / page change
+  // Restore focus after commit / cancel / expand / page change without depending on CSS.escape (IP16-FE1-1)
   useEffect(() => {
     const key = pendingFocusKeyRef.current;
     if (!key || !hostRef.current) return;
     pendingFocusKeyRef.current = null;
-    const target = hostRef.current.querySelector<HTMLElement>(
-      `[data-json-focus-key="${CSS.escape(key)}"]`,
-    );
+    const candidates = hostRef.current.querySelectorAll<HTMLElement>('[data-json-focus-key]');
+    let target: HTMLElement | null = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const el = candidates[i]!;
+      if (el.getAttribute('data-json-focus-key') === key) {
+        target = el;
+        break;
+      }
+    }
     if (target && !target.hasAttribute('disabled')) {
       target.focus();
     }
   });
-
   const translateEditError = useCallback(
     (code: string): string => {
       switch (code) {
@@ -204,12 +214,13 @@ export function JsonTreeGrid({
           ...editState,
           error: translateEditError(outcome.error.code),
         });
-        queueMicrotask(() => {
-          editInputRef.current?.focus();
-        });
+        if (focusAfterKey === editState.cellKey) {
+          queueMicrotask(() => {
+            editInputRef.current?.focus();
+          });
+        }
         return false;
       }
-
       if (!outcome.changed) {
         // Rule 2: No-op commit produces no splice (preserves original escapes like \u00e9 or \/)
         if (editInputRef.current) {
@@ -228,9 +239,11 @@ export function JsonTreeGrid({
           ...editState,
           error: tJson('editErrorOverCap'),
         });
-        queueMicrotask(() => {
-          editInputRef.current?.focus();
-        });
+        if (focusAfterKey === editState.cellKey) {
+          queueMicrotask(() => {
+            editInputRef.current?.focus();
+          });
+        }
         return false;
       }
 
@@ -255,6 +268,18 @@ export function JsonTreeGrid({
     [doc, onApplyEdit, tJson, translateEditError],
   );
 
+  useEffect(() => {
+    if (!commitControlRef) return;
+    commitControlRef.current = {
+      commitOrFlushPendingEdit: () => {
+        if (!activeCellEdit) return true;
+        return commitActiveCellEdit(activeCellEdit, activeCellEdit.cellKey);
+      },
+    };
+    return () => {
+      commitControlRef.current = null;
+    };
+  }, [activeCellEdit, commitActiveCellEdit, commitControlRef]);
   const handleCancelCellEdit = useCallback((cellKey: string) => {
     skipBlurCommitRef.current = true;
     if (editInputRef.current) {
@@ -467,7 +492,7 @@ export function JsonTreeGrid({
     [activeCellEdit, disabled, doc, onApplyEdit, readOnly],
   );
 
-  // Keyboard arrow navigation between interactive grid cells (Task 16 item 6)
+  // Keyboard arrow navigation between interactive grid cells (Task 16 item 6, IP16-FE1-16)
   const handleHostKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement | null;
@@ -495,10 +520,49 @@ export function JsonTreeGrid({
       if (currentIdx === -1) return;
 
       e.preventDefault();
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      if (e.key === 'ArrowRight') {
         const next = navElements[Math.min(navElements.length - 1, currentIdx + 1)];
         next?.focus();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        const prev = navElements[Math.max(0, currentIdx - 1)];
+        prev?.focus();
+        return;
+      }
+
+      // ArrowDown / ArrowUp: prefer the cell at the same column in the next/previous row of the same table
+      const currentCell = target.closest('td');
+      const currentRow = target.closest('tr');
+      const currentTable = currentRow?.closest('table');
+      if (currentCell && currentRow && currentTable) {
+        const rowCells = Array.from(currentRow.children);
+        const colIdx = rowCells.indexOf(currentCell);
+        const tbody = currentRow.parentElement;
+        if (tbody && colIdx !== -1) {
+          const rows = Array.from(tbody.children).filter(
+            (el): el is HTMLTableRowElement => el.tagName.toUpperCase() === 'TR',
+          );
+          const rowIdx = rows.indexOf(currentRow);
+          const candidateRow =
+            e.key === 'ArrowDown' ? rows[rowIdx + 1] : rows[rowIdx - 1];
+          if (candidateRow) {
+            const candidateTd = candidateRow.children[colIdx] as HTMLElement | undefined;
+            const candidateNav = candidateTd?.querySelector<HTMLElement>(
+              '[data-json-grid-nav]:not(:disabled)',
+            );
+            if (candidateNav) {
+              candidateNav.focus();
+              return;
+            }
+          }
+        }
+      }
+
+      if (e.key === 'ArrowDown') {
+        const next = navElements[Math.min(navElements.length - 1, currentIdx + 1)];
+        next?.focus();
+      } else {
         const prev = navElements[Math.max(0, currentIdx - 1)];
         prev?.focus();
       }
@@ -721,13 +785,14 @@ export function JsonTreeGrid({
         <span className="whitespace-pre-wrap break-words">{cell.displayText}</span>
       );
 
-    if (readOnly || disabled) {
+    if (readOnly) {
       return valueNode;
     }
 
     return (
       <button
         type="button"
+        disabled={disabled}
         aria-label={posLabel}
         title={tJson('editCellTitle')}
         data-testid={`json-cell-btn-${cellKey}`}
@@ -816,7 +881,7 @@ export function JsonTreeGrid({
           <span className="caret" aria-hidden="true">
             ›
           </span>
-          <span>{extraFields.label}</span>
+          <span>{tJson('extraFieldsToggle', { count: extraFields.count })}</span>
         </button>
         {isExpanded && extraView ? (
           <div className="json-nest" data-testid={`json-extra-nest-${extraPath}`}>
@@ -905,7 +970,7 @@ export function JsonTreeGrid({
             aria-label={tJson('addFieldKeyPlaceholder')}
             aria-invalid={activeAddField.error ? 'true' : undefined}
             data-testid={`json-new-key-input-${containerPath}`}
-            className="field-input json-cell-input !w-[192px] shrink-0 px-2 py-1 text-[13px]"
+            className="field-input json-cell-input shrink-0 px-2 py-1 text-[13px]"
             {...VAULT_SECRET_INPUT_PROPS}
             onChange={(e) =>
               setActiveAddField((prev) =>
@@ -1042,13 +1107,13 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'group' } as const);
+      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
 
     if (view.totalRows === 0) {
       return (
         <div>
           <table className="json-table" {...tableRoleProps}>
-            <tbody>
+            <tbody role="presentation">
               <tr role="row" aria-level={level}>
                 <td role="gridcell" className="mono p-3 text-[13px] text-muted">
                   {tJson('emptyObject')}
@@ -1066,16 +1131,20 @@ export function JsonTreeGrid({
     return (
       <div>
         <table className="json-table" {...tableRoleProps}>
-          <thead>
+          <thead role="presentation">
             <tr role="row">
               <th role="columnheader">{tJson('colField')}</th>
               <th role="columnheader">{tJson('colValue')}</th>
               {!readOnly && !disabled && !opts?.hideToolbar ? (
-                <th role="columnheader" className="w-[44px]" aria-label="Actions" />
+                <th
+                  role="columnheader"
+                  className="json-col-idx"
+                  aria-label={tJson('colActions')}
+                />
               ) : null}
             </tr>
           </thead>
-          <tbody>
+          <tbody role="presentation">
             {view.rows.map((row) => {
               const rowNum = row.propertyIndex + 1;
               const keyCellKey = `${containerPath}.k${row.propertyIndex}`;
@@ -1103,13 +1172,17 @@ export function JsonTreeGrid({
                       <span
                         className="k-occ ml-1"
                         data-testid={`json-dup-occ-${keyCellKey}`}
-                        aria-label={tJson('occurrenceAria', {
-                          occ: row.occurrenceIndex + 1,
-                        })}
                       >
-                        {`(#${row.occurrenceIndex + 1}) ⁽${toSuperscriptNumber(
-                          row.occurrenceIndex + 1,
-                        )}⁾`}
+                        <span className="sr-only">
+                          {tJson('occurrenceAria', {
+                            occ: row.occurrenceIndex + 1,
+                          })}
+                        </span>
+                        <span aria-hidden="true">
+                          {`(#${row.occurrenceIndex + 1}) ⁽${toSuperscriptNumber(
+                            row.occurrenceIndex + 1,
+                          )}⁾`}
+                        </span>
                       </span>
                     ) : null}
                   </td>
@@ -1128,7 +1201,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled && !opts?.hideToolbar ? (
                     <td
                       role="gridcell"
-                      className="json-col-act w-[44px] text-right"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1136,7 +1209,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-field-${containerPath}-${row.propertyIndex}`}
                         data-json-focus-key={`${containerPath}:remove-field:${row.propertyIndex}`}
-                        className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveField(containerPath, row, view.totalRows)
                         }
@@ -1175,14 +1248,14 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'group' } as const);
+      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
 
     const overflowColCount = Math.max(0, view.totalDistinctKeys - view.columns.length);
 
     return (
       <div>
         <table className="json-table" {...tableRoleProps}>
-          <thead>
+          <thead role="presentation">
             <tr role="row">
               <th role="columnheader" className="json-col-idx">
                 {tJson('colIndex')}
@@ -1205,11 +1278,15 @@ export function JsonTreeGrid({
                 </th>
               ) : null}
               {!readOnly && !disabled ? (
-                <th role="columnheader" className="w-[44px]" aria-label="Actions" />
+                <th
+                  role="columnheader"
+                  className="json-col-idx"
+                  aria-label={tJson('colActions')}
+                />
               ) : null}
             </tr>
           </thead>
-          <tbody>
+          <tbody role="presentation">
             {view.rows.map((row) => {
               const rowNum = row.rowIndex + 1;
               const rowPath = `${containerPath}.e${row.rowIndex}`;
@@ -1248,7 +1325,7 @@ export function JsonTreeGrid({
                     {!readOnly && !disabled ? (
                       <td
                         role="gridcell"
-                        className="json-col-act w-[44px] text-right"
+                        className="json-col-act json-col-idx text-right"
                       >
                         <button
                           type="button"
@@ -1256,7 +1333,7 @@ export function JsonTreeGrid({
                           title={tJson('removeRowTitle')}
                           data-testid={`json-remove-row-${containerPath}-${row.rowIndex}`}
                           data-json-focus-key={`${containerPath}:remove-row:${row.rowIndex}`}
-                          className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted"
+                          className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                           onClick={() =>
                             handleRemoveRow(
                               containerPath,
@@ -1369,7 +1446,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled ? (
                     <td
                       role="gridcell"
-                      className="json-col-act w-[44px] text-right"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1377,7 +1454,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-row-${containerPath}-${row.rowIndex}`}
                         data-json-focus-key={`${containerPath}:remove-row:${row.rowIndex}`}
-                        className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveRow(
                             containerPath,
@@ -1419,13 +1496,13 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'group' } as const);
+      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
 
     if (view.totalRows === 0) {
       return (
         <div>
           <table className="json-table" {...tableRoleProps}>
-            <thead>
+            <thead role="presentation">
               <tr role="row">
                 <th role="columnheader" className="json-col-idx">
                   {tJson('colIndex')}
@@ -1433,7 +1510,7 @@ export function JsonTreeGrid({
                 <th role="columnheader">{tJson('colValue')}</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="presentation">
               <tr role="row" aria-level={level}>
                 <td
                   role="gridcell"
@@ -1453,18 +1530,22 @@ export function JsonTreeGrid({
     return (
       <div>
         <table className="json-table" {...tableRoleProps}>
-          <thead>
+          <thead role="presentation">
             <tr role="row">
               <th role="columnheader" className="json-col-idx">
                 {tJson('colIndex')}
               </th>
               <th role="columnheader">{tJson('colValue')}</th>
               {!readOnly && !disabled ? (
-                <th role="columnheader" className="w-[44px]" aria-label="Actions" />
+                <th
+                  role="columnheader"
+                  className="json-col-idx"
+                  aria-label={tJson('colActions')}
+                />
               ) : null}
             </tr>
           </thead>
-          <tbody>
+          <tbody role="presentation">
             {view.rows.map((row) => {
               const rowNum = row.index + 1;
               const elPath = `${containerPath}.e${row.index}`;
@@ -1495,7 +1576,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled ? (
                     <td
                       role="gridcell"
-                      className="json-col-act w-[44px] text-right"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1503,7 +1584,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-row-${containerPath}-${row.index}`}
                         data-json-focus-key={`${containerPath}:remove-row:${row.index}`}
-                        className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveRow(
                             containerPath,
@@ -1541,23 +1622,27 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'group' } as const);
+      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
 
     return (
       <div>
         <table className="json-table" {...tableRoleProps}>
-          <thead>
+          <thead role="presentation">
             <tr role="row">
               <th role="columnheader" className="json-col-idx">
                 {tJson('colIndex')}
               </th>
               <th role="columnheader">{tJson('colValue')}</th>
               {!readOnly && !disabled ? (
-                <th role="columnheader" className="w-[44px]" aria-label="Actions" />
+                <th
+                  role="columnheader"
+                  className="json-col-idx"
+                  aria-label={tJson('colActions')}
+                />
               ) : null}
             </tr>
           </thead>
-          <tbody>
+          <tbody role="presentation">
             {view.rows.map((row) => {
               const rowNum = row.index + 1;
               const elPath = `${containerPath}.e${row.index}`;
@@ -1579,13 +1664,13 @@ export function JsonTreeGrid({
                       row.cell,
                       elPath,
                       level,
-                      row.label,
+                      tJson('arrayOfArraysLabel', { count: row.cell.childCount }),
                     )}
                   </td>
                   {!readOnly && !disabled ? (
                     <td
                       role="gridcell"
-                      className="json-col-act w-[44px] text-right"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1593,7 +1678,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-row-${containerPath}-${row.index}`}
                         data-json-focus-key={`${containerPath}:remove-row:${row.index}`}
-                        className="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveRow(
                             containerPath,
@@ -1638,12 +1723,12 @@ export function JsonTreeGrid({
         role="treegrid"
         aria-label={tJson('treegridAria')}
       >
-        <thead>
+        <thead role="presentation">
           <tr role="row">
             <th role="columnheader">{tJson('colRootPrimitive')}</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="presentation">
           <tr
             role="row"
             aria-level={level}
@@ -1697,7 +1782,7 @@ export function JsonTreeGrid({
     <div
       ref={hostRef}
       data-testid={`json-table-host-${entryId}`}
-      className="card-table-clip overflow-x-auto"
+      className="overflow-x-auto"
       onKeyDown={handleHostKeyDown}
     >
       {renderedTree}

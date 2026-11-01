@@ -2,7 +2,10 @@ export {
   JSON_NEW_PRESETS,
   JsonEntryCard,
   NewJsonEntryComposer,
+  setJsonComposerPlaintextHolderForTests,
+  setJsonEditorPlaintextHolderForTests,
   type JsonCardMode,
+  type JsonComposerPlaintextHolder,
   type JsonEntryCardProps,
   type JsonNewPresetId,
   type NewJsonEntryComposerProps,
@@ -22,5 +25,6 @@ export {
   toSuperscriptNumber,
   type ActiveAddFieldState,
   type ActiveCellEditState,
+  type JsonTreeGridCommitControlRef,
   type JsonTreeGridProps,
 } from '@/features/json-table/json-tree-grid';
