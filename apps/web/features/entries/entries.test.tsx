@@ -2720,13 +2720,14 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       }
     });
 
-    it('fences a waiter that was granted right before reset() (before its task body runs) so it rejects with AbortError, never runs its body, and its stale release does not decrement a post-reset holder (IP14-FE1-8, IP14-BE3-1, IP14-FE3-1)', async () => {
+    it('fences a waiter that was granted right before reset() (before its acquisition .then samples generation or its task body runs) so it rejects with AbortError, never runs its body, and its stale release does not decrement a post-reset holder (IP14-FE1-8, IP14-BE3-1, IP14-FE3-1, IP14-BE4-2, IP14-FE4-2)', async () => {
       const limiter = createConcurrencyLimiter(1);
       const gate3 = Promise.withResolvers<void>();
       const gate3Entered = Promise.withResolvers<void>();
       const gate4 = Promise.withResolvers<void>();
       const gate5 = Promise.withResolvers<void>();
       const gate5Entered = Promise.withResolvers<void>();
+      const resetDone = Promise.withResolvers<void>();
 
       try {
         // Task 3 acquires the single slot in generation 0 and holds it
@@ -2747,18 +2748,37 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         });
         expect(limiter.pendingCount()).toBe(1);
 
-        // Deterministic boundary: register a reaction on `task3` BEFORE resolving `gate3`.
-        // When `gate3.resolve()` runs:
-        //   Tick 1: `await gate3.promise` resumes -> `finally` calls `release(0)` -> `pump()` calls `waiter4.grant()`
-        //           (Queueing `promise4.then(() => grantedGeneration)` as a microtask) AND `run()` for task3 settles
-        //           (Queueing `task3.then(...)` right after `promise4.then`, BEFORE `await acquire` in task4 can resume).
-        //   Tick 2: `promise4.then` resolves `acquire()` with `grantedGeneration`; then `task3.then` runs `limiter.reset()`
-        //           AND starts post-reset `task5` (which synchronously acquires the single slot in generation 1),
-        //           all BEFORE task4's `await acquire` continuation executes in Tick 3!
+        // Deterministic microtask ordering using deferred promises (`Promise.withResolvers`)
+        // to position `limiter.reset()` strictly AFTER `waiter4.grant()` (so Task 4 is popped
+        // and granted in generation 0) AND strictly BEFORE `promise4.then(...)` in `acquire()`
+        // runs (so reverting grant-time generation capture `grantedGeneration = resetGeneration`
+        // to sample `resetGeneration` inside `promise.then(() => resetGeneration)`, at `run()`
+        // start, or at `release()` time makes this test FAIL):
+        //   Microtask M1 (`gate3.promise` reaction inside `task3` body): resumes `task3` body
+        //     -> returns `'task3'`, resolving `task3`'s inner task promise and queueing M3
+        //     (`await task()` continuation in `limiter.run`).
+        //   Microtask M2 (`afterBodyResume.promise` reaction): runs right after M1 (when M3 is
+        //     already at the head of the microtask queue) and resolves `afterGrantBeforeSample`,
+        //     queueing M4 immediately behind M3 — BEFORE M3 runs `release(0)` -> `waiter4.grant()`.
+        //   Microtask M3 (`await task()` continuation in `limiter.run` for `task3`): runs
+        //     `finally { release(0) }` -> `pump()` -> `waiter4.grant()`, which captures
+        //     `grantedGeneration = resetGeneration` (0) and calls `resolve()`, queueing M5
+        //     (`promise4.then(() => grantedGeneration)`) AFTER M4!
+        //   Microtask M4 (`afterGrantBeforeSample.promise` reaction): observes
+        //     `pendingCount() === 0` and `activeCount() === 1` (proving `waiter4.grant()`
+        //     already ran in M3), then calls `limiter.reset()` (bumping `resetGeneration` to 1)
+        //     and starts `task5` (acquiring the single slot in generation 1) BEFORE M5
+        //     (`promise4.then(...)`) or Task 4's `await acquire` continuation can execute!
         let pendingAtReset = -1;
         let activeBeforeReset = -1;
         let task5!: Promise<string>;
-        const resetDone = task3.then(() => {
+        const afterBodyResume = Promise.withResolvers<void>();
+        const afterGrantBeforeSample = Promise.withResolvers<void>();
+
+        void afterBodyResume.promise.then(() => {
+          afterGrantBeforeSample.resolve();
+        });
+        void afterGrantBeforeSample.promise.then(() => {
           pendingAtReset = limiter.pendingCount();
           activeBeforeReset = limiter.activeCount();
           limiter.reset();
@@ -2767,17 +2787,28 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
             await gate5.promise;
             return 'task5';
           });
+          resetDone.resolve();
         });
 
         gate3.resolve();
+        afterBodyResume.resolve();
         await expect(task3).resolves.toBe('task3');
-        await resetDone;
+        await resetDone.promise;
 
         // Confirm Task 4 was already popped and granted before reset() ran
         expect(pendingAtReset).toBe(0);
         expect(activeBeforeReset).toBe(1);
 
-        // Task 4 must reject with AbortError without ever invoking its task body
+        // Task 4 must reject with AbortError without ever invoking its task body.
+        // If grant-time generation capture in `concurrency-limiter.ts` were reverted to sample
+        // `resetGeneration` inside `promise.then(() => resetGeneration)`, M5 would read the
+        // post-reset generation `1`, `slotGeneration !== resetGeneration` (1 !== 1) would be
+        // false, Task 4's body would run (`task4Ran === true`), `gate4.resolve()` below would
+        // let Task 4 resolve instead of rejecting, and its `release(1)` would decrement Task 5's
+        // active slot (`activeCount()` would drop from 1 to 0).
+        // Resolve `gate4` before awaiting `task4` so a broken implementation fails the
+        // rejection/body/activeCount assertions immediately instead of hanging on `gate4.promise`.
+        gate4.resolve();
         await expect(task4).rejects.toMatchObject({ name: 'AbortError' });
         expect(task4Ran).toBe(false);
 
