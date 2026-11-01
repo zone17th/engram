@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { useEffect, useState, type ReactNode } from 'react';
@@ -2024,7 +2025,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
 
       try {
         await mountUnlockedHarness(() => (
-          <div>
+          <div data-testid="waiting-vs-active-cards">
             {cardIds.map((id, idx) => (
               <div key={id} data-testid={`waiting-vs-active-card-${idx + 1}`}>
                 <EntryBody entryId={id} version={1} load={heldLoader} lazy={false} />
@@ -2037,10 +2038,11 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
         expect(entryBodyLoadLimiter.pendingCount()).toBe(1);
         expect(startedIds).toEqual(cardIds.slice(0, 4));
 
-        const allLoadingNodes = screen.getAllByTestId('entry-body-loading');
+        const cardsContainer = screen.getByTestId('waiting-vs-active-cards');
+        const allLoadingNodes = within(cardsContainer).getAllByTestId('entry-body-loading');
         expect(allLoadingNodes).toHaveLength(5);
 
-        const statusNodes = screen.getAllByRole('status');
+        const statusNodes = within(cardsContainer).getAllByRole('status');
         expect(statusNodes).toHaveLength(4);
 
         for (let i = 0; i < 4; i += 1) {
@@ -2069,6 +2071,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
             .querySelector('[data-testid="entry-body-loading"]');
           expect(fifthNow).toHaveAttribute('role', 'status');
           expect(fifthNow).not.toHaveAttribute('aria-hidden');
+          expect(within(cardsContainer).getAllByRole('status')).toHaveLength(4);
         });
 
         // Release remaining gates -> all 5 cards render their decrypted bodies
