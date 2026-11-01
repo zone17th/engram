@@ -1563,7 +1563,7 @@
       "saveBtn": "Save",
       "cancelBtn": "Cancel",
       "goToErrorBtn": "Go to error",
-      "rawInvalidHeader": "Line {line}, column {col}: {detail}",
+      "rawInvalidHeader": "Line {line}, column {column}: {detail}",
       "rawInvalidUnicode": "Input contains an unpaired UTF-16 surrogate and cannot be encoded as UTF-8.",
       "rawOverCap": "Entry exceeds 256 KiB (262,144 UTF-8 bytes; 413 entry_too_large). Shorten before saving.",
       "formatRefusedDepth": "Formatting refused: nesting depth exceeds {maxDepth} levels. Original text kept intact.",

@@ -1563,7 +1563,7 @@
       "saveBtn": "Lưu",
       "cancelBtn": "Huỷ",
       "goToErrorBtn": "Đi tới lỗi",
-      "rawInvalidHeader": "Dòng {line}, cột {col}: {detail}",
+      "rawInvalidHeader": "Dòng {line}, cột {column}: {detail}",
       "rawInvalidUnicode": "Chuỗi chứa surrogate lẻ (UTF-16 không hợp lệ) — không thể mã hoá UTF-8.",
       "rawOverCap": "Nội dung vượt quá 256 KiB (262.144 B UTF-8; 413 entry_too_large). Hãy rút gọn trước khi lưu.",
       "formatRefusedDepth": "Từ chối định dạng: độ sâu lồng nhau vượt quá {maxDepth} cấp. Nội dung gốc được giữ nguyên.",

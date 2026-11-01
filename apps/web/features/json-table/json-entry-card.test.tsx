@@ -915,19 +915,27 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(within(card600).getByTestId('json-page-indicator-root')).toHaveTextContent(
       'Trang 1/12',
     );
-    expect(card600.querySelectorAll('[data-testid^="json-cell-btn-root.e"]')).toHaveLength(50);
-    expect(card600.textContent).toContain('row_val_1');
-    expect(card600.textContent).toContain('row_val_50');
-    expect(card600.textContent).not.toContain('row_val_51');
+    const page1Cells = Array.from(
+      card600.querySelectorAll<HTMLElement>('[data-testid^="json-cell-btn-root.e"]'),
+    );
+    expect(page1Cells).toHaveLength(50);
+    expect(within(card600).getByTestId('json-cell-btn-root.e0')).toHaveTextContent(/^row_val_1$/);
+    expect(within(card600).getByTestId('json-cell-btn-root.e49')).toHaveTextContent(/^row_val_50$/);
+    expect(within(card600).queryByTestId('json-cell-btn-root.e50')).toBeNull();
 
     // Click Next page -> Trang 2/12, shows rows 51..100
     fireEvent.click(within(card600).getByTestId('json-page-next-root'));
     expect(within(card600).getByTestId('json-page-indicator-root')).toHaveTextContent(
       'Trang 2/12',
     );
-    expect(card600.textContent).toContain('row_val_51');
-    expect(card600.textContent).toContain('row_val_100');
-    expect(card600.textContent).not.toContain('row_val_1');
+    const page2Cells = Array.from(
+      card600.querySelectorAll<HTMLElement>('[data-testid^="json-cell-btn-root.e"]'),
+    );
+    expect(page2Cells).toHaveLength(50);
+    expect(within(card600).getByTestId('json-cell-btn-root.e50')).toHaveTextContent(/^row_val_51$/);
+    expect(within(card600).getByTestId('json-cell-btn-root.e99')).toHaveTextContent(/^row_val_100$/);
+    expect(within(card600).queryByTestId('json-cell-btn-root.e0')).toBeNull();
+    expect(page2Cells.map((el) => el.textContent?.trim())).not.toContain('row_val_1');
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(0);
     },
     30_000,
@@ -980,7 +988,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       'array-of-objects-25-cols': {
         kind: 'cell',
         expand: ['root.e0.extra'],
-        cellKey: 'root.e0.extra.p0',
+        cellKey: 'root.e0.extra.p20',
         newVal: '2100',
       },
       'lone-surrogate-string': {
@@ -1207,7 +1215,12 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
           ) {
             s += 1;
           }
-          expect(p + s).toBeGreaterThan(0);
+          if (fixture.id === 'root-number') {
+            expect(p + s).toBe(0);
+            expect(savedPlaintext).toBe('9007199254740993');
+          } else {
+            expect(p + s).toBeGreaterThan(0);
+          }
           const replacedOriginalLen = originalBytes.byteLength - p - s;
           expect(replacedOriginalLen).toBeLessThanOrEqual(32);
         }
@@ -1325,6 +1338,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     // Keyboard navigation between cells: focus key cell root.k0, ArrowRight -> value cell root.p0, ArrowDown -> toggle root.p1, ArrowUp -> value cell root.p0
     const keyBtn0 = within(card).getByTestId('json-cell-btn-root.k0');
     const valBtn0 = within(card).getByTestId('json-cell-btn-root.p0');
+    const keyBtn1 = within(card).getByTestId('json-cell-btn-root.k1');
     const toggleBtn1 = within(card).getByTestId('json-toggle-root.p1');
 
     keyBtn0.focus();
@@ -1342,7 +1356,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
         .getByTestId(`json-table-host-${ENTRY_ID_1}`)
         .querySelectorAll<HTMLElement>('[data-json-grid-nav]:not(:disabled)'),
     );
-    expect(navButtons.slice(0, 3)).toEqual([keyBtn0, valBtn0, toggleBtn1]);
+    expect(navButtons.slice(0, 4)).toEqual([keyBtn0, valBtn0, keyBtn1, toggleBtn1]);
     expect(keyBtn0.tabIndex).toBe(0);
     expect(valBtn0.tabIndex).toBe(0);
     expect(toggleBtn1.tabIndex).toBe(0);
@@ -1692,7 +1706,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('btn-add-json')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-add-json')).toBeEnabled();
     });
     expect(h.vault().vaultMeta).toBeNull();
 
@@ -2089,7 +2103,9 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
           notifyFirstPutEntered();
           await firstPutGate;
         }
-        return problemResponse('dependency_unavailable', 503);
+        return problemResponse('dependency_unavailable', 503, {
+          retry_after: 60,
+        });
       }
       return null;
     });
