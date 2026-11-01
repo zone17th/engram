@@ -154,6 +154,62 @@ func ParseVaultIfMatchFromRequest(w http.ResponseWriter, r *http.Request) (Vault
 	return vim, true
 }
 
+// ParseVersionIfMatch kiểm tra định dạng If-Match của P04 content (mục 2.4, SPEC §9.1):
+// nhận chuỗi bên trong strong ETag (hoặc nguyên chuỗi `"..."` nếu truyền cả dấu ngoặc kép),
+// bắt buộc là số nguyên dương thập phân không có số 0 đứng đầu (`^[1-9][0-9]*$`), vừa int32 và >= 1.
+// Thiếu, `*`, weak tag `W/"..."`, danh sách hoặc sai định dạng đều trả (0, false).
+func ParseVersionIfMatch(tag string) (int32, bool) {
+	s := tag
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		var ok bool
+		s, ok = ParseStrongETag(s)
+		if !ok {
+			return 0, false
+		}
+	}
+	if len(s) == 0 {
+		return 0, false
+	}
+	if s[0] < '1' || s[0] > '9' {
+		return 0, false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	v64, err := strconv.ParseInt(s, 10, 32)
+	if err != nil || v64 < 1 {
+		return 0, false
+	}
+	return int32(v64), true
+}
+
+// ParseVersionIfMatchFromRequest lấy strong tag từ context (hoặc parse trực tiếp
+// từ header If-Match nếu chưa qua RequireIfMatch) rồi kiểm tra số version hợp lệ.
+// Nếu thiếu hoặc sai dạng, hàm ghi ngay 428 precondition_required và trả (0, false).
+func ParseVersionIfMatchFromRequest(w http.ResponseWriter, r *http.Request) (int32, bool) {
+	tag, ok := IfMatchFrom(r.Context())
+	if !ok {
+		vals := r.Header.Values(HeaderIfMatch)
+		if len(vals) != 1 {
+			WriteProblem(w, r, http.StatusPreconditionRequired, "precondition_required", "Thiếu hoặc sai định dạng If-Match.")
+			return 0, false
+		}
+		tag, ok = ParseStrongETag(vals[0])
+		if !ok {
+			WriteProblem(w, r, http.StatusPreconditionRequired, "precondition_required", "Thiếu hoặc sai định dạng If-Match.")
+			return 0, false
+		}
+	}
+	ver, ok := ParseVersionIfMatch(tag)
+	if !ok {
+		WriteProblem(w, r, http.StatusPreconditionRequired, "precondition_required", "Thiếu hoặc sai định dạng If-Match.")
+		return 0, false
+	}
+	return ver, true
+}
+
 type versionMismatchProblem struct {
 	Problem
 	CurrentVersion int32 `json:"current_version"`

@@ -17,12 +17,13 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 )
 
-// Các scope giới hạn tốc độ theo người dùng (SPEC §9.1 / plan mục 2.4).
+// Các scope giới hạn tốc độ theo người dùng (SPEC §9.1 / plan mục 2.4 & P04 mục 2.5).
 const (
 	ScopeVaultRecoveryLookup   = "vault_recovery_lookup"
 	ScopeVaultRecoveryComplete = "vault_recovery_complete"
 	ScopeVaultPasskeyOptions   = "vault_passkey_options"
 	ScopeVaultSensitive        = "vault_sensitive"
+	ScopeContentWrite          = "content_write"
 
 	// MaxRateLimitWindow là cửa sổ dài nhất của rate_event (phục vụ job prune).
 	MaxRateLimitWindow = 15 * time.Minute
@@ -34,7 +35,7 @@ type RateLimitRule struct {
 	Window time.Duration
 }
 
-// DefaultUserLimitRules là bảng giới hạn chuẩn của P03 mục 2.4.
+// DefaultUserLimitRules là bảng giới hạn chuẩn của P03 mục 2.4 và P04 mục 2.5.
 func DefaultUserLimitRules() map[string]RateLimitRule {
 	return map[string]RateLimitRule{
 		ScopeVaultRecoveryLookup: {
@@ -52,6 +53,10 @@ func DefaultUserLimitRules() map[string]RateLimitRule {
 		ScopeVaultSensitive: {
 			Limit:  10,
 			Window: time.Minute,
+		},
+		ScopeContentWrite: {
+			Limit:  10,
+			Window: time.Second,
 		},
 	}
 }
