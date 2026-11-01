@@ -38,7 +38,9 @@ export {
   type JsonNumberNode,
   type JsonObjectNode,
   type JsonParseError,
+  type JsonParseFailure,
   type JsonParseResult,
+  type JsonParseSuccess,
   type JsonPrimitiveNode,
   type JsonPropertyNode,
   type JsonSpan,
@@ -91,6 +93,7 @@ export {
   type JsonEditErrorCode,
   type JsonEditOutcome,
   type JsonTextEdit,
+  type RemoveFieldSelector,
 } from './edit';
 
 export {

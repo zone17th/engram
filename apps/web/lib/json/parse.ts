@@ -142,15 +142,17 @@ export interface JsonDocument {
   readonly parentById: ReadonlyMap<number, JsonObjectNode | JsonArrayNode | null>;
 }
 
-export type JsonParseResult =
-  | {
-      readonly ok: true;
-      readonly document: JsonDocument;
-    }
-  | {
-      readonly ok: false;
-      readonly error: JsonParseError;
-    };
+export interface JsonParseSuccess {
+  readonly ok: true;
+  readonly document: JsonDocument;
+}
+
+export interface JsonParseFailure {
+  readonly ok: false;
+  readonly error: JsonParseError;
+}
+
+export type JsonParseResult = JsonParseSuccess | JsonParseFailure;
 
 /**
  * Computes 1-based `{ line, column }` in UTF-16 code units for a 0-based `offset` in `source`.
@@ -394,7 +396,7 @@ export function parseJsonStrict(
   const propertyById = new Map<number, JsonPropertyNode>();
   const parentById = new Map<number, JsonObjectNode | JsonArrayNode | null>();
 
-  function makeError(offset: number, code: JsonErrorCode, message: string): JsonParseResult {
+  function makeError(offset: number, code: JsonErrorCode, message: string): JsonParseFailure {
     const { line, column } = offsetToLineColumn(source, offset);
     return {
       ok: false,
@@ -408,7 +410,7 @@ export function parseJsonStrict(
     };
   }
 
-  function skipWhitespace(): JsonParseResult | null {
+  function skipWhitespace(): JsonParseFailure | null {
     while (pos < len) {
       const ch = source.charCodeAt(pos);
       if (ch === 0x20 || ch === 0x09 || ch === 0x0a || ch === 0x0d) {
@@ -432,7 +434,7 @@ export function parseJsonStrict(
     return null;
   }
 
-  function parseStringLiteral(): { ok: true; node: JsonStringNode } | JsonParseResult {
+  function parseStringLiteral(): { ok: true; node: JsonStringNode } | JsonParseFailure {
     const start = pos;
     pos++; // skip opening '"'
     let chunkStart = pos;
@@ -547,7 +549,7 @@ export function parseJsonStrict(
     return makeError(start, 'UNTERMINATED_STRING', 'Unterminated JSON string literal');
   }
 
-  function parseNumberLiteral(): { ok: true; node: JsonNumberNode } | JsonParseResult {
+  function parseNumberLiteral(): { ok: true; node: JsonNumberNode } | JsonParseFailure {
     const start = pos;
     if (source.charCodeAt(pos) === 0x2d /* - */) {
       pos++;
@@ -664,7 +666,7 @@ export function parseJsonStrict(
   let rootNode: JsonNode | null = null;
   let expectingValue = true;
 
-  function attachCompletedValue(node: JsonNode): JsonParseResult | null {
+  function attachCompletedValue(node: JsonNode): JsonParseFailure | null {
     nodeById.set(node.id, node);
     if (stack.length === 0) {
       parentById.set(node.id, null);

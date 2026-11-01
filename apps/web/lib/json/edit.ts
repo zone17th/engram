@@ -926,16 +926,26 @@ export function removeRow(
 }
 
 /**
+ * Selector for `removeField` when `targetRef` points to the parent object node
+ * rather than a specific property occurrence (`targetRef.propertyId === undefined`):
+ * - `{ key, occurrenceIndex? }`: removes the N-th occurrence (default 0) of `key`.
+ * - `{ propertyIndex }`: removes the property at 0-based `propertyIndex` in `objectNode.properties`.
+ */
+export type RemoveFieldSelector =
+  | { readonly key: string; readonly occurrenceIndex?: number; readonly propertyIndex?: undefined }
+  | { readonly propertyIndex: number; readonly key?: string; readonly occurrenceIndex?: number };
+
+/**
  * Removes a property occurrence from an object node.
  * Accepts either:
  * - A `JsonNodeRef` carrying `propertyId` (from `JsonFieldRowView.nodeRef`, `keyCell.nodeRef`,
  *   or `valueCell.nodeRef`), OR
- * - An object `JsonNodeRef` plus `{ key, occurrenceIndex }`.
+ * - An object `JsonNodeRef` plus `{ key, occurrenceIndex? }` or `{ propertyIndex }`.
  */
 export function removeField(
   document: JsonDocument,
   targetRef: JsonNodeRef,
-  selector?: { key: string; occurrenceIndex?: number; propertyIndex?: number },
+  selector?: RemoveFieldSelector,
 ): JsonEditOutcome {
   const revErr = validateRefRevision(document, targetRef);
   if (revErr) {

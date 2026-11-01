@@ -230,12 +230,16 @@ describe('P04-T12 JSON Corpus (packages/content-fixtures/json-corpus)', () => {
         });
         expect(insFirst.ok).toBe(true);
         if (insFirst.ok) {
-          const remFirst = removeField(insFirst.document, {
-            revision: insFirst.document.revision,
-            nodeId: insFirst.document.root.id,
-            span: insFirst.document.root.span,
-            parentId: null,
-          }, { propertyIndex: 0 });
+          const remFirst = removeField(
+            insFirst.document,
+            {
+              revision: insFirst.document.revision,
+              nodeId: insFirst.document.root.id,
+              span: insFirst.document.root.span,
+              parentId: null,
+            },
+            { key: '__corpus_first__', occurrenceIndex: 0 },
+          );
           expect(remFirst.ok).toBe(true);
         }
 
