@@ -745,7 +745,7 @@
         "step1Next": "None of these work",
         "step2Label": "Step 2 of 5 — Backup check",
         "step2Title": "Export or check your backups before deleting",
-        "step2Body": "Resetting deletes data on the live server only and does not erase backup files you already hold. Before resetting, check any backups you already hold in case you recall an old passphrase or find a printout later; an encrypted backup export (.sabk.json) is coming later.",
+        "step2Body": "Resetting deletes data on the live server only and does not erase backup files you already hold. Before resetting, check any backups you already hold in case you recall an old passphrase or find a printout later.",
         "step2ExportLink": "Go to Data / Export",
         "step2Next": "Checked backups",
         "step3Label": "Step 3 of 5 — Re-authenticate",
