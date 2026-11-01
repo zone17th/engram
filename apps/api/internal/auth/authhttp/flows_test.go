@@ -526,6 +526,9 @@ func TestReauthReceiptReplayAndMissingFreshness(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
+	if _, err := h.pool.Exec(context.Background(), `UPDATE app_user SET email_verified_at = now() WHERE email = 'reauth@example.com'`); err != nil {
+		t.Fatal(err)
+	}
 	grant := h.grant("account.identity_link", "correcthorse")
 	resp = h.withGrant(http.MethodPost, "/api/v1/auth/oauth/google/link", "", grant)
 	if resp.StatusCode != http.StatusOK {
@@ -635,6 +638,9 @@ func TestReauthRejectsUnlinkedAndForeignProviderSubjects(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
+	if _, err := h.pool.Exec(context.Background(), `UPDATE app_user SET email_verified_at = now() WHERE email = 'victim@example.com'`); err != nil {
+		t.Fatal(err)
+	}
 	resp = h.doAs(h.jar, http.MethodPost, "/api/v1/auth/oauth/google/reauth", `{"action":"account.password_change"}`, true, "203.0.113.43")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reauth unlinked start = %d %s", resp.StatusCode, h.body(resp))
@@ -673,6 +679,9 @@ func TestReauthRejectsUnlinkedAndForeignProviderSubjects(t *testing.T) {
 		t.Fatalf("signup other = %d %s", resp.StatusCode, h.body(resp))
 	}
 	_ = resp.Body.Close()
+	if _, err := h.pool.Exec(context.Background(), `UPDATE app_user SET email_verified_at = now() WHERE email = 'other@example.com'`); err != nil {
+		t.Fatal(err)
+	}
 	oldJar := h.jar
 	h.jar = other
 	fake.Identity = oauth.Identity{Provider: "google", UID: "g-foreign", Email: "other@example.com", EmailVerified: true}
@@ -803,6 +812,9 @@ func TestOauthLinkAndGithubReauthUnsupported(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
+	if _, err := h.pool.Exec(context.Background(), `UPDATE app_user SET email_verified_at = now() WHERE email = 'haspw@example.com'`); err != nil {
+		t.Fatal(err)
+	}
 	resp = h.do(http.MethodPost, "/api/v1/auth/oauth/github/reauth", `{"action":"account.password_change"}`, true)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("github reauth = %d %s", resp.StatusCode, h.body(resp))

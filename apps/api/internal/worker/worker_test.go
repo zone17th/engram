@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -177,21 +178,34 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 	}); err != nil {
 		t.Fatalf("NotifySecurity: %v", err)
 	}
+	if err := notes.NotifySecurity(ctx, nil, secevent.Notice{
+		UserID: userID,
+		Kind:   secevent.NoticeSecurity,
+		Meta: secevent.Meta{
+			Event:             secevent.EventPasswordReset,
+			UnlinkedProviders: []string{secevent.ProviderGoogle},
+		},
+		EmailTargets: []string{email},
+	}); err != nil {
+		t.Fatalf("NotifySecurity password_reset: %v", err)
+	}
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var state, jobErrors string
+		var completedCount int
+		var jobErrors string
 		err := pool.QueryRow(ctx,
-			`SELECT state::text, coalesce(errors::text, '') FROM river_job WHERE kind = 'security_notice_mail' ORDER BY id DESC LIMIT 1`,
-		).Scan(&state, &jobErrors)
+			`SELECT count(*) FILTER (WHERE state = 'completed'), coalesce(string_agg(errors::text, ';'), '') FROM river_job WHERE kind = 'security_notice_mail'`,
+		).Scan(&completedCount, &jobErrors)
 		if err == nil {
 			if strings.Contains(jobErrors, "not registered") || strings.Contains(jobErrors, "Unhandled job kind") {
-				t.Fatalf("security_notice_mail failed with unhandled job kind under worker.Run: state=%q errors=%s", state, jobErrors)
+				t.Fatalf("security_notice_mail failed with unhandled job kind under worker.Run: errors=%s", jobErrors)
 			}
-			if state == "completed" {
+			if completedCount == 2 {
 				break
 			}
 		}
+		state := fmt.Sprintf("completed=%d", completedCount)
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for security_notice_mail job to complete under worker.Run (last state=%q errors=%s)", state, jobErrors)
 		}
@@ -214,5 +228,12 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 	}
 	if len(entries) != 1 {
 		t.Fatalf("delivered security emails in default sink %q = %d, want 1", wantSink, len(entries))
+	}
+	resetEntries, err := sink.EntriesFor(email, auth.PurposePasswordResetNotice)
+	if err != nil {
+		t.Fatalf("EntriesFor password_reset_notice: %v", err)
+	}
+	if len(resetEntries) != 1 || !strings.Contains(resetEntries[0].Link, "Google") {
+		t.Fatalf("delivered password_reset_notice emails = %+v, want 1 mentioning Google", resetEntries)
 	}
 }
