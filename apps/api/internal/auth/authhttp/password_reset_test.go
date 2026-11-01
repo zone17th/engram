@@ -41,48 +41,111 @@ import (
 	"github.com/zone17th/engram/apps/api/migrations"
 )
 
-func waitForForgotJobs(t *testing.T, h *harness, count int) []auth.ForgotJob {
-	t.Helper()
-	doneCh := make(chan auth.ForgotJob, count+8)
-	h.svc.SetForgotHooks(auth.ForgotHooks{
-		OnJobDone: func(job auth.ForgotJob, err error) {
-			if err != nil {
-				t.Errorf("forgot job error: %v", err)
-			}
-			doneCh <- job
-		},
-	})
-	t.Cleanup(func() { h.svc.SetForgotHooks(auth.ForgotHooks{}) })
-	var out []auth.ForgotJob
-	for range count {
-		select {
-		case j := <-doneCh:
-			out = append(out, j)
-		case <-time.After(10 * time.Second):
-			t.Fatalf("timed out waiting for %d forgot jobs (got %d)", count, len(out))
-		}
+type clockFixedWindow struct {
+	mu      sync.Mutex
+	windows map[string]struct {
+		count int
+		start time.Time
 	}
-	return out
+	limit  int
+	window time.Duration
+	now    func() time.Time
 }
 
-func extractResetTokenFromSink(t *testing.T, h *harness, recipient string) (token string, link string) {
+func newClockFixedWindow(limit int, d time.Duration, now func() time.Time) *clockFixedWindow {
+	return &clockFixedWindow{
+		windows: make(map[string]struct {
+			count int
+			start time.Time
+		}),
+		limit:  limit,
+		window: d,
+		now:    now,
+	}
+}
+
+func (f *clockFixedWindow) Allow(key string) (bool, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := f.now()
+	w, exists := f.windows[key]
+	if !exists || now.Sub(w.start) >= f.window {
+		f.windows[key] = struct {
+			count int
+			start time.Time
+		}{count: 1, start: now}
+		return true, 0
+	}
+	if w.count >= f.limit {
+		left := int(f.window.Seconds() - now.Sub(w.start).Seconds())
+		if left < 1 {
+			left = 1
+		}
+		return false, left
+	}
+	w.count++
+	f.windows[key] = w
+	return true, 0
+}
+
+func snapshotResetMailLinks(t *testing.T, h *harness, recipient string) map[string]struct{} {
+	t.Helper()
+	entries, err := h.mail.EntriesFor(recipient, auth.PurposePasswordReset)
+	if err != nil {
+		t.Fatalf("EntriesFor(%s): %v", recipient, err)
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		seen[e.Link] = struct{}{}
+	}
+	return seen
+}
+
+func extractNewResetTokenFromSink(t *testing.T, h *harness, recipient string, before map[string]struct{}) (token string, link string) {
 	t.Helper()
 	entries, err := h.mail.EntriesFor(recipient, auth.PurposePasswordReset)
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("reset mail for %s = %d, err=%v", recipient, len(entries), err)
 	}
-	last := entries[len(entries)-1]
-	u, err := url.Parse(last.Link)
+	var added []auth.SinkEntry
+	for _, e := range entries {
+		if _, ok := before[e.Link]; !ok {
+			added = append(added, e)
+		}
+	}
+	if len(added) != 1 {
+		t.Fatalf("expected exactly 1 new reset mail for %s (before=%d total=%d), got %d", recipient, len(before), len(entries), len(added))
+	}
+	return parseResetTokenLink(t, added[0].Link), added[0].Link
+}
+
+func extractResetTokenFromSink(t *testing.T, h *harness, recipient string) (token string, link string) {
+	t.Helper()
+	return extractNewResetTokenFromSink(t, h, recipient, nil)
+}
+
+func parseResetTokenLink(t *testing.T, link string) string {
+	t.Helper()
+	u, err := url.Parse(link)
 	if err != nil {
-		t.Fatalf("parse reset link %q: %v", last.Link, err)
+		t.Fatalf("parse reset link %q: %v", link, err)
 	}
 	vals, err := url.ParseQuery(u.Fragment)
 	if err != nil || vals.Get("token") == "" {
-		t.Fatalf("reset link fragment missing token: %q", last.Link)
+		t.Fatalf("reset link fragment missing token: %q", link)
 	}
-	return vals.Get("token"), last.Link
+	return vals.Get("token")
 }
 
+func issueResetTokenForTest(t *testing.T, h *harness, email string) string {
+	t.Helper()
+	before := snapshotResetMailLinks(t, h, email)
+	if err := h.svc.ProcessForgotJob(context.Background(), auth.ForgotJob{Email: email, Locale: "en"}); err != nil {
+		t.Fatalf("ProcessForgotJob(%s): %v", email, err)
+	}
+	tok, _ := extractNewResetTokenFromSink(t, h, email, before)
+	return tok
+}
 func runNoticeMailForLatestNotification(t *testing.T, h *harness) {
 	t.Helper()
 	ctx := context.Background()
@@ -180,8 +243,10 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 
 	// Block worker to prove HTTP 202 returns before worker touches DB/mail for all 3 branches.
 	blockWorker := make(chan struct{})
+	var unblockOnce sync.Once
+	unblock := func() { unblockOnce.Do(func() { close(blockWorker) }) }
 	startedFirst := make(chan struct{}, 1)
-	doneCh := make(chan auth.ForgotJob, 10)
+	doneCh := make(chan auth.ForgotJob, auth.ForgotQueueSize+16)
 	h.svc.SetForgotHooks(auth.ForgotHooks{
 		OnJobStart: func(job auth.ForgotJob) {
 			select {
@@ -194,10 +259,16 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 			if err != nil {
 				t.Errorf("forgot worker err: %v", err)
 			}
-			doneCh <- job
+			select {
+			case doneCh <- job:
+			default:
+			}
 		},
 	})
-	t.Cleanup(func() { h.svc.SetForgotHooks(auth.ForgotHooks{}) })
+	t.Cleanup(func() {
+		unblock()
+		h.svc.SetForgotHooks(auth.ForgotHooks{})
+	})
 
 	branches := []struct {
 		email  string
@@ -232,7 +303,8 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 		t.Fatalf("tokens created before worker unblocked = %d, want 0", tokCount)
 	}
 
-	// Test queue overflow while worker is blocked: fill queue and assert HTTP still returns 202.
+	// Test queue overflow while worker is blocked: fill queue to capacity (1 in flight + 2 in queue + 126 overflow = 128 queued)
+	// and assert HTTP still returns 202 with Cache-Control: no-store while dropping the overflow job.
 	<-startedFirst
 	for range auth.ForgotQueueSize + 5 {
 		h.svc.EnqueueForgotPassword("overflow@example.com", "en")
@@ -243,29 +315,38 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted || h.body(resp) != "" {
 		t.Fatalf("overflow forgot status = %d, want 202 empty", resp.StatusCode)
 	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("overflow Cache-Control = %q, want no-store", got)
+	}
 
-	// Unblock worker and wait for the 3 branch jobs.
-	close(blockWorker)
-	for range 3 {
+	// Unblock worker and drain all 1 + ForgotQueueSize (129) queued jobs so none remain in flight.
+	unblock()
+	const totalAcceptedJobs = 1 + auth.ForgotQueueSize
+	for i := range totalAcceptedJobs {
 		select {
 		case <-doneCh:
 		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for forgot jobs")
+			t.Fatalf("timed out draining forgot jobs (%d/%d)", i, totalAcceptedJobs)
 		}
 	}
+	h.svc.SetForgotHooks(auth.ForgotHooks{})
 
 	// Verify password user got a password_reset email with locale=vi and 43-char token.
 	tok, link := extractResetTokenFromSink(t, h, "pw-user@example.com")
 	if len(tok) != 43 || !strings.Contains(link, "locale=vi") {
 		t.Fatalf("password user reset token=%q link=%q", tok, link)
 	}
-	// Verify plaintext token is not in DB.
-	var dbHashHex string
-	if err := h.pool.QueryRow(context.Background(), `SELECT encode(token_hash, 'hex') FROM password_reset_token LIMIT 1`).Scan(&dbHashHex); err != nil {
+	// Verify stored token_hash equals SHA-256(decoded raw token) and raw token is never stored.
+	rawTok, err := auth.ParseResetToken(tok)
+	if err != nil {
+		t.Fatalf("ParseResetToken(%q): %v", tok, err)
+	}
+	var dbTokenHash []byte
+	if err := h.pool.QueryRow(context.Background(), `SELECT token_hash FROM password_reset_token LIMIT 1`).Scan(&dbTokenHash); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(dbHashHex, tok) {
-		t.Fatal("token_hash must not contain raw token")
+	if !bytes.Equal(dbTokenHash, auth.SHA256Bytes(rawTok)) {
+		t.Fatalf("stored token_hash %x != SHA256(raw) %x", dbTokenHash, auth.SHA256Bytes(rawTok))
 	}
 
 	// Verify OAuth-only user got password_reset_oauth_only reminder and NO reset token row.
@@ -285,10 +366,11 @@ func TestPasswordForgotAntiEnumerationAsyncBoundaryAndOverflow(t *testing.T) {
 		t.Fatalf("oauth-only user must have 0 reset tokens, got %d", oauthTokCount)
 	}
 
-	// Verify unknown user got no mail and no DB rows.
+	// Verify unknown user and dropped overflow request got no mail and no DB rows.
 	unkMails, _ := h.mail.EntriesFor("unknown-user@example.com", auth.PurposePasswordReset)
-	if len(unkMails) != 0 {
-		t.Fatalf("unknown email must receive 0 mails, got %d", len(unkMails))
+	overflowMails, _ := h.mail.EntriesFor("overflow-http@example.com", auth.PurposePasswordReset)
+	if len(unkMails) != 0 || len(overflowMails) != 0 {
+		t.Fatalf("unknown/overflow emails must receive 0 mails, got unknown=%d overflow=%d", len(unkMails), len(overflowMails))
 	}
 }
 
@@ -498,7 +580,7 @@ func TestPasswordResetHappyPathSingleUseSessionRevokeNoticeAndVaultUntouched(t *
 	if err != nil || len(notices) != 1 {
 		t.Fatalf("password_reset_notice mails = %d, err=%v", len(notices), err)
 	}
-	if !strings.Contains(notices[0].Link, "locale=vi") || !strings.Contains(notices[0].Link, "Mật khẩu đăng nhập engram của bạn vừa được đặt lại") {
+	if !strings.Contains(notices[0].Link, "Mật khẩu đăng nhập engram của bạn vừa được đặt lại") || strings.Contains(notices[0].Link, "Subject") || strings.Contains(notices[0].Link, "unlinked") {
 		t.Fatalf("unexpected notice detail: %q", notices[0].Link)
 	}
 
@@ -532,11 +614,21 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 		t.Fatal(err)
 	}
 
+	h.api.SetMailLimiters(
+		newClockFixedWindow(1, time.Minute, h.clk.Now),
+		newClockFixedWindow(3, time.Hour, h.clk.Now),
+	)
 	requestResetToken := func(email, xff string) string {
 		t.Helper()
+		before := snapshotResetMailLinks(t, h, email)
 		done := make(chan struct{}, 1)
 		h.svc.SetForgotHooks(auth.ForgotHooks{
-			OnJobDone: func(_ auth.ForgotJob, _ error) { done <- struct{}{} },
+			OnJobDone: func(_ auth.ForgotJob, _ error) {
+				select {
+				case done <- struct{}{}:
+				default:
+				}
+			},
 		})
 		j := jar{}
 		h.csrfJar(j)
@@ -547,18 +639,14 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 		_ = resp.Body.Close()
 		<-done
 		h.svc.SetForgotHooks(auth.ForgotHooks{})
-		tok, _ := extractResetTokenFromSink(t, h, email)
+		tok, _ := extractNewResetTokenFromSink(t, h, email, before)
 		return tok
 	}
 
 	// (a) Issuing a second token expires the first token; advancing clock past 30m expires the second.
 	tok1 := requestResetToken("inv-a@example.com", "198.51.100.1")
 	h.clk.Advance(2 * time.Minute)
-	// Advance rate limit window by using fresh service or wait: FixedWindow uses time.Now(), so call ProcessForgotJob directly when testing token lifecycle within same minute/hour, or advance.
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "inv-a@example.com", Locale: "en"}); err != nil {
-		t.Fatal(err)
-	}
-	tok2, _ := extractResetTokenFromSink(t, h, "inv-a@example.com")
+	tok2 := requestResetToken("inv-a@example.com", "198.51.100.11")
 	if tok1 == tok2 {
 		t.Fatal("expected distinct tokens")
 	}
@@ -580,11 +668,66 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	}
 	_ = resp.Body.Close()
 
-	// (b) Invalidation on ChangePassword.
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "inv-a@example.com", Locale: "en"}); err != nil {
+	// (a2) AU3-BE1-2: Token expiry boundary while waiting on token lock after user lock + RevokeAllUserSessions.
+	// Issue tokWait, advance clock to 1s before expiry, hold FOR UPDATE on password_reset_token in an external tx,
+	// let ResetPassword acquire app_user FOR UPDATE and execute RevokeAllUserSessions, advance clock past expiry while
+	// ResetPassword blocks on GetPasswordResetTokenByHashForUpdate, then release the token lock.
+	// ResetPassword must re-read the clock after acquiring the token lock, return 400 reset_token_invalid,
+	// leave password unchanged, and roll back the early RevokeAllUserSessions so the live session remains usable!
+	tokWait := issueResetTokenForTest(t, h, "inv-a@example.com")
+	rawWait, err := auth.ParseResetToken(tokWait)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tokBeforePwChange, _ := extractResetTokenFromSink(t, h, "inv-a@example.com")
+	hashWait := auth.SHA256Bytes(rawWait)
+	h.clk.Advance(auth.PasswordResetTTL - time.Second)
+
+	holdTokTx, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holdTokTx.Rollback(ctx) }()
+	if _, err := holdTokTx.Exec(ctx, `SELECT id FROM password_reset_token WHERE token_hash = $1 FOR UPDATE`, hashWait); err != nil {
+		t.Fatal(err)
+	}
+
+	resetLockedExpiry := make(chan struct{})
+	var onceExpiry sync.Once
+	h.svc.SetOnResetLocked(func() {
+		onceExpiry.Do(func() { close(resetLockedExpiry) })
+	})
+	resetWaitDone := make(chan *http.Response, 1)
+	go func() {
+		jExp := jar{}
+		h.csrfJar(jExp)
+		resetWaitDone <- h.doAs(jExp, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokWait+`","new_password":"expiredwhilewaiting12"}`, true, "198.51.100.31")
+	}()
+
+	<-resetLockedExpiry
+	// Advance clock past token expiry while ResetPassword is blocked waiting on GetPasswordResetTokenByHashForUpdate,
+	// then release the external token lock.
+	h.clk.Advance(2 * time.Second)
+	if err := holdTokTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	respWait := <-resetWaitDone
+	h.svc.SetOnResetLocked(nil)
+	requireAcceptanceProblem(t, h, respWait, http.StatusBadRequest, "reset_token_invalid")
+
+	// Verify the early RevokeAllUserSessions was rolled back: refresh and /auth/me still succeed, and old password still works.
+	resp = h.do(http.MethodPost, "/api/v1/auth/refresh", "", true)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("session must survive rolled-back expired reset: refresh = %d %s", resp.StatusCode, h.body(resp))
+	}
+	_ = resp.Body.Close()
+	resp = h.do(http.MethodGet, "/api/v1/auth/me", "", false)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("session must remain usable after rolled-back expired reset: me = %d %s", resp.StatusCode, h.body(resp))
+	}
+	_ = resp.Body.Close()
+
+	// (b) Invalidation on ChangePassword.
+	tokBeforePwChange := issueResetTokenForTest(t, h, "inv-a@example.com")
 	grant := h.grant("account.password_change", "correcthorse")
 	resp = h.withGrant(http.MethodPost, "/api/v1/me/password", `{"new_password":"changedpassword12"}`, grant)
 	if resp.StatusCode != http.StatusOK {
@@ -596,10 +739,7 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 
 	// (c) Email change A -> B -> A must NOT revive token issued at A (AU2-BE1-7).
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "inv-a@example.com", Locale: "en"}); err != nil {
-		t.Fatal(err)
-	}
-	tokAtEmailA, _ := extractResetTokenFromSink(t, h, "inv-a@example.com")
+	tokAtEmailA := issueResetTokenForTest(t, h, "inv-a@example.com")
 
 	// Change email A -> B.
 	grantEmail1 := h.grant("account.email_change", "changedpassword12")
@@ -637,10 +777,7 @@ func TestPasswordResetExpiryAndInvalidationOnPasswordAndEmailChangeABATransition
 	requireAcceptanceProblem(t, h, resp, http.StatusBadRequest, "reset_token_invalid")
 
 	// (d) Unlink password identity expires pending reset tokens.
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "inv-a@example.com", Locale: "en"}); err != nil {
-		t.Fatal(err)
-	}
-	tokBeforeUnlink, _ := extractResetTokenFromSink(t, h, "inv-a@example.com")
+	tokBeforeUnlink := issueResetTokenForTest(t, h, "inv-a@example.com")
 	grantLink := h.grant("account.identity_link", "changedpassword12")
 	resp = h.withGrant(http.MethodPost, "/api/v1/auth/oauth/google/link", "", grantLink)
 	if resp.StatusCode != http.StatusOK {
@@ -684,15 +821,35 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 		t.Fatalf("missing Retry-After on email rate limit: %s", raw)
 	}
 
-	// Email 3/hour rate limit: test NewFixedWindowWith(3, time.Hour) directly and verify 4th call within 1 hour is rejected.
-	hourLim := httpx.NewFixedWindowWith(3, time.Hour)
-	for i := range 3 {
-		if ok, _ := hourLim.Allow("mailhr:test-3hr"); !ok {
-			t.Fatalf("hour limiter call %d should be allowed", i+1)
+	// Email 3/hour rate limit at HTTP handler level (AU3-BE1-10):
+	// Inject clock-backed minute (1/min) and hourly (3/hour) limiters into h.api,
+	// advance the injected clock past the 1-minute window (but within 1 hour) for both known and unknown normalized emails.
+	// The 1st, 2nd, and 3rd hourly requests succeed (202), and the 4th within the hour returns 429 rate_limited with Retry-After.
+	h.api.SetMailLimiters(
+		newClockFixedWindow(1, time.Minute, h.clk.Now),
+		newClockFixedWindow(3, time.Hour, h.clk.Now),
+	)
+	signupAcceptance(t, h, "hourly-known@example.com")
+	for _, target := range []string{"hourly-known@example.com", "hourly-unknown@example.com"} {
+		for attempt := 1; attempt <= 3; attempt++ {
+			h.clk.Advance(61 * time.Second)
+			reqEmail := target
+			if attempt == 2 {
+				reqEmail = strings.ToUpper(target)
+			}
+			r := h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", fmt.Sprintf(`{"email":%q}`, reqEmail), true, fmt.Sprintf("198.51.100.%d", 120+attempt))
+			if r.StatusCode != http.StatusAccepted {
+				t.Fatalf("hourly %s attempt %d = %d %s, want 202", target, attempt, r.StatusCode, h.body(r))
+			}
+			_ = r.Body.Close()
 		}
-	}
-	if ok, retry := hourLim.Allow("mailhr:test-3hr"); ok || retry <= 0 {
-		t.Fatalf("4th call within 1 hour must be rate limited, ok=%v retry=%d", ok, retry)
+		// Advance 61s again (still well within 1 hour): 4th attempt for the same normalized email must hit 429!
+		h.clk.Advance(61 * time.Second)
+		r4 := h.doAs(j, http.MethodPost, "/api/v1/auth/password/forgot", fmt.Sprintf(`{"email":%q}`, strings.ToUpper(target)), true, "198.51.100.129")
+		raw4 := requireAcceptanceProblem(t, h, r4, http.StatusTooManyRequests, "rate_limited")
+		if r4.Header.Get("Retry-After") == "" || !strings.Contains(raw4, `"retry_after"`) {
+			t.Fatalf("hourly 4th attempt for %s missing Retry-After: %s", target, raw4)
+		}
 	}
 
 	// IP rate limit on forgot: 5 requests from same IP -> 6th is 429.
@@ -740,27 +897,88 @@ func TestPasswordForgotAndResetRateLimitsAndCaptcha(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-// 7. Concurrent issuance serialization under app_user FOR UPDATE (AU2-BE1-6).
+// 7. Concurrent issuance serialization under app_user FOR UPDATE (AU2-BE1-6, AU3-BE1-9).
 func TestPasswordForgotConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
 	signupAcceptance(t, h, "concurrent-issue@example.com")
 
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs <- h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "concurrent-issue@example.com", Locale: "en"})
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent ProcessForgotJob err: %v", err)
+	// Deterministically overlap two ProcessForgotJob calls using OnJobLocked:
+	// Job 1 acquires app_user FOR UPDATE and pauses inside OnJobLocked.
+	// Job 2 starts concurrently and blocks on GetUserByIDForUpdate until Job 1 commits.
+	// If GetUserByIDForUpdate were removed from ProcessForgotJob, Job 2 would enter OnJobLocked
+	// while Job 1 is still paused, which we explicitly detect and fail on.
+	job1Locked := make(chan struct{})
+	releaseJob1 := make(chan struct{})
+	var releaseJob1Once sync.Once
+	unblockJob1 := func() { releaseJob1Once.Do(func() { close(releaseJob1) }) }
+	job2Started := make(chan struct{})
+	var inCriticalSection atomic.Int32
+	var overlapDetected atomic.Bool
+	var lockOrder []int
+	var lockMu sync.Mutex
+	callSeq := atomic.Int32{}
+
+	h.svc.SetForgotHooks(auth.ForgotHooks{
+		OnJobLocked: func(_ uuid.UUID) {
+			seq := int(callSeq.Add(1))
+			if inCriticalSection.Add(1) > 1 {
+				overlapDetected.Store(true)
+			}
+			lockMu.Lock()
+			lockOrder = append(lockOrder, seq)
+			lockMu.Unlock()
+			if seq == 1 {
+				close(job1Locked)
+				<-releaseJob1
+			}
+			inCriticalSection.Add(-1)
+		},
+	})
+	t.Cleanup(func() {
+		unblockJob1()
+		h.svc.SetForgotHooks(auth.ForgotHooks{})
+	})
+
+	errCh1 := make(chan error, 1)
+	go func() {
+		errCh1 <- h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "concurrent-issue@example.com", Locale: "en"})
+	}()
+	<-job1Locked
+	beforeJob1Mail := snapshotResetMailLinks(t, h, "concurrent-issue@example.com")
+
+	errCh2 := make(chan error, 1)
+	go func() {
+		close(job2Started)
+		errCh2 <- h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "concurrent-issue@example.com", Locale: "en"})
+	}()
+	<-job2Started
+
+	// Wait until Postgres pg_locks / pg_stat_activity shows Job 2 waiting on the transaction/tuple lock held by Job 1.
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		var blockedCount int
+		_ = h.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&blockedCount)
+		if blockedCount > 0 {
+			break
 		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	unblockJob1()
+	if err := <-errCh1; err != nil {
+		t.Fatalf("job1 ProcessForgotJob: %v", err)
+	}
+	if err := <-errCh2; err != nil {
+		t.Fatalf("job2 ProcessForgotJob: %v", err)
+	}
+	h.svc.SetForgotHooks(auth.ForgotHooks{})
+
+	if overlapDetected.Load() {
+		t.Fatal("concurrent ProcessForgotJob entered critical section simultaneously; app_user FOR UPDATE lock missing")
+	}
+	if len(lockOrder) != 2 || lockOrder[0] != 1 || lockOrder[1] != 2 {
+		t.Fatalf("unexpected lock acquisition order: %v", lockOrder)
 	}
 
 	var liveCount, totalCount int
@@ -773,28 +991,76 @@ func TestPasswordForgotConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 	if totalCount != 2 || liveCount != 1 {
 		t.Fatalf("expected 2 total tokens and 1 live token, got total=%d live=%d", totalCount, liveCount)
 	}
+
+	// Identify the two issued tokens and verify ONLY the second (surviving) token is accepted by ResetPassword.
+	entries, err := h.mail.EntriesFor("concurrent-issue@example.com", auth.PurposePasswordReset)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("expected 2 reset mails, got %d err=%v (before=%d)", len(entries), err, len(beforeJob1Mail))
+	}
+	var liveHash []byte
+	if err := h.pool.QueryRow(ctx, `SELECT token_hash FROM password_reset_token WHERE consumed_at IS NULL`).Scan(&liveHash); err != nil {
+		t.Fatal(err)
+	}
+	var expiredTok, liveTok string
+	for _, e := range entries {
+		tok := parseResetTokenLink(t, e.Link)
+		raw, err := auth.ParseResetToken(tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Equal(auth.SHA256Bytes(raw), liveHash) {
+			liveTok = tok
+		} else {
+			expiredTok = tok
+		}
+	}
+	if expiredTok == "" || liveTok == "" {
+		t.Fatalf("failed to partition expiredTok=%q and liveTok=%q", expiredTok, liveTok)
+	}
+
+	j := jar{}
+	h.csrfJar(j)
+	respExp := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+expiredTok+`","new_password":"winnerpassword12"}`, true, "198.51.100.140")
+	requireAcceptanceProblem(t, h, respExp, http.StatusBadRequest, "reset_token_invalid")
+
+	respLive := h.doAs(j, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+liveTok+`","new_password":"winnerpassword12"}`, true, "198.51.100.141")
+	if respLive.StatusCode != http.StatusNoContent {
+		t.Fatalf("surviving token reset = %d %s, want 204", respLive.StatusCode, h.body(respLive))
+	}
+	_ = respLive.Body.Close()
 }
 
-// 8. D2 deterministic barrier race: old-password Login vs ResetPassword (AU2-BE1-3).
+// 8. D2 deterministic barrier race: old-password Login vs ResetPassword (AU2-BE1-3, AU3-BE1-6).
 func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
 	signupAcceptance(t, h, "d2-race@example.com")
 
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "d2-race@example.com", Locale: "en"}); err != nil {
-		t.Fatal(err)
-	}
-	tok, _ := extractResetTokenFromSink(t, h, "d2-race@example.com")
+	tok := issueResetTokenForTest(t, h, "d2-race@example.com")
 
 	loginVerified := make(chan struct{})
+	var verifiedOnce sync.Once
 	releaseLogin := make(chan struct{})
+	var releaseOnce sync.Once
+	unblockLogin := func() { releaseOnce.Do(func() { close(releaseLogin) }) }
+
 	h.svc.SetOnLoginVerified(func() {
-		close(loginVerified)
+		verifiedOnce.Do(func() { close(loginVerified) })
 		<-releaseLogin
 	})
-	t.Cleanup(func() { h.svc.SetOnLoginVerified(nil) })
-
 	loginDone := make(chan *http.Response, 1)
+	t.Cleanup(func() {
+		h.svc.SetOnLoginVerified(nil)
+		unblockLogin()
+		select {
+		case r := <-loginDone:
+			if r != nil && r.Body != nil {
+				_ = r.Body.Close()
+			}
+		default:
+		}
+	})
+
 	go func() {
 		jLogin := jar{}
 		h.csrfJar(jLogin)
@@ -814,8 +1080,9 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 	_ = respReset.Body.Close()
 
 	// Release Login to enter its session-issuance transaction.
-	close(releaseLogin)
+	unblockLogin()
 	respLogin := <-loginDone
+	h.svc.SetOnLoginVerified(nil)
 	requireAcceptanceProblem(t, h, respLogin, http.StatusUnauthorized, "invalid_credentials")
 
 	// Assert 0 live sessions exist for the user.
@@ -830,7 +1097,8 @@ func TestLoginOldPasswordBarrierRaceAgainstResetPassword(t *testing.T) {
 }
 
 // 9. D3 & E1: OAuth link refusal when unverified, verify-between-issue-and-consume (AU2-BE2-3),
-// and deterministic barrier races on oauth.Service.Complete + in-flight Callback (AU2-BE2-1, AU2-BE3-1).
+// deterministic barrier races on oauth.Service.Complete, pending link/reauth/receipt cancellation,
+// independent owner recheck proof, and genuinely in-flight Callback held in Exchange while claimed (AU3-BE1-8).
 func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	fakeGoogle := oauth.NewFake("google", true, oauth.Identity{
 		Provider: "google", UID: "g-attacker", Email: "victim-d3@example.com", EmailVerified: true,
@@ -872,10 +1140,14 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	}
 
 	// (b) Seed pre-existing linked OAuth identities (google + github) on the unverified account,
+	// plus pending link, pending reauth, and unconsumed oauth_reauth_receipt rows for the user,
 	// issue a reset token while unverified (was_email_unverified = true), then verify the email
-	// BEFORE consuming the reset token (AU2-BE2-3).
-	var victimID uuid.UUID
+	// BEFORE consuming the reset token (AU2-BE2-3, AU3-BE1-8).
+	var victimID, victimSessID uuid.UUID
 	if err := h.pool.QueryRow(ctx, `SELECT id FROM app_user WHERE email = 'victim-d3@example.com'`).Scan(&victimID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT id FROM session WHERE user_id = $1 AND revoked_at IS NULL LIMIT 1`, victimID).Scan(&victimSessID); err != nil {
 		t.Fatal(err)
 	}
 	q := gen.New(h.pool)
@@ -891,10 +1163,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	}
 
 	// Issue reset token while email_verified_at IS NULL (was_email_unverified = true).
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "victim-d3@example.com", Locale: "en"}); err != nil {
-		t.Fatal(err)
-	}
-	tok, _ := extractResetTokenFromSink(t, h, "victim-d3@example.com")
+	tok := issueResetTokenForTest(t, h, "victim-d3@example.com")
 
 	// Attacker starts an OAuth login flow and reaches login_ready BEFORE reset.
 	jarAttacker := jar{}
@@ -907,21 +1176,110 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	jarAttacker = cloneAcceptanceJar(h.jar)
 	h.jar = oldJar
 
-	// Attacker also verifies the account's email between reset token issuance and consumption (AU2-BE2-3)!
+	// Attacker also verifies the account's email between reset token issuance and consumption (AU2-BE2-3),
+	// and creates pending link, pending reauth, and unconsumed reauth receipt rows bound to victimID.
 	if _, err := h.pool.Exec(ctx, `UPDATE app_user SET email_verified_at = now() WHERE id = $1`, victimID); err != nil {
 		t.Fatal(err)
+	}
+	for idx, mode := range []string{"link", "reauth"} {
+		if _, err := h.pool.Exec(ctx,
+			`INSERT INTO oauth_transaction (provider, mode, status, state_hash, cookie_binding_hash, expected_user_id, expected_session_id, expires_at) VALUES ('google', $1, 'pending', $2, $3, $4, $5, now() + interval '10 minutes')`,
+			mode, bytes.Repeat([]byte{byte(0x90 + idx)}, 32), bytes.Repeat([]byte{byte(0xA0 + idx)}, 32), victimID, victimSessID,
+		); err != nil {
+			t.Fatalf("insert pending %s tx: %v", mode, err)
+		}
+	}
+	if _, err := h.pool.Exec(ctx,
+		`INSERT INTO oauth_reauth_receipt (user_id, session_id, provider, action, token_hash, expires_at) VALUES ($1, $2, 'google', 'account.password_change', $3, now() + interval '5 minutes')`,
+		victimID, victimSessID, bytes.Repeat([]byte{0xB1}, 32),
+	); err != nil {
+		t.Fatalf("insert reauth receipt: %v", err)
+	}
+
+	// Start two genuinely in-flight OAuth login callbacks (same-email Google and different-email GitHub)
+	// BEFORE reset, and hold them inside fakeProvider.Exchange while their oauth_transaction status is 'claimed'!
+	startClaimedCallback := func(provider string, fake *oauth.Fake, xff string) (jar, <-chan string, func()) {
+		t.Helper()
+		jFlow := jar{}
+		h.csrfJar(jFlow)
+		saved := h.jar
+		h.jar = jFlow
+		cbURL := oauthCallbackURL(t, h, "/api/v1/auth/oauth/"+provider+"/start")
+		jFlow = cloneAcceptanceJar(h.jar)
+		h.jar = saved
+
+		exchEntered := make(chan struct{})
+		var enterOnce sync.Once
+		exchRelease := make(chan struct{})
+		var relOnce sync.Once
+		unblockExch := func() { relOnce.Do(func() { close(exchRelease) }) }
+		fake.SetOnExchange(func(_ oauth.ExchangeRequest) {
+			enterOnce.Do(func() { close(exchEntered) })
+			<-exchRelease
+		})
+		cbStatusCh := make(chan string, 1)
+		go func() {
+			client := noRedirect()
+			req, err := http.NewRequest(http.MethodGet, cbURL, nil)
+			if err != nil {
+				cbStatusCh <- ""
+				return
+			}
+			req.Header.Set("X-Forwarded-For", xff)
+			jFlow.apply(req)
+			resp, err := client.Do(req)
+			if err != nil {
+				cbStatusCh <- ""
+				return
+			}
+			loc := resp.Header.Get("Location")
+			_ = resp.Body.Close()
+			cbStatusCh <- statusFromCallback(loc)
+		}()
+		<-exchEntered
+		return jFlow, cbStatusCh, func() {
+			fake.SetOnExchange(nil)
+			unblockExch()
+		}
+	}
+
+	jarInFlightSame, sameCbCh, releaseSameExch := startClaimedCallback("google", fakeGoogle, "198.51.100.205")
+	t.Cleanup(releaseSameExch)
+	jarInFlightDiff, diffCbCh, releaseDiffExch := startClaimedCallback("github", fakeGitHub, "198.51.100.206")
+	t.Cleanup(releaseDiffExch)
+
+	// Verify both in-flight callbacks are genuinely in status = 'claimed' in DB before reset runs!
+	var claimedCount int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM oauth_transaction WHERE mode = 'login' AND status = 'claimed' AND consumed_at IS NULL`).Scan(&claimedCount); err != nil {
+		t.Fatal(err)
+	}
+	if claimedCount != 2 {
+		t.Fatalf("expected 2 in-flight OAuth login transactions in status='claimed' across reset, got %d", claimedCount)
 	}
 
 	// Set deterministic barrier in oauth.Service.Complete right after non-locking owner discovery (E1 A).
 	ownerDiscovered := make(chan struct{})
+	var discOnce sync.Once
 	releaseComplete := make(chan struct{})
+	var relCompOnce sync.Once
+	unblockComplete := func() { relCompOnce.Do(func() { close(releaseComplete) }) }
 	h.oa.SetOnOwnerDiscovered(func() {
-		close(ownerDiscovered)
+		discOnce.Do(func() { close(ownerDiscovered) })
 		<-releaseComplete
 	})
-	t.Cleanup(func() { h.oa.SetOnOwnerDiscovered(nil) })
-
 	completeDone := make(chan *http.Response, 1)
+	t.Cleanup(func() {
+		h.oa.SetOnOwnerDiscovered(nil)
+		unblockComplete()
+		select {
+		case r := <-completeDone:
+			if r != nil && r.Body != nil {
+				_ = r.Body.Close()
+			}
+		default:
+		}
+	})
+
 	go func() {
 		h.csrfJar(jarAttacker)
 		completeDone <- h.doAs(jarAttacker, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.200")
@@ -929,7 +1287,7 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 
 	<-ownerDiscovered
 
-	// Victim consumes reset token while Complete is paused after owner discovery.
+	// Victim consumes reset token while Complete is paused after owner discovery and while the two callbacks are held in Exchange ('claimed').
 	jVictim := jar{}
 	h.csrfJar(jVictim)
 	respReset := h.doAs(jVictim, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok+`","new_password":"victimrecovered12"}`, true, "198.51.100.201")
@@ -939,10 +1297,22 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	_ = respReset.Body.Close()
 
 	// Release Complete -> must fail with 400 oauth_state_invalid and issue 0 sessions!
-	close(releaseComplete)
+	unblockComplete()
 	respComplete := <-completeDone
-	requireAcceptanceProblem(t, h, respComplete, http.StatusBadRequest, "oauth_state_invalid")
 	h.oa.SetOnOwnerDiscovered(nil)
+	requireAcceptanceProblem(t, h, respComplete, http.StatusBadRequest, "oauth_state_invalid")
+
+	// Assert pending link/reauth flows and unconsumed reauth receipts for victim were all cancelled by reset!
+	var uncancelledUserOAuth, uncancelledReceipts int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM oauth_transaction WHERE expected_user_id = $1 AND consumed_at IS NULL`, victimID).Scan(&uncancelledUserOAuth); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM oauth_reauth_receipt WHERE user_id = $1 AND consumed_at IS NULL`, victimID).Scan(&uncancelledReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if uncancelledUserOAuth != 0 || uncancelledReceipts != 0 {
+		t.Fatalf("expected 0 unconsumed user-bound oauth_transaction and oauth_reauth_receipt rows after D3 reset, got tx=%d receipts=%d", uncancelledUserOAuth, uncancelledReceipts)
+	}
 
 	// Verify 0 sessions for victim and 0 OAuth identities remaining on victim.
 	var sessionCount, oauthIdentCount int
@@ -977,28 +1347,21 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 		t.Fatalf("notice mail must name unlinked providers Google and GitHub: %q", notices[0].Link)
 	}
 
-	// (c) In-flight OAuth callback finishing exchange AFTER reset committed (AU2-BE2-1 #2 & AU2-BE3-1):
-	// Case 1: Provider email matches victim's email ("victim-d3@example.com") -> Complete returns 409 email_taken.
-	jarInFlightSameEmail := jar{}
-	h.csrfJar(jarInFlightSameEmail)
-	h.jar = jarInFlightSameEmail
-	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/google/start")); got != "login_ready" {
-		t.Fatalf("in-flight same-email callback = %s", got)
+	// (c) Release the two genuinely in-flight callbacks that were held in Exchange ('claimed') across reset (AU3-BE1-8):
+	releaseSameExch()
+	if got := <-sameCbCh; got != "login_ready" {
+		t.Fatalf("in-flight same-email callback status after exchange release = %q, want login_ready", got)
 	}
-	h.csrf()
-	respSame := h.doAs(h.jar, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.202")
+	h.csrfJar(jarInFlightSame)
+	respSame := h.doAs(jarInFlightSame, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.202")
 	requireAcceptanceProblem(t, h, respSame, http.StatusConflict, "email_taken")
 
-	// Case 2 (AU2-BE3-1): Provider email is attacker's different mailbox ("attacker-gh@example.com") ->
-	// Complete creates a separate account for attacker-gh@example.com, issuing NO session for the recovered victim!
-	jarInFlightDiffEmail := jar{}
-	h.csrfJar(jarInFlightDiffEmail)
-	h.jar = jarInFlightDiffEmail
-	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/github/start")); got != "login_ready" {
-		t.Fatalf("in-flight diff-email callback = %s", got)
+	releaseDiffExch()
+	if got := <-diffCbCh; got != "login_ready" {
+		t.Fatalf("in-flight diff-email callback status after exchange release = %q, want login_ready", got)
 	}
-	h.csrf()
-	respDiff := h.doAs(h.jar, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.203")
+	h.csrfJar(jarInFlightDiff)
+	respDiff := h.doAs(jarInFlightDiff, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.203")
 	if respDiff.StatusCode != http.StatusOK {
 		t.Fatalf("diff-email oauth signup = %d %s", respDiff.StatusCode, h.body(respDiff))
 	}
@@ -1016,52 +1379,144 @@ func TestOAuthPreRegistrationDefenseAndCompleteRaces(t *testing.T) {
 	if sessionCount != 0 {
 		t.Fatalf("victim must still have 0 live sessions, got %d", sessionCount)
 	}
+
+	// (d) Independently prove oauth.Service.Complete's final owner recheck under app_user FOR UPDATE (AU3-BE1-8):
+	// Re-link Google on the now-verified victim account, reach login_ready, pause Complete at OnOwnerDiscovered,
+	// unlink Google via DeleteIdentity (which does NOT cancel ready login oauth_transaction rows, unlike D3 reset),
+	// and release Complete. Because the oauth_transaction row is still status='ready', ONLY Complete's
+	// GetIdentityByProviderUID recheck under GetUserByIDForUpdate prevents session issuance and returns 400 oauth_state_invalid!
+	if _, err := q.InsertOAuthIdentity(ctx, gen.InsertOAuthIdentityParams{
+		UserID: victimID, Provider: "google", ProviderUid: new("g-attacker"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	jarRecheck := jar{}
+	h.csrfJar(jarRecheck)
+	oldJar = h.jar
+	h.jar = jarRecheck
+	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/google/start")); got != "login_ready" {
+		t.Fatalf("recheck oauth callback = %s", got)
+	}
+	jarRecheck = cloneAcceptanceJar(h.jar)
+	h.jar = oldJar
+
+	disc2 := make(chan struct{})
+	var disc2Once sync.Once
+	rel2 := make(chan struct{})
+	var rel2Once sync.Once
+	unblock2 := func() { rel2Once.Do(func() { close(rel2) }) }
+	h.oa.SetOnOwnerDiscovered(func() {
+		disc2Once.Do(func() { close(disc2) })
+		<-rel2
+	})
+	comp2Done := make(chan *http.Response, 1)
+	t.Cleanup(func() {
+		h.oa.SetOnOwnerDiscovered(nil)
+		unblock2()
+		select {
+		case r := <-comp2Done:
+			if r != nil && r.Body != nil {
+				_ = r.Body.Close()
+			}
+		default:
+		}
+	})
+	go func() {
+		h.csrfJar(jarRecheck)
+		comp2Done <- h.doAs(jarRecheck, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "198.51.100.209")
+	}()
+	<-disc2
+	// Remove the Google identity directly while leaving the oauth_transaction in status='ready'.
+	if _, err := h.pool.Exec(ctx, `DELETE FROM auth_identity WHERE user_id = $1 AND provider = 'google'`, victimID); err != nil {
+		t.Fatal(err)
+	}
+	unblock2()
+	respComp2 := <-comp2Done
+	h.oa.SetOnOwnerDiscovered(nil)
+	requireAcceptanceProblem(t, h, respComp2, http.StatusBadRequest, "oauth_state_invalid")
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM session WHERE user_id = $1 AND revoked_at IS NULL`, victimID).Scan(&sessionCount); err != nil {
+		t.Fatal(err)
+	}
+	if sessionCount != 0 {
+		t.Fatalf("owner recheck failure must issue 0 sessions, got %d", sessionCount)
+	}
 }
 
-// 10. E2 forced collision between ResetPassword and Logout / lock timeout retry + 503 dependency_unavailable (AU2-BE2-2).
+// 10. E2 forced collision between ResetPassword and Logout / lock timeout retry + 503 dependency_unavailable (AU2-BE2-2, AU3-BE1-7).
 func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
 	signupAcceptance(t, h, "e2-collision@example.com")
 	jarLogout := cloneAcceptanceJar(h.jar)
 
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "e2-collision@example.com", Locale: "en"}); err != nil {
-		t.Fatal(err)
-	}
-	tok, _ := extractResetTokenFromSink(t, h, "e2-collision@example.com")
+	tok := issueResetTokenForTest(t, h, "e2-collision@example.com")
 
-	// Part A: Forced concurrent collision between ResetPassword and Logout on the same user.
-	// ResetPassword locks app_user FOR UPDATE first; pause it right after locking app_user,
-	// fire Logout concurrently, then release ResetPassword and assert ResetPassword commits cleanly (204)
-	// and all sessions are revoked (no 500).
+	// Part A: True forced 40P01 deadlock collision between ResetPassword (locks app_user -> session)
+	// and Logout (locks session -> audit_log FK FOR KEY SHARE on app_user), with 0 sleeps:
+	// 1. ResetPassword attempt 0 acquires app_user FOR UPDATE and signals resetLocked.
+	// 2. Logout starts, executes RevokeSession (acquiring FOR NO KEY UPDATE lock on session),
+	//    signals logoutLockedSession, and continues to audit.Record where INSERT INTO audit_log
+	//    blocks waiting for FOR KEY SHARE on app_user!
+	// 3. Once pg_locks confirms Logout is blocked on app_user, release ResetPassword attempt 0:
+	//    ResetPassword executes RevokeAllUserSessions, which blocks on the session lock held by Logout,
+	//    completing the cycle app_user <-> session!
+	// 4. Postgres deadlock detector raises 40P01; ResetPassword catches 40P01 if chosen as victim,
+	//    retries automatically, and commits cleanly with 204 No Content!
 	resetLocked := make(chan struct{})
+	var onceResetLocked sync.Once
 	releaseReset := make(chan struct{})
-	var once sync.Once
+	var onceReleaseReset sync.Once
+	unblockReset := func() { onceReleaseReset.Do(func() { close(releaseReset) }) }
+
+	logoutLockedSession := make(chan struct{})
+	var onceLogoutLocked sync.Once
+
+	var partAAttempts atomic.Int32
+	h.svc.SetOnResetAttempt(func(_ context.Context, _ pgx.Tx, _ int) error {
+		partAAttempts.Add(1)
+		return nil
+	})
 	h.svc.SetOnResetLocked(func() {
-		once.Do(func() {
+		onceResetLocked.Do(func() {
 			close(resetLocked)
 			<-releaseReset
 		})
 	})
+	h.svc.SetOnLogoutRevoked(func() {
+		onceLogoutLocked.Do(func() { close(logoutLockedSession) })
+	})
 
 	resetDone := make(chan *http.Response, 1)
+	logoutDone := make(chan *http.Response, 1)
+	t.Cleanup(func() {
+		h.svc.SetOnResetAttempt(nil)
+		h.svc.SetOnResetLocked(nil)
+		h.svc.SetOnLogoutRevoked(nil)
+		unblockReset()
+	})
+
 	go func() {
 		jReset := jar{}
 		h.csrfJar(jReset)
 		resetDone <- h.doAs(jReset, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok+`","new_password":"aftercollision12"}`, true, "203.0.113.91")
 	}()
-
 	<-resetLocked
 
-	logoutDone := make(chan *http.Response, 1)
 	go func() {
 		logoutDone <- h.doAs(jarLogout, http.MethodPost, "/api/v1/auth/logout", "", true, "203.0.113.92")
 	}()
-
-	// Give Logout's transaction a moment to lock session and wait on audit_log FK share lock on app_user,
-	// triggering either serialization or a 40P01 deadlock that ResetPassword retries automatically.
-	time.Sleep(30 * time.Millisecond)
-	close(releaseReset)
+	// Prove Logout holds its session lock before releasing ResetPassword!
+	<-logoutLockedSession
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		var ungranted int
+		_ = h.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&ungranted)
+		if ungranted > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	unblockReset()
 
 	respReset := <-resetDone
 	if respReset.StatusCode != http.StatusNoContent {
@@ -1072,8 +1527,13 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 	respLogout := <-logoutDone
 	_ = respLogout.Body.Close()
 	h.svc.SetOnResetLocked(nil)
+	h.svc.SetOnLogoutRevoked(nil)
+	h.svc.SetOnResetAttempt(nil)
+	if got := partAAttempts.Load(); got < 1 || got > 2 {
+		t.Fatalf("unexpected Part A reset attempt count = %d, want 1 or 2", got)
+	}
 
-	// Verify all sessions are revoked and new password works.
+	// Verify all sessions are revoked.
 	var liveSessions int
 	if err := h.pool.QueryRow(ctx,
 		`SELECT count(*) FROM session s JOIN app_user u ON u.id = s.user_id WHERE u.email = 'e2-collision@example.com' AND s.revoked_at IS NULL`).Scan(&liveSessions); err != nil {
@@ -1083,14 +1543,49 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 		t.Fatalf("expected 0 live sessions after reset-vs-logout collision, got %d", liveSessions)
 	}
 
-	// Part B: Simulate 55P03 lock_not_available on first attempt (succeeds on automatic retry)
-	// and on both attempts (returns 503 dependency_unavailable + Retry-After: 1, token stays unconsumed).
-	if err := h.svc.ProcessForgotJob(ctx, auth.ForgotJob{Email: "e2-collision@example.com", Locale: "en"}); err != nil {
+	// Part B1: First attempt hits real PostgreSQL 55P03 (lock_not_available) on the exact reset tx connection
+	// via SET LOCAL lock_timeout = '25ms' while an external tx holds app_user FOR UPDATE; once attempt 0 fails,
+	// the external lock is released before attempt 1 runs, proving ResetPassword retries once (attempts == 2) and succeeds with 204!
+	tokRetryOnce := issueResetTokenForTest(t, h, "e2-collision@example.com")
+	holdRetryOnceTx, err := h.pool.Begin(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tok2, _ := extractResetTokenFromSink(t, h, "e2-collision@example.com")
+	defer func() { _ = holdRetryOnceTx.Rollback(ctx) }()
+	if _, err := holdRetryOnceTx.Exec(ctx, `SELECT id FROM app_user WHERE email = 'e2-collision@example.com' FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
 
-	// Hold an external FOR UPDATE lock on app_user, and set lock_timeout on pool connections or hold lock across both retries.
+	var retryOnceAttempts atomic.Int32
+	h.svc.SetOnResetAttempt(func(txCtx context.Context, tx pgx.Tx, attempt int) error {
+		retryOnceAttempts.Add(1)
+		if _, err := tx.Exec(txCtx, `SET LOCAL lock_timeout = '25ms'`); err != nil {
+			return err
+		}
+		if attempt == 1 {
+			// Release the external lock right as attempt 1 starts so attempt 0 failed with 55P03 and attempt 1 succeeds!
+			if err := holdRetryOnceTx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
+				return err
+			}
+		}
+		return nil
+	})
+
+	jRetry := jar{}
+	h.csrfJar(jRetry)
+	respRetry204 := h.doAs(jRetry, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tokRetryOnce+`","new_password":"retrysucceeded12"}`, true, "203.0.113.94")
+	h.svc.SetOnResetAttempt(nil)
+	if respRetry204.StatusCode != http.StatusNoContent {
+		t.Fatalf("first-attempt 55P03 + second-attempt success = %d %s, want 204", respRetry204.StatusCode, h.body(respRetry204))
+	}
+	_ = respRetry204.Body.Close()
+	if got := retryOnceAttempts.Load(); got != 2 {
+		t.Fatalf("expected exactly 2 attempts (1 retry) on first-attempt 55P03, got %d", got)
+	}
+
+	// Part B2: Both attempts hit real PostgreSQL 55P03 on the exact reset tx connection ->
+	// returns 503 dependency_unavailable + Retry-After: 1 after exactly 2 attempts, leaving token unconsumed and password unchanged.
+	tok2 := issueResetTokenForTest(t, h, "e2-collision@example.com")
 	lockTx, err := h.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1100,28 +1595,113 @@ func TestPasswordResetDeadlockRetryWithLogoutAndExhaustedRetry503(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// Configure short lock_timeout on pool so blocked FOR UPDATE raises SQLSTATE 55P03 (lock_not_available).
-	if _, err := h.pool.Exec(ctx, `ALTER DATABASE current_database() SET lock_timeout = '40ms'`); err != nil {
-		// Fallback if ALTER DATABASE not permitted: set on active idle connections.
-		_, _ = h.pool.Exec(ctx, `SET lock_timeout = '40ms'`)
-	}
+	var exhaustedAttempts atomic.Int32
+	h.svc.SetOnResetAttempt(func(txCtx context.Context, tx pgx.Tx, _ int) error {
+		exhaustedAttempts.Add(1)
+		_, err := tx.Exec(txCtx, `SET LOCAL lock_timeout = '25ms'`)
+		return err
+	})
 
-	jRetry := jar{}
 	h.csrfJar(jRetry)
 	resp503 := h.doAs(jRetry, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok2+`","new_password":"retryexhausted12"}`, true, "203.0.113.95")
+	h.svc.SetOnResetAttempt(nil)
 	raw503 := requireAcceptanceProblem(t, h, resp503, http.StatusServiceUnavailable, "dependency_unavailable")
 	if resp503.Header.Get("Retry-After") != "1" || !strings.Contains(raw503, `"retry_after":1`) {
 		t.Fatalf("503 dependency_unavailable must include Retry-After: 1 header and retry_after: 1 body, got header=%q body=%s", resp503.Header.Get("Retry-After"), raw503)
 	}
+	if got := exhaustedAttempts.Load(); got != 2 {
+		t.Fatalf("expected exactly 2 attempts before 503 dependency_unavailable, got %d", got)
+	}
 
-	// Release the external lock and reset lock_timeout: token was not consumed on rollback, so retry now succeeds with 204!
-	_ = lockTx.Rollback(ctx)
-	_, _ = h.pool.Exec(ctx, `ALTER DATABASE current_database() SET lock_timeout = '0'`)
+	// Release the external lock: token was not consumed on rollback, so retry now succeeds with 204!
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
 	resp204 := h.doAs(jRetry, http.MethodPost, "/api/v1/auth/password/reset", `{"token":"`+tok2+`","new_password":"retryexhausted12"}`, true, "203.0.113.96")
 	if resp204.StatusCode != http.StatusNoContent {
 		t.Fatalf("retry after lock release = %d %s, want 204", resp204.StatusCode, h.body(resp204))
 	}
 	_ = resp204.Body.Close()
+}
+
+// 12. Service.Close cancels active blocked forgot-worker DB work and waits for worker exit before pool teardown (AU3-BE1-1).
+func TestServiceCloseCancelsBlockedWorkerAndWaitsForExit(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	clk := clock.NewFixed(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://127.0.0.1:3000")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("AUTH_MAIL_CAPTURE_AS_DELIVERY", "true")
+	cfg := loadTestConfig(t)
+	sink, err := auth.NewSinkMailer(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, _, _, err := compose.NewAuth(cfg, pool, nil, clk, sink, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a user and hold app_user FOR UPDATE in an external transaction so the forgot worker
+	// blocks inside GetUserByIDForUpdate(ctx, u.ID).
+	var uid uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO app_user (email, locale) VALUES ('close-worker@example.com', 'en') RETURNING id`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	holdTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holdTx.Rollback(ctx) }()
+	if _, err := holdTx.Exec(ctx, `SELECT id FROM app_user WHERE id = $1 FOR UPDATE`, uid); err != nil {
+		t.Fatal(err)
+	}
+
+	jobStarted := make(chan struct{})
+	jobDone := make(chan error, 1)
+	svc.SetForgotHooks(auth.ForgotHooks{
+		OnJobStart: func(_ auth.ForgotJob) {
+			close(jobStarted)
+		},
+		OnJobDone: func(_ auth.ForgotJob, err error) {
+			jobDone <- err
+		},
+	})
+
+	svc.EnqueueForgotPassword("close-worker@example.com", "en")
+	<-jobStarted
+
+	// Wait until pg_locks confirms the worker query is blocked on app_user FOR UPDATE.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var blocked int
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&blocked)
+		if blocked > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Calling svc.Close() must cancel the in-flight DB query and wait for the worker to exit
+	// well before the 15-second ForgotJobTimeout and before pool.Close() is called.
+	startClose := time.Now()
+	svc.Close()
+	elapsed := time.Since(startClose)
+	if elapsed >= 5*time.Second {
+		t.Fatalf("svc.Close() took %v, expected immediate cancellation", elapsed)
+	}
+	select {
+	case jobErr := <-jobDone:
+		if jobErr == nil {
+			t.Fatal("expected cancelled worker job to report non-nil error")
+		}
+	default:
+		t.Fatal("svc.Close() returned before worker finished OnJobDone")
+	}
 }
 
 // 11. Migration 0007 up/down on a DB with P03 (vault) and P04 (content) data + AuthPruneWorker deletes expired reset tokens.

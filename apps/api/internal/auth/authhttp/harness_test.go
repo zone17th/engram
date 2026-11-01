@@ -54,6 +54,7 @@ type harness struct {
 	svc    *auth.Service
 	pool   *pgxpool.Pool
 	oa     *oauth.Service
+	api    *authhttp.API
 }
 
 func newHarness(t *testing.T, providers []oauth.Provider) *harness {
@@ -100,7 +101,7 @@ func newHarness(t *testing.T, providers []oauth.Provider) *harness {
 	srv.Listener = ln
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, jar: jar{}, origin: origin, clk: clk, mail: mail, svc: svc, oa: oa, pool: pool}
+	return &harness{t: t, srv: srv, jar: jar{}, origin: origin, clk: clk, mail: mail, svc: svc, oa: oa, api: api, pool: pool}
 }
 
 func (h *harness) do(method, path, body string, withCSRF bool) *http.Response {

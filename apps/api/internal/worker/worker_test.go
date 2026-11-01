@@ -237,3 +237,57 @@ func TestWorkerRunDeliversSecurityNoticeMailWithDefaultDevelopmentSink(t *testin
 		t.Fatalf("delivered password_reset_notice emails = %+v, want 1 mentioning Google", resetEntries)
 	}
 }
+
+// TestSecurityNoticeWorkerContextQueryFailureReturnsErrorForRetry covers AU3-BE1-3:
+// if GetNotificationForMail succeeds (e.g. a notification row exists) but
+// GetNotificationMailContext fails (or encounters a transient DB error / missing joined row),
+// Work must return the error so River retries rather than silently downgrading to a generic
+// "security" mail with empty detail.
+func TestSecurityNoticeWorkerContextQueryFailureReturnsErrorForRetry(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	email := "notice-err-retry@example.com"
+	var userID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO app_user (email, email_verified_at, locale) VALUES ($1, now(), 'vi') RETURNING id`,
+		email,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var notifID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_notification (user_id, kind, meta, email_targets) VALUES ($1, 'security', $2, $3) RETURNING id`,
+		userID,
+		[]byte(`{"event":"auth.password.reset","unlinked_providers":["google"]}`),
+		[]string{email},
+	).Scan(&notifID); err != nil {
+		t.Fatalf("insert notification: %v", err)
+	}
+
+	// Corrupt the JSONB meta column into an invalid Meta shape (e.g. JSON array instead of object)
+	// or drop the joined user lookup in a transaction so GetNotificationForMail succeeds while
+	// context extraction fails, verifying Work returns an error and sends 0 generic emails.
+	if _, err := pool.Exec(ctx, `UPDATE user_notification SET meta = '["corrupt"]'::jsonb WHERE id = $1`, notifID); err != nil {
+		t.Fatalf("corrupt meta: %v", err)
+	}
+
+	sinkDir := t.TempDir()
+	sink, err := auth.NewSinkMailer(sinkDir)
+	if err != nil {
+		t.Fatalf("NewSinkMailer: %v", err)
+	}
+	w := worker.NewSecurityNoticeWorker(pool, sink, silentLogger())
+	err = w.Work(ctx, &river.Job[notification.SecurityNoticeArgs]{
+		Args: notification.SecurityNoticeArgs{NotificationID: notifID},
+	})
+	if err == nil {
+		t.Fatal("expected SecurityNoticeWorker.Work to return error when notification context cannot be decoded")
+	}
+	secMails, _ := sink.EntriesFor(email, "security")
+	if len(secMails) != 0 {
+		t.Fatalf("must not silently downgrade to generic security mail on context error, got %d", len(secMails))
+	}
+}

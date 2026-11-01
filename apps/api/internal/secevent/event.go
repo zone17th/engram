@@ -60,10 +60,11 @@ var reasons = map[string]struct{}{
 
 // Meta chỉ chứa enum đã whitelist — không map tự do.
 type Meta struct {
-	Provider          string   `json:"provider,omitempty"`
-	Reason            string   `json:"reason,omitempty"`
-	Fields            []string `json:"fields,omitempty"`
-	Count             int      `json:"count,omitempty"`
+	Provider string   `json:"provider,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
+	Fields   []string `json:"fields,omitempty"`
+	Count    int      `json:"count,omitempty"`
+
 	Event             string   `json:"event,omitempty"`
 	UnlinkedProviders []string `json:"unlinked_providers,omitempty"`
 }

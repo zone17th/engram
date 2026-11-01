@@ -37,20 +37,74 @@ type ForgotHooks struct {
 }
 
 func (s *Service) SetForgotHooks(hooks ForgotHooks) {
+	s.hooksMu.Lock()
 	s.forgotHooks = hooks
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getForgotHooks() ForgotHooks {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.forgotHooks
 }
 
 func (s *Service) SetOnLoginVerified(fn func()) {
+	s.hooksMu.Lock()
 	s.onLoginVerified = fn
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getOnLoginVerified() func() {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.onLoginVerified
 }
 
 func (s *Service) SetOnResetLocked(fn func()) {
+	s.hooksMu.Lock()
 	s.onResetLocked = fn
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getOnResetLocked() func() {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.onResetLocked
+}
+
+func (s *Service) SetOnResetAttempt(fn func(ctx context.Context, tx pgx.Tx, attempt int) error) {
+	s.hooksMu.Lock()
+	s.onResetAttempt = fn
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getOnResetAttempt() func(ctx context.Context, tx pgx.Tx, attempt int) error {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.onResetAttempt
+}
+
+func (s *Service) SetOnLogoutRevoked(fn func()) {
+	s.hooksMu.Lock()
+	s.onLogoutRevoked = fn
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getOnLogoutRevoked() func() {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.onLogoutRevoked
 }
 
 func (s *Service) Close() {
-	if s != nil && s.forgotCancel != nil {
+	if s == nil {
+		return
+	}
+	if s.forgotCancel != nil {
 		s.forgotCancel()
+	}
+	if s.forgotDone != nil {
+		<-s.forgotDone
 	}
 }
 
@@ -73,6 +127,9 @@ func (s *Service) EnqueueForgotPassword(email, locale string) {
 }
 
 func (s *Service) runForgotWorker() {
+	if s.forgotDone != nil {
+		defer close(s.forgotDone)
+	}
 	for {
 		select {
 		case <-s.forgotWorkerCtx.Done():
@@ -87,8 +144,9 @@ func (s *Service) runForgotWorker() {
 }
 
 func (s *Service) processForgotJobWithTimeout(job ForgotJob) {
-	if s.forgotHooks.OnJobStart != nil {
-		s.forgotHooks.OnJobStart(job)
+	hooks := s.getForgotHooks()
+	if hooks.OnJobStart != nil {
+		hooks.OnJobStart(job)
 	}
 	ctx, cancel := context.WithTimeout(s.forgotWorkerCtx, ForgotJobTimeout)
 	defer cancel()
@@ -96,8 +154,9 @@ func (s *Service) processForgotJobWithTimeout(job ForgotJob) {
 	if err != nil {
 		slog.Error("password forgot worker job failed", slog.String("reason", scrubForgotErr(err)))
 	}
-	if s.forgotHooks.OnJobDone != nil {
-		s.forgotHooks.OnJobDone(job, err)
+	hooks = s.getForgotHooks()
+	if hooks.OnJobDone != nil {
+		hooks.OnJobDone(job, err)
 	}
 }
 
@@ -160,8 +219,8 @@ func (s *Service) ProcessForgotJob(ctx context.Context, job ForgotJob) error {
 		}
 		return err
 	}
-	if s.forgotHooks.OnJobLocked != nil {
-		s.forgotHooks.OnJobLocked(uLocked.ID)
+	if hooks := s.getForgotHooks(); hooks.OnJobLocked != nil {
+		hooks.OnJobLocked(uLocked.ID)
 	}
 	if !equalFoldEmail(uLocked.Email, job.Email) {
 		return nil
@@ -255,7 +314,7 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	}
 
 	for attempt := range 2 {
-		err = s.resetPasswordTx(ctx, row.UserID, tokenHash, newHash, in.IP, in.UA)
+		err = s.resetPasswordTx(ctx, attempt, row.UserID, tokenHash, newHash, in.IP, in.UA)
 		if err == nil {
 			return nil
 		}
@@ -271,12 +330,17 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	return ErrDependencyUnavailable
 }
 
-func (s *Service) resetPasswordTx(ctx context.Context, userID uuid.UUID, tokenHash []byte, newHash, ip, ua string) error {
+func (s *Service) resetPasswordTx(ctx context.Context, attempt int, userID uuid.UUID, tokenHash []byte, newHash, ip, ua string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if fn := s.getOnResetAttempt(); fn != nil {
+		if err := fn(ctx, tx, attempt); err != nil {
+			return err
+		}
+	}
 	q := s.q.WithTx(tx)
 
 	u, err := q.GetUserByIDForUpdate(ctx, userID)
@@ -286,14 +350,14 @@ func (s *Service) resetPasswordTx(ctx context.Context, userID uuid.UUID, tokenHa
 		}
 		return err
 	}
-	if s.onResetLocked != nil {
-		s.onResetLocked()
+	if fn := s.getOnResetLocked(); fn != nil {
+		fn()
 	}
 
-	now := s.clk.Now()
+	revokeNow := s.clk.Now()
 	if _, err := q.RevokeAllUserSessions(ctx, gen.RevokeAllUserSessionsParams{
 		UserID:    u.ID,
-		RevokedAt: pgts(now),
+		RevokedAt: pgts(revokeNow),
 	}); err != nil {
 		return err
 	}
@@ -305,6 +369,7 @@ func (s *Service) resetPasswordTx(ctx context.Context, userID uuid.UUID, tokenHa
 		}
 		return err
 	}
+	now := s.clk.Now()
 	if tok.UserID != u.ID || tok.ConsumedAt.Valid || !tok.ExpiresAt.Valid || !tok.ExpiresAt.Time.After(now) {
 		return ErrResetTokenInvalid
 	}
