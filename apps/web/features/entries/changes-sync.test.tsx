@@ -878,25 +878,34 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     });
   });
 
-  it('triggers canonical refetch on wake (focus, online, visibilitychange) even when feed returns empty, and coalesces overlapping wake bursts into one cycle', async () => {
+  it('triggers canonical refetch on wake (focus, online, visibilitychange) even when feed returns empty, coalesces synchronous wake bursts, and queues at most one trailing cycle for wakes arriving mid-cycle', async () => {
     const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: true });
     const invalidateSpy = vi.spyOn(h.qc, 'invalidateQueries');
 
     h.requests.splice(0);
     invalidateSpy.mockClear();
-    const pageGate = createDeferred<void>();
-    let changesCallsDuringBurst = 0;
+    const cycle1Gate = createDeferred<void>();
+    const cycle2Gate = createDeferred<void>();
+    let changesCalls = 0;
     h.setChangesHandler(async () => {
-      changesCallsDuringBurst += 1;
-      await pageGate.promise;
+      changesCalls += 1;
+      if (changesCalls === 1) {
+        await cycle1Gate.promise;
+        return jsonResponse({
+          changes: [],
+          next_cursor: null,
+          watermark: '2026-11-01T12:10:00.000000001Z',
+        } satisfies EntryChangesPage);
+      }
+      await cycle2Gate.promise;
       return jsonResponse({
         changes: [],
         next_cursor: null,
-        watermark: '2026-11-01T12:10:00.000000001Z',
+        watermark: '2026-11-01T12:15:00.000000002Z',
       } satisfies EntryChangesPage);
     });
 
-    // Fire focus, online, and visibilitychange -> visible in the same synchronous burst + while in flight
+    // 1. Fire focus, online, and visibilitychange -> visible in the same synchronous burst
     Object.defineProperty(document, 'visibilityState', {
       value: 'visible',
       configurable: true,
@@ -907,24 +916,10 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    // Wait until the single coalesced cycle enters the feed fetch, then fire another focus while in flight
+    // Wait until the single coalesced cycle enters the feed fetch (synchronous burst coalesced to 1)
     await waitFor(() => {
-      expect(changesCallsDuringBurst).toBe(1);
+      expect(changesCalls).toBe(1);
     });
-    act(() => {
-      window.dispatchEvent(new Event('focus'));
-    });
-
-    pageGate.resolve();
-
-    await waitFor(() => {
-      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(
-        '2026-11-01T12:10:00.000000001Z',
-      );
-    });
-
-    // Overlapping wakes coalesced into exactly 1 feed request
-    expect(changesCallsDuringBurst).toBe(1);
 
     // Canonical sources were invalidated with refetchType: 'active' regardless of empty feed
     expect(invalidateSpy).toHaveBeenCalledWith({
@@ -943,6 +938,41 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
       queryKey: ['content', 'tags'],
       refetchType: 'active',
     });
+
+    // 2. While cycle 1 is in flight, fire a burst of 3 more wakes -> queues at most ONE trailing cycle
+    invalidateSpy.mockClear();
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // Still only 1 in-flight feed call while cycle 1 is held
+    expect(changesCalls).toBe(1);
+
+    // Release cycle 1 -> watermark 1 commits and the single trailing cycle (cycle 2) starts automatically
+    cycle1Gate.resolve();
+    await waitFor(() => {
+      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(
+        '2026-11-01T12:10:00.000000001Z',
+      );
+      expect(changesCalls).toBe(2);
+    });
+
+    // Trailing cycle also refetches canonical sources
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['content', 'entries'],
+      refetchType: 'active',
+    });
+
+    cycle2Gate.resolve();
+    await waitFor(() => {
+      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(
+        '2026-11-01T12:15:00.000000002Z',
+      );
+    });
+    // No 3rd cycle ran from the burst of 3 mid-cycle wakes
+    expect(changesCalls).toBe(2);
   });
 
   it('reads all feed pages before storing the new watermark, keeps old watermark on second-page error, and passes since = watermark - 120 s on the next call', async () => {
@@ -1083,6 +1113,96 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(true);
   });
 
+  it('preserves the old watermark and applies no partial batch when MAX_CHANGES_PAGES_PER_CYCLE is exhausted with next_cursor pending, and commits normally when the terminal page lands exactly at the cap', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: true });
+    const initialWatermark = '2026-11-01T12:00:00.123456789Z';
+    changesSyncTesting.setWatermarkForUser(USER_A_ID, initialWatermark);
+    changesSyncTesting.setMaxChangesPagesPerCycleForTests(3);
+
+    h.qc.setQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID), {
+      items: [
+        {
+          id: ENTRY_ID_1,
+          item_id: ITEM_ID,
+          type: 'text',
+          position: 0,
+          version: 1,
+          plaintext_len_bucket: 256,
+          created_at: '2026-11-01T10:00:00Z',
+          updated_at: '2026-11-01T10:00:00Z',
+        },
+      ],
+      next_cursor: null,
+    });
+    h.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'cap-test-v1-body');
+
+    // 1. Cap reached (3 pages) with next_cursor still non-null on the 3rd page -> old watermark kept, no cache/store mutations
+    let capExhaustedCalls = 0;
+    h.setChangesHandler(() => {
+      capExhaustedCalls += 1;
+      return jsonResponse({
+        changes: [
+          makeEntryChange({
+            id: ENTRY_ID_1,
+            version: 2,
+            updated_at: `2026-11-01T12:0${capExhaustedCalls}:00Z`,
+          }),
+          makeEntryChange({
+            id: ENTRY_ID_2,
+            version: 1,
+            deleted_at: `2026-11-01T12:0${capExhaustedCalls}:00Z`,
+            updated_at: `2026-11-01T12:0${capExhaustedCalls}:00Z`,
+          }),
+        ],
+        next_cursor: `cursor-after-page-${capExhaustedCalls}`,
+        watermark: '2026-11-01T12:40:00.000000000Z',
+      } satisfies EntryChangesPage);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+
+    await waitFor(() => {
+      expect(capExhaustedCalls).toBe(3);
+    });
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(initialWatermark);
+    expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBe('cap-test-v1-body');
+    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
+
+    // 2. Terminal page (next_cursor: null) reached on the exact 3rd page (at the cap) -> commits watermark & batch normally
+    let exactCapCalls = 0;
+    h.setChangesHandler(() => {
+      exactCapCalls += 1;
+      const isLastAllowedPage = exactCapCalls === 3;
+      return jsonResponse({
+        changes: [
+          makeEntryChange({
+            id: isLastAllowedPage ? ENTRY_ID_2 : ENTRY_ID_1,
+            version: isLastAllowedPage ? 1 : 2,
+            deleted_at: isLastAllowedPage ? '2026-11-01T12:03:00Z' : null,
+            updated_at: `2026-11-01T12:0${exactCapCalls}:00Z`,
+          }),
+        ],
+        next_cursor: isLastAllowedPage ? null : `cursor-exact-${exactCapCalls}`,
+        watermark: '2026-11-01T12:45:00.999999999Z',
+      } satisfies EntryChangesPage);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+
+    await waitFor(() => {
+      expect(exactCapCalls).toBe(3);
+      expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(
+        '2026-11-01T12:45:00.999999999Z',
+      );
+    });
+    expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(true);
+  });
+
   it('deduplicates by (id, updated_at), applies tombstones (removes from entries cache + body keys + publishes id), drops older version body keys, and drops watermark on 410 changes_window_expired', async () => {
     const h = await setupSyncHarness({ initialUnlocked: true });
 
@@ -1197,6 +1317,46 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     // ENTRY_ID_3 v5 untouched
     expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_3, 5))).toBe('body-3-v5');
 
+
+    // Delete -> restore in one accumulated batch follows the LAST observation in (updated_at, id) order:
+    // [tombstone(E, t1), live(E, t2)] -> isEntryRemotelyDeleted(E) === false (also clears a previously published tombstone)
+    expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(true);
+    applyEntryChangesBatch(h.qc, [
+      makeEntryChange({
+        id: ENTRY_ID_1,
+        item_id: ITEM_ID,
+        version: 3,
+        updated_at: '2026-11-01T12:05:00Z',
+        deleted_at: '2026-11-01T12:05:00Z',
+      }),
+      makeEntryChange({
+        id: ENTRY_ID_1,
+        item_id: ITEM_ID,
+        version: 4,
+        updated_at: '2026-11-01T12:06:00Z',
+        deleted_at: null,
+      }),
+    ]);
+    expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(false);
+
+    // Reverse order [live(E, t1), tombstone(E, t2)] -> later tombstone wins (isEntryRemotelyDeleted(E) === true)
+    applyEntryChangesBatch(h.qc, [
+      makeEntryChange({
+        id: ENTRY_ID_1,
+        item_id: ITEM_ID,
+        version: 4,
+        updated_at: '2026-11-01T12:06:00Z',
+        deleted_at: null,
+      }),
+      makeEntryChange({
+        id: ENTRY_ID_1,
+        item_id: ITEM_ID,
+        version: 5,
+        updated_at: '2026-11-01T12:07:00Z',
+        deleted_at: '2026-11-01T12:07:00Z',
+      }),
+    ]);
+    expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(true);
     // Now test 410 changes_window_expired on wake: drops watermark and relies on canonical refetch
     changesSyncTesting.setWatermarkForUser(USER_A_ID, '2026-11-01T12:00:00.123456789Z');
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).not.toBeNull();
@@ -1251,6 +1411,144 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
 
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it('fences in-flight feed cycles across lock -> re-unlock so a stale pre-lock response cannot mutate caches, tombstones, or watermark', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: true });
+    const initialWatermark = '2026-11-01T12:00:00.123456789Z';
+    changesSyncTesting.setWatermarkForUser(USER_A_ID, initialWatermark);
+
+    const heldFeedPage = createDeferred<Response>();
+    let feedRequestStarted = false;
+    h.setChangesHandler(() => {
+      feedRequestStarted = true;
+      return heldFeedPage.promise;
+    });
+
+    // Start a wake cycle and hold its feed page in flight
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await waitFor(() => {
+      expect(feedRequestStarted).toBe(true);
+    });
+
+    // Lock and re-unlock the same user/vault while the pre-lock feed page is still pending
+    await h.lock();
+    await h.unlock();
+
+    // Repopulate live metadata and decrypted body in the new unlock interval
+    h.qc.setQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID), {
+      items: [
+        {
+          id: ENTRY_ID_1,
+          item_id: ITEM_ID,
+          type: 'text',
+          position: 0,
+          version: 1,
+          plaintext_len_bucket: 256,
+          created_at: '2026-11-01T10:00:00Z',
+          updated_at: '2026-11-01T10:00:00Z',
+        },
+      ],
+      next_cursor: null,
+    });
+    h.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'fresh-reunlocked-body');
+
+    // Release the stale pre-lock feed page with a tombstone for ENTRY_ID_1 and a newer watermark
+    await act(async () => {
+      heldFeedPage.resolve(
+        jsonResponse({
+          changes: [
+            makeEntryChange({
+              id: ENTRY_ID_1,
+              item_id: ITEM_ID,
+              version: 2,
+              updated_at: '2026-11-01T12:05:00Z',
+              deleted_at: '2026-11-01T12:05:00Z',
+            }),
+          ],
+          next_cursor: null,
+          watermark: '2026-11-01T12:50:00.000000000Z',
+        } satisfies EntryChangesPage),
+      );
+      await Promise.resolve();
+    });
+
+    // The stale pre-lock cycle MUST NOT evict the new unlock interval's metadata/body, publish tombstones, or advance watermark
+    expect(
+      h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items.map((e) => e.id),
+    ).toEqual([ENTRY_ID_1]);
+    expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBe('fresh-reunlocked-body');
+    expect(isEntryRemotelyDeleted(ENTRY_ID_1)).toBe(false);
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBe(initialWatermark);
+  });
+
+  it('fences wake reloadVaultMeta() continuation so a delayed foreign-session null from User A does not purge User B caches or sync state', async () => {
+    const h = await setupSyncHarness({ initialUnlocked: true, observeEntriesQuery: true });
+
+    const heldUserAVaultGet = createDeferred<Response>();
+    let userAVaultGetIntercepted = false;
+    h.overrideRoute((url, init) => {
+      const parsed = new URL(url, 'http://localhost');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (parsed.pathname.endsWith('/vault') && method === 'GET' && !userAVaultGetIntercepted) {
+        userAVaultGetIntercepted = true;
+        return heldUserAVaultGet.promise;
+      }
+      return null;
+    });
+
+    // Trigger wake for User A so reloadVaultMeta() issues GET /vault and blocks on heldUserAVaultGet
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await waitFor(() => {
+      expect(userAVaultGetIntercepted).toBe(true);
+    });
+
+    // Switch session to User B and unlock User B's vault
+    h.overrideRoute(null);
+    h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+    await h.loginSession('b@example.test', 'pw');
+    await waitFor(() => {
+      expect(h.sessionStatus()).toBe('authenticated_with_vault');
+    });
+    await h.unlock();
+
+    // Seed User B's entries metadata, decrypted body, watermark, and tombstone state
+    h.qc.setQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID), {
+      items: [
+        {
+          id: ENTRY_ID_1,
+          item_id: ITEM_ID,
+          type: 'text',
+          position: 0,
+          version: 1,
+          plaintext_len_bucket: 256,
+          created_at: '2026-11-01T10:00:00Z',
+          updated_at: '2026-11-01T10:00:00Z',
+        },
+      ],
+      next_cursor: null,
+    });
+    h.qc.setQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1), 'user-b-decrypted-body');
+    changesSyncTesting.setWatermarkForUser(USER_B_ID, '2026-11-01T16:00:00Z');
+    changesSyncTesting.publishRemoteTombstonesForTests([ENTRY_ID_2]);
+
+    // Release User A's stale GET /vault response (VaultProvider returns null because the response is foreign to User B)
+    await act(async () => {
+      heldUserAVaultGet.resolve(problemResponse('vault_absent', 404));
+      await Promise.resolve();
+    });
+
+    // User B's entries cache, decrypted body, watermark, and tombstones MUST remain untouched
+    expect(
+      h.qc.getQueryData<EntryMetaList>(contentQueryKeys.entries(ITEM_ID))?.items.map((e) => e.id),
+    ).toEqual([ENTRY_ID_1]);
+    expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBe('user-b-decrypted-body');
+    expect(changesSyncTesting.getWatermarkForUser(USER_B_ID)).toBe('2026-11-01T16:00:00Z');
+    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(true);
   });
 
   it('removes ["content","entries"] cache and clears watermark + tombstones while keeping items/tags on vault_key_id change or vault absent, and clears on logout and user switch', async () => {

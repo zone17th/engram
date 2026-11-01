@@ -101,7 +101,8 @@ const activeCardListeners = new Set<() => void>();
 
 let globalSubscriptionsInstalled = false;
 let syncEpoch = 0;
-
+let reloadEpoch = 0;
+let maxChangesPagesPerCycleOverride: number | null = null;
 function emitTombstoneChange(): void {
   tombstoneSnapshotVersion += 1;
   for (const listener of [...tombstoneListeners]) {
@@ -128,13 +129,15 @@ function emitActiveCardChange(): void {
  */
 export function clearChangesWatermark(): void {
   syncEpoch += 1;
+  reloadEpoch += 1;
   watermarkState = { userId: null, watermark: null };
 }
 
 /**
- * Clears the in-memory remote-tombstone ID set and notifies subscribers.
+ * Bumps the sync lifecycle epoch and clears the in-memory remote-tombstone ID set, notifying subscribers.
  */
 export function clearRemoteTombstones(): void {
+  syncEpoch += 1;
   if (remoteTombstoneIds.size === 0) {
     return;
   }
@@ -429,10 +432,12 @@ export function applyEntryChangesBatch(
   changes: readonly EntryChange[],
 ): void {
   const deduped = dedupEntryChanges(changes);
-  const tombstonesToPublish: string[] = [];
+  const tombstonesToPublish = new Set<string>();
   const itemsToInvalidate = new Set<string>();
 
-  // Track the latest change per entryId in case multiple updates to the same entry appear in the window
+  // Track the latest change per entryId in (updated_at, id) order:
+  // a later live observation cancels an earlier tombstone in the same batch (and clears any previously published one);
+  // a later tombstone wins over an earlier live observation.
   for (const change of deduped) {
     const { id: entryId, item_id: itemId, version, deleted_at: deletedAt } = change;
     if (!entryId || !itemId) continue;
@@ -440,11 +445,12 @@ export function applyEntryChangesBatch(
     if (deletedAt !== null && deletedAt !== undefined) {
       removeEntryFromEntriesCache(queryClient, itemId, entryId);
       queryClient.removeQueries({ queryKey: vaultBodyQueryKey(entryId) });
-      tombstonesToPublish.push(entryId);
+      tombstonesToPublish.add(entryId);
       continue;
     }
 
-    // Live entry (created, updated, or restored)
+    // Live entry (created, updated, or restored): cancel any earlier tombstone in this batch and in the store
+    tombstonesToPublish.delete(entryId);
     clearRemoteTombstoneForEntry(entryId);
 
     const cachedVersion = getCachedEntryMetaVersion(queryClient, itemId, entryId);
@@ -459,7 +465,7 @@ export function applyEntryChangesBatch(
     }
   }
 
-  if (tombstonesToPublish.length > 0) {
+  if (tombstonesToPublish.size > 0) {
     publishRemoteTombstones(tombstonesToPublish);
   }
 
@@ -499,6 +505,10 @@ export async function runChangesFeedCycle(options: RunChangesFeedCycleOptions): 
   }
 
   const cycleEpoch = syncEpoch;
+  const maxPages =
+    maxChangesPagesPerCycleOverride !== null && maxChangesPagesPerCycleOverride > 0
+      ? maxChangesPagesPerCycleOverride
+      : MAX_CHANGES_PAGES_PER_CYCLE;
   const previousWatermark = getWatermarkForUser(userId);
   const since = computeChangesSince(previousWatermark);
 
@@ -506,9 +516,10 @@ export async function runChangesFeedCycle(options: RunChangesFeedCycleOptions): 
   let cursor: string | undefined = undefined;
   let candidateWatermark: string | null = null;
   let pageCount = 0;
+  let reachedTerminalPage = false;
 
   try {
-    while (pageCount < MAX_CHANGES_PAGES_PER_CYCLE) {
+    while (pageCount < maxPages) {
       if (!isUnlockedAndCurrent() || syncEpoch !== cycleEpoch) {
         return;
       }
@@ -542,11 +553,14 @@ export async function runChangesFeedCycle(options: RunChangesFeedCycleOptions): 
       if (typeof page.next_cursor === 'string' && page.next_cursor.length > 0) {
         cursor = page.next_cursor;
       } else {
+        reachedTerminalPage = true;
         break;
       }
     }
 
-    if (!isUnlockedAndCurrent() || syncEpoch !== cycleEpoch) {
+    if (!reachedTerminalPage || !isUnlockedAndCurrent() || syncEpoch !== cycleEpoch) {
+      // On cap exhaustion (cursor still pending after maxPages) or lifecycle invalidation:
+      // keep the OLD watermark and apply nothing from the partial batch.
       return;
     }
 
@@ -562,7 +576,7 @@ export async function runChangesFeedCycle(options: RunChangesFeedCycleOptions): 
       err instanceof ProblemError &&
       (err.problem.status === 410 || err.problem.code === 'changes_window_expired')
     ) {
-      if (syncEpoch === cycleEpoch) {
+      if (syncEpoch === cycleEpoch && isUnlockedAndCurrent()) {
         watermarkState = { userId, watermark: null };
       }
       return;
@@ -621,8 +635,16 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     ensureGlobalSyncLifecycleSubscriptions();
   }, []);
 
+  const prevVaultStateRef = useRef(vaultState);
   useEffect(() => {
-    if (vaultState !== 'unlocked' && vaultState !== 'unlocking') {
+    const prev = prevVaultStateRef.current;
+    prevVaultStateRef.current = vaultState;
+    const prevEligible = prev === 'unlocked' || prev === 'unlocking';
+    const nextEligible = vaultState === 'unlocked' || vaultState === 'unlocking';
+    if (prevEligible !== nextEligible) {
+      syncEpoch += 1;
+    }
+    if (!nextEligible) {
       clearRemoteTombstones();
     }
   }, [vaultState]);
@@ -725,14 +747,18 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       return;
     }
 
+    let disposed = false;
     let inFlightPromise: Promise<void> | null = null;
-    let scheduledMicrotask = false;
+    let scheduledBeforeRun = false;
+    let rerunRequested = false;
 
     const executeWakeCycle = async (): Promise<void> => {
-      if (!isAuthenticatedRef.current || !userIdRef.current) {
+      if (disposed || !isAuthenticatedRef.current || !userIdRef.current) {
         return;
       }
       const activeUserId = userIdRef.current;
+      const wakeEpoch = syncEpoch;
+      const wakeReloadEpoch = reloadEpoch;
       const hasActiveEntries = hasActiveContentEntriesQuery(queryClient);
       const keyAtWakeStart = lastSeenVaultByUserRef.current?.lastNonNullVaultKeyId ?? null;
       const wasUnlockedAtWakeStart =
@@ -753,6 +779,15 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
         ? reloadVaultMetaRef
             .current!()
             .then((freshMeta) => {
+              if (
+                disposed ||
+                reloadEpoch !== wakeReloadEpoch ||
+                !isAuthenticatedRef.current ||
+                userIdRef.current !== activeUserId ||
+                lastSeenVaultByUserRef.current?.userId !== activeUserId
+              ) {
+                return freshMeta;
+              }
               const rememberedKey =
                 lastSeenVaultByUserRef.current?.lastNonNullVaultKeyId ?? keyAtWakeStart;
               if (
@@ -770,9 +805,11 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       await Promise.allSettled([refetchPromise, reloadPromise]);
 
       // 3. Run the changes feed ONLY on a wake event, ONLY when the session is authenticated,
-      //    the vault was unlocked on wake (and did not lock during verification), AND at least one
-      //    ['content','entries',itemId] query is currently active/observed.
+      //    the vault was unlocked on wake (and did not lock or change generation during verification),
+      //    AND at least one ['content','entries',itemId] query is currently active/observed.
       if (
+        disposed ||
+        syncEpoch !== wakeEpoch ||
         !isAuthenticatedRef.current ||
         userIdRef.current !== activeUserId ||
         !wasUnlockedAtWakeStart ||
@@ -786,6 +823,8 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
         queryClient,
         userId: activeUserId,
         isUnlockedAndCurrent: () =>
+          !disposed &&
+          syncEpoch === wakeEpoch &&
           isAuthenticatedRef.current &&
           userIdRef.current === activeUserId &&
           (vaultStateRef.current === 'unlocked' || vaultStateRef.current === 'unlocking') &&
@@ -795,26 +834,35 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     };
 
     const triggerCoalescedWakeCycle = (): Promise<void> => {
-      if (!isAuthenticatedRef.current || !userIdRef.current) {
+      if (disposed || !isAuthenticatedRef.current || !userIdRef.current) {
         return Promise.resolve();
       }
-      // Coalesce overlapping or synchronous burst wake events (focus + visibilitychange + online) into one cycle
+      // Coalesce overlapping or synchronous burst wake events (focus + visibilitychange + online) into one cycle;
+      // if a wake arrives after the in-flight cycle has already started, queue at most ONE trailing cycle.
       if (inFlightPromise) {
+        if (!scheduledBeforeRun) {
+          rerunRequested = true;
+        }
         return inFlightPromise;
       }
-      if (scheduledMicrotask) {
-        return inFlightPromise ?? Promise.resolve();
-      }
-      scheduledMicrotask = true;
-      const p = Promise.resolve()
-        .then(() => {
-          scheduledMicrotask = false;
-          return executeWakeCycle();
-        })
-        .finally(() => {
-          inFlightPromise = null;
-          scheduledMicrotask = false;
-        });
+      scheduledBeforeRun = true;
+      const runDrainLoop = async (): Promise<void> => {
+        await Promise.resolve();
+        scheduledBeforeRun = false;
+        if (disposed) {
+          return;
+        }
+        await executeWakeCycle();
+        while (rerunRequested && !disposed) {
+          rerunRequested = false;
+          await executeWakeCycle();
+        }
+      };
+      const p = runDrainLoop().finally(() => {
+        inFlightPromise = null;
+        scheduledBeforeRun = false;
+        rerunRequested = false;
+      });
       inFlightPromise = p;
       return p;
     };
@@ -836,6 +884,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
+      disposed = true;
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onOnline);
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -867,7 +916,11 @@ export const __testing = {
   getTombstoneSnapshotVersion(): number {
     return tombstoneSnapshotVersion;
   },
+  setMaxChangesPagesPerCycleForTests(maxPages: number | null): void {
+    maxChangesPagesPerCycleOverride = maxPages;
+  },
   resetAllForTests(): void {
+    maxChangesPagesPerCycleOverride = null;
     clearAllChangesSyncState();
     activeCardTrackerByItem.clear();
   },
