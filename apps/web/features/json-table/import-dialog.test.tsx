@@ -640,6 +640,8 @@ async function setupImportHarness(options?: {
 
   const messages = locale === 'en' ? enMessages : viMessages;
 
+  const lockEpochEnv = makeSimpleLockEpochEnv();
+
   function buildTree(node?: ReactNode) {
     const content =
       node !== undefined ? (
@@ -661,7 +663,7 @@ async function setupImportHarness(options?: {
                     shims.push(shim);
                     return shim.port;
                   }}
-                  lockEpochEnv={makeSimpleLockEpochEnv()}
+                  lockEpochEnv={lockEpochEnv}
                 >
                   <Probe />
                   {content}
@@ -687,7 +689,11 @@ async function setupImportHarness(options?: {
       opGeneration: createOp.opGeneration,
     });
   });
-  await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+  await waitFor(() => {
+    expect(vaultCtx.state).toBe('unlocked');
+    expect(vaultCtx.inFlight).toBe(false);
+    expect(vaultCtx.unlockBaseline?.lockEpoch).toBe(vaultCtx.tabKnownLockEpoch);
+  });
 
   if (!options?.skipInitialReloadVaultMeta) {
     await act(async () => {
@@ -773,13 +779,22 @@ async function setupImportHarness(options?: {
         });
         await vaultCtx.reloadVaultMeta();
       });
-      await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('unlocked');
+        expect(vaultCtx.inFlight).toBe(false);
+        expect(vaultCtx.unlockBaseline?.lockEpoch).toBe(vaultCtx.tabKnownLockEpoch);
+      });
     },
     lock: async () => {
+      const prevLockEpoch = vaultCtx.tabKnownLockEpoch;
       await act(async () => {
         await vaultCtx.lockNow();
       });
-      await waitFor(() => expect(vaultCtx.state).toBe('locked'));
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('locked');
+        expect(vaultCtx.inFlight).toBe(false);
+        expect(vaultCtx.tabKnownLockEpoch).toBeGreaterThan(prevLockEpoch);
+      });
     },
     signOutSession: async () => {
       await act(async () => {
@@ -1299,6 +1314,9 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('advisor-dec-209: omnibox JSON banner handoff never touches location, history.state, or Web Storage, and wipes on lock between click and open, logout, user switch, and dialog close', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
+      expect(h.vault().state).toBe('unlocked');
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
 
@@ -1352,6 +1370,12 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     expect(realLockHolderRef.text).toBe('');
 
     await h.unlock();
+    await waitFor(() => {
+      expect(h.vault().state).toBe('unlocked');
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     expect(getJsonImportHandoffSnapshot()).toBeNull();
 
@@ -1373,6 +1397,9 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     // Re-mount the page and verify no stale handoff dialog reopens
     h.rerenderPage();
     await waitFor(() => {
+      expect(h.vault().state).toBe('unlocked');
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
     });
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
