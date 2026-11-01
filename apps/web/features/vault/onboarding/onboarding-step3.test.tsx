@@ -306,6 +306,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     options: {
       oauthOnly?: boolean;
       onBeforeGetVault?: () => Promise<void> | void;
+      getVaultMode?: 'present' | 'absent_404';
     } = {},
   ) {
     let currentMe = makeMeFixture('absent', options);
@@ -341,6 +342,20 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
       if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
         getVaultCalls += 1;
         await options.onBeforeGetVault?.();
+        if (options.getVaultMode === 'absent_404') {
+          return new Response(
+            JSON.stringify({
+              type: 'https://engram.zone17.click/problems/vault_absent',
+              title: 'vault_absent',
+              status: 404,
+              code: 'vault_absent',
+            }),
+            {
+              status: 404,
+              headers: { 'content-type': 'application/problem+json' },
+            },
+          );
+        }
         const vkId = vaultGetHook?.() ?? 'vk:7f3a9b2c4d5e6f7a8b9c0d';
         return jsonResponse({
           version: 1,
@@ -840,14 +855,16 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     });
 
     expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
-    expect(getVaultCallsCount()).toBe(1);
+    // Step 2 -> Step 3 transition does NOT eagerly fire GET /vault (avoiding any post-create reload race on Step 3)
+    expect(getVaultCallsCount()).toBe(0);
     expect(getVault().vaultMeta).toBeNull();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-skip-passkey-button'));
     });
 
-    // While the post-create GET /vault is still in flight, Skip waits before navigating to /app
+    // Clicking Skip starts GET /vault (reloadVaultMeta) and waits before navigating to /app
+    expect(getVaultCallsCount()).toBe(1);
     expect(routerMocks.replace).not.toHaveBeenCalledWith('/app');
 
     await act(async () => {
@@ -1049,5 +1066,25 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     expect(getVaultCallsDuringStaleSubmit).toBe(0);
     expect(vaultCtx3.vaultMeta).toBeNull();
     expect(routerMocks.replace).not.toHaveBeenCalled();
+  }, CRYPTO_TEST_TIMEOUT);
+
+  it('FU2 fix2 (CI-41336756651 regression): when GET /vault is mocked to return 404 vault_absent (as in e2e/vault-onboarding.spec.ts), Step 3 stays mounted and unlocked after POST /vault so Skip is clickable', async () => {
+    const { getVault, getVaultCallsCount } = await advanceToStep3('en', {
+      getVaultMode: 'absent_404',
+    });
+
+    // Allow microtasks/effects after POST /vault to flush
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // If POST /vault eagerly called reloadVaultMeta(), the 404 response would trigger VaultProvider.loadVaultMeta()
+    // row 1a -> lock() -> registerSecretFormReset -> setStep('done'), unmounting Step 3 before Skip can be clicked!
+    expect(getVaultCallsCount()).toBe(0);
+    expect(getVault().workerState).toBe('unlocked');
+    expect(getVault().state).toBe('unlocked');
+    expect(screen.getByTestId('onboarding-step-passkey')).toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-skip-passkey-button')).toBeEnabled();
   }, CRYPTO_TEST_TIMEOUT);
 });
