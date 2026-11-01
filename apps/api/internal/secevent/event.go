@@ -43,6 +43,11 @@ const (
 	ReasonLastMethod = "last_method"
 	ReasonCollision  = "collision"
 	ReasonUnverified = "unverified"
+
+	EventEntryImport = "entry.import"
+
+	ImportSourcePaste = "paste"
+	ImportSourceFile  = "file"
 )
 
 var providers = map[string]struct{}{
@@ -58,12 +63,18 @@ var reasons = map[string]struct{}{
 	ReasonLastMethod: {}, ReasonCollision: {}, ReasonUnverified: {},
 }
 
+var importSources = map[string]struct{}{
+	ImportSourcePaste: {}, ImportSourceFile: {},
+}
+
 // Meta chỉ chứa enum đã whitelist — không map tự do.
 type Meta struct {
 	Provider string   `json:"provider,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 	Fields   []string `json:"fields,omitempty"`
 	Count    int      `json:"count,omitempty"`
+
+	ImportSource string `json:"import_source,omitempty"`
 }
 
 func (m Meta) Sanitize() Meta {
@@ -78,6 +89,9 @@ func (m Meta) Sanitize() Meta {
 		if _, ok := fields[f]; ok {
 			out.Fields = append(out.Fields, f)
 		}
+	}
+	if _, ok := importSources[m.ImportSource]; ok {
+		out.ImportSource = m.ImportSource
 	}
 	return out
 }
