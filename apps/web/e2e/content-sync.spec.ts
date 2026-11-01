@@ -464,8 +464,9 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
         timeout: CRYPTO_WAIT_MS,
       });
 
-      // Focus B -> B detects vault reset (404 on GET /vault + GET /auth/me), locks its Worker, purges old entries,
-      // and redirects to /app/onboarding with the vault pill showing 'absent' (vault-shut)
+      // Focus B -> B detects vault reset (404 on GET /vault + GET /auth/me), locks its Worker immediately,
+      // purges decrypted bodies + entries cache, and shows locked state on `/app/items/<id>` with 0 decrypted bodies
+      // and no old entry body text in B's DOM (plan Task 20: "reset ở A -> B khi focus bị khoá (P03)").
       await triggerFocusWake(pageB);
       await expect
         .poll(
@@ -476,18 +477,24 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
                 pathname: window.location.pathname,
                 pillState: pill?.getAttribute('data-vault-state') ?? null,
                 decryptedCount: document.querySelectorAll('[data-testid="entry-body"]').length,
+                hasOldPlaintextInDom: document.body.innerText.includes(
+                  'entry-2-added-by-A-while-feed-empty',
+                ),
               };
             }),
           { timeout: UI_WAIT_MS },
         )
         .toEqual({
-          pathname: '/app/onboarding',
-          pillState: 'absent',
+          pathname: `/app/items/${itemId}`,
+          pillState: 'locked',
           decryptedCount: 0,
+          hasOldPlaintextInDom: false,
         });
       await expectVaultShut(pageB);
+      await expect(pageB.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+      await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
 
-      // Create a new vault in A
+      // Create a new vault in A via the reset dialog's "Create new vault" link -> /app/onboarding
       await resetDialog.getByRole('link', { name: /^(Create new vault|Tạo vault mới)$/ }).click();
       await createVaultViaOnboarding(pageA, NEW_VAULT_PASSPHRASE, { kind: 'skip' });
       await expectUnlockedOnApp(pageA);
@@ -506,11 +513,13 @@ test.describe('P04-T20 multi-device content sync and client vault reset (A5, A8,
       await expect(itemCardB).toBeVisible({ timeout: UI_WAIT_MS });
       await expect(itemCardB).toContainText('sync-router-item');
 
-      // Open the item in B -> empty entries state, 0 old entry cards
+      // Open the item in B -> empty entries state, 0 old entry cards, and no old entry body text
       await itemCardB.click();
       await expect(pageB).toHaveURL(new RegExp(`/app/items/${itemId}$`), { timeout: UI_WAIT_MS });
       await expect(pageB.getByTestId('item-entries-empty')).toBeVisible({ timeout: UI_WAIT_MS });
       await expect(pageB.getByTestId(`entry-card-${entry2Id}`)).toHaveCount(0);
+      await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
+      await expect(pageB.locator('body')).not.toContainText('entry-2-added-by-A-while-feed-empty');
     } finally {
       await closeAll(contexts);
     }
