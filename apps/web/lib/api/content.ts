@@ -782,16 +782,24 @@ export async function contentMutate<
         headers,
         signal: opts.signal,
       });
-      opts.onAttempt?.({ attempt, uncertainOutcome: false });
+      try {
+        opts.onAttempt?.({ attempt, uncertainOutcome: false });
+      } catch {
+        // Never let a throwing observer callback turn a committed 2xx response into a retry or failure (advisor-dec-203).
+      }
       return response;
     } catch (error) {
       if (isAbortFromCaller(error, opts.signal)) {
         throw error;
       }
-      opts.onAttempt?.({
-        attempt,
-        uncertainOutcome: isUncertainMutationOutcomeError(error),
-      });
+      try {
+        opts.onAttempt?.({
+          attempt,
+          uncertainOutcome: isUncertainMutationOutcomeError(error),
+        });
+      } catch {
+        // Never let a throwing observer callback alter retry or error classification (advisor-dec-203).
+      }
       // Pre-lookup recovery: if the server rejected before idempotency lookup with `403 csrf_invalid`
       // (either on the first send or after an uncertain prior send — CCFE8), bootstrap the CSRF
       // cookie in-session once within the 2-retry budget and replay the exact same bytes + key.

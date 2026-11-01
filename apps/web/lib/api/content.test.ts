@@ -667,6 +667,49 @@ describe('lib/api/content', () => {
         problem: { code: 'session_invalid', status: 401 },
       });
       expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // 5. A throwing onAttempt callback never alters response resolution, retry flow, or error mapping
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: SAMPLE_ENTRY_ID,
+            item_id: SAMPLE_ITEM_ID,
+            type: 'text',
+            position: 0,
+            version: 1,
+            plaintext_len_bucket: 256,
+            created_at: '2026-11-01T00:00:00Z',
+            updated_at: '2026-11-01T00:00:00Z',
+          },
+          201,
+        ),
+      );
+      const createdDespiteThrow = await entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+        idempotencyKey: createIdempotencyKey(),
+        onAttempt: () => {
+          throw new Error('observer callback boom');
+        },
+      });
+      expect(createdDespiteThrow.id).toBe(SAMPLE_ENTRY_ID);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      fetchMock.mockReset();
+      fetchMock
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce(problemResponse('session_invalid', 401));
+      await expect(
+        entryCreate(SAMPLE_ITEM_ID, SAMPLE_ENTRY_CREATE, {
+          idempotencyKey: createIdempotencyKey(),
+          onAttempt: () => {
+            throw new Error('observer callback boom on failure');
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: 'ProblemError',
+        problem: { code: 'session_invalid', status: 401 },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
 

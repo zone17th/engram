@@ -222,46 +222,56 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     let postItemsAbortRemaining = CONTENT_MUTATE_ATTEMPTS_PER_CALL;
     let postItemsForwardedToBackend = false;
     const seenPostItemsKeys: string[] = [];
-    await page.route('**/api/v1/items', async (route) => {
-      if (route.request().method() !== 'POST') {
-        await route.continue();
-        return;
-      }
-      const key = route.request().headers()['idempotency-key'] ?? '';
-      seenPostItemsKeys.push(key);
-      if (postItemsAbortRemaining > 0) {
-        postItemsAbortRemaining -= 1;
-        if (!postItemsForwardedToBackend) {
-          postItemsForwardedToBackend = true;
-          await route.fetch();
+    const a3RouteHandlers: Array<Promise<void>> = [];
+    const trackRouteHandler = (fn: () => Promise<void>): Promise<void> => {
+      const p = fn();
+      a3RouteHandlers.push(p);
+      return p;
+    };
+    await page.route('**/api/v1/items', (route) =>
+      trackRouteHandler(async () => {
+        if (route.request().method() !== 'POST') {
+          await route.continue().catch(() => {});
+          return;
         }
-        await route.abort('failed');
-        return;
-      }
-      await route.continue();
-    });
+        const key = route.request().headers()['idempotency-key'] ?? '';
+        seenPostItemsKeys.push(key);
+        if (postItemsAbortRemaining > 0) {
+          postItemsAbortRemaining -= 1;
+          if (!postItemsForwardedToBackend) {
+            postItemsForwardedToBackend = true;
+            await route.fetch();
+          }
+          await route.abort('failed').catch(() => {});
+          return;
+        }
+        await route.continue().catch(() => {});
+      }),
+    );
 
     let postEntriesAbortRemaining = 0;
     let postEntriesForwardedToBackend = false;
     const seenPostEntriesKeys: string[] = [];
-    await page.route('**/api/v1/items/*/entries', async (route) => {
-      if (route.request().method() !== 'POST') {
-        await route.continue();
-        return;
-      }
-      const key = route.request().headers()['idempotency-key'] ?? '';
-      seenPostEntriesKeys.push(key);
-      if (postEntriesAbortRemaining > 0) {
-        postEntriesAbortRemaining -= 1;
-        if (!postEntriesForwardedToBackend) {
-          postEntriesForwardedToBackend = true;
-          await route.fetch();
+    await page.route('**/api/v1/items/*/entries', (route) =>
+      trackRouteHandler(async () => {
+        if (route.request().method() !== 'POST') {
+          await route.continue().catch(() => {});
+          return;
         }
-        await route.abort('failed');
-        return;
-      }
-      await route.continue();
-    });
+        const key = route.request().headers()['idempotency-key'] ?? '';
+        seenPostEntriesKeys.push(key);
+        if (postEntriesAbortRemaining > 0) {
+          postEntriesAbortRemaining -= 1;
+          if (!postEntriesForwardedToBackend) {
+            postEntriesForwardedToBackend = true;
+            await route.fetch();
+          }
+          await route.abort('failed').catch(() => {});
+          return;
+        }
+        await route.continue().catch(() => {});
+      }),
+    );
 
     await setSecretTextareaValue(omnibox, 'a3-item #nhà: a3-secret-payload');
     await omnibox.press('Enter');
@@ -306,6 +316,7 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     expect(lookupA3Item2.total).toBe(1);
     expect(lookupA3Item2.items[0]?.entry_count).toBe(2);
 
+    await Promise.allSettled(a3RouteHandlers);
     await page.unroute('**/api/v1/items');
     await page.unroute('**/api/v1/items/*/entries');
   });
@@ -395,9 +406,14 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
 
     const apiResponses = attachApiResponseRecorder(page);
     const deleteRequestUrls: string[] = [];
+    const postEntriesRequestUrls: string[] = [];
     page.context().on('request', (req) => {
-      if (req.method() === 'DELETE' && req.url().includes('/api/v1/')) {
-        deleteRequestUrls.push(req.url());
+      const url = req.url();
+      if (req.method() === 'DELETE' && url.includes('/api/v1/')) {
+        deleteRequestUrls.push(url);
+      }
+      if (req.method() === 'POST' && /\/api\/v1\/items\/[^/]+\/entries$/.test(url)) {
+        postEntriesRequestUrls.push(url);
       }
     });
 
@@ -478,32 +494,45 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     expect(afterTypingCtrlZLookup.total).toBe(1);
     expect(afterTypingCtrlZLookup.items[0]?.entry_count).toBe(1);
 
-    // 3. Lock mid-plan -> unlock via the real `/app/unlock` route -> post-unlock notice is visible (HM18B-R1-4)
+    // 3. Lock mid-plan -> unlock via the real `/app/unlock` route -> post-unlock notice is visible (HM18B-R1-4, HM18-CI-9)
     const { promise: postEntriesEntered, resolve: resolvePostEntriesEntered } =
       Promise.withResolvers<void>();
     const { promise: heldPostEntriesGate, resolve: releaseHeldPostEntries } =
       Promise.withResolvers<void>();
+    const { promise: heldPostEntriesDone, resolve: resolveHeldPostEntriesDone } =
+      Promise.withResolvers<void>();
+    let heldOnePostEntries = false;
     await page.route('**/api/v1/items/*/entries', async (route) => {
-      if (route.request().method() !== 'POST') {
-        await route.continue();
+      if (route.request().method() !== 'POST' || heldOnePostEntries) {
+        await route.continue().catch(() => {});
         return;
       }
-      resolvePostEntriesEntered();
-      await heldPostEntriesGate;
-      await route.abort('aborted');
+      heldOnePostEntries = true;
+      try {
+        resolvePostEntriesEntered();
+        await heldPostEntriesGate;
+        // Locking the vault aborts the in-flight `fetch` signal (`planAbortRef.current.abort()`),
+        // which may already settle the route in Playwright before `route.abort` runs (HM18-CI-9).
+        await route.abort('aborted').catch(() => {});
+      } finally {
+        resolveHeldPostEntriesDone();
+      }
     });
 
     await setSecretTextareaValue(omnibox, 'lock-mid-plan-item #nhà: secret-dropped-on-lock');
     await omnibox.press('Enter');
     await postEntriesEntered;
+    const postEntriesCountAtLock = postEntriesRequestUrls.length;
 
     // Lock the vault while `POST /items` + `POST /tags` + `POST /items/{id}/tags` have committed and `POST /entries` is in flight
     await page.getByTestId('vault-lock-button').click();
     releaseHeldPostEntries();
+    await heldPostEntriesDone;
     await page.unroute('**/api/v1/items/*/entries');
 
     await expectLockedListOnApp(page);
     await expectOmniboxEmptyBool(omnibox);
+    expect(postEntriesRequestUrls).toHaveLength(postEntriesCountAtLock);
 
     // Unlock through the real `/app/unlock` route (Omnibox unmounts on `/app/unlock` and remounts on `/app`)
     await unlockFromLockedList(page, VAULT_PASSPHRASE);
@@ -514,7 +543,27 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
     await expect(lockClearedNotice).toContainText(
       /Bản nháp chưa lưu đã bị xoá khi khoá vault; mục\/tag đã tạo vẫn còn|Unsaved draft was cleared when the vault locked; any item\/tags already created were kept/,
     );
+    expect(postEntriesRequestUrls).toHaveLength(postEntriesCountAtLock);
 
+    // Verify on the real backend that the item stayed with 0 entries and nothing was auto-sent after lock/unlock (HM18-CI-9)
+    const lockMidPlanLookup = await page.evaluate(async () => {
+      const res = await fetch('/api/v1/items/lookup?name=lock-mid-plan-item', {
+        credentials: 'include',
+      });
+      return (await res.json()) as {
+        items: Array<{ id: string; entry_count: number }>;
+        total: number;
+      };
+    });
+    expect(lockMidPlanLookup.total).toBe(1);
+    expect(lockMidPlanLookup.items[0]?.entry_count).toBe(0);
+    expect(
+      apiResponses.filter(
+        (r) =>
+          r.method === 'POST' &&
+          r.pathname === `/api/v1/items/${lockMidPlanLookup.items[0]?.id ?? ''}/entries`,
+      ),
+    ).toHaveLength(0);
     // Switching to another user in `['auth', 'me']` immediately hides and clears User A's lock notice (HM18B-R2-7)
     await page.evaluate(() => {
       const win = window as unknown as {
