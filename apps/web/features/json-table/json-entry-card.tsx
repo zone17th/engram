@@ -38,7 +38,7 @@ import { contentQueryKeys } from '@/features/items/query-keys';
 import {
   JSON_NEW_PRESETS,
   NewJsonEntryComposer,
-  setJsonComposerPlaintextHolderForTests,
+  __testing as jsonComposerTesting,
   type JsonCardMode,
   type JsonComposerPlaintextHolder,
   type JsonNewPresetId,
@@ -72,7 +72,6 @@ import {
 export {
   JSON_NEW_PRESETS,
   NewJsonEntryComposer,
-  setJsonComposerPlaintextHolderForTests,
   type JsonCardMode,
   type JsonComposerPlaintextHolder,
   type JsonNewPresetId,
@@ -82,13 +81,17 @@ export {
 let jsonEditorPlaintextHolderTestHookRef: { current: EditorPlaintextHolder } | null = null;
 
 /**
- * Module-scoped test hook to observe the JSON card plaintext holder without exposing a public component prop (IP16-FE1-3 / IP15-FE3-7a).
+ * Module-scoped test namespace to observe the JSON card/composer plaintext holders without exposing public component props or production exports (IP16-FE1-3, IP15-FE4-7).
  */
-export function setJsonEditorPlaintextHolderForTests(
-  holderRef: { current: EditorPlaintextHolder } | null,
-): void {
-  jsonEditorPlaintextHolderTestHookRef = holderRef;
-}
+export const __testing = {
+  setJsonEditorPlaintextHolderForTests(
+    holderRef: { current: EditorPlaintextHolder } | null,
+  ): void {
+    jsonEditorPlaintextHolderTestHookRef = holderRef;
+  },
+  setJsonComposerPlaintextHolderForTests:
+    jsonComposerTesting.setJsonComposerPlaintextHolderForTests,
+};
 
 export interface JsonEntryCardProps {
   readonly entry: EntryMeta;
@@ -325,19 +328,28 @@ export function JsonEntryCard({
   const baseForRawEol = tableSource || originalSource || body || '{}';
   const rawEolInfo = useMemo(() => detectEol(baseForRawEol), [baseForRawEol]);
 
+  const normalizedOriginalLf = useMemo(
+    () => normalizeEolToLf(originalSource),
+    [originalSource],
+  );
+  const normalizedTableLf = useMemo(
+    () => normalizeEolToLf(tableSource),
+    [tableSource],
+  );
+
   // Keep holder in sync with latest state
   plaintextHolderRef.current.originalSource = originalSource;
   plaintextHolderRef.current.tableSource = tableSource;
   plaintextHolderRef.current.draftValue =
-    mode === 'raw' && rawEditedSinceSwitch ? rawDraftValue : normalizeEolToLf(tableSource);
+    mode === 'raw' && rawEditedSinceSwitch ? rawDraftValue : normalizedTableLf;
 
   const isDirty = useMemo(() => {
     if (!unlocked || originalSource === '') return false;
     if (mode === 'raw' && rawEditedSinceSwitch) {
-      return rawDraftValue !== normalizeEolToLf(originalSource);
+      return rawDraftValue !== normalizedOriginalLf;
     }
     return tableSource !== originalSource;
-  }, [mode, originalSource, rawDraftValue, rawEditedSinceSwitch, tableSource, unlocked]);
+  }, [mode, normalizedOriginalLf, originalSource, rawDraftValue, rawEditedSinceSwitch, tableSource, unlocked]);
 
   // IP16-FE1-19: Only count an actual unsaved draft or active error/conflict state (not merely viewing the Raw tab)
   const hasActiveDraftOrStateRef = useRef<boolean>(false);
@@ -1677,7 +1689,7 @@ export function JsonEntryCard({
                     className="auth-alert mb-3"
                   >
                     <p className="m-0 mb-1 text-[14px] font-semibold text-body">
-                      {tEntry('conflictHeading')}
+                      {tEntry('conflictTitle')}
                     </p>
                     <p className="m-0 text-[13px] text-body">{tEntry('conflictBody')}</p>
                     <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
@@ -1689,7 +1701,7 @@ export function JsonEntryCard({
                           void handleConflictCopyMine();
                         }}
                       >
-                        {tEntry('conflictCopyMine')}
+                        {tEntry('copyMine')}
                       </button>
                       <button
                         type="button"
@@ -1701,7 +1713,7 @@ export function JsonEntryCard({
                           )
                         }
                       >
-                        {tEntry('conflictLoadLatest')}
+                        {tEntry('loadLatest')}
                       </button>
                       <button
                         type="button"
@@ -1712,7 +1724,7 @@ export function JsonEntryCard({
                           void handleConflictKeepMine();
                         }}
                       >
-                        {tEntry('conflictKeepMine')}
+                        {tEntry('keepMine')}
                       </button>
                     </div>
 
@@ -1722,7 +1734,7 @@ export function JsonEntryCard({
                         className="mt-3 border-t border-line pt-2.5 flex flex-wrap items-center justify-between gap-2"
                       >
                         <span className="text-[13px] text-body">
-                          {tEntry('conflictLoadLatestConfirm')}
+                          {tEntry('reloadConfirmPrompt')}
                         </span>
                         <div className="flex flex-wrap gap-2">
                           <button
@@ -1744,7 +1756,7 @@ export function JsonEntryCard({
                               void handleConflictConfirmDiscardAndLoad();
                             }}
                           >
-                            {tEntry('discardAndLoadLatest')}
+                            {tEntry('discardAndLoad')}
                           </button>
                         </div>
                       </div>

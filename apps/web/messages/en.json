@@ -1440,6 +1440,7 @@
       "objectSummary": "{count, plural, one {# key} other {# keys}}",
       "arraySummary": "{count, plural, one {# item} other {# items}}",
       "arrayOfArraysLabel": "Array ({count})",
+      "occurrenceAria": "Occurrence {occ}",
       "duplicateRowBadge": "duplicate keys",
       "duplicateRowNote": "Row {row} has duplicate keys; shown as field/value with occurrence badges.",
       "missingCellInitTitle": "Click to add field",

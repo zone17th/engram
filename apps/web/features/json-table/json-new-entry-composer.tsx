@@ -60,11 +60,13 @@ let jsonComposerPlaintextHolderTestHookRef: { current: JsonComposerPlaintextHold
 /**
  * Module-scoped test hook to observe the JSON composer plaintext holder without exposing a public prop (IP16-FE1-3).
  */
-export function setJsonComposerPlaintextHolderForTests(
-  holderRef: { current: JsonComposerPlaintextHolder } | null,
-): void {
-  jsonComposerPlaintextHolderTestHookRef = holderRef;
-}
+export const __testing = {
+  setJsonComposerPlaintextHolderForTests(
+    holderRef: { current: JsonComposerPlaintextHolder } | null,
+  ): void {
+    jsonComposerPlaintextHolderTestHookRef = holderRef;
+  },
+};
 
 export interface NewJsonEntryComposerProps {
   readonly itemId: string;

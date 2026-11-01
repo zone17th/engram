@@ -1440,6 +1440,7 @@
       "objectSummary": "{count, plural, other {# khoá}}",
       "arraySummary": "{count, plural, other {# phần tử}}",
       "arrayOfArraysLabel": "Mảng ({count})",
+      "occurrenceAria": "Lần xuất hiện thứ {occ}",
       "duplicateRowBadge": "khoá trùng",
       "duplicateRowNote": "Hàng {row} có khoá trùng nên hiển thị bảng khoá/giá trị kèm nhãn thứ tự ⁽²⁾ để sửa đúng từng occurrence.",
       "missingCellInitTitle": "Nhấp để thêm trường",

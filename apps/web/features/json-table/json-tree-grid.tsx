@@ -1107,7 +1107,7 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
+      : ({ role: 'treegrid' } as const);
 
     if (view.totalRows === 0) {
       return (
@@ -1248,7 +1248,7 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
+      : ({ role: 'treegrid' } as const);
 
     const overflowColCount = Math.max(0, view.totalDistinctKeys - view.columns.length);
 
@@ -1496,7 +1496,7 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
+      : ({ role: 'treegrid' } as const);
 
     if (view.totalRows === 0) {
       return (
@@ -1622,7 +1622,7 @@ export function JsonTreeGrid({
     const isRootLevel = level === 1;
     const tableRoleProps = isRootLevel
       ? ({ role: 'treegrid', 'aria-label': tJson('treegridAria') } as const)
-      : ({ role: 'rowgroup', 'aria-label': tJson('treegridAria') } as const);
+      : ({ role: 'treegrid' } as const);
 
     return (
       <div>

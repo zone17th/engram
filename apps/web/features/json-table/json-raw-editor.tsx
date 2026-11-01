@@ -164,7 +164,7 @@ export function JsonRawEditor({
     [debouncedIssue, isOverCap, prospectiveByteLength],
   );
 
-  const isInvalid = (!validationPending && debouncedIssue !== null) || isOverCap;
+  const isInvalid = validationPending || debouncedIssue !== null || isOverCap;
   const saveDisabled =
     isInvalid || savingInFlight || hasBlockingState || draftValue.length === 0;
   const formatDisabled =
@@ -222,6 +222,8 @@ export function JsonRawEditor({
   }, [flushValidationImmediate]);
   const handleFormat = useCallback(() => {
     setFormatErrorMsg(null);
+    const immediateIssue = flushValidationImmediate();
+    if (immediateIssue !== null || savingInFlight || hasBlockingState) return;
     const currentText = textareaRef.current?.value ?? draftValue;
     const eolInfo = detectEol(currentText);
     const targetEol = sourceEol.totalBreaks > 0 ? sourceEol.majority : eolInfo.majority;
@@ -254,15 +256,26 @@ export function JsonRawEditor({
     const normalizedFormatted = res.text.replace(/\r\n|\r/g, '\n');
     onDraftChange(normalizedFormatted);
     setValidatedState({ text: normalizedFormatted, issue: null });
-  }, [draftValue, format, onDraftChange, sourceEol.majority, sourceEol.totalBreaks, tJson]);
+  }, [
+    draftValue,
+    flushValidationImmediate,
+    format,
+    hasBlockingState,
+    onDraftChange,
+    savingInFlight,
+    sourceEol.majority,
+    sourceEol.totalBreaks,
+    tJson,
+  ]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     const keyLower = (e.key || '').toLowerCase();
     if (keyLower === 's' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
+      e.stopPropagation();
       const immediateIssue = flushValidationImmediate();
-      if (immediateIssue !== null || saveDisabled) return;
+      if (immediateIssue !== null || isOverCap || savingInFlight || hasBlockingState || draftValue.length === 0) return;
       onSave();
     } else if (e.key === 'Escape' && onRequestCancel) {
       e.preventDefault();
@@ -304,7 +317,7 @@ export function JsonRawEditor({
             className="btn btn-primary btn-sm"
             onClick={() => {
               const immediateIssue = flushValidationImmediate();
-              if (immediateIssue !== null || saveDisabled) return;
+              if (immediateIssue !== null || isOverCap || savingInFlight || hasBlockingState || draftValue.length === 0) return;
               onSave();
             }}
           >
