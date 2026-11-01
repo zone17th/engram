@@ -17,7 +17,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/db"
 )
 
 // StartPostgres chạy container pgvector/pg16. Bỏ qua khi -short.

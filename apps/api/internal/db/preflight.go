@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
 )
 
 // requiredExtensions là các extension SPEC §4.3 bắt buộc.

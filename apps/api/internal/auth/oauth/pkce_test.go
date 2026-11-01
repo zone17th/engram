@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/oauth"
+	"github.com/zone17th/engram/apps/api/internal/auth/oauth"
 )
 
 func TestFakePKCERejectsWrongVerifier(t *testing.T) {

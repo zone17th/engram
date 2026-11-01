@@ -8,10 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
 // regenerateBeforeTxHook cho phép test đồng bộ hai request `POST /vault/recovery-keys/regenerate`

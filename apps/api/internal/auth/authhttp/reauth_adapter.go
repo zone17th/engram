@@ -3,8 +3,8 @@ package authhttp
 import (
 	"context"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
 )
 
 // GrantAdapter triển khai httpx.ReauthVerifier — không success giả.

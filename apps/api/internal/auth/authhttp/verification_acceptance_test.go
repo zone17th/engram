@@ -17,12 +17,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/oauth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/engram/apps/api/internal/auth/oauth"
+	"github.com/zone17th/engram/apps/api/internal/compose"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 func acceptanceToken(t *testing.T, h *harness, recipient, purpose string) string {

@@ -1,4 +1,4 @@
-module github.com/zone17th/save-all-by-keyword/apps/api
+module github.com/zone17th/engram/apps/api
 
 go 1.26.0
 

@@ -6,8 +6,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/vault"
 )
 
 // Mount đăng ký toàn bộ bảng route `/vault*` của P03 Task 8–13 (15 operations trên `/api/v1`)

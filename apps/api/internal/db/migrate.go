@@ -9,7 +9,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/migrations"
+	"github.com/zone17th/engram/apps/api/migrations"
 )
 
 func newMigrator(dsn string) (*migrate.Migrate, error) {

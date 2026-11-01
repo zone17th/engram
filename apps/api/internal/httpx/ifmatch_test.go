@@ -17,9 +17,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 const validTestVaultKeyID = "vk:7f3a1c9e02b4d6f89012ab"

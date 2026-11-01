@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
+	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
 func TestMetaSanitizeDropsSecrets(t *testing.T) {

@@ -9,17 +9,17 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/compose"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/obs"
+	"github.com/zone17th/engram/apps/api/internal/vault"
+	"github.com/zone17th/engram/apps/api/internal/vault/vaulthttp"
 )
 
 func TestNewVaultAndAuthVaultStatusIntegration(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/config"
 )
 
 func TestConfigProbeTracksTEIHealth(t *testing.T) {
