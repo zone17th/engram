@@ -20,17 +20,17 @@ import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
   getUnconfirmedSavesSnapshot,
-  peekUnconfirmedSavesForTests,
   recordUnconfirmedSave,
   resetEntryBodyLoadLimiterForTests,
   subscribeUnconfirmedSaves,
 } from '@/features/entries';
+import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
 import { subscribeUserChanged, __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
   TextEntryCard,
-  setEditorPlaintextHolderForTests,
+  __testing as textEntryCardTesting,
   type EditorPlaintextHolder,
 } from '@/features/items/text-entry-card';
 import {
@@ -352,7 +352,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
     userChangedTesting.resetCommittedUserForTests();
-    setEditorPlaintextHolderForTests(null);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(null);
   });
 
   afterEach(() => {
@@ -362,7 +362,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
     userChangedTesting.resetCommittedUserForTests();
-    setEditorPlaintextHolderForTests(null);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(null);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalVisibilityStateDescriptor) {
@@ -1400,7 +1400,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const holderRef: { current: EditorPlaintextHolder } = {
       current: { originalSource: '', draftValue: '' },
     };
-    setEditorPlaintextHolderForTests(holderRef);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(holderRef);
     const entryMeta = Array.from(h.server.entries.values())[0];
     h.rerenderPage(
       <TextEntryCard
@@ -1545,7 +1545,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(h.container.textContent).not.toContain(PRE_LOCK_DRAFT);
 
     // Remount TextEntryCard for the remaining checks in this test
-    setEditorPlaintextHolderForTests(null);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(null);
     h.rerenderPage(
       <TextEntryCard
         entry={entryMeta}
@@ -2787,7 +2787,12 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     const { promise: loadV7Gate, resolve: releaseLoadV7 } = createDeferred();
     const { promise: loadV7Entered, resolve: notifyLoadV7Entered } = createDeferred();
     const { promise: loadV7Finished, resolve: notifyLoadV7Finished } = createDeferred();
-    let holdLoadV7 = true;
+    // Hold the first GET(v7) AND make the automatic one-time retry also return v7 so we verify both:
+    // (a) IP15-BE3-4: when even the one-time refetch returns a stale v7 snapshot (< observed v8 validator),
+    //     the v8 conflict stays active, typed inputs are preserved, and cache is not fabricated at v8;
+    // (b) IP15-FE4-5: stale Load latest announces and auto-refetches once (2 GET /items/{id} calls total),
+    //     and when the server serves v8 on the auto-refetch, a single Load latest resolves the conflict cleanly.
+    let returnStaleV7Count = 2;
     const fetchedV7Summary: ItemSummary = {
       ...h.server.item,
       version: 7,
@@ -2795,18 +2800,24 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       hint: 'remote-v7-hint',
     };
 
+    let getCallsDuringStaleLoadLatest = 0;
     h.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
-      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && holdLoadV7) {
-        notifyLoadV7Entered();
-        await loadV7Gate;
-        queueMicrotask(() => notifyLoadV7Finished());
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && returnStaleV7Count > 0) {
+        getCallsDuringStaleLoadLatest += 1;
+        returnStaleV7Count -= 1;
+        if (getCallsDuringStaleLoadLatest === 1) {
+          notifyLoadV7Entered();
+          await loadV7Gate;
+        } else {
+          queueMicrotask(() => notifyLoadV7Finished());
+        }
         return jsonResponse(fetchedV7Summary, 200);
       }
       return null;
     });
 
-    // Click Load latest and hold its GET(v7)
+    // Click Load latest and hold its first GET(v7)
     fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
     await loadV7Entered;
 
@@ -2824,30 +2835,59 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
     });
 
-    // Release the older GET(v7)
-    holdLoadV7 = false;
-    h.server.overrideRoute(null);
+    // Release the held first GET(v7) -> stale Load latest announces to item-page-live-region and auto-refetches once (2nd GET)
     releaseLoadV7();
     await loadV7Finished;
     await act(async () => {
       await flushMacrotask();
     });
 
-    // The newer v8 conflict remains active, inputs keep the user's typed candidate (not overwritten by v6 or v7),
-    // and the item cache is NOT fabricated with version 8 + older v6/v7 fields
+    // IP15-FE4-5: Verify it announced and refetched exactly once (1 initial GET + 1 auto-refetch = 2 GETs)
+    expect(getCallsDuringStaleLoadLatest).toBe(2);
+    expect(screen.getByTestId('item-page-live-region')).toHaveTextContent(
+      viMessages.content.item.conflictBody,
+    );
+
+    // IP15-BE3-4: Because the auto-refetch also returned stale v7 (< v8), the v8 conflict remains active,
+    // inputs keep the user's typed candidate, and cache is NOT fabricated with version 8 + older fields
     expect(screen.getByTestId('item-header-conflict-412')).toBeInTheDocument();
     expect(screen.getByTestId('item-name-input')).toHaveValue('local-keep-mine-candidate');
     const cachedAfterStaleRelease = h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID]);
     expect(cachedAfterStaleRelease?.version).toBe(7);
     expect(cachedAfterStaleRelease?.name).toBe('remote-v7-name');
 
-    // Clicking Load latest now fetches the real v8 summary and resolves the conflict cleanly
+    // IP15-FE4-5: Now verify that when a stale Load latest GET(v7) is followed by a server that serves v8 on the
+    // one-time auto-refetch, a single Load latest click announces, refetches v8, and resolves the conflict without a second click.
+    const { promise: loadV7Gate2, resolve: releaseLoadV7_2 } = createDeferred();
+    const { promise: loadV7Entered2, resolve: notifyLoadV7Entered2 } = createDeferred();
+    let interceptFirstGetOnly = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith(`/items/${ITEM_ID}`) && method === 'GET' && interceptFirstGetOnly) {
+        interceptFirstGetOnly = false;
+        notifyLoadV7Entered2();
+        await loadV7Gate2;
+        return jsonResponse(fetchedV7Summary, 200);
+      }
+      return null;
+    });
+
+    const getsBeforeAutoResolve = h.server.requests.filter(
+      (r) => r.method === 'GET' && r.url.endsWith(`/items/${ITEM_ID}`),
+    ).length;
     fireEvent.click(screen.getByTestId('item-conflict-load-latest'));
+    await loadV7Entered2;
+    releaseLoadV7_2();
+
     await waitFor(() => {
       expect(screen.queryByTestId('item-header-conflict-412')).toBeNull();
       expect(screen.getByTestId('item-name-input')).toHaveValue('remote-v8-authoritative-name');
       expect(screen.getByTestId('item-hint-input')).toHaveValue('remote-v8-authoritative-hint');
     });
+    const getsAfterAutoResolve = h.server.requests.filter(
+      (r) => r.method === 'GET' && r.url.endsWith(`/items/${ITEM_ID}`),
+    ).length;
+    expect(getsAfterAutoResolve - getsBeforeAutoResolve).toBe(2);
     expect(h.qc.getQueryData<ItemSummary>(['content', 'item', ITEM_ID])?.version).toBe(8);
   });
 
@@ -2961,7 +3001,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       h.setCurrentMe(makeMe(USER_A_ID, 'present'));
       await h.loginSession('a@example.test', 'pw');
       expect(userChangedEvents).toEqual([]);
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
       await waitFor(() => {
         expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
       });
@@ -3020,8 +3060,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
-      expect(peekUnconfirmedSavesForTests()[0].userId).toBe(USER_A_ID);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()[0].userId).toBe(USER_A_ID);
       expect(getKnownDeviceSessionUserId()).toBeNull();
     });
 
@@ -3034,7 +3074,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(h.vault().state).toBe('no_vault');
       expect(getKnownDeviceSessionUserId()).toBeNull();
     });
-    expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+    expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
 
     const userChangedEvents: Array<{ prev: string; next: string }> = [];
     const unsubUserChanged = subscribeUserChanged((prev, next) => {
@@ -3056,7 +3096,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
 
       expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
       expect(storeEmitCount).toBe(1);
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
 
       // Wait for VaultProvider to settle for B, then log User A back in and remount -> User A's prior notice does NOT return
       await waitFor(() => {
@@ -3068,7 +3108,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         { prev: USER_A_ID, next: USER_B_ID },
         { prev: USER_B_ID, next: USER_A_ID },
       ]);
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
       h.rerenderPage();
       expect(screen.queryByTestId('entry-save-unconfirmed-banner')).toBeNull();
     } finally {
@@ -3104,7 +3144,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     fireEvent.click(screen.getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
 
     await waitFor(() => {
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
       expect(getKnownDeviceSessionUserId()).toBeNull();
     });
 
@@ -3130,7 +3170,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       await h.signupSession('b-signup@example.test', 'pw');
       expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
       expect(storeEmitCount).toBe(1);
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
 
       // 2. Now User B has a record, and User B's session hits terminal session_invalid with /auth/me signed-out and pointer null
       await waitFor(() => {
@@ -3142,7 +3182,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         itemName: 'wifi-b',
         source: 'entry',
       });
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
 
       // Trigger real terminal session_invalid via ItemDetailPage PUT for User B
       h.rerenderPage();
@@ -3166,8 +3206,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         expect(h.vault().state).toBe('no_vault');
         expect(getKnownDeviceSessionUserId()).toBeNull();
       });
-      expect(peekUnconfirmedSavesForTests()).toHaveLength(1);
-      expect(peekUnconfirmedSavesForTests()[0].userId).toBe(USER_B_ID);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toHaveLength(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()[0].userId).toBe(USER_B_ID);
 
       const emitsBeforeOAuth = storeEmitCount;
       // Direct User A OAuth completion from the settled terminal-null state -> notifies subscriber and empties store
@@ -3178,7 +3218,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         { prev: USER_B_ID, next: USER_A_ID },
       ]);
       expect(storeEmitCount).toBeGreaterThan(emitsBeforeOAuth);
-      expect(peekUnconfirmedSavesForTests()).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
     } finally {
       unsubUserChanged();
       unsubStore();
@@ -3471,7 +3511,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
         submittedCandidateSource: '',
       },
     };
-    setEditorPlaintextHolderForTests(holderProbeRef);
+    textEntryCardTesting.setEditorPlaintextHolderForTests(holderProbeRef);
 
     const hCard = await setupItemPageHarness({
       initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Initial card body v1', position: 0 }],

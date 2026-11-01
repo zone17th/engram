@@ -75,11 +75,11 @@ export function subscribeUnconfirmedSaves(listener: () => void): () => void {
 export function getUnconfirmedSavesSnapshot(): readonly UnconfirmedSaveRecord[] {
   return records;
 }
-
-export function peekUnconfirmedSavesForTests(): readonly UnconfirmedSaveRecord[] {
-  return records;
-}
-
+export const __testing = {
+  peekUnconfirmedSavesForTests(): readonly UnconfirmedSaveRecord[] {
+    return records;
+  },
+};
 export function recordUnconfirmedSave(record: {
   readonly userId: string;
   readonly itemId: string;

@@ -341,40 +341,58 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
     });
   }, [enqueuePatch, hintInput, onAnnounce, translateContentError]);
 
-  const handleLoadLatestItem = useCallback(async () => {
-    const startedConflictEpoch = conflictEpochRef.current;
-    try {
-      const latest = await itemGet(item.id);
-      const accepted = applyItemSummaryToCache(latest, 'fetch');
-      // IP15-BE3-4: An older Load latest completion must never clear a newer conflict that occurred while
-      // this GET was in flight, nor clear the conflict when its returned snapshot is still older than an
-      // already-observed conflict validator (latestVersionRef) with no authoritative newer full summary.
-      if (
-        conflictEpochRef.current !== startedConflictEpoch ||
-        accepted.version < latestVersionRef.current
-      ) {
-        return;
+  const runLoadLatestItem = useCallback(
+    async (isAutoRetryAfterStale = false): Promise<void> => {
+      const startedConflictEpoch = conflictEpochRef.current;
+      try {
+        const latest = await itemGet(item.id);
+        const accepted = applyItemSummaryToCache(latest, 'fetch');
+        // IP15-BE3-4: An older Load latest completion must never clear a newer conflict that occurred while
+        // this GET was in flight, nor clear the conflict when its returned snapshot is still older than an
+        // already-observed conflict validator (latestVersionRef) with no authoritative newer full summary.
+        if (conflictEpochRef.current !== startedConflictEpoch) {
+          // IP15-FE4-5: When a newer conflict superseded this Load latest, announce and refetch once
+          // instead of silently doing nothing.
+          if (!isAutoRetryAfterStale && mountedRef.current && conflictRef.current) {
+            onAnnounce?.(tItem('conflictBody'));
+            await runLoadLatestItem(true);
+          }
+          return;
+        }
+        if (accepted.version < latestVersionRef.current) {
+          if (!isAutoRetryAfterStale && mountedRef.current) {
+            onAnnounce?.(tItem('conflictBody'));
+            await runLoadLatestItem(true);
+          }
+          return;
+        }
+        conflictRef.current = false;
+        patchQueueRef.current = [];
+        uncertainStepPausedRef.current = false;
+        if (mountedRef.current) {
+          setConflict412(null);
+          setUncertainPatchError(null);
+          setNameError(null);
+          setHintError(null);
+          setNameDirty(false);
+          setHintDirty(false);
+          setNameInput(accepted.name);
+          setHintInput(accepted.hint ?? '');
+        }
+      } catch (err) {
+        const classified = classifyContentMutationError(err);
+        if (mountedRef.current) {
+          setNameError(translateContentError(classified.i18nKey));
+        }
       }
-      conflictRef.current = false;
-      patchQueueRef.current = [];
-      uncertainStepPausedRef.current = false;
-      if (mountedRef.current) {
-        setConflict412(null);
-        setUncertainPatchError(null);
-        setNameError(null);
-        setHintError(null);
-        setNameDirty(false);
-        setHintDirty(false);
-        setNameInput(accepted.name);
-        setHintInput(accepted.hint ?? '');
-      }
-    } catch (err) {
-      const classified = classifyContentMutationError(err);
-      if (mountedRef.current) {
-        setNameError(translateContentError(classified.i18nKey));
-      }
-    }
-  }, [applyItemSummaryToCache, item.id, translateContentError]);
+    },
+    [applyItemSummaryToCache, item.id, onAnnounce, tItem, translateContentError],
+  );
+
+  const handleLoadLatestItem = useCallback(
+    () => runLoadLatestItem(false),
+    [runLoadLatestItem],
+  );
 
   const handleKeepMineItem = useCallback(async () => {
     const startedConflictEpoch = conflictEpochRef.current;
