@@ -438,8 +438,9 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'vault-a11y-settings-remember-device-vi-dark-390.png',
   'vault-a11y-settings-remember-device-vi-dark-768.png',
   'vault-a11y-settings-remember-device-vi-dark-1440.png',
+  // P04 content screenshot allowlist block (W3/W4 lanes append content screenshot names here):
 ]);
-const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440']);
+const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440', 'content']);
 
 function projectNameFromPath(relativeSource) {
   for (const segment of relativeSource) {
