@@ -1123,18 +1123,35 @@ func TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers(t *testing.T) {
 	jarA, meA := h.SignupUser("reset-race-matrix@example.com", password)
 	ctx := context.Background()
 	q := gen.New(h.Pool)
+	sessionIssuedAt := h.Clock.Now()
+	sessionCookie := jarA[authhttp.CookieSession]
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatal("missing initial sabk_session cookie")
+	}
+	principalA, err := h.AuthSvc.Sessions().Authenticate(ctx, sessionCookie.Value)
+	if err != nil {
+		t.Fatalf("Authenticate initial session: %v", err)
+	}
 
-	// prepareReset advances the harness clock, refreshes the session, sets the ResetHook, and issues a fresh
-	// reauth grant on the owning test goroutine before launching concurrent workers.
+	// prepareReset advances the harness clock past vault_sensitive (1/min), refreshes the session only when
+	// approaching the 15m access-token TTL (avoiding authhttp.credLimit's 5/min wall-clock IP limiter across
+	// the 24 rapid sub-scenarios), sets the ResetHook, and issues a fresh reauth grant for principalA.
 	prepareReset := func(t *testing.T, hook vault.ResetHook) string {
 		t.Helper()
-		h.Clock.Advance(61 * time.Second) // keep vault_sensitive (1/min) and reauth limiters clean
-		h.RefreshSession(jarA)            // keep 15m access token fresh across sub-scenarios
+		h.Clock.Advance(61 * time.Second) // keep vault_sensitive (1/min) limiter clean
+		if h.Clock.Now().Sub(sessionIssuedAt) >= 12*time.Minute {
+			h.RefreshSession(jarA)
+			sessionIssuedAt = h.Clock.Now()
+		}
 		h.VaultSvc.SetResetHook(hook)
 		t.Cleanup(func() {
 			h.VaultSvc.SetResetHook(entry.ResetHook)
 		})
-		return issueReauthGrant(t, h, jarA, "vault.reset", password)
+		grant, err := h.AuthSvc.Grants().Issue(principalA, "vault.reset")
+		if err != nil {
+			t.Fatalf("Grants.Issue(vault.reset): %v", err)
+		}
+		return grant.Grant
 	}
 
 	// runReset executes DELETE /api/v1/vault using a cancellable worker context and returns a result/error
