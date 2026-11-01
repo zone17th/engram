@@ -5,7 +5,7 @@ import { HeroDemo } from '@/components/landing/hero-demo';
 import { JsonTable } from '@/components/landing/json-table';
 import { SiteHeader } from '@/components/landing/site-header';
 import { SiteFooter } from '@/components/landing/site-footer';
-import { DEMO_JSON } from '@/lib/demo-fixtures';
+import { LANDING_ROUTER_JSON } from '@/components/landing/landing-fixtures';
 
 // Landing phải là SSG để đạt TTFB < 200 ms (Global Constraints).
 export function generateStaticParams() {
@@ -16,20 +16,26 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations('landing');
+  const tNav = await getTranslations('nav');
   const wallTags = t.raw('wallTags') as string[];
 
   return (
     <>
       <SiteHeader />
 
-      {/* hero */}
-      <section className="max-w-container mx-auto px-5 pb-16 pt-14">
-        <h1 className="t-hero mb-4">
-          {t('heroTitle')}
-          <br />
-          <span className="text-muted">{t('heroTitleSecond')}</span>
-        </h1>
-        <p className="t-body-lg mb-8 max-w-[56ch] text-muted">{t('heroSub')}</p>
+      {/* hero — theo mockups/landing.html: tiêu đề hai dòng cùng màu ink, rồi panel demo (UIA-5) */}
+      <section className="max-w-container mx-auto px-5 pb-6 pt-16 md:pt-24">
+        <div className="max-w-[1000px]">
+          <h1 className="t-hero mb-5">
+            {t('heroTitle')}
+            <br />
+            {t('heroTitleSecond')}
+          </h1>
+          <p className="t-body-lg max-w-[62ch] text-muted">{t('heroSub')}</p>
+        </div>
+      </section>
+
+      <section className="max-w-container mx-auto px-5 pb-16">
         <HeroDemo />
       </section>
 
@@ -39,7 +45,8 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
         <p className="t-body-lg mb-7 text-muted">{t('wallSub')}</p>
         <div className="flex flex-wrap gap-2">
           {wallTags.map((tag) => (
-            <span key={tag} className="chip chip-lg">
+            // 40px như chip mono của mockup (16px × 1.375 + 2×8px + viền); min-h giữ mốc đó (UIA-5).
+            <span key={tag} className="chip chip-lg min-h-10">
               {tag}
             </span>
           ))}
@@ -55,7 +62,7 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
             <p className="t-body text-muted">{t('jsonNote')}</p>
           </div>
           <JsonTable
-            data={DEMO_JSON}
+            data={LANDING_ROUTER_JSON}
             title={t('jsonCardTitle')}
             labels={{ table: t('jsonViewTable'), raw: t('jsonViewRaw') }}
           />
@@ -117,10 +124,13 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
         <div className="py-12 text-center">
           <h2 className="t-headline-md mb-4">{t('cta')}</h2>
           <p className="t-body-lg mx-auto mb-8 max-w-[52ch] text-muted">{t('ctaBody')}</p>
-          <Link href="/app" className="btn btn-primary no-underline !px-7 !py-4 !text-[16px]">
-            {t('cta')}
+          {/* Nút CTA theo mockups/landing.html: "Tạo tài khoản" mở trang đăng ký thật (audit UIA-6). */}
+          <Link
+            href="/app/auth/signup"
+            className="btn btn-primary no-underline !px-7 !py-4 !text-[16px]"
+          >
+            {tNav('signUp')}
           </Link>
-          <p className="t-body mt-4 text-muted">{t('previewNote')}</p>
         </div>
       </section>
 
