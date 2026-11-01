@@ -66,6 +66,10 @@
       "lockNowNamed": "{state} — Khoá vault ngay (L)",
       "settings": "Cài đặt",
       "settingsDone": "Xong"
+    },
+    "preview": {
+      "label": "Bản xem trước",
+      "body": "Đây là dữ liệu mẫu để xem giao diện. Bản xem trước chỉ đọc: thay đổi không được lưu và nội dung không được gửi tới máy chủ."
     }
   },
   "states": {
@@ -965,7 +969,6 @@
     "submitting": "Đang mở khoá…",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
     "forgotPassphrase": "Tôi quên passphrase",
-    "signOut": "Đăng xuất",
     "errors": {
       "empty": "Hãy nhập passphrase của vault.",
       "incorrectPassphraseBadge": "sai passphrase",

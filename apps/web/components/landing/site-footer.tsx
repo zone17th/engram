@@ -46,7 +46,7 @@ export async function SiteFooter() {
           </div>
         </div>
         <hr className="my-8 mb-5 h-px border-0 bg-white/12" />
-        <p className="t-legal m-0 text-white/45">{tFooter('legal')}</p>
+        <p className="t-legal m-0 text-white/55">{tFooter('legal')}</p>
       </div>
     </footer>
   );

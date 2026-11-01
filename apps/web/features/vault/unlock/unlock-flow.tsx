@@ -41,7 +41,7 @@ export function VaultUnlockFlow() {
   const t = useTranslations('unlock');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { me, signOut } = useSession();
+  const { me } = useSession();
   const vault = useVault();
 
   const [passphrase, setPassphrase] = useState('');
@@ -556,15 +556,6 @@ export function VaultUnlockFlow() {
             >
               {t('forgotPassphrase')}
             </Link>
-            <button
-              type="button"
-              onClick={() => void signOut()}
-              className="cursor-pointer border-0 bg-transparent p-0 text-[14px]"
-              style={{ color: 'var(--muted)' }}
-              data-testid="unlock-sign-out-button"
-            >
-              {t('signOut')}
-            </button>
           </div>
         </section>
       </main>
