@@ -19,22 +19,26 @@ import {
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 
 /**
- * P04-T16 U13 unlocked JSON card visual captures (Advisor msg_ef31bfd2c663):
+ * P04-T16 U13 unlocked JSON card + P04-T17 U14 Import JSON dialog visual captures
+ * (Advisor msg_ef31bfd2c663, fix-T17-4):
  * CI evidence only, picked up by `scripts/sanitize-e2e-artifacts.mjs` into the
  * `playwright-results-content-verify-true` artifact for Tester visual comparison against
- * `mockups/item.html` U13.
+ * `mockups/item.html` U13 and U14.
  *
  * Uses only the seeded test-vector fixture `e2e/fixtures/locked-item-entries.json` (never real
  * secrets, no crypto calls in the spec). Unlocks via the locked banner, then captures:
  *   - Table tab (`content-item-json-table-{light,dark}-{390,1440}.png`)
  *   - Raw JSON tab (`content-item-json-raw-{light,dark}-{390,1440}.png`)
  *   - Invalid-JSON error state (`content-item-json-error-{light,dark}-{390,1440}.png`)
+ *   - Import JSON dialog valid state (`content-item-import-valid-{light,dark}-{390,1440}.png`)
+ *   - Import JSON dialog invalid state (`content-item-import-invalid-{light,dark}-{390,1440}.png`)
  */
 const ITEM = LOCKED_ITEM_FIXTURE.item;
 const ENTRIES = LOCKED_ITEM_FIXTURE.entries;
 const JSON_RECORD = ENTRIES.find((entry) => entry.meta.type === 'json')!;
 
 type JsonVisualState = 'table' | 'raw' | 'error';
+type ImportVisualState = 'valid' | 'invalid';
 
 /**
  * Layers the theme-specific parts of `installVisualApiMocks` (`sabk_theme` cookie,
@@ -132,6 +136,44 @@ async function captureContentItemJson(
   expect(buffer.byteLength).toBeGreaterThan(0);
 }
 
+async function captureContentItemImport(
+  page: Page,
+  testInfo: TestInfo,
+  state: ImportVisualState,
+  theme: Theme,
+  width: ViewportWidth,
+): Promise<void> {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+  });
+  await page.addStyleTag({
+    content:
+      '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important;}',
+  });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  await page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    return promise;
+  });
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+
+  const outputPath = testInfo.outputPath(`content-item-import-${state}-${theme}-${width}.png`);
+  mkdirSync(dirname(outputPath), { recursive: true });
+  const buffer = await page.screenshot({
+    path: outputPath,
+    timeout: STEP_TIMEOUT,
+    fullPage: true,
+    animations: 'disabled',
+    caret: 'hide',
+  });
+  expect(buffer.byteLength).toBeGreaterThan(0);
+}
+
 test.describe('P04-T16 Unlocked JSON card U13 visual captures (CI artifacts only)', () => {
   for (const theme of THEMES) {
     for (const viewport of WIDTHS) {
@@ -204,6 +246,64 @@ test.describe('P04-T16 Unlocked JSON card U13 visual captures (CI artifacts only
         await expect(card.getByTestId(`json-raw-format-btn-${jsonEntryId}`)).toBeDisabled();
 
         await captureContentItemJson(page, testInfo, 'error', theme, viewport.width);
+
+        // 4. Open Import JSON dialog (U14) — valid JSON preview table + byte counter capture (never save)
+        const importBtn = page.getByTestId('btn-import-json');
+        await expect(importBtn).toBeVisible({ timeout: UI_WAIT_MS });
+        await importBtn.click();
+
+        const importDialog = page.getByTestId('import-json-dialog');
+        await expect(importDialog).toBeVisible({ timeout: UI_WAIT_MS });
+        const importTextarea = importDialog.getByTestId('import-json-source-textarea');
+        await setTextareaValue(importTextarea, '{"ssid":"Demo","vlan":10}');
+
+        await expect(importDialog.getByTestId('import-json-source-badge')).toContainText(
+          '25 / 262,144 B',
+          { timeout: UI_WAIT_MS },
+        );
+        await expect(importDialog.getByTestId('import-json-status-line')).toContainText(
+          /Valid JSON · 2 keys/,
+          { timeout: UI_WAIT_MS },
+        );
+        const previewGrid = importDialog.getByTestId('json-table-host-import-preview');
+        await expect(previewGrid).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(previewGrid).toContainText('ssid');
+        await expect(previewGrid).toContainText('Demo');
+        await expect(previewGrid).toContainText('vlan');
+        await expect(previewGrid).toContainText('10');
+        await expect(importDialog.getByTestId('import-json-submit-btn')).toBeEnabled();
+
+        await captureContentItemImport(page, testInfo, 'valid', theme, viewport.width);
+
+        // 5. Import JSON dialog (U14) — invalid JSON with trailing comma showing line/col error + "Save as text" ("Lưu dạng văn bản")
+        // In '{"ssid":"Demo","vlan":10,}' (26 chars), ',' is at 0-based UTF-16 offset 24 -> 1-based column 25 ('}' is 26).
+        await setTextareaValue(importTextarea, '{"ssid":"Demo","vlan":10,}');
+        const importParseError = importDialog.getByTestId('import-json-parse-error');
+        await expect(importParseError).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(importParseError).toContainText(/Invalid JSON — Line 1, column 25:/);
+        await expect(importParseError).toContainText(
+          /trailing comma is not allowed in RFC 8259 JSON/i,
+        );
+        const saveAsTextBtn = importDialog.getByTestId('import-json-save-as-text-btn');
+        await expect(saveAsTextBtn).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(saveAsTextBtn).toBeEnabled();
+        await expect(saveAsTextBtn).toHaveText('Save as text');
+        await expect(importDialog.getByTestId('import-json-status-line')).toContainText(
+          /Syntax error at line 1, column 25/,
+          { timeout: UI_WAIT_MS },
+        );
+        await expect(importDialog.getByTestId('import-json-submit-btn')).toBeDisabled();
+
+        if (viewport.width === 390) {
+          const cancelBox = await importDialog.getByTestId('import-json-cancel-btn').boundingBox();
+          const submitBox = await importDialog.getByTestId('import-json-submit-btn').boundingBox();
+          expect(cancelBox).not.toBeNull();
+          expect(submitBox).not.toBeNull();
+          expect(cancelBox!.y + cancelBox!.height).toBeLessThanOrEqual(viewport.height);
+          expect(submitBox!.y + submitBox!.height).toBeLessThanOrEqual(viewport.height);
+        }
+
+        await captureContentItemImport(page, testInfo, 'invalid', theme, viewport.width);
       });
     }
   }

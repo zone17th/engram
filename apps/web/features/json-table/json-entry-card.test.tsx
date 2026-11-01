@@ -12,6 +12,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,9 +23,12 @@ import * as entriesModule from '@/features/entries';
 import {
   assertVaultSecretElementAttributes,
   clearAllUnconfirmedSaves,
+  getUnconfirmedSavesSnapshot,
   resetEntryBodyLoadLimiterForTests,
   type EditorPlaintextHolder,
 } from '@/features/entries';
+import { __testing as unconfirmedSaveStoreTesting } from '@/features/entries/unconfirmed-save-store';
+import { __testing as userChangedTesting } from '@/lib/auth/user-changed';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
@@ -119,11 +123,18 @@ const ITEM_ID = '11111111-1111-4111-8111-111111111111';
 const ENTRY_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ENTRY_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const USER_A_ID = '33333333-3333-4333-8333-333333333333';
+const USER_B_ID = '44444444-4444-4444-8444-444444444444';
 
 const utf8Encoder = new TextEncoder();
 
 function createDeferred<T = void>(): PromiseWithResolvers<T> {
   return Promise.withResolvers<T>();
+}
+
+function flushMacrotask(): Promise<void> {
+  const d = createDeferred();
+  setTimeout(() => d.resolve(), 0);
+  return d.promise;
 }
 
 const fastTestDeriveKek: DeriveKekFn = (
@@ -356,6 +367,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    userChangedTesting.resetCommittedUserForTests();
     jsonTableTesting.setJsonEditorPlaintextHolderForTests(null);
     jsonTableTesting.setJsonComposerPlaintextHolderForTests(null);
   });
@@ -371,6 +383,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     resetVaultBroadcastForTests();
     resetEntryBodyLoadLimiterForTests();
     clearAllUnconfirmedSaves();
+    userChangedTesting.resetCommittedUserForTests();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -405,6 +418,9 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     server: ServerSimulator;
     unlock: () => Promise<void>;
     lock: () => Promise<void>;
+    signOutSession: () => Promise<void>;
+    loginSession: (email: string, password: string) => Promise<void>;
+    setCurrentMe: (me: Me | null) => void;
     rerenderPage: (node?: ReactNode) => void;
   }
 
@@ -424,14 +440,18 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const locale = options?.locale ?? 'vi';
     const lazyCards = options?.lazyCards ?? false;
     let vaultCtx!: VaultContextValue;
+    let signOutFn!: () => Promise<void>;
+    let loginFn!: (args: { email: string; password: string }) => Promise<unknown>;
     function Probe() {
       vaultCtx = useVault();
-      useSession();
+      const sess = useSession();
+      signOutFn = () => sess.signOut();
+      loginFn = (args) => sess.login(args);
       return <output data-testid="vault-state-probe">{vaultCtx.state}</output>;
     }
 
     let createdVault: CreateVaultResult | null = null;
-    const currentMe = makeMe(USER_A_ID, 'present');
+    let currentMe: Me | null = makeMe(USER_A_ID, 'present');
     let routeOverride:
       | ((url: string, init?: RequestInit) => Promise<Response | null> | Response | null)
       | null = null;
@@ -519,9 +539,19 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
           captcha_site_key: null,
         });
       }
-      if (url.endsWith('/auth/me')) return jsonResponse(currentMe);
-      if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 });
-      if (url.endsWith('/auth/login')) return jsonResponse(currentMe);
+      if (url.endsWith('/auth/me')) {
+        if (!currentMe) {
+          return problemResponse('session_invalid', 401);
+        }
+        return jsonResponse(currentMe);
+      }
+      if (url.endsWith('/auth/logout')) {
+        currentMe = null;
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/auth/login')) {
+        return jsonResponse(currentMe ?? makeMe(USER_A_ID, 'present'));
+      }
       if (url.endsWith('/vault')) {
         if (!createdVault) return problemResponse('vault_absent', 404);
         return jsonResponse(makeVaultGetResponse(createdVault, KEY_ID, 1));
@@ -780,6 +810,19 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       },
       unlock,
       lock,
+      signOutSession: async () => {
+        await act(async () => {
+          await signOutFn();
+        });
+      },
+      loginSession: async (email, password) => {
+        await act(async () => {
+          await loginFn({ email, password });
+        });
+      },
+      setCurrentMe: (nextMe) => {
+        currentMe = nextMe;
+      },
       rerenderPage: (node) => {
         rendered.rerender(
           buildTree(node !== undefined ? node : <ItemDetailPage itemId={ITEM_ID} lazyCards={lazyCards} />),
@@ -1903,15 +1946,16 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
 
     const { promise: unmountGetGate, resolve: releaseUnmountGet } = createDeferred();
     const { promise: unmountGetEntered, resolve: notifyUnmountGetEntered } = createDeferred();
+    const { promise: unmountGetFinished, resolve: notifyUnmountGetFinished } = createDeferred();
     h.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET') {
         notifyUnmountGetEntered();
         await unmountGetGate;
+        queueMicrotask(() => notifyUnmountGetFinished());
       }
       return null;
     });
-
     const putsBeforeUnmount = h.server.requests.filter((r) => r.method === 'PUT').length;
     sealSpy.mockClear();
     fireEvent.click(screen.getByTestId(`entry-conflict-keep-mine-${ENTRY_ID_1}`));
@@ -1933,9 +1977,12 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     await h.unlock();
     h.server.overrideRoute(null);
     releaseUnmountGet();
-    const settleTimer = Promise.withResolvers<void>();
-    setTimeout(settleTimer.resolve, 20);
-    await settleTimer.promise;
+    await unmountGetFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
     expect(sealSpy).not.toHaveBeenCalled();
     expect(h.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeUnmount);
 
@@ -1983,12 +2030,14 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     let holdVaultGet = false;
     const { promise: vaultGate, resolve: releaseVaultGet } = createDeferred();
     const { promise: vaultEntered, resolve: notifyVaultEntered } = createDeferred();
+    const { promise: vaultFinished, resolve: notifyVaultFinished } = createDeferred();
 
     hRace.server.overrideRoute(async (url, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (method === 'GET' && url.endsWith('/vault') && holdVaultGet) {
         notifyVaultEntered();
         await vaultGate;
+        queueMicrotask(() => notifyVaultFinished());
       }
       return null;
     });
@@ -2053,9 +2102,12 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     holdVaultGet = false;
     hRace.server.overrideRoute(null);
     releaseVaultGet();
-    const raceSettle = Promise.withResolvers<void>();
-    setTimeout(raceSettle.resolve, 20);
-    await raceSettle.promise;
+    await vaultFinished;
+    await act(async () => {
+      await flushMacrotask();
+      await flushMacrotask();
+      await flushMacrotask();
+    });
 
     expect(raceSealSpy).not.toHaveBeenCalled();
     expect(hRace.server.requests.filter((r) => r.method === 'PUT')).toHaveLength(putsBeforeRace);
@@ -2332,4 +2384,268 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
   },
   30_000,
 );
+
+  it(
+    'IP16-R3-1: keeps JSON table and mode switcher mounted across the post-Save version hand-off and restores focus to the edited cell (or card when the cell no longer exists)',
+    async () => {
+      const h = await setupJsonCardHarness({
+        initialEntries: [
+          {
+            id: ENTRY_ID_1,
+            text: '{\n  "host": "db-primary",\n  "temp": "remove-me"\n}',
+            type: 'json',
+            position: 0,
+            version: 1,
+          },
+        ],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      });
+      const card = screen.getByTestId(`entry-card-${ENTRY_ID_1}`);
+
+      // Hold the version-2 GET /entries/{id} so body === undefined during the version hand-off after PUT v2 commits
+      const { promise: v2GetGate, resolve: releaseV2Get } = createDeferred();
+      const { promise: v2GetEntered, resolve: notifyV2GetEntered } = createDeferred();
+      let holdV2Get = true;
+      h.server.overrideRoute(async (url, init) => {
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && method === 'GET' && holdV2Get) {
+          notifyV2GetEntered();
+          await v2GetGate;
+        }
+        return null;
+      });
+
+      // 1. Edit cell root.p0 and Save -> while GET /entries/{id} for v2 is held, table stays mounted (no entry-body-loading flash) and focus returns to root.p0
+      fireEvent.click(within(card).getByTestId('json-cell-btn-root.p0'));
+      const hostInput = within(card).getByTestId('json-cell-input-root.p0');
+      fireEvent.change(hostInput, { target: { value: 'db-replica-v2' } });
+      fireEvent.keyDown(hostInput, { key: 'Enter' });
+
+      fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+      await v2GetEntered;
+
+      // Even before v2 decrypts, the table and Table/Raw switcher remain rendered and focus is restored to the edited cell
+      expect(within(card).queryByTestId('entry-body-loading')).toBeNull();
+      expect(within(card).getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      expect(within(card).getByTestId(`json-mode-switcher-${ENTRY_ID_1}`)).toBeInTheDocument();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(within(card).getByTestId('json-cell-btn-root.p0'));
+      });
+
+      holdV2Get = false;
+      releaseV2Get();
+      await waitFor(() => {
+        expect(within(card).getByTestId('json-cell-btn-root.p0')).toHaveTextContent('db-replica-v2');
+      });
+      expect(document.activeElement).toBe(within(card).getByTestId('json-cell-btn-root.p0'));
+
+      // 2. Edit cell root.p1, then switch to Raw and remove the second field so root.p1 no longer exists after Save -> focus falls back to the card article
+      fireEvent.click(within(card).getByTestId('json-cell-btn-root.p1'));
+      const tempInput = within(card).getByTestId('json-cell-input-root.p1');
+      fireEvent.change(tempInput, { target: { value: 'about-to-vanish' } });
+      fireEvent.keyDown(tempInput, { key: 'Enter' });
+
+      fireEvent.click(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`));
+      const rawTa = within(card).getByTestId(`json-raw-textarea-${ENTRY_ID_1}`);
+      fireEvent.change(rawTa, { target: { value: '{\n  "host": "db-replica-v2"\n}' } });
+      fireEvent.blur(rawTa);
+      fireEvent.click(within(card).getByTestId(`json-raw-save-btn-${ENTRY_ID_1}`));
+
+      await waitFor(() => {
+        expect(within(card).queryByTestId('json-cell-btn-root.p1')).toBeNull();
+        expect(document.activeElement).toBe(card);
+      });
+    },
+    30_000,
+  );
+
+  it(
+    'IP16-R3-2: moves focus with real userEvent.tab() / userEvent.tab({ shift: true }) and expands/collapses chevron with userEvent.keyboard("{Enter}")',
+    async () => {
+      const user = userEvent.setup();
+      await setupJsonCardHarness({
+        initialEntries: [
+          {
+            id: ENTRY_ID_1,
+            text: '{\n  "count": "42",\n  "nested": { "flag": true }\n}',
+            type: 'json',
+            position: 0,
+            version: 1,
+          },
+        ],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      });
+
+      const card = screen.getByTestId(`entry-card-${ENTRY_ID_1}`);
+      const keyBtn0 = within(card).getByTestId('json-cell-btn-root.k0');
+      const valBtn0 = within(card).getByTestId('json-cell-btn-root.p0');
+      const removeBtn0 = within(card).getByTestId('json-remove-field-root-0');
+      const keyBtn1 = within(card).getByTestId('json-cell-btn-root.k1');
+      const toggleBtn1 = within(card).getByTestId('json-toggle-root.p1');
+
+      keyBtn0.focus();
+      expect(document.activeElement).toBe(keyBtn0);
+
+      await user.tab();
+      expect(document.activeElement).toBe(valBtn0);
+
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(keyBtn0);
+
+      await user.tab();
+      expect(document.activeElement).toBe(valBtn0);
+      await user.tab();
+      expect(document.activeElement).toBe(removeBtn0);
+      await user.tab();
+      expect(document.activeElement).toBe(keyBtn1);
+      await user.tab();
+      expect(document.activeElement).toBe(toggleBtn1);
+
+      expect(toggleBtn1).toHaveAttribute('aria-expanded', 'false');
+      await user.keyboard('{Enter}');
+      expect(toggleBtn1).toHaveAttribute('aria-expanded', 'true');
+      expect(within(card).getByTestId('json-nest-root.p1')).toBeInTheDocument();
+
+      await user.keyboard('{Enter}');
+      expect(toggleBtn1).toHaveAttribute('aria-expanded', 'false');
+      expect(within(card).queryByTestId('json-nest-root.p1')).toBeNull();
+    },
+    30_000,
+  );
+
+  it(
+    'IP16-R3-3: late terminal session_invalid from held JSON card PUT or held JSON composer POST after explicit signOut() or User A->B switch drops saveUnconfirmed (pure snapshot [])',
+    async () => {
+      const h = await setupJsonCardHarness({
+        initialEntries: [
+          {
+            id: ENTRY_ID_1,
+            text: '{\n  "k": "v1"\n}',
+            type: 'json',
+            position: 0,
+            version: 1,
+          },
+        ],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      });
+
+      // 1. JSON card PUT held across explicit signOut() -> release with 401 session_invalid -> pure snapshot stays []
+      const { promise: cardLogoutGate, resolve: releaseCardLogout } = createDeferred();
+      const { promise: cardLogoutEntered, resolve: notifyCardLogoutEntered } = createDeferred();
+      const { promise: cardLogoutFinished, resolve: notifyCardLogoutFinished } = createDeferred();
+      let holdCardLogout = true;
+      h.server.overrideRoute(async (url, init) => {
+        if (url.endsWith(`/entries/${ENTRY_ID_1}`) && init?.method === 'PUT' && holdCardLogout) {
+          notifyCardLogoutEntered();
+          await cardLogoutGate;
+          queueMicrotask(() => notifyCardLogoutFinished());
+          return problemResponse('session_invalid', 401);
+        }
+        return null;
+      });
+
+      const genBeforeCardLogout = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+      const card = screen.getByTestId(`entry-card-${ENTRY_ID_1}`);
+      fireEvent.click(within(card).getByTestId('json-cell-btn-root.p0'));
+      const input1 = within(card).getByTestId('json-cell-input-root.p0');
+      fireEvent.change(input1, { target: { value: 'v2-held-logout' } });
+      fireEvent.keyDown(input1, { key: 'Enter' });
+      fireEvent.click(within(card).getByTestId(`entry-save-btn-${ENTRY_ID_1}`));
+      await cardLogoutEntered;
+
+      await h.signOutSession();
+      expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(
+        genBeforeCardLogout,
+      );
+      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+      holdCardLogout = false;
+      releaseCardLogout();
+      await cardLogoutFinished;
+      await act(async () => {
+        await flushMacrotask();
+        await flushMacrotask();
+        await flushMacrotask();
+      });
+
+      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+
+      // Re-login User A and unlock for part 2 (JSON composer POST held across User A->B switch)
+      await waitFor(() => {
+        expect(h.vault().inFlight).toBe(false);
+        expect(h.vault().state).toBe('no_vault');
+      });
+      h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+      await h.loginSession('a@example.test', 'pw');
+      await waitFor(() => {
+        expect(h.vault().state).toBe('locked');
+        expect(h.vault().inFlight).toBe(false);
+      });
+      await h.unlock();
+      await waitFor(() => {
+        expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      });
+
+      // 2. JSON composer POST held across explicit signOut() AND User A->B switch -> release with 401 session_invalid -> pure snapshot stays []
+      const { promise: compLogoutGate, resolve: releaseCompLogout } = createDeferred();
+      const { promise: compLogoutEntered, resolve: notifyCompLogoutEntered } = createDeferred();
+      const { promise: compLogoutFinished, resolve: notifyCompLogoutFinished } = createDeferred();
+      let holdCompLogout = true;
+      h.server.overrideRoute(async (url, init) => {
+        if (
+          url.endsWith(`/items/${ITEM_ID}/entries`) &&
+          init?.method === 'POST' &&
+          holdCompLogout
+        ) {
+          notifyCompLogoutEntered();
+          await compLogoutGate;
+          queueMicrotask(() => notifyCompLogoutFinished());
+          return problemResponse('session_invalid', 401);
+        }
+        return null;
+      });
+
+      const genBeforeCompSwitch = unconfirmedSaveStoreTesting.getClearGenerationForTests();
+      fireEvent.click(screen.getByTestId('btn-add-json'));
+      const composer = screen.getByTestId('new-json-entry-composer');
+      fireEvent.click(within(composer).getByTestId('json-open-add-field-root'));
+      fireEvent.change(within(composer).getByTestId('json-new-key-input-root'), {
+        target: { value: 'compKey' },
+      });
+      fireEvent.click(within(composer).getByTestId('json-confirm-add-field-root'));
+      fireEvent.click(within(composer).getByTestId('new-json-save-btn'));
+      await compLogoutEntered;
+
+      // Switch User A -> User B before the held composer POST returns 401 session_invalid
+      h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+      await h.loginSession('b@example.test', 'pw');
+      expect(unconfirmedSaveStoreTesting.getClearGenerationForTests()).toBeGreaterThan(
+        genBeforeCompSwitch,
+      );
+      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+      holdCompLogout = false;
+      releaseCompLogout();
+      await compLogoutFinished;
+      await act(async () => {
+        await flushMacrotask();
+        await flushMacrotask();
+        await flushMacrotask();
+      });
+
+      expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
+    },
+    30_000,
+  );
 });

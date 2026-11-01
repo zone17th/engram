@@ -640,6 +640,15 @@ const SAFE_SCREENSHOT_NAMES = new Set([
   'content-a11y-item-undo-toast-vi-dark-390.png',
   'content-a11y-item-undo-toast-vi-dark-768.png',
   'content-a11y-item-undo-toast-vi-dark-1440.png',
+  // P04 itempage Task 17 U14 (e2e/content-itempage-visual.spec.ts)
+  'content-item-import-valid-light-390.png',
+  'content-item-import-valid-light-1440.png',
+  'content-item-import-valid-dark-390.png',
+  'content-item-import-valid-dark-1440.png',
+  'content-item-import-invalid-light-390.png',
+  'content-item-import-invalid-light-1440.png',
+  'content-item-import-invalid-dark-390.png',
+  'content-item-import-invalid-dark-1440.png',
 ]);
 const SAFE_PROJECT_NAMES = new Set(['mobile-390', 'tablet-768', 'desktop-1440', 'content']);
 
