@@ -119,6 +119,7 @@ export function VaultOnboardingFlow() {
   currentUserIdRef.current = me?.user.id ?? null;
   const isMountedRef = useRef(true);
   const postSubmitSeqRef = useRef(0);
+  const postCreateReloadPromiseRef = useRef<Promise<unknown> | null>(null);
   const confirmCheckboxId = useId();
   const gridHeadingId = useId();
 
@@ -145,6 +146,7 @@ export function VaultOnboardingFlow() {
 
   const clearRecoveryKeysAndSecrets = useCallback(() => {
     postSubmitSeqRef.current += 1;
+    postCreateReloadPromiseRef.current = null;
     clearPassphraseFields();
     setPreparedBundle(null);
     setConfirmedSaved(false);
@@ -427,6 +429,8 @@ export function VaultOnboardingFlow() {
         vault_key_id: response.vault_key_id,
         version: response.version,
       });
+      const reloadPromise = Promise.resolve(vault.reloadVaultMeta?.()).catch(() => undefined);
+      postCreateReloadPromiseRef.current = reloadPromise;
     } catch (err) {
       if (
         !isMountedRef.current ||
@@ -536,13 +540,27 @@ export function VaultOnboardingFlow() {
   }, [rememberDevice, vault.workerState]);
 
   const handleFinishStep3 = useCallback(async () => {
+    const pendingReload = postCreateReloadPromiseRef.current;
+    const client = vault.getClient();
+    const finishOpGeneration = client.getGeneration();
+    const finishUserId = currentUserIdRef.current;
     clearRecoveryKeysAndSecrets();
+    const finishSeq = postSubmitSeqRef.current;
     setStep('done');
-    await refetchMe().catch(() => undefined);
-    if (isMountedRef.current && currentUserIdRef.current !== null) {
+    await Promise.all([
+      pendingReload ?? Promise.resolve(),
+      refetchMe().catch(() => undefined),
+    ]);
+    if (
+      isMountedRef.current &&
+      postSubmitSeqRef.current === finishSeq &&
+      client.getGeneration() === finishOpGeneration &&
+      currentUserIdRef.current !== null &&
+      currentUserIdRef.current === finishUserId
+    ) {
       router.replace('/app');
     }
-  }, [clearRecoveryKeysAndSecrets, refetchMe, router]);
+  }, [clearRecoveryKeysAndSecrets, refetchMe, router, vault]);
 
   const handleGoToUnlock = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
