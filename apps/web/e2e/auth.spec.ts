@@ -216,10 +216,18 @@ test.describe('P02 auth (real API)', () => {
     const mail = await waitForMail(email, 'password_reset');
     const token = tokenFromLink(mail.link);
 
-    await page.goto(`/app/auth/reset-password#token=${token}`);
+    await page.goto('/app/auth/reset-password');
     await waitForAuthPageReady(page);
-    await expect(page).not.toHaveURL(/token=/);
-
+    await expect(page.getByTestId('reset-invalid-token')).toBeVisible();
+    await page.evaluate((t) => {
+      window.location.hash = 'token=' + encodeURIComponent(t);
+    }, token);
+    await expect
+      .poll(() => page.evaluate(() => window.location.hash.includes('token=')), {
+        timeout: 15_000,
+      })
+      .toBe(false);
+    await expect(page.locator('form[data-hydrated="true"]')).toBeVisible({ timeout: 15_000 });
     await fillSecret(page.getByLabel(/^(New login password|Mật khẩu đăng nhập mới)$/), newPassword);
     await fillSecret(page.getByLabel(/^(Confirm new password|Nhập lại mật khẩu mới)$/), newPassword);
     await page.getByRole('button', { name: /Save new password|Lưu mật khẩu mới/ }).click();
@@ -236,8 +244,18 @@ test.describe('P02 auth (real API)', () => {
     await expect(page.getByTestId('login-reset-banner')).toHaveCount(0);
 
     // Replaying the same reset token must fail with reset_token_invalid and show the invalid-token card.
-    await page.goto(`/app/auth/reset-password#token=${token}`);
+    await page.goto('/app/auth/reset-password');
     await waitForAuthPageReady(page);
+    await expect(page.getByTestId('reset-invalid-token')).toBeVisible();
+    await page.evaluate((t) => {
+      window.location.hash = 'token=' + encodeURIComponent(t);
+    }, token);
+    await expect
+      .poll(() => page.evaluate(() => window.location.hash.includes('token=')), {
+        timeout: 15_000,
+      })
+      .toBe(false);
+    await expect(page.locator('form[data-hydrated="true"]')).toBeVisible({ timeout: 15_000 });
     await fillSecret(page.getByLabel(/^(New login password|Mật khẩu đăng nhập mới)$/), 'another-new-password-2026!');
     await fillSecret(page.getByLabel(/^(Confirm new password|Nhập lại mật khẩu mới)$/), 'another-new-password-2026!');
     await page.getByRole('button', { name: /Save new password|Lưu mật khẩu mới/ }).click();
@@ -421,9 +439,15 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
 
     // 4. Reset page with valid 43-char #token strips hash immediately; 400 reset_token_invalid shows invalid card
     const validToken = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq';
-    await page.goto(`/app/auth/reset-password#token=${validToken}`);
-    await waitForAuthPageReady(page);
-    await expect(page).not.toHaveURL(/token=/);
+    await page.evaluate((t) => {
+      window.location.hash = 'token=' + encodeURIComponent(t);
+    }, validToken);
+    await expect
+      .poll(() => page.evaluate(() => window.location.hash.includes('token=')), {
+        timeout: 15_000,
+      })
+      .toBe(false);
+    await expect(page.locator('form[data-hydrated="true"]')).toBeVisible({ timeout: 15_000 });
     await fillSecret(page.getByLabel('New login password', { exact: true }), 'ValidReplacementPass!2026');
     await fillSecret(page.getByLabel('Confirm new password', { exact: true }), 'ValidReplacementPass!2026');
     await page.getByRole('button', { name: 'Save new password' }).click();
@@ -431,8 +455,15 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
 
     // 5. Reset page 204 hard-navigates to /app/auth/login?reset=done and shows one-shot banner
     resetOutcome = '204';
-    await page.goto(`/app/auth/reset-password#token=${validToken}`);
-    await waitForAuthPageReady(page);
+    await page.evaluate((t) => {
+      window.location.hash = 'token=' + encodeURIComponent(t);
+    }, validToken);
+    await expect
+      .poll(() => page.evaluate(() => window.location.hash.includes('token=')), {
+        timeout: 15_000,
+      })
+      .toBe(false);
+    await expect(page.locator('form[data-hydrated="true"]')).toBeVisible({ timeout: 15_000 });
     await fillSecret(page.getByLabel('New login password', { exact: true }), 'ValidReplacementPass!2026');
     await fillSecret(page.getByLabel('Confirm new password', { exact: true }), 'ValidReplacementPass!2026');
     await page.getByRole('button', { name: 'Save new password' }).click();
