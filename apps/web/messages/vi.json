@@ -685,7 +685,7 @@
         "slotChipEmpty": "rk{slot} · trống",
         "summaryWithEmpty": "Còn {remaining}/{slots} key trên máy chủ · {emptyCount} slot trống ({slotRange})",
         "summaryFull": "Đủ 10/10 recovery key đang hoạt động trên máy chủ.",
-        "noViewNotice": "Khi đủ 10/10: nút Tạo key mới khoá (chỉ bật khi có slot trống); dùng Xoay cả 10 để thay toàn bộ bộ key trên máy chủ. Không có nút xem lại bí mật đã lưu.",
+        "noViewNotice": "Nút Tạo key mới tắt khi đủ slot; dùng Xoay cả 10 để thay cả bộ. Key đã lưu không bao giờ hiện lại.",
         "grid": {
           "shownOnceWarning": "Chỉ hiện đúng một lần. Lưu các key mới này ở nơi an toàn ngoài trình duyệt đang dùng — chụp màn hình trên máy chung có rủi ro lộ khoá.",
           "downloadTxt": "Tải .txt",

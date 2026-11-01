@@ -360,9 +360,11 @@ function VaultSecurityPanelInner({
           </div>
         )}
 
-        <div className="rounded-md bg-surface p-3 text-[12px] text-muted">
-          {t('recoveryKeys.noViewNotice')}
-        </div>
+        {rkStatusQuery.data && !hasEmptySlots && (
+          <div className="rounded-md bg-surface p-3 text-[12px] text-muted">
+            {t('recoveryKeys.noViewNotice')}
+          </div>
+        )}
       </div>
 
       {passkeySlot}

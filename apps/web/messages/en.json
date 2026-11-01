@@ -683,9 +683,9 @@
         "rotateButton": "Rotate all 10",
         "slotChipActive": "rk{slot}",
         "slotChipEmpty": "rk{slot} · empty",
-        "summaryWithEmpty": "{remaining} of {slots} keys on server · {emptyCount} empty slots ({slotRange})",
+        "summaryWithEmpty": "{remaining} of {slots} keys on server · {emptyCount, plural, one {# empty slot} other {# empty slots}} ({slotRange})",
         "summaryFull": "All 10 of 10 recovery key slots are active on the server.",
-        "noViewNotice": "When 10 of 10 slots are filled, “Regenerate new keys” is disabled (enabled only when at least one slot is empty); use “Rotate all 10” to replace the whole set. Saved secrets are never shown again.",
+        "noViewNotice": "“Regenerate new keys” stays off while every slot is filled; use “Rotate all 10” to replace the set. Saved keys are never shown again.",
         "grid": {
           "shownOnceWarning": "Shown only once. Save these new keys in a safe place outside this browser — screenshots on shared machines put your vault at risk.",
           "downloadTxt": "Download .txt",
