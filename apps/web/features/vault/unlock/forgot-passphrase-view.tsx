@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 import { AppHeader } from '@/components/app-shell/app-header';
+import { Callout } from '@/components/ui/callout';
 
 export function ForgotPassphraseView() {
   const t = useTranslations('forgotPassphrase');
@@ -17,7 +18,7 @@ export function ForgotPassphraseView() {
       >
         <section data-view="s1">
           <h1 className="t-title-lg mb-2 text-ink">{t('title')}</h1>
-          <p className="t-body-lg mb-6" style={{ color: 'var(--muted)' }}>
+          <p className="t-body-lg mb-6 text-muted">
             {t('lead')}
           </p>
 
@@ -27,8 +28,7 @@ export function ForgotPassphraseView() {
               data-testid="forgot-path-passkey"
             >
               <span
-                className="mono w-6 text-center"
-                style={{ color: 'var(--muted)' }}
+                className="mono w-6 text-center text-muted"
               >
                 {tForgotB('passkeyStep')}
               </span>
@@ -36,7 +36,7 @@ export function ForgotPassphraseView() {
                 <div className="text-[14px] font-semibold text-body">
                   {tForgotB('passkeyTitle')}
                 </div>
-                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                <div className="text-[13px] text-muted">
                   {tForgotB('passkeyBody')}
                 </div>
               </div>
@@ -54,8 +54,7 @@ export function ForgotPassphraseView() {
               data-testid="forgot-path-remembered-device"
             >
               <span
-                className="mono w-6 text-center"
-                style={{ color: 'var(--muted)' }}
+                className="mono w-6 text-center text-muted"
               >
                 {tForgotB('deviceStep')}
               </span>
@@ -63,7 +62,7 @@ export function ForgotPassphraseView() {
                 <div className="text-[14px] font-semibold text-body">
                   {tForgotB('deviceTitle')}
                 </div>
-                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                <div className="text-[13px] text-muted">
                   {tForgotB('deviceBody')}
                 </div>
               </div>
@@ -81,8 +80,7 @@ export function ForgotPassphraseView() {
               data-testid="forgot-path-unlocked-tab"
             >
               <span
-                className="mono w-6 text-center"
-                style={{ color: 'var(--muted)' }}
+                className="mono w-6 text-center text-muted"
               >
                 {tForgotB('unlockedTabStep')}
               </span>
@@ -90,7 +88,7 @@ export function ForgotPassphraseView() {
                 <div className="text-[14px] font-semibold text-body">
                   {tForgotB('unlockedTabTitle')}
                 </div>
-                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                <div className="text-[13px] text-muted">
                   {tForgotB('unlockedTabBody')}
                 </div>
               </div>
@@ -104,13 +102,11 @@ export function ForgotPassphraseView() {
             </div>
 
             <div
-              className="card flex flex-wrap items-center gap-3 p-4"
-              style={{ borderColor: 'var(--accent)' }}
+              className="card flex flex-wrap items-center gap-3 border-accent p-4"
               data-testid="forgot-path-recovery-key"
             >
               <span
-                className="mono w-6 text-center"
-                style={{ color: 'var(--accent)' }}
+                className="mono w-6 text-center text-accent"
               >
                 {tForgotB('recoveryKeyStep')}
               </span>
@@ -118,7 +114,7 @@ export function ForgotPassphraseView() {
                 <div className="text-[14px] font-semibold text-body">
                   {t('paths.recoveryKeyTitle')}
                 </div>
-                <div className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                <div className="text-[13px] text-muted">
                   {t('paths.recoveryKeyBody')}
                 </div>
               </div>
@@ -132,34 +128,26 @@ export function ForgotPassphraseView() {
             </div>
           </div>
 
-          <div
-            className="card mb-6 p-5"
+          <Callout
             id="recovery-reauth-start"
             data-testid="forgot-reauth-note"
+            className="mb-6"
+            label={t('reauthNote.badge')}
+            title={t('reauthNote.title')}
           >
-            <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-              {t('reauthNote.badge')}
-            </p>
-            <p className="m-0 mb-1 text-[14px] font-semibold text-body">
-              {t('reauthNote.title')}
-            </p>
-            <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
-              {t('reauthNote.body')}
-            </p>
-          </div>
+            {t('reauthNote.body')}
+          </Callout>
 
           <div
-            className="mb-6 rounded-md p-4"
-            style={{ background: 'var(--surface)' }}
+            className="mb-6 rounded-md p-4 bg-surface"
             data-testid="forgot-last-resort-note"
           >
             <p
-              className="m-0 mb-2 text-[13px] font-semibold"
-              style={{ color: 'var(--body)' }}
+              className="m-0 mb-2 text-[13px] font-semibold text-body"
             >
               {t('lastResort.title')}
             </p>
-            <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+            <p className="m-0 text-[13px] text-muted">
               {t('lastResort.body')}
             </p>
           </div>

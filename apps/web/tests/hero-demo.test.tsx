@@ -34,16 +34,38 @@ describe('HeroDemo', () => {
   it('lọc kết quả khi gõ không dấu', async () => {
     renderHero();
     const input = screen.getByRole('combobox');
-    await userEvent.type(input, 'ca phe');
+    // <mark> chỉ bọc "mạng"; tên đầy đủ nằm ở bản sr-only, nên getByText khớp đúng một nút.
+    await userEvent.type(input, 'mang');
 
     const listbox = await screen.findByRole('listbox');
-    expect(within(listbox).getByText(/Cà phê sữa đá/)).toBeInTheDocument();
+    expect(within(listbox).getByText('mạng nhà')).toBeInTheDocument();
+  });
+
+  it('chia gợi ý thành nhóm Tags / Items / Gần nghĩa như mockup, mọi hàng là option', async () => {
+    renderHero();
+    const input = screen.getByRole('combobox');
+    await userEvent.type(input, 'wif');
+
+    const listbox = screen.getByRole('listbox');
+    const groups = within(listbox).getAllByRole('group');
+    expect(groups).toHaveLength(3);
+    expect(groups[0]).toHaveAccessibleName('Tags');
+    expect(groups[1]).toHaveAccessibleName('Items');
+    expect(groups[2]).toHaveAccessibleName('Gần nghĩa');
+    expect(within(groups[2]).getByRole('option')).toHaveTextContent('mạng nhà');
+
+    await userEvent.keyboard('{ArrowDown}');
+    const options = within(listbox).getAllByRole('option');
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+    expect(input).toHaveAttribute('aria-activedescendant', options[0].id);
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('status')).toHaveTextContent('Đã chọn #wifi-khách');
   });
 
   it('điều hướng bằng bàn phím và chọn bằng Enter (P01-A6)', async () => {
     renderHero();
     const input = screen.getByRole('combobox');
-    await userEvent.type(input, 'ghi');
+    await userEvent.type(input, 'hop');
     await userEvent.keyboard('{ArrowDown}');
 
     const options = screen.getAllByRole('option');
@@ -51,12 +73,12 @@ describe('HeroDemo', () => {
     expect(input).toHaveAttribute('aria-activedescendant', options[0].id);
 
     await userEvent.keyboard('{Enter}');
-    expect(screen.getByRole('status')).toHaveTextContent(/Ghi chú họp thứ Ba/);
+    expect(screen.getByRole('status')).toHaveTextContent(/hợp đồng thuê nhà/);
   });
 
   it('Escape đóng danh sách', async () => {
     renderHero();
-    await userEvent.type(screen.getByRole('combobox'), 'ghi');
+    await userEvent.type(screen.getByRole('combobox'), 'wif');
     expect(screen.getByRole('listbox')).toBeInTheDocument();
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -118,7 +140,7 @@ describe('HeroDemo', () => {
     expect(input).not.toHaveAttribute('aria-activedescendant');
 
     await userEvent.clear(input);
-    await userEvent.type(input, 'ghi');
+    await userEvent.type(input, 'wif');
     await userEvent.keyboard('{ArrowDown}{Enter}');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(input).toHaveAttribute('aria-expanded', 'false');
@@ -148,7 +170,7 @@ describe('HeroDemo', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
-    expect(input.value).toBe('ca phe');
+    expect(input.value).toBe('wif');
     vi.useRealTimers();
   });
 
@@ -178,13 +200,15 @@ describe('HeroDemo', () => {
     const input = screen.getByRole('combobox');
 
     expect(input).toHaveAccessibleName('Search sample notes');
-    expect(input).toHaveAttribute('placeholder', 'Type a keyword…');
+    expect(input).toHaveAttribute('placeholder', 'Try typing: wifi');
     expect(screen.getByRole('note')).toHaveTextContent('Sample data — type freely, nothing is sent anywhere.');
 
-    await userEvent.type(input, 'ghi');
+    await userEvent.type(input, 'wif');
     expect(screen.getByRole('listbox')).toHaveAccessibleName('Sample results');
+    // Mẫu tiếng Anh lấy từ fixture riêng của landing (audit UIA-24), không còn tên tiếng Việt.
+    expect(screen.getByRole('group', { name: 'Similar meaning' })).toHaveTextContent('home network');
 
     await userEvent.keyboard('{ArrowDown}{Enter}');
-    expect(screen.getByRole('status')).toHaveTextContent('Selected Ghi chú họp thứ Ba');
+    expect(screen.getByRole('status')).toHaveTextContent('Selected #wifi-guest');
   });
 });

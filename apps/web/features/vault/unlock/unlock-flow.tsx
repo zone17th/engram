@@ -23,6 +23,7 @@ import {
   hasRecoveryCompletedNotice,
 } from './recovery-notice';
 import { PasskeyUnlockButton } from '@/features/vault/passkey/passkey-unlock-button';
+import { Callout } from '@/components/ui/callout';
 
 export type UnlockErrorState =
   | { kind: 'empty' }
@@ -281,21 +282,20 @@ export function VaultUnlockFlow() {
         {recoveredNotice ? (
           <div
             role="status"
-            className="card mb-6 p-5"
-            style={{ borderColor: 'var(--success)' }}
+            className="card mb-6 p-5 border-success"
             data-testid="unlock-recovered-notice"
           >
-            <p className="m-0 mb-1 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+            <p className="m-0 mb-1 text-[14px] font-semibold text-body">
               {t('recoveredNoticeTitle')}
             </p>
-            <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+            <p className="m-0 text-[13px] text-muted">
               {t('recoveredNoticeBody')}
             </p>
           </div>
         ) : null}
         <p
-          className="t-label mb-2 min-w-0 max-w-full break-words [overflow-wrap:anywhere]"
-          style={{ color: 'var(--muted)', overflowWrap: 'anywhere' }}
+          className="t-label mb-2 min-w-0 max-w-full break-words text-muted [overflow-wrap:anywhere]"
+          style={{ overflowWrap: 'anywhere' }}
           data-testid="unlock-signed-in-line"
         >
           {me?.user.email
@@ -303,7 +303,7 @@ export function VaultUnlockFlow() {
             : t('signedInGeneric')}
         </p>
         <h1 className="t-title-lg mb-2 text-ink">{t('title')}</h1>
-        <p className="t-body-lg mb-7" style={{ color: 'var(--muted)' }}>
+        <p className="t-body-lg mb-7 text-muted">
           {t('lead')}
         </p>
 
@@ -355,8 +355,7 @@ export function VaultUnlockFlow() {
                 {submitting ? t('submitting') : t('submit')}
               </Button>
               <p
-                className="t-caption mt-3 mb-0 text-center"
-                style={{ color: 'var(--muted)' }}
+                className="t-caption mt-3 mb-0 text-center text-muted"
               >
                 {t('caption')}
               </p>
@@ -366,9 +365,8 @@ export function VaultUnlockFlow() {
           {/* Error states matching mockups/unlock.html — at most 1 role="alert" at a time */}
           {errorState?.kind === 'incorrect_passphrase' ? (
             <div
-              className="card mb-4 p-5"
+              className="card mb-4 p-5 card-error"
               id="err-passphrase-aead"
-              style={{ borderColor: 'var(--error)' }}
               data-testid="unlock-error-incorrect-passphrase"
             >
               <div className="mb-2 flex items-center gap-2">
@@ -382,7 +380,7 @@ export function VaultUnlockFlow() {
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.incorrectPassphraseTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.incorrectPassphraseBody')}
                 </p>
               </div>
@@ -390,42 +388,38 @@ export function VaultUnlockFlow() {
           ) : null}
 
           {errorState?.kind === 'insufficient_memory' ? (
-            <div
-              className="card mb-4 p-5"
+            <Callout
+              tone="error"
               id="err-insufficient-memory"
-              style={{ borderColor: 'var(--error)' }}
               data-testid="unlock-error-insufficient-memory"
+              className="mb-4"
+              label={t('errors.oomBadge')}
             >
-              <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                {t('errors.oomBadge')}
-              </p>
               <div role="alert" className="auth-alert">
                 <p
-                  className="m-0 mb-1 text-[14px] font-semibold"
-                  style={{ color: 'var(--body)' }}
+                  className="m-0 mb-1 text-[14px] font-semibold text-body"
                 >
                   {t('errors.oomTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                <p className="m-0 text-[13px] text-body">
                   {t('errors.oomBodyPrefix')}
                   <strong>{t('errors.oomBodyStrong')}</strong>
                   {t('errors.oomBodySuffix')}
                 </p>
               </div>
-            </div>
+            </Callout>
           ) : null}
 
           {errorState?.kind === 'passphrase_invalid' ? (
             <div
-              className="card mb-4 p-5"
-              style={{ borderColor: 'var(--error)' }}
+              className="card mb-4 p-5 card-error"
               data-testid="unlock-error-passphrase-invalid"
             >
               <div role="alert">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.invalidUnicodeTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.invalidUnicodeBody')}
                 </p>
               </div>
@@ -434,15 +428,14 @@ export function VaultUnlockFlow() {
 
           {errorState?.kind === 'private_keys_wrap_invalid' ? (
             <div
-              className="card mb-4 p-5"
-              style={{ borderColor: 'var(--error)' }}
+              className="card mb-4 p-5 card-error"
               data-testid="unlock-error-private-keys-wrap-invalid"
             >
               <div role="alert">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.privateKeysWrapInvalidTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.privateKeysWrapInvalidBody')}
                 </p>
               </div>
@@ -451,15 +444,14 @@ export function VaultUnlockFlow() {
 
           {errorState?.kind === 'busy' ? (
             <div
-              className="card mb-4 p-5"
-              style={{ borderColor: 'var(--warning)' }}
+              className="card mb-4 p-5 card-warning"
               data-testid="unlock-error-busy"
             >
               <div role="alert">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.busyTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.busyBody')}
                 </p>
               </div>
@@ -468,15 +460,14 @@ export function VaultUnlockFlow() {
 
           {errorState?.kind === 'recovering' ? (
             <div
-              className="card mb-4 p-5"
-              style={{ borderColor: 'var(--warning)' }}
+              className="card mb-4 p-5 card-warning"
               data-testid="unlock-error-recovering"
             >
               <div role="alert" className="mb-3">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.recoveringTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.recoveringBody')}
                 </p>
               </div>
@@ -493,27 +484,25 @@ export function VaultUnlockFlow() {
           ) : null}
 
           {errorState?.kind === 'rate_limited' ? (
-            <div
-              className="card mb-4 p-5"
+            <Callout
+              tone="warning"
               id="err-rate-limited"
-              style={{ borderColor: 'var(--warning)' }}
               data-testid="unlock-error-rate-limited"
+              className="mb-4"
+              label={t('errors.rateLimitedBadge')}
             >
-              <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                {t('errors.rateLimitedBadge')} · Retry-After: {effectiveRateLimitSeconds}
-              </p>
               <div role="alert">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.rateLimitedTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.rateLimitedBody', {
                     clock: formatRetryClock(effectiveRateLimitSeconds),
                     seconds: effectiveRateLimitSeconds,
                   })}
                 </p>
               </div>
-            </div>
+            </Callout>
           ) : null}
 
           {errorState?.kind === 'session_expired' ? (
@@ -522,14 +511,14 @@ export function VaultUnlockFlow() {
               id="err-session-expired"
               data-testid="unlock-error-session-expired"
             >
-              <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+              <p className="t-label mb-2 text-muted">
                 {t('errors.sessionExpiredBadge')}
               </p>
               <div role="alert" className="mb-3">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.sessionExpiredTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {t('errors.sessionExpiredBody')}
                 </p>
               </div>
@@ -545,15 +534,14 @@ export function VaultUnlockFlow() {
 
           {errorState?.kind === 'network' ? (
             <div
-              className="card mb-4 p-5"
-              style={{ borderColor: 'var(--error)' }}
+              className="card mb-4 p-5 card-error"
               data-testid="unlock-error-network"
             >
               <div role="alert">
                 <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                   {t('errors.networkTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                <p className="m-0 text-[13px] text-muted">
                   {errorState.detail ?? t('errors.networkBody')}
                 </p>
               </div>
@@ -563,7 +551,7 @@ export function VaultUnlockFlow() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <Link
               href="/app/unlock/forgot"
-              style={{ fontSize: '14px' }}
+              className="text-[14px]"
               data-testid="unlock-forgot-passphrase-link"
             >
               {t('forgotPassphrase')}
