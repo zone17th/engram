@@ -74,3 +74,12 @@ export {
   useUnconfirmedSavesForUser,
   type UnconfirmedSaveRecord,
 } from '@/features/entries/unconfirmed-save-store';
+
+export {
+  ENTRY_NEAR_CAP_BYTES,
+  captureEntrySaveOpGuard,
+  copyEntryPlaintextToClipboard,
+  ensureVaultForEntrySeal,
+  type EditorPlaintextHolder,
+  type EntrySaveOpGuard,
+} from '@/features/entries/entry-save-helpers';

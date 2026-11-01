@@ -13,7 +13,10 @@ import {
   type DragEvent,
 } from 'react';
 import { AppHeader } from '@/components/app-shell/app-header';
-import { BadgeType } from '@/components/ui/badge-type';
+import {
+  JsonEntryCard,
+  NewJsonEntryComposer,
+} from '@/features/json-table';
 import { useOptionalUndoToast } from '@/components/ui/undo-toast';
 import { useSession } from '@/features/auth/session-provider';
 import {
@@ -22,10 +25,7 @@ import {
   reconcileUnconfirmedSavesUser,
   useUnconfirmedSavesForUser,
 } from '@/features/entries';
-import {
-  EntryBody,
-  type EntryBodyLoader,
-} from '@/features/items/entry-body';
+import { type EntryBodyLoader } from '@/features/items/entry-body';
 import { ItemHeader } from '@/features/items/item-header';
 import { LockedBanner } from '@/features/items/locked-banner';
 import { contentQueryKeys } from '@/features/items/query-keys';
@@ -110,6 +110,7 @@ export function ItemDetailPage({
 }: ItemDetailPageProps) {
   const tItem = useTranslations('content.item');
   const tEntry = useTranslations('content.entry');
+  const tJson = useTranslations('content.json');
   const tErrors = useTranslations('content.errors');
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -232,6 +233,7 @@ export function ItemDetailPage({
   // Card element registry for focus management after Delete / Undo / Create (IP15-FE1-5)
   const cardElementsRef = useRef<Map<string, HTMLElement>>(new Map());
   const addTextBtnRef = useRef<HTMLButtonElement | null>(null);
+  const addJsonBtnRef = useRef<HTMLButtonElement | null>(null);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const pendingFocusIdRef = useRef<string | null>(null);
 
@@ -737,12 +739,14 @@ export function ItemDetailPage({
 
   // Add new text entry state
   const [creatingText, setCreatingText] = useState(false);
+  const [creatingJson, setCreatingJson] = useState(false);
 
   useEffect(() => {
-    if (!unlocked && creatingText) {
-      setCreatingText(false);
+    if (!unlocked) {
+      if (creatingText) setCreatingText(false);
+      if (creatingJson) setCreatingJson(false);
     }
-  }, [creatingText, unlocked]);
+  }, [creatingJson, creatingText, unlocked]);
 
   const handleCancelCreatingText = useCallback(() => {
     setCreatingText(false);
@@ -750,9 +754,18 @@ export function ItemDetailPage({
       addTextBtnRef.current?.focus();
     });
   }, []);
-  const handleCreatedTextEntry = useCallback(
+
+  const handleCancelCreatingJson = useCallback(() => {
+    setCreatingJson(false);
+    queueMicrotask(() => {
+      addJsonBtnRef.current?.focus();
+    });
+  }, []);
+
+  const handleCreatedEntry = useCallback(
     (created: EntryMeta) => {
       setCreatingText(false);
+      setCreatingJson(false);
       const nextList = sortEntriesByPosition([
         ...orderedEntriesRef.current.filter((e) => e.id !== created.id),
         created,
@@ -961,10 +974,29 @@ export function ItemDetailPage({
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
                 onClick={() => {
                   if (atEntryLimit || !unlocked || !entriesQuery.isSuccess) return;
+                  setCreatingJson(false);
                   setCreatingText(true);
                 }}
               >
                 {tItem('addTextCta')}
+              </button>
+
+              <button
+                ref={addJsonBtnRef}
+                type="button"
+                id="btn-add-json"
+                data-testid="btn-add-json"
+                className="btn btn-secondary btn-sm"
+                disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
+                title={atEntryLimit ? tItem('entryLimitHint') : undefined}
+                aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
+                onClick={() => {
+                  if (atEntryLimit || !unlocked || !entriesQuery.isSuccess) return;
+                  setCreatingText(false);
+                  setCreatingJson(true);
+                }}
+              >
+                {tJson('addJsonCta')}
               </button>
 
               <button
@@ -1000,8 +1032,19 @@ export function ItemDetailPage({
                   <NewTextEntryComposer
                     itemId={itemId}
                     itemName={itemQuery.data.name}
-                    onSaved={handleCreatedTextEntry}
+                    onSaved={handleCreatedEntry}
                     onCancel={handleCancelCreatingText}
+                    onAnnounce={announce}
+                    onDraftClearedOnLock={handleDraftClearedOnLock}
+                  />
+                ) : null}
+
+                {creatingJson && unlocked ? (
+                  <NewJsonEntryComposer
+                    itemId={itemId}
+                    itemName={itemQuery.data.name}
+                    onSaved={handleCreatedEntry}
+                    onCancel={handleCancelCreatingJson}
                     onAnnounce={announce}
                     onDraftClearedOnLock={handleDraftClearedOnLock}
                   />
@@ -1036,7 +1079,10 @@ export function ItemDetailPage({
                     <p className="t-body m-0 text-muted">{tItem('loading')}</p>
                   </div>
                 ) : null}
-                {orderedEntries.length === 0 && !creatingText && entriesQuery.isSuccess ? (
+                {orderedEntries.length === 0 &&
+                !creatingText &&
+                !creatingJson &&
+                entriesQuery.isSuccess ? (
                   <div className="card p-6 text-center" data-testid="item-entries-empty">
                     <h2 className="t-title-sm mb-2 text-ink">{tItem('emptyTitle')}</h2>
                     <p className="t-body mb-4 text-muted">{tItem('emptyBody')}</p>
@@ -1046,9 +1092,23 @@ export function ItemDetailPage({
                           type="button"
                           data-testid="empty-add-text-btn"
                           className="btn btn-primary btn-sm"
-                          onClick={() => setCreatingText(true)}
+                          onClick={() => {
+                            setCreatingJson(false);
+                            setCreatingText(true);
+                          }}
                         >
                           {tItem('emptyAddTextCta')}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="empty-add-json-btn"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => {
+                            setCreatingText(false);
+                            setCreatingJson(true);
+                          }}
+                        >
+                          {tJson('addJsonCta')}
                         </button>
                       </div>
                     ) : null}
@@ -1057,34 +1117,27 @@ export function ItemDetailPage({
 
                 {visibleEntries.map((entry, idx) =>
                   entry.type === 'json' ? (
-                    /* JSON card fallback until Task 16 replaces with full table/raw renderer */
-                    <article
+                    <JsonEntryCard
                       key={entry.id}
-                      ref={(el) => registerCardElement(entry.id, el)}
-                      tabIndex={-1}
-                      aria-label={tEntry('cardLabel', { pos: idx + 1 })}
-                      data-testid={`entry-card-${entry.id}`}
-                      data-entry-card={entry.id}
-                      className="card min-w-0 overflow-hidden"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
-                        <BadgeType kind="json" />
-                        <span className="mono text-[12px] text-muted" data-entry-pos>
-                          #{idx + 1}
-                        </span>
-                      </div>
-                      <div className="p-4">
-                        <EntryBody
-                          entryId={entry.id}
-                          version={entry.version}
-                          itemId={itemId}
-                          load={load}
-                          lazy={lazyCards}
-                          kind="json"
-                          variant="full"
-                        />
-                      </div>
-                    </article>
+                      entry={entry}
+                      itemId={itemId}
+                      itemName={itemQuery.data.name}
+                      index={idx}
+                      total={orderedEntries.length}
+                      canReorder={canReorder}
+                      load={load}
+                      lazy={lazyCards}
+                      onMoveUp={handleMoveUp}
+                      onMoveDown={handleMoveDown}
+                      onDelete={handleDeleteEntry}
+                      onDragStart={handleDragStart}
+                      onDragOver={handleDragOver}
+                      onDrop={handleDrop}
+                      onDragEnd={handleDragEnd}
+                      onAnnounce={announce}
+                      onDraftClearedOnLock={handleDraftClearedOnLock}
+                      registerCardElement={registerCardElement}
+                    />
                   ) : (
                     <TextEntryCard
                       key={entry.id}
