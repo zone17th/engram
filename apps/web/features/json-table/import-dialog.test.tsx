@@ -1978,4 +1978,57 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       source: 'entry',
     });
   }, 30_000);
+
+  it('FU13 (dec-228, dec-229): hides #importFileInput from keyboard/a11y tree while delegating click from Choose file button, and applies text-success-ink on valid #importStatusLine', async () => {
+    const h = await setupImportHarness();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog = screen.getByTestId('import-json-dialog');
+    const fileInput = within(dialog).getByTestId('import-json-file-input') as HTMLInputElement;
+    const chooseFileBtn = within(dialog).getByTestId('import-json-choose-file-btn');
+    const statusLine = within(dialog).getByTestId('import-json-status-line');
+
+    // dec-228: sr-only file input is excluded from tab order and a11y tree
+    expect(fileInput).toHaveAttribute('id', 'importFileInput');
+    expect(fileInput).toHaveAttribute('tabindex', '-1');
+    expect(fileInput.tabIndex).toBe(-1);
+    expect(fileInput).toHaveAttribute('aria-hidden', 'true');
+
+    // Clicking the visible Choose file button triggers fileInput.click()
+    const inputClickSpy = vi.spyOn(fileInput, 'click');
+    fireEvent.click(chooseFileBtn);
+    expect(inputClickSpy).toHaveBeenCalledTimes(1);
+    inputClickSpy.mockRestore();
+
+    // File change still imports and valid #importStatusLine uses high-contrast text-success-ink (dec-229)
+    const validPayload = '{"fu13":"contrast","ok":true}';
+    await act(async () => {
+      fireEvent.change(fileInput, {
+        target: { files: [makeFileFromBytes(utf8Encoder.encode(validPayload), 'fu13.json')] },
+      });
+    });
+
+    await waitFor(() => {
+      expect(statusLine).toHaveAttribute('id', 'importStatusLine');
+      expect(statusLine).toHaveClass('font-medium', 'text-success-ink');
+      expect(statusLine).not.toHaveClass('text-success');
+    });
+
+    fireEvent.click(within(dialog).getByTestId('import-json-submit-btn'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    });
+
+    const importReqs = h.server.requests.filter((r) =>
+      r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
+    );
+    expect(importReqs).toHaveLength(1);
+    const reqBody = JSON.parse(importReqs[0]!.rawBody) as { id: string; source: string };
+    expect(reqBody.source).toBe('file');
+    const savedPlaintext = await h.server.openServerEntryPlaintext(reqBody.id);
+    expect(savedPlaintext).toBe(validPayload);
+  });
 });
