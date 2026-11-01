@@ -27,3 +27,22 @@ export {
   type JsonTreeGridCommitControlRef,
   type JsonTreeGridProps,
 } from '@/features/json-table/json-tree-grid';
+
+export {
+  ImportJsonDialog,
+  importDialogTesting,
+  type ImportJsonDialogProps,
+  type JsonImportPlaintextHolder,
+  type JsonImportPreviewMode,
+} from '@/features/json-table/import-dialog';
+
+export {
+  getJsonImportHandoffLockEpoch,
+  getJsonImportHandoffSnapshot,
+  openJsonImportFromHandoff,
+  reconcileJsonImportHandoffUser,
+  subscribeJsonImportHandoff,
+  wipeJsonImportHandoff,
+  type JsonImportHandoffInput,
+  type JsonImportHandoffRecord,
+} from '@/features/json-table/import-handoff-store';

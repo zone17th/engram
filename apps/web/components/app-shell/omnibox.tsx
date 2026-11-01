@@ -30,6 +30,7 @@ import {
   contentQueryKeys,
   type ContentItemsQueryKey,
 } from '@/features/items/query-keys';
+import { ImportJsonDialog, openJsonImportFromHandoff } from '@/features/json-table';
 import {
   DupPickerDialog,
   type DupPickerSelection,
@@ -1815,14 +1816,37 @@ export function Omnibox({
                   </p>
                   <p className="m-0 text-[12px] text-muted">{tOmni('jsonBannerBody')}</p>
                 </div>
-                {/* Milestone rule (JSON/Import button hidden until Milestone C, plan header & brief item 1):
-                    Task 17 import dialog is not merged yet; keep the action button hidden until Task 17 wires it. */}
                 <button
                   type="button"
-                  hidden
                   data-omni-open-json="1"
                   data-testid="omnibox-json-banner-action"
-                  className="btn btn-secondary btn-sm hidden shrink-0"
+                  className="btn btn-secondary btn-sm shrink-0"
+                  onClick={() => {
+                    if (parsed.mode !== 'add') return;
+                    if (!isVaultUnlocked) {
+                      unlockToSaveBtnRef.current?.focus();
+                      return;
+                    }
+                    openJsonImportFromHandoff({
+                      name: parsed.name,
+                      tags: parsed.tags,
+                      body: parsed.body,
+                      userId: activeUserId,
+                      onSavedEntry: () => {
+                        setInputValue('');
+                        inputValueRef.current = '';
+                        if (textareaRef.current) {
+                          textareaRef.current.value = '';
+                          syncTextareaHeight(textareaRef.current);
+                          textareaRef.current.focus();
+                        }
+                        undoToast?.markOmniboxJustCleared(textareaRef.current);
+                      },
+                      onRestoreFocus: () => {
+                        textareaRef.current?.focus();
+                      },
+                    });
+                  }}
                 >
                   {tOmni('jsonBannerAction')}
                 </button>
@@ -2161,6 +2185,7 @@ export function Omnibox({
         onPick={handleDupPickerPick}
         onCancel={handleDupPickerCancel}
       />
+      <ImportJsonDialog listenToHandoff />
     </div>
   );
 }
