@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '../components/app-shell/app-header';
 import { EmptyState } from '../components/app-shell/empty-state';
 import { Omnibox } from '../components/app-shell/omnibox';
@@ -23,6 +23,16 @@ function renderWithTheme(ui: ReactNode) {
 }
 
 const WEB_ROOT = resolve(__dirname, '..');
+
+// AppHeader shows Sign out by default (advisor-dec-186). The real button needs SessionProvider + VaultProvider; its
+// behaviour is covered by the auth/vault suites, so here it is a stand-in that only proves where and how it renders.
+vi.mock('../features/auth/route-guard', async () => {
+  const { createElement } = await import('react');
+  return {
+    AppShellLogoutButton: ({ size = 'sm' }: { size?: 'sm' | 'md' }) =>
+      createElement('button', { type: 'button', 'data-size': size }, 'Đăng xuất'),
+  };
+});
 
 describe('AppHeader', () => {
   it('luôn hiện chữ engram viết thường', () => {
@@ -49,6 +59,24 @@ describe('AppHeader', () => {
     renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
     expect(screen.getByRole('link', { name: 'Cài đặt' })).toHaveAttribute('href', '/app/settings');
     expect(screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' })).toBeInTheDocument();
+  });
+
+  // UIA-9/18 (advisor-dec-186): one header on every app route. The item page passes no showLogout flag.
+  it('hiện Settings, theme và Đăng xuất cùng cỡ, theo thứ tự mockup, kể cả khi không truyền showLogout', () => {
+    renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
+    const settings = screen.getByRole('link', { name: 'Cài đặt' });
+    const theme = screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' });
+    const signOut = screen.getByRole('button', { name: 'Đăng xuất' });
+    expect(settings).toHaveClass('btn', 'btn-tertiary');
+    expect(theme).toHaveClass('btn', 'btn-tertiary', 'btn-icon');
+    expect(signOut).toHaveAttribute('data-size', 'md');
+    expect(settings.compareDocumentPosition(theme) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(theme.compareDocumentPosition(signOut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('showLogout={false} chỉ để render ngoài SessionProvider', () => {
+    renderWithTheme(<AppHeader vault={{ state: 'locked' }} showLogout={false} />);
+    expect(screen.queryByRole('button', { name: 'Đăng xuất' })).not.toBeInTheDocument();
   });
 });
 

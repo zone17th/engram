@@ -11,7 +11,7 @@ export function ThemeToggle() {
   return (
     <button
       type="button"
-      className="btn btn-tertiary !px-3"
+      className="btn btn-tertiary btn-icon !px-3"
       onClick={toggle}
       aria-label={toggleLabel}
       title={titleLabel}
