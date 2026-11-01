@@ -14,6 +14,10 @@ import { contentQueryKeys } from '@/features/items/query-keys';
 import {
   clearLockClearedNotice,
   clearSaveUnconfirmed,
+  getLockClearedNoticeSnapshot,
+  getSaveUnconfirmedSnapshot,
+  recordLockClearedNotice,
+  recordSaveUnconfirmed,
 } from '@/features/omnibox/unconfirmed-save-store';
 import { setKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import * as contentApi from '@/lib/api/content';
@@ -1749,21 +1753,20 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     );
     expect(entryCreateSpy).toHaveBeenCalledTimes(2); // No auto-replay after unlock
 
-    // Switching to User B clears User A's unconfirmed notice so User B never sees User A's item name
-    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_B_ID } });
-    setKnownDeviceSessionUserId(USER_B_ID);
-    rerender(
-      <NextIntlClientProvider locale="vi" messages={viMessages}>
-        <QueryClientProvider client={queryClient}>
-          <UndoToastProvider>
-            <Omnibox />
-          </UndoToastProvider>
-        </QueryClientProvider>
-      </NextIntlClientProvider>,
-    );
-    await waitFor(() => {
-      expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    // Switching to User B in the `['auth', 'me', ...]` cache reactively hides and clears User A's
+    // unconfirmed notice immediately without requiring an unmount or parent rerender (HM18-CI-10)
+    act(() => {
+      queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_B_ID } });
+      setKnownDeviceSessionUserId(USER_B_ID);
     });
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+
+    // Even if `['auth', 'me']` switches back to User A later without a new uncertain save, User A's cleared notice does not reappear
+    act(() => {
+      queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_A_ID } });
+      setKnownDeviceSessionUserId(USER_A_ID);
+    });
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
   });
 
   it('drops save plan and draft when vault locks mid-plan (after POST /items, before POST /entries), preserves the user-scoped lock notice across Omnibox unmount/remount on the unlock route (HM18B-R1-4), keeps item, and never leaks plaintext', async () => {
@@ -1833,21 +1836,20 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     );
     expect(entryCreateSpy).not.toHaveBeenCalled();
 
-    // Switching to User B clears User A's lock notice so User B never sees it
-    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_B_ID } });
-    setKnownDeviceSessionUserId(USER_B_ID);
-    remounted.rerender(
-      <NextIntlClientProvider locale="vi" messages={viMessages}>
-        <QueryClientProvider client={queryClient}>
-          <UndoToastProvider>
-            <Omnibox />
-          </UndoToastProvider>
-        </QueryClientProvider>
-      </NextIntlClientProvider>,
-    );
-    await waitFor(() => {
-      expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+    // Switching to User B in the `['auth', 'me', ...]` cache reactively hides and clears User A's
+    // lock notice immediately without requiring an unmount or parent rerender (HM18-CI-10)
+    act(() => {
+      queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_B_ID } });
+      setKnownDeviceSessionUserId(USER_B_ID);
     });
+    expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+
+    // Even if `['auth', 'me']` switches back to User A later, the cleared lock notice does not reappear
+    act(() => {
+      queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_A_ID } });
+      setKnownDeviceSessionUserId(USER_A_ID);
+    });
+    expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
 
     // HM18B-R2-6 & HM18-R3-4: When user ID is unknown at lock time, lock notice is recorded with `userId: null`
     // while `activeUserId === null`, cleared on any `signed_out` reason (incl. `expired`/`revoked`), and dropped
@@ -1872,21 +1874,13 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       'Bản nháp chưa lưu đã bị xoá khi khoá vault',
     );
 
-    // HM18-R3-4 (dec-120): When a known user ID appears, a `userId: null` notice is dropped rather than adopted
-    queryClient.setQueryData(['auth', 'me'], { user: { id: USER_A_ID } });
-    setKnownDeviceSessionUserId(USER_A_ID);
-    unlockedUnknownView.rerender(
-      <NextIntlClientProvider locale="vi" messages={viMessages}>
-        <QueryClientProvider client={queryClient}>
-          <UndoToastProvider>
-            <Omnibox />
-          </UndoToastProvider>
-        </QueryClientProvider>
-      </NextIntlClientProvider>,
-    );
-    await waitFor(() => {
-      expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+    // HM18-R3-4 & HM18-CI-10 (dec-120): When a known user ID appears in `['auth', 'me', epoch]`,
+    // a `userId: null` notice is reactively dropped rather than adopted without requiring unmount/rerender
+    act(() => {
+      queryClient.setQueryData(['auth', 'me', 1], { user: { id: USER_A_ID } });
+      setKnownDeviceSessionUserId(USER_A_ID);
     });
+    expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
 
     // Record a known-user notice for User A and verify involuntary `signed_out` (`reason: 'expired'`) immediately clears it
     unlockedUnknownView.unmount();
@@ -2263,5 +2257,39 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(actionErr).toHaveTextContent(viMessages.content.errors.network);
     expect(mockSealEntryCalls).toHaveLength(0);
     expect(itemCreateSpy).not.toHaveBeenCalled();
+  });
+
+  it('reactively hides and clears lock-cleared notice and saveUnconfirmed line immediately when [\'auth\', \'me\', ...] cache switches from user A to user B without unmount or parent rerender (HM18-CI-10, dec-120)', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    // Seed the real epoch-keyed `['auth', 'me', sessionEpoch]` entry used by `SessionProvider`
+    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    setKnownDeviceSessionUserId(USER_A_ID);
+    recordLockClearedNotice({ userId: USER_A_ID, kind: 'plan' });
+    recordSaveUnconfirmed({ userId: USER_A_ID, itemName: 'wifi' });
+
+    renderOmnibox(<Omnibox />, { queryClient });
+
+    expect(screen.getByTestId('omnibox-lock-cleared-notice')).toHaveTextContent(
+      'Bản nháp chưa lưu đã bị xoá khi khoá vault; mục/tag đã tạo vẫn còn',
+    );
+    expect(screen.getByTestId('omnibox-save-unconfirmed-notice')).toHaveTextContent(
+      'Lần lưu trước vào “wifi” chưa xác nhận; kiểm tra mục trước khi lưu lại',
+    );
+
+    // Switch the `['auth', 'me', ...]` cache to User B WITHOUT unmounting or calling `rerender(...)`
+    act(() => {
+      queryClient.setQueriesData(
+        { queryKey: ['auth', 'me'] },
+        { user: { id: USER_B_ID } },
+      );
+      setKnownDeviceSessionUserId(USER_B_ID);
+    });
+
+    expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    expect(getLockClearedNoticeSnapshot()).toBeNull();
+    expect(getSaveUnconfirmedSnapshot()).toBeNull();
   });
 });

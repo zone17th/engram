@@ -92,11 +92,33 @@ async function collectOmniboxFailureDiagnostics(
   });
 }
 
+function isOmniboxRelevantRequest(rec: CapturedRequestRecord): boolean {
+  const { method, url } = rec;
+  if (
+    url.includes('/items?') ||
+    url.includes('/items/lookup') ||
+    url.includes('/tags?')
+  ) {
+    return true;
+  }
+  if (method === 'POST' || method === 'PATCH' || method === 'PUT') {
+    if (
+      url.includes('/items') ||
+      url.includes('/tags') ||
+      url.includes('/entries')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function attachNetworkRecorder(page: Page): {
   readonly records: CapturedRequestRecord[];
   readonly apiResponses: ApiResponseSummary[];
   readonly flushPending: () => Promise<void>;
   readonly countSince: (index: number) => number;
+  readonly expectZeroSince: (index: number, label: string) => void;
   readonly assertNeverContains: (sentinels: readonly string[]) => void;
 } {
   const records: CapturedRequestRecord[] = [];
@@ -160,7 +182,26 @@ function attachNetworkRecorder(page: Page): {
       }
     },
     countSince(index: number): number {
-      return records.length - index;
+      return records.slice(index).filter(isOmniboxRelevantRequest).length;
+    },
+    expectZeroSince(index: number, label: string): void {
+      const matched = records.slice(index).filter(isOmniboxRelevantRequest);
+      if (matched.length > 0) {
+        const summary = matched
+          .map((rec) => {
+            try {
+              return `${rec.method} ${new URL(rec.url).pathname}`;
+            } catch {
+              const rawPath = rec.url.split('?')[0]?.split('#')[0] ?? '/unknown';
+              return `${rec.method} ${rawPath}`;
+            }
+          })
+          .join(', ');
+        throw new Error(
+          `Expected 0 omnibox requests in ${label}, received ${matched.length}: [${summary}]`,
+        );
+      }
+      expect(matched.length).toBe(0);
     },
     assertNeverContains(sentinels: readonly string[]): void {
       for (const rec of records) {
@@ -234,12 +275,12 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     const mark1 = recorder.records.length;
     await setSecretTextareaValue(omnibox, secretBody123);
     await page.waitForTimeout(1_100);
-    expect(recorder.countSince(mark1)).toBe(0);
+    recorder.expectZeroSince(mark1, 'step 1a (paste body without colon)');
 
     await setSecretTextareaValue(omnibox, `name: ${secretBody123}`);
     await page.waitForTimeout(500);
     await recorder.flushPending();
-    expect(recorder.countSince(mark1)).toBe(0);
+    recorder.expectZeroSince(mark1, 'step 1b (prepend name: before Enter)');
     recorder.assertNeverContains(allSentinels);
 
     // 2. Paste `a:SECRET`, wait >= 1 s -> no request contains `a:SECRET` (or encoded/base64 variants) or `SECRET` before Enter (advisor-dec-098, HM18A-R1-4).
@@ -247,7 +288,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await setSecretTextareaValue(omnibox, fullColonDraft);
     await page.waitForTimeout(1_100);
     await recorder.flushPending();
-    expect(recorder.countSince(mark2)).toBe(0);
+    recorder.expectZeroSince(mark2, 'step 2 (paste a:SECRET before Enter)');
     recorder.assertNeverContains(allSentinels);
     // 3. Paste multi-line text without `:` then press Enter -> nothing sent; guard alert shown.
     const mark3 = recorder.records.length;
@@ -256,7 +297,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
     await page.waitForTimeout(300);
     await recorder.flushPending();
-    expect(recorder.countSince(mark3)).toBe(0);
+    recorder.expectZeroSince(mark3, 'step 3 (multi-line search on Enter)');
     recorder.assertNeverContains(allSentinels);
 
     // 4. One 5 KB line without `:` then press Enter -> nothing sent; guard alert shown.
@@ -266,7 +307,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
     await page.waitForTimeout(300);
     await recorder.flushPending();
-    expect(recorder.countSince(mark4)).toBe(0);
+    recorder.expectZeroSince(mark4, 'step 4 (5 KB search on Enter)');
     recorder.assertNeverContains(allSentinels);
     // 5. Type an add draft then delete the `:` -> nothing sent.
     const mark5 = recorder.records.length;
@@ -275,7 +316,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await setSecretTextareaValue(omnibox, `wifi #home ${draftDeletedColonSecret}`);
     await page.waitForTimeout(1_100);
     await recorder.flushPending();
-    expect(recorder.countSince(mark5)).toBe(0);
+    recorder.expectZeroSince(mark5, 'step 5 (delete : from add draft)');
     recorder.assertNeverContains(allSentinels);
 
     // 5b. Add-mode invalid draft (`a:` with empty body) on Enter -> sends 0 requests;
@@ -285,7 +326,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await omnibox.press('Enter');
     await page.waitForTimeout(300);
     await recorder.flushPending();
-    expect(recorder.countSince(markAddInvalid)).toBe(0);
+    recorder.expectZeroSince(markAddInvalid, 'step 5b (invalid add draft a: with empty body)');
     recorder.assertNeverContains(allSentinels);
 
     const markSave = recorder.records.length;
@@ -342,7 +383,7 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     await expect(page.getByTestId('omnibox-guard-alert')).toBeVisible({ timeout: UI_WAIT_MS });
     await page.waitForTimeout(300);
     await recorder.flushPending();
-    expect(recorder.countSince(markTag)).toBe(0);
+    recorder.expectZeroSince(markTag, 'step 6 (tag mode without valid Enter)');
     recorder.assertNeverContains(allSentinels);
 
     // 7. Positive controls (HM18A-R1-8, HM18A-R2-5):

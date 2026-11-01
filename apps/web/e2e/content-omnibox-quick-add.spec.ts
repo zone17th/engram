@@ -564,29 +564,37 @@ test.describe('P04-T18b quick-add E2E (A3 retry & idempotency, Ctrl+Z Undo vs na
           r.pathname === `/api/v1/items/${lockMidPlanLookup.items[0]?.id ?? ''}/entries`,
       ),
     ).toHaveLength(0);
-    // Switching to another user in `['auth', 'me']` immediately hides and clears User A's lock notice (HM18B-R2-7)
-    await page.evaluate(() => {
+    // Switching to another user in the real `['auth', 'me', ...]` cache immediately hides and clears User A's lock notice (HM18B-R2-7, HM18-CI-10)
+    const updatedMeCount = await page.evaluate(() => {
       const win = window as unknown as {
         __engramQueryClient?: {
-          setQueryData: (key: readonly unknown[], updater: (prev: unknown) => unknown) => void;
+          setQueriesData: (
+            filters: { queryKey: readonly unknown[] },
+            updater: (prev: unknown) => unknown,
+          ) => Array<[readonly unknown[], unknown]>;
         };
       };
-      win.__engramQueryClient?.setQueryData(['auth', 'me'], (prev) => {
-        if (!prev || typeof prev !== 'object') return prev;
-        const prevObj: Record<string, unknown> = prev as Record<string, unknown>;
-        const prevUser =
-          'user' in prevObj && typeof prevObj.user === 'object' && prevObj.user !== null
-            ? (prevObj.user as Record<string, unknown>)
-            : {};
-        return {
-          ...prevObj,
-          user: {
-            ...prevUser,
-            id: '00000000-0000-4000-8000-000000000999',
-          },
-        };
-      });
+      const updated = win.__engramQueryClient?.setQueriesData(
+        { queryKey: ['auth', 'me'] },
+        (prev) => {
+          if (!prev || typeof prev !== 'object') return prev;
+          const prevObj: Record<string, unknown> = prev as Record<string, unknown>;
+          const prevUser =
+            'user' in prevObj && typeof prevObj.user === 'object' && prevObj.user !== null
+              ? (prevObj.user as Record<string, unknown>)
+              : {};
+          return {
+            ...prevObj,
+            user: {
+              ...prevUser,
+              id: '00000000-0000-4000-8000-000000000999',
+            },
+          };
+        },
+      );
+      return updated?.length ?? 0;
     });
+    expect(updatedMeCount).toBeGreaterThan(0);
     await expect(lockClearedNotice).toBeHidden({ timeout: UI_WAIT_MS });
   });
 });
