@@ -1,7 +1,7 @@
 import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { UI_WAIT_MS } from './vault-passkey-support';
+import { UI_WAIT_MS, expectVaultShut } from './vault-passkey-support';
 
 // Helpers for the P04-T21a acceptance specs (`content-journey.spec.ts`, `content-journey-p03.spec.ts`,
 // `content-artifacts.spec.ts`). Nothing here stubs `/api/**` (all calls reach the compose stack's real API
@@ -372,4 +372,14 @@ export function scanDirectoriesForSecretsAndStorageState(
     secretHits,
     forbiddenStorageFiles,
   };
+}
+
+/**
+ * Like `expectOnUnlockPage` (vault-passkey-support.ts, frozen P03 helper) but also accepts the `returnTo` query that the
+ * app adds when a locked deep link (for example a reload of `/app/items/<id>`) is sent to the unlock page.
+ */
+export async function expectOnUnlockPageAllowingReturnTo(page: Page): Promise<void> {
+  await expect(page).toHaveURL(/\/app\/unlock(?:\?returnTo=[^&#]*)?$/, { timeout: ACCEPTANCE_UI_WAIT_MS });
+  await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+  await expectVaultShut(page);
 }

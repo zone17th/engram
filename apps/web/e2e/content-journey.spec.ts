@@ -1,6 +1,7 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
 import en from '../messages/en.json';
 import {
+  expectOnUnlockPageAllowingReturnTo,
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
   expectInputEmptyBool,
@@ -19,7 +20,7 @@ import {
   submitUnlock,
   unlockFromLockedList,
 } from './vault-journey-support';
-import { CRYPTO_WAIT_MS, VAULT_PASSPHRASE, expectOnUnlockPage, expectVaultShut } from './vault-passkey-support';
+import { CRYPTO_WAIT_MS, VAULT_PASSPHRASE, expectVaultShut } from './vault-passkey-support';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs,
 // so a failure while a recovery-key sheet or decrypted entry is mounted never serializes secrets to disk.
@@ -263,7 +264,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await pageA.getByTestId('vault-locked-unlock-cta').click();
-        await expectOnUnlockPage(pageA);
+        await expectOnUnlockPageAllowingReturnTo(pageA);
         await submitUnlock(pageA, VAULT_PASSPHRASE);
         await expect(pageA).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
           timeout: CRYPTO_WAIT_MS,
@@ -344,7 +345,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await pageA.getByTestId('vault-locked-unlock-cta').click();
-        await expectOnUnlockPage(pageA);
+        await expectOnUnlockPageAllowingReturnTo(pageA);
         await submitUnlock(pageA, VAULT_PASSPHRASE);
         await expect(pageA).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
           timeout: CRYPTO_WAIT_MS,
@@ -377,7 +378,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
 
       await timedJourneyStep('5. open a new browser context, log in, unlock with passphrase, and verify every item, tag, and entry body decrypts accurately', async () => {
         await loginViaUiSecret(pageB, email);
-        await expectOnUnlockPage(pageB);
+        await expectOnUnlockPageAllowingReturnTo(pageB);
         await pageB.goto('/app');
         await expectLockedListOnApp(pageB);
         await unlockFromLockedList(pageB, VAULT_PASSPHRASE);

@@ -1,6 +1,7 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
 import en from '../messages/en.json';
 import {
+  expectOnUnlockPageAllowingReturnTo,
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
   expectInputEmptyBool,
@@ -28,7 +29,6 @@ import {
 import {
   CRYPTO_WAIT_MS,
   VAULT_PASSPHRASE,
-  expectOnUnlockPage,
   expectVaultOpen,
   expectVaultShut,
   gotoSettings,
@@ -244,7 +244,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
 
         // Unlock from the item-page locked banner -> bodies decrypt again
         await page.getByTestId('vault-locked-unlock-cta').click();
-        await expectOnUnlockPage(page);
+        await expectOnUnlockPageAllowingReturnTo(page);
         await submitUnlock(page, VAULT_PASSPHRASE);
         await expect(page).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
           timeout: CRYPTO_WAIT_MS,
@@ -268,7 +268,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
       await timedJourneyStep('4. (c) recovery with onboarding recovery key -> unlock with new passphrase -> entry created BEFORE recovery decrypts with the exact same body', async () => {
         await freshRateBucket(page);
         await page.getByTestId('vault-locked-unlock-cta').click();
-        await expectOnUnlockPage(page);
+        await expectOnUnlockPageAllowingReturnTo(page);
 
         await openRecoveryFromUnlock(page, { kind: 'password' });
         const lookupRes = await submitRecoveryKey(page, recoveryKeySlot1);
@@ -286,7 +286,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         const pageB = await contextB.newPage();
 
         await loginViaUiSecret(pageB, email);
-        await expectOnUnlockPage(pageB);
+        await expectOnUnlockPageAllowingReturnTo(pageB);
         await submitUnlock(pageB, RECOVERED_PASSPHRASE);
         await expectUnlockedOnApp(pageB);
 
