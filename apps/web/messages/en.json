@@ -222,7 +222,7 @@
       "conflictTitle": "Request key conflict",
       "conflictBody": "The request state changed. Reload to check whether your vault was already created.",
       "mutationsDisabledTitle": "Vault key changes are temporarily paused",
-      "mutationsDisabledBody": "Creating a new vault is temporarily disabled for maintenance (503 vault_mutations_disabled). Please try again later.",
+      "mutationsDisabledBody": "Creating a new vault is temporarily disabled for maintenance. Please try again later.",
       "emailNotVerifiedTitle": "Verify your email before creating a vault",
       "emailNotVerifiedBody": "Your account email must be verified before you can create a vault.",
       "rateLimitedTitle": "Too many vault requests",
@@ -613,7 +613,7 @@
         "flowStartLabel": "Re-authenticate at flow start",
         "passwordLabel": "Login password",
         "passwordHint": "Your account login password, not your vault encryption passphrase.",
-        "oauthLabel": "OAuth-only account · re-authenticate at start",
+        "oauthLabel": "Confirm with Google first",
         "oauthBody": "Re-authenticate with Google at the start of the flow before entering or generating vault secrets so a page redirect does not wipe your progress.",
         "oauthButton": "Verify with Google",
         "oauthRedirectHint": "Google re-authentication leaves the page: the vault locks again — unlock it when you return to continue.",
@@ -623,7 +623,7 @@
         "expiredPasswordTitle": "Re-authentication expired before saving",
         "expiredPasswordBody": "Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.",
         "expiredPasswordSubmit": "Verify & save",
-        "expiredOauthLabel": "OAuth-only account · restart flow",
+        "expiredOauthLabel": "Confirmation expired — start again",
         "expiredOauthTitle": "Time ran out — restart required",
         "expiredOauthBody": "Because Google re-authentication redirects the page, temporary secrets were cleared and nothing was saved on the server. Restart the flow to re-authenticate with Google."
       },
@@ -838,7 +838,7 @@
       "add": {
         "button": "Add passkey",
         "title": "Add a passkey",
-        "description": "Re-authenticate at the start, verify WebAuthn PRF support on your authenticator, and wrap the vault key.",
+        "description": "Confirm your account first. We then check that your authenticator supports vault unlock and protect the vault key with this passkey.",
         "reauthStep": "Step 1 · Re-authenticate",
         "googleNote": "Google re-authentication leaves the page: the vault locks again, so unlock it before the flow continues.",
         "oauthStartFailed": "Could not start Google re-authentication. Try again.",
@@ -857,7 +857,7 @@
       },
       "settings": {
         "title": "Passkey",
-        "body": "Unlock your vault with biometrics or a security key. Requires WebAuthn PRF support, checked during registration.",
+        "body": "Unlock your vault with biometrics or a security key. Your browser and authenticator must support vault unlock; we check this when you add a passkey.",
         "added": "Passkey added."
       }
     },
@@ -916,7 +916,7 @@
           "revokeNotFoundError": "Could not remove this passkey because it was not found on the server.",
           "revokeFailed": "Could not remove this passkey. Try again.",
           "revokeNoteStrong": "Remove passkey",
-          "revokeNoteBody": "(requires account re-auth) deletes the credential and wrapped key on the live server. It does not remove the credential from your authenticator or stop previously copied wraps or backups from being opened if the authenticator can still evaluate PRF."
+          "revokeNoteBody": "(requires account re-auth) deletes this passkey and its protected copy of the vault key from the live server. It does not remove the passkey from your authenticator, and copies or backups made earlier can still be opened while your authenticator keeps this passkey."
         },
         "autoLock": {
           "title": "Auto-lock",
@@ -1036,10 +1036,10 @@
       "cancel": "Cancel recovery",
       "caption": "Limited to 5 attempts per 15 minutes per account. Your key never leaves this browser — the server only receives a fingerprint of the key.",
       "errors": {
-        "invalidBadge": "401 recovery_key_invalid · recovery.invalid",
+        "invalidBadge": "Recovery key not accepted",
         "invalidTitle": "That recovery key is not valid.",
         "invalidBody": "This single message is shown whether the key is malformed, unknown, already used, or belongs to another vault — without revealing how many keys remain. Check the characters or try another key from your set.",
-        "rateLimitedBadge": "429 rate_limited · vault_recovery_lookup (5 / 15 min)",
+        "rateLimitedBadge": "Limit: 5 tries per 15 minutes",
         "rateLimitedTitle": "Too many recovery attempts — please wait",
         "rateLimitedBody": "Recovery key checks are limited to 5 per 15 minutes per account. Please wait {clock} ({seconds}s) before trying again. The server does not say how many attempts or recovery keys are left.",
         "aeadBadge": "could not open · key not consumed",
@@ -1080,13 +1080,13 @@
         "invalidUnicode": "Passphrase contains invalid Unicode characters. Re-type your passphrase."
       },
       "errors": {
-        "reauthExpiredPasswordBadge": "reauth_expired · password account",
+        "reauthExpiredPasswordBadge": "Confirmation expired — confirm again here",
         "reauthExpiredPasswordTitle": "Re-authentication expired — confirm your login password in place",
         "reauthExpiredPasswordBody": "Your account confirmation has less than 60 seconds left or has expired. Enter your account login password right here to confirm again without leaving this page — your opened key is kept.",
         "reauthExpiredPasswordLabel": "Login password (not your vault passphrase)",
         "reauthExpiredPasswordSubmit": "Verify & finish recovery",
         "reauthExpiredPasswordSubmitting": "Verifying…",
-        "reauthExpiredOauthBadge": "reauth_expired · OAuth-only account",
+        "reauthExpiredOauthBadge": "Confirmation expired — start again",
         "reauthExpiredOauthTitle": "Time ran out — please start again",
         "reauthExpiredOauthBody": "Confirming again with a sign-in provider needs a full-page redirect, which clears temporary memory. The opened key was cleared and your recovery key was NOT consumed — start again from step 1 to confirm your account and reuse the same key.",
         "reauthExpiredOauthRestart": "Restart from step 1",
@@ -1109,7 +1109,7 @@
         "mutationsDisabledBadge": "503 vault_mutations_disabled",
         "mutationsDisabledTitle": "Vault key changes are temporarily paused",
         "mutationsDisabledBody": "Completing recovery is temporarily disabled for maintenance. Your recovery key was not consumed.",
-        "rateLimitedBadge": "429 rate_limited · vault_recovery_complete (5 / 15 min)",
+        "rateLimitedBadge": "Limit: 5 requests per 15 minutes",
         "rateLimitedTitle": "Too many recovery completion requests — please wait",
         "rateLimitedBody": "Finishing recovery is limited to 5 requests per 15 minutes (counted separately from key checks). Please wait {clock} ({seconds}s) before retrying.",
         "networkTitle": "Could not reach the server",

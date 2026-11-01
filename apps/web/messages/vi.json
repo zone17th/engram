@@ -222,7 +222,7 @@
       "conflictTitle": "Xung đột khoá yêu cầu",
       "conflictBody": "Trạng thái yêu cầu đã thay đổi. Hãy tải lại để kiểm tra xem vault đã được tạo hay chưa.",
       "mutationsDisabledTitle": "Thao tác thay đổi khoá vault đang tạm dừng",
-      "mutationsDisabledBody": "Hệ thống đang tạm ngưng tạo vault mới để bảo trì an toàn (503 vault_mutations_disabled). Hãy thử lại sau.",
+      "mutationsDisabledBody": "Hệ thống đang tạm ngưng tạo vault mới để bảo trì an toàn. Hãy thử lại sau.",
       "emailNotVerifiedTitle": "Cần xác minh email trước khi tạo vault",
       "emailNotVerifiedBody": "Địa chỉ email tài khoản cần được xác minh trước khi tạo vault.",
       "rateLimitedTitle": "Thử quá nhiều lần cho thao tác vault này",
@@ -613,7 +613,7 @@
         "flowStartLabel": "Xác thực lại ở đầu luồng",
         "passwordLabel": "Mật khẩu đăng nhập",
         "passwordHint": "Mật khẩu đăng nhập tài khoản, không phải passphrase mã hoá vault.",
-        "oauthLabel": "Tài khoản OAuth-only · xác thực lại ở đầu luồng",
+        "oauthLabel": "Xác thực bằng Google trước",
         "oauthBody": "Xác thực lại với Google ở đầu luồng trước khi nhập hoặc sinh bí mật vault để chuyển trang không làm mất trạng thái đang thao tác.",
         "oauthButton": "Xác nhận bằng Google",
         "oauthRedirectHint": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại khi quay về để tiếp tục.",
@@ -623,7 +623,7 @@
         "expiredPasswordTitle": "Xác thực lại đã hết hạn trước khi lưu",
         "expiredPasswordBody": "Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.",
         "expiredPasswordSubmit": "Xác nhận và lưu",
-        "expiredOauthLabel": "Tài khoản chỉ có OAuth · bắt đầu lại",
+        "expiredOauthLabel": "Hết hạn xác thực — bắt đầu lại",
         "expiredOauthTitle": "Hết thời gian xác thực — cần bắt đầu lại",
         "expiredOauthBody": "Xác thực lại qua Google cần chuyển trang nên khoá tạm đã được xoá và chưa có gì lưu lên máy chủ. Bấm bắt đầu lại để xác thực Google rồi thực hiện lại."
       },
@@ -838,7 +838,7 @@
       "add": {
         "button": "Thêm passkey",
         "title": "Thêm passkey",
-        "description": "Xác thực lại ở đầu luồng, kiểm tra phần mở rộng PRF của WebAuthn trên khoá bảo mật rồi bọc khoá vault.",
+        "description": "Xác thực lại tài khoản trước. Sau đó chúng tôi kiểm tra thiết bị xác thực có hỗ trợ mở vault không và bảo vệ khoá vault bằng passkey này.",
         "reauthStep": "Bước 1 · Xác thực lại",
         "googleNote": "Xác thực qua Google sẽ chuyển trang: vault khoá lại, bạn mở lại vault trước khi luồng tiếp tục.",
         "oauthStartFailed": "Không bắt đầu được xác thực lại bằng Google. Hãy thử lại.",
@@ -857,7 +857,7 @@
       },
       "settings": {
         "title": "Passkey",
-        "body": "Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật. Cần trình duyệt và thiết bị hỗ trợ phần mở rộng PRF của WebAuthn; chúng tôi kiểm tra ngay khi đăng ký.",
+        "body": "Mở vault bằng vân tay, khuôn mặt hoặc khoá bảo mật. Cần trình duyệt và thiết bị hỗ trợ mở vault bằng passkey; chúng tôi kiểm tra ngay khi bạn thêm passkey.",
         "added": "Đã thêm passkey."
       }
     },
@@ -916,7 +916,7 @@
           "revokeNotFoundError": "Không gỡ được passkey này vì không tìm thấy trên máy chủ.",
           "revokeFailed": "Không gỡ được passkey này. Hãy thử lại.",
           "revokeNoteStrong": "Gỡ passkey",
-          "revokeNoteBody": "(cần xác thực lại tài khoản) xoá credential và bản bọc khoá trên máy chủ live. Thao tác này không xoá credential khỏi thiết bị của bạn và không thu hồi các bản sao dữ liệu bọc khoá hoặc backup cũ nếu thiết bị vẫn tính được PRF."
+          "revokeNoteBody": "(cần xác thực lại tài khoản) xoá passkey này và bản khoá vault được nó bảo vệ trên máy chủ live. Thao tác này không xoá passkey khỏi thiết bị của bạn, và các bản sao hoặc backup cũ vẫn mở được nếu thiết bị còn giữ passkey này."
         },
         "autoLock": {
           "title": "Tự khoá",
@@ -1036,10 +1036,10 @@
       "cancel": "Huỷ khôi phục",
       "caption": "Mỗi tài khoản chỉ được thử 5 lần trong 15 phút. Key bạn gõ không rời trình duyệt — máy chủ chỉ nhận dấu vân tay của key.",
       "errors": {
-        "invalidBadge": "401 recovery_key_invalid · recovery.invalid",
+        "invalidBadge": "Recovery key không được chấp nhận",
         "invalidTitle": "Recovery key không đúng hoặc đã dùng.",
         "invalidBody": "Một thông báo chung cho key sai định dạng, không tồn tại, đã dùng hoặc thuộc vault khác — không tiết lộ còn bao nhiêu key. Hãy kiểm tra lại ký tự hoặc thử một key khác trong bộ 10 key của bạn.",
-        "rateLimitedBadge": "429 rate_limited · vault_recovery_lookup (5 / 15 min)",
+        "rateLimitedBadge": "Giới hạn: 5 lần thử mỗi 15 phút",
         "rateLimitedTitle": "Thử quá nhiều lần — vui lòng đợi",
         "rateLimitedBody": "Kiểm tra recovery key giới hạn 5 lần / 15 phút cho mỗi tài khoản. Thử lại sau {clock} ({seconds} giây). Máy chủ không cho biết còn bao nhiêu lần thử hay bao nhiêu recovery key.",
         "aeadBadge": "không mở được · key chưa bị tiêu thụ",
@@ -1080,13 +1080,13 @@
         "invalidUnicode": "Passphrase chứa ký tự Unicode lỗi. Hãy gõ lại passphrase."
       },
       "errors": {
-        "reauthExpiredPasswordBadge": "reauth_expired · tài khoản có mật khẩu đăng nhập",
+        "reauthExpiredPasswordBadge": "Hết hạn xác thực — xác thực lại tại đây",
         "reauthExpiredPasswordTitle": "Phiên xác thực lại đã hết hạn — nhập mật khẩu đăng nhập tại chỗ",
         "reauthExpiredPasswordBody": "Xác thực tài khoản còn dưới 60 giây hoặc đã hết hạn. Nhập mật khẩu đăng nhập ngay tại đây để xác thực lại mà không chuyển trang — khoá đang mở vẫn được giữ nguyên.",
         "reauthExpiredPasswordLabel": "Mật khẩu đăng nhập (không phải passphrase vault)",
         "reauthExpiredPasswordSubmit": "Xác nhận và hoàn tất khôi phục",
         "reauthExpiredPasswordSubmitting": "Đang xác nhận…",
-        "reauthExpiredOauthBadge": "reauth_expired · tài khoản chỉ có OAuth",
+        "reauthExpiredOauthBadge": "Hết hạn xác thực — bắt đầu lại",
         "reauthExpiredOauthTitle": "Hết thời gian xác thực — cần bắt đầu lại",
         "reauthExpiredOauthBody": "Xác thực lại qua nhà cung cấp đăng nhập phải chuyển trang, làm xoá bộ nhớ tạm. Khoá vừa mở đã bị xoá và recovery key bạn vừa nhập CHƯA bị tiêu thụ — hãy bắt đầu lại từ bước 1 để xác thực tài khoản và dùng lại chính key đó.",
         "reauthExpiredOauthRestart": "Bắt đầu lại từ bước 1",
@@ -1109,7 +1109,7 @@
         "mutationsDisabledBadge": "503 vault_mutations_disabled",
         "mutationsDisabledTitle": "Thao tác thay đổi khoá vault đang tạm dừng",
         "mutationsDisabledBody": "Hoàn tất khôi phục đang tạm ngưng để bảo trì an toàn. Recovery key của bạn chưa bị tiêu thụ.",
-        "rateLimitedBadge": "429 rate_limited · vault_recovery_complete (5 / 15 min)",
+        "rateLimitedBadge": "Giới hạn: 5 yêu cầu mỗi 15 phút",
         "rateLimitedTitle": "Quá số lần hoàn tất khôi phục — vui lòng đợi",
         "rateLimitedBody": "Yêu cầu hoàn tất khôi phục giới hạn 5 lần / 15 phút (đếm riêng với bước kiểm tra key). Thử lại sau {clock} ({seconds} giây).",
         "networkTitle": "Không kết nối được máy chủ",
