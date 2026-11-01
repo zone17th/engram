@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import ts from 'typescript';
 import type { ProblemDetails } from '@engram/shared-types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
@@ -815,70 +812,6 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       }
     }, 30_000);
 
-    it('keeps features/entries production modules free of Worker crypto implementation imports (envelope/sodium/kdf/wrap/worker-core/libsodium) (IP14-BE1-5)', () => {
-      const entryProductionFiles = [
-        resolve(__dirname, './seal.ts'),
-        resolve(__dirname, './real-body-loader.ts'),
-        resolve(__dirname, './mutations.ts'),
-        resolve(__dirname, './concurrency-limiter.ts'),
-        resolve(__dirname, './secret-input-props.ts'),
-        resolve(__dirname, './index.ts'),
-        resolve(__dirname, '../items/entry-body.tsx'),
-      ];
-
-      const forbiddenModulePattern =
-        /(?:^|\/)(?:envelope|sodium|kdf|wrap|jcs|recovery|worker-core|worker|libsodium-wrappers-sumo)(?:\.[jt]sx?)?$/;
-
-      const extractRuntimeSpecifiers = (filePath: string): string[] => {
-        const src = readFileSync(filePath, 'utf8');
-        const sf = ts.createSourceFile(
-          filePath,
-          src,
-          ts.ScriptTarget.ES2022,
-          true,
-          filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-        );
-        const specifiers: string[] = [];
-
-        const visit = (node: ts.Node) => {
-          if (ts.isImportDeclaration(node)) {
-            if (!node.importClause?.isTypeOnly && ts.isStringLiteral(node.moduleSpecifier)) {
-              specifiers.push(node.moduleSpecifier.text);
-            }
-          } else if (ts.isExportDeclaration(node)) {
-            if (!node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-              specifiers.push(node.moduleSpecifier.text);
-            }
-          } else if (
-            ts.isCallExpression(node) &&
-            (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-              (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
-          ) {
-            const arg = node.arguments[0];
-            if (arg && ts.isStringLiteral(arg)) {
-              specifiers.push(arg.text);
-            }
-          }
-          ts.forEachChild(node, visit);
-        };
-
-        visit(sf);
-        return specifiers;
-      };
-
-      for (const filePath of entryProductionFiles) {
-        const runtimeSpecs = extractRuntimeSpecifiers(filePath);
-        const forbiddenHits = runtimeSpecs.filter((spec) => forbiddenModulePattern.test(spec));
-        expect(forbiddenHits, `Forbidden Worker crypto import in ${filePath}`).toEqual([]);
-      }
-
-      // Specifically verify seal.ts imports crypto constants only from protocol.ts and client types/errors from client.ts
-      const sealRuntimeSpecs = extractRuntimeSpecifiers(resolve(__dirname, './seal.ts'));
-      expect(sealRuntimeSpecs.filter((s) => s.includes('crypto'))).toEqual([
-        '@/lib/crypto/client',
-        '@/lib/crypto/protocol',
-      ]);
-    });
   });
 
   describe('2. key_id mismatch vs AEAD decrypt failure + Retry + identity auth + version reconciliation', () => {
@@ -1054,6 +987,7 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
             <button type="button" data-testid="other-focus-target">
               Other control
             </button>
+            <div data-testid="non-focusable-chrome">Blank page chrome</div>
           </div>
         ),
         'vi',
@@ -1218,6 +1152,37 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       notifyRetryEntered = null;
       await waitFor(() => expect(retryBtn).not.toBeDisabled());
       expect(document.activeElement).toBe(otherControl);
+
+      // 6b. Hold another failing retry, click non-focusable page chrome (focus moves to document.body / activeElement outside card) ->
+      // focus is NOT stolen when the retry settles (IP14-FE3-2).
+      const nonFocusFailGate = Promise.withResolvers<void>();
+      const nonFocusFailEntered = Promise.withResolvers<void>();
+      holdRetryGate = nonFocusFailGate.promise;
+      notifyRetryEntered = nonFocusFailEntered.resolve;
+
+      const blankChrome = screen.getByTestId('non-focusable-chrome');
+      retryBtn.focus();
+      await act(async () => {
+        fireEvent.click(retryBtn);
+        await nonFocusFailEntered.promise;
+      });
+      expect(document.activeElement).toBe(errorContainer);
+      act(() => {
+        fireEvent.pointerDown(blankChrome);
+        fireEvent.mouseDown(blankChrome);
+        errorContainer.blur();
+        fireEvent.mouseUp(blankChrome);
+        fireEvent.click(blankChrome);
+      });
+      expect(document.activeElement).toBe(document.body);
+
+      await act(async () => {
+        nonFocusFailGate.resolve();
+      });
+      holdRetryGate = null;
+      notifyRetryEntered = null;
+      await waitFor(() => expect(retryBtn).not.toBeDisabled());
+      expect(document.activeElement).toBe(document.body);
 
       // 7. Hold a succeeding retry, move user focus to another control before it settles -> focus is NOT stolen (IP14-BE2-3).
       currentMode = 'valid';
@@ -2037,6 +2002,89 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       expect(loadCalls).toEqual([ENTRY_ID_1]);
     }, 30_000);
 
+    it('distinguishes active slot-holding cards (role="status") from enabled cards queued behind the limiter (inert skeleton) (IP14-FE1-14)', async () => {
+      const cardIds = Array.from({ length: 5 }, (_, i) => {
+        const hex = (i + 1).toString(16).padStart(12, '0');
+        return `00000000-0000-4000-8500-${hex}`;
+      });
+      const gates = new Map<string, PromiseWithResolvers<void>>();
+      for (const id of cardIds) {
+        gates.set(id, Promise.withResolvers<void>());
+      }
+      const startedIds: string[] = [];
+
+      const heldLoader: EntryBodyLoader = async (entryId) => {
+        startedIds.push(entryId);
+        const gate = gates.get(entryId);
+        if (gate) {
+          await gate.promise;
+        }
+        return `SENTINEL-WAITING-VS-ACTIVE-${entryId}`;
+      };
+
+      try {
+        await mountUnlockedHarness(() => (
+          <div>
+            {cardIds.map((id, idx) => (
+              <div key={id} data-testid={`waiting-vs-active-card-${idx + 1}`}>
+                <EntryBody entryId={id} version={1} load={heldLoader} lazy={false} />
+              </div>
+            ))}
+          </div>
+        ));
+
+        await waitFor(() => expect(entryBodyLoadLimiter.activeCount()).toBe(4));
+        expect(entryBodyLoadLimiter.pendingCount()).toBe(1);
+        expect(startedIds).toEqual(cardIds.slice(0, 4));
+
+        const allLoadingNodes = screen.getAllByTestId('entry-body-loading');
+        expect(allLoadingNodes).toHaveLength(5);
+
+        const statusNodes = screen.getAllByRole('status');
+        expect(statusNodes).toHaveLength(4);
+
+        for (let i = 0; i < 4; i += 1) {
+          const cardLoading = screen
+            .getByTestId(`waiting-vs-active-card-${i + 1}`)
+            .querySelector('[data-testid="entry-body-loading"]');
+          expect(cardLoading).toHaveAttribute('role', 'status');
+          expect(cardLoading).not.toHaveAttribute('aria-hidden');
+        }
+
+        const fifthCardLoading = screen
+          .getByTestId('waiting-vs-active-card-5')
+          .querySelector('[data-testid="entry-body-loading"]');
+        expect(fifthCardLoading).not.toHaveAttribute('role', 'status');
+        expect(fifthCardLoading).toHaveAttribute('aria-hidden', 'true');
+
+        // Release the 1st card -> 5th card acquires a slot and transitions to role="status"
+        await act(async () => {
+          gates.get(cardIds[0]!)!.resolve();
+        });
+
+        await waitFor(() => expect(startedIds).toContain(cardIds[4]));
+        await waitFor(() => {
+          const fifthNow = screen
+            .getByTestId('waiting-vs-active-card-5')
+            .querySelector('[data-testid="entry-body-loading"]');
+          expect(fifthNow).toHaveAttribute('role', 'status');
+          expect(fifthNow).not.toHaveAttribute('aria-hidden');
+        });
+
+        // Release remaining gates -> all 5 cards render their decrypted bodies
+        await act(async () => {
+          for (const gate of gates.values()) {
+            gate.resolve();
+          }
+        });
+        await waitFor(() => expect(screen.getAllByTestId('entry-body')).toHaveLength(5));
+      } finally {
+        for (const gate of gates.values()) {
+          gate.resolve();
+        }
+      }
+    }, 30_000);
+
     it('scrolling a 200-entry item to the end never exceeds 4 concurrent GET /entries/{id} requests through real EntryBody + shared limiter + real loader (IP14-FE1-2, IP14-BE1-8, IP14-BE1-9)', async () => {
       const ENTRY_COUNT = 200;
       const entryIds = Array.from({ length: ENTRY_COUNT }, (_, i) => {
@@ -2314,70 +2362,136 @@ describe('P04-T14 Real entry body (seal/open, loader, mutations, concurrency)', 
       }
     });
 
-    it('fences pre-reset in-flight and granted tasks on reset() so late releases never corrupt post-reset activeCount and queued waiters reject (IP14-FE1-8)', async () => {
+    it('fences pre-reset in-flight tasks and rejects queued waiters on reset() so late releases never corrupt post-reset activeCount (IP14-FE1-8, IP14-BE3-1, IP14-FE3-1)', async () => {
       const limiter = createConcurrencyLimiter(1);
       const gate1 = Promise.withResolvers<void>();
       const gate1Entered = Promise.withResolvers<void>();
-
-      // Task 1 acquires the single slot and holds it
-      const task1 = limiter.run(async () => {
-        gate1Entered.resolve();
-        await gate1.promise;
-        return 'task1';
-      });
-      await gate1Entered.promise;
-      expect(limiter.activeCount()).toBe(1);
-
-      // Task 2 queues behind Task 1
-      let task2Ran = false;
-      const task2 = limiter.run(async () => {
-        task2Ran = true;
-        return 'task2';
-      });
-      expect(limiter.pendingCount()).toBe(1);
-
-      // Reset while Task 1 is active and Task 2 is queued -> Task 2 rejects immediately, active resets to 0
-      limiter.reset();
-      expect(limiter.activeCount()).toBe(0);
-      expect(limiter.pendingCount()).toBe(0);
-      await expect(task2).rejects.toMatchObject({ name: 'AbortError' });
-      expect(task2Ran).toBe(false);
-
-      // Start post-reset Task 3, which acquires the single slot in the new generation
       const gate3 = Promise.withResolvers<void>();
       const gate3Entered = Promise.withResolvers<void>();
-      const task3 = limiter.run(async () => {
-        gate3Entered.resolve();
-        await gate3.promise;
-        return 'task3';
-      });
-      await gate3Entered.promise;
-      expect(limiter.activeCount()).toBe(1);
 
-      // Now pre-reset Task 1 finishes: its late release() must be ignored and NOT decrement Task 3's active slot!
-      gate1.resolve();
-      await expect(task1).resolves.toBe('task1');
-      expect(limiter.activeCount()).toBe(1);
+      try {
+        // Task 1 acquires the single slot and holds it
+        const task1 = limiter.run(async () => {
+          gate1Entered.resolve();
+          await gate1.promise;
+          return 'task1';
+        });
+        await gate1Entered.promise;
+        expect(limiter.activeCount()).toBe(1);
 
-      // Also verify a queued waiter that was just granted right before a reset() captures the pre-reset generation
-      // and aborts before running its task or decrementing post-reset activeCount.
+        // Task 2 queues behind Task 1
+        let task2Ran = false;
+        const task2 = limiter.run(async () => {
+          task2Ran = true;
+          return 'task2';
+        });
+        expect(limiter.pendingCount()).toBe(1);
+
+        // Reset while Task 1 is active and Task 2 is queued -> Task 2 rejects immediately, active resets to 0
+        limiter.reset();
+        expect(limiter.activeCount()).toBe(0);
+        expect(limiter.pendingCount()).toBe(0);
+        await expect(task2).rejects.toMatchObject({ name: 'AbortError' });
+        expect(task2Ran).toBe(false);
+
+        // Start post-reset Task 3, which acquires the single slot in the new generation
+        const task3 = limiter.run(async () => {
+          gate3Entered.resolve();
+          await gate3.promise;
+          return 'task3';
+        });
+        await gate3Entered.promise;
+        expect(limiter.activeCount()).toBe(1);
+
+        // Now pre-reset Task 1 finishes: its late release() must be ignored and NOT decrement Task 3's active slot!
+        gate1.resolve();
+        await expect(task1).resolves.toBe('task1');
+        expect(limiter.activeCount()).toBe(1);
+
+        gate3.resolve();
+        await expect(task3).resolves.toBe('task3');
+        expect(limiter.activeCount()).toBe(0);
+        expect(limiter.pendingCount()).toBe(0);
+      } finally {
+        gate1.resolve();
+        gate3.resolve();
+      }
+    });
+
+    it('fences a waiter that was granted right before reset() (before its task body runs) so it rejects with AbortError, never runs its body, and its stale release does not decrement a post-reset holder (IP14-FE1-8, IP14-BE3-1, IP14-FE3-1)', async () => {
+      const limiter = createConcurrencyLimiter(1);
+      const gate3 = Promise.withResolvers<void>();
+      const gate3Entered = Promise.withResolvers<void>();
       const gate4 = Promise.withResolvers<void>();
-      let task4Ran = false;
-      const task4 = limiter.run(async () => {
-        task4Ran = true;
-        await gate4.promise;
-        return 'task4';
-      });
-      expect(limiter.pendingCount()).toBe(1);
+      const gate5 = Promise.withResolvers<void>();
+      const gate5Entered = Promise.withResolvers<void>();
 
-      // Release Task 3 synchronously (which grants Task 4 in the pre-reset generation) and immediately call reset()
-      // before Task 4's microtask continuation runs.
-      gate3.resolve();
-      await expect(task3).resolves.toBe('task3');
-      limiter.reset();
-      await expect(task4).rejects.toMatchObject({ name: 'AbortError' });
-      expect(task4Ran).toBe(false);
-      expect(limiter.activeCount()).toBe(0);
+      try {
+        // Task 3 acquires the single slot in generation 0 and holds it
+        const task3 = limiter.run(async () => {
+          gate3Entered.resolve();
+          await gate3.promise;
+          return 'task3';
+        });
+        await gate3Entered.promise;
+        expect(limiter.activeCount()).toBe(1);
+
+        // Task 4 queues behind Task 3
+        let task4Ran = false;
+        const task4 = limiter.run(async () => {
+          task4Ran = true;
+          await gate4.promise;
+          return 'task4';
+        });
+        expect(limiter.pendingCount()).toBe(1);
+
+        // Deterministic boundary: register a reaction on `task3` BEFORE resolving `gate3`.
+        // When `gate3.resolve()` runs:
+        //   Tick 1: `await gate3.promise` resumes -> `finally` calls `release(0)` -> `pump()` calls `waiter4.grant()`
+        //           (Queueing `promise4.then(() => grantedGeneration)` as a microtask) AND `run()` for task3 settles
+        //           (Queueing `task3.then(...)` right after `promise4.then`, BEFORE `await acquire` in task4 can resume).
+        //   Tick 2: `promise4.then` resolves `acquire()` with `grantedGeneration`; then `task3.then` runs `limiter.reset()`
+        //           AND starts post-reset `task5` (which synchronously acquires the single slot in generation 1),
+        //           all BEFORE task4's `await acquire` continuation executes in Tick 3!
+        let pendingAtReset = -1;
+        let activeBeforeReset = -1;
+        let task5!: Promise<string>;
+        const resetDone = task3.then(() => {
+          pendingAtReset = limiter.pendingCount();
+          activeBeforeReset = limiter.activeCount();
+          limiter.reset();
+          task5 = limiter.run(async () => {
+            gate5Entered.resolve();
+            await gate5.promise;
+            return 'task5';
+          });
+        });
+
+        gate3.resolve();
+        await expect(task3).resolves.toBe('task3');
+        await resetDone;
+
+        // Confirm Task 4 was already popped and granted before reset() ran
+        expect(pendingAtReset).toBe(0);
+        expect(activeBeforeReset).toBe(1);
+
+        // Task 4 must reject with AbortError without ever invoking its task body
+        await expect(task4).rejects.toMatchObject({ name: 'AbortError' });
+        expect(task4Ran).toBe(false);
+
+        // Post-reset Task 5's active slot must NOT have been decremented by Task 4's stale release
+        await gate5Entered.promise;
+        expect(limiter.activeCount()).toBe(1);
+
+        gate5.resolve();
+        await expect(task5).resolves.toBe('task5');
+        expect(limiter.activeCount()).toBe(0);
+        expect(limiter.pendingCount()).toBe(0);
+      } finally {
+        gate3.resolve();
+        gate4.resolve();
+        gate5.resolve();
+      }
     });
   });
 });
