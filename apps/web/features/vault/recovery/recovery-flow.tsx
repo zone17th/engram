@@ -37,6 +37,7 @@ import { grantStillValid } from '@/lib/auth/audit-catalog';
 import { formatRetryClock, normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
 import { CryptoClientError } from '@/lib/crypto/client';
+import { Callout } from '@/components/ui/callout';
 
 const GRANT_MIN_TTL_BEFORE_FIRST_SEND_MS = 60_000;
 
@@ -1766,7 +1767,7 @@ export function VaultRecoveryFlow() {
       className="auth-alert mb-4 outline-none"
       data-testid="recovery-step4-error"
     >
-      <p className="m-0 mb-1 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+      <p className="m-0 mb-1 text-[14px] font-semibold text-body">
         {step4Error.kind === 'version_mismatch' && t('step4.errors.versionMismatchTitle')}
         {step4Error.kind === 'slot_taken' && t('step4.errors.slotTakenTitle')}
         {step4Error.kind === 'rate_limited' && t('step4.errors.rateLimitedTitle')}
@@ -1775,7 +1776,7 @@ export function VaultRecoveryFlow() {
         {step4Error.kind === 'reauth_expired_oauth' && t('step4.errors.reauthExpiredOauthTitle')}
         {step4Error.kind === 'network' && t('step4.errors.networkTitle')}
       </p>
-      <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+      <p className="m-0 text-[13px] text-body">
         {step4Error.kind === 'version_mismatch' && t('step4.errors.versionMismatchBody')}
         {step4Error.kind === 'slot_taken' && t('step4.errors.slotTakenBody')}
         {step4Error.kind === 'rate_limited' &&
@@ -1798,11 +1799,10 @@ export function VaultRecoveryFlow() {
   const wakeGateStatus = (
     <div
       role="status"
-      className="mb-5 rounded-md p-4"
-      style={{ background: 'var(--pale-orange)' }}
+      className="mb-5 rounded-md p-4 bg-paleOrange"
       data-testid="recovery-wake-gate-status"
     >
-      <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+      <p className="m-0 text-[13px] text-body">
         <strong>{t('wakeGate.title')}</strong> {t('wakeGate.body')}
       </p>
     </div>
@@ -1818,17 +1818,15 @@ export function VaultRecoveryFlow() {
         {completedWhileLockedNotice ? (
           <div
             role="alert"
-            className="card mb-6 p-5"
-            style={{ borderColor: 'var(--success)' }}
+            className="card mb-6 p-5 card-success"
             data-testid="recovery-completed-while-locked-notice"
           >
             <p
-              className="m-0 mb-1 text-[14px] font-semibold"
-              style={{ color: 'var(--body)' }}
+              className="m-0 mb-1 text-[14px] font-semibold text-body"
             >
               {t('step3.errors.completedWhileLockedTitle')}
             </p>
-            <p className="m-0 mb-3 text-[13px]" style={{ color: 'var(--muted)' }}>
+            <p className="m-0 mb-3 text-[13px] text-muted">
               {t('step3.errors.completedWhileLockedBody')}
             </p>
             <Button
@@ -1847,25 +1845,20 @@ export function VaultRecoveryFlow() {
         {visibleCommittedRecheck ? (
           <div
             role={visibleCommittedRecheck.phase === 'recheck_needed' ? 'alert' : 'status'}
-            className="card mb-6 p-5"
-            style={{
-              borderColor:
-                visibleCommittedRecheck.phase === 'recheck_needed'
-                  ? 'var(--warning)'
-                  : 'var(--success)',
-            }}
+            className={`card mb-6 p-5 ${
+              visibleCommittedRecheck.phase === 'recheck_needed' ? 'card-warning' : 'border-success'
+            }`}
             data-testid="recovery-committed-recheck-notice"
             data-phase={visibleCommittedRecheck.phase}
           >
             <p
-              className="m-0 mb-1 text-[14px] font-semibold"
-              style={{ color: 'var(--body)' }}
+              className="m-0 mb-1 text-[14px] font-semibold text-body"
             >
               {visibleCommittedRecheck.phase === 'recheck_needed'
                 ? t('committedRecheck.recheckTitle')
                 : t('committedRecheck.verifyingTitle')}
             </p>
-            <p className="m-0 mb-3 text-[13px]" style={{ color: 'var(--muted)' }}>
+            <p className="m-0 mb-3 text-[13px] text-muted">
               {visibleCommittedRecheck.phase === 'recheck_needed'
                 ? t('committedRecheck.recheckBody')
                 : t('committedRecheck.verifyingBody')}
@@ -1934,12 +1927,12 @@ export function VaultRecoveryFlow() {
         {step === 'reauth' ? (
           <section data-view="s1" data-testid="recovery-step-reauth">
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step1.title')}</h1>
-            <p className="t-body-lg mb-6" style={{ color: 'var(--muted)' }}>
+            <p className="t-body-lg mb-6 text-muted">
               {t('step1.lead')}
             </p>
 
             <div className="card mb-5 p-6" id="recovery-reauth-start">
-              <p className="t-label mb-3" style={{ color: 'var(--muted)' }}>
+              <p className="t-label mb-3 text-muted">
                 {t('step1.badge')}
               </p>
 
@@ -2018,11 +2011,11 @@ export function VaultRecoveryFlow() {
         {/* STEP 2 — Enter one recovery key */}
         {step === 'enter-key' ? (
           <section data-view="s2" data-testid="recovery-step-enter-key">
-            <p className="t-label mb-2" style={{ color: 'var(--body)' }}>
+            <p className="t-label mb-2 text-body">
               {t('step2.grantActiveBadge')}
             </p>
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step2.title')}</h1>
-            <p className="t-body-lg mb-6" style={{ color: 'var(--muted)' }}>
+            <p className="t-body-lg mb-6 text-muted">
               {t('step2.lead')}
             </p>
 
@@ -2080,88 +2073,79 @@ export function VaultRecoveryFlow() {
 
             {/* Step 2 error cards (at most 1 role="alert" at a time) */}
             {step2Error?.kind === 'invalid' ? (
-              <div
+              <Callout
+                tone="error"
                 id="s2-err-invalid"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
                 data-testid="recovery-error-invalid-key"
+                className="mb-4"
+                label={t('step2.errors.invalidBadge')}
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                  {t('step2.errors.invalidBadge')}
-                </p>
                 <div role="alert" className="auth-alert">
                   <p
-                    className="m-0 mb-1 text-[14px] font-semibold"
-                    style={{ color: 'var(--body)' }}
+                    className="m-0 mb-1 text-[14px] font-semibold text-body"
                   >
                     {t('step2.errors.invalidTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                  <p className="m-0 text-[13px] text-body">
                     {t('step2.errors.invalidBody')}
                   </p>
                 </div>
-              </div>
+              </Callout>
             ) : null}
 
             {step2Error?.kind === 'rate_limited' ? (
-              <div
+              <Callout
+                tone="warning"
                 id="s2-err-rate"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--warning)' }}
                 data-testid="recovery-error-lookup-rate-limited"
+                className="mb-4"
+                label={t('step2.errors.rateLimitedBadge')}
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                  {t('step2.errors.rateLimitedBadge')}
-                </p>
                 <div role="alert">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step2.errors.rateLimitedTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {t('step2.errors.rateLimitedBody', {
                       clock: formatRetryClock(effectiveStep2RateSeconds),
                       seconds: effectiveStep2RateSeconds,
                     })}
                   </p>
                 </div>
-              </div>
+              </Callout>
             ) : null}
 
             {step2Error?.kind === 'aead_failed' ? (
-              <div
+              <Callout
+                tone="error"
                 id="s2-err-aead"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
                 data-testid="recovery-error-aead-failed"
+                className="mb-4"
+                label={t('step2.errors.aeadBadge')}
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                  {t('step2.errors.aeadBadge')}
-                </p>
                 <div role="alert" className="auth-alert">
                   <p
-                    className="m-0 mb-1 text-[14px] font-semibold"
-                    style={{ color: 'var(--body)' }}
+                    className="m-0 mb-1 text-[14px] font-semibold text-body"
                   >
                     {t('step2.errors.aeadTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                  <p className="m-0 text-[13px] text-body">
                     {t('step2.errors.aeadBody')}
                   </p>
                 </div>
-              </div>
+              </Callout>
             ) : null}
 
             {step2Error?.kind === 'network' ? (
               <div
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
+                className="card mb-4 p-5 card-error"
                 data-testid="recovery-error-lookup-network"
               >
                 <div role="alert">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step2.errors.networkTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {step2Error.detail ?? t('step2.errors.networkBody')}
                   </p>
                 </div>
@@ -2169,7 +2153,7 @@ export function VaultRecoveryFlow() {
             ) : null}
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <p className="t-caption m-0 flex-1" style={{ color: 'var(--muted)' }}>
+              <p className="t-caption m-0 flex-1 text-muted">
                 {t('step2.caption')}
               </p>
               <Button
@@ -2189,17 +2173,16 @@ export function VaultRecoveryFlow() {
         {step === 'new-passphrase' ? (
           <section data-view="s3" data-testid="recovery-step-new-passphrase">
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step3.title')}</h1>
-            <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
+            <p className="t-body-lg mb-5 text-muted">
               {t('step3.lead')}
             </p>
 
             <div
-              className="mb-5 rounded-md p-4"
+              className="mb-5 rounded-md p-4 bg-paleOrange"
               id="s3-recovering-note"
-              style={{ background: 'var(--pale-orange)' }}
               data-testid="recovery-recovering-note"
             >
-              <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+              <p className="m-0 text-[13px] text-body">
                 <strong>{t('step3.recoveringNoteTitle')}</strong>{' '}
                 {t('step3.recoveringNoteBody')}
               </p>
@@ -2244,23 +2227,15 @@ export function VaultRecoveryFlow() {
                   role="region"
                   aria-label={t('step3.strengthMeterLabel')}
                 >
-                  <div
-                    className="flex-1 overflow-hidden"
-                    style={{
-                      height: '4px',
-                      borderRadius: 'var(--r-pill)',
-                      background: 'var(--border)',
-                    }}
-                  >
+                  <div className="h-1 flex-1 overflow-hidden rounded-pill bg-line">
                     <div
                       data-testid="recovery-passphrase-strength-bar"
                       data-score={policyScore}
                       data-meets-length={meetsMinLength}
                       data-meets-score={meetsMinScore}
+                      className="h-1 rounded-pill"
                       style={{
-                        height: '4px',
                         width: `${barWidth}%`,
-                        borderRadius: 'var(--r-pill)',
                         background: barColor,
                         transition: 'width 120ms ease-out',
                       }}
@@ -2269,8 +2244,7 @@ export function VaultRecoveryFlow() {
                   <span
                     data-testid="recovery-passphrase-strength-label"
                     aria-live="polite"
-                    className="text-[12px]"
-                    style={{ color: 'var(--body)' }}
+                    className="text-[12px] text-body"
                   >
                     {strengthLabel}
                   </span>
@@ -2337,18 +2311,17 @@ export function VaultRecoveryFlow() {
             {step3Error?.kind === 'reauth_expired_password' ? (
               <div
                 id="s3-reauth-expired-password"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--warning)' }}
+                className="card mb-4 p-5 card-warning"
                 data-testid="recovery-error-reauth-expired-password"
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+                <p className="t-label mb-2 text-muted">
                   {t('step3.errors.reauthExpiredPasswordBadge')}
                 </p>
                 <div role="alert" className="mb-3">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step3.errors.reauthExpiredPasswordTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {t('step3.errors.reauthExpiredPasswordBody')}
                   </p>
                 </div>
@@ -2393,21 +2366,19 @@ export function VaultRecoveryFlow() {
             {step3Error?.kind === 'reauth_expired_oauth' ? (
               <div
                 id="s3-reauth-expired-oauth"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
+                className="card mb-4 p-5 card-error"
                 data-testid="recovery-error-reauth-expired-oauth"
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+                <p className="t-label mb-2 text-muted">
                   {t('step3.errors.reauthExpiredOauthBadge')}
                 </p>
                 <div role="alert" className="auth-alert mb-3">
                   <p
-                    className="m-0 mb-1 text-[14px] font-semibold"
-                    style={{ color: 'var(--body)' }}
+                    className="m-0 mb-1 text-[14px] font-semibold text-body"
                   >
                     {t('step3.errors.reauthExpiredOauthTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                  <p className="m-0 text-[13px] text-body">
                     {t('step3.errors.reauthExpiredOauthBody')}
                   </p>
                 </div>
@@ -2423,27 +2394,24 @@ export function VaultRecoveryFlow() {
             ) : null}
 
             {step3Error?.kind === 'insufficient_memory' ? (
-              <div
+              <Callout
+                tone="error"
                 id="s3-err-oom"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
                 data-testid="recovery-error-oom"
+                className="mb-4"
+                label={t('step3.errors.oomBadge')}
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                  {t('step3.errors.oomBadge')}
-                </p>
                 <div role="alert" className="auth-alert">
                   <p
-                    className="m-0 mb-1 text-[14px] font-semibold"
-                    style={{ color: 'var(--body)' }}
+                    className="m-0 mb-1 text-[14px] font-semibold text-body"
                   >
                     {t('step3.errors.oomTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                  <p className="m-0 text-[13px] text-body">
                     {t('step3.errors.oomBody')}
                   </p>
                 </div>
-              </div>
+              </Callout>
             ) : null}
 
             {step3Error?.kind === 'version_mismatch' ||
@@ -2451,11 +2419,10 @@ export function VaultRecoveryFlow() {
             step3Error?.kind === 'idempotency_conflict' ? (
               <div
                 id="s3-err-version"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
+                className="card mb-4 p-5 card-error"
                 data-testid="recovery-error-version-mismatch"
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+                <p className="t-label mb-2 text-muted">
                   {step3Error.kind === 'version_mismatch'
                     ? t('step3.errors.versionMismatchBadge')
                     : step3Error.kind === 'precondition_required'
@@ -2464,8 +2431,7 @@ export function VaultRecoveryFlow() {
                 </p>
                 <div role="alert" className="auth-alert mb-3">
                   <p
-                    className="m-0 mb-1 text-[14px] font-semibold"
-                    style={{ color: 'var(--body)' }}
+                    className="m-0 mb-1 text-[14px] font-semibold text-body"
                   >
                     {step3Error.kind === 'version_mismatch'
                       ? t('step3.errors.versionMismatchTitle')
@@ -2473,7 +2439,7 @@ export function VaultRecoveryFlow() {
                         ? t('step3.errors.preconditionTitle')
                         : t('step3.errors.idempotencyConflictTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                  <p className="m-0 text-[13px] text-body">
                     {step3Error.kind === 'version_mismatch'
                       ? t('step3.errors.versionMismatchBody')
                       : step3Error.kind === 'precondition_required'
@@ -2494,18 +2460,17 @@ export function VaultRecoveryFlow() {
 
             {step3Error?.kind === 'idempotency_in_progress' ? (
               <div
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--warning)' }}
+                className="card mb-4 p-5 card-warning"
                 data-testid="recovery-error-in-progress"
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+                <p className="t-label mb-2 text-muted">
                   {t('step3.errors.idempotencyInProgressBadge')}
                 </p>
                 <div role="alert" className="mb-3">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step3.errors.idempotencyInProgressTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {t('step3.errors.idempotencyInProgressBody')}
                   </p>
                 </div>
@@ -2524,60 +2489,55 @@ export function VaultRecoveryFlow() {
             ) : null}
 
             {step3Error?.kind === 'mutations_disabled' ? (
-              <div
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
+              <Callout
+                tone="error"
                 data-testid="recovery-error-mutations-disabled"
+                className="mb-4"
+                label={t('step3.errors.mutationsDisabledBadge')}
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                  {t('step3.errors.mutationsDisabledBadge')}
-                </p>
                 <div role="alert">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step3.errors.mutationsDisabledTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {t('step3.errors.mutationsDisabledBody')}
                   </p>
                 </div>
-              </div>
+              </Callout>
             ) : null}
 
             {step3Error?.kind === 'rate_limited' ? (
-              <div
+              <Callout
+                tone="warning"
                 id="s3-err-rate"
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--warning)' }}
                 data-testid="recovery-error-complete-rate-limited"
+                className="mb-4"
+                label={t('step3.errors.rateLimitedBadge')}
               >
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
-                  {t('step3.errors.rateLimitedBadge')}
-                </p>
                 <div role="alert">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step3.errors.rateLimitedTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {t('step3.errors.rateLimitedBody', {
                       clock: formatRetryClock(effectiveStep3RateSeconds),
                       seconds: effectiveStep3RateSeconds,
                     })}
                   </p>
                 </div>
-              </div>
+              </Callout>
             ) : null}
 
             {step3Error?.kind === 'network' ? (
               <div
-                className="card mb-4 p-5"
-                style={{ borderColor: 'var(--error)' }}
+                className="card mb-4 p-5 card-error"
                 data-testid="recovery-error-complete-network"
               >
                 <div role="alert" className="mb-3">
                   <p className="m-0 mb-1 text-[14px] font-semibold text-body">
                     {t('step3.errors.networkTitle')}
                   </p>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {step3Error.detail ?? t('step3.errors.networkBody')}
                   </p>
                 </div>
@@ -2595,8 +2555,8 @@ export function VaultRecoveryFlow() {
               </div>
             ) : null}
 
-            <div className="rounded-md p-4" style={{ background: 'var(--surface)' }}>
-              <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+            <div className="rounded-md p-4 bg-surface">
+              <p className="m-0 text-[13px] text-body">
                 {t('step3.footerNote')}
               </p>
             </div>
@@ -2608,11 +2568,10 @@ export function VaultRecoveryFlow() {
           <section data-view="s4-reauth" data-testid="recovery-step-regenerate-reauth">
             {regenWakeGated ? wakeGateStatus : null}
             <div
-              className="mb-5 rounded-md p-4"
-              style={{ background: 'var(--pale-accent)' }}
+              className="mb-5 rounded-md p-4 bg-paleAccent"
               data-testid="recovery-unlocked-banner"
             >
-              <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+              <p className="m-0 text-[13px] text-body">
                 {emptySlots.length > 0
                   ? t('step4Reauth.unlockedBanner', {
                       remaining: remainingCount,
@@ -2623,15 +2582,15 @@ export function VaultRecoveryFlow() {
             </div>
 
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step4Reauth.title')}</h1>
-            <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
+            <p className="t-body-lg mb-5 text-muted">
               {t('step4Reauth.lead')}
             </p>
 
             <div className="card mb-5 p-5" id="s4-regenerate-reauth">
-              <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+              <p className="t-label mb-2 text-muted">
                 {t('step4Reauth.cardBadge')}
               </p>
-              <p className="m-0 mb-3 text-[13px]" style={{ color: 'var(--body)' }}>
+              <p className="m-0 mb-3 text-[13px] text-body">
                 {t('step4Reauth.cardBody')}
               </p>
 
@@ -2722,10 +2681,10 @@ export function VaultRecoveryFlow() {
               )}
             </div>
 
-            <p className="t-caption m-0 mb-3" style={{ color: 'var(--muted)' }}>
+            <p className="t-caption m-0 mb-3 text-muted">
               {t('step4Reauth.googleCaption')}
             </p>
-            <p className="t-caption m-0" style={{ color: 'var(--muted)' }}>
+            <p className="t-caption m-0 text-muted">
               {t('step4Reauth.skipCaption', { remaining: remainingCount })}
             </p>
           </section>
@@ -2742,10 +2701,9 @@ export function VaultRecoveryFlow() {
         {step === 'regenerate-keys' && preparedRegenBundle && vault.state === 'unlocked' ? (
           <section data-view="s4" data-testid="recovery-step-regenerate-keys">
             <div
-              className="mb-5 rounded-md p-4"
-              style={{ background: 'var(--pale-accent)' }}
+              className="mb-5 rounded-md p-4 bg-paleAccent"
             >
-              <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+              <p className="m-0 text-[13px] text-body">
                 {t('step4.unlockedBanner', {
                   remaining: remainingCount,
                   emptySlots: emptySlotsLabel,
@@ -2754,7 +2712,7 @@ export function VaultRecoveryFlow() {
             </div>
 
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step4.title')}</h1>
-            <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
+            <p className="t-body-lg mb-5 text-muted">
               {t('step4.lead', { remaining: remainingCount })}
             </p>
 
@@ -2781,7 +2739,7 @@ export function VaultRecoveryFlow() {
               })}
             </div>
 
-            <p className="t-caption mb-3" style={{ color: 'var(--muted)' }}>
+            <p className="t-caption mb-3 text-muted">
               {t('step4.newKeyCaption', { emptySlots: emptySlotsLabel })}
             </p>
 

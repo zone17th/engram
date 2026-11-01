@@ -638,21 +638,13 @@ export function VaultOnboardingFlow() {
                   role="region"
                   aria-label={t('step1.strengthMeterLabel')}
                 >
-                  <div
-                    className="flex-1 overflow-hidden"
-                    style={{
-                      height: '4px',
-                      borderRadius: 'var(--r-pill)',
-                      background: 'var(--border)',
-                    }}
-                  >
+                  <div className="h-1 flex-1 overflow-hidden rounded-pill bg-line">
                     <div
                       data-testid="passphrase-strength-bar"
                       data-score={policyScore}
+                      className="h-1 rounded-pill"
                       style={{
-                        height: '4px',
                         width: `${barWidth}%`,
-                        borderRadius: 'var(--r-pill)',
                         background: barColor,
                         transition: 'width 120ms ease-out',
                       }}
@@ -661,8 +653,7 @@ export function VaultOnboardingFlow() {
                   <span
                     data-testid="passphrase-strength-label"
                     aria-live="polite"
-                    className="text-[12px]"
-                    style={{ color: 'var(--body)' }}
+                    className="text-[12px] text-body"
                   >
                     {strengthLabel}
                   </span>
@@ -705,12 +696,11 @@ export function VaultOnboardingFlow() {
                     data-testid="onboarding-step1-error"
                   >
                     <p
-                      className="m-0 mb-1 text-[14px] font-semibold"
-                      style={{ color: 'var(--body)' }}
+                      className="m-0 mb-1 text-[14px] font-semibold text-body"
                     >
                       {t('errors.genericTitle')}
                     </p>
-                    <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                    <p className="m-0 text-[13px] text-body">
                       {step2Error.kind === 'generic'
                         ? (step2Error.detail ?? t('errors.genericBody'))
                         : t('errors.genericBody')}
@@ -719,13 +709,12 @@ export function VaultOnboardingFlow() {
                 ) : null}
 
                 <ul
-                  className="m-0 flex list-none flex-col gap-1.5 p-0 text-[13px]"
-                  style={{ color: 'var(--muted)' }}
+                  className="m-0 flex list-none flex-col gap-1.5 p-0 text-[13px] text-muted"
                 >
                   <li data-testid="rule-min-length" data-satisfied={meetsMinLength}>
                     <span
                       aria-hidden="true"
-                      style={{ color: meetsMinLength ? 'var(--success)' : 'var(--body)' }}
+                      className={meetsMinLength ? 'text-success' : 'text-body'}
                     >
                       {meetsMinLength ? '✓' : '·'}
                     </span>{' '}
@@ -735,7 +724,7 @@ export function VaultOnboardingFlow() {
                     {t('step1.rules.minLength')}
                   </li>
                   <li data-testid="rule-distinct-login">
-                    <span aria-hidden="true" style={{ color: 'var(--muted)' }}>
+                    <span aria-hidden="true" className="text-muted">
                       ·
                     </span>{' '}
                     {t('step1.rules.distinctFromLogin')}
@@ -743,7 +732,7 @@ export function VaultOnboardingFlow() {
                   <li data-testid="rule-min-score" data-satisfied={meetsMinScore}>
                     <span
                       aria-hidden="true"
-                      style={{ color: meetsMinScore ? 'var(--success)' : 'var(--body)' }}
+                      className={meetsMinScore ? 'text-success' : 'text-body'}
                     >
                       {meetsMinScore ? '✓' : '·'}
                     </span>{' '}
@@ -756,10 +745,9 @@ export function VaultOnboardingFlow() {
               </div>
 
               <div
-                className="mb-6 rounded-md p-4"
-                style={{ background: 'var(--pale-orange)' }}
+                className="mb-6 rounded-md p-4 bg-paleOrange"
               >
-                <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                <p className="m-0 text-[13px] text-body">
                   {t('step1.warningBanner')}
                 </p>
               </div>
@@ -785,18 +773,17 @@ export function VaultOnboardingFlow() {
         {step === 'passphrase-oom' ? (
           <section data-view="pp-oom" id="onboard-oom" data-testid="onboarding-step-oom">
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-2 text-ink outline-none">{t('step1.title')}</h1>
-            <div className="card mb-4 p-5" style={{ borderColor: 'var(--error)' }}>
-              <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+            <div className="card mb-4 p-5 card-error">
+              <p className="t-label mb-2 text-muted">
                 {t('step1.oom.badge')}
               </p>
               <div role="alert" className="auth-alert mb-4">
                 <p
-                  className="m-0 mb-1 text-[14px] font-semibold"
-                  style={{ color: 'var(--body)' }}
+                  className="m-0 mb-1 text-[14px] font-semibold text-body"
                 >
                   {t('step1.oom.title')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                <p className="m-0 text-[13px] text-body">
                   {t('step1.oom.body')}
                 </p>
               </div>
@@ -850,8 +837,7 @@ export function VaultOnboardingFlow() {
                 data-testid="onboarding-step2-error"
               >
                 <p
-                  className="m-0 mb-1 text-[14px] font-semibold"
-                  style={{ color: 'var(--body)' }}
+                  className="m-0 mb-1 text-[14px] font-semibold text-body"
                 >
                   {step2Error.kind === 'network' && t('errors.networkTitle')}
                   {step2Error.kind === 'in_progress' && t('errors.inProgressTitle')}
@@ -863,7 +849,7 @@ export function VaultOnboardingFlow() {
                   {step2Error.kind === 'rate_limited' && t('errors.rateLimitedTitle')}
                   {step2Error.kind === 'generic' && t('errors.genericTitle')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                <p className="m-0 text-[13px] text-body">
                   {step2Error.kind === 'network' && t('errors.networkBody')}
                   {step2Error.kind === 'in_progress' && t('errors.inProgressBody')}
                   {step2Error.kind === 'idempotency_conflict' && t('errors.conflictBody')}
@@ -900,7 +886,7 @@ export function VaultOnboardingFlow() {
                 {submittingVault ? t('step2.creatingVault') : t('step2.createVault')}
               </Button>
             </div>
-            <p className="t-caption mt-3 mb-0" style={{ color: 'var(--muted)' }}>
+            <p className="t-caption mt-3 mb-0 text-muted">
               {t('step2.disabledHint')}
             </p>
           </section>
@@ -914,18 +900,17 @@ export function VaultOnboardingFlow() {
             data-testid="onboarding-step-vault-exists"
           >
             <h1 ref={stepHeadingRef} tabIndex={-1} className="t-title-lg mb-4 text-ink outline-none">{t('vaultExists.title')}</h1>
-            <div className="card mb-4 p-5" style={{ borderColor: 'var(--error)' }}>
-              <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+            <div className="card mb-4 p-5 card-error">
+              <p className="t-label mb-2 text-muted">
                 {t('vaultExists.badge')}
               </p>
               <div role="alert" className="auth-alert mb-4">
                 <p
-                  className="m-0 mb-1 text-[14px] font-semibold"
-                  style={{ color: 'var(--body)' }}
+                  className="m-0 mb-1 text-[14px] font-semibold text-body"
                 >
                   {t('vaultExists.title')}
                 </p>
-                <p className="m-0 text-[13px]" style={{ color: 'var(--body)' }}>
+                <p className="m-0 text-[13px] text-body">
                   {t('vaultExists.bodyPrefix')}
                   <strong>{t('vaultExists.bodyStrong')}</strong>
                   {t('vaultExists.bodySuffix')}
@@ -955,7 +940,7 @@ export function VaultOnboardingFlow() {
             >
               {tStep3('title')}
             </h1>
-            <p className="t-body-lg mb-5" style={{ color: 'var(--muted)' }}>
+            <p className="t-body-lg mb-5 text-muted">
               {tStep3('lead')}
             </p>
 
@@ -965,10 +950,10 @@ export function VaultOnboardingFlow() {
                   <div className="mb-1 text-[15px] font-semibold text-body">
                     {tStep3('cardTitle')}
                   </div>
-                  <p className="m-0 mb-2 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 mb-2 text-[13px] text-muted">
                     {tStep3('cardBody')}
                   </p>
-                  <p className="m-0 text-[12px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[12px] text-muted">
                     {tStep3('reauthNote')}
                   </p>
                 </div>
@@ -984,8 +969,7 @@ export function VaultOnboardingFlow() {
               {passkeyAdded ? (
                 <p
                   role="status"
-                  className="m-0 mt-3 text-[13px] font-semibold"
-                  style={{ color: 'var(--success)' }}
+                  className="m-0 mt-3 text-[13px] font-semibold text-success"
                   data-testid="onboarding-passkey-added-status"
                 >
                   {tStep3('addedStatus')}
@@ -999,7 +983,7 @@ export function VaultOnboardingFlow() {
                   <div className="mb-1 text-[15px] font-semibold text-body">
                     {tDevice('remember.label')}
                   </div>
-                  <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p className="m-0 text-[13px] text-muted">
                     {tDevice('remember.description')}
                   </p>
                 </div>
@@ -1028,8 +1012,7 @@ export function VaultOnboardingFlow() {
               {rememberDevice.notice === 'device_state_changed' ? (
                 <div
                   role="status"
-                  className="mt-3 flex flex-wrap items-center gap-2 text-[12px]"
-                  style={{ color: 'var(--muted)' }}
+                  className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-muted"
                   data-testid="onboarding-remember-device-notice"
                 >
                   <span>{tDevice('notice.stateChanged')}</span>
@@ -1046,8 +1029,7 @@ export function VaultOnboardingFlow() {
               {rememberDevice.status === 'unavailable' ? (
                 <p
                   role="status"
-                  className="m-0 mt-3 text-[12px]"
-                  style={{ color: 'var(--muted)' }}
+                  className="m-0 mt-3 text-[12px] text-muted"
                   data-testid="onboarding-remember-device-unavailable"
                 >
                   {tDevice('unavailable')}
