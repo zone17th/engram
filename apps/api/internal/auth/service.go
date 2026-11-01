@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -41,22 +42,28 @@ type Mailer interface {
 type VaultStatus func(ctx context.Context, userID uuid.UUID) (string, error)
 
 type Service struct {
-	cfg      *config.Config
-	pool     *pgxpool.Pool
-	q        *gen.Queries
-	sessions *SessionStore
-	csrf     *CSRF
-	tokens   *TokenIssuer
-	grants   *Grants
-	lockout  *Lockout
-	clk      clock.Clock
-	audit    Auditor
-	notify   Notifier
-	probe    SemanticProbe
-	mail     Mailer
-	vault    VaultStatus
-	ipPepper []byte
-	emPepper []byte
+	cfg             *config.Config
+	pool            *pgxpool.Pool
+	q               *gen.Queries
+	sessions        *SessionStore
+	csrf            *CSRF
+	tokens          *TokenIssuer
+	grants          *Grants
+	lockout         *Lockout
+	clk             clock.Clock
+	audit           Auditor
+	notify          Notifier
+	probe           SemanticProbe
+	mail            Mailer
+	vault           VaultStatus
+	ipPepper        []byte
+	emPepper        []byte
+	forgotQueue     chan ForgotJob
+	forgotWorkerCtx context.Context
+	forgotCancel    context.CancelFunc
+	forgotHooks     ForgotHooks
+	onLoginVerified func()
+	onResetLocked   func()
 }
 
 func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, csrf *CSRF, tokens *TokenIssuer, grants *Grants, lockout *Lockout, clk clock.Clock, audit Auditor, notify Notifier, probe SemanticProbe, mail Mailer, vault VaultStatus) (*Service, error) {
@@ -72,12 +79,17 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 	if probe == nil {
 		probe = staticProbe(false)
 	}
-	return &Service{
+	// initialized above
+	svc := &Service{
 		cfg: cfg, pool: pool, q: gen.New(pool), sessions: sessions, csrf: csrf,
 		tokens: tokens, grants: grants, lockout: lockout, clk: clk,
 		audit: audit, notify: notify, probe: probe, mail: mail, vault: vault,
 		ipPepper: cfg.AuthIPPepper, emPepper: cfg.AuthEmailPepper,
-	}, nil
+		forgotQueue: make(chan ForgotJob, ForgotQueueSize),
+	}
+	svc.forgotWorkerCtx, svc.forgotCancel = context.WithCancel(context.Background())
+	go svc.runForgotWorker()
+	return svc, nil
 }
 
 type staticProbe bool
@@ -141,7 +153,18 @@ func (s *Service) PublicConfig() AuthConfig {
 		OAuthProviders:            s.cfg.OAuthProviders(),
 		EmailVerificationRequired: s.cfg.RequireEmailVerification,
 		CaptchaSiteKey:            s.cfg.CaptchaSiteKey(),
+		MailDeliveryAvailable:     s.MailDeliveryAvailable(),
 	}
+}
+
+func (s *Service) MailDeliveryAvailable() bool {
+	if s == nil || s.mail == nil {
+		return false
+	}
+	if _, isSink := s.mail.(*SinkMailer); isSink {
+		return s.cfg != nil && s.cfg.MailCaptureAsDelivery
+	}
+	return true
 }
 
 func (s *Service) AppOrigin() string { return s.cfg.AppOrigin }
@@ -310,16 +333,31 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (Me, IssueResult, er
 		return Me{}, IssueResult{}, ErrInvalidCredentials
 	}
 	_ = s.lockout.Reset(ctx, subject)
+	if s.onLoginVerified != nil {
+		s.onLoginVerified()
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Me{}, IssueResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	issued, err := s.sessions.Issue(ctx, tx, IssueParams{UserID: u.ID, IPHash: HashIP(s.ipPepper, in.IP), UserAgent: in.UA})
+	q := s.q.WithTx(tx)
+	uLocked, err := q.GetUserByIDForUpdate(ctx, u.ID)
+	if err != nil {
+		return Me{}, IssueResult{}, ErrInvalidCredentials
+	}
+	idNow, err := q.GetIdentityByUserProvider(ctx, gen.GetIdentityByUserProviderParams{UserID: uLocked.ID, Provider: "password"})
+	if err != nil || idNow.PasswordHash == nil {
+		return Me{}, IssueResult{}, ErrInvalidCredentials
+	}
+	if subtle.ConstantTimeCompare(SHA256Bytes([]byte(*idNow.PasswordHash)), SHA256Bytes([]byte(hash))) != 1 {
+		return Me{}, IssueResult{}, ErrInvalidCredentials
+	}
+	issued, err := s.sessions.Issue(ctx, tx, IssueParams{UserID: uLocked.ID, IPHash: HashIP(s.ipPepper, in.IP), UserAgent: in.UA})
 	if err != nil {
 		return Me{}, IssueResult{}, err
 	}
-	uid, sid := u.ID, issued.Principal.SessionID
+	uid, sid := uLocked.ID, issued.Principal.SessionID
 	if err := s.audit.Record(ctx, tx, secevent.Record{
 		UserID: &uid, SessionID: &sid, Event: secevent.EventLoginSuccess, Result: secevent.ResultSuccess,
 		Actor: "user", IPHash: HashIP(s.ipPepper, in.IP), UserAgent: in.UA,

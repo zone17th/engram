@@ -49,6 +49,9 @@ func (w *AuthPruneWorker) Work(ctx context.Context, job *river.Job[AuthPruneArgs
 	if _, err := q.DeleteExpiredVerifications(ctx, expired); err != nil {
 		return err
 	}
+	if _, err := q.DeleteExpiredPasswordResetTokens(ctx, expired); err != nil {
+		return err
+	}
 	if _, err := q.DeleteExpiredOAuthTransactions(ctx, expired); err != nil {
 		return err
 	}
