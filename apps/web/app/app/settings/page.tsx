@@ -74,7 +74,7 @@ export default function SettingsPage() {
             <h2 id="data-heading" className="t-title-md mb-5 text-ink">
               {t('page.dataHeading')}
             </h2>
-            <div className="card p-5 control-disabled" aria-disabled="true">
+            <div className="card p-5">
               <div className="text-[15px] font-semibold text-body">{t('page.dataTitle')}</div>
               <p className="t-body mt-1 m-0 text-muted">{t('page.dataBody')}</p>
             </div>

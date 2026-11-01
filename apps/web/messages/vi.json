@@ -468,8 +468,8 @@
       "searchTitle": "Tìm kiếm thấy được gì",
       "searchBody": "Tên mục, gợi ý và tag không được mã hoá, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.",
       "dataHeading": "Dữ liệu",
-      "dataTitle": "Xuất và xoá",
-      "dataBody": "Xuất đã giải mã cần vault đang mở. Xuất và xoá sẽ có sau."
+      "dataTitle": "Dữ liệu của bạn",
+      "dataBody": "Nội dung entry được mã hoá ngay trên trình duyệt trước khi gửi lên máy chủ. Tên mục, gợi ý và tag được lưu không mã hoá."
     },
     "reauth": { "resume": "Đã xác nhận. Lặp lại thao tác bên dưới để hoàn tất." },
     "common": { "cancel": "Huỷ", "continue": "Tiếp tục", "loading": "Đang tải…", "empty": "Chưa có mục nào.", "loadMore": "Tải thêm" },
@@ -743,9 +743,9 @@
         "step1Cancel": "Để sau",
         "step1Next": "Không đường nào dùng được",
         "step2Label": "Bước 2/5 — Kiểm tra bản sao lưu",
-        "step2Title": "Xuất hoặc kiểm tra bản backup trước khi xoá",
+        "step2Title": "Kiểm tra bản backup trước khi xoá",
         "step2Body": "Đặt lại chỉ xoá dữ liệu trên máy chủ live, không xoá các file backup bạn đang giữ ở ngoài. Trước khi đặt lại, hãy kiểm tra các bản backup đang có phòng khi sau này bạn nhớ lại passphrase cũ hoặc tìm thấy bản in.",
-        "step2ExportLink": "Tới mục Dữ liệu / Xuất",
+        "step2ExportLink": "Tới mục Dữ liệu của bạn",
         "step2Next": "Đã kiểm tra backup",
         "step3Label": "Bước 3/5 — Xác thực lại tài khoản",
         "step3Body": "Xác nhận bạn là chủ tài khoản bằng mật khẩu đăng nhập hoặc nhà cung cấp đăng nhập trước bước xác nhận cuối cùng.",

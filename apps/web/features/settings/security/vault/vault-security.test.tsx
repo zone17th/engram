@@ -2488,7 +2488,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
     const focusSpy = vi.spyOn(resetOpener, 'focus');
 
-    await user.click(within(dialog).getByRole('link', { name: 'Go to Data / Export' }));
+    await user.click(within(dialog).getByRole('link', { name: 'Go to Your data' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     // Radix FocusScope runs its unmount auto-focus in a zero-delay timeout scheduled when the dialog unmounted;
     // one later macrotask is therefore enough to observe whether the opener was refocused.

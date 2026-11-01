@@ -468,8 +468,8 @@
       "searchTitle": "What search can see",
       "searchBody": "Item names, hints and tags are not encrypted, so the server can search item names and tags. Entry content stays encrypted.",
       "dataHeading": "Data",
-      "dataTitle": "Export and delete",
-      "dataBody": "Decrypted export needs an unlocked vault. Export and delete are coming later."
+      "dataTitle": "Your data",
+      "dataBody": "Entry content is encrypted in your browser before it is sent to the server. Item names, hints and tags are stored unencrypted."
     },
     "reauth": { "resume": "Confirmed. Repeat the action below to finish." },
     "common": { "cancel": "Cancel", "continue": "Continue", "loading": "Loading…", "empty": "Nothing here yet.", "loadMore": "Load more" },
@@ -743,9 +743,9 @@
         "step1Cancel": "Later",
         "step1Next": "None of these work",
         "step2Label": "Step 2 of 5 — Backup check",
-        "step2Title": "Export or check your backups before deleting",
+        "step2Title": "Check your backups before deleting",
         "step2Body": "Resetting deletes data on the live server only and does not erase backup files you already hold. Before resetting, check any backups you already hold in case you recall an old passphrase or find a printout later.",
-        "step2ExportLink": "Go to Data / Export",
+        "step2ExportLink": "Go to Your data",
         "step2Next": "Checked backups",
         "step3Label": "Step 3 of 5 — Re-authenticate",
         "step3Body": "Confirm account ownership with your login password or sign-in provider before the final confirmation step.",
