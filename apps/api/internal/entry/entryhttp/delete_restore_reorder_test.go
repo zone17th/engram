@@ -14,6 +14,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/entry"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/vault"
 )
 
@@ -610,4 +611,161 @@ func TestItemEntriesReorderPermutationMismatchVersionAndCrossUserIsolation(t *te
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
 	contenttest.AssertInvariants(t, h.Pool, meB.User.ID)
+}
+
+// TestItemEntriesReorderBodyLimit16KiBPreLookup covers EA6b-R1-1 (SPEC §9.2, OpenAPI itemEntriesReorder, plan §2.3):
+//   - PATCH /items/{id}/entries/reorder is mounted through ChainItemTagWrite (16 KiB pre-Lookup limit -> 413 invalid_request).
+//   - A valid reorder JSON body padded to exact 16 KiB (16,384 B) with Content-Length and with Transfer-Encoding: chunked
+//     reaches the handler, returns 200 OK, updates positions, and persists the idempotency row.
+//   - A reorder body of 16 KiB + 1 (16,385 B) with Content-Length and with Transfer-Encoding: chunked is rejected with
+//     413 invalid_request BEFORE Idempotency.Lookup / rate-limit / Claim:
+//     0 idempotency_key rows created, 0 rate_event rows added for content_write, and entry positions/timestamps untouched.
+//   - A reorder body of 16 KiB + 1 sent with an existing committed Idempotency-Key still returns 413 invalid_request
+//     before Idempotency.Lookup (does not replay 200 or return 409 idempotency_key_reused).
+//   - AssertInvariants after every case.
+func TestItemEntriesReorderBodyLimit16KiBPreLookup(t *testing.T) {
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	jarA, meA := h.SignupUser("entry-reorder-16k@example.com", "correct-horse-battery-staple-a")
+	vfA := createVaultForUser(t, h, jarA, 0xA0)
+	itemA := insertTestItem(t, h, meA.User.ID, "Reorder 16KiB Limit Item")
+
+	id0 := uuid.NewString()
+	sealed0 := sealEntryFixture(t, id0, vfA.VaultKeyID, vfA.VK, []byte("reorder limit e0"), seqBytes(vault.WrapNonceBytes, 0xE1))
+	resp0, raw0 := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+itemA.ID.String()+"/entries",
+		makeCreateBody(id0, entry.TypeText, sealed0.EnvelopeRaw, sealed0.CiphertextB64, sealed0.PlaintextLenBucket),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_16k_seed_e0"})
+	if resp0.StatusCode != http.StatusCreated {
+		t.Fatalf("seed e0 = %d %s", resp0.StatusCode, raw0)
+	}
+
+	id1 := uuid.NewString()
+	sealed1 := sealEntryFixture(t, id1, vfA.VaultKeyID, vfA.VK, []byte("reorder limit e1"), seqBytes(vault.WrapNonceBytes, 0xE2))
+	resp1, raw1 := h.DoReq(jarA, http.MethodPost, "/api/v1/items/"+itemA.ID.String()+"/entries",
+		makeCreateBody(id1, entry.TypeText, sealed1.EnvelopeRaw, sealed1.CiphertextB64, sealed1.PlaintextLenBucket),
+		contenttest.ReqOptions{IdemKey: "idem_t6b_16k_seed_e1"})
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("seed e1 = %d %s", resp1.StatusCode, raw1)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	ctx := context.Background()
+	countIdemKey := func(key string) int {
+		t.Helper()
+		var n int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_key WHERE user_id = $1 AND key = $2`, meA.User.ID, key).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	countContentWriteEvents := func() int {
+		t.Helper()
+		var n int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE scope = $1`, string(httpx.ScopeContentWrite)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	makePaddedReorderBody := func(ids []string, targetLen int) string {
+		t.Helper()
+		base, err := json.Marshal(map[string]any{"entry_ids": ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(base) > targetLen {
+			t.Fatalf("base reorder JSON len %d > targetLen %d", len(base), targetLen)
+		}
+		padded := string(base) + strings.Repeat(" ", targetLen-len(base))
+		if len(padded) != targetLen {
+			t.Fatalf("padded len = %d, want %d", len(padded), targetLen)
+		}
+		return padded
+	}
+
+	reorderPath := "/api/v1/items/" + itemA.ID.String() + "/entries/reorder"
+	limitBytes := int(httpx.ContentItemTagJSONLimit) // 16,384 B (16 KiB)
+	overBytes := limitBytes + 1                      // 16,385 B (16 KiB + 1)
+
+	// 1. Over-limit (16 KiB + 1) with Content-Length and with chunked encoding -> 413 invalid_request before Lookup/rate-limit/Claim.
+	eventsBeforeOver := countContentWriteEvents()
+	overBody := makePaddedReorderBody([]string{id1, id0}, overBytes)
+	for _, chunked := range []bool{false, true} {
+		mode := "cl"
+		if chunked {
+			mode = "chunked"
+		}
+		idemKey := "idem_t6b_reorder_16k_over_" + mode
+		respOver, rawOver := h.DoReq(jarA, http.MethodPatch, reorderPath, overBody, contenttest.ReqOptions{
+			IdemKey: idemKey,
+			Chunked: chunked,
+		})
+		if respOver.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("reorder 16 KiB+1 (%s): status = %d (%s), want 413", mode, respOver.StatusCode, rawOver)
+		}
+		if code := contenttest.DecodeProblem(t, rawOver).Code; code != "invalid_request" {
+			t.Fatalf("reorder 16 KiB+1 (%s): code = %q, want invalid_request", mode, code)
+		}
+		if got := countIdemKey(idemKey); got != 0 {
+			t.Fatalf("reorder 16 KiB+1 (%s): idempotency rows = %d, want 0 (must reject before Lookup/Claim)", mode, got)
+		}
+		if got := countContentWriteEvents(); got != eventsBeforeOver {
+			t.Fatalf("reorder 16 KiB+1 (%s): rate_event count = %d, want %d (must reject before rate limit)", mode, got, eventsBeforeOver)
+		}
+		contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+	}
+
+	// Verify entry positions [id0@0, id1@1] were not modified by the rejected 16 KiB + 1 requests.
+	respListBefore, rawListBefore := h.DoReq(jarA, http.MethodGet, "/api/v1/items/"+itemA.ID.String()+"/entries", "", contenttest.ReqOptions{})
+	if respListBefore.StatusCode != http.StatusOK {
+		t.Fatalf("GET entries after 413 = %d %s", respListBefore.StatusCode, rawListBefore)
+	}
+	var listBefore entry.MetaList
+	if err := json.Unmarshal([]byte(rawListBefore), &listBefore); err != nil {
+		t.Fatal(err)
+	}
+	if len(listBefore.Items) != 2 || listBefore.Items[0].ID != id0 || listBefore.Items[0].Position != 0 || listBefore.Items[1].ID != id1 || listBefore.Items[1].Position != 1 {
+		t.Fatalf("entries after 413 were modified: %+v", listBefore.Items)
+	}
+
+	// 2. Exact 16 KiB (16,384 B) with Content-Length and with chunked encoding -> reaches handler, returns 200 OK.
+	exactBodyCL := makePaddedReorderBody([]string{id1, id0}, limitBytes)
+	keyExactCL := "idem_t6b_reorder_16k_exact_cl"
+	respExactCL, rawExactCL := h.DoReq(jarA, http.MethodPatch, reorderPath, exactBodyCL, contenttest.ReqOptions{
+		IdemKey: keyExactCL,
+		Chunked: false,
+	})
+	if respExactCL.StatusCode != http.StatusOK {
+		t.Fatalf("reorder exact 16 KiB (cl): status = %d (%s), want 200", respExactCL.StatusCode, rawExactCL)
+	}
+	if got := countIdemKey(keyExactCL); got != 1 {
+		t.Fatalf("reorder exact 16 KiB (cl): idempotency rows = %d, want 1", got)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	exactBodyChunked := makePaddedReorderBody([]string{id0, id1}, limitBytes)
+	keyExactChunked := "idem_t6b_reorder_16k_exact_chunked"
+	respExactChunked, rawExactChunked := h.DoReq(jarA, http.MethodPatch, reorderPath, exactBodyChunked, contenttest.ReqOptions{
+		IdemKey: keyExactChunked,
+		Chunked: true,
+	})
+	if respExactChunked.StatusCode != http.StatusOK {
+		t.Fatalf("reorder exact 16 KiB (chunked): status = %d (%s), want 200", respExactChunked.StatusCode, rawExactChunked)
+	}
+	if got := countIdemKey(keyExactChunked); got != 1 {
+		t.Fatalf("reorder exact 16 KiB (chunked): idempotency rows = %d, want 1", got)
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+
+	// 3. Over-limit (16 KiB + 1) reusing an EXISTING committed Idempotency-Key (keyExactCL) ->
+	// still rejected with 413 invalid_request BEFORE Idempotency.Lookup (neither replays 200 nor returns 409 conflict).
+	for _, chunked := range []bool{false, true} {
+		respOverExisting, rawOverExisting := h.DoReq(jarA, http.MethodPatch, reorderPath, overBody, contenttest.ReqOptions{
+			IdemKey: keyExactCL,
+			Chunked: chunked,
+		})
+		if respOverExisting.StatusCode != http.StatusRequestEntityTooLarge || contenttest.DecodeProblem(t, rawOverExisting).Code != "invalid_request" {
+			t.Fatalf("reorder 16 KiB+1 with existing key (chunked=%v) = %d %s, want 413 invalid_request before Lookup",
+				chunked, respOverExisting.StatusCode, rawOverExisting)
+		}
+	}
+	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
 }

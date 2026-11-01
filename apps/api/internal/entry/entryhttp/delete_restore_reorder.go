@@ -475,7 +475,7 @@ func decodeStrictJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, 
 		return false
 	}
 	if int64(len(body)) > maxBytes {
-		writeContentProblem(w, r, tooLargeCode)
+		httpx.WriteProblem(w, r, http.StatusRequestEntityTooLarge, tooLargeCode, httpx.ProblemTitle(tooLargeCode)+".")
 		return false
 	}
 	if len(bytes.TrimSpace(body)) == 0 || !utf8.Valid(body) {
@@ -513,7 +513,7 @@ func decodeOptionalEmptyJSON(w http.ResponseWriter, r *http.Request, maxBytes in
 		return false
 	}
 	if int64(len(body)) > maxBytes {
-		writeContentProblem(w, r, tooLargeCode)
+		httpx.WriteProblem(w, r, http.StatusRequestEntityTooLarge, tooLargeCode, httpx.ProblemTitle(tooLargeCode)+".")
 		return false
 	}
 	if len(bytes.TrimSpace(body)) == 0 {

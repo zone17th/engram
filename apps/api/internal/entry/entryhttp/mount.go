@@ -51,12 +51,13 @@ type ContentDeps interface {
 	ContentAudit() *audit.Store
 	ContentLogger() *slog.Logger
 	ChainEntryWrite(d httpx.Deps, requireIfMatch bool, fn http.HandlerFunc) http.Handler
+	ChainItemTagWrite(d httpx.Deps, requireIfMatch bool, fn http.HandlerFunc) http.Handler
 }
 
 // Mount đăng ký các route `/api/v1/items/{id}/entries*` và `/api/v1/entries/{id}*` của Task 6a–6b:
 //   - GET    /items/{id}/entries         (`itemEntriesList`): S
 //   - POST   /items/{id}/entries         (`entryCreate`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
-//   - PATCH  /items/{id}/entries/reorder (`itemEntriesReorder`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
+//   - PATCH  /items/{id}/entries/reorder (`itemEntriesReorder`): S + C + I + R (qua `ChainItemTagWrite(d, false, ...)`)
 //   - GET    /entries/{id}               (`entryGet`): S
 //   - PUT    /entries/{id}               (`entryUpdate`): S + C + I + R + M (qua `ChainEntryWrite(d, true, ...)`)
 //   - DELETE /entries/{id}               (`entryDelete`): S + C + I + R (qua `ChainEntryWrite(d, false, ...)`)
@@ -82,12 +83,13 @@ func Mount(c ContentDeps) func(v1 chi.Router, d httpx.Deps) {
 			g.Get("/entries/{id}", h.entryGet)
 		})
 
-		// Các route ghi (cột S+C+I+R[+M]) bắt buộc đi qua ChainEntryWrite (trần 400 KiB -> 413 entry_too_large).
+		// Các route ghi entry (cột S+C+I+R[+M]) đi qua ChainEntryWrite (trần 400 KiB -> 413 entry_too_large);
+		// riêng reorder là route trên item có trần 16 KiB -> 413 invalid_request trước Lookup (SPEC §9.2) nên đi qua ChainItemTagWrite.
 		v1.Method(http.MethodPost, "/items/{id}/entries", c.ChainEntryWrite(d, false, h.entryCreate))
 		v1.Method(http.MethodPut, "/entries/{id}", c.ChainEntryWrite(d, true, h.entryUpdate))
 		v1.Method(http.MethodDelete, "/entries/{id}", c.ChainEntryWrite(d, false, h.entryDelete))
 		v1.Method(http.MethodPost, "/entries/{id}/restore", c.ChainEntryWrite(d, false, h.entryRestore))
-		v1.Method(http.MethodPatch, "/items/{id}/entries/reorder", c.ChainEntryWrite(d, false, h.itemEntriesReorder))
+		v1.Method(http.MethodPatch, "/items/{id}/entries/reorder", c.ChainItemTagWrite(d, false, h.itemEntriesReorder))
 	}
 }
 
