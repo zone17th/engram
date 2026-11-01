@@ -57,6 +57,7 @@ import {
   type LockEpochEnvironment,
   type VaultContextValue,
 } from '@/features/vault';
+import { getSessionEpoch } from '@/lib/api/auth-fetch';
 import type { Me } from '@/lib/api/auth';
 import type {
   Entry,
@@ -84,10 +85,58 @@ interface SealAttemptRecord {
   }>;
 }
 
+type SessionBroadcastMessageListener = (event: MessageEvent<SessionBroadcast>) => void;
+
 const testHarnessHoisted = vi.hoisted(() => {
+  const sessionBroadcastListeners = new Set<SessionBroadcastMessageListener>();
+
+  class HoistedBroadcastChannelStub {
+    readonly name: string;
+    private readonly localListeners = new Set<EventListener>();
+
+    constructor(name: string) {
+      this.name = name;
+    }
+
+    addEventListener(type: string, listener: EventListener): void {
+      if (type !== 'message') return;
+      this.localListeners.add(listener);
+      if (this.name === 'sabk.auth.session') {
+        sessionBroadcastListeners.add(listener as unknown as SessionBroadcastMessageListener);
+      }
+    }
+
+    removeEventListener(type: string, listener: EventListener): void {
+      if (type !== 'message') return;
+      this.localListeners.delete(listener);
+      if (this.name === 'sabk.auth.session') {
+        sessionBroadcastListeners.delete(listener as unknown as SessionBroadcastMessageListener);
+      }
+    }
+
+    postMessage(): void {}
+
+    close(): void {
+      for (const listener of this.localListeners) {
+        sessionBroadcastListeners.delete(listener as unknown as SessionBroadcastMessageListener);
+      }
+      this.localListeners.clear();
+    }
+  }
+
+  // Install BroadcastChannel stub before lib/auth/broadcast.ts first subscribes and caches its module-scoped channel
+  vi.stubGlobal('BroadcastChannel', HoistedBroadcastChannelStub);
+
   let sealRecorderListener: ((record: SealAttemptRecord) => void) | null = null;
 
   return {
+    HoistedBroadcastChannelStub,
+    getSessionBroadcastListenerCount: () => sessionBroadcastListeners.size,
+    emitRemoteSessionBroadcast: (message: SessionBroadcast) => {
+      for (const listener of [...sessionBroadcastListeners]) {
+        listener({ data: message } as MessageEvent<SessionBroadcast>);
+      }
+    },
     getSealRecorderListener: () => sealRecorderListener,
     setSealRecorderListener: (listener: ((record: SealAttemptRecord) => void) | null) => {
       sealRecorderListener = listener;
@@ -493,6 +542,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     textEntryCardTesting.setEditorPlaintextHolderForTests(null);
     testHarnessHoisted.setSealRecorderListener(null);
     vi.unstubAllGlobals();
+    vi.stubGlobal('BroadcastChannel', testHarnessHoisted.HoistedBroadcastChannelStub);
     vi.restoreAllMocks();
     if (originalVisibilityStateDescriptor) {
       Object.defineProperty(document, 'visibilityState', originalVisibilityStateDescriptor);
@@ -3475,21 +3525,6 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
   });
 
   it('advisor-dec-199 / IP15-FE5-5 / BE5-3 (d cross-tab session_changed): remote session_changed resolving /auth/me as User B commits B via the me?.user.id effect with exactly one A->B event, one store emit, and an empty pure snapshot before any detail mount', async () => {
-    // Stub BroadcastChannel BEFORE mounting SessionProvider so subscribeSessionBroadcast attaches its 'remote' listener
-    type BroadcastMessageListener = (event: MessageEvent<SessionBroadcast>) => void;
-    const channelListeners = new Set<BroadcastMessageListener>();
-    class CrossTabBroadcastChannelStub {
-      addEventListener(type: string, listener: BroadcastMessageListener): void {
-        if (type === 'message') channelListeners.add(listener);
-      }
-      removeEventListener(type: string, listener: BroadcastMessageListener): void {
-        if (type === 'message') channelListeners.delete(listener);
-      }
-      postMessage(): void {}
-      close(): void {}
-    }
-    vi.stubGlobal('BroadcastChannel', CrossTabBroadcastChannelStub);
-
     const h = await setupItemPageHarness({
       initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Secret for User A' }],
     });
@@ -3498,6 +3533,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Secret for User A');
     });
     expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_A_ID);
+    // Verify that SessionProvider attached its remote BroadcastChannel('sabk.auth.session') listener
+    expect(testHarnessHoisted.getSessionBroadcastListenerCount()).toBeGreaterThan(0);
 
     recordUnconfirmedSave({
       userId: USER_A_ID,
@@ -3520,23 +3557,30 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     try {
-      // Another tab switches to User B: /auth/me now resolves to User B and session_changed broadcast arrives.
-      // Emit through both the remote BroadcastChannel listener (if channel was not yet cached) and postSessionBroadcast
-      // so even two session_changed notifications for the same B snapshot result in exactly one A->B commit event.
+      // Another tab switches to User B: /auth/me now resolves to User B and ONLY a remote session_changed broadcast arrives
+      // (no local postSessionBroadcast fallback).
+      const meGetsBeforeRemote = h.server.requests.filter(
+        (r) => r.method === 'GET' && r.url.endsWith('/auth/me'),
+      ).length;
+      const epochBeforeRemote = getSessionEpoch();
       h.setCurrentMe(makeMe(USER_B_ID, 'present'));
+
       await act(async () => {
-        for (const listener of [...channelListeners]) {
-          listener({ data: { type: 'session_changed' } } as MessageEvent<SessionBroadcast>);
-        }
-        postSessionBroadcast({ type: 'session_changed' });
+        testHarnessHoisted.emitRemoteSessionBroadcast({ type: 'session_changed' });
       });
 
+      // Assert the remote-only branch ran: session epoch incremented and /auth/me refetched
       await waitFor(() => {
+        expect(getSessionEpoch()).toBe(epochBeforeRemote + 1);
+        const meGetsAfterRemote = h.server.requests.filter(
+          (r) => r.method === 'GET' && r.url.endsWith('/auth/me'),
+        ).length;
+        expect(meGetsAfterRemote).toBeGreaterThan(meGetsBeforeRemote);
         expect(userChangedTesting.getLastCommittedUserId()).toBe(USER_B_ID);
-        expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
-        expect(storeEmitCount).toBe(1);
-        expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
       });
+      expect(userChangedEvents).toEqual([{ prev: USER_A_ID, next: USER_B_ID }]);
+      expect(storeEmitCount).toBe(1);
+      expect(unconfirmedSaveStoreTesting.peekUnconfirmedSavesForTests()).toEqual([]);
     } finally {
       unsubUserChanged();
       unsubStore();
