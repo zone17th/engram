@@ -285,11 +285,65 @@ test.describe('P04-T11 OAuth-off required arrays contract (CI-OAUTH-OFF, advisor
     expect(tagsBody.items?.[0]?.display).toBe(tagDisplay);
     expect(tagsBody.items?.[0]?.item_count).toBe(1);
 
+    // 7. P04-T7 (entryapi): required-arrays contract for entries list and changes feed with OAuth off.
+    // 7a. GET /api/v1/items/{id}/entries on an item with no entries -> 200, EntryMetaList.items is `[]` (never null), next_cursor null.
+    const itemEntriesRes = await request.get(
+      `/api/v1/items/${encodeURIComponent(itemtagWriteProbe.itemId)}/entries`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(itemEntriesRes.status()).toBe(200);
+    const itemEntriesBody = (await itemEntriesRes.json()) as {
+      items?: unknown;
+      next_cursor?: unknown;
+    };
+    expect(Array.isArray(itemEntriesBody.items)).toBe(true);
+    expect(itemEntriesBody.items).toEqual([]);
+    expect(itemEntriesBody.next_cursor).toBeNull();
+
+    // 7b. GET /api/v1/entries/changes (bootstrap without `since`) -> 200, EntryChangesPage.changes is `[]`,
+    //     watermark is a non-empty RFC 3339 date-time string, next_cursor null.
+    const bootstrapChangesRes = await request.get('/api/v1/entries/changes', {
+      headers: { cookie: cookieHeader },
+    });
+    expect(bootstrapChangesRes.status()).toBe(200);
+    const bootstrapChangesBody = (await bootstrapChangesRes.json()) as {
+      changes?: unknown;
+      next_cursor?: unknown;
+      watermark?: unknown;
+    };
+    expect(Array.isArray(bootstrapChangesBody.changes)).toBe(true);
+    expect(bootstrapChangesBody.changes).toEqual([]);
+    expect(bootstrapChangesBody.next_cursor).toBeNull();
+    expect(typeof bootstrapChangesBody.watermark).toBe('string');
+    const bootstrapWatermark =
+      typeof bootstrapChangesBody.watermark === 'string' ? bootstrapChangesBody.watermark : '';
+    expect(bootstrapWatermark.length).toBeGreaterThan(0);
+    expect(Number.isNaN(Date.parse(bootstrapWatermark))).toBe(false);
+
+    // 7c. GET /api/v1/entries/changes?since=<watermark> (query scan path with `since` for a user with no entries) ->
+    //     200, EntryChangesPage.changes is `[]` (never null), watermark non-empty RFC 3339 string, next_cursor null.
+    const sinceChangesRes = await request.get(
+      `/api/v1/entries/changes?since=${encodeURIComponent(bootstrapWatermark)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(sinceChangesRes.status()).toBe(200);
+    const sinceChangesBody = (await sinceChangesRes.json()) as {
+      changes?: unknown;
+      next_cursor?: unknown;
+      watermark?: unknown;
+    };
+    expect(Array.isArray(sinceChangesBody.changes)).toBe(true);
+    expect(sinceChangesBody.changes).toEqual([]);
+    expect(sinceChangesBody.next_cursor).toBeNull();
+    expect(typeof sinceChangesBody.watermark).toBe('string');
+    const sinceWatermark =
+      typeof sinceChangesBody.watermark === 'string' ? sinceChangesBody.watermark : '';
+    expect(sinceWatermark.length).toBeGreaterThan(0);
+    expect(Number.isNaN(Date.parse(sinceWatermark))).toBe(false);
+
     // Follow-up ownership (advisor-dec-127 Q4):
     // - W2 lane `itemtag`: covered above (`GET /api/v1/items`, `GET /api/v1/items/lookup`, `GET /api/v1/tags`, and `ItemSummary.tags`).
-    // - W2 lane `entryapi` extends this spec with entries/changes arrays when its endpoints land:
-    //   GET /api/v1/items/{id}/entries -> EntryMetaList.items,
-    //   GET /api/v1/entries/changes?since=<now> -> EntryChangesPage.changes.
+    // - W2 lane `entryapi`: covered above (`GET /api/v1/items/{id}/entries` -> `EntryMetaList.items`, `GET /api/v1/entries/changes` -> `EntryChangesPage.changes`).
     // - Task 21a verifies full required-array coverage across all merged content endpoints.
   });
 });
