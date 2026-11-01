@@ -1516,7 +1516,7 @@
       "colActions": "Thao tác",
       "colExtraFields": "+{count, plural, other {# cột khác}}",
       "extraFieldsToggle": "+{count, plural, other {# trường}}",
-      "emptyObject": "Object rỗng {}",
+      "emptyObject": "Object rỗng '{}'",
       "emptyArray": "Mảng rỗng [] (0 phần tử)",
       "objectSummary": "{count, plural, other {# khoá}}",
       "arraySummary": "{count, plural, other {# phần tử}}",

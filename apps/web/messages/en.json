@@ -1516,7 +1516,7 @@
       "colActions": "Actions",
       "colExtraFields": "+{count, plural, one {# more column} other {# more columns}}",
       "extraFieldsToggle": "+{count, plural, one {# field} other {# fields}}",
-      "emptyObject": "Empty object {}",
+      "emptyObject": "Empty object '{}'",
       "emptyArray": "Empty array [] (0 items)",
       "objectSummary": "{count, plural, one {# key} other {# keys}}",
       "arraySummary": "{count, plural, one {# item} other {# items}}",

@@ -1509,11 +1509,22 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(document.activeElement).toBe(rawTextarea);
     expect(rawTextarea.selectionStart).toBe(invalidWithLfAndEmoji.lastIndexOf('}'));
 
-    // 2b. Test "Đi tới lỗi" with CRLF (\r\n) + astral emoji on the textarea value
+    // 2b. Test "Đi tới lỗi" with CRLF (\r\n) + astral emoji on the textarea value:
+    // Browsers and jsdom normalize CRLF (\r\n) to LF (\n) in HTMLTextAreaElement.value (WHATWG HTML spec),
+    // so each of the 2 preceding \r\n line breaks occupies 1 UTF-16 code unit (\n) instead of 2 (\r\n)
+    // in the live textarea value, while the astral emoji pair ("🚀🎉") still occupies 4 UTF-16 code units.
+    // Line 3, column 13 therefore resolves to UTF-16 offset 33 (= 35 in raw CRLF source minus 2 normalized \r chars):
+    //   Line 1: "{\n"                    ->  2 code units (offsets 0..1)
+    //   Line 2: '  "emoji": "🚀🎉",\n'   -> 19 code units (offsets 2..20, where 🚀🎉 is 4 UTF-16 code units)
+    //   Line 3: '  "broken": @'          -> 12 code units before '@' (offsets 21..32), so '@' is at offset 33.
     const invalidWithCrlfAndEmoji = '{\r\n  "emoji": "🚀🎉",\r\n  "broken": @\r\n}';
+    const normalizedTextareaValue = invalidWithCrlfAndEmoji.replace(/\r\n/g, '\n');
     const parsedCrlfErr = parseJsonStrict(invalidWithCrlfAndEmoji);
     expect(parsedCrlfErr.ok).toBe(false);
-    const expectedAtOffset = invalidWithCrlfAndEmoji.indexOf('@');
+    const expectedRawCrlfOffset = invalidWithCrlfAndEmoji.indexOf('@'); // 35 in raw CRLF string
+    const expectedTextareaOffset = normalizedTextareaValue.indexOf('@'); // 33 in textarea.value (35 - 2 prior \r)
+    expect(expectedRawCrlfOffset).toBe(35);
+    expect(expectedTextareaOffset).toBe(33);
     if (!parsedCrlfErr.ok) {
       expect(
         lineColumnToOffset(
@@ -1521,21 +1532,21 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
           parsedCrlfErr.error.line,
           parsedCrlfErr.error.column,
         ),
-      ).toBe(expectedAtOffset);
+      ).toBe(expectedRawCrlfOffset);
+      expect(
+        lineColumnToOffset(
+          normalizedTextareaValue,
+          parsedCrlfErr.error.line,
+          parsedCrlfErr.error.column,
+        ),
+      ).toBe(expectedTextareaOffset);
     }
-    const valueGetterSpy = vi
-      .spyOn(HTMLTextAreaElement.prototype, 'value', 'get')
-      .mockReturnValue(invalidWithCrlfAndEmoji);
-    try {
-      fireEvent.change(rawTextarea, { target: { value: invalidWithCrlfAndEmoji } });
-      fireEvent.blur(rawTextarea);
-      const errBoxAfterCrlf = await within(card).findByTestId(`json-raw-error-${ENTRY_ID_1}`);
-      expect(errBoxAfterCrlf).toHaveTextContent('Dòng 3, cột 13');
-      fireEvent.click(within(card).getByTestId(`json-raw-goto-btn-${ENTRY_ID_1}`));
-      expect(rawTextarea.selectionStart).toBe(expectedAtOffset);
-    } finally {
-      valueGetterSpy.mockRestore();
-    }
+    fireEvent.change(rawTextarea, { target: { value: invalidWithCrlfAndEmoji } });
+    fireEvent.blur(rawTextarea);
+    const errBoxAfterCrlf = await within(card).findByTestId(`json-raw-error-${ENTRY_ID_1}`);
+    expect(errBoxAfterCrlf).toHaveTextContent('Dòng 3, cột 13');
+    fireEvent.click(within(card).getByTestId(`json-raw-goto-btn-${ENTRY_ID_1}`));
+    expect(rawTextarea.selectionStart).toBe(expectedTextareaOffset);
     // 3. Attempting to switch to Table tab while Raw JSON is invalid keeps Raw tab active and shows switchBlockedInvalidError
     fireEvent.click(within(card).getByTestId(`json-tab-table-${ENTRY_ID_1}`));
     expect(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`)).toHaveAttribute(
@@ -1722,7 +1733,10 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(composer.textContent).toContain(viMessages.content.json.emptyArray);
 
     fireEvent.click(within(composer).getByTestId('new-json-preset-object'));
-    expect(composer.textContent).toContain(viMessages.content.json.emptyObject);
+    expect(composer.textContent).toContain(
+      viMessages.content.json.emptyObject.replaceAll("'", ''),
+    );
+    expect(composer.textContent).not.toContain('content.json.emptyObject');
 
     fireEvent.click(within(composer).getByTestId('json-open-add-field-root'));
     fireEvent.change(within(composer).getByTestId('json-new-key-input-root'), {
@@ -2141,6 +2155,11 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(retryPut.headers['idempotency-key']).toBe(firstIdemKey);
     expect(retryPut.rawBody).toBe(firstRawBody);
 
+    // Wait for the version-2 body query to finish decrypting so the Table / Raw JSON tabs re-mount
+    await waitFor(() => {
+      expect(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
+
     // 2. Switch to Raw JSON, edit draft to SECRET_RAW_DRAFT, trigger 412 -> verify 412 keeps Raw JSON draft AND Table expanded state
     fireEvent.click(within(card).getByTestId(`json-tab-raw-${ENTRY_ID_1}`));
     const rawTa = within(card).getByTestId(
@@ -2200,6 +2219,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
         putsBeforeKeepMine + 1,
       );
       expect(within(card).queryByTestId(`entry-conflict-box-${ENTRY_ID_1}`)).toBeNull();
+      expect(within(card).getByTestId('json-toggle-root.p2')).toBeInTheDocument();
     });
     const keepMinePuts = h.server.requests.filter((r) => r.method === 'PUT');
     expect(keepMinePuts[keepMinePuts.length - 1]!.headers['if-match']).toBe('"3"');
