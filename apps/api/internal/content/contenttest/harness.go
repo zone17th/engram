@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -349,4 +351,28 @@ func DecodeProblem(t testing.TB, raw string) httpx.Problem {
 		t.Fatalf("decode problem (%s): %v", raw, err)
 	}
 	return p
+}
+
+// AssertJSONEqual giải mã cả `want` và `got` thành `any` bằng `json.Decoder.UseNumber()`
+// và so sánh cấu trúc bằng `reflect.DeepEqual` (phục vụ so sánh body replay từ cột `jsonb`
+// của `idempotency_key` với response JSON gốc).
+func AssertJSONEqual(t testing.TB, want, got string) {
+	t.Helper()
+	decode := func(label, s string) any {
+		dec := json.NewDecoder(strings.NewReader(s))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("AssertJSONEqual decode %s (%q): %v", label, s, err)
+		}
+		if dec.More() {
+			t.Fatalf("AssertJSONEqual trailing data in %s (%q)", label, s)
+		}
+		return v
+	}
+	wantVal := decode("want", want)
+	gotVal := decode("got", got)
+	if !reflect.DeepEqual(wantVal, gotVal) {
+		t.Fatalf("AssertJSONEqual mismatch:\nwant: %s\ngot:  %s", want, got)
+	}
 }

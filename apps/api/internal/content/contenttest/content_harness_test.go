@@ -329,6 +329,7 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	jarA, meA, jarB, meB := h.SignupTwoUsers()
 
 	// 1. Send 10 distinct writes within 1 second -> all 10 succeed (201).
+	var rawWrite1 string
 	for i := 1; i <= 10; i++ {
 		key := "idem_rate_write_00" + strconv.Itoa(10+i)
 		body := `{"name":"Item ` + strconv.Itoa(i) + `"}`
@@ -337,6 +338,9 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 		})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("write %d: status=%d body=%s", i, resp.StatusCode, raw)
+		}
+		if i == 1 {
+			rawWrite1 = raw
 		}
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
@@ -353,6 +357,7 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	if respReplay.StatusCode != http.StatusCreated {
 		t.Fatalf("replay at exhausted quota: status=%d body=%s, want 201", respReplay.StatusCode, rawReplay)
 	}
+	contenttest.AssertJSONEqual(t, rawWrite1, rawReplay)
 	var rateEventsAfterReplay int
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM rate_event WHERE user_id = $1 AND scope = $2`, meA.User.ID, httpx.ScopeContentWrite).Scan(&rateEventsAfterReplay); err != nil {
 		t.Fatal(err)
@@ -400,9 +405,10 @@ func TestContentRateLimit11thBlockedRetrySameKeyReplayConflictsAnd24hReclaim(t *
 	resp11Replay, raw11Replay := h.DoReq(jarA, http.MethodPost, "/api/v1/__test/items", body11, contenttest.ReqOptions{
 		IdemKey: key11,
 	})
-	if resp11Replay.StatusCode != http.StatusCreated || raw11Replay != raw11Retry {
-		t.Fatalf("replay of 11th write: status=%d body=%s, want %s", resp11Replay.StatusCode, raw11Replay, raw11Retry)
+	if resp11Replay.StatusCode != http.StatusCreated {
+		t.Fatalf("replay of 11th write: status=%d body=%s, want 201", resp11Replay.StatusCode, raw11Replay)
 	}
+	contenttest.AssertJSONEqual(t, raw11Retry, raw11Replay)
 	var itemElevenCount int
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = 'Item Eleven'`, meA.User.ID).Scan(&itemElevenCount); err != nil {
 		t.Fatal(err)
@@ -647,9 +653,10 @@ func TestContentBodyLimitsEntryItemAndP03VaultThroughRealChain(t *testing.T) {
 	respReplay, rawReplay := h.DoReq(jarA, http.MethodPost, entryPath, exactBody, contenttest.ReqOptions{
 		IdemKey: keyExact,
 	})
-	if respReplay.StatusCode != http.StatusCreated || rawReplay != rawExact || entryCalls.Load() != callsBeforeReplay {
+	if respReplay.StatusCode != http.StatusCreated || entryCalls.Load() != callsBeforeReplay {
 		t.Fatalf("replay exact 400 KiB: status=%d calls=%d (before=%d)", respReplay.StatusCode, entryCalls.Load(), callsBeforeReplay)
 	}
+	contenttest.AssertJSONEqual(t, rawExact, rawReplay)
 
 	// 3. Read error midway -> 400 invalid_request (tested directly on the router handler so mid-stream error is delivered to middleware).
 	keyMidway := "idem_entry_midway_err_1"
@@ -1111,9 +1118,10 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	respDLReplay, rawDLReplay := h.DoReq(victimJar, http.MethodPost, "/api/v1/__test/items", victimBody, contenttest.ReqOptions{
 		IdemKey: victimKey,
 	})
-	if respDLReplay.StatusCode != http.StatusCreated || rawDLReplay != rawDLRetry {
-		t.Fatalf("replay after real 40P01 recovery: status=%d body=%s, want %s", respDLReplay.StatusCode, rawDLReplay, rawDLRetry)
+	if respDLReplay.StatusCode != http.StatusCreated {
+		t.Fatalf("replay after real 40P01 recovery: status=%d body=%s, want 201", respDLReplay.StatusCode, rawDLReplay)
 	}
+	contenttest.AssertJSONEqual(t, rawDLRetry, rawDLReplay)
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1 AND name = $2`, victimUserID, victimItemName).Scan(&victimItemRows); err != nil {
 		t.Fatal(err)
 	}
@@ -1203,11 +1211,11 @@ func newBarrierProbeServer(b *barrierController, activeHandlers *atomic.Int32) *
 	return httptest.NewServer(mux)
 }
 
-func startBarrierProbeRequest(srv *httptest.Server, path string, wg *sync.WaitGroup) {
+func startBarrierProbeRequest(ctx context.Context, srv *httptest.Server, path string, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(`{}`))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+path, strings.NewReader(`{}`))
 		if err != nil {
 			return
 		}
@@ -1219,74 +1227,137 @@ func startBarrierProbeRequest(srv *httptest.Server, path string, wg *sync.WaitGr
 	}()
 }
 
+// emergencyAbortBarrierProbe independently aborts a probe run without relying on b.releaseAll():
+// it cancels the client requests' context, closes all active client/server HTTP connections via
+// srv.CloseClientConnections() (which cancels server-side r.Context().Done() inside onLockHeld /
+// waitDeadlockStep2), and joins the cleanup/server and client request goroutines with a bounded wait.
+func emergencyAbortBarrierProbe(
+	tb testing.TB,
+	label string,
+	cancelReqCtx context.CancelFunc,
+	srv *httptest.Server,
+	reqWG *sync.WaitGroup,
+	activeHandlers *atomic.Int32,
+	cleanupDone <-chan time.Duration,
+	bound time.Duration,
+) {
+	tb.Helper()
+	if cancelReqCtx != nil {
+		cancelReqCtx()
+	}
+	if srv != nil {
+		srv.CloseClientConnections()
+	}
+	if cleanupDone != nil {
+		select {
+		case <-cleanupDone:
+		case <-time.After(bound):
+			tb.Fatalf("%s: emergency abort timed out waiting for LIFO cleanup / srv.Close within %s", label, bound)
+		}
+	} else if srv != nil {
+		closed := make(chan struct{})
+		go func() {
+			srv.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(bound):
+			tb.Fatalf("%s: emergency abort timed out waiting for srv.Close within %s", label, bound)
+		}
+	}
+	if reqWG != nil {
+		reqsDone := make(chan struct{})
+		go func() {
+			reqWG.Wait()
+			close(reqsDone)
+		}()
+		select {
+		case <-reqsDone:
+		case <-time.After(bound):
+			tb.Fatalf("%s: emergency abort timed out waiting for probe requests within %s", label, bound)
+		}
+	}
+	deadline := time.Now().Add(bound)
+	for activeHandlers.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active := activeHandlers.Load(); active != 0 {
+		tb.Fatalf("%s: active handlers after emergency abort = %d, want 0", label, active)
+	}
+}
+
 // TestContentBarrierCleanupFailurePaths proves in-repository (without requiring DB or skipping under -short)
 // that the shared barrierController + attachBarrierServer / registerBarrierRelease cleanup releases held
 // HTTP handlers before httptest.Server.Close runs when a barrier wait fails with Fatal/Fatalf:
 //   - missing_same_user_waiter: User A tx 1 is held on LockUserContent while User A tx 2 waiter is absent.
 //   - missing_cross_user_notification: User A and User B handlers are both held while User B's notification is withheld.
 //   - missing_deadlock_participant: Deadlock participant 1 is held at step 1 while participant 2 is absent.
-//   - omitted_cleanup_exceeds_bound & wrong_order_cleanup_exceeds_bound: Negative controls proving that
-//     omitting registerBarrierRelease or registering it before srv.Close (so LIFO runs srv.Close first)
-//     causes teardown to exceed the bound, then force-releasing so CI never hangs.
+//   - omitted_cleanup_exceeds_bound, wrong_order_cleanup_exceeds_bound & ineffective_release_cleanup_aborts_bounded:
+//     Negative controls proving that omitting registerBarrierRelease, registering it before srv.Close, or substituting
+//     a no-op barrier release causes teardown to exceed the bound and is terminated via the independent emergency abort
+//     (context cancellation + CloseClientConnections + bounded join) without relying on b.releaseAll() or synchronous srv.Close().
 func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 	const (
 		injectWaitTimeout = 40 * time.Millisecond
 		pollInterval      = 5 * time.Millisecond
 		cleanupBound      = 2 * time.Second
 		negativeHangBound = 150 * time.Millisecond
+		abortBound        = 1 * time.Second
 	)
 
 	runFixedFailureCase := func(
-		t *testing.T,
+		tb testing.TB,
+		caseCleanupBound time.Duration,
+		attachFn func(tb testing.TB, b *barrierController, startServer func(tb testing.TB)),
 		wantHeldAtFatal int32,
 		wantDiagnostic string,
-		scenario func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup),
+		scenario func(reqCtx context.Context, ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup),
 	) {
-		t.Helper()
-		ft := &fakeBarrierTB{TB: t}
+		tb.Helper()
+		ft := &fakeBarrierTB{TB: tb}
 		b := newBarrierController()
 		b.userATarget = uuid.New()
 		b.userBTarget = uuid.New()
 
 		var activeHandlers atomic.Int32
 		var srv *httptest.Server
-		attachBarrierServer(ft, b, func(tb testing.TB) {
+		attachFn(ft, b, func(innerTB testing.TB) {
 			srv = newBarrierProbeServer(b, &activeHandlers)
-			tb.Cleanup(srv.Close)
+			innerTB.Cleanup(srv.Close)
 		})
+
+		reqCtx, cancelReqCtx := context.WithCancel(context.Background())
+		defer cancelReqCtx()
 
 		var reqWG sync.WaitGroup
 		var completedNormally atomic.Bool
 		bodyDone := make(chan struct{})
 		go func() {
 			defer close(bodyDone)
-			scenario(ft, b, srv, &reqWG)
+			scenario(reqCtx, ft, b, srv, &reqWG)
 			completedNormally.Store(true)
 		}()
 
 		select {
 		case <-bodyDone:
-		case <-time.After(cleanupBound):
-			b.releaseAll()
-			srv.Close()
-			t.Fatalf("scenario goroutine did not exit via Fatal within %s", cleanupBound)
+		case <-time.After(caseCleanupBound):
+			emergencyAbortBarrierProbe(tb, "scenario_timeout", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			tb.Fatalf("scenario goroutine did not exit via Fatal within %s", caseCleanupBound)
 		}
 
 		failed, fatalMsg := ft.status()
 		if !failed || completedNormally.Load() {
-			b.releaseAll()
-			srv.Close()
-			t.Fatalf("expected Fatal Goexit, got failed=%v completedNormally=%v msg=%q", failed, completedNormally.Load(), fatalMsg)
+			emergencyAbortBarrierProbe(tb, "unexpected_scenario_exit", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			tb.Fatalf("expected Fatal Goexit, got failed=%v completedNormally=%v msg=%q", failed, completedNormally.Load(), fatalMsg)
 		}
 		if !strings.Contains(fatalMsg, wantDiagnostic) {
-			b.releaseAll()
-			srv.Close()
-			t.Fatalf("fatal diagnostic = %q, want substring %q", fatalMsg, wantDiagnostic)
+			emergencyAbortBarrierProbe(tb, "unexpected_diagnostic", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			tb.Fatalf("fatal diagnostic = %q, want substring %q", fatalMsg, wantDiagnostic)
 		}
 		if held := activeHandlers.Load(); held != wantHeldAtFatal {
-			b.releaseAll()
-			srv.Close()
-			t.Fatalf("active held handlers at Fatal = %d, want %d", held, wantHeldAtFatal)
+			emergencyAbortBarrierProbe(tb, "unexpected_held_count", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
+			tb.Fatalf("active held handlers at Fatal = %d, want %d", held, wantHeldAtFatal)
 		}
 
 		cleanupDone := make(chan time.Duration, 1)
@@ -1300,26 +1371,27 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		select {
 		case elapsed := <-cleanupDone:
 			if active := activeHandlers.Load(); active != 0 {
-				t.Fatalf("active handlers after LIFO cleanup = %d, want 0", active)
+				tb.Fatalf("active handlers after LIFO cleanup = %d, want 0", active)
 			}
-			t.Logf("diagnostic=%q goexited=true held_at_fatal=%d cleanup_elapsed=%s bound=%s",
-				fatalMsg, wantHeldAtFatal, elapsed, cleanupBound)
-		case <-time.After(cleanupBound):
-			// Ensure CI never hangs even when the regression test fails because cleanup was broken.
-			b.releaseAll()
-			srv.Close()
-			t.Fatalf("LIFO barrier cleanup + srv.Close exceeded %s bound (diagnostic=%q)", cleanupBound, fatalMsg)
+			tb.Logf("diagnostic=%q goexited=true held_at_fatal=%d cleanup_elapsed=%s bound=%s",
+				fatalMsg, wantHeldAtFatal, elapsed, caseCleanupBound)
+		case <-time.After(caseCleanupBound):
+			// Independent emergency abort: does NOT call b.releaseAll() or synchronous srv.Close().
+			emergencyAbortBarrierProbe(tb, "cleanup_timeout", cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
+			tb.Fatalf("LIFO barrier cleanup + srv.Close exceeded %s bound (diagnostic=%q)", caseCleanupBound, fatalMsg)
 		}
 	}
 
 	t.Run("missing_same_user_waiter", func(t *testing.T) {
 		runFixedFailureCase(
 			t,
+			cleanupBound,
+			attachBarrierServer,
 			1,
 			"expected User A tx 2 to wait on ungranted advisory lock in pg_locks",
-			func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+			func(reqCtx context.Context, ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
 				b.serialBarrierActive.Store(true)
-				startBarrierProbeRequest(srv, "/serial/a", reqWG)
+				startBarrierProbeRequest(reqCtx, srv, "/serial/a", reqWG)
 				select {
 				case <-b.userAEntered:
 				case <-time.After(cleanupBound):
@@ -1337,13 +1409,15 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 	t.Run("missing_cross_user_notification", func(t *testing.T) {
 		runFixedFailureCase(
 			t,
+			cleanupBound,
+			attachBarrierServer,
 			2,
 			"User B transaction was blocked by User A LockUserContent",
-			func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+			func(reqCtx context.Context, ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
 				b.serialBarrierActive.Store(true)
 				b.withholdUserBNotify.Store(true)
-				startBarrierProbeRequest(srv, "/serial/a", reqWG)
-				startBarrierProbeRequest(srv, "/serial/b", reqWG)
+				startBarrierProbeRequest(reqCtx, srv, "/serial/a", reqWG)
+				startBarrierProbeRequest(reqCtx, srv, "/serial/b", reqWG)
 				select {
 				case <-b.userAEntered:
 				case <-time.After(cleanupBound):
@@ -1365,12 +1439,14 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 	t.Run("missing_deadlock_participant", func(t *testing.T) {
 		runFixedFailureCase(
 			t,
+			cleanupBound,
+			attachBarrierServer,
 			1,
 			"timed out waiting for deadlock participant 2 to acquire first lock",
-			func(ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+			func(reqCtx context.Context, ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
 				b.deadlockBarrierActive.Store(true)
 				// Start only participant 1; intentionally omit participant 2.
-				startBarrierProbeRequest(srv, "/deadlock", reqWG)
+				startBarrierProbeRequest(reqCtx, srv, "/deadlock", reqWG)
 				b.awaitDeadlockParticipants(ft, injectWaitTimeout)
 			},
 		)
@@ -1387,13 +1463,21 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		srv := newBarrierProbeServer(b, &activeHandlers)
 		registerBroken(ft, b, srv)
 
+		reqCtx, cancelReqCtx := context.WithCancel(context.Background())
+		defer cancelReqCtx()
+
 		var reqWG sync.WaitGroup
 		bodyDone := make(chan struct{})
 		go func() {
 			defer close(bodyDone)
 			b.serialBarrierActive.Store(true)
-			startBarrierProbeRequest(srv, "/serial/a", &reqWG)
-			<-b.userAEntered
+			startBarrierProbeRequest(reqCtx, srv, "/serial/a", &reqWG)
+			select {
+			case <-b.userAEntered:
+			case <-time.After(cleanupBound):
+				t.Error("timed out waiting for User A probe handler to enter barrier")
+				return
+			}
 			b.awaitAdvisoryLockWaiter(ft, injectWaitTimeout, pollInterval, func() bool {
 				return false
 			})
@@ -1402,14 +1486,12 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		select {
 		case <-bodyDone:
 		case <-time.After(cleanupBound):
-			b.releaseAll()
-			srv.Close()
+			emergencyAbortBarrierProbe(t, mode+"_scenario_timeout", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			t.Fatalf("%s: scenario goroutine did not exit via Fatal within %s", mode, cleanupBound)
 		}
 
 		if held := activeHandlers.Load(); held != 1 {
-			b.releaseAll()
-			srv.Close()
+			emergencyAbortBarrierProbe(t, mode+"_unexpected_held", cancelReqCtx, srv, &reqWG, &activeHandlers, nil, abortBound)
 			t.Fatalf("%s: active held handlers at Fatal = %d, want 1", mode, held)
 		}
 
@@ -1425,22 +1507,15 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 		case elapsed := <-cleanupDone:
 			t.Fatalf("%s: expected srv.Close to remain blocked past %s, but finished in %s", mode, negativeHangBound, elapsed)
 		case <-time.After(negativeHangBound):
-			// Confirmed that omitting cleanup or registering it in wrong LIFO order hangs srv.Close past negativeHangBound.
+			// Confirmed that broken cleanup leaves srv.Close blocked past negativeHangBound.
 			if held := activeHandlers.Load(); held != 1 {
-				b.releaseAll()
-				srv.Close()
+				emergencyAbortBarrierProbe(t, mode+"_held_changed", cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
 				t.Fatalf("%s: expected handler to still be held at %s, got active=%d", mode, negativeHangBound, held)
 			}
-			recoverStart := time.Now()
-			b.releaseAll()
-			select {
-			case <-cleanupDone:
-				t.Logf("mode=%s confirmed_hang_past=%s recovered_after_force_release=%s",
-					mode, negativeHangBound, time.Since(recoverStart))
-			case <-time.After(cleanupBound):
-				srv.Close()
-				t.Fatalf("%s: failed to recover srv.Close within %s after force release", mode, cleanupBound)
-			}
+			abortStart := time.Now()
+			emergencyAbortBarrierProbe(t, mode+"_independent_abort", cancelReqCtx, srv, &reqWG, &activeHandlers, cleanupDone, abortBound)
+			t.Logf("mode=%s confirmed_hang_past=%s recovered_via_independent_abort=%s active_after=%d",
+				mode, negativeHangBound, time.Since(abortStart), activeHandlers.Load())
 		}
 	}
 
@@ -1457,5 +1532,55 @@ func TestContentBarrierCleanupFailurePaths(t *testing.T) {
 			registerBarrierRelease(ft, b)
 			ft.Cleanup(srv.Close)
 		})
+	})
+
+	t.Run("ineffective_release_cleanup_aborts_bounded", func(t *testing.T) {
+		// Exercise runFixedFailureCase with a deliberately ineffective barrier-release substitute (a no-op cleanup
+		// in place of b.releaseAll) and assert that the outer probe TB records a bounded Fatal via the independent
+		// emergency abort and finishes within the bound with zero held handlers/requests/server goroutines.
+		outerFT := &fakeBarrierTB{TB: t}
+		done := make(chan time.Duration, 1)
+		start := time.Now()
+		go func() {
+			defer func() {
+				done <- time.Since(start)
+			}()
+			runFixedFailureCase(
+				outerFT,
+				negativeHangBound,
+				func(tb testing.TB, _ *barrierController, startServer func(tb testing.TB)) {
+					startServer(tb)
+					// Deliberately ineffective releaseAll substitute: does nothing, leaving the barrier held.
+					tb.Cleanup(func() {})
+				},
+				1,
+				"expected User A tx 2 to wait on ungranted advisory lock in pg_locks",
+				func(reqCtx context.Context, ft *fakeBarrierTB, b *barrierController, srv *httptest.Server, reqWG *sync.WaitGroup) {
+					b.serialBarrierActive.Store(true)
+					startBarrierProbeRequest(reqCtx, srv, "/serial/a", reqWG)
+					select {
+					case <-b.userAEntered:
+					case <-time.After(cleanupBound):
+						t.Error("timed out waiting for User A probe handler to enter barrier")
+						return
+					}
+					b.awaitAdvisoryLockWaiter(ft, injectWaitTimeout, pollInterval, func() bool {
+						return false
+					})
+				},
+			)
+		}()
+
+		var elapsed time.Duration
+		select {
+		case elapsed = <-done:
+		case <-time.After(cleanupBound):
+			t.Fatalf("ineffective_release_cleanup: probe did not finish within %s bound", cleanupBound)
+		}
+		failed, fatalMsg := outerFT.status()
+		if !failed || !strings.Contains(fatalMsg, "LIFO barrier cleanup + srv.Close exceeded") {
+			t.Fatalf("ineffective_release_cleanup: expected bounded cleanup timeout Fatal, got failed=%v msg=%q", failed, fatalMsg)
+		}
+		t.Logf("mode=ineffective_release_cleanup fatal=%q elapsed=%s bound=%s", fatalMsg, elapsed, cleanupBound)
 	})
 }
