@@ -294,6 +294,15 @@ test.describe('P04-T16 Unlocked JSON card U13 visual captures (CI artifacts only
         );
         await expect(importDialog.getByTestId('import-json-submit-btn')).toBeDisabled();
 
+        if (viewport.width === 390) {
+          const cancelBox = await importDialog.getByTestId('import-json-cancel-btn').boundingBox();
+          const submitBox = await importDialog.getByTestId('import-json-submit-btn').boundingBox();
+          expect(cancelBox).not.toBeNull();
+          expect(submitBox).not.toBeNull();
+          expect(cancelBox!.y + cancelBox!.height).toBeLessThanOrEqual(viewport.height);
+          expect(submitBox!.y + submitBox!.height).toBeLessThanOrEqual(viewport.height);
+        }
+
         await captureContentItemImport(page, testInfo, 'invalid', theme, viewport.width);
       });
     }

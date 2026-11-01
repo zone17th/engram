@@ -111,12 +111,14 @@ test.describe('P04-T17 Import JSON U14 real-browser clipboard paste & import flo
     await page.keyboard.press('ControlOrMeta+V');
     const observation = await pasteObservationPromise;
 
-    // Record whether CR survived in Chromium's paste event into Playwright annotations (plan §2.10 rule 3, Task 17)
+    // Record whether CR survived in Chromium's paste event into Playwright annotations and CI stdout (plan §2.10 rule 3, Task 17, IP17-R1-6)
+    console.log(
+      `[T17 chromium paste CR] crSurvivedInClipboardData=${String(observation.crSurvivedInClipboardData)}`,
+    );
     testInfo.annotations.push({
       type: 'chromium-paste-cr-observation',
       description: `crSurvivedInClipboardData=${String(observation.crSurvivedInClipboardData)} byteLength=${observation.rawClipboardData.length}`,
     });
-
     // Verify table preview renders the pasted JSON and submit button is enabled
     await expect(dialog.getByRole('treegrid')).toBeVisible({ timeout: UI_WAIT_MS });
     const submitBtn = dialog.getByTestId('import-json-submit-btn');
@@ -135,6 +137,10 @@ test.describe('P04-T17 Import JSON U14 real-browser clipboard paste & import flo
     expect(sent.type).toBe('json');
     expect(sent.source).toBe('paste');
     expect(typeof sent.ciphertext).toBe('string');
+    expect(capturedImportRequests[0]!.url).not.toContain('5432');
+    expect(capturedImportRequests[0]!.url).not.toContain('line');
     expect(capturedImportRequests[0]!.rawBody).not.toContain('5432');
+    expect(capturedImportRequests[0]!.rawBody).not.toContain('"line"');
+    expect(capturedImportRequests[0]!.rawBody).not.toContain('"port"');
   });
 });
