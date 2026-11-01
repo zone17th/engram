@@ -6,11 +6,15 @@ import { Segmented } from '@/components/ui/segmented';
 
 type Row = { path: string; key: string; value: string | null; valueClass: string; depth: number };
 
-/** Lớp màu theo kiểu giá trị, dùng các rule `.json-table .v-*` của tokens.css (như mockup). */
+/**
+ * Lớp màu theo kiểu giá trị, dùng các rule `.json-table .v-*` của tokens.css (như mockup).
+ * Riêng boolean dùng `--success-ink` thay cho `.v-bool` (`--product-teal` chỉ ~3.1:1 trên card
+ * sáng, trượt axe wcag2aa: RV-UI2-1). Cần `!` vì `.json-table td { color }` mạnh hơn một class.
+ */
 function valueClassOf(value: unknown): string {
   if (value === null) return 'mono v-null';
   if (typeof value === 'number') return 'mono v-num';
-  if (typeof value === 'boolean') return 'mono v-bool';
+  if (typeof value === 'boolean') return 'mono !text-[color:var(--success-ink)]';
   return 'mono';
 }
 
