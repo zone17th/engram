@@ -934,11 +934,11 @@ export function ItemDetailPage({
                 id="btn-add-text"
                 data-testid="btn-add-text"
                 className="btn btn-primary btn-sm"
-                disabled={atEntryLimit || !unlocked}
+                disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
                 onClick={() => {
-                  if (atEntryLimit || !unlocked) return;
+                  if (atEntryLimit || !unlocked || !entriesQuery.isSuccess) return;
                   setCreatingText(true);
                 }}
               >
@@ -990,6 +990,35 @@ export function ItemDetailPage({
                   />
                 ) : null}
 
+
+                {entriesQuery.isError ? (
+                  <div
+                    className="card card-error p-6"
+                    role="alert"
+                    data-testid="item-entries-load-error"
+                  >
+                    <h2 className="t-title-sm mb-2 text-ink">{tItem('loadErrorTitle')}</h2>
+                    <p className="t-body mb-4 text-muted">
+                      {translateContentError(
+                        classifyContentMutationError(entriesQuery.error).i18nKey,
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      data-testid="item-entries-retry-btn"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        void entriesQuery.refetch();
+                      }}
+                    >
+                      {tItem('retry')}
+                    </button>
+                  </div>
+                ) : entriesQuery.isPending && orderedEntries.length === 0 ? (
+                  <div className="card p-6" role="status" data-testid="item-entries-loading">
+                    <p className="t-body m-0 text-muted">{tItem('loading')}</p>
+                  </div>
+                ) : null}
                 {orderedEntries.length === 0 && !creatingText && entriesQuery.isSuccess ? (
                   <div className="card p-6 text-center" data-testid="item-entries-empty">
                     <h2 className="t-title-sm mb-2 text-ink">{tItem('emptyTitle')}</h2>

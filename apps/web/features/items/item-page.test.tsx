@@ -2270,4 +2270,51 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(screen.getByTestId('entry-body')).toHaveTextContent('Recovered body text');
     });
   });
+
+  it('IP15-BE1-10: renders localized error + Retry (not empty state) when GET item entries fails, disables + Text and reorder until metadata succeeds, then renders cards in order on Retry', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [
+        { id: ENTRY_ID_2, text: 'Second entry at pos 1', position: 1 },
+        { id: ENTRY_ID_1, text: 'First entry at pos 0', position: 0 },
+      ],
+    });
+
+    let failEntriesList = true;
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes(`/items/${ITEM_ID}/entries`) && method === 'GET' && failEntriesList) {
+        return problemResponse('dependency_unavailable', 503);
+      }
+      return null;
+    });
+
+    // Force entries query to re-run from scratch and fail while item query succeeds
+    act(() => {
+      h.qc.removeQueries({ queryKey: ['content', 'entries', ITEM_ID] });
+      h.rerenderPage();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-entries-load-error')).toBeInTheDocument();
+    });
+
+    const errCard = screen.getByTestId('item-entries-load-error');
+    expect(errCard).toHaveTextContent(viMessages.content.item.loadErrorTitle);
+    expect(errCard).toHaveTextContent(viMessages.content.errors.dependency_unavailable);
+    expect(screen.queryByTestId('item-entries-empty')).toBeNull();
+    expect(screen.getByTestId('btn-add-text')).toBeDisabled();
+
+    // Click Retry -> entries list succeeds and renders cards in position order; + Text is enabled
+    failEntriesList = false;
+    fireEvent.click(screen.getByTestId('item-entries-retry-btn'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('item-entries-load-error')).toBeNull();
+      const cards = screen
+        .getAllByTestId(/^entry-card-/)
+        .map((el) => el.getAttribute('data-entry-card'));
+      expect(cards).toEqual([ENTRY_ID_1, ENTRY_ID_2]);
+    });
+    expect(screen.getByTestId('btn-add-text')).not.toBeDisabled();
+  });
 });
