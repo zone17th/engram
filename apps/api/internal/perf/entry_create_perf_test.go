@@ -1072,6 +1072,17 @@ func runPopulation1Sequential(
 		}
 	}
 
+	// Read the expected position for req[0] from the DB before executing the request, matching
+	// InsertEntry's exact rule (`COALESCE(MAX(position) + 1, 0)` over all rows of the item).
+	var expectedPos0 int32
+	if err := h.Pool.QueryRow(context.Background(), `
+		SELECT COALESCE(MAX(position) + 1, 0)::int
+		FROM entry
+		WHERE user_id = $1 AND item_id = $2
+	`, user.UserID, item199ID).Scan(&expectedPos0); err != nil {
+		t.Fatalf("Population 1 query expected position for 199-entry item: %v", err)
+	}
+
 	// Request 0 goes into the 199-entry item (must succeed with 201 and reach 200 live entries).
 	path199 := "/api/v1/items/" + item199ID.String() + "/entries"
 	code0, raw0, dur0 := h.doServeHTTP(context.Background(), user.Jar, http.MethodPost, path199, reqs[0].BodyJSON, reqs[0].IdemKey)
@@ -1083,9 +1094,9 @@ func runPopulation1Sequential(
 		t.Fatalf("Population 1 req[0] decode EntryMeta (%s): %v", raw0, err)
 	}
 	if createdMeta0.ID != reqs[0].EntryID || createdMeta0.ItemID != item199ID.String() ||
-		createdMeta0.Type != entry.TypeText || createdMeta0.Position != 199 ||
+		createdMeta0.Type != entry.TypeText || createdMeta0.Position != expectedPos0 ||
 		createdMeta0.Version != 1 || createdMeta0.PlaintextLenBucket != reqs[0].Bucket {
-		t.Fatalf("Population 1 req[0] unexpected EntryMeta = %+v", createdMeta0)
+		t.Fatalf("Population 1 req[0] unexpected EntryMeta = %+v (want position=%d)", createdMeta0, expectedPos0)
 	}
 	status201++
 	latencies = append(latencies, dur0)
@@ -1723,9 +1734,15 @@ func prepareItemAt199Entries(t *testing.T, pool *pgxpool.Pool, user perfUser, it
 	t.Helper()
 	ctx := context.Background()
 
-	var currentCount int
-	if err := pool.QueryRow(ctx, `SELECT entry_count FROM item WHERE id = $1 AND user_id = $2`, itemID, user.UserID).Scan(&currentCount); err != nil {
-		t.Fatalf("read item entry_count: %v", err)
+	var currentCount, maxPos int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			i.entry_count,
+			COALESCE((SELECT MAX(e.position) FROM entry AS e WHERE e.user_id = i.user_id AND e.item_id = i.id), -1)::int
+		FROM item AS i
+		WHERE i.id = $1 AND i.user_id = $2
+	`, itemID, user.UserID).Scan(&currentCount, &maxPos); err != nil {
+		t.Fatalf("read item entry_count and max position: %v", err)
 	}
 	needed := seedNearFullEntries - currentCount
 	if needed <= 0 {
@@ -1766,7 +1783,7 @@ func prepareItemAt199Entries(t *testing.T, pool *pgxpool.Pool, user perfUser, it
 			1024,
 			1
 		FROM generate_series(1, $5::int) AS g
-	`, user.UserID, itemID, currentCount+10, string(envRaw), needed)
+	`, user.UserID, itemID, maxPos, string(envRaw), needed)
 	if err != nil {
 		t.Fatalf("top up item to 199 entries: %v", err)
 	}
