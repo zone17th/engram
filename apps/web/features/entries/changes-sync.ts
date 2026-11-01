@@ -659,8 +659,15 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
   } | null>(null);
 
   useEffect(() => {
-    if (!isAuthenticated || !userId) {
+    if (sessionStatus === 'signed_out') {
       lastSeenVaultByUserRef.current = null;
+      return;
+    }
+    if (!isAuthenticated || !userId) {
+      // Preserve lastSeenVaultByUserRef across transient non-authenticated states
+      // (e.g. sessionStatus === 'loading' when remote session_changed bumps sessionEpoch
+      // or 'unavailable' during a transient /auth/me failure) so the remembered
+      // lastNonNullVaultKeyId is not lost when the same user remains signed in.
       return;
     }
 
@@ -706,6 +713,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     isAuthenticated,
     queryClient,
     serverVaultStatus,
+    sessionStatus,
     userId,
     vaultKeyId,
     vaultMeta,

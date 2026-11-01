@@ -91,6 +91,7 @@ const PASSPHRASE = 'task20-changes-sync-passphrase-1';
 const KEY_ID_1 = 'vk:7f3a91c4e0b2d8a1f5c309';
 const KEY_ID_2 = 'vk:99887766554433221100aa';
 const KEY_ID_3 = 'vk:11223344556677889900bb';
+const KEY_ID_4 = 'vk:55667788990011223344dd';
 const ITEM_ID = '11111111-1111-4111-8111-111111111111';
 const ENTRY_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ENTRY_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -1362,13 +1363,20 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
 
     // 2a-bis. After vault became absent (vaultMeta === null, serverVaultStatus === 'absent'), a replacement vault
-    //         KEY_ID_2 appears (e.g. null -> KEY_ID_2 transition after intermediate absent/null state): remembered
-    //         lastNonNullVaultKeyId was never overwritten with null, so seeing KEY_ID_2 !== KEY_ID_3 purges again.
+    //         KEY_ID_4 appears (e.g. null -> KEY_ID_4 transition after intermediate absent/null state, including across
+    //         a transient non-authenticated sessionStatus === 'loading' when remote session_changed bumps sessionEpoch):
+    //         remembered lastNonNullVaultKeyId was never overwritten with null or cleared by the transient status,
+    //         so seeing KEY_ID_4 !== KEY_ID_3 purges again.
     h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
     await h.refetchMeSession();
     populateCachesAndSyncState();
     h.setCurrentMe(makeMe(USER_A_ID, 'present'));
-    h.setActiveVaultKeyId(KEY_ID_2);
+    h.setActiveVaultKeyId(KEY_ID_4);
+    await act(async () => {
+      const sender = new BroadcastChannel('sabk.auth.session');
+      sender.postMessage({ type: 'session_changed' });
+      sender.close();
+    });
     await h.refetchMeSession();
     await act(async () => {
       await h.vault().reloadVaultMeta();
