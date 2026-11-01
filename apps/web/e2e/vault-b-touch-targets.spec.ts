@@ -10,9 +10,9 @@ import { UI_WAIT_MS, installApiMocks, unlockFromBanner } from './vault-locked-su
  *    theme toggle, Sign out button) has an effective hit box >= 44x44 px (both via bounding box +
  *    `::after` / `::before` pseudo-element geometry and via `document.elementFromPoint` probes near
  *    the 44x44 box edges), with no neighbour hit-box overlap that steals taps.
- * 2. In a default fine-pointer (`(pointer: fine)`) context, visible bounding boxes are unchanged
- *    from pre-FU3 CSS sizes (38px height on `.btn-tertiary` / `.btn-icon` / mobile pill, 33.5px on
- *    desktop `.vault-pill`, 28px on logo).
+ * 2. In a default fine-pointer (`(pointer: fine)`) context, visible bounding boxes on 1440x900
+ *    and 390x844 are completely unchanged by `.touch-target` (equal before and after removing
+ *    `.touch-target` on the same page, with `::after` content `'none'`).
  */
 
 interface MeasuredControl {
@@ -76,9 +76,11 @@ async function measureHeaderControls(page: Page, selectors: ReadonlyArray<{ name
 
       const cx = (left + right) / 2;
       const cy = (top + bottom) / 2;
-      // Probe 1px inside the 44x44 effective box edges around the control center
-      const halfW = Math.max(22, width / 2) - 1;
-      const halfH = Math.max(22, height / 2) - 1;
+      // Probe 1.5px inside the 44x44 effective box edges around the control center so subpixel
+      // flex centering (e.g. cy = 33.5 -> y = 54.5 rounding to y = 55) stays strictly inside the
+      // control's 44px box [12..56] instead of landing on the bottom border pixel.
+      const halfW = Math.max(22, width / 2) - 1.5;
+      const halfH = Math.max(22, height / 2) - 1.5;
 
       return {
         name,
@@ -202,39 +204,106 @@ test.describe('FU3 UI-TOUCH-44 header and primary control touch targets', () => 
       await expect(page).toHaveURL(/\/app$/, { timeout: UI_WAIT_MS });
       await expect(page.getByTestId('vault-lock-button')).toBeVisible({ timeout: UI_WAIT_MS });
 
-      const desktopBoxes = await page.evaluate(() => {
-        const q = (sel: string) => {
-          const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
-          return { width: Math.round(r.width * 10) / 10, height: Math.round(r.height * 10) / 10 };
+      const desktopComparison = await page.evaluate(() => {
+        const selectors = {
+          logo: 'header a[href="/app"]',
+          vaultLock: '[data-testid="vault-lock-button"]',
+          vaultPill: '[data-testid="vault-lock-button"] .vault-pill',
+          settings: 'header a[href="/app/settings"]',
+          themeToggle: 'header button.btn-icon',
+          signOut: 'header div.ml-auto > button.btn-tertiary:not(.btn-icon)',
+        } as const;
+
+        const measureAll = () => {
+          const out: Record<string, { x: number; y: number; width: number; height: number }> = {};
+          for (const [key, sel] of Object.entries(selectors)) {
+            const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
+            out[key] = { x: r.x, y: r.y, width: r.width, height: r.height };
+          }
+          return out;
         };
-        const logoEl = document.querySelector<HTMLElement>('header a[href="/app"]')!;
-        const afterContent = window.getComputedStyle(logoEl, '::after').content;
+
+        const afterContents: Record<string, string> = {};
+        for (const [key, sel] of Object.entries(selectors)) {
+          const el = document.querySelector<HTMLElement>(sel)!;
+          afterContents[key] = window.getComputedStyle(el, '::after').content;
+        }
+
+        const withTouchTarget = measureAll();
+        const touchedNodes = Array.from(document.querySelectorAll<HTMLElement>('.touch-target'));
+        for (const node of touchedNodes) {
+          node.classList.remove('touch-target');
+        }
+        const withoutTouchTarget = measureAll();
+        for (const node of touchedNodes) {
+          node.classList.add('touch-target');
+        }
+
         return {
-          afterContent,
-          logo: q('header a[href="/app"]'),
-          vaultLock: q('[data-testid="vault-lock-button"]'),
-          vaultPill: q('[data-testid="vault-lock-button"] .vault-pill'),
-          settings: q('header a[href="/app/settings"]'),
-          themeToggle: q('header button.btn-icon'),
-          signOut: q('header div.ml-auto > button.btn-tertiary:not(.btn-icon)'),
+          afterContents,
+          touchedCount: touchedNodes.length,
+          withTouchTarget,
+          withoutTouchTarget,
         };
       });
 
-      // Under fine pointer, .touch-target::after is not generated and heights stay at desktop values (38px buttons, 28px logo, < 38px pill)
-      expect(desktopBoxes.afterContent).toBe('none');
-      expect(desktopBoxes.logo.height).toBe(28);
-      expect(desktopBoxes.vaultLock.height).toBeLessThan(38);
-      expect(desktopBoxes.vaultPill.height).toBeLessThan(38);
-      expect(desktopBoxes.settings.height).toBe(38);
-      expect(desktopBoxes.themeToggle.height).toBe(38);
-      expect(desktopBoxes.signOut.height).toBe(38);
+      // Under fine pointer, .touch-target::after is not generated and every header control's box is identical with or without .touch-target
+      expect(desktopComparison.touchedCount).toBeGreaterThan(0);
+      for (const [key, content] of Object.entries(desktopComparison.afterContents)) {
+        expect(content, `${key} ::after content at 1440 fine pointer`).toBe('none');
+      }
+      expect(desktopComparison.withTouchTarget).toEqual(desktopComparison.withoutTouchTarget);
 
-      // At 390x844 under fine pointer (e.g. desktop mobile-390 Playwright project), mobile lock button stays 38x38
+      // At 390x844 under fine pointer (e.g. desktop mobile-390 Playwright project), all visible header controls also match with vs without .touch-target
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(page.getByTestId('vault-lock-button-mobile')).toBeVisible({ timeout: UI_WAIT_MS });
-      const mobileFineBox = await page.getByTestId('vault-lock-button-mobile').boundingBox();
-      expect(mobileFineBox?.width).toBe(38);
-      expect(mobileFineBox?.height).toBe(38);
+      const mobileFineComparison = await page.evaluate(() => {
+        const selectors = {
+          logo: 'header a[href="/app"]',
+          vaultLockMobile: '[data-testid="vault-lock-button-mobile"]',
+          settings: 'header a[href="/app/settings"]',
+          themeToggle: 'header button.btn-icon',
+          signOut: 'header div.ml-auto > button.btn-tertiary:not(.btn-icon)',
+        } as const;
+
+        const measureAll = () => {
+          const out: Record<string, { x: number; y: number; width: number; height: number }> = {};
+          for (const [key, sel] of Object.entries(selectors)) {
+            const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
+            out[key] = { x: r.x, y: r.y, width: r.width, height: r.height };
+          }
+          return out;
+        };
+
+        const afterContents: Record<string, string> = {};
+        for (const [key, sel] of Object.entries(selectors)) {
+          const el = document.querySelector<HTMLElement>(sel)!;
+          afterContents[key] = window.getComputedStyle(el, '::after').content;
+        }
+
+        const withTouchTarget = measureAll();
+        const touchedNodes = Array.from(document.querySelectorAll<HTMLElement>('.touch-target'));
+        for (const node of touchedNodes) {
+          node.classList.remove('touch-target');
+        }
+        const withoutTouchTarget = measureAll();
+        for (const node of touchedNodes) {
+          node.classList.add('touch-target');
+        }
+
+        return {
+          afterContents,
+          touchedCount: touchedNodes.length,
+          withTouchTarget,
+          withoutTouchTarget,
+        };
+      });
+
+      expect(mobileFineComparison.touchedCount).toBeGreaterThan(0);
+      for (const [key, content] of Object.entries(mobileFineComparison.afterContents)) {
+        expect(content, `${key} ::after content at 390 fine pointer`).toBe('none');
+      }
+      expect(mobileFineComparison.withTouchTarget).toEqual(mobileFineComparison.withoutTouchTarget);
     } finally {
       await context.close();
     }
