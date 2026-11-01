@@ -702,7 +702,7 @@ export function UndoToastCard({
       <div className="flex flex-col gap-0.5">
         <span>{item.message}</span>
         {item.detail ? (
-          <span className="text-[12px] text-[#A3A3A3]" data-testid="undo-toast-detail">
+          <span className="toast-sub" data-testid="undo-toast-detail">
             {item.detail}
           </span>
         ) : null}
