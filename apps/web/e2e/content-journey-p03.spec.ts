@@ -272,7 +272,11 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         await page.getByTestId('vault-lock-button').click();
         await expectVaultShut(page);
         await expect(draftTextarea).toHaveCount(0);
-        await expect(page.locator('textarea')).toHaveCount(0);
+        // The omnibox textarea stays mounted while locked; it must be empty. Every other textarea (editors) must be gone.
+        await expect(page.locator('textarea:not([data-omnibox-input])')).toHaveCount(0);
+        expect(
+          await page.locator('textarea[data-omnibox-input]').evaluateAll((els) => els.every((el) => (el as HTMLTextAreaElement).value === '')),
+        ).toBe(true);
         await expect(page.getByTestId('entry-body')).toHaveCount(0);
         await expectNoDomOrStorageBodyLeaks(page, labeledSecrets);
         monitor.assertNoLeaks();

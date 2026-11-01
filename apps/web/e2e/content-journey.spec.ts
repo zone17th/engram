@@ -545,7 +545,11 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expect(draftTextarea).toHaveCount(0);
-        await expect(pageB.locator('textarea')).toHaveCount(0);
+        // The omnibox textarea stays mounted while locked; it must be empty. Every other textarea (editors) must be gone.
+        await expect(pageB.locator('textarea:not([data-omnibox-input])')).toHaveCount(0);
+        expect(
+          await pageB.locator('textarea[data-omnibox-input]').evaluateAll((els) => els.every((el) => (el as HTMLTextAreaElement).value === '')),
+        ).toBe(true);
         await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
         await expect(pageB.getByTestId('entry-body-locked')).toHaveCount(3);
 
