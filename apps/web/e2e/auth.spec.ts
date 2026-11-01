@@ -296,22 +296,26 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
 
   test('legal pages /terms and /privacy render in en and vi with working anchor navigation', async ({ page }) => {
     await page.goto('/terms');
-    await expect(page.getByRole('heading', { name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'Terms of Service' })).toBeVisible();
     await expect(page.locator('#terms')).toBeVisible();
     await expect(page.locator('#privacy')).toBeVisible();
     await expect(page.locator('#contact')).toBeVisible();
     await expect(page.locator('body')).not.toContainText('Điều khoản sử dụng');
 
     await page.goto('/privacy#contact');
-    await expect(page.getByRole('heading', { name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'Privacy Policy & End-to-End Scope' })).toBeVisible();
     await expect(page.locator('#contact')).toBeVisible();
 
     await page.goto('/vi/terms');
-    await expect(page.getByRole('heading', { name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'Điều khoản sử dụng' })).toBeVisible();
     await expect(page.locator('#terms')).toBeVisible();
 
     await page.goto('/vi/privacy#contact');
-    await expect(page.getByRole('heading', { name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'Chính sách quyền riêng tư & Phạm vi mã hoá đầu-cuối' })).toBeVisible();
     await expect(page.locator('#contact')).toBeVisible();
   });
 

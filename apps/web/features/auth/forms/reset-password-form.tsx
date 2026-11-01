@@ -51,6 +51,7 @@ export function ResetPasswordForm() {
   const [token, setToken] = useState<string | null>(null);
   const [fragmentHandled, setFragmentHandled] = useState(false);
   const [tokenInvalidatedByServer, setTokenInvalidatedByServer] = useState(false);
+  const [completed, setCompleted] = useState(false);
 
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -124,10 +125,19 @@ export function ResetPasswordForm() {
             throw firstErr;
           }
         }
+        setCompleted(true);
         setToken(null);
+        setNewPassword('');
+        setConfirmPassword('');
         postSessionBroadcast({ type: 'signed_out', reason: 'logout' });
         try {
-          await bootstrapCsrf();
+          const timeout = Promise.withResolvers<void>();
+          const timer = setTimeout(timeout.resolve, 1500);
+          try {
+            await Promise.race([bootstrapCsrf(), timeout.promise]);
+          } finally {
+            clearTimeout(timer);
+          }
         } catch {
           // Next document load runs bootstrapCsrf in SessionProvider; never block navigation (AU2-FE3-4).
         }
@@ -201,13 +211,13 @@ export function ResetPasswordForm() {
       <h1 className="t-title-lg mb-2">{t('reset.title')}</h1>
       <p className="t-body-lg mb-6 text-muted">{t('reset.subtitle')}</p>
 
-      {!fragmentHandled && (
-        <div className="card mb-4 p-6">
-          <AuthStatus tone="loading">{t('guard.loading')}</AuthStatus>
+      {(!fragmentHandled || completed) && (
+        <div className="card mb-4 p-6" data-testid={completed ? 'reset-completed-redirecting' : undefined}>
+          <AuthStatus tone="loading">{completed ? t('reset.submitting') : t('guard.loading')}</AuthStatus>
         </div>
       )}
 
-      {fragmentHandled && token === null && (
+      {fragmentHandled && !completed && token === null && (
         <div
           className="card mb-4 border-error p-5"
           id="forgot-invalid"

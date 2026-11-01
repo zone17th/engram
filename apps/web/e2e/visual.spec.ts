@@ -1,9 +1,8 @@
-import { expect, test, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
-import { fillSecret } from './helpers';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { expectSignedIn, patchSettingsViaPage } from './helpers';
+import { expect, test, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
+import { expectSignedIn, fillSecret, patchSettingsViaPage } from './helpers';
 
 const THEMES = ['light', 'dark'] as const;
 const LOCALES = ['en', 'vi'] as const;

@@ -263,7 +263,7 @@
       }
     },
     "strength": {
-      "label": "Độ mạnh mật khẩu",
+      "label": "Độ mạnh mật khẩu (gợi ý)",
       "localNote": "Kiểm tra ngay trên thiết bị này, không gửi gì đi.",
       "level0": "Chưa nhập",
       "level1": "Quá ngắn / Yếu",
@@ -318,7 +318,6 @@
       "subtitle": "Xong bước này bạn sẽ đặt passphrase mã hoá vault và nhận 10 recovery key.",
       "passphraseNoteStrong": "Mật khẩu tài khoản không phải là passphrase của vault.",
       "passphraseNoteBody": "Passphrase sẽ được đặt ở bước kế tiếp và mới là khoá bảo vệ nội dung entry.",
-      "terms": "Tôi đồng ý với điều khoản và cách dữ liệu được xử lý.",
       "termsPrefix": "Tôi đồng ý với ",
       "termsLink": "Điều khoản sử dụng",
       "termsMiddle": " và ",
@@ -329,7 +328,7 @@
       "submitting": "Đang tạo tài khoản…",
       "haveAccount": "Đã có tài khoản?",
       "signInLink": "Đăng nhập",
-      "privacyNote": "Chúng tôi không đọc được nội dung bạn lưu. Quên mọi đường mở khoá thì chúng tôi cũng không khôi phục giúp được."
+      "privacyNote": "Chúng tôi không đọc được nội dung các entry của bạn. Nếu bạn mất toàn bộ các đường mở khoá, chúng tôi không thể khôi phục giúp bạn."
     },
     "forgot": {
       "title": "Quên mật khẩu đăng nhập",

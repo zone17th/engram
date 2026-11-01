@@ -40,14 +40,11 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
   },
   ref,
 ) {
-  let defaultToggleLabels = { show: 'Hiện', hide: 'Ẩn' };
-  try {
-    const t = useTranslations('auth.fields');
-    defaultToggleLabels = { show: t('showPassword'), hide: t('hidePassword') };
-  } catch {
-    // Outside NextIntlClientProvider (e.g. standalone unit tests), keep the Vietnamese fallback.
-  }
-  const resolvedToggleLabels = passwordToggleLabels ?? defaultToggleLabels;
+  const t = useTranslations('auth.fields');
+  const resolvedToggleLabels = passwordToggleLabels ?? {
+    show: t('showPassword'),
+    hide: t('hidePassword'),
+  };
   const autoId = useId();
   const inputId = idProp ?? autoId;
   const hintId = hint ? `${inputId}-hint` : undefined;

@@ -16,7 +16,7 @@ export async function generateMetadata({
   setRequestLocale(locale);
   const t = await getTranslations({ locale, namespace: 'legal' });
   return {
-    title: `${t('privacy.heading')} — engram`,
+    title: `${t('privacy.heading')} · ${t('title')} — engram`,
   };
 }
 

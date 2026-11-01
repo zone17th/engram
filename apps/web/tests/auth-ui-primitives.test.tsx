@@ -25,12 +25,14 @@ import { Switch } from '../components/ui/switch';
 describe('Field', () => {
   it('nối label, hint và error qua id/aria', () => {
     render(
-      <Field
-        label="Email"
-        hint="Dùng email đăng nhập"
-        error="Email không hợp lệ"
-        defaultValue="bad"
-      />,
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field
+          label="Email"
+          hint="Dùng email đăng nhập"
+          error="Email không hợp lệ"
+          defaultValue="bad"
+        />
+      </NextIntlClientProvider>,
     );
     const input = screen.getByLabelText('Email');
     expect(input).toHaveAttribute('aria-invalid', 'true');
@@ -39,7 +41,11 @@ describe('Field', () => {
   });
 
   it('email/password giữ autocomplete và không chặn paste', () => {
-    render(<Field label="Mật khẩu" type="password" autoComplete="current-password" />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field label="Mật khẩu" type="password" autoComplete="current-password" />
+      </NextIntlClientProvider>,
+    );
     const input = screen.getByLabelText('Mật khẩu');
     expect(input).toHaveAttribute('type', 'password');
     expect(input).toHaveAttribute('autocomplete', 'current-password');
@@ -47,7 +53,11 @@ describe('Field', () => {
   });
 
   it('password toggle đổi type và có accessible name', async () => {
-    render(<Field label="Mật khẩu" type="password" defaultValue="secret" />);
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <Field label="Mật khẩu" type="password" defaultValue="secret" />
+      </NextIntlClientProvider>,
+    );
     const input = screen.getByLabelText('Mật khẩu');
     expect(input).toHaveAttribute('type', 'password');
     const toggle = screen.getByRole('button', { name: 'Hiện' });
@@ -81,10 +91,12 @@ describe('Field', () => {
 
   it('focusFirstInvalidField focus ô lỗi đầu tiên', () => {
     render(
-      <form data-testid="form">
-        <Field label="A" error="lỗi A" />
-        <Field label="B" error="lỗi B" />
-      </form>,
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <form data-testid="form">
+          <Field label="A" error="lỗi A" />
+          <Field label="B" error="lỗi B" />
+        </form>
+      </NextIntlClientProvider>,
     );
     const form = screen.getByTestId('form');
     focusFirstInvalidField(form);

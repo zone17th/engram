@@ -78,9 +78,6 @@ export function SignupForm() {
       if (retrySeconds > 0) return;
       const emailErr = validateEmail(email);
       const passwordErr = validatePassword(password);
-      // Backward compatibility for tests/callers that leave confirmPassword empty while filling password only,
-      // UNLESS confirmPassword was explicitly typed or we check confirmPassword === password when confirmPassword is required.
-      // Wait: SPEC and brief say "signup: confirm password, local-only strength meter... terms checkbox unticked by default and blocking on submit".
       const confirmErr = confirmPassword !== password ? t('validation.password.mismatch') : undefined;
       const termsErr = !accepted ? t('signup.termsRequired') : undefined;
       if (emailErr || passwordErr || confirmErr || termsErr) {
@@ -248,18 +245,33 @@ export function SignupForm() {
                 />
                 <span className="text-[14px]">
                   {t('signup.termsPrefix')}
-                  <Link href={termsHref} className="text-link underline">
+                  <Link
+                    href={termsHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-link underline"
+                  >
                     {t('signup.termsLink')}
                   </Link>
                   {t('signup.termsMiddle')}
-                  <Link href={privacyHref} className="text-link underline">
+                  <Link
+                    href={privacyHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-link underline"
+                  >
                     {t('signup.privacyLink')}
                   </Link>
                   {t('signup.termsSuffix')}
                 </span>
               </label>
               {fieldErrors.terms && (
-                <span id={termsErrorId} className="field-error mt-1.5 block" role="alert">
+                <span
+                  id={termsErrorId}
+                  className="field-error mt-1.5 block"
+                  style={{ color: 'var(--error-ink)' }}
+                  role="alert"
+                >
                   {fieldErrors.terms}
                 </span>
               )}

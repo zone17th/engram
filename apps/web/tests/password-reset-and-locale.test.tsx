@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
+import { StrictMode, type AnchorHTMLAttributes, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProblemError, type ProblemDetails } from '@engram/shared-types';
 import { AuthChrome } from '@/features/auth/auth-chrome';
@@ -8,14 +10,24 @@ import { LoginForm } from '@/features/auth/forms/login-form';
 import { OAuthCallbackView } from '@/features/auth/forms/oauth-callback';
 import { PasswordEnrollForm } from '@/features/auth/forms/password-enroll-form';
 import { ReauthForm } from '@/features/auth/forms/reauth-form';
-import * as resetPasswordModule from '@/features/auth/forms/reset-password-form';
 import { ResetPasswordForm, extractResetTokenFromHash } from '@/features/auth/forms/reset-password-form';
 import { SignupForm } from '@/features/auth/forms/signup-form';
 import { VerifyEmailForm } from '@/features/auth/forms/verify-email-form';
 import { evaluateAccountPasswordStrength } from '@/features/auth/password-strength-meter';
 import { RouteGuard } from '@/features/auth/route-guard';
+import { AccountDialogs } from '@/features/settings/account/account-dialogs';
 import en from '../messages/en.json';
 import viMessages from '../messages/vi.json';
+
+type TurnstileOptions = { callback: (token: string) => void };
+
+const turnstileMocks = vi.hoisted(() => ({
+  render: vi.fn(),
+  reset: vi.fn(),
+  remove: vi.fn(),
+}));
+
+let tokenCallback: ((token: string) => void) | undefined;
 
 const mocks = vi.hoisted(() => {
   const authPasswordForgot = vi.fn();
@@ -27,6 +39,7 @@ const mocks = vi.hoisted(() => {
   const verifyEmailSend = vi.fn();
   const passwordEnrollSend = vi.fn();
   const changePassword = vi.fn();
+  const oauthLinkStart = vi.fn();
   const completeOAuthLogin = vi.fn();
   const refetchMe = vi.fn();
   const login = vi.fn();
@@ -46,6 +59,7 @@ const mocks = vi.hoisted(() => {
     verifyEmailSend,
     passwordEnrollSend,
     changePassword,
+    oauthLinkStart,
     completeOAuthLogin,
     refetchMe,
     login,
@@ -91,7 +105,7 @@ const mocks = vi.hoisted(() => {
       clearPrivateCache: vi.fn(),
       reauth: {
         grant: null,
-        pendingAction: 'password_change' as const,
+        pendingAction: 'account.password_change' as const,
         error: null as string | null,
         submitting: false,
         capabilities: {
@@ -111,6 +125,18 @@ const mocks = vi.hoisted(() => {
     },
   };
 });
+
+vi.mock('next/link', () => ({
+  default: ({
+    href,
+    children,
+    ...rest
+  }: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string; children: ReactNode }) => (
+    <a href={href} data-next-link="true" {...rest}>
+      {children}
+    </a>
+  ),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mocks.replace, push: mocks.push }),
@@ -141,6 +167,7 @@ vi.mock('@/lib/api/auth', async (importOriginal) => {
     verifyEmailSend: mocks.verifyEmailSend,
     passwordEnrollSend: mocks.passwordEnrollSend,
     changePassword: mocks.changePassword,
+    oauthLinkStart: mocks.oauthLinkStart,
   };
 });
 
@@ -183,6 +210,16 @@ const VALID_TOKEN_43 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq';
 
 beforeEach(() => {
   vi.resetAllMocks();
+  tokenCallback = undefined;
+  turnstileMocks.render.mockImplementation((_element: HTMLElement, options: TurnstileOptions) => {
+    tokenCallback = options.callback;
+    return 'widget-1';
+  });
+  Object.defineProperty(window, 'turnstile', {
+    configurable: true,
+    value: turnstileMocks,
+  });
+  document.querySelectorAll('script[data-engram-turnstile]').forEach((script) => script.remove());
   mocks.pathname = '/app/auth/forgot-password';
   mocks.searchParams = '';
   mocks.session.status = 'signed_out';
@@ -202,13 +239,16 @@ beforeEach(() => {
   mocks.bootstrapCsrf.mockResolvedValue(undefined);
   mocks.ensureCsrf.mockResolvedValue(undefined);
   mocks.refetchMe.mockResolvedValue(undefined);
+  mocks.oauthLinkStart.mockResolvedValue({ authorization_url: 'https://accounts.google.com/o/oauth2/auth' });
   window.history.replaceState(null, '', '/app/auth/forgot-password');
 });
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  Reflect.deleteProperty(window, 'turnstile');
 });
 
 describe('PasswordStrengthMeter estimator (local-only)', () => {
@@ -216,7 +256,7 @@ describe('PasswordStrengthMeter estimator (local-only)', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     expect(evaluateAccountPasswordStrength('')).toBe(0);
     expect(evaluateAccountPasswordStrength('short1!')).toBe(1);
-    expect(evaluateAccountPasswordStrength('alllowercase12')).toBe(2);
+    expect(evaluateAccountPasswordStrength('alllowercase')).toBe(2);
     expect(evaluateAccountPasswordStrength('MixedCase12345')).toBe(3);
     expect(evaluateAccountPasswordStrength('StrongPassphrase!2026#Engram')).toBe(4);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -338,6 +378,87 @@ describe('ForgotPasswordForm states and problem-code mapping (ADR 0006 §9.2)', 
 
     expect(screen.getByTestId('forgot-unavailable')).toBeInTheDocument();
   });
+
+  it('does not mount Turnstile widget or script when mail_delivery_available === false (AU4-FE1-8)', () => {
+    mocks.session.config = {
+      oauth_providers: ['google'],
+      email_verification_required: false,
+      captcha_site_key: 'site-key-123',
+      mail_delivery_available: false,
+    };
+
+    renderWithLocale(<ForgotPasswordForm />);
+    expect(screen.getByTestId('forgot-unavailable')).toBeInTheDocument();
+    expect(document.querySelector('script[data-engram-turnstile]')).toBeNull();
+    expect(turnstileMocks.render).not.toHaveBeenCalled();
+  });
+
+  it('renders Turnstile when captcha_site_key is configured and resets it after 403/429/503/network and tryAnotherEmail (AU4-FE1-8)', async () => {
+    mocks.session.config = {
+      oauth_providers: ['google'],
+      email_verification_required: false,
+      captcha_site_key: 'site-key-123',
+      mail_delivery_available: true,
+    };
+
+    renderWithLocale(<ForgotPasswordForm />);
+    expect(turnstileMocks.render).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'user@example.com' } });
+    const form = screen.getByLabelText('Email').closest('form')!;
+
+    // 1. 403 captcha_required
+    act(() => {
+      tokenCallback?.('tok-1');
+    });
+    mocks.authPasswordForgot.mockRejectedValueOnce(problem('captcha_required', { status: 403, captcha_required: true }));
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(turnstileMocks.reset).toHaveBeenCalledTimes(1);
+
+    // 2. 429 rate_limited
+    act(() => {
+      tokenCallback?.('tok-2');
+    });
+    mocks.authPasswordForgot.mockRejectedValueOnce(problem('rate_limited', { status: 429, retry_after: 0 }));
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(turnstileMocks.reset).toHaveBeenCalledTimes(2);
+
+    // 3. 503 dependency_unavailable
+    act(() => {
+      tokenCallback?.('tok-3');
+    });
+    mocks.authPasswordForgot.mockRejectedValueOnce(problem('dependency_unavailable', { status: 503, retry_after: 0 }));
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(turnstileMocks.reset).toHaveBeenCalledTimes(3);
+
+    // 4. Network error
+    act(() => {
+      tokenCallback?.('tok-4');
+    });
+    mocks.authPasswordForgot.mockRejectedValueOnce(new Error('network down'));
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(turnstileMocks.reset).toHaveBeenCalledTimes(4);
+
+    // 5. 202 sent -> Try another email resets widget
+    act(() => {
+      tokenCallback?.('tok-5');
+    });
+    mocks.authPasswordForgot.mockResolvedValueOnce(undefined);
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(screen.getByTestId('forgot-sent')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: en.auth.forgot.tryAnotherEmail }));
+    expect(turnstileMocks.reset).toHaveBeenCalledTimes(5);
+  });
 });
 
 describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mapping (ADR 0006 §6.1-6.2, §9.2)', () => {
@@ -349,11 +470,15 @@ describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mappi
     expect(extractResetTokenFromHash('')).toBeNull();
   });
 
-  it('extracts #token on mount, strips hash via history.replaceState, and survives double-effect execution', async () => {
+  it('extracts #token on mount, strips hash via history.replaceState, and survives <StrictMode> double-effect execution (AU4-FE1-7)', async () => {
     window.history.replaceState(null, '', `/app/auth/reset-password#token=${VALID_TOKEN_43}`);
     const replaceSpy = vi.spyOn(window.history, 'replaceState');
 
-    renderWithLocale(<ResetPasswordForm />);
+    renderWithLocale(
+      <StrictMode>
+        <ResetPasswordForm />
+      </StrictMode>,
+    );
 
     await waitFor(() => {
       expect(screen.getByLabelText(en.auth.fields.newLoginPassword)).toBeInTheDocument();
@@ -361,11 +486,51 @@ describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mappi
     expect(window.location.hash).toBe('');
     expect(replaceSpy).toHaveBeenCalledWith(null, '', '/app/auth/reset-password');
     expect(screen.getByText(en.auth.reset.vaultNotice)).toBeInTheDocument();
+    expect(screen.queryByTestId('reset-invalid-token')).not.toBeInTheDocument();
   });
 
-  it('shows missing-token invalid card when opened without #token', () => {
-    window.history.replaceState(null, '', '/app/auth/reset-password');
+  it('replaces in-memory token and scrubs URL on hashchange, and shows invalid card for malformed/non-token hashes (AU4-FE1-7)', async () => {
+    window.history.replaceState(null, '', '/app/auth/reset-password#not-a-valid-token');
     renderWithLocale(<ResetPasswordForm />);
+
+    expect(screen.getByTestId('reset-invalid-token')).toBeInTheDocument();
+    expect(window.location.hash).toBe('');
+
+    const replacementToken = '1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg';
+    act(() => {
+      window.history.replaceState(null, '', `/app/auth/reset-password#token=${replacementToken}`);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(en.auth.fields.newLoginPassword)).toBeInTheDocument();
+    });
+    expect(window.location.hash).toBe('');
+
+    fireEvent.change(screen.getByLabelText(en.auth.fields.newLoginPassword), {
+      target: { value: 'ValidReplacementPass!2026' },
+    });
+    fireEvent.change(screen.getByLabelText(en.auth.fields.confirmNewPassword), {
+      target: { value: 'ValidReplacementPass!2026' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByLabelText(en.auth.fields.newLoginPassword).closest('form')!);
+    });
+    expect(mocks.authPasswordReset).toHaveBeenCalledWith({
+      token: replacementToken,
+      new_password: 'ValidReplacementPass!2026',
+    });
+  });
+
+  it('shows missing-token invalid card when opened without #token, and RouteGuard keeps reset route mounted when status is unavailable (AU2-FE3-2)', () => {
+    mocks.pathname = '/app/auth/reset-password';
+    mocks.session.status = 'unavailable';
+    window.history.replaceState(null, '', '/app/auth/reset-password');
+    renderWithLocale(
+      <RouteGuard>
+        <ResetPasswordForm />
+      </RouteGuard>,
+    );
 
     expect(screen.getByTestId('reset-invalid-token')).toBeInTheDocument();
     expect(screen.getByText(en.auth.reset.missingTokenTitle)).toBeInTheDocument();
@@ -406,9 +571,27 @@ describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mappi
     expect(screen.getByText(en.auth.validation.password.mismatch)).toBeInTheDocument();
   });
 
-  it('on 204: clears token, broadcasts signed_out, calls bootstrapCsrf (tolerating failure), and hard-navigates to /app/auth/login?reset=done (AU2-FE3-4)', async () => {
+  it('on 204: clears token without flashing invalid card, broadcasts signed_out before navigating, tolerates failed/slow bootstrapCsrf, and calls location.assign("/app/auth/login?reset=done") (AU4-FE1-5, AU4-FE1-10)', async () => {
     window.history.replaceState(null, '', `/app/auth/reset-password#token=${VALID_TOKEN_43}`);
-    mocks.bootstrapCsrf.mockRejectedValueOnce(new Error('network blip during csrf bootstrap'));
+    const callOrder: string[] = [];
+    const assignMock = vi.fn((url: string) => {
+      callOrder.push(`assign:${url}`);
+    });
+    vi.stubGlobal('location', {
+      ...window.location,
+      hash: `#token=${VALID_TOKEN_43}`,
+      pathname: '/app/auth/reset-password',
+      search: '',
+      assign: assignMock,
+    });
+    mocks.postSessionBroadcast.mockImplementation(() => {
+      callOrder.push('broadcast');
+    });
+    const csrfDeferred = Promise.withResolvers<void>();
+    mocks.bootstrapCsrf.mockImplementation(() => {
+      callOrder.push('bootstrapCsrf');
+      return csrfDeferred.promise;
+    });
 
     renderWithLocale(<ResetPasswordForm />);
 
@@ -419,17 +602,32 @@ describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mappi
       target: { value: 'StrongReplacementPassword!2026' },
     });
 
-    await act(async () => {
+    let submitDone = false;
+    const submitPromise = act(async () => {
       fireEvent.submit(screen.getByLabelText(en.auth.fields.newLoginPassword).closest('form')!);
+    }).then(() => {
+      submitDone = true;
     });
 
+    // While bootstrapCsrf is pending after 204, the missing/invalid link card must NOT flash (AU4-FE1-10).
+    await waitFor(() => {
+      expect(mocks.postSessionBroadcast).toHaveBeenCalledWith({ type: 'signed_out', reason: 'logout' });
+    });
+    expect(screen.queryByTestId('reset-invalid-token')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reset-completed-redirecting')).toBeInTheDocument();
+
+    await act(async () => {
+      csrfDeferred.reject(new Error('network blip during csrf bootstrap'));
+      await submitPromise;
+    });
+    expect(submitDone).toBe(true);
     expect(mocks.authPasswordReset).toHaveBeenCalledWith({
       token: VALID_TOKEN_43,
       new_password: 'StrongReplacementPassword!2026',
     });
-    expect(mocks.postSessionBroadcast).toHaveBeenCalledWith({ type: 'signed_out', reason: 'logout' });
-    expect(mocks.bootstrapCsrf).toHaveBeenCalledTimes(1);
-    expect(resetPasswordModule).toBeDefined();
+    expect(assignMock).toHaveBeenCalledTimes(1);
+    expect(assignMock).toHaveBeenCalledWith('/app/auth/login?reset=done');
+    expect(callOrder).toEqual(['broadcast', 'bootstrapCsrf', 'assign:/app/auth/login?reset=done']);
   });
 
   it('maps 400 reset_token_invalid to the invalid/expired token card and clears in-memory token', async () => {
@@ -479,67 +677,74 @@ describe('ResetPasswordForm token lifecycle, strict mode, and problem-code mappi
     expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
 
-  it('renders plain <a> tags (no client-router Link) for every exit on /app/auth/reset-password including AuthChrome logo (AU2-FE3-1)', () => {
+  it('renders plain <a> tags (zero next/link) and hard-navigates via location.assign for every exit on /app/auth/reset-password in both states (AU2-FE3-1, AU4-FE1-6)', () => {
     mocks.pathname = '/app/auth/reset-password';
-    window.history.replaceState(null, '', `/app/auth/reset-password#token=${VALID_TOKEN_43}`);
+    const assignMock = vi.fn();
 
-    renderWithLocale(
+    // State 1: token present
+    vi.stubGlobal('location', {
+      ...window.location,
+      hash: `#token=${VALID_TOKEN_43}`,
+      pathname: '/app/auth/reset-password',
+      search: '',
+      assign: assignMock,
+    });
+    const { container, unmount } = renderWithLocale(
       <AuthChrome>
         <ResetPasswordForm />
       </AuthChrome>,
     );
-
+    expect(container.querySelector('[data-next-link]')).toBeNull();
     const logoLink = screen.getByRole('link', { name: 'engram' });
     expect(logoLink).toHaveAttribute('href', '/');
-    const backLink = screen.getByRole('link', { name: en.auth.reset.backToLogin });
-    expect(backLink).toHaveAttribute('href', '/app/auth/login');
+    const formBackLink = screen.getByRole('link', { name: en.auth.reset.backToLogin });
+    fireEvent.click(formBackLink);
+    expect(assignMock).toHaveBeenCalledWith('/app/auth/login');
+    unmount();
+
+    // State 2: token missing (invalid card)
+    assignMock.mockClear();
+    vi.stubGlobal('location', {
+      ...window.location,
+      hash: '',
+      pathname: '/app/auth/reset-password',
+      search: '',
+      assign: assignMock,
+    });
+    const { container: invalidContainer } = renderWithLocale(
+      <AuthChrome>
+        <ResetPasswordForm />
+      </AuthChrome>,
+    );
+    expect(invalidContainer.querySelector('[data-next-link]')).toBeNull();
+    fireEvent.click(screen.getByRole('link', { name: en.auth.reset.requestNewLink }));
+    expect(assignMock).toHaveBeenCalledWith('/app/auth/forgot-password');
+    fireEvent.click(screen.getByRole('link', { name: en.auth.reset.backToLogin }));
+    expect(assignMock).toHaveBeenCalledWith('/app/auth/login');
   });
 });
 
-describe('OAuthCallbackView problem-code mapping (AU2-FE3-6)', () => {
-  it('maps 400 oauth_state_invalid on /auth/oauth/complete to localized oauthCallback.invalidFlow without rendering raw problem.detail', async () => {
+describe('OAuthCallbackView problem-code mapping (AU2-FE3-6) and AccountDialogs linkRequiresVerifiedEmail (AU4-FE1-12)', () => {
+  it('maps 400 oauth_state_invalid and 409 email_taken on /auth/oauth/complete to localized copy without rendering raw problem.detail', async () => {
     mocks.searchParams = 'status=login_ready';
     mocks.completeOAuthLogin.mockRejectedValueOnce(problem('oauth_state_invalid', { status: 400 }));
 
-    renderWithLocale(<OAuthCallbackView provider="google" />, 'en');
-
+    const { unmount } = renderWithLocale(<OAuthCallbackView provider="google" />, 'en');
     await waitFor(() => {
       expect(screen.getByText(en.auth.oauthCallback.invalidFlow)).toBeInTheDocument();
     });
     expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
+    unmount();
+
+    mocks.completeOAuthLogin.mockRejectedValueOnce(problem('email_taken', { status: 409 }));
+    renderWithLocale(<OAuthCallbackView provider="google" />, 'en');
+    await waitFor(() => {
+      expect(screen.getByText(en.auth.errors.emailTaken)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
-});
 
-describe('Zero language mixing across all auth screens (en has zero Vietnamese diacritics; vi has zero stray English UI chrome)', () => {
-  const VIETNAMESE_DIACRITIC_RE =
-    /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/;
-
-  const STRAY_ENGLISH_IN_VI_RE =
-    /\b(Sign in|Create account|Forgot password|Send reset link|Save new password|Show|Hide|Toggle light\/dark theme)\b/;
-
-  it('renders every auth screen in English with zero Vietnamese diacritics and localized theme/password-toggle labels', () => {
-    const screens: Array<{ name: string; path: string; hash?: string; search?: string; node: React.ReactNode }> = [
-      { name: 'login', path: '/app/auth/login', search: 'reset=done', node: <LoginForm /> },
-      { name: 'signup', path: '/app/auth/signup', node: <SignupForm /> },
-      { name: 'forgot', path: '/app/auth/forgot-password', node: <ForgotPasswordForm /> },
-      {
-        name: 'reset',
-        path: '/app/auth/reset-password',
-        hash: `#token=${VALID_TOKEN_43}`,
-        node: <ResetPasswordForm />,
-      },
-      { name: 'verify-email', path: '/app/auth/verify-email', node: <VerifyEmailForm /> },
-      { name: 'password-enroll', path: '/app/auth/password-enroll', node: <PasswordEnrollForm /> },
-      { name: 'reauth', path: '/app/auth/reauth', node: <ReauthForm /> },
-      {
-        name: 'oauth-callback',
-        path: '/app/auth/callback/google',
-        search: 'status=invalid_flow',
-        node: <OAuthCallbackView provider="google" />,
-      },
-    ];
-
-    mocks.session.status = 'authenticated_without_vault';
+  it('maps 403 email_not_verified from oauthLinkStart in AccountDialogs to settings.account.linkRequiresVerifiedEmail (AU4-FE1-12, advisor-dec-161)', async () => {
     mocks.session.me = {
       user: { id: 'u1', email: 'person@example.com', email_verified: false, created_at: '2026-01-01T00:00:00Z' },
       settings: { locale: 'en', theme: 'light', auto_lock_minutes: 15, semantic_suggest: false },
@@ -549,85 +754,304 @@ describe('Zero language mixing across all auth screens (en has zero Vietnamese d
         email_verification_required: true,
         oauth_providers: ['google'],
         oauth_reauth_providers: ['google'],
-        password_enrollment_available: true,
+        password_enrollment_available: false,
         captcha_site_key: null,
       },
       vault: { status: 'absent' },
     };
+    mocks.session.reauth.hasUsableGrant.mockReturnValue(true);
+    mocks.session.reauth.grant = {
+      grant: 'reauth-grant-tok',
+      action: 'account.identity_link',
+      expires_at: '2099-01-01T00:00:00Z',
+    } as never;
+    mocks.oauthLinkStart.mockRejectedValueOnce(problem('email_not_verified', { status: 403 }));
 
-    for (const item of screens) {
-      mocks.pathname = item.path;
-      mocks.searchParams = item.search ?? '';
-      window.history.replaceState(null, '', `${item.path}${item.search ? `?${item.search}` : ''}${item.hash ?? ''}`);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <QueryClientProvider client={queryClient}>
+          <AccountDialogs
+            active="linkProviderDlg"
+            context={{ provider: 'google' }}
+            close={vi.fn()}
+            open={vi.fn()}
+          />
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
 
-      const { container, unmount } = renderWithLocale(<AuthChrome>{item.node}</AuthChrome>, 'en');
-      const text = container.textContent ?? '';
-      expect(text, `Screen ${item.name} in en contained Vietnamese diacritics`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: en.settings.common.continue }));
+    });
 
-      for (const el of Array.from(container.querySelectorAll('[aria-label], [title]'))) {
-        const aria = el.getAttribute('aria-label') ?? '';
-        const title = el.getAttribute('title') ?? '';
-        expect(aria, `Screen ${item.name} aria-label in en`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
-        expect(title, `Screen ${item.name} title in en`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
-      }
-      unmount();
-    }
+    await waitFor(() => {
+      expect(screen.getByText(en.settings.account.linkRequiresVerifiedEmail)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
+});
 
-  it('renders every auth screen in Vietnamese with zero stray English UI chrome', () => {
-    const screens: Array<{ name: string; path: string; hash?: string; search?: string; node: React.ReactNode }> = [
-      { name: 'login', path: '/app/auth/login', search: 'reset=done', node: <LoginForm /> },
-      { name: 'signup', path: '/app/auth/signup', node: <SignupForm /> },
-      { name: 'forgot', path: '/app/auth/forgot-password', node: <ForgotPasswordForm /> },
-      {
-        name: 'reset',
-        path: '/app/auth/reset-password',
-        hash: `#token=${VALID_TOKEN_43}`,
-        node: <ResetPasswordForm />,
-      },
-      { name: 'verify-email', path: '/app/auth/verify-email', node: <VerifyEmailForm /> },
-      { name: 'password-enroll', path: '/app/auth/password-enroll', node: <PasswordEnrollForm /> },
-      { name: 'reauth', path: '/app/auth/reauth', node: <ReauthForm /> },
-      {
-        name: 'oauth-callback',
-        path: '/app/auth/callback/google',
-        search: 'status=invalid_flow',
-        node: <OAuthCallbackView provider="google" />,
-      },
-    ];
+describe('Zero language mixing across all auth screens and states (AU4-FE1-9)', () => {
+  const VIETNAMESE_DIACRITIC_RE =
+    /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/;
 
-    mocks.session.status = 'authenticated_without_vault';
-    mocks.session.me = {
-      user: { id: 'u1', email: 'person@example.com', email_verified: false, created_at: '2026-01-01T00:00:00Z' },
-      settings: { locale: 'vi', theme: 'light', auto_lock_minutes: 15, semantic_suggest: false },
-      identities: [{ provider: 'password', linked_at: '2026-01-01T00:00:00Z' }],
-      features: {
-        semantic_available: false,
-        email_verification_required: true,
-        oauth_providers: ['google'],
-        oauth_reauth_providers: ['google'],
-        password_enrollment_available: true,
-        captcha_site_key: null,
-      },
-      vault: { status: 'absent' },
+  function collectDifferingEnLeaves(
+    enObj: Record<string, unknown>,
+    viObj: Record<string, unknown>,
+  ): string[] {
+    const result: string[] = [];
+    const walk = (eNode: unknown, vNode: unknown) => {
+      if (typeof eNode === 'string' && typeof vNode === 'string') {
+        const cleanEn = eNode.replace(/\{[^}]+\}/g, '').trim();
+        if (cleanEn.length >= 4 && eNode !== vNode) {
+          result.push(cleanEn);
+        }
+        return;
+      }
+      if (eNode && typeof eNode === 'object' && vNode && typeof vNode === 'object') {
+        for (const key of Object.keys(eNode as Record<string, unknown>)) {
+          walk((eNode as Record<string, unknown>)[key], (vNode as Record<string, unknown>)[key]);
+        }
+      }
     };
+    walk(enObj, viObj);
+    return result;
+  }
 
-    for (const item of screens) {
-      mocks.pathname = item.path;
-      mocks.searchParams = item.search ?? '';
-      window.history.replaceState(null, '', `${item.path}${item.search ? `?${item.search}` : ''}${item.hash ?? ''}`);
+  const EN_ONLY_AUTH_STRINGS = collectDifferingEnLeaves(
+    en.auth as unknown as Record<string, unknown>,
+    viMessages.auth as unknown as Record<string, unknown>,
+  );
 
-      const { container, unmount } = renderWithLocale(<AuthChrome>{item.node}</AuthChrome>, 'vi');
-      const text = container.textContent ?? '';
-      expect(text, `Screen ${item.name} in vi contained stray English UI strings`).not.toMatch(STRAY_ENGLISH_IN_VI_RE);
+  function assertLocalePurity(container: HTMLElement, locale: 'en' | 'vi', contextLabel: string) {
+    const text = container.textContent ?? '';
+    const attrs = Array.from(container.querySelectorAll('[aria-label], [title]')).flatMap((el) => [
+      el.getAttribute('aria-label') ?? '',
+      el.getAttribute('title') ?? '',
+    ]);
 
-      for (const el of Array.from(container.querySelectorAll('[aria-label], [title]'))) {
-        const aria = el.getAttribute('aria-label') ?? '';
-        const title = el.getAttribute('title') ?? '';
-        expect(aria, `Screen ${item.name} aria-label in vi`).not.toMatch(STRAY_ENGLISH_IN_VI_RE);
-        expect(title, `Screen ${item.name} title in vi`).not.toMatch(STRAY_ENGLISH_IN_VI_RE);
+    if (locale === 'en') {
+      expect(text, `${contextLabel} (en) contained Vietnamese diacritics`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
+      for (const attr of attrs) {
+        expect(attr, `${contextLabel} (en) attr contained Vietnamese diacritics`).not.toMatch(VIETNAMESE_DIACRITIC_RE);
       }
-      unmount();
+    } else {
+      for (const enPhrase of EN_ONLY_AUTH_STRINGS) {
+        expect(text, `${contextLabel} (vi) leaked English string "${enPhrase}"`).not.toContain(enPhrase);
+        for (const attr of attrs) {
+          expect(attr, `${contextLabel} (vi) attr leaked English string "${enPhrase}"`).not.toContain(enPhrase);
+        }
+      }
     }
-  });
+  }
+
+  it.each(['en', 'vi'] as const)(
+    'renders every auth screen and interactive/error state in %s with strict catalog purity',
+    async (locale) => {
+      expect(EN_ONLY_AUTH_STRINGS.length).toBeGreaterThan(80);
+
+      const resetConfig = () => {
+        mocks.session.status = 'authenticated_without_vault';
+        mocks.session.config = {
+          oauth_providers: ['google', 'github'],
+          email_verification_required: true,
+          captcha_site_key: null,
+          mail_delivery_available: true,
+        };
+        mocks.session.configLoading = false;
+        mocks.session.configError = false;
+        mocks.session.bootstrapComplete = true;
+        mocks.session.me = {
+          user: { id: 'u1', email: 'person@example.com', email_verified: false, created_at: '2026-01-01T00:00:00Z' },
+          settings: { locale, theme: 'light', auto_lock_minutes: 15, semantic_suggest: false },
+          identities: [{ provider: 'password', linked_at: '2026-01-01T00:00:00Z' }],
+          features: {
+            semantic_available: false,
+            email_verification_required: true,
+            oauth_providers: ['google'],
+            oauth_reauth_providers: ['google'],
+            password_enrollment_available: true,
+            captcha_site_key: null,
+          },
+          vault: { status: 'absent' },
+        };
+      };
+
+      // 1. Login: default + ?reset=done banner + 401 invalid_credentials error alert
+      resetConfig();
+      mocks.pathname = '/app/auth/login';
+      mocks.searchParams = 'reset=done';
+      window.history.replaceState(null, '', '/app/auth/login?reset=done');
+      mocks.login.mockRejectedValueOnce(problem('invalid_credentials', { status: 401 }));
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><LoginForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'login-banner');
+        const emailInput = container.querySelector('input[type="email"]')!;
+        const pwInput = container.querySelector('input[type="password"]')!;
+        fireEvent.change(emailInput, { target: { value: 'person@example.com' } });
+        fireEvent.change(pwInput, { target: { value: 'ValidLoginPassword!2026' } });
+        await act(async () => {
+          fireEvent.submit(container.querySelector('form')!);
+        });
+        assertLocalePurity(container, locale, 'login-invalid-credentials');
+        unmount();
+      }
+
+      // 2. Signup: default + password mismatch + terms-blocked validation errors
+      resetConfig();
+      mocks.pathname = '/app/auth/signup';
+      mocks.searchParams = '';
+      window.history.replaceState(null, '', '/app/auth/signup');
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><SignupForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'signup-default');
+        const pwInputs = container.querySelectorAll('input[type="password"]');
+        fireEvent.change(container.querySelector('input[type="email"]')!, { target: { value: 'person@example.com' } });
+        fireEvent.change(pwInputs[0]!, { target: { value: 'ValidSignupPassword!2026' } });
+        fireEvent.change(pwInputs[1]!, { target: { value: 'DifferentPassword!2026' } });
+        await act(async () => {
+          fireEvent.submit(container.querySelector('form')!);
+        });
+        assertLocalePurity(container, locale, 'signup-mismatch-and-terms-error');
+        unmount();
+      }
+
+      // 3. Forgot: skeleton, config-error, mail-unavailable, form -> 429/503/network -> 202 sent
+      resetConfig();
+      mocks.pathname = '/app/auth/forgot-password';
+      mocks.session.config = null;
+      mocks.session.configLoading = true;
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><ForgotPasswordForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'forgot-skeleton');
+        unmount();
+      }
+
+      resetConfig();
+      mocks.session.config = null;
+      mocks.session.configError = true;
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><ForgotPasswordForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'forgot-config-error');
+        unmount();
+      }
+
+      resetConfig();
+      mocks.session.config!.mail_delivery_available = false;
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><ForgotPasswordForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'forgot-unavailable');
+        unmount();
+      }
+
+      resetConfig();
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><ForgotPasswordForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'forgot-form');
+        const emailInput = container.querySelector('input[type="email"]')!;
+        const form = container.querySelector('form')!;
+        fireEvent.change(emailInput, { target: { value: 'person@example.com' } });
+
+        mocks.authPasswordForgot.mockRejectedValueOnce(problem('rate_limited', { status: 429, retry_after: 0 }));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'forgot-429');
+
+        mocks.authPasswordForgot.mockRejectedValueOnce(problem('dependency_unavailable', { status: 503, retry_after: 0 }));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'forgot-503');
+
+        mocks.authPasswordForgot.mockRejectedValueOnce(new Error('network error'));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'forgot-network');
+
+        mocks.authPasswordForgot.mockResolvedValueOnce(undefined);
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'forgot-sent');
+        unmount();
+      }
+
+      // 4. Reset: missing token card, form -> 429/503/network -> 400 invalid token card
+      resetConfig();
+      mocks.pathname = '/app/auth/reset-password';
+      window.history.replaceState(null, '', '/app/auth/reset-password');
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><ResetPasswordForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'reset-missing-token');
+        unmount();
+      }
+
+      window.history.replaceState(null, '', `/app/auth/reset-password#token=${VALID_TOKEN_43}`);
+      {
+        const { container, unmount } = renderWithLocale(<AuthChrome><ResetPasswordForm /></AuthChrome>, locale);
+        assertLocalePurity(container, locale, 'reset-form');
+        const pwInputs = container.querySelectorAll('input[type="password"]');
+        const form = container.querySelector('form')!;
+        fireEvent.change(pwInputs[0]!, { target: { value: 'ValidResetPassword!2026' } });
+        fireEvent.change(pwInputs[1]!, { target: { value: 'ValidResetPassword!2026' } });
+
+        mocks.authPasswordReset.mockRejectedValueOnce(problem('rate_limited', { status: 429, retry_after: 0 }));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'reset-429');
+
+        mocks.authPasswordReset.mockRejectedValueOnce(problem('dependency_unavailable', { status: 503, retry_after: 0 }));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'reset-503');
+
+        mocks.authPasswordReset.mockRejectedValueOnce(new Error('network error'));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'reset-network');
+
+        mocks.authPasswordReset.mockRejectedValueOnce(problem('reset_token_invalid', { status: 400 }));
+        await act(async () => {
+          fireEvent.submit(form);
+        });
+        assertLocalePurity(container, locale, 'reset-invalid-token');
+        unmount();
+      }
+
+      // 5. VerifyEmail, PasswordEnroll, Reauth, OAuthCallback states
+      const extraScreens: Array<{ name: string; path: string; search?: string; node: React.ReactNode }> = [
+        { name: 'verify-email', path: '/app/auth/verify-email', node: <VerifyEmailForm /> },
+        { name: 'password-enroll', path: '/app/auth/password-enroll', node: <PasswordEnrollForm /> },
+        { name: 'reauth', path: '/app/auth/reauth', node: <ReauthForm /> },
+        {
+          name: 'oauth-callback-invalid',
+          path: '/app/auth/callback/google',
+          search: 'status=invalid_flow',
+          node: <OAuthCallbackView provider="google" />,
+        },
+        {
+          name: 'oauth-callback-conflict',
+          path: '/app/auth/callback/google',
+          search: 'status=identity_conflict',
+          node: <OAuthCallbackView provider="google" />,
+        },
+      ];
+
+      for (const item of extraScreens) {
+        resetConfig();
+        mocks.pathname = item.path;
+        mocks.searchParams = item.search ?? '';
+        window.history.replaceState(null, '', `${item.path}${item.search ? `?${item.search}` : ''}`);
+        const { container, unmount } = renderWithLocale(<AuthChrome>{item.node}</AuthChrome>, locale);
+        assertLocalePurity(container, locale, item.name);
+        unmount();
+      }
+    },
+  );
 });

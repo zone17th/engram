@@ -32,9 +32,7 @@ export async function LegalPageContent({
       <main className="mx-auto max-w-container px-5 pb-24 pt-10">
         <div className="mb-10 max-w-[780px]">
           <p className="t-label mb-2 text-muted">{t('updatedLabel')}</p>
-          <h1 className="t-headline-md mb-3">
-            {activeSection === 'terms' ? t('terms.heading') : t('privacy.heading')}
-          </h1>
+          <h1 className="t-headline-md mb-3">{t('title')}</h1>
           <p className="t-body-lg m-0 text-muted">{t('lead')}</p>
         </div>
 
@@ -70,11 +68,14 @@ export async function LegalPageContent({
           </nav>
 
           <div className="flex min-w-0 max-w-[820px] flex-col gap-8">
-            <section id="terms" className="panel p-6 md:p-8">
+            <section
+              id="terms"
+              className={`panel p-6 md:p-8 ${activeSection === 'privacy' ? 'order-2' : 'order-1'}`}
+            >
               <p className="t-label mb-2 text-accent">{t('terms.sectionLabel')}</p>
               <h2 className="t-title-md mb-4">{t('terms.heading')}</h2>
 
-              <div className=" flex flex-col gap-4">
+              <div className="flex flex-col gap-4">
                 <div className="card p-5">
                   <p className="m-0 mb-1.5 text-[15px] font-semibold">{t('terms.s1Title')}</p>
                   <p className="t-body m-0 text-body">{t('terms.s1Body')}</p>
@@ -92,14 +93,17 @@ export async function LegalPageContent({
               </div>
             </section>
 
-            <section id="privacy" className="panel p-6 md:p-8">
+            <section
+              id="privacy"
+              className={`panel p-6 md:p-8 ${activeSection === 'privacy' ? 'order-1' : 'order-2'}`}
+            >
               <p className="t-label mb-2 text-accent">{t('privacy.sectionLabel')}</p>
               <h2 className="t-title-md mb-4">{t('privacy.heading')}</h2>
               <p className="t-body mb-5 text-body">{t('privacy.intro')}</p>
 
               <div className="mb-6 grid gap-3 md:grid-cols-2">
                 <div className="card border-success p-5">
-                  <p className="t-label mb-1.5 text-success">{t('privacy.encBadge')}</p>
+                  <p className="t-label mb-1.5" style={{ color: 'var(--success-ink)' }}>{t('privacy.encBadge')}</p>
                   <p className="m-0 mb-1.5 text-[14px] font-semibold">{t('privacy.encTitle')}</p>
                   <p className="m-0 text-[13px] text-body">{t('privacy.encBody')}</p>
                 </div>
@@ -165,7 +169,7 @@ export async function LegalPageContent({
               </div>
             </section>
 
-            <section id="deletion" className="panel p-6 md:p-8">
+            <section id="deletion" className="panel order-3 p-6 md:p-8">
               <p className="t-label mb-2 text-accent">{t('deletion.sectionLabel')}</p>
               <h2 className="t-title-md mb-4">{t('deletion.heading')}</h2>
 
@@ -182,15 +186,15 @@ export async function LegalPageContent({
               </div>
             </section>
 
-            <section id="contact" className="panel p-6 md:p-8">
+            <section id="contact" className="panel order-4 p-6 md:p-8">
               <p className="t-label mb-2 text-accent">{t('contact.sectionLabel')}</p>
               <h2 className="t-title-md mb-3">{t('contact.heading')}</h2>
               <p className="t-body mb-3 text-body">
                 {t('contact.generalPrefix')}
                 <a
                   href="https://github.com/zone17th/engram/issues"
-                  className="mono break-all text-[14px] text-link underline"
-                  style={{ overflowWrap: 'anywhere' }}
+                  className="mono break-all text-[14px] underline"
+                  style={{ color: 'var(--link-ink)', overflowWrap: 'anywhere' }}
                 >
                   https://github.com/zone17th/engram/issues
                 </a>
@@ -200,8 +204,8 @@ export async function LegalPageContent({
                 {t('contact.securityPrefix')}
                 <a
                   href="https://github.com/zone17th/engram/security/advisories/new"
-                  className="mono break-all text-[14px] text-link underline"
-                  style={{ overflowWrap: 'anywhere' }}
+                  className="mono break-all text-[14px] underline"
+                  style={{ color: 'var(--link-ink)', overflowWrap: 'anywhere' }}
                 >
                   https://github.com/zone17th/engram/security/advisories/new
                 </a>
