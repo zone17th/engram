@@ -697,6 +697,7 @@ export interface TouchTargetMeasurement {
     readonly effectiveWidth: number;
     readonly effectiveHeight: number;
     readonly pseudoHitOk: boolean;
+    readonly pseudoCornerMisses?: string;
   }>;
 }
 
@@ -786,6 +787,7 @@ export async function measureCoarseTouchTargets(
         effectiveWidth: number;
         effectiveHeight: number;
         pseudoHitOk: boolean;
+        pseudoCornerMisses?: string;
       }> = [];
 
       elements.forEach((el, index) => {
@@ -796,6 +798,7 @@ export async function measureCoarseTouchTargets(
         let effW = w;
         let effH = h;
         let pseudoHitOk = false;
+        let pseudoCornerMisses: string | undefined;
 
         if (w < 43.5 || h < 43.5) {
           const parsePx = (val: string): number => {
@@ -856,13 +859,20 @@ export async function measureCoarseTouchTargets(
               [cx - halfW, cy + halfH],
               [cx + halfW, cy + halfH],
             ];
-            const allHit = corners.every(([px, py]) => {
+            // Diagnostics only (structure, never text): which element each missed corner hits.
+            const misses: string[] = [];
+            corners.forEach(([px, py], ci) => {
               if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) {
-                return false;
+                misses.push(`c${ci}:offscreen`);
+                return;
               }
               const hit = document.elementFromPoint(px, py);
-              return Boolean(hit && (hit === el || el.contains(hit)));
+              if (!(hit && (hit === el || el.contains(hit)))) {
+                misses.push(`c${ci}:${hit instanceof HTMLElement ? describeElement(hit) : hit ? hit.nodeName.toLowerCase() : 'null'}`);
+              }
             });
+            const allHit = misses.length === 0;
+            if (!allHit) pseudoCornerMisses = misses.join(' ');
             if (allHit) {
               effW = Math.round(candW * 100) / 100;
               effH = Math.round(candH * 100) / 100;
@@ -936,6 +946,7 @@ export async function measureCoarseTouchTargets(
             effectiveWidth: effW,
             effectiveHeight: effH,
             pseudoHitOk,
+            pseudoCornerMisses,
           });
         }
       });
