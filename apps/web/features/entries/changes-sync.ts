@@ -1,0 +1,841 @@
+'use client';
+
+import { ProblemError } from '@engram/shared-types';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useSession } from '@/features/auth/session-provider';
+import {
+  CONTENT_ENTRIES_QUERY_KEY_PREFIX,
+  CONTENT_ITEM_QUERY_KEY_PREFIX,
+  CONTENT_ITEMS_QUERY_KEY_PREFIX,
+  CONTENT_TAGS_QUERY_KEY_PREFIX,
+  contentQueryKeys,
+} from '@/features/items/query-keys';
+import {
+  VAULT_BODY_QUERY_KEY_PREFIX,
+  useOptionalVault,
+  vaultBodyQueryKey,
+} from '@/features/vault/vault-provider';
+import {
+  entriesChanges,
+  type EntriesChangesParams,
+  type EntryChange,
+  type EntryChangesPage,
+  type EntryMeta,
+  type EntryMetaList,
+} from '@/lib/api/content';
+import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
+import { subscribeUserChanged } from '@/lib/auth/user-changed';
+
+/**
+ * Overlap window subtracted from the stored feed watermark on subsequent requests (120 seconds, plan §2.9).
+ */
+export const CHANGES_OVERLAP_WINDOW_MS = 120_000;
+
+/**
+ * Safety bound on pagination depth within a single feed cycle to prevent an infinite loop on malformed cursors.
+ */
+export const MAX_CHANGES_PAGES_PER_CYCLE = 250;
+
+const RFC3339_NANO_REGEX =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Subtracts `overlapMs` (default 120 s) from an RFC3339 / RFC3339Nano timestamp while preserving sub-millisecond
+ * fractional digits (`RFC3339Nano` format accepted by `time.Parse(time.RFC3339Nano, ...)` in `apps/api`).
+ * Returns `undefined` if `watermark` cannot be parsed.
+ */
+export function computeChangesSince(
+  watermark: string | null | undefined,
+  overlapMs: number = CHANGES_OVERLAP_WINDOW_MS,
+): string | undefined {
+  if (typeof watermark !== 'string' || watermark.length === 0) {
+    return undefined;
+  }
+  const match = RFC3339_NANO_REGEX.exec(watermark.trim());
+  if (!match) {
+    const fallbackMs = Date.parse(watermark);
+    if (!Number.isFinite(fallbackMs)) {
+      return undefined;
+    }
+    return new Date(fallbackMs - overlapMs).toISOString();
+  }
+
+  const [, dateTimeHead, rawFraction, tzSuffix] = match;
+  const fractionPadded = (rawFraction ?? '').padEnd(9, '0');
+  const millisPart = fractionPadded.slice(0, 3);
+  const subMillisPart = fractionPadded.slice(3); // 6 digits (microseconds + nanoseconds)
+
+  const isoWithMillis = `${dateTimeHead}.${millisPart}${tzSuffix}`;
+  const baseMs = Date.parse(isoWithMillis);
+  if (!Number.isFinite(baseMs)) {
+    return undefined;
+  }
+
+  const shiftedDate = new Date(baseMs - overlapMs);
+  const shiftedIso = shiftedDate.toISOString(); // YYYY-MM-DDTHH:mm:ss.sssZ
+  const trimmedSubMillis = subMillisPart.replace(/0+$/, '');
+  if (trimmedSubMillis.length > 0) {
+    return `${shiftedIso.slice(0, -1)}${trimmedSubMillis}Z`;
+  }
+  const baseWithoutZ = shiftedIso.slice(0, -1);
+  const trimmedMillis = baseWithoutZ.replace(/\.?0+$/, '');
+  return `${trimmedMillis}Z`;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory watermark & remote-tombstone stores (never persisted to storage)
+// ---------------------------------------------------------------------------
+
+let watermarkState: { userId: string | null; watermark: string | null } = {
+  userId: null,
+  watermark: null,
+};
+
+const remoteTombstoneIds = new Set<string>();
+const tombstoneListeners = new Set<() => void>();
+let tombstoneSnapshotVersion = 0;
+
+const activeCardTrackerByItem = new Map<string, Map<string, Set<symbol>>>();
+const activeCardListeners = new Set<() => void>();
+
+let globalSubscriptionsInstalled = false;
+let syncEpoch = 0;
+
+function emitTombstoneChange(): void {
+  tombstoneSnapshotVersion += 1;
+  for (const listener of [...tombstoneListeners]) {
+    try {
+      listener();
+    } catch {
+      // Never let a subscriber error break sync or lock cleanup
+    }
+  }
+}
+
+function emitActiveCardChange(): void {
+  for (const listener of [...activeCardListeners]) {
+    try {
+      listener();
+    } catch {
+      // Ignore subscriber errors
+    }
+  }
+}
+
+/**
+ * Clears the in-memory feed watermark (scoped to user, never written to storage).
+ */
+export function clearChangesWatermark(): void {
+  syncEpoch += 1;
+  watermarkState = { userId: null, watermark: null };
+}
+
+/**
+ * Clears the in-memory remote-tombstone ID set and notifies subscribers.
+ */
+export function clearRemoteTombstones(): void {
+  if (remoteTombstoneIds.size === 0) {
+    return;
+  }
+  remoteTombstoneIds.clear();
+  emitTombstoneChange();
+}
+
+/**
+ * Clears both the feed watermark and remote-tombstone store (used on logout, user switch, and vault reset).
+ */
+export function clearAllChangesSyncState(): void {
+  clearChangesWatermark();
+  clearRemoteTombstones();
+}
+
+function getWatermarkForUser(userId: string | null | undefined): string | null {
+  if (!userId) return null;
+  if (watermarkState.userId !== userId) {
+    return null;
+  }
+  return watermarkState.watermark;
+}
+
+function setWatermarkForUser(userId: string, watermark: string): void {
+  if (!userId || !watermark) return;
+  watermarkState = {
+    userId,
+    watermark,
+  };
+}
+
+function publishRemoteTombstones(entryIds: Iterable<string>): void {
+  let mutated = false;
+  for (const id of entryIds) {
+    if (typeof id === 'string' && id.length > 0 && !remoteTombstoneIds.has(id)) {
+      remoteTombstoneIds.add(id);
+      mutated = true;
+    }
+  }
+  if (mutated) {
+    emitTombstoneChange();
+  }
+}
+
+function clearRemoteTombstoneForEntry(entryId: string): void {
+  if (remoteTombstoneIds.delete(entryId)) {
+    emitTombstoneChange();
+  }
+}
+
+function ensureGlobalSyncLifecycleSubscriptions(): void {
+  if (typeof window === 'undefined' || globalSubscriptionsInstalled) {
+    return;
+  }
+  globalSubscriptionsInstalled = true;
+
+  subscribeUserChanged((_prevUserId, nextUserId) => {
+    clearAllChangesSyncState();
+    watermarkState = { userId: nextUserId, watermark: null };
+  });
+
+  subscribeSessionBroadcast((message) => {
+    if (message.type === 'signed_out') {
+      clearAllChangesSyncState();
+    }
+  });
+}
+
+/**
+ * Subscribes to changes in the in-memory remote-tombstone entry ID store.
+ */
+export function subscribeRemoteTombstones(listener: () => void): () => void {
+  ensureGlobalSyncLifecycleSubscriptions();
+  tombstoneListeners.add(listener);
+  return () => {
+    tombstoneListeners.delete(listener);
+  };
+}
+
+/**
+ * Returns `true` if `entryId` has been observed as remotely deleted (`deleted_at != null`) in the current unlocked session.
+ */
+export function isEntryRemotelyDeleted(entryId: string): boolean {
+  if (!entryId) return false;
+  return remoteTombstoneIds.has(entryId);
+}
+
+/**
+ * React hook (`useSyncExternalStore`) returning `true` when `entryId` was remotely deleted on another device.
+ * Stores entry IDs only — never plaintext. Cleared on lock, logout, user switch, and vault reset.
+ */
+export function useEntryRemotelyDeleted(entryId: string): boolean {
+  const getSnapshot = useCallback(
+    () => (entryId ? remoteTombstoneIds.has(entryId) : false),
+    [entryId],
+  );
+  return useSyncExternalStore(subscribeRemoteTombstones, getSnapshot, () => false);
+}
+
+// ---------------------------------------------------------------------------
+// Active/dirty card retention registry (advisor-dec-211)
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a card (`entryId` under `itemId`) as having an active editor, unsaved draft, or in-flight save so
+ * `ItemDetailPage` keeps the card mounted even after its `EntryMeta` leaves `['content', 'entries', itemId]`.
+ * Holds metadata IDs only — never plaintext.
+ */
+export function setEntryCardKeepMounted(
+  itemId: string,
+  entryId: string,
+  token: symbol,
+  keepMounted: boolean,
+): void {
+  if (!itemId || !entryId) return;
+  let byEntry = activeCardTrackerByItem.get(itemId);
+  const hadBefore = Boolean(byEntry?.get(entryId)?.size);
+
+  if (keepMounted) {
+    if (!byEntry) {
+      byEntry = new Map();
+      activeCardTrackerByItem.set(itemId, byEntry);
+    }
+    let tokens = byEntry.get(entryId);
+    if (!tokens) {
+      tokens = new Set();
+      byEntry.set(entryId, tokens);
+    }
+    tokens.add(token);
+  } else if (byEntry) {
+    const tokens = byEntry.get(entryId);
+    if (tokens) {
+      tokens.delete(token);
+      if (tokens.size === 0) {
+        byEntry.delete(entryId);
+      }
+    }
+    if (byEntry.size === 0) {
+      activeCardTrackerByItem.delete(itemId);
+    }
+  }
+
+  const hasAfter = Boolean(activeCardTrackerByItem.get(itemId)?.get(entryId)?.size);
+  if (hadBefore !== hasAfter) {
+    emitActiveCardChange();
+  }
+}
+
+export function isEntryCardKeptMounted(itemId: string, entryId: string): boolean {
+  return Boolean(activeCardTrackerByItem.get(itemId)?.get(entryId)?.size);
+}
+
+export function subscribeActiveEntryCards(listener: () => void): () => void {
+  activeCardListeners.add(listener);
+  return () => {
+    activeCardListeners.delete(listener);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cache invalidation & feed reconciliation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Refetches canonical metadata sources on wake (plan §2.9, Task 20 item 1):
+ * invalidates `['content', 'entries', *]`, `['content', 'item', *]`, `['content', 'items', *]`, and `['content', 'tags', *]`.
+ */
+export async function refetchCanonicalContentSources(queryClient: QueryClient): Promise<void> {
+  await Promise.allSettled([
+    queryClient.invalidateQueries({ queryKey: CONTENT_ENTRIES_QUERY_KEY_PREFIX }),
+    queryClient.invalidateQueries({ queryKey: CONTENT_ITEM_QUERY_KEY_PREFIX }),
+    queryClient.invalidateQueries({ queryKey: CONTENT_ITEMS_QUERY_KEY_PREFIX }),
+    queryClient.invalidateQueries({ queryKey: CONTENT_TAGS_QUERY_KEY_PREFIX }),
+  ]);
+}
+
+function getCachedEntryMetaVersion(
+  queryClient: QueryClient,
+  itemId: string,
+  entryId: string,
+): number | undefined {
+  const cached = queryClient.getQueryData<EntryMetaList | EntryMeta[] | undefined>(
+    contentQueryKeys.entries(itemId),
+  );
+  if (!cached) return undefined;
+  const list = Array.isArray(cached) ? cached : Array.isArray(cached.items) ? cached.items : [];
+  const found = list.find((item) => item.id === entryId);
+  return found?.version;
+}
+
+function removeEntryFromEntriesCache(
+  queryClient: QueryClient,
+  itemId: string,
+  entryId: string,
+): void {
+  queryClient.setQueryData<EntryMetaList | EntryMeta[] | undefined>(
+    contentQueryKeys.entries(itemId),
+    (prev) => {
+      if (!prev) return prev;
+      if (Array.isArray(prev)) {
+        const filtered = prev.filter((e) => e.id !== entryId);
+        return filtered.length === prev.length ? prev : filtered;
+      }
+      if (Array.isArray(prev.items)) {
+        const filtered = prev.items.filter((e) => e.id !== entryId);
+        if (filtered.length === prev.items.length) return prev;
+        return {
+          ...prev,
+          items: filtered,
+        };
+      }
+      return prev;
+    },
+  );
+}
+
+function removeOlderEntryBodyQueries(
+  queryClient: QueryClient,
+  entryId: string,
+  newVersion: number,
+): boolean {
+  const prefix = vaultBodyQueryKey(entryId);
+  const matchingQueries = queryClient.getQueryCache().findAll({ queryKey: prefix });
+  let hadOlderBody = false;
+
+  for (const query of matchingQueries) {
+    const key = query.queryKey;
+    // Key shape: ['vault', 'body', entryId] or ['vault', 'body', entryId, version]
+    const keyVersion = key.length >= 4 ? key[3] : undefined;
+    if (typeof keyVersion !== 'number' || keyVersion < newVersion) {
+      hadOlderBody = true;
+      queryClient.removeQueries({ queryKey: key, exact: true });
+    }
+  }
+  return hadOlderBody;
+}
+
+/**
+ * Deduplicates feed changes by `(id, updated_at)` across the overlap window while preserving order.
+ */
+export function dedupEntryChanges(changes: readonly EntryChange[]): EntryChange[] {
+  const seen = new Set<string>();
+  const result: EntryChange[] = [];
+  for (const change of changes) {
+    if (!change || typeof change.id !== 'string' || typeof change.updated_at !== 'string') {
+      continue;
+    }
+    const key = `${change.id}\u0000${change.updated_at}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(change);
+  }
+  return result;
+}
+
+/**
+ * Applies a batch of deduplicated `EntryChange` records to the TanStack Query cache and remote-tombstone store (plan §2.9, Task 20):
+ * - Tombstone (`deleted_at != null`): removes the entry from `['content', 'entries', item_id]`, removes all
+ *   `vaultBodyQueryKey(entryId)` queries, and publishes `id` to the remote-tombstone store.
+ * - Live change (`deleted_at == null`): clears any prior tombstone for `id`; when `change.version` is newer than
+ *   the cached `EntryMeta.version` (or an older body query exists), removes older body queries for `entryId` and
+ *   invalidates `['content', 'entries', item_id]`.
+ */
+export function applyEntryChangesBatch(
+  queryClient: QueryClient,
+  changes: readonly EntryChange[],
+): void {
+  const deduped = dedupEntryChanges(changes);
+  const tombstonesToPublish: string[] = [];
+  const itemsToInvalidate = new Set<string>();
+
+  // Track the latest change per entryId in case multiple updates to the same entry appear in the window
+  for (const change of deduped) {
+    const { id: entryId, item_id: itemId, version, deleted_at: deletedAt } = change;
+    if (!entryId || !itemId) continue;
+
+    if (deletedAt !== null && deletedAt !== undefined) {
+      removeEntryFromEntriesCache(queryClient, itemId, entryId);
+      queryClient.removeQueries({ queryKey: vaultBodyQueryKey(entryId) });
+      tombstonesToPublish.push(entryId);
+      continue;
+    }
+
+    // Live entry (created, updated, or restored)
+    clearRemoteTombstoneForEntry(entryId);
+
+    const cachedVersion = getCachedEntryMetaVersion(queryClient, itemId, entryId);
+    const removedOlderBody = removeOlderEntryBodyQueries(queryClient, entryId, version);
+    const isNewerThanCachedMeta = cachedVersion !== undefined && version > cachedVersion;
+    const isMissingFromCachedItem =
+      cachedVersion === undefined &&
+      queryClient.getQueryData(contentQueryKeys.entries(itemId)) !== undefined;
+
+    if (isNewerThanCachedMeta || removedOlderBody || isMissingFromCachedItem) {
+      itemsToInvalidate.add(itemId);
+    }
+  }
+
+  if (tombstonesToPublish.length > 0) {
+    publishRemoteTombstones(tombstonesToPublish);
+  }
+
+  for (const itemId of itemsToInvalidate) {
+    void queryClient.invalidateQueries({ queryKey: contentQueryKeys.entries(itemId) });
+  }
+}
+
+export interface RunChangesFeedCycleOptions {
+  readonly queryClient: QueryClient;
+  readonly userId: string;
+  readonly isUnlockedAndCurrent: () => boolean;
+  readonly fetchChanges?: (params: EntriesChangesParams) => Promise<EntryChangesPage>;
+  readonly limit?: number;
+}
+
+/**
+ * Reads all pages from `GET /entries/changes` before committing the new watermark (plan §2.9, Task 20):
+ * - First call when no watermark is held for `userId` omits `since`: `apps/api/internal/entry/entryhttp/changes.go:80-97`
+ *   treats no-`since` + no-`cursor` as an O(1) `ContentClockNow` bootstrap returning `{ changes: [], next_cursor: null, watermark }`
+ *   without scanning the `entry` table.
+ * - Subsequent calls pass `since = watermark - 120 s` (`RFC3339Nano`) and follow `next_cursor` across all pages.
+ * - If any page fails, the old watermark is preserved so the next wake re-reads from the start.
+ * - On `410 changes_window_expired`, drops the watermark and relies on the canonical refetch.
+ */
+export async function runChangesFeedCycle(options: RunChangesFeedCycleOptions): Promise<void> {
+  const {
+    queryClient,
+    userId,
+    isUnlockedAndCurrent,
+    fetchChanges = entriesChanges,
+    limit,
+  } = options;
+
+  if (!userId || !isUnlockedAndCurrent()) {
+    return;
+  }
+
+  const cycleEpoch = syncEpoch;
+  const previousWatermark = getWatermarkForUser(userId);
+  const since = computeChangesSince(previousWatermark);
+
+  const accumulatedChanges: EntryChange[] = [];
+  let cursor: string | undefined = undefined;
+  let candidateWatermark: string | null = null;
+  let pageCount = 0;
+
+  try {
+    while (pageCount < MAX_CHANGES_PAGES_PER_CYCLE) {
+      if (!isUnlockedAndCurrent() || syncEpoch !== cycleEpoch) {
+        return;
+      }
+
+      const page = await fetchChanges({
+        ...(since !== undefined ? { since } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      });
+
+      if (!isUnlockedAndCurrent() || syncEpoch !== cycleEpoch) {
+        return;
+      }
+
+      if (pageCount === 0 && typeof page.watermark === 'string' && page.watermark.length > 0) {
+        candidateWatermark = page.watermark;
+      } else if (
+        candidateWatermark === null &&
+        typeof page.watermark === 'string' &&
+        page.watermark.length > 0
+      ) {
+        candidateWatermark = page.watermark;
+      }
+
+      if (Array.isArray(page.changes) && page.changes.length > 0) {
+        accumulatedChanges.push(...page.changes);
+      }
+
+      pageCount += 1;
+
+      if (typeof page.next_cursor === 'string' && page.next_cursor.length > 0) {
+        cursor = page.next_cursor;
+      } else {
+        break;
+      }
+    }
+
+    if (!isUnlockedAndCurrent() || syncEpoch !== cycleEpoch) {
+      return;
+    }
+
+    if (accumulatedChanges.length > 0) {
+      applyEntryChangesBatch(queryClient, accumulatedChanges);
+    }
+
+    if (candidateWatermark !== null) {
+      setWatermarkForUser(userId, candidateWatermark);
+    }
+  } catch (err) {
+    if (
+      err instanceof ProblemError &&
+      (err.problem.status === 410 || err.problem.code === 'changes_window_expired')
+    ) {
+      if (syncEpoch === cycleEpoch) {
+        watermarkState = { userId, watermark: null };
+      }
+      return;
+    }
+    // Any other error (network, 5xx on page 1 or page 2, etc.): keep the OLD watermark, no retry loop, no UI error.
+  }
+}
+
+/**
+ * Purges entry metadata cache (`['content', 'entries']`), decrypted entry bodies (`['vault', 'body']`),
+ * the feed watermark, and the remote-tombstone store on vault reset or `vault_key_id` change (plan §2.10, Task 20).
+ * Keeps `['content', 'items']`, `['content', 'item']`, and `['content', 'tags']` intact.
+ */
+export function purgeEntriesCacheOnVaultReset(queryClient: QueryClient): void {
+  queryClient.removeQueries({ queryKey: CONTENT_ENTRIES_QUERY_KEY_PREFIX });
+  queryClient.removeQueries({ queryKey: VAULT_BODY_QUERY_KEY_PREFIX });
+  clearAllChangesSyncState();
+}
+
+export interface UseContentChangesSyncOptions {
+  readonly fetchChanges?: (params: EntriesChangesParams) => Promise<EntryChangesPage>;
+}
+
+/**
+ * App-wide multi-device content sync and client-side vault reset reconciliation hook (plan Task 20, §2.9, §2.10).
+ * Mounted once inside `<VaultProvider>` via `<ContentChangesSync />`.
+ */
+export function useContentChangesSync(options?: UseContentChangesSyncOptions): void {
+  const queryClient = useQueryClient();
+  const { me, status: sessionStatus } = useSession();
+  const vault = useOptionalVault();
+  const fetchChangesRef = useRef(options?.fetchChanges);
+  fetchChangesRef.current = options?.fetchChanges;
+
+  const userId = me?.user?.id ?? null;
+  const isAuthenticated =
+    Boolean(userId) &&
+    (sessionStatus === 'authenticated_with_vault' ||
+      sessionStatus === 'authenticated_without_vault');
+  const serverVaultStatus = me?.vault?.status ?? null;
+  const vaultState = vault?.state ?? 'locked';
+  const vaultKeyId = vault?.vaultMeta?.vault_key_id ?? null;
+  const reloadVaultMeta = vault?.reloadVaultMeta;
+  const registerSecretFormReset = vault?.registerSecretFormReset;
+
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const vaultStateRef = useRef(vaultState);
+  vaultStateRef.current = vaultState;
+  const serverVaultStatusRef = useRef(serverVaultStatus);
+  serverVaultStatusRef.current = serverVaultStatus;
+  const reloadVaultMetaRef = useRef(reloadVaultMeta);
+  reloadVaultMetaRef.current = reloadVaultMeta;
+
+  useEffect(() => {
+    ensureGlobalSyncLifecycleSubscriptions();
+  }, []);
+
+  // Clear remote tombstones synchronously on every vault lock / secret form reset
+  useEffect(() => {
+    if (!registerSecretFormReset) return;
+    return registerSecretFormReset(() => {
+      clearRemoteTombstones();
+    });
+  }, [registerSecretFormReset]);
+
+  useEffect(() => {
+    if (vaultState !== 'unlocked') {
+      clearRemoteTombstones();
+    }
+  }, [vaultState]);
+
+  // User switch or logout reconciliation
+  const prevUserIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prevUser = prevUserIdRef.current;
+    if (sessionStatus === 'signed_out' || !userId) {
+      if (prevUser !== null || watermarkState.watermark !== null || remoteTombstoneIds.size > 0) {
+        clearAllChangesSyncState();
+      }
+      prevUserIdRef.current = null;
+      return;
+    }
+    if (prevUser !== null && prevUser !== userId) {
+      clearAllChangesSyncState();
+    }
+    prevUserIdRef.current = userId;
+    if (watermarkState.userId !== null && watermarkState.userId !== userId) {
+      clearAllChangesSyncState();
+    }
+  }, [sessionStatus, userId]);
+
+  // Vault reset / vault_key_id replacement / vault absent detection (plan §2.10)
+  const lastSeenVaultByUserRef = useRef<{
+    userId: string;
+    vaultKeyId: string | null;
+    hadPresentVault: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!isAuthenticated || !userId) {
+      lastSeenVaultByUserRef.current = null;
+      return;
+    }
+
+    const prev = lastSeenVaultByUserRef.current;
+    const isPresent = serverVaultStatus === 'present' && vaultState !== 'no_vault';
+
+    if (!prev || prev.userId !== userId) {
+      lastSeenVaultByUserRef.current = {
+        userId,
+        vaultKeyId: vaultKeyId ?? null,
+        hadPresentVault: isPresent || Boolean(vaultKeyId),
+      };
+      if (serverVaultStatus === 'absent' || vaultState === 'no_vault') {
+        purgeEntriesCacheOnVaultReset(queryClient);
+      }
+      return;
+    }
+
+    const keyChanged =
+      prev.vaultKeyId !== null && vaultKeyId !== null && prev.vaultKeyId !== vaultKeyId;
+    const becameAbsent =
+      (prev.hadPresentVault || prev.vaultKeyId !== null) &&
+      (serverVaultStatus === 'absent' || vaultState === 'no_vault');
+
+    if (keyChanged || becameAbsent) {
+      purgeEntriesCacheOnVaultReset(queryClient);
+    }
+
+    lastSeenVaultByUserRef.current = {
+      userId,
+      vaultKeyId: becameAbsent ? null : (vaultKeyId ?? prev.vaultKeyId),
+      hadPresentVault: isPresent,
+    };
+  }, [isAuthenticated, queryClient, serverVaultStatus, userId, vaultKeyId, vaultState]);
+
+  // Bootstrap initial watermark when first entering unlocked state so changes made before the first wake are caught
+  const bootstrappedKeyRef = useRef<string | null>(null);
+  const runWakeCycleRef = useRef<((trigger: 'wake' | 'bootstrap') => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
+    let inFlightPromise: Promise<void> | null = null;
+    let scheduledMicrotask = false;
+
+    const executeCycle = async (trigger: 'wake' | 'bootstrap'): Promise<void> => {
+      if (!isAuthenticatedRef.current || !userIdRef.current) {
+        return;
+      }
+      const activeUserId = userIdRef.current;
+
+      if (trigger === 'wake') {
+        // 1. Always refetch canonical metadata sources regardless of vault lock state or feed result
+        const refetchPromise = refetchCanonicalContentSources(queryClient);
+
+        // 2. Reconcile GET /vault metadata when a vault exists so a reset/rewrap on another device locks this tab
+        //    (VaultProvider.verifyOnWake only checks GET /auth/me, not GET /vault).
+        const shouldReloadVaultMeta =
+          typeof reloadVaultMetaRef.current === 'function' &&
+          (serverVaultStatusRef.current === 'present' || vaultStateRef.current === 'unlocked');
+
+        const reloadPromise = shouldReloadVaultMeta
+          ? reloadVaultMetaRef
+              .current!()
+              .then((freshMeta) => {
+                if (freshMeta === null) {
+                  purgeEntriesCacheOnVaultReset(queryClient);
+                }
+                return freshMeta;
+              })
+              .catch(() => null)
+          : Promise.resolve(null);
+
+        await Promise.allSettled([refetchPromise, reloadPromise]);
+      }
+
+      // 3. If the vault is still unlocked for the same user, poll all pages of GET /entries/changes
+      if (
+        !isAuthenticatedRef.current ||
+        userIdRef.current !== activeUserId ||
+        vaultStateRef.current !== 'unlocked'
+      ) {
+        return;
+      }
+
+      await runChangesFeedCycle({
+        queryClient,
+        userId: activeUserId,
+        isUnlockedAndCurrent: () =>
+          isAuthenticatedRef.current &&
+          userIdRef.current === activeUserId &&
+          vaultStateRef.current === 'unlocked',
+        fetchChanges: fetchChangesRef.current,
+      });
+    };
+
+    const triggerCoalescedCycle = (trigger: 'wake' | 'bootstrap'): Promise<void> => {
+      if (!isAuthenticatedRef.current || !userIdRef.current) {
+        return Promise.resolve();
+      }
+      // Coalesce overlapping or synchronous burst wake events (focus + visibilitychange + online) into one cycle
+      if (inFlightPromise) {
+        return inFlightPromise;
+      }
+      if (scheduledMicrotask) {
+        return inFlightPromise ?? Promise.resolve();
+      }
+      scheduledMicrotask = true;
+      const p = Promise.resolve()
+        .then(() => {
+          scheduledMicrotask = false;
+          return executeCycle(trigger);
+        })
+        .finally(() => {
+          inFlightPromise = null;
+          scheduledMicrotask = false;
+        });
+      inFlightPromise = p;
+      return p;
+    };
+
+    runWakeCycleRef.current = triggerCoalescedCycle;
+
+    const onFocus = () => {
+      void triggerCoalescedCycle('wake');
+    };
+    const onOnline = () => {
+      void triggerCoalescedCycle('wake');
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void triggerCoalescedCycle('wake');
+      }
+    };
+
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      runWakeCycleRef.current = null;
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [queryClient]);
+
+  // Bootstrap watermark once when the vault becomes unlocked and no watermark is held yet for this user
+  useEffect(() => {
+    if (!isAuthenticated || !userId || vaultState !== 'unlocked') {
+      bootstrappedKeyRef.current = null;
+      return;
+    }
+    if (getWatermarkForUser(userId) !== null) {
+      return;
+    }
+    const bootstrapToken = `${userId}:${vaultKeyId ?? 'unlocked'}`;
+    if (bootstrappedKeyRef.current === bootstrapToken) {
+      return;
+    }
+    bootstrappedKeyRef.current = bootstrapToken;
+    void runWakeCycleRef.current?.('bootstrap');
+  }, [isAuthenticated, userId, vaultKeyId, vaultState]);
+}
+
+/**
+ * Tiny client component mounted inside `<VaultProvider>` in `app/app/layout.tsx` next to `<LocaleThemeSync />`.
+ */
+export function ContentChangesSync(): null {
+  useContentChangesSync();
+  return null;
+}
+
+export const __testing = {
+  getWatermarkForUser(userId: string): string | null {
+    return getWatermarkForUser(userId);
+  },
+  setWatermarkForUser(userId: string, watermark: string): void {
+    setWatermarkForUser(userId, watermark);
+  },
+  getRemoteTombstoneIds(): ReadonlySet<string> {
+    return remoteTombstoneIds;
+  },
+  publishRemoteTombstonesForTests(entryIds: Iterable<string>): void {
+    publishRemoteTombstones(entryIds);
+  },
+  getTombstoneSnapshotVersion(): number {
+    return tombstoneSnapshotVersion;
+  },
+  resetAllForTests(): void {
+    clearAllChangesSyncState();
+    activeCardTrackerByItem.clear();
+  },
+};

@@ -30,6 +30,10 @@ import {
   type SealedEntryUpdatePayload,
 } from '@/features/entries';
 import {
+  setEntryCardKeepMounted,
+  useEntryRemotelyDeleted,
+} from '@/features/entries/changes-sync';
+import {
   LockMask,
   useEntryBody,
   useEntryInViewport,
@@ -230,11 +234,12 @@ export function JsonEntryCard({
     readonly reloadConfirmOpen: boolean;
   } | null>(null);
   const [deletedRemotely, setDeletedRemotely] = useState<boolean>(false);
+  const remotelyDeletedFromFeed = useEntryRemotelyDeleted(entry.id);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState<boolean>(false);
   const [menuOpen, setMenuOpen] = useState<boolean>(false);
   const [resetEpoch, setResetEpoch] = useState<number>(0);
-
+  const cardKeepMountedTokenRef = useRef<symbol>(Symbol('JsonEntryCard'));
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const menuPopRef = useRef<HTMLDivElement | null>(null);
   const tabTableBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -354,17 +359,42 @@ export function JsonEntryCard({
 
   // IP16-FE1-19: Only count an actual unsaved draft or active error/conflict state (not merely viewing the Raw tab)
   const hasActiveDraftOrStateRef = useRef<boolean>(false);
+  const shouldKeepCardMounted =
+    unlocked &&
+    (isDirty ||
+      savingInFlight ||
+      unconfirmedSave !== null ||
+      conflictState !== null ||
+      deletedRemotely);
   hasActiveDraftOrStateRef.current =
     isDirty ||
     unconfirmedSave !== null ||
     conflictState !== null ||
     deletedRemotely;
+  useEffect(() => {
+    setEntryCardKeepMounted(
+      itemId,
+      entry.id,
+      cardKeepMountedTokenRef.current,
+      shouldKeepCardMounted,
+    );
+  }, [entry.id, itemId, shouldKeepCardMounted]);
 
+  useEffect(() => {
+    if (
+      remotelyDeletedFromFeed &&
+      (hasActiveDraftOrStateRef.current || savingInFlight) &&
+      !deletedRemotely
+    ) {
+      setDeletedRemotely(true);
+    }
+  }, [deletedRemotely, remotelyDeletedFromFeed, savingInFlight]);
   // Register secret form reset on vault lock / auto-lock / user switch / logout (plan §2.10, P4FE1-8)
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       const hadActiveDraft = hasActiveDraftOrStateRef.current;
+      setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
@@ -388,11 +418,12 @@ export function JsonEntryCard({
         onDraftClearedOnLock?.();
       }
     });
-  }, [clearEditorPlaintextHolderSync, onDraftClearedOnLock, vault]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId, onDraftClearedOnLock, vault]);
 
   // Also clear immediately if `unlocked` flips to false
   useEffect(() => {
     if (!unlocked) {
+      setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
@@ -413,13 +444,15 @@ export function JsonEntryCard({
       setMenuOpen(false);
       setResetEpoch((prev) => prev + 1);
     }
-  }, [clearEditorPlaintextHolderSync, unlocked]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId, unlocked]);
 
   // Unmount cleanup (IP16-FE1-3 / IP15-BE3-2): synchronously wipe every plaintext holder field and
   // invalidate card op/save ownership on unmount, independent of the reset-registration effect.
   useEffect(() => {
     const holderToWipe = plaintextHolderRef;
+    const token = cardKeepMountedTokenRef.current;
     return () => {
+      setEntryCardKeepMounted(itemId, entry.id, token, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       saveOwnerIdRef.current = 0;
@@ -429,7 +462,7 @@ export function JsonEntryCard({
       holderToWipe.current.submittedCandidateSource = '';
       holderToWipe.current.tableSource = '';
     };
-  }, [plaintextHolderRef]);
+  }, [entry.id, itemId, plaintextHolderRef]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -635,6 +668,7 @@ export function JsonEntryCard({
   );
 
   const resetDraftToOriginal = useCallback(() => {
+    setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
     const base = body ?? originalSource;
     const normalized = normalizeEolToLf(base);
     plaintextHolderRef.current.originalSource = base;
@@ -658,7 +692,7 @@ export function JsonEntryCard({
     setDeletedRemotely(false);
     setSaveError(null);
     setResetEpoch((prev) => prev + 1);
-  }, [body, originalSource, plaintextHolderRef]);
+  }, [body, entry.id, itemId, originalSource, plaintextHolderRef]);
 
   const requestCancelEdit = useCallback(() => {
     if (savingInFlight) return;
