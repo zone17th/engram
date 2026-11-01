@@ -760,7 +760,7 @@
         "submittingButton": "Đang đặt lại vault…",
         "expiredPasswordSubmit": "Xác nhận và đặt lại",
         "step5Status": "Vault đã được đặt lại",
-        "step5Body": "Nội dung mọi entry và bộ khoá cũ trên máy chủ đã bị xoá. Tên mục và tag vẫn được giữ nguyên. Để lưu và đọc nội dung mới, bạn cần tạo một vault mới.",
+        "step5Body": "Nội dung mọi entry và bộ khoá cũ trên máy chủ đã bị xoá. Tên mục, gợi ý và tag vẫn được giữ nguyên. Để lưu và đọc nội dung mới, bạn cần tạo một vault mới.",
         "createNewVaultLink": "Tạo vault mới",
         "toastDone": "Vault đã được đặt lại"
       }

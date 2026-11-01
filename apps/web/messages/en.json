@@ -760,7 +760,7 @@
         "submittingButton": "Resetting vault…",
         "expiredPasswordSubmit": "Verify & reset",
         "step5Status": "Vault has been reset",
-        "step5Body": "All entry contents and previous keys on the server have been deleted. Item names and tags were kept. You must create a new vault before saving new entries.",
+        "step5Body": "All entry contents and previous keys on the server have been deleted. Item names, hints and tags were kept. You must create a new vault before saving new entries.",
         "createNewVaultLink": "Create new vault",
         "toastDone": "Vault has been reset"
       }
