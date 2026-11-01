@@ -48,53 +48,109 @@ func TestContentMigration0006CleanAndFrom0005WithData(t *testing.T) {
 		}
 	}
 
-	expectedIndexes := map[string][]string{
+	type expectedIndexSpec struct {
+		name           string
+		mustContain    []string
+		mustNotContain []string
+	}
+	expectedIndexes := map[string][]expectedIndexSpec{
 		"item": {
-			"item_user_name_prefix",
-			"item_name_trgm",
-			"item_user_recent",
-			"item_user_created",
-			"item_user_name_exact",
-			"item_purge_idx",
+			{
+				name:        "item_user_name_prefix",
+				mustContain: []string{"(user_id, name_normalized text_pattern_ops)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "item_name_trgm",
+				mustContain: []string{"using gin (name_unaccent gin_trgm_ops)"},
+			},
+			{
+				name:        "item_user_recent",
+				mustContain: []string{"(user_id, last_used_at desc, id desc)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "item_user_created",
+				mustContain: []string{"(user_id, created_at desc)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "item_user_name_exact",
+				mustContain: []string{"(user_id, name_normalized, created_at desc, id)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "item_user_name_alpha",
+				mustContain: []string{"(user_id, name_normalized, id)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "item_purge_idx",
+				mustContain: []string{"(deleted_at)", "where (deleted_at is not null)"},
+			},
 		},
 		"tag": {
-			"tag_user_norm_uq",
-			"tag_user_norm_prefix",
-			"tag_norm_trgm",
-			"tag_user_recent",
-			"tag_purge_idx",
+			{
+				name:        "tag_user_norm_uq",
+				mustContain: []string{"unique index", "(user_id, normalized)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "tag_user_norm_prefix",
+				mustContain: []string{"(user_id, normalized text_pattern_ops)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "tag_norm_trgm",
+				mustContain: []string{"using gin (tag_unaccent gin_trgm_ops)"},
+			},
+			{
+				name:        "tag_user_recent",
+				mustContain: []string{"(user_id, last_used_at desc, id desc)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "tag_purge_idx",
+				mustContain: []string{"(deleted_at)", "where (deleted_at is not null)"},
+			},
 		},
 		"item_tag": {
-			"item_tag_tag_idx",
+			{
+				name:        "item_tag_tag_idx",
+				mustContain: []string{"(tag_id, item_id)"},
+			},
 		},
 		"entry": {
-			"entry_item_live_pos_idx",
-			"entry_user_updated_idx",
-			"entry_user_changes_idx",
-			"entry_purge_idx",
+			{
+				name:        "entry_item_live_pos_idx",
+				mustContain: []string{"(item_id, \"position\", id)", "where (deleted_at is null)"},
+			},
+			{
+				name:        "entry_user_updated_idx",
+				mustContain: []string{"(user_id, updated_at desc)", "where (deleted_at is null)"},
+			},
+			{
+				name:           "entry_user_changes_idx",
+				mustContain:    []string{"(user_id, updated_at, id)"},
+				mustNotContain: []string{"deleted_at"},
+			},
+			{
+				name:        "entry_purge_idx",
+				mustContain: []string{"(deleted_at)", "where (deleted_at is not null)"},
+			},
 		},
 	}
-	for table, indexes := range expectedIndexes {
-		for _, idx := range indexes {
-			var n int
-			if err := poolClean.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE tablename = $1 AND indexname = $2`, table, idx).Scan(&n); err != nil {
-				t.Fatalf("query index %s.%s: %v", table, idx, err)
+	for table, specs := range expectedIndexes {
+		for _, spec := range specs {
+			var idxDef string
+			if err := poolClean.QueryRow(ctx, `SELECT indexdef FROM pg_indexes WHERE tablename = $1 AND indexname = $2`, table, spec.name).Scan(&idxDef); err != nil {
+				t.Fatalf("query indexdef %s.%s: %v", table, spec.name, err)
 			}
-			if n != 1 {
-				t.Fatalf("missing index %s on table %s", idx, table)
+			lowerDef := strings.ToLower(idxDef)
+			for _, sub := range spec.mustContain {
+				if !strings.Contains(lowerDef, sub) {
+					t.Fatalf("index %s.%s definition mismatch: got %q, want substring %q", table, spec.name, idxDef, sub)
+				}
+			}
+			for _, forbidden := range spec.mustNotContain {
+				if strings.Contains(lowerDef, forbidden) {
+					t.Fatalf("index %s.%s definition must not contain %q: got %q", table, spec.name, forbidden, idxDef)
+				}
 			}
 		}
 	}
-
-	// Verify entry_user_changes_idx has NO deleted_at predicate (feed needs tombstones).
-	var changesIdxDef string
-	if err := poolClean.QueryRow(ctx, `SELECT indexdef FROM pg_indexes WHERE tablename = 'entry' AND indexname = 'entry_user_changes_idx'`).Scan(&changesIdxDef); err != nil {
-		t.Fatalf("read entry_user_changes_idx indexdef: %v", err)
-	}
-	if strings.Contains(strings.ToLower(changesIdxDef), "deleted_at") {
-		t.Fatalf("entry_user_changes_idx must not have a deleted_at predicate: %s", changesIdxDef)
-	}
-
 	// Verify entry_item_pos_idx is replaced by entry_item_live_pos_idx.
 	var legacyPosIdx int
 	if err := poolClean.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE tablename = 'entry' AND indexname = 'entry_item_pos_idx'`).Scan(&legacyPosIdx); err != nil {
@@ -643,7 +699,76 @@ func TestContentQueriesBehavior(t *testing.T) {
 		t.Fatalf("EntryIDExistsGlobal = %v, err=%v", exists, err)
 	}
 
-	// Reset queries: DeleteEntriesByUser + ZeroEntryCountByUser.
+	// Database clock watermark helper (plan §2.9) returns a valid timestamp independently of rows.
+	watermark, err := q.ContentClockNow(ctx)
+	if err != nil || !watermark.Valid || watermark.Time.IsZero() {
+		t.Fatalf("ContentClockNow: watermark=%+v err=%v", watermark, err)
+	}
+
+	// Seed user u2 with a live item, live tag (linked), and live entry so reset of u1
+	// can be verified to leave u2's rows and counters completely untouched (CC2-R1-4).
+	itU2, err := q.InsertItem(ctx, gen.InsertItemParams{
+		UserID:         u2.ID,
+		Name:           "U2 Item",
+		NameNormalized: "u2 item",
+	})
+	if err != nil {
+		t.Fatalf("InsertItem u2: %v", err)
+	}
+	tU2, err := q.InsertTag(ctx, gen.InsertTagParams{
+		UserID:     u2.ID,
+		Display:    "u2tag",
+		Normalized: "u2tag",
+	})
+	if err != nil {
+		t.Fatalf("InsertTag u2: %v", err)
+	}
+	if _, err := q.AssignItemTag(ctx, gen.AssignItemTagParams{
+		UserID: u2.ID,
+		ItemID: itU2.ID,
+		TagID:  tU2.ID,
+	}); err != nil {
+		t.Fatalf("AssignItemTag u2: %v", err)
+	}
+	if _, err := q.IncrementTagsItemCountAndTouch(ctx, gen.IncrementTagsItemCountAndTouchParams{
+		UserID: u2.ID,
+		TagIds: []uuid.UUID{tU2.ID},
+		Now:    nowPg,
+	}); err != nil {
+		t.Fatalf("IncrementTagsItemCountAndTouch u2: %v", err)
+	}
+	eU2, err := q.InsertEntry(ctx, gen.InsertEntryParams{
+		ID:                 uuid.New(),
+		UserID:             u2.ID,
+		ItemID:             itU2.ID,
+		Type:               "text",
+		Envelope:           validEnv,
+		Ciphertext:         make([]byte, 32),
+		PlaintextLenBucket: 256,
+	})
+	if err != nil {
+		t.Fatalf("InsertEntry u2: %v", err)
+	}
+	if _, err := q.AddItemEntryCount(ctx, gen.AddItemEntryCountParams{
+		UserID: u2.ID,
+		ID:     itU2.ID,
+		Delta:  1,
+	}); err != nil {
+		t.Fatalf("AddItemEntryCount u2: %v", err)
+	}
+
+	// Verify pre-reset state: u1's it1 has entry_count=1 (from RestoreItem above),
+	// and u2's itU2 has entry_count=1.
+	it1BeforeReset, err := q.GetLiveItemByUserAndID(ctx, gen.GetLiveItemByUserAndIDParams{UserID: u1.ID, ID: it1.ID})
+	if err != nil || it1BeforeReset.EntryCount != 1 {
+		t.Fatalf("pre-reset it1 entry_count = %d, want 1 (err=%v)", it1BeforeReset.EntryCount, err)
+	}
+	itU2BeforeReset, err := q.GetLiveItemByUserAndID(ctx, gen.GetLiveItemByUserAndIDParams{UserID: u2.ID, ID: itU2.ID})
+	if err != nil || itU2BeforeReset.EntryCount != 1 {
+		t.Fatalf("pre-reset itU2 entry_count = %d, want 1 (err=%v)", itU2BeforeReset.EntryCount, err)
+	}
+
+	// Reset queries for u1: LockAllItemsOfUserForUpdate + DeleteEntriesByUser + ZeroEntryCountByUser.
 	if _, err := q.LockAllItemsOfUserForUpdate(ctx, u1.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -651,11 +776,32 @@ func TestContentQueriesBehavior(t *testing.T) {
 	if err != nil || delCount != 2 {
 		t.Fatalf("DeleteEntriesByUser = %d want 2, err=%v", delCount, err)
 	}
-	if _, err := q.ZeroEntryCountByUser(ctx, u1.ID); err != nil {
-		t.Fatal(err)
+	zeroedItems, err := q.ZeroEntryCountByUser(ctx, u1.ID)
+	if err != nil || zeroedItems != 1 {
+		t.Fatalf("ZeroEntryCountByUser = %d want 1, err=%v", zeroedItems, err)
+	}
+
+	// Assert real nonzero -> zero transition on it1 (which had live entries) as well as it2 surviving.
+	it1AfterReset, err := q.GetLiveItemByUserAndID(ctx, gen.GetLiveItemByUserAndIDParams{UserID: u1.ID, ID: it1.ID})
+	if err != nil || it1AfterReset.EntryCount != 0 {
+		t.Fatalf("it1 after reset must transition entry_count 1->0: got=%+v err=%v", it1AfterReset, err)
 	}
 	it2Check, err := q.GetLiveItemByUserAndID(ctx, gen.GetLiveItemByUserAndIDParams{UserID: u1.ID, ID: it2.ID})
 	if err != nil || it2Check.EntryCount != 0 {
-		t.Fatalf("item survives reset with entry_count=0: got=%+v err=%v", it2Check, err)
+		t.Fatalf("it2 survives reset with entry_count=0: got=%+v err=%v", it2Check, err)
+	}
+
+	// Verify u2's item, tag, and entry rows and counters are completely untouched by u1's reset.
+	itU2AfterReset, err := q.GetLiveItemByUserAndID(ctx, gen.GetLiveItemByUserAndIDParams{UserID: u2.ID, ID: itU2.ID})
+	if err != nil || itU2AfterReset.EntryCount != 1 {
+		t.Fatalf("u2 item entry_count must remain 1 after u1 reset: got=%+v err=%v", itU2AfterReset, err)
+	}
+	tU2AfterReset, err := q.GetLiveTagByUserAndID(ctx, gen.GetLiveTagByUserAndIDParams{UserID: u2.ID, ID: tU2.ID})
+	if err != nil || tU2AfterReset.ItemCount != 1 {
+		t.Fatalf("u2 tag item_count must remain 1 after u1 reset: got=%+v err=%v", tU2AfterReset, err)
+	}
+	eU2AfterReset, err := q.GetLiveEntryByUserAndID(ctx, gen.GetLiveEntryByUserAndIDParams{UserID: u2.ID, ID: eU2.ID})
+	if err != nil || eU2AfterReset.ID != eU2.ID {
+		t.Fatalf("u2 entry must survive u1 reset: got=%+v err=%v", eU2AfterReset, err)
 	}
 }
