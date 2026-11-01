@@ -253,7 +253,16 @@ RETURNING id, position;
 -- =============================================================================
 -- Section 4: Entry changes feed & watermark (plan §2.9)
 -- Keyset on (updated_at, id) ASC with since and no upper bound; includes tombstones.
+-- ContentClockNow captures the server's database clock_timestamp() watermark
+-- before the first page of a feed cursor chain (plan §2.9), independently of
+-- whether the page returns any rows. Subsequent pages carry the first page's
+-- watermark in the cursor rather than calling ContentClockNow again.
 -- =============================================================================
+
+-- ContentClockNow returns the database clock_timestamp() watermark captured
+-- before the first page of GET /entries/changes (plan §2.9).
+-- name: ContentClockNow :one
+SELECT clock_timestamp()::timestamptz AS watermark;
 
 -- name: ListEntryChangesSince :many
 SELECT

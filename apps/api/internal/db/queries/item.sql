@@ -124,9 +124,10 @@ WHERE user_id = sqlc.arg('user_id')
 
 -- =============================================================================
 -- Section 4: Item list keyset (sort=recent | sort=alpha, optional tag_id and q)
--- NOTE on q_prefix: caller MUST escape '%' and '_' with '\' and append '%'
--- (e.g. escaped_q || '%') before passing q_prefix so LIKE uses Escape '\' and
--- can use item_user_name_prefix (text_pattern_ops). Pass NULL when no q filter.
+-- NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+-- and only then append trailing '%' (e.g. escaped_q || '%') before passing
+-- q_prefix so LIKE uses ESCAPE '\' and can use item_user_name_prefix
+-- (text_pattern_ops). Pass NULL when no q filter.
 -- =============================================================================
 
 -- name: ListLiveItemsRecent :many
@@ -160,6 +161,10 @@ WHERE i.user_id = sqlc.arg('user_id')
 ORDER BY i.last_used_at DESC, i.id DESC
 LIMIT sqlc.arg('page_limit');
 
+-- NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+-- and only then append trailing '%' (e.g. escaped_q || '%') before passing
+-- q_prefix so LIKE uses ESCAPE '\' and can use item_user_name_prefix
+-- (text_pattern_ops). Pass NULL when no q filter.
 -- name: ListLiveItemsAlpha :many
 SELECT i.*
 FROM item AS i

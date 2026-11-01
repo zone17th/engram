@@ -12,6 +12,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const contentClockNow = `-- name: ContentClockNow :one
+
+SELECT clock_timestamp()::timestamptz AS watermark
+`
+
+// =============================================================================
+// Section 4: Entry changes feed & watermark (plan §2.9)
+// Keyset on (updated_at, id) ASC with since and no upper bound; includes tombstones.
+// ContentClockNow captures the server's database clock_timestamp() watermark
+// before the first page of a feed cursor chain (plan §2.9), independently of
+// whether the page returns any rows. Subsequent pages carry the first page's
+// watermark in the cursor rather than calling ContentClockNow again.
+// =============================================================================
+// ContentClockNow returns the database clock_timestamp() watermark captured
+// before the first page of GET /entries/changes (plan §2.9).
+func (q *Queries) ContentClockNow(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, contentClockNow)
+	var watermark pgtype.Timestamptz
+	err := row.Scan(&watermark)
+	return watermark, err
+}
+
 const countEntriesByItemBatch = `-- name: CountEntriesByItemBatch :one
 SELECT count(*)::int AS batch_entry_count
 FROM entry
@@ -236,7 +258,6 @@ func (q *Queries) InsertEntry(ctx context.Context, arg InsertEntryParams) (Inser
 }
 
 const listEntryChangesSince = `-- name: ListEntryChangesSince :many
-
 SELECT
   id,
   item_id,
@@ -281,10 +302,6 @@ type ListEntryChangesSinceRow struct {
 	DeletedAt          pgtype.Timestamptz
 }
 
-// =============================================================================
-// Section 4: Entry changes feed & watermark (plan §2.9)
-// Keyset on (updated_at, id) ASC with since and no upper bound; includes tombstones.
-// =============================================================================
 func (q *Queries) ListEntryChangesSince(ctx context.Context, arg ListEntryChangesSinceParams) ([]ListEntryChangesSinceRow, error) {
 	rows, err := q.db.Query(ctx, listEntryChangesSince,
 		arg.UserID,
