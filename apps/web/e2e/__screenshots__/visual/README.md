@@ -1,5 +1,7 @@
 # Visual regression references
 
+> P04 note: the `win32` PNGs below are P01 history and are no longer updated; the current landing evidence is the CI capture spec `e2e/content-uipolish-capture.spec.ts` (Linux, `content` project in the `e2e-content-verify-true` job, artifact `playwright-results-content-verify-true`, files `content-landing-<locale>-<theme>-<width>.png`; advisor-dec-187).
+
 The `win32` references capture the current public landing implementation on
 2026-09-16 with Playwright 1.56.0 Chromium, at 390, 768, and 1440 pixels, in both
 locales and themes. The demo uses the public `ghi` search fixture and reduced
