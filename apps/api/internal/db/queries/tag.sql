@@ -111,9 +111,10 @@ FROM (
 
 -- =============================================================================
 -- Section 3: Tag list keyset (sort=recent | sort=alpha, optional q prefix)
--- NOTE on q_prefix: caller MUST escape '%' and '_' with '\' and append '%'
--- (e.g. escaped_q || '%') before passing q_prefix so LIKE uses Escape '\' and
--- can use tag_user_norm_prefix (text_pattern_ops). Pass NULL when no q filter.
+-- NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+-- and only then append trailing '%' (e.g. escaped_q || '%') before passing
+-- q_prefix so LIKE uses ESCAPE '\' and can use tag_user_norm_prefix
+-- (text_pattern_ops). Pass NULL when no q filter.
 -- =============================================================================
 
 -- name: ListLiveTagsRecent :many
@@ -136,6 +137,10 @@ WHERE user_id = sqlc.arg('user_id')
 ORDER BY last_used_at DESC, id DESC
 LIMIT sqlc.arg('page_limit');
 
+-- NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+-- and only then append trailing '%' (e.g. escaped_q || '%') before passing
+-- q_prefix so LIKE uses ESCAPE '\' and can use tag_user_norm_prefix
+-- (text_pattern_ops). Pass NULL when no q filter.
 -- name: ListLiveTagsAlpha :many
 SELECT *
 FROM tag

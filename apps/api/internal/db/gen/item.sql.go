@@ -253,6 +253,10 @@ type ListLiveItemsAlphaParams struct {
 	PageLimit            int32
 }
 
+// NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+// and only then append trailing '%' (e.g. escaped_q || '%') before passing
+// q_prefix so LIKE uses ESCAPE '\' and can use item_user_name_prefix
+// (text_pattern_ops). Pass NULL when no q filter.
 func (q *Queries) ListLiveItemsAlpha(ctx context.Context, arg ListLiveItemsAlphaParams) ([]Item, error) {
 	rows, err := q.db.Query(ctx, listLiveItemsAlpha,
 		arg.UserID,
@@ -338,9 +342,10 @@ type ListLiveItemsRecentParams struct {
 
 // =============================================================================
 // Section 4: Item list keyset (sort=recent | sort=alpha, optional tag_id and q)
-// NOTE on q_prefix: caller MUST escape '%' and '_' with '\' and append '%'
-// (e.g. escaped_q || '%') before passing q_prefix so LIKE uses Escape '\' and
-// can use item_user_name_prefix (text_pattern_ops). Pass NULL when no q filter.
+// NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+// and only then append trailing '%' (e.g. escaped_q || '%') before passing
+// q_prefix so LIKE uses ESCAPE '\' and can use item_user_name_prefix
+// (text_pattern_ops). Pass NULL when no q filter.
 // =============================================================================
 func (q *Queries) ListLiveItemsRecent(ctx context.Context, arg ListLiveItemsRecentParams) ([]Item, error) {
 	rows, err := q.db.Query(ctx, listLiveItemsRecent,

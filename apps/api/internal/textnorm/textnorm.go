@@ -56,13 +56,11 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Code }
 
-// Is supports errors.Is comparisons against sentinel errors in this package.
+// Is supports shallow, nil-safe errors.Is comparisons against sentinel errors
+// in this package.
 func (e *Error) Is(target error) bool {
-	var t *Error
-	if !errors.As(target, &t) {
-		return false
-	}
-	return e.Code == t.Code
+	t, ok := target.(*Error)
+	return ok && e != nil && t != nil && e.Code == t.Code
 }
 
 var (
@@ -88,10 +86,11 @@ func AsError(err error) (*Error, bool) {
 //     except U+0020 space, bidi overrides/isolates (U+202A–U+202E, U+2066–U+2069),
 //     or strings that are empty after trimming Unicode White_Space.
 //  2. Apply Unicode NFC -> per-rune unicode.ToLower (without locale-specific special
-//     casing) -> collapse every contiguous run of Unicode White_Space (unicode.IsSpace)
-//     to a single ASCII space U+0020 -> trim leading/trailing space -> strip leading
-//     and trailing punctuation runes (Unicode category P*, unicode.IsPunct) repeatedly
-//     until neither end is P* (also trimming any space exposed by stripping outer P*).
+//     casing) -> Unicode NFC again (advisor-dec-125) -> collapse every contiguous
+//     run of Unicode White_Space (unicode.IsSpace) to a single ASCII space U+0020 ->
+//     trim leading/trailing space -> strip leading and trailing punctuation runes
+//     (Unicode category P*, unicode.IsPunct) repeatedly until neither end is P*
+//     (also trimming any space exposed by stripping outer P*).
 //     Vietnamese diacritics are preserved (`mã` != `ma`).
 //  3. If the resulting string is empty (e.g. `"!!!"`), reject with ErrNameInvalid.
 //
@@ -228,17 +227,24 @@ func normalizeAndTrim(s string, invalidErr error) (trimmed string, normalized st
 }
 
 // normalizeStep2 executes plan mục 2.2 step 2 on a valid UTF-8 string that has
-// already passed step 1:
-// NFC -> per-rune unicode.ToLower -> collapse White_Space runs to ' ' -> trim ->
-// repeatedly strip leading/trailing P* (and any newly exposed edge spaces).
+// already passed step 1 (advisor-dec-125):
+// NFC -> per-rune unicode.ToLower -> NFC again -> collapse White_Space runs to
+// ' ' -> trim -> repeatedly strip leading/trailing P* (and any newly exposed
+// edge spaces).
 func normalizeStep2(s string) string {
 	nfc := norm.NFC.String(s)
+
+	var lowered strings.Builder
+	lowered.Grow(len(nfc))
+	for _, r := range nfc {
+		lowered.WriteRune(unicode.ToLower(r))
+	}
+	nfc = norm.NFC.String(lowered.String())
 
 	var b strings.Builder
 	b.Grow(len(nfc))
 	inSpace := false
 	for _, r := range nfc {
-		r = unicode.ToLower(r)
 		if unicode.IsSpace(r) {
 			if b.Len() > 0 {
 				inSpace = true
@@ -251,7 +257,6 @@ func normalizeStep2(s string) string {
 		}
 		b.WriteRune(r)
 	}
-
 	res := b.String()
 	// Strip category P* (unicode.IsPunct) at both ends repeatedly, also trimming
 	// any ASCII spaces exposed when outer punctuation was separated by whitespace

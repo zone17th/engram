@@ -322,6 +322,10 @@ type ListLiveTagsAlphaParams struct {
 	PageLimit        int32
 }
 
+// NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+// and only then append trailing '%' (e.g. escaped_q || '%') before passing
+// q_prefix so LIKE uses ESCAPE '\' and can use tag_user_norm_prefix
+// (text_pattern_ops). Pass NULL when no q filter.
 func (q *Queries) ListLiveTagsAlpha(ctx context.Context, arg ListLiveTagsAlphaParams) ([]Tag, error) {
 	rows, err := q.db.Query(ctx, listLiveTagsAlpha,
 		arg.UserID,
@@ -477,9 +481,10 @@ type ListLiveTagsRecentParams struct {
 
 // =============================================================================
 // Section 3: Tag list keyset (sort=recent | sort=alpha, optional q prefix)
-// NOTE on q_prefix: caller MUST escape '%' and '_' with '\' and append '%'
-// (e.g. escaped_q || '%') before passing q_prefix so LIKE uses Escape '\' and
-// can use tag_user_norm_prefix (text_pattern_ops). Pass NULL when no q filter.
+// NOTE on q_prefix: caller MUST escape '\' first, then '%' and '_' with '\',
+// and only then append trailing '%' (e.g. escaped_q || '%') before passing
+// q_prefix so LIKE uses ESCAPE '\' and can use tag_user_norm_prefix
+// (text_pattern_ops). Pass NULL when no q filter.
 // =============================================================================
 func (q *Queries) ListLiveTagsRecent(ctx context.Context, arg ListLiveTagsRecentParams) ([]Tag, error) {
 	rows, err := q.db.Query(ctx, listLiveTagsRecent,
