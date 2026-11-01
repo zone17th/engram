@@ -1,0 +1,5 @@
+[
+  { "id": 1, "name": "clean" },
+  { "id": 2, "name": "dup-row", "id": 99 },
+  { "id": 3, "name": "tail" }
+]

@@ -1,0 +1,9 @@
+{
+  "__proto__": "proto-value",
+  "constructor": "ctor-value",
+  "hasOwnProperty": "hop-value",
+  "rows": [
+    { "__proto__": 1, "constructor": 2, "hasOwnProperty": 3 },
+    { "__proto__": 4, "constructor": 5, "normal": 6 }
+  ]
+}
