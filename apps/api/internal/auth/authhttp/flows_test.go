@@ -18,6 +18,7 @@ import (
 
 func noRedirect() *http.Client {
 	return &http.Client{
+		Timeout:       5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
