@@ -72,6 +72,10 @@ export const CONTENT_A11Y_ITEM_STATES = [
   'json-error',
   'entry-menu',
   'item-undo-toast',
+  'import-empty',
+  'import-valid',
+  'import-invalid',
+  'import-over-cap',
 ] as const;
 
 export type ContentA11yHomeState = (typeof CONTENT_A11Y_HOME_STATES)[number];
@@ -470,6 +474,7 @@ async function saveContentScreenshot(
       page.locator('[data-testid^="json-readonly-cell-"]'),
       page.locator('[data-testid^="json-raw-textarea-"]'),
       page.locator('#omni textarea[data-vault-secret][data-visual-mask]'),
+      page.locator('[data-testid="import-json-preview-raw"]'),
       ...(spec.maskSelectors ?? []).map((sel) => page.locator(sel)),
     ],
   });

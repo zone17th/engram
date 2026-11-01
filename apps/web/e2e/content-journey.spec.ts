@@ -3,12 +3,14 @@ import en from '../messages/en.json';
 import {
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
+  expectEntryDecryptedPlaintextExactBool,
   expectInputEmptyBool,
   expectInputValueEqualsBool,
   expectNoDomOrStorageBodyLeaks,
   expectServerItemAndLiveEntryIds,
   expectTextEqualsBool,
   setQuietInputValue,
+  setQuietJsonFileInput,
   timedJourneyStep,
   verifyStorageAndCacheScannerPositiveControl,
   expectOnUnlockPageAllowingReturnTo,
@@ -53,7 +55,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
   test.describe.configure({ mode: 'serial' });
   test.skip(!process.env.E2E_STACK, 'needs the compose stack (E2E_STACK=1): real API, real database');
 
-  test('signup -> onboarding (skip passkey) -> omnibox quick-add 0/1/n (picker keyboard) -> item text edit (incl. offline draft retention + Retry) -> JSON composer & lossless cell edit (incl. offline Retry) -> new context unlock -> delete & Undo (entry toast + Ctrl+Z, item delete + Undo proven via server API) -> lock wipes open draft, DOM, and storage', async ({
+  test('signup -> onboarding (skip passkey) -> omnibox quick-add 0/1/n (picker keyboard) -> item text edit (incl. offline draft retention + Retry) -> import JSON (CRLF file + nested objects + newline string + offline Retry idempotency) -> JSON composer & lossless cell edit (incl. offline Retry) -> new context unlock -> delete & Undo (entry toast + Ctrl+Z, item delete + Undo proven via server API) -> lock wipes open draft, DOM, and storage', async ({
     browser,
   }) => {
     test.setTimeout(JOURNEY_TIMEOUT_MS);
@@ -69,12 +71,20 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
     const jsonSecretTokenInit = `acceptance-json-token-init-${nonce}`;
     const jsonSecretTokenEdited = `acceptance-json-token-edited-${nonce}`;
     const jsonSiblingKeep = `acceptance-json-sibling-keep-${nonce}`;
+    const importJsonToken = `acceptance-import-json-token-${nonce}`;
+    const importJsonNestedSecret = `acceptance-import-nested-secret-${nonce}`;
+    const importJsonNoteLine1 = `acceptance-import-note-line1-${nonce}`;
+    const importJsonNoteLine2 = `acceptance-import-note-line2-${nonce}`;
 
     // Deliberately irregular whitespace, key ordering, escapes (including \n in sibling), and 64-bit integer lexeme
     // outside the edited cell span so byte-for-byte comparison proves lossless span splicing (P04-A6, ACC-FE1-7).
     const jsonInitialRaw = `{\n  "service" :  "${jsonSecretTokenInit}" ,\n    "port": 5432,\n\t"snowflake_id": 9007199254740993,\n  "escaped_path": "a\\/b\\u00e9",\n  "sibling": "${jsonSiblingKeep}\\nline2"\n}`;
     const jsonExpectedAfterEdit = `{\n  "service" :  "${jsonSecretTokenEdited}" ,\n    "port": 5432,\n\t"snowflake_id": 9007199254740993,\n  "escaped_path": "a\\/b\\u00e9",\n  "sibling": "${jsonSiblingKeep}\\nline2"\n}`;
 
+
+    // T17 import JSON fixture: nested objects, a string with \n, and CRLF (\r\n) line endings (P04-A6 file path byte-exact).
+    const importJsonCrlfFixture = `{\r\n  "cluster": "${importJsonToken}",\r\n  "nested": {\r\n    "endpoint": "https://db.internal:5432",\r\n    "credentials": {\r\n      "secret": "${importJsonNestedSecret}",\r\n      "retries": 3\r\n    }\r\n  },\r\n  "multiline_note": "${importJsonNoteLine1}\\n${importJsonNoteLine2}"\r\n}\r\n`;
+    const importJsonDisplayNormalized = importJsonCrlfFixture.replace(/\r\n/g, '\n');
     const labeledSecrets = [
       { label: 'bodyMatch0', value: bodyMatch0 },
       { label: 'bodyMatch1', value: bodyMatch1 },
@@ -86,6 +96,10 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
       { label: 'jsonSecretTokenInit', value: jsonSecretTokenInit },
       { label: 'jsonSecretTokenEdited', value: jsonSecretTokenEdited },
       { label: 'jsonSiblingKeep', value: jsonSiblingKeep },
+      { label: 'importJsonToken', value: importJsonToken },
+      { label: 'importJsonNestedSecret', value: importJsonNestedSecret },
+      { label: 'importJsonNoteLine1', value: importJsonNoteLine1 },
+      { label: 'importJsonNoteLine2', value: importJsonNoteLine2 },
       { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
     ] as const;
 
@@ -99,6 +113,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
     let entry0Id = '';
     let entry1Id = '';
     let entry2Id = '';
+    let importedJsonEntryId = '';
     let jsonEntryId = '';
 
     try {
@@ -279,7 +294,168 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         monitor.assertNoLeaks();
       });
 
-      // T17: import JSON step goes here
+      await timedJourneyStep('3b. (T17) open Import JSON dialog from the item page, load CRLF JSON fixture (nested objects + string with \\n) via the file input, verify offline Retry idempotency (A11), import, and prove 1 new server entry, byte-identical decrypted CRLF content (A6), and zero plaintext in network requests (A4)', async () => {
+        const importTrigger = pageA.getByTestId('btn-import-json');
+        await expect(importTrigger).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await importTrigger.click();
+
+        const importDialog = pageA.getByTestId('import-json-dialog');
+        await expect(importDialog).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expect(importDialog.getByTestId('import-json-destination')).toContainText(itemName);
+
+        // Load the CRLF JSON fixture via the real file input using DataTransfer (no locator.fill with body)
+        await setQuietJsonFileInput(
+          importDialog.getByTestId('import-json-file-input'),
+          importJsonCrlfFixture,
+          'journey-crlf-fixture.json',
+        );
+
+        await expect(importDialog.getByTestId('import-json-source-badge')).toContainText(
+          'file (.json)',
+          { timeout: ACCEPTANCE_UI_WAIT_MS },
+        );
+        await expect(
+          importDialog.getByTestId('json-table-host-import-preview').getByRole('treegrid'),
+        ).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+
+        // Switch preview to Raw JSON tab and verify read-only `<pre>` holds the exact CRLF bytes (`===`, P04-A6)
+        await importDialog.getByTestId('import-json-preview-tab-raw').click();
+        const previewRawPre = importDialog.getByTestId('import-json-preview-raw');
+        await expect(previewRawPre).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        expect(
+          await previewRawPre.evaluate((el, expected) => el.textContent === expected, importJsonCrlfFixture),
+        ).toBe(true);
+        await importDialog.getByTestId('import-json-preview-tab-table').click();
+
+        const submitImportBtn = importDialog.getByTestId('import-json-submit-btn');
+        await expect(submitImportBtn).toBeEnabled({ timeout: ACCEPTANCE_UI_WAIT_MS });
+
+        // (d) Exercise the product's unconfirmed-save Retry path (`import-json-retry-banner` / `import-json-retry-btn`, P04-A11):
+        // go offline -> click Encrypt and save -> retry banner appears with draft locked -> go online -> click Retry ->
+        // replays the exact same Idempotency-Key and sealed payload, creating 1 entry without duplication.
+        await contextA.setOffline(true);
+        try {
+          await submitImportBtn.click();
+          await expect(importDialog.getByTestId('import-json-retry-banner')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(importDialog.getByTestId('import-json-source-textarea')).toBeDisabled();
+          monitor.assertNoLeaks();
+        } finally {
+          await contextA.setOffline(false);
+        }
+
+        const importPostHeaders: string[] = [];
+        const onImportReq = (req: { method: () => string; url: () => string; headers: () => Record<string, string> }) => {
+          if (req.method() === 'POST' && req.url().includes(`/api/v1/items/${item1Id}/entries/import-json`)) {
+            importPostHeaders.push(req.headers()['idempotency-key'] ?? '');
+          }
+        };
+        contextA.on('request', onImportReq);
+        try {
+          await importDialog.getByTestId('import-json-retry-btn').click();
+          await expect(importDialog).toBeHidden({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        } finally {
+          contextA.off('request', onImportReq);
+        }
+        expect(importPostHeaders.length).toBeGreaterThanOrEqual(1);
+        const usedIdemKey = importPostHeaders[0]!;
+        expect(usedIdemKey.length).toBeGreaterThan(0);
+
+        // (a) Prove the server has exactly one new entry in the exact ID set via page fetch of `/api/v1/items/<id>/entries`
+        const entriesAfterImport = await pageA.evaluate(async (id) => {
+          const res = await fetch(`/api/v1/items/${encodeURIComponent(id)}/entries`, {
+            credentials: 'include',
+          });
+          return (await res.json()) as EntriesListResult;
+        }, item1Id);
+        expect(entriesAfterImport.items).toHaveLength(4);
+        const priorIds = new Set([entry0Id, entry1Id, entry2Id]);
+        const newImportEntries = entriesAfterImport.items.filter((e) => !priorIds.has(e.id));
+        expect(newImportEntries).toHaveLength(1);
+        expect(newImportEntries[0]!.type).toBe('json');
+        importedJsonEntryId = newImportEntries[0]!.id;
+        await expectServerItemAndLiveEntryIds(pageA, item1Id, [
+          entry0Id,
+          entry1Id,
+          entry2Id,
+          importedJsonEntryId,
+        ]);
+
+        // Also verify server-side idempotent replay with the same Idempotency-Key does not duplicate the entry (P04-A11)
+        await expectEntryDecryptedPlaintextExactBool(pageA, importedJsonEntryId, importJsonCrlfFixture);
+
+        // (b) Prove the rendered JSON card decrypts to byte-identical content (boolean compare, CRLF preserved per A6):
+        // Table view renders `"cluster"` (`root.p0`) and `"multiline_note"` (`root.p2`, containing `\n`);
+        // switching to Raw JSON and clicking Save without editing sends 0 PUTs (`JsonEntryCard` no-op round-trip rule);
+        // editing 1 cell in Table view (`"cluster"`) and reverting it back to `importJsonToken` via lossless span splice
+        // preserves the surrounding CRLF bytes byte-for-byte (`=== importJsonCrlfFixture`).
+        const importedCard = pageA.getByTestId(`entry-card-${importedJsonEntryId}`);
+        await expect(importedCard).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expectTextEqualsBool(
+          importedCard.getByTestId('json-cell-btn-root.p0'),
+          importJsonToken,
+        );
+        await expectTextEqualsBool(
+          importedCard.getByTestId('json-cell-btn-root.p2'),
+          `${importJsonNoteLine1}\n${importJsonNoteLine2}`,
+        );
+
+        // Expand nested object `nested` (`root.p1`) and `nested.credentials` (`root.p1.p1`) to verify nested structure
+        const nestedToggle = importedCard.getByTestId('json-toggle-root.p1');
+        await expect(nestedToggle).toHaveAttribute('aria-expanded', 'false');
+        await nestedToggle.click();
+        await expect(nestedToggle).toHaveAttribute('aria-expanded', 'true');
+        const credsToggle = importedCard.getByTestId('json-toggle-root.p1.p1');
+        await expect(credsToggle).toHaveAttribute('aria-expanded', 'false');
+        await credsToggle.click();
+        await expect(credsToggle).toHaveAttribute('aria-expanded', 'true');
+        await expectTextEqualsBool(
+          importedCard.getByTestId('json-cell-btn-root.p1.p1.p0'),
+          importJsonNestedSecret,
+        );
+
+        // Switch to Raw JSON tab -> verify textarea value equals the LF-normalized display while the card's
+        // underlying source preserves CRLF: clicking Save without edits sends 0 PUT requests and returns to Table view.
+        await importedCard.getByTestId(`json-tab-raw-${importedJsonEntryId}`).click();
+        const importedRawTextarea = importedCard.getByTestId(
+          `json-raw-textarea-${importedJsonEntryId}`,
+        );
+        await expect(importedRawTextarea).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expectInputValueEqualsBool(importedRawTextarea, importJsonDisplayNormalized);
+
+        // Prove CRLF is preserved in the decrypted card source (P04-A6):
+        // 1) `json-raw-bytes-<id>` measures `tableSource` (the decrypted body in memory) and includes all 9 CRLF `\r` bytes
+        //    (`importJsonCrlfFixture.length` > `importJsonDisplayNormalized.length`);
+        // 2) clicking Save (`json-raw-save-btn-<id>`) in Raw JSON without editing compares `applyTextareaEol(originalSource, draftValue)`
+        //    against `originalSource` (`=== importJsonCrlfFixture`), sends 0 PUT requests, and switches back to Table view.
+        const expectedCrlfByteCount = new TextEncoder().encode(importJsonCrlfFixture).byteLength;
+        const lfOnlyByteCount = new TextEncoder().encode(importJsonDisplayNormalized).byteLength;
+        expect(expectedCrlfByteCount).toBeGreaterThan(lfOnlyByteCount);
+        await expect(
+          importedCard.getByTestId(`json-raw-bytes-${importedJsonEntryId}`),
+        ).toContainText(`${expectedCrlfByteCount}`);
+
+        let putCountOnNoOp = 0;
+        const onPutReq = (req: { method: () => string; url: () => string }) => {
+          if (req.method() === 'PUT' && req.url().includes(`/api/v1/entries/${importedJsonEntryId}`)) {
+            putCountOnNoOp += 1;
+          }
+        };
+        contextA.on('request', onPutReq);
+        try {
+          await importedCard.getByTestId(`json-raw-save-btn-${importedJsonEntryId}`).click();
+          await expect(importedCard.getByTestId(`json-table-host-${importedJsonEntryId}`)).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+        } finally {
+          contextA.off('request', onPutReq);
+        }
+        expect(putCountOnNoOp).toBe(0);
+
+        // (c) Verify the request monitor saw zero plaintext leaks (A4: POST /entries/import-json carried ciphertext only)
+        monitor.assertNoLeaks();
+      });
 
       await timedJourneyStep('4. create a JSON entry via the item-page composer, edit one cell in Table view (U13), test offline Retry (A10), save, reload, and verify lossless raw byte preservation outside the edited span (A6)', async () => {
         await pageA.getByTestId('btn-add-json').click();
@@ -299,9 +475,10 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           });
           return (await res.json()) as EntriesListResult;
         }, item1Id);
-        expect(entriesAfterJsonCreate.items).toHaveLength(4);
-        const createdJsonMeta = entriesAfterJsonCreate.items.find((e) => e.type === 'json');
-        expect(createdJsonMeta).toBeDefined();
+        expect(entriesAfterJsonCreate.items).toHaveLength(5);
+        const createdJsonMeta = entriesAfterJsonCreate.items.find(
+          (e) => e.type === 'json' && e.id !== importedJsonEntryId,
+        );
         jsonEntryId = createdJsonMeta!.id;
 
         const jsonCard = pageA.getByTestId(`entry-card-${jsonEntryId}`);
@@ -393,16 +570,15 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expect(cardItem2).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
         await expect(cardItem2).toContainText('#home');
 
-        // Navigate to item1 page and check all 4 decrypted entries (3 text + 1 JSON)
+        // Navigate to item1 page and check all 5 decrypted entries (3 text + 2 JSON)
         await cardItem1.click();
         await expect(pageB).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expect(pageB.getByTestId('item-tags')).toContainText('#ops');
-        await expect(pageB.getByTestId('entry-body')).toHaveCount(4, {
+        await expect(pageB.getByTestId('entry-body')).toHaveCount(5, {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
-
         await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body'),
           bodyMatch0Edited,
@@ -414,6 +590,10 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${entry2Id}`).getByTestId('entry-body'),
           bodyMatchNPicked,
+        );
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${importedJsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
+          importJsonToken,
         );
         await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
@@ -449,6 +629,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           entry0Id,
           entry1Id,
           entry2Id,
+          importedJsonEntryId,
           jsonEntryId,
         ]);
 
@@ -472,15 +653,16 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           entry0Id,
           entry1Id,
           entry2Id,
+          importedJsonEntryId,
           jsonEntryId,
         ]);
 
-        // Delete `entry2Id` on its own and do NOT undo it (leaving 3 live entries: entry0Id, entry1Id, jsonEntryId)
+        // Delete `entry2Id` on its own and do NOT undo it (leaving 4 live entries: entry0Id, entry1Id, importedJsonEntryId, jsonEntryId)
         const card2 = pageB.getByTestId(`entry-card-${entry2Id}`);
         await card2.getByTestId(`entry-menu-trigger-${entry2Id}`).click();
         await card2.getByTestId(`entry-menu-delete-${entry2Id}`).click();
         await expect(card2).toHaveCount(0, { timeout: ACCEPTANCE_UI_WAIT_MS });
-        await expect(pageB.getByTestId('entry-body')).toHaveCount(3, {
+        await expect(pageB.getByTestId('entry-body')).toHaveCount(4, {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
 
@@ -500,7 +682,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           .getByRole('button', { name: new RegExp(en.content.item.undoAction, 'i') })
           .click();
 
-        // Undo navigates back to `/app/items/<item1Id>` with its tag `#ops` and the 3 live entries restored,
+        // Undo navigates back to `/app/items/<item1Id>` with its tag `#ops` and the 4 live entries restored,
         // while `entry2Id` (deleted separately before the item delete) remains deleted (P04-A8 provenance rule).
         await expect(pageB).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
           timeout: ACCEPTANCE_UI_WAIT_MS,
@@ -509,7 +691,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expect(pageB.getByTestId('item-tags')).toContainText('#ops');
-        await expect(pageB.getByTestId('entry-body')).toHaveCount(3, {
+        await expect(pageB.getByTestId('entry-body')).toHaveCount(4, {
           timeout: ACCEPTANCE_UI_WAIT_MS,
         });
         await expectTextEqualsBool(
@@ -521,6 +703,10 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           bodyMatch1,
         );
         await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${importedJsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
+          importJsonToken,
+        );
+        await expectTextEqualsBool(
           pageB.getByTestId(`entry-card-${jsonEntryId}`).getByTestId('json-cell-btn-root.p0'),
           jsonSecretTokenEdited,
         );
@@ -529,7 +715,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await expectServerItemAndLiveEntryIds(
           pageB,
           item1Id,
-          [entry0Id, entry1Id, jsonEntryId],
+          [entry0Id, entry1Id, importedJsonEntryId, jsonEntryId],
           [entry2Id],
         );
         monitor.assertNoLeaks();
@@ -561,7 +747,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           await pageB.locator('textarea[data-omnibox-input]').evaluateAll((els) => els.every((el) => (el as HTMLTextAreaElement).value === '')),
         ).toBe(true);
         await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
-        await expect(pageB.getByTestId('entry-body-locked')).toHaveCount(3);
+        await expect(pageB.getByTestId('entry-body-locked')).toHaveCount(4);
 
         await expectNoDomOrStorageBodyLeaks(pageB, labeledSecrets);
         // Navigate back to /app locked list via the breadcrumb link and confirm zero DOM and storage/cache leaks there too

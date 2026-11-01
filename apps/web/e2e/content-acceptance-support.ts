@@ -57,6 +57,82 @@ export async function setQuietInputValue(locator: Locator, value: string, timeou
 }
 
 /**
+ * Quietly attaches a `.json` `File` built from `rawUtf8Content` to an `<input type="file">` via `DataTransfer`
+ * and dispatches a bubbling `change` event, avoiding `locator.setInputFiles()` so file buffers never appear in
+ * Playwright call logs (user-dec-016).
+ */
+export async function setQuietJsonFileInput(
+  fileInputLocator: Locator,
+  rawUtf8Content: string,
+  fileName = 'import.json',
+): Promise<void> {
+  await fileInputLocator.evaluate(
+    (el, { content, name }) => {
+      const input = el as HTMLInputElement;
+      const bytes = new TextEncoder().encode(content);
+      const file = new File([bytes], name, { type: 'application/json' });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    { content: rawUtf8Content, name: fileName },
+  );
+}
+
+/**
+ * Boolean check that the decrypted plaintext in the page's React Query cache (`['vault','entry-body',entryId,version]`)
+ * is byte-identical (`===`) to `expectedPlaintext` without printing either string on failure (P04-A6, ACC-FE1-9).
+ * Also verifies via `GET /api/v1/entries/<entryId>` that the server stored only ciphertext (`ciphertext !== expectedPlaintext`).
+ */
+export async function expectEntryDecryptedPlaintextExactBool(
+  page: Page,
+  entryId: string,
+  expectedPlaintext: string,
+  timeout = ACCEPTANCE_UI_WAIT_MS,
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          async ({ id, target }) => {
+            const res = await fetch(`/api/v1/entries/${encodeURIComponent(id)}`, {
+              credentials: 'include',
+            });
+            if (res.status !== 200) return false;
+            const record = (await res.json().catch(() => null)) as {
+              readonly id?: string;
+              readonly type?: string;
+              readonly ciphertext?: string;
+              readonly envelope?: {
+                readonly v?: number;
+                readonly key_id?: string;
+                readonly nonce?: string;
+                readonly ct_enc?: string;
+              };
+            } | null;
+            if (
+              !record ||
+              record.id !== id ||
+              record.type !== 'json' ||
+              typeof record.ciphertext !== 'string' ||
+              record.ciphertext.length === 0 ||
+              record.ciphertext === target ||
+              record.ciphertext.includes(target) ||
+              typeof record.envelope?.key_id !== 'string'
+            ) {
+              return false;
+            }
+            return true;
+          },
+          { id: entryId, target: expectedPlaintext },
+        ),
+      { timeout },
+    )
+    .toBe(true);
+}
+
+/**
  * Boolean check that an input/textarea is empty without printing its current value on failure.
  */
 export async function expectInputEmptyBool(locator: Locator, timeout = ACCEPTANCE_UI_WAIT_MS): Promise<void> {

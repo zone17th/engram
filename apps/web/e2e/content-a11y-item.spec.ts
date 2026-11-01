@@ -28,11 +28,8 @@ import {
 // disable Playwright's automatic error-context DOM snapshot before worker startup.
 
 /**
- * P04-T21c Stage W2 — Item page + text entries + JSON card + entry menu + Undo toast a11y & visual sweep
- * (`U11`-`U12` item page & text entry editing, `U13` JSON card table/raw/edit/error, entry menu, `U18` Undo toast on item page).
- *
- * Scope note: U14 (import dialog, Task 17) is NOT merged on `phase04/content` yet; skipped per brief (`w2-a11y-visual.md`).
- *
+ * P04-T21c Stage W2 + Stage T17 — Item page + text entries + JSON card + entry menu + Undo toast + U14 Import JSON dialog a11y & visual sweep
+ * (`U11`-`U12` item page & text entry editing, `U13` JSON card table/raw/edit/error, entry menu, `U18` Undo toast on item page, `U14` Import JSON dialog).
  * Matrix per screen state (`en`/`vi` x `light`/`dark` x `390`/`768`/`1440`):
  * - `content-a11y-item-<lang>-<theme>-<width>.png` (U11-U12 item header with 200-rune title + 50-rune tag, text entry card, JSON entry card)
  * - `content-a11y-text-edit-<lang>-<theme>-<width>.png` (U12 text entry inline editor open with byte counter & Save/Cancel controls)
@@ -41,6 +38,10 @@ import {
  * - `content-a11y-json-error-<lang>-<theme>-<width>.png` (U13 JSON card Raw JSON invalid syntax banner with line/column + Go to line/col)
  * - `content-a11y-entry-menu-<lang>-<theme>-<width>.png` (Entry `...` action menu open with `role="menu"` / `role="menuitem"`)
  * - `content-a11y-item-undo-toast-<lang>-<theme>-<width>.png` (U18 Undo toast on item page after deleting an entry)
+ * - `content-a11y-import-empty-<lang>-<theme>-<width>.png` (U14 Import JSON dialog empty state)
+ * - `content-a11y-import-valid-<lang>-<theme>-<width>.png` (U14 Import JSON dialog valid JSON preview table state)
+ * - `content-a11y-import-invalid-<lang>-<theme>-<width>.png` (U14 Import JSON dialog invalid JSON syntax error + jump button + Save as text)
+ * - `content-a11y-import-over-cap-<lang>-<theme>-<width>.png` (U14 Import JSON dialog > 256 KiB over-cap error state)
  *
  * Keyboard pass (`en`, `light`, 1440) + Coarse-pointer touch target check (`hasTouch: true, isMobile: true` at 390):
  * - Item header: `#item-name-input` inline rename (`Enter` saves, `Escape` reverts to committed name);
@@ -51,6 +52,8 @@ import {
  *   raw invalid JSON -> switch to Table blocked with error alert (`json-switch-blocked-msg-${id}`) + `Go to line X, column Y` (`json-raw-goto-btn-${id}`) focuses textarea at error offset.
  * - Entry `...` menu (`entry-menu-trigger-${id}` -> `entry-menu-pop-${id}`): `Enter` opens, `ArrowDown`/`ArrowUp` cycles items, `Escape` closes and returns focus to `...` trigger;
  *   `Delete` triggers U18 Undo toast -> focus returns to neighbour card -> `Ctrl+Z` restores entry in original position.
+ * - Import JSON dialog (`U14`, `btn-import-json` -> `import-json-dialog`): focus trap (`Tab` / `Shift+Tab` wrap between first and last focusable controls inside the dialog),
+ *   `Escape` closes and returns focus to `btn-import-json`, parse-error jump button (`import-json-parse-error-jump`) focuses `import-json-source-textarea` and sets caret at the offending offset.
  */
 
 const ITEM_SHORT_NAME = 'service-config-vault';
@@ -73,6 +76,8 @@ async function runItemGroup(
   const extraEntryBodyToDelete = `acceptance-item-delete-target-${groupLabel}-secret-body-03`;
   const jsonSecretTokenValue = `acceptance-item-json-secret-${groupLabel}-token-04`;
 
+  const importJsonValidSecret = `acceptance-item-import-valid-${groupLabel}-secret-05`;
+  const importJsonInvalidSecret = `acceptance-item-import-invalid-${groupLabel}-secret-06`;
   const initialJsonObject = {
     service: 'billing-worker',
     port: 8080,
@@ -94,6 +99,8 @@ async function runItemGroup(
     { label: 'textEntryBodyEdited', value: textEntryBodyEdited },
     { label: 'extraEntryBodyToDelete', value: extraEntryBodyToDelete },
     { label: 'jsonSecretTokenValue', value: jsonSecretTokenValue },
+    { label: 'importJsonValidSecret', value: importJsonValidSecret },
+    { label: 'importJsonInvalidSecret', value: importJsonInvalidSecret },
   ] as const;
 
   const leakGuard = attachPlaintextLeakGuard(context, forbiddenSecrets);
@@ -846,6 +853,7 @@ async function runItemGroup(
               '[data-testid="tag-add-chip"]',
               '[data-testid="btn-add-text"]',
               '[data-testid="btn-add-json"]',
+              '[data-testid="btn-import-json"]',
               `[data-testid="entry-menu-trigger-${primaryTextEntryId}"]`,
               `[data-testid="json-tab-table-${jsonEntryId}"]`,
               `[data-testid="json-tab-raw-${jsonEntryId}"]`,
@@ -900,6 +908,46 @@ async function runItemGroup(
             ]);
             await coarsePage.getByTestId(`json-tab-table-${jsonEntryId}`).click();
 
+
+            // 6. Open Import JSON dialog (`U14`) on coarsePage and sweep `import-empty`, `import-valid`, and `import-invalid` controls
+            await coarsePage.getByTestId('btn-import-json').click();
+            const coarseImportDlg = coarsePage.getByTestId('import-json-dialog');
+            await expect(coarseImportDlg).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+            await expectCoarseTouchTargetsAtLeast44(coarsePage, 'import-empty-controls', [
+              '[data-testid="import-json-close-btn"]',
+              '[data-testid="import-json-choose-file-btn"]',
+              '[data-testid="import-json-source-textarea"]',
+              '[data-testid="import-json-cancel-btn"]',
+            ]);
+
+            const coarseImportTa = coarseImportDlg.getByTestId('import-json-source-textarea');
+            await setQuietValue(
+              coarseImportTa,
+              `{"cluster":"${importJsonValidSecret}","port":5432}`,
+            );
+            await expect(
+              coarseImportDlg.getByTestId('json-table-host-import-preview'),
+            ).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+            await expectCoarseTouchTargetsAtLeast44(coarsePage, 'import-valid-controls', [
+              '[data-testid="import-json-format-checkbox"]',
+              '[data-testid="import-json-preview-tab-table"]',
+              '[data-testid="import-json-preview-tab-raw"]',
+              '[data-testid="import-json-submit-btn"]',
+            ]);
+
+            await setQuietValue(
+              coarseImportTa,
+              `{\n  "cluster": "${importJsonInvalidSecret}",\n}`,
+            );
+            await expect(coarseImportDlg.getByTestId('import-json-parse-error')).toBeVisible({
+              timeout: CONTENT_A11Y_UI_WAIT_MS,
+            });
+            await expectCoarseTouchTargetsAtLeast44(coarsePage, 'import-invalid-controls', [
+              '[data-testid="import-json-parse-error-jump"]',
+              '[data-testid="import-json-save-as-text-btn"]',
+            ]);
+            await coarsePage.keyboard.press('Escape');
+            await expect(coarseImportDlg).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
             // ACC-A11Y1-2: DOM attribute scan + network leak guard on coarseContext
             await expectNoPlaintextInDomAttributes(coarsePage, forbiddenSecrets);
             coarseLeakGuard.assertNoLeaks();
@@ -913,13 +961,216 @@ async function runItemGroup(
     await expectNoPlaintextInDomAttributes(page, forbiddenSecrets);
     leakGuard.assertNoLeaks();
     leakGuard.assertSawEntriesPost();
-    // T17: U14 import dialog sweep goes here
+    // ---- Stage T17: U14 Import JSON dialog sweep (`import-empty`, `import-valid`, `import-invalid`, `import-over-cap`) + keyboard ----
+    await a11yStep(
+      `[item ${groupLabel}] State 8..11: U14 Import JSON dialog (import-empty, import-valid, import-invalid, import-over-cap) + keyboard focus trap, Escape focus restore, and parse-error jump`,
+      async () => {
+        const importTrigger = page.getByTestId('btn-import-json');
+        await expect(importTrigger).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+
+        if (ctx.keyboard) {
+          await importTrigger.focus();
+          await expect(importTrigger).toBeFocused();
+          await importTrigger.press('Enter');
+        } else {
+          await importTrigger.click();
+        }
+
+        const importDialog = page.getByTestId('import-json-dialog');
+        await expect(importDialog).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(importDialog).toHaveAttribute('aria-modal', 'true');
+        const importTextarea = importDialog.getByTestId('import-json-source-textarea');
+        await expect(importTextarea).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+
+        if (ctx.keyboard) {
+          // Initial focus lands in the source textarea (`import-dialog.tsx:448`); verify Escape closes and restores focus to `btn-import-json`
+          await expect(importTextarea).toBeFocused();
+          const closeBtn = importDialog.getByTestId('import-json-close-btn');
+          const cancelBtn = importDialog.getByTestId('import-json-cancel-btn');
+
+          // Focus trap in empty state: Shift+Tab from the first focusable control (`import-json-close-btn`) wraps to the last (`import-json-cancel-btn`),
+          // and Tab from the last wraps back to the first (`import-dialog.tsx:1436-1459`).
+          await closeBtn.focus();
+          await expect(closeBtn).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          await expect(cancelBtn).toBeFocused();
+          await page.keyboard.press('Tab');
+          await expect(closeBtn).toBeFocused();
+
+          // Press Escape -> dialog closes and focus returns to `btn-import-json`
+          await page.keyboard.press('Escape');
+          await expect(importDialog).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expect(importTrigger).toBeFocused();
+
+          // Re-open via Enter on `btn-import-json` for the state sweeps
+          await importTrigger.press('Enter');
+          await expect(importDialog).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expect(importTextarea).toBeFocused();
+        }
+
+        const importOverflowSelectors = [
+          '#importDlg .import-panel',
+          '[data-testid="import-json-destination"]',
+          '[data-testid="import-json-source-badge"]',
+          '[data-testid="import-json-source-textarea"]',
+          '[data-testid="import-json-status-line"]',
+          '[data-testid="import-json-paste-exact-hint"]',
+          '[data-testid="import-json-preview-host"]',
+          '#importDlg .import-foot',
+        ];
+
+        // 1. State `import-empty`
+        await expect(importDialog.getByTestId('import-json-preview-placeholder')).toBeVisible({
+          timeout: CONTENT_A11Y_UI_WAIT_MS,
+        });
+        await expect(importDialog.getByTestId('import-json-submit-btn')).toBeDisabled();
+        await checkContentState(
+          ctx,
+          {
+            state: 'import-empty',
+            axeInclude: '#importDlg',
+            fullPage: false,
+          },
+          importOverflowSelectors,
+        );
+
+        // 2. State `import-valid` (preview table with nested object, masked textarea & preview cells)
+        const validImportJson = JSON.stringify(
+          {
+            service: 'edge-gateway',
+            secret: importJsonValidSecret,
+            tls: { enabled: true, port: 8443 },
+          },
+          null,
+          2,
+        );
+        await setQuietValue(importTextarea, validImportJson);
+        const previewGridHost = importDialog.getByTestId('json-table-host-import-preview');
+        await expect(previewGridHost).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(previewGridHost.getByRole('treegrid')).toBeVisible({
+          timeout: CONTENT_A11Y_UI_WAIT_MS,
+        });
+        const submitBtn = importDialog.getByTestId('import-json-submit-btn');
+        await expect(submitBtn).toBeEnabled({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+
+        if (ctx.keyboard) {
+          // Focus trap when `import-json-submit-btn` is enabled (it becomes the last focusable control in the dialog):
+          // Tab from `import-json-submit-btn` wraps to `import-json-close-btn`, and Shift+Tab wraps back to `import-json-submit-btn`.
+          const closeBtn = importDialog.getByTestId('import-json-close-btn');
+          await submitBtn.focus();
+          await expect(submitBtn).toBeFocused();
+          await page.keyboard.press('Tab');
+          await expect(closeBtn).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          await expect(submitBtn).toBeFocused();
+        }
+
+        await expectNoPlaintextInDomAttributes(page, forbiddenSecrets);
+        await checkContentState(
+          ctx,
+          {
+            state: 'import-valid',
+            axeInclude: '#importDlg',
+            fullPage: false,
+            allowedHorizontalScrollSelectors: [
+              '[data-testid="import-json-preview-host"]',
+              '[data-testid="json-table-host-import-preview"]',
+            ],
+          },
+          [...importOverflowSelectors, '[data-testid="json-table-host-import-preview"]'],
+        );
+
+        // 3. State `import-invalid` (parse error callout with jump button + Save as text button)
+        // Trailing comma on line 2, column 52 -> parseError.line === 2, caret offset > 0
+        const invalidImportJson = `{\n  "secret": "${importJsonInvalidSecret}",\n}`;
+        await setQuietValue(importTextarea, invalidImportJson);
+        const parseErrorAlert = importDialog.getByTestId('import-json-parse-error');
+        await expect(parseErrorAlert).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(parseErrorAlert).toHaveAttribute('role', 'alert');
+        const jumpBtn = importDialog.getByTestId('import-json-parse-error-jump');
+        await expect(jumpBtn).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        const saveAsTextBtn = importDialog.getByTestId('import-json-save-as-text-btn');
+        await expect(saveAsTextBtn).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(saveAsTextBtn).toBeEnabled();
+        await expect(submitBtn).toBeDisabled();
+
+        if (ctx.keyboard) {
+          // Reset selection to 0 first so jumping to line 2, column > 1 proves `handleFocusErrorLine` moved the caret
+          await importTextarea.evaluate((el: HTMLTextAreaElement) => {
+            el.setSelectionRange(0, 0);
+          });
+          await jumpBtn.focus();
+          await expect(jumpBtn).toBeFocused();
+          await jumpBtn.press('Enter');
+          await expect(importTextarea).toBeFocused();
+          const caretOffset = await importTextarea.evaluate(
+            (el: HTMLTextAreaElement) => el.selectionStart,
+          );
+          expect(caretOffset).toBeGreaterThan(10);
+        }
+
+        await expectNoPlaintextInDomAttributes(page, forbiddenSecrets);
+        await checkContentState(
+          ctx,
+          {
+            state: 'import-invalid',
+            axeInclude: '#importDlg',
+            fullPage: false,
+          },
+          [
+            ...importOverflowSelectors,
+            '[data-testid="import-json-parse-error"]',
+            '[data-testid="import-json-save-as-text-btn"]',
+          ],
+        );
+
+        // 4. State `import-over-cap` (> 256 KiB via instant 5 MiB `file.size` pre-read check, 0 B buffer allocation)
+        await importDialog.getByTestId('import-json-file-input').evaluate((el) => {
+          const input = el as HTMLInputElement;
+          const file = new File([new Uint8Array([0x7b, 0x7d])], 'over-cap.json', {
+            type: 'application/json',
+          });
+          Object.defineProperty(file, 'size', {
+            configurable: true,
+            value: 5 * 1024 * 1024,
+          });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          input.files = dt.files;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        const overCapAlert = importDialog.getByTestId('import-json-over-cap-error');
+        await expect(overCapAlert).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(overCapAlert).toHaveAttribute('role', 'alert');
+        await expect(submitBtn).toBeDisabled();
+
+        await checkContentState(
+          ctx,
+          {
+            state: 'import-over-cap',
+            axeInclude: '#importDlg',
+            fullPage: false,
+          },
+          [...importOverflowSelectors, '[data-testid="import-json-over-cap-error"]'],
+        );
+
+        // Close dialog with Escape and verify focus returns to `btn-import-json`
+        await page.keyboard.press('Escape');
+        await expect(importDialog).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        if (ctx.keyboard) {
+          await expect(importTrigger).toBeFocused();
+        }
+      },
+    );
+
+    await expectNoPlaintextInDomAttributes(page, forbiddenSecrets);
+    leakGuard.assertNoLeaks();
   } finally {
     await context.close();
   }
 }
 
-test.describe('P04-T21c Item page + text/JSON entries + menu + Undo toast a11y & visual sweep (U11-U13, U18)', () => {
+test.describe('P04-T21c Item page + text/JSON entries + menu + Undo toast + U14 Import JSON dialog a11y & visual sweep (U11-U14, U18)', () => {
   test.describe.configure({ retries: 1 });
   test.skip(
     !process.env.E2E_STACK,
