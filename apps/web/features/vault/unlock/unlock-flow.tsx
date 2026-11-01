@@ -282,7 +282,7 @@ export function VaultUnlockFlow() {
         {recoveredNotice ? (
           <div
             role="status"
-            className="card mb-6 p-5 card-success"
+            className="card mb-6 p-5 border-success"
             data-testid="unlock-recovered-notice"
           >
             <p className="m-0 mb-1 text-[14px] font-semibold text-body">

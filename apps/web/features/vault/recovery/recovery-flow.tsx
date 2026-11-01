@@ -1818,7 +1818,7 @@ export function VaultRecoveryFlow() {
         {completedWhileLockedNotice ? (
           <div
             role="alert"
-            className="card mb-6 p-5 card-success"
+            className="card mb-6 p-5 border-success"
             data-testid="recovery-completed-while-locked-notice"
           >
             <p
