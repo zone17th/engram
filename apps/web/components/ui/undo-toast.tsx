@@ -586,13 +586,17 @@ export function UndoToastProvider({
     });
   }, [isHovered]);
 
-  // ACC-TV1-5 (FU10, dec-216, RV-FU10-1, RV-FU10-5): Keep focused page controls clear of the fixed undo-toast stack.
+  // ACC-TV1-5 (FU10, dec-216, RV-FU10-1, RV-FU10-5, RV-FU10-R2-1, RV-FU10-R2-3): Keep keyboard-focused page
+  // controls clear of the fixed undo-toast stack, including the last focusable control at the document bottom.
   // While toasts are visible, measure the stack with a ResizeObserver, expose its height as `--undo-stack-h` on
-  // `<html>`, set `scroll-padding-bottom: calc(var(--undo-stack-h) + 8px)` on `<html>`, and on `focusin` (and stack
-  // growth) call `el.scrollIntoView({ block: 'nearest' })` when the focused element's bounding rect (plus 3 px focus-
-  // ring halo) intersects the stack rect. Ignore `tabIndex === -1` programmatic container hosts, elements inside the
-  // toast stack itself, and fixed/sticky header/footer elements that cannot scroll clear. Throttle with
-  // `requestAnimationFrame` and clean up listeners + styles on unmount and when the stack empties.
+  // `<html>`, set `scroll-padding-bottom: calc(var(--undo-stack-h) + 8px)` on `<html>`, and set
+  // `padding-bottom: calc(var(--undo-stack-h) + 8px)` on `<body>` (`data-undo-stack-active` on `<html>`) so the
+  // document has enough bottom scroll room even when a control is at the very end of the page. On `focusin` (and stack
+  // growth) call `el.scrollIntoView({ block: 'nearest' })` when a keyboard-focused (`:focus-visible`) element's
+  // bounding rect (plus 3 px focus-ring halo) intersects the stack rect. Ignore pointer/mouse focus,
+  // `tabIndex === -1` programmatic container hosts, elements inside the toast stack itself, and fixed/sticky
+  // header/footer elements that cannot scroll clear. Throttle with `requestAnimationFrame` and clean up listeners +
+  // styles on unmount and when the stack empties.
   const prevStackHeightRef = useRef(0);
 
   useEffect(() => {
@@ -601,9 +605,18 @@ export function UndoToastProvider({
     }
 
     const htmlEl = document.documentElement;
+    const bodyEl = document.body;
+    const applyStackClearanceStyles = (heightPx: number) => {
+      htmlEl.style.setProperty('--undo-stack-h', `${heightPx}px`);
+      htmlEl.style.setProperty('scroll-padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+      htmlEl.setAttribute('data-undo-stack-active', 'true');
+      bodyEl?.style.setProperty('padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+    };
     const clearHtmlStackStyles = () => {
       htmlEl.style.removeProperty('--undo-stack-h');
       htmlEl.style.removeProperty('scroll-padding-bottom');
+      htmlEl.removeAttribute('data-undo-stack-active');
+      bodyEl?.style.removeProperty('padding-bottom');
       prevStackHeightRef.current = 0;
     };
 
@@ -643,8 +656,7 @@ export function UndoToastProvider({
       const stackRect = currentStack.getBoundingClientRect();
       const stackH = Math.max(0, Math.ceil(stackRect.height));
       if (stackH > 0) {
-        htmlEl.style.setProperty('--undo-stack-h', `${stackH}px`);
-        htmlEl.style.setProperty('scroll-padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+        applyStackClearanceStyles(stackH);
       } else {
         clearHtmlStackStyles();
         return;
@@ -667,11 +679,25 @@ export function UndoToastProvider({
         return;
       }
 
+      // Restrict clearance scroll to keyboard / `:focus-visible` focus (RV-FU10-R2-3) so pointer/mouse mousedown
+      // on a control near the stack does not scroll the page between mousedown and mouseup.
+      const isKeyboardFocused =
+        lastInteractionWasKeyboardRef.current ||
+        (() => {
+          try {
+            return typeof activeEl.matches === 'function' && activeEl.matches(':focus-visible');
+          } catch {
+            return true;
+          }
+        })();
+      if (!isKeyboardFocused) {
+        return;
+      }
+
       // Fixed/sticky header/footer controls cannot scroll clear; leave them in place.
       if (isFixedOrStickyElement(activeEl)) {
         return;
       }
-
       const focusRect = activeEl.getBoundingClientRect();
       if (focusRect.width <= 0 || focusRect.height <= 0) {
         return;
@@ -727,8 +753,7 @@ export function UndoToastProvider({
         const prevH = prevStackHeightRef.current;
         prevStackHeightRef.current = nextH;
         if (nextH > 0) {
-          htmlEl.style.setProperty('--undo-stack-h', `${nextH}px`);
-          htmlEl.style.setProperty('scroll-padding-bottom', 'calc(var(--undo-stack-h) + 8px)');
+          applyStackClearanceStyles(nextH);
         }
         if (nextH > prevH) {
           scheduleSync();

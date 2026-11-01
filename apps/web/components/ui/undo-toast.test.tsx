@@ -1122,7 +1122,7 @@ describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clam
     expect(statusEl.textContent).toContain('Undo (Ctrl+Z)');
   });
 
-  it('ACC-TV1-5 (RV-FU10-1, RV-FU10-5): exposes --undo-stack-h and scroll-padding-bottom on <html>, scrolls overlapped focused controls into view, ignores tabIndex=-1 containers, and cleans up on empty/unmount', () => {
+  it('ACC-TV1-5 (RV-FU10-1, RV-FU10-5, RV-FU10-R2-1, RV-FU10-R2-3): exposes --undo-stack-h and scroll-padding-bottom on <html> plus padding-bottom on <body>, scrolls keyboard-focused overlapped controls into view, ignores pointer focus and tabIndex=-1 containers, and cleans up on empty/unmount', () => {
     const rafCallbacks: FrameRequestCallback[] = [];
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
       rafCallbacks.push(cb);
@@ -1180,11 +1180,13 @@ describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clam
     const stickyBtn = screen.getByTestId('sticky-btn');
     const stackEl = screen.getByTestId('undo-toast-stack');
     const htmlEl = document.documentElement;
+    const bodyEl = document.body;
 
-    // Before any toast is shown, --undo-stack-h is not set
+    // Before any toast is shown, --undo-stack-h and body padding-bottom are not set
     expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('');
     expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe('');
-
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBeNull();
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe('');
     let stackHeight = 64;
     vi.spyOn(stackEl, 'getBoundingClientRect').mockImplementation(
       () =>
@@ -1296,8 +1298,36 @@ describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clam
     expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe(
       'calc(var(--undo-stack-h) + 8px)',
     );
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBe('true');
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe(
+      'calc(var(--undo-stack-h) + 8px)',
+    );
     expect(originScrollSpy).toHaveBeenCalledWith({ block: 'nearest' });
 
+    // Pointer/mouse focus (`:focus-visible === false` after pointerdown) does NOT trigger scrollIntoView (RV-FU10-R2-3)
+    originScrolledClear = false;
+    originScrollSpy.mockClear();
+    const matchesSpy = vi.spyOn(originBtn, 'matches').mockImplementation((sel: string) => {
+      if (sel === ':focus-visible') return false;
+      return HTMLElement.prototype.matches.call(originBtn, sel);
+    });
+    act(() => {
+      fireEvent.pointerDown(originBtn);
+      originBtn.focus();
+      fireEvent.focusIn(originBtn);
+      flushRaf();
+    });
+    expect(originScrollSpy).not.toHaveBeenCalled();
+    matchesSpy.mockRestore();
+
+    // Subsequent keyboard focus (`keydown` / `:focus-visible`) DOES trigger scrollIntoView
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' });
+      originBtn.focus();
+      fireEvent.focusIn(originBtn);
+      flushRaf();
+    });
+    expect(originScrollSpy).toHaveBeenCalledWith({ block: 'nearest' });
     // Non-overlapping button does not call scrollIntoView
     act(() => {
       outsideBtn.focus();
@@ -1355,6 +1385,8 @@ describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clam
     expect(undoFn).toHaveBeenCalledTimes(1);
     expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('');
     expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe('');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBeNull();
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe('');
     expect(disconnectSpy).toHaveBeenCalled();
     expect(removeEventListenerSpy).toHaveBeenCalledWith('focusin', expect.any(Function), true);
     expect(removeEventListenerSpy).toHaveBeenCalledWith('resize', expect.any(Function));
@@ -1369,8 +1401,14 @@ describe('FU10 UNDO-TOAST-390: compact bottom-anchored narrow stack, 2-line clam
       });
     });
     expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('128px');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBe('true');
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe(
+      'calc(var(--undo-stack-h) + 8px)',
+    );
     unmount();
     expect(htmlEl.style.getPropertyValue('--undo-stack-h')).toBe('');
     expect(htmlEl.style.getPropertyValue('scroll-padding-bottom')).toBe('');
+    expect(htmlEl.getAttribute('data-undo-stack-active')).toBeNull();
+    expect(bodyEl.style.getPropertyValue('padding-bottom')).toBe('');
   });
 });

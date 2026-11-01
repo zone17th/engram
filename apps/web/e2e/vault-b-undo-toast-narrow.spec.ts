@@ -88,7 +88,7 @@ async function saveToastCapture(
 }
 
 /**
- * FU10 UNDO-TOAST-390 (advisor-dec-216, ACC-TV1-2, ACC-TV1-5; fix2 RV-FU10-1..2, TV-FU10-1..3):
+ * FU10 UNDO-TOAST-390 (advisor-dec-216, ACC-TV1-2, ACC-TV1-5; fix2 RV-FU10-1..2, TV-FU10-1..3; fix3 RV-FU10-R2-1..3):
  * Verifies at 390x844 and 768x1024 viewports that:
  * 1. At 390x844, the undo-toast stack (`data-testid="undo-toast-stack"`) is anchored to the viewport bottom
  *    (16 px bottom inset), has width >= 390 - 2*16 - 2 (356 px, 16 px side gutters), has bounded
@@ -97,11 +97,12 @@ async function saveToastCapture(
  *    or an open omnibox listbox.
  * 2. At 390x844 with a multi-toast stack (3 visible toasts + `+1` overflow button), the stack remains
  *    bottom-anchored (`bottom` within 12–20 px of the viewport bottom).
- * 3. At both 390x844 and 768x1024 (ACC-TV1-5, RV-FU10-1, RV-FU10-2, TV-FU10-2), when a page control
- *    positioned under the stack receives focus via keyboard `Tab`, `UndoToastProvider` scrolls it clear
- *    of the stack (`--undo-stack-h` + `scroll-padding-bottom` + `scrollIntoView({ block: 'nearest' })`)
- *    so its bounding rect + 2 px does not intersect the stack rect and `document.elementFromPoint` at
- *    its center hits the focused control.
+ * 3. At both 390x844 and 768x1024 (ACC-TV1-5, RV-FU10-1, RV-FU10-2, TV-FU10-2, RV-FU10-R2-1, RV-FU10-R2-2),
+ *    when a page control positioned under the stack (including the last focusable control at the end of `/app`
+ *    and when a 2nd toast grows the stack while a control is focused) receives keyboard focus, `UndoToastProvider`
+ *    adds bottom scroll room (`--undo-stack-h`, `scroll-padding-bottom`, and `body { padding-bottom: calc(var(--undo-stack-h) + 8px) }`)
+ *    and scrolls it clear of the stack so its bounding rect + 2 px does not intersect the stack rect and
+ *    `document.elementFromPoint` at its center hits the focused control.
  * 4. Saves CI evidence screenshots (`fu10-undo-toast-{en-light,vi-dark}-{390,768}.png` and
  *    `fu10-undo-toast-stack-en-light-390.png`) into `testInfo.outputPath(...)` for the sanitizer allowlist.
  */
@@ -266,6 +267,8 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
           viewportHeight: window.innerHeight,
           undoStackHVar: document.documentElement.style.getPropertyValue('--undo-stack-h'),
           scrollPaddingBottom: document.documentElement.style.getPropertyValue('scroll-padding-bottom'),
+          dataUndoStackActive: document.documentElement.getAttribute('data-undo-stack-active'),
+          bodyPaddingBottom: document.body.style.getPropertyValue('padding-bottom'),
           stackRect: {
             left: stackRect.left,
             top: stackRect.top,
@@ -306,6 +309,8 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
       expect(metrics.viewportHeight).toBe(844);
       expect(metrics.undoStackHVar).toMatch(/^\d+px$/);
       expect(metrics.scrollPaddingBottom).toBe('calc(var(--undo-stack-h) + 8px)');
+      expect(metrics.dataUndoStackActive).toBe('true');
+      expect(metrics.bodyPaddingBottom).toBe('calc(var(--undo-stack-h) + 8px)');
       expect(metrics.stackRect.bottom).toBeGreaterThanOrEqual(844 - 20);
       expect(metrics.stackRect.bottom).toBeLessThanOrEqual(844 - 12);
 
@@ -405,9 +410,107 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         )
         .toEqual({ focused: true, intersects: false, centerHit: true });
 
-      // Scroll back to top and queue 3 more toasts via rail tag delete so we have 4 total (3 visible + "+1")
+      // 6. RV-FU10-R2-1 at 390x844: focus the LAST focusable control on /app (end of page) with a toast showing;
+      // body bottom padding from --undo-stack-h provides scroll room so its rect + 2 px does not intersect the stack
+      // and elementFromPoint hits the control.
+      const lastCardIdx = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="item-card"]'));
+        if (cards.length < 2) {
+          throw new Error('Expected at least 2 item-card elements on /app');
+        }
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' });
+        const prev = cards[cards.length - 2]!;
+        prev.focus();
+        return cards.length - 1;
+      });
+
+      await page.keyboard.press('Tab');
+
+      await expect
+        .poll(
+          async () => {
+            return page.evaluate((idx) => {
+              const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
+              const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="item-card"]'));
+              const target = cards[idx];
+              if (!stack || !target || document.activeElement !== target) {
+                return { focused: false, intersects: true, centerHit: false };
+              }
+              const fRect = target.getBoundingClientRect();
+              const sRect = stack.getBoundingClientRect();
+              const pad = 2;
+              const intersects =
+                fRect.left - pad < sRect.right &&
+                fRect.right + pad > sRect.left &&
+                fRect.top - pad < sRect.bottom &&
+                fRect.bottom + pad > sRect.top;
+              const cx = fRect.left + fRect.width / 2;
+              const cy = fRect.top + fRect.height / 2;
+              const hit = document.elementFromPoint(cx, cy);
+              const centerHit = Boolean(hit && (hit === target || target.contains(hit)));
+              return { focused: true, intersects, centerHit };
+            }, lastCardIdx);
+          },
+          { timeout: UI_WAIT_MS },
+        )
+        .toEqual({ focused: true, intersects: false, centerHit: true });
+
+      // 7. RV-FU10-R2-2 at 390x844: stack growth (a 2nd toast pushed while the last control is focused)
+      // updates --undo-stack-h and scrolls the focused control clear of the taller 2-toast stack.
+      await page.evaluate(() => {
+        const tag1Id = '00000000-0000-4000-8000-000000000101';
+        const trigger = document.querySelector<HTMLElement>(
+          `[data-testid="rail-tag-menu-trigger-${tag1Id}"]`,
+        );
+        trigger?.click();
+      });
+      await page.evaluate(() => {
+        const tag1Id = '00000000-0000-4000-8000-000000000101';
+        const delBtn = document.querySelector<HTMLElement>(
+          `[data-testid="rail-tag-delete-action-${tag1Id}"]`,
+        );
+        const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="item-card"]'));
+        const lastCard = cards[cards.length - 1]!;
+        // Simulate keyboard state and keep focus on the last card while triggering the 2nd toast
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+        delBtn?.click();
+        lastCard.focus();
+      });
+
+      await expect(toastItem).toHaveCount(2, { timeout: UI_WAIT_MS });
+
+      await expect
+        .poll(
+          async () => {
+            return page.evaluate((idx) => {
+              const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
+              const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="item-card"]'));
+              const target = cards[idx];
+              if (!stack || !target || document.activeElement !== target) {
+                return { focused: false, intersects: true, centerHit: false };
+              }
+              const fRect = target.getBoundingClientRect();
+              const sRect = stack.getBoundingClientRect();
+              const pad = 2;
+              const intersects =
+                fRect.left - pad < sRect.right &&
+                fRect.right + pad > sRect.left &&
+                fRect.top - pad < sRect.bottom &&
+                fRect.bottom + pad > sRect.top;
+              const cx = fRect.left + fRect.width / 2;
+              const cy = fRect.top + fRect.height / 2;
+              const hit = document.elementFromPoint(cx, cy);
+              const centerHit = Boolean(hit && (hit === target || target.contains(hit)));
+              return { focused: true, intersects, centerHit };
+            }, lastCardIdx);
+          },
+          { timeout: UI_WAIT_MS },
+        )
+        .toEqual({ focused: true, intersects: false, centerHit: true });
+
+      // Scroll back to top and queue 2 more toasts via rail tag delete so we have 4 total (3 visible + "+1")
       await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
-      for (let i = 1; i <= 3; i++) {
+      for (let i = 2; i <= 3; i++) {
         const tagId = `00000000-0000-4000-8000-00000000010${i}`;
         await page.getByTestId(`rail-tag-menu-trigger-${tagId}`).click();
         await page.getByTestId(`rail-tag-delete-action-${tagId}`).click();
