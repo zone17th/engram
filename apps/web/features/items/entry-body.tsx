@@ -69,6 +69,61 @@ class VersionHandoffSignal extends Error {
 function isVersionHandoffSignal(error: unknown): error is VersionHandoffSignal {
   return error instanceof VersionHandoffSignal;
 }
+
+type VersionHandoffListener = (discoveredVersion: number) => void;
+
+const versionHandoffBus = new WeakMap<
+  QueryClient,
+  Map<string, Set<VersionHandoffListener>>
+>();
+
+function getHandoffChannelKey(entryId: string, fromVersion: number): string {
+  return `${entryId}:${fromVersion}`;
+}
+
+function subscribeVersionHandoff(
+  queryClient: QueryClient,
+  entryId: string,
+  fromVersion: number | undefined,
+  listener: VersionHandoffListener,
+): () => void {
+  if (fromVersion === undefined) {
+    return () => {};
+  }
+  let byChannel = versionHandoffBus.get(queryClient);
+  if (!byChannel) {
+    byChannel = new Map();
+    versionHandoffBus.set(queryClient, byChannel);
+  }
+  const channelKey = getHandoffChannelKey(entryId, fromVersion);
+  let listeners = byChannel.get(channelKey);
+  if (!listeners) {
+    listeners = new Set();
+    byChannel.set(channelKey, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      byChannel.delete(channelKey);
+    }
+  };
+}
+
+function publishVersionHandoff(
+  queryClient: QueryClient,
+  entryId: string,
+  fromVersion: number,
+  toVersion: number,
+): void {
+  const byChannel = versionHandoffBus.get(queryClient);
+  if (!byChannel) return;
+  const listeners = byChannel.get(getHandoffChannelKey(entryId, fromVersion));
+  if (!listeners) return;
+  for (const listener of [...listeners]) {
+    listener(toVersion);
+  }
+}
 /**
  * Tracks whether a DOM element has entered the viewport via `IntersectionObserver` (plan Task 14 item 5).
  * Once an element intersects the viewport, `inView` stays `true` so scrolling back and forth does not
@@ -179,6 +234,24 @@ export function useEntryBody(
   const vault = useOptionalVault();
   const queryClient = useQueryClient();
   const unlocked = vault?.state === 'unlocked';
+
+  useEffect(() => {
+    if (!unlocked || initialVersion === undefined) {
+      return;
+    }
+    return subscribeVersionHandoff(
+      queryClient,
+      entryId,
+      initialVersion,
+      (discoveredVersion) => {
+        setResolvedVersionOverride({
+          entryId,
+          fromVersion: initialVersion,
+          toVersion: discoveredVersion,
+        });
+      },
+    );
+  }, [unlocked, queryClient, entryId, initialVersion]);
   const getClient = vault?.getClient;
   const captureOpGeneration = vault?.captureOpGeneration;
   const beginOp = vault?.beginOp;
@@ -241,8 +314,9 @@ export function useEntryBody(
         effectiveVersion !== undefined &&
         discoveredVersion !== effectiveVersion
       ) {
-        // IP14-BE1-2 / IP14-FE1-11: Handoff to the authoritative version without resolving
-        // plaintext under the obsolete version key, and remove the obsolete exact key immediately.
+        // IP14-BE1-2 / IP14-FE1-11 / IP14-BE2-2: Handoff to the authoritative version without resolving
+        // plaintext under the obsolete version key, notify EVERY mounted observer of `(entryId, effectiveVersion)`,
+        // and remove the obsolete exact key immediately.
         const obsoleteKey = vaultBodyQueryKey(entryId, effectiveVersion);
         queryClient.setQueryData(vaultBodyQueryKey(entryId, discoveredVersion), body);
         setResolvedVersionOverride({
@@ -250,6 +324,10 @@ export function useEntryBody(
           fromVersion: initialVersion,
           toVersion: discoveredVersion,
         });
+        if (initialVersion !== undefined && initialVersion !== effectiveVersion) {
+          publishVersionHandoff(queryClient, entryId, initialVersion, discoveredVersion);
+        }
+        publishVersionHandoff(queryClient, entryId, effectiveVersion, discoveredVersion);
         queueMicrotask(() => {
           queryClient.removeQueries({ queryKey: obsoleteKey, exact: true });
         });
@@ -348,6 +426,7 @@ export function EntryBody({
   const [lastErrorKind, setLastErrorKind] = useState<EntryOpenErrorKind | null>(null);
   const errorContainerRef = useRef<HTMLDivElement | null>(null);
   const retryBtnRef = useRef<HTMLButtonElement | null>(null);
+  const bodyNodeRef = useRef<HTMLElement | null>(null);
   const shouldRestoreFocusRef = useRef(false);
 
   const inViewport = useEntryInViewport(hostEl, {
@@ -375,13 +454,13 @@ export function EntryBody({
       setRetryingFromError(false);
       if (shouldRestoreFocusRef.current) {
         shouldRestoreFocusRef.current = false;
-        queueMicrotask(() => {
-          if (failed && retryBtnRef.current) {
-            retryBtnRef.current.focus();
-          } else if (hostEl) {
-            hostEl.focus();
-          }
-        });
+        if (failed && retryBtnRef.current) {
+          retryBtnRef.current.focus();
+        } else if (bodyNodeRef.current) {
+          bodyNodeRef.current.focus();
+        } else if (hostEl) {
+          hostEl.focus();
+        }
       }
     }
   }, [unlocked, pending, failed, oldKey, errorKind, retryingFromError, hostEl]);
@@ -433,6 +512,13 @@ export function EntryBody({
         }}
         tabIndex={-1}
         aria-busy={retryingFromError && pending ? 'true' : undefined}
+        onBlur={(e) => {
+          if (!shouldRestoreFocusRef.current) return;
+          const nextTarget = e.relatedTarget;
+          if (nextTarget instanceof Node && !e.currentTarget.contains(nextTarget)) {
+            shouldRestoreFocusRef.current = false;
+          }
+        }}
         className={cn('flex flex-wrap items-center justify-between gap-2', className)}
         role="alert"
         data-testid="entry-body-error"
@@ -496,7 +582,10 @@ export function EntryBody({
   if (kind === 'json' && variant === 'full') {
     return (
       <pre
-        ref={setHostEl}
+        ref={(node) => {
+          bodyNodeRef.current = node;
+          setHostEl(node);
+        }}
         tabIndex={-1}
         className={cn('json-raw overflow-x-auto rounded-md', className)}
         data-testid="entry-body"
@@ -508,7 +597,10 @@ export function EntryBody({
 
   return (
     <p
-      ref={setHostEl}
+      ref={(node) => {
+        bodyNodeRef.current = node;
+        setHostEl(node);
+      }}
       tabIndex={-1}
       className={cn(
         variant === 'summary' ? 't-legal text-muted' : 'm-0 text-[15px] leading-relaxed text-body',
