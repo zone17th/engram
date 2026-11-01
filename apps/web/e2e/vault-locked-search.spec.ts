@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { DEMO_ITEMS } from '../lib/demo-fixtures';
 import { installHomeContentMetadataRoutes } from './content-home-support';
+import { LOCKED_ITEM_FIXTURE, installItemPageContentMocks } from './content-itempage-support';
 import { UI_WAIT_MS, findBodyLeaks, installApiMocks } from './vault-locked-support';
 
 /**
@@ -52,10 +53,11 @@ test.describe('P03-T21 Locked state U5', () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
       await installApiMocks(context);
+      await installItemPageContentMocks(context);
       const page = await context.newPage();
       const bodyOnly = DEMO_ITEMS[0]; // "phin" is only in this item's body, never in a title or tag
 
-      await page.goto(`/app/items/${DEMO_ITEMS[1].id}`);
+      await page.goto(`/app/items/${LOCKED_ITEM_FIXTURE.item.id}`);
       await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
       const input = page.getByRole('combobox');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
