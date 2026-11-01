@@ -4286,6 +4286,75 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
   });
 
+  it('IP15-FE5-2: held reloadVaultMeta() + rerender with a new reloadVaultMeta identity does not swallow the attempt failure and shows the error/Retry card instead of an endless skeleton', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [{ id: ENTRY_ID_1, text: 'Decrypted after identity change Retry', position: 0 }],
+      skipInitialVaultMetaReload: true,
+    });
+
+    await h.lock();
+
+    let failVaultGet = true;
+    const reloadEntered = Promise.withResolvers<void>();
+    const reloadRelease = Promise.withResolvers<void>();
+
+    h.server.overrideRoute(async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && url.endsWith('/vault')) {
+        if (failVaultGet) {
+          reloadEntered.resolve();
+          await reloadRelease.promise;
+          return problemResponse('internal_error', 500);
+        }
+      }
+      return null;
+    });
+    h.server.requests.splice(0);
+
+    await h.unlockWithoutReload();
+    expect(h.vault().state).toBe('unlocked');
+    expect(h.vault().vaultMeta).toBeNull();
+
+    // Wait for useEntryBody's single automatic reloadVaultMeta() attempt to be in flight
+    await reloadEntered.promise;
+    expect(
+      h.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+    ).toHaveLength(1);
+
+    // While reloadVaultMeta() is held in flight, replace reloadVaultMeta on the vault context with a new function identity
+    // and trigger a rerender (matching a sessionStatus / loadVaultMeta identity change in VaultProvider).
+    const origReload = h.vault().reloadVaultMeta.bind(h.vault());
+    const nextReloadIdentity = () => origReload();
+    Object.defineProperty(h.vault(), 'reloadVaultMeta', {
+      get: () => nextReloadIdentity,
+      configurable: true,
+    });
+    h.rerenderPage();
+
+    // Release the held reloadVaultMeta() -> fails with 500 -> error/Retry card must still appear (not swallowed by cleanup)
+    reloadRelease.resolve();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-body-error')).toBeInTheDocument();
+      expect(screen.getByTestId('entry-body-retry')).toBeEnabled();
+    });
+    expect(screen.queryByTestId('entry-body-loading')).toBeNull();
+    expect(
+      h.server.requests.filter((r) => r.method === 'GET' && r.url.endsWith('/vault')),
+    ).toHaveLength(1);
+
+    // Clicking Retry now succeeds and decrypts the entry body
+    failVaultGet = false;
+    fireEvent.click(screen.getByTestId('entry-body-retry'));
+    await waitFor(() => {
+      expect(h.vault().vaultMeta?.vault_key_id).toBe(KEY_ID);
+      expect(screen.queryByTestId('entry-body-error')).toBeNull();
+      expect(screen.getByTestId('entry-body')).toHaveTextContent(
+        'Decrypted after identity change Retry',
+      );
+    });
+  });
+
   it('advisor-dec-186 (UIA-3 + UIA-21): localizes breadcrumb, header, and locked-banner short copy in both en and vi with zero hardcoded Vietnamese UI strings in en locale', async () => {
     const h = await setupItemPageHarness({
       locale: 'en',

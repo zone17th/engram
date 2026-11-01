@@ -360,6 +360,18 @@ export function useEntryBody(
 
   const [metaReloadError, setMetaReloadError] = useState<unknown>(null);
   const metaReloadAttemptedGenRef = useRef<number | null>(null);
+  const mountedRef = useRef<boolean>(true);
+  const unlockedRef = useRef<boolean>(unlocked);
+  unlockedRef.current = unlocked;
+  const captureOpGenerationRef = useRef(captureOpGeneration);
+  captureOpGenerationRef.current = captureOpGeneration;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!unlocked) {
@@ -384,23 +396,30 @@ export function useEntryBody(
       setMetaReloadError(new Error('vault_meta_unavailable'));
       return;
     }
-    let cancelled = false;
+    // IP15-FE5-2: Record the single reloadVaultMeta() attempt outcome independent of effect cleanup
+    // when reloadVaultMeta changes identity mid-flight: apply a failure unless the component unmounted,
+    // the vault locked, or the opGeneration changed.
+    const isAttemptStillRelevant = () => {
+      if (!mountedRef.current || !unlockedRef.current) return false;
+      const latestGen =
+        typeof captureOpGenerationRef.current === 'function'
+          ? captureOpGenerationRef.current()
+          : -1;
+      return latestGen === currentGen;
+    };
     void (async () => {
       try {
         const reloaded = await reloadVaultMeta();
-        if (cancelled) return;
+        if (!isAttemptStillRelevant()) return;
         const nextKeyId = reloaded?.vault_key_id;
         if (typeof nextKeyId !== 'string' || nextKeyId.length === 0) {
           setMetaReloadError(new Error('vault_meta_unavailable'));
         }
       } catch (err) {
-        if (cancelled) return;
+        if (!isAttemptStillRelevant()) return;
         setMetaReloadError(err);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [
     captureOpGeneration,
     hasValidVaultKeyId,
