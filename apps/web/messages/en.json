@@ -808,7 +808,7 @@
       "unlock_cancelled": "Passkey prompt was cancelled.",
       "unlock_failed": "Could not unlock with this passkey. Use your passphrase or a recovery key.",
       "unlock_prf_missing": "Authenticator did not return PRF. Cannot unlock with passkey.",
-      "none_registered": "No passkeys yet. Add one in Settings after unlock.",
+      "none_registered": "No passkeys yet.",
       "revoked": "Passkey removed.",
       "register": {
         "nameLabel": "Passkey name",

@@ -808,7 +808,7 @@
       "unlock_cancelled": "Đã huỷ mở khoá bằng passkey.",
       "unlock_failed": "Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.",
       "unlock_prf_missing": "Authenticator không trả PRF. Không mở vault bằng passkey.",
-      "none_registered": "Chưa có passkey. Thêm trong Settings sau khi mở vault.",
+      "none_registered": "Chưa có passkey nào.",
       "revoked": "Đã gỡ passkey.",
       "register": {
         "nameLabel": "Tên passkey",
