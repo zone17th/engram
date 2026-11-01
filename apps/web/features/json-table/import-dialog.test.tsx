@@ -1134,7 +1134,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     h.server.overrideRoute((url, init) => {
       if (url.endsWith(`/items/${ITEM_ID}/entries/import-json`) && init?.method === 'POST') {
         importAttempts += 1;
-        if (importAttempts <= 3) {
+        if (importAttempts <= 1) {
           return problemResponse('dependency_unavailable', 503, { retry_after: 60 });
         }
       }
