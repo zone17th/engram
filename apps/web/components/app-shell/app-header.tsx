@@ -3,34 +3,40 @@
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
-import { useVaultPillLabel, VaultPill, type VaultPillState } from '@/components/ui/vault-pill';
+import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
-import { useOptionalVault, type VaultStateMachineMode } from '@/features/vault/vault-provider';
+import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-function modeToPillState(mode: VaultStateMachineMode): VaultPillState {
-  if (mode === 'no_vault' || mode === 'onboarding') return 'absent';
-  if (mode === 'unlocked' || mode === 'rewrapping') return 'open';
-  return 'locked';
-}
 
-/** Header dính, nền mờ, cao 68px — chép từ mockups/index.html. */
+/**
+ * Header dính, nền mờ, cao 68px — chép từ mockups/index.html.
+ *
+ * advisor-dec-186 (UIA-9/18): every app route shows the same header actions in the same order and at one size
+ * (the mockup's `btn btn-tertiary`, 38px / 15px): vault pill, Settings, theme toggle, Sign out. Sign out takes the
+ * mockup avatar slot at the end.
+ *
+ * `showLogout` defaults to `true` so every route (including the item page, which passes no flag) shows Sign out.
+ * The prop stays in the API only as an opt-out for isolated renders without a SessionProvider (unit tests); app routes
+ * must not pass `false`.
+ */
 export function AppHeader({
   vault,
   showSearch = false,
   settingsActive = false,
-  showLogout = false,
+  showLogout = true,
 }: {
   vault?: { state: VaultPillState; minutesLeft?: number };
   showSearch?: boolean;
   settingsActive?: boolean;
+  /** Defaults to true (dec-186). Opt-out only for renders outside SessionProvider. */
   showLogout?: boolean;
 }) {
   const tHeader = useTranslations('app.header');
   const tVault = useTranslations('vault.state');
   const vaultCtx = useOptionalVault();
   const effectivePillState: VaultPillState = vaultCtx
-    ? modeToPillState(vaultCtx.state)
+    ? vaultModeToPillState(vaultCtx.state)
     : (vault?.state ?? 'locked');
   const effectiveMinutesLeft = vault?.minutesLeft ?? vaultCtx?.minutesLeft;
   const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
@@ -83,7 +89,7 @@ export function AppHeader({
               type="button"
               data-testid="vault-lock-button-mobile"
               onClick={handleLockClick}
-              className="grid h-9 w-9 cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
+              className="grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
               aria-label={tHeader('openAndLockNow')}
               title={tHeader('openAndLockNow')}
             >
@@ -91,7 +97,7 @@ export function AppHeader({
             </button>
           ) : (
             <span
-              className="grid h-9 w-9 place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
+              className="grid h-[38px] w-[38px] place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
               aria-label={mobilePillLabel}
               title={mobilePillLabel}
             >
@@ -105,8 +111,8 @@ export function AppHeader({
           >
             {settingsActive ? tHeader('settingsDone') : tHeader('settings')}
           </Link>
-          {showLogout ? <AppShellLogoutButton /> : null}
           <ThemeToggle />
+          {showLogout ? <AppShellLogoutButton size="md" /> : null}
         </div>
       </div>
     </header>
