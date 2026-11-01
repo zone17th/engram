@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth"
 )
 
 func TestSinkMailerEntriesFor(t *testing.T) {

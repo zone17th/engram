@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 func testDeps(buf *bytes.Buffer) httpx.Deps {

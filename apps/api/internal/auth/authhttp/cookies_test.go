@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
 )
 
 func TestSessionCookiesFlags(t *testing.T) {

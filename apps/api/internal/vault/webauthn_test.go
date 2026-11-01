@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/webauthntest"
+	"github.com/zone17th/engram/apps/api/internal/vault"
+	"github.com/zone17th/engram/apps/api/internal/vault/webauthntest"
 )
 
 func TestExtractClientDataChallengeAndVerifyRegistrationAttestation(t *testing.T) {

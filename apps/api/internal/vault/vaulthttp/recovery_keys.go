@@ -3,9 +3,9 @@ package vaulthttp
 import (
 	"net/http"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/vault"
 )
 
 // RecoveryKeysRegenerate xử lý `POST /api/v1/vault/recovery-keys/regenerate` (`vaultRecoveryKeysRegenerate`, plan Task 11, mục 3).

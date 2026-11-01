@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/oauth"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/engram/apps/api/internal/auth/oauth"
 )
 
 func noRedirect() *http.Client {

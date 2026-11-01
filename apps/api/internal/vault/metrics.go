@@ -3,7 +3,7 @@ package vault
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
+	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
 // UnlockMethodRecovery là nhãn `method="recovery"` duy nhất mà server đo được cho

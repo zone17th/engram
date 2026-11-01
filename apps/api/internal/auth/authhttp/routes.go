@@ -3,7 +3,7 @@ package authhttp
 import (
 	"github.com/go-chi/chi/v5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 // Mount đăng ký 26 operation P02. Từ chối mount khi thiếu verifier thật.
