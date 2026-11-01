@@ -4,8 +4,8 @@ Shared test fixtures consumed by both Web (`apps/web`, Vitest) and API (`apps/ap
 
 ## Layout
 
-- `normalize.json` — Name/tag Unicode NFKC + whitespace + case-fold normalization vectors (Task 3a / Task 13).
-- `quick-add.json` — Omnibox quick-add grammar vectors (Task 13).
+- `normalize.json` — Name/tag/hint/query Unicode NFC → per-code-point lowercase → NFC (`advisor-dec-125`), whitespace collapse, punctuation strip, C0/C1/bidi/UTF-8 rejection, and rune-limit vectors (79 cases; Task 3a / Task 13).
+- `quick-add.json` — Omnibox quick-add grammar and mode classification vectors (`{name, input, expected: {mode, name, tags, body, jsonCandidate, searchable, error?}}`, 46 cases; Task 13, plan mục 2.11, SPEC §3.4): URL in body/name (`(?!//)` colon rule), `a::b`, `:abc`, `abc:`, `wifi:Abc123`, `10:30 họp` (Q13), multi-line, CRLF, lone CR, tab, full-width colon `：`, Vietnamese tags, `#` tag-filter vs lone `#` token, word after tag (Q5), tag 50/51 runes, name 200/201 runes, Unicode whitespace, 20/21 tags, duplicate tag merge (`#Nhà #nhà`, `#J\u030c #j\u030c #\u01f0`), multi-line without `:`, 5 KB single line without `:`, and JSON object/array/invalid/primitive body detection.
 - `json-corpus/` — Strict RFC 8259 JSON lossless corpus for `apps/web/lib/json` (Task 12, Task 16, Task 17; evidence rows `P04-A6` and `P04-A7`):
   - `manifest.json` — Index of all valid, BOM, and invalid UTF-8/JSON corpus files with metadata (`id`, `file`, `kind`, `eol`, `expectedBomStripped`, `expectedValidJson`, `description`).
   - `*.json` — Valid RFC 8259 JSON documents covering duplicate keys, integer-like key order (`"10"` before `"2"`), exact number lexemes (`9007199254740993`, `1e400`, `-0`, `0.10`), string escapes (`é`, `😀`, `\/`, `\n`, `\r\n`, `\t`, lone surrogate `\ud800`), prototype-pollution keys (`__proto__`, `constructor`, `hasOwnProperty`), CRLF/tab/mixed/lone-CR line endings, root primitives (`42`, `"ok"`, `null`, `true`), empty containers (`[]`, `{}`), mixed arrays, arrays of arrays, array-of-objects with duplicate keys in one row, 25-column array-of-objects (`+5 field`), and 10,000-level deep nesting (`deep-10000-array.json`, ~20 KB).

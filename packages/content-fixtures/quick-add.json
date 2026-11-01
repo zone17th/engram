@@ -1,0 +1,662 @@
+{
+  "version": 1,
+  "schema": "engram-content-quick-add-v1",
+  "description": "Shared omnibox quick-add grammar test fixtures (P04 plan muc 2.11, SPEC 3.4). Plain JSON with control/non-ASCII code points escaped via \\uXXXX so both TypeScript (Vitest) and Go can consume the file directly.",
+  "cases": [
+    {
+      "name": "url-in-body",
+      "input": "link: https://a.b/c",
+      "expected": {
+        "mode": "add",
+        "name": "link",
+        "tags": [],
+        "body": "https://a.b/c",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "url-in-name-colon-slash-slash-skipped",
+      "input": "docs https://a.b: ghi ch\u00fa",
+      "expected": {
+        "mode": "add",
+        "name": "docs https://a.b",
+        "tags": [],
+        "body": "ghi ch\u00fa",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "url-only-no-second-colon-is-search",
+      "input": "https://a.b/c",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": true
+      }
+    },
+    {
+      "name": "double-colon-a-colon-colon-b",
+      "input": "a::b",
+      "expected": {
+        "mode": "add",
+        "name": "a",
+        "tags": [],
+        "body": ":b",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "colon-slash-slash-at-start-of-body",
+      "input": "a://b:c",
+      "expected": {
+        "mode": "add",
+        "name": "a://b",
+        "tags": [],
+        "body": "c",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "leading-colon-empty-name",
+      "input": ":abc",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "",
+        "tags": [],
+        "body": "abc",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "name_empty"
+      }
+    },
+    {
+      "name": "whitespace-only-name-before-colon",
+      "input": "   :abc",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "",
+        "tags": [],
+        "body": "abc",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "name_empty"
+      }
+    },
+    {
+      "name": "trailing-colon-empty-body",
+      "input": "abc:",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "abc",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "body_empty"
+      }
+    },
+    {
+      "name": "colon-with-whitespace-only-body",
+      "input": "abc:   \n\t  ",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "abc",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "body_empty"
+      }
+    },
+    {
+      "name": "colon-without-space-wifi-password",
+      "input": "wifi:Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "time-like-prefix-10-30-hop-Q13",
+      "input": "10:30 h\u1ecdp",
+      "expected": {
+        "mode": "add",
+        "name": "10",
+        "tags": [],
+        "body": "30 h\u1ecdp",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "multiline-body-preserves-inner-newlines-and-spaces",
+      "input": "ssh config #ops #home-lab:   Host prod\n  HostName 10.0.0.1\n\n  User root   ",
+      "expected": {
+        "mode": "add",
+        "name": "ssh config",
+        "tags": [
+          "ops",
+          "home-lab"
+        ],
+        "body": "Host prod\n  HostName 10.0.0.1\n\n  User root",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "crlf-multiline-add-body",
+      "input": "ghi ch\u00fa: d\u00f2ng 1\r\nd\u00f2ng 2\r\nd\u00f2ng 3\r\n",
+      "expected": {
+        "mode": "add",
+        "name": "ghi ch\u00fa",
+        "tags": [],
+        "body": "d\u00f2ng 1\r\nd\u00f2ng 2\r\nd\u00f2ng 3",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "crlf-colon-on-second-line-ignored-not-searchable",
+      "input": "d\u00f2ng \u0111\u1ea7u kh\u00f4ng d\u1ea5u hai ch\u1ea5m\r\nd\u00f2ng hai: c\u00f3 d\u1ea5u hai ch\u1ea5m",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "lone-cr-colon-on-second-line-ignored-not-searchable",
+      "input": "first line\rsecond: line",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "tab-in-body-trimmed-at-edges-preserved-in-middle",
+      "input": "wifi #tag1 #tag2:\tcol1\tcol2\t",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [
+          "tag1",
+          "tag2"
+        ],
+        "body": "col1\tcol2",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "tab-inside-name-rejected-as-c0-control",
+      "input": "wi\tfi: secret",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wi\tfi",
+        "tags": [],
+        "body": "secret",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "name_invalid"
+      }
+    },
+    {
+      "name": "full-width-colon-is-not-separator",
+      "input": "wifi\uff1aAbc123",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": true
+      }
+    },
+    {
+      "name": "vietnamese-name-and-tags",
+      "input": "m\u1eadt kh\u1ea9u wifi b\u1ed1 m\u1eb9 #nh\u00e0 #\u0111\u1ed3ng-\u0111\u1ed9i: H\u00f2a Ph\u00e1t 2026!",
+      "expected": {
+        "mode": "add",
+        "name": "m\u1eadt kh\u1ea9u wifi b\u1ed1 m\u1eb9",
+        "tags": [
+          "nh\u00e0",
+          "\u0111\u1ed3ng-\u0111\u1ed9i"
+        ],
+        "body": "H\u00f2a Ph\u00e1t 2026!",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "tag-filter-mode-starts-with-hash",
+      "input": "#nh\u00e0",
+      "expected": {
+        "mode": "tag-filter",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "tag-filter-mode-starts-with-hash-even-with-colon-later",
+      "input": "#nh\u00e0: ghi ch\u00fa",
+      "expected": {
+        "mode": "tag-filter",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "lone-hash-only-input-is-tag-filter",
+      "input": "#",
+      "expected": {
+        "mode": "tag-filter",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "lone-hash-token-in-add-head-rejected",
+      "input": "wifi # : Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wifi",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "tag_display_invalid"
+      }
+    },
+    {
+      "name": "double-hash-inside-tag-token-rejected",
+      "input": "wifi #a#b: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wifi",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "tag_display_invalid"
+      }
+    },
+    {
+      "name": "word-after-tag-rejected-Q5",
+      "input": "wifi #nh\u00e0 tr\u1ecd: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wifi",
+        "tags": [
+          "nh\u00e0"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "tag_has_space"
+      }
+    },
+    {
+      "name": "word-between-two-tags-rejected-Q5",
+      "input": "wifi #nh\u00e0 v\u0103n ph\u00f2ng #ops: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wifi",
+        "tags": [
+          "nh\u00e0",
+          "ops"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "tag_has_space"
+      }
+    },
+    {
+      "name": "duplicate-tags-merged-after-normalization-preserve-first-display",
+      "input": "wifi #Nh\u00e0 #nh\u00e0 #NH\u00c0 #office #Office!: Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [
+          "Nh\u00e0",
+          "office"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "duplicate-tags-merged-j-caron-advisor-dec-125",
+      "input": "wifi #J\u030c #j\u030c #\u01f0: Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [
+          "J\u030c"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "tag-exact-50-runes-accepted",
+      "input": "wifi #tttttttttttttttttttttttttttttttttttttttttttttttttt: Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [
+          "tttttttttttttttttttttttttttttttttttttttttttttttttt"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "tag-51-runes-rejected",
+      "input": "wifi #ttttttttttttttttttttttttttttttttttttttttttttttttttt: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wifi",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "tag_display_invalid"
+      }
+    },
+    {
+      "name": "name-exact-200-runes-accepted",
+      "input": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn: Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "name-201-runes-rejected",
+      "input": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "name_invalid"
+      }
+    },
+    {
+      "name": "name-punctuation-only-rejected-Q12",
+      "input": "!!!: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "!!!",
+        "tags": [],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "name_invalid"
+      }
+    },
+    {
+      "name": "unicode-whitespace-in-head-and-body",
+      "input": "\u00a0wifi\u2003nh\u00e0\u3000#tag1\u00a0#tag2\u2000:\u00a0\u3000n\u1ed9i dung\u00a0gi\u1eefa\u3000",
+      "expected": {
+        "mode": "add",
+        "name": "wifi\u2003nh\u00e0",
+        "tags": [
+          "tag1",
+          "tag2"
+        ],
+        "body": "n\u1ed9i dung\u00a0gi\u1eefa",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "exact-20-tags-accepted",
+      "input": "wifi #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9 #t10 #t11 #t12 #t13 #t14 #t15 #t16 #t17 #t18 #t19 #t20: Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [
+          "t1",
+          "t2",
+          "t3",
+          "t4",
+          "t5",
+          "t6",
+          "t7",
+          "t8",
+          "t9",
+          "t10",
+          "t11",
+          "t12",
+          "t13",
+          "t14",
+          "t15",
+          "t16",
+          "t17",
+          "t18",
+          "t19",
+          "t20"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "21-distinct-tags-rejected",
+      "input": "wifi #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9 #t10 #t11 #t12 #t13 #t14 #t15 #t16 #t17 #t18 #t19 #t20 #t21: Abc123",
+      "expected": {
+        "mode": "add-invalid",
+        "name": "wifi",
+        "tags": [
+          "t1",
+          "t2",
+          "t3",
+          "t4",
+          "t5",
+          "t6",
+          "t7",
+          "t8",
+          "t9",
+          "t10",
+          "t11",
+          "t12",
+          "t13",
+          "t14",
+          "t15",
+          "t16",
+          "t17",
+          "t18",
+          "t19",
+          "t20",
+          "t21"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false,
+        "error": "tag_limit"
+      }
+    },
+    {
+      "name": "21-tag-tokens-collapsing-to-20-after-dedup-accepted",
+      "input": "wifi #T1 #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9 #t10 #t11 #t12 #t13 #t14 #t15 #t16 #t17 #t18 #t19 #t20: Abc123",
+      "expected": {
+        "mode": "add",
+        "name": "wifi",
+        "tags": [
+          "T1",
+          "t2",
+          "t3",
+          "t4",
+          "t5",
+          "t6",
+          "t7",
+          "t8",
+          "t9",
+          "t10",
+          "t11",
+          "t12",
+          "t13",
+          "t14",
+          "t15",
+          "t16",
+          "t17",
+          "t18",
+          "t19",
+          "t20"
+        ],
+        "body": "Abc123",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "multiline-without-colon-is-unsearchable-search-mode",
+      "input": "d\u00f2ng m\u1ed9t kh\u00f4ng c\u00f3 d\u1ea5u hai ch\u1ea5m\nd\u00f2ng hai c\u0169ng kh\u00f4ng c\u00f3",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "single-line-search-exact-200-runes-searchable",
+      "input": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": true
+      }
+    },
+    {
+      "name": "single-line-search-201-runes-unsearchable",
+      "input": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "single-line-5kb-without-colon-unsearchable",
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "json-body-valid-object",
+      "input": "router config #ops: {\"host\":\"10.0.0.1\",\"port\":8080}",
+      "expected": {
+        "mode": "add",
+        "name": "router config",
+        "tags": [
+          "ops"
+        ],
+        "body": "{\"host\":\"10.0.0.1\",\"port\":8080}",
+        "jsonCandidate": true,
+        "searchable": false
+      }
+    },
+    {
+      "name": "json-body-valid-array-multiline",
+      "input": "ports: [\n  80,\n  443\n]",
+      "expected": {
+        "mode": "add",
+        "name": "ports",
+        "tags": [],
+        "body": "[\n  80,\n  443\n]",
+        "jsonCandidate": true,
+        "searchable": false
+      }
+    },
+    {
+      "name": "json-body-invalid-trailing-comma-not-candidate",
+      "input": "broken json: {\"a\": 1,}",
+      "expected": {
+        "mode": "add",
+        "name": "broken json",
+        "tags": [],
+        "body": "{\"a\": 1,}",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "json-primitive-number-body-not-candidate",
+      "input": "pin: 123456",
+      "expected": {
+        "mode": "add",
+        "name": "pin",
+        "tags": [],
+        "body": "123456",
+        "jsonCandidate": false,
+        "searchable": false
+      }
+    },
+    {
+      "name": "empty-input-is-searchable-search-mode",
+      "input": "",
+      "expected": {
+        "mode": "search",
+        "name": "",
+        "tags": [],
+        "body": "",
+        "jsonCandidate": false,
+        "searchable": true
+      }
+    }
+  ]
+}
