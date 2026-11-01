@@ -716,96 +716,183 @@ func TestContentBodyLimitsEntryItemAndP03VaultThroughRealChain(t *testing.T) {
 //     the aborted transaction returns 503 dependency_unavailable + Retry-After: 1 with its in-transaction
 //     InsertItem rolled back and its idempotency claim released; retry with the same key runs once and replay
 //     returns the stored response, leaving exactly one committed row per key.
+type barrierController struct {
+	userAEntered       chan struct{}
+	releaseUserA       chan struct{}
+	cancelUserABarrier chan struct{}
+	closeUserAOnce     sync.Once
+
+	userBEntered        chan struct{}
+	userBHeld           chan struct{}
+	withholdUserBNotify atomic.Bool
+	cancelUserBBarrier  chan struct{}
+	closeUserBOnce      sync.Once
+
+	dlStep1Done    chan struct{}
+	dlProceedStep2 chan struct{}
+	closeDLOnce    sync.Once
+
+	userATarget           uuid.UUID
+	userBTarget           uuid.UUID
+	serialBarrierActive   atomic.Bool
+	deadlockBarrierActive atomic.Bool
+	dlLockItem1           uuid.UUID
+	dlLockItem2           uuid.UUID
+}
+
+func newBarrierController() *barrierController {
+	return &barrierController{
+		userAEntered:       make(chan struct{}, 4),
+		releaseUserA:       make(chan struct{}, 4),
+		cancelUserABarrier: make(chan struct{}),
+		userBEntered:       make(chan struct{}, 2),
+		userBHeld:          make(chan struct{}, 2),
+		cancelUserBBarrier: make(chan struct{}),
+		dlStep1Done:        make(chan struct{}, 2),
+		dlProceedStep2:     make(chan struct{}),
+	}
+}
+
+func (b *barrierController) closeUserABarrier() {
+	b.closeUserAOnce.Do(func() { close(b.cancelUserABarrier) })
+}
+
+func (b *barrierController) closeUserBBarrier() {
+	b.closeUserBOnce.Do(func() { close(b.cancelUserBBarrier) })
+}
+
+func (b *barrierController) closeDLBarrier() {
+	b.closeDLOnce.Do(func() { close(b.dlProceedStep2) })
+}
+
+func (b *barrierController) releaseAll() {
+	b.serialBarrierActive.Store(false)
+	b.deadlockBarrierActive.Store(false)
+	b.closeUserABarrier()
+	b.closeUserBBarrier()
+	b.closeDLBarrier()
+}
+
+// registerBarrierRelease registers b.releaseAll on tb.Cleanup so any held handler
+// is released when the test finishes or fails via Fatal/Fatalf.
+func registerBarrierRelease(tb testing.TB, b *barrierController) {
+	tb.Helper()
+	tb.Cleanup(b.releaseAll)
+}
+
+// attachBarrierServer starts a server whose Close cleanup is registered inside startServer(tb),
+// and then registers registerBarrierRelease(tb, b) so LIFO teardown releases all held barriers
+// BEFORE srv.Close waits for active HTTP handlers.
+func attachBarrierServer(tb testing.TB, b *barrierController, startServer func(tb testing.TB)) {
+	tb.Helper()
+	startServer(tb)
+	registerBarrierRelease(tb, b)
+}
+
+func (b *barrierController) onLockHeld(reqCtx context.Context, uid uuid.UUID) {
+	if !b.serialBarrierActive.Load() {
+		return
+	}
+	switch uid {
+	case b.userATarget:
+		b.userAEntered <- struct{}{}
+		select {
+		case <-b.releaseUserA:
+		case <-b.cancelUserABarrier:
+		case <-reqCtx.Done():
+		}
+	case b.userBTarget:
+		select {
+		case b.userBHeld <- struct{}{}:
+		default:
+		}
+		if !b.withholdUserBNotify.Load() {
+			b.userBEntered <- struct{}{}
+		}
+		select {
+		case <-b.cancelUserBBarrier:
+		case <-reqCtx.Done():
+		}
+	}
+}
+
+func (b *barrierController) waitDeadlockStep2(reqCtx context.Context) error {
+	b.dlStep1Done <- struct{}{}
+	select {
+	case <-b.dlProceedStep2:
+		return nil
+	case <-reqCtx.Done():
+		return reqCtx.Err()
+	}
+}
+
+func (b *barrierController) afterInsertTxHook(reqCtx context.Context, uid uuid.UUID, tx pgx.Tx) error {
+	if !b.deadlockBarrierActive.Load() {
+		return nil
+	}
+	// Deterministic two-transaction Postgres 40P01 deadlock after InsertItem has already executed in tx:
+	// - User A locks dlLockItem1 FOR UPDATE, signals step 1, waits for both txs to hold step-1 locks, then locks dlLockItem2 FOR UPDATE.
+	// - User B locks dlLockItem2 FOR UPDATE, signals step 1, waits for both txs to hold step-1 locks, then locks dlLockItem1 FOR UPDATE.
+	firstID, secondID := b.dlLockItem1, b.dlLockItem2
+	if uid == b.userBTarget {
+		firstID, secondID = b.dlLockItem2, b.dlLockItem1
+	}
+	if _, err := tx.Exec(reqCtx, `SELECT 1 FROM item WHERE id = $1 FOR UPDATE`, firstID); err != nil {
+		return err
+	}
+	if err := b.waitDeadlockStep2(reqCtx); err != nil {
+		return err
+	}
+	_, err := tx.Exec(reqCtx, `SELECT 1 FROM item WHERE id = $1 FOR UPDATE`, secondID)
+	return err
+}
+
+func (b *barrierController) awaitAdvisoryLockWaiter(tb testing.TB, timeout, pollInterval time.Duration, hasWaiter func() bool) {
+	tb.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if hasWaiter() {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+	tb.Fatal("expected User A tx 2 to wait on ungranted advisory lock in pg_locks")
+}
+
+func (b *barrierController) awaitUserBEntered(tb testing.TB, timeout time.Duration) {
+	tb.Helper()
+	select {
+	case <-b.userBEntered:
+	case <-time.After(timeout):
+		tb.Fatal("User B transaction was blocked by User A LockUserContent")
+	}
+}
+
+func (b *barrierController) awaitDeadlockParticipants(tb testing.TB, timeout time.Duration) {
+	tb.Helper()
+	for step := 1; step <= 2; step++ {
+		select {
+		case <-b.dlStep1Done:
+		case <-time.After(timeout):
+			tb.Fatalf("timed out waiting for deadlock participant %d to acquire first lock", step)
+		}
+	}
+}
+
 func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock503Retry(t *testing.T) {
-	userAEntered := make(chan struct{}, 4)
-	releaseUserA := make(chan struct{}, 4)
-	cancelUserABarrier := make(chan struct{})
-	var closeUserAOnce sync.Once
-	closeUserABarrier := func() { closeUserAOnce.Do(func() { close(cancelUserABarrier) }) }
-
-	userBEntered := make(chan struct{}, 2)
-	cancelUserBBarrier := make(chan struct{})
-	var closeUserBOnce sync.Once
-	closeUserBBarrier := func() { closeUserBOnce.Do(func() { close(cancelUserBBarrier) }) }
-
-	dlStep1Done := make(chan struct{}, 2)
-	dlProceedStep2 := make(chan struct{})
-	var closeDLOnce sync.Once
-	closeDLBarrier := func() { closeDLOnce.Do(func() { close(dlProceedStep2) }) }
-
-	var userATarget uuid.UUID
-	var userBTarget uuid.UUID
-	var serialBarrierActive atomic.Bool
-	var deadlockBarrierActive atomic.Bool
-	var dlLockItem1 uuid.UUID
-	var dlLockItem2 uuid.UUID
-
-	h := newHarnessWithTestRoutes(
-		t,
-		func(reqCtx context.Context, uid uuid.UUID) {
-			if !serialBarrierActive.Load() {
-				return
-			}
-			switch uid {
-			case userATarget:
-				userAEntered <- struct{}{}
-				select {
-				case <-releaseUserA:
-				case <-cancelUserABarrier:
-				case <-reqCtx.Done():
-				}
-			case userBTarget:
-				userBEntered <- struct{}{}
-				select {
-				case <-cancelUserBBarrier:
-				case <-reqCtx.Done():
-				}
-			}
-		},
-		func(reqCtx context.Context, uid uuid.UUID, tx pgx.Tx) error {
-			if !deadlockBarrierActive.Load() {
-				return nil
-			}
-			// Deterministic two-transaction Postgres 40P01 deadlock after InsertItem has already executed in tx:
-			// - User A locks dlLockItem1 FOR UPDATE, signals step 1, waits for both txs to hold step-1 locks, then locks dlLockItem2 FOR UPDATE.
-			// - User B locks dlLockItem2 FOR UPDATE, signals step 1, waits for both txs to hold step-1 locks, then locks dlLockItem1 FOR UPDATE.
-			firstID, secondID := dlLockItem1, dlLockItem2
-			if uid == userBTarget {
-				firstID, secondID = dlLockItem2, dlLockItem1
-			}
-			if _, err := tx.Exec(reqCtx, `SELECT 1 FROM item WHERE id = $1 FOR UPDATE`, firstID); err != nil {
-				return err
-			}
-			dlStep1Done <- struct{}{}
-			select {
-			case <-dlProceedStep2:
-			case <-reqCtx.Done():
-				return reqCtx.Err()
-			}
-			_, err := tx.Exec(reqCtx, `SELECT 1 FROM item WHERE id = $1 FOR UPDATE`, secondID)
-			return err
-		},
-		nil,
-		nil,
-	)
-
-	// Register barrier release/cancel AFTER NewHarness (so LIFO t.Cleanup runs this BEFORE h.Server.Close)
-	// and BEFORE launching any goroutines/requests.
-	t.Cleanup(func() {
-		serialBarrierActive.Store(false)
-		deadlockBarrierActive.Store(false)
-		closeUserABarrier()
-		closeUserBBarrier()
-		closeDLBarrier()
+	b := newBarrierController()
+	var h *contenttest.Harness
+	attachBarrierServer(t, b, func(tb testing.TB) {
+		h = newHarnessWithTestRoutes(tb.(*testing.T), b.onLockHeld, b.afterInsertTxHook, nil, nil)
 	})
 
 	ctx := context.Background()
 	jarA, meA, jarB, meB := h.SignupTwoUsers()
-	userATarget = meA.User.ID
-	userBTarget = meB.User.ID
+	b.userATarget = meA.User.ID
+	b.userBTarget = meB.User.ID
 
 	// Part 1: Same user runs serially, different user runs in parallel while User A holds LockUserContent.
-	serialBarrierActive.Store(true)
+	b.serialBarrierActive.Store(true)
 
 	type reqResult struct {
 		resp contenttest.TestResponse
@@ -824,7 +911,7 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}()
 
 	select {
-	case <-userAEntered:
+	case <-b.userAEntered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for User A tx 1 to acquire LockUserContent")
 	}
@@ -838,9 +925,7 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}()
 
 	// Wait until Postgres pg_locks shows an ungranted advisory lock waiter for hashtext('engram.content').
-	deadline := time.Now().Add(10 * time.Second)
-	sawWaitingAdvisoryLock := false
-	for time.Now().Before(deadline) {
+	b.awaitAdvisoryLockWaiter(t, 10*time.Second, 15*time.Millisecond, func() bool {
 		var waiting int
 		err := h.Pool.QueryRow(ctx, `
 			SELECT count(*)
@@ -850,19 +935,12 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 			  AND objid = hashtext(($1::uuid)::text)
 			  AND NOT granted
 		`, meA.User.ID).Scan(&waiting)
-		if err == nil && waiting == 1 {
-			sawWaitingAdvisoryLock = true
-			break
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	if !sawWaitingAdvisoryLock {
-		t.Fatal("expected User A tx 2 to wait on ungranted advisory lock in pg_locks")
-	}
+		return err == nil && waiting == 1
+	})
 
 	// Confirm User A tx 2 has NOT entered the critical section while tx 1 holds the lock.
 	select {
-	case <-userAEntered:
+	case <-b.userAEntered:
 		t.Fatal("User A tx 2 entered critical section while User A tx 1 still held LockUserContent")
 	default:
 	}
@@ -875,13 +953,9 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 		doneB1 <- reqResult{resp: resp, raw: raw}
 	}()
 
-	select {
-	case <-userBEntered:
-		// User B entered while User A tx 1 is still holding LockUserContent(A) and tx 2 is waiting!
-	case <-time.After(10 * time.Second):
-		t.Fatal("User B transaction was blocked by User A LockUserContent")
-	}
-	closeUserBBarrier()
+	// User B enters while User A tx 1 is still holding LockUserContent(A) and tx 2 is waiting.
+	b.awaitUserBEntered(t, 10*time.Second)
+	b.closeUserBBarrier()
 
 	var resB1 reqResult
 	select {
@@ -891,7 +965,7 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}
 
 	// Now release User A tx 1 -> User A tx 2 must enter next, then complete.
-	releaseUserA <- struct{}{}
+	b.releaseUserA <- struct{}{}
 	var resA1 reqResult
 	select {
 	case resA1 = <-doneA1:
@@ -900,19 +974,18 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}
 
 	select {
-	case <-userAEntered:
+	case <-b.userAEntered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for User A tx 2 to acquire LockUserContent after tx 1 released")
 	}
-	releaseUserA <- struct{}{}
+	b.releaseUserA <- struct{}{}
 	var resA2 reqResult
 	select {
 	case resA2 = <-doneA2:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for User A tx 2 response")
 	}
-	serialBarrierActive.Store(false)
-
+	b.serialBarrierActive.Store(false)
 	if resA1.resp.StatusCode != http.StatusCreated || resA2.resp.StatusCode != http.StatusCreated || resB1.resp.StatusCode != http.StatusCreated {
 		t.Fatalf("statuses: A1=%d (%s) A2=%d (%s) B1=%d (%s), want all 201",
 			resA1.resp.StatusCode, resA1.raw, resA2.resp.StatusCode, resA2.raw, resB1.resp.StatusCode, resB1.raw)
@@ -931,10 +1004,9 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	// Two concurrent requests (User A and User B) each insert a new item row inside their mutation transaction
 	// and then lock (itemA1, itemB1) in opposite order after barrier synchronization.
 	// Postgres detects the cycle and raises 40P01 on one transaction while the other succeeds (201).
-	dlLockItem1 = itemA1.ID
-	dlLockItem2 = itemB1.ID
-	deadlockBarrierActive.Store(true)
-
+	b.dlLockItem1 = itemA1.ID
+	b.dlLockItem2 = itemB1.ID
+	b.deadlockBarrierActive.Store(true)
 	keyDLA := "idem_deadlock_real_a_001"
 	bodyDLA := `{"name":"Deadlock Real A"}`
 	keyDLB := "idem_deadlock_real_b_001"
@@ -957,14 +1029,8 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	}()
 
 	// Wait for both transactions to acquire their first FOR UPDATE lock, then release both to request the opposite lock.
-	for step := 1; step <= 2; step++ {
-		select {
-		case <-dlStep1Done:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("timed out waiting for deadlock participant %d to acquire first lock", step)
-		}
-	}
-	closeDLBarrier()
+	b.awaitDeadlockParticipants(t, 10*time.Second)
+	b.closeDLBarrier()
 
 	var resDLA, resDLB reqResult
 	select {
@@ -977,7 +1043,7 @@ func TestContentLockUserContentSameUserSerialDifferentUsersParallelAndDeadlock50
 	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for User B deadlock request to finish")
 	}
-	deadlockBarrierActive.Store(false)
+	b.deadlockBarrierActive.Store(false)
 
 	// Exactly one transaction must be aborted by Postgres with 40P01 -> 503 + Retry-After: 1,
 	// and the other transaction must commit with 201 Created.
