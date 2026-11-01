@@ -976,9 +976,14 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   }
   .tag-menu-trigger, .btn-icon { min-width: 44px; }
   .chip-x::after {
-    content: ''; position: absolute; left: 50%; top: 50%;
-    width: 44px; height: 44px; transform: translate(-50%, -50%);
+    content: none;
   }
+  .chip-x {
+    min-width: 44px; min-height: 44px;
+  }
+  .json-cell-input { min-height: 44px; }
+  .json-cell-btn, .json-type-btn,
+  .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
 }
 
 :focus-visible {
