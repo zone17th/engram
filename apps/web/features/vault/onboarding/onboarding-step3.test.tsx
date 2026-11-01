@@ -310,7 +310,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
   ) {
     let currentMe = makeMeFixture('absent', options);
     let vaultCtx!: VaultContextValue;
-    let sessionCtx!: Pick<SessionState, 'status' | 'me'>;
+    let sessionCtx!: Pick<SessionState, 'status' | 'me'> & { refetchMe: () => Promise<void> };
     const oauthReauthCalls: Array<{ url: string; body: string }> = [];
     let getVaultCalls = 0;
     // Armed by a test AFTER step 3 rendered: runs on every later GET /vault (the in-lock Remember verification and any
@@ -884,7 +884,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     // Switch to another user while GET /vault is in flight
     setCurrentMe(makeMeFixture('absent', { userId: 'user-onboarding-step3-test-2' }));
     await act(async () => {
-      await (getSession() as SessionState).refetchMe();
+      await getSession().refetchMe();
     });
     await waitFor(() => {
       expect(getSession().me?.user.id).toBe('user-onboarding-step3-test-2');
@@ -938,7 +938,7 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     let getVaultCallsDuringStaleSubmit = 0;
     let currentMe3 = makeMeFixture('absent', { userId: 'user-onboarding-step3-test-1' });
     let vaultCtx3!: VaultContextValue;
-    let sessionCtx3!: SessionState;
+    let sessionCtx3!: SessionState & { refetchMe: () => Promise<void> };
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
