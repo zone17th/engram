@@ -754,7 +754,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
     await waitFor(() => {
       expect(vaultCtx.inFlight).toBe(false);
       expect(screen.getByTestId('recovery-step3-submit')).toHaveTextContent(
-        /Rewrapping & saving/i,
+        /Saving new passphrase/i,
       );
     });
 
