@@ -2167,14 +2167,52 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       id: `tag-${i + 1}`,
       display: `t${i + 1}`,
     }));
+    let activeSentinelCallback: IntersectionObserverCallback | null = null;
+    let observedSentinelTargets: Element[] = [];
+    class MockSentinelIntersectionObserver implements IntersectionObserver {
+      readonly root: Element | Document | null = null;
+      readonly rootMargin: string;
+      readonly thresholds: ReadonlyArray<number> = [0];
+      private readonly cb: IntersectionObserverCallback;
+
+      constructor(cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+        this.cb = cb;
+        this.rootMargin = opts?.rootMargin ?? '0px';
+        activeSentinelCallback = cb;
+      }
+
+      observe(target: Element): void {
+        observedSentinelTargets.push(target);
+      }
+
+      unobserve(target: Element): void {
+        observedSentinelTargets = observedSentinelTargets.filter((t) => t !== target);
+      }
+
+      disconnect(): void {
+        if (activeSentinelCallback === this.cb) {
+          activeSentinelCallback = null;
+        }
+      }
+
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', MockSentinelIntersectionObserver);
+
     const h = await setupItemPageHarness({
       initialItem: makeItemSummary({ tags: twentyTags, entry_count: 200 }),
       initialPlaintexts: [],
     });
 
     // Populate 200 entries metadata on server
+    const expectedIds = Array.from(
+      { length: 200 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    );
     for (let i = 0; i < 200; i++) {
-      const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+      const id = expectedIds[i];
       h.server.entries.set(id, {
         id,
         item_id: ITEM_ID,
@@ -2209,16 +2247,54 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(addTextBtn).toBeDisabled();
     });
 
-    // Also verifies batch rendering: only 20 cards rendered initially out of 200, then load more reveals the next 20-card batch (40, then 60)
-    expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(20);
-    const loadMoreBtn = screen.getByTestId('entries-load-more-btn');
-    fireEvent.click(loadMoreBtn);
-    await waitFor(() => {
-      expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(40);
+    // IP15-BE3-6: Drive the page's real batch sentinel IntersectionObserver:
+    // 1. Initially 20 cards in position order; sentinel is observed
+    const sentinel = screen.getByTestId('entries-batch-sentinel');
+    expect(observedSentinelTargets).toContain(sentinel);
+    expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 20));
+
+    const triggerSentinelObserver = (isIntersecting: boolean) => {
+      const cb = activeSentinelCallback;
+      expect(cb).not.toBeNull();
+      const currentSentinel = screen.getByTestId('entries-batch-sentinel');
+      const fakeEntry: IntersectionObserverEntry = {
+        boundingClientRect: currentSentinel.getBoundingClientRect(),
+        intersectionRatio: isIntersecting ? 1 : 0,
+        intersectionRect: currentSentinel.getBoundingClientRect(),
+        isIntersecting,
+        rootBounds: null,
+        target: currentSentinel,
+        time: Date.now(),
+      };
+      cb!([fakeEntry], {} as IntersectionObserver);
+    };
+
+    // 2. Non-intersecting delivery -> stays at 20 cards
+    act(() => {
+      triggerSentinelObserver(false);
     });
+    expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 20));
+
+    // 3. First intersecting delivery -> advances to 40 cards in position order
+    act(() => {
+      triggerSentinelObserver(true);
+    });
+    await waitFor(() => {
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 40));
+    });
+
+    // 4. Second intersecting delivery -> advances to 60 cards in position order
+    act(() => {
+      triggerSentinelObserver(true);
+    });
+    await waitFor(() => {
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 60));
+    });
+
+    // 5. Explicit load-more button also advances to 80 cards in position order
     fireEvent.click(screen.getByTestId('entries-load-more-btn'));
     await waitFor(() => {
-      expect(h.container.querySelectorAll('[data-entry-card]')).toHaveLength(60);
+      expect(getRenderedEntryCardIds(h.container)).toEqual(expectedIds.slice(0, 80));
     });
   });
 
