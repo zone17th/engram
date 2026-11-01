@@ -512,18 +512,15 @@ export function TextEntryCard({
           queryKey: vaultBodyQueryKey(entry.id, meta.version),
         });
       } catch (err) {
-        if (saveOwnerIdRef.current !== ownerId) {
-          return;
-        }
-        releaseSaveGuardIfOwner(ownerId);
-        if (!sealed.isCurrent()) {
-          return;
-        }
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
 
-        // Case (b): terminal logout boundary after uncertain send (SPEC §3.7, advisor-dec-119/120)
+        // Case (b): terminal logout boundary after uncertain send (SPEC §3.7, advisor-dec-119/120, IP15-BE7-2).
+        // Record the metadata-only notice before checking saveOwnerIdRef / sealed.isCurrent(), because
+        // authFetchWithLock broadcasts signed_out(reason='invalid') synchronously before rejecting, and
+        // React 19 flushSync inside the signed_out QueryCache listener chain can run VaultProvider's
+        // signed_out lock effect (wiping saveOwnerIdRef and bumping opGeneration) before this catch block resumes.
         if (classified.isLogoutBoundary) {
           if (me?.user?.id) {
             recordUnconfirmedSave({
@@ -533,10 +530,19 @@ export function TextEntryCard({
               source: 'entry',
             });
           }
+          releaseSaveGuardIfOwner(ownerId);
           clearEditorPlaintextHolderSync();
           setEditing(false);
           setUnconfirmedSave(null);
           setConflictState(null);
+          return;
+        }
+
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        releaseSaveGuardIfOwner(ownerId);
+        if (!sealed.isCurrent()) {
           return;
         }
 
@@ -1724,16 +1730,6 @@ export function NewTextEntryComposer({
         onAnnounce?.(tEntry('savedAnnounce'));
         onSaved(meta);
       } catch (err) {
-        if (saveOwnerIdRef.current !== ownerId) {
-          return;
-        }
-        saveOwnerIdRef.current = 0;
-        saveLockRef.current = false;
-        setSavingInFlight(false);
-        if (!sealed.isCurrent()) {
-          return;
-        }
-
         const classified = classifyContentMutationError(err, {
           hadUncertainSend: true,
         });
@@ -1747,12 +1743,27 @@ export function NewTextEntryComposer({
               source: 'entry',
             });
           }
+          if (saveOwnerIdRef.current === ownerId) {
+            saveOwnerIdRef.current = 0;
+            saveLockRef.current = false;
+            setSavingInFlight(false);
+          }
           if (textareaRef.current) {
             textareaRef.current.value = '';
           }
           setDraftValue('');
           setUnconfirmedCreate(null);
           onCancel();
+          return;
+        }
+
+        if (saveOwnerIdRef.current !== ownerId) {
+          return;
+        }
+        saveOwnerIdRef.current = 0;
+        saveLockRef.current = false;
+        setSavingInFlight(false);
+        if (!sealed.isCurrent()) {
           return;
         }
 
