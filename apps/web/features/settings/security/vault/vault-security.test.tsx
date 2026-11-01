@@ -751,7 +751,7 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await user.click(submitBtn);
     await waitFor(() => {
       expect(within(dialog).getByRole('alert')).toHaveTextContent(
-        'Passphrase is too easy to guess (requires score ≥ 3).',
+        'Passphrase is too easy to guess.',
       );
     });
 
