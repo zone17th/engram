@@ -185,10 +185,13 @@ describe('lib/api/content', () => {
 
   describe('content.errors.* i18n mapping', () => {
     it('exhaustively maps every P04 problem code and reused §3 code (+ network, offline, 429) to en/vi messages', () => {
-      // Every P04 code appended in packages/shared-types/src/problem.ts after passkey_not_found
+      // Every P04 content code appended in packages/shared-types/src/problem.ts after passkey_not_found, up to and
+      // including changes_window_expired (later appends, e.g. authui reset_token_invalid, are not content codes).
       const passkeyIdx = ERROR_CODES.indexOf('passkey_not_found');
       expect(passkeyIdx).toBeGreaterThan(0);
-      const p04CodesFromCatalog = ERROR_CODES.slice(passkeyIdx + 1);
+      const lastContentIdx = ERROR_CODES.indexOf('changes_window_expired');
+      expect(lastContentIdx).toBeGreaterThan(passkeyIdx);
+      const p04CodesFromCatalog = ERROR_CODES.slice(passkeyIdx + 1, lastContentIdx + 1);
       expect(p04CodesFromCatalog.length).toBe(16);
 
       for (const code of p04CodesFromCatalog) {
