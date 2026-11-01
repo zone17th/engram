@@ -1048,6 +1048,22 @@ export const KNOWN_UI_TOUCH_44: ReadonlyArray<{
     minW: 8,
     minH: 15,
   },
+  // advisor-dec-228: Task 17 import dialog controls below 44x44 under a coarse pointer (CI 41355773958).
+  {
+    unit: 'w4fix FU11',
+    control: 'import JSON parse error jump button',
+    descriptor: /^button\[data-testid="import-json-parse-error-jump"\]\.m-0\.mb-1\.cursor-pointer$/,
+    minW: 202,
+    minH: 19,
+  },
+  {
+    unit: 'w4fix FU11',
+    control: 'import JSON format-before-save checkbox',
+    descriptor:
+      /^input#importFormatBeforeSave\[data-testid="import-json-format-checkbox"\]\.accent-\[var\(--accent\)\]$/,
+    minW: 13,
+    minH: 13,
+  },
 ];
 
 const knownTouchGap = (descriptor: string) =>
