@@ -135,9 +135,6 @@
   },
   "onboarding": {
     "title": "Create your vault",
-    "body": "Vault setup, passphrase, and recovery keys arrive in P03. In P02 you can still manage your account and sessions.",
-    "absent": "This account has no encrypted vault yet. When P03 is ready, you will set a passphrase and receive recovery keys here.",
-    "present": "A vault already exists — lock and unlock are handled in P03.",
     "settings": "Account settings",
     "stepperLabel": "Vault setup steps",
     "steps": {
@@ -465,15 +462,15 @@
   "settings": {
     "page": {
       "title": "Settings",
-      "subtitle": "Account, sessions, and notices. Vault crypto arrives in P03.",
       "navLabel": "Settings sections",
       "nav": { "account": "Account", "security": "Security", "search": "Search", "data": "Data" },
       "searchHeading": "Search",
       "searchTitle": "Similar-meaning search",
-      "searchBody": "Item names and tags can be embedded on our server. Entry content is not sent. This control ships in P05.",
+      "comingLater": "Coming later",
+      "searchBody": "Item names and tags may be sent to our embedding server. Entry content is not sent. This setting is coming later.",
       "dataHeading": "Data",
       "dataTitle": "Export and delete",
-      "dataBody": "Decrypted export needs an unlocked vault. Those actions ship with P03 and later phases."
+      "dataBody": "Decrypted export needs an unlocked vault. Export and delete are coming later."
     },
     "reauth": { "resume": "Confirmed. Repeat the action below to finish." },
     "common": { "cancel": "Cancel", "continue": "Continue", "loading": "Loading…", "empty": "Nothing here yet.", "loadMore": "Load more" },
@@ -512,7 +509,7 @@
     },
     "security": {
       "heading": "Security",
-      "subtitle": "Vault crypto controls arrive in P03. Account sessions and audit are live.",
+      "subtitle": "The vault holds the key that decrypts your entry content. Item names and tags stay outside the vault.",
       "sessionsTitle": "Sign-in sessions",
       "sessionsEmpty": "Only this session is signed in.",
       "revokeOthers": "Sign out elsewhere",
@@ -523,8 +520,7 @@
       "auditBody": "Sign-in, email changes, provider links, session revokes.",
       "notificationsTitle": "In-app notices",
       "notificationsBody": "Security alerts without secrets.",
-      "vaultPlaceholder": "Vault controls",
-      "vaultPlaceholderBody": "Passphrase, recovery keys, and passkeys wire in P03."
+      "vaultPlaceholder": "Vault controls"
     },
     "audit": {
       "events": {
@@ -607,7 +603,7 @@
         "stepLabel": "Step 1 · Account re-authentication",
         "flowStartLabel": "Re-authenticate at flow start",
         "passwordLabel": "Login password",
-        "passwordHint": "Account login password (P02), not your vault encryption passphrase (P03).",
+        "passwordHint": "Your account login password, not your vault encryption passphrase.",
         "oauthLabel": "OAuth-only account · re-authenticate at start",
         "oauthBody": "Re-authenticate with Google at the start of the flow before entering or generating vault secrets so a page redirect does not wipe your progress.",
         "oauthButton": "Verify with Google",
@@ -712,7 +708,7 @@
           "dialogDescription": "Requires an unlocked vault and account re-authentication. Replaces all current recovery keys with 10 new keys (rk1…rk10) on the live server.",
           "reauthBody": "Confirm your account before the Worker generates a replacement set of 10 recovery keys.",
           "warningTitle": "Warning: Once saved, all current recovery keys and their printouts stop working on the live server.",
-          "warningBody": "Rotating recovery keys does not rotate the vault key (VK) — previously copied wraps or exported backups are not cryptographically revoked.",
+          "warningBody": "Rotating recovery keys does not change the vault key itself: copies or exported backups made earlier are not revoked.",
           "ackCheckbox": "I have saved all 10 new recovery keys and understand the previous set will stop working on the live server.",
           "submitButton": "Rotate all 10",
           "toastDone": "Rotated all 10 recovery keys"
@@ -739,11 +735,11 @@
         "step1Next": "None of these work",
         "step2Label": "Step 2 of 5 — Backup check",
         "step2Title": "Export or check your backups before deleting",
-        "step2Body": "Resetting deletes data on the live server only and does not erase backup files you already hold. Before resetting, check any existing backups or export an encrypted snapshot (.sabk.json, P06) in case you recall an old passphrase or find a printout later.",
+        "step2Body": "Resetting deletes data on the live server only and does not erase backup files you already hold. Before resetting, check any existing backups or export an encrypted backup (.sabk.json) in case you recall an old passphrase or find a printout later.",
         "step2ExportLink": "Go to Data / Export",
         "step2Next": "Checked backups",
         "step3Label": "Step 3 of 5 — Re-authenticate",
-        "step3Body": "Confirm account ownership with your login password or OAuth provider before proceeding to the final confirmation step (vault.reset).",
+        "step3Body": "Confirm account ownership with your login password or sign-in provider before the final confirmation step.",
         "step3OauthHint": "An OAuth sign-in redirect restarts the reset flow at step 1 (steps 1–2 hold no secrets).",
         "step4Label": "Step 4 of 5 — Type confirmation word",
         "step4Body": "All encrypted entry contents, the vault key, recovery keys, and passkeys on the server will be permanently deleted. Item names and tags are kept.",

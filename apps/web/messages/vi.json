@@ -135,9 +135,6 @@
   },
   "onboarding": {
     "title": "Tạo vault",
-    "body": "Đặt passphrase và nhận recovery key sẽ có ở P03. P02 vẫn cho quản lý tài khoản và phiên đăng nhập.",
-    "absent": "Tài khoản này chưa có vault mã hoá. Khi P03 sẵn sàng, bạn sẽ đặt passphrase và nhận recovery key tại đây.",
-    "present": "Vault đã tồn tại — khoá và mở khoá do P03 xử lý.",
     "settings": "Cài đặt tài khoản",
     "stepperLabel": "Các bước tạo vault",
     "steps": {
@@ -465,15 +462,15 @@
   "settings": {
     "page": {
       "title": "Cài đặt",
-      "subtitle": "Tài khoản, phiên và thông báo. Mã hoá vault có ở P03.",
       "navLabel": "Mục cài đặt",
       "nav": { "account": "Tài khoản", "security": "Bảo mật", "search": "Tìm kiếm", "data": "Dữ liệu" },
       "searchHeading": "Tìm kiếm",
       "searchTitle": "Tìm gần nghĩa",
-      "searchBody": "Tên mục và tag có thể được gửi tới máy chủ nhúng của chúng tôi. Nội dung entry thì không. Điều khiển này thuộc P05.",
+      "comingLater": "Sắp có",
+      "searchBody": "Tên mục và tag có thể được gửi tới máy chủ nhúng của chúng tôi. Nội dung entry thì không. Tuỳ chọn này sẽ có sau.",
       "dataHeading": "Dữ liệu",
       "dataTitle": "Xuất và xoá",
-      "dataBody": "Xuất đã giải mã cần vault đang mở. Các thao tác đó thuộc P03 và các phase sau."
+      "dataBody": "Xuất đã giải mã cần vault đang mở. Xuất và xoá sẽ có sau."
     },
     "reauth": { "resume": "Đã xác nhận. Lặp lại thao tác bên dưới để hoàn tất." },
     "common": { "cancel": "Huỷ", "continue": "Tiếp tục", "loading": "Đang tải…", "empty": "Chưa có mục nào.", "loadMore": "Tải thêm" },
@@ -512,7 +509,7 @@
     },
     "security": {
       "heading": "Bảo mật",
-      "subtitle": "Vault giữ khoá giải mã nội dung entry. Phiên và nhật ký tài khoản đã nối API.",
+      "subtitle": "Vault giữ khoá giải mã nội dung entry. Tên mục và tag nằm ngoài vault.",
       "sessionsTitle": "Phiên đăng nhập",
       "sessionsEmpty": "Chỉ phiên này đang đăng nhập.",
       "revokeOthers": "Đăng xuất nơi khác",
@@ -523,8 +520,7 @@
       "auditBody": "Đăng nhập, đổi email, liên kết provider, thu hồi phiên.",
       "notificationsTitle": "Thông báo trong app",
       "notificationsBody": "Cảnh báo bảo mật — không chứa secret.",
-      "vaultPlaceholder": "Thao tác vault",
-      "vaultPlaceholderBody": "Passphrase, recovery key và passkey sẽ nối ở P03."
+      "vaultPlaceholder": "Thao tác vault"
     },
     "audit": {
       "events": {
@@ -604,10 +600,10 @@
         "inFlightBody": "Đang có thao tác vault khác chạy trong tab này. Hãy chờ hoàn tất trước khi thực hiện thay đổi mới."
       },
       "reauth": {
-        "stepLabel": "Bước 1 · Xác thực lại tài khoản (P02)",
+        "stepLabel": "Bước 1 · Xác thực lại tài khoản",
         "flowStartLabel": "Xác thực lại ở đầu luồng",
         "passwordLabel": "Mật khẩu đăng nhập",
-        "passwordHint": "Mật khẩu đăng nhập tài khoản (P02), không phải passphrase mã hoá vault (P03).",
+        "passwordHint": "Mật khẩu đăng nhập tài khoản, không phải passphrase mã hoá vault.",
         "oauthLabel": "Tài khoản OAuth-only · xác thực lại ở đầu luồng",
         "oauthBody": "Xác thực lại với Google ở đầu luồng trước khi nhập hoặc sinh bí mật vault để chuyển trang không làm mất trạng thái đang thao tác.",
         "oauthButton": "Xác nhận bằng Google",
@@ -712,7 +708,7 @@
           "dialogDescription": "Cần vault đang mở và xác thực lại tài khoản. Thay toàn bộ bộ recovery key hiện tại bằng 10 key mới (rk1…rk10) trên máy chủ live.",
           "reauthBody": "Xác nhận tài khoản trước khi Worker sinh bộ 10 recovery key mới.",
           "warningTitle": "Cảnh báo: Ngay khi lưu bộ mới, toàn bộ recovery key hiện tại và các bản in cũ sẽ ngừng hoạt động trên máy chủ live.",
-          "warningBody": "Thao tác này không xoay khoá vault (VK): các bản bọc khoá hoặc bản backup đã chép ra trước đó không bị thu hồi bởi mật mã (xoay VK thuộc P07).",
+          "warningBody": "Xoay recovery key không đổi chính khoá vault: các bản sao hoặc bản backup đã xuất trước đó không bị thu hồi.",
           "ackCheckbox": "Tôi đã lưu bộ 10 recovery key mới này ở nơi an toàn và hiểu rằng bộ key cũ sẽ ngừng hoạt động trên máy chủ.",
           "submitButton": "Thay cả 10 key",
           "toastDone": "Đã xoay cả 10 recovery key"
@@ -739,11 +735,11 @@
         "step1Next": "Không đường nào dùng được",
         "step2Label": "Bước 2/5 — Kiểm tra bản sao lưu",
         "step2Title": "Xuất hoặc kiểm tra bản backup trước khi xoá",
-        "step2Body": "Đặt lại chỉ xoá dữ liệu trên máy chủ live, không xoá các file backup bạn đang giữ ở ngoài. Nếu vẫn còn khả năng nhớ lại passphrase hoặc tìm thấy recovery key cũ sau này, hãy kiểm tra hoặc tải bản encrypted backup (.sabk.json, P06) trước khi đặt lại.",
+        "step2Body": "Đặt lại chỉ xoá dữ liệu trên máy chủ live, không xoá các file backup bạn đang giữ ở ngoài. Trước khi đặt lại, hãy kiểm tra các bản backup đang có hoặc xuất một bản backup mã hoá (.sabk.json) phòng khi sau này bạn nhớ lại passphrase cũ hoặc tìm thấy bản in.",
         "step2ExportLink": "Tới mục Dữ liệu / Xuất",
         "step2Next": "Đã kiểm tra backup",
         "step3Label": "Bước 3/5 — Xác thực lại tài khoản",
-        "step3Body": "Xác nhận bạn là chủ tài khoản trước khi mở bước xác nhận xoá vault (vault.reset).",
+        "step3Body": "Xác nhận bạn là chủ tài khoản bằng mật khẩu đăng nhập hoặc nhà cung cấp đăng nhập trước bước xác nhận cuối cùng.",
         "step3OauthHint": "Nếu xác thực qua OAuth (chuyển trang), khi quay lại luồng đặt lại vault sẽ bắt đầu lại từ bước 1 (các bước 1–2 không giữ bí mật nào).",
         "step4Label": "Bước 4/5 — Xác nhận không thể hoàn tác",
         "step4Body": "Toàn bộ nội dung entry, khoá vault, recovery key và passkey trên máy chủ sẽ bị xoá vĩnh viễn. Tên mục và tag được giữ lại.",

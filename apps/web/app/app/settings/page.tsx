@@ -51,10 +51,7 @@ export default function SettingsPage() {
         </nav>
 
         <div className="flex min-w-0 max-w-[720px] flex-col gap-12">
-          <div>
-            <h1 className="t-title-lg text-ink">{t('page.title')}</h1>
-            <p className="t-body-lg mt-1 text-muted">{t('page.subtitle')}</p>
-          </div>
+          <h1 className="t-title-lg text-ink">{t('page.title')}</h1>
 
           {reauth.grant && (
             <AuthStatus tone="sent">{t('reauth.resume')}</AuthStatus>
@@ -69,7 +66,7 @@ export default function SettingsPage() {
             </h2>
             <div className="card p-5 control-disabled" aria-disabled="true">
               <div className="text-[15px] font-semibold text-body">
-                {t('page.searchTitle')} <span className="phase-badge">P05</span>
+                {t('page.searchTitle')} <span className="phase-badge">{t('page.comingLater')}</span>
               </div>
               <p className="t-body mt-1 m-0 text-muted">{t('page.searchBody')}</p>
             </div>
