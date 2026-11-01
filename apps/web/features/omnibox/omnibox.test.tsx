@@ -1235,7 +1235,8 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     await waitFor(() => {
       expect(textarea).toHaveValue('');
     });
-    expect(await screen.findByText(/Đã lưu vào “router”/)).toBeInTheDocument();
+    const routerToast = await screen.findByTestId('undo-toast-item');
+    expect(within(routerToast).getByText(/Đã lưu vào “router”/)).toBeInTheDocument();
   });
 
   it('Undo calls ONLY entryDelete for the saved entry ID and never calls itemDelete, tagDelete, or itemTagRemove (Q18, P4BE1-2, HM18B-R1-6)', async () => {
@@ -1413,7 +1414,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     }
 
     expect(screen.getAllByTestId('undo-toast-item')).toHaveLength(3);
-    const expandBtn = screen.getByTestId('undo-toast-expand');
+    const expandBtn = screen.getByTestId('undo-toast-overflow');
     expect(expandBtn).toHaveTextContent('+1');
 
     // Clicking "+1" reveals all 4 toasts
@@ -1493,6 +1494,12 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     fetchSpy.mockRestore();
 
     // Part 1b: Lost response on first send, then `401 unauthenticated` with session CSRF evidence -> `authMutate` refreshes `/auth/refresh` and replays same Idempotency-Key -> 1 entry
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async (_name: string, cb: () => Promise<unknown>) => cb(),
+      },
+    });
     const sessionCsrfPayload = btoa('v1|sess|user-a|exp|nonce').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     document.cookie = `sabk_csrf=${sessionCsrfPayload}.sig; path=/`;
     const seenUnauthEntryKeys: string[] = [];
