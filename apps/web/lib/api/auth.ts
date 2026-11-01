@@ -15,6 +15,8 @@ export type NotificationList = components['schemas']['NotificationList'];
 export type SettingsPatch = components['schemas']['SettingsPatch'];
 export type Locale = components['schemas']['Locale'];
 export type Theme = components['schemas']['Theme'];
+export type PasswordForgotRequest = components['schemas']['PasswordForgotRequest'];
+export type PasswordResetRequest = components['schemas']['PasswordResetRequest'];
 
 export { bootstrapCsrf };
 
@@ -53,6 +55,21 @@ export function passwordEnrollSend(): Promise<void> {
   return authMutate<void>('/auth/password/enroll/send', { method: 'POST' });
 }
 
+export function authPasswordForgot(body: PasswordForgotRequest): Promise<void> {
+  return authMutate<void>('/auth/password/forgot', {
+    method: 'POST',
+    json: body,
+    requireSession: false,
+  });
+}
+
+export function authPasswordReset(body: PasswordResetRequest): Promise<void> {
+  return authMutate<void>('/auth/password/reset', {
+    method: 'POST',
+    json: body,
+    requireSession: false,
+  });
+}
 export function changePassword(
   body: components['schemas']['PasswordChangeRequest'],
   reauthToken?: string,
