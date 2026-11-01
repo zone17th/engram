@@ -119,6 +119,8 @@ export function VaultOnboardingFlow() {
   currentUserIdRef.current = me?.user.id ?? null;
   const isMountedRef = useRef(true);
   const postSubmitSeqRef = useRef(0);
+  const [finishingStep3, setFinishingStep3] = useState(false);
+  const finishingStep3Ref = useRef(false);
   const confirmCheckboxId = useId();
   const gridHeadingId = useId();
 
@@ -145,6 +147,8 @@ export function VaultOnboardingFlow() {
 
   const clearRecoveryKeysAndSecrets = useCallback(() => {
     postSubmitSeqRef.current += 1;
+    finishingStep3Ref.current = false;
+    setFinishingStep3(false);
     clearPassphraseFields();
     setPreparedBundle(null);
     setConfirmedSaved(false);
@@ -427,6 +431,9 @@ export function VaultOnboardingFlow() {
         vault_key_id: response.vault_key_id,
         version: response.version,
       });
+      // Do not call vault.reloadVaultMeta() until Step 3 finishes (or Remember / Passkey is triggered):
+      // VaultProvider.loadVaultMeta() fails closed on a 404 by locking the Worker, which would synchronously
+      // unmount Step 3 (`setStep('done')`) before the user can interact with Passkey / Remember / Skip.
     } catch (err) {
       if (
         !isMountedRef.current ||
@@ -536,13 +543,32 @@ export function VaultOnboardingFlow() {
   }, [rememberDevice, vault.workerState]);
 
   const handleFinishStep3 = useCallback(async () => {
+    if (finishingStep3Ref.current) return;
+    finishingStep3Ref.current = true;
+    setFinishingStep3(true);
+    const finishUserId = currentUserIdRef.current;
     clearRecoveryKeysAndSecrets();
-    setStep('done');
-    await refetchMe().catch(() => undefined);
-    if (isMountedRef.current && currentUserIdRef.current !== null) {
+    finishingStep3Ref.current = true;
+    setFinishingStep3(true);
+    const shouldLoadVaultMeta = !vault.vaultMeta?.vault_key_id;
+    await Promise.all([
+      shouldLoadVaultMeta
+        ? Promise.resolve(vault.reloadVaultMeta?.()).catch(() => undefined)
+        : Promise.resolve(),
+      refetchMe().catch(() => undefined),
+    ]);
+    if (
+      isMountedRef.current &&
+      currentUserIdRef.current !== null &&
+      currentUserIdRef.current === finishUserId
+    ) {
+      setStep('done');
       router.replace('/app');
+    } else if (isMountedRef.current) {
+      finishingStep3Ref.current = false;
+      setFinishingStep3(false);
     }
-  }, [clearRecoveryKeysAndSecrets, refetchMe, router]);
+  }, [clearRecoveryKeysAndSecrets, refetchMe, router, vault]);
 
   const handleGoToUnlock = useCallback(async () => {
     clearRecoveryKeysAndSecrets();
@@ -1040,6 +1066,7 @@ export function VaultOnboardingFlow() {
               <Button
                 type="button"
                 variant="tertiary"
+                disabled={finishingStep3}
                 onClick={() => void handleFinishStep3()}
                 data-testid="onboarding-skip-passkey-button"
               >
@@ -1049,6 +1076,7 @@ export function VaultOnboardingFlow() {
                 type="button"
                 variant="primary"
                 className="ml-auto"
+                disabled={finishingStep3}
                 onClick={() => void handleFinishStep3()}
                 data-testid="onboarding-finish-button"
               >

@@ -490,6 +490,27 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
           201,
         );
       }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse({
+          version: 1,
+          vault_key_id: 'vk:7f3a9b2c4d5e6f7a8b9c0d',
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67_108_864,
+            parallelism: 1,
+            salt: 'oKGio6SlpqeoqaqrrK2urw',
+          },
+          vault_key_wrapped_by_kek:
+            'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA',
+          x25519_public: '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff',
+          ed25519_public: 'ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211',
+          private_keys_wrapped:
+            'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-',
+          recovery_keys_remaining: 10,
+          passkeys: [],
+        });
+      }
       return jsonResponse({});
     });
 
@@ -963,6 +984,27 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
       if (url.endsWith('/vault') && init?.method === 'POST') {
         currentMe = makeMeFixture('present');
         return jsonResponse({ vault_key_id: 'vk:be1-4-key', version: 1 }, 201);
+      }
+      if (url.endsWith('/vault') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse({
+          version: 1,
+          vault_key_id: 'vk:be1-4-key',
+          kdf: {
+            alg: 'argon2id13',
+            ops: 3,
+            mem: 67_108_864,
+            parallelism: 1,
+            salt: 'oKGio6SlpqeoqaqrrK2urw',
+          },
+          vault_key_wrapped_by_kek:
+            'AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA',
+          x25519_public: '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff',
+          ed25519_public: 'ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211',
+          private_keys_wrapped:
+            'AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-',
+          recovery_keys_remaining: 10,
+          passkeys: [],
+        });
       }
       return jsonResponse({});
     });

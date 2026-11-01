@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRef } from 'react';
@@ -9,6 +11,19 @@ import {
   type UndoToastContextValue,
   type UndoToastOptions,
 } from '@/components/ui/undo-toast';
+import { AppHeader } from '@/components/app-shell/app-header';
+import { ThemeProvider } from '@/components/theme-provider';
+import { Button } from '@/components/ui/button';
+import { Chip } from '@/components/ui/chip';
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTrigger } from '@/components/ui/dialog';
+import { Field } from '@/components/ui/field';
+import { Segmented } from '@/components/ui/segmented';
+import { Switch } from '@/components/ui/switch';
+import { Toast } from '@/components/ui/toast';
+import * as vaultProviderMod from '@/features/vault/vault-provider';
+import type { VaultContextValue } from '@/features/vault/vault-provider';
+import viMessages from '@/messages/vi.json';
+import { NextIntlClientProvider } from 'next-intl';
 
 /**
  * Undo buttons only. The collapsed "+N" overflow button's accessible name is `+N · Hoàn tác`
@@ -853,5 +868,179 @@ describe('components/ui/undo-toast', () => {
     });
 
     expect(screen.getByText('Đã lưu trong app layout')).toBeInTheDocument();
+  });
+});
+
+describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions and primary ui controls', () => {
+  it('defines :where(.touch-target) with zero-specificity position: relative under @media (pointer: coarse) in globals.css, excludes static/!static hosts, and does not alter tokens.css (LEAD-FU3-1, RV-B-FE-7)', () => {
+    const globalsCss = readFileSync(resolve(__dirname, '../../app/globals.css'), 'utf8');
+    expect(globalsCss).toMatch(/@media\s*\(pointer:\s*coarse\)/);
+    expect(globalsCss).toMatch(
+      /:where\(\.touch-target:not\(\.static\):not\(\.\\!static\)\)\s*\{\s*position:\s*relative;\s*\}/,
+    );
+    expect(globalsCss).not.toMatch(/(?<!:where\()\.touch-target[^{]*\{\s*position:\s*relative;\s*\}/);
+    expect(globalsCss).toMatch(
+      /\.touch-target:not\(\.switch\):not\(\.chip-x\):not\(\.static\):not\(\.\\!static\)::after,\s*\.switch\.touch-target:not\(\.static\):not\(\.\\!static\)::before/,
+    );
+    expect(globalsCss).toMatch(/inset:\s*min\(0px,\s*calc\(\(100%\s*-\s*44px\)\s*\/\s*2\)\)/);
+  });
+
+  it('RV-B-FE-7: undo-toast overflow button has no .touch-target class, carries coarse 44x44 min-size utilities, and no component combines .touch-target with static/!static', () => {
+    expect(DialogTrigger.displayName).toBeTruthy();
+    expect(DialogClose.displayName).toBeTruthy();
+
+    let api!: UndoToastContextValue;
+    render(
+      <UndoToastProvider>
+        <TestHarness
+          onPushReady={(ctx) => {
+            api = ctx;
+          }}
+        />
+      </UndoToastProvider>,
+    );
+
+    act(() => {
+      api.pushUndoToast({ id: 'rv7-1', message: 'Toast 1', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+      api.pushUndoToast({ id: 'rv7-2', message: 'Toast 2', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+      api.pushUndoToast({ id: 'rv7-3', message: 'Toast 3', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+      api.pushUndoToast({ id: 'rv7-4', message: 'Toast 4', actionLabel: 'Hoàn tác', onUndo: vi.fn() });
+    });
+
+    const overflowBtn = screen.getByTestId('undo-toast-overflow');
+    expect(overflowBtn).not.toHaveClass('touch-target');
+    expect(overflowBtn).toHaveClass('toast', '!static');
+    expect(overflowBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+    expect(overflowBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+    // Guard over component and feature sources: no class string combines `touch-target` with `static` or `!static`
+    const webRoot = resolve(__dirname, '../..');
+    const scanDirs = ['components', 'features', 'app'];
+    const collectTsxFiles = (dir: string): string[] => {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          files.push(...collectTsxFiles(full));
+        } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
+          files.push(full);
+        }
+      }
+      return files;
+    };
+
+    const offenders: string[] = [];
+    for (const sub of scanDirs) {
+      for (const file of collectTsxFiles(join(webRoot, sub))) {
+        const source = readFileSync(file, 'utf8');
+        const lines = source.split(/\r?\n/);
+        lines.forEach((line, idx) => {
+          if (/\btouch-target\b/.test(line) && /(?:^|\s|['"`])!?static(?:\s|['"`]|$)/.test(line)) {
+            offenders.push(`${file}:${idx + 1}: ${line.trim()}`);
+          }
+        });
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('applies .touch-target to primary ui controls (Button, Chip, Segmented, Switch, Field password toggle, DialogTrigger/DialogClose, Toast)', () => {
+    const noop = vi.fn();
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <div>
+          <Button size="sm">Primary sm</Button>
+          <Chip count={3}>#nhà</Chip>
+          <Segmented
+            value="a"
+            onChange={noop}
+            options={[
+              { value: 'a', label: 'Tab A' },
+              { value: 'b', label: 'Tab B' },
+            ]}
+          />
+          <Switch checked={false} onCheckedChange={noop} label="Bật gợi ý" />
+          <Field label="Mật khẩu" type="password" />
+          <Toast message="Đã sao chép" action={{ label: 'Đóng', onAction: noop }} />
+          <Dialog defaultOpen={false}>
+            <DialogTrigger>Mở hộp thoại</DialogTrigger>
+            <DialogContent aria-describedby={undefined}>
+              <DialogHeader title="Hộp thoại" />
+              <DialogClose>Huỷ hộp thoại</DialogClose>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </NextIntlClientProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Primary sm' })).toHaveClass('btn', 'btn-sm', 'touch-target');
+    expect(screen.getByRole('button', { name: /#nhà/ })).toHaveClass('chip', 'touch-target');
+    expect(screen.getByRole('radio', { name: 'Tab A' })).toHaveClass('touch-target');
+    expect(screen.getByRole('radio', { name: 'Tab B' })).toHaveClass('touch-target');
+    expect(screen.getByRole('switch', { name: 'Bật gợi ý' })).toHaveClass('switch', 'touch-target');
+    expect(screen.getByRole('button', { name: 'Hiện' })).toHaveClass(
+      'field-toggle',
+      'touch-target',
+    );
+    expect(screen.getByRole('button', { name: 'Đóng' })).toHaveClass('touch-target');
+    const dialogTrigger = screen.getByRole('button', { name: 'Mở hộp thoại' });
+    expect(dialogTrigger).toHaveClass('touch-target');
+
+    fireEvent.click(dialogTrigger);
+    expect(screen.getByRole('button', { name: 'Huỷ hộp thoại' })).toHaveClass('touch-target');
+  });
+
+  it('applies .touch-target and coarse-pointer 44px sizing to AppHeader actions (locked and open vault states)', () => {
+    const useOptionalVaultSpy = vi.spyOn(vaultProviderMod, 'useOptionalVault').mockReturnValue(null);
+
+    const { rerender } = render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <AppHeader vault={{ state: 'locked' }} showLogout={false} />
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const logoLink = screen.getByRole('link', { name: 'engram — Mục gần đây' });
+    const settingsLink = screen.getByRole('link', { name: 'Cài đặt' });
+    const themeButton = screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' });
+    const mobileLockedStandIn = screen.getByLabelText('Vault đang khoá');
+
+    expect(logoLink).toHaveClass('touch-target');
+    expect(settingsLink).toHaveClass('btn', 'btn-tertiary', 'touch-target');
+    expect(themeButton).toHaveClass('btn', 'btn-tertiary', 'btn-icon');
+    expect(mobileLockedStandIn.className).toContain('[@media(pointer:coarse)]:h-[44px]');
+    expect(mobileLockedStandIn.className).toContain('[@media(pointer:coarse)]:w-[44px]');
+
+    // Simulate unlocked vault context so lock buttons render
+    useOptionalVaultSpy.mockReturnValue({
+      state: 'unlocked',
+      minutesLeft: 15,
+      lockNow: vi.fn(),
+    } as unknown as VaultContextValue);
+
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <AppHeader vault={{ state: 'open', minutesLeft: 15 }} showLogout={false} />
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const desktopLockBtn = screen.getByTestId('vault-lock-button');
+    const mobileLockBtn = screen.getByTestId('vault-lock-button-mobile');
+
+    expect(desktopLockBtn).toHaveClass('touch-target');
+    expect(desktopLockBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+    expect(desktopLockBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+    expect(desktopLockBtn.querySelector('.vault-pill')?.className).toContain(
+      '[@media(pointer:coarse)]:min-h-[44px]',
+    );
+    expect(mobileLockBtn).toHaveClass('touch-target');
+    expect(mobileLockBtn.className).toContain('[@media(pointer:coarse)]:h-[44px]');
+    expect(mobileLockBtn.className).toContain('[@media(pointer:coarse)]:w-[44px]');
+
+    useOptionalVaultSpy.mockRestore();
   });
 });
