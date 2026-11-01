@@ -713,6 +713,13 @@ export function Omnibox({
           }
           // Mark omnibox as just cleared by save so immediate Ctrl+Z / ⌘Z triggers Undo (plan §2.11 step 4, SPEC §7.8).
           undoToast?.markOmniboxJustCleared(textareaRef.current);
+        } else {
+          setInputValue(currentVal);
+          inputValueRef.current = currentVal;
+          if (textareaRef.current) {
+            textareaRef.current.value = currentVal;
+            syncTextareaHeight(textareaRef.current);
+          }
         }
         // Push Undo toast ONLY after entry 201 commit; Undo deletes ONLY the entry (Q18, dec-116, P4BE1-2, P4FE2-13).
         undoToast?.pushUndoToast({
@@ -805,7 +812,7 @@ export function Omnibox({
         }
 
         // Retryable failure (network, timeout, 5xx, 429, 409 idempotency_in_progress, recoverable_auth) ->
-        // keep draft and plan so "Thử lại" resumes from the failed step with the exact same keys + bytes (A3).
+        // keep draft and plan so Retry resumes from the failed step with the exact same keys + bytes (A3).
         if (classifiedError.canRetrySameBytes) {
           setPlanRenderTick((prev) => prev + 1);
           setLiveMessage(
@@ -1721,7 +1728,7 @@ export function Omnibox({
                   </p>
                   <p className="m-0 text-[12px] text-muted">{tOmni('jsonBannerBody')}</p>
                 </div>
-                {/* Milestone rule ("nút JSON/Import ẩn tới mốc C", plan header & brief item 1):
+                {/* Milestone rule (JSON/Import button hidden until Milestone C, plan header & brief item 1):
                     Task 17 import dialog is not merged yet; keep the action button hidden until Task 17 wires it. */}
                 <button
                   type="button"
