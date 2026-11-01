@@ -887,11 +887,19 @@ export async function measureCoarseTouchTargets(
               const lw = Math.round(lRect.width * 100) / 100;
               const lh = Math.round(lRect.height * 100) / 100;
               if (lw >= 43.5 && lh >= 43.5) {
+                // Hit testing follows border-radius, so a point 1 px inside a rounded corner misses the box.
+                // Inset each corner by 30% of its radius (a point on the 45-degree arc is at ~0.29 r) plus 1 px.
+                const ls = getComputedStyle(labelWrapper);
+                const rad = (v: string) => Math.ceil((parseFloat(v) || 0) * 0.3) + 1;
+                const tl = rad(ls.borderTopLeftRadius);
+                const tr = rad(ls.borderTopRightRadius);
+                const bl = rad(ls.borderBottomLeftRadius);
+                const br = rad(ls.borderBottomRightRadius);
                 const corners: Array<[number, number]> = [
-                  [lRect.left + 1, lRect.top + 1],
-                  [lRect.right - 1, lRect.top + 1],
-                  [lRect.left + 1, lRect.bottom - 1],
-                  [lRect.right - 1, lRect.bottom - 1],
+                  [lRect.left + tl, lRect.top + tl],
+                  [lRect.right - tr, lRect.top + tr],
+                  [lRect.left + bl, lRect.bottom - bl],
+                  [lRect.right - br, lRect.bottom - br],
                 ];
                 const labelCornersHit = corners.every(([px, py]) => {
                   if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) {

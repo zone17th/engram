@@ -675,12 +675,20 @@ async function runItemGroup(
               : 'null';
           });
           console.log(`focus-after-delete ${groupLabel}: ${activeAfterDelete}`);
-          await expect(
-            page.getByTestId(`entry-menu-trigger-${jsonEntryId}`),
-            `focus-after-delete (${groupLabel}): activeElement=${activeAfterDelete}`,
-          ).toBeFocused({
-            timeout: CONTENT_A11Y_UI_WAIT_MS,
-          });
+          // Plan Task 15: after delete, focus moves to the next card. The product focuses the first focusable control
+          // inside the neighbour card (item-detail-page.tsx tryFocusCardDom), so assert focus is inside that card.
+          await expect
+            .poll(
+              () =>
+                page
+                  .getByTestId(`entry-card-${jsonEntryId}`)
+                  .evaluate((card) => Boolean(document.activeElement && card.contains(document.activeElement))),
+              {
+                message: `focus-after-delete (${groupLabel}): activeElement=${activeAfterDelete}`,
+                timeout: CONTENT_A11Y_UI_WAIT_MS,
+              },
+            )
+            .toBe(true);
         }
 
         const undoToasts = page.getByTestId('undo-toast-item');
@@ -734,9 +742,17 @@ async function runItemGroup(
           await expect(textCards).toHaveCount(2, {
             timeout: CONTENT_A11Y_UI_WAIT_MS,
           });
-          await expect(
-            page.getByTestId(`entry-menu-trigger-${deleteTargetTextEntryId}`),
-          ).toBeFocused({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          // Plan Task 15: after Undo, focus is on the restored card (first focusable control inside it, which is
+          // Copy/Edit once the body is decrypted or the menu trigger before that), so assert focus is inside the card.
+          await expect
+            .poll(
+              () =>
+                page
+                  .getByTestId(`entry-card-${deleteTargetTextEntryId}`)
+                  .evaluate((card) => Boolean(document.activeElement && card.contains(document.activeElement))),
+              { message: `focus-after-undo (${groupLabel})`, timeout: CONTENT_A11Y_UI_WAIT_MS },
+            )
+            .toBe(true);
           await expect(page.getByTestId('item-page-live-region')).toContainText(
             msgs.content.entry.restoredNotice,
             { timeout: CONTENT_A11Y_UI_WAIT_MS },
