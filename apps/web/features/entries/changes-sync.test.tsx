@@ -1339,13 +1339,13 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
 
-    // 2a. Vault becomes absent (404 on reloadVaultMeta while observer inactive) -> entries cache removed (undefined),
-    //     items/tags kept, watermark + tombstones cleared
+    // 2a. Vault becomes absent (404 on reloadVaultMeta while observer inactive, even BEFORE GET /auth/me updates
+    //     session me.vault.status to 'absent') -> reloadVaultMeta clears vaultMeta to null and locks; entries cache
+    //     is purged to undefined, items/tags kept, watermark + tombstones cleared.
     await h.unlock();
     await h.setObserveEntriesQuery(false);
     populateCachesAndSyncState();
     h.setActiveVaultKeyId(null);
-    h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
 
     await act(async () => {
       await h.vault().reloadVaultMeta();
@@ -1361,6 +1361,24 @@ describe('P04-T20 changes-sync: multi-device feed, overlap dedup, tombstones, va
     expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
     expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
 
+    // 2a-bis. After vault became absent (vaultMeta === null, serverVaultStatus === 'absent'), a replacement vault
+    //         KEY_ID_2 appears (e.g. null -> KEY_ID_2 transition after intermediate absent/null state): remembered
+    //         lastNonNullVaultKeyId was never overwritten with null, so seeing KEY_ID_2 !== KEY_ID_3 purges again.
+    h.setCurrentMe(makeMe(USER_A_ID, 'absent'));
+    await h.refetchMeSession();
+    populateCachesAndSyncState();
+    h.setCurrentMe(makeMe(USER_A_ID, 'present'));
+    h.setActiveVaultKeyId(KEY_ID_2);
+    await h.refetchMeSession();
+    await act(async () => {
+      await h.vault().reloadVaultMeta();
+    });
+    await waitFor(() => {
+      expect(h.qc.getQueryData(contentQueryKeys.entries(ITEM_ID))).toBeUndefined();
+      expect(h.qc.getQueryData(vaultBodyQueryKey(ENTRY_ID_1, 1))).toBeUndefined();
+    });
+    expect(changesSyncTesting.getWatermarkForUser(USER_A_ID)).toBeNull();
+    expect(isEntryRemotelyDeleted(ENTRY_ID_2)).toBe(false);
     // 2b. Also verify with active observer on focus wake when vault transitions from present (unlocked) to absent:
     //     state transitions to no_vault, old ENTRY_ID_1 is purged, and active observer refetches [] after reset
     h.setCurrentMe(makeMe(USER_A_ID, 'present'));

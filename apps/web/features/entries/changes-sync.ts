@@ -604,7 +604,9 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       sessionStatus === 'authenticated_without_vault');
   const serverVaultStatus = me?.vault?.status ?? null;
   const vaultState = vault?.state ?? 'locked';
-  const vaultKeyId = vault?.vaultMeta?.vault_key_id ?? null;
+  const vaultMeta = vault?.vaultMeta;
+  const hasVaultContext = vault !== null;
+  const vaultKeyId = vaultMeta?.vault_key_id ?? null;
   const reloadVaultMeta = vault?.reloadVaultMeta;
   const isAuthenticatedRef = useRef(isAuthenticated);
   isAuthenticatedRef.current = isAuthenticated;
@@ -645,11 +647,15 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     }
   }, [sessionStatus, userId]);
 
-  // Vault reset / vault_key_id replacement / vault absent detection (plan §2.10)
+  // Vault reset / vault_key_id replacement / vault absent detection (plan §2.10).
+  // Remember the last NON-NULL vault_key_id per user (never overwrite it with null) AND whether a non-null
+  // vaultMeta was observed so a provider reset transition that clears vaultMeta to null (404 on reloadVaultMeta,
+  // vault_changed reset broadcast, or key-mismatch intermediate null before replacement) purges immediately.
   const lastSeenVaultByUserRef = useRef<{
     userId: string;
-    vaultKeyId: string | null;
+    lastNonNullVaultKeyId: string | null;
     hadPresentVault: boolean;
+    hadNonNullVaultMeta: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -660,12 +666,14 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
 
     const prev = lastSeenVaultByUserRef.current;
     const isPresent = serverVaultStatus === 'present' && vaultState !== 'no_vault';
+    const hasNonNullMeta = vaultKeyId !== null;
 
     if (!prev || prev.userId !== userId) {
       lastSeenVaultByUserRef.current = {
         userId,
-        vaultKeyId: vaultKeyId ?? null,
-        hadPresentVault: isPresent || Boolean(vaultKeyId),
+        lastNonNullVaultKeyId: vaultKeyId,
+        hadPresentVault: isPresent || hasNonNullMeta,
+        hadNonNullVaultMeta: hasNonNullMeta,
       };
       if (serverVaultStatus === 'absent' || vaultState === 'no_vault') {
         purgeEntriesCacheOnVaultReset(queryClient);
@@ -674,21 +682,35 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
     }
 
     const keyChanged =
-      prev.vaultKeyId !== null && vaultKeyId !== null && prev.vaultKeyId !== vaultKeyId;
+      prev.lastNonNullVaultKeyId !== null &&
+      vaultKeyId !== null &&
+      prev.lastNonNullVaultKeyId !== vaultKeyId;
     const becameAbsent =
-      (prev.hadPresentVault || prev.vaultKeyId !== null) &&
+      (prev.hadPresentVault || prev.lastNonNullVaultKeyId !== null) &&
       (serverVaultStatus === 'absent' || vaultState === 'no_vault');
+    const vaultMetaClearedAfterPresent =
+      hasVaultContext && prev.hadNonNullVaultMeta && vaultMeta === null;
 
-    if (keyChanged || becameAbsent) {
+    if (keyChanged || becameAbsent || vaultMetaClearedAfterPresent) {
       purgeEntriesCacheOnVaultReset(queryClient);
     }
 
     lastSeenVaultByUserRef.current = {
       userId,
-      vaultKeyId: becameAbsent ? null : (vaultKeyId ?? prev.vaultKeyId),
+      lastNonNullVaultKeyId: vaultKeyId ?? prev.lastNonNullVaultKeyId,
       hadPresentVault: isPresent,
+      hadNonNullVaultMeta: hasNonNullMeta,
     };
-  }, [isAuthenticated, queryClient, serverVaultStatus, userId, vaultKeyId, vaultState]);
+  }, [
+    hasVaultContext,
+    isAuthenticated,
+    queryClient,
+    serverVaultStatus,
+    userId,
+    vaultKeyId,
+    vaultMeta,
+    vaultState,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -704,7 +726,7 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
       }
       const activeUserId = userIdRef.current;
       const hasActiveEntries = hasActiveContentEntriesQuery(queryClient);
-      const keyAtWakeStart = lastSeenVaultByUserRef.current?.vaultKeyId ?? null;
+      const keyAtWakeStart = lastSeenVaultByUserRef.current?.lastNonNullVaultKeyId ?? null;
       const wasUnlockedAtWakeStart =
         vaultStateRef.current === 'unlocked' || vaultStateRef.current === 'unlocking';
 
@@ -723,9 +745,12 @@ export function useContentChangesSync(options?: UseContentChangesSyncOptions): v
         ? reloadVaultMetaRef
             .current!()
             .then((freshMeta) => {
+              const rememberedKey =
+                lastSeenVaultByUserRef.current?.lastNonNullVaultKeyId ?? keyAtWakeStart;
               if (
                 freshMeta === null ||
-                (keyAtWakeStart !== null && freshMeta.vault_key_id !== keyAtWakeStart)
+                (keyAtWakeStart !== null && freshMeta.vault_key_id !== keyAtWakeStart) ||
+                (rememberedKey !== null && freshMeta.vault_key_id !== rememberedKey)
               ) {
                 purgeEntriesCacheOnVaultReset(queryClient);
               }
