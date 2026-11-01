@@ -980,6 +980,12 @@ export const KNOWN_UI_TOUCH_44: ReadonlyArray<{ readonly unit: string; readonly 
   { unit: 'w4fix FU11', control: 'json cell button (short value)', descriptor: /^button\[data-testid="json-cell-btn-[^"]+"\]/ },
   { unit: 'w4fix FU11', control: 'json field delete x', descriptor: /^button\[data-testid="json-remove-field-[^"]+"\]/ },
   { unit: 'w4fix FU11', control: 'json row delete x', descriptor: /^button\[data-testid="json-remove-row-[^"]+"\]/ },
+  // advisor-dec-221: the 44x44 ::after of the item tag remove x overlaps the #tag link and the tag group (CI 41350488609).
+  {
+    unit: 'w4fix FU11',
+    control: 'item tag remove x',
+    descriptor: /^button\[data-testid="item-tag-remove-[^"]+"\]\.chip-x\.cursor-pointer\.border-0$/,
+  },
 ];
 
 const knownTouchGap = (descriptor: string) => KNOWN_UI_TOUCH_44.find((k) => k.descriptor.test(descriptor));
