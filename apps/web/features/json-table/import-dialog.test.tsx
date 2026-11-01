@@ -714,12 +714,12 @@ async function setupImportHarness(options?: {
 
   for (let i = 0; i < initialList.length; i++) {
     const spec = initialList[i]!;
-    const op = vaultCtx.beginOp();
-    const sealed = await op.client.sealEntry({
+    const opGeneration = vaultCtx.captureOpGeneration();
+    const sealed = await vaultCtx.getClient().sealEntry({
       entryId: spec.id,
       keyId: KEY_ID,
       plaintext: spec.text,
-      opGeneration: op.opGeneration,
+      opGeneration,
     });
     const bytes = utf8Encoder.encode(spec.text).byteLength;
     const bucket = Math.max(256, Math.ceil(bytes / 256) * 256);
@@ -744,12 +744,12 @@ async function setupImportHarness(options?: {
   const openServerEntryPlaintext = async (entryId: string): Promise<string> => {
     const rec = entriesMap.get(entryId);
     if (!rec) throw new Error(`Entry ${entryId} not found`);
-    const op = vaultCtx.beginOp();
-    const opened = await op.client.openEntry({
+    const opGeneration = vaultCtx.captureOpGeneration();
+    const opened = await vaultCtx.getClient().openEntry({
       entryId: rec.id,
       envelope: rec.envelope,
       ciphertext: rec.ciphertext,
-      opGeneration: op.opGeneration,
+      opGeneration,
     });
     return opened.plaintext;
   };
@@ -1318,6 +1318,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       expect(h.vault().inFlight).toBe(false);
       expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
 
     const handoffSecret = 'DEC_209_HANDOFF_SECRET_884422';
@@ -1375,6 +1376,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       expect(h.vault().inFlight).toBe(false);
       expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     expect(getJsonImportHandoffSnapshot()).toBeNull();
@@ -1401,6 +1403,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       expect(h.vault().inFlight).toBe(false);
       expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     // 4. User switch (User A -> User B) wipes the open handoff
