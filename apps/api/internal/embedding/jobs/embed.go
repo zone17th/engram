@@ -75,6 +75,11 @@ type Dependencies struct {
 	// worker detects a stale input_hash (in step 2 when inStep5 is false, or in
 	// step 5 when inStep5 is true) and before inserting the replacement job.
 	BeforeStaleInsert func(ctx context.Context, kind string, generationID int, targetID uuid.UUID, inStep5 bool)
+
+	// BeforeCanaryPersistTx is an optional test-only hook invoked right after a
+	// first-run CheckCanary call succeeds (outside any DB transaction) and before
+	// the short FOR UPDATE transaction persists or compares the canary baseline.
+	BeforeCanaryPersistTx func(ctx context.Context, generationID int)
 }
 
 func (d Dependencies) withDefaults() Dependencies {

@@ -8,6 +8,9 @@ import (
 	"log/slog"
 
 	"github.com/riverqueue/river"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
@@ -47,7 +50,6 @@ func (w *CanaryWorker) Work(ctx context.Context, _ *river.Job[jobargs.CanaryArgs
 		return err
 	}
 
-	q := gen.New(deps.Pool)
 	for _, g := range receiving {
 		if deps.ClientSet == nil {
 			logCanarySkipped(ctx, deps.Logger, g.ID)
@@ -95,14 +97,10 @@ func (w *CanaryWorker) Work(ctx context.Context, _ *river.Job[jobargs.CanaryArgs
 		}
 
 		if res.FirstRun && len(res.Vectors) > 0 {
-			encoded, err := json.Marshal(res.Vectors)
-			if err != nil {
-				return err
+			if deps.BeforeCanaryPersistTx != nil {
+				deps.BeforeCanaryPersistTx(ctx, g.ID)
 			}
-			if _, err := q.SetEmbeddingGenerationCanary(ctx, gen.SetEmbeddingGenerationCanaryParams{
-				ID:     int32(g.ID),
-				Canary: encoded,
-			}); err != nil {
+			if err := persistOrCompareFirstCanary(ctx, deps, g.ID, client.Provider.Name(), res.Vectors); err != nil {
 				return err
 			}
 		}
@@ -121,6 +119,137 @@ func decodeStoredCanary(raw []byte) ([][]float32, error) {
 		return nil, err
 	}
 	return vecs, nil
+}
+
+// persistOrCompareFirstCanary makes initial canary baseline persistence
+// write-once under a short generation-row FOR UPDATE lock (EJ2-4).
+//
+// The network embedding call has already completed outside any database
+// transaction. In a short transaction we lock the generation row FOR UPDATE and
+// re-read its canary column:
+//   - If canary is still empty/null, we persist freshVectors as the baseline.
+//   - If a concurrent first-run job already committed a baseline while we were
+//     embedding, we retain the winner's baseline (never overwriting it) and
+//     evaluate drift of freshVectors against the stored baseline after commit.
+func persistOrCompareFirstCanary(
+	ctx context.Context,
+	deps Dependencies,
+	generationID int,
+	providerName string,
+	freshVectors [][]float32,
+) error {
+	encoded, err := json.Marshal(freshVectors)
+	if err != nil {
+		return err
+	}
+
+	tx, err := deps.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	qtx := gen.New(tx)
+	lockedRow, err := qtx.GetEmbeddingGenerationByIDForUpdate(ctx, int32(generationID))
+	if err != nil {
+		return err
+	}
+
+	existing, err := decodeStoredCanary(lockedRow.Canary)
+	if err != nil {
+		return err
+	}
+	if len(existing) == 0 {
+		if _, err := qtx.SetEmbeddingGenerationCanary(ctx, gen.SetEmbeddingGenerationCanaryParams{
+			ID:     int32(generationID),
+			Canary: encoded,
+		}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return recordCanaryComparison(ctx, deps, generationID, providerName, freshVectors, existing)
+}
+
+func recordCanaryComparison(
+	ctx context.Context,
+	deps Dependencies,
+	generationID int,
+	providerName string,
+	fresh [][]float32,
+	stored [][]float32,
+) error {
+	if len(stored) != embedding.CanaryCount || len(fresh) != embedding.CanaryCount {
+		return errors.New("jobs: stored canary vector count mismatch")
+	}
+
+	minCos := 1.0
+	for i := range embedding.CanaryCount {
+		cos, err := canaryCosineSimilarity(fresh[i], stored[i])
+		if err != nil {
+			return err
+		}
+		if i == 0 || cos < minCos {
+			minCos = cos
+		}
+	}
+
+	genLabel := "unknown"
+	if generationID > 0 {
+		genLabel = strings.TrimSpace(strconv.Itoa(generationID))
+	}
+	if deps.Metrics != nil && deps.Metrics.CanaryMinCos != nil {
+		deps.Metrics.CanaryMinCos.WithLabelValues(genLabel).Set(minCos)
+	}
+	if minCos < embedding.CanaryThreshold {
+		if deps.Metrics != nil && deps.Metrics.CanaryDriftTotal != nil {
+			deps.Metrics.CanaryDriftTotal.WithLabelValues(genLabel).Inc()
+		}
+		if deps.Logger != nil {
+			deps.Logger.LogAttrs(
+				ctx,
+				slog.LevelWarn,
+				"embedding canary drift detected",
+				slog.String("generation", genLabel),
+				slog.String("provider", providerName),
+				slog.Int("count", embedding.CanaryCount),
+				slog.Float64("min_cos", minCos),
+				slog.Float64("threshold", embedding.CanaryThreshold),
+			)
+		}
+	}
+	return nil
+}
+
+func canaryCosineSimilarity(a, b []float32) (float64, error) {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, errors.New("jobs: canary vector dimension mismatch")
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		fa := float64(a[i])
+		fb := float64(b[i])
+		if math.IsNaN(fa) || math.IsInf(fa, 0) || math.IsNaN(fb) || math.IsInf(fb, 0) {
+			return 0, errors.New("jobs: canary vector contains NaN or Inf")
+		}
+		dot += fa * fb
+		normA += fa * fa
+		normB += fb * fb
+	}
+	if normA <= 0 || normB <= 0 {
+		return 0, errors.New("jobs: canary vector has zero norm")
+	}
+	cos := dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	if cos > 1.0 {
+		cos = 1.0
+	} else if cos < -1.0 {
+		cos = -1.0
+	}
+	return cos, nil
 }
 
 func logCanarySkipped(ctx context.Context, logger *slog.Logger, generationID int) {

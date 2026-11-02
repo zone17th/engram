@@ -1499,3 +1499,119 @@ func TestTwoWorkerRenameCycleGuaranteesSuccessor(t *testing.T) {
 		t.Fatalf("stored vector input_hash = %x, want final hashB %x", stored.InputHash, hashB[:])
 	}
 }
+
+// TestCanaryWorkerConcurrentFirstRunWriteOnce verifies the EJ2-4 fix:
+// When two first-run CanaryWorker executions concurrently observe an empty
+// canary baseline (holding no DB lock during the network call) and embed
+// responses that straddle provider drift:
+//   - Both workers finish embedding and synchronize at BeforeCanaryPersistTx.
+//   - Worker 1 enters the short FOR UPDATE tx first and persists its baseline.
+//   - Worker 2 enters the short FOR UPDATE tx second, re-reads the now-populated
+//     canary column, retains Worker 1's baseline (write-once), and evaluates
+//     drift against Worker 1's baseline (incrementing embedding_canary_drift_total
+//     and setting embedding_canary_min_cos < 0.99).
+func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	defer srv.Close()
+
+	client := newTEIClient(t, srv, 8, "", "")
+	cs := embedding.NewClientSet(client, nil)
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, client.Identity, generation.StateActive, nil)
+
+	reg, m := obs.NewRegistry()
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	w1Embedded := make(chan struct{})
+	releaseW1 := make(chan struct{})
+	w2Embedded := make(chan struct{})
+	releaseW2 := make(chan struct{})
+
+	worker1 := jobs.NewCanaryWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Logger:    logger,
+		BeforeCanaryPersistTx: func(_ context.Context, _ int) {
+			close(w1Embedded)
+			<-releaseW1
+		},
+	})
+	worker2 := jobs.NewCanaryWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Logger:    logger,
+		BeforeCanaryPersistTx: func(_ context.Context, _ int) {
+			close(w2Embedded)
+			<-releaseW2
+		},
+	})
+
+	errCh1 := make(chan error, 1)
+	go func() {
+		errCh1 <- worker1.Work(ctx, &river.Job[jobargs.CanaryArgs]{})
+	}()
+	// Wait until Worker 1 has embedded the normal baseline (with no DB lock held).
+	<-w1Embedded
+
+	// Simulate provider drift before Worker 2 embeds, while g1.canary in DB is
+	// still NULL so Worker 2 also takes the FirstRun path.
+	canaryStrings := embedding.CanaryStrings()
+	srv.SetAliases(map[string]string{
+		canaryStrings[0]: "drifted-canary-vector-orthogonality-target-9999",
+	})
+
+	errCh2 := make(chan error, 1)
+	go func() {
+		errCh2 <- worker2.Work(ctx, &river.Job[jobargs.CanaryArgs]{})
+	}()
+	// Wait until Worker 2 has also finished its network call and observed FirstRun=true.
+	<-w2Embedded
+
+	// Release Worker 1 first so it wins the FOR UPDATE write-once persistence.
+	close(releaseW1)
+	if err := <-errCh1; err != nil {
+		t.Fatalf("CanaryWorker 1: %v", err)
+	}
+
+	// Capture Worker 1's persisted baseline before releasing Worker 2.
+	g1AfterW1, err := generation.GetByID(ctx, pool, g1.ID)
+	if err != nil {
+		t.Fatalf("GetByID after Worker 1: %v", err)
+	}
+	var w1Baseline [][]float32
+	if err := json.Unmarshal(g1AfterW1.Canary, &w1Baseline); err != nil {
+		t.Fatalf("Unmarshal Worker 1 baseline: %v", err)
+	}
+	if len(w1Baseline) != embedding.CanaryCount {
+		t.Fatalf("Worker 1 baseline count = %d, want %d", len(w1Baseline), embedding.CanaryCount)
+	}
+
+	// Now release Worker 2. It locks g1 FOR UPDATE, sees Worker 1's baseline is
+	// already set, does NOT overwrite it, and checks drift against it.
+	close(releaseW2)
+	if err := <-errCh2; err != nil {
+		t.Fatalf("CanaryWorker 2: %v", err)
+	}
+
+	g1AfterW2, err := generation.GetByID(ctx, pool, g1.ID)
+	if err != nil {
+		t.Fatalf("GetByID after Worker 2: %v", err)
+	}
+	if !bytes.Equal(g1AfterW1.Canary, g1AfterW2.Canary) {
+		t.Fatalf("Worker 2 overwrote Worker 1's canary baseline:\nafter W1: %s\nafter W2: %s", g1AfterW1.Canary, g1AfterW2.Canary)
+	}
+
+	if got := counterValue(t, reg, "embedding_canary_drift_total", map[string]string{"generation": "1"}); got != 1 {
+		t.Fatalf("embedding_canary_drift_total{generation=1} = %v, want 1 (drift detected by losing first-run initializer)", got)
+	}
+	if !strings.Contains(logBuf.String(), "embedding canary drift detected") {
+		t.Fatalf("expected drift warning log from losing initializer, got: %s", logBuf.String())
+	}
+}
