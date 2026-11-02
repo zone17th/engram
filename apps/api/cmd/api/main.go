@@ -112,7 +112,18 @@ func run() error {
 		return fmt.Errorf("river insert client: %w", err)
 	}
 
-	svc, _, api, err := compose.NewAuth(cfg, pool, riverInsert, nil, nil, nil)
+	var pinner *generation.Pinner
+	if cfg.SearchSemanticEnabled {
+		if prov := strings.TrimSpace(cfg.EmbeddingProvider); prov != "" && prov != embedding.ProviderNoop {
+			pinner = generation.NewPinner(pool)
+			defer pinner.Close()
+			if err := pinner.StartListener(ctx); err != nil {
+				return fmt.Errorf("generation pinner listener: %w", err)
+			}
+		}
+	}
+	semRuntime := semantic.NewRuntimeFromConfig(ctx, cfg, pool, pinner, nil, metrics, logger)
+	svc, _, api, err := compose.NewAuth(cfg, pool, riverInsert, nil, nil, nil, compose.WithSemantic(semRuntime))
 	if err != nil {
 		return fmt.Errorf("compose auth: %w", err)
 	}
@@ -126,17 +137,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose content: %w", err)
 	}
-	var pinner *generation.Pinner
-	if cfg.SearchSemanticEnabled {
-		if prov := strings.TrimSpace(cfg.EmbeddingProvider); prov != "" && prov != embedding.ProviderNoop {
-			pinner = generation.NewPinner(pool)
-			defer pinner.Close()
-			if err := pinner.StartListener(ctx); err != nil {
-				return fmt.Errorf("generation pinner listener: %w", err)
-			}
-		}
-	}
-	semRuntime := semantic.NewRuntimeFromConfig(ctx, cfg, pool, pinner, nil, metrics, logger)
 	searchComp, err := compose.NewSearch(cfg, pool, nil, metrics, logger, semRuntime.NearSource())
 	if err != nil {
 		return fmt.Errorf("compose search: %w", err)
@@ -154,6 +154,8 @@ func run() error {
 			CSRF:             csrfv,
 			Reauth:           reauth,
 			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI), itemhttp.Mount(contentComp), taghttp.Mount(contentComp), entryhttp.Mount(contentComp), searchComp.Mount),
+
+			SemanticAvailability: semRuntime.Availability,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

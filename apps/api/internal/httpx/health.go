@@ -19,9 +19,11 @@ type readyResponse struct {
 	SemanticAvailable bool              `json:"semantic_available"`
 }
 
-// readyz kiểm tra các phụ thuộc BẮT BUỘC (hiện chỉ có Postgres). TEI là optional:
-// deployment lexical-only vẫn ready khi TEI chết (P01 §Contract).
-// Lý do lỗi chỉ đi vào log, không đi vào response.
+// readyz kiểm tra các phụ thuộc BẮT BUỘC (hiện chỉ có Postgres). Embedding
+// provider là optional: deployment lexical-only vẫn ready khi provider chết
+// (P01 §Contract). semantic_available lấy từ Deps.SemanticAvailability (cùng hàm
+// với /auth/me, tĩnh, không gọi mạng; plan P05 mục 2.18) và không bao giờ làm
+// readyz trả 503. Lý do lỗi chỉ đi vào log, không đi vào response.
 func readyz(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := d.Ready(r.Context()); err != nil {
@@ -34,12 +36,16 @@ func readyz(d Deps) http.HandlerFunc {
 				"Phụ thuộc bắt buộc chưa sẵn sàng.")
 			return
 		}
+		semantic := false
+		if d.SemanticAvailability != nil {
+			semantic = d.SemanticAvailability(r.Context())
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(readyResponse{
 			Status:            "ready",
 			Checks:            map[string]string{"database": "ok"},
-			SemanticAvailable: d.Config.SemanticAvailable(),
+			SemanticAvailable: semantic,
 		})
 	}
 }
