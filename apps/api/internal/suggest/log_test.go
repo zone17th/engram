@@ -58,8 +58,8 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 		t.Fatalf("DeriveCursorKey: %v", err)
 	}
 
-	// Capacity 3 so we can exercise 200, 400, and 429 on the same router.
-	bucket := httpx.NewTokenBucket(4, 20, clk)
+	// Capacity 10 so we exercise 200, 400 (name_invalid & invalid_request), 500, and 429 across /suggest and /search.
+	bucket := httpx.NewTokenBucket(10, 20, clk)
 	svc := suggest.NewService(pool, clk, suggest.NewNoopNearSource(), metrics, cursorKey)
 	handler := suggest.NewHandler(svc, bucket)
 	auth := &suggestTestAuth{}
@@ -82,10 +82,27 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 		"UnauthQuerySentinelDelta",
 		"RateLimitQuerySentinelEpsilon",
 		"HintSentinelNeverExposed999",
+		"SearchQuerySentinelZeta",
+		"searchquerysentinelzeta",
+		"SearchBadControlSentinelEta",
+		"searchbadcontrolsentineleta",
+		"SearchBadCursorSentinelTheta",
+		"SearchUnauthSentinelIota",
+		"SearchTimeout500SentinelKappa",
+		"searchtimeout500sentinelkappa",
 	}
 
 	send := func(token string, q url.Values) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/suggest?"+q.Encode(), nil)
+		if token != "" {
+			req.AddCookie(&http.Cookie{Name: "sabk_session", Value: token})
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+	sendSearch := func(token string, q url.Values) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/search?"+q.Encode(), nil)
 		if token != "" {
 			req.AddCookie(&http.Cookie{Name: "sabk_session", Value: token})
 		}
@@ -144,15 +161,103 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 		t.Fatalf("401 problem body echoed query: %s", rec401.Body.String())
 	}
 
-	// 6. 429 `rate_limited` (all 4 tokens consumed by steps 1..4) with sentinel query.
-	rec429 := send("tok-privacy", url.Values{"q": {"RateLimitQuerySentinelEpsilon"}})
-	if rec429.Code != http.StatusTooManyRequests {
-		t.Fatalf("429 status = %d, want 429", rec429.Code)
+	// 6. `/search` 200 OK full search with sentinel query (consumes token 5).
+	recSearch200 := sendSearch("tok-privacy", url.Values{"q": {"SearchQuerySentinelZeta"}})
+	if recSearch200.Code != http.StatusOK {
+		t.Fatalf("/search 200 status = %d", recSearch200.Code)
 	}
-	if strings.Contains(rec429.Body.String(), "RateLimitQuerySentinelEpsilon") {
-		t.Fatalf("429 problem body echoed query: %s", rec429.Body.String())
+	if strings.Contains(recSearch200.Body.String(), "SearchQuerySentinelZeta") ||
+		strings.Contains(recSearch200.Body.String(), "searchquerysentinelzeta") ||
+		strings.Contains(recSearch200.Body.String(), "HintSentinelNeverExposed999") {
+		t.Fatalf("/search 200 response body echoed query or hint: %s", recSearch200.Body.String())
 	}
 
+	// 7. `/search` 200 OK matching item (`QuantumLedgerVault`, consumes token 6) -> verify `HintSentinelNeverExposed999` is absent.
+	recSearchHit := sendSearch("tok-privacy", url.Values{"q": {"quantum"}})
+	if recSearchHit.Code != http.StatusOK {
+		t.Fatalf("/search hit status = %d", recSearchHit.Code)
+	}
+	if strings.Contains(recSearchHit.Body.String(), "HintSentinelNeverExposed999") {
+		t.Fatalf("/search 200 hit response leaked item.hint: %s", recSearchHit.Body.String())
+	}
+
+	// 8. `/search` 400 `name_invalid` with forbidden control character and sentinel (consumes token 7).
+	recSearch400Name := sendSearch("tok-privacy", url.Values{"q": {"SearchBadControlSentinelEta\x00"}})
+	if recSearch400Name.Code != http.StatusBadRequest {
+		t.Fatalf("/search 400 name_invalid status = %d", recSearch400Name.Code)
+	}
+	if strings.Contains(recSearch400Name.Body.String(), "SearchBadControlSentinelEta") {
+		t.Fatalf("/search 400 name_invalid problem body echoed query: %s", recSearch400Name.Body.String())
+	}
+
+	// 9. `/search` 400 `invalid_request` with bad cursor sentinel (consumes token 8).
+	recSearch400Cursor := sendSearch("tok-privacy", url.Values{
+		"q":      {"SearchQuerySentinelZeta"},
+		"cursor": {"SearchBadCursorSentinelTheta"},
+	})
+	if recSearch400Cursor.Code != http.StatusBadRequest {
+		t.Fatalf("/search 400 invalid_request status = %d", recSearch400Cursor.Code)
+	}
+	if strings.Contains(recSearch400Cursor.Body.String(), "SearchBadCursorSentinelTheta") ||
+		strings.Contains(recSearch400Cursor.Body.String(), "SearchQuerySentinelZeta") {
+		t.Fatalf("/search 400 invalid_request problem body echoed cursor or query: %s", recSearch400Cursor.Body.String())
+	}
+
+	// 10. `/search` 401 `unauthenticated` with sentinel query and cursor (consumes 0 tokens).
+	recSearch401 := sendSearch("", url.Values{
+		"q":      {"SearchUnauthSentinelIota"},
+		"cursor": {"SearchBadCursorSentinelTheta"},
+	})
+	if recSearch401.Code != http.StatusUnauthorized {
+		t.Fatalf("/search 401 status = %d", recSearch401.Code)
+	}
+	if strings.Contains(recSearch401.Body.String(), "SearchUnauthSentinelIota") ||
+		strings.Contains(recSearch401.Body.String(), "SearchBadCursorSentinelTheta") {
+		t.Fatalf("/search 401 problem body echoed query or cursor: %s", recSearch401.Body.String())
+	}
+
+	// 11. `/search` 500 `internal_error` on primary-corpus branch timeout (advisor-dec-287, consumes token 9).
+	svc.SetTestHooks(&suggest.TestHooks{
+		BeforeBranch: func(_ context.Context, corpus string) error {
+			if corpus == suggest.CorpusItem {
+				return context.DeadlineExceeded
+			}
+			return nil
+		},
+	})
+	recSearch500 := sendSearch("tok-privacy", url.Values{"q": {"SearchTimeout500SentinelKappa"}, "scope": {"item"}})
+	svc.SetTestHooks(nil)
+	if recSearch500.Code != http.StatusInternalServerError {
+		t.Fatalf("/search 500 status = %d, want 500", recSearch500.Code)
+	}
+	if strings.Contains(recSearch500.Body.String(), "SearchTimeout500SentinelKappa") ||
+		strings.Contains(recSearch500.Body.String(), "searchtimeout500sentinelkappa") {
+		t.Fatalf("/search 500 problem body echoed query: %s", recSearch500.Body.String())
+	}
+
+	// 12. Consume token 10 via `/search`, then verify 429 `rate_limited` on both `/suggest` and `/search`.
+	recSearch10 := sendSearch("tok-privacy", url.Values{"q": {"quantum"}})
+	if recSearch10.Code != http.StatusOK {
+		t.Fatalf("/search token 10 status = %d, want 200", recSearch10.Code)
+	}
+	rec429 := send("tok-privacy", url.Values{"q": {"RateLimitQuerySentinelEpsilon"}})
+	if rec429.Code != http.StatusTooManyRequests {
+		t.Fatalf("/suggest 429 status = %d, want 429", rec429.Code)
+	}
+	if strings.Contains(rec429.Body.String(), "RateLimitQuerySentinelEpsilon") {
+		t.Fatalf("/suggest 429 problem body echoed query: %s", rec429.Body.String())
+	}
+	recSearch429 := sendSearch("tok-privacy", url.Values{
+		"q":      {"RateLimitQuerySentinelEpsilon"},
+		"cursor": {"SearchBadCursorSentinelTheta"},
+	})
+	if recSearch429.Code != http.StatusTooManyRequests {
+		t.Fatalf("/search 429 status = %d, want 429", recSearch429.Code)
+	}
+	if strings.Contains(recSearch429.Body.String(), "RateLimitQuerySentinelEpsilon") ||
+		strings.Contains(recSearch429.Body.String(), "SearchBadCursorSentinelTheta") {
+		t.Fatalf("/search 429 problem body echoed query or cursor: %s", recSearch429.Body.String())
+	}
 	// 7. Scrape `/api/v1/metrics` and verify `suggest_latency_seconds` was recorded and no sentinel or user ID appears.
 	metricsRec := httptest.NewRecorder()
 	router.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil))
