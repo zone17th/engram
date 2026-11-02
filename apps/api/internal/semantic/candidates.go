@@ -327,10 +327,9 @@ func (r *Runtime) runVectorBranch(
 	qvec []float32,
 	branchTimeout time.Duration,
 ) branchResult {
-	deadline := r.clk.Now().Add(branchTimeout)
 	branchCtx, cancel := context.WithTimeout(parentCtx, branchTimeout)
 	defer cancel()
-
+	deadline, _ := branchCtx.Deadline()
 	hits, stats, err := r.searcher.VectorSearch(
 		branchCtx,
 		pin,

@@ -15,6 +15,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/clock"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
+	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 	"github.com/zone17th/engram/apps/api/internal/semantic"
 	"github.com/zone17th/engram/apps/api/internal/semantic/semantictest"
@@ -546,6 +547,7 @@ func TestSQLTimeoutDegradesWithoutOpeningBreaker(t *testing.T) {
 	pinner := semantictest.NewSpyPinner(pin, true)
 
 	// First request: item branch reports TimedOut=true (simulating statement_timeout 57014).
+	var observedDeadline time.Time
 	searcher := &semantictest.SpyVectorSearcher{
 		ItemStats: semantic.VectorPathStats{Path: "exact", TimedOut: true},
 	}
@@ -580,16 +582,40 @@ func TestSQLTimeoutDegradesWithoutOpeningBreaker(t *testing.T) {
 	}
 
 	// Second request: SQL recovers -> semantic succeeds because breaker stayed closed.
-	searcher.ItemStats = semantic.VectorPathStats{Path: "exact", TimedOut: false}
-	searcher.ItemHits = []semantic.VectorHit{
-		{
-			ID:         uuid.MustParse("00000000-0001-4000-8000-000000000099"),
-			Cos:        0.85,
-			Name:       "wifi nhà",
-			Count:      4,
-			LastUsedAt: ts,
-			CreatedAt:  ts,
-		},
+	// Also verify RV-T12-BE-2: even when r.clk is fixed in the past (2026-10-25),
+	// the deadline passed to VectorSearch is derived from real branchCtx.Deadline()
+	// (in the future relative to real time.Now()), never from the injected fake clock.
+	searcher.SearchFn = func(
+		branchCtx context.Context,
+		_ generation.Pin,
+		_ uuid.UUID,
+		corpus generation.Corpus,
+		_ []float32,
+		_ int,
+		deadline time.Time,
+		_ semantic.VectorSearchKnobs,
+	) ([]semantic.VectorHit, semantic.VectorPathStats, error) {
+		observedDeadline = deadline
+		ctxDeadline, ok := branchCtx.Deadline()
+		if !ok || !deadline.Equal(ctxDeadline) {
+			t.Errorf("VectorSearch deadline = %v, want branchCtx.Deadline() %v (ok=%v)", deadline, ctxDeadline, ok)
+		}
+		if !deadline.After(time.Now().Add(-5 * time.Second)) {
+			t.Errorf("VectorSearch deadline %v is in the past (must use real context deadline, not fake clock)", deadline)
+		}
+		if corpus == generation.CorpusItem {
+			return []semantic.VectorHit{
+				{
+					ID:         uuid.MustParse("00000000-0001-4000-8000-000000000099"),
+					Cos:        0.85,
+					Name:       "wifi nhà",
+					Count:      4,
+					LastUsedAt: ts,
+					CreatedAt:  ts,
+				},
+			}, semantic.VectorPathStats{Path: "exact"}, nil
+		}
+		return nil, semantic.VectorPathStats{Path: "exact"}, nil
 	}
 	res2, err := rt.NearSource().Near(ctx, suggest.NearRequest{
 		UserID:        userID,
@@ -604,6 +630,9 @@ func TestSQLTimeoutDegradesWithoutOpeningBreaker(t *testing.T) {
 	}
 	if !res2.Semantic || res2.SemanticReason != nil || len(res2.Near) != 1 {
 		t.Fatalf("Near after SQL timeout recovery = %+v, want Semantic=true len(Near)=1", res2)
+	}
+	if observedDeadline.IsZero() {
+		t.Fatal("expected VectorSearch to observe non-zero branch deadline")
 	}
 	if searcher.ItemCalls() != 2 || searcher.TagCalls() != 1 {
 		t.Fatalf("scope=item on second call should only query item corpus: itemCalls=%d tagCalls=%d",
