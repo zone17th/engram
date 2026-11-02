@@ -12,20 +12,28 @@ import type { Page } from '@playwright/test';
  * cannot answer it, reads `fakeembedStats()` before and after and asserts `query_requests` grew (the provider path was
  * really called) before it asserts a late/degraded near zone. A probe query (`probeQuery`) is never reused as a
  * scenario query: the probes only warm readiness, never the cache entry a scenario depends on.
+ *
+ * Breaker contract: `waitForEmbedded` MUST precede any `slow`/`down` step. The API embedding breaker opens on the first
+ * provider failure (threshold 1) and stays open for 60 s, so a spec that fails after `down` can leave it open even
+ * after `fakeembedReset()`. A successful `waitForEmbedded` proves the breaker is closed (a fresh probe reached the
+ * provider and its vector matched), so a retry or the next `@semantic` spec is safe as long as it calls it first.
  */
 
 /**
  * fakeembed control plane (published on 127.0.0.1 by compose profile `semantic-fake`, default port 8090).
- * The env var name is a placeholder until the BE worker of Task 20b-1 fixes the CI name; the default matches compose.
+ * The `e2e-search-semantic` job pins `FAKEEMBED_CONTROL_URL` explicitly; the default matches compose.
  */
 export const FAKEEMBED_CONTROL_URL = (process.env.FAKEEMBED_CONTROL_URL ?? 'http://127.0.0.1:8090').replace(/\/+$/, '');
 
 /**
- * Prefix the TEI client puts in front of every document input (`TEI_INPUT_PREFIX_DOCUMENT`, Task 16 handoff: the
- * `semantic-fake` stack runs with `'passage: '`). fakeembed's alias value must equal the exact document input the
- * provider received, so an alias only reaches cosine 1.0 against the stored vector when this matches the stack.
+ * Prefix the TEI client puts in front of every document input (`TEI_INPUT_PREFIX_DOCUMENT`; the `semantic-fake` stack
+ * and job `e2e-search-semantic` run with `'passage: '`, ci.yml). fakeembed's alias value must equal the exact document
+ * input the provider received, so an alias only reaches cosine 1.0 against the stored vector when this matches the
+ * stack. Prefer the stack's own variable (passed into the Playwright container) so the two cannot drift apart;
+ * `FAKEEMBED_DOC_PREFIX` is a manual override, `'passage: '` the fallback.
  */
-export const FAKEEMBED_DOCUMENT_PREFIX = process.env.FAKEEMBED_DOC_PREFIX ?? 'passage: ';
+export const FAKEEMBED_DOCUMENT_PREFIX =
+  process.env.TEI_INPUT_PREFIX_DOCUMENT ?? process.env.FAKEEMBED_DOC_PREFIX ?? 'passage: ';
 
 /** `near` carries at most 5 rows (plan 2.4), so one `waitForEmbedded` call covers at most 5 targets. */
 export const WAIT_FOR_EMBEDDED_MAX_TARGETS = 5;
