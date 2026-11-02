@@ -224,8 +224,15 @@ export interface SearchRequestRecorder {
   suggestQueriesSince(mark: number): readonly string[];
   /** Resolves headers that arrive after the sync `request` event. Call before asserting on `headersText`. */
   flush(): Promise<void>;
-  /** Throws (label + needle-form suffix + surface only) if any request since `mark` carries any form of a secret. */
-  assertNeverContains(secrets: readonly NeedleSecret[], mark?: number): Promise<void>;
+  /**
+   * Throws (label + needle-form suffix + surface only) if any request since `mark` carries any form of a secret.
+   * `opts.filter` narrows the scanned requests (e.g. API only, for short generic needles that could occur in a chunk URL).
+   */
+  assertNeverContains(
+    secrets: readonly NeedleSecret[],
+    mark?: number,
+    opts?: { readonly filter?: (rec: RecordedRequest) => boolean },
+  ): Promise<void>;
   /** Throws if an omnibox-relevant request was sent since `mark`. */
   expectNoOmniboxRequestsSince(mark: number, label: string): void;
 }
@@ -355,10 +362,11 @@ export function attachSearchRequestRecorder(context: BrowserContext): SearchRequ
         await Promise.all([...pending]);
       }
     },
-    async assertNeverContains(secrets, mark = 0) {
+    async assertNeverContains(secrets, mark = 0, opts = {}) {
       await recorder.flush();
       const leaks: string[] = [];
       for (const rec of records.slice(mark)) {
+        if (opts.filter && !opts.filter(rec)) continue;
         const surfaces: ReadonlyArray<readonly [string, string]> = [
           ['url', rec.url],
           ['url-decoded', safeDecode(rec.url)],
