@@ -485,7 +485,7 @@
       "nav": { "account": "Tài khoản", "security": "Bảo mật", "search": "Tìm kiếm", "data": "Dữ liệu" },
       "searchHeading": "Tìm kiếm",
       "searchTitle": "Tìm kiếm thấy được gì",
-      "searchBody": "Tên mục, gợi ý và tag không được mã hoá, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.",
+      "searchBody": "Tên mục, gợi ý và tag không được mã hoá, và chữ gõ trong ô tìm được gửi tới máy chủ, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.",
       "dataHeading": "Dữ liệu",
       "dataTitle": "Dữ liệu của bạn",
       "dataBody": "Nội dung entry được mã hoá ngay trên trình duyệt trước khi gửi lên máy chủ. Tên mục, gợi ý và tag được lưu không mã hoá."
@@ -783,6 +783,16 @@
         "createNewVaultLink": "Tạo vault mới",
         "toastDone": "Vault đã được đặt lại"
       }
+    },
+    "search": {
+      "semanticTitle": "Tìm gần nghĩa",
+      "semanticDesc": "Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ, nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.",
+      "semanticExternalCopy": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại.",
+      "semanticSelfHostCopy": "Tên mục, gợi ý và tag được nhúng trên máy chủ engram. Tắt chỉ ẩn kết quả gần nghĩa; chỉ mục vẫn được cập nhật nên bật lại dùng được ngay.",
+      "semanticEntryNeverSent": "Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn.",
+      "semanticServerOff": "Máy chủ này chưa bật tìm gần nghĩa",
+      "semanticEnable409": "Không bật được tìm theo nghĩa",
+      "semanticSaveFailed": "Không lưu được thay đổi. Thử lại sau."
     }
   },
   "vault": {
