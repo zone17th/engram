@@ -983,7 +983,10 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   }
   .json-cell-input { min-height: 44px; }
   .json-col-idx, .json-table td.json-col-act { width: 68px; min-width: 68px; }
-  .json-table td.json-col-act .btn-sm { display: flex; margin-left: auto; min-width: 44px; min-height: 44px; }
+  /* FU11 fix r4 (dec-238): the action td is sticky z-10 at <=768 px; as a static child its
+     button's bottom band missed hit testing (CI 41376832862). Its own positioned layer makes
+     the full 44 px box hit-testable. */
+  .json-table td.json-col-act .btn-sm { display: flex; margin-left: auto; min-width: 44px; min-height: 44px; position: relative; z-index: 1; }
   .json-cell-btn, .json-type-btn,
   .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
 }
