@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
@@ -280,6 +281,151 @@ func TestEnqueueTxFanOutLockAndBootstrapPending(t *testing.T) {
 	wantOff := []int{g1Pending.ID, g3RetiredReceiving.ID}
 	if !equalIntSlice(genIDsOff, wantOff) {
 		t.Fatalf("enqueued generation IDs (user off, BE-3) = %v, want %v", genIDsOff, wantOff)
+	}
+}
+
+// TestEnqueueTxAcquiresSharedLockBeforeReadingReceivingGenerations verifies
+// EJB-4 (plan P05 mục 2.15, 2.17, OQ-16):
+// `EnqueueTx` MUST acquire `LockGenerationSetShared` BEFORE calling
+// `ReceivingGenerations(ctx, tx)`:
+//  1. Seed active generation g1.
+//  2. Transaction X acquires `LockGenerationSetExclusive`.
+//  3. A concurrent mutation transaction M starts and invokes `EnqueueTx` on
+//     its own connection.
+//  4. Poll `pg_locks` (bounded condition poll, no fixed sleeps) until M's
+//     backend PID is observed waiting (`granted = false`, `mode = 'ShareLock'`)
+//     on `generation.GenerationSetLockKey`.
+//  5. While M is blocked on the shared lock, transaction X inserts a new
+//     pending generation g2 and commits, releasing the exclusive lock.
+//  6. M unblocks, reads `R = {g1, g2}`, and commits; assert jobs are enqueued
+//     for BOTH g1 and g2. A read-R-before-lock regression would have read
+//     `R = {g1}` before blocking on the lock and missed g2.
+func TestEnqueueTxAcquiresSharedLockBeforeReadingReceivingGenerations(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+	riverClient := newInsertClient(t, pool)
+
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "enq-lock-order@example.com", Locale: "vi"})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+
+	ident1 := embedid.Identity{
+		Provider:      generation.ProviderTEI,
+		Model:         "tei/BAAI/bge-m3",
+		ModelVersion:  "rev-lock-order-1;qp=00000000;dp=11111111",
+		Dims:          8,
+		DocPrefix:     "passage: ",
+		Preprocessing: "v1",
+	}
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, ident1, generation.StateActive, nil)
+
+	// 1. Transaction X acquires LockGenerationSetExclusive.
+	txX, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin txX: %v", err)
+	}
+	defer func() { _ = txX.Rollback(ctx) }()
+	if err := generation.LockGenerationSetExclusive(ctx, txX); err != nil {
+		t.Fatalf("LockGenerationSetExclusive in txX: %v", err)
+	}
+
+	// 2. Prepare mutation transaction M on its own connection and read its backend PID.
+	txM, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin txM: %v", err)
+	}
+	defer func() { _ = txM.Rollback(ctx) }()
+	var mutPID int32
+	if err := txM.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&mutPID); err != nil {
+		t.Fatalf("read mutPID: %v", err)
+	}
+
+	targetID := uuid.New()
+	input := embedding.ItemInput("Lock Order Target", "must see g2")
+
+	mutDone := make(chan error, 1)
+	go func() {
+		if err := jobs.EnqueueTx(ctx, txM, riverClient, true, embedding.ProviderTEI, user.ID, item.EmbedKindItem, targetID, input); err != nil {
+			mutDone <- err
+			return
+		}
+		mutDone <- txM.Commit(ctx)
+	}()
+
+	// 3. Bounded condition poll on pg_locks until mutPID is waiting (granted = false)
+	// for ShareLock on GenerationSetLockKey.
+	waitCtx, cancelWait := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelWait()
+	for {
+		select {
+		case err := <-mutDone:
+			t.Fatalf("EnqueueTx returned before exclusive generation-set lock was released (err=%v)", err)
+		default:
+		}
+
+		var waiting bool
+		if err := pool.QueryRow(waitCtx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_locks
+				WHERE pid = $1
+				  AND locktype = 'advisory'
+				  AND mode = 'ShareLock'
+				  AND NOT granted
+				  AND ((classid::bigint << 32) | (objid::bigint & 4294967295)) = $2
+			)
+		`, mutPID, generation.GenerationSetLockKey).Scan(&waiting); err != nil {
+			t.Fatalf("poll pg_locks for blocked ShareLock: %v", err)
+		}
+		if waiting {
+			break
+		}
+
+		select {
+		case err := <-mutDone:
+			t.Fatalf("EnqueueTx returned before exclusive generation-set lock was released (err=%v)", err)
+		case <-waitCtx.Done():
+			t.Fatal("timed out waiting for EnqueueTx to block on LockGenerationSetShared")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// 4. While EnqueueTx is blocked on the shared lock, insert a new receiving
+	// generation g2 inside txX and commit txX to release the exclusive lock.
+	qX := gen.New(txX)
+	if _, err := qX.InsertPendingEmbeddingGeneration(ctx, gen.InsertPendingEmbeddingGenerationParams{
+		ID:                 2,
+		Provider:           generation.ProviderTEI,
+		Model:              "tei/BAAI/bge-m3",
+		ModelVersion:       "rev-lock-order-2;qp=00000000;dp=11111111",
+		Preprocessing:      "v1",
+		QueryPrefix:        "",
+		DocPrefix:          "passage: ",
+		Dims:               8,
+		Partitions:         4,
+		HnswM:              16,
+		HnswEfConstruction: 64,
+		SemanticMinCos:     0.55,
+		CalibrationRef:     "docs/benchmarks/semantic-eval/report.json",
+		Bootstrap:          false,
+	}); err != nil {
+		t.Fatalf("InsertPendingEmbeddingGeneration g2 in txX: %v", err)
+	}
+	if err := txX.Commit(ctx); err != nil {
+		t.Fatalf("Commit txX: %v", err)
+	}
+
+	// 5. Wait for EnqueueTx + txM.Commit to finish and assert jobs for BOTH g1 and g2.
+	if err := <-mutDone; err != nil {
+		t.Fatalf("EnqueueTx / Commit txM after lock release: %v", err)
+	}
+
+	gotGenIDs := queryEnqueuedGenIDs(t, ctx, pool, "embed_item", targetID)
+	wantGenIDs := []int{g1.ID, 2}
+	if !equalIntSlice(gotGenIDs, wantGenIDs) {
+		t.Fatalf("enqueued generation IDs = %v, want %v (must include g2 committed while waiting on lock)", gotGenIDs, wantGenIDs)
 	}
 }
 
