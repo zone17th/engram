@@ -44,9 +44,9 @@ Với mỗi query:
 
 | Tham số | Giá trị |
 |---|---|
-| `min_cos` benchmark | **TBD (decision_required)** — plan P05 nói "cố định trong `targets.md`" nhưng không nêu số; lead/Advisor phải chốt và điền bằng commit riêng trước run `full` đầu tiên |
+| `min_cos` benchmark | **0.50** (advisor-dec-255, 2026-11-02) |
 
-Không worker nào tự chọn giá trị này.
+Ràng buộc đóng băng cho generator dataset (Task 10): query gần item (70 %) đặt cos với target **cao hơn hẳn** 0.50; query ngẫu nhiên (10 %) **dưới** 0.50, để cả ca `|E| = 0` lẫn fixture "ngưỡng cắt bớt" đều xảy ra. Đây **chỉ** là tham số benchmark: không bao giờ dùng làm `semantic_min_cos` production (giá trị đó theo từng generation, từ calibration — plan P05 mục 2.20; giá trị tạm 0.55/0.58 của ADR 0004 không bị ảnh hưởng). Đổi giá trị chỉ theo mục 4.
 
 ## 4. Quy tắc thất bại
 
