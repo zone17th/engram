@@ -46,18 +46,8 @@ func NewEnqueuer(client *river.Client[pgx.Tx], enabled bool, provider string, lo
 	}
 }
 
-func (e *Enqueuer) deploymentActive() bool {
-	if e == nil || !e.Enabled || e.Client == nil {
-		return false
-	}
-	prov := strings.TrimSpace(e.Provider)
-	return prov != "" && prov != embedding.ProviderNoop
-}
-
-// OnUpsert implements item.EmbedHook. When the deployment has semantic search
-// enabled (`Enabled && Provider != "noop"` and a non-nil River client), it
-// delegates to EnqueueTx inside the caller's transaction; otherwise it is a
-// no-op without acquiring the generation-set lock (plan P05 mục 2.17, 2.18).
+// OnUpsert implements item.EmbedHook by delegating directly to EnqueueTx inside
+// the caller's transaction (plan P05 mục 2.17, 2.18).
 func (e *Enqueuer) OnUpsert(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -66,10 +56,10 @@ func (e *Enqueuer) OnUpsert(
 	id uuid.UUID,
 	input string,
 ) error {
-	if !e.deploymentActive() {
+	if e == nil {
 		return nil
 	}
-	return EnqueueTx(ctx, tx, e.Client, userID, kind, id, input)
+	return EnqueueTx(ctx, tx, e.Client, e.Enabled, e.Provider, userID, kind, id, input)
 }
 
 // OnDelete implements item.EmbedHook. It acquires LockGenerationSetShared on tx
@@ -101,7 +91,8 @@ func (e *Enqueuer) OnDelete(
 // EnqueueTx is the single transactional decision point that fans out embed_item
 // or embed_tag jobs across the receiving generation set R inside tx (plan P05
 // mục 2.15, 2.17, Task 11b; SPEC §6.6; ADR 0007 §3, §8, §9):
-//  1. If client == nil, returns nil (deployment off / insert client unconfigured).
+//  1. If !enabled, provider is empty/"noop", or client == nil, returns nil
+//     without acquiring the generation-set lock.
 //  2. Acquires generation.LockGenerationSetShared(ctx, tx) BEFORE reading R.
 //  3. Reads R = generation.ReceivingGenerations(ctx, tx)
 //     ({active} ∪ {pending} ∪ {retired with rollback_until > now()}).
@@ -118,12 +109,15 @@ func EnqueueTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	client *river.Client[pgx.Tx],
+	enabled bool,
+	provider string,
 	userID uuid.UUID,
 	kind item.EmbedKind,
 	id uuid.UUID,
 	input string,
 ) error {
-	if client == nil {
+	prov := strings.TrimSpace(provider)
+	if !enabled || prov == "" || prov == embedding.ProviderNoop || client == nil {
 		return nil
 	}
 	if tx == nil {

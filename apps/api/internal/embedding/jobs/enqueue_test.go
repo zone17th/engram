@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
+	"github.com/riverqueue/river"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
@@ -41,10 +42,11 @@ func hasSharedGenSetLockInTx(t *testing.T, ctx context.Context, tx gen.DBTX) boo
 	return held
 }
 
-// TestEnqueuerDeploymentOffNoopNoLock verifies plan P05 mục 2.17 / 2.18:
+// TestEnqueuerDeploymentOffNoopNoLock verifies plan P05 mục 2.17 / 2.18 (EJB-3):
 // When deployment semantic search is disabled (`!Enabled` or `Provider == "noop"`
-// or nil River client), `Enqueuer.OnUpsert` is a pure no-op that inserts 0 jobs
-// and does NOT acquire `LockGenerationSetShared`.
+// or nil River client), both `EnqueueTx` (the single decision point) and
+// `Enqueuer.OnUpsert` are pure no-ops that insert 0 jobs and do NOT acquire
+// `LockGenerationSetShared`.
 func TestEnqueuerDeploymentOffNoopNoLock(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
@@ -66,38 +68,71 @@ func TestEnqueuerDeploymentOffNoopNoLock(t *testing.T) {
 	riverClient := newInsertClient(t, pool)
 
 	cases := []struct {
-		name string
-		enq  *jobs.Enqueuer
+		name     string
+		client   *river.Client[pgx.Tx]
+		enabled  bool
+		provider string
 	}{
 		{
-			name: "disabled_flag",
-			enq:  jobs.NewEnqueuer(riverClient, false, embedding.ProviderTEI, nil),
+			name:     "disabled_flag",
+			client:   riverClient,
+			enabled:  false,
+			provider: embedding.ProviderTEI,
 		},
 		{
-			name: "noop_provider",
-			enq:  jobs.NewEnqueuer(riverClient, true, embedding.ProviderNoop, nil),
+			name:     "noop_provider",
+			client:   riverClient,
+			enabled:  true,
+			provider: embedding.ProviderNoop,
 		},
 		{
-			name: "nil_client",
-			enq:  jobs.NewEnqueuer(nil, true, embedding.ProviderTEI, nil),
+			name:     "empty_provider",
+			client:   riverClient,
+			enabled:  true,
+			provider: "   ",
+		},
+		{
+			name:     "nil_client",
+			client:   nil,
+			enabled:  true,
+			provider: embedding.ProviderTEI,
 		},
 	}
 
 	for _, tc := range cases {
-		tx, err := pool.Begin(ctx)
+		// 1. Direct EnqueueTx call.
+		txDirect, err := pool.Begin(ctx)
 		if err != nil {
-			t.Fatalf("[%s] Begin: %v", tc.name, err)
+			t.Fatalf("[%s] Begin txDirect: %v", tc.name, err)
 		}
-		if err := tc.enq.OnUpsert(ctx, tx, user.ID, item.EmbedKindItem, uuid.New(), "Name — hint"); err != nil {
-			_ = tx.Rollback(ctx)
+		if err := jobs.EnqueueTx(ctx, txDirect, tc.client, tc.enabled, tc.provider, user.ID, item.EmbedKindItem, uuid.New(), "Name — hint"); err != nil {
+			_ = txDirect.Rollback(ctx)
+			t.Fatalf("[%s] EnqueueTx: %v", tc.name, err)
+		}
+		if hasSharedGenSetLockInTx(t, ctx, txDirect) {
+			_ = txDirect.Rollback(ctx)
+			t.Fatalf("[%s] expected NO shared generation-set lock from EnqueueTx when deployment is off", tc.name)
+		}
+		if err := txDirect.Commit(ctx); err != nil {
+			t.Fatalf("[%s] Commit txDirect: %v", tc.name, err)
+		}
+
+		// 2. Delegating Enqueuer.OnUpsert call.
+		enq := jobs.NewEnqueuer(tc.client, tc.enabled, tc.provider, nil)
+		txHook, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("[%s] Begin txHook: %v", tc.name, err)
+		}
+		if err := enq.OnUpsert(ctx, txHook, user.ID, item.EmbedKindItem, uuid.New(), "Name — hint"); err != nil {
+			_ = txHook.Rollback(ctx)
 			t.Fatalf("[%s] OnUpsert: %v", tc.name, err)
 		}
-		if hasSharedGenSetLockInTx(t, ctx, tx) {
-			_ = tx.Rollback(ctx)
-			t.Fatalf("[%s] expected NO shared generation-set lock when deployment is off", tc.name)
+		if hasSharedGenSetLockInTx(t, ctx, txHook) {
+			_ = txHook.Rollback(ctx)
+			t.Fatalf("[%s] expected NO shared generation-set lock from OnUpsert when deployment is off", tc.name)
 		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("[%s] Commit: %v", tc.name, err)
+		if err := txHook.Commit(ctx); err != nil {
+			t.Fatalf("[%s] Commit txHook: %v", tc.name, err)
 		}
 	}
 
@@ -153,7 +188,7 @@ func TestEnqueueTxFanOutLockAndBootstrapPending(t *testing.T) {
 	}
 	defer func() { _ = tx1.Rollback(ctx) }()
 
-	if err := jobs.EnqueueTx(ctx, tx1, riverClient, user.ID, item.EmbedKindItem, targetID1, input1); err != nil {
+	if err := jobs.EnqueueTx(ctx, tx1, riverClient, true, embedding.ProviderTEI, user.ID, item.EmbedKindItem, targetID1, input1); err != nil {
 		t.Fatalf("EnqueueTx bootstrap pending: %v", err)
 	}
 	if !hasSharedGenSetLockInTx(t, ctx, tx1) {
@@ -207,7 +242,7 @@ func TestEnqueueTxFanOutLockAndBootstrapPending(t *testing.T) {
 		t.Fatalf("Begin txOn: %v", err)
 	}
 	defer func() { _ = txOn.Rollback(ctx) }()
-	if err := jobs.EnqueueTx(ctx, txOn, riverClient, user.ID, item.EmbedKindTag, tagIDOn, embedding.TagInput("tag-on")); err != nil {
+	if err := jobs.EnqueueTx(ctx, txOn, riverClient, true, embedding.ProviderTEI, user.ID, item.EmbedKindTag, tagIDOn, embedding.TagInput("tag-on")); err != nil {
 		t.Fatalf("EnqueueTx user on: %v", err)
 	}
 	if err := txOn.Commit(ctx); err != nil {
@@ -234,7 +269,7 @@ func TestEnqueueTxFanOutLockAndBootstrapPending(t *testing.T) {
 		t.Fatalf("Begin txOff: %v", err)
 	}
 	defer func() { _ = txOff.Rollback(ctx) }()
-	if err := jobs.EnqueueTx(ctx, txOff, riverClient, user.ID, item.EmbedKindTag, tagIDOff, embedding.TagInput("tag-off")); err != nil {
+	if err := jobs.EnqueueTx(ctx, txOff, riverClient, true, embedding.ProviderOpenAICompat, user.ID, item.EmbedKindTag, tagIDOff, embedding.TagInput("tag-off")); err != nil {
 		t.Fatalf("EnqueueTx user off: %v", err)
 	}
 	if err := txOff.Commit(ctx); err != nil {
