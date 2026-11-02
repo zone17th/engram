@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1032,11 +1033,32 @@ func TestUserOffOpenAICompatSendsNothing(t *testing.T) {
 	}
 	e.create(mxItem, "Alpha second ledger "+markerA)
 	e.create(mxTag, "alpha-second-tag-"+markerA)
+	// Control: the pre-T query text. Its vector is in the runtime's query cache
+	// (the key ignores route and scope), so these probes are cache HITS.
 	if got := e.query("suggest", "zzalpha"+markerA, mxItem, ""); got.Semantic || got.reason() != "disabled_user" {
 		t.Fatalf("/suggest after off = semantic %t reason %q, want false/disabled_user", got.Semantic, got.reason())
 	}
 	if got := e.query("search", "zzalpha"+markerA, mxTag, ""); got.Semantic || got.reason() != "disabled_user" {
 		t.Fatalf("/search after off = semantic %t reason %q, want false/disabled_user", got.Semantic, got.reason())
+	}
+	// RV-T21-BE-1: distinct, never-before-used queries after T are cache MISSES, so
+	// they would reach the provider if the setting were checked after the query
+	// vector is obtained. Every route x scope gets its own text.
+	n := 0
+	for _, route := range []string{"suggest", "search"} {
+		for _, scope := range []string{mxItem, mxTag} {
+			n++
+			fresh := fmt.Sprintf("zzfresh%d%s%s%s", n, route, scope, markerA)
+			if got := e.query(route, fresh, scope, ""); got.Semantic || got.reason() != "disabled_user" {
+				t.Fatalf("fresh /%s scope=%s after off = semantic %t reason %q, want false/disabled_user", route, scope, got.Semantic, got.reason())
+			}
+		}
+	}
+	if q := e.oaSrv.Stats().QueryRequests; q != 0 {
+		t.Fatalf("%d query requests reached the provider after user A turned off, want 0", q)
+	}
+	if mxAnyInputContains(e.oaSrv.ReceivedInputs(), markerA) {
+		t.Fatal("a fresh query after off reached the provider with user A's text")
 	}
 	if _, err := jobs.InsertReembedAll(context.Background(), jobs.RiverClientInserter{Client: e.insert}, 0); err != nil {
 		t.Fatalf("InsertReembedAll: %v", err)
@@ -1069,11 +1091,48 @@ func TestUserOffOpenAICompatReembedUserOnEnable(t *testing.T) {
 	tagA := e.create(mxTag, "alpha-tag-"+markerA)
 	jarB, userB := e.signup("bravo")
 	itemB := e.createAs(jarB, mxItem, "Bravo ledger "+markerB)
+	tagB := e.createAs(jarB, mxTag, "bravo-tag-"+markerB)
 	e.runEmbedWorkers()
 	bBefore, ok := e.vector(1, mxItem, userB, itemB)
 	if !ok {
 		t.Fatal("precondition: user B has no vector")
 	}
+	if _, ok := e.vector(1, mxTag, userB, tagB); !ok {
+		t.Fatal("precondition: user B's tag has no vector")
+	}
+
+	// RV-T21-BE-2: make B genuinely need work WITHOUT leaving a runnable job of B's
+	// own (test-only SQL, no router/enqueue path): B's item gets a new name while its
+	// current vector is kept (stale), B's tag vector is removed (missing). A reconcile
+	// that is broader than "user A" would now re-send B; the per-user backfill must not.
+	const bDrifted = "Bravo ledger drifted " + markerB
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE item SET name = $1, name_normalized = lower($1) WHERE user_id = $2 AND id = $3`, bDrifted, userB, itemB); err != nil {
+		t.Fatalf("make B's item stale: %v", err)
+	}
+	if _, err := e.pool.Exec(context.Background(),
+		`DELETE FROM tag_embedding_g1 WHERE user_id = $1 AND target_id = $2`, userB, tagB); err != nil {
+		t.Fatalf("make B's tag vector missing: %v", err)
+	}
+	if want := embedding.InputHashFor(g1.Identity(), mxInput(mxItem, bDrifted)); bytes.Equal(bBefore.InputHash, want[:]) {
+		t.Fatal("precondition: B's item vector is not stale")
+	}
+	if _, ok := e.vector(1, mxTag, userB, tagB); ok {
+		t.Fatal("precondition: B's tag vector is not missing")
+	}
+	bJobs := func() int {
+		var n int
+		if err := e.pool.QueryRow(context.Background(),
+			`SELECT count(*)::int FROM river_job WHERE kind IN ($1, $2) AND args->>'user_id' = $3`,
+			jobargs.KindEmbedItem, jobargs.KindEmbedTag, userB.String()).Scan(&n); err != nil {
+			t.Fatalf("count B's embed jobs: %v", err)
+		}
+		return n
+	}
+	if got := mxUnfinishedEmbedJobs(t, e.pool); got != 0 {
+		t.Fatalf("precondition: %d unfinished embed jobs before toggling A, want 0", got)
+	}
+	bJobsBefore := bJobs()
 
 	if code, raw := e.patchSemantic(false); code != http.StatusOK {
 		t.Fatalf("PATCH false = %d %s", code, raw)
@@ -1136,7 +1195,13 @@ func TestUserOffOpenAICompatReembedUserOnEnable(t *testing.T) {
 	}
 	bAfter, ok := e.vector(1, mxItem, userB, itemB)
 	if !ok || !bAfter.EmbeddedAt.Equal(bBefore.EmbeddedAt) || !bytes.Equal(bAfter.InputHash, bBefore.InputHash) {
-		t.Fatalf("user B's vector changed across A's off->on (present=%t)", ok)
+		t.Fatalf("user B's stale item vector changed across A's off->on (present=%t)", ok)
+	}
+	if _, ok := e.vector(1, mxTag, userB, tagB); ok {
+		t.Fatal("user B's missing tag vector was backfilled by A's off->on")
+	}
+	if got := bJobs(); got != bJobsBefore {
+		t.Fatalf("user B's embed jobs = %d, want %d (A's off->on must not enqueue for B)", got, bJobsBefore)
 	}
 }
 
@@ -1150,6 +1215,123 @@ func mxTargetJob(t *testing.T, pool *pgxpool.Pool, kind string, genID int, targe
 		t.Fatalf("queued %s job for generation %d: %v", kind, genID, err)
 	}
 	return user, hash
+}
+
+const (
+	// mxBarrierTimeout bounds one race scenario (the paused worker, the PATCH and the
+	// wait for the worker); mxHTTPTimeout bounds each HTTP exchange inside it;
+	// mxJoinTimeout bounds the cleanup join of the worker goroutine.
+	mxBarrierTimeout = 45 * time.Second
+	mxHTTPTimeout    = 20 * time.Second
+	mxJoinTimeout    = 15 * time.Second
+)
+
+// patchSemanticBounded is patchSemantic for the race barrier: the request carries
+// ctx and an HTTP client timeout (not http.DefaultClient) and failures are returned
+// instead of calling t.Fatal, so the caller always reaches its release path.
+func (e *mxEnv) patchSemanticBounded(ctx context.Context, on bool) (int, string, error) {
+	body := fmt.Sprintf(`{"semantic_suggest":%t}`, on)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, e.h.Server.URL+"/api/v1/me/settings", strings.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", e.h.Origin)
+	e.jar.Apply(req)
+	if c := e.jar[authhttp.CookieCSRF]; c != nil {
+		req.Header.Set(authhttp.HeaderCSRF, c.Value)
+	}
+	resp, err := (&http.Client{Timeout: mxHTTPTimeout}).Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	e.jar.Capture(resp)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, "", err
+	}
+	return resp.StatusCode, string(raw), nil
+}
+
+// mxOffBetweenProviderAndStep5 runs a real embed_tag worker for the openai_compat
+// generation (g2) of barrierID, pauses it between its provider answer (steps 1-4)
+// and step 5, commits the user's PATCH semantic_suggest=false, then lets step 5 run.
+// Every wait is bounded by one per-scenario context; the hook is context-aware; the
+// release is safe to call more than once; the worker is cancelled and joined on every
+// exit path (t.Cleanup), so a lock-order regression fails this test fast instead of
+// hanging the package until the global timeout.
+func mxOffBetweenProviderAndStep5(t *testing.T, e *mxEnv, barrierID uuid.UUID) {
+	t.Helper()
+	user, hash := mxTargetJob(t, e.pool, jobargs.KindEmbedTag, 2, barrierID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), mxBarrierTimeout)
+	defer cancel()
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var reachedOnce, releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+
+	deps := jobs.Dependencies{
+		Pool:      e.pool,
+		ClientSet: e.clientSet,
+		Inserter:  jobs.RiverClientInserter{Client: e.insert},
+		BeforeStep5Tx: func(hctx context.Context, _ string, genID int, target uuid.UUID) {
+			if genID != 2 || target != barrierID {
+				return
+			}
+			reachedOnce.Do(func() { close(reached) })
+			select {
+			case <-release:
+			case <-hctx.Done():
+			case <-ctx.Done():
+			}
+		},
+	}
+	finished := make(chan struct{})
+	var workerErr error // written before close(finished), read only after <-finished
+	go func() {
+		defer close(finished)
+		workerErr = jobs.NewEmbedTagWorker(deps).Work(ctx, &river.Job[jobargs.EmbedTagArgs]{
+			JobRow: &rivertype.JobRow{Attempt: 1},
+			Args:   jobargs.EmbedTagArgs{GenerationID: 2, UserID: user, TargetID: barrierID.String(), InputHash: hash},
+		})
+	}()
+	t.Cleanup(func() {
+		releaseWorker()
+		cancel()
+		timer := time.NewTimer(mxJoinTimeout)
+		defer timer.Stop()
+		select {
+		case <-finished:
+		case <-timer.C:
+			t.Error("the in-flight embed_tag worker did not stop after cancel")
+		}
+	})
+
+	select {
+	case <-reached:
+	case <-finished:
+		t.Fatalf("in-flight embed_tag worker returned before step 5 (err=%v)", workerErr)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for the embed_tag worker to reach step 5")
+	}
+	code, raw, err := e.patchSemanticBounded(ctx, false)
+	if err != nil {
+		t.Fatalf("PATCH false while an upsert is in flight: %v (PATCH must not wait for the paused worker)", err)
+	}
+	if code != http.StatusOK {
+		t.Fatalf("PATCH false while an upsert is in flight = %d %s", code, raw)
+	}
+	releaseWorker()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for the embed_tag worker to finish step 5")
+	}
+	if workerErr != nil {
+		t.Fatalf("in-flight embed_tag worker: %v", workerErr)
+	}
 }
 
 // TestUserOffMixedGenerations is BE-3: the policy follows the provider of the
@@ -1202,40 +1384,7 @@ func TestUserOffMixedGenerations(t *testing.T) {
 				// steps 1-4 (its document reached the provider), then the user turns off
 				// and commits, and only then does step 5 run.
 				barrierID := e.create(mxTag, "mixed-barrier-tag")
-				user, hash := mxTargetJob(t, e.pool, jobargs.KindEmbedTag, 2, barrierID)
-				reached := make(chan struct{})
-				release := make(chan struct{})
-				deps := jobs.Dependencies{
-					Pool:      e.pool,
-					ClientSet: e.clientSet,
-					Inserter:  jobs.RiverClientInserter{Client: e.insert},
-					BeforeStep5Tx: func(_ context.Context, _ string, genID int, target uuid.UUID) {
-						if genID == 2 && target == barrierID {
-							close(reached)
-							<-release
-						}
-					},
-				}
-				done := make(chan error, 1)
-				go func() {
-					done <- jobs.NewEmbedTagWorker(deps).Work(ctx, &river.Job[jobargs.EmbedTagArgs]{
-						JobRow: &rivertype.JobRow{Attempt: 1},
-						Args:   jobargs.EmbedTagArgs{GenerationID: 2, UserID: user, TargetID: barrierID.String(), InputHash: hash},
-					})
-				}()
-				select {
-				case <-reached:
-				case err := <-done:
-					t.Fatalf("in-flight embed_tag worker returned before step 5 (err=%v)", err)
-				}
-				if code, raw := e.patchSemantic(false); code != http.StatusOK {
-					close(release)
-					t.Fatalf("PATCH false while an upsert is in flight = %d %s", code, raw)
-				}
-				close(release)
-				if err := <-done; err != nil {
-					t.Fatalf("in-flight embed_tag worker: %v", err)
-				}
+				mxOffBetweenProviderAndStep5(t, e, barrierID)
 				if _, ok := e.vector(2, mxTag, e.userID, barrierID); ok {
 					t.Fatal("an upsert into the openai_compat generation committed after the user turned off (step 5 did not block it)")
 				}
