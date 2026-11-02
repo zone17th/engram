@@ -56,7 +56,7 @@ func WithOpenAIClock(now func() time.Time) OpenAICompatOption {
 // OpenAICompat implements Provider over an OpenAI-compatible /embeddings API
 // (ADR 0004, plan P05 mục 2.12, SPEC §4.4).
 type OpenAICompat struct {
-	endpoint        string
+	endpoint        Endpoint
 	apiKey          Secret
 	rawModel        string
 	fullModel       string
@@ -78,7 +78,7 @@ type OpenAICompat struct {
 // Security invariant: error messages returned here never include raw URLs or
 // API keys.
 func NewOpenAICompat(cfg ClientConfig, opts ...OpenAICompatOption) (*OpenAICompat, error) {
-	baseURL := strings.TrimSpace(cfg.BaseURL)
+	baseURL := strings.TrimSpace(cfg.BaseURL.Reveal())
 	if err := CheckURL(baseURL); err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func NewOpenAICompat(cfg ClientConfig, opts ...OpenAICompatOption) (*OpenAICompa
 		docTimeout = DefaultDocumentTimeout
 	}
 
-	endpoint := strings.TrimRight(baseURL, "/") + "/embeddings"
+	endpoint := NewEndpoint(strings.TrimRight(baseURL, "/") + "/embeddings")
 	p := &OpenAICompat{
 		endpoint:        endpoint,
 		apiKey:          apiKey,
@@ -268,7 +268,7 @@ func (p *OpenAICompat) doEmbed(ctx context.Context, op string, inputs []string, 
 		return nil, retErr
 	}
 
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, p.endpoint, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, p.endpoint.Reveal(), bytes.NewReader(reqBody))
 	if err != nil {
 		retErr = &ProviderError{
 			Class:  ClassRefused,

@@ -263,12 +263,84 @@ func (s Secret) LogValue() slog.Value {
 	return slog.StringValue(redactedMask)
 }
 
+// Endpoint holds a provider base or request URL in an opaque struct whose
+// formatting, JSON/text marshaling, and structured logging representations are
+// unconditionally redacted to "[redacted]". Storing the URL behind a pointer to
+// string (rather than a string-kind value) ensures that even when Go's
+// reflection-based fmt formatter reaches Endpoint through an unexported struct
+// field (where CanInterface() is false and custom Format/String/GoString
+// methods cannot be invoked), fmt prints only a pointer address at depth > 0
+// and never enumerates the raw URL bytes.
+//
+// Call Reveal() only at URL validation, request construction, or dial time.
+type Endpoint struct {
+	v *string
+}
+
+// NewEndpoint constructs an Endpoint from raw (trimming surrounding whitespace).
+// An empty or whitespace-only string produces the zero Endpoint (IsEmpty() == true).
+func NewEndpoint(raw string) Endpoint {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return Endpoint{}
+	}
+	return Endpoint{v: &s}
+}
+
+// Reveal returns the underlying raw URL string, or "" if empty.
+func (e Endpoint) Reveal() string {
+	if e.v == nil {
+		return ""
+	}
+	return *e.v
+}
+
+// IsEmpty reports whether the endpoint is empty.
+func (e Endpoint) IsEmpty() bool {
+	return e.v == nil || *e.v == ""
+}
+
+// String implements fmt.Stringer with a fixed redaction mask.
+func (e Endpoint) String() string {
+	return redactedMask
+}
+
+// GoString implements fmt.GoStringer so %#v never leaks the URL.
+func (e Endpoint) GoString() string {
+	return redactedMask
+}
+
+// Format implements fmt.Formatter so every verb (%v, %+v, %#v, %s, %q, %x, ...)
+// writes the redaction mask rather than the raw URL bytes.
+func (e Endpoint) Format(f fmt.State, verb rune) {
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(f, "%q", redactedMask)
+		return
+	}
+	_, _ = f.Write([]byte(redactedMask))
+}
+
+// MarshalJSON implements json.Marshaler with a fixed redaction mask.
+func (e Endpoint) MarshalJSON() ([]byte, error) {
+	return []byte(`"[redacted]"`), nil
+}
+
+// MarshalText implements encoding.TextMarshaler with a fixed redaction mask.
+func (e Endpoint) MarshalText() ([]byte, error) {
+	return []byte(redactedMask), nil
+}
+
+// LogValue implements slog.LogValuer with a fixed redaction mask.
+func (e Endpoint) LogValue() slog.Value {
+	return slog.StringValue(redactedMask)
+}
+
 // ClientConfig holds the configuration for a single embedding provider client
 // (primary or shadow). Its String and GoString methods redact APIKey and
 // BaseURL so formatting with %v / %+v / %#v never leaks secrets or full URLs.
 type ClientConfig struct {
 	Provider         string
-	BaseURL          string
+	BaseURL          Endpoint
 	APIKey           Secret
 	Model            string
 	Dims             int
@@ -281,7 +353,7 @@ type ClientConfig struct {
 
 func (c ClientConfig) redactedSummary() string {
 	keySet := !c.APIKey.IsEmpty()
-	urlSet := c.BaseURL != ""
+	urlSet := !c.BaseURL.IsEmpty()
 	return fmt.Sprintf(
 		"ClientConfig{Provider:%q, BaseURLSet:%t, APIKeySet:%t, Model:%q, Dims:%d, QueryTimeout:%s, DocumentTimeout:%s}",
 		c.Provider, urlSet, keySet, c.Model, c.Dims, c.QueryTimeout, c.DocumentTimeout,
@@ -329,7 +401,7 @@ func (c ClientConfig) MarshalJSON() ([]byte, error) {
 		DocumentTimeout string `json:"document_timeout"`
 	}{
 		Provider:        c.Provider,
-		BaseURLSet:      c.BaseURL != "",
+		BaseURLSet:      !c.BaseURL.IsEmpty(),
 		APIKeySet:       !c.APIKey.IsEmpty(),
 		Model:           c.Model,
 		Dims:            c.Dims,

@@ -55,9 +55,9 @@ func WithTEIClock(now func() time.Time) TEIOption {
 // TEI implements Provider over a Hugging Face Text Embeddings Inference server
 // (plan P05 mục 2.12, SPEC §4.4, §6.7).
 type TEI struct {
-	baseURL         string
-	infoURL         string
-	embedURL        string
+	baseURL         Endpoint
+	infoURL         Endpoint
+	embedURL        Endpoint
 	modelID         string
 	modelSHA        string
 	fullModel       string
@@ -86,7 +86,7 @@ type teiInfoResponse struct {
 // Security invariant: error messages never include raw URLs, headers, or
 // response bodies.
 func NewTEI(ctx context.Context, cfg ClientConfig, opts ...TEIOption) (*TEI, error) {
-	baseURL := strings.TrimSpace(cfg.BaseURL)
+	baseURL := strings.TrimSpace(cfg.BaseURL.Reveal())
 	if err := CheckURL(baseURL); err != nil {
 		return nil, err
 	}
@@ -105,9 +105,9 @@ func NewTEI(ctx context.Context, cfg ClientConfig, opts ...TEIOption) (*TEI, err
 
 	trimmedBase := strings.TrimRight(baseURL, "/")
 	p := &TEI{
-		baseURL:         trimmedBase,
-		infoURL:         trimmedBase + "/info",
-		embedURL:        trimmedBase + "/embed",
+		baseURL:         NewEndpoint(trimmedBase),
+		infoURL:         NewEndpoint(trimmedBase + "/info"),
+		embedURL:        NewEndpoint(trimmedBase + "/embed"),
 		dims:            cfg.Dims,
 		queryPrefix:     cfg.QueryPrefix,
 		docPrefix:       cfg.DocPrefix,
@@ -135,7 +135,7 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 	infoCtx, cancel := context.WithTimeout(ctx, p.documentTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(infoCtx, http.MethodGet, p.infoURL, nil)
+	req, err := http.NewRequestWithContext(infoCtx, http.MethodGet, p.infoURL.Reveal(), nil)
 	if err != nil {
 		return &ProviderError{
 			Class:  ClassRefused,
@@ -323,7 +323,7 @@ func (p *TEI) doEmbed(ctx context.Context, op string, inputs []string, timeout t
 		return nil, retErr
 	}
 
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, p.embedURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, p.embedURL.Reveal(), bytes.NewReader(reqBody))
 	if err != nil {
 		retErr = &ProviderError{
 			Class:  ClassRefused,

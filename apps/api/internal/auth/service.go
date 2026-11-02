@@ -144,7 +144,7 @@ func ConfigProbe(cfg *config.Config) SemanticProbe {
 		return staticProbe(false)
 	}
 	return &runtimeSemanticProbe{
-		endpoint: strings.TrimRight(cfg.TEIURL, "/") + "/health",
+		endpoint: strings.TrimRight(cfg.TEIURL.Reveal(), "/") + "/health",
 		client: &http.Client{
 			Timeout: semanticProbeTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
