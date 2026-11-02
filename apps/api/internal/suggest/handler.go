@@ -37,7 +37,9 @@ type Handler struct {
 // `httpx.Deps.Logger` when none was set, so NewHandler and the compose call sites stay unchanged.
 func (h *Handler) SetLogger(l *slog.Logger) {
 	h.logger.Store(l)
-	h.svc.setLogger(l)
+	if h.svc != nil { // a zero Handler (tests, partial wiring) has no Service to forward to
+		h.svc.setLogger(l)
+	}
 }
 
 const (

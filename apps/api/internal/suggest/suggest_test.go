@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -189,6 +190,24 @@ func (e *suggestTestEnv) doSuggestSettled(token string, params url.Values) *http
 			e.t.Fatalf("doSuggestSettled: still lexical_partial=%v after %d asks", body.LexicalPartial, ask)
 		}
 	}
+}
+
+func suggestItemsContain(items []suggest.SuggestItem, id uuid.UUID) bool {
+	for _, it := range items {
+		if it.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func suggestTagsContain(tags []suggest.SuggestTag, id uuid.UUID) bool {
+	for _, tg := range tags {
+		if tg.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // validateSuggestResponseOpenAPIShape strictly validates the raw JSON bytes of a 200
@@ -1615,6 +1634,44 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 			})
 			respOn := validateSuggestResponseOpenAPIShape(t, recOn)
 
+			// Positive lexical rows on BOTH responses (RV-SB2-BE-2). Equality alone would pass a
+			// complete-empty result (`lexical_partial: []`, no rows) on both sides, so every
+			// (scope, limit) must also return the fixture's wifi rows. The seed fixes them: u1
+			// owns items "wifi" and "wifi phòng khách" and tags "wifi-khách" and "wifi-nhà", all
+			// exact-prefix hits that fit every quota cell.
+			limitN, convErr := strconv.Atoi(limitStr)
+			if convErr != nil {
+				t.Fatalf("limit %q: %v", limitStr, convErr)
+			}
+			cell, ok := suggest.LookupQuotaCell(scope, limitN)
+			if !ok {
+				t.Fatalf("(%s,%s) no quota cell", scope, limitStr)
+			}
+			for label, resp := range map[string]suggest.SuggestResponse{"semantic=0": respOff, "semantic=1": respOn} {
+				if len(resp.LexicalPartial) != 0 {
+					t.Fatalf("(%s,%s) %s lexical_partial = %v, want none", scope, limitStr, label, resp.LexicalPartial)
+				}
+				if (scope == suggest.ScopeTag && len(resp.Items) != 0) || (scope == suggest.ScopeItem && len(resp.Tags) != 0) {
+					t.Fatalf("(%s,%s) %s returned rows of the wrong corpus: items=%d tags=%d", scope, limitStr, label, len(resp.Items), len(resp.Tags))
+				}
+				if scope != suggest.ScopeTag {
+					if len(resp.Items) == 0 || len(resp.Items) > cell.LexMax {
+						t.Fatalf("(%s,%s) %s items = %d, want 1..%d wifi items (complete-empty lexical result?)", scope, limitStr, label, len(resp.Items), cell.LexMax)
+					}
+					if !suggestItemsContain(resp.Items, lexDupItemID) {
+						t.Fatalf("(%s,%s) %s items %+v lack the fixture item %s", scope, limitStr, label, resp.Items, lexDupItemID)
+					}
+				}
+				if scope != suggest.ScopeItem {
+					if len(resp.Tags) == 0 || len(resp.Tags) > cell.LexMax {
+						t.Fatalf("(%s,%s) %s tags = %d, want 1..%d wifi tags (complete-empty lexical result?)", scope, limitStr, label, len(resp.Tags), cell.LexMax)
+					}
+					if !suggestTagsContain(resp.Tags, lexDupTagID) {
+						t.Fatalf("(%s,%s) %s tags %+v lack the fixture tag %s", scope, limitStr, label, resp.Tags, lexDupTagID)
+					}
+				}
+			}
+
 			tagsOffJSON, _ := json.Marshal(respOff.Tags)
 			tagsOnJSON, _ := json.Marshal(respOn.Tags)
 			if !bytes.Equal(tagsOffJSON, tagsOnJSON) {
@@ -2053,4 +2110,70 @@ func TestSuggestBranchTimeoutPartial(t *testing.T) {
 			t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want %v", afterTag2, beforeTag+1)
 		}
 	})
+}
+
+// delayTxStarter delays BeginTx (the stand-in for a slow pool acquire: pool wait, dial, handshake)
+// and then delegates to the REAL pool, so the transaction, the SET LOCALs and the query run on a
+// real pgx connection. The wait aborts if the setup context ends first.
+type delayTxStarter struct {
+	inner suggest.TxStarter
+	delay time.Duration
+	begun atomic.Int32
+}
+
+func (d *delayTxStarter) BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error) {
+	d.begun.Add(1)
+	timer := time.NewTimer(d.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return d.inner.BeginTx(ctx, opts)
+}
+
+// TestSuggestSlowAcquireRealDBStillReturnsLexicalRows is the real-driver regression of FU-SB-2
+// (RV-SB2-BE-3): BeginTx takes 120 ms, longer than the whole 50 ms query budget, and then hands a
+// real pgx transaction to the branch. Before the fix the 50 ms context also covered acquire+BEGIN,
+// so each branch expired before its query ran and returned `lexical_partial` with no rows. Now
+// setup has its own bound and the query gets a fresh 50 ms, so the real SET LOCAL and the real
+// query still return the fixture rows and nothing is partial.
+//
+// The query path is warmed with one normal settled request first, so a cold first Parse/plan (the
+// FU-SB-2b residual owned by Task 23) is not the condition under test. There is deliberately no
+// elapsed-time ceiling: the assertions are on rows, `lexical_partial` and the begin count.
+func TestSuggestSlowAcquireRealDBStillReturnsLexicalRows(t *testing.T) {
+	dsn := startTestDB(t) // skips under -short like the other DB tests
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	_, users := loadAndSeedCorpus(t, ctx, pool)
+	env := newSuggestTestEnv(t, pool)
+	env.auth.addToken("tok-u1", users["u1"])
+
+	params := url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}}
+	warm := validateSuggestResponseOpenAPIShape(t, env.doSuggestSettled("tok-u1", params))
+	if len(warm.Items) == 0 || len(warm.Tags) == 0 {
+		t.Fatalf("warm-up returned no lexical rows: items=%d tags=%d", len(warm.Items), len(warm.Tags))
+	}
+
+	slow := &delayTxStarter{inner: pool, delay: 120 * time.Millisecond}
+	env.svc.SetTxStarter(slow)
+	rec := env.doSuggest("tok-u1", params)
+	resp := validateSuggestResponseOpenAPIShape(t, rec)
+
+	if got := slow.begun.Load(); got < 2 {
+		t.Fatalf("delayed BeginTx calls = %d, want >= 2 (one per lexical branch)", got)
+	}
+	if len(resp.LexicalPartial) != 0 {
+		t.Fatalf("lexical_partial = %v after a 120 ms acquire, want none: setup must not spend the 50 ms query budget", resp.LexicalPartial)
+	}
+	if !suggestItemsContain(resp.Items, uuid.MustParse("00000000-0001-4000-8000-000000000009")) {
+		t.Fatalf("items %+v lack the fixture item \"wifi\"", resp.Items)
+	}
+	if !suggestTagsContain(resp.Tags, uuid.MustParse("00000000-0011-4000-8000-000000000001")) {
+		t.Fatalf("tags %+v lack the fixture tag \"wifi-khách\"", resp.Tags)
+	}
 }
