@@ -25,6 +25,10 @@ import {
 import { setKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import * as contentApi from '@/lib/api/content';
 import type { EntryEnvelopeV1, EntryMeta, ItemSummary, Tag } from '@/lib/api/content';
+import * as searchApi from '@/lib/api/search';
+import type { SuggestResponse } from '@/lib/api/search';
+import { buildSuggestQueryKey } from '@/features/omnibox/suggest/query-keys';
+import { getSessionEpoch } from '@/lib/api/auth-fetch';
 import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import {
   commitAuthenticatedUser,
@@ -202,6 +206,100 @@ function renderOmnibox(
     ),
   };
 }
+function makeEmptySuggestResponse(
+  overrides: Partial<SuggestResponse> = {},
+): SuggestResponse {
+  return {
+    scope: 'all',
+    limit: 8,
+    mode: 'full',
+    quota: { tag: 3, lexical: 6, near: 2 },
+    tags: [],
+    items: [],
+    has_more: false,
+    lexical_partial: [],
+    semantic: false,
+    semantic_reason: 'disabled_server',
+    near: [],
+    generation: null,
+    ...overrides,
+  };
+}
+
+function dispatchNativeTextEdit(
+  textarea: HTMLElement,
+  params: {
+    readonly inputType: string;
+    readonly data?: string | null;
+    readonly nextValue: string;
+    readonly isComposing?: boolean;
+  },
+) {
+  const el = textarea as HTMLTextAreaElement;
+  el.dispatchEvent(
+    new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: params.inputType,
+      data: params.data ?? null,
+      isComposing: params.isComposing ?? false,
+    }),
+  );
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'value',
+  )?.set;
+  setter?.call(el, params.nextValue);
+  el.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      inputType: params.inputType,
+      data: params.data ?? null,
+      isComposing: params.isComposing ?? false,
+    }),
+  );
+}
+
+function typeNativeString(textarea: HTMLElement, text: string) {
+  const el = textarea as HTMLTextAreaElement;
+  for (const ch of text) {
+    dispatchNativeTextEdit(el, {
+      inputType: 'insertText',
+      data: ch,
+      nextValue: el.value + ch,
+      isComposing: false,
+    });
+  }
+}
+
+function delayMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+// RV-T17-1-FE2-1: a long synchronous run of native edits never yields to React's scheduler, so pending passive-effect
+// work keeps `nestedUpdateCount` climbing until React throws "Maximum update depth exceeded" (limit 50). Real typing
+// yields between keystrokes; tests that dispatch many edits must do the same (real timers, ~0 ms, far below the
+// 120 ms suggest debounce).
+async function yieldToReact(): Promise<void> {
+  await act(async () => {
+    await delayMs(0);
+  });
+}
+
+// Types `text` rune by rune like `typeNativeString`, yielding to React every `chunkSize` runes and once at the end.
+async function typeNativeStringYielding(
+  textarea: HTMLElement,
+  text: string,
+  chunkSize = 20,
+): Promise<void> {
+  const runes = Array.from(text);
+  for (let i = 0; i < runes.length; i += chunkSize) {
+    typeNativeString(textarea, runes.slice(i, i + chunkSize).join(''));
+    await yieldToReact();
+  }
+}
 
 describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and lock reset', () => {
   beforeEach(() => {
@@ -220,30 +318,70 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     userChangedTesting.resetCommittedUserForTests();
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(makeEmptySuggestResponse());
+    vi.spyOn(searchApi, 'search').mockResolvedValue({
+      scope: 'all',
+      limit: 20,
+      mode: 'full',
+      items: [],
+      tags: [],
+      next_cursor: null,
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    });
   });
 
-  it('shows searchHint in search mode (mentioning Ctrl+Enter and server plaintext), tagHint in #… mode, and no hint in add mode', () => {
+  it('shows search.help.sentToServer help copy in search mode (with tainted enterToSearch variant), tagHint in #… mode, and no hint in add mode', () => {
     const itemsSpy = vi.spyOn(contentApi, 'itemsList');
     const tagsSpy = vi.spyOn(contentApi, 'tagsList');
     const createSpy = vi.spyOn(contentApi, 'itemCreate');
 
-    renderOmnibox();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    // semantic_external: false -> search.help.sentToServer
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
+      user: { id: USER_A_ID },
+      settings: { semantic_suggest: false },
+      features: { semantic_available: false, semantic_external: false },
+    });
+
+    renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
     const hint = screen.getByTestId('omnibox-hint');
 
     // Empty input -> hint hidden
     expect(hint).toHaveAttribute('hidden');
 
-    // Search mode -> searchHint visible, mentions Ctrl+Enter and server/unencrypted, and renders mono span (HM18A-R1-10)
-    fireEvent.change(textarea, { target: { value: 'wifi' } });
+    // Clean typed search mode -> search.help.sentToServer visible, renders mono `tên:` span
+    typeNativeString(textarea, 'wifi');
     expect(hint).not.toHaveAttribute('hidden');
-    expect(hint).toHaveTextContent(/Ctrl\+Enter/);
-    expect(hint).toHaveTextContent(/gửi tới máy chủ, không mã hoá/);
-    expect(hint.querySelector('span.mono')?.textContent).toBe('tên: nội dung');
+    expect(hint).toHaveTextContent(
+      'Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ tên: trước.',
+    );
+    expect(hint.querySelector('span.mono')?.textContent).toBe('tên:');
     expect(hint.textContent).not.toContain('`');
 
-    // Tag filter mode (#…) -> tagHint visible, Ctrl+Enter does nothing; 0 cached tags renders no empty role="listbox" (HM18A-R1-9)
-    fireEvent.change(textarea, { target: { value: '#nhà' } });
+    // Clear and test tainted input (insertFromPaste) -> search.help.enterToSearch
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'deleteWordBackward',
+      nextValue: '',
+    });
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromPaste',
+      data: 'pasted-query',
+      nextValue: 'pasted-query',
+    });
+    expect(hint).not.toHaveAttribute('hidden');
+    expect(hint).toHaveTextContent(viMessages.search.help.enterToSearch);
+    // Clear and test tag filter mode (#…) with clean typing -> tagHint visible, Ctrl+Enter does nothing; 0 cached tags renders no empty role="listbox" (HM18A-R1-9)
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'deleteWordBackward',
+      nextValue: '',
+    });
+    typeNativeString(textarea, '#nhà');
     expect(hint).not.toHaveAttribute('hidden');
     expect(hint).toHaveTextContent(viMessages.content.omnibox.tagHint);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -305,21 +443,98 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(textarea).not.toHaveAttribute('aria-activedescendant');
   });
 
-  it('sends 0 requests while typing; Enter opens listbox without changing URL; second Enter searches again; ArrowDown + Enter opens item; editing closes listbox; live region announces count', async () => {
+  it('sends 0 requests for tainted, colon-locked, add-mode, or multi-line input, while clean typing sends /suggest after debounce; Enter opens listbox without changing URL; second Enter searches again; ArrowDown + Enter opens item; editing closes listbox; live region announces count', async () => {
     const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
       items: [ITEM_WIFI, ITEM_WIFI_GUEST],
       next_cursor: null,
     });
+    const suggestSpy = vi
+      .spyOn(searchApi, 'suggest')
+      .mockResolvedValue(makeEmptySuggestResponse());
 
     renderOmnibox();
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
-    // Typing -> 0 requests
-    fireEvent.change(textarea, { target: { value: 'w' } });
-    fireEvent.change(textarea, { target: { value: 'wi' } });
-    fireEvent.change(textarea, { target: { value: 'wifi' } });
+    // Tainted input (insertFromPaste, insertFromDrop, historyUndo after setDraft, type-then-paste),
+    // colon-locked (ASCII `:`, U+FF1A `：`, `http://x`), add mode, multi-line (`insertLineBreak`), and > 200 runes -> 0 requests (RV-T17-1-FE1-4)
+    // RV-T17-1-FE2-1: yield to React after every case (`clearToEmpty` yields) and every <= 20 runes of the long draft,
+    // so the burst of native edits never trips React's nested-update limit. Every blocked draft is kept.
+    const clearToEmpty = async () => {
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      await yieldToReact();
+    };
+
+    // RV-T17-1-FE3-1: a real user's textarea already has focus when Esc arrives, so `handleDiscardDraft` -> `focus()` is a
+    // no-op there. Focus it here first (the legitimate focus-on-empty `recent` /suggest, which carries no draft text), wait
+    // for that single call, then reset the spy so the "0 requests" window below only sees draft-driven traffic.
+    act(() => {
+      textarea.focus();
+    });
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(suggestSpy.mock.calls[0]?.[0]).not.toHaveProperty('q');
+    suggestSpy.mockClear();
+
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromPaste',
+      data: 'pasted-tainted',
+      nextValue: 'pasted-tainted',
+    });
+    await clearToEmpty();
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromDrop',
+      data: 'dropped-secret',
+      nextValue: 'dropped-secret',
+    });
+    await clearToEmpty();
+    typeNativeString(textarea, 'ab');
+    fireEvent.keyDown(textarea, { key: 'Escape' }); // clears via setDraft('')
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'historyUndo',
+      nextValue: 'ab',
+    });
+    await clearToEmpty();
+    typeNativeString(textarea, 'wi');
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromPaste',
+      data: 'fi-secret',
+      nextValue: 'wifi-secret',
+    });
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'http://x');
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'wifi： mật khẩu');
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'wifi: secret');
+    await clearToEmpty();
+    typeNativeString(textarea, 'line1');
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertLineBreak',
+      data: '\n',
+      nextValue: 'line1\n',
+    });
+    typeNativeString(textarea, 'line2');
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'a'.repeat(201));
+    await delayMs(160);
+    expect(suggestSpy).not.toHaveBeenCalled();
     expect(itemsSpy).not.toHaveBeenCalled();
 
+    // Clear to reset taint/colon lock, then clean typing -> sends /suggest after 120ms debounce
+    await clearToEmpty();
+    suggestSpy.mockClear();
+    typeNativeString(textarea, 'wifi');
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'wifi', scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+    });
+    expect(itemsSpy).not.toHaveBeenCalled();
     // First Enter -> GET /items?sort=alpha&q=wifi, URL unchanged, live region announces 2 results
     fireEvent.keyDown(textarea, { key: 'Enter' });
     const listbox = await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
@@ -654,9 +869,10 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(textarea).toHaveValue('changed-after-tag-enter');
   });
 
-  it('clears textarea, closes listbox, clears live region, and removes seeded search queries from QueryCache on vault lock (P4FE3-5, P4FE4-8, HM18A-R1-7, HM18A-R2-6)', async () => {
+  it('clears textarea, closes listbox, clears live region, and removes seeded search queries (including ["search", ...]) from QueryCache on vault lock (P4FE3-5, P4FE4-8, HM18A-R1-7, HM18A-R2-6, L4)', async () => {
     const secretQuery = 'pasted-secret-token-7788';
     const seededSecretQuery = 'seeded-cache-secret-8899';
+    const seededP05SuggestQuery = 'seeded-p05-suggest-secret-9900';
     vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
       items: [],
       next_cursor: null,
@@ -665,10 +881,21 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: Infinity } },
     });
-    // Seed a search query key with infinite gcTime so only `removeQueries` on lock can purge it (HM18A-R1-7)
+    // Seed both a P04 content search key and a P05 `['search', ...]` key with infinite gcTime
     const seededKey = contentQueryKeys.items({ sort: 'alpha', q: seededSecretQuery });
     queryClient.setQueryData(seededKey, { items: [ITEM_WIFI], next_cursor: null });
+    const seededSearchKey = buildSuggestQueryKey({
+      userId: USER_A_ID,
+      scope: 'all',
+      limit: 8,
+      requestMode: 'lex',
+      semanticSuggestSetting: false,
+      generationId: null,
+      qn: seededP05SuggestQuery,
+    })!;
+    queryClient.setQueryData(seededSearchKey, makeEmptySuggestResponse());
     expect(queryClient.getQueryCache().find({ queryKey: seededKey })).toBeDefined();
+    expect(queryClient.getQueryCache().find({ queryKey: seededSearchKey })).toBeDefined();
 
     const { container } = renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
@@ -679,7 +906,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
     expect(container.textContent).toContain(secretQuery);
 
-    // Lock the vault -> synchronous reset runs and `removeQueries` purges all omnibox search keys
+    // Lock the vault -> synchronous reset runs and `removeQueries` purges all omnibox search keys (both `['content', ...]` and `['search', ...]`)
     act(() => {
       triggerVaultLockReset();
     });
@@ -688,25 +915,42 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(screen.getByTestId('omnibox-live')).toHaveTextContent('');
     expect(container.innerHTML).not.toContain(secretQuery);
-    assertNoPlaintextAttrs(container, [secretQuery, seededSecretQuery], { locked: true });
+    assertNoPlaintextAttrs(
+      container,
+      [secretQuery, seededSecretQuery, seededP05SuggestQuery],
+      { locked: true },
+    );
     expect(queryClient.getQueryCache().find({ queryKey: seededKey })).toBeUndefined();
+    expect(queryClient.getQueryCache().find({ queryKey: seededSearchKey })).toBeUndefined();
 
-    // Verify every QueryCache key and state is free of both search strings
+    // Verify every QueryCache key and state is free of all search strings
     const allQueries = queryClient.getQueryCache().getAll();
     const serializedCache = JSON.stringify(
       allQueries.map((q) => ({ key: q.queryKey, data: q.state.data })),
     );
     expect(serializedCache).not.toContain(secretQuery);
     expect(serializedCache).not.toContain(seededSecretQuery);
+    expect(serializedCache).not.toContain(seededP05SuggestQuery);
   });
 
-  it('discards in-flight search and in-flight Ctrl+Enter itemCreate when the vault locks so nothing opens, shows a toast, or appears in the DOM after lock (HM18A-R2-6)', async () => {
+  it('discards in-flight search, in-flight suggest, and in-flight Ctrl+Enter itemCreate when the vault locks so nothing opens, shows a toast, or appears in the DOM after lock (HM18A-R2-6, L4)', async () => {
     const inFlightQuery = 'in-flight-lock-query-6611';
+    const inFlightSuggestName = 'in-flight-lock-suggest-5500';
     const inFlightCreateName = 'in-flight-lock-create-7722';
 
     const { promise: heldSearch, resolve: resolveHeldSearch } =
       Promise.withResolvers<contentApi.ItemList>();
     const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldSearch);
+
+    let capturedSuggestSignal: AbortSignal | undefined;
+    const { promise: heldSuggest, resolve: resolveHeldSuggest } =
+      Promise.withResolvers<SuggestResponse>();
+    const suggestSpy = vi
+      .spyOn(searchApi, 'suggest')
+      .mockImplementation((_params, opts) => {
+        capturedSuggestSignal = opts?.signal;
+        return heldSuggest;
+      });
 
     const { promise: heldCreate, resolve: resolveHeldCreate } =
       Promise.withResolvers<ItemSummary>();
@@ -718,8 +962,13 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     const { container } = renderOmnibox(<Omnibox />, { queryClient });
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
-    // 1. Start search (`GET /items?q=`), then lock while the search promise is still in flight
-    fireEvent.change(textarea, { target: { value: inFlightQuery } });
+    // 1. Start keystroke suggest (`GET /suggest`) and Enter search (`GET /items?q=`), then lock while both are in flight
+    typeNativeString(textarea, inFlightQuery);
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(capturedSuggestSignal?.aborted).toBe(false);
+
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(itemsSpy).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -728,8 +977,26 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       triggerVaultLockReset();
     });
     expect(textarea).toHaveValue('');
+    expect(capturedSuggestSignal?.aborted).toBe(true);
 
     await act(async () => {
+      resolveHeldSuggest(
+        makeEmptySuggestResponse({
+          items: [
+            {
+              kind: 'item',
+              id: ITEM_WIFI.id,
+              name: inFlightSuggestName,
+              entry_count: 1,
+              created_at: ITEM_WIFI.created_at,
+              last_used_at: ITEM_WIFI.last_used_at,
+              tags: [],
+              tag_total: 0,
+              match: 'prefix',
+            },
+          ],
+        }),
+      );
       resolveHeldSearch({
         items: [{ ...ITEM_WIFI, name: inFlightQuery }],
         next_cursor: null,
@@ -737,12 +1004,13 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       await Promise.resolve();
     });
 
-    // Nothing opens or shows afterwards
+    // Nothing opens or shows afterwards, and ['search'] cache stays empty
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(screen.getByTestId('omnibox-live')).toHaveTextContent('');
     expect(container.innerHTML).not.toContain(inFlightQuery);
-    assertNoPlaintextAttrs(container, [inFlightQuery], { locked: true });
-
+    expect(container.innerHTML).not.toContain(inFlightSuggestName);
+    expect(queryClient.getQueryCache().findAll({ queryKey: ['search'] })).toEqual([]);
+    assertNoPlaintextAttrs(container, [inFlightQuery, inFlightSuggestName], { locked: true });
     // 2. Unlock, start `Ctrl+Enter` itemCreate (`POST /items`), then lock while the create promise is still in flight
     triggerVaultUnlock();
     fireEvent.change(textarea, { target: { value: inFlightCreateName } });
@@ -795,13 +1063,16 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     fireEvent.change(textarea, { target: { value: '#op' } });
     expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #op');
 
-    fireEvent.change(textarea, { target: { value: 'router' } });
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'deleteWordBackward',
+      nextValue: '',
+    });
+    typeNativeString(textarea, 'router');
     const hint = screen.getByTestId('omnibox-hint');
     expect(hint).toHaveTextContent(
-      'Enter: search by name prefix · Ctrl+Enter: create item with this name — typed text is sent to the server, not encrypted. To save content, type name: content',
+      'Text you type to search is sent to the server, and to an external embedding service when ≈ is on, not encrypted. To save content, type name: first.',
     );
-    expect(hint.querySelector('span.mono')?.textContent).toBe('name: content');
-
+    expect(hint.querySelector('span.mono')?.textContent).toBe('name:');
     fireEvent.keyDown(textarea, { key: 'Enter' });
     await screen.findByRole('listbox', { name: 'Search results' });
     expect(
@@ -841,6 +1112,19 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
     document.cookie = 'sabk_csrf=v1.sess.test; path=/';
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(makeEmptySuggestResponse());
+    vi.spyOn(searchApi, 'search').mockResolvedValue({
+      scope: 'all',
+      limit: 20,
+      mode: 'full',
+      items: [],
+      tags: [],
+      next_cursor: null,
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    });
   });
 
   function makeEntryMeta(itemId: string, entryId: string, position = 0): EntryMeta {
@@ -2342,7 +2626,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       defaultOptions: { queries: { retry: false } },
     });
     // Seed the real epoch-keyed `['auth', 'me', sessionEpoch]` entry used by `SessionProvider`
-    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
     recordLockClearedNotice({ userId: USER_A_ID, kind: 'plan' });
@@ -2412,7 +2696,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
 
@@ -2538,7 +2822,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
 
@@ -2572,6 +2856,587 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       itemId: ITEM_WIFI_GUEST.id,
       itemName: ITEM_WIFI_GUEST.name,
       source: 'entry',
+    });
+  });
+  describe('P05-T17 PR 17-1 — send-gate wiring, setDraft/syncOwnWrite, composition, and lock reset', () => {
+    beforeEach(() => {
+      vi.spyOn(searchApi, 'suggest').mockResolvedValue(makeEmptySuggestResponse());
+      vi.spyOn(searchApi, 'search').mockResolvedValue({
+        scope: 'all',
+        limit: 20,
+        mode: 'full',
+        items: [],
+        tags: [],
+        next_cursor: null,
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      });
+    });
+
+    it('keystroke suggest after typed input only', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      // Enable both semantic_available and semantic_suggest so >= 3 runes fires semantic=0 and semantic=1 on the same tick
+      queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
+        user: { id: USER_A_ID },
+        settings: { semantic_suggest: true },
+        features: { semantic_available: true, semantic_external: false },
+      });
+
+      renderOmnibox(<Omnibox />, { queryClient });
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      // Paste via insertFromPaste -> 0 requests
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: 'pasted-secret',
+        nextValue: 'pasted-secret',
+      });
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      // Clear to '', then type 2 runes ('wi') -> only semantic=0 after 120ms debounce
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'wi');
+      // RV-T17-1-FE2-3: fail clearly if the seeded `Me` is not the one the hook reads (semantic_external: false ->
+      // `search.help.sentToServer`; a missed read would default to `sentToServerExternal` and drop the semantic=1 leg).
+      expect(screen.getByTestId('omnibox-hint')).toHaveTextContent('gửi tới máy chủ, không mã hoá');
+      expect(screen.getByTestId('omnibox-hint')).not.toHaveTextContent('dịch vụ nhúng bên ngoài');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'wi', scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+
+      // Type 3rd rune ('f' -> 'wif') -> fires both semantic=0 and semantic=1 on the same debounce tick
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'f');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(2);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'wif', scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'wif', scope: 'all', semantic: 1 }),
+        expect.anything(),
+      );
+    });
+
+    it('native beforeinput listener reads inputType', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+      const hint = screen.getByTestId('omnibox-hint');
+
+      // Multi-grapheme insertText (Gboard clipboard chip / keyboard suggestion tap) taints via native beforeinput/input
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertText',
+        data: 'wifi',
+        nextValue: 'wifi',
+      });
+      expect(hint).toHaveTextContent(viMessages.search.help.enterToSearch);
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      // Clear, then dispatch insertReplacementText (autocorrect) -> taints
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertReplacementText',
+        data: 'router',
+        nextValue: 'router',
+      });
+      expect(hint).toHaveTextContent(viMessages.search.help.enterToSearch);
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      // Clear, then single-grapheme insertText -> untainted, sends /suggest
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      typeNativeString(textarea, 'ok');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'ok', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('no request while composing; send after compositionend', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertCompositionText',
+        data: 'dduowngf',
+        nextValue: 'dduowngf',
+        isComposing: true,
+      });
+
+      // Wait longer than 120ms debounce while still composing -> 0 requests (intermediate Telex string never leaves browser)
+      await delayMs(180);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      // Commit composition (`compositionend`) -> restarts 120ms debounce and sends committed text
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertCompositionText',
+        data: 'đường',
+        nextValue: 'đường',
+        isComposing: true,
+      });
+      textarea.dispatchEvent(
+        new CompositionEvent('compositionend', { bubbles: true, data: 'đường' }),
+      );
+
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'đường', scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain('dduowngf');
+    });
+
+    it('lock mid-suggest drops late response and clears [\'search\']', async () => {
+      const lateSecretName = 'late-suggest-after-lock-9191';
+      let capturedSignal: AbortSignal | undefined;
+      const { promise: heldSuggest, resolve: resolveHeldSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockImplementation((_params, opts) => {
+          capturedSignal = opts?.signal;
+          return heldSuggest;
+        });
+
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+      });
+      const preSeededKey = buildSuggestQueryKey({
+        userId: USER_A_ID,
+        scope: 'all',
+        limit: 8,
+        requestMode: 'lex',
+        semanticSuggestSetting: false,
+        generationId: null,
+        qn: 'cached-before-lock',
+      })!;
+      queryClient.setQueryData(preSeededKey, makeEmptySuggestResponse());
+      expect(queryClient.getQueryCache().find({ queryKey: preSeededKey })).toBeDefined();
+
+      renderOmnibox(<Omnibox />, { queryClient });
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      typeNativeString(textarea, 'wifi');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(capturedSignal?.aborted).toBe(false);
+
+      // Lock vault mid-suggest
+      act(() => {
+        triggerVaultLockReset();
+      });
+      expect(capturedSignal?.aborted).toBe(true);
+      expect(queryClient.getQueryCache().findAll({ queryKey: ['search'] })).toEqual([]);
+
+      // Resolve the held suggest promise after lock -> must be dropped and never cached or rendered
+      await act(async () => {
+        resolveHeldSuggest(
+          makeEmptySuggestResponse({
+            items: [
+              {
+                kind: 'item',
+                id: ITEM_WIFI.id,
+                name: lateSecretName,
+                entry_count: 1,
+                created_at: ITEM_WIFI.created_at,
+                last_used_at: ITEM_WIFI.last_used_at,
+                tags: [],
+                tag_total: 0,
+                match: 'prefix',
+              },
+            ],
+          }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(queryClient.getQueryCache().findAll({ queryKey: ['search'] })).toEqual([]);
+    });
+
+    it('save clear then type → first typed char untainted, /suggest sent', async () => {
+      vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+        items: [ITEM_WIFI],
+        total: 1,
+        next_cursor: null,
+      });
+      vi.spyOn(contentApi, 'entryCreate').mockImplementation(async (itemId, body) =>
+        makeEntryMeta(itemId, body.id),
+      );
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      // Save an entry via quick-add (which clears the omnibox via setDraft(''))
+      fireEvent.change(textarea, { target: { value: 'wifi: secret-to-save' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await screen.findByTestId('undo-toast-item');
+      expect(textarea).toHaveValue('');
+
+      // Type a single character -> untainted, /suggest sent
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'w');
+      const hint = screen.getByTestId('omnibox-hint');
+      expect(hint).not.toHaveTextContent(viMessages.search.help.enterToSearch);
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'w', scope: 'all', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('Esc clear then type → untainted', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      // Paste text (tainted), then press Escape to clear via setDraft('')
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: 'pasted-draft',
+        nextValue: 'pasted-draft',
+      });
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+      expect(textarea).toHaveValue('');
+
+      // Type a character -> untainted, /suggest sent
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'a');
+      expect(screen.getByTestId('omnibox-hint')).not.toHaveTextContent(
+        viMessages.search.help.enterToSearch,
+      );
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'a', scope: 'all', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('Tab on tag then type → not tainted by (d)', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      });
+      queryClient.setQueryData(contentQueryKeys.tags({ sort: 'recent' }), {
+        items: [TAG_NHA, TAG_OPS],
+        next_cursor: null,
+      });
+
+      renderOmnibox(<Omnibox />, { queryClient });
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      // Type `#nh` cleanly -> cached tag `#nhà` is shown and active
+      typeNativeString(textarea, '#nh');
+      expect(screen.getByRole('listbox', { name: 'Kết quả lọc tag' })).toBeInTheDocument();
+
+      // When listbox is closed via Escape, Tab is default (does not preventDefault or trap focus — RV-T17-1-FE1-5)
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+      const tabWhenClosed = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      });
+      textarea.dispatchEvent(tabWhenClosed);
+      expect(tabWhenClosed.defaultPrevented).toBe(false);
+      expect(textarea).toHaveValue('#nh');
+
+      // Re-open tag-filter listbox with active row, then press Tab -> fills `#nhà ` via setDraft() -> syncOwnWrite()
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      typeNativeString(textarea, '#nh');
+      expect(screen.getByRole('listbox', { name: 'Kết quả lọc tag' })).toBeInTheDocument();
+      fireEvent.keyDown(textarea, { key: 'Tab' });
+      expect(textarea).toHaveValue('#nhà ');
+
+      // Type another character -> not tainted by rule 1(d)!
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'x');
+      expect(textarea).toHaveValue('#nhà x');
+      expect(screen.getByTestId('omnibox-hint')).toHaveTextContent(
+        viMessages.content.omnibox.tagHint,
+      );
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'nhà', scope: 'tag', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('programmatic foreign `.value` write (not via setDraft) still taints', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+
+      // Type 'ab' cleanly so gate state has value='ab' and prevValue='ab'
+      typeNativeString(textarea, 'ab');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'ab', scope: 'all', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+      suggestSpy.mockClear();
+
+      // Foreign code mutates `textarea.value` to a same-length string ('ab') without setDraft, or wait:
+      // if foreign code mutates `textarea.value` to `'xy'` (same length, not via setDraft) and then `beforeinput`
+      // runs with `currentDomValue: 'xy'`, `stepSendGateBeforeInput` taints strictly via rule 1(d) (`currentDomValue !== state.prevValue`).
+      // Even if `input` later sees `nextValue: 'xyz'` where `event.data = 'z'`, let's verify rule 1(d) in isolation:
+      // foreign code sets `textarea.value = 'xy'` before `beforeinput`, then reverts to `'ab'` before `input` so `computeSingleSpliceDiff('ab', 'abz')` has `inserted === 'z' === data` (1 grapheme).
+      // Only `stepSendGateBeforeInput`'s `currentDomValue !== state.prevValue` (rule 1(d)) can catch this!
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(textarea, 'xy');
+      textarea.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: 'z',
+          isComposing: false,
+        }),
+      );
+      setter?.call(textarea, 'abz');
+      textarea.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          inputType: 'insertText',
+          data: 'z',
+          isComposing: false,
+        }),
+      );
+      expect(screen.getByTestId('omnibox-hint')).toHaveTextContent(
+        viMessages.search.help.enterToSearch,
+      );
+
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+    });
+
+    it('typing #home sends only token, and typing colon after in-flight request aborts it and sends nothing after colon', async () => {
+      const signals: AbortSignal[] = [];
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockImplementation((params, opts) => {
+          if (opts?.signal) {
+            signals.push(opts.signal);
+          }
+          if (params?.q === 'home') {
+            return heldHomeSuggest;
+          }
+          return Promise.resolve(makeEmptySuggestResponse());
+        });
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      // 1. Type `#home` and wait for the debounced `/suggest` request to be in-flight
+      typeNativeString(textarea, '#home');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      // 2. Type `:` then secret text -> immediately aborts the in-flight controller and locks the gate
+      typeNativeString(textarea, ':secret-after-colon');
+      expect(signals[0]?.aborted).toBe(true);
+      await delayMs(160);
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain('secret-after-colon');
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
+
+      // 3. Clear to '', then type `#home secret` -> sends only `q: 'home'` with `scope: 'tag', semantic: 0`
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      suggestSpy.mockClear();
+      typeNativeString(textarea, '#home secret');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain('secret');
+    });
+
+    // CI-41431143632-E2E-QA402 / CI-41431143632-SMOKE-LOCKED: in a real browser the native `input` event reaches the
+    // textarea listener BEFORE React's root `onChange` listener, and React flushes a sync-lane update scheduled from
+    // that native listener in a microtask between the two listeners. The flush re-applies the stale controlled value
+    // and wipes the typed / `fill()`ed text before `onChange` can read it. jsdom's script `dispatchEvent` never
+    // flushes between listeners, so this test stops propagation at the target (React's root listener never runs) and
+    // asserts the native listeners alone schedule no render that could rewrite the DOM value.
+    it('native input listener never schedules a render that rewrites the controlled textarea before onChange (typed char survives)', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+      const stopRootListener = (event: Event) => {
+        event.stopPropagation();
+      };
+      textarea.addEventListener('input', stopRootListener);
+      try {
+        dispatchNativeTextEdit(textarea, { inputType: 'insertText', data: 'x', nextValue: 'x' });
+        // Let any render scheduled by the native listeners flush (act-environment microtasks + scheduler tick).
+        await act(async () => {
+          await Promise.resolve();
+        });
+        await delayMs(30);
+        expect(textarea.value).toBe('x');
+
+        // `fill()`-style single insertText of a whole multi-grapheme string must survive the same way.
+        dispatchNativeTextEdit(textarea, {
+          inputType: 'insertText',
+          data: 'Cà phê',
+          nextValue: 'Cà phê',
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        await delayMs(30);
+        expect(textarea.value).toBe('Cà phê');
+      } finally {
+        textarea.removeEventListener('input', stopRootListener);
+      }
+      expect(suggestSpy).not.toHaveBeenCalled();
+    });
+
+    // RV-T17-1-FE2-5: jsdom never reproduces the real-browser native-listener -> microtask -> stale-value ordering
+    // (CI-41431143632-E2E-QA402), so this test is NOT a regression guard for that ordering. It asserts only the
+    // post-save typed value, the native-undo revert, the surviving toast and 0 DELETEs. The ordering guards are the
+    // stopPropagation test above and e2e `content-omnibox-quick-add.spec.ts:402`.
+    it('after quick-add save, a typed char keeps its value and sends /suggest, native undo reverts it to empty, the toast stays, and 0 DELETE requests are sent (HM18B-R1-7)', async () => {
+      vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+        items: [ITEM_WIFI],
+        total: 1,
+        next_cursor: null,
+      });
+      vi.spyOn(contentApi, 'entryCreate').mockImplementation(async (itemId, body) =>
+        makeEntryMeta(itemId, body.id),
+      );
+      const entryDeleteSpy = vi.spyOn(contentApi, 'entryDelete').mockResolvedValue(undefined);
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: 'wifi: keep-this-entry' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await screen.findByTestId('undo-toast-item');
+      expect(textarea).toHaveValue('');
+
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'x');
+      // Real timers: wait past the 120 ms debounce so any late re-render has had its chance to overwrite the value.
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'x', scope: 'all', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+      expect(textarea.value).toBe('x');
+
+      dispatchNativeTextEdit(textarea, { inputType: 'historyUndo', nextValue: '' });
+      await delayMs(30);
+      expect(textarea.value).toBe('');
+      expect(screen.getByTestId('undo-toast-item')).toBeInTheDocument();
+      expect(entryDeleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('fill-style edit (one insertText with a whole name) then Enter opens the search listbox via GET /items and sends no keystroke /suggest (P03-T21 U5, FU10; vault unlocked in this unit — locked-mode coverage is e2e vault-locked-search.spec.ts)', async () => {
+      const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
+        items: [ITEM_WIFI],
+        next_cursor: null,
+      });
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertText',
+        data: 'Cà phê',
+        nextValue: 'Cà phê',
+      });
+      await delayMs(30);
+      expect(textarea.value).toBe('Cà phê');
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      expect(await screen.findByRole('listbox')).toBeInTheDocument();
+      expect(itemsSpy).toHaveBeenCalledWith(expect.objectContaining({ q: 'Cà phê' }));
+      // `fill()` is a multi-grapheme single insert: the draft is tainted, so no keystroke `/suggest` was sent.
+      expect(suggestSpy).not.toHaveBeenCalled();
     });
   });
 });

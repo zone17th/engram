@@ -40,20 +40,24 @@ export function parseTagFilterInput(rawInput: string): ParsedTagFilterInput {
     i += 1;
   }
 
-  const afterHash = trimUnicodeWhiteSpace(rawInput.slice(i));
-  if (afterHash === '') {
+  const afterHash = rawInput.slice(i);
+  if (afterHash === '' || trimUnicodeWhiteSpace(afterHash) === '') {
     return { token: '', searchable: true };
   }
 
   let end = 0;
   while (end < afterHash.length) {
     const cp = afterHash.codePointAt(end);
-    if (cp === undefined || isUnicodeWhiteSpace(cp)) {
+    if (
+      cp === undefined ||
+      isUnicodeWhiteSpace(cp) ||
+      cp === 0x3a /* ':' */ ||
+      cp === 0xff1a /* '：' */
+    ) {
       break;
     }
     end += cp > 0xffff ? 2 : 1;
   }
-
   const token = afterHash.slice(0, end);
   const searchable = countRunes(token, TAG_QUERY_MAX_RUNES) <= TAG_QUERY_MAX_RUNES;
   return { token, searchable };
