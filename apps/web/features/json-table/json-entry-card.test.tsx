@@ -2650,7 +2650,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
   );
 
   it(
-    'FU11 (advisor-dec-216/217/221/223/224/228): applies 44x44 coarse-pointer classes, sticky action column, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
+    'FU11 (advisor-dec-216/217/221/223/224): applies 44x44 coarse-pointer classes, sticky action column, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
     async () => {
       const longTag50 = `${'tag-chip-50-rune-'.repeat(2)}tail50`.padEnd(50, 'q').slice(0, 50);
       expect(Array.from(longTag50).length).toBe(50);
@@ -2747,29 +2747,6 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(tokensCss).toMatch(/\.chip-x::after\s*\{\s*content:\s*none;\s*\}/);
       expect(tokensCss).toMatch(/\.chip-x\s*\{\s*min-width:\s*44px;\s*min-height:\s*44px;\s*\}/);
       expect(tokensCss).toMatch(/\.json-cell-input\s*\{\s*min-height:\s*44px;\s*\}/);
-
-      // 6. Open Import JSON dialog and verify dec-228 coarse-pointer classes on parse-error jump and format checkbox label
-      fireEvent.click(screen.getByTestId('btn-import-json'));
-      const importDialog = screen.getByTestId('import-json-dialog');
-      const importTextarea = within(importDialog).getByTestId('import-json-source-textarea');
-      fireEvent.change(importTextarea, { target: { value: '{\n  "bad": 1,\n}' } });
-
-      const parseErrorJumpBtn = within(importDialog).getByTestId('import-json-parse-error-jump');
-      expect(parseErrorJumpBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
-
-      const formatCheckbox = within(importDialog).getByTestId(
-        'import-json-format-checkbox',
-      ) as HTMLInputElement;
-      const formatLabel = within(importDialog).getByTestId('import-json-format-label');
-      expect(formatCheckbox.closest('label')).toBe(formatLabel);
-      expect(formatLabel.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
-      expect(formatLabel.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
-
-      fireEvent.change(importTextarea, { target: { value: '{"ok":1}' } });
-      expect(formatCheckbox.disabled).toBe(false);
-      expect(formatCheckbox.checked).toBe(false);
-      fireEvent.click(formatLabel);
-      expect(formatCheckbox.checked).toBe(true);
     },
     30_000,
   );

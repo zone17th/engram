@@ -1641,7 +1641,7 @@ export function ImportJsonDialog({
                   <button
                     type="button"
                     data-testid="import-json-parse-error-jump"
-                    className="m-0 mb-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-danger underline [@media(pointer:coarse)]:min-h-[44px]"
+                    className="m-0 mb-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-danger underline"
                     onClick={handleFocusErrorLine}
                   >
                     {tJson('importParseErrorTitle', {
@@ -1805,10 +1805,7 @@ export function ImportJsonDialog({
               >
                 {statusLineText}
               </span>
-              <label
-                data-testid="import-json-format-label"
-                className="inline-flex cursor-pointer items-center gap-1.5 text-body [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
-              >
+              <label className="inline-flex cursor-pointer items-center gap-1.5 text-body">
                 <input
                   type="checkbox"
                   id="importFormatBeforeSave"
