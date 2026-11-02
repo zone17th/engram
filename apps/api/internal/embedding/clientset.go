@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 
@@ -131,12 +130,13 @@ func isMatchableClient(c Client) bool {
 		c.Identity.Dims > 0
 }
 
-// ClientDeps bundles optional runtime dependencies (HTTP client, Prometheus
-// collectors, structured logger, clock) injected into concrete providers when
-// constructing a Client or ClientSet from ClientConfig. All fields are
-// optional and nil-safe.
+// ClientDeps bundles optional runtime dependencies (transport resolver/dial
+// options, Prometheus collectors, structured logger, clock) injected into
+// concrete providers when constructing a Client or ClientSet from ClientConfig.
+// All fields are optional and nil-safe. Production and test paths always
+// construct providers via NewHTTPClient so the no-redirect, no-proxy, dial-IP
+// validation, and 4 MiB response body cap policy cannot be bypassed.
 type ClientDeps struct {
-	HTTPClient  *http.Client
 	HTTPOptions []HTTPClientOption
 	Metrics     *obs.EmbeddingMetrics
 	Logger      *slog.Logger
@@ -144,29 +144,24 @@ type ClientDeps struct {
 }
 
 // NewClientFromConfig constructs a Provider (noop, tei, or openai_compat) from
-// cfg using NewHTTPClient (unless deps.HTTPClient is supplied) and wraps it in
-// a Client with the full seven-field embedid.Identity populated (plan P05 mục
-// 2.12, BE-1, M1).
+// cfg using NewHTTPClient(deps.HTTPOptions...) and wraps it in a Client with
+// the full seven-field embedid.Identity populated (plan P05 mục 2.12, BE-1, M1).
 func NewClientFromConfig(ctx context.Context, cfg ClientConfig, role ClientRole, deps ClientDeps) (Client, error) {
 	if role == "" {
 		role = RolePrimary
 	}
-	provName := strings.TrimSpace(cfg.Provider)
-	if provName == "" || provName == ProviderNoop {
+	cfg.Provider = strings.TrimSpace(cfg.Provider)
+	if cfg.Provider == "" || cfg.Provider == ProviderNoop {
 		return NewClientWithRole(NewNoop(), "", "", role), nil
 	}
 
-	httpClient := deps.HTTPClient
-	if httpClient == nil {
-		httpClient = NewHTTPClient(deps.HTTPOptions...)
-	}
 	queryPrefix, docPrefix := cfg.EffectivePrefixes()
 
-	switch provName {
+	switch cfg.Provider {
 	case ProviderOpenAICompat:
 		p, err := NewOpenAICompat(
 			cfg,
-			WithOpenAIHTTPClient(httpClient),
+			WithOpenAIHTTPOptions(deps.HTTPOptions...),
 			WithOpenAIMetrics(deps.Metrics),
 			WithOpenAILogger(deps.Logger),
 			WithOpenAIClock(deps.Now),
@@ -180,7 +175,7 @@ func NewClientFromConfig(ctx context.Context, cfg ClientConfig, role ClientRole,
 		p, err := NewTEI(
 			ctx,
 			cfg,
-			WithTEIHTTPClient(httpClient),
+			WithTEIHTTPOptions(deps.HTTPOptions...),
 			WithTEIMetrics(deps.Metrics),
 			WithTEILogger(deps.Logger),
 			WithTEIClock(deps.Now),
@@ -191,7 +186,7 @@ func NewClientFromConfig(ctx context.Context, cfg ClientConfig, role ClientRole,
 		return NewClientWithRole(p, queryPrefix, docPrefix, role), nil
 
 	default:
-		return Client{}, fmt.Errorf("embedding: unsupported provider %q", provName)
+		return Client{}, fmt.Errorf("embedding: unsupported provider %q", cfg.Provider)
 	}
 }
 

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -240,6 +242,40 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 		}
 	})
 
+	// RV52B-BE1-7: JSON null vector elements must be rejected as ClassBadResponse / ErrBadResponse.
+	t.Run("null_coordinate_rejected", func(t *testing.T) {
+		for _, body := range []string{
+			`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,null,0,0,0,0,0,0]}]}`,
+			`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[null,1,0,0,0,0,0,0]}]}`,
+			`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,"0",0,0,0,0,0,0]}]}`,
+		} {
+			nullSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			pNull, err := embedding.NewOpenAICompat(embedding.ClientConfig{
+				Provider: embedding.ProviderOpenAICompat,
+				BaseURL:  nullSrv.URL,
+				APIKey:   "sk-test-null",
+				Model:    "qwen",
+				Dims:     8,
+			})
+			if err != nil {
+				nullSrv.Close()
+				t.Fatalf("NewOpenAICompat: %v", err)
+			}
+			_, err = pNull.EmbedQuery(context.Background(), "wifi")
+			nullSrv.Close()
+			if !errors.Is(err, embedding.ErrBadResponse) {
+				t.Fatalf("body %s: err = %v, want ErrBadResponse", body, err)
+			}
+			var pe *embedding.ProviderError
+			if !errors.As(err, &pe) || pe.Class != embedding.ClassBadResponse {
+				t.Fatalf("body %s: ProviderError = %+v, want ClassBadResponse", body, pe)
+			}
+		}
+	})
+
 	// 5xx classification.
 	t.Run("http_5xx", func(t *testing.T) {
 		srv.Set5xx(http.StatusBadGateway)
@@ -376,5 +412,179 @@ func TestNewClientFromConfigComputesFullIdentity(t *testing.T) {
 	}
 	if len(srv.Calls()) != 0 {
 		t.Fatalf("Match made %d network calls, want 0", len(srv.Calls()))
+	}
+}
+
+func TestOpenAICompatNon2xxDoesNotBlockOnStalledBody(t *testing.T) {
+	unblock := make(chan struct{})
+	stalledSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "18")
+		w.WriteHeader(http.StatusTooManyRequests)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-unblock:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(unblock)
+		stalledSrv.Close()
+	}()
+
+	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
+		Provider:     embedding.ProviderOpenAICompat,
+		BaseURL:      stalledSrv.URL,
+		APIKey:       "sk-stalled-429",
+		Model:        "qwen",
+		Dims:         8,
+		QueryTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompat: %v", err)
+	}
+
+	_, err = prov.EmbedQuery(context.Background(), "wifi")
+	var pe *embedding.ProviderError
+	if !errors.As(err, &pe) || pe.Class != embedding.Class429 || pe.HTTPStatus != http.StatusTooManyRequests || pe.RetryAfter != 18*time.Second {
+		t.Fatalf("stalled 429 err = %v (%+v), want Class429 status 429 RetryAfter=18s", err, pe)
+	}
+}
+
+func TestOpenAICompatCallerCancelPreservesCanceledSentinel(t *testing.T) {
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	defer srv.Close()
+	srv.SetSlow(500 * time.Millisecond)
+
+	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
+		Provider:     embedding.ProviderOpenAICompat,
+		BaseURL:      srv.URL() + "/v1",
+		APIKey:       "sk-cancel-secret-key",
+		Model:        "qwen",
+		Dims:         8,
+		QueryTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompat: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = prov.EmbedQuery(ctx, "wifi")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled EmbedQuery err = %v, want errors.Is(context.Canceled)", err)
+	}
+	if embedding.IsTimeoutError(err) {
+		t.Fatalf("canceled EmbedQuery must not be classified as timeout: %v", err)
+	}
+	if strings.Contains(err.Error(), srv.URL()) || strings.Contains(err.Error(), "sk-cancel-secret-key") {
+		t.Fatalf("canceled error leaked URL or key: %v", err)
+	}
+}
+
+func TestFactoryEnforcesTransportPolicyAndTrimmedProviderPrefixes(t *testing.T) {
+	// 1. Public plaintext DNS resolution is rejected across direct and factory construction paths.
+	var dials atomic.Int32
+	pubResolver := fakeResolver{
+		lookup: func(_ context.Context, _, _ string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("198.51.100.42")}, nil
+		},
+	}
+	httpOpts := []embedding.HTTPClientOption{
+		embedding.WithResolver(pubResolver),
+		embedding.WithDialFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
+			dials.Add(1)
+			var d net.Dialer
+			return d.DialContext(ctx, network, address)
+		}),
+	}
+
+	client, err := embedding.NewClientFromConfig(
+		context.Background(),
+		embedding.ClientConfig{
+			Provider:         "  openai_compat  ",
+			BaseURL:          "http://rebind-factory.example.invalid:8080/v1",
+			APIKey:           "sk-factory-policy",
+			Model:            "qwen",
+			Dims:             8,
+			QueryInstruction: "Retrieve matching items",
+		},
+		embedding.RolePrimary,
+		embedding.ClientDeps{HTTPOptions: httpOpts},
+	)
+	if err != nil {
+		t.Fatalf("NewClientFromConfig(openai_compat): %v", err)
+	}
+
+	// RV52B-BE1-9: Trimmed provider name must still populate Identity.QueryPrefix.
+	wantQueryPrefix := embedding.OpenAIQueryPrefix("Retrieve matching items")
+	if client.Identity.Provider != "openai_compat" || client.Identity.QueryPrefix != wantQueryPrefix {
+		t.Fatalf("Identity = %+v, want Provider=openai_compat and QueryPrefix=%q", client.Identity, wantQueryPrefix)
+	}
+
+	_, err = client.Provider.EmbedQuery(context.Background(), "wifi")
+	if !errors.Is(err, embedding.ErrDisallowedIP) {
+		t.Fatalf("factory client EmbedQuery to public HTTP IP err = %v, want ErrDisallowedIP", err)
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("dials = %d, want 0 when public IP rejected", dials.Load())
+	}
+
+	// TEI factory construction with public HTTP DNS must also fail at boot /info.
+	_, err = embedding.NewClientFromConfig(
+		context.Background(),
+		embedding.ClientConfig{
+			Provider: " tei ",
+			BaseURL:  "http://tei-public.example.invalid:8080",
+			Dims:     8,
+		},
+		embedding.RolePrimary,
+		embedding.ClientDeps{HTTPOptions: httpOpts},
+	)
+	if !errors.Is(err, embedding.ErrDisallowedIP) {
+		t.Fatalf("NewClientFromConfig(tei public IP) err = %v, want ErrDisallowedIP", err)
+	}
+
+	// 2. RV52B-BE1-9: Trimmed TEI provider name records QueryPrefix and DocPrefix in Identity matching sent inputs.
+	srv := embedtest.NewServer(embedtest.Options{
+		Dims:     8,
+		ModelID:  "BAAI/bge-m3",
+		ModelSHA: "sha-trimmed-tei",
+	})
+	defer srv.Close()
+
+	teiClient, err := embedding.NewClientFromConfig(
+		context.Background(),
+		embedding.ClientConfig{
+			Provider:    "  tei\t",
+			BaseURL:     srv.URL(),
+			Dims:        8,
+			QueryPrefix: "query: ",
+			DocPrefix:   "passage: ",
+		},
+		embedding.RolePrimary,
+		embedding.ClientDeps{},
+	)
+	if err != nil {
+		t.Fatalf("NewClientFromConfig(trimmed tei): %v", err)
+	}
+	if teiClient.Identity.Provider != "tei" || teiClient.Identity.QueryPrefix != "query: " || teiClient.Identity.DocPrefix != "passage: " {
+		t.Fatalf("trimmed TEI Identity = %+v, want prefixes recorded", teiClient.Identity)
+	}
+	if _, err := teiClient.Provider.EmbedQuery(context.Background(), "wifi"); err != nil {
+		t.Fatalf("teiClient EmbedQuery: %v", err)
+	}
+	qCall, ok := srv.LastCall()
+	if !ok || len(qCall.Inputs) != 1 || qCall.Inputs[0] != teiClient.Identity.QueryPrefix+"wifi" {
+		t.Fatalf("TEI query call = %+v, want input %q", qCall, teiClient.Identity.QueryPrefix+"wifi")
+	}
+	if _, err := teiClient.Provider.EmbedDocuments(context.Background(), []string{"doc1"}); err != nil {
+		t.Fatalf("teiClient EmbedDocuments: %v", err)
+	}
+	dCall, ok := srv.LastCall()
+	if !ok || len(dCall.Inputs) != 1 || dCall.Inputs[0] != teiClient.Identity.DocPrefix+"doc1" {
+		t.Fatalf("TEI doc call = %+v, want input %q", dCall, teiClient.Identity.DocPrefix+"doc1")
 	}
 }

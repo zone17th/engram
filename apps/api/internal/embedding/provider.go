@@ -4,9 +4,11 @@
 package embedding
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -286,7 +288,7 @@ func (c ClientConfig) LogValue() slog.Value {
 //   - tei: QueryPrefix = c.QueryPrefix, DocPrefix = c.DocPrefix
 //   - noop (or other): "", ""
 func (c ClientConfig) EffectivePrefixes() (queryPrefix, docPrefix string) {
-	switch c.Provider {
+	switch strings.TrimSpace(c.Provider) {
 	case ProviderOpenAICompat:
 		return OpenAIQueryPrefix(c.QueryInstruction), ""
 	case ProviderTEI:
@@ -362,6 +364,43 @@ func ValidateAndNormalizeL2(v []float32, dims int) ([]float32, error) {
 	return out, nil
 }
 
+// strictFloat32Vector decodes a JSON array of finite numbers into []float32,
+// explicitly rejecting JSON null elements (which standard encoding/json would
+// silently unmarshal into 0.0) and non-numeric elements.
+func strictFloat32Vector(raw json.RawMessage) ([]float32, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("vector is not a JSON array")
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal(trimmed, &elems); err != nil {
+		return nil, err
+	}
+	out := make([]float32, len(elems))
+	for i, elem := range elems {
+		et := bytes.TrimSpace(elem)
+		if len(et) == 0 || bytes.Equal(et, []byte("null")) {
+			return nil, fmt.Errorf("vector element %d is null", i)
+		}
+		if et[0] != '-' && (et[0] < '0' || et[0] > '9') {
+			return nil, fmt.Errorf("vector element %d is not a JSON number", i)
+		}
+		var v float64
+		if err := json.Unmarshal(et, &v); err != nil {
+			return nil, err
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, fmt.Errorf("vector element %d is non-finite", i)
+		}
+		f32 := float32(v)
+		if math.IsNaN(float64(f32)) || math.IsInf(float64(f32), 0) {
+			return nil, fmt.Errorf("vector element %d overflows float32", i)
+		}
+		out[i] = f32
+	}
+	return out, nil
+}
+
 // ParseRetryAfter parses an HTTP Retry-After header value as either a
 // non-negative integer number of seconds or an RFC 7231 HTTP-date relative to
 // now (plan P05 mục 2.12). If header is empty, unparseable, or in the past, it
@@ -400,14 +439,14 @@ func ParseRetryAfter(header string, now time.Time) (time.Duration, bool) {
 // Note: http.Client.Do wraps the underlying transport/context error in a
 // *url.Error whose Error() includes the full request URL. We NEVER retain or
 // format the raw *url.Error as Detail or Err when it could expose the URL.
-func classifyTransportError(err error) *ProviderError {
+func classifyTransportError(err error) error {
 	if err == nil {
 		return nil
 	}
 	// Check context deadline and network timeout first so any timeout during
 	// DNS resolution, dialing, or body reading is always classified as
 	// ClassTimeout (never ClassRefused or ClassBadResponse).
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return &ProviderError{
 			Class:  ClassTimeout,
 			Detail: "request deadline exceeded",
@@ -421,6 +460,12 @@ func classifyTransportError(err error) *ProviderError {
 			Detail: "network timeout",
 			Err:    context.DeadlineExceeded,
 		}
+	}
+	// Preserve caller context cancellation as the safe context.Canceled sentinel
+	// (stripping any *url.Error wrapper so full URLs never leak) without
+	// converting it into a provider timeout or countable provider failure.
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
 	}
 	var pe *ProviderError
 	if errors.As(err, &pe) && pe != nil {
@@ -532,6 +577,9 @@ func recordProviderCall(
 	httpStatus int,
 	err error,
 ) {
+	if err != nil && errors.Is(err, context.Canceled) && !IsTimeoutError(err) {
+		return
+	}
 	if metrics != nil && (op == OpQuery || op == OpDocument) {
 		outcome := OutcomeForError(err)
 		if metrics.ProviderRequestsTotal != nil {
@@ -554,7 +602,7 @@ func recordProviderCall(
 			}
 		} else if errors.Is(err, ErrBadResponse) {
 			errClass = string(ClassBadResponse)
-		} else if errors.Is(err, context.DeadlineExceeded) {
+		} else if IsTimeoutError(err) {
 			errClass = string(ClassTimeout)
 		} else {
 			errClass = string(ClassRefused)

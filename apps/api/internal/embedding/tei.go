@@ -16,11 +16,13 @@ import (
 // TEIOption configures a TEI provider.
 type TEIOption func(*TEI)
 
-// WithTEIHTTPClient overrides the *http.Client used by TEI.
-func WithTEIHTTPClient(client *http.Client) TEIOption {
+// WithTEIHTTPOptions configures the underlying NewHTTPClient used by TEI
+// without bypassing the no-redirect, no-proxy, dial-IP check, or 4 MiB
+// response body cap policy.
+func WithTEIHTTPOptions(opts ...HTTPClientOption) TEIOption {
 	return func(p *TEI) {
-		if client != nil {
-			p.httpClient = client
+		if len(opts) > 0 {
+			p.httpOpts = append(p.httpOpts, opts...)
 		}
 	}
 }
@@ -65,6 +67,7 @@ type TEI struct {
 	docPrefix       string
 	queryTimeout    time.Duration
 	documentTimeout time.Duration
+	httpOpts        []HTTPClientOption
 	httpClient      *http.Client
 	metrics         *obs.EmbeddingMetrics
 	logger          *slog.Logger
@@ -74,7 +77,6 @@ type TEI struct {
 type teiInfoResponse struct {
 	ModelID  string `json:"model_id"`
 	ModelSHA string `json:"model_sha"`
-	SHA      string `json:"sha"`
 }
 
 // NewTEI validates cfg, fetches GET {TEI_URL}/info using DocumentTimeout to
@@ -111,7 +113,6 @@ func NewTEI(ctx context.Context, cfg ClientConfig, opts ...TEIOption) (*TEI, err
 		docPrefix:       cfg.DocPrefix,
 		queryTimeout:    queryTimeout,
 		documentTimeout: docTimeout,
-		httpClient:      NewHTTPClient(),
 		now:             time.Now,
 	}
 	for _, opt := range opts {
@@ -119,6 +120,7 @@ func NewTEI(ctx context.Context, cfg ClientConfig, opts ...TEIOption) (*TEI, err
 			opt(p)
 		}
 	}
+	p.httpClient = NewHTTPClient(p.httpOpts...)
 
 	if err := p.fetchBootInfo(ctx); err != nil {
 		return nil, err
@@ -148,15 +150,13 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, readErr := ReadBodyCapped(resp.Body)
-	if readErr != nil {
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return classifyHTTPStatus(resp.StatusCode, resp.Header, p.now())
-		}
-		return classifyTransportError(readErr)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return classifyHTTPStatus(resp.StatusCode, resp.Header, p.now())
+	}
+
+	bodyBytes, readErr := ReadBodyCapped(resp.Body)
+	if readErr != nil {
+		return classifyTransportError(readErr)
 	}
 
 	var info teiInfoResponse
@@ -180,12 +180,13 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 	}
 	modelSHA := strings.TrimSpace(info.ModelSHA)
 	if modelSHA == "" {
-		modelSHA = strings.TrimSpace(info.SHA)
+		return &ProviderError{
+			Class:      ClassBadResponse,
+			HTTPStatus: resp.StatusCode,
+			Detail:     "TEI /info missing model_sha",
+			Err:        ErrBadResponse,
+		}
 	}
-	if modelSHA == "" {
-		modelSHA = "unknown"
-	}
-
 	p.modelID = modelID
 	p.modelSHA = modelSHA
 	p.fullModel = ProviderTEI + "/" + modelID
@@ -218,17 +219,35 @@ func (p *TEI) MaxBatch() int {
 	return MaxBatch
 }
 
-// String returns a redacted summary of the TEI provider.
-func (p *TEI) String() string {
-	if p == nil {
-		return "<nil>"
-	}
+func (p TEI) redactedSummary() string {
 	return fmt.Sprintf("TEI{Model:%q, ModelVersion:%q, Dims:%d}", p.fullModel, p.modelVersion, p.dims)
 }
 
-// GoString returns a redacted summary of the TEI provider.
-func (p *TEI) GoString() string {
-	return p.String()
+// String returns a redacted summary of the TEI provider (both value and pointer receivers).
+func (p TEI) String() string {
+	return p.redactedSummary()
+}
+
+// GoString returns a redacted summary of the TEI provider (both value and pointer receivers).
+func (p TEI) GoString() string {
+	return p.redactedSummary()
+}
+
+// Format implements fmt.Formatter on the value receiver so %v, %+v, %#v, %s,
+// and %q on either TEI or *TEI never disclose endpoint URLs.
+func (p TEI) Format(f fmt.State, verb rune) {
+	summary := p.redactedSummary()
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(f, "%q", summary)
+		return
+	}
+	_, _ = f.Write([]byte(summary))
+}
+
+// LogValue implements slog.LogValuer so logging a TEI or *TEI directly never
+// exposes endpoint URLs.
+func (p TEI) LogValue() slog.Value {
+	return slog.StringValue(p.redactedSummary())
 }
 
 // EmbedDocuments embeds up to MaxBatch (64) document inputs, prepending
@@ -323,22 +342,18 @@ func (p *TEI) doEmbed(ctx context.Context, op string, inputs []string, timeout t
 	defer resp.Body.Close()
 
 	httpStatus = resp.StatusCode
-	bodyBytes, readErr := ReadBodyCapped(resp.Body)
-	if readErr != nil {
-		if httpStatus < 200 || httpStatus >= 300 {
-			retErr = classifyHTTPStatus(httpStatus, resp.Header, p.now())
-			return nil, retErr
-		}
-		retErr = classifyTransportError(readErr)
-		return nil, retErr
-	}
-
 	if httpStatus < 200 || httpStatus >= 300 {
 		retErr = classifyHTTPStatus(httpStatus, resp.Header, p.now())
 		return nil, retErr
 	}
 
-	var rawVecs [][]float32
+	bodyBytes, readErr := ReadBodyCapped(resp.Body)
+	if readErr != nil {
+		retErr = classifyTransportError(readErr)
+		return nil, retErr
+	}
+
+	var rawVecs []json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &rawVecs); err != nil {
 		retErr = &ProviderError{
 			Class:      ClassBadResponse,
@@ -361,8 +376,18 @@ func (p *TEI) doEmbed(ctx context.Context, op string, inputs []string, timeout t
 	}
 
 	out := make([][]float32, n)
-	for i, v := range rawVecs {
-		normed, normErr := ValidateAndNormalizeL2(v, p.dims)
+	for i, rawVec := range rawVecs {
+		coords, coordErr := strictFloat32Vector(rawVec)
+		if coordErr != nil {
+			retErr = &ProviderError{
+				Class:      ClassBadResponse,
+				HTTPStatus: httpStatus,
+				Detail:     "invalid TEI embedding vector",
+				Err:        ErrBadResponse,
+			}
+			return nil, retErr
+		}
+		normed, normErr := ValidateAndNormalizeL2(coords, p.dims)
 		if normErr != nil {
 			retErr = &ProviderError{
 				Class:      ClassBadResponse,

@@ -17,11 +17,13 @@ import (
 // OpenAICompatOption configures an OpenAICompat provider.
 type OpenAICompatOption func(*OpenAICompat)
 
-// WithOpenAIHTTPClient overrides the *http.Client used by OpenAICompat.
-func WithOpenAIHTTPClient(client *http.Client) OpenAICompatOption {
+// WithOpenAIHTTPOptions configures the underlying NewHTTPClient used by
+// OpenAICompat without bypassing the no-redirect, no-proxy, dial-IP check, or
+// 4 MiB response body cap policy.
+func WithOpenAIHTTPOptions(opts ...HTTPClientOption) OpenAICompatOption {
 	return func(p *OpenAICompat) {
-		if client != nil {
-			p.httpClient = client
+		if len(opts) > 0 {
+			p.httpOpts = append(p.httpOpts, opts...)
 		}
 	}
 }
@@ -64,6 +66,7 @@ type OpenAICompat struct {
 	queryPrefix     string
 	queryTimeout    time.Duration
 	documentTimeout time.Duration
+	httpOpts        []HTTPClientOption
 	httpClient      *http.Client
 	metrics         *obs.EmbeddingMetrics
 	logger          *slog.Logger
@@ -112,7 +115,6 @@ func NewOpenAICompat(cfg ClientConfig, opts ...OpenAICompatOption) (*OpenAICompa
 		queryPrefix:     OpenAIQueryPrefix(cfg.QueryInstruction),
 		queryTimeout:    queryTimeout,
 		documentTimeout: docTimeout,
-		httpClient:      NewHTTPClient(),
 		now:             time.Now,
 	}
 	for _, opt := range opts {
@@ -120,6 +122,7 @@ func NewOpenAICompat(cfg ClientConfig, opts ...OpenAICompatOption) (*OpenAICompa
 			opt(p)
 		}
 	}
+	p.httpClient = NewHTTPClient(p.httpOpts...)
 	return p, nil
 }
 
@@ -148,17 +151,38 @@ func (p *OpenAICompat) MaxBatch() int {
 	return MaxBatch
 }
 
-// String redacts internal credentials and URLs if the provider is formatted.
-func (p *OpenAICompat) String() string {
-	if p == nil {
-		return "<nil>"
-	}
+func (p OpenAICompat) redactedSummary() string {
 	return fmt.Sprintf("OpenAICompat{Model:%q, ModelVersion:%q, Dims:%d}", p.fullModel, p.modelVersion, p.dims)
 }
 
-// GoString redacts internal credentials and URLs if formatted with %#v.
-func (p *OpenAICompat) GoString() string {
-	return p.String()
+// String redacts internal credentials and URLs if the provider is formatted
+// (both value and pointer receivers).
+func (p OpenAICompat) String() string {
+	return p.redactedSummary()
+}
+
+// GoString redacts internal credentials and URLs if formatted with %#v
+// (both value and pointer receivers).
+func (p OpenAICompat) GoString() string {
+	return p.redactedSummary()
+}
+
+// Format implements fmt.Formatter on the value receiver so %v, %+v, %#v, %s,
+// and %q on either OpenAICompat or *OpenAICompat never disclose endpoint URLs
+// or credentials.
+func (p OpenAICompat) Format(f fmt.State, verb rune) {
+	summary := p.redactedSummary()
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(f, "%q", summary)
+		return
+	}
+	_, _ = f.Write([]byte(summary))
+}
+
+// LogValue implements slog.LogValuer so logging an OpenAICompat or
+// *OpenAICompat directly never exposes endpoint URLs or credentials.
+func (p OpenAICompat) LogValue() slog.Value {
+	return slog.StringValue(p.redactedSummary())
 }
 
 // EmbedDocuments embeds up to MaxBatch (64) document inputs without any query
@@ -206,8 +230,8 @@ type openAIResponsePayload struct {
 }
 
 type openAIResponseItem struct {
-	Index     *int      `json:"index"`
-	Embedding []float32 `json:"embedding"`
+	Index     *int            `json:"index"`
+	Embedding json.RawMessage `json:"embedding"`
 }
 
 func (p *OpenAICompat) doEmbed(ctx context.Context, op string, inputs []string, timeout time.Duration) ([][]float32, error) {
@@ -264,18 +288,14 @@ func (p *OpenAICompat) doEmbed(ctx context.Context, op string, inputs []string, 
 	defer resp.Body.Close()
 
 	httpStatus = resp.StatusCode
-	bodyBytes, readErr := ReadBodyCapped(resp.Body)
-	if readErr != nil {
-		if httpStatus < 200 || httpStatus >= 300 {
-			retErr = classifyHTTPStatus(httpStatus, resp.Header, p.now())
-			return nil, retErr
-		}
-		retErr = classifyTransportError(readErr)
+	if httpStatus < 200 || httpStatus >= 300 {
+		retErr = classifyHTTPStatus(httpStatus, resp.Header, p.now())
 		return nil, retErr
 	}
 
-	if httpStatus < 200 || httpStatus >= 300 {
-		retErr = classifyHTTPStatus(httpStatus, resp.Header, p.now())
+	bodyBytes, readErr := ReadBodyCapped(resp.Body)
+	if readErr != nil {
+		retErr = classifyTransportError(readErr)
 		return nil, retErr
 	}
 
@@ -329,7 +349,17 @@ func (p *OpenAICompat) doEmbed(ctx context.Context, op string, inputs []string, 
 			}
 			return nil, retErr
 		}
-		normed, normErr := ValidateAndNormalizeL2(item.Embedding, p.dims)
+		coords, coordErr := strictFloat32Vector(item.Embedding)
+		if coordErr != nil {
+			retErr = &ProviderError{
+				Class:      ClassBadResponse,
+				HTTPStatus: httpStatus,
+				Detail:     "invalid embedding vector",
+				Err:        ErrBadResponse,
+			}
+			return nil, retErr
+		}
+		normed, normErr := ValidateAndNormalizeL2(coords, p.dims)
 		if normErr != nil {
 			retErr = &ProviderError{
 				Class:      ClassBadResponse,
