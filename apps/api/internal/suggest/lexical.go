@@ -21,7 +21,8 @@ type TxStarter interface {
 	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 }
 
-// BranchTimeout is the per-branch budget for lexical item/tag queries (SPEC §6.3, §6.4, plan mục 2.3).
+// BranchTimeout is the per-branch budget for lexical item/tag QUERY work, started after acquire +
+// BEGIN + SET LOCAL, which have their own BranchSetupTimeout (FU-SB-2) (SPEC §6.3, §6.4, plan mục 2.3).
 const BranchTimeout = 50 * time.Millisecond
 
 type itemBranchOutcome struct {
@@ -142,100 +143,76 @@ func (s *Service) runLexicalBranches(
 }
 
 func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode string, qn string, fetchLimit int32) itemBranchOutcome {
-	branchCtx, cancel := s.branchContext(ctx, CorpusItem)
-	defer cancel()
-
-	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
-	// genuine error -> err (FU-SB-1, classifyBranchErr).
-	fail := func(err error, class string) itemBranchOutcome {
-		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusItem, mode, class)
-		if partial {
-			return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return itemBranchOutcome{err: out}
-	}
-
-	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
-		if err := h.BeforeBranch(branchCtx, CorpusItem); err != nil {
-			return fail(err, ClassLexicalItemDB)
-		}
-	}
-
-	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return fail(err, ClassLexicalItemDB)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
 	isRecent := mode == ModeRecent
-	if err := configureLexicalTx(branchCtx, tx, !isRecent); err != nil {
-		return fail(err, ClassLexicalItemDB)
-	}
-
-	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
-		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusItem); err != nil {
-			return fail(err, ClassLexicalItemDB)
-		}
-	}
-
-	q := gen.New(tx)
 	var out []SuggestItem
 
-	if isRecent {
-		rows, err := q.RecentItemsForSuggest(branchCtx, gen.RecentItemsForSuggestParams{
-			UserID:    userID,
-			PageLimit: fetchLimit,
-		})
-		if err != nil {
-			return fail(err, ClassLexicalItemDB)
-		}
-		out = make([]SuggestItem, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, SuggestItem{
-				Kind:       CorpusItem,
-				ID:         r.ID,
-				Name:       r.Name,
-				EntryCount: r.EntryCount,
-				CreatedAt:  r.CreatedAt.Time.UTC(),
-				LastUsedAt: r.LastUsedAt.Time.UTC(),
-				Tags:       []TagRef{},
-				TagTotal:   0,
-				Match:      MatchPrefix,
+	// Setup (acquire, BEGIN, SET LOCAL) and the 50 ms query budget are bounded separately
+	// (FU-SB-2, runBranch); a stage that expired while the request is alive -> partial (SPEC §6.8),
+	// client gone or genuine error -> err (FU-SB-1, classifyBranchErr).
+	partial, err := s.runBranch(ctx, CorpusItem, mode, ClassLexicalItemDB, !isRecent, func(qctx context.Context, tx pgx.Tx) (string, error) {
+		q := gen.New(tx)
+		if isRecent {
+			rows, err := q.RecentItemsForSuggest(qctx, gen.RecentItemsForSuggestParams{
+				UserID:    userID,
+				PageLimit: fetchLimit,
 			})
-		}
-	} else {
-		rows, err := q.SearchItemsLexical(branchCtx, gen.SearchItemsLexicalParams{
-			UserID:    userID,
-			Qn:        qn,
-			QPrefix:   item.EscapeLikePrefix(qn),
-			Fuzzy:     mode == ModeFull,
-			PageLimit: fetchLimit,
-		})
-		if err != nil {
-			return fail(err, ClassLexicalItemDB)
-		}
-		out = make([]SuggestItem, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, SuggestItem{
-				Kind:       CorpusItem,
-				ID:         r.ID,
-				Name:       r.Name,
-				EntryCount: r.EntryCount,
-				CreatedAt:  r.CreatedAt.Time.UTC(),
-				LastUsedAt: r.LastUsedAt.Time.UTC(),
-				Tags:       []TagRef{},
-				TagTotal:   0,
-				Match:      TierToMatch(r.Tier),
+			if err != nil {
+				return ClassLexicalItemDB, err
+			}
+			out = make([]SuggestItem, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, SuggestItem{
+					Kind:       CorpusItem,
+					ID:         r.ID,
+					Name:       r.Name,
+					EntryCount: r.EntryCount,
+					CreatedAt:  r.CreatedAt.Time.UTC(),
+					LastUsedAt: r.LastUsedAt.Time.UTC(),
+					Tags:       []TagRef{},
+					TagTotal:   0,
+					Match:      MatchPrefix,
+				})
+			}
+		} else {
+			rows, err := q.SearchItemsLexical(qctx, gen.SearchItemsLexicalParams{
+				UserID:    userID,
+				Qn:        qn,
+				QPrefix:   item.EscapeLikePrefix(qn),
+				Fuzzy:     mode == ModeFull,
+				PageLimit: fetchLimit,
 			})
+			if err != nil {
+				return ClassLexicalItemDB, err
+			}
+			out = make([]SuggestItem, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, SuggestItem{
+					Kind:       CorpusItem,
+					ID:         r.ID,
+					Name:       r.Name,
+					EntryCount: r.EntryCount,
+					CreatedAt:  r.CreatedAt.Time.UTC(),
+					LastUsedAt: r.LastUsedAt.Time.UTC(),
+					Tags:       []TagRef{},
+					TagTotal:   0,
+					Match:      TierToMatch(r.Tier),
+				})
+			}
 		}
-	}
 
-	if len(out) > 0 {
-		if err := attachTagRefs(branchCtx, q, userID, out); err != nil {
-			return fail(err, ClassLexicalItemTagRefs)
+		if len(out) > 0 {
+			if err := attachTagRefs(qctx, q, userID, out); err != nil {
+				return ClassLexicalItemTagRefs, err
+			}
 		}
+		return "", nil
+	})
+	if partial {
+		return itemBranchOutcome{items: []SuggestItem{}, partial: true}
 	}
-
+	if err != nil {
+		return itemBranchOutcome{err: err}
+	}
 	return itemBranchOutcome{
 		items:   out,
 		hasMore: int32(len(out)) >= fetchLimit,
@@ -243,88 +220,62 @@ func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode stri
 }
 
 func (s *Service) runTagBranch(ctx context.Context, userID uuid.UUID, mode string, qn string, fetchLimit int32) tagBranchOutcome {
-	branchCtx, cancel := s.branchContext(ctx, CorpusTag)
-	defer cancel()
-
-	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
-	// genuine error -> err (FU-SB-1, classifyBranchErr).
-	fail := func(err error, class string) tagBranchOutcome {
-		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusTag, mode, class)
-		if partial {
-			return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return tagBranchOutcome{err: out}
-	}
-
-	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
-		if err := h.BeforeBranch(branchCtx, CorpusTag); err != nil {
-			return fail(err, ClassLexicalTagDB)
-		}
-	}
-
-	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return fail(err, ClassLexicalTagDB)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
 	isRecent := mode == ModeRecent
-	if err := configureLexicalTx(branchCtx, tx, !isRecent); err != nil {
-		return fail(err, ClassLexicalTagDB)
-	}
-
-	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
-		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusTag); err != nil {
-			return fail(err, ClassLexicalTagDB)
-		}
-	}
-
-	q := gen.New(tx)
 	var out []SuggestTag
 
-	if isRecent {
-		rows, err := q.RecentTagsForSuggest(branchCtx, gen.RecentTagsForSuggestParams{
-			UserID:    userID,
-			PageLimit: fetchLimit,
-		})
-		if err != nil {
-			return fail(err, ClassLexicalTagDB)
-		}
-		out = make([]SuggestTag, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, SuggestTag{
-				Kind:       CorpusTag,
-				ID:         r.ID,
-				Display:    r.Display,
-				ItemCount:  r.ItemCount,
-				LastUsedAt: r.LastUsedAt.Time.UTC(),
-				Match:      MatchPrefix,
+	// Setup and the 50 ms query budget are bounded separately (FU-SB-2, runBranch).
+	partial, err := s.runBranch(ctx, CorpusTag, mode, ClassLexicalTagDB, !isRecent, func(qctx context.Context, tx pgx.Tx) (string, error) {
+		q := gen.New(tx)
+		if isRecent {
+			rows, err := q.RecentTagsForSuggest(qctx, gen.RecentTagsForSuggestParams{
+				UserID:    userID,
+				PageLimit: fetchLimit,
 			})
-		}
-	} else {
-		rows, err := q.SearchTagsLexical(branchCtx, gen.SearchTagsLexicalParams{
-			UserID:    userID,
-			Qn:        qn,
-			QPrefix:   item.EscapeLikePrefix(qn),
-			Fuzzy:     mode == ModeFull,
-			PageLimit: fetchLimit,
-		})
-		if err != nil {
-			return fail(err, ClassLexicalTagDB)
-		}
-		out = make([]SuggestTag, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, SuggestTag{
-				Kind:       CorpusTag,
-				ID:         r.ID,
-				Display:    r.Display,
-				ItemCount:  r.ItemCount,
-				LastUsedAt: r.LastUsedAt.Time.UTC(),
-				Match:      TierToMatch(r.Tier),
+			if err != nil {
+				return ClassLexicalTagDB, err
+			}
+			out = make([]SuggestTag, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, SuggestTag{
+					Kind:       CorpusTag,
+					ID:         r.ID,
+					Display:    r.Display,
+					ItemCount:  r.ItemCount,
+					LastUsedAt: r.LastUsedAt.Time.UTC(),
+					Match:      MatchPrefix,
+				})
+			}
+		} else {
+			rows, err := q.SearchTagsLexical(qctx, gen.SearchTagsLexicalParams{
+				UserID:    userID,
+				Qn:        qn,
+				QPrefix:   item.EscapeLikePrefix(qn),
+				Fuzzy:     mode == ModeFull,
+				PageLimit: fetchLimit,
 			})
+			if err != nil {
+				return ClassLexicalTagDB, err
+			}
+			out = make([]SuggestTag, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, SuggestTag{
+					Kind:       CorpusTag,
+					ID:         r.ID,
+					Display:    r.Display,
+					ItemCount:  r.ItemCount,
+					LastUsedAt: r.LastUsedAt.Time.UTC(),
+					Match:      TierToMatch(r.Tier),
+				})
+			}
 		}
+		return "", nil
+	})
+	if partial {
+		return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
 	}
-
+	if err != nil {
+		return tagBranchOutcome{err: err}
+	}
 	return tagBranchOutcome{
 		tags:    out,
 		hasMore: int32(len(out)) >= fetchLimit,
