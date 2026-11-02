@@ -93,11 +93,16 @@ func parseConfig(getenv envLookup) (serverConfig, error) {
 		dims = parsed
 	}
 
+	queryPrefix := getenv("FAKEEMBED_QUERY_PREFIX")
+	if strings.TrimSpace(queryPrefix) == "" {
+		return serverConfig{}, errors.New("fakeembed: FAKEEMBED_QUERY_PREFIX must be non-empty")
+	}
+
 	return serverConfig{
 		appEnv:      appEnv,
 		addr:        addr,
 		dims:        dims,
-		queryPrefix: getenv("FAKEEMBED_QUERY_PREFIX"),
+		queryPrefix: queryPrefix,
 	}, nil
 }
 
@@ -177,19 +182,33 @@ func probeHealthcheck(ctx context.Context, getenv envLookup) error {
 	return probeHealthcheckAddr(ctx, addr)
 }
 
+func probeTargetHostPort(listenAddr string) (string, error) {
+	host, port, splitErr := net.SplitHostPort(listenAddr)
+	if splitErr != nil {
+		return "", errors.New("fakeembed: invalid FAKEEMBED_ADDR")
+	}
+	switch strings.TrimSpace(host) {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::", "[::]":
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
 func probeHealthcheckAddr(ctx context.Context, listenAddr string) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, port, splitErr := net.SplitHostPort(listenAddr)
-	if splitErr != nil {
-		return errors.New("fakeembed: invalid FAKEEMBED_ADDR")
+	hostPort, addrErr := probeTargetHostPort(listenAddr)
+	if addrErr != nil {
+		return addrErr
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	targetURL := "http://" + net.JoinHostPort("127.0.0.1", port) + "/__control/stats"
+	targetURL := "http://" + hostPort + "/__control/stats"
 	req, reqErr := http.NewRequestWithContext(probeCtx, http.MethodGet, targetURL, nil)
 	if reqErr != nil {
 		return fmt.Errorf("fakeembed healthcheck request: %w", reqErr)
