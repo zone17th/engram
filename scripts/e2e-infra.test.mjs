@@ -737,6 +737,122 @@ test('Search semantic e2e CI job waits for /readyz before @semantic Playwright a
   assert.throws(() => validateCiSemanticJob(withoutReadiness, compose), /readiness step/);
 });
 
+const EMBEDDING_LAG_GO_TEST =
+  "go test -tags lagperf ./internal/perf/... -run '^TestEmbeddingLagP95$' -count=1 -timeout 35m -v | tee lag.log";
+const EMBEDDING_LAG_GUARD = "grep -q -- '--- PASS: TestEmbeddingLagP95' lag.log";
+
+// P05 Task 20b PR 20b-2 (plan L7, FS-1, FS-30a): job embedding-lag runs TestEmbeddingLagP95 and ends with a PASS guard.
+function validateCiEmbeddingLagJob(workflowSource) {
+  const jobMatch = workflowSource.match(
+    /  embedding-lag:\r?\n    name:\s*Embedding lag perf\r?\n([\s\S]*?)(?=\r?\n  [a-z0-9-]+:|$)/,
+  );
+  assert.ok(jobMatch, 'missing "Embedding lag perf" job embedding-lag in ci.yml');
+  const body = jobMatch[1];
+  const lines = body.split(/\r?\n/).map((line) => stripYamlComment(line));
+
+  assert.ok(
+    lines.some((line) => /^ {4}timeout-minutes:\s*40\s*$/.test(line)),
+    'embedding-lag must set timeout-minutes: 40',
+  );
+  // Not a required check: a job-level continue-on-error would hide a red run, and no other job may wait for it.
+  assert.ok(!lines.some((line) => /^ {4}continue-on-error:/.test(line)), 'embedding-lag must not set continue-on-error');
+  assert.ok(!lines.some((line) => /^ {4}needs:/.test(line)), 'embedding-lag must not depend on other jobs');
+  const withoutJob = workflowSource.replace(jobMatch[0], '');
+  assert.doesNotMatch(
+    withoutJob,
+    /^\s+needs:.*\bembedding-lag\b|^\s+-\s*embedding-lag\s*$/m,
+    'no job may need embedding-lag (it is not a required check)',
+  );
+  assert.ok(
+    lines.some((line) => /^ {8}working-directory:\s*apps\/api\s*$/.test(line) || /^ {6}working-directory:\s*apps\/api\s*$/.test(line)),
+    'embedding-lag must run in apps/api',
+  );
+
+  const runIndex = lines.findIndex((line) => /^ {8}run:\s*\|\s*$/.test(line) || /^ {8}run:\s*\S/.test(line));
+  assert.notEqual(runIndex, -1, 'embedding-lag must have a run step');
+  const runLines = [];
+  for (let i = runIndex + 1; i < lines.length; i += 1) {
+    if (!lines[i].trim()) continue;
+    if (!/^ {10}/.test(lines[i])) break;
+    runLines.push(lines[i].trim());
+  }
+  const pipefailAt = runLines.indexOf('set -o pipefail');
+  const goTestAt = runLines.indexOf(EMBEDDING_LAG_GO_TEST);
+  const guardAt = runLines.indexOf(EMBEDDING_LAG_GUARD);
+  assert.notEqual(pipefailAt, -1, 'embedding-lag run step must start with set -o pipefail');
+  assert.notEqual(
+    goTestAt,
+    -1,
+    'embedding-lag must run go test -tags lagperf ... -run ^TestEmbeddingLagP95$ ... | tee lag.log',
+  );
+  assert.notEqual(guardAt, -1, "embedding-lag must end with the guard grep -q -- '--- PASS: TestEmbeddingLagP95' lag.log");
+  assert.ok(pipefailAt < goTestAt, 'set -o pipefail must come before go test (so tee cannot mask a failure)');
+  assert.ok(goTestAt < guardAt, 'the PASS guard must come after go test');
+  assert.equal(guardAt, runLines.length - 1, 'the PASS guard must be the last command of the step');
+}
+
+test('Embedding lag CI job runs TestEmbeddingLagP95 under lagperf and guards on the PASS line', () => {
+  const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  validateCiEmbeddingLagJob(workflow);
+
+  // The tag stays a separate build: Content perf (-tags perf) must not compile the lagperf file.
+  assert.match(workflow, /go test -tags perf \.\/internal\/perf\/\.\.\. -count=1/);
+  assert.doesNotMatch(workflow, /-tags perf[^\n]*TestEmbeddingLagP95/);
+
+  // FS-30a: "no tests to run" exits 0, so removing the guard must be rejected.
+  const withoutGuard = workflow.replace(/^ {10}grep -q -- '--- PASS: TestEmbeddingLagP95' lag\.log\r?\n/m, '');
+  assert.notEqual(withoutGuard, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(withoutGuard), /guard/);
+
+  // A guard that watches a different test name (or file) is rejected.
+  const wrongGuard = workflow.replace("'--- PASS: TestEmbeddingLagP95' lag.log", "'--- PASS: TestSomethingElse' lag.log");
+  assert.notEqual(wrongGuard, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(wrongGuard), /guard/);
+
+  // Guard moved before go test is rejected.
+  const guardLine = "          grep -q -- '--- PASS: TestEmbeddingLagP95' lag.log\n";
+  const goTestLine = '          ' + EMBEDDING_LAG_GO_TEST + '\n';
+  const guardFirst = workflow.replace(goTestLine + guardLine, () => guardLine + goTestLine);
+  assert.notEqual(guardFirst, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(guardFirst), /guard must come after go test/);
+
+  // Without pipefail a failing go test is masked by tee.
+  const withoutPipefail = workflow.replace(/^ {10}set -o pipefail\r?\n(?= {10}go test -tags lagperf)/m, '');
+  assert.notEqual(withoutPipefail, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(withoutPipefail), /set -o pipefail/);
+
+  // Dropping the tag, the -run anchor or tee lag.log is rejected.
+  for (const [from, to] of [
+    ['-tags lagperf ', ''],
+    ["-run '^TestEmbeddingLagP95$' ", ''],
+    [' | tee lag.log', ''],
+  ]) {
+    const mutated = workflow.replace(goTestLine, () => goTestLine.replace(from, to));
+    assert.notEqual(mutated, workflow, 'mutation ' + from + ' must apply');
+    assert.throws(() => validateCiEmbeddingLagJob(mutated), /go test -tags lagperf/);
+  }
+
+  // Timeout other than 40 minutes is rejected.
+  const jobHead = /(  embedding-lag:\r?\n    name: Embedding lag perf\r?\n    runs-on: ubuntu-latest\r?\n    )timeout-minutes: 40/;
+  const shortTimeout = workflow.replace(jobHead, '$1timeout-minutes: 20');
+  assert.notEqual(shortTimeout, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(shortTimeout), /timeout-minutes: 40/);
+
+  // continue-on-error would let a red run pass silently; another job needing embedding-lag would make it required.
+  const continueOnError = workflow.replace(jobHead, '$1continue-on-error: true\n    timeout-minutes: 40');
+  assert.notEqual(continueOnError, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(continueOnError), /continue-on-error/);
+  const needsLag = workflow.replace(
+    /(  search-bench:\r?\n    name: Search bench\r?\n)/,
+    '$1    needs: embedding-lag\n',
+  );
+  assert.notEqual(needsLag, workflow);
+  assert.throws(() => validateCiEmbeddingLagJob(needsLag), /not a required check/);
+
+  // No job at all is rejected.
+  assert.throws(() => validateCiEmbeddingLagJob(workflow.replace('  embedding-lag:', '  embedding-lag-renamed:')), /missing/);
+});
+
 test('NEXT_PUBLIC_CONTENT_ENABLED build guards reject runtime-only declarations and comments', () => {
   const dockerfile = readFileSync(join(ROOT, 'apps', 'web', 'Dockerfile'), 'utf8');
   const compose = readFileSync(join(ROOT, 'infra', 'docker-compose.yml'), 'utf8');
