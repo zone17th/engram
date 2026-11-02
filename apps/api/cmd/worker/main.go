@@ -13,6 +13,10 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/worker"
 )
 
+// metricsListenerComponent nhận diện log của listener /metrics (không phải
+// `error_class`, xem runWorker).
+const metricsListenerComponent = "worker_metrics_listener"
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -41,8 +45,10 @@ func runWorker(ctx context.Context, env Env) error {
 
 	listener, err := worker.StartMetricsListener(runCtx, env.Cfg.WorkerMetricsAddr, nil, env.Logger)
 	if err != nil {
+		// Không dùng `error_class`: trường đó dành riêng cho chín mã lý do embedding
+		// của plan mục 2.21; lỗi listener được nhận diện bằng `component`.
 		env.Logger.Error("worker metrics listener không bind được",
-			slog.String("error_class", "metrics_listener_bind_failed"),
+			slog.String("component", metricsListenerComponent),
 			slog.String("err", err.Error()))
 		return err
 	}
@@ -52,7 +58,9 @@ func runWorker(ctx context.Context, env Env) error {
 	})
 	cancel()
 	if lerr := listener.Wait(); lerr != nil {
-		env.Logger.Error("worker metrics listener dừng không gọn", slog.String("err", lerr.Error()))
+		env.Logger.Error("worker metrics listener dừng không gọn",
+			slog.String("component", metricsListenerComponent),
+			slog.String("err", lerr.Error()))
 	}
 	if runErr != nil {
 		env.Logger.Error("worker dừng do lỗi", slog.String("err", runErr.Error()))
