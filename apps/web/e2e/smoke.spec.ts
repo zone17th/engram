@@ -213,7 +213,7 @@ test.describe('P01 browser smoke', () => {
     // Marketing legal route check: /privacy and /vi/privacy under next-intl [locale] routing (FE1-5)
     await page.goto('/vi/privacy#contact', { waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
-    await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản & Chính sách bảo mật' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản sử dụng & Chính sách quyền riêng tư' })).toBeVisible();
     await page.goto('/privacy#contact', { waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page.getByRole('heading', { level: 1, name: 'Terms of Service & Privacy Policy' })).toBeVisible();
