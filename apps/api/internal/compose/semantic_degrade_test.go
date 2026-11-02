@@ -12,23 +12,45 @@ package compose_test
 //     their embed jobs while the provider is dead.
 //   - TestDegradeBreakerNoStorm: 200 real T11a embed jobs against a provider
 //     that answers 503 for 10 (virtual) minutes -> provider requests <= 2 x
-//     (half-open probes + backoff attempts).
+//     (half-open probes + backoff attempts), work invocations bounded, every
+//     returned snooze at least the breaker's remaining window (+ positive jitter).
 //   - TestRecoveryNoStorm: the provider comes back after a short outage -> every
 //     job completes with exactly one provider request, none is dead-lettered;
 //     the API half-open admits ONE concurrent probe, then closes.
+//   - TestNoStormEvidenceRejectsMutations: negative controls — an immediate
+//     snooze, raised queue concurrency and a too-small persisted MaxAttempts each
+//     make the job evidence helper report a violation.
 //
 // Time is driven through the product's clock seams only (clock.Fixed for the API
 // runtime/breaker/rate bucket, jobs.Dependencies.Now + the worker breaker clock);
-// there are no real waits beyond the provider's own 200 ms query timeout. River's
-// scheduler is the one thing we cannot fast-forward, so the job tests drive the
-// REAL embed_item worker (jobs.EmbedItemWorker.Work) from a small virtual-time
-// scheduler that applies River's contract: a returned JobSnooze reschedules
-// without consuming an attempt, any other error consumes one and retries at
-// worker.NextRetry, attempt MaxEmbedAttempts is the last.
+// there are no sleeps. The only real waits are the provider's own 200 ms query
+// timeout in the outage fixture and bounded channel receives.
 //
-// One Postgres container per package run (plan gate 10): TestMain below owns it;
-// every test gets its own database on it. The fake provider is an in-process
-// httptest server wrapping embedtest (TEI protocol) with a counting mode switch.
+// What the job scheduler models, and what it does not. River's scheduler cannot
+// be fast-forwarded, so the job tests drive the REAL embed_item worker
+// (jobs.EmbedItemWorker.Work, real DB, real breakers, real snooze + jitter) from
+// a small virtual-time simulator that applies River's contract: a returned
+// JobSnooze reschedules at completion + duration without consuming an attempt, any
+// other error consumes one and retries at worker.NextRetry, and the attempt that
+// reaches the persisted row's MaxAttempts is the last. The simulator is event
+// driven: the next event is the earliest due job, rounded up to River's 1 s fetch
+// poll; backoff always comes from the worker's own snooze/retry (a snooze below
+// the breaker's remaining window, or an immediate one, is a violation and aborts
+// the run). Work runs on jobs.MaxEmbedWorkers overlapping slots, and the provider
+// measures the peak number of simultaneous requests and the largest document batch
+// through entry/release channels. MaxAttempts and the queue come from the rows
+// River actually persisted for the inserted jobs. Not covered here, by design:
+// final river_job states (completed/discarded) and River's own fetch/producer
+// loop; those need a River-backed run on a real clock and are left to the worker
+// package's integration tests. The simulator's rules were checked against River
+// v0.31.0's job executor (JobSnooze handling precedes error/max-attempt handling).
+//
+// One shared Postgres container per package run for the fixtures in this file
+// (plan gate 10): TestMain below owns it and every test gets its own database on
+// it. The pre-existing vault_test.go keeps its own container (outside this
+// change's file scope, recorded exception), so a full package run starts two
+// containers. The fake provider is an in-process httptest server wrapping
+// embedtest (TEI protocol) with a counting mode switch.
 
 import (
 	"bytes"
@@ -92,13 +114,27 @@ import (
 )
 
 const (
-	dgDims          = 8
-	dgQueryTimeout  = 200 * time.Millisecond // real time the hung provider costs one query
-	dgJobCount      = 200
-	dgVirtualStep   = 5 * time.Second
-	dgOutageWindow  = 10 * time.Minute
-	dgShortOutage   = 3 * time.Minute
-	dgRecoveryLimit = 10 * time.Minute
+	dgDims         = 8
+	dgQueryTimeout = 200 * time.Millisecond // outage fixture: real time the hung provider costs one query
+	// dgRecoveryQueryTimeout is the recovery fixture's generous query timeout: the
+	// half-open trial is parked at the provider until the competing requests are
+	// answered, which must never race a 200 ms deadline on a loaded runner.
+	dgRecoveryQueryTimeout = 30 * time.Second
+	dgJobDocTimeout        = 60 * time.Second // job fixtures park requests at the provider on purpose
+	dgJobCount             = 200
+	dgFetchPoll            = time.Second // River's default FetchPollInterval: events are rounded up to it
+	dgOutageWindow         = 10 * time.Minute
+	dgShortOutage          = 3 * time.Minute
+	dgRecoveryLimit        = 10 * time.Minute
+
+	// Plan P05 2.17 limits, spelled out so a regression of the product constant is
+	// not silently followed by the test: 2 workers on the embedding queue, 30
+	// attempts (>= 24 h of backoff).
+	dgPlanMaxEmbedWorkers = 2
+	dgPlanMaxAttempts     = 30
+
+	dgHoldDeadline = 30 * time.Second // upper bound a parked provider request waits for its release
+	dgRecvDeadline = 30 * time.Second // upper bound of every test-side channel receive
 )
 
 var (
@@ -108,8 +144,9 @@ var (
 	dgSharedBaseCtr testcontainers.Container
 )
 
-// TestMain owns the single shared Postgres container of this package (plan P05
-// gate 10). vault_test.go keeps its own per-test containers; they are unaffected.
+// TestMain owns the shared Postgres container of the degrade fixtures (plan P05
+// gate 10). vault_test.go keeps its own container (recorded exception: not in this
+// change's file scope); it is unaffected and is terminated by its own cleanup.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if dgSharedBaseCtr != nil {
@@ -200,20 +237,64 @@ const (
 	dgModeOK   dgMode = iota // answer normally
 	dgModeHang               // hold /embed until the client gives up (timeout)
 	dgModeDown               // 503 on /embed
-	dgModeGate               // hold /embed until the gate is released, then answer
 )
+
+// dgHold parks every /embed request at the provider until the test lets it go.
+// entered: the provider tells the test a request has arrived (a barrier, not a
+// poll). release: the test lets ONE parked request continue. closed: lets every
+// current and future request continue (cleanup, abort).
+type dgHold struct {
+	entered chan struct{}
+	release chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newDGHold() *dgHold {
+	return &dgHold{
+		entered: make(chan struct{}, 4096),
+		release: make(chan struct{}, 4096),
+		closed:  make(chan struct{}),
+	}
+}
+
+// openAll releases everything parked now or later. Idempotent.
+func (h *dgHold) openAll() { h.once.Do(func() { close(h.closed) }) }
+
+// park signals entry and waits for a release, bounded by dgHoldDeadline. It
+// reports whether the request should go on to be answered.
+func (h *dgHold) park(ctx context.Context) bool {
+	select {
+	case h.entered <- struct{}{}:
+	default: // buffer full: the receiver is long gone, never block the provider
+	}
+	timer := time.NewTimer(dgHoldDeadline)
+	defer timer.Stop()
+	select {
+	case <-h.release:
+		return true
+	case <-h.closed:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
+}
 
 type dgProvider struct {
 	backend *embedtest.Server
 	srv     *httptest.Server
 
-	mode     atomic.Int32
-	queries  atomic.Int64 // POST /embed carrying the query prefix
-	docs     atomic.Int64 // every other POST /embed
-	inflight atomic.Int64 // POST /embed currently held by the gate
+	mode      atomic.Int32
+	queries   atomic.Int64 // POST /embed carrying the query prefix
+	docs      atomic.Int64 // every other POST /embed
+	active    atomic.Int64 // POST /embed requests being handled right now (parked ones included)
+	peak      atomic.Int64 // highest value active ever reached
+	maxInputs atomic.Int64 // largest number of inputs in one POST /embed (document batch length)
 
-	gateMu sync.Mutex
-	gate   chan struct{}
+	holdMu sync.Mutex
+	hold   *dgHold
 }
 
 func newDGProvider(t *testing.T) *dgProvider {
@@ -222,7 +303,6 @@ func newDGProvider(t *testing.T) *dgProvider {
 		backend: embedtest.NewHandler(embedtest.Options{
 			Dims: dgDims, ModelID: "BAAI/bge-m3", ModelSHA: "rev-degrade", QueryPrefix: "query: ",
 		}),
-		gate: make(chan struct{}),
 	}
 	p.srv = httptest.NewServer(p)
 	t.Cleanup(p.srv.Close)
@@ -231,32 +311,42 @@ func newDGProvider(t *testing.T) *dgProvider {
 
 func (p *dgProvider) setMode(m dgMode) { p.mode.Store(int32(m)) }
 
-// armGate switches to gate mode with a fresh, closed-on-release gate.
-func (p *dgProvider) armGate() {
-	p.gateMu.Lock()
-	p.gate = make(chan struct{})
-	p.gateMu.Unlock()
-	p.setMode(dgModeGate)
+// setHold installs (or, with nil, removes) the barrier every /embed request passes.
+func (p *dgProvider) setHold(h *dgHold) {
+	p.holdMu.Lock()
+	p.hold = h
+	p.holdMu.Unlock()
 }
 
-func (p *dgProvider) releaseGate() {
-	p.gateMu.Lock()
-	defer p.gateMu.Unlock()
-	select {
-	case <-p.gate:
-	default:
-		close(p.gate)
-	}
-}
-
-func (p *dgProvider) currentGate() chan struct{} {
-	p.gateMu.Lock()
-	defer p.gateMu.Unlock()
-	return p.gate
+func (p *dgProvider) currentHold() *dgHold {
+	p.holdMu.Lock()
+	defer p.holdMu.Unlock()
+	return p.hold
 }
 
 // total is the number of embedding requests (query + document) the provider received.
 func (p *dgProvider) total() int64 { return p.queries.Load() + p.docs.Load() }
+
+func dgInputCount(body []byte) int64 {
+	var req struct {
+		Inputs json.RawMessage `json:"inputs"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return 0
+	}
+	raw := bytes.TrimSpace(req.Inputs)
+	if len(raw) == 0 {
+		return 0
+	}
+	if raw[0] != '[' {
+		return 1
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return 0
+	}
+	return int64(len(arr))
+}
 
 func (p *dgProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && r.URL.Path == "/embed" {
@@ -267,6 +357,25 @@ func (p *dgProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			p.docs.Add(1)
 		}
+		if n := dgInputCount(body); n > p.maxInputs.Load() {
+			for {
+				old := p.maxInputs.Load()
+				if n <= old || p.maxInputs.CompareAndSwap(old, n) {
+					break
+				}
+			}
+		}
+		now := p.active.Add(1)
+		defer p.active.Add(-1)
+		for {
+			old := p.peak.Load()
+			if now <= old || p.peak.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		if h := p.currentHold(); h != nil && !h.park(r.Context()) {
+			return
+		}
 		switch dgMode(p.mode.Load()) {
 		case dgModeHang:
 			<-r.Context().Done()
@@ -276,20 +385,12 @@ func (p *dgProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"unavailable"}`))
 			return
-		case dgModeGate:
-			p.inflight.Add(1)
-			defer p.inflight.Add(-1)
-			select {
-			case <-p.currentGate():
-			case <-r.Context().Done():
-				return
-			}
 		}
 	}
 	p.backend.ServeHTTP(w, r)
 }
 
-func dgTEIClient(t *testing.T, p *dgProvider) embedding.Client {
+func dgTEIClient(t *testing.T, p *dgProvider, queryTimeout, docTimeout time.Duration) embedding.Client {
 	t.Helper()
 	c, err := embedding.NewClientFromConfig(context.Background(), embedding.ClientConfig{
 		Provider:        embedding.ProviderTEI,
@@ -297,13 +398,27 @@ func dgTEIClient(t *testing.T, p *dgProvider) embedding.Client {
 		Dims:            dgDims,
 		QueryPrefix:     "query: ",
 		DocPrefix:       "passage: ",
-		QueryTimeout:    dgQueryTimeout,
-		DocumentTimeout: 5 * time.Second,
+		QueryTimeout:    queryTimeout,
+		DocumentTimeout: docTimeout,
 	}, embedding.RolePrimary, embedding.ClientDeps{})
 	if err != nil {
 		t.Fatalf("tei client: %v", err)
 	}
 	return c
+}
+
+// dgRecv is a bounded, non-polling receive: it fails the test instead of hanging.
+func dgRecv[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	timer := time.NewTimer(dgRecvDeadline)
+	defer timer.Stop()
+	select {
+	case v := <-ch:
+		return v
+	case <-timer.C:
+		t.Fatalf("timed out after %s waiting for %s", dgRecvDeadline, what)
+	}
+	panic("unreachable")
 }
 
 // dgSeedActiveGeneration inserts g1 (bootstrap, active) and its vector tables.
@@ -404,11 +519,14 @@ type dgEnv struct {
 	sent   int // semantic=1 requests sent
 }
 
-func newDGEnv(t *testing.T) *dgEnv {
+// newDGEnv builds the API stack. queryTimeout is the provider client's real
+// query timeout: dgQueryTimeout (200 ms) for the outage fixture that needs a hung
+// provider to time out, dgRecoveryQueryTimeout for fixtures that park a request.
+func newDGEnv(t *testing.T, queryTimeout time.Duration) *dgEnv {
 	t.Helper()
 	e := &dgEnv{t: t, pool: dgNewPool(t), clk: clock.NewFixed(time.Now().UTC())}
 	e.prov = newDGProvider(t)
-	client := dgTEIClient(t, e.prov)
+	client := dgTEIClient(t, e.prov, queryTimeout, 5*time.Second)
 	e.gen = dgSeedActiveGeneration(t, e.pool, client.Identity)
 	cs := embedding.NewClientSet(client, nil)
 
@@ -523,15 +641,20 @@ func (e *dgEnv) create(corpus, name string) uuid.UUID {
 	if corpus == "tag" {
 		path, body = "/api/v1/tags", fmt.Sprintf(`{"display":%q}`, name)
 	}
+	// Failure messages carry route label, status, decode error and counts only:
+	// response bodies hold item/tag names and must never reach the Actions log.
 	code, raw := e.do(http.MethodPost, path, body)
 	if code != http.StatusCreated {
-		e.t.Fatalf("POST %s = %d %s, want 201", path, code, raw)
+		e.t.Fatalf("POST %s = %d, want 201", path, code)
 	}
 	var out struct {
 		ID uuid.UUID `json:"id"`
 	}
-	if err := json.Unmarshal([]byte(raw), &out); err != nil || out.ID == uuid.Nil {
-		e.t.Fatalf("decode created %s id: %v (%s)", corpus, err, raw)
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		e.t.Fatalf("decode created %s id: %v", corpus, err)
+	}
+	if out.ID == uuid.Nil {
+		e.t.Fatalf("created %s response has no id", corpus)
 	}
 	return out.ID
 }
@@ -578,7 +701,7 @@ func dgQueryPath(route, q string) string {
 func dgDecode(t *testing.T, route string, code int, raw string) dgResponse {
 	t.Helper()
 	if code != http.StatusOK {
-		t.Fatalf("GET %s = %d %s, want 200", route, code, raw)
+		t.Fatalf("GET %s = %d, want 200", route, code)
 	}
 	var out dgResponse
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
@@ -616,9 +739,8 @@ func (e *dgEnv) rawGET(path string) (int, []byte, error) {
 
 func (e *dgEnv) assertReadyz() {
 	e.t.Helper()
-	code, raw := e.do(http.MethodGet, "/api/v1/readyz", "")
-	if code != http.StatusOK {
-		e.t.Fatalf("GET /readyz = %d %s, want 200 while the provider is down", code, raw)
+	if code, _ := e.do(http.MethodGet, "/api/v1/readyz", ""); code != http.StatusOK {
+		e.t.Fatalf("GET /readyz = %d, want 200 while the provider is down", code)
 	}
 }
 
@@ -648,7 +770,7 @@ func (e *dgEnv) degradedDecisions() float64 {
 // ---------------------------------------------------------------------------
 
 func TestDegradeProviderDownLexicalStillServes(t *testing.T) {
-	e := newDGEnv(t)
+	e := newDGEnv(t, dgQueryTimeout)
 	wifi := e.create("item", "Wifi router upstairs")
 
 	// Sanity: while the provider is healthy the same request runs semantically.
@@ -729,7 +851,7 @@ func TestDegradeProviderDownLexicalStillServes(t *testing.T) {
 }
 
 func TestQuickAddWhileProviderDown(t *testing.T) {
-	e := newDGEnv(t)
+	e := newDGEnv(t, dgQueryTimeout)
 	e.prov.setMode(dgModeDown) // dead from the first request on: every embed call is a 503
 	docsBefore := e.prov.docs.Load()
 
@@ -760,8 +882,8 @@ func TestQuickAddWhileProviderDown(t *testing.T) {
 
 	// Reads and lexical suggest keep working; the new item is findable at once and
 	// the semantic leg reports degraded (the query path hit the dead provider).
-	if code, raw := e.do(http.MethodGet, "/api/v1/items/"+itemID.String(), ""); code != http.StatusOK {
-		t.Fatalf("GET /items/{id} = %d %s, want 200", code, raw)
+	if code, _ := e.do(http.MethodGet, "/api/v1/items/"+itemID.String(), ""); code != http.StatusOK {
+		t.Fatalf("GET /items/{id} = %d, want 200", code)
 	}
 	r := e.query("suggest", "quick add", time.Second)
 	e.assertDegradedLexical(r, itemID, "suggest right after quick-add")
@@ -775,37 +897,90 @@ func TestQuickAddWhileProviderDown(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Jobs: the REAL embed_item worker under a virtual-time scheduler.
+// Jobs: the REAL embed_item worker under an event-driven virtual-time scheduler
+// (see the file header for exactly what this models and what it does not).
 // ---------------------------------------------------------------------------
 
+// dgWorkFunc is the worker entry point the simulator invokes. The default is the
+// real jobs.EmbedItemWorker.Work; negative controls wrap it to mutate its result.
+type dgWorkFunc func(context.Context, *river.Job[jobargs.EmbedItemArgs]) error
+
 type dgSimJob struct {
-	args    jobargs.EmbedItemArgs
-	itemID  uuid.UUID
-	due     time.Time
-	attempt int // River attempt number of the next run (1-based)
-	done    bool
-	dead    bool
-	errors  int // failed attempts that consumed an attempt (River backoff retries)
-	snoozes int
+	args        jobargs.EmbedItemArgs
+	itemID      uuid.UUID
+	due         time.Time
+	attempt     int // River attempt number of the next run (1-based)
+	maxAttempts int // MaxAttempts of the river_job row River persisted for this job
+	done        bool
+	dead        bool
+	errors      int // failed attempts that consumed an attempt (River backoff retries)
+	snoozes     int
+}
+
+type dgJobsOpts struct {
+	slots      int                                 // overlapping worker slots; default jobs.MaxEmbedWorkers
+	insertOpts func(kind string) *river.InsertOpts // default jobs.EmbedInsertOpts
+	wrapWork   func(dgWorkFunc) dgWorkFunc         // negative controls only
+}
+
+// dgLockedRand makes the seeded snooze-jitter source safe for the overlapping
+// worker slots (math/rand/v2 generators are not goroutine-safe).
+type dgLockedRand struct {
+	mu sync.Mutex
+	r  *mrand.Rand
+}
+
+func (l *dgLockedRand) Int64N(n int64) int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.r.Int64N(n)
+}
+
+type dgWorkResult struct {
+	idx int
+	err error
 }
 
 type dgJobsEnv struct {
-	t      *testing.T
-	pool   *pgxpool.Pool
-	clk    *clock.Fixed
-	prov   *dgProvider
-	user   uuid.UUID
-	gen    generation.Generation
-	worker *jobs.EmbedItemWorker
-	sims   []*dgSimJob
+	t       *testing.T
+	pool    *pgxpool.Pool
+	clk     *clock.Fixed
+	prov    *dgProvider
+	hold    *dgHold
+	user    uuid.UUID
+	gen     generation.Generation
+	worker  *jobs.EmbedItemWorker
+	breaker *embedding.Breaker // the worker-mode breaker the worker was built with
+	work    dgWorkFunc
+	slots   int
+	sims    []*dgSimJob
+	start   time.Time
+
+	// What River persisted for the inserted jobs (read from the returned rows).
+	persistedMaxAttempts []int
+	persistedQueues      []string
+
+	invocations int // Work calls so far
+	guard       int // hard cap on Work calls: a spinning scheduler aborts here
+	rounds      int
+	lastRound   time.Time
+	tripAt      time.Time // virtual time the worker breaker last opened
+	aborted     bool
+	violations  []string
 }
 
-func newDGJobsEnv(t *testing.T, n int) *dgJobsEnv {
+func newDGJobsEnv(t *testing.T, n int, opts dgJobsOpts) *dgJobsEnv {
 	t.Helper()
 	ctx := context.Background()
-	e := &dgJobsEnv{t: t, pool: dgNewPool(t), clk: clock.NewFixed(time.Now().UTC())}
+	e := &dgJobsEnv{t: t, pool: dgNewPool(t), clk: clock.NewFixed(time.Now().UTC()), slots: opts.slots}
+	if e.slots <= 0 {
+		e.slots = jobs.MaxEmbedWorkers
+	}
 	e.prov = newDGProvider(t)
-	client := dgTEIClient(t, e.prov)
+	e.hold = newDGHold()
+	e.prov.setHold(e.hold)
+	t.Cleanup(e.hold.openAll) // registered after the provider server: runs before its Close
+	client := dgTEIClient(t, e.prov, dgQueryTimeout, dgJobDocTimeout)
 	e.gen = dgSeedActiveGeneration(t, e.pool, client.Identity)
 	cs := embedding.NewClientSet(client, nil)
 	_, metrics := obs.NewRegistry()
@@ -822,19 +997,29 @@ func newDGJobsEnv(t *testing.T, n int) *dgJobsEnv {
 	e.user = user.ID
 
 	// Real worker deps: the worker-mode breaker (3 failures -> 60 s) on the same
-	// virtual clock as the scheduler, deterministic snooze jitter and retry jitter.
-	rnd := mrand.New(mrand.NewPCG(20, 26))
+	// virtual clock as the scheduler, seeded snooze jitter, zero retry jitter.
+	breakers := jobs.NewWorkerBreakers(e.clk.Now, metrics.Embedding)
+	e.breaker = breakers[embedding.ProviderTEI]
 	e.worker = jobs.NewEmbedItemWorker(jobs.Dependencies{
 		Pool:       e.pool,
 		ClientSet:  cs,
-		Breakers:   jobs.NewWorkerBreakers(e.clk.Now, metrics.Embedding),
+		Breakers:   breakers,
 		Metrics:    metrics.Embedding,
 		Now:        e.clk.Now,
 		Jitter:     func() float64 { return 0 },
-		RandSource: rnd,
+		RandSource: &dgLockedRand{r: mrand.New(mrand.NewPCG(20, 26))},
 		Inserter:   jobs.RiverClientInserter{Client: insert},
 	})
+	e.work = e.worker.Work
+	if opts.wrapWork != nil {
+		e.work = opts.wrapWork(e.work)
+	}
+	insertOpts := opts.insertOpts
+	if insertOpts == nil {
+		insertOpts = jobs.EmbedInsertOpts
+	}
 
+	e.start = e.clk.Now()
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("degrade job item %03d", i)
 		row, err := q.InsertItem(ctx, gen.InsertItemParams{UserID: user.ID, Name: name, NameNormalized: strings.ToLower(name)})
@@ -848,60 +1033,271 @@ func newDGJobsEnv(t *testing.T, n int) *dgJobsEnv {
 			TargetID:     row.ID.String(),
 			InputHash:    hex.EncodeToString(hash[:]),
 		}
-		if _, err := insert.Insert(ctx, args, jobs.EmbedInsertOpts(jobargs.KindEmbedItem)); err != nil {
+		res, err := insert.Insert(ctx, args, insertOpts(jobargs.KindEmbedItem))
+		if err != nil {
 			t.Fatalf("enqueue embed_item %d: %v", i, err)
 		}
-		e.sims = append(e.sims, &dgSimJob{args: args, itemID: row.ID, due: e.clk.Now(), attempt: 1})
+		if res.UniqueSkippedAsDuplicate || res.Job == nil {
+			t.Fatalf("enqueue embed_item %d did not insert a row", i)
+		}
+		e.persistedMaxAttempts = append(e.persistedMaxAttempts, res.Job.MaxAttempts)
+		e.persistedQueues = append(e.persistedQueues, res.Job.Queue)
+		e.sims = append(e.sims, &dgSimJob{args: args, itemID: row.ID, due: e.start, attempt: 1, maxAttempts: res.Job.MaxAttempts})
 	}
+	e.guard = dgInvocationBudget(n, dgOutageWindow+dgShortOutage+dgRecoveryLimit)
 	return e
 }
 
-// runUntil advances virtual time in dgVirtualStep ticks, running every due job
-// through the real worker once per tick, until `until` or (when stopWhenDone) all
-// jobs are final.
-func (e *dgJobsEnv) runUntil(until time.Time, stopWhenDone bool) {
-	e.t.Helper()
-	ctx := context.Background()
-	for e.clk.Now().Before(until) {
-		now := e.clk.Now()
-		pending := 0
-		for _, sj := range e.sims {
-			if sj.done || sj.dead {
-				continue
-			}
-			pending++
-			if sj.due.After(now) {
-				continue
-			}
-			job := &river.Job[jobargs.EmbedItemArgs]{JobRow: &rivertype.JobRow{Attempt: sj.attempt}, Args: sj.args}
-			err := e.worker.Work(ctx, job)
-			var snooze *river.JobSnoozeError
-			switch {
-			case err == nil:
-				sj.done = true
-			case asSnooze(err, &snooze):
-				// River: a snooze does not consume an attempt.
-				sj.snoozes++
-				sj.due = now.Add(snooze.Duration)
-			default:
-				sj.errors++
-				if sj.attempt >= jobs.MaxEmbedAttempts {
-					sj.dead = true // River would discard (dead-letter) it here
-					continue
-				}
-				sj.due = e.worker.NextRetry(job)
-				sj.attempt++
-			}
+// dgInvocationBudget bounds Work calls over a horizon: a correct scheduler runs a
+// job at most about once per breaker window (every reschedule is >= the remaining
+// window), plus the first run and one boundary run.
+func dgInvocationBudget(jobCount int, horizon time.Duration) int {
+	return jobCount * (int(horizon/embedding.BreakerOpenWindow) + 2)
+}
+
+func (e *dgJobsEnv) violate(format string, args ...any) {
+	e.violations = append(e.violations, fmt.Sprintf(format, args...))
+}
+
+func (e *dgJobsEnv) allFinal() bool {
+	for _, sj := range e.sims {
+		if !sj.done && !sj.dead {
+			return false
 		}
-		if stopWhenDone && pending == 0 {
+	}
+	return true
+}
+
+// nextEvent is the earliest due pending job, rounded up to River's fetch poll
+// (relative to the start). It never invents backoff: it only quantises a due
+// time the worker itself chose.
+func (e *dgJobsEnv) nextEvent() (time.Time, bool) {
+	var earliest time.Time
+	found := false
+	for _, sj := range e.sims {
+		if sj.done || sj.dead {
+			continue
+		}
+		if !found || sj.due.Before(earliest) {
+			earliest, found = sj.due, true
+		}
+	}
+	if !found {
+		return time.Time{}, false
+	}
+	off := max(earliest.Sub(e.start), 0)
+	ticks := (off + dgFetchPoll - 1) / dgFetchPoll
+	return e.start.Add(ticks * dgFetchPoll), true
+}
+
+// run executes events until `until` (virtual) or, when stopWhenDone, until every
+// job is final. It stops early, with violations recorded, on an immediate
+// reschedule or when the invocation cap is hit; it never spins.
+func (e *dgJobsEnv) run(until time.Time, stopWhenDone bool) {
+	e.t.Helper()
+	for !e.aborted {
+		if stopWhenDone && e.allFinal() {
 			return
 		}
-		e.clk.Advance(dgVirtualStep)
+		next, ok := e.nextEvent()
+		if !ok || next.After(until) {
+			break
+		}
+		if e.rounds > 0 && !next.After(e.lastRound) {
+			e.violate("scheduler cannot advance: a job is due again at the instant it just ran (immediate reschedule)")
+			e.aborted = true
+			return
+		}
+		e.clk.Set(next)
+		e.round()
+	}
+	if !e.aborted && e.clk.Now().Before(until) {
+		e.clk.Set(until)
 	}
 }
 
-func asSnooze(err error, target **river.JobSnoozeError) bool {
-	return errors.As(err, target)
+// round runs every job due at the current virtual instant on e.slots overlapping
+// worker slots. The provider parks each request at the hold barrier; the
+// scheduler releases the parked requests only once every running worker is either
+// parked or finished and either all slots are busy or nothing is left to start.
+// That makes the overlap maximal and deterministic (no sleeps, no polling), so the
+// provider's peak counter is the real peak concurrency the slots allow.
+func (e *dgJobsEnv) round() {
+	now := e.clk.Now()
+	var queue []int
+	for i, sj := range e.sims {
+		if !sj.done && !sj.dead && !sj.due.After(now) {
+			queue = append(queue, i)
+		}
+	}
+	if len(queue) == 0 {
+		return
+	}
+	e.rounds++
+	e.lastRound = now
+	before := e.breaker.State()
+
+	ctx := context.Background()
+	results := make(chan dgWorkResult, len(queue))
+	var snoozed []time.Duration
+	running, blocked, next := 0, 0, 0
+	opened := false
+	timer := time.NewTimer(dgRecvDeadline)
+	defer timer.Stop()
+
+	for (next < len(queue) && !e.aborted) || running > 0 {
+		if e.aborted && !opened {
+			e.hold.openAll() // never leave a parked request behind an aborted run
+			opened = true
+		}
+		for !e.aborted && running < e.slots && next < len(queue) {
+			idx := queue[next]
+			sj := e.sims[idx]
+			job := &river.Job[jobargs.EmbedItemArgs]{
+				JobRow: &rivertype.JobRow{Attempt: sj.attempt, MaxAttempts: sj.maxAttempts},
+				Args:   sj.args,
+			}
+			go func() { results <- dgWorkResult{idx: idx, err: e.work(ctx, job)} }()
+			next++
+			running++
+		}
+		if !e.aborted && blocked > 0 && blocked == running && (running == e.slots || next == len(queue)) {
+			for ; blocked > 0; blocked-- {
+				e.hold.release <- struct{}{}
+			}
+			continue
+		}
+		if running == 0 {
+			continue
+		}
+		timer.Reset(dgRecvDeadline)
+		select {
+		case <-e.hold.entered:
+			blocked++
+		case r := <-results:
+			running--
+			e.handle(r, now, &snoozed)
+		case <-timer.C:
+			e.violate("scheduler round stalled for %s with %d workers running", dgRecvDeadline, running)
+			e.aborted = true
+			return
+		}
+	}
+	e.verifySnoozes(now, before, snoozed)
+}
+
+// handle applies River's contract to one Work result.
+func (e *dgJobsEnv) handle(r dgWorkResult, now time.Time, snoozed *[]time.Duration) {
+	sj := e.sims[r.idx]
+	e.invocations++
+	if e.invocations > e.guard {
+		e.violate("work invocations exceeded the hard cap of %d: the scheduler is spinning", e.guard)
+		e.aborted = true
+		return
+	}
+	var snooze *river.JobSnoozeError
+	switch {
+	case r.err == nil:
+		sj.done = true
+	case errors.As(r.err, &snooze):
+		// River: a snooze reschedules at completion + duration and does not consume an attempt.
+		sj.snoozes++
+		if snooze.Duration < dgFetchPoll {
+			e.violate("immediate reschedule: a job was snoozed for %s (< %s); backoff must come from the worker, not the scheduler", snooze.Duration, dgFetchPoll)
+			e.aborted = true
+			return
+		}
+		sj.due = now.Add(snooze.Duration)
+		*snoozed = append(*snoozed, snooze.Duration)
+	default:
+		sj.errors++
+		if sj.attempt >= sj.maxAttempts {
+			sj.dead = true // River discards (dead-letters) at attempt >= the row's MaxAttempts
+			return
+		}
+		job := &river.Job[jobargs.EmbedItemArgs]{
+			JobRow: &rivertype.JobRow{Attempt: sj.attempt, MaxAttempts: sj.maxAttempts},
+			Args:   sj.args,
+		}
+		sj.due = e.worker.NextRetry(job)
+		if wait, floor := sj.due.Sub(now), jobs.RetryWait(sj.attempt, 0); wait < floor {
+			e.violate("retry after failed attempt %d is %s away, want >= %s", sj.attempt, wait, floor)
+		}
+		sj.attempt++
+	}
+}
+
+// verifySnoozes checks the snoozes a round returned against the worker breaker:
+// never shorter than the remaining open window (the lower bound includes the
+// positive jitter floor of 0), never longer than a full window plus MaxBreakerJitter.
+func (e *dgJobsEnv) verifySnoozes(now time.Time, before embedding.BreakerState, snoozed []time.Duration) {
+	after := e.breaker.State()
+	if after == embedding.BreakerStateOpen && before != embedding.BreakerStateOpen {
+		e.tripAt = now // opened (or reopened by a failed half-open trial) in this round
+	}
+	upper := embedding.BreakerOpenWindow + embedding.MaxBreakerJitter
+	lower := embedding.BreakerOpenWindow // trial in flight or fresh trip: a full window
+	if after == embedding.BreakerStateOpen {
+		lower = e.tripAt.Add(embedding.BreakerOpenWindow).Sub(now)
+	}
+	for _, d := range snoozed {
+		if d < lower {
+			e.violate("snooze %s is below the breaker's remaining window %s", d, lower)
+		}
+		if d > upper {
+			e.violate("snooze %s is above window + max jitter %s", d, upper)
+		}
+	}
+}
+
+// finalChecks records the end-of-run evidence: persisted retry limits and queue,
+// worker-slot concurrency (modelled and measured at the provider) and the batch bound.
+func (e *dgJobsEnv) finalChecks() {
+	for i, m := range e.persistedMaxAttempts {
+		if m < dgPlanMaxAttempts || m < jobs.MaxEmbedAttempts {
+			e.violate("persisted MaxAttempts of job %d is %d, want >= %d (plan 2.17 / jobs.MaxEmbedAttempts %d)", i, m, dgPlanMaxAttempts, jobs.MaxEmbedAttempts)
+			break
+		}
+	}
+	for i, queue := range e.persistedQueues {
+		if queue != jobs.QueueEmbedding {
+			e.violate("job %d was persisted on a queue other than %q", i, jobs.QueueEmbedding)
+			break
+		}
+	}
+	if jobs.MaxEmbedWorkers > dgPlanMaxEmbedWorkers {
+		e.violate("jobs.MaxEmbedWorkers = %d exceeds the plan's %d workers", jobs.MaxEmbedWorkers, dgPlanMaxEmbedWorkers)
+	}
+	if e.slots > dgPlanMaxEmbedWorkers {
+		e.violate("modelled worker slots %d exceed the plan's %d workers", e.slots, dgPlanMaxEmbedWorkers)
+	}
+	if peak := e.prov.peak.Load(); peak > int64(jobs.MaxEmbedWorkers) {
+		e.violate("peak in-flight provider requests %d > jobs.MaxEmbedWorkers %d", peak, jobs.MaxEmbedWorkers)
+	}
+	if batch := e.prov.maxInputs.Load(); batch > int64(embedding.MaxBatch) {
+		e.violate("largest document batch %d > embedding.MaxBatch %d", batch, embedding.MaxBatch)
+	}
+}
+
+// requireClean fails the test when any evidence violation was recorded. Messages
+// carry durations and counts only.
+func (e *dgJobsEnv) requireClean(t *testing.T) {
+	t.Helper()
+	if len(e.violations) > 0 {
+		t.Fatalf("%d evidence violation(s):\n  %s", len(e.violations), strings.Join(e.violations, "\n  "))
+	}
+}
+
+// requireViolation is the negative-control assertion: the helper must have flagged
+// the mutation.
+func (e *dgJobsEnv) requireViolation(t *testing.T, substr string) {
+	t.Helper()
+	for _, v := range e.violations {
+		if strings.Contains(v, substr) {
+			return
+		}
+	}
+	t.Fatalf("evidence helper accepted the mutation: no violation mentions %q (got %d: %v)", substr, len(e.violations), e.violations)
 }
 
 func (e *dgJobsEnv) counts() (done, dead, errored, maxAttempt int) {
@@ -920,12 +1316,21 @@ func (e *dgJobsEnv) counts() (done, dead, errored, maxAttempt int) {
 	return done, dead, errored, maxAttempt
 }
 
-func TestDegradeBreakerNoStorm(t *testing.T) {
-	e := newDGJobsEnv(t, dgJobCount)
-	e.prov.setMode(dgModeDown) // every embed request answers 503
-	start := e.clk.Now()
+func (e *dgJobsEnv) totalSnoozes() int {
+	n := 0
+	for _, sj := range e.sims {
+		n += sj.snoozes
+	}
+	return n
+}
 
-	e.runUntil(start.Add(dgOutageWindow), false)
+func TestDegradeBreakerNoStorm(t *testing.T) {
+	e := newDGJobsEnv(t, dgJobCount, dgJobsOpts{})
+	e.prov.setMode(dgModeDown) // every embed request answers 503
+
+	e.run(e.start.Add(dgOutageWindow), false)
+	e.finalChecks()
+	e.requireClean(t)
 
 	requests := e.prov.total()
 	done, dead, errored, maxAttempt := e.counts()
@@ -960,32 +1365,43 @@ func TestDegradeBreakerNoStorm(t *testing.T) {
 	if maxAttempt >= jobs.MaxEmbedAttempts {
 		t.Fatalf("a job reached attempt %d of %d during a 10 min outage", maxAttempt, jobs.MaxEmbedAttempts)
 	}
-	// And the 200 jobs really were parked (snoozed with jitter), not spun.
-	snoozes := 0
-	for _, sj := range e.sims {
-		snoozes += sj.snoozes
-	}
-	if snoozes < dgJobCount-errored {
+	// And the jobs really were parked (snoozed with jitter, every snooze verified
+	// against the breaker window by verifySnoozes), not spun.
+	if snoozes := e.totalSnoozes(); snoozes < dgJobCount-errored {
 		t.Fatalf("snoozes = %d, want >= %d (every job without a failed attempt parks on the open breaker)", snoozes, dgJobCount-errored)
+	}
+	// The worker is not invoked more often than the breaker windows allow, which is
+	// what keeps the DB/fetch load of 200 parked jobs bounded (not just provider calls).
+	if budget := dgInvocationBudget(dgJobCount, dgOutageWindow); e.invocations < dgJobCount || e.invocations > budget {
+		t.Fatalf("work invocations over %s = %d, want within [%d, %d]", dgOutageWindow, e.invocations, dgJobCount, budget)
+	}
+	// Overlap really happened (two slots both reached the provider) and stayed within the queue limit.
+	if peak := e.prov.peak.Load(); peak != int64(jobs.MaxEmbedWorkers) {
+		t.Fatalf("peak in-flight provider requests = %d, want exactly %d (both worker slots overlapped)", peak, jobs.MaxEmbedWorkers)
+	}
+	if batch := e.prov.maxInputs.Load(); batch != 1 {
+		t.Fatalf("largest document batch = %d, want 1 (the worker embeds one target per request)", batch)
 	}
 }
 
 func TestRecoveryNoStorm(t *testing.T) {
 	t.Run("jobs_complete_none_dead_lettered", func(t *testing.T) {
-		e := newDGJobsEnv(t, dgJobCount)
+		e := newDGJobsEnv(t, dgJobCount, dgJobsOpts{})
 		e.prov.setMode(dgModeDown)
-		start := e.clk.Now()
-		e.runUntil(start.Add(dgShortOutage), false)
+		e.run(e.start.Add(dgShortOutage), false)
 		if done, _, _, _ := e.counts(); done != 0 {
 			t.Fatalf("jobs done during the outage = %d, want 0", done)
 		}
 		duringOutage := e.prov.total()
 
-		// The provider recovers: the next half-open probe succeeds, the breaker
-		// closes, and the jobs drain.
+		// The provider recovers: the next half-open trial succeeds, the breaker
+		// closes, and the jobs drain on two overlapping slots.
 		e.prov.setMode(dgModeOK)
+		e.prov.peak.Store(0) // measure the recovery phase on its own
 		recoveredAt := e.clk.Now()
-		e.runUntil(recoveredAt.Add(dgRecoveryLimit), true)
+		e.run(recoveredAt.Add(dgRecoveryLimit), true)
+		e.finalChecks()
+		e.requireClean(t)
 
 		done, dead, errored, maxAttempt := e.counts()
 		if dead != 0 || maxAttempt >= jobs.MaxEmbedAttempts {
@@ -1000,6 +1416,13 @@ func TestRecoveryNoStorm(t *testing.T) {
 		// No storm on the way back: each job costs exactly one provider request.
 		if got := e.prov.total() - duringOutage; got != dgJobCount {
 			t.Fatalf("provider requests during recovery = %d, want exactly %d (one per job)", got, dgJobCount)
+		}
+		if budget := dgInvocationBudget(dgJobCount, dgShortOutage+dgRecoveryLimit); e.invocations > budget {
+			t.Fatalf("work invocations = %d, want <= %d", e.invocations, budget)
+		}
+		// The drain ran on both slots at once, never more.
+		if peak := e.prov.peak.Load(); peak != int64(jobs.MaxEmbedWorkers) {
+			t.Fatalf("peak in-flight provider requests during recovery = %d, want exactly %d", peak, jobs.MaxEmbedWorkers)
 		}
 		// Every job left a vector with its hash in the active generation.
 		ctx := context.Background()
@@ -1019,65 +1442,63 @@ func TestRecoveryNoStorm(t *testing.T) {
 	})
 
 	t.Run("api_half_open_admits_one_probe", func(t *testing.T) {
-		e := newDGEnv(t)
+		// Generous query timeout: the trial is parked at the provider while the
+		// competing requests are answered, which must not race the outage fixture's
+		// real 200 ms deadline.
+		e := newDGEnv(t, dgRecoveryQueryTimeout)
 		wifi := e.create("item", "Wifi router upstairs")
 
-		e.prov.setMode(dgModeHang)
-		if r := e.query("suggest", "wifi hang", time.Second); r.Semantic {
-			t.Fatal("query against a hung provider must degrade")
+		// A failing provider (503, no timeout involved) opens the API breaker.
+		e.prov.setMode(dgModeDown)
+		if r := e.query("suggest", "wifi down", time.Second); r.Semantic {
+			t.Fatal("query against a failing provider must degrade")
 		}
 		if st := e.rt.Breaker().State(); st != embedding.BreakerStateOpen {
 			t.Fatalf("breaker = %s, want open", st)
 		}
 
-		// The window elapses and the provider is back but slow (gated). A burst of
-		// concurrent suggests arrives: ONE becomes the half-open trial and holds the
-		// gate, all others are rejected without touching the provider.
+		// The window elapses and the provider is back. A burst of concurrent
+		// suggests arrives: ONE becomes the half-open trial and parks at the
+		// provider, all others are rejected without touching it.
 		e.clk.Advance(61 * time.Second)
-		e.prov.armGate()
-		before := e.prov.total()
+		e.prov.setMode(dgModeOK)
+		hold := newDGHold()
+		e.prov.setHold(hold)
 		const burst = 8
-		type result struct {
-			code int
-			raw  []byte
-			err  error
-		}
-		results := make(chan result, burst)
+		results := make(chan dgHTTPResult, burst)
 		var wg sync.WaitGroup
+		t.Cleanup(func() { hold.openAll(); wg.Wait() }) // release the gate even when a barrier fails
+		before := e.prov.total()
 		for i := 0; i < burst; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
 				code, raw, err := e.rawGET(dgQueryPath("suggest", fmt.Sprintf("wifi burst %d", i)))
-				results <- result{code, raw, err}
+				results <- dgHTTPResult{code, raw, err}
 			}(i)
 		}
-		t.Cleanup(func() { e.prov.releaseGate(); wg.Wait() })
 
-		// Deterministic wait (no fixed sleep): the trial is parked at the gate and
-		// the other burst-1 requests have already come back degraded.
-		var collected []result
-		deadline := time.Now().Add(20 * time.Second)
+		// Barrier 1: the trial announces itself at the provider (no polling).
+		dgRecv(t, hold.entered, "the half-open trial to reach the provider")
+		// Barrier 2: the burst-1 competing requests answer while the trial stays parked.
+		collected := make([]dgHTTPResult, 0, burst-1)
 		for len(collected) < burst-1 {
-			select {
-			case r := <-results:
-				collected = append(collected, r)
-			case <-time.After(time.Until(deadline)):
-				t.Fatalf("only %d of %d rejected burst requests returned before the trial finished", len(collected), burst-1)
-			}
+			collected = append(collected, dgRecv(t, results, "a rejected burst request to answer"))
 		}
-		for time.Now().Before(deadline) && e.prov.inflight.Load() != 1 {
-			time.Sleep(10 * time.Millisecond)
-		}
-		if got := e.prov.inflight.Load(); got != 1 {
+		if got := e.prov.active.Load(); got != 1 {
 			t.Fatalf("requests held at the provider = %d, want exactly 1 (the half-open trial)", got)
 		}
 		if got := e.prov.total() - before; got != 1 {
 			t.Fatalf("provider requests during the half-open burst = %d, want exactly 1", got)
 		}
+		select {
+		case <-hold.entered:
+			t.Fatal("a second burst request reached the provider while the trial was in flight")
+		default:
+		}
 		for i, r := range collected {
 			if r.err != nil {
-				t.Fatalf("burst request: %v", r.err)
+				t.Fatalf("burst request %d failed at the transport (%T)", i, r.err)
 			}
 			resp := dgDecode(t, "suggest", r.code, string(r.raw))
 			if resp.Semantic || resp.reason() != "degraded" {
@@ -1086,10 +1507,10 @@ func TestRecoveryNoStorm(t *testing.T) {
 		}
 
 		// The trial completes: it answers semantically and the breaker closes.
-		e.prov.releaseGate()
-		last := <-results
+		hold.release <- struct{}{}
+		last := dgRecv(t, results, "the half-open trial to answer")
 		if last.err != nil {
-			t.Fatalf("trial request: %v", last.err)
+			t.Fatalf("trial request failed at the transport (%T)", last.err)
 		}
 		trial := dgDecode(t, "suggest", last.code, string(last.raw))
 		if !trial.Semantic || trial.reason() != "" {
@@ -1103,10 +1524,64 @@ func TestRecoveryNoStorm(t *testing.T) {
 			t.Fatalf("embedding_breaker_open{tei,api} = %v after recovery, want 0", g)
 		}
 		// Recovered: the next query reaches the provider normally and runs semantic.
-		e.prov.setMode(dgModeOK)
+		hold.openAll()
 		next := e.query("suggest", "router", time.Second)
 		if !next.Semantic || next.reason() != "" || !next.hasItem(wifi) {
 			t.Fatalf("after recovery: semantic=%v reason=%q hasItem=%v, want true/null/true", next.Semantic, next.reason(), next.hasItem(wifi))
 		}
+	})
+}
+
+// dgHTTPResult is one non-test-goroutine HTTP outcome (rawGET never calls t.Fatal).
+type dgHTTPResult struct {
+	code int
+	raw  []byte
+	err  error
+}
+
+// TestNoStormEvidenceRejectsMutations are the negative controls of the job
+// evidence helper: each mutation of the behaviour the no-storm checkbox relies on
+// must make the helper report a violation, so a green TestDegradeBreakerNoStorm /
+// TestRecoveryNoStorm cannot come from a helper that cannot fail.
+func TestNoStormEvidenceRejectsMutations(t *testing.T) {
+	t.Run("immediate_snooze", func(t *testing.T) {
+		const n = 6
+		e := newDGJobsEnv(t, n, dgJobsOpts{wrapWork: func(work dgWorkFunc) dgWorkFunc {
+			return func(ctx context.Context, job *river.Job[jobargs.EmbedItemArgs]) error {
+				err := work(ctx, job)
+				var snooze *river.JobSnoozeError
+				if errors.As(err, &snooze) {
+					return river.JobSnooze(0) // the worker "forgets" its backoff
+				}
+				return err
+			}
+		}})
+		e.prov.setMode(dgModeDown)
+		e.run(e.start.Add(dgOutageWindow), false)
+		e.finalChecks()
+		e.requireViolation(t, "immediate reschedule")
+		if !e.aborted || e.invocations > n {
+			t.Fatalf("a zero snooze must abort the run at once: aborted=%v invocations=%d (jobs=%d)", e.aborted, e.invocations, n)
+		}
+	})
+
+	t.Run("raised_queue_concurrency", func(t *testing.T) {
+		const n = 50
+		e := newDGJobsEnv(t, n, dgJobsOpts{slots: n}) // queue MaxWorkers regressed from 2 to 50
+		e.prov.setMode(dgModeDown)
+		e.run(e.start.Add(30*time.Second), false)
+		e.finalChecks()
+		e.requireViolation(t, "peak in-flight provider requests")
+		e.requireViolation(t, "modelled worker slots")
+	})
+
+	t.Run("too_small_persisted_max_attempts", func(t *testing.T) {
+		e := newDGJobsEnv(t, 3, dgJobsOpts{insertOpts: func(kind string) *river.InsertOpts {
+			o := jobs.EmbedInsertOpts(kind)
+			o.MaxAttempts = 3 // EmbedInsertOpts regressed: the row would dead-letter after 3 attempts
+			return o
+		}})
+		e.finalChecks()
+		e.requireViolation(t, "persisted MaxAttempts")
 	})
 }
