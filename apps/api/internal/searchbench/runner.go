@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -165,6 +164,19 @@ type HarnessConfig struct {
 	PoolMaxConns int           // 0 = production pool (db.NewPool, 10 conns)
 	Semantic     bool          // wire the real semantic.Runtime + stub provider (hybrid scenarios)
 	StubDelay    time.Duration // 90 ms for C1-M
+
+	// SessionSQL is run on every new connection of the harness pool (pgxpool
+	// AfterConnect). TEST-ONLY: the low-recall self-check uses it to make the
+	// planner scan the HNSW index of its tiny fixture (advisor-dec-289 pattern);
+	// it is never set for the benchmark (see benchHarnessConfig) and never exists
+	// in production code, so every measured cell runs on Postgres defaults.
+	SessionSQL []string
+}
+
+// benchHarnessConfig is the harness of TestSearchBench: the hybrid scenarios with
+// the 90 ms stub and the production pool, with NO session/planner overrides.
+func benchHarnessConfig() HarnessConfig {
+	return HarnessConfig{Semantic: true, StubDelay: StubEmbedDelay}
 }
 
 // Harness bundles the router, pool and stubs of one benchmark database.
@@ -180,6 +192,9 @@ type Harness struct {
 	Pin      generation.Pin
 	PoolMax  int
 
+	// SessionSQL echoes HarnessConfig.SessionSQL (test-only planner overrides).
+	SessionSQL []string
+
 	tokMu  sync.Mutex
 	tokens map[int]string
 }
@@ -190,21 +205,35 @@ func NewHarness(ctx context.Context, dsn string, sr *SeedResult, cfg HarnessConf
 		pool *pgxpool.Pool
 		err  error
 	)
-	if cfg.PoolMaxConns <= 0 {
+	if cfg.PoolMaxConns <= 0 && len(cfg.SessionSQL) == 0 {
 		pool, err = db.NewPool(ctx, dsn)
 	} else {
 		var pc *pgxpool.Config
 		pc, err = pgxpool.ParseConfig(dsn)
 		if err == nil {
 			pc.MaxConns = int32(cfg.PoolMaxConns)
+			if cfg.PoolMaxConns <= 0 {
+				pc.MaxConns = 10 // the production pool size (db.NewPool)
+			}
 			pc.MinConns = 1
+			if len(cfg.SessionSQL) > 0 {
+				stmts := append([]string(nil), cfg.SessionSQL...)
+				pc.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
+					for _, s := range stmts {
+						if _, err := c.Exec(ctx, s); err != nil {
+							return fmt.Errorf("session setup %q: %w", s, err)
+						}
+					}
+					return nil
+				}
+			}
 			pool, err = pgxpool.NewWithConfig(ctx, pc)
 		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("searchbench: open pool: %w", err)
 	}
-	h := &Harness{Pool: pool, Seed: sr, PoolMax: int(pool.Config().MaxConns), tokens: map[int]string{}}
+	h := &Harness{Pool: pool, Seed: sr, PoolMax: int(pool.Config().MaxConns), SessionSQL: cfg.SessionSQL, tokens: map[int]string{}}
 
 	// Warm a few connections so the first requests do not pay the handshake.
 	var warm []*pgxpool.Conn
@@ -831,30 +860,57 @@ func (h *Harness) RunVectorCell(ctx context.Context, corpus generation.Corpus, c
 	return AggregateCell(string(corpus), string(class), knob.Label, outs), nil
 }
 
-var vectorLiteral = regexp.MustCompile(`'\[[^\]]*\]'`)
+// annKnobStatements renders the hnsw.* SET LOCAL statements the store applies to
+// an ANN query for this knob set (same values and defaults as
+// store.buildANNSetLocalStatements).
+func annKnobStatements(k KnobSet) []string {
+	iter := k.Iterative
+	if iter == "" {
+		iter = store.IterativeScanRelaxedOrder
+	}
+	ef, scan := k.EfSearch, k.MaxScanTuples
+	if ef == 0 {
+		ef = store.DefaultHNSWEfSearch
+	}
+	if scan == 0 {
+		scan = store.DefaultHNSWMaxScanTuples
+	}
+	return []string{
+		"SET LOCAL hnsw.iterative_scan = " + iter,
+		fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", ef),
+		fmt.Sprintf("SET LOCAL hnsw.max_scan_tuples = %d", scan),
+	}
+}
 
-func (h *Harness) explainANN(ctx context.Context, corpus generation.Corpus, user uuid.UUID, vec []float32) ([]string, error) {
-	tbl, _ := h.tableOf(corpus)
+// explainANNSQL runs EXPLAIN of the ACTUAL ANN SQL (store.ANNSearchSQL, with its
+// bound parameters) in a read-only transaction on the harness pool, under the
+// hnsw.* knobs of `knob`. The pool's own session settings apply (Postgres
+// defaults for the benchmark; the test-only overrides for the low-recall
+// self-check), so the plan is the one the measured queries get.
+func (h *Harness) explainANNSQL(ctx context.Context, corpus generation.Corpus, user uuid.UUID, vec []float32, knob KnobSet, analyze bool) ([]string, error) {
+	ident, err := h.Pin.TableIdent(corpus)
+	if err != nil {
+		return nil, err
+	}
+	sql, err := store.ANNSearchSQL(ident.Sanitize(), corpus)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := h.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	for _, s := range []string{
-		"SET LOCAL hnsw.iterative_scan = 'relaxed_order'",
-		fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", store.DefaultHNSWEfSearch),
-		fmt.Sprintf("SET LOCAL hnsw.max_scan_tuples = %d", store.DefaultHNSWMaxScanTuples),
-	} {
+	for _, s := range annKnobStatements(knob) {
 		if _, err := tx.Exec(ctx, s); err != nil {
 			return nil, err
 		}
 	}
-	lit := pgvector.NewVector(vec).String()
-	q := fmt.Sprintf(`EXPLAIN (ANALYZE, BUFFERS)
-WITH c AS MATERIALIZED (SELECT target_id, embedding <=> '%s'::vector AS dist FROM %s
-                         WHERE user_id = '%s' ORDER BY embedding <=> '%s'::vector LIMIT %d)
-SELECT target_id FROM c ORDER BY dist, target_id`, lit, pgx.Identifier{tbl}.Sanitize(), user.String(), lit, RecallK)
-	rows, err := tx.Query(ctx, q)
+	prefix := "EXPLAIN (COSTS OFF) "
+	if analyze {
+		prefix = "EXPLAIN (ANALYZE, BUFFERS) "
+	}
+	rows, err := tx.Query(ctx, prefix+sql, user, pgvector.NewVector(vec), float64(h.Pin.MinCos), RecallK)
 	if err != nil {
 		return nil, err
 	}
@@ -865,9 +921,51 @@ SELECT target_id FROM c ORDER BY dist, target_id`, lit, pgx.Identifier{tbl}.Sani
 		if err := rows.Scan(&l); err != nil {
 			return nil, err
 		}
-		lines = append(lines, vectorLiteral.ReplaceAllString(l, "'[vector]'"))
+		lines = append(lines, l)
 	}
 	return lines, rows.Err()
+}
+
+// indexAM resolves an index name to its access method ("hnsw", "btree", ...).
+func (h *Harness) indexAM(ctx context.Context, name string) string {
+	var am string
+	err := h.Pool.QueryRow(ctx, `SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+	                              WHERE c.relkind IN ('i', 'I') AND c.relname = $1 LIMIT 1`, name).Scan(&am)
+	if err != nil {
+		return ""
+	}
+	return am
+}
+
+// ANNPlanEvidence runs EXPLAIN of the actual ANN SQL under `knob` and reports
+// whether it scans the tenant's pruned partition through its HNSW index. An
+// EXPLAIN error is reported as a plan problem, not as a run failure.
+func (h *Harness) ANNPlanEvidence(ctx context.Context, corpus generation.Corpus, user uuid.UUID, vec []float32, knob KnobSet) *PlanEvidence {
+	lines, err := h.explainANNSQL(ctx, corpus, user, vec, knob, false)
+	if err != nil {
+		return &PlanEvidence{Problem: "EXPLAIN of the ANN SQL failed: " + err.Error()}
+	}
+	tbl, _ := h.tableOf(corpus)
+	names := map[string]string{}
+	ev := ParseANNPlan(lines, tbl, func(idx string) string {
+		if am, ok := names[idx]; ok {
+			return am
+		}
+		am := h.indexAM(ctx, idx)
+		names[idx] = am
+		return am
+	})
+	return &ev
+}
+
+// explainANN is the representative EXPLAIN (ANALYZE, BUFFERS) of the ANN SQL under
+// the production default knobs. Vector literals (planner constants) are scrubbed.
+func (h *Harness) explainANN(ctx context.Context, corpus generation.Corpus, user uuid.UUID, vec []float32) ([]string, error) {
+	lines, err := h.explainANNSQL(ctx, corpus, user, vec, DefaultKnob(), true)
+	for i, l := range lines {
+		lines[i] = planVector.ReplaceAllString(l, "'[vector]'")
+	}
+	return lines, err
 }
 
 // RunC2 computes the exact oracle per query and scores the knob matrix.
@@ -882,6 +980,7 @@ func (h *Harness) RunC2(ctx context.Context, cfg C2Config) (*C2Report, error) {
 	rep := &C2Report{
 		DefaultKnob: cfg.Default.Label, Matrix: cfg.Knobs, MatrixNote: cfg.MatrixNote,
 		Queries: map[string]int{}, Explain: map[string][]string{}, MatrixPass: map[string][]Verdict{},
+		PlannerOverrides: append([]string(nil), h.SessionSQL...),
 	}
 	for _, corpus := range cfg.Corpora {
 		for _, class := range ClassOrder {
@@ -920,6 +1019,13 @@ func (h *Harness) RunC2(ctx context.Context, cfg C2Config) (*C2Report, error) {
 				cell, err := h.RunVectorCell(ctx, corpus, class, knob, jobs, cfg.Workers, branch)
 				if err != nil {
 					return rep, err
+				}
+				// One EXPLAIN per ANN cell, under the cell's own knobs: record whether
+				// the planner's plan for the ANN SQL is an HNSW scan of the pruned
+				// partition, so a sequential scan can never be reported as "ANN".
+				if cell.ANNQueries > 0 && len(jobs) > 0 {
+					user := h.Seed.Spec.Tenants[jobs[0].q.TenantIdx].UserID
+					cell.Plan = h.ANNPlanEvidence(ctx, corpus, user, jobs[0].q.Vec, knob)
 				}
 				rep.Cells = append(rep.Cells, cell)
 			}
@@ -1007,7 +1113,7 @@ func ConfigFor(p ProfileName) BenchConfig {
 // (so a failure still leaves a partial report to write).
 func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep *Report, logf func(string, ...any)) error {
 	cfg := ConfigFor(env.Profile)
-	h, err := NewHarness(ctx, dsn, sr, HarnessConfig{Semantic: true, StubDelay: StubEmbedDelay})
+	h, err := NewHarness(ctx, dsn, sr, benchHarnessConfig())
 	if err != nil {
 		return err
 	}
@@ -1024,6 +1130,7 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 			"Requests go through httpx.NewRouter + semantic.RequestScopeMiddleware + suggest.Mount with the production auth.SessionStore (real JWT parse and session/user DB lookups; validator clock frozen at start so the 10-minute access token never expires mid-run). No network listener.",
 			"The query-embedding provider is an in-process stub: it never dials anything; EmbedQuery sleeps the stub delay and returns the dataset query vector.",
 			"API connection pool is the production size (db.NewPool, 10 connections); concurrency 32 therefore also measures pool queueing, as production would.",
+			"Planner settings are the Postgres defaults on every measured pool (no enable_* or other planner override anywhere in the benchmark); each C2 ANN cell records the plan the planner chose for the ANN SQL (HNSW or not).",
 			"Hybrid scenarios use the production default knobs; C2 re-runs store.VectorSearch directly with each knob set under the same 80 ms branch budget.",
 		},
 	}
@@ -1095,6 +1202,13 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Verdicts = ConsolidateVerdicts(rep.C1, rep.C2, minMeasured, rep.Run.DatasetHash != "")
 	rep.Hard = HardFailures(rep)
+	if rep.C2 != nil {
+		if cells := NonHNSWANNCells(rep.C2.Cells); len(cells) > 0 {
+			rep.Notes = append(rep.Notes, fmt.Sprintf(
+				"WARNING - ANN cells whose planner-chosen plan is not an HNSW scan of one partition (the planner chose another plan on default settings; their recall/latency measure that plan, not HNSW): %s.",
+				strings.Join(cells, "; ")))
+		}
+	}
 	if rep.Run.Profile == string(ProfileSmoke) {
 		rep.Notes = append(rep.Notes, "smoke — not acceptance evidence (targets.md §4): verdicts above are informational and must not be used to claim a target met or missed.")
 	}

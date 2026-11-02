@@ -710,14 +710,34 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	}
 }
 
-// TestHarnessCatchesLowRecall: with ExactMax=0, exact fallback disabled,
-// iterative scan off and ef_search=1 the same aggregation code must report a
-// C2-R FAIL on an ANN-family path; the control (default knobs, exact path) must
-// have recall 1.0 and no C2-R failure.
+// lowRecallPlannerOverrides are applied ONLY to the connection pool of the
+// low-recall self-check (HarnessConfig.SessionSQL). The 4,000-row single-tenant
+// fixture is too small for the planner to choose the HNSW index by itself (a
+// sequential scan + top-N sort is cheaper), which made the first version of this
+// control "force ANN" on a plan that never touched HNSW (recall 1.0). Disabling
+// the competing paths makes the HNSW ordered index scan the only plan without a
+// disabled node. TEST-ONLY, same pattern as advisor-dec-289: never in production
+// code, never in TestSearchBench (benchHarnessConfig has none), and the plan is
+// proven by EXPLAIN of the actual ANN SQL under these settings before recall is
+// judged.
+var lowRecallPlannerOverrides = []string{
+	"SET enable_seqscan = off",
+	"SET enable_bitmapscan = off",
+	"SET enable_sort = off",
+}
+
+// TestHarnessCatchesLowRecall: the ANN SQL is forced onto the HNSW index
+// (ExactMax=0, exact fallback disabled, iterative scan off, ef_search=1) and the
+// same aggregation code must report a C2-R FAIL. The test first proves from
+// EXPLAIN of the actual ANN SQL, under the same session settings and hnsw.* knobs,
+// that the plan is an HNSW scan of the tenant's pruned partition, and requires that
+// no query took the exact or fallback path; the control (default knobs on the
+// default planner, exact path) must have recall 1.0 and no C2-R failure.
 //
-// Note: the literal path "ann" is unreachable at ef_search=1 (fewer than 20
-// candidates are returned, so the store reports "ann_short"); the assertion is
-// therefore on the ANN family (ann / ann_short) and on "no exact path, no fallback".
+// The assertion on the path is on the ANN family (ann / ann_short): at ef_search=1
+// HNSW returns fewer than 20 candidates, so the store reports "ann_short" - the
+// literal "ann" is not guaranteed and must not be forced by raising ef. What must
+// hold is "no exact path, no fallback", a physical HNSW plan, and the recall collapse.
 func TestHarnessCatchesLowRecall(t *testing.T) {
 	env := dbEnvT(t)
 	limits := map[int]int{0: 4000}
@@ -725,27 +745,45 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 	dsn, sr := freshSeed(t, env, SeedOptions{Tenants: []int{0}, ItemLimit: limits, TagLimit: tagLimits})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	h, err := NewHarness(ctx, dsn, sr, HarnessConfig{Semantic: false})
+
+	// plain: default planner settings, like the benchmark. forcedH: planner
+	// overrides on this pool only (see lowRecallPlannerOverrides).
+	plain, err := NewHarness(ctx, dsn, sr, HarnessConfig{Semantic: false})
 	if err != nil {
-		t.Fatalf("harness: %v", err)
+		t.Fatalf("plain harness: %v", err)
 	}
-	t.Cleanup(h.Close)
+	t.Cleanup(plain.Close)
+	if len(plain.SessionSQL) != 0 {
+		t.Fatalf("the control harness must run on default planner settings: %v", plain.SessionSQL)
+	}
+	forcedH, err := NewHarness(ctx, dsn, sr, HarnessConfig{Semantic: false, SessionSQL: lowRecallPlannerOverrides})
+	if err != nil {
+		t.Fatalf("forced harness: %v", err)
+	}
+	t.Cleanup(forcedH.Close)
 
 	forced := KnobSet{
 		Label: "forced_ann_ef1", EfSearch: 1, MaxScanTuples: 20000, ExactMax: 0,
 		Iterative: "off", ForceNoFallbk: true,
 	}
 	sane := NewKnob(100, unlimitedScan, 0) // informational: forced ANN with sane knobs
-	rep, err := h.RunC2(ctx, C2Config{
-		QueriesPerCell: 100, Workers: 4, Knobs: []KnobSet{forced, DefaultKnob(), sane}, Default: forced,
-		Corpora: []generation.Corpus{generation.CorpusItem},
-		Classes: map[TenantClass][]int{ClassWhale: {0}}, ItemLimit: limits, TagLimit: tagLimits,
-	})
-	if err != nil {
-		t.Fatalf("C2: %v", err)
+	c2cfg := func(def KnobSet, knobs ...KnobSet) C2Config {
+		return C2Config{
+			QueriesPerCell: 100, Workers: 4, Knobs: knobs, Default: def,
+			Corpora: []generation.Corpus{generation.CorpusItem},
+			Classes: map[TenantClass][]int{ClassWhale: {0}}, ItemLimit: limits, TagLimit: tagLimits,
+		}
 	}
-	cellOf := func(label string) CellAgg {
-		for _, c := range rep.Cells {
+	rep, err := forcedH.RunC2(ctx, c2cfg(forced, forced, sane))
+	if err != nil {
+		t.Fatalf("C2 (forced pool): %v", err)
+	}
+	ctlRep, err := plain.RunC2(ctx, c2cfg(DefaultKnob(), DefaultKnob()))
+	if err != nil {
+		t.Fatalf("C2 (control pool): %v", err)
+	}
+	cellOf := func(r *C2Report, label string) CellAgg {
+		for _, c := range r.Cells {
 			if c.Knob == label {
 				return c
 			}
@@ -754,21 +792,47 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 		return CellAgg{}
 	}
 
-	bad := cellOf(forced.Label)
+	// 1. The negative control physically runs on HNSW.
+	bad := cellOf(rep, forced.Label)
 	t.Logf("forced cell: paths=%v recall=%.4f", bad.PathCounts, bad.RecallMean)
+	if len(rep.PlannerOverrides) == 0 {
+		t.Fatal("the forced run must record its planner overrides in the report")
+	}
+	user := sr.Spec.Tenants[0].UserID
+	qs := BuildVectorQueries(sr.Gen, generation.CorpusItem, ClassWhale, []int{0}, 1, limits)
+	if lines, err := forcedH.explainANNSQL(ctx, generation.CorpusItem, user, qs[0].Vec, forced, false); err == nil {
+		t.Logf("EXPLAIN of the ANN SQL under the self-check settings:\n%s", strings.Join(lines, "\n"))
+	}
+	if nat := plain.ANNPlanEvidence(ctx, generation.CorpusItem, user, qs[0].Vec, forced); nat != nil {
+		t.Logf("planner's own choice on the default pool (why the override exists): uses_hnsw=%v problem=%q", nat.UsesHNSW, nat.Problem)
+	}
+	if bad.Plan == nil || !bad.Plan.UsesHNSW {
+		t.Fatalf("the ANN SQL must scan the pruned partition through its HNSW index under the self-check settings, got %+v", bad.Plan)
+	}
+	if bad.Plan.EmbeddingScans != 1 || bad.Plan.SeqScans != 0 || bad.Plan.IndexAM != "hnsw" {
+		t.Fatalf("plan evidence = %+v, want one HNSW index scan and no sequential scan", bad.Plan)
+	}
+
+	// 2. No query took an exact or fallback path.
 	for path, n := range bad.PathCounts {
 		if n > 0 && !IsANNFamily(path) {
 			t.Fatalf("forced run took non-ANN path %q (%d queries); the check would be void", path, n)
 		}
 	}
+	if bad.PathCounts["exact"] != 0 || bad.PathCounts["ann_fallback_exact"] != 0 {
+		t.Fatalf("forced run paths %v: exact and fallback must be 0", bad.PathCounts)
+	}
 	if bad.ANNQueries != bad.Queries || bad.FallbackUsed != 0 {
 		t.Fatalf("forced run: ann %d of %d queries, fallback used %d; want all ANN and no fallback", bad.ANNQueries, bad.Queries, bad.FallbackUsed)
 	}
+
+	// 3. The shared evaluator fails the recall collapse.
 	if v := EvaluateC2R(rep.Cells, forced.Label); !v.Applicable || v.Pass {
-		t.Fatalf("harness failed to catch ef_search=1 recall collapse: %+v", v)
+		t.Fatalf("harness failed to catch ef_search=1 recall collapse (recall %.4f): %+v", bad.RecallMean, v)
 	}
 
-	ctl := cellOf(DefaultKnob().Label)
+	// Control: default knobs on the default planner take the exact path.
+	ctl := cellOf(ctlRep, DefaultKnob().Label)
 	t.Logf("control cell: paths=%v exact recall=%.4f", ctl.PathCounts, ctl.ExactRecallMean)
 	if ctl.PathCounts["exact"] != ctl.Queries || ctl.ExactQueries == 0 {
 		t.Fatalf("control (default knobs, 4000 items <= 5000) must take the exact path: %v", ctl.PathCounts)
@@ -776,13 +840,95 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 	if ctl.ExactRecallMean < 1-1e-9 {
 		t.Fatalf("control exact-path recall = %v, want 1.0", ctl.ExactRecallMean)
 	}
-	if v := EvaluateC2R(rep.Cells, DefaultKnob().Label); v.Applicable && !v.Pass {
+	if v := EvaluateC2R(ctlRep.Cells, DefaultKnob().Label); v.Applicable && !v.Pass {
 		t.Fatalf("control must not fail C2-R: %+v", v)
 	}
-	o := cellOf(sane.Label)
-	t.Logf("informational forced-ANN control (ef=100): paths=%v recall=%.4f", o.PathCounts, o.RecallMean)
-	if n := totalCrossTenant(rep.Cells); n != 0 {
+	o := cellOf(rep, sane.Label)
+	t.Logf("informational forced-ANN control (ef=100): paths=%v recall=%.4f plan=%s", o.PathCounts, o.RecallMean, o.PlanLabel())
+	if n := totalCrossTenant(rep.Cells) + totalCrossTenant(ctlRep.Cells); n != 0 {
 		t.Fatalf("cross-tenant rows in self-check: %d", n)
+	}
+}
+
+// TestBenchHarnessUsesDefaultPlanner: the benchmark's harness has no session or
+// planner overrides; they exist only for the low-recall self-check.
+func TestBenchHarnessUsesDefaultPlanner(t *testing.T) {
+	if cfg := benchHarnessConfig(); len(cfg.SessionSQL) != 0 || !cfg.Semantic || cfg.PoolMaxConns != 0 {
+		t.Fatalf("benchmark harness config = %+v: want the production pool and no SessionSQL", cfg)
+	}
+	for _, s := range lowRecallPlannerOverrides {
+		if !strings.HasPrefix(s, "SET enable_") {
+			t.Fatalf("unexpected self-check override %q", s)
+		}
+	}
+}
+
+// TestParseANNPlan pins how plan evidence is derived from EXPLAIN text: HNSW only
+// when exactly one embedding partition is scanned by an HNSW index scan.
+func TestParseANNPlan(t *testing.T) {
+	const tail = `  ->  Nested Loop
+        ->  CTE Scan on ann a
+        ->  Index Scan using item_pkey on item i
+              Index Cond: (id = a.target_id)`
+	hnsw := []string{
+		"Sort",
+		"  CTE ann",
+		"    ->  Limit",
+		"          ->  Index Scan using item_embedding_g1_p2_hnsw on item_embedding_g1_p2 e",
+		"                Order By: (embedding <=> '[0.1,0.2,0.3]'::vector)",
+		tail,
+	}
+	am := func(idx string) string {
+		return map[string]string{"item_embedding_g1_p2_hnsw": "hnsw", "item_embedding_g1_p2_pkey": "btree"}[idx]
+	}
+	if ev := ParseANNPlan(hnsw, "item_embedding_g1", am); !ev.UsesHNSW || ev.Relation != "item_embedding_g1_p2" ||
+		ev.IndexAM != "hnsw" || ev.EmbeddingScans != 1 || ev.SeqScans != 0 || len(ev.Plan) != 0 {
+		t.Fatalf("pruned HNSW scan: %+v", ev)
+	}
+	seq := []string{
+		"CTE ann",
+		"  ->  Limit",
+		"        ->  Sort",
+		"              Sort Key: ((e.embedding <=> '[0.1,0.2,0.3]'::vector))",
+		"              ->  Seq Scan on item_embedding_g1_p2 e",
+		tail,
+	}
+	ev := ParseANNPlan(seq, "item_embedding_g1", am)
+	if ev.UsesHNSW || ev.SeqScans != 1 || !strings.Contains(ev.Problem, "not an index scan") {
+		t.Fatalf("sequential scan must not count as HNSW: %+v", ev)
+	}
+	if strings.Contains(strings.Join(ev.Plan, "\n"), "0.1,0.2") || !strings.Contains(strings.Join(ev.Plan, "\n"), "'[vector]'") {
+		t.Fatalf("plan text must have its vector literal scrubbed: %v", ev.Plan)
+	}
+	pk := []string{"CTE ann", "  ->  Sort", "        ->  Index Scan using item_embedding_g1_p2_pkey on item_embedding_g1_p2 e", tail}
+	if ev := ParseANNPlan(pk, "item_embedding_g1", am); ev.UsesHNSW || !strings.Contains(ev.Problem, "not an HNSW index") {
+		t.Fatalf("btree index scan must not count as HNSW: %+v", ev)
+	}
+	unpruned := []string{
+		"CTE ann", "  ->  Append",
+		"        ->  Index Scan using item_embedding_g1_p0_hnsw on item_embedding_g1_p0 e_1",
+		"        ->  Index Scan using item_embedding_g1_p1_hnsw on item_embedding_g1_p1 e_2",
+		tail,
+	}
+	if ev := ParseANNPlan(unpruned, "item_embedding_g1", func(string) string { return "hnsw" }); ev.UsesHNSW || ev.EmbeddingScans != 2 {
+		t.Fatalf("an unpruned Append must not count as one HNSW partition scan: %+v", ev)
+	}
+	onParent := []string{"CTE ann", "  ->  Index Scan using item_embedding_g1_hnsw on item_embedding_g1 e", tail}
+	if ev := ParseANNPlan(onParent, "item_embedding_g1", func(string) string { return "hnsw" }); ev.UsesHNSW {
+		t.Fatalf("the parent table is not a pruned partition: %+v", ev)
+	}
+	if ev := ParseANNPlan([]string{"Result"}, "item_embedding_g1", am); ev.UsesHNSW || ev.Problem == "" {
+		t.Fatalf("a plan without an embedding scan must not count as HNSW: %+v", ev)
+	}
+
+	// A cell with ANN queries and a non-HNSW plan is surfaced, not hidden.
+	cell := AggregateCell("item", "whale", "k", []QueryOutcome{annOutcome(ids(20), ids(20), "ann", false, false, 9000)})
+	cell.Plan = &ev
+	if got := NonHNSWANNCells([]CellAgg{cell}); len(got) != 1 || !strings.Contains(got[0], "item/whale/k") {
+		t.Fatalf("NonHNSWANNCells = %v", got)
+	}
+	if !strings.HasPrefix(cell.PlanLabel(), "NOT HNSW") {
+		t.Fatalf("plan label = %q", cell.PlanLabel())
 	}
 }
 

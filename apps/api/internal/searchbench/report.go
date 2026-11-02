@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -266,8 +267,111 @@ type CellAgg struct {
 	ExactQueries    int     `json:"exact_path_queries_e_gt0"`
 	ExactRecallMean float64 `json:"exact_path_recall_mean"`
 
-	BranchLatency    LatencyStats `json:"branch_latency_all"`
-	ANNBranchLatency LatencyStats `json:"branch_latency_ann"` // C2-B input
+	BranchLatency    LatencyStats `json:"branch_latency_all"` // C2-B input: every request of the cell
+	ANNBranchLatency LatencyStats `json:"branch_latency_ann"` // informational: ANN-family requests only
+
+	// Plan is the plan of the ANN SQL (one EXPLAIN per cell, under the cell's
+	// hnsw.* knobs, on the planner's own choice) for cells with ANN-family queries.
+	Plan *PlanEvidence `json:"ann_plan,omitempty"`
+}
+
+// PlanEvidence records whether the plan of the actual ANN SQL
+// (store.ANNSearchSQL) scans the pruned partition through its HNSW index. It
+// keeps a benchmark from silently measuring a sequential scan + exact sort as
+// "ANN" (SBW3-1-1).
+type PlanEvidence struct {
+	UsesHNSW       bool     `json:"uses_hnsw"`
+	Index          string   `json:"index,omitempty"`
+	IndexAM        string   `json:"index_am,omitempty"`
+	Relation       string   `json:"relation,omitempty"`
+	EmbeddingScans int      `json:"embedding_scans"` // scans of embedding relations in the plan (1 = pruned to one partition)
+	SeqScans       int      `json:"embedding_seq_scans"`
+	Problem        string   `json:"problem,omitempty"` // why the plan is not an HNSW scan of one partition
+	Plan           []string `json:"plan,omitempty"`    // plan text, only when UsesHNSW is false (vector literals scrubbed)
+}
+
+var (
+	planScanRe = regexp.MustCompile(`(Index Only Scan|Index Scan|Bitmap Heap Scan|Bitmap Index Scan|Seq Scan|Tid Scan)( Backward)?(?: using (\S+))? on (\S+)`)
+	planVector = regexp.MustCompile(`'\[[^\]]*\]'`)
+)
+
+// ParseANNPlan inspects `EXPLAIN (COSTS OFF)` text of the ANN SQL. parent is the
+// partitioned embedding table (e.g. item_embedding_g1); indexAM resolves an index
+// name to its access method ("hnsw"). The plan "uses HNSW" iff exactly one
+// embedding relation is scanned (the hash partition of the tenant, so partition
+// pruning applied), by a plain Index Scan whose index is an hnsw index.
+func ParseANNPlan(lines []string, parent string, indexAM func(string) string) PlanEvidence {
+	ev := PlanEvidence{}
+	type scan struct{ node, index, rel string }
+	var scans []scan
+	for _, l := range lines {
+		m := planScanRe.FindStringSubmatch(l)
+		if m == nil || !strings.Contains(m[4], "_embedding_g") {
+			continue // scans of item/tag (the live join) are not the vector scan
+		}
+		rel := m[4]
+		if i := strings.LastIndex(rel, "."); i >= 0 {
+			rel = rel[i+1:]
+		}
+		scans = append(scans, scan{node: m[1] + m[2], index: m[3], rel: rel})
+		if m[1] == "Seq Scan" {
+			ev.SeqScans++
+		}
+	}
+	ev.EmbeddingScans = len(scans)
+	switch {
+	case len(scans) == 0:
+		ev.Problem = "no scan of an embedding table in the plan"
+	case len(scans) > 1:
+		ev.Problem = fmt.Sprintf("%d embedding scans: the tenant partition was not pruned to a single scan", len(scans))
+	default:
+		s := scans[0]
+		ev.Relation, ev.Index = s.rel, s.index
+		if s.index != "" && indexAM != nil {
+			ev.IndexAM = indexAM(s.index)
+		}
+		switch {
+		case s.node != "Index Scan" && s.node != "Index Scan Backward":
+			ev.Problem = fmt.Sprintf("%s on %s, not an index scan", s.node, s.rel)
+		case ev.IndexAM != "hnsw":
+			ev.Problem = fmt.Sprintf("index scan on %s uses index %q (access method %q), not an HNSW index", s.rel, s.index, ev.IndexAM)
+		case s.rel == parent || !strings.HasPrefix(s.rel, parent+"_"):
+			ev.Problem = fmt.Sprintf("scanned relation %s is not a partition of %s", s.rel, parent)
+		default:
+			ev.UsesHNSW = true
+		}
+	}
+	if !ev.UsesHNSW {
+		for _, l := range lines {
+			ev.Plan = append(ev.Plan, planVector.ReplaceAllString(l, "'[vector]'"))
+		}
+	}
+	return ev
+}
+
+// PlanLabel is the short plan cell of the C2 table.
+func (c CellAgg) PlanLabel() string {
+	switch {
+	case c.Plan == nil:
+		return "-"
+	case c.Plan.UsesHNSW:
+		return "HNSW (" + c.Plan.Relation + ")"
+	default:
+		return "NOT HNSW: " + c.Plan.Problem
+	}
+}
+
+// NonHNSWANNCells lists the cells that have ANN-family queries although the plan
+// of the ANN SQL is not an HNSW scan of the pruned partition: their "ann" numbers
+// measure a different plan and must not be read as HNSW recall or latency.
+func NonHNSWANNCells(cells []CellAgg) []string {
+	var out []string
+	for _, c := range cells {
+		if c.ANNQueries > 0 && c.Plan != nil && !c.Plan.UsesHNSW {
+			out = append(out, fmt.Sprintf("%s/%s/%s: %s", c.Corpus, c.Class, c.Knob, c.Plan.Problem))
+		}
+	}
+	return out
 }
 
 // AggregateCell applies the frozen definitions to a set of outcomes.
@@ -742,6 +846,10 @@ type C2Report struct {
 	CountCost   []CountCostRow       `json:"capped_count_cost"`
 	Explain     map[string][]string  `json:"explain_analyze_buffers"`
 	MatrixPass  map[string][]Verdict `json:"matrix_verdicts"`
+	// PlannerOverrides lists session-level planner settings applied to the pool
+	// that measured the cells. Always empty for the benchmark (Postgres defaults);
+	// only the low-recall self-check sets them.
+	PlannerOverrides []string `json:"planner_overrides"`
 }
 
 // HardwareInfo is the part of hardware-template.md that Go can collect.
@@ -1123,9 +1231,9 @@ func RenderMarkdown(r *Report) string {
 		c := r.C2
 		w("## C2 - recall / underfill / vector branch\n\n")
 		w("Default knob set: `%s`. %s\n\n", c.DefaultKnob, c.MatrixNote)
-		w("| Corpus | Class | Knob | Queries | ANN q. | %s | %s | recall@20 mean | recall>=0.8 | underfill after | underfill before (ANN cand.) | overlap | false+ | scan-cap suspect | fallback | timeout | cross-tenant | branch p95/p99 ms (all paths, C2-B) | branch p95/p99 ms (ANN only) | paths |\n",
+		w("| Corpus | Class | Knob | Queries | ANN q. | %s | %s | recall@20 mean | recall>=0.8 | underfill after | underfill before (ANN cand.) | overlap | false+ | scan-cap suspect | fallback | timeout | cross-tenant | branch p95/p99 ms (all paths, C2-B) | branch p95/p99 ms (ANN only) | paths | ANN plan (planner choice) |\n",
 			mdCell("|E|>0"), mdCell("|E|=0"))
-		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, x := range c.Cells {
 			var paths []string
 			for _, p := range []string{"exact", "ann", "ann_fallback_exact", "ann_short"} {
@@ -1133,11 +1241,16 @@ func RenderMarkdown(r *Report) string {
 					paths = append(paths, fmt.Sprintf("%s %d (%.0f%%)", p, n, 100*float64(n)/float64(x.Queries)))
 				}
 			}
-			w("| %s | %s | %s | %d | %d | %d | %d | %.4f | %.1f%% | %.2f%% | %.1f%% | %.3f | %d | %d | %d | %d | %d | %.1f / %.1f | %.1f / %.1f | %s |\n",
+			w("| %s | %s | %s | %d | %d | %d | %d | %.4f | %.1f%% | %.2f%% | %.1f%% | %.3f | %d | %d | %d | %d | %d | %.1f / %.1f | %.1f / %.1f | %s | %s |\n",
 				x.Corpus, x.Class, x.Knob, x.Queries, x.ANNQueries, x.Eligible, x.ExcludedE0, x.RecallMean, 100*x.QFraction,
 				100*x.UnderfillAfter, 100*x.UnderfillBeforeANN, x.OverlapMean, x.FalsePositives, x.ScanCapSuspect,
 				x.FallbackUsed, x.TimedOut, x.CrossTenantRows, x.BranchLatency.P95Ms, x.BranchLatency.P99Ms,
-				x.ANNBranchLatency.P95Ms, x.ANNBranchLatency.P99Ms, strings.Join(paths, ", "))
+				x.ANNBranchLatency.P95Ms, x.ANNBranchLatency.P99Ms, strings.Join(paths, ", "), mdCell(x.PlanLabel()))
+		}
+		if len(c.PlannerOverrides) > 0 {
+			w("\n**Planner overrides on the measuring pool (self-check only): %s**\n", mdCell(strings.Join(c.PlannerOverrides, "; ")))
+		} else {
+			w("\nPlanner settings: Postgres defaults (no `enable_*` override). The _ANN plan_ column is what the planner chose for the ANN SQL under the cell's `hnsw.*` knobs (one EXPLAIN per cell); a cell that is not an HNSW scan of one partition is reported as such, never pinned.\n")
 		}
 		w("\n_scan-cap suspect_ = ANN candidate underfill although the tenant has >= 20 vectors (proxy for ef_search / max_scan_tuples stopping the scan; `PathStats` has no direct scan-cap signal). _overlap_ = |ANN ∩ E| / |ANN ∪ E| after threshold.\n\n")
 		if len(c.CountCost) > 0 {
@@ -1165,7 +1278,7 @@ func RenderMarkdown(r *Report) string {
 			w("\n")
 		}
 		if len(c.Explain) > 0 {
-			w("### EXPLAIN (ANALYZE, BUFFERS) of a representative ANN candidate query\n\n_Simplified candidate query (not byte-identical to production SQL); vector parameter not shown._\n\n")
+			w("### EXPLAIN (ANALYZE, BUFFERS) of the ANN SQL (whale tenant, production default knobs)\n\n_The actual `store.ANNSearchSQL` statement with bound parameters; vector literals are scrubbed._\n\n")
 			keys := make([]string, 0, len(c.Explain))
 			for k := range c.Explain {
 				keys = append(keys, k)
