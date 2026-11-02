@@ -1164,6 +1164,13 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       viMessages.content.privacy.hintServerReadable,
     );
 
+    // Wait for the entries query and entry card list to settle before checking add-entry controls
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-card-${ENTRY_ID_1}`)).toBeInTheDocument();
+      expect(screen.queryByTestId('item-entries-empty')).toBeNull();
+      expect(screen.getByTestId('btn-add-text')).not.toBeDisabled();
+    });
+
     // Open tag popover and verify privacy notice there too
     fireEvent.click(screen.getByTestId('tag-add-chip'));
     await waitFor(() => {
@@ -1181,6 +1188,35 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     expect(within(actionBar).getByTestId('btn-import-json')).toHaveTextContent(
       viMessages.content.json.importJsonCta,
     );
+    expect(
+      within(actionBar).getByRole('button', {
+        name: viMessages.content.item.addTextCta,
+      }),
+    ).toBeEnabled();
+    expect(
+      within(actionBar).getByRole('button', {
+        name: viMessages.content.json.addJsonCta,
+      }),
+    ).toBeEnabled();
+    expect(
+      within(actionBar).getByRole('button', {
+        name: viMessages.content.json.importJsonCta,
+      }),
+    ).toBeEnabled();
+
+    // Legacy "+ JSON" placeholder label is absent; empty-state add-entry controls are absent once entries settle
+    const cardList = screen.getByTestId('entry-card-list');
+    expect(
+      within(actionBar).queryByRole('button', { name: /^\+ JSON$/ }),
+    ).toBeNull();
+    expect(
+      within(cardList).queryByRole('button', {
+        name: new RegExp(
+          `^(?:\\+ JSON|${viMessages.content.json.addJsonCta.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|${viMessages.content.json.importJsonCta.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|Import JSON)$`,
+          'i',
+        ),
+      }),
+    ).toBeNull();
   });
 
   it('renders javascript:alert(1) and URLs as plain text with NO <a> links and NO innerHTML, and shows no entry title or edit date on cards (Q19)', async () => {

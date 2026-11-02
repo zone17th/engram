@@ -12,17 +12,24 @@ import { assertVaultSecretElementAttributes } from '@/features/entries/secret-in
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
 import { contentQueryKeys } from '@/features/items/query-keys';
 import {
+  clearAllUnconfirmedSaves,
+  getUnconfirmedSavesSnapshot,
+  recordUnconfirmedSave,
+  useUnconfirmedSavesForUser,
+} from '@/features/entries/unconfirmed-save-store';
+import {
   clearLockClearedNotice,
-  clearSaveUnconfirmed,
   getLockClearedNoticeSnapshot,
-  getSaveUnconfirmedSnapshot,
   recordLockClearedNotice,
-  recordSaveUnconfirmed,
 } from '@/features/omnibox/unconfirmed-save-store';
 import { setKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import * as contentApi from '@/lib/api/content';
 import type { EntryEnvelopeV1, EntryMeta, ItemSummary, Tag } from '@/lib/api/content';
 import { postSessionBroadcast } from '@/lib/auth/broadcast';
+import {
+  commitAuthenticatedUser,
+  __testing as userChangedTesting,
+} from '@/lib/auth/user-changed';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 const mockRouterPush = vi.fn();
@@ -208,9 +215,11 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     mockVaultMetaOverride = undefined;
     mockReloadVaultMeta.mockReset();
     mockReloadVaultMeta.mockResolvedValue({ vault_key_id: TEST_KEY_ID, version: 1 });
-    clearSaveUnconfirmed();
+    clearAllUnconfirmedSaves();
     clearLockClearedNotice();
+    userChangedTesting.resetCommittedUserForTests();
     setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
   });
 
   it('shows searchHint in search mode (mentioning Ctrl+Enter and server plaintext), tagHint in #… mode, and no hint in add mode', () => {
@@ -826,9 +835,11 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     mockVaultMetaOverride = undefined;
     mockReloadVaultMeta.mockReset();
     mockReloadVaultMeta.mockResolvedValue({ vault_key_id: TEST_KEY_ID, version: 1 });
-    clearSaveUnconfirmed();
+    clearAllUnconfirmedSaves();
     clearLockClearedNotice();
+    userChangedTesting.resetCommittedUserForTests();
     setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
     document.cookie = 'sabk_csrf=v1.sess.test; path=/';
   });
 
@@ -1609,7 +1620,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     // Part 2a-bis (HM18B-R2-3): First send inside `contentMutate` fails on network error (uncertain lost response)
     // and its automatic internal retry receives `401 session_invalid` -> `priorUncertain` is true via intra-call
     // retry observation, so `saveUnconfirmed` IS recorded for User A even on the first plan attempt.
-    clearSaveUnconfirmed();
+    clearAllUnconfirmedSaves();
     let internalRetryAttempt = 0;
     const internalRetryFetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -1642,7 +1653,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     expect(screen.getByTestId('omnibox-save-unconfirmed-notice')).toHaveTextContent(
       'Lần lưu trước vào “wifi” chưa xác nhận; kiểm tra mục trước khi lưu lại',
     );
-    clearSaveUnconfirmed();
+    clearAllUnconfirmedSaves();
     internalRetryFetchSpy.mockRestore();
 
     // Part 2b (HM18B-R1-5): When no real user ID is known (`['auth','me']` cache empty and `getKnownDeviceSessionUserId() === null`),
@@ -1685,6 +1696,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     // Even after User A signs in later, nothing was recorded under a fallback ID
     queryClient.setQueryData(['auth', 'me'], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
     rerender(
       <NextIntlClientProvider locale="vi" messages={viMessages}>
         <QueryClientProvider client={queryClient}>
@@ -1759,18 +1771,20 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     );
     expect(entryCreateSpy).toHaveBeenCalledTimes(2); // No auto-replay after unlock
 
-    // Switching to User B in the `['auth', 'me', ...]` cache reactively hides and clears User A's
-    // unconfirmed notice immediately without requiring an unmount or parent rerender (HM18-CI-10)
+    // Switching to User B via `commitAuthenticatedUser` (and `['auth', 'me', ...]` cache) reactively hides and clears User A's
+    // unconfirmed notice immediately without requiring an unmount or parent rerender (HM18-CI-10, advisor-dec-199/205)
     act(() => {
       queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_B_ID } });
       setKnownDeviceSessionUserId(USER_B_ID);
+      commitAuthenticatedUser(USER_B_ID);
     });
     expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
 
-    // Even if `['auth', 'me']` switches back to User A later without a new uncertain save, User A's cleared notice does not reappear
+    // Even if session switches back to User A later without a new uncertain save, User A's cleared notice does not reappear
     act(() => {
       queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_A_ID } });
       setKnownDeviceSessionUserId(USER_A_ID);
+      commitAuthenticatedUser(USER_A_ID);
     });
     expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
   });
@@ -1842,18 +1856,20 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     );
     expect(entryCreateSpy).not.toHaveBeenCalled();
 
-    // Switching to User B in the `['auth', 'me', ...]` cache reactively hides and clears User A's
-    // lock notice immediately without requiring an unmount or parent rerender (HM18-CI-10)
+    // Switching to User B via `commitAuthenticatedUser` (and `['auth', 'me', ...]` cache) reactively hides and clears User A's
+    // lock notice immediately without requiring an unmount or parent rerender (HM18-CI-10, advisor-dec-199/205)
     act(() => {
       queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_B_ID } });
       setKnownDeviceSessionUserId(USER_B_ID);
+      commitAuthenticatedUser(USER_B_ID);
     });
     expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
 
-    // Even if `['auth', 'me']` switches back to User A later, the cleared lock notice does not reappear
+    // Even if session switches back to User A later, the cleared lock notice does not reappear
     act(() => {
       queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_A_ID } });
       setKnownDeviceSessionUserId(USER_A_ID);
+      commitAuthenticatedUser(USER_A_ID);
     });
     expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
 
@@ -1862,6 +1878,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     // (never adopted) when a user ID subsequently appears so User B can never see a notice recorded before User B signed in.
     remounted.unmount();
     clearLockClearedNotice();
+    userChangedTesting.resetCommittedUserForTests();
     queryClient.removeQueries({ queryKey: ['auth', 'me'] });
     setKnownDeviceSessionUserId(null);
 
@@ -1885,6 +1902,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     act(() => {
       queryClient.setQueryData(['auth', 'me', 1], { user: { id: USER_A_ID } });
       setKnownDeviceSessionUserId(USER_A_ID);
+      commitAuthenticatedUser(USER_A_ID);
     });
     expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
 
@@ -2326,8 +2344,14 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     // Seed the real epoch-keyed `['auth', 'me', sessionEpoch]` entry used by `SessionProvider`
     queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
     recordLockClearedNotice({ userId: USER_A_ID, kind: 'plan' });
-    recordSaveUnconfirmed({ userId: USER_A_ID, itemName: 'wifi' });
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI.id,
+      itemName: 'wifi',
+      source: 'omnibox',
+    });
 
     renderOmnibox(<Omnibox />, { queryClient });
 
@@ -2338,18 +2362,216 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       'Lần lưu trước vào “wifi” chưa xác nhận; kiểm tra mục trước khi lưu lại',
     );
 
-    // Switch the `['auth', 'me', ...]` cache to User B WITHOUT unmounting or calling `rerender(...)`
+    // Switch to User B via `commitAuthenticatedUser` (and `['auth', 'me', ...]` cache) WITHOUT unmounting or calling `rerender(...)`
     act(() => {
       queryClient.setQueriesData(
         { queryKey: ['auth', 'me'] },
         { user: { id: USER_B_ID } },
       );
       setKnownDeviceSessionUserId(USER_B_ID);
+      commitAuthenticatedUser(USER_B_ID);
     });
 
     expect(screen.queryByTestId('omnibox-lock-cleared-notice')).not.toBeInTheDocument();
     expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
     expect(getLockClearedNoticeSnapshot()).toBeNull();
-    expect(getSaveUnconfirmedSnapshot()).toBeNull();
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+  });
+
+  it('shares a single unconfirmed-save store between omnibox and item page notice (omnibox -> item page and item page -> omnibox), and user switch clears both views (FU7, dec-205)', async () => {
+    vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+      items: [ITEM_WIFI],
+      total: 1,
+      next_cursor: null,
+    });
+
+    // Hook probe (RV-C-FE-2): the real `ItemDetailPage` banner uses the same `useUnconfirmedSavesForUser` hook.
+    function ItemPageNoticeProbe({
+      userId,
+      itemId,
+    }: {
+      readonly userId: string | null;
+      readonly itemId: string;
+    }) {
+      const notices = useUnconfirmedSavesForUser(userId, itemId);
+      return (
+        <>
+          {notices.map((notice) => (
+            <div
+              key={`${notice.source}-${notice.itemId}`}
+              role="status"
+              data-testid="entry-save-unconfirmed-banner"
+            >
+              <span>{notice.itemName}</span>
+            </div>
+          ))}
+        </>
+      );
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
+
+    const { rerender } = renderOmnibox(
+      <>
+        <Omnibox />
+        <ItemPageNoticeProbe userId={USER_A_ID} itemId={ITEM_WIFI.id} />
+      </>,
+      { queryClient },
+    );
+
+    // 1. Record saved from the omnibox path (uncertain send followed by 401 session_invalid on retry)
+    // is visible to BOTH the omnibox notice AND the item page notice (`useUnconfirmedSavesForUser(userId, itemId)`).
+    let omniAttempt = 0;
+    const entryCreateSpy = vi.spyOn(contentApi, 'entryCreate').mockImplementation(async () => {
+      omniAttempt += 1;
+      if (omniAttempt === 1) {
+        throw new TypeError('Failed to fetch: lost POST /entries response');
+      }
+      throw new ProblemError({
+        type: 'https://engram.zone17.click/problems/session_invalid',
+        title: 'Session invalid',
+        status: 401,
+        code: 'session_invalid',
+      });
+    });
+
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(textarea, { target: { value: 'wifi: omnibox uncertain save' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    await screen.findByTestId('omnibox-retry-plan-btn');
+    fireEvent.click(screen.getByTestId('omnibox-retry-plan-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-save-unconfirmed-notice')).toHaveTextContent('wifi');
+    });
+    expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi');
+    expect(getUnconfirmedSavesSnapshot()).toHaveLength(1);
+    expect(getUnconfirmedSavesSnapshot()[0]).toMatchObject({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI.id,
+      itemName: 'wifi',
+      source: 'omnibox',
+    });
+    entryCreateSpy.mockRestore();
+
+    // User A -> User B switch clears both views and empties the single store
+    act(() => {
+      queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_B_ID } });
+      setKnownDeviceSessionUserId(USER_B_ID);
+      commitAuthenticatedUser(USER_B_ID);
+    });
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+            <ItemPageNoticeProbe userId={USER_B_ID} itemId={ITEM_WIFI.id} />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).not.toBeInTheDocument();
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+
+    // 2. Vice versa: a record saved from the item page path (`source: 'entry'`) is visible to BOTH
+    // the item page notice AND the omnibox notice, and a subsequent user switch (B -> A) clears both views.
+    act(() => {
+      recordUnconfirmedSave({
+        userId: USER_B_ID,
+        itemId: ITEM_WIFI_GUEST.id,
+        itemName: ITEM_WIFI_GUEST.name,
+        source: 'entry',
+      });
+    });
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+            <ItemPageNoticeProbe userId={USER_B_ID} itemId={ITEM_WIFI_GUEST.id} />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByTestId('entry-save-unconfirmed-banner')).toHaveTextContent('wifi khách');
+    expect(screen.getByTestId('omnibox-save-unconfirmed-notice')).toHaveTextContent(
+      'Lần lưu trước vào “wifi khách” chưa xác nhận; kiểm tra mục trước khi lưu lại',
+    );
+
+    // Switch from User B back to User A -> clears both views immediately
+    act(() => {
+      queryClient.setQueriesData({ queryKey: ['auth', 'me'] }, { user: { id: USER_A_ID } });
+      setKnownDeviceSessionUserId(USER_A_ID);
+      commitAuthenticatedUser(USER_A_ID);
+    });
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={queryClient}>
+          <UndoToastProvider>
+            <Omnibox />
+            <ItemPageNoticeProbe userId={USER_A_ID} itemId={ITEM_WIFI_GUEST.id} />
+          </UndoToastProvider>
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+    expect(screen.queryByTestId('omnibox-save-unconfirmed-notice')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('entry-save-unconfirmed-banner')).not.toBeInTheDocument();
+    expect(getUnconfirmedSavesSnapshot()).toEqual([]);
+  });
+
+  it('dismisses only source: "omnibox" unconfirmed records on quick-add submit and preserves item-page source: "entry" records for the same user (RV-C-FE-1)', async () => {
+    vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+      items: [ITEM_WIFI],
+      total: 1,
+      next_cursor: null,
+    });
+    vi.spyOn(contentApi, 'entryCreate').mockImplementation(async (itemId, body) =>
+      makeEntryMeta(itemId, body.id),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    setKnownDeviceSessionUserId(USER_A_ID);
+    commitAuthenticatedUser(USER_A_ID);
+
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI_GUEST.id,
+      itemName: ITEM_WIFI_GUEST.name,
+      source: 'entry',
+    });
+    recordUnconfirmedSave({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI.id,
+      itemName: ITEM_WIFI.name,
+      source: 'omnibox',
+    });
+    expect(getUnconfirmedSavesSnapshot()).toHaveLength(2);
+
+    renderOmnibox(<Omnibox />, { queryClient });
+
+    const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+    fireEvent.change(textarea, { target: { value: 'wifi: quick-add submit preserves entry notice' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    const toast = await screen.findByTestId('undo-toast-item');
+    expect(within(toast).getByText(/Đã lưu vào “wifi”/)).toBeInTheDocument();
+
+    const remaining = getUnconfirmedSavesSnapshot();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toMatchObject({
+      userId: USER_A_ID,
+      itemId: ITEM_WIFI_GUEST.id,
+      itemName: ITEM_WIFI_GUEST.name,
+      source: 'entry',
+    });
   });
 });

@@ -640,6 +640,8 @@ async function setupImportHarness(options?: {
 
   const messages = locale === 'en' ? enMessages : viMessages;
 
+  const lockEpochEnv = makeSimpleLockEpochEnv();
+
   function buildTree(node?: ReactNode) {
     const content =
       node !== undefined ? (
@@ -661,7 +663,7 @@ async function setupImportHarness(options?: {
                     shims.push(shim);
                     return shim.port;
                   }}
-                  lockEpochEnv={makeSimpleLockEpochEnv()}
+                  lockEpochEnv={lockEpochEnv}
                 >
                   <Probe />
                   {content}
@@ -687,7 +689,11 @@ async function setupImportHarness(options?: {
       opGeneration: createOp.opGeneration,
     });
   });
-  await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+  await waitFor(() => {
+    expect(vaultCtx.state).toBe('unlocked');
+    expect(vaultCtx.inFlight).toBe(false);
+    expect(vaultCtx.unlockBaseline?.lockEpoch).toBe(vaultCtx.tabKnownLockEpoch);
+  });
 
   if (!options?.skipInitialReloadVaultMeta) {
     await act(async () => {
@@ -708,12 +714,12 @@ async function setupImportHarness(options?: {
 
   for (let i = 0; i < initialList.length; i++) {
     const spec = initialList[i]!;
-    const op = vaultCtx.beginOp();
-    const sealed = await op.client.sealEntry({
+    const opGeneration = vaultCtx.captureOpGeneration();
+    const sealed = await vaultCtx.getClient().sealEntry({
       entryId: spec.id,
       keyId: KEY_ID,
       plaintext: spec.text,
-      opGeneration: op.opGeneration,
+      opGeneration,
     });
     const bytes = utf8Encoder.encode(spec.text).byteLength;
     const bucket = Math.max(256, Math.ceil(bytes / 256) * 256);
@@ -738,12 +744,12 @@ async function setupImportHarness(options?: {
   const openServerEntryPlaintext = async (entryId: string): Promise<string> => {
     const rec = entriesMap.get(entryId);
     if (!rec) throw new Error(`Entry ${entryId} not found`);
-    const op = vaultCtx.beginOp();
-    const opened = await op.client.openEntry({
+    const opGeneration = vaultCtx.captureOpGeneration();
+    const opened = await vaultCtx.getClient().openEntry({
       entryId: rec.id,
       envelope: rec.envelope,
       ciphertext: rec.ciphertext,
-      opGeneration: op.opGeneration,
+      opGeneration,
     });
     return opened.plaintext;
   };
@@ -773,13 +779,22 @@ async function setupImportHarness(options?: {
         });
         await vaultCtx.reloadVaultMeta();
       });
-      await waitFor(() => expect(vaultCtx.state).toBe('unlocked'));
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('unlocked');
+        expect(vaultCtx.inFlight).toBe(false);
+        expect(vaultCtx.unlockBaseline?.lockEpoch).toBe(vaultCtx.tabKnownLockEpoch);
+      });
     },
     lock: async () => {
+      const prevLockEpoch = vaultCtx.tabKnownLockEpoch;
       await act(async () => {
         await vaultCtx.lockNow();
       });
-      await waitFor(() => expect(vaultCtx.state).toBe('locked'));
+      await waitFor(() => {
+        expect(vaultCtx.state).toBe('locked');
+        expect(vaultCtx.inFlight).toBe(false);
+        expect(vaultCtx.tabKnownLockEpoch).toBeGreaterThan(prevLockEpoch);
+      });
     },
     signOutSession: async () => {
       await act(async () => {
@@ -1299,7 +1314,11 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
   it('advisor-dec-209: omnibox JSON banner handoff never touches location, history.state, or Web Storage, and wipes on lock between click and open, logout, user switch, and dialog close', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {
+      expect(h.vault().state).toBe('unlocked');
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
 
     const handoffSecret = 'DEC_209_HANDOFF_SECRET_884422';
@@ -1352,6 +1371,13 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     expect(realLockHolderRef.text).toBe('');
 
     await h.unlock();
+    await waitFor(() => {
+      expect(h.vault().state).toBe('unlocked');
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+    });
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     expect(getJsonImportHandoffSnapshot()).toBeNull();
 
@@ -1373,7 +1399,11 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     // Re-mount the page and verify no stale handoff dialog reopens
     h.rerenderPage();
     await waitFor(() => {
+      expect(h.vault().state).toBe('unlocked');
+      expect(h.vault().inFlight).toBe(false);
+      expect(h.vault().unlockBaseline?.lockEpoch).toBe(h.vault().tabKnownLockEpoch);
       expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+      expect(screen.getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
     });
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     // 4. User switch (User A -> User B) wipes the open handoff
@@ -1951,4 +1981,57 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       source: 'entry',
     });
   }, 30_000);
+
+  it('FU13 (dec-228, dec-229): hides #importFileInput from keyboard/a11y tree while delegating click from Choose file button, and applies text-success-ink on valid #importStatusLine', async () => {
+    const h = await setupImportHarness();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog = screen.getByTestId('import-json-dialog');
+    const fileInput = within(dialog).getByTestId('import-json-file-input') as HTMLInputElement;
+    const chooseFileBtn = within(dialog).getByTestId('import-json-choose-file-btn');
+    const statusLine = within(dialog).getByTestId('import-json-status-line');
+
+    // dec-228: sr-only file input is excluded from tab order and a11y tree
+    expect(fileInput).toHaveAttribute('id', 'importFileInput');
+    expect(fileInput).toHaveAttribute('tabindex', '-1');
+    expect(fileInput.tabIndex).toBe(-1);
+    expect(fileInput).toHaveAttribute('aria-hidden', 'true');
+
+    // Clicking the visible Choose file button triggers fileInput.click()
+    const inputClickSpy = vi.spyOn(fileInput, 'click');
+    fireEvent.click(chooseFileBtn);
+    expect(inputClickSpy).toHaveBeenCalledTimes(1);
+    inputClickSpy.mockRestore();
+
+    // File change still imports and valid #importStatusLine uses high-contrast text-success-ink (dec-229)
+    const validPayload = '{"fu13":"contrast","ok":true}';
+    await act(async () => {
+      fireEvent.change(fileInput, {
+        target: { files: [makeFileFromBytes(utf8Encoder.encode(validPayload), 'fu13.json')] },
+      });
+    });
+
+    await waitFor(() => {
+      expect(statusLine).toHaveAttribute('id', 'importStatusLine');
+      expect(statusLine).toHaveClass('font-medium', 'text-success-ink');
+      expect(statusLine).not.toHaveClass('text-success');
+    });
+
+    fireEvent.click(within(dialog).getByTestId('import-json-submit-btn'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('import-json-dialog')).toBeNull();
+    });
+
+    const importReqs = h.server.requests.filter((r) =>
+      r.url.endsWith(`/items/${ITEM_ID}/entries/import-json`),
+    );
+    expect(importReqs).toHaveLength(1);
+    const reqBody = JSON.parse(importReqs[0]!.rawBody) as { id: string; source: string };
+    expect(reqBody.source).toBe('file');
+    const savedPlaintext = await h.server.openServerEntryPlaintext(reqBody.id);
+    expect(savedPlaintext).toBe(validPayload);
+  });
 });

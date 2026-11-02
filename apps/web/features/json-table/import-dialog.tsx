@@ -1510,7 +1510,7 @@ export function ImportJsonDialog({
     });
     statusLineClass = 'font-medium text-danger';
   } else if (validDoc) {
-    statusLineClass = 'font-medium text-success';
+    statusLineClass = 'font-medium text-success-ink';
     if (validDoc.root.kind === 'object') {
       statusLineText = tJson('importStatusValidObject', {
         count: validDoc.root.properties.length,
@@ -1734,6 +1734,8 @@ export function ImportJsonDialog({
                   data-testid="import-json-file-input"
                   accept=".json,application/json"
                   className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden="true"
                   disabled={atEntryLimit || savingInFlight || unconfirmedSaveState !== null}
                   onChange={(e) => {
                     void handleFileChange(e);
