@@ -684,7 +684,7 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	const (
 		minN         = 200 // self-check size; the real run uses MinMeasuredPerScenario
 		injectedMs   = 50.0
-		visibleDelta = 40.0 // injected p50 must exceed the control p50 by at least this much
+		visibleDelta = injectedMs / 2 // injected p50 must exceed the control p50 by at least this much (25 ms)
 	)
 
 	// Control first (no delay): logged only. A shared runner may exceed the
@@ -728,8 +728,11 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	}
 	// (iii) ... and stands out against the undelayed control of the same run.
 	// Medians, not p95: a single noisy control tail (78 ms p95 seen in CI) must
-	// not make the comparison flake; a 50 ms delay in every branch shifts the
-	// whole distribution, so the median moves by about the injected amount.
+	// not make the comparison flake. The visibility margin is half the injected
+	// delay (advisor-dec-305): a closed-loop run cannot show the full delay at the
+	// median, because the delay itself lowers the arrival rate and the contention
+	// (CI 41496729972 observed a 36.6 ms median delta for a 50 ms hook). Half the
+	// delay (25 ms) still separates a real injection from runner noise.
 	t.Logf("control p50 %.2f ms p95 %.2f ms; injected p50 %.2f ms p95 %.2f ms", cl.Stats.P50Ms, cl.Stats.P95Ms, sl.Stats.P50Ms, sl.Stats.P95Ms)
 	if sl.Stats.P50Ms < cl.Stats.P50Ms+visibleDelta {
 		t.Fatalf("injected p50 %.2f ms is not at least %.0f ms above the control p50 %.2f ms (p95: injected %.2f ms, control %.2f ms)",
