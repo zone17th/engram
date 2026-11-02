@@ -525,4 +525,13 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	if nearItem.ID != nearItemID || nearItem.Match != suggest.MatchSemantic || nearItem.TagTotal != 1 || len(nearItem.Tags) != 1 || nearItem.Tags[0].ID != nearTagID {
 		t.Fatalf("nearItem = %+v, want ID=%s Match=semantic TagTotal=1 Tags=[%s]", nearItem, nearItemID, nearTagID)
 	}
+
+	// Verify Task 14 store.VectorSearch recorded search_vector_path_total{corpus, path="exact"}
+	// for both item and tag branches via forwarded obs.Metrics.Search (RV-T12-BE-6, dec-293).
+	if got := counterValue(t, metrics.Search.VectorPathTotal.WithLabelValues(suggest.CorpusItem, string(semantic.VectorPathExact))); got != 1 {
+		t.Fatalf("search_vector_path_total{corpus=item,path=exact} = %v, want 1", got)
+	}
+	if got := counterValue(t, metrics.Search.VectorPathTotal.WithLabelValues(suggest.CorpusTag, string(semantic.VectorPathExact))); got != 1 {
+		t.Fatalf("search_vector_path_total{corpus=tag,path=exact} = %v, want 1", got)
+	}
 }
