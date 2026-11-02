@@ -262,32 +262,51 @@ export function needleForms(value: string): NeedleForm[] {
   return forms;
 }
 
-/** Labels (form suffixes only, never values) of every `needleForms(value)` form found in `haystack`. */
-export function encodedNeedleHits(value: string, haystack: string): string[] {
-  return needleForms(value)
-    .filter((form) => haystack.includes(form.value))
-    .map((form) => (form.suffix === '' ? 'literal' : form.suffix));
-}
-
 /**
- * Negative control for the encoded-needle matcher (ACC-FE3-4, Advisor: each check must be able to fail): a synthetic
- * needle embedded as base64 at a non-aligned offset, as base64url, as hex and URI-encoded inside a JSON body must be
- * found, and a body without it must not. Values are synthetic and never printed.
+ * Negative control for the request monitor's encoded-needle path (ACC-FE3-4, ACC-FE4-1; Advisor: each check must be
+ * able to fail). It drives a throwaway, unattached monitor through the SAME code as the real one: `registerSecret`
+ * (form generation + storage) and the request scan (`ingestRequestForSelfTest` -> `inspectRequest`). A synthetic needle
+ * sent as base64 at a non-aligned offset, as base64url, as hex and URI-encoded must each be reported with an encoded
+ * form label, a body without it must not, and a needle in a URL path must be reported with the path redacted
+ * (ACC-FE4-2). Values are synthetic and never printed.
  */
 export function verifyEncodedNeedleMatcherNegativeControl(): void {
   const needle = `enc-negative-control/${Date.now().toString(36)}?+é`;
   const raw = Buffer.from(needle, 'utf8');
   const b64Odd = Buffer.concat([Buffer.from([9]), raw, Buffer.from([8, 7])]).toString('base64');
   const b64urlOdd = Buffer.concat([Buffer.from([1, 2]), raw]).toString('base64url');
-  for (const body of [
-    JSON.stringify({ ciphertext: b64Odd }),
-    JSON.stringify({ ciphertext: b64urlOdd }),
-    JSON.stringify({ q: raw.toString('hex') }),
-    `q=${encodeURIComponent(needle)}`,
-  ]) {
-    expect(encodedNeedleHits(needle, body).length > 0).toBe(true);
+  const cases: ReadonlyArray<{ readonly body: string; readonly form: RegExp }> = [
+    { body: JSON.stringify({ ciphertext: b64Odd }), form: /#b64-\d$/ },
+    { body: JSON.stringify({ ciphertext: b64urlOdd }), form: /#b64(url)?-\d$/ },
+    { body: JSON.stringify({ q: raw.toString('hex') }), form: /#hex$/ },
+    { body: `q=${encodeURIComponent(needle)}`, form: /#uri$/ },
+  ];
+  for (const c of cases) {
+    const probe = createRequestPlaintextMonitor([], { skipSelfTest: true });
+    probe.registerSecret('selfTestNeedle', needle);
+    probe.ingestRequestForSelfTest({ method: 'POST', url: 'https://self-test.invalid/api/v1/x', headers: {}, postData: c.body });
+    expect(probe.getLeaks().some((l) => l.surface === 'postData' && c.form.test(l.needleLabel))).toBe(true);
   }
-  expect(encodedNeedleHits(needle, JSON.stringify({ ciphertext: Buffer.alloc(64, 5).toString('base64') }))).toEqual([]);
+  const clean = createRequestPlaintextMonitor([], { skipSelfTest: true });
+  clean.registerSecret('selfTestNeedle', needle);
+  clean.ingestRequestForSelfTest({
+    method: 'POST',
+    url: 'https://self-test.invalid/api/v1/x',
+    headers: {},
+    postData: JSON.stringify({ ciphertext: Buffer.alloc(64, 5).toString('base64') }),
+  });
+  expect(clean.getLeaks().length).toBe(0);
+  const inPath = createRequestPlaintextMonitor([], { skipSelfTest: true });
+  inPath.registerSecret('selfTestNeedle', needle);
+  inPath.ingestRequestForSelfTest({
+    method: 'GET',
+    url: `https://self-test.invalid/api/v1/items/${encodeURIComponent(needle)}/entries`,
+    headers: {},
+    postData: null,
+  });
+  const pathLeaks = inPath.getLeaks().filter((l) => l.surface === 'url');
+  expect(pathLeaks.length > 0).toBe(true);
+  expect(pathLeaks.every((l) => !l.pathname.includes('enc-negative-control') && l.pathname.includes('<redacted>'))).toBe(true);
 }
 
 export interface ReplayedRequestRecord {
@@ -331,6 +350,13 @@ export interface RequestPlaintextMonitor {
   readonly getLeaks: () => readonly RequestPlaintextLeak[];
   readonly getRequestCount: () => number;
   readonly assertNoLeaks: () => void;
+  /** Feeds one synthetic request through the real scan path; used only by the negative control. */
+  readonly ingestRequestForSelfTest: (req: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers: Record<string, string>;
+    readonly postData: string | null;
+  }) => void;
 }
 
 /**
@@ -342,8 +368,11 @@ export interface RequestPlaintextMonitor {
  */
 export function createRequestPlaintextMonitor(
   initialSecrets: ReadonlyArray<{ readonly label: string; readonly value: string }> = [],
+  options: { readonly skipSelfTest?: boolean } = {},
 ): RequestPlaintextMonitor {
-  verifyEncodedNeedleMatcherNegativeControl();
+  if (!options.skipSelfTest) {
+    verifyEncodedNeedleMatcherNegativeControl();
+  }
   const secrets = new Map<string, string>();
   const addSecretForms = (label: string, value: string) => {
     for (const form of needleForms(value)) {
@@ -368,7 +397,25 @@ export function createRequestPlaintextMonitor(
   const leaks: RequestPlaintextLeak[] = [];
   const seenLeakKeys = new Set<string>();
   const attachedContexts = new WeakSet<BrowserContext>();
-  const recordLeak = (leak: RequestPlaintextLeak) => {
+  // ACC-FE4-2: a leak report must never carry the leaked value, so any path segment holding any registered form is
+  // redacted; a needle spanning segments (it contains '/') redacts everything after the first three segments.
+  const redactPathname = (pathname: string): string => {
+    const values = [...secrets.values()].filter((v) => v.length > 0);
+    const holdsSecret = (text: string) => values.some((v) => text.includes(v));
+    const segments = pathname.split('/').map((seg) => {
+      let decoded = seg;
+      try {
+        decoded = decodeURIComponent(seg);
+      } catch {
+        // keep the raw segment
+      }
+      return holdsSecret(seg) || holdsSecret(decoded) ? '<redacted>' : seg;
+    });
+    const joined = segments.join('/');
+    return holdsSecret(joined) ? `${segments.slice(0, 3).join('/')}/<redacted>` : joined;
+  };
+  const recordLeak = (rawLeak: RequestPlaintextLeak) => {
+    const leak: RequestPlaintextLeak = { ...rawLeak, pathname: redactPathname(rawLeak.pathname) };
     const key = `${leak.method}:${leak.pathname}:${leak.surface}:${leak.headerName ?? ''}:${leak.needleLabel}`;
     if (!seenLeakKeys.has(key)) {
       seenLeakKeys.add(key);
@@ -465,6 +512,14 @@ export function createRequestPlaintextMonitor(
     },
     assertNoLeaks() {
       expect(leaks, `Plaintext leaked in network requests: ${JSON.stringify(leaks)}`).toEqual([]);
+    },
+    ingestRequestForSelfTest(req) {
+      inspectRequest({
+        method: () => req.method,
+        url: () => req.url,
+        headers: () => req.headers,
+        postData: () => req.postData,
+      });
     },
   };
 }
