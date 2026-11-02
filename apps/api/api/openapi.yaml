@@ -2723,6 +2723,7 @@ paths:
         Cursor opaque base64url JSON `{v, scope, kind, gen, qh, tier, score, last_used_at, count, id}` với `qh` là 16 byte đầu của
         `HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn)` — **không chứa q thô**. Lệch `q`/`scope`/`kind`/`generation` hoặc cursor hỏng → `400 invalid_request`.
         Nếu `last_used_at` đổi giữa hai trang, client dedup theo `id`.
+        Contract phía client cho trang cursor ("Xem thêm", SPEC §6.8): client chỉ append `items` (hoặc `tags` khi `scope=tag`) vào nhóm đang hiện, theo thứ tự server, loại trùng theo `(kind,id)`; hàng `near`, `nearState` và trạng thái semantic của trang 1 được giữ, và `semantic:false` / `near:[]` / `semantic_reason:"request_lexical"` của trang cursor không được đọc là degraded hay ≈ tắt; trang cursor dùng `requestMode='lex'` trong cache key và không thuộc snapshot.
       security:
         - sessionCookie: []
       parameters:
@@ -2759,7 +2760,7 @@ paths:
           required: false
           description: |
             `0` ép chỉ lexical; `1` (mặc định) cho phép trả `near` (≤ 5) ở trang đầu khi đủ điều kiện (`near` chỉ trả ở trang đầu, khi có `cursor` thì `near=[]`).
-            Contract phía client (SPEC §3.5, server không kiểm chứng được gate-cleanliness): mọi request `GET /search` của client chỉ gửi `semantic=1` khi draft sinh ra query sạch qua cổng gửi tại thời điểm gửi, không có `cursor`, và thoả SPEC §3.5 quy tắc 7 (gồm `scope ≠ tag`); mọi request khác (Enter trên draft không sạch như taint/dán, khoá dấu hai chấm ở mọi chế độ, nhiều dòng hoặc > 200 rune; gửi lại khi bật ≈ trên draft không sạch — vốn chỉ PATCH setting và không gửi gì; các trang "Xem thêm"/có `cursor`; retry sau `Retry-After` của query không sạch; hoặc chế độ `#` `scope=tag` từ omnibox) luôn gửi `semantic=0` (API vẫn trả lời `scope=tag&semantic=1`, nhưng client không gửi). Với `/search` có `cursor`, client luôn gửi `semantic=0`.
+            Contract phía client (SPEC §3.5, server không kiểm chứng được gate-cleanliness): mọi request `GET /search` của client chỉ gửi `semantic=1` khi draft sinh ra query sạch qua cổng gửi tại thời điểm gửi, không có `cursor`, và thoả SPEC §3.5 quy tắc 7 (gồm `scope ≠ tag`); mọi request khác (Enter trên draft không sạch như taint/dán, khoá dấu hai chấm ở mọi chế độ, nhiều dòng hoặc > 200 rune; gửi lại khi bật ≈ trên draft không sạch — vốn chỉ PATCH setting và không gửi gì; các trang "Xem thêm"/có `cursor`; retry sau `Retry-After` của query không sạch; hoặc chế độ `#` từ omnibox — draft sau trim bắt đầu bằng `#`, bất kể `scope` được gửi; Enter-search từ draft `#` gửi `scope=tag&semantic=0`) luôn gửi `semantic=0` (API vẫn trả lời `scope=tag&semantic=1`, nhưng client không gửi). Với `/search` có `cursor`, client luôn gửi `semantic=0`.
           schema:
             type: integer
             enum: [0, 1]
