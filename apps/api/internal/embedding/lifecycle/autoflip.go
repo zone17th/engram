@@ -26,6 +26,9 @@ const (
 	// DefaultBootstrapFlipInterval is the production period.
 	DefaultBootstrapFlipInterval = time.Minute
 
+	// BootstrapFlipPeriodicID identifies the periodic job in the River client.
+	BootstrapFlipPeriodicID = "embedding_bootstrap_flip"
+
 	bootstrapFlipTimeout = 10 * time.Minute
 )
 
@@ -262,6 +265,6 @@ func BootstrapFlipPeriodicJob(interval time.Duration) *river.PeriodicJob {
 		func() (river.JobArgs, *river.InsertOpts) {
 			return jobargs.BootstrapFlipArgs{}, BootstrapFlipInsertOpts()
 		},
-		&river.PeriodicJobOpts{RunOnStart: true},
+		&river.PeriodicJobOpts{ID: BootstrapFlipPeriodicID, RunOnStart: true},
 	)
 }
