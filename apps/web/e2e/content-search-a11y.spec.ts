@@ -258,7 +258,7 @@ async function runKeyboardJourney(page: Page): Promise<void> {
   await expectRowsSettled(page, 'item');
   // Group order is tags, then items: the first ↓ lands on the tag `nimbus-prod`, the second on the first item.
   const active = listbox.locator('[role="option"][aria-selected="true"]');
-  await expectActiveOption(page, 'tag');
+  await expectActiveOption(page, 'tag', { press: true });
   await page.keyboard.press('ArrowDown');
   await expectActiveOption(page, 'item');
   const activeName = (await active.locator('.omni-opt-title').first().textContent()) ?? '';

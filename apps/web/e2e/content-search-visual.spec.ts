@@ -636,26 +636,43 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
     await expect(toast).toBeVisible();
     await settle(page);
 
-    const overlap = await page.evaluate(() => {
-      const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
-      const lb = document.getElementById('omni-listbox');
-      if (!stack || !lb) return null;
-      const a = stack.getBoundingClientRect();
-      const b = lb.getBoundingClientRect();
-      const intersects = a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-      return { intersects, stackTop: Math.round(a.top), listboxBottom: Math.round(b.bottom) };
-    });
-    expect(overlap, 'toast stack and listbox must both be present').not.toBeNull();
     await expectNoHorizontalScroll(ctx, 'undo-toast', 390);
     await saveCapture(ctx, 'undo-toast', 390);
     leakGuard.assertNoLeaks();
     leakGuard.assertSawEntriesPost();
-    // FU10 (advisor-dec-326): the product fix for RV-T22-1-FE1-6 lands in this PR, so this is a HARD assert. It runs after the
-    // capture so a red run still leaves the evidence screenshot.
+
+    // FU10 (advisor-dec-326): the product fix for RV-T22-1-FE1-6 lands in this PR, so this is a HARD assert. It measures the
+    // VISIBLE popover (`#omni-pop`, the clipping box the user sees), not the unclipped `#omni-listbox`, which is taller than
+    // `#omni-pop` once the popover scrolls. It runs after the capture so the evidence PNG still shows the popover at the top
+    // (and a red run still leaves it); the scrollIntoView below only happens inside the measurement.
+    const overlap = await page.evaluate(() => {
+      const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
+      const pop = document.getElementById('omni-pop');
+      const create = pop?.querySelector<HTMLElement>('[data-opt-kind="create"]');
+      if (!stack || !pop || !create) return null;
+      const a = stack.getBoundingClientRect();
+      const p = pop.getBoundingClientRect();
+      const intersects = a.left < p.right && a.right > p.left && a.top < p.bottom && a.bottom > p.top;
+      // The action row must be reachable by scrolling the popover.
+      create.scrollIntoView({ block: 'nearest' });
+      const c = create.getBoundingClientRect();
+      const p2 = pop.getBoundingClientRect();
+      return {
+        intersects,
+        stackTop: Math.round(a.top),
+        popBottom: Math.round(p.bottom),
+        createReachable: c.top >= p2.top - 1 && c.bottom <= p2.bottom + 1 && c.bottom <= a.top,
+      };
+    });
+    expect(overlap, 'toast stack, #omni-pop and its create action row must all be present').not.toBeNull();
     expect(
       overlap!.intersects,
-      `undo toast stack overlaps the open dropdown at 390 (stackTop=${overlap!.stackTop}, listboxBottom=${overlap!.listboxBottom})`,
+      `undo toast stack overlaps the open dropdown at 390 (stackTop=${overlap!.stackTop}, popBottom=${overlap!.popBottom})`,
     ).toBe(false);
+    expect(
+      overlap!.createReachable,
+      'the create action row must be reachable above the toast stack by scrolling #omni-pop',
+    ).toBe(true);
   });
 }
 
