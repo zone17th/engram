@@ -684,7 +684,7 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	const (
 		minN         = 200 // self-check size; the real run uses MinMeasuredPerScenario
 		injectedMs   = 50.0
-		visibleDelta = 40.0 // injected p95 must exceed the control p95 by at least this much
+		visibleDelta = 40.0 // injected p50 must exceed the control p50 by at least this much
 	)
 
 	// Control first (no delay): logged only. A shared runner may exceed the
@@ -727,8 +727,13 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 		t.Fatalf("injected delay not visible in the measured p95: %.2f ms < %.0f ms (%+v)", sl.Stats.P95Ms, injectedMs, sl.Stats)
 	}
 	// (iii) ... and stands out against the undelayed control of the same run.
-	if sl.Stats.P95Ms < cl.Stats.P95Ms+visibleDelta {
-		t.Fatalf("injected p95 %.2f ms is not at least %.0f ms above the control p95 %.2f ms", sl.Stats.P95Ms, visibleDelta, cl.Stats.P95Ms)
+	// Medians, not p95: a single noisy control tail (78 ms p95 seen in CI) must
+	// not make the comparison flake; a 50 ms delay in every branch shifts the
+	// whole distribution, so the median moves by about the injected amount.
+	t.Logf("control p50 %.2f ms p95 %.2f ms; injected p50 %.2f ms p95 %.2f ms", cl.Stats.P50Ms, cl.Stats.P95Ms, sl.Stats.P50Ms, sl.Stats.P95Ms)
+	if sl.Stats.P50Ms < cl.Stats.P50Ms+visibleDelta {
+		t.Fatalf("injected p50 %.2f ms is not at least %.0f ms above the control p50 %.2f ms (p95: injected %.2f ms, control %.2f ms)",
+			sl.Stats.P50Ms, visibleDelta, cl.Stats.P50Ms, sl.Stats.P95Ms, cl.Stats.P95Ms)
 	}
 }
 
