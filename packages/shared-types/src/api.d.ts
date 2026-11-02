@@ -557,7 +557,7 @@ export interface paths {
         head?: never;
         /**
          * Cập nhật settings từng phần
-         * @description Field vắng giữ nguyên. null/unknown = 400. Bật semantic khi probe down = 409, không lưu patch.
+         * @description Field vắng giữ nguyên. null/unknown = 400. Bật semantic khi `semantic_available=false` (tĩnh) hoặc breaker mở = 409 (`semantic_unavailable`), không lưu patch.
          */
         patch: operations["meSettingsPatch"];
         trace?: never;
@@ -1227,6 +1227,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Gợi ý mục và tag theo từng phím gõ (lexical + vùng gần nghĩa semantic)
+         * @description Chạy song song trên hai corpus plaintext (`item.name` và `tag.display`/`normalized`; mỗi nhánh read-only timeout 50 ms, quá giờ
+         *     đánh dấu trong `lexical_partial`). Không bao giờ đọc hay trả body entry, không trả `hint`, không echo `q`/`qn`.
+         *     `q` vắng/rỗng/chỉ khoảng trắng → `mode=recent` (sắp `last_used_at DESC, id DESC`, không gọi provider). `q` chuẩn hoá ra rỗng
+         *     (`!!!`, `#` một mình; `textnorm.ErrEmptyQuery`) → `200` với mảng rỗng, `mode=prefix`. Ký tự đầu `#` sau trim ép `scope=tag`
+         *     và lấy token đầu. `len_runes(qn) < 2` → `mode=prefix`; `≥ 2` → `mode=full` (prefix + fuzzy `pg_trgm`); semantic chỉ chạy khi
+         *     `len_runes(qn) ≥ 3`, `semantic=1`, deployment/user bật và breaker đóng. Quota theo `(scope, limit, mode)` cố định, độc lập với
+         *     cờ `semantic` nên `tags` và `items` giống hệt giữa `semantic=0` và `semantic=1` trên cùng snapshot.
+         */
+        get: operations["suggest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tìm kiếm đầy đủ có phân trang keyset theo scope (Enter khi không chọn hàng active)
+         * @description Cùng chuẩn hoá và ranking theo tier `(tier DESC, score DESC, last_used_at DESC, count DESC, id ASC)` như `/suggest`, nhưng
+         *     bắt buộc `q` không rỗng sau chuẩn hoá (rỗng/chỉ ký tự dấu câu → `400 name_invalid`). Phân trang theo `scope` (plan P05 mục 2.4, BE-12):
+         *     - `scope=item`: chỉ trả `items`, phân trang keyset `SearchItemsLexicalPage` với cursor `kind="item"`, `tags=[]`.
+         *     - `scope=tag`: chỉ trả `tags` (`limit` tag mỗi trang), phân trang keyset `SearchTagsLexicalPage` với cursor `kind="tag"`, `items=[]`.
+         *     - `scope=all`: phân trang `items` theo keyset (cursor `kind="item"`); `tags` (≤ 5) và `near` (≤ 5, sau khi dedup với lexical) chỉ trả ở trang đầu (khi không gửi `cursor`), các trang sau trả `tags=[]`, `near=[]`.
+         *     Cursor opaque base64url JSON `{v, scope, kind, gen, qh, tier, score, last_used_at, count, id}` với `qh` là 16 byte đầu của
+         *     `HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn)` — **không chứa q thô**. Lệch `q`/`scope`/`kind`/`generation` hoặc cursor hỏng → `400 invalid_request`.
+         *     Nếu `last_used_at` đổi giữa hai trang, client dedup theo `id`.
+         */
+        get: operations["search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1300,6 +1353,8 @@ export interface components {
             }[];
             features: {
                 semantic_available: boolean;
+                /** @description True khi provider của generation active là dịch vụ nhúng bên ngoài (`openai_compat`); false với `tei` hoặc khi chưa có active generation. */
+                semantic_external: boolean;
                 email_verification_required: boolean;
                 oauth_providers: components["schemas"]["OauthProvider"][];
                 oauth_reauth_providers: "google"[];
@@ -1899,6 +1954,121 @@ export interface components {
         };
         /** @description Body `{}` của các POST restore (vẫn cần `Content-Type: application/json`). */
         EmptyObject: Record<string, never>;
+        /**
+         * @description Phạm vi corpus tìm kiếm (`all` = cả tag và mục; `item` = chỉ mục; `tag` = chỉ tag).
+         * @default all
+         * @enum {string}
+         */
+        SearchScope: "all" | "item" | "tag";
+        /**
+         * @description `recent` khi `q` vắng/trắng; `prefix` khi `< 2` rune (hoặc chuẩn hoá ra rỗng ở `/suggest`); `full` (prefix + fuzzy) khi `≥ 2` rune.
+         * @enum {string}
+         */
+        SuggestMode: "recent" | "prefix" | "full";
+        /**
+         * @description Kênh khớp của hàng gợi ý (`prefix` đúng dấu tier 3, `prefix_folded` bỏ dấu tier 2, `fuzzy` trigram tier 1, `semantic` vùng gần nghĩa).
+         * @enum {string}
+         */
+        SuggestMatch: "prefix" | "prefix_folded" | "fuzzy" | "semantic";
+        /**
+         * @description Lý do nhánh semantic không chạy trong request này (`null` khi `semantic=true`).
+         * @enum {string}
+         */
+        SemanticReason: "disabled_server" | "disabled_user" | "degraded" | "request_lexical" | "short_query";
+        /** @enum {string} */
+        SuggestLexicalCorpus: "item" | "tag";
+        /** @description Trần cơ sở theo bảng quota mục 2.4 cho `(scope, limit, mode)` của request. */
+        SuggestQuota: {
+            /** @description `tag_max` (số slot dành cho tag trước khi nhận phần dư từ item). */
+            tag: number;
+            /** @description `lex_max` (tổng slot tối đa của `tags` + `items`). */
+            lexical: number;
+            /** @description `near_max` cơ sở dành cho vùng gần nghĩa (khi lexical thiếu có thể cộng thêm tối đa +1 theo bảng mục 2.4). */
+            near: number;
+        };
+        SuggestTag: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "tag";
+            /** Format: uuid */
+            id: string;
+            display: components["schemas"]["TagDisplay"];
+            item_count: number;
+            /** Format: date-time */
+            last_used_at: string;
+            match: components["schemas"]["SuggestMatch"];
+        };
+        /** @description Hàng gợi ý mục (không bao giờ mang `hint` hay dữ liệu entry). */
+        SuggestItem: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "item";
+            /** Format: uuid */
+            id: string;
+            name: components["schemas"]["ItemName"];
+            entry_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_used_at: string;
+            /** @description Tối đa 3 chip `TagRef` sống của mục (sắp theo `display`). Luôn là mảng, không bao giờ `null`. */
+            tags: components["schemas"]["TagRef"][];
+            /** @description Tổng số tag sống đang gắn với mục. */
+            tag_total: number;
+            match: components["schemas"]["SuggestMatch"];
+        };
+        /** @description Hàng vùng gần nghĩa (`SuggestTag` trước, `SuggestItem` sau; luôn có `match="semantic"`, không lộ điểm cosine). */
+        SuggestNearRow: components["schemas"]["SuggestTag"] | components["schemas"]["SuggestItem"];
+        /** @description Response của `GET /suggest` (mục 2.5; không echo `q`/`qn`, không `hint`, không body). */
+        SuggestResponse: {
+            scope: components["schemas"]["SearchScope"];
+            /** @enum {integer} */
+            limit: 5 | 8 | 12;
+            mode: components["schemas"]["SuggestMode"];
+            quota: components["schemas"]["SuggestQuota"];
+            /** @description Hàng lexical tag. Luôn là mảng, không bao giờ `null`. */
+            tags: components["schemas"]["SuggestTag"][];
+            /** @description Hàng lexical mục. Luôn là mảng, không bao giờ `null`. */
+            items: components["schemas"]["SuggestItem"][];
+            /** @description True khi ít nhất một corpus lexical còn kết quả vượt quota. */
+            has_more: boolean;
+            /** @description Các corpus lexical bị quá 50 ms timeout trong request này (`[]` khi đủ cả hai; có phần tử thì client không cache). */
+            lexical_partial: components["schemas"]["SuggestLexicalCorpus"][];
+            /** @description True khi nhánh semantic thực sự chạy xong trong request này. */
+            semantic: boolean;
+            /** @description `null` khi `semantic=true`; một trong 5 mã `SemanticReason` khi `semantic=false`. */
+            semantic_reason: components["schemas"]["SemanticReason"] | null;
+            /** @description Vùng gợi ý gần nghĩa sau khi dedup với `tags`/`items` (rỗng `[]` khi `semantic=false`). */
+            near: components["schemas"]["SuggestNearRow"][];
+            /** @description ID generation embedding đã pin cho request khi `semantic=true`; `null` khi `semantic=false`. */
+            generation: number | null;
+        };
+        /** @description Response của `GET /search` có phân trang keyset theo `scope` (mục 2.4, 2.5, BE-12; không echo `q`/`qn`). */
+        SearchResponse: {
+            scope: components["schemas"]["SearchScope"];
+            /** @enum {integer} */
+            limit: 20 | 50;
+            /**
+             * @description `/search` đòi `q` không rỗng sau chuẩn hoá nên `mode` chỉ là `prefix` (`< 2` rune) hoặc `full` (`≥ 2` rune).
+             * @enum {string}
+             */
+            mode: "prefix" | "full";
+            /** @description Trang kết quả mục (`[]` khi `scope=tag`). Luôn là mảng, không bao giờ `null`. */
+            items: components["schemas"]["SuggestItem"][];
+            /** @description Trang kết quả tag khi `scope=tag`, hoặc tối đa 5 tag ở trang đầu khi `scope=all` (`[]` ở các trang sau hoặc khi `scope=item`). Luôn là mảng, không bao giờ `null`. */
+            tags: components["schemas"]["SuggestTag"][];
+            /** @description Cursor keyset opaque cho trang kế (mang `kind` ∈ `item | tag`, `qh` HMAC, `gen`; không chứa `q`), hoặc `null` khi hết. */
+            next_cursor: string | null;
+            semantic: boolean;
+            semantic_reason: components["schemas"]["SemanticReason"] | null;
+            /** @description Tối đa 5 gợi ý gần nghĩa ở trang đầu (sau lexical, đã dedup; `[]` ở các trang tiếp theo hoặc khi `semantic=false`). */
+            near: components["schemas"]["SuggestNearRow"][];
+            generation: number | null;
+        };
     };
     responses: {
         /** @description Lỗi RFC 9457 */
@@ -2055,7 +2225,7 @@ export interface operations {
                         checks: {
                             [key: string]: string;
                         };
-                        /** @description false khi EMBEDDING_PROVIDER=noop, thiếu TEI_URL, hoặc probe runtime fail. */
+                        /** @description Tĩnh theo `SEARCH_SEMANTIC_ENABLED`, provider ≠ noop, active generation khớp client và có calibration (`semantic_available=false` (tĩnh) khi thiếu điều kiện; breaker mở không lật cờ này, không gây 503). */
                         semantic_available: boolean;
                     };
                 };
@@ -4432,6 +4602,93 @@ export interface operations {
             415: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    suggest: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Chuỗi tìm kiếm gõ tay (≤ 200 rune sau trim; `scope=tag` hoặc bắt đầu bằng `#` giới hạn ≤ 50 rune). Vắng hoặc chỉ khoảng
+                 *     trắng → `mode=recent`; chuẩn hoá ra rỗng (`ErrEmptyQuery`) → `200` rỗng. Không bao giờ gửi nội dung sau dấu `:` hoặc
+                 *     chuỗi dán/tainted trước Enter.
+                 */
+                q?: string;
+                /** @description Phạm vi corpus (`all` mặc định; nếu `q` sau trim bắt đầu bằng `#` thì server ép `scope=tag`). */
+                scope?: components["schemas"]["SearchScope"];
+                /**
+                 * @description Tổng số gợi ý tối đa (`5 | 8 | 12`, mặc định `8`; viewport `< 768 px` gửi `5`; giá trị khác → `400 invalid_request`).
+                 *     Bảng quota theo `(scope, limit, mode)` (plan P05 mục 2.4, độc lập với semantic bật/tắt):
+                 *     - `all · prefix/full`: `limit=5` → `tag_max=2, lex_max=4, near_max=1` (+ phần lexical thiếu, tối đa `2`); `limit=8` → `tag_max=3, lex_max=6, near_max=2` (tối đa `3`); `limit=12` → `tag_max=4, lex_max=9, near_max=3` (tối đa `4`).
+                 *     - `all · recent`: `limit=5` → `2` tag / `3` item; `limit=8` → `3` tag / `5` item; `limit=12` → `4` tag / `8` item (`near=0`).
+                 *     - `item`: `tag_max=0`, `lex_max = 4 / 6 / 9` (ứng với `limit = 5 / 8 / 12`), `near_max` như `all` (chỉ item), recent `0 / limit`.
+                 *     - `tag`: `tag_max = lex_max = 4 / 6 / 9`, `near_max` như `all` (chỉ tag), recent `limit / 0`.
+                 *     Công thức: `tags_used = min(tag_hits, max(tag_max, lex_max − item_hits))`; `items_used = min(item_hits, lex_max − tags_used)`;
+                 *     `near_used = min(near_hits_sau_dedup, near_max, limit − tags_used − items_used)`.
+                 */
+                limit?: 5 | 8 | 12;
+                /** @description `0` ép chỉ lexical; `1` (mặc định) cho phép bổ sung vùng `near` khi đủ điều kiện. */
+                semantic?: 0 | 1;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gợi ý lexical và vùng gần nghĩa (nếu chạy) */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestResponse"];
+                };
+            };
+            /** @description Tham số scope/limit/semantic sai, tham số lạ, hoặc q quá 200 rune (tag > 50) / UTF-8 hỏng / ký tự điều khiển cấm (invalid_request, name_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Quá giới hạn scope `search_read` (token bucket in-memory 20/s, burst 40 theo user); kèm header `Retry-After` (≥ 1 s) và `retry_after` (rate_limited) */
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    search: {
+        parameters: {
+            query: {
+                /** @description Chuỗi tìm kiếm bắt buộc (1–200 rune sau trim, `scope=tag` hoặc `#` ≤ 50 rune; chuẩn hoá ra rỗng → `400 name_invalid`). */
+                q: string;
+                /** @description Phạm vi tìm kiếm (`all` mặc định; `#` đầu `q` ép `scope=tag`). */
+                scope?: components["schemas"]["SearchScope"];
+                /** @description Số kết quả mỗi trang (`20 | 50`, mặc định `20`; giá trị khác → `400 invalid_request`). */
+                limit?: 20 | 50;
+                /** @description Cursor keyset opaque từ `next_cursor` trang trước (mang `kind` ∈ `item | tag`, `qh` HMAC và `gen`; không chứa `q`). */
+                cursor?: string;
+                /** @description `0` ép chỉ lexical; `1` (mặc định) cho phép trả `near` (≤ 5) ở trang đầu khi đủ điều kiện. */
+                semantic?: 0 | 1;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Một trang kết quả tìm kiếm */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description Tham số sai, cursor hỏng/lệch q/scope/kind/generation, hoặc q rỗng sau chuẩn hoá / quá dài / ký tự cấm (invalid_request, name_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Quá giới hạn scope `search_read` (token bucket in-memory 20/s, burst 40 theo user); kèm header `Retry-After` (≥ 1 s) và `retry_after` (rate_limited) */
+            429: components["responses"]["RateLimited"];
         };
     };
 }
