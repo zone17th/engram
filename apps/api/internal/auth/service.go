@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/clock"
@@ -32,8 +33,36 @@ type Notifier interface {
 	NotifySecurity(ctx context.Context, tx pgx.Tx, n secevent.Notice) error
 }
 
-type SemanticProbe interface {
-	Available(ctx context.Context) bool
+// SemanticRuntime is the static semantic state the auth service reads for
+// `features.semantic_available` / `features.semantic_external` and the
+// `PATCH /me/settings` semantic_suggest guard (plan P05 mục 2.18, Task 13).
+// *semantic.Runtime implements it; none of the methods may perform network I/O.
+type SemanticRuntime interface {
+	// Availability is the static, cached semantic_available value (breaker state
+	// never flips it).
+	Availability(ctx context.Context) bool
+	// External reports whether the active generation's provider is
+	// openai_compat (features.semantic_external).
+	External(ctx context.Context) bool
+	// IsBreakerOpen reports the active provider's API breaker; PATCH
+	// semantic_suggest=true is refused while it is open.
+	IsBreakerOpen() bool
+}
+
+// JobInserter is the River insert surface PatchSettings needs to enqueue
+// reembed_user inside the settings transaction (*river.Client[pgx.Tx]).
+type JobInserter interface {
+	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
+}
+
+// ServiceOption customizes NewService without changing its positional signature.
+type ServiceOption func(*Service)
+
+// WithJobInserter sets the River client used to enqueue reembed_user when a user
+// turns semantic_suggest back on. Without it no job is enqueued (the periodic
+// Reconcile still catches the user up).
+func WithJobInserter(j JobInserter) ServiceOption {
+	return func(s *Service) { s.jobs = j }
 }
 
 type Mailer interface {
@@ -54,7 +83,8 @@ type Service struct {
 	clk             clock.Clock
 	audit           Auditor
 	notify          Notifier
-	probe           SemanticProbe
+	sem             SemanticRuntime
+	jobs            JobInserter
 	mail            Mailer
 	vault           VaultStatus
 	ipPepper        []byte
@@ -71,7 +101,7 @@ type Service struct {
 	onLogoutRevoked func()
 }
 
-func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, csrf *CSRF, tokens *TokenIssuer, grants *Grants, lockout *Lockout, clk clock.Clock, audit Auditor, notify Notifier, probe SemanticProbe, mail Mailer, vault VaultStatus) (*Service, error) {
+func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, csrf *CSRF, tokens *TokenIssuer, grants *Grants, lockout *Lockout, clk clock.Clock, audit Auditor, notify Notifier, sem SemanticRuntime, mail Mailer, vault VaultStatus, opts ...ServiceOption) (*Service, error) {
 	if cfg == nil || pool == nil || sessions == nil || csrf == nil || tokens == nil || grants == nil || lockout == nil || audit == nil || notify == nil {
 		return nil, errors.New("auth service thiếu dependency bắt buộc")
 	}
@@ -81,16 +111,20 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 	if vault == nil {
 		vault = func(context.Context, uuid.UUID) (string, error) { return "absent", nil }
 	}
-	if probe == nil {
-		probe = staticProbe(false)
+	if sem == nil {
+		sem = noSemantic{}
 	}
-	// initialized above
 	svc := &Service{
 		cfg: cfg, pool: pool, q: gen.New(pool), sessions: sessions, csrf: csrf,
 		tokens: tokens, grants: grants, lockout: lockout, clk: clk,
-		audit: audit, notify: notify, probe: probe, mail: mail, vault: vault,
+		audit: audit, notify: notify, sem: sem, mail: mail, vault: vault,
 		ipPepper: cfg.AuthIPPepper, emPepper: cfg.AuthEmailPepper,
 		forgotQueue: make(chan ForgotJob, ForgotQueueSize),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(svc)
+		}
 	}
 	svc.forgotWorkerCtx, svc.forgotCancel = context.WithCancel(context.Background())
 	svc.forgotDone = make(chan struct{})
@@ -98,61 +132,13 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 	return svc, nil
 }
 
-type staticProbe bool
+// noSemantic is the runtime used when none is wired: semantic is unavailable
+// and there is no active provider, so semantic_external is false.
+type noSemantic struct{}
 
-func (s staticProbe) Available(context.Context) bool { return bool(s) }
-
-const semanticProbeTimeout = 300 * time.Millisecond
-
-type runtimeSemanticProbe struct {
-	endpoint string
-	client   *http.Client
-}
-
-func (p *runtimeSemanticProbe) Available(ctx context.Context) bool {
-	if p == nil || p.endpoint == "" {
-		return false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, semanticProbeTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, p.endpoint, nil)
-	if err != nil {
-		return false
-	}
-	client := p.client
-	if client == nil {
-		client = &http.Client{
-			Timeout: semanticProbeTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
-}
-
-func ConfigProbe(cfg *config.Config) SemanticProbe {
-	if cfg == nil || !cfg.SemanticAvailable() {
-		return staticProbe(false)
-	}
-	return &runtimeSemanticProbe{
-		endpoint: strings.TrimRight(cfg.TEIURL.Reveal(), "/") + "/health",
-		client: &http.Client{
-			Timeout: semanticProbeTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-	}
-}
+func (noSemantic) Availability(context.Context) bool { return false }
+func (noSemantic) External(context.Context) bool     { return false }
+func (noSemantic) IsBreakerOpen() bool               { return false }
 
 func (s *Service) PublicConfig() AuthConfig {
 	return AuthConfig{
@@ -215,7 +201,8 @@ func (s *Service) BuildMe(ctx context.Context, userID uuid.UUID) (Me, error) {
 		},
 		Identities: identities,
 		Features: MeFeatures{
-			SemanticAvailable:           s.probe.Available(ctx),
+			SemanticAvailable:           s.sem.Availability(ctx),
+			SemanticExternal:            s.sem.External(ctx),
 			EmailVerificationRequired:   s.cfg.RequireEmailVerification,
 			OAuthProviders:              s.cfg.OAuthProviders(),
 			OAuthReauthProviders:        s.cfg.OAuthReauthProviders(),
@@ -444,7 +431,9 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 			return Me{}, ErrInvalidRequest
 		}
 	}
-	if patch.SemanticSuggest != nil && *patch.SemanticSuggest && !s.probe.Available(ctx) {
+	// Static check, no network call (plan P05 mục 2.18 row 1–3b, 8): unavailable
+	// deployment or an open API breaker refuses turning semantic on.
+	if patch.SemanticSuggest != nil && *patch.SemanticSuggest && (!s.sem.Availability(ctx) || s.sem.IsBreakerOpen()) {
 		return Me{}, ErrSemanticUnavailable
 	}
 	tx, err := s.pool.Begin(ctx)
