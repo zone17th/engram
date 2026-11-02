@@ -3,6 +3,7 @@ package semantic_test
 import (
 	"encoding/json"
 	"math/rand/v2"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -39,11 +40,24 @@ func TestAppendZoneProperty(t *testing.T) {
 
 	// 1. Deterministic ordering & tie-break verification (tags before items,
 	// cos DESC -> last_used_at DESC -> count DESC -> id ASC, lexical duplicates dropped).
+	lexItemTagRefID := uuid.MustParse("00000000-0011-4000-8000-000000000099")
 	lexical := []semantic.Row{
 		{Kind: suggest.CorpusTag, ID: lexTag1, Display: "wifi-khách", Count: 4, LastUsedAt: t2, Match: suggest.MatchPrefix},
-		{Kind: suggest.CorpusItem, ID: lexItem1, Name: "wifi", Count: 12, CreatedAt: t0, LastUsedAt: t2, Match: suggest.MatchPrefix},
+		{
+			Kind:       suggest.CorpusItem,
+			ID:         lexItem1,
+			Name:       "wifi",
+			Count:      12,
+			CreatedAt:  t0,
+			LastUsedAt: t2,
+			Tags: []semantic.TagRef{
+				{ID: lexItemTagRefID, Display: "nhà-chính"},
+				{ID: lexTag1, Display: "wifi-khách"},
+			},
+			TagTotal: 2,
+			Match:    suggest.MatchPrefix,
+		},
 	}
-
 	semTags := []semantic.Candidate{
 		// Duplicate of lexical tag -> must be dropped even though cos is 0.99.
 		{Kind: suggest.CorpusTag, ID: lexTag1, Cos: 0.99, Display: "wifi-khách", Count: 4, LastUsedAt: t2},
@@ -65,7 +79,31 @@ func TestAppendZoneProperty(t *testing.T) {
 		{Kind: suggest.CorpusItem, ID: semItemA, Cos: 0.80, Name: "router A", Count: 1, LastUsedAt: t2, CreatedAt: t0},
 	}
 
+	lexicalSnap := snapshotRows(lexical)
+	semItemsSnap := snapshotCandidates(semItems)
+	semTagsSnap := snapshotCandidates(semTags)
+
 	merged := semantic.AppendZone(lexical, semItems, semTags, 10)
+
+	if !reflect.DeepEqual(lexical, lexicalSnap) {
+		t.Fatalf("AppendZone mutated input lexical slice:\ngot  %+v\nwant %+v", lexical, lexicalSnap)
+	}
+	if !reflect.DeepEqual(semItems, semItemsSnap) {
+		t.Fatalf("AppendZone mutated input semItems slice:\ngot  %+v\nwant %+v", semItems, semItemsSnap)
+	}
+	if !reflect.DeepEqual(semTags, semTagsSnap) {
+		t.Fatalf("AppendZone mutated input semTags slice:\ngot  %+v\nwant %+v", semTags, semTagsSnap)
+	}
+	if !reflect.DeepEqual(merged[:len(lexicalSnap)], lexicalSnap) {
+		t.Fatalf("merged lexical prefix != pre-call snapshot:\ngot  %+v\nwant %+v", merged[:len(lexicalSnap)], lexicalSnap)
+	}
+
+	// Mutating nested tag refs on the input after AppendZone must not affect merged output.
+	lexical[1].Tags[0].Display = "mutated-after-call"
+	if merged[1].Tags[0].Display != "nhà-chính" {
+		t.Fatalf("merged lexical row shares backing Tags slice with input: got %q, want %q", merged[1].Tags[0].Display, "nhà-chính")
+	}
+	lexical[1].Tags[0].Display = "nhà-chính"
 	wantOrder := []suggest.KindID{
 		{Kind: suggest.CorpusTag, ID: lexTag1},
 		{Kind: suggest.CorpusItem, ID: lexItem1},
@@ -125,13 +163,25 @@ func TestAppendZoneProperty(t *testing.T) {
 				continue
 			}
 			seenLex[k] = struct{}{}
+			var tags []semantic.TagRef
+			var tagTotal int32
+			if kind == suggest.CorpusItem && rng.IntN(2) == 0 {
+				tags = []semantic.TagRef{
+					{ID: poolIDs[rng.IntN(len(poolIDs))], Display: "tag-ref-1"},
+					{ID: poolIDs[rng.IntN(len(poolIDs))], Display: "tag-ref-2"},
+				}
+				tagTotal = 2
+			}
 			lexIn = append(lexIn, semantic.Row{
 				Kind:       kind,
 				ID:         id,
-				Name:       "lex",
-				Display:    "lex",
+				Name:       "lex-item",
+				Display:    "lex-tag",
 				Count:      int32(rng.IntN(20)),
+				CreatedAt:  t0,
 				LastUsedAt: t0.Add(time.Duration(rng.IntN(10)) * time.Minute),
+				Tags:       tags,
+				TagTotal:   tagTotal,
 				Match:      suggest.MatchPrefix,
 			})
 		}
@@ -139,6 +189,14 @@ func TestAppendZoneProperty(t *testing.T) {
 		nSemItems := rng.IntN(15)
 		sItems := make([]semantic.Candidate, nSemItems)
 		for i := range nSemItems {
+			var candTags []semantic.TagRef
+			var candTagTotal int32
+			if rng.IntN(2) == 0 {
+				candTags = []semantic.TagRef{
+					{ID: poolIDs[rng.IntN(len(poolIDs))], Display: "sem-tag-ref"},
+				}
+				candTagTotal = 1
+			}
 			sItems[i] = semantic.Candidate{
 				Kind:       suggest.CorpusItem,
 				ID:         poolIDs[rng.IntN(len(poolIDs))],
@@ -147,6 +205,8 @@ func TestAppendZoneProperty(t *testing.T) {
 				Count:      int32(rng.IntN(10)),
 				LastUsedAt: t0.Add(time.Duration(rng.IntN(5)) * time.Minute),
 				CreatedAt:  t0,
+				Tags:       candTags,
+				TagTotal:   candTagTotal,
 			}
 		}
 
@@ -163,18 +223,30 @@ func TestAppendZoneProperty(t *testing.T) {
 			}
 		}
 
+		lexSnap := snapshotRows(lexIn)
+		sItemsSnap := snapshotCandidates(sItems)
+		sTagsSnap := snapshotCandidates(sTags)
+
 		zoneQuota := min(quotaNear, max(0, limit-len(lexIn)))
 		out := semantic.AppendZone(lexIn, sItems, sTags, zoneQuota)
 
-		// Property A: lexical prefix in `out` equals `lexIn` verbatim.
-		if len(out) < len(lexIn) {
-			t.Fatalf("trial %d: len(out)=%d < len(lexIn)=%d", trial, len(out), len(lexIn))
+		// Property A: lexical prefix in `out` equals the pre-call snapshot `lexSnap`
+		// across all fields (including nested tag refs), and inputs are never mutated.
+		if len(out) < len(lexSnap) {
+			t.Fatalf("trial %d: len(out)=%d < len(lexSnap)=%d", trial, len(out), len(lexSnap))
 		}
-		for i := range lexIn {
-			if out[i].KindID() != lexIn[i].KindID() || out[i].Match != lexIn[i].Match {
-				t.Fatalf("trial %d: lexical prefix mutated at index %d: got %+v, want %+v",
-					trial, i, out[i], lexIn[i])
-			}
+		if !reflect.DeepEqual(lexIn, lexSnap) {
+			t.Fatalf("trial %d: AppendZone mutated lexIn:\ngot  %+v\nwant %+v", trial, lexIn, lexSnap)
+		}
+		if !reflect.DeepEqual(sItems, sItemsSnap) {
+			t.Fatalf("trial %d: AppendZone mutated sItems:\ngot  %+v\nwant %+v", trial, sItems, sItemsSnap)
+		}
+		if !reflect.DeepEqual(sTags, sTagsSnap) {
+			t.Fatalf("trial %d: AppendZone mutated sTags:\ngot  %+v\nwant %+v", trial, sTags, sTagsSnap)
+		}
+		if !reflect.DeepEqual(out[:len(lexSnap)], lexSnap) {
+			t.Fatalf("trial %d: lexical prefix in out != pre-call snapshot:\ngot  %+v\nwant %+v",
+				trial, out[:len(lexSnap)], lexSnap)
 		}
 
 		// Property B: near zone length <= quotaNear and <= max(0, limit - len(lexIn)).
@@ -219,4 +291,36 @@ func padHex12(n int) string {
 		n >>= 4
 	}
 	return string(buf[:])
+}
+
+func snapshotRows(in []semantic.Row) []semantic.Row {
+	if in == nil {
+		return nil
+	}
+	out := make([]semantic.Row, len(in))
+	for i, r := range in {
+		cp := r
+		if r.Tags != nil {
+			cp.Tags = make([]semantic.TagRef, len(r.Tags))
+			copy(cp.Tags, r.Tags)
+		}
+		out[i] = cp
+	}
+	return out
+}
+
+func snapshotCandidates(in []semantic.Candidate) []semantic.Candidate {
+	if in == nil {
+		return nil
+	}
+	out := make([]semantic.Candidate, len(in))
+	for i, c := range in {
+		cp := c
+		if c.Tags != nil {
+			cp.Tags = make([]semantic.TagRef, len(c.Tags))
+			copy(cp.Tags, c.Tags)
+		}
+		out[i] = cp
+	}
+	return out
 }
