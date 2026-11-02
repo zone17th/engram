@@ -4,6 +4,7 @@ package searchbench
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/suggest"
@@ -660,7 +662,12 @@ func runLexicalCheck(t *testing.T, h *Harness, sr *SeedResult, limits map[int]in
 // TestHarnessCatchesSlowLexical: a 50 ms delay injected through the production
 // suggest.TestHooks.BeforeBranch seam must turn the C1-L verdict into a FAIL
 // (p95 < 40 ms), proving the harness measures the server and the aggregation
-// would catch a regression. The control without the delay must pass.
+// would catch a regression. Plan Task 10 BE-7a requires exactly that; it does
+// NOT require the undelayed tiny control to meet the absolute 40 ms target on a
+// shared CI runner (cloud runs: 35.95 ms, then 62/78 ms for the same code), so the
+// control is measured and logged, never asserted against the target. The delay
+// must be visible relative to that control, measured first on the same harness,
+// the same query set and the same concurrency 8.
 func TestHarnessCatchesSlowLexical(t *testing.T) {
 	env := dbEnvT(t)
 	limits := map[int]int{0: 1500}
@@ -674,23 +681,23 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 		t.Fatalf("harness: %v", err)
 	}
 	t.Cleanup(h.Close)
-	const minN = 200 // self-check size; the real run uses MinMeasuredPerScenario
+	const (
+		minN         = 200 // self-check size; the real run uses MinMeasuredPerScenario
+		injectedMs   = 50.0
+		visibleDelta = 40.0 // injected p95 must exceed the control p95 by at least this much
+	)
 
-	// Control first (no delay): must pass. One retry absorbs a noisy CI neighbour.
-	var control Verdict
-	for attempt := 1; attempt <= 2; attempt++ {
-		rep := runLexicalCheck(t, h, sr, limits)
-		control = EvaluateScenario(rep, TargetC1LP95, minN)
-		t.Logf("control attempt %d: %s - %s", attempt, control.Status(), control.Measured)
-		if control.Pass {
-			break
-		}
+	// Control first (no delay): logged only. A shared runner may exceed the
+	// absolute 40 ms target on this tiny corpus; that says nothing about the harness.
+	control := runLexicalCheck(t, h, sr, limits)
+	cv := EvaluateScenario(control, TargetC1LP95, minN)
+	cl, ok := control.Level(TargetConcurrency)
+	if !ok {
+		t.Fatalf("control run has no concurrency %d level", TargetConcurrency)
 	}
-	if !control.Pass {
-		t.Fatalf("control without delay must PASS C1-L on a tiny corpus: %+v", control)
-	}
+	t.Logf("control (no delay, logged not asserted): %s - %s; pool max conns %d", cv.Status(), cv.Measured, h.PoolMax)
 
-	// Injected 50 ms delay in every lexical branch.
+	// Injected 50 ms delay in every lexical branch, same harness, same queries.
 	h.Service.SetTestHooks(&suggest.TestHooks{BeforeBranch: func(ctx context.Context, _ string) error {
 		select {
 		case <-time.After(50 * time.Millisecond):
@@ -701,12 +708,27 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	t.Cleanup(func() { h.Service.SetTestHooks(nil) })
 	slow := runLexicalCheck(t, h, sr, limits)
 	v := EvaluateScenario(slow, TargetC1LP95, minN)
-	t.Logf("slow run: %s - %s", v.Status(), v.Measured)
+	t.Logf("injected 50 ms run: %s - %s", v.Status(), v.Measured)
+
+	// (i) the shared evaluator fails the injected run.
 	if !v.Applicable || v.Pass {
-		t.Fatalf("harness failed to catch a 50 ms lexical delay: %+v", v)
+		t.Fatalf("harness failed to catch a 50 ms lexical delay (control p95 %.2f ms): %+v", cl.Stats.P95Ms, v)
 	}
-	if l, ok := slow.Level(TargetConcurrency); !ok || l.Stats.P95Ms < 45 {
-		t.Fatalf("injected delay not visible in the measured p95: %+v", l.Stats)
+	sl, ok := slow.Level(TargetConcurrency)
+	if !ok {
+		t.Fatalf("injected run has no concurrency %d level", TargetConcurrency)
+	}
+	// The FAIL must be a latency FAIL, not an invalid/errored/undersized run.
+	if !slow.Valid || sl.Stats.Errors != 0 || sl.Stats.N < minN {
+		t.Fatalf("injected run is not valid latency evidence (valid=%v %q, errors=%d, n=%d): %+v", slow.Valid, slow.InvalidReason, sl.Stats.Errors, sl.Stats.N, v)
+	}
+	// (ii) the delay is in the measured p95 ...
+	if sl.Stats.P95Ms < injectedMs {
+		t.Fatalf("injected delay not visible in the measured p95: %.2f ms < %.0f ms (%+v)", sl.Stats.P95Ms, injectedMs, sl.Stats)
+	}
+	// (iii) ... and stands out against the undelayed control of the same run.
+	if sl.Stats.P95Ms < cl.Stats.P95Ms+visibleDelta {
+		t.Fatalf("injected p95 %.2f ms is not at least %.0f ms above the control p95 %.2f ms", sl.Stats.P95Ms, visibleDelta, cl.Stats.P95Ms)
 	}
 }
 
@@ -716,14 +738,50 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 // sequential scan + top-N sort is cheaper), which made the first version of this
 // control "force ANN" on a plan that never touched HNSW (recall 1.0). Disabling
 // the competing paths makes the HNSW ordered index scan the only plan without a
-// disabled node. TEST-ONLY, same pattern as advisor-dec-289: never in production
-// code, never in TestSearchBench (benchHarnessConfig has none), and the plan is
-// proven by EXPLAIN of the actual ANN SQL under these settings before recall is
-// judged.
+// disabled node. A disabled node adds a huge cost constant to the plan, which
+// pushes the plan cost over jit_above_cost: the first cloud run saw the 80 ms
+// statement budget expire (repeated 57014 timeouts, recall 0 from empty results,
+// not from ef_search=1), most likely on JIT compilation of the forced plan, so JIT
+// is off on this pool too. TEST-ONLY, same pattern as advisor-dec-289: never in
+// production code, never in TestSearchBench (benchHarnessConfig has none), and the
+// plan is proven by EXPLAIN of the actual ANN SQL under these settings before
+// recall is judged.
 var lowRecallPlannerOverrides = []string{
 	"SET enable_seqscan = off",
 	"SET enable_bitmapscan = off",
 	"SET enable_sort = off",
+	"SET jit = off",
+}
+
+// lowRecallBranchTimeout is the vector branch budget of this self-check only
+// (C2Config.BranchTimeout). The benchmark keeps the production 80 ms; here the
+// question is "does ef_search=1 collapse recall", which is only answerable when
+// every query completes, so the budget is deliberately generous and any timeout
+// voids the evidence instead of counting as a collapse.
+const lowRecallBranchTimeout = 2 * time.Second
+
+// errClass is the class of a failed query for logs: SQLSTATE or the context
+// error, never the SQL text or the query vector.
+func errClass(err error) string {
+	var pgErr *pgconn.PgError
+	switch {
+	case err == nil:
+		return "none"
+	case errors.As(err, &pgErr):
+		return "pg_sqlstate_" + pgErr.Code
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return fmt.Sprintf("%T", err)
+	}
+}
+
+// cellEvidence renders the completion evidence of a cell for failure messages.
+func cellEvidence(c CellAgg) string {
+	return fmt.Sprintf("queries=%d timed_out=%d empty_path=%d paths=%v recall=%.4f branch_p95=%.1fms",
+		c.Queries, c.TimedOut, c.PathCounts[""], c.PathCounts, c.RecallMean, c.BranchLatency.P95Ms)
 }
 
 // TestHarnessCatchesLowRecall: the ANN SQL is forced onto the HNSW index
@@ -733,6 +791,12 @@ var lowRecallPlannerOverrides = []string{
 // that the plan is an HNSW scan of the tenant's pruned partition, and requires that
 // no query took the exact or fallback path; the control (default knobs on the
 // default planner, exact path) must have recall 1.0 and no C2-R failure.
+//
+// The forced run is evidence only when it completed: TimedOut == 0, no empty path
+// and no error. A timed-out query returns an empty or partial result whose low
+// recall says nothing about ef_search=1, so it fails the test with its evidence
+// rather than counting as a collapse. The self-check has its own 2 s branch budget
+// and jit off on the forced pool; the benchmark's budgets are unchanged.
 //
 // The assertion on the path is on the ANN family (ann / ann_short): at ef_search=1
 // HNSW returns fewer than 20 candidates, so the store reports "ann_short" - the
@@ -769,18 +833,18 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 	sane := NewKnob(100, unlimitedScan, 0) // informational: forced ANN with sane knobs
 	c2cfg := func(def KnobSet, knobs ...KnobSet) C2Config {
 		return C2Config{
-			QueriesPerCell: 100, Workers: 4, Knobs: knobs, Default: def,
+			QueriesPerCell: 100, Workers: 4, Knobs: knobs, Default: def, BranchTimeout: lowRecallBranchTimeout,
 			Corpora: []generation.Corpus{generation.CorpusItem},
 			Classes: map[TenantClass][]int{ClassWhale: {0}}, ItemLimit: limits, TagLimit: tagLimits,
 		}
 	}
 	rep, err := forcedH.RunC2(ctx, c2cfg(forced, forced, sane))
 	if err != nil {
-		t.Fatalf("C2 (forced pool): %v", err)
+		t.Fatalf("C2 (forced pool) failed, error class %s: %v", errClass(err), err)
 	}
 	ctlRep, err := plain.RunC2(ctx, c2cfg(DefaultKnob(), DefaultKnob()))
 	if err != nil {
-		t.Fatalf("C2 (control pool): %v", err)
+		t.Fatalf("C2 (control pool) failed, error class %s: %v", errClass(err), err)
 	}
 	cellOf := func(r *C2Report, label string) CellAgg {
 		for _, c := range r.Cells {
@@ -794,7 +858,11 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 
 	// 1. The negative control physically runs on HNSW.
 	bad := cellOf(rep, forced.Label)
-	t.Logf("forced cell: paths=%v recall=%.4f", bad.PathCounts, bad.RecallMean)
+	t.Logf("forced cell: %s", cellEvidence(bad))
+	var jit string
+	if err := forcedH.Pool.QueryRow(ctx, "SHOW jit").Scan(&jit); err != nil || jit != "off" {
+		t.Fatalf("forced pool must run with jit off (SHOW jit = %q, error class %s)", jit, errClass(err))
+	}
 	if len(rep.PlannerOverrides) == 0 {
 		t.Fatal("the forced run must record its planner overrides in the report")
 	}
@@ -813,7 +881,14 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 		t.Fatalf("plan evidence = %+v, want one HNSW index scan and no sequential scan", bad.Plan)
 	}
 
-	// 2. No query took an exact or fallback path.
+	// 2. The run completed: a timed-out query, an empty path or a short query set
+	// is not evidence of a recall collapse (it would also "collapse" on a runner
+	// that is merely slow), so recall is only judged after this.
+	if bad.TimedOut != 0 || bad.PathCounts[""] != 0 || bad.Queries != 100 {
+		t.Fatalf("forced run did not complete cleanly (statement_timeout 57014 / branch deadline, or an empty path): %s; want 100 queries, timed_out=0, empty_path=0", cellEvidence(bad))
+	}
+
+	// No query took an exact or fallback path.
 	for path, n := range bad.PathCounts {
 		if n > 0 && !IsANNFamily(path) {
 			t.Fatalf("forced run took non-ANN path %q (%d queries); the check would be void", path, n)
@@ -833,7 +908,10 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 
 	// Control: default knobs on the default planner take the exact path.
 	ctl := cellOf(ctlRep, DefaultKnob().Label)
-	t.Logf("control cell: paths=%v exact recall=%.4f", ctl.PathCounts, ctl.ExactRecallMean)
+	t.Logf("control cell: %s exact_recall=%.4f", cellEvidence(ctl), ctl.ExactRecallMean)
+	if ctl.TimedOut != 0 || ctl.PathCounts[""] != 0 {
+		t.Fatalf("control run did not complete cleanly: %s", cellEvidence(ctl))
+	}
 	if ctl.PathCounts["exact"] != ctl.Queries || ctl.ExactQueries == 0 {
 		t.Fatalf("control (default knobs, 4000 items <= 5000) must take the exact path: %v", ctl.PathCounts)
 	}
@@ -844,7 +922,7 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 		t.Fatalf("control must not fail C2-R: %+v", v)
 	}
 	o := cellOf(rep, sane.Label)
-	t.Logf("informational forced-ANN control (ef=100): paths=%v recall=%.4f plan=%s", o.PathCounts, o.RecallMean, o.PlanLabel())
+	t.Logf("informational forced-ANN control (ef=100): %s plan=%s", cellEvidence(o), o.PlanLabel())
 	if n := totalCrossTenant(rep.Cells) + totalCrossTenant(ctlRep.Cells); n != 0 {
 		t.Fatalf("cross-tenant rows in self-check: %d", n)
 	}
@@ -857,7 +935,7 @@ func TestBenchHarnessUsesDefaultPlanner(t *testing.T) {
 		t.Fatalf("benchmark harness config = %+v: want the production pool and no SessionSQL", cfg)
 	}
 	for _, s := range lowRecallPlannerOverrides {
-		if !strings.HasPrefix(s, "SET enable_") {
+		if !strings.HasPrefix(s, "SET enable_") && s != "SET jit = off" {
 			t.Fatalf("unexpected self-check override %q", s)
 		}
 	}
