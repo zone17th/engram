@@ -466,11 +466,13 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	}, pool, generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now)), clk, metrics, nil)
 	disabledRouter := buildRouter(disabledRT.NearSource())
 
-	// Router 3: Real semantic.Runtime with semantic enabled + StoreVectorSearcher against Postgres.
+	// Router 3: Real semantic.Runtime with semantic enabled + StoreVectorSearcher against Postgres
+	// (explicit default knobs so exact path is configured explicitly, RV-T12-BE-8).
 	spyProv := semantictest.NewSpyProvider(teiID) // returns [1,0,0,0,0,0,0,0]
 	enabledRT := semantic.NewRuntime(semantic.RuntimeConfig{
 		Enabled:        true,
 		Provider:       embedding.ProviderTEI,
+		Knobs:          semantic.DefaultVectorSearchKnobs(),
 		ClientSet:      embedding.NewClientSet(embedding.NewClient(spyProv, "", ""), nil),
 		Pinner:         generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now)),
 		Calibration:    cal,
@@ -481,7 +483,6 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 		Clock:          clk,
 	})
 	enabledRouter := buildRouter(enabledRT.NearSource())
-
 	params := url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}, "semantic": {"1"}}
 	respNoop := callSuggest(noopRouter, params)
 	respDisabled := callSuggest(disabledRouter, params)
@@ -533,5 +534,110 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	}
 	if got := counterValue(t, metrics.Search.VectorPathTotal.WithLabelValues(suggest.CorpusTag, string(semantic.VectorPathExact))); got != 1 {
 		t.Fatalf("search_vector_path_total{corpus=tag,path=exact} = %v, want 1", got)
+	}
+
+	// RV-T12-BE-8: Verify explicit zero thresholds (ExactMaxVectors=0, FallbackMaxVectors=0)
+	// through StoreVectorSearcher and semantic.Runtime on a non-empty corpus:
+	//   - Direct StoreVectorSearcher call with k=20 (where corpus has 1 vector < k=20)
+	//     takes ANN (never exact) and never takes exact fallback because FallbackMaxVectors=0
+	//     caps CappedCount at 1 (> 0), returning Path=ann_short, FallbackUsed=false,
+	//     CappedCount=1, and incrementing search_vector_path_total{path="ann_short"}.
+	//   - Direct StoreVectorSearcher call with k=1 (where corpus has 1 vector >= k=1)
+	//     takes Path=ann, FallbackUsed=false, CappedCount=1, and increments
+	//     search_vector_path_total{path="ann"}.
+	//   - End-to-end semantic.Runtime configured with Knobs{ExactMaxVectors: 0, FallbackMaxVectors: 0}
+	//     forwards (0, 0) without replacing them with defaults (5000, 20000), never
+	//     executes the exact path or exact fallback, and returns the ANN near rows.
+	_, zeroMetrics := obs.NewRegistry()
+	zeroKnobs := semantic.DefaultVectorSearchKnobs()
+	zeroKnobs.ExactMaxVectors = 0
+	zeroKnobs.FallbackMaxVectors = 0
+	zeroKnobs.Metrics = zeroMetrics.Search
+	zeroKnobs.Now = clk.Now
+
+	pinner := generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now))
+	pin, err := pinner.ActivePin(ctx)
+	if err != nil {
+		t.Fatalf("ActivePin for zero-threshold check: %v", err)
+	}
+	qvec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
+	storeSearcher := semantic.NewStoreVectorSearcher(pool)
+
+	// 1. k=1 (non-empty corpus has 1 vector >= k=1): Path must be "ann", CappedCount=1, FallbackUsed=false.
+	hitsANN, statsANN, err := storeSearcher.VectorSearch(
+		ctx,
+		pin,
+		userID,
+		generation.CorpusItem,
+		qvec,
+		1,
+		time.Now().Add(time.Second),
+		zeroKnobs,
+	)
+	if err != nil {
+		t.Fatalf("StoreVectorSearcher (0,0) k=1 error: %v", err)
+	}
+	if statsANN.Path != semantic.VectorPathANN || statsANN.FallbackUsed || statsANN.CappedCount != 1 {
+		t.Fatalf("StoreVectorSearcher (0,0) k=1 stats = %+v, want Path=ann FallbackUsed=false CappedCount=1", statsANN)
+	}
+	if len(hitsANN) != 1 || hitsANN[0].ID != nearItemID {
+		t.Fatalf("StoreVectorSearcher (0,0) k=1 hits = %+v, want [%s]", hitsANN, nearItemID)
+	}
+	if got := counterValue(t, zeroMetrics.Search.VectorPathTotal.WithLabelValues(suggest.CorpusItem, string(semantic.VectorPathANN))); got != 1 {
+		t.Fatalf("zero-threshold k=1 search_vector_path_total{corpus=item,path=ann} = %v, want 1", got)
+	}
+
+	// 2. k=20 (underfill on 1-vector corpus with FallbackMaxVectors=0): Path must be "ann_short",
+	// Underfill=true, FallbackUsed=false, CappedCount=1 (LIMIT 0+1).
+	hitsShort, statsShort, err := storeSearcher.VectorSearch(
+		ctx,
+		pin,
+		userID,
+		generation.CorpusItem,
+		qvec,
+		semantic.DefaultNearCandidateK,
+		time.Now().Add(time.Second),
+		zeroKnobs,
+	)
+	if err != nil {
+		t.Fatalf("StoreVectorSearcher (0,0) k=20 error: %v", err)
+	}
+	if statsShort.Path != semantic.VectorPathANNShort || !statsShort.Underfill || statsShort.FallbackUsed || statsShort.CappedCount != 1 {
+		t.Fatalf("StoreVectorSearcher (0,0) k=20 stats = %+v, want Path=ann_short Underfill=true FallbackUsed=false CappedCount=1", statsShort)
+	}
+	if len(hitsShort) != 1 || hitsShort[0].ID != nearItemID {
+		t.Fatalf("StoreVectorSearcher (0,0) k=20 hits = %+v, want [%s]", hitsShort, nearItemID)
+	}
+
+	// 3. End-to-end semantic.Runtime with (0, 0) thresholds:
+	zeroRT := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		Knobs:          zeroKnobs,
+		ClientSet:      embedding.NewClientSet(embedding.NewClient(spyProv, "", ""), nil),
+		Pinner:         pinner,
+		Calibration:    cal,
+		VectorSearcher: storeSearcher,
+		SettingsReader: semantic.NewDBUserSettingsReader(pool),
+		ItemTagLoader:  semantic.NewDBItemTagRefLoader(pool),
+		Metrics:        zeroMetrics,
+		Clock:          clk,
+	})
+	zeroRouter := buildRouter(zeroRT.NearSource())
+	respZero := callSuggest(zeroRouter, params)
+	if !respZero.Semantic || len(respZero.Near) != 2 {
+		t.Fatalf("zero-threshold runtime response = %+v, want Semantic=true len(Near)=2", respZero)
+	}
+	// Neither exact nor ann_fallback_exact may ever be taken when thresholds are (0, 0).
+	for _, corpus := range []string{suggest.CorpusItem, suggest.CorpusTag} {
+		if got := counterValue(t, zeroMetrics.Search.VectorPathTotal.WithLabelValues(corpus, string(semantic.VectorPathExact))); got != 0 {
+			t.Fatalf("zero-threshold search_vector_path_total{corpus=%s,path=exact} = %v, want 0", corpus, got)
+		}
+		if got := counterValue(t, zeroMetrics.Search.VectorPathTotal.WithLabelValues(corpus, string(semantic.VectorPathANNFallbackExact))); got != 0 {
+			t.Fatalf("zero-threshold search_vector_path_total{corpus=%s,path=ann_fallback_exact} = %v, want 0", corpus, got)
+		}
+	}
+	if got := counterValue(t, zeroMetrics.Search.VectorPathTotal.WithLabelValues(suggest.CorpusTag, string(semantic.VectorPathANNShort))); got != 1 {
+		t.Fatalf("zero-threshold search_vector_path_total{corpus=tag,path=ann_short} = %v, want 1", got)
 	}
 }

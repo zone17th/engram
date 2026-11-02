@@ -159,15 +159,8 @@ func (s *StoreVectorSearcher) VectorSearch(
 	}
 
 	storeKnobs := store.DefaultVectorSearchKnobs()
-	if knobs.ExactMaxVectors > 0 || knobs.FallbackMaxVectors > 0 {
-		storeKnobs.ExactMaxVectors = knobs.ExactMaxVectors
-	}
-	if knobs.FallbackMaxVectors > 0 {
-		storeKnobs.FallbackMaxVectors = knobs.FallbackMaxVectors
-	}
-	if storeKnobs.FallbackMaxVectors < storeKnobs.ExactMaxVectors {
-		storeKnobs.FallbackMaxVectors = storeKnobs.ExactMaxVectors
-	}
+	storeKnobs.ExactMaxVectors = knobs.ExactMaxVectors
+	storeKnobs.FallbackMaxVectors = knobs.FallbackMaxVectors
 	if knobs.EfSearch > 0 {
 		storeKnobs.EfSearch = knobs.EfSearch
 	}

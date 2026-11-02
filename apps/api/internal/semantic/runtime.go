@@ -257,7 +257,7 @@ func NewRuntimeFromConfig(
 		prov           = embedding.ProviderNoop
 		shadowProv     string
 		appEnv         string
-		knobs          VectorSearchKnobs
+		knobs          = DefaultVectorSearchKnobs()
 		clientSet      *embedding.ClientSet
 		embMetrics     *obs.EmbeddingMetrics
 		settingsReader UserSettingsReader
