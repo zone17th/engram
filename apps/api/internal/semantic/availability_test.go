@@ -543,3 +543,163 @@ func TestRuntimeSingleInstance(t *testing.T) {
 		t.Fatal("unexpected context canceled")
 	}
 }
+
+// TestIsBreakerOpenActiveProviderCutover verifies RV-T12-BE-4:
+//   - When two providers are configured (primary "openai_compat", shadow "tei"),
+//     `rt.IsBreakerOpen()` inspects ONLY the breaker for the active generation's
+//     provider (from the cached availability/pin snapshot, invalidated on NOTIFY),
+//     falling back to the primary breaker only when no active snapshot exists.
+//   - Before any active generation is cached, IsBreakerOpen() reflects the primary
+//     breaker and ignores an open shadow breaker.
+//   - While g1 ("openai_compat") is active and its breaker trips, IsBreakerOpen()
+//     is true.
+//   - When a NOTIFY cutover flips the active generation to g2 ("tei") while the
+//     old "openai_compat" breaker is still open, Availability() / NearSource()
+//     updates the snapshot and IsBreakerOpen() immediately reports false (so
+//     PATCH /me/settings is not blocked by the inactive provider's open breaker),
+//     with only 1 ActivePin read per request.
+//   - If the new active generation's breaker ("tei") subsequently trips,
+//     IsBreakerOpen() reports true.
+func TestIsBreakerOpenActiveProviderCutover(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFixed(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	_, metrics := obs.NewRegistry()
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+
+	openAIID := testOpenAIIdentity()
+	teiID := testTEIIdentity()
+	g1Pin := testPinForIdentity(1, openAIID)
+	g2Pin := generation.Pin{
+		GenID:     2,
+		Identity:  teiID,
+		MinCos:    0.62,
+		ItemTable: "item_embedding_g2",
+		TagTable:  "tag_embedding_g2",
+	}
+
+	openAISpy := semantictest.NewSpyProvider(openAIID)
+	teiSpy := semantictest.NewSpyProvider(teiID)
+	openAIClient := embedding.NewClient(openAISpy, openAIID.QueryPrefix, openAIID.DocPrefix)
+	teiClient := embedding.NewClient(teiSpy, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(openAIClient, &teiClient)
+
+	pinner := semantictest.NewSpyPinner(g1Pin, true)
+	searcher := &semantictest.SpyVectorSearcher{}
+
+	bothCal := func(id embedid.Identity) (float64, string, bool) {
+		if id.Provider == openAIID.Provider || id.Provider == teiID.Provider {
+			return 0.62, "docs/benchmarks/semantic-eval/report.json", true
+		}
+		return 0, "", false
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderOpenAICompat,
+		ShadowProvider: embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    bothCal,
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Metrics:        metrics,
+		Clock:          clk,
+	})
+
+	// 1. Before any availability/pin snapshot is populated, IsBreakerOpen() uses
+	// the primary breaker fallback: tripping the inactive shadow ("tei") breaker
+	// must NOT cause IsBreakerOpen() to return true.
+	teiBreaker := rt.BreakerForProvider(embedding.ProviderTEI)
+	openAIBreaker := rt.BreakerForProvider(embedding.ProviderOpenAICompat)
+	if teiBreaker == nil || openAIBreaker == nil || teiBreaker == openAIBreaker {
+		t.Fatal("expected distinct breakers for openai_compat and tei")
+	}
+	_, _, finishTEI := teiBreaker.Acquire()
+	finishTEI(&embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 503})
+	if !teiBreaker.IsOpen() {
+		t.Fatal("expected teiBreaker to be open")
+	}
+	if rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == false when only inactive shadow breaker is open and no snapshot exists")
+	}
+
+	// Populate snapshot with g1 (openai_compat): IsBreakerOpen() still false because
+	// active provider is openai_compat and its breaker is closed.
+	if !rt.Availability(ctx) {
+		t.Fatal("expected Availability() == true for g1")
+	}
+	if rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == false when active g1 (openai_compat) breaker is closed")
+	}
+
+	// Recover teiBreaker (advance 60 s and complete trial) so g2 is healthy for cutover.
+	clk.Advance(embedding.BreakerOpenWindow)
+	ok, _, finishTEIRecover := teiBreaker.Acquire()
+	if !ok {
+		t.Fatal("expected teiBreaker half-open probe to be admitted")
+	}
+	finishTEIRecover(nil)
+
+	// 2. Trip the active g1 ("openai_compat") breaker via a failing query ->
+	// IsBreakerOpen() must now report true.
+	openAISpy.EmbedQueryFn = func(context.Context, string) ([]float32, error) {
+		return nil, &embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 502}
+	}
+	res1, err := rt.NearSource().Near(ctx, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "fail g1 query",
+		Scope:         suggest.ScopeAll,
+		Limit:         8,
+		Cap:           2,
+		SemanticParam: true,
+	})
+	if err != nil || res1.Semantic {
+		t.Fatalf("expected g1 query failure to degrade, got %+v (err=%v)", res1, err)
+	}
+	if !rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == true when active provider (openai_compat) breaker is open")
+	}
+
+	// 3. Cut over active generation to g2 ("tei") and fire NOTIFY while g1's
+	// "openai_compat" breaker is still within its 60 s open window.
+	pinner.SetPin(g2Pin, true)
+	pinner.Notify()
+	pinner.ResetCalls()
+
+	// Query on g2 succeeds with 1 ActivePin read and updates the active provider snapshot.
+	res2, err := rt.NearSource().Near(ctx, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "healthy g2 query",
+		Scope:         suggest.ScopeAll,
+		Limit:         8,
+		Cap:           2,
+		SemanticParam: true,
+	})
+	if err != nil || !res2.Semantic || res2.Generation == nil || *res2.Generation != 2 {
+		t.Fatalf("Near on g2 after cutover = %+v (err=%v), want Semantic=true Generation=2", res2, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("expected exactly 1 ActivePin read during g2 query, got %d", pinner.Calls())
+	}
+	// Even though openAIBreaker is still open, IsBreakerOpen() must be false because
+	// the active generation is now g2 ("tei") whose breaker is closed.
+	if !openAIBreaker.IsOpen() {
+		t.Fatal("precondition: expected inactive openAIBreaker to still be open")
+	}
+	if rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == false after cutover to healthy g2 (inactive openAIBreaker must not block)")
+	}
+	if !rt.Availability(ctx) {
+		t.Fatal("expected Availability() == true for g2")
+	}
+	if rt.External(ctx) {
+		t.Fatal("expected External() == false after cutover to tei g2")
+	}
+
+	// 4. Trip the now-active "tei" breaker -> IsBreakerOpen() must report true.
+	_, _, finishTEITrip := teiBreaker.Acquire()
+	finishTEITrip(&embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 503})
+	if !rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == true when the active g2 (tei) breaker is open")
+	}
+}

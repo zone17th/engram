@@ -133,6 +133,7 @@ type Runtime struct {
 	availMu       sync.Mutex
 	availCached   bool
 	availExternal bool
+	availProvider string
 	availHasCache bool
 	availExpires  time.Time
 	availEpoch    uint64

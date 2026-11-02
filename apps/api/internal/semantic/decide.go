@@ -97,11 +97,14 @@ func (r *Runtime) decideServerAndPin(ctx context.Context) (generation.Pin, strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	r.availMu.Lock()
+	epoch := r.availEpoch
+	r.availMu.Unlock()
 	pin, err := r.pinner.ActivePin(ctx)
 	if err != nil {
 		return generation.Pin{}, suggest.ReasonDisabledServer, false
 	}
-
+	r.recordActiveProvider(epoch, pin.Identity.Provider)
 	if _, ok := r.clients.Match(pin.Identity); !ok {
 		r.incGenerationMismatch(MismatchReasonUnconfigured)
 		logSafeError(ctx, r.logger, "semantic active generation unconfigured", "generation_unconfigured")

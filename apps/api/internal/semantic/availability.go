@@ -24,6 +24,7 @@ func (r *Runtime) InvalidateAvailability() {
 	}
 	r.availMu.Lock()
 	r.availHasCache = false
+	r.availProvider = ""
 	r.availExpires = time.Time{}
 	r.availEpoch++
 	r.availMu.Unlock()
@@ -74,15 +75,14 @@ func (r *Runtime) IsBreakerOpen() bool {
 	if r == nil {
 		return false
 	}
-	if r.primaryBreaker != nil && r.primaryBreaker.IsOpen() {
-		return true
+	r.availMu.Lock()
+	prov := r.availProvider
+	r.availMu.Unlock()
+	if prov != "" {
+		b := r.BreakerForProvider(prov)
+		return b != nil && b.IsOpen()
 	}
-	for _, b := range r.breakers {
-		if b != nil && b.IsOpen() {
-			return true
-		}
-	}
-	return false
+	return r.primaryBreaker != nil && r.primaryBreaker.IsOpen()
 }
 
 func (r *Runtime) resolveStaticAvailability(ctx context.Context) (available bool, external bool) {
@@ -117,14 +117,14 @@ func (r *Runtime) resolveStaticAvailability(ctx context.Context) (available bool
 		// Cache negative result only when there is genuinely no active generation
 		// (so transient DB errors do not pin false for 30 s).
 		if errors.Is(err, generation.ErrNoActiveGeneration) {
-			r.storeAvailabilityCache(epoch, false, defaultExternal)
+			r.storeAvailabilityCache(epoch, false, defaultExternal, "")
 		}
 		return false, defaultExternal
 	}
 
 	ext := pin.Identity.Provider == embedding.ProviderOpenAICompat
 	avail := r.checkPinConfiguredAndCalibrated(pin)
-	r.storeAvailabilityCache(epoch, avail, ext)
+	r.storeAvailabilityCache(epoch, avail, ext, pin.Identity.Provider)
 	return avail, ext
 }
 
@@ -147,13 +147,28 @@ func (r *Runtime) checkPinConfiguredAndCalibrated(pin generation.Pin) bool {
 	return true
 }
 
-func (r *Runtime) storeAvailabilityCache(epoch uint64, avail bool, external bool) {
+func (r *Runtime) storeAvailabilityCache(epoch uint64, avail bool, external bool, activeProvider string) {
 	r.availMu.Lock()
 	if r.availEpoch == epoch {
 		r.availCached = avail
 		r.availExternal = external
+		r.availProvider = activeProvider
 		r.availHasCache = true
 		r.availExpires = r.clk.Now().Add(AvailabilityCacheTTL)
+	}
+	r.availMu.Unlock()
+}
+
+// recordActiveProvider updates the cached active provider on a successful
+// ActivePin read when no availability snapshot has recorded a provider yet
+// in the current notification epoch.
+func (r *Runtime) recordActiveProvider(epoch uint64, activeProvider string) {
+	if r == nil || activeProvider == "" {
+		return
+	}
+	r.availMu.Lock()
+	if r.availEpoch == epoch && r.availProvider == "" {
+		r.availProvider = activeProvider
 	}
 	r.availMu.Unlock()
 }
