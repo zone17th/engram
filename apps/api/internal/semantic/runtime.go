@@ -261,14 +261,6 @@ func NewRuntimeFromConfig(
 	if metrics != nil {
 		embMetrics = metrics.Embedding
 	}
-	if pool != nil {
-		settingsReader = &dbUserSettingsReader{db: pool}
-		tagLoader = &dbItemTagRefLoader{db: pool}
-		searcher = NewExactVectorSearcher(pool)
-		if pinner == nil {
-			pinner = generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now))
-		}
-	}
 	if cfg != nil {
 		enabled = cfg.SearchSemanticEnabled
 		if strings.TrimSpace(cfg.EmbeddingProvider) != "" {
@@ -285,7 +277,16 @@ func NewRuntimeFromConfig(
 			VectorBranchTimeout:     cfg.SearchVectorBranchTimeout,
 			VectorFallbackMinBudget: cfg.SearchVectorFallbackMinBudget,
 		}
-
+	}
+	if pool != nil {
+		settingsReader = &dbUserSettingsReader{db: pool}
+		tagLoader = &dbItemTagRefLoader{db: pool}
+		searcher = NewExactVectorSearcher(pool)
+		if pinner == nil && enabled && prov != embedding.ProviderNoop {
+			pinner = generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now))
+		}
+	}
+	if cfg != nil {
 		if enabled && prov != embedding.ProviderNoop {
 			primaryCfg := cfg.EmbeddingPrimary()
 			var shadowPtr *embedding.ClientConfig

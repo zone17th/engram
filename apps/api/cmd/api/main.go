@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/compose"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/entry"
 	"github.com/zone17th/engram/apps/api/internal/entry/entryhttp"
@@ -124,10 +126,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose content: %w", err)
 	}
-	pinner := generation.NewPinner(pool)
-	defer pinner.Close()
-	if err := pinner.StartListener(ctx); err != nil {
-		return fmt.Errorf("generation pinner listener: %w", err)
+	var pinner *generation.Pinner
+	if cfg.SearchSemanticEnabled {
+		if prov := strings.TrimSpace(cfg.EmbeddingProvider); prov != "" && prov != embedding.ProviderNoop {
+			pinner = generation.NewPinner(pool)
+			defer pinner.Close()
+			if err := pinner.StartListener(ctx); err != nil {
+				return fmt.Errorf("generation pinner listener: %w", err)
+			}
+		}
 	}
 	semRuntime := semantic.NewRuntimeFromConfig(ctx, cfg, pool, pinner, nil, metrics, logger)
 	searchComp, err := compose.NewSearch(cfg, pool, nil, metrics, logger, semRuntime.NearSource())
