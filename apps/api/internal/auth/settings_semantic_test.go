@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -306,6 +307,13 @@ func semRuntimeNamed(t *testing.T, name string) *semantic.Runtime {
 
 func semNewService(t *testing.T, pool *pgxpool.Pool, sem auth.SemanticRuntime) *auth.Service {
 	t.Helper()
+	return semNewServiceClock(t, pool, sem, clock.NewFixed(semFixedNow))
+}
+
+// semNewServiceClock is semNewService with a caller-owned clock so a test can
+// advance time (token bucket refill).
+func semNewServiceClock(t *testing.T, pool *pgxpool.Pool, sem auth.SemanticRuntime, clk clock.Clock) *auth.Service {
+	t.Helper()
 	cfg := &config.Config{
 		AppOrigin:        "http://localhost:3000",
 		AuthJWTSecret:    bytes32(1),
@@ -326,7 +334,7 @@ func semNewService(t *testing.T, pool *pgxpool.Pool, sem auth.SemanticRuntime) *
 	if sem != nil {
 		opts = append(opts, compose.WithSemantic(sem))
 	}
-	svc, _, _, err := compose.NewAuth(cfg, pool, riverc, clock.NewFixed(semFixedNow), mail, nil, opts...)
+	svc, _, _, err := compose.NewAuth(cfg, pool, riverc, clk, mail, nil, opts...)
 	if err != nil {
 		t.Fatalf("compose.NewAuth: %v", err)
 	}
@@ -779,6 +787,111 @@ func TestPatchOnEnqueuesReembedUser(t *testing.T) {
 	// Stored value is on after the toggle.
 	if !semStoredSemanticSuggest(t, pool, u.id) {
 		t.Error("stored semantic_suggest = false after PATCH true")
+	}
+}
+
+// semMarkReembedRunning flips every reembed_user job of the user to running,
+// as a worker would while its pass is in flight (no worker is started).
+func semMarkReembedRunning(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) {
+	t.Helper()
+	tag, err := pool.Exec(context.Background(),
+		`UPDATE river_job SET state = 'running', attempt = 1, attempted_at = now()
+		 WHERE kind = 'reembed_user' AND args->>'user_id' = $1`, userID.String())
+	if err != nil {
+		t.Fatalf("mark reembed_user running: %v", err)
+	}
+	if tag.RowsAffected() == 0 {
+		t.Fatal("mark reembed_user running: no job row")
+	}
+}
+
+// TestPatchOnOffOnWhileFirstJobRunning (RV-T13-BE-1): an off->on whose
+// reembed_user is still running must not swallow the next off->on. The insert
+// has no uniqueness, so the second toggle gets its own job; true->true adds none.
+func TestPatchOnOffOnWhileFirstJobRunning(t *testing.T) {
+	pool := semNewPool(t)
+	svc := semNewService(t, pool, semRuntimeNamed(t, "row6_openai_available_external"))
+	semSeedGeneration(t, pool, 1, generation.ProviderTEI, generation.StateActive, nil)
+	semSeedGeneration(t, pool, 2, generation.ProviderOpenAICompat, generation.StatePending, nil)
+
+	u := semNewUser(t, pool, svc, "onoffon@example.com", true)
+	if _, err := semPatch(svc, u, false); err != nil {
+		t.Fatalf("PATCH false (1): %v", err)
+	}
+	if _, err := semPatch(svc, u, true); err != nil {
+		t.Fatalf("PATCH true (1): %v", err)
+	}
+	if got := semReembedJobs(t, pool, u.id); got != 1 {
+		t.Fatalf("reembed_user jobs after first off->on = %d, want 1", got)
+	}
+	semMarkReembedRunning(t, pool, u.id)
+
+	if _, err := semPatch(svc, u, false); err != nil {
+		t.Fatalf("PATCH false (2): %v", err)
+	}
+	if _, err := semPatch(svc, u, true); err != nil {
+		t.Fatalf("PATCH true (2): %v", err)
+	}
+	if got := semReembedJobs(t, pool, u.id); got != 2 {
+		t.Errorf("reembed_user jobs after on/off/on with the first running = %d, want 2 (no dedupe against running)", got)
+	}
+
+	// true -> true inserts nothing.
+	if _, err := semPatch(svc, u, true); err != nil {
+		t.Fatalf("PATCH true when already true: %v", err)
+	}
+	if got := semReembedJobs(t, pool, u.id); got != 2 {
+		t.Errorf("reembed_user jobs after true->true = %d, want 2", got)
+	}
+	if !semStoredSemanticSuggest(t, pool, u.id) {
+		t.Error("stored semantic_suggest = false after PATCH true")
+	}
+}
+
+// TestPatchOnReembedRateLimited (advisor-dec-301 addendum): at most 5 off->on
+// reembed_user inserts per user per 600 s. The 6th toggle still succeeds and
+// stores true but enqueues nothing; advancing the clock refills the bucket.
+func TestPatchOnReembedRateLimited(t *testing.T) {
+	pool := semNewPool(t)
+	clk := clock.NewFixed(semFixedNow)
+	svc := semNewServiceClock(t, pool, semRuntimeNamed(t, "row6_openai_available_external"), clk)
+	semSeedGeneration(t, pool, 1, generation.ProviderTEI, generation.StateActive, nil)
+	semSeedGeneration(t, pool, 2, generation.ProviderOpenAICompat, generation.StatePending, nil)
+
+	u := semNewUser(t, pool, svc, "ratelimit@example.com", true)
+	toggle := func(step string) {
+		t.Helper()
+		if _, err := semPatch(svc, u, false); err != nil {
+			t.Fatalf("%s: PATCH false: %v", step, err)
+		}
+		if _, err := semPatch(svc, u, true); err != nil {
+			t.Fatalf("%s: PATCH true: %v, want 200 even when rate limited", step, err)
+		}
+		if !semStoredSemanticSuggest(t, pool, u.id) {
+			t.Fatalf("%s: stored semantic_suggest = false after PATCH true", step)
+		}
+	}
+
+	for i := 1; i <= 5; i++ {
+		toggle("toggle " + strconv.Itoa(i))
+		if got := semReembedJobs(t, pool, u.id); got != i {
+			t.Fatalf("reembed_user jobs after toggle %d = %d, want %d", i, got, i)
+		}
+	}
+	toggle("toggle 6 (over the limit)")
+	if got := semReembedJobs(t, pool, u.id); got != 5 {
+		t.Errorf("reembed_user jobs after the 6th toggle = %d, want 5 (rate limited, setting still stored)", got)
+	}
+
+	// 130 s refills 130*5/600 = 1.08 tokens: exactly one more insert.
+	clk.Advance(130 * time.Second)
+	toggle("toggle 7 (after refill)")
+	if got := semReembedJobs(t, pool, u.id); got != 6 {
+		t.Errorf("reembed_user jobs after refill = %d, want 6", got)
+	}
+	toggle("toggle 8 (bucket empty again)")
+	if got := semReembedJobs(t, pool, u.id); got != 6 {
+		t.Errorf("reembed_user jobs right after the refilled token was spent = %d, want 6", got)
 	}
 }
 
