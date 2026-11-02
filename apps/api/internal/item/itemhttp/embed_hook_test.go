@@ -548,7 +548,7 @@ func TestMutationEnqueuesPerReceivingGeneration(t *testing.T) {
 
 // TestMutationRollbackNoJob verifies plan P05 mục 2.17 / Task 11b (evidence P05-B2):
 // Mutation paths that fail and roll back (409 item_id_conflict on create,
-// 412 version_mismatch on update, 409 item_tag_limit on restore) enqueue 0 jobs.
+// 412 version_mismatch on update, 409 item_entry_limit on restore) enqueue 0 jobs.
 func TestMutationRollbackNoJob(t *testing.T) {
 	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
 	ctx := context.Background()
@@ -616,18 +616,33 @@ func TestMutationRollbackNoJob(t *testing.T) {
 	if respDel.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE /items status = %d, body = %s", respDel.StatusCode, bodyDel)
 	}
-	// Seed 201 entries sharing the item's delete_batch so restore hits 409 item_entry_limit.
+	// Seed 201 entries via gen.InsertEntry + valid envelope and mark them
+	// soft-deleted under the item's delete_batch so restore hits 409 item_entry_limit.
 	var batchID uuid.UUID
 	if err := h.Pool.QueryRow(ctx, `SELECT delete_batch FROM item WHERE id = $1`, itemID).Scan(&batchID); err != nil {
 		t.Fatalf("read delete_batch: %v", err)
 	}
+	q := gen.New(h.Pool)
+	validEnv := []byte(`{"v":1,"alg":"xchacha20poly1305-ietf","key_id":"vk:1111111111111111111111","nonce":"AAAAAAAAAAAAAAAAAAAAAAAA","ct_enc":"utf8"}`)
 	for i := range item.MaxLiveEntriesPerItem + 1 {
-		if _, err := h.Pool.Exec(ctx, `
-			INSERT INTO entry (id, item_id, user_id, type, position, ciphertext, key_id, nonce, plaintext_len_bucket, version, deleted_at, deleted_via, delete_batch)
-			VALUES ($1, $2, $3, 'text', $4, $5, 'vk:test', $6, 256, 1, now(), 'item', $7)
-		`, uuid.New(), itemID, userA.User.ID, i+1, bytes.Repeat([]byte{0x01}, 32), bytes.Repeat([]byte{byte(i + 1)}, 12), batchID); err != nil {
-			t.Fatalf("seed deleted entry %d: %v", i, err)
+		if _, err := q.InsertEntry(ctx, gen.InsertEntryParams{
+			ID:                 uuid.New(),
+			UserID:             userA.User.ID,
+			ItemID:             itemID,
+			Type:               "text",
+			Envelope:           validEnv,
+			Ciphertext:         bytes.Repeat([]byte{0x01}, 32),
+			PlaintextLenBucket: 256,
+		}); err != nil {
+			t.Fatalf("InsertEntry %d: %v", i, err)
 		}
+	}
+	if _, err := q.SoftDeleteLiveEntriesByItem(ctx, gen.SoftDeleteLiveEntriesByItemParams{
+		DeleteBatch: &batchID,
+		UserID:      userA.User.ID,
+		ItemID:      itemID,
+	}); err != nil {
+		t.Fatalf("SoftDeleteLiveEntriesByItem: %v", err)
 	}
 	clearRiverJobs(t, h.Pool)
 
