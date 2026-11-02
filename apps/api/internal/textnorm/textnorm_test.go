@@ -360,6 +360,102 @@ func TestNormalizeDirectUnits(t *testing.T) {
 	})
 }
 
+func TestErrEmptyQueryWrapsNameInvalid(t *testing.T) {
+	// Punctuation-only inputs that normalize to empty must return ErrEmptyQuery,
+	// which wraps ErrNameInvalid (BE-10, plan P05 mục 2.2, Task 3).
+	for _, in := range []string{"!!!", "#", "...", " - _ ! ", "   ###   "} {
+		if _, err := NormalizeQuery(in); !errors.Is(err, ErrEmptyQuery) || !errors.Is(err, ErrNameInvalid) {
+			t.Fatalf("NormalizeQuery(%q) err = %v, want errors.Is both ErrEmptyQuery and ErrNameInvalid", in, err)
+		} else if err.Error() != "name_invalid" {
+			t.Fatalf("NormalizeQuery(%q) err.Error() = %q, want \"name_invalid\"", in, err.Error())
+		} else if te, ok := AsError(err); !ok || te.Code != "name_invalid" {
+			t.Fatalf("AsError(NormalizeQuery(%q)) = (%v, %v), want code name_invalid", in, te, ok)
+		}
+
+		if _, err := NormalizeTagQuery(in); !errors.Is(err, ErrEmptyQuery) || !errors.Is(err, ErrNameInvalid) {
+			t.Fatalf("NormalizeTagQuery(%q) err = %v, want errors.Is both ErrEmptyQuery and ErrNameInvalid", in, err)
+		}
+
+		if _, err := Normalize(in); !errors.Is(err, ErrEmptyQuery) || !errors.Is(err, ErrNameInvalid) {
+			t.Fatalf("Normalize(%q) err = %v, want errors.Is both ErrEmptyQuery and ErrNameInvalid", in, err)
+		}
+		if _, _, err := NormalizeName(in); !errors.Is(err, ErrEmptyQuery) || !errors.Is(err, ErrNameInvalid) {
+			t.Fatalf("NormalizeName(%q) err = %v, want errors.Is both ErrEmptyQuery and ErrNameInvalid", in, err)
+		}
+		if _, err := NormalizeLookupName(in); !errors.Is(err, ErrEmptyQuery) || !errors.Is(err, ErrNameInvalid) {
+			t.Fatalf("NormalizeLookupName(%q) err = %v, want errors.Is both ErrEmptyQuery and ErrNameInvalid", in, err)
+		}
+	}
+
+	// Reverse must NOT match: plain ErrNameInvalid (control char, bad UTF-8, >200 runes,
+	// >50 runes for tag, or empty/whitespace-only on NormalizeName) is NOT ErrEmptyQuery.
+	if errors.Is(ErrNameInvalid, ErrEmptyQuery) {
+		t.Fatal("errors.Is(ErrNameInvalid, ErrEmptyQuery) = true, want false")
+	}
+
+	nonEmptyErrors := []struct {
+		name string
+		fn   func() error
+	}{
+		{
+			name: "control char in query",
+			fn: func() error {
+				_, err := NormalizeQuery("abc\x00def")
+				return err
+			},
+		},
+		{
+			name: "invalid UTF-8 in query",
+			fn: func() error {
+				_, err := NormalizeQuery(string([]byte{0xff, 0xfe}))
+				return err
+			},
+		},
+		{
+			name: "bidi override in query",
+			fn: func() error {
+				_, err := NormalizeQuery("abc\u202Edef")
+				return err
+			},
+		},
+		{
+			name: "query over 200 runes",
+			fn: func() error {
+				_, err := NormalizeQuery(strings.Repeat("a", QueryMaxRunes+1))
+				return err
+			},
+		},
+		{
+			name: "tag query over 50 runes",
+			fn: func() error {
+				_, err := NormalizeTagQuery(strings.Repeat("a", TagQueryMaxRunes+1))
+				return err
+			},
+		},
+		{
+			name: "empty name",
+			fn: func() error {
+				_, _, err := NormalizeName("   ")
+				return err
+			},
+		},
+	}
+	for _, tc := range nonEmptyErrors {
+		err := tc.fn()
+		if !errors.Is(err, ErrNameInvalid) {
+			t.Fatalf("%s: got %v, want ErrNameInvalid", tc.name, err)
+		}
+		if errors.Is(err, ErrEmptyQuery) {
+			t.Fatalf("%s: got %v matching ErrEmptyQuery, want false", tc.name, err)
+		}
+	}
+
+	// NormalizeTag on punctuation-only still returns ErrTagDisplayInvalid (not ErrEmptyQuery).
+	if _, _, err := NormalizeTag("!!!"); !errors.Is(err, ErrTagDisplayInvalid) || errors.Is(err, ErrEmptyQuery) {
+		t.Fatalf("NormalizeTag(\"!!!\") = %v, want ErrTagDisplayInvalid and not ErrEmptyQuery", err)
+	}
+}
+
 func FuzzNormalizeIdempotent(f *testing.F) {
 	path := filepath.Join("..", "..", "..", "..", "packages", "content-fixtures", "normalize.json")
 	raw, err := os.ReadFile(path)
