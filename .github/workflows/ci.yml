@@ -728,7 +728,9 @@ jobs:
     timeout-minutes: ${{ startsWith(github.head_ref, 'phase05/search-bench') && 150 || 25 }}
     env:
       # Free-disk floors in GB (protocol section 3): full = 1.5 x the ~10 GB
-      # estimate. The smoke floor is a placeholder until worker A's sizing table.
+      # estimate. Smoke: the Go formula (searchbench.EstimateDiskBytes) estimates
+      # 1 GB for the smoke profile, i.e. a 1.5 GB floor; the job keeps 4 GB as a
+      # conservative floor that also covers the Go build/module cache.
       SEARCH_BENCH_MIN_FREE_GB_FULL: '15'
       SEARCH_BENCH_MIN_FREE_GB_SMOKE: '4'
       SEARCH_BENCH_PROFILE: ${{ startsWith(github.head_ref, 'phase05/search-bench') && 'full' || 'smoke' }}
@@ -866,10 +868,14 @@ jobs:
       - name: Run vet (searchbench tag)
         run: go vet -tags searchbench ./internal/searchbench/
 
+      # Every tagged test except the benchmark itself: the three mandatory
+      # self-checks plus the pure tests (nearest-rank percentiles, latency
+      # boundaries, size estimate, query mix and determinism). TestSearchBench
+      # runs once, in its own step below.
       - name: Run harness self-checks
         run: >-
           go test -tags searchbench ./internal/searchbench/ -count=1 -v
-          -run '^(TestRecallDefinitionEdgeCases|TestHarnessCatchesSlowLexical|TestHarnessCatchesLowRecall)$'
+          -skip '^TestSearchBench$'
           -timeout "$SEARCH_BENCH_SELFCHECK_TIMEOUT"
           2>&1 | tee "$SEARCH_BENCH_OUT_DIR/self-checks.log"
 
@@ -887,7 +893,10 @@ jobs:
       - name: Guard that the self-checks and the bench really ran
         run: |
           status=0
-          for name in TestRecallDefinitionEdgeCases TestHarnessCatchesSlowLexical TestHarnessCatchesLowRecall; do
+          for name in \
+            TestRecallDefinitionEdgeCases TestHarnessCatchesSlowLexical TestHarnessCatchesLowRecall \
+            TestNearestRankPercentiles TestEvaluateLatencyBoundaries TestEstimateDiskBytes \
+            TestMixKindProportions TestQuerySetsAreDeterministic; do
             if ! grep -Eq "^[[:space:]]*--- PASS: ${name} \(" "$SEARCH_BENCH_OUT_DIR/self-checks.log"; then
               echo "::error::self-check ${name} has no '--- PASS:' line (skipped, filtered out or failed)"
               status=1
