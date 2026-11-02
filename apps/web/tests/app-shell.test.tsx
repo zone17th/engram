@@ -16,6 +16,8 @@ import { UndoToastProvider } from '../components/ui/undo-toast';
 import { contentQueryKeys } from '../features/items/query-keys';
 import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
+import * as searchApi from '../lib/api/search';
+import type { SuggestResponse } from '../lib/api/search';
 import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
 
@@ -403,6 +405,32 @@ describe('Omnibox', () => {
     vi.restoreAllMocks();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue({
+      scope: 'all',
+      limit: 8,
+      mode: 'full',
+      quota: { tag: 3, lexical: 6, near: 2 },
+      tags: [],
+      items: [],
+      has_more: false,
+      lexical_partial: [],
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    });
+    vi.spyOn(searchApi, 'search').mockResolvedValue({
+      scope: 'all',
+      limit: 20,
+      mode: 'full',
+      items: [],
+      tags: [],
+      next_cursor: null,
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    });
   });
 
   function renderOmnibox(ui: ReactNode = <Omnibox />) {
@@ -418,10 +446,50 @@ describe('Omnibox', () => {
     );
   }
 
-  it('focus bằng Ctrl K, không gửi request khi gõ, và chỉ tìm khi nhấn Enter', async () => {
+  function dispatchTypedChar(el: HTMLElement, ch: string) {
+    const textarea = el as HTMLTextAreaElement;
+    textarea.dispatchEvent(
+      new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: ch,
+        isComposing: false,
+      }),
+    );
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      'value',
+    )?.set;
+    setter?.call(textarea, textarea.value + ch);
+    textarea.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: ch,
+        isComposing: false,
+      }),
+    );
+  }
+
+  it('focus bằng Ctrl K, gõ qua send gate gọi /suggest sau debounce (dán không gửi), và nhấn Enter tìm kiếm (PR 17-1 / N6)', async () => {
     const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
       items: [SAMPLE_ITEMS[0]!],
       next_cursor: null,
+    });
+    const suggestSpy = vi.spyOn(searchApi, 'suggest').mockResolvedValue({
+      scope: 'all',
+      limit: 8,
+      mode: 'full',
+      quota: { tag: 3, lexical: 6, near: 2 },
+      tags: [],
+      items: [],
+      has_more: false,
+      lexical_partial: [],
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
     });
     renderOmnibox();
     const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
@@ -429,7 +497,16 @@ describe('Omnibox', () => {
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
     expect(input).toHaveFocus();
 
-    fireEvent.change(input, { target: { value: 'Cà phê' } });
+    // Clean typing through native beforeinput/input sends GET /suggest after 120ms debounce
+    for (const ch of 'Cà phê') {
+      dispatchTypedChar(input, ch);
+    }
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'cà phê', scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+    });
     expect(itemsSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
 

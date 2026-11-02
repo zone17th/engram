@@ -109,6 +109,58 @@ export async function installApiMocks(context: BrowserContext) {
       }),
     });
   });
+  await context.route('**/api/v1/suggest*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const reqUrl = new URL(route.request().url());
+    const scope = (reqUrl.searchParams.get('scope') ?? 'all') as 'all' | 'item' | 'tag';
+    const limit = Number(reqUrl.searchParams.get('limit') ?? 8);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scope,
+        limit,
+        mode: 'full',
+        quota: { tag: 3, lexical: 6, near: 2 },
+        tags: [],
+        items: [],
+        has_more: false,
+        lexical_partial: [],
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      }),
+    });
+  });
+  await context.route('**/api/v1/search*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const reqUrl = new URL(route.request().url());
+    const scope = (reqUrl.searchParams.get('scope') ?? 'all') as 'all' | 'item' | 'tag';
+    const limit = Number(reqUrl.searchParams.get('limit') ?? 20);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scope,
+        limit,
+        mode: 'full',
+        items: [],
+        tags: [],
+        next_cursor: null,
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      }),
+    });
+  });
 }
 
 export async function installVisualApiMocks(context: BrowserContext, theme: Theme) {
@@ -168,6 +220,58 @@ export async function installVisualApiMocks(context: BrowserContext, theme: Them
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ status: 'ok', semantic_available: false }),
+    });
+  });
+  await context.route('**/api/v1/suggest*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const reqUrl = new URL(route.request().url());
+    const scope = (reqUrl.searchParams.get('scope') ?? 'all') as 'all' | 'item' | 'tag';
+    const limit = Number(reqUrl.searchParams.get('limit') ?? 8);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scope,
+        limit,
+        mode: 'full',
+        quota: { tag: 3, lexical: 6, near: 2 },
+        tags: [],
+        items: [],
+        has_more: false,
+        lexical_partial: [],
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      }),
+    });
+  });
+  await context.route('**/api/v1/search*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const reqUrl = new URL(route.request().url());
+    const scope = (reqUrl.searchParams.get('scope') ?? 'all') as 'all' | 'item' | 'tag';
+    const limit = Number(reqUrl.searchParams.get('limit') ?? 20);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scope,
+        limit,
+        mode: 'full',
+        items: [],
+        tags: [],
+        next_cursor: null,
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      }),
     });
   });
 }
