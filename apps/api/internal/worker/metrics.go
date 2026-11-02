@@ -216,7 +216,8 @@ const (
 )
 
 // MetricsListener phục vụ đúng `GET /metrics` của registry worker trên
-// WORKER_METRICS_ADDR (SPEC §10.3). Mọi đường dẫn khác trả 404.
+// WORKER_METRICS_ADDR (SPEC §10.3). Mọi đường dẫn khác trả 404; HEAD và mọi phương thức khác
+// trả 405 mà không chạm gatherer.
 //
 // Listener được bind trước khi worker mở DB (lỗi bind → worker thoát sớm, không
 // chạy mù không có metrics) trong khi registry do worker.Run tạo sau đó, nên
@@ -255,7 +256,10 @@ func StartMetricsListener(
 
 	l := &MetricsListener{ln: ln, logger: logger, gatherer: gatherer, done: make(chan struct{})}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /metrics", l.serveMetrics)
+	// Không dùng pattern "GET /metrics": ServeMux cho pattern GET khớp cả HEAD.
+	// Đăng ký theo đường dẫn rồi tự kiểm phương thức trong serveMetrics để chỉ GET
+	// được tới gatherer.
+	mux.HandleFunc("/metrics", l.serveMetrics)
 	l.srv = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: metricsReadHeaderTimeout,
@@ -317,6 +321,12 @@ func (l *MetricsListener) Wait() error {
 }
 
 func (l *MetricsListener) serveMetrics(w http.ResponseWriter, r *http.Request) {
+	// Chỉ GET; HEAD và mọi phương thức khác bị từ chối (405) trước khi gatherer chạy.
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	l.mu.RLock()
 	g := l.gatherer
 	l.mu.RUnlock()

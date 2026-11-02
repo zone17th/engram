@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +123,17 @@ func httpDo(t *testing.T, method, url string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
+// countingGatherer đếm số lần registry thực sự được gom.
+type countingGatherer struct {
+	inner prometheus.Gatherer
+	calls atomic.Int64
+}
+
+func (g *countingGatherer) Gather() ([]*dto.MetricFamily, error) {
+	g.calls.Add(1)
+	return g.inner.Gather()
+}
+
 // TestWorkerMetricsListenerOnlyMetrics: chỉ GET /metrics, đường dẫn khác 404,
 // addr rỗng không bind, registry worker có embedding_jobs_total (Task 5 khởi
 // tạo trước mọi child, FS-40), gắn registry muộn, lỗi bind và dừng gọn.
@@ -189,6 +201,41 @@ func TestWorkerMetricsListenerOnlyMetrics(t *testing.T) {
 		if resp, err := client.Do(req); err == nil {
 			_ = resp.Body.Close()
 			t.Error("GET /metrics after shutdown succeeded, want connection error")
+		}
+	})
+
+	t.Run("rejects every non-GET method before gathering", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cg := &countingGatherer{inner: reg}
+		l, err := StartMetricsListener(ctx, "127.0.0.1:0", cg, discardLogger())
+		if err != nil {
+			t.Fatalf("StartMetricsListener: %v", err)
+		}
+		defer func() {
+			cancel()
+			if err := l.Wait(); err != nil {
+				t.Errorf("Wait: %v", err)
+			}
+		}()
+		url := "http://" + l.Addr() + "/metrics"
+		for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
+			status, body := httpDo(t, method, url)
+			if status != http.StatusMethodNotAllowed {
+				t.Errorf("%s /metrics = %d, want 405", method, status)
+			}
+			if strings.Contains(body, "embedding_jobs_total") {
+				t.Errorf("%s /metrics leaked metrics body", method)
+			}
+		}
+		if n := cg.calls.Load(); n != 0 {
+			t.Fatalf("gatherer called %d times by rejected requests, want 0", n)
+		}
+		// GET vẫn tới gatherer đúng một lần.
+		if status, _ := httpDo(t, http.MethodGet, url); status != http.StatusOK {
+			t.Fatalf("GET /metrics = %d, want 200", status)
+		}
+		if n := cg.calls.Load(); n != 1 {
+			t.Fatalf("gatherer calls after one GET = %d, want 1", n)
 		}
 	})
 
