@@ -869,6 +869,14 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 	var releaseAttemptAOnce sync.Once
 	doReleaseAttemptA := func() { releaseAttemptAOnce.Do(func() { close(releaseAttemptA) }) }
 
+	waiterBJoined := make(chan uint64, 1)
+	var waiterBJoinedOnce sync.Once
+	waiterBBeforeRead := make(chan uint64, 1)
+	var waiterBBeforeReadOnce sync.Once
+	releaseWaiterB := make(chan struct{})
+	var releaseWaiterBOnce sync.Once
+	doReleaseWaiterB := func() { releaseWaiterBOnce.Do(func() { close(releaseWaiterB) }) }
+
 	attemptCEntered := make(chan struct{})
 	var attemptCEnteredOnce sync.Once
 	releaseAttemptC := make(chan struct{})
@@ -876,6 +884,7 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 	doReleaseAttemptC := func() { releaseAttemptCOnce.Do(func() { close(releaseAttemptC) }) }
 
 	errAttemptA := errors.New("simulated startup failure on attempt A")
+	errAttemptC := errors.New("simulated startup failure on attempt C")
 	var hookCall atomic.Int32
 
 	pinner := generation.NewPinner(
@@ -898,7 +907,17 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 					return hookCtx.Err()
 				}
 			default:
-				return nil
+				return errAttemptC
+			}
+		}),
+		generation.WithAfterJoinAttemptHook(func(attemptID uint64) {
+			waiterBJoinedOnce.Do(func() { waiterBJoined <- attemptID })
+		}),
+		generation.WithBeforeReadAttemptResultHook(func(waiterCtx context.Context, attemptID uint64) {
+			waiterBBeforeReadOnce.Do(func() { waiterBBeforeRead <- attemptID })
+			select {
+			case <-releaseWaiterB:
+			case <-waiterCtx.Done():
 			}
 		}),
 	)
@@ -906,13 +925,14 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 	var wg sync.WaitGroup
 	t.Cleanup(func() {
 		doReleaseAttemptA()
+		doReleaseWaiterB()
 		doReleaseAttemptC()
 		cancel()
 		pinner.Close()
 		wg.Wait()
 	})
 
-	// 1. Launch attempt A and wait until it holds startup in the hook.
+	// 1. Launch attempt A and wait until it holds startup in its hook.
 	errACh := make(chan error, 1)
 	wg.Add(1)
 	go func() {
@@ -926,18 +946,25 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 		t.Fatal("timed out waiting for attempt A to enter hook")
 	}
 
-	// 2. Launch waiter B while attempt A is in progress and wait for its goroutine to start.
-	waiterBStarting := make(chan struct{})
+	// 2. Launch waiter B while attempt A is in progress and wait until B's
+	// afterJoinAttempt hook acknowledges that B captured attempt A (attemptID == 1).
 	errBCh := make(chan error, 1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		close(waiterBStarting)
 		errBCh <- pinner.StartListener(ctx)
 	}()
-	<-waiterBStarting
 
-	// Release attempt A so it fails with errAttemptA.
+	select {
+	case joinedID := <-waiterBJoined:
+		if joinedID != 1 {
+			t.Fatalf("waiter B joined attempt ID = %d, want 1", joinedID)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for waiter B to join attempt A")
+	}
+
+	// 3. Release attempt A so it fails with errAttemptA and closes attempt A's done channel.
 	doReleaseAttemptA()
 	select {
 	case errA := <-errACh:
@@ -948,7 +975,21 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 		t.Fatal("timed out waiting for attempt A to fail")
 	}
 
-	// 3. Launch retry C, which blocks inside the hook without completing LISTEN.
+	// 4. Wait until waiter B wakes from <-attempt.done and is held in
+	// beforeReadAttemptResult (before reading attempt A's result).
+	select {
+	case readID := <-waiterBBeforeRead:
+		if readID != 1 {
+			t.Fatalf("waiter B beforeReadAttemptResult attempt ID = %d, want 1", readID)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for waiter B to reach beforeReadAttemptResult")
+	}
+
+	// 5. Launch retry C and wait until C is blocked inside its own beforeListen hook.
+	// Sanity (BE6-8 / BE6-12): on the old shared-startErr design, retry C starting
+	// here reset p.startErr = nil before B read it, so releasing B in this exact
+	// ordering would return nil for B while C had not even completed LISTEN.
 	errCCh := make(chan error, 1)
 	wg.Add(1)
 	go func() {
@@ -962,8 +1003,8 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 		t.Fatal("timed out waiting for retry C to enter hook")
 	}
 
-	// 4. Waiter B (which waited on attempt A) must return attempt A's error (errAttemptA)
-	// and must never return nil while retry C is still blocked before LISTEN.
+	// 6. Release waiter B and assert it returns attempt A's error (not nil, not C's).
+	doReleaseWaiterB()
 	select {
 	case errB := <-errBCh:
 		if !errors.Is(errB, errAttemptA) {
@@ -973,7 +1014,7 @@ func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 		t.Fatal("timed out waiting for waiter B to return")
 	}
 
-	// 5. Release retry C and verify it succeeds and finishes cleanly.
+	// 7. Release retry C and verify it succeeds and finishes cleanly.
 	doReleaseAttemptC()
 	select {
 	case errC := <-errCCh:

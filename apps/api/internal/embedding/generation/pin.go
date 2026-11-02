@@ -107,6 +107,7 @@ func WithPinNowFunc(now func() time.Time) PinnerOption {
 // err is written at most once before done is closed; waiters capture the
 // attempt pointer under Pinner.mu and read attempt.err after <-attempt.done.
 type startAttempt struct {
+	id     uint64
 	cancel context.CancelFunc
 	done   chan struct{}
 	err    error
@@ -116,13 +117,15 @@ type startAttempt struct {
 // listens on NotifyChannel to invalidate its cache and invoke registered
 // subscribers immediately on generation flip (plan P05 mục 2.15, 2.18; M3).
 type Pinner struct {
-	db           gen.DBTX
-	pool         *pgxpool.Pool
-	ttl          time.Duration
-	now          func() time.Time
-	onQuery      func()
-	beforeListen func(context.Context) error
-	afterListen  func(context.Context)
+	db                      gen.DBTX
+	pool                    *pgxpool.Pool
+	ttl                     time.Duration
+	now                     func() time.Time
+	onQuery                 func()
+	beforeListen            func(context.Context) error
+	afterListen             func(context.Context)
+	afterJoinAttempt        func(uint64)
+	beforeReadAttemptResult func(context.Context, uint64)
 
 	mu          sync.Mutex
 	cached      Pin
@@ -132,11 +135,12 @@ type Pinner struct {
 	cacheEpoch  uint64
 	subscribers []func()
 
-	closed       bool
-	listening    bool
-	startAttempt *startAttempt
-	listenStop   context.CancelFunc
-	listenDone   chan struct{}
+	closed        bool
+	listening     bool
+	nextAttemptID uint64
+	startAttempt  *startAttempt
+	listenStop    context.CancelFunc
+	listenDone    chan struct{}
 }
 
 // WithBeforeListenHook configures a test-only callback invoked after pool
@@ -152,6 +156,24 @@ func WithBeforeListenHook(fn func(context.Context) error) PinnerOption {
 func WithAfterListenHook(fn func(context.Context)) PinnerOption {
 	return func(p *Pinner) {
 		p.afterListen = fn
+	}
+}
+
+// WithAfterJoinAttemptHook configures a test-only callback invoked inside
+// StartListener immediately after a concurrent waiter has captured an in-flight
+// startup attempt (before waiting on attempt.done).
+func WithAfterJoinAttemptHook(fn func(attemptID uint64)) PinnerOption {
+	return func(p *Pinner) {
+		p.afterJoinAttempt = fn
+	}
+}
+
+// WithBeforeReadAttemptResultHook configures a test-only callback invoked
+// inside StartListener immediately after an in-flight startup attempt's done
+// channel closes and before the waiter reads attempt.err.
+func WithBeforeReadAttemptResultHook(fn func(ctx context.Context, attemptID uint64)) PinnerOption {
+	return func(p *Pinner) {
+		p.beforeReadAttemptResult = fn
 	}
 }
 
@@ -316,9 +338,18 @@ func (p *Pinner) StartListener(ctx context.Context) error {
 		return nil
 	}
 	if attempt := p.startAttempt; attempt != nil {
+		attemptID := attempt.id
+		afterJoin := p.afterJoinAttempt
+		beforeRead := p.beforeReadAttemptResult
 		p.mu.Unlock()
+		if afterJoin != nil {
+			afterJoin(attemptID)
+		}
 		select {
 		case <-attempt.done:
+			if beforeRead != nil {
+				beforeRead(ctx, attemptID)
+			}
 			if attempt.err != nil {
 				return attempt.err
 			}
@@ -334,8 +365,10 @@ func (p *Pinner) StartListener(ctx context.Context) error {
 		}
 	}
 
+	p.nextAttemptID++
 	attemptCtx, attemptCancel := context.WithCancel(ctx)
 	attempt := &startAttempt{
+		id:     p.nextAttemptID,
 		cancel: attemptCancel,
 		done:   make(chan struct{}),
 	}
