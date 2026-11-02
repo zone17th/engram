@@ -265,7 +265,25 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         const cardRect = card.getBoundingClientRect();
         const msgRect = msg.getBoundingClientRect();
         const omniRect = omni.getBoundingClientRect();
-        const lbRect = lb.getBoundingClientRect();
+        const lbFullRect = lb.getBoundingClientRect();
+        // advisor-dec-330: #omni-pop (overflow:auto) clips the listbox at <= 639 px, and getBoundingClientRect() ignores
+        // ancestor overflow. The visible dropdown box is the listbox rect intersected with #omni-pop's rect (fallback:
+        // the listbox rect when #omni-pop is absent).
+        const popEl = document.querySelector<HTMLElement>('#omni-pop');
+        const popRect = popEl ? popEl.getBoundingClientRect() : null;
+        const lbRect = popRect
+          ? {
+              left: Math.max(lbFullRect.left, popRect.left),
+              top: Math.max(lbFullRect.top, popRect.top),
+              right: Math.min(lbFullRect.right, popRect.right),
+              bottom: Math.min(lbFullRect.bottom, popRect.bottom),
+            }
+          : {
+              left: lbFullRect.left,
+              top: lbFullRect.top,
+              right: lbFullRect.right,
+              bottom: lbFullRect.bottom,
+            };
         const msgStyle = window.getComputedStyle(msg);
         return {
           viewportWidth: window.innerWidth,
@@ -306,6 +324,7 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
             right: lbRect.right,
             bottom: lbRect.bottom,
           },
+          lbFullHeight: lbFullRect.height,
         };
       });
 
@@ -343,6 +362,14 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         metrics.stackRect.bottom > metrics.omniRect.top;
       expect(overlapsOmnibox).toBe(false);
       expect(metrics.stackRect.top).toBeGreaterThan(metrics.omniRect.bottom);
+
+      // advisor-dec-330: lbRect is the VISIBLE dropdown box (listbox ∩ #omni-pop). It must be non-empty with height
+      // >= the P1 floor of 160 px (or the whole listbox when the list is shorter), so the overlap check below
+      // cannot pass vacuously.
+      const visibleLbHeight = metrics.lbRect.bottom - metrics.lbRect.top;
+      const visibleLbWidth = metrics.lbRect.right - metrics.lbRect.left;
+      expect(visibleLbWidth).toBeGreaterThan(0);
+      expect(visibleLbHeight).toBeGreaterThanOrEqual(Math.min(160, metrics.lbFullHeight) - 0.5); // 0.5 px = sub-pixel rounding slack
 
       const overlapsListbox =
         metrics.stackRect.left < metrics.lbRect.right &&
