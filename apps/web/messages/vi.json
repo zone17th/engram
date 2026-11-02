@@ -1694,7 +1694,8 @@
       "loadMoreKbd": "Enter"
     },
     "tab": {
-      "cannotFill": "Không điền được bằng Tab"
+      "cannotFill": "Không điền được bằng Tab",
+      "pinned": "Đã chọn mục có sẵn"
     }
   }
 }

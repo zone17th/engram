@@ -1694,7 +1694,8 @@
       "loadMoreKbd": "Enter"
     },
     "tab": {
-      "cannotFill": "Cannot fill with Tab"
+      "cannotFill": "Cannot fill with Tab",
+      "pinned": "Existing item selected"
     }
   }
 }

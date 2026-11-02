@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cài đặt — engram</title>
 <link rel="stylesheet" href="tokens.css">
-<link rel="stylesheet" href="search.css">
 <link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
@@ -299,12 +298,14 @@
           <button type="button" data-timkiem-mode="selfhost-on" aria-pressed="false">3. Máy chủ engram · Đang bật · <span lang="en">Self-host · On</span></button>
           <button type="button" data-timkiem-mode="server-off" aria-pressed="false">4. Máy chủ chưa bật · <span lang="en">Server off</span></button>
           <button type="button" data-timkiem-mode="enable-409" aria-pressed="false">5. Bật lúc dịch vụ bận · <span lang="en">Enable error</span></button>
+          <button type="button" data-timkiem-mode="save-failed" aria-pressed="false">6. Lưu thất bại · <span lang="en">Save failed</span></button>
         </div>
       </div>
 
       <!-- Card Tìm gần nghĩa (features/settings/search/semantic-card.tsx) -->
       <div class="card p-5 mb-3" id="timkiem-semantic-card">
-        <div class="flex items-start gap-4 flex-wrap mb-4">
+        <!-- Server-off dims ONLY this header row (title/description/switch); the server-off note below stays full opacity (advisor-dec-288) -->
+        <div class="flex items-start gap-4 flex-wrap mb-4" id="timkiem-semantic-header">
           <div class="min-w-0 flex-1 basis-[240px]">
             <div class="flex items-center gap-2 flex-wrap mb-1">
               <span class="text-[15px] font-semibold" data-i18n-key="settings.search.semanticTitle">Tìm gần nghĩa</span>
@@ -345,6 +346,11 @@
         <!-- Neo #semantic-enable-409: dòng trạng thái hiển thị có role="status" trên màn Cài đặt (không phải dropdown omnibox) -->
         <p class="text-[13px] m-0 mt-3" style="color:var(--muted)" id="semantic-enable-409" role="status" data-i18n-key="settings.search.semanticEnable409" hidden>
           Không bật được tìm theo nghĩa
+        </p>
+
+        <!-- Trạng thái save-failed: PATCH lỗi khác 409; cùng dòng role="status", không toast (advisor-dec-283) -->
+        <p class="text-[13px] m-0 mt-3" style="color:var(--muted)" id="semantic-save-failed" role="status" data-i18n-key="settings.search.semanticSaveFailed" hidden>
+          Không lưu được thay đổi. Thử lại sau.
         </p>
       </div>
     </section>
@@ -1340,10 +1346,13 @@
     const copySelf = document.getElementById('timkiem-copy-selfhost');
     const serverOffNote = document.getElementById('timkiem-server-off-note');
     const inline409 = document.getElementById('semantic-enable-409');
+    const inlineSaveFailed = document.getElementById('semantic-save-failed');
+    const header = document.getElementById('timkiem-semantic-header');
     const seg = document.getElementById('timkiem-state-seg');
     if (!card || !sw) return;
 
     let show409 = false;
+    let showSaveFailed = false;
 
     function syncTimkiemUI() {
       const avail = SAK.state.semanticAvailable !== false;
@@ -1352,7 +1361,7 @@
 
       sw.disabled = !avail;
       sw.setAttribute('aria-checked', String(on));
-      card.classList.toggle('control-disabled', !avail);
+      if (header) header.classList.toggle('control-disabled', !avail);
       if (!avail) {
         card.setAttribute('aria-disabled', 'true');
       } else {
@@ -1363,11 +1372,13 @@
       if (copySelf) copySelf.hidden = !avail || ext;
       if (serverOffNote) serverOffNote.hidden = avail;
       if (inline409) inline409.hidden = !show409;
+      if (inlineSaveFailed) inlineSaveFailed.hidden = !showSaveFailed;
     }
 
     sw.addEventListener('click', () => {
       if (SAK.state.semanticAvailable === false) return;
       show409 = false;
+      showSaveFailed = false;
       SAK.state.semantic = !SAK.state.semantic;
       syncTimkiemUI();
       SAK.toast(SAK.state.semantic
@@ -1377,6 +1388,7 @@
 
     function applyTimkiemMode(mode) {
       show409 = false;
+      showSaveFailed = false;
       if (mode === 'external-on') {
         SAK.state.semanticAvailable = true;
         SAK.state.semanticExternal = true;
@@ -1397,6 +1409,10 @@
         SAK.state.semanticAvailable = true;
         SAK.state.semantic = false;
         show409 = true;
+      } else if (mode === 'save-failed') {
+        SAK.state.semanticAvailable = true;
+        SAK.state.semantic = false;
+        showSaveFailed = true;
       }
       if (seg) {
         seg.querySelectorAll('[data-timkiem-mode]').forEach((b) => {

@@ -274,14 +274,16 @@ async function runHomeGroup(
         expect(preEnterAttrs.autocapitalize).toBe('off');
         await expect(page.getByTestId('omnibox-hint')).toBeVisible();
 
-        // Press Enter to run prefix search and open the listbox
+        // Press Enter (no active row) to run `GET /search` (P05 T17) and open the results listbox
         await omnibox.press('Enter');
         const listbox = page.getByRole('listbox', {
           name: msgs.content.omnibox.searchListboxAriaLabel,
         });
         await expect(listbox).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        const options = listbox.getByRole('option');
+        // Item rows only: every typed dropdown also carries the `Create item` CTA option in its last group (plan 2.8).
+        const options = listbox.locator('[role="option"][data-opt-kind="item"]');
         await expect(options).toHaveCount(2, { timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(listbox.getByRole('option')).toHaveCount(3);
 
         // Post-Enter open invariants: aria-controls points to omni-listbox, still no role="combobox" or aria-expanded,
         // single live region announces result count, no option active initially.

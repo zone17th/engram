@@ -245,6 +245,11 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
       // Open the tag-filter listbox (`#`) while the toast is visible to verify non-overlap with an open listbox (TV-FU10-3)
       await omnibox.fill('#');
       await expect(listbox).toBeVisible({ timeout: UI_WAIT_MS });
+      // P05 T17: the `#` dropdown is the cached tag group (seeded from the rail's tag query; the empty state now lives
+      // OUTSIDE the listbox), so its first option is a tag row.
+      await expect(listbox.getByRole('option').first()).toHaveAttribute('data-opt-kind', 'tag', {
+        timeout: UI_WAIT_MS,
+      });
 
       const metrics = await page.evaluate(() => {
         const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
