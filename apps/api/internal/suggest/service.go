@@ -56,9 +56,16 @@ func AsError(err error) (*Error, bool) {
 
 // TestHooks allows tests (such as TestSuggestBranchTimeoutPartial) to inject
 // deterministic hooks into a lexical branch without sleeping or modifying production SQL.
+// Test-only: production never sets it.
 type TestHooks struct {
 	BeforeBranch        func(ctx context.Context, corpus string) error
 	AfterBranchSetLocal func(ctx context.Context, tx pgx.Tx, corpus string) error
+	// BranchContext, when set, replaces context.WithTimeout(parent, BranchTimeout) as the
+	// per-branch context. A test that injects a GENUINE error uses it to hand the branch a
+	// non-expiring context (a WithCancel child of parent), so the real 50 ms timer cannot fire
+	// between the injection and classifyBranchErr (RV-SB1-BE-4). The parent must stay its
+	// parent so a request cancel still reaches the branch.
+	BranchContext func(parent context.Context, corpus string) (context.Context, context.CancelFunc)
 }
 
 // Service implements `/suggest` (Task 3) and `/search` (Task 4).
@@ -131,6 +138,15 @@ func (s *Service) SetTestHooks(h *TestHooks) {
 
 func (s *Service) activeHooks() *TestHooks {
 	return s.hooks.Load()
+}
+
+// branchContext returns the per-branch context: the BranchTimeout budget in production, or
+// the TestHooks.BranchContext override a test installed.
+func (s *Service) branchContext(parent context.Context, corpus string) (context.Context, context.CancelFunc) {
+	if h := s.activeHooks(); h != nil && h.BranchContext != nil {
+		return h.BranchContext(parent, corpus)
+	}
+	return context.WithTimeout(parent, BranchTimeout)
 }
 
 // CursorKey returns a copy of the HKDF-derived cursor HMAC key (for Task 4 `/search`).
@@ -317,7 +333,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 		alloc := ComputeQuota(parsed.Scope, limit, ModePrefix, 0, 0, 0)
 		reason, err := s.recentSemanticReason(ctx, in, parsed, limit)
 		if err != nil {
-			return SuggestResponse{}, err
+			return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 		}
 		resp = SuggestResponse{
 			Scope:          parsed.Scope,
@@ -347,7 +363,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 		parsed.QN,
 	)
 	if err != nil {
-		return SuggestResponse{}, err
+		return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 	}
 
 	alloc := ComputeQuota(parsed.Scope, limit, parsed.Mode, len(rawTags), len(rawItems), 0)
@@ -368,7 +384,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	if parsed.Mode == ModeRecent {
 		reason, err := s.recentSemanticReason(ctx, in, parsed, limit)
 		if err != nil {
-			return SuggestResponse{}, err
+			return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 		}
 		resp = SuggestResponse{
 			Scope:          parsed.Scope,
@@ -405,7 +421,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	nearCap := min(alloc.WireQuota.Near, max(0, limit-len(tags)-len(items)))
 	nearRes, err := s.resolveNear(ctx, in, parsed, limit, exclude, nearCap)
 	if err != nil {
-		return SuggestResponse{}, err
+		return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 	}
 
 	nearRows := filterAndClipNear(nearRes.Near, lexSet, alloc.WireQuota, limit, len(tags), len(items))
@@ -473,7 +489,10 @@ func (s *Service) resolveNear(
 		res, err = s.near.Near(ctx, req)
 	}
 	if err != nil {
-		return NearResult{}, err
+		if _, domain := AsError(err); domain {
+			return NearResult{}, err
+		}
+		return NearResult{}, newInternalError(ClassNearSource, "", parsed.Mode, err)
 	}
 	if !res.Semantic {
 		res.Near = []SuggestNearRow{}
