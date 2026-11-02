@@ -317,10 +317,11 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
           locale,
         });
 
-        const buttons = screen.getAllByRole('button');
+        const buttons = container.querySelectorAll('button');
         // Only the single switch control exists inside the card
         expect(buttons).toHaveLength(1);
         expect(buttons[0]).toHaveAttribute('role', 'switch');
+        expect(screen.queryAllByRole('button')).toHaveLength(0);
 
         const text = container.textContent ?? '';
         expect(text).not.toMatch(/Nhúng lại tất cả|Re-embed all/i);
