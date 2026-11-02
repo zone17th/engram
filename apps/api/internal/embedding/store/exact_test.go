@@ -103,8 +103,19 @@ func seedGenerationForVectorSearch(
 	return g, pin
 }
 
+// explainContainsHNSW reports whether any node of an EXPLAIN (FORMAT JSON)
+// payload references an index whose name contains "hnsw". It accepts the
+// payload as decoded into []map[string]any (the typed root list), as well as
+// the generic map[string]any / []any shapes. A type it does not recognise would
+// silently report false, so every decoded shape must be listed here.
 func explainContainsHNSW(v any) bool {
 	switch node := v.(type) {
+	case []map[string]any:
+		for _, root := range node {
+			if explainContainsHNSW(root) {
+				return true
+			}
+		}
 	case map[string]any:
 		if idx, ok := node["Index Name"].(string); ok {
 			if strings.Contains(strings.ToLower(idx), "hnsw") {
@@ -124,6 +135,60 @@ func explainContainsHNSW(v any) bool {
 		}
 	}
 	return false
+}
+
+func TestExplainContainsHNSW(t *testing.T) {
+	cases := []struct {
+		name string
+		plan string
+		want bool
+	}{
+		{
+			name: "index scan via the partition hnsw index",
+			plan: `[{"Plan": {"Node Type": "Limit", "Plans": [
+				{"Node Type": "Index Scan", "Parent Relationship": "Outer",
+				 "Index Name": "item_embedding_g1_p5_hnsw", "Relation Name": "item_embedding_g1_p5", "Alias": "e"}
+			]}}]`,
+			want: true,
+		},
+		{
+			name: "bitmap scan via the partition pkey (CI plan shape)",
+			plan: `[{"Plan": {"Node Type": "Sort", "Sort Key": ["a.dist", "i.id"], "Plans": [
+				{"Node Type": "Limit", "Parent Relationship": "InitPlan", "Subplan Name": "CTE ann", "Plans": [
+					{"Node Type": "Sort", "Parent Relationship": "Outer", "Plans": [
+						{"Node Type": "Bitmap Heap Scan", "Parent Relationship": "Outer",
+						 "Relation Name": "item_embedding_g1_p5", "Alias": "e", "Plans": [
+							{"Node Type": "Bitmap Index Scan", "Parent Relationship": "Outer",
+							 "Index Name": "item_embedding_g1_p5_pkey",
+							 "Index Cond": "(user_id = 'fd0c9201-952f-415d-95b5-d4a554937c80'::uuid)"}
+						]}
+					]}
+				]},
+				{"Node Type": "Nested Loop", "Parent Relationship": "Outer", "Plans": [
+					{"Node Type": "CTE Scan", "Parent Relationship": "Outer", "CTE Name": "ann", "Alias": "a"},
+					{"Node Type": "Index Scan", "Parent Relationship": "Inner",
+					 "Index Name": "item_user_unaccent_prefix", "Relation Name": "item", "Alias": "i"}
+				]}
+			]}}]`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var plan []map[string]any
+			if err := json.Unmarshal([]byte(tc.plan), &plan); err != nil {
+				t.Fatalf("unmarshal fixture: %v", err)
+			}
+			if got := explainContainsHNSW(plan); got != tc.want {
+				t.Fatalf("explainContainsHNSW(typed roots) = %v, want %v", got, tc.want)
+			}
+			for _, root := range plan {
+				if got := explainContainsHNSW(root); got != tc.want {
+					t.Fatalf("explainContainsHNSW(root) = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
 }
 
 func TestExactBelowThresholdNoHNSW(t *testing.T) {
@@ -215,8 +280,10 @@ func TestExactBelowThresholdNoHNSW(t *testing.T) {
 		if err := json.Unmarshal(rawPlan, &planPayload); err != nil {
 			t.Fatalf("unmarshal EXPLAIN JSON (%s): %v\nRaw:\n%s", corpus, err, string(rawPlan))
 		}
-		if explainContainsHNSW(planPayload) {
-			t.Fatalf("expected ExactSearchSQL (%s) plan to contain NO hnsw index, got plan:\n%s", corpus, string(rawPlan))
+		for _, root := range planPayload {
+			if explainContainsHNSW(root) {
+				t.Fatalf("expected ExactSearchSQL (%s) plan to contain NO hnsw index, got plan:\n%s", corpus, string(rawPlan))
+			}
 		}
 	}
 
