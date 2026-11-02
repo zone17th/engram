@@ -5,6 +5,7 @@ import {
   applyGateClose,
   applySearchCursorPageResponse,
   applySearchFirstPageResponse,
+  applySemanticLegFailed,
   applySuggestResponse,
   applyToggleSemanticOff,
   createInitialMergeState,
@@ -95,7 +96,6 @@ describe('features/omnibox/suggest/merge', () => {
     state = suggestMergeReducer(state, { type: 'set_active_key', activeKey: 'item:i1' });
 
     // 2. Late semantic response (semantic=1) arrives asynchronously (plan L13: real timers + waitFor)
-    const lateDelivery = Promise.withResolvers<void>();
     setTimeout(() => {
       state = applySuggestResponse(state, {
         gen,
@@ -110,13 +110,10 @@ describe('features/omnibox/suggest/merge', () => {
           generation: 1,
         }),
       });
-      lateDelivery.resolve();
-    }, 10);
-    await lateDelivery.promise;
+    }, 15);
     await waitFor(() => {
       expect(state.snapshot!.nearState).toBe('shown');
     });
-
     // Lexical array reference and elements are strictly untouched; near is deduped and clipped to quota.near (2)
     expect(state.snapshot!.lexical).toBe(lexicalRefBefore);
     expect(state.snapshot!.lexical).toEqual([tag1, item1, item2]);
@@ -334,18 +331,17 @@ describe('features/omnibox/suggest/merge', () => {
     expect(state.snapshot!.lexical).toEqual([itemGen2]);
 
     // Late gen1 response arrives asynchronously (plan L13: real timers + waitFor) -> dropped
-    const staleDelivery = Promise.withResolvers<void>();
+    let staleDelivered = false;
     setTimeout(() => {
       state = applySuggestResponse(state, {
         gen: gen1,
         qn: 'wi',
         response: makeSuggestResponse({ items: [itemGen1] }),
       });
-      staleDelivery.resolve();
-    }, 10);
-    await staleDelivery.promise;
+      staleDelivered = true;
+    }, 15);
     await waitFor(() => {
-      expect(state.snapshot!.gen).toBe(gen2);
+      expect(staleDelivered).toBe(true);
     });
     expect(state.snapshot!.gen).toBe(gen2);
     expect(state.snapshot!.lexical).toEqual([itemGen2]);
@@ -547,5 +543,223 @@ describe('features/omnibox/suggest/merge', () => {
     expect(state.snapshot!.generation).toBe(3);
     expect(state.snapshot!.hasMore).toBe(false);
     expect(state.snapshot!.nextCursor).toBeNull();
+  });
+
+  it('partial semantic=1 arriving before complete semantic=0 buffers near and merges when complete snapshot arrives (RV-T9-FE1-4)', () => {
+    const item1 = makeItem('i1', 'wifi phòng khách');
+    const near1 = makeItem('n1', 'router tổng', 'semantic');
+    const near2 = makeItem('n2', 'cáp quang', 'semantic');
+
+    let state = createInitialMergeState();
+    state = startNewQueryGen(state, { qn: 'wifi', scope: 'all', limit: 8, expectSemantic: true });
+    const gen = state.queryGen;
+
+    // 1. `semantic=1` returns FIRST with `lexical_partial: ['tag']`, `semantic: true`, and 2 near rows.
+    // It must not define the snapshot yet, but its `near` rows are buffered in `pendingNear`.
+    state = applySuggestResponse(state, {
+      gen,
+      qn: 'wifi',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        lexical_partial: ['tag'],
+        semantic: true,
+        semantic_reason: null,
+        near: [near1, near2],
+        generation: 4,
+      }),
+    });
+    expect(state.snapshot).toBeNull();
+    expect(state.pendingNear).not.toBeNull();
+    expect(state.pendingNear?.gen).toBe(gen);
+    expect(state.pendingNear?.near).toEqual([near1, near2]);
+
+    // 2. Complete `semantic=0` response arrives 40ms later -> defines snapshot AND merges buffered `near`
+    // so `nearState` becomes `'shown'` (not stuck at `'pending'`).
+    state = applySuggestResponse(state, {
+      gen,
+      qn: 'wifi',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        lexical_partial: [],
+        semantic: false,
+        semantic_reason: 'request_lexical',
+        near: [],
+      }),
+    });
+
+    expect(state.pendingNear).toBeNull();
+    expect(state.snapshot).not.toBeNull();
+    expect(state.snapshot!.lexical).toEqual([item1]);
+    expect(state.snapshot!.near).toEqual([near1, near2]);
+    expect(state.snapshot!.nearState).toBe('shown');
+    expect(state.snapshot!.generation).toBe(4);
+  });
+
+  it('failed or aborted semantic leg transitions nearState out of pending without dropping lexical rows (RV-T9-FE1-4)', () => {
+    const item1 = makeItem('i1', 'wifi');
+    let state = createInitialMergeState();
+    state = startNewQueryGen(state, { qn: 'wifi', scope: 'all', limit: 8, expectSemantic: true });
+    const gen = state.queryGen;
+
+    // Complete lexical leg arrives first -> nearState is 'pending'
+    state = applySuggestResponse(state, {
+      gen,
+      qn: 'wifi',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: false,
+        semantic_reason: 'request_lexical',
+      }),
+    });
+    const lexicalRef = state.snapshot!.lexical;
+    expect(state.snapshot!.nearState).toBe('pending');
+
+    // Semantic leg fails with 429/5xx/network -> transitions to 'degraded' while keeping lexical untouched
+    state = applySemanticLegFailed(state, { gen });
+    expect(state.snapshot!.nearState).toBe('degraded');
+    expect(state.snapshot!.lexical).toBe(lexicalRef);
+
+    // Aborted semantic leg transitions from 'pending' to 'idle'
+    state = startNewQueryGen(state, { qn: 'wifi2', scope: 'all', limit: 8, expectSemantic: true });
+    const gen2 = state.queryGen;
+    state = applySuggestResponse(state, {
+      gen: gen2,
+      qn: 'wifi2',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: false,
+        semantic_reason: 'request_lexical',
+      }),
+    });
+    expect(state.snapshot!.nearState).toBe('pending');
+    state = suggestMergeReducer(state, { type: 'semantic_leg_failed', gen: gen2, aborted: true });
+    expect(state.snapshot!.nearState).toBe('idle');
+  });
+
+  it('semantic response after toggle off stays off, including when toggled off before snapshot exists (RV-T9-FE1-5)', () => {
+    const item1 = makeItem('i1', 'wifi');
+    const near1 = makeItem('n1', 'router', 'semantic');
+
+    // Case 1: Snapshot exists with nearState='pending', user toggles ≈ off while semantic=1 is in flight,
+    // then semantic=1 lands -> near stays [] and nearState stays 'off'.
+    let state = createInitialMergeState();
+    state = startNewQueryGen(state, { qn: 'wifi', scope: 'all', limit: 8, expectSemantic: true });
+    const gen1 = state.queryGen;
+    state = applySuggestResponse(state, {
+      gen: gen1,
+      qn: 'wifi',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: false,
+        semantic_reason: 'request_lexical',
+      }),
+    });
+    expect(state.snapshot!.nearState).toBe('pending');
+
+    state = suggestMergeReducer(state, { type: 'toggle_semantic_off' });
+    expect(state.semanticEnabled).toBe(false);
+    expect(state.snapshot!.nearState).toBe('off');
+    expect(state.snapshot!.near).toEqual([]);
+
+    // Late semantic=1 response arrives after toggle-off
+    state = applySuggestResponse(state, {
+      gen: gen1,
+      qn: 'wifi',
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: true,
+        semantic_reason: null,
+        near: [near1],
+      }),
+    });
+    expect(state.snapshot!.near).toEqual([]);
+    expect(state.snapshot!.nearState).toBe('off');
+
+    // Case 2: User toggles ≈ off while snapshot === null (before first response lands),
+    // then semantic=1 arrives first -> defines lexical snapshot but keeps near=[] and nearState='off'.
+    let earlyOffState = createInitialMergeState();
+    earlyOffState = startNewQueryGen(earlyOffState, {
+      qn: 'wifi',
+      scope: 'all',
+      limit: 8,
+      expectSemantic: true,
+    });
+    const gen2 = earlyOffState.queryGen;
+    expect(earlyOffState.snapshot).toBeNull();
+    earlyOffState = applyToggleSemanticOff(earlyOffState);
+    expect(earlyOffState.semanticEnabled).toBe(false);
+
+    earlyOffState = applySuggestResponse(earlyOffState, {
+      gen: gen2,
+      qn: 'wifi',
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: true,
+        semantic_reason: null,
+        near: [near1],
+      }),
+    });
+    expect(earlyOffState.snapshot!.lexical).toEqual([item1]);
+    expect(earlyOffState.snapshot!.near).toEqual([]);
+    expect(earlyOffState.snapshot!.nearState).toBe('off');
+  });
+
+  it('clips near by limit - lexical.length when tighter than quota.near and drops late responses after close_gate or reset (RV-T9-FE1-11)', () => {
+    // 1. `limit - lexical.length` arm of near clip:
+    // limit = 5, lexical has 4 rows -> free slots = 1, even if quota.near = 2
+    const lexRows = [
+      makeTag('t1', 'tag 1'),
+      makeItem('i1', 'item 1'),
+      makeItem('i2', 'item 2'),
+      makeItem('i3', 'item 3'),
+    ];
+    const near1 = makeItem('n1', 'near 1', 'semantic');
+    const near2 = makeItem('n2', 'near 2', 'semantic');
+
+    let state = createInitialMergeState();
+    state = startNewQueryGen(state, { qn: 'wifi', scope: 'all', limit: 5, expectSemantic: true });
+    const gen1 = state.queryGen;
+    state = applySuggestResponse(state, {
+      gen: gen1,
+      qn: 'wifi',
+      response: makeSuggestResponse({
+        limit: 5,
+        quota: { tag: 2, lexical: 4, near: 2 },
+        tags: [lexRows[0] as SuggestTag],
+        items: lexRows.slice(1) as SuggestItem[],
+        semantic: true,
+        semantic_reason: null,
+        near: [near1, near2],
+      }),
+    });
+    expect(state.snapshot!.lexical).toHaveLength(4);
+    expect(state.snapshot!.near).toEqual([near1]);
+
+    // 2. Late response for old gen after `close_gate` is dropped
+    state = suggestMergeReducer(state, { type: 'close_gate', keepLocalTagCache: false });
+    expect(state.snapshot).toBeNull();
+    state = applySuggestResponse(state, {
+      gen: gen1,
+      qn: 'wifi',
+      response: makeSuggestResponse({ items: [makeItem('i-late', 'late after close')] }),
+    });
+    expect(state.snapshot).toBeNull();
+
+    // 3. Late response for old gen after `reset` is dropped
+    state = startNewQueryGen(state, { qn: 'router', scope: 'all', limit: 8 });
+    const genBeforeReset = state.queryGen;
+    state = suggestMergeReducer(state, { type: 'reset' });
+    expect(state.snapshot).toBeNull();
+    state = applySuggestResponse(state, {
+      gen: genBeforeReset,
+      qn: 'router',
+      response: makeSuggestResponse({ items: [makeItem('i-late-reset', 'late after reset')] }),
+    });
+    expect(state.snapshot).toBeNull();
   });
 });

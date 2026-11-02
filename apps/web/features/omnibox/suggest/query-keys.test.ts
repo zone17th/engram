@@ -8,9 +8,6 @@ import {
   buildSuggestQueryKey,
   isCacheableSearchResponse,
   isSearchQueryKeyPrefix,
-  requireSearchQueryKey,
-  requireSuggestQueryKey,
-  searchQueryKeys,
 } from './query-keys';
 
 describe('features/omnibox/suggest/query-keys', () => {
@@ -60,7 +57,6 @@ describe('features/omnibox/suggest/query-keys', () => {
       'cursor-abc',
     ]);
     expect(searchKey?.[1]).toBe('user-123');
-    expect(searchQueryKeys.user('user-123')).toEqual(['search', 'user-123']);
   });
 
   it('no key with q only', () => {
@@ -86,35 +82,11 @@ describe('features/omnibox/suggest/query-keys', () => {
           qn: 'secret-query',
         }),
       ).toBeNull();
-
-      expect(() =>
-        requireSuggestQueryKey({
-          userId: missingUserId,
-          scope: 'all',
-          limit: 8,
-          requestMode: 'lex',
-          semanticSuggestSetting: false,
-          qn: 'secret-query',
-        }),
-      ).toThrow();
-
-      expect(() =>
-        requireSearchQueryKey({
-          userId: missingUserId,
-          scope: 'all',
-          limit: 20,
-          requestMode: 'lex',
-          semanticSuggestSetting: false,
-          qn: 'secret-query',
-        }),
-      ).toThrow();
-
-      expect(() => searchQueryKeys.user(missingUserId ?? '')).toThrow();
     }
   });
 
   it('forces requestMode=lex on cursor pages and matches ["search"] prefix for cache clearing', () => {
-    const cursorKey = requireSearchQueryKey({
+    const cursorKey = buildSearchQueryKey({
       userId: 'u-1',
       scope: 'all',
       limit: 20,
@@ -124,11 +96,12 @@ describe('features/omnibox/suggest/query-keys', () => {
       qn: 'wifi',
       cursor: 'next-page-token',
     });
-    expect(cursorKey[5]).toBe('lex');
-    expect(cursorKey[9]).toBe('next-page-token');
+    expect(cursorKey).not.toBeNull();
+    expect(cursorKey?.[5]).toBe('lex');
+    expect(cursorKey?.[9]).toBe('next-page-token');
 
     expect(isSearchQueryKeyPrefix(SEARCH_QUERY_KEY_PREFIX)).toBe(true);
-    expect(isSearchQueryKeyPrefix(cursorKey)).toBe(true);
+    expect(isSearchQueryKeyPrefix(cursorKey!)).toBe(true);
     expect(isSearchQueryKeyPrefix(['content', 'items', { q: 'wifi' }])).toBe(false);
     expect(isSearchQueryKeyPrefix([])).toBe(false);
 

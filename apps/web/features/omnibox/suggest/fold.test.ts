@@ -57,8 +57,14 @@ describe('features/omnibox/suggest/fold', () => {
       match: '',
       after: 'wifi nhà',
     });
-  });
 
+    // Non-precomposed combining mark (`q` + U+0323) stays attached inside `match`, never orphaned in `after` (RV-T9-FE1-12)
+    expect(splitMarkedFoldedPrefix('q\u0323x', 'q')).toEqual({
+      before: '',
+      match: 'q\u0323',
+      after: 'x',
+    });
+  });
   it('splitHighlightByMatch only highlights prefix and prefix_folded, never fuzzy or semantic', () => {
     expect(splitHighlightByMatch('đường hoa', 'đường', 'prefix')).toEqual({
       before: '',

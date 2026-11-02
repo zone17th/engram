@@ -7,12 +7,13 @@ import {
   createSendGate,
   evaluateEnterSearch,
   evaluateKeystrokeSend,
-  evaluateSeeMoreSearchSemantic,
   evaluateSemanticReissue,
   extractTagModeToken,
   resolveOmniboxHelpTextKey,
   stepSendGateInput,
   syncSendGateOwnWrite,
+  type KeystrokeSendDecision,
+  type SemanticEligibilityContext,
 } from './send-gate';
 
 /**
@@ -92,12 +93,17 @@ function createTextareaWithGate(initialValue = '') {
     });
   }
 
-  function typeStringCharByChar(text: string) {
+  function typeStringCharByChar(
+    text: string,
+    context?: SemanticEligibilityContext,
+  ): KeystrokeSendDecision[] {
+    const decisions: KeystrokeSendDecision[] = [];
     for (const ch of text) {
       typeChar(ch);
+      decisions.push(gate.decideKeystroke(context));
     }
+    return decisions;
   }
-
   function setDraft(value: string) {
     textarea.value = value;
     gate.syncOwnWrite(value);
@@ -416,10 +422,28 @@ describe('features/omnibox/suggest/send-gate', () => {
   });
 
   it('`#home:secretbody` sends nothing', () => {
+    const ctx = { semanticAvailable: true, semanticSuggest: true } as const;
     const { gate, typeStringCharByChar, dispatchNativeEdit } = createTextareaWithGate();
-    typeStringCharByChar('#home:secretbody');
+    const trace = typeStringCharByChar('#home:secretbody', ctx);
 
-    const ks = gate.decideKeystroke({ semanticAvailable: true, semanticSuggest: true });
+    // Before `:`, `#home` is in `#` tag mode with semantic=0; from `:` onwards, every keystroke is blocked
+    // and no keystroke decision EVER carries any character from `:secretbody`.
+    const colonIdx = '#home:secretbody'.indexOf(':');
+    for (let i = 0; i < trace.length; i += 1) {
+      const d = trace[i]!;
+      if (d.q !== undefined) {
+        expect(d.q).not.toContain(':');
+        expect(d.q).not.toContain('secret');
+      }
+      if (i >= colonIdx) {
+        expect(d.canSend).toBe(false);
+        expect(d.gateClosed).toBe(true);
+        expect(d.blockReason).toBe('colon_locked');
+        expect(d.q).toBeUndefined();
+      }
+    }
+
+    const ks = gate.decideKeystroke(ctx);
     expect(ks.canSend).toBe(false);
     expect(ks.gateClosed).toBe(true);
     expect(ks.keepLocalTagCacheRows).toBe(true);
@@ -431,49 +455,99 @@ describe('features/omnibox/suggest/send-gate', () => {
       inputType: 'deleteContentBackward',
       nextValue: '#home',
     });
-    expect(gate.decideKeystroke().canSend).toBe(false);
+    expect(gate.decideKeystroke(ctx).canSend).toBe(false);
 
     // Enter also refuses to send anything after colon in # mode
-    const enter = gate.decideEnterSearch({ semanticAvailable: true, semanticSuggest: true }, '#home:secretbody');
+    const enter = gate.decideEnterSearch(ctx, '#home:secretbody');
     expect(enter.canSearch).toBe(false);
     expect(enter.q).toBe('');
   });
 
   it('`#home secret:x` sends nothing after colon', () => {
+    const ctx = { semanticAvailable: true, semanticSuggest: true } as const;
     const { gate, typeStringCharByChar } = createTextareaWithGate();
-    typeStringCharByChar('#home secret:x');
+    const trace = typeStringCharByChar('#home secret:x', ctx);
 
-    const ks = gate.decideKeystroke({ semanticAvailable: true, semanticSuggest: true });
+    const colonIdx = '#home secret:x'.indexOf(':');
+    for (let i = 0; i < trace.length; i += 1) {
+      const d = trace[i]!;
+      if (d.q !== undefined) {
+        expect(d.q).not.toContain('secret');
+        expect(d.q).not.toContain(':');
+      }
+      if (i >= colonIdx) {
+        expect(d.canSend).toBe(false);
+        expect(d.gateClosed).toBe(true);
+        expect(d.blockReason).toBe('colon_locked');
+        expect(d.q).toBeUndefined();
+      }
+    }
+
+    const ks = gate.decideKeystroke(ctx);
     expect(ks.canSend).toBe(false);
     expect(ks.gateClosed).toBe(true);
     expect(ks.blockReason).toBe('colon_locked');
     expect(ks.q).toBeUndefined();
 
-    const enter = gate.decideEnterSearch({ semanticAvailable: true, semanticSuggest: true });
+    const enter = gate.decideEnterSearch(ctx);
     expect(enter.canSearch).toBe(false);
     expect(enter.q).toBe('');
   });
 
   it('`name: body` locks', () => {
+    const ctx = { semanticAvailable: true, semanticSuggest: true } as const;
     const { gate, typeStringCharByChar } = createTextareaWithGate();
-    typeStringCharByChar('name: body');
+    const trace = typeStringCharByChar('name: body', ctx);
 
-    const ks = gate.decideKeystroke({ semanticAvailable: true, semanticSuggest: true });
+    const colonIdx = 'name: body'.indexOf(':');
+    for (let i = 0; i < trace.length; i += 1) {
+      const d = trace[i]!;
+      if (d.q !== undefined) {
+        expect(d.q).not.toContain(':');
+        expect(d.q).not.toContain('body');
+      }
+      if (i >= colonIdx) {
+        expect(d.canSend).toBe(false);
+        expect(d.gateClosed).toBe(true);
+        expect(d.blockReason).toBe('colon_locked');
+        expect(d.q).toBeUndefined();
+      }
+    }
+
+    const ks = gate.decideKeystroke(ctx);
     expect(ks.canSend).toBe(false);
     expect(ks.gateClosed).toBe(true);
     expect(ks.blockReason).toBe('colon_locked');
     expect(ks.q).toBeUndefined();
 
-    const enter = gate.decideEnterSearch({ semanticAvailable: true, semanticSuggest: true });
+    const enter = gate.decideEnterSearch(ctx);
     expect(enter.canSearch).toBe(false);
     expect(enter.blockReason).toBe('colon_locked');
   });
 
   it('`wifi： mật khẩu` locks (full-width)', () => {
+    const ctx = { semanticAvailable: true, semanticSuggest: true } as const;
     const { gate, typeStringCharByChar, dispatchNativeEdit } = createTextareaWithGate();
-    typeStringCharByChar('wifi： mật khẩu');
+    const text = 'wifi： mật khẩu';
+    const trace = typeStringCharByChar(text, ctx);
 
-    const ks = gate.decideKeystroke({ semanticAvailable: true, semanticSuggest: true });
+    const colonIdx = Array.from(text).indexOf('：');
+    for (let i = 0; i < trace.length; i += 1) {
+      const d = trace[i]!;
+      if (d.q !== undefined) {
+        expect(d.q).not.toContain('：');
+        expect(d.q).not.toContain('mật');
+        expect(d.q).not.toContain('khẩu');
+      }
+      if (i >= colonIdx) {
+        expect(d.canSend).toBe(false);
+        expect(d.gateClosed).toBe(true);
+        expect(d.blockReason).toBe('colon_locked');
+        expect(d.q).toBeUndefined();
+      }
+    }
+
+    const ks = gate.decideKeystroke(ctx);
     expect(ks.canSend).toBe(false);
     expect(ks.gateClosed).toBe(true);
     expect(ks.blockReason).toBe('colon_locked');
@@ -484,14 +558,30 @@ describe('features/omnibox/suggest/send-gate', () => {
       inputType: 'deleteContentBackward',
       nextValue: 'wifi',
     });
-    expect(gate.decideKeystroke().canSend).toBe(false);
+    expect(gate.decideKeystroke(ctx).canSend).toBe(false);
   });
 
   it('`http://x` locks', () => {
+    const ctx = { semanticAvailable: true, semanticSuggest: true } as const;
     const { gate, typeStringCharByChar, dispatchNativeEdit } = createTextareaWithGate();
-    typeStringCharByChar('http://x');
+    const trace = typeStringCharByChar('http://x', ctx);
 
-    const ks = gate.decideKeystroke({ semanticAvailable: true, semanticSuggest: true });
+    const colonIdx = 'http://x'.indexOf(':');
+    for (let i = 0; i < trace.length; i += 1) {
+      const d = trace[i]!;
+      if (d.q !== undefined) {
+        expect(d.q).not.toContain(':');
+        expect(d.q).not.toContain('//x');
+      }
+      if (i >= colonIdx) {
+        expect(d.canSend).toBe(false);
+        expect(d.gateClosed).toBe(true);
+        expect(d.blockReason).toBe('colon_locked');
+        expect(d.q).toBeUndefined();
+      }
+    }
+
+    const ks = gate.decideKeystroke(ctx);
     expect(ks.canSend).toBe(false);
     expect(ks.gateClosed).toBe(true);
     expect(ks.blockReason).toBe('colon_locked');
@@ -502,7 +592,7 @@ describe('features/omnibox/suggest/send-gate', () => {
       inputType: 'deleteContentBackward',
       nextValue: 'httpx',
     });
-    expect(gate.decideKeystroke().canSend).toBe(false);
+    expect(gate.decideKeystroke(ctx).canSend).toBe(false);
   });
 
   it('tag mode sends token up to whitespace or colon only', () => {
@@ -664,14 +754,16 @@ describe('features/omnibox/suggest/send-gate', () => {
       expect(reissueClean.q).toBe('wifi');
 
       // "See more" cursor pages ALWAYS send semantic=0 even on a clean draft
-      expect(evaluateSeeMoreSearchSemantic()).toBe(0);
-      expect(shortGate.gate.decideSeeMoreSemantic()).toBe(0);
       expect(
         shortGate.gate.decideEnterSearch({ ...ctx, cursor: 'next_page_cursor' }).semantic,
       ).toBe(0);
       expect(
         shortGate.gate.decideSemanticReissue({ ...ctx, cursor: 'next_page_cursor' }).canSendSemantic,
       ).toBe(false);
+      expect(
+        evaluateSemanticReissue(shortGate.gate.getState(), { ...ctx, cursor: 'next_page_cursor' })
+          .semantic,
+      ).toBe(0);
     });
 
     it('2.24 item 9: `#zzz` Enter -> `semantic=0` and `#` mode always sends semantic=0 across keystroke, Enter, and toggle-on', () => {
@@ -768,5 +860,117 @@ describe('features/omnibox/suggest/send-gate', () => {
     });
     expect(stepped.tainted).toBe(false);
     expect(stepped.value).toBe('a');
+  });
+
+  it('`!!!`, `#!!!`, and lone `#` produce isLocalEmptyMatch on Enter and do not close the gate on keystroke (RV-T9-FE1-6)', () => {
+    const ctx = { semanticAvailable: true, semanticSuggest: true } as const;
+
+    // 1. Search mode `!!!`: keystrokes do not send (`empty_normalized`), do NOT close the gate (`gateClosed: false`),
+    // and Enter returns `canSearch: false, isLocalEmptyMatch: true`.
+    const bangGate = createTextareaWithGate();
+    const bangTrace = bangGate.typeStringCharByChar('!!!', ctx);
+    for (const d of bangTrace) {
+      expect(d.canSend).toBe(false);
+      expect(d.gateClosed).toBe(false);
+      expect(d.blockReason).toBe('empty_normalized');
+      expect(d.q).toBeUndefined();
+    }
+    const bangEnter = bangGate.gate.decideEnterSearch(ctx);
+    expect(bangEnter.canSearch).toBe(false);
+    expect(bangEnter.isLocalEmptyMatch).toBe(true);
+    expect(bangEnter.blockReason).toBe('empty_normalized');
+    expect(bangEnter.semantic).toBe(0);
+
+    // 2. `#!!!` in tag mode: `#` sends `q: '#'`, then `!` tokens do not send and do NOT close the gate;
+    // Enter returns `canSearch: false, isLocalEmptyMatch: true`.
+    const tagBangGate = createTextareaWithGate();
+    const tagBangTrace = tagBangGate.typeStringCharByChar('#!!!', ctx);
+    expect(tagBangTrace[0]?.canSend).toBe(true);
+    expect(tagBangTrace[0]?.q).toBe('#');
+    for (const d of tagBangTrace.slice(1)) {
+      expect(d.canSend).toBe(false);
+      expect(d.gateClosed).toBe(false);
+      expect(d.keepLocalTagCacheRows).toBe(true);
+      expect(d.blockReason).toBe('empty_normalized');
+    }
+    const tagBangEnter = tagBangGate.gate.decideEnterSearch(ctx);
+    expect(tagBangEnter.canSearch).toBe(false);
+    expect(tagBangEnter.isLocalEmptyMatch).toBe(true);
+    expect(tagBangEnter.blockReason).toBe('empty_normalized');
+    expect(tagBangEnter.scope).toBe('tag');
+
+    // 3. Lone `#`: keystroke sends `q: '#'` (scope='tag', semantic=0), Enter returns `isLocalEmptyMatch: true`.
+    const loneHashGate = createTextareaWithGate();
+    loneHashGate.typeChar('#');
+    const loneHashKs = loneHashGate.gate.decideKeystroke(ctx);
+    expect(loneHashKs.canSend).toBe(true);
+    expect(loneHashKs.q).toBe('#');
+    expect(loneHashKs.scope).toBe('tag');
+    expect(loneHashKs.allowSemantic).toBe(false);
+    const loneHashEnter = loneHashGate.gate.decideEnterSearch(ctx);
+    expect(loneHashEnter.canSearch).toBe(false);
+    expect(loneHashEnter.isLocalEmptyMatch).toBe(true);
+    expect(loneHashEnter.blockReason).toBe('empty_normalized');
+  });
+
+  it('fails closed (taints without throwing) when Intl.Segmenter is unavailable (RV-T9-FE1-8)', () => {
+    const originalSegmenter = Intl.Segmenter;
+    try {
+      Object.defineProperty(Intl, 'Segmenter', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+
+      const { gate, typeChar } = createTextareaWithGate();
+      expect(() => typeChar('w')).not.toThrow();
+      expect(gate.getState().tainted).toBe(true);
+      expect(gate.decideKeystroke().canSend).toBe(false);
+      expect(gate.decideKeystroke().blockReason).toBe('tainted');
+
+      // Enter still works in lexical mode (`semantic=0`) as P04 fallback
+      const enter = gate.decideEnterSearch({ semanticAvailable: true, semanticSuggest: true });
+      expect(enter.canSearch).toBe(true);
+      expect(enter.semantic).toBe(0);
+    } finally {
+      Object.defineProperty(Intl, 'Segmenter', {
+        value: originalSegmenter,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  it('missed compositionend followed by multi-grapheme insertText taints and composition commit with colon locks (RV-T9-FE1-10, RV-T9-FE1-11)', () => {
+    // 1. Missed `compositionend` followed by 5-grapheme `insertText` (isComposing: false) -> MUST taint
+    const { textarea, gate, dispatchNativeEdit } = createTextareaWithGate();
+    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
+    expect(gate.getState().isComposing).toBe(true);
+
+    // No `compositionend` fired (e.g. mobile blur quirk); next event is a non-composing `insertText` of 5 graphemes
+    dispatchNativeEdit({
+      inputType: 'insertText',
+      data: 'hello',
+      nextValue: 'hello',
+      isComposing: false,
+    });
+    expect(gate.getState().tainted).toBe(true);
+    expect(gate.getState().isComposing).toBe(false);
+    expect(gate.decideKeystroke().canSend).toBe(false);
+    expect(gate.decideKeystroke().blockReason).toBe('tainted');
+
+    // 2. Composition commit containing `:` locks the gate until empty
+    const compColon = createTextareaWithGate();
+    compColon.textarea.dispatchEvent(new CompositionEvent('compositionstart'));
+    compColon.dispatchNativeEdit({
+      inputType: 'insertCompositionText',
+      data: 'wifi:123',
+      nextValue: 'wifi:123',
+      isComposing: true,
+    });
+    compColon.textarea.dispatchEvent(new CompositionEvent('compositionend', { data: 'wifi:123' }));
+    expect(compColon.gate.getState().colonLocked).toBe(true);
+    expect(compColon.gate.decideKeystroke().canSend).toBe(false);
+    expect(compColon.gate.decideKeystroke().blockReason).toBe('colon_locked');
   });
 });

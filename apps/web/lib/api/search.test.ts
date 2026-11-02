@@ -110,6 +110,20 @@ describe('lib/api/search', () => {
     expect(init.signal).toBe(controller.signal);
   });
 
+  it('defaults semantic to 0 (fails closed) when omitted at runtime', async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse(SAMPLE_SUGGEST_RESPONSE));
+    await suggest();
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/suggest?semantic=0');
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse(SAMPLE_SUGGEST_RESPONSE));
+    await suggest({ q: 'wifi', scope: 'all' } as unknown as SuggestParams);
+    expect(fetchSpy.mock.calls[1]?.[0]).toBe('/api/v1/suggest?q=wifi&scope=all&semantic=0');
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse(SAMPLE_SEARCH_RESPONSE));
+    await search({ q: 'wifi', scope: 'all' } as unknown as SearchParams);
+    expect(fetchSpy.mock.calls[2]?.[0]).toBe('/api/v1/search?q=wifi&scope=all&semantic=0');
+  });
+
   it('never logs q to console on success or failure', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
