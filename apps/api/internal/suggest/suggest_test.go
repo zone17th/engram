@@ -1460,11 +1460,19 @@ func TestSuggestQuotaTable(t *testing.T) {
 }
 
 type stubNearSource struct {
-	fn func(ctx context.Context, req suggest.NearRequest) (suggest.NearResult, error)
+	fn        func(ctx context.Context, req suggest.NearRequest) (suggest.NearResult, error)
+	activeGen func(ctx context.Context, userID uuid.UUID) (*int, error)
 }
 
 func (s stubNearSource) Near(ctx context.Context, req suggest.NearRequest) (suggest.NearResult, error) {
 	return s.fn(ctx, req)
+}
+
+func (s stubNearSource) ActiveGeneration(ctx context.Context, userID uuid.UUID) (*int, error) {
+	if s.activeGen != nil {
+		return s.activeGen(ctx, userID)
+	}
+	return nil, nil
 }
 
 // TestSuggestLexicalIdenticalSemanticOnOff verifies plan P05 mục 2.4 & Task 3:

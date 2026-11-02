@@ -15,8 +15,10 @@ const (
 	MobileSuggestLimit  = 5
 	MaxSuggestLimit     = 12
 
-	DefaultSearchLimit = 20
-	MaxSearchLimit     = 50
+	DefaultSearchLimit        = 20
+	MaxSearchLimit            = 50
+	SearchAllFirstPageTagsMax = 5
+	SearchFirstPageNearMax    = 5
 )
 
 // QuotaCell holds the static quota parameters for a (scope, limit) cell
@@ -56,6 +58,11 @@ func ValidSuggestScope(scope string) bool {
 // ValidSuggestLimit returns true if limit is one of 5, 8, 12.
 func ValidSuggestLimit(limit int) bool {
 	return limit == 5 || limit == 8 || limit == 12
+}
+
+// ValidSearchLimit returns true if limit is one of 20, 50.
+func ValidSearchLimit(limit int) bool {
+	return limit == DefaultSearchLimit || limit == MaxSearchLimit
 }
 
 // LookupQuotaCell returns the QuotaCell for (scope, limit).

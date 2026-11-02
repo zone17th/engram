@@ -38,6 +38,7 @@ type NearResult struct {
 // via a single hunk in compose/search.go.
 type NearSource interface {
 	Near(ctx context.Context, req NearRequest) (NearResult, error)
+	ActiveGeneration(ctx context.Context, userID uuid.UUID) (*int, error)
 }
 
 // NoopNearSource is the Phase A / W1 NearSource implementation when semantic search
@@ -78,4 +79,10 @@ func (n NoopNearSource) Near(_ context.Context, req NearRequest) (NearResult, er
 		Near:           []SuggestNearRow{},
 		Generation:     nil,
 	}, nil
+}
+
+// ActiveGeneration implements NearSource (advisor-dec-290).
+// Reads only the pinned generation: no provider or embedding call, no q, no logging.
+func (n NoopNearSource) ActiveGeneration(_ context.Context, _ uuid.UUID) (*int, error) {
+	return nil, nil
 }

@@ -123,3 +123,38 @@ func (r *SuggestResponse) NormalizeSlices() {
 		r.Near = []SuggestNearRow{}
 	}
 }
+
+// SearchResponse matches OpenAPI schema `SearchResponse` (SPEC §6.4, §9.2, plan mục 2.4, 2.5, Task 4).
+// Never echoes `q`, `qn`, or `cursor`, and never includes `hint` or entry content.
+// All array fields (`Items`, `Tags`, `Near`) are guaranteed non-nil (`[]` when empty).
+type SearchResponse struct {
+	Scope          string           `json:"scope"`
+	Limit          int              `json:"limit"`
+	Mode           string           `json:"mode"`
+	Items          []SuggestItem    `json:"items"`
+	Tags           []SuggestTag     `json:"tags"`
+	NextCursor     *string          `json:"next_cursor"`
+	Semantic       bool             `json:"semantic"`
+	SemanticReason *string          `json:"semantic_reason"`
+	Near           []SuggestNearRow `json:"near"`
+	Generation     *int             `json:"generation"`
+}
+
+// NormalizeSlices ensures all required JSON array fields on SearchResponse are non-nil
+// so `encoding/json` always serializes `[]` instead of `null` (OpenAPI contract).
+func (r *SearchResponse) NormalizeSlices() {
+	if r.Tags == nil {
+		r.Tags = []SuggestTag{}
+	}
+	for i := range r.Items {
+		if r.Items[i].Tags == nil {
+			r.Items[i].Tags = []TagRef{}
+		}
+	}
+	if r.Items == nil {
+		r.Items = []SuggestItem{}
+	}
+	if r.Near == nil {
+		r.Near = []SuggestNearRow{}
+	}
+}
