@@ -11,6 +11,7 @@ import {
   type AccountNotice,
 } from '@/features/settings/account/account-dialogs';
 import { SecuritySection } from '@/features/settings/security/sessions-panel';
+import { SemanticCard } from '@/features/settings/search/semantic-card';
 import { useSession } from '@/features/auth/session-provider';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 
@@ -64,10 +65,11 @@ export default function SettingsPage() {
             <h2 id="search-heading" className="t-title-md mb-5 text-ink">
               {t('page.searchHeading')}
             </h2>
-            <div className="card p-5">
+            <div className="card mb-3 p-5">
               <div className="text-[15px] font-semibold text-body">{t('page.searchTitle')}</div>
               <p className="t-body mt-1 m-0 text-muted">{t('page.searchBody')}</p>
             </div>
+            <SemanticCard />
           </section>
 
           <section id="dulieu" aria-labelledby="data-heading">

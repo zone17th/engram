@@ -485,7 +485,7 @@
       "nav": { "account": "Account", "security": "Security", "search": "Search", "data": "Data" },
       "searchHeading": "Search",
       "searchTitle": "What search can see",
-      "searchBody": "Item names, hints and tags are not encrypted, so the server can search item names and tags. Entry content stays encrypted.",
+      "searchBody": "Item names, hints and tags are not encrypted, and text typed in the search box is sent to the server, so the server can search item names and tags. Entry content stays encrypted.",
       "dataHeading": "Data",
       "dataTitle": "Your data",
       "dataBody": "Entry content is encrypted in your browser before it is sent to the server. Item names, hints and tags are stored unencrypted."
@@ -783,6 +783,16 @@
         "createNewVaultLink": "Create new vault",
         "toastDone": "Vault has been reset"
       }
+    },
+    "search": {
+      "semanticTitle": "Meaning-based search",
+      "semanticDesc": "Typing “home network” also suggests an item named “wifi”. Meaning-based hits stay in their own group below lexical matches, so toggling never reorders exact or prefix results.",
+      "semanticExternalCopy": "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Turning this off stops sending and deletes your vectors on the engram server (previously sent data cannot be recalled from the external service); turning it back on re-indexes your items and tags.",
+      "semanticSelfHostCopy": "Item names, hints, and tags are embedded on the engram server. Turning this off only hides meaning-based results; the index keeps updating so turning it back on works right away.",
+      "semanticEntryNeverSent": "Entry content is never sent — it is encrypted before leaving your device.",
+      "semanticServerOff": "Meaning-based search is not enabled on this server",
+      "semanticEnable409": "Couldn't turn on meaning-based search",
+      "semanticSaveFailed": "Couldn't save the change. Try again later."
     }
   },
   "vault": {
