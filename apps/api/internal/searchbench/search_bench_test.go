@@ -643,8 +643,19 @@ func TestQuerySetsAreDeterministic(t *testing.T) {
 
 // ---- self-checks (database) -------------------------------------------------
 
+// lexSingleClient is the concurrency level at which the delay visibility check
+// (iii) of TestHarnessCatchesSlowLexical is evaluated (advisor-dec-307).
+const lexSingleClient = 1
+
+// lexPlan measures two levels per run: concurrency 1 (150 measured requests, a
+// stable median; a closed loop with one client has no queueing, so an injected
+// delay shows in full) and concurrency 8 (the C1 target level, 240 measured).
+// At c=1 the delayed run costs about 170 x 55 ms = 9 s, so the self-check stays fast.
 func lexPlan() ScenarioPlan {
-	return ScenarioPlan{Levels: []LoadLevel{{Concurrency: TargetConcurrency, Warmup: 20, Measured: 240}}}
+	return ScenarioPlan{Levels: []LoadLevel{
+		{Concurrency: lexSingleClient, Warmup: 20, Measured: 150},
+		{Concurrency: TargetConcurrency, Warmup: 20, Measured: 240},
+	}}
 }
 
 func runLexicalCheck(t *testing.T, h *Harness, sr *SeedResult, limits map[int]int) ScenarioReport {
@@ -690,8 +701,10 @@ func delayLexicalSuggest(next http.Handler, d time.Duration) http.Handler {
 // NOT require the undelayed tiny control to meet the absolute 40 ms target on a
 // shared CI runner (cloud runs: 35.95 ms, then 62/78 ms for the same code), so the
 // control is measured and logged, never asserted against the target. The delay
-// must be visible relative to that control, measured first on the same harness,
-// the same query set and the same concurrency 8.
+// must be visible relative to that control, measured first on the same harness and
+// the same query set: (i) the shared evaluator FAILs the injected run at c=8 and
+// (ii) the injected c=8 p95 is >= 50 ms, but (iii) the visibility margin is
+// evaluated at concurrency 1 (see the comment at (iii)).
 func TestHarnessCatchesSlowLexical(t *testing.T) {
 	env := dbEnvT(t)
 	limits := map[int]int{0: 1500}
@@ -708,7 +721,8 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	const (
 		minN         = 200 // self-check size; the real run uses MinMeasuredPerScenario
 		injectedMs   = 50.0
-		visibleDelta = injectedMs / 2 // injected p50 must exceed the control p50 by at least this much (25 ms)
+		visibleDelta = injectedMs / 2 // injected c=1 p50 must exceed the control c=1 p50 by at least this much (25 ms)
+		minSingleN   = 100            // measured requests at c=1 for a stable median
 	)
 
 	// Control first (no delay): logged only. A shared runner may exceed the
@@ -719,7 +733,13 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	if !ok {
 		t.Fatalf("control run has no concurrency %d level", TargetConcurrency)
 	}
-	t.Logf("control (no delay, logged not asserted): %s - %s; pool max conns %d; statuses %v", cv.Status(), cv.Measured, h.PoolMax, cl.Statuses)
+	cl1, ok := control.Level(lexSingleClient)
+	if !ok {
+		t.Fatalf("control run has no concurrency %d level", lexSingleClient)
+	}
+	t.Logf("control (no delay, logged not asserted): %s - %s; pool max conns %d", cv.Status(), cv.Measured, h.PoolMax)
+	t.Logf("control c=%d: p50 %.2f ms p95 %.2f ms n=%d statuses %v", lexSingleClient, cl1.Stats.P50Ms, cl1.Stats.P95Ms, cl1.Stats.N, cl1.Statuses)
+	t.Logf("control c=%d: p50 %.2f ms p95 %.2f ms n=%d statuses %v", TargetConcurrency, cl.Stats.P50Ms, cl.Stats.P95Ms, cl.Stats.N, cl.Statuses)
 
 	// Injected 50 ms delay on every lexical /suggest request, same harness, same
 	// queries. Outside the branch budget (see delayLexicalSuggest).
@@ -747,17 +767,33 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	if sl.Stats.P95Ms < injectedMs {
 		t.Fatalf("injected delay not visible in the measured p95: %.2f ms < %.0f ms (http statuses %v, %+v)", sl.Stats.P95Ms, injectedMs, sl.Statuses, sl.Stats)
 	}
-	// (iii) ... and stands out against the undelayed control of the same run.
-	// Medians, not p95: a single noisy control tail (78 ms p95 seen in CI) must
-	// not make the comparison flake. The visibility margin is half the injected
-	// delay (advisor-dec-305): a closed-loop run cannot show the full delay at the
-	// median, because the delay itself lowers the arrival rate and the contention
-	// (CI 41496729972 observed a 36.6 ms median delta for a 50 ms hook). Half the
-	// delay (25 ms) still separates a real injection from runner noise.
-	t.Logf("control p50 %.2f ms p95 %.2f ms; injected p50 %.2f ms p95 %.2f ms", cl.Stats.P50Ms, cl.Stats.P95Ms, sl.Stats.P50Ms, sl.Stats.P95Ms)
-	if sl.Stats.P50Ms < cl.Stats.P50Ms+visibleDelta {
-		t.Fatalf("injected p50 %.2f ms is not at least %.0f ms above the control p50 %.2f ms (p95: injected %.2f ms, control %.2f ms; http statuses: injected %v, control %v)",
-			sl.Stats.P50Ms, visibleDelta, cl.Stats.P50Ms, sl.Stats.P95Ms, cl.Stats.P95Ms, sl.Statuses, cl.Statuses)
+	// (iii) ... and stands out against the undelayed control of the same run,
+	// evaluated at concurrency 1 (advisor-dec-307). Medians, not p95: a single noisy
+	// control tail (78 ms p95 seen in CI) must not make the comparison flake.
+	//
+	// Why c=1 and not c=8: with 8 clients the medians are load-dependent. The
+	// control at c=8 queues (8 clients against a small pool and a few vCPUs), so its
+	// median already contains queueing time, and the delay itself lowers the arrival
+	// rate and the contention of the injected run; the c=8 median delta is therefore
+	// not the injected delay. CI 41496729972 observed a 36.6 ms median delta for a
+	// 50 ms hook, and CI 41498702667 observed 24.95 ms, just under the half-delay
+	// margin of advisor-dec-305. A closed loop with ONE client has no queueing, so the
+	// full 50 ms must show: injected c=1 p50 >= control c=1 p50 + 25 ms (advisor-dec-305
+	// keeps the margin at half the delay; advisor-dec-307 moves the level to c=1).
+	// The c=8 level stays the verdict level of (i) and (ii).
+	sl1, ok := slow.Level(lexSingleClient)
+	if !ok {
+		t.Fatalf("injected run has no concurrency %d level", lexSingleClient)
+	}
+	t.Logf("injected c=%d: p50 %.2f ms p95 %.2f ms n=%d statuses %v", lexSingleClient, sl1.Stats.P50Ms, sl1.Stats.P95Ms, sl1.Stats.N, sl1.Statuses)
+	t.Logf("injected c=%d: p50 %.2f ms p95 %.2f ms n=%d statuses %v", TargetConcurrency, sl.Stats.P50Ms, sl.Stats.P95Ms, sl.Stats.N, sl.Statuses)
+	if sl1.Stats.N < minSingleN || cl1.Stats.N < minSingleN {
+		t.Fatalf("c=%d levels are too small for a stable median: injected n=%d, control n=%d, want >= %d", lexSingleClient, sl1.Stats.N, cl1.Stats.N, minSingleN)
+	}
+	if sl1.Stats.P50Ms < cl1.Stats.P50Ms+visibleDelta {
+		t.Fatalf("injected c=%d p50 %.2f ms is not at least %.0f ms above the control c=%d p50 %.2f ms (p95: injected %.2f ms, control %.2f ms; http statuses: injected %v, control %v; c=%d p50: injected %.2f ms, control %.2f ms)",
+			lexSingleClient, sl1.Stats.P50Ms, visibleDelta, lexSingleClient, cl1.Stats.P50Ms, sl1.Stats.P95Ms, cl1.Stats.P95Ms, sl1.Statuses, cl1.Statuses,
+			TargetConcurrency, sl.Stats.P50Ms, cl.Stats.P50Ms)
 	}
 }
 
