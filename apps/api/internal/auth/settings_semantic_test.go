@@ -749,9 +749,13 @@ func TestPatchOffMixedProvidersDeletesOnlyExternal(t *testing.T) {
 	}
 }
 
-// TestPatchOnEnqueuesReembedUser: off -> on enqueues reembed_user (queue
-// embedding, priority 3) when R holds openai_compat generations; on -> on
-// enqueues nothing; a tei-only R enqueues nothing.
+// TestPatchOnEnqueuesReembedUser covers the enqueue side only: off -> on inserts
+// one reembed_user (queue embedding, priority 3) when R holds an openai_compat
+// generation; on -> on inserts nothing. It does not run the job, so it makes no
+// claim about the fan-out over several external generations (active, pending,
+// retired in window): that belongs to the embedjobs lane, see T15's
+// TestReembedUserTwoExternalGenerations. A tei-only R is
+// TestPatchOnTEIOnlyEnqueuesNothing.
 func TestPatchOnEnqueuesReembedUser(t *testing.T) {
 	ctx := context.Background()
 	pool := semNewPool(t)
@@ -768,7 +772,7 @@ func TestPatchOnEnqueuesReembedUser(t *testing.T) {
 		t.Fatalf("PATCH true from false: %v", err)
 	}
 	if got := semReembedJobs(t, pool, u.id); got != 1 {
-		t.Fatalf("reembed_user jobs after off->on = %d, want 1 (one job covers every openai_compat generation in R)", got)
+		t.Fatalf("reembed_user jobs after off->on = %d, want 1 (one insert per toggle; the worker fans out over R)", got)
 	}
 	var queue string
 	var priority int
