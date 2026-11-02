@@ -561,8 +561,8 @@ func TestOpenAPIP05ContractInvariants(t *testing.T) {
 
 	meBlock := openAPIBlock(t, spec, "    Me:")
 	featuresBlock := openAPIBlock(t, meBlock, "        features:")
-	if !strings.Contains(featuresBlock, "\n            - semantic_external\n") {
-		t.Error("Me.features.required phải chứa semantic_external")
+	if strings.Contains(featuresBlock, "\n            - semantic_external\n") {
+		t.Error("Me.features.required không được chứa semantic_external ở W0 (optional theo advisor-dec-256)")
 	}
 	semanticExternalProp := openAPIBlock(t, featuresBlock, "            semantic_external:")
 	if !strings.Contains(semanticExternalProp, "              type: boolean\n") {
