@@ -243,7 +243,7 @@ func mxNewEnv(t *testing.T, dep mxDeployment) *mxEnv {
 		return 0, "", false
 	}
 
-	_, metrics := obs.NewRegistry()
+	reg, metrics := obs.NewRegistry()
 	var pinReader semantic.ActivePinReader
 	if dep.enabled && dep.provider != embedding.ProviderNoop {
 		p := generation.NewPinner(e.pool)
@@ -285,7 +285,6 @@ func mxNewEnv(t *testing.T, dep mxDeployment) *mxEnv {
 	cfg.EmbeddingProvider = dep.provider
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	reg, _ := obs.NewRegistry()
 	e.insert, err = river.NewClient(riverpgxv5.New(e.pool), &river.Config{})
 	if err != nil {
 		t.Fatal(err)
