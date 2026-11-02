@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useLocale, useTranslations } from 'next-intl';
 import { Logo } from '@/components/landing/logo';
+import { LocaleSwitch } from '@/components/locale-switch';
 import { useTheme } from '@/components/theme-provider';
 
 /**
@@ -20,7 +21,7 @@ export function SiteHeader() {
   return (
     <div className="max-w-container mx-auto px-5 pt-5">
       <nav
-        className="flex items-center gap-4 rounded-pill border border-line bg-canvas px-5 py-3"
+        className="flex items-center gap-2 sm:gap-4 rounded-pill border border-line bg-canvas px-3.5 sm:px-5 py-3"
         aria-label="Primary"
       >
         <a href={locale === 'en' ? '/' : `/${locale}`} className="no-underline">
@@ -46,7 +47,8 @@ export function SiteHeader() {
             {t('recovery')}
           </a>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+          <LocaleSwitch mode="landing" />
           <button
             type="button"
             className="btn btn-tertiary !px-3"

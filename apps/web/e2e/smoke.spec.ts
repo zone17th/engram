@@ -136,4 +136,50 @@ test.describe('P01 browser smoke', () => {
     await page.reload({ waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   });
+
+  test('landing locale switch navigates / <-> /vi, persists sabk_locale across reload, and has 0 header axe violations', async ({
+    page,
+  }) => {
+    await page.goto('/', { waitUntil: 'networkidle' });
+    const enGroup = page.getByRole('group', { name: 'Language' });
+    await expect(enGroup.getByRole('radio', { name: 'EN' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(enGroup.getByRole('radio', { name: 'VI' })).toHaveAttribute('aria-pressed', 'false');
+
+    const enHeaderAxe = await new AxeBuilder({ page })
+      .include('nav[aria-label="Primary"]')
+      .withTags(['wcag2a', 'wcag2aa'])
+      .analyze();
+    expect(enHeaderAxe.violations, JSON.stringify(enHeaderAxe.violations, null, 2)).toEqual([]);
+
+    await enGroup.getByRole('radio', { name: 'VI' }).click();
+    await expect(page).toHaveURL(/\/vi$/);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Gõ một từ bạn còn nhớ.');
+
+    const viGroup = page.getByRole('group', { name: 'Ngôn ngữ' });
+    await expect(viGroup.getByRole('radio', { name: 'VI' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(viGroup.getByRole('radio', { name: 'EN' })).toHaveAttribute('aria-pressed', 'false');
+
+    const cookiesAfterVi = await page.context().cookies();
+    expect(cookiesAfterVi.find((c) => c.name === 'sabk_locale')?.value).toBe('vi');
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await expect(page).toHaveURL(/\/vi$/);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    await expect(
+      page.getByRole('group', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'VI' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+
+    const viHeaderAxe = await new AxeBuilder({ page })
+      .include('nav[aria-label="Primary"]')
+      .withTags(['wcag2a', 'wcag2aa'])
+      .analyze();
+    expect(viHeaderAxe.violations, JSON.stringify(viHeaderAxe.violations, null, 2)).toEqual([]);
+
+    await page.getByRole('group', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'EN' }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    const cookiesAfterEn = await page.context().cookies();
+    expect(cookiesAfterEn.find((c) => c.name === 'sabk_locale')?.value).toBe('en');
+  });
 });
