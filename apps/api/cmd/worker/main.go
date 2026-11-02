@@ -19,8 +19,19 @@ func main() {
 	}
 	logger := obs.NewLogger(cfg.LogLevel, cfg.Env)
 
-	if err := worker.Run(context.Background(), cfg, logger); err != nil {
-		logger.Error("worker dừng do lỗi", slog.String("err", err.Error()))
-		os.Exit(1)
+	env := Env{
+		Cfg:    cfg,
+		Logger: logger,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
 	}
+	os.Exit(defaultRegistry.dispatch(context.Background(), env, os.Args[1:], runWorker))
+}
+
+func runWorker(ctx context.Context, env Env) error {
+	if err := worker.Run(ctx, env.Cfg, env.Logger); err != nil {
+		env.Logger.Error("worker dừng do lỗi", slog.String("err", err.Error()))
+		return err
+	}
+	return nil
 }
