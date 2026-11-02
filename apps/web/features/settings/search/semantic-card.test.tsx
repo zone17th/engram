@@ -124,9 +124,10 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
       semantic_available: true,
       semantic_external: true,
     });
-    fetchMock.mockResolvedValueOnce(problemResponse('semantic_unavailable', 409));
+    const deferred409 = Promise.withResolvers<Response>();
+    fetchMock.mockReturnValueOnce(deferred409.promise);
 
-    const { queryClient, messages, container } = renderSemanticCard({
+    const { queryClient, messages } = renderSemanticCard({
       initialMe,
       locale: 'vi',
     });
@@ -136,33 +137,40 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
     });
     expect(sw).toHaveAttribute('aria-checked', 'false');
     expect(sw).not.toBeDisabled();
+    expect(sw).not.toHaveAttribute('aria-describedby');
+    expect(sw).not.toHaveAttribute('aria-label');
 
-    // Status node is mounted in DOM and initially empty (not hidden)
+    // Status node is mounted in DOM and initially empty (not hidden, no redundant aria-live)
     const statusNode = screen.getByRole('status');
     expect(statusNode).toBeInTheDocument();
     expect(statusNode).not.toHaveAttribute('hidden');
+    expect(statusNode).not.toHaveAttribute('aria-live');
     expect(statusNode.textContent).toBe('');
 
     fireEvent.click(sw);
+
+    // Never flips to true while PATCH is in flight
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    expect(readMeFromQueryClient(queryClient)?.settings.semantic_suggest).toBe(false);
+
+    deferred409.resolve(problemResponse('semantic_unavailable', 409));
 
     await waitFor(() => {
       expect(statusNode).toHaveTextContent(messages.settings.search.semanticEnable409);
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, reqInit] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/v1/me/settings');
     expect(reqInit.method).toBe('PATCH');
     expect(JSON.parse(String(reqInit.body))).toEqual({ semantic_suggest: true });
 
-    // Switch stays/reverts to off, cache is false
+    // Switch stays/reverts to off, cache is false, aria-describedby points to non-empty status line
     expect(sw).toHaveAttribute('aria-checked', 'false');
+    expect(sw).toHaveAttribute('aria-describedby', statusNode.id);
     expect(readMeFromQueryClient(queryClient)?.settings.semantic_suggest).toBe(false);
-
-    // No toast or alert container rendered
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(container.querySelector('.toast')).toBeNull();
-    expect(document.querySelector('.toast')).toBeNull();
 
     // Next toggle clears the error before sending the new PATCH
     const updatedMe = makeMe({
@@ -178,6 +186,7 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
       expect(sw).toHaveAttribute('aria-checked', 'true');
     });
     expect(statusNode.textContent).toBe('');
+    expect(sw).not.toHaveAttribute('aria-describedby');
   });
 
   it('server-off disables control', () => {
@@ -200,79 +209,123 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
     // Reflects stored setting even when server is off
     expect(sw).toHaveAttribute('aria-checked', 'true');
 
-    expect(
-      screen.getByText(messages.settings.search.semanticServerOff),
-    ).toBeInTheDocument();
+    const serverOffNote = screen.getByText(messages.settings.search.semanticServerOff);
+    expect(serverOffNote).toBeInTheDocument();
+    expect(sw).toHaveAttribute('aria-describedby', serverOffNote.id);
 
     fireEvent.click(sw);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('tei copy says index continues when off', () => {
-    const initialMe = makeMe({
-      semantic_suggest: true,
-      semantic_available: true,
-      semantic_external: false,
-    });
+  describe('tei copy says index continues when off', () => {
+    it.each([
+      {
+        locale: 'en' as const,
+        keyPhrase: /index keeps updating/,
+      },
+      {
+        locale: 'vi' as const,
+        keyPhrase: /chỉ mục vẫn được cập nhật/,
+      },
+    ])('tei copy says index continues when off ($locale)', ({ locale, keyPhrase }) => {
+      const initialMe = makeMe({
+        semantic_suggest: true,
+        semantic_available: true,
+        semantic_external: false,
+      });
 
-    const { messages } = renderSemanticCard({
-      initialMe,
-      locale: 'en',
-    });
+      const { messages, container } = renderSemanticCard({
+        initialMe,
+        locale,
+      });
 
-    expect(
-      screen.getByText(messages.settings.search.semanticSelfHostCopy),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(messages.settings.search.semanticEntryNeverSent),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText(messages.settings.search.semanticExternalCopy),
-    ).toBeNull();
+      expect(
+        screen.getByText(messages.settings.search.semanticSelfHostCopy),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(messages.settings.search.semanticEntryNeverSent),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(messages.settings.search.semanticExternalCopy),
+      ).toBeNull();
+
+      const renderedCopy = container.textContent ?? '';
+      expect(renderedCopy).toMatch(keyPhrase);
+    });
   });
 
-  it('external copy says vectors deleted when off', () => {
-    const initialMe = makeMe({
-      semantic_suggest: true,
-      semantic_available: true,
-      semantic_external: true,
-    });
+  describe('external copy says vectors deleted when off', () => {
+    it.each([
+      {
+        locale: 'en' as const,
+        deletedPhrase: /deletes your vectors on the engram server/,
+        notRecalledPhrase: /cannot be recalled/,
+      },
+      {
+        locale: 'vi' as const,
+        deletedPhrase: /xoá vector của bạn trên máy chủ engram/,
+        notRecalledPhrase: /không thu hồi được/,
+      },
+    ])(
+      'external copy says vectors deleted when off ($locale)',
+      ({ locale, deletedPhrase, notRecalledPhrase }) => {
+        const initialMe = makeMe({
+          semantic_suggest: true,
+          semantic_available: true,
+          semantic_external: true,
+        });
 
-    const { messages } = renderSemanticCard({
-      initialMe,
-      locale: 'en',
-    });
+        const { messages, container } = renderSemanticCard({
+          initialMe,
+          locale,
+        });
 
-    expect(
-      screen.getByText(messages.settings.search.semanticExternalCopy),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(messages.settings.search.semanticEntryNeverSent),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText(messages.settings.search.semanticSelfHostCopy),
-    ).toBeNull();
+        expect(
+          screen.getByText(messages.settings.search.semanticExternalCopy),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(messages.settings.search.semanticEntryNeverSent),
+        ).toBeInTheDocument();
+        expect(
+          screen.queryByText(messages.settings.search.semanticSelfHostCopy),
+        ).toBeNull();
+
+        const renderedCopy = container.textContent ?? '';
+        expect(renderedCopy).toMatch(deletedPhrase);
+        expect(renderedCopy).toMatch(notRecalledPhrase);
+      },
+    );
   });
 
-  it('no reembed button', () => {
-    const initialMe = makeMe({
-      semantic_suggest: true,
-      semantic_available: true,
-      semantic_external: false,
-    });
+  describe('no reembed button', () => {
+    it.each([
+      { locale: 'vi' as const, semanticExternal: false },
+      { locale: 'vi' as const, semanticExternal: true },
+      { locale: 'en' as const, semanticExternal: false },
+      { locale: 'en' as const, semanticExternal: true },
+    ])(
+      'no reembed button (locale=$locale, semantic_external=$semanticExternal)',
+      ({ locale, semanticExternal }) => {
+        const initialMe = makeMe({
+          semantic_suggest: true,
+          semantic_available: true,
+          semantic_external: semanticExternal,
+        });
 
-    const { container } = renderSemanticCard({
-      initialMe,
-      locale: 'vi',
-    });
+        const { container } = renderSemanticCard({
+          initialMe,
+          locale,
+        });
 
-    const buttons = screen.getAllByRole('button');
-    // Only the single switch control exists inside the card
-    expect(buttons).toHaveLength(1);
-    expect(buttons[0]).toHaveAttribute('role', 'switch');
+        const buttons = screen.getAllByRole('button');
+        // Only the single switch control exists inside the card
+        expect(buttons).toHaveLength(1);
+        expect(buttons[0]).toHaveAttribute('role', 'switch');
 
-    const text = container.textContent ?? '';
-    expect(text).not.toMatch(/Nhúng lại|Re-embed|reembed|bge-m3|qwen3/i);
+        const text = container.textContent ?? '';
+        expect(text).not.toMatch(/Nhúng lại tất cả|Re-embed all/i);
+      },
+    );
   });
 
   it('PATCH waits for 200 before switch flips', async () => {
@@ -297,13 +350,14 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
 
     fireEvent.click(sw);
 
-    // Non-optimistic: while in-flight, switch stays false and is disabled against double clicks
+    // Non-optimistic: while in-flight, switch stays false, keeps focus (not disabled), and sets aria-disabled + aria-busy
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
     expect(sw).toHaveAttribute('aria-checked', 'false');
-    expect(sw).toBeDisabled();
+    expect(sw).not.toBeDisabled();
     expect(sw).toHaveAttribute('aria-disabled', 'true');
+    expect(sw).toHaveAttribute('aria-busy', 'true');
     expect(readMeFromQueryClient(queryClient)?.settings.semantic_suggest).toBe(false);
 
     // Double click while in-flight does not trigger a second PATCH
@@ -319,37 +373,59 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
 
     await waitFor(() => {
       expect(sw).toHaveAttribute('aria-checked', 'true');
-      expect(sw).not.toBeDisabled();
+      expect(sw).not.toHaveAttribute('aria-disabled');
+      expect(sw).not.toHaveAttribute('aria-busy');
     });
+    expect(sw).not.toBeDisabled();
     expect(readMeFromQueryClient(queryClient)?.settings.semantic_suggest).toBe(true);
   });
 
-  it('absent semantic_external uses external copy', () => {
-    // makeMe without semantic_external leaves features.semantic_external undefined
-    const initialMe = makeMe({
-      semantic_suggest: true,
-      semantic_available: true,
-    });
-    expect('semantic_external' in initialMe.features).toBe(false);
+  describe('absent semantic_external uses external copy', () => {
+    it.each([
+      {
+        locale: 'vi' as const,
+        deletedPhrase: /xoá vector của bạn trên máy chủ engram/,
+        notRecalledPhrase: /không thu hồi được/,
+      },
+      {
+        locale: 'en' as const,
+        deletedPhrase: /deletes your vectors on the engram server/,
+        notRecalledPhrase: /cannot be recalled/,
+      },
+    ])(
+      'absent semantic_external uses external copy ($locale)',
+      ({ locale, deletedPhrase, notRecalledPhrase }) => {
+        // makeMe without semantic_external leaves features.semantic_external undefined
+        const initialMe = makeMe({
+          semantic_suggest: true,
+          semantic_available: true,
+        });
+        expect('semantic_external' in initialMe.features).toBe(false);
 
-    const { messages } = renderSemanticCard({
-      initialMe,
-      locale: 'vi',
-    });
+        const { messages, container } = renderSemanticCard({
+          initialMe,
+          locale,
+        });
 
-    expect(
-      screen.getByText(messages.settings.search.semanticExternalCopy),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(messages.settings.search.semanticEntryNeverSent),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText(messages.settings.search.semanticSelfHostCopy),
-    ).toBeNull();
+        expect(
+          screen.getByText(messages.settings.search.semanticExternalCopy),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(messages.settings.search.semanticEntryNeverSent),
+        ).toBeInTheDocument();
+        expect(
+          screen.queryByText(messages.settings.search.semanticSelfHostCopy),
+        ).toBeNull();
+
+        const renderedCopy = container.textContent ?? '';
+        expect(renderedCopy).toMatch(deletedPhrase);
+        expect(renderedCopy).toMatch(notRecalledPhrase);
+      },
+    );
   });
 
   it('shows save failed message on non-409 PATCH failure and disables when me is null', async () => {
-    // 1. When me is null, renders disabled card without fetching
+    // 1. When me is null, renders disabled card without fetching and without server-off note
     const nullView = renderSemanticCard({
       initialMe: null,
       locale: 'en',
@@ -359,11 +435,12 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
     });
     expect(nullSw).toBeDisabled();
     expect(nullSw).toHaveAttribute('aria-disabled', 'true');
+    expect(nullSw).not.toHaveAttribute('aria-describedby');
     fireEvent.click(nullSw);
     expect(fetchMock).not.toHaveBeenCalled();
     nullView.unmount();
 
-    // 2. When PATCH fails with 500, shows semanticSaveFailed in role="status"
+    // 2. When PATCH fails with 500, shows semanticSaveFailed in role="status" and links aria-describedby
     const initialMe = makeMe({
       semantic_suggest: true,
       semantic_available: true,
@@ -383,6 +460,7 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
     });
     const statusNode = screen.getByRole('status');
     expect(statusNode.textContent).toBe('');
+    expect(sw).not.toHaveAttribute('aria-describedby');
 
     fireEvent.click(sw);
 
@@ -390,6 +468,6 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
       expect(statusNode).toHaveTextContent(messages.settings.search.semanticSaveFailed);
     });
     expect(sw).toHaveAttribute('aria-checked', 'true');
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(sw).toHaveAttribute('aria-describedby', statusNode.id);
   });
 });
