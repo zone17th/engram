@@ -602,22 +602,20 @@ test.describe('FU11 JSON-TABLE + ITEM TOUCH 44x44 coarse-pointer targets and nar
       const tableHost = page.getByTestId(`json-table-host-${JSON_ENTRY_ID}`);
       await expect(tableHost).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // Expand nested array so row delete controls are in the DOM
+      // Expand nested array and open inline cell editor so all controls are in the DOM
       await tableHost.getByTestId('json-toggle-root.p3').click();
+      await tableHost.getByTestId('json-cell-btn-root.p0').click();
+      await expect(tableHost.getByTestId('json-cell-input-root.p0')).toBeVisible({
+        timeout: UI_WAIT_MS,
+      });
+
 
       // Open Import JSON dialog with invalid JSON so parse-error jump and format checkbox are mounted
-      // before opening the inline cell editor (clicking outside the editor triggers blur-commit).
       await page.getByTestId('btn-import-json').click();
       const importDialog = page.getByTestId('import-json-dialog');
       await expect(importDialog).toBeVisible({ timeout: UI_WAIT_MS });
       await importDialog.getByTestId('import-json-source-textarea').fill('{\n  "bad": 1,\n}');
       await expect(importDialog.getByTestId('import-json-parse-error-jump')).toBeVisible({
-        timeout: UI_WAIT_MS,
-      });
-
-      // Open inline cell editor via DOM click so the modal dialog stays open while all controls are mounted
-      await tableHost.getByTestId('json-cell-btn-root.p0').evaluate((el: HTMLElement) => el.click());
-      await expect(tableHost.getByTestId('json-cell-input-root.p0')).toBeVisible({
         timeout: UI_WAIT_MS,
       });
       const firstTagDisplay = FU11_ITEM_FIXTURE.item.tags[0]!.display;
@@ -647,11 +645,7 @@ test.describe('FU11 JSON-TABLE + ITEM TOUCH 44x44 coarse-pointer targets and nar
           const measureAll = () => {
             const out: Record<string, { x: number; y: number; width: number; height: number }> = {};
             for (const [key, sel] of Object.entries(selectors)) {
-              const el = document.querySelector<HTMLElement>(sel);
-              if (!el) {
-                throw new Error(`Missing fine-pointer comparison control (${key}): ${sel}`);
-              }
-              const r = el.getBoundingClientRect();
+              const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
               out[key] = { x: r.x, y: r.y, width: r.width, height: r.height };
             }
             return out;
