@@ -232,6 +232,12 @@ var p04AuthUIOperationIDs = []string{
 	"authPasswordReset",
 }
 
+// p05OperationIDs là các operation gợi ý và tìm kiếm của plan P05 mục 3.
+var p05OperationIDs = []string{
+	"suggest",
+	"search",
+}
+
 // p04ProblemStatus là bảng mã lỗi mới của plan P04 mục 3, đúng thứ tự thêm cuối catalog.
 var p04ProblemStatus = []struct {
 	code   string
@@ -304,8 +310,8 @@ func TestOpenAPIHasUniqueP04OperationIDs(t *testing.T) {
 			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
 		}
 	}
-	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + 3; len(seen) != total {
-		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui) có %d", len(seen), total)
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + len(p05OperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui + P05) có %d", len(seen), total)
 	}
 }
 
@@ -524,5 +530,59 @@ func TestOpenAPIP04PerOperationContract(t *testing.T) {
 	}
 	if reorder := openAPIBlock(t, spec, "    ItemEntriesReorderRequest:"); strings.Contains(reorder, "minItems") {
 		t.Error("entry_ids không có minItems: [] là hoán vị hợp lệ của tập rỗng (CBE1-2)")
+	}
+}
+
+func TestOpenAPIHasUniqueP05OperationIDs(t *testing.T) {
+	spec := readOpenAPI(t)
+	seen := map[string]int{}
+	re := regexp.MustCompile(`(?m)^[ \t]*operationId: ([A-Za-z][A-Za-z0-9]+)\s*$`)
+	for _, m := range re.FindAllStringSubmatch(spec, -1) {
+		seen[m[1]]++
+	}
+	for _, id := range p05OperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if len(p05OperationIDs) != 2 {
+		t.Fatalf("catalog test phải đủ 2 operation P05 (plan P05 mục 3), có %d", len(p05OperationIDs))
+	}
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + len(p05OperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui + P05) có %d", len(seen), total)
+	}
+}
+
+func TestOpenAPIP05ContractInvariants(t *testing.T) {
+	spec := readOpenAPI(t)
+
+	meBlock := openAPIBlock(t, spec, "    Me:")
+	featuresBlock := openAPIBlock(t, meBlock, "        features:")
+	if strings.Contains(featuresBlock, "\n            - semantic_external\n") {
+		t.Error("Me.features.required không được chứa semantic_external ở W0 (optional theo advisor-dec-256)")
+	}
+	semanticExternalProp := openAPIBlock(t, featuresBlock, "            semantic_external:")
+	if !strings.Contains(semanticExternalProp, "              type: boolean\n") {
+		t.Error("Me.features.semantic_external phải là type: boolean")
+	}
+
+	for _, schema := range []string{"SuggestItem", "SuggestResponse", "SearchResponse"} {
+		block := openAPIBlock(t, spec, "    "+schema+":")
+		if strings.Contains(block, "\n        hint:") || strings.Contains(block, "\n        envelope:") || strings.Contains(block, "\n        ciphertext:") {
+			t.Errorf("%s không được chứa hint, envelope hay ciphertext", schema)
+		}
+	}
+
+	for _, id := range p05OperationIDs {
+		op := openAPIOperation(t, spec, id)
+		if !strings.Contains(op, "$ref: '#/components/headers/NoStore'") {
+			t.Errorf("%s phải khai báo Cache-Control: no-store", id)
+		}
+		if !strings.Contains(op, "search_read") {
+			t.Errorf("%s phải nêu scope rate limit search_read", id)
+		}
 	}
 }

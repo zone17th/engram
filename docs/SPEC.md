@@ -457,13 +457,29 @@ Cú pháp: `name: nội dung` (một `name`). Mở rộng: `name #tag1 #tag2: n�
 - `head` = phần name rồi các token tag. Token tag bắt đầu `#`, kết thúc ở khoảng trắng, không chứa `#`/`:` — tag có khoảng trắng gắn bằng chip trên trang mục, không có cú pháp trích dẫn. Sau token tag đầu tiên, mọi token phải là tag (chữ thường xen giữa → preview báo lỗi, Enter bị chặn). Name rỗng → không add. Tag trùng sau chuẩn hoá (`#Nhà #nhà`) gộp thành một; quá 20 tag → không add.
 - Entry tạo từ quick-add lưu xuống dòng **LF** (ô omnibox đã chuẩn hoá xuống dòng thành LF).
 
-**Ranh giới gửi** ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)): chuỗi đang gõ chưa phân loại có thể là body tương lai (dán body trước, gõ `name:` sau), nên ô omnibox **không gửi gì trước Enter** ở mọi chế độ, kể cả lookup tên ở add mode (advisor-dec-098: `root:hunter2` hay `Sup3rSecret:backup` dán vào đã là add mode, phần trước `:` là mảnh body):
+**Ranh giới gửi** ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)): chuỗi đang gõ chưa phân loại có thể là body tương lai (dán body trước, gõ `name:` sau), nên ô omnibox **không gửi gì trước Enter** ở mọi chế độ, kể cả lookup tên ở add mode (advisor-dec-098: `root:hunter2` hay `Sup3rSecret:backup` dán vào đã là add mode, phần trước `:` là mảnh body).
 
-- Chế độ tìm kiếm (không có `:`): không request nào khi gõ; dòng gợi ý cố định báo chữ đã gõ sẽ gửi tới máy chủ, không mã hoá. **Enter** = người dùng chủ động tìm → `GET /items?q=` chỉ khi input một dòng và ≤ 200 rune (nhiều dòng hoặc dài hơn → không gửi, gợi ý thêm `tên:`); kết quả hiện dưới ô, không đưa từ khoá vào URL/history. Gợi ý theo từng phím (§3.5) thuộc P05 và phải giữ ranh giới này.
-- Chế độ lọc tag (`#…`): lọc phía client trên danh sách tag đã có trong cache; chỉ khi không có trong cache, Enter mới gửi `GET /tags?q=<token>` (một token ≤ 50 rune).
-- Add mode: **không request nào trước Enter**. Preview "Sẽ lưu vào …" dựng từ `name` và tag parse cục bộ (thấy ngay `10:30 họp` thành name `10`), không có số mục trùng. Enter → `GET /items/lookup?name=` chỉ với `name`; name không hợp lệ (rỗng sau chuẩn hoá, ký tự cấm) hoặc dài hơn 200 rune → không gửi, preview báo lỗi. Body không bao giờ rời client ngoài ciphertext.
-- **Ba dòng cố định** (en/vi, mỗi dòng chỉ hiện ở đúng chế độ của nó): chế độ tìm `content.omnibox.searchHint` "Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ `tên: nội dung`"; chế độ `#…` `content.omnibox.tagHint` "Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá"; add mode `content.privacy.*` "Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối" (máy chủ vẫn thấy độ dài gần đúng của nội dung, §10.4).
-- Test (Task 18): dán `a:SECRET`, chờ ≥ 1 giây, không request nào (URL, header, body) chứa `a` hay `SECRET` trước Enter; cùng các ca dán body không có `:` rồi gõ `name:` phía trước.
+> **P05 (advisor-dec-244, thay advisor-dec-115 chỉ cho P05, có hiệu lực từ Task 17):** ngoại lệ **duy nhất** là gợi ý theo phím ở chế độ tìm (và token `#` đầu) cho chữ **chắc chắn do người dùng gõ tay**, theo quy tắc taint, khoá dấu hai chấm và IME ở §3.5. Add mode, mọi draft có `:`/`：`, draft tainted (dán, chạm gợi ý, autocorrect, dictation, set bằng code), nhiều dòng hoặc > 200 rune giữ nguyên hành vi P04 bên dưới (Enter-only). Các bullet dưới đây mô tả hành vi P04 và chỉ đổi ở chỗ được ghi "P05".
+
+- Chế độ tìm kiếm (không có `:`): P04 không request nào khi gõ. **P05:** gợi ý theo phím theo §3.5 (`GET /suggest`); dòng gợi ý cố định được thay bằng help text ngắn (bullet "Dòng gợi ý" bên dưới). **Enter** = người dùng chủ động tìm: P04 `GET /items?q=` chỉ khi input một dòng và ≤ 200 rune (nhiều dòng hoặc dài hơn → không gửi, gợi ý thêm `tên:`); **P05:** Enter không có hàng active → `GET /search` trang 1 vào listbox thay `GET /items?q=` (§3.5, §9.2); nếu draft là thứ gate §3.5 sẽ không gửi theo phím (tainted/dán, khoá `:`/`：` ở mọi chế độ, nhiều dòng, > 200 rune) thì request này **luôn `semantic=0`** (chỉ lexical, không tới dịch vụ nhúng bên ngoài; advisor-dec-256) — chỉ draft gõ tay sạch mới được `semantic=1` (§3.5 quy tắc 10, áp cho **mọi** request `/suggest`/`/search` — cả gửi lại khi bật ≈ và "Xem thêm"; advisor-dec-259). Kết quả hiện dưới ô, không đưa từ khoá vào URL/history.
+- Chế độ lọc tag (`#…`): lọc phía client trên danh sách tag đã có trong cache; P04 chỉ khi không có trong cache, Enter mới gửi `GET /tags?q=<token>` (một token ≤ 50 rune). **P05:** hàng tag từ cache hiện tức thì, token `#` (≤ 50 rune, theo §3.5) được gợi ý bằng `GET /suggest?scope=tag` **luôn kèm `semantic=0`** (chế độ `#` luôn lexical, §3.5 quy tắc 7; advisor-dec-259); Enter dùng hàng active, không còn `GET /tags?q=` khi Enter.
+- Add mode: **không request nào trước Enter**. Preview "Sẽ lưu vào …" dựng từ `name` và tag parse cục bộ (thấy ngay `10:30 họp` thành name `10`), không có số mục trùng. Enter → `GET /items/lookup?name=` chỉ với `name`; name không hợp lệ (rỗng sau chuẩn hoá, ký tự cấm) hoặc dài hơn 200 rune → không gửi, preview báo lỗi. Body không bao giờ rời client ngoài ciphertext. **P05:** add mode khoá gửi theo phím tới khi ô rỗng — vào add mode (kể cả bằng `Tab` điền `name: `) rồi xoá `:` không mở lại gửi.
+- **Dòng gợi ý** (en/vi): add mode `content.privacy.*` "Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối" (máy chủ vẫn thấy độ dài gần đúng của nội dung, §10.4) giữ nguyên. P04 còn hai dòng cố định cho chế độ tìm `content.omnibox.searchHint` ("Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ `tên: nội dung`") và chế độ `#…` `content.omnibox.tagHint` ("Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá"). **P05:** không banner và không dòng cố định mới; câu ngắn "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ `tên:` trước" (`search.help.sentToServer`) chỉ nằm trong help text tìm kiếm (nội dung `aria-describedby` của omnibox, thay `content.omnibox.searchHint`, và trợ giúp cú pháp); khi `features.semantic_external=true` **hoặc vắng** (fail-safe: coi là provider ngoài, advisor-dec-256) dùng biến thể có mệnh đề dịch vụ nhúng bên ngoài (hai key riêng, chuỗi đầy đủ bên dưới). Draft đang tainted vì bất kỳ nguyên nhân nào, hoặc bị khoá `:`/`：` ngoài add mode → help text đổi tạm thành câu chung "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá" (`search.help.enterToSearch`).
+
+  **Bảng trạng thái → i18n key của help text** (một nguồn cho Task 8/9/17; `aria-describedby` của omnibox trỏ phần tử help text này, thay `searchHint`, §7.8):
+
+  | Trạng thái omnibox | Key |
+  |---|---|
+  | Chế độ tìm, gate mở (gõ tay sạch, ô rỗng cũng tính) | `search.help.sentToServer`; khi `features.semantic_external` là `true` hoặc vắng → `search.help.sentToServerExternal` |
+  | Chế độ `#…`, gate mở | giữ P04 `content.omnibox.tagHint` (không đổi chữ; chỉ gửi token tag tới máy chủ của engram, luôn `semantic=0` nên không tới provider, §3.5 quy tắc 7) |
+  | Tainted (dán, chạm gợi ý, autocorrect, dictation, set bằng code), **hoặc** khoá `:`/`：` ngoài add mode (`http://x`, `wifi： mật khẩu`), nhiều dòng, > 200 rune | `search.help.enterToSearch` |
+  | Add mode (`name: …`, kể cả điền bằng Tab) | `content.privacy.*` (giữ nguyên) |
+
+  Chuỗi đầy đủ (en / vi):
+  - `search.help.sentToServer` — en: "Text you type to search is sent to the server, not encrypted. To save content, type `name:` first." · vi: "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ `tên:` trước."
+  - `search.help.sentToServerExternal` — en: "Text you type to search is sent to the server, and to an external embedding service when ≈ is on, not encrypted. To save content, type `name:` first." · vi: "Chữ gõ để tìm được gửi tới máy chủ và tới dịch vụ nhúng bên ngoài khi bật ≈, không mã hoá; lưu nội dung thì gõ `tên:` trước."
+  - `search.help.enterToSearch` — en: "Press Enter to search; the text is sent to the server, not encrypted." · vi: "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá." (advisor-dec-259 / FE-C18: Enter vẫn gửi chuỗi lexical tới máy chủ của engram, nên câu này nói rõ việc gửi; không nhắc dịch vụ nhúng vì Enter của draft không sạch luôn `semantic=0`, quy tắc 10.)
+- Test: P04 (Task 18) dán `a:SECRET`, chờ ≥ 1 giây, không request nào (URL, header, body) chứa `a` hay `SECRET` trước Enter; cùng các ca dán body không có `:` rồi gõ `name:` phía trước. **P05:** các assert "không request trước Enter" của chế độ tìm được sửa có chủ đích (Task 17, liệt kê từng assert đổi); ca âm bắt buộc giữ: `#home:secretbody`, `#home secret:x`, `name: body`, `wifi： mật khẩu`, `http://x`, văn bản dán → không request `/suggest`/`/search` nào mang chữ sau `:` (và không gì đã dán) — `send-gate.test.ts`, `omnibox-no-body.test.tsx`, Playwright `content-search-privacy`. Ca âm thêm cho Enter (advisor-dec-256): `omnibox-no-body.test.tsx` "paste then Enter → `/search?semantic=0`" và "`http://x` then Enter → `semantic=0`" (và Task 17, `content-search-privacy` cùng hai ca), `send-gate.test.ts` "tainted/colon-locked/multi-line/> 200 rune → `allowSemantic=false`"; mỗi test assert thêm không có request `semantic=1` nào mang chữ chưa phân loại. Ca âm thêm (advisor-dec-259 / FE-C15): `omnibox-no-body.test.tsx` "paste → Enter → click ≈ → không có request `semantic=1`" và "'Xem thêm' của Enter-search tainted → `semantic=0`" (Task 17; cùng hai ca ở `content-search-privacy`, Task 22); `send-gate.test.ts` `allowSemantic=false` cho mọi draft không sạch và cho chế độ `#`.
 
 **Luồng lưu** (một "kế hoạch quick-add" giữ trong memory của phiên, không persist):
 
@@ -488,15 +504,33 @@ Import bằng **file** giữ nguyên byte UTF-8 của file (sau khi bỏ đúng 
 
 ### 3.5 Flow: Search & suggest
 
-> **P04:** mục này là thiết kế **P05**. P04 **không** có `GET /suggest` theo từng phím, không `Tab` điền, không dropdown nhóm Items/Tags/Gần đây/Gần nghĩa; hành vi P04 của ô omnibox là §3.4 (không request nào trước Enter). Khi P05 làm gợi ý theo phím, nó phải giữ ranh giới gửi của §3.4 và [ADR 0005](adr/0005-content-lossless-va-concurrency.md) §10: chuỗi chưa phân loại (có thể là body tương lai) không được rời client.
+> **P04:** mục này là thiết kế **P05**. P04 **không** có `GET /suggest` theo từng phím, không `Tab` điền, không dropdown nhóm Items/Tags/Gần đây/Gần nghĩa; hành vi P04 của ô omnibox là §3.4 (không request nào trước Enter). P05 gửi theo phím nhưng **chỉ chuỗi chắc chắn do người dùng gõ ở chế độ tìm** (advisor-dec-244, thay advisor-dec-115 chỉ cho P05 từ Task 17; [ADR 0005](adr/0005-content-lossless-va-concurrency.md) §10): chuỗi chưa phân loại (có thể là body tương lai) vẫn không được rời client.
 
 Gõ → debounce 120 ms → `GET /suggest?q=` → dropdown hỗn hợp item + tag.
 
-- Enter trên **item** → mở `/items/:id`.
-- Enter trên **tag** → `/items?tag_id=`.
+- Enter trên **item** → mở `/app/items/{id}`.
+- Enter trên **tag** → `/app?tag={id}` (như §7.8).
+- Enter không có hàng active → `GET /search` (§3.4); `semantic` theo quy tắc 10 bên dưới.
 - Gõ bắt đầu bằng `#` (hoặc token `#…`) → `scope=tag`.
-- `Tab` trên item → điền `name: ` (add mode).
+- `Tab` trên item → điền `name: ` (add mode) và **ghim item ID** vào kế hoạch lưu (OQ-2; sửa phần name thì bỏ ghim).
 - `Tab` trên tag → điền `#display ` (tiếp tục lọc/gán).
+- `Tab` chỉ chặn khi có hàng active; Tab-điền **không có tương đương chạm** trên mobile — chấp nhận, người dùng mobile gõ `tên:`.
+
+**Ranh giới gửi theo phím** (module thuần `features/omnibox/suggest/send-gate.ts`; mọi quy tắc dưới đây là điều kiện cần để request `/suggest`/`/search` rời trình duyệt):
+
+1. **Chỉ gõ — quy tắc taint (L2).** Gate đọc `event.inputType` từ listener native `beforeinput`/`input` (không dùng `onBeforeInput` của React). Allowlist giữ draft sạch: `insertText`, `insertCompositionText`, `insertFromComposition`, `deleteCompositionText`, `deleteContent`, `deleteContentBackward/Forward`, `deleteWordBackward/Forward`, `deleteSoftLineBackward/Forward`, `deleteHardLineBackward/Forward`, `deleteByCut`. Draft bị **tainted** (hành vi P04, không request trước Enter) khi: (a) một sự kiện input ngoài composition chèn **> 1 grapheme** (`Intl.Segmenter`; chip clipboard Gboard, chạm gợi ý bàn phím, text replacement iOS, dictation); (b) `inputType` ngoài allowlist (`insertFromPaste`, `insertFromDrop`, `insertReplacementText`, `historyUndo/Redo`, autofill…); (c) thiếu `inputType`; (d) giá trị bị đổi bằng code không qua omnibox. `insertLineBreak` và `insertParagraph` (Shift+Enter) **không** nằm trong allowlist nên taint: draft nhiều dòng giữ tainted tới khi ô rỗng (không thêm chúng vào allowlist). Cờ chỉ xoá khi ô rỗng. Ghi của chính omnibox (lưu xong xoá ô, Esc, Tab điền, khôi phục draft) đi qua `setDraft()` → `syncOwnWrite` nên không taint (nhưng vẫn qua đánh giá khoá `:` ở quy tắc 3). Đánh đổi chấp nhận: chạm gợi ý bàn phím hay autocorrect cũng taint; người dùng vẫn tìm bằng Enter. Khi tainted, help text đổi tạm thành câu chung `search.help.enterToSearch` ("Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá") — không banner, không dòng mới.
+2. **IME/composition (L3).** Không request nào khi đang composing (`compositionstart…compositionend`), kể cả khi debounce hết hạn giữa chừng. Sau `compositionend`, chữ đã commit tính là **gõ** (một commit có thể chèn nhiều grapheme, không áp (a)) và debounce 120 ms bắt đầu lại; một commit > 64 grapheme → taint.
+3. **Khoá dấu hai chấm (L1; phán quyết Advisor FE-1 = advisor-dec-244).** Draft chứa `:` ASCII hoặc `：` (U+FF1A) **ở bất kỳ đâu** — mọi dòng, mọi chế độ kể cả `#`, kể cả `://` — khoá gửi tới khi ô rỗng. `parseQuickAdd` ra `add`/`add-invalid` cũng khoá (add mode khoá tới khi rỗng). Request đang bay bị abort, response muộn bị bỏ; xoá `:` không mở lại gửi. **Khoá được đánh giá trên mọi giá trị gate quan sát** — sự kiện input **và** `syncOwnWrite(value)` (khôi phục draft khi lưu lỗi/plan đang chạy, undo restore, Tab điền, picker điền): giá trị có `:`/`：` thì khoá ngay; chỉ xoá khoá khi `value === ''`. Lookup add mode vẫn Enter-only. Test Task 9 (`send-gate.test.ts`): "`syncOwnWrite('name: body')` rồi xoá `:` không gửi gì", "`syncOwnWrite('http://x')` khoá", "Tab điền `name: ` khoá".
+4. **Một dòng, ≤ 200 rune**; nhiều dòng hoặc dài hơn → không gửi, gợi ý `tên:` như P04.
+5. **Chế độ `#`:** chỉ gửi token giữa `#` và khoảng trắng **hoặc** `:` đầu tiên (≤ 50 rune) với `scope=tag`, và chỉ khi draft chưa có `:` nào; chữ sau token không bao giờ gửi.
+6. Ô rỗng khi focus → `GET /suggest` không `q` (recent). Text do omnibox tự điền (Tab trên tag → `#display `) là sạch; Tab trên item → add mode → khoá.
+7. **Debounce 120 ms.** `semantic=1` chỉ khi `features.semantic_available && settings.semantic_suggest && len_runes(qn) ≥ 3 && mode ≠ recent && scope ≠ tag` **và** draft gate-sạch (quy tắc 10); chế độ `#` (`scope=tag`) **luôn lexical** (`semantic=0`, advisor-dec-259 / FE-C17: token tag không bao giờ tới `openai_compat`, nên câu help text của `#` giữ đúng). "Chế độ `#`" = draft sau trim bắt đầu bằng `#` (đúng scope mà server ép, §9.2), **bất kể** tham số `scope` được gửi: Enter-search từ draft `#` (không hàng active, §3.4) gửi `GET /search` với `scope=tag&semantic=0`, không bao giờ `semantic=1` (advisor-dec-259 / FE-C23; test `send-gate.test.ts` "`#zzz` Enter → `semantic=0`"); khi đủ điều kiện, `semantic=0` và `semantic=1` bắn **cùng lúc** ở cùng nhịp, không chờ nhau (≤ 2 token `search_read` mỗi nhịp, §9.1; cache key `requestMode='hybrid'`). Ngược lại gửi **đúng một** request `semantic=0` (`requestMode='lex'`). Chế độ recent (ô rỗng, không `q`): một `GET /suggest` không `q` với `semantic=0`, không bao giờ cặp đôi.
+8. Lock, logout, đổi user: đặt lại gate, tăng `queryGen`, abort mọi request suggest/search, xoá prefix cache `['search']`.
+9. **Không banner/dòng cố định** (UX tối giản, advisor-dec-244): câu "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ `tên:` trước" chỉ nằm trong help text tìm kiếm (§3.4); bảng state → key ở §3.4.
+10. **Mọi request đều qua gate (advisor-dec-256 mục 1, tổng quát hoá bởi advisor-dec-259 / FE-C15).** **Mọi** `GET /suggest` hoặc `GET /search` mà client phát ra — nhịp gõ, Enter, gửi lại khi bật ≈, "Xem thêm", retry sau `Retry-After` — chỉ mang `semantic=1` khi draft sinh ra query **gate-sạch tại thời điểm gửi** (gate mở: không tainted, không khoá `:`/`：`, một dòng, ≤ 200 rune) **và** đủ điều kiện quy tắc 7; ngược lại **`semantic=0`**. Draft mà gate sẽ không gửi theo phím (tainted/dán, khoá `:` ở mọi chế độ kể cả `http://x`, nhiều dòng, > 200 rune) → Enter vẫn tìm được nhưng **luôn `semantic=0`** (lexical, không tới `openai_compat`). Bật ≈ trên draft không sạch **chỉ `PATCH /me/settings`**, không gửi gì cho query hiện tại (setting có hiệu lực từ query gõ tay sạch kế tiếp). "Xem thêm" (trang cursor của `GET /search`) **luôn `semantic=0`** (near chỉ ở trang đầu, §6.4). Lý do: P04 cho phép Enter vì chỉ tới server của engram; P05 với `semantic=1` sẽ gửi chuỗi chưa phân loại tới dịch vụ nhúng bên ngoài. Test âm: `omnibox-no-body.test.tsx` "paste → Enter → click ≈ → không có request `semantic=1`" và "'Xem thêm' của Enter-search tainted → `semantic=0`" (Task 17; cùng hai ca ở Playwright `content-search-privacy`, Task 22); `send-gate.test.ts` `allowSemantic=false` cho mọi draft không sạch (Task 9).
+11. **Gate đóng (advisor-dec-256 mục 2).** Khi gate đóng vì khoá `:`/`：`, taint, nhiều dòng hoặc > 200 rune: abort request đang bay, bỏ response muộn, **xoá snapshot (lexical + near)**, `activeKey = null`, bỏ `aria-busy`, đóng dropdown; Enter quay về đường Enter-only (add mode: lookup; còn lại `/search` theo quy tắc 10) — ở chế độ `#`, gõ `#home:` rồi Enter **không** mở tag của hàng active cũ. **Chế độ `#` (advisor-dec-259 / FE-C20):** hàng tag từ cache cục bộ (không qua mạng, hành vi P04) **được giữ** khi gate đóng (dropdown vẫn hiện các hàng cục bộ này, không đóng); chỉ hàng/snapshot do server (`/suggest`) bị xoá và `activeKey` đặt lại `null` (không tự kích hoạt lại hàng đầu cho tới khi người dùng chọn bằng phím mũi tên), nên Enter không bao giờ dùng hàng cũ. Trong lúc IME composing (không request) giữ hàng đang hiện nhưng hàng active cũ không là đích Enter cho văn bản mới. Test: "colon sau `#home` xoá hàng active", "dán vào `wifi` khi đang mở hàng đóng dropdown" (Task 9 `merge.test.ts` và Task 17 `omnibox.test.tsx`).
+
+**Rủi ro còn lại (threat model C-4):** người dùng **gõ tay** từng ký tự một bí mật một dòng **không có dấu hai chấm** ở chế độ tìm thì từng tiền tố được gửi; gõ body rồi đưa con trỏ về đầu gõ `tên:` cũng vậy cho các tiền tố trước khi gõ `:`; bàn phím đẩy chip clipboard/gợi ý qua composing text (Android Gboard) với ≤ 64 grapheme được tính là gõ. Biện pháp: help text tìm kiếm + cú pháp `tên:`, copy công khai (§10.4). CI chỉ có Desktop Chrome → hành vi `inputType`/composition trên Safari/iOS/Firefox là checklist thủ công ở Task 22.
 
 Chi tiết ranking §6, UI §7.
 
@@ -718,14 +752,43 @@ Next.js **15** App Router, TypeScript, Tailwind + shadcn/ui (Radix), TanStack Qu
 ```go
 // apps/api/internal/embedding/provider.go
 type Provider interface {
-    Name() string // ví dụ "tei/BAAI/bge-m3@<model-revision>"
+    Name() string         // "openai_compat" | "tei" | "noop"
+    Model() string        // "openai_compat/<EMBEDDING_MODEL>" | "tei/<model_id>"
+    ModelVersion() string // openai_compat: "dims=1024;instr=<sha8>"; tei: "<model_sha>;qp=<sha8>;dp=<sha8>"
     Dims() int
-    MaxBatch() int
-    Embed(ctx context.Context, inputs []string) ([][]float32, error)
+    MaxBatch() int        // 64
+    EmbedDocuments(ctx context.Context, inputs []string) ([][]float32, error)
+    EmbedQuery(ctx context.Context, q string) ([]float32, error)
 }
 ```
 
-MVP: **`openai_compat`** (`POST /embeddings`, `dimensions`, instruction query; env và quy tắc trong [ADR 0004](adr/0004-embedding-provider-openai-compat.md)), **`tei`** (`POST /embed`, đọc `/info` lúc boot: `model_id`, `model_sha`, dims → `model_version`) và **`noop`** (vector 0, dev/test không TEI). Env: `EMBEDDING_PROVIDER=noop|tei|openai_compat`, `TEI_URL`, `EMBEDDING_*`.
+MVP: **`openai_compat`** (`POST /embeddings`, `dimensions`, instruction query; env và quy tắc trong [ADR 0004](adr/0004-embedding-provider-openai-compat.md)), **`tei`** (`POST /embed`, đọc `/info` lúc boot: `model_id`, `model_sha`, dims → `model_version`) và **`noop`**. `noop` nghĩa là **semantic unavailable** và **không bao giờ được gọi** (dev/test không có provider; không còn "vector 0" vì cosine với vector 0 là NaN). Danh tính của một client là `embedid.Identity` (bảy trường: provider, model, model_version, dims, query prefix, doc prefix, preprocessing) — client chỉ được dùng cho generation khớp **cả bảy** trường ([ADR 0007](adr/0007-embedding-generation-cutover.md)).
+
+Env (một chủ — `internal/config/config.go`; compose truyền cho `api` + `worker`, không đặt giá trị key):
+
+| Env | Kiểu / mặc định | Ghi chú |
+|---|---|---|
+| `SEARCH_SEMANTIC_ENABLED` | bool, `true` | tầng deployment; `false` → không enqueue/query |
+| `EMBEDDING_PROVIDER` | `noop\|tei\|openai_compat`, `noop` | |
+| `TEI_URL`, `TEI_INPUT_PREFIX_QUERY`, `TEI_INPUT_PREFIX_DOCUMENT` | URL / string | `TEI_URL` bắt buộc khi `tei` |
+| `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY` | URL / secret | bắt buộc khi `openai_compat`; key chỉ từ env, `Redacted()` chỉ ghi `embedding_api_key_set` |
+| `EMBEDDING_MODEL` | `openrouter/qwen/qwen3-embedding-8b` | ADR 0004 |
+| `EMBEDDING_DIMENSIONS` | int `1024`, `1..2000` | bằng `dims` của generation |
+| `EMBEDDING_QUERY_INSTRUCTION` | `Given a short search query, retrieve matching item names or tags` | vào `ModelVersion` |
+| `EMBEDDING_QUERY_TIMEOUT` | rỗng → `300ms` (tei) / `4s` (openai_compat) | |
+| `EMBEDDING_DOCUMENT_TIMEOUT` | `30s` | một batch ≤ 64 |
+| `EMBEDDING_SHADOW_*` | cùng tên trường với bộ trên (`PROVIDER`, `BASE_URL`, `API_KEY`, `MODEL`, `DIMENSIONS`, `QUERY_INSTRUCTION`, …), rỗng = không có | client thứ hai cho cutover (§6.6) |
+| `SEARCH_EXACT_MAX_VECTORS` | `5000`, `0..1000000` (`0` = luôn ANN, chỉ benchmark) | §6.3 |
+| `SEARCH_EXACT_FALLBACK_MAX_VECTORS` | `20000`; validate `≥ SEARCH_EXACT_MAX_VECTORS` | underfill fallback; cũng là trần của phép đếm có trần |
+| `SEARCH_HNSW_EF_SEARCH`, `SEARCH_HNSW_MAX_SCAN_TUPLES`, `SEARCH_HNSW_ITERATIVE_SCAN` | `64`, `20000`, `relaxed_order` (`off\|relaxed_order\|strict_order`) | knob query |
+| `SEARCH_VECTOR_BRANCH_TIMEOUT`, `SEARCH_VECTOR_FALLBACK_MIN_BUDGET` | `80ms`, `30ms` | §6.4 |
+| `SEARCH_ROLLBACK_WINDOW` | `168h` | cửa sổ rollback generation |
+| `WORKER_METRICS_ADDR` | rỗng = tắt; production bind mạng Docker nội bộ, không publish port | listener `/metrics` của worker |
+| `EMBEDDING_BOOTSTRAP_FLIP_INTERVAL` | duration, rỗng = `1m`; **chỉ test** — giá trị khác rỗng bị `validate` từ chối khi `APP_ENV=production` | chu kỳ periodic `embedding_bootstrap_flip`; chỉ job CI `e2e-search-semantic` đặt `5s` |
+
+`validate` áp rule URL cho `EMBEDDING_BASE_URL`, `EMBEDDING_SHADOW_BASE_URL`, `TEI_URL` ở mọi `APP_ENV`: `https://` bất kỳ; `http://` chỉ khi mọi IP đích thuộc loopback, RFC 1918, `100.64.0.0/10`, `fc00::/7`. Hằng trong code (không env): batch 64, concurrency provider worker 2, breaker 60 s, cache query-embedding 5000/24 h, retry 1 m→1 h, dead-letter ≥ 24 h.
+
+Biến **chỉ của compose** (không vào `config.go`): `TEI_MODEL_ID` (mặc định `BAAI/bge-m3`, service `tei`) và profile `semantic-fake` (service `fakeembed`, **chỉ CI**, không vào image production): server giả TEI/OpenAI vector tất định, công tắc lỗi qua `POST /__control` với `mode` (`down|slow|ok`) và `aliases`, và `GET /__control/stats` chỉ trả số đếm (không input, không `q`).
 
 Đổi model (fallback host: `intfloat/multilingual-e5-base`, 768 dims, cần prefix `query:`/`passage:` qua `TEI_INPUT_PREFIX_*`) qua shadow tables + cutover §6.6; không đổi query model trước khi index mới sẵn sàng. Không implement SDK riêng từng hãng; mọi API ngoài đi qua `openai_compat`.
 
@@ -918,7 +981,7 @@ Passkey là **phương thức mở vault** ở MVP, ngang hàng passphrase — *
 
 ### 6.1 Phạm vi
 
-- **MVP: hai corpus plaintext** — `item.name` (+ hint) và `tag.display`/`normalized`. Body ciphertext → server không index.
+- **MVP: hai corpus plaintext** — `item.name` (+ hint, chỉ làm input semantic; lexical item chỉ trên `name`, §6.2) và `tag.display`/`normalized`. Body ciphertext → server không index.
 - **P07:** client-side search trên entry đã decrypt trong session (MiniSearch/FlexSearch trong Worker, không persist index).
 
 Chọn tag → **filter** item (`GET /items?tag_id=`), không "mở tag như một trang nội dung". Chọn item → mở entries.
@@ -928,79 +991,107 @@ Chọn tag → **filter** item (`GET /items?tag_id=`), không "mở tag như m�
 | Kênh | Kỹ thuật | Ví dụ |
 |------|----------|--------|
 | **Prefix** | `normalized LIKE q \|\| '%'` + `text_pattern_ops` | `wi` → item `wifi`, tag `wifi-khách` |
-| **Fuzzy / substring** | `pg_trgm` `similarity` / `%` / `word_similarity` + `unaccent` | `wfii` → `wifi`; `ma` → `mã` |
+| **Fuzzy / substring** | `pg_trgm` `similarity` / `%` / `word_similarity` + `unaccent` | `pasword` → `password`, `wiifi` → `wifi`; `ma` → `mã` |
 | **Semantic** | pgvector `<=>` cosine, HNSW 1024 dims | `mật khẩu mạng` → item `wifi-password` hoặc tag `mạng-nhà` |
 | **Tie-break** | `last_used_at`, `entry_count` / `item_count` | Chỉ phá hoà relevance, không cộng score |
 
-Cùng model `bge-m3`, cùng ngưỡng, cùng toggle semantic. Query embed **một lần**, so với **cả** `item_embedding` và `tag_embedding`.
+Cùng model theo [ADR 0004](adr/0004-embedding-provider-openai-compat.md) (mặc định production `openai_compat` với `qwen/qwen3-embedding-8b` 1024 dims; `tei` + `bge-m3` là lựa chọn tự host), cùng ngưỡng, cùng toggle semantic. Query embed **một lần**, so với **cả** `item_embedding_g<N>` và `tag_embedding_g<N>` của generation đã pin (§6.6).
+
+- **Tier lexical:** prefix đúng dấu **3** > prefix bỏ dấu **2** > fuzzy **1** (`score ≥ 0.35`); trong tier xếp theo `score` rồi tie-break (§6.4). Recency/count chỉ phá hoà, không so điểm giữa item và tag.
+- **Corpus lexical của item = chỉ `name`** (OQ-4): `hint` không vào lexical, chỉ vào input semantic (§6.6).
+- **Typo chỉ hứa trên từ ≥ 5 ký tự** (giới hạn của trigram, OQ-5): `pasword` → `password` (≈ 0.70) và `wiifi` → `wifi` bắt được; `wfii` (≈ 0.11) không bắt được.
 
 Khi `q` có leading `#` (sau trim): **chỉ** corpus tag; UI ở chế độ filter/assign.
 
 ### 6.3 SQL sketches
 
-Lexical items:
+Lexical items (mỗi corpus một câu trong `internal/db/queries/search_lexical.sql`, hai goroutine song song, mỗi câu một read tx riêng với `SET LOCAL statement_timeout = '50ms'`, `pg_trgm.similarity_threshold = 0.35`, `pg_trgm.word_similarity_threshold = 0.5` — giá trị khởi đầu, chỉ đổi kèm số đo benchmark):
 
 ```sql
--- $1 user_id, $2 normalized q, $3 limit
-WITH q AS (SELECT $2::text AS q, immutable_unaccent($2::text) AS qa)
+-- $1 user_id, $2 qn, $3 q_prefix (escaped qn || '%'), $4 fuzzy bool, $5 limit
+WITH q AS (SELECT $2::text AS qn, immutable_unaccent($2::text) AS qa)
 SELECT i.id, i.name, i.entry_count, i.last_used_at, i.created_at,
-       (i.name_normalized LIKE q.q || '%')::int AS prefix_hit,
-       GREATEST(similarity(i.name_normalized, q.q),
-                word_similarity(q.qa, i.name_unaccent)) AS trgm_score
+       CASE WHEN i.name_normalized LIKE $3 ESCAPE '\' THEN 3
+            WHEN i.name_unaccent LIKE immutable_unaccent($3) ESCAPE '\' THEN 2
+            ELSE 1 END AS tier,
+       round(GREATEST(similarity(i.name_unaccent, q.qa),
+                      word_similarity(q.qa, i.name_unaccent))::numeric, 2) AS score
 FROM item i, q
 WHERE i.user_id = $1 AND i.deleted_at IS NULL
-  AND (i.name_normalized LIKE q.q || '%'
-       OR i.name_unaccent % q.qa
-       OR q.qa <% i.name_unaccent)
-ORDER BY prefix_hit DESC, trgm_score DESC, i.last_used_at DESC, i.entry_count DESC, i.id
-LIMIT $3;
+  AND (i.name_normalized LIKE $3 ESCAPE '\'
+       OR i.name_unaccent LIKE immutable_unaccent($3) ESCAPE '\'
+       OR ($4 AND (i.name_unaccent % q.qa OR q.qa <% i.name_unaccent)))
+ORDER BY tier DESC, score DESC, i.last_used_at DESC, i.entry_count DESC, i.id ASC
+LIMIT $5;
 ```
 
-Lexical tags: cùng hình trên `tag.normalized` / `tag_unaccent`.
+`LIMIT` = trần corpus theo quota (§6.4) + 1 để biết `has_more`. Nhánh quá 50 ms → rỗng + `lexical_partial: ["item"|"tag"]`; client không cache, không báo lỗi.
 
-Semantic (items; tags tương tự; `e` là bảng generation đang active):
+Lexical tags: cùng hình trên `tag.normalized` / `tag_unaccent`, `count = item_count`.
+
+Semantic (items; tags tương tự; `e` là bảng của **generation đã pin cho request**, tên bảng chỉ từ allowlist `^(item|tag)_embedding_g[1-9][0-9]{0,3}$` suy từ id — §8, [ADR 0007](adr/0007-embedding-generation-cutover.md); query vector viết tay trong `internal/embedding/store`):
 
 ```sql
 SELECT i.id, i.name, 1 - (e.embedding <=> $2::vector) AS cos_sim
-FROM item_embedding e
-JOIN item i ON i.id = e.item_id AND i.user_id = e.user_id
+FROM item_embedding_g<N> e
+JOIN item i ON i.id = e.target_id AND i.user_id = e.user_id
 WHERE e.user_id = $1 AND i.deleted_at IS NULL
-  AND e.model = $3 AND e.model_version = $4
-ORDER BY e.embedding <=> $2::vector
+  AND 1 - (e.embedding <=> $2::vector) >= $3   -- semantic_min_cos của generation
+ORDER BY e.embedding <=> $2::vector, i.id
 LIMIT 20;
 ```
 
-**Chọn exact hay ANN theo kích thước corpus của user:** mặc định `SEARCH_EXACT_MAX_VECTORS=5000` cho từng corpus, là ngưỡng khởi đầu phải benchmark trên host đích. Dưới ngưỡng: lấy vector của user qua index B-tree `(user_id, target_id)` vào `MATERIALIZED` CTE rồi tính/sort cosine **exact**, không dùng HNSW cho nhánh đó. Không cam kết số ms chỉ từ kích thước vector.
+**Chọn exact hay ANN theo kích thước corpus của user** (`store.VectorSearch(ctx, pin, userID, corpus, qvec, k, deadline)`):
 
-Trên ngưỡng: query bảng embedding hash-partition theo `user_id` (§8), HNSW riêng từng partition; predicate `e.user_id=$1` giúp partition pruning. Một hash partition vẫn chứa nhiều user: trong HNSW, filter user là **post-filter**, không phải pre-filter. pgvector ≥ 0.8 dùng `SET LOCAL hnsw.iterative_scan = relaxed_order`, `hnsw.ef_search=64`, `hnsw.max_scan_tuples=20000` làm mức khởi đầu. Iterative scan tiếp tục để bù kết quả bị lọc nhưng có thể chạm scan/time budget; sort lại candidates theo cosine trước response. Nếu thiếu kết quả, chỉ fallback exact trong budget còn lại; không coi ANN là exact hay đảm bảo đủ K. Benchmark recall@20 so với exact, p95/p99 latency, tỷ lệ thiếu K và chạm trần trên nhiều tenant, phân bố lệch và cả hai corpus; dùng kết quả để tune ngưỡng, partition count và scan budget.
+- `SEARCH_EXACT_MAX_VECTORS` (mặc định `5000`, ngưỡng khởi đầu phải benchmark trên host đích) áp riêng item/tag. **Một** phép đếm có trần: `SELECT count(*) FROM (SELECT 1 FROM <tbl> WHERE user_id=$1 LIMIT $fallback_max+1) s` với `$fallback_max = SEARCH_EXACT_FALLBACK_MAX_VECTORS` (mặc định `20000`, validate `≥ SEARCH_EXACT_MAX_VECTORS`); cùng số đếm so với **cả hai** ngưỡng. `SEARCH_EXACT_MAX_VECTORS=0` (benchmark luôn ANN) vẫn tôn trọng trần fallback; tenant whale (count = trần + 1) không bao giờ đi exact fallback. Không cache số đếm ở MVP.
+- **Exact** (`count ≤ max`): tiền chọn vector của user qua PK `(user_id, target_id)` trong `MATERIALIZED` CTE (chặn planner dùng HNSW), join `item`/`tag` sống, `1 − (e <=> q) ≥ min_cos`, `ORDER BY dist, id`. Không cam kết số ms chỉ từ kích thước vector.
+- **ANN** (`count > max`): bảng embedding hash-partition theo `user_id` (§8), HNSW riêng từng partition; predicate `e.user_id=$1` giúp partition pruning. Một hash partition vẫn chứa nhiều user: trong HNSW, filter user là **post-filter**, không phải pre-filter. Một read-only tx, một `pgx.Batch`: `SET LOCAL hnsw.iterative_scan` (`SEARCH_HNSW_ITERATIVE_SCAN`, mặc định `relaxed_order`), `hnsw.ef_search` (`SEARCH_HNSW_EF_SEARCH`, `64`), `hnsw.max_scan_tuples` (`SEARCH_HNSW_MAX_SCAN_TUPLES`, `20000`), `statement_timeout = <budget nhánh>`, rồi candidates qua HNSW trong `MATERIALIZED` CTE (`WHERE user_id=$1 ORDER BY e.embedding <=> $2 LIMIT $k`), join sống, lọc ngưỡng, **sort lại** `dist, id` (bắt buộc với `relaxed_order`; pgvector ≥ 0.8).
+- **Underfill:** số candidate trước lọc ngưỡng < K **và** budget còn ≥ `SEARCH_VECTOR_FALLBACK_MIN_BUDGET` (`30ms`) **và** `count ≤ SEARCH_EXACT_FALLBACK_MAX_VECTORS` → exact trong budget còn lại; không thì trả phần đã có. Không coi ANN là exact, không hứa đủ K.
+- Benchmark recall@20 so với exact, p95/p99 latency, tỷ lệ underfill và chạm trần trên nhiều tenant, phân bố lệch (ép ca tenant trung bình chung partition với whale) và cả hai corpus; dùng kết quả để tune ngưỡng, partition count và scan budget (`docs/benchmarks/P05-search/`).
 
 Gắn tag chips cho mỗi item hit: `SELECT tag_id, display FROM item_tag JOIN tag … WHERE item_id IN (…) LIMIT 20` — cần để disambiguate tên trùng trong dropdown.
 
 ### 6.4 Hybrid ranking
 
-Chạy lexical item/tag song song (timeout 50 ms / nhánh). Nhánh semantic gọi provider một lần (budget `EMBEDDING_QUERY_TIMEOUT`: 300 ms với TEI, 4 s với `openai_compat`), rồi hai query vector song song (budget còn lại, tối đa 80 ms / nhánh); tổng hybrid cache miss ≤ 350 ms server. UI nhận lexical trước qua `semantic=0`, semantic đến sau không được di chuyển hàng đã hiện.
+Chạy lexical item/tag song song (timeout 50 ms / nhánh). Nhánh semantic gọi provider một lần (budget `EMBEDDING_QUERY_TIMEOUT`: 300 ms với TEI, 4 s với `openai_compat`), rồi hai query vector song song (budget còn lại, tối đa `SEARCH_VECTOR_BRANCH_TIMEOUT` = 80 ms / nhánh); tổng hybrid cache miss ≤ 350 ms server **với stub provider 90 ms**. UI nhận lexical trước qua `semantic=0`, semantic đến sau (`semantic=1`, bắn cùng lúc khi đủ điều kiện §3.5 quy tắc 7, không chờ nhau) không được di chuyển hàng đã hiện.
+
+> **Latency miss với `openai_compat` (OQ-21, advisor-dec-244):** target miss 350 ms áp cho profile stub 90 ms của benchmark. Với `openai_compat` trên host production (~2,3 s/request) latency miss là **số vận hành báo cho P06** (metric của Task 24), không phải target P05. UI không bao giờ chờ semantic: lexical hiện trước, near append muộn mà không dời hàng lexical (§6.7, §6.8).
 
 **MVP dùng thứ tự theo tier và các tiêu chí lần lượt, không cộng RRF/recency thành một score.** Quy tắc trên cùng snapshot dữ liệu:
 
-- `tier`: prefix > fuzzy (`trgm ≥ 0.35`) > semantic only (`cos ≥ semantic_min_cos` của generation active, hiệu chỉnh trên bộ đánh giá — ADR 0004; tạm 0.58 cho qwen3@1024); `q` rỗng dùng recent riêng.
-- Prefix/fuzzy trong từng corpus: `tier DESC`, `trgm_score DESC`, `last_used_at DESC`, `count DESC`, `id ASC`. Recency/count chỉ phá hoà khi relevance bằng nhau, không cộng trọng số để lấn át relevance. `count` = `entry_count` (item) hoặc `item_count` (tag).
-- Semantic only: bỏ mọi `(kind,id)` đã có trong lexical, xếp `cos_sim DESC`, `last_used_at DESC`, `count DESC`, `id ASC`. Điểm semantic của một lexical hit không thay đổi vị trí hit đó. Không so trộn numeric score giữa corpus item và tag.
-- Dropdown: lexical **Tags**, lexical **Items**, rồi một vùng **Gần nghĩa** ở cuối (row có `kind`). Khi merge, giữ nguyên thứ tự và node identity của toàn bộ lexical rows, chỉ append/remove vùng semantic; selection bám `(kind,id)`, không bám row index. Không chèn semantic tag lên trước lexical item đã hiện. Quota lexical xác định từ request đầu; nếu đã đủ `limit`, bỏ semantic thừa thay vì loại lexical.
-- `q` rỗng: tối đa 8 item + 4 tag theo `last_used_at DESC, id ASC`, vẫn tôn trọng `limit`; không gọi TEI.
-- `len(q) < 2`: chỉ prefix, cả hai corpus.
-- Semantic khi `len(q) ≥ 3` và `semantic_effective`.
+- `tier`: prefix đúng dấu **3** > prefix bỏ dấu **2** > fuzzy **1** (`score ≥ 0.35`) > semantic only (`cos ≥ semantic_min_cos` của generation đã pin, hiệu chỉnh trên bộ đánh giá — §6.7, ADR 0004); `q` rỗng dùng recent riêng.
+- Prefix/fuzzy trong từng corpus: `tier DESC`, `score DESC` (**làm tròn 2 chữ số**, `round(…, 2)` trong SQL, §6.3), `last_used_at DESC`, `count DESC`, `id ASC`. Recency/count chỉ phá hoà khi relevance bằng nhau, không cộng trọng số để lấn át relevance. `count` = `entry_count` (item) hoặc `item_count` (tag).
+- Semantic only: bỏ mọi `(kind,id)` đã có trong lexical, **vùng near = tag rồi item** (OQ-11), mỗi nhóm `cos DESC`, `last_used_at DESC`, `count DESC`, `id ASC`; row `match:"semantic"`, không lộ giá trị cos. Điểm semantic của một lexical hit không thay đổi vị trí hit đó. Không so trộn numeric score giữa corpus item và tag.
+- Dropdown: lexical **Tags**, lexical **Items**, rồi một vùng **Gần nghĩa** ở cuối (row có `kind`). Khi merge, giữ nguyên thứ tự và node identity của toàn bộ lexical rows, chỉ append/remove vùng semantic; selection bám `(kind,id)`, không bám row index. Không chèn semantic tag lên trước lexical item đã hiện. Lexical đủ quota **không bao giờ** nhường slot cho near: vùng near **không bao giờ cắt hay đổi thứ tự lexical**; độ dài vùng near = `min(quota.near, limit − len(lexical))`, với `quota.near` là near **hiệu dụng** của response đó (công thức bên dưới).
+- `q` rỗng (recent): theo bảng quota bên dưới, `last_used_at DESC, id DESC` (khớp `item_user_recent`/`tag_user_recent`; thay `id ASC` cũ), vẫn tôn trọng `limit`; không gọi provider.
+- `len_runes(qn) < 2`: mode `prefix` (chỉ prefix, cả hai corpus); `≥ 2`: mode `full` (prefix + fuzzy). Semantic khi `len_runes(qn) ≥ 3` và `semantic_effective`.
+
+**Quota theo `limit`** (OQ-3, OQ-9 — advisor-dec-244; contract máy đọc: `packages/search-fixtures/quota.json`). Quota chỉ phụ thuộc `(scope, limit, mode)`, **không** phụ thuộc semantic bật/tắt/sẵn sàng; `near_reserve` luôn để dành (trống khi semantic tắt). Cùng `q/scope/limit` + cùng snapshot → **cùng mảng `tags`/`items`** ở `semantic=0` và `semantic=1`. `/suggest` `limit ∈ {5, 8, 12}`, mặc định 8 (`< 768 px` gửi 5); khác → `400 invalid_request`.
+
+| scope · mode | limit | `tag_max` | `lex_max` | `near_max` | Recent: tag / item |
+|---|---|---|---|---|---|
+| all · prefix/full | 5 | 2 | 4 | 1 + phần lexical thiếu, tối đa 2 | 2 / 3 |
+| all · prefix/full | 8 | 3 | 6 | 2 + phần lexical thiếu, tối đa 3 | 3 / 5 |
+| all · prefix/full | 12 | 4 | 9 | 3 + phần lexical thiếu, tối đa 4 | 4 / 8 |
+| item | 5 / 8 / 12 | 0 | 4 / 6 / 9 | như all (chỉ item) | 0 / `limit` |
+| tag | 5 / 8 / 12 | = `lex_max` | 4 / 6 / 9 | như all (chỉ tag) | `limit` / 0 |
+
+Công thức (`internal/suggest/quota.go`): `tags_used = min(tag_hits, max(tag_max, lex_max − item_hits))`; `items_used = min(item_hits, lex_max − tags_used)`; `near_used = min(near_hits_sau_dedup, near_max_eff, limit − tags_used − items_used)`.
+
+**Hai đại lượng near (advisor-dec-256 mục 5; BE-C1/FE-C8).** Cột `near_max` của bảng là **hai** số: `near_base` (phần để dành cố định: 1/2/3 theo limit 5/8/12) và `near_max_cap` (trần: 2/3/4 = `near_base + 1`). Wire `SuggestQuota.near` = near **hiệu dụng** của chính response đó: `near_max_eff = min(near_max_cap, near_base + max(0, lex_max − tags_used − items_used))` (phần lexical thiếu nhường thêm slot cho near, không vượt trần). Ví dụ scope=all, limit=8, `tag_hits=1`, `item_hits=4`: `lex_max − 1 − 4 = 1` → `near_max_eff = min(3, 2 + 1) = 3`, nên `quota.near = 3`. Bảng/fixture `quota.json` giữ hai số cố định `near_base` và `near_max_cap` (đúng tên khoá trong fixture) — không giữ near hiệu dụng, vì nó phụ thuộc số hit; server trả `near_max_eff` ở cả hai response `semantic=0`/`semantic=1`. Client cắt vùng near = `min(quota.near, limit − lexical.length)` (§6.8), không tự tính lại từ bảng. **Recent** (`mode=recent`): `quota.near = 0`, `quota.tag = recent_tag` và `quota.lexical = recent_tag + recent_item` = **tổng** slot lexical recent (= `limit`, cùng nghĩa với `lex_max` ở prefix/full và với OpenAPI `SuggestQuota.lexical`/`quota.json`; advisor-dec-259 / FE-C16, BE-C6), lấy từ cột "Recent: tag / item" của bảng: scope=all limit 8 → `{ "tag": 3, "lexical": 8, "near": 0 }` (`recent_tag=3`, `recent_item=5`); scope=item → tag 0, lexical `limit`; scope=tag → tag `limit`, lexical `limit`. `recent_item` là phần chia item, **không** phải `quota.lexical`. Không near, không gọi provider. Ngoài recent: `quota.tag = tag_max`, `quota.lexical = lex_max` của hàng tương ứng (item: tag 0; tag: tag = lexical = `lex_max`) và `quota.near` hiệu dụng theo cùng công thức (chỉ item hoặc chỉ tag). Test: `quota.test.ts` (Task 9) thêm ca thiếu lexical (limit 8, 5 hàng lexical → near 3) **và ca recent** (limit 8: scope=all → `{tag 3, lexical 8, near 0}`, item → `{0, 8, 0}`, tag → `{8, 8, 0}`; đọc `recent_tag`/`recent_item` từ `quota.json`, kiểm `quota.lexical == recent_tag + recent_item`). Thứ tự hiển thị cố định Tags → Items → Gần nghĩa; recent "Gần đây" (item) → "Tag hay dùng". `/search`: `limit ∈ {20, 50}` mặc định 20; phân trang **theo scope** — `scope=item` chỉ item (keyset `SearchItemsLexicalPage`), `scope=tag` chỉ tag (keyset `SearchTagsLexicalPage`, cùng ranking), `scope=all` trang item theo keyset còn `tags` chỉ trang đầu (≤ 5, không phân trang tag); `near` chỉ trang đầu (≤ 5, sau lexical). Cursor mang `kind` (`item|tag`) và chỉ hợp lệ cho đúng scope/kind đó (§9.2).
 
 ```
-semantic_effective = SEARCH_SEMANTIC_ENABLED   -- env, default true
-                  && user.settings.semantic_suggest  -- default true
+semantic_effective = SEARCH_SEMANTIC_ENABLED                 -- env, default true
+                  && provider != noop && active generation khớp client đã cấu hình && có calibration  -- = features.semantic_available (tĩnh, §6.10)
+                  && user.settings.semantic_suggest          -- default true
                   && request.semantic != 0
                   && circuit_breaker.closed
-                  && len(q) >= 3
+                  && len_runes(qn) >= 3
 ```
 
-Tắt semantic → lexical-only trên **cả hai** corpus; không gọi TEI cho query; không đọc bảng embedding cho query. Prefix/fuzzy **không đảo thứ tự** khi bật/tắt ≈ hoặc khi response semantic đến — chỉ thêm/bớt vùng Gần nghĩa. Đổi query mới tạo snapshot/lexical list mới; response cũ bị bỏ qua.
+Thứ tự quyết định (`semantic.Decide`): deployment → generation → user → request → breaker → độ dài; lý do ra là `semantic_reason` (§6.10). Tắt semantic → lexical-only trên **cả hai** corpus; không gọi provider cho query; không đọc bảng embedding cho query. Prefix/fuzzy **không đảo thứ tự** khi bật/tắt ≈ hoặc khi response semantic đến — chỉ thêm/bớt vùng Gần nghĩa. Đổi query mới tạo snapshot/lexical list mới; response cũ bị bỏ qua. Lỗi provider mở breaker; timeout SQL của nhánh vector chỉ bỏ semantic lần đó (`degraded`), không mở breaker.
 
-`GET /suggest?q=#nhà` hoặc `q=nhà&scope=tag`: chỉ tag.
+`GET /suggest?q=#nhà` hoặc `q=nhà&scope=tag`: chỉ tag. Client omnibox ở chế độ `#` luôn gửi `semantic=0` (§3.5 quy tắc 7; advisor-dec-259 / FE-C17), nên near của `scope=tag` trong bảng quota chỉ phục vụ gọi API trực tiếp, không phải đường `#`.
 
 ### 6.5 Indexing strategy
 
@@ -1014,52 +1105,58 @@ CREATE INDEX item_user_name_prefix ON item (user_id, name_normalized text_patter
 CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops);
 CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
 -- không UNIQUE trên name_normalized — trùng tên là hợp lệ
-
-CREATE INDEX item_emb_hnsw ON item_embedding
-  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-CREATE INDEX tag_emb_hnsw ON tag_embedding
-  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
--- Hai bảng hash-partition theo user_id (§8); lệnh trên tạo index riêng ở từng partition.
--- Mỗi generation/model dùng bảng và bộ HNSW riêng, không trộn model trong một index.
+-- P05 thêm index lexical theo user ở migration 0008_search_lexical (§8).
 ```
 
-Generated `unaccent` columns: `IMMUTABLE` wrapper. `hnsw.ef_search = 64` lúc suggest.
+HNSW **không** nằm trong migration và **không** là một lệnh `CREATE INDEX … ON item_embedding`: bảng `item_embedding_g<N>`/`tag_embedding_g<N>` (§8) hash-partition 16 theo `user_id`, và HNSW được tạo **theo từng partition** bằng `worker reembed generation index` — `CREATE INDEX CONCURRENTLY` cho từng partition (`vector_cosine_ops`, `m = 16`, `ef_construction = 128`), rồi tạo index cha `ON ONLY` và `ATTACH PARTITION`; riêng generation bootstrap rỗng thì tạo HNSW ngay lúc bootstrap ([ADR 0007](adr/0007-embedding-generation-cutover.md)). Mỗi bảng chỉ một model, nên không có `item_emb_model_idx`; mỗi generation dùng bảng và bộ HNSW riêng, không trộn model trong một index. Đổi partitions/`m`/`ef_construction`/dims/model/revision/instruction/preprocessing = **generation mới**, không `ALTER`.
+
+Generated `unaccent` columns: `IMMUTABLE` wrapper. `hnsw.ef_search = 64` lúc suggest (`SEARCH_HNSW_EF_SEARCH`).
 
 ### 6.6 Embedding pipeline
+
+Giao thức generation/cutover đầy đủ (bảng, khoá, pin, vòng đời, CLI) nằm ở [ADR 0007](adr/0007-embedding-generation-cutover.md); mục này chỉ nêu quy tắc.
 
 ```mermaid
 sequenceDiagram
     participant A as API
     participant DB as Postgres
     participant W as Worker River
-    participant T as TEI bge-m3
-    A->>DB: INSERT/UPDATE item hoặc tag
-    A->>DB: INSERT embedding_job {user_id, target_kind, target_id, generation_id, input_hash}
-    Note over A: chỉ khi SEARCH_SEMANTIC_ENABLED
-    W->>DB: claim batch ≤ 64 SKIP LOCKED
-    W->>T: POST /embed {inputs, normalize: true}
-    T-->>W: vectors 1024 dims
-    W->>DB: UPSERT item_embedding hoặc tag_embedding
+    participant P as Provider (openai_compat | tei)
+    A->>DB: tx: INSERT/UPDATE item hoặc tag + embed_item/embed_tag {generation_id, user_id, target_id, input_hash} cho mọi generation thuộc R
+    Note over A: chỉ khi SEARCH_SEMANTIC_ENABLED và provider khác noop; enqueue trong cùng tx
+    W->>DB: đọc target, không lock; kiểm hash hiện tại, policy user theo provider của generation
+    W->>P: EmbedDocuments(inputs, tối đa 64) — không giữ lock khi gọi mạng
+    P-->>W: vectors dims
+    W->>DB: tx ngắn: FOR SHARE target rồi app_user, kiểm hash, UPSERT vào bảng của generation
 ```
 
 | Target | Input text |
 |--------|------------|
-| Item | `name` + (`" — "` + `hint` nếu có) |
-| Tag | `display` (nếu `display` khác `normalized` rõ rệt, vẫn chỉ `display` — đó là thứ user nhận) |
+| Item | `name` (đã trim, **không** phải `name_normalized`) + (`" — "` + `hint` nếu hint khác rỗng) |
+| Tag | `display` (vẫn chỉ `display` — đó là thứ user nhận) |
+| Query | `qn` — chỉ khi ranh giới gửi §3.5 cho phép |
 
-`input_hash = SHA256(UTF8(JCS({model, model_version, input_prefix, input})))`; generation chứa cả model revision, dims và cấu hình preprocessing. Skip chỉ khi hash và model/version đều khớp. Worker đọc input mới nhất trước embed; trước UPSERT phải so lại hash hiện tại trong tx, không ghi vector từ job cũ đè lên rename mới. Sai hash → enqueue lại. Index cập nhật async theo mục tiêu lag §6.9; khi deployment vừa bật lại, catch-up có thể tạm thời chưa phủ input mới.
+Không bao giờ nằm trong input, job args, log hay cache: body/entry/envelope/ciphertext, `entry_count`, tag của item, `normalized`. Job args chỉ ID + hash.
 
-Trigger: tạo/đổi `item.name`/`hint`; tạo/đổi `tag.display`. Gán/gỡ `item_tag` **không** re-embed (văn bản không đổi). Soft-delete → xoá vector trong mọi generation và không enqueue; hard-delete → FK cascade. Restore item/tag → enqueue input hiện tại cho các generation còn nhận mutation.
+`input_hash = SHA256(UTF8(JCS({input, input_prefix, model, model_version})))` (`bytea` 32 B), một hàm `internal/embedding/input.go` dùng chung cho hook, job và Reconcile; `input_prefix` là prefix document, và mỗi generation chứa cả model revision, dims và `preprocessing`. Skip chỉ khi hash và model/version đều khớp. Worker đọc input mới nhất trước embed; trước UPSERT phải so lại hash hiện tại **dưới `FOR SHARE`** trên hàng item/tag (rồi `app_user`), không ghi vector từ job cũ đè lên rename mới. Hash lệch → bỏ vector và **chèn job với hash hiện tại**. Index cập nhật async theo mục tiêu lag §6.9; khi deployment vừa bật lại, catch-up có thể tạm thời chưa phủ input mới.
 
-`SEARCH_SEMANTIC_ENABLED=false` (cấp **deployment**): không enqueue. Bật lại → `ReembedAll` cho item/tag active có **vector thiếu hoặc `input_hash` khác hash hiện tại hoặc `model`/`model_version` khác generation active**. Với `tei`: tắt `user.settings.semantic_suggest` vẫn chạy embed job (§6.10), không cần backfill khi user bật lại. Với `openai_compat`: tắt thì không enqueue và xoá vector của user, bật lại → `ReembedUser` (ADR 0004).
+Trigger: tạo/đổi `item.name`/`hint`; tạo/đổi `tag.display`. Gán/gỡ `item_tag`, đổi `last_used_at`/`entry_count` **không** re-embed (văn bản không đổi). Enqueue **transactional**: hook gọi trong tx của mutation, trước `CommitIdempotencyTx`; lỗi hook → rollback cả mutation (503). Soft-delete → xoá vector trong **mọi generation còn bảng** (`state ≠ dropped`) và không enqueue; hard-delete → FK cascade. Restore item/tag → enqueue input hiện tại cho các generation thuộc R.
 
-**Đổi model/revision/preprocessing luôn dùng shadow tables**, kể cả dims không đổi: tạo `item_embedding_v2` / `tag_embedding_v2` với vector(N), partition và HNSW riêng. Không đổi PK thành `(item_id, model)` để trộn hai model vào một HNSW. Backfill batch 64, concurrency TEI mặc định 2; query vẫn dùng generation cũ. Trong lúc build, mutation enqueue cho cả generation active và pending; retry/delete phải xử lý cả hai, kết quả job kiểm tra input hash trước ghi.
+**Tập nhận `R`** = `{active} ∪ {pending} ∪ {retired có rollback_until > now()}`; `generation.ReceivingGenerations(tx)` là nguồn duy nhất cho enqueue và restore. **Khoá:** mọi tx mutation enqueue/xoá vector lấy `pg_advisory_xact_lock_shared(<khoá generation set>)` trước khi đọc `R`; create/flip/rollback/retire/drop/lấy watermark lấy `pg_advisory_xact_lock` exclusive cùng khoá, nên generation mới chỉ commit sau mọi mutation đang bay và backfill bắt đầu sau commit (không có khe hở). Worker không lấy advisory lock nội dung.
 
-Cutover khi **cả hai corpus** pending đã phủ mọi item/tag active tại watermark kiểm tra, xử lý kịp mutation đến watermark và qua kiểm tra index/recall; không flip ở 95%. Atomically đổi một cấu hình `active_generation` gồm provider/query model+revision+prefix, dims và tên hai bảng đã allowlist. Mỗi request pin một generation cho query embedding, cache và cả hai truy vấn; không trộn vector query mới với index cũ. Mutation sau watermark vẫn được chuyển tới generation mới. Giữ generation cũ cập nhật trong cửa sổ rollback, chỉ drop sau khi xác nhận ổn định; tăng dims cũng theo đúng quy trình này.
+**Client theo danh tính đầy đủ (BE-1):** mỗi generation và mỗi client provider (`EMBEDDING_*`, `EMBEDDING_SHADOW_*`) mang `embedid.Identity` đủ bảy trường (provider, model, model_version, dims, query prefix, doc prefix, preprocessing); `ClientSet.Match` chỉ trả client khi `Identity.Key()` khớp **cả bảy** trường, kiểm trước mọi lời gọi mạng. Không khớp → query `degraded` (`generation_unconfigured`), job `JobSnooze(5m)`; không bao giờ gọi provider hay upsert vào generation cũ. **Pin theo request:** API đọc active (cache ≤ 2 s, xoá ngay khi `NOTIFY embedding_generation_changed`) thành `Pin` từ **một** hàng generation; embed query, cache, hai truy vấn vector và cursor `/search` dùng cùng Pin, không trộn vector query mới với index cũ.
 
-Query embedding cache: LRU key `generation_id || normalized(q)`, TTL 24 h; generation đổi → namespace mới. `ReembedAll` là sửa thiếu/stale trong một generation; thay model dùng quy trình shadow/cutover riêng.
+**Vòng đời generation (7 bước)** — chi tiết ở ADR 0007: (1) `create` → `pending`, bảng không index, từ commit mutation fan-out cả active và pending; (2) `backfill` = Reconcile(All) trên pending (batch 64, concurrency 2, tôn trọng `Retry-After`); (3) `index` → `index_ready` khi mọi `pg_index.indisvalid`; (4) `verify` dưới watermark `W`: không còn job embed trước `W` ở available/retryable/running, Reconcile dry-run = 0 missing + 0 stale cho **cả hai corpus**, toàn vẹn, recall mẫu 200 query ANN vs exact đạt C2 — không flip ở 95 %; (5) `flip` (tx exclusive, thủ công `--yes`): pending → active, active cũ → `retired` + `rollback_until = now() + SEARCH_ROLLBACK_WINDOW` (`168h`), `NOTIFY`; (6) `rollback` trong cửa sổ, chỉ khi bản retired catch up cùng điều kiện (4); (7) `drop` chỉ `retired`, sau `rollback_until` **và** `--accepted-evidence <path>`. Mỗi lần đổi model/revision/instruction/preprocessing/dims luôn là generation mới (shadow tables), kể cả dims không đổi; không đổi PK thành `(item_id, model)`.
 
-Degraded: provider quá `EMBEDDING_QUERY_TIMEOUT` / 5xx / 429 / refused → circuit 60 s → lexical-only, `semantic: false, semantic_reason: "degraded"`. Job retry 1 m → 1 h, dead-letter sau 24 h.
+**Bootstrap g1 (BE-4):** hàm duy nhất `generation.Bootstrap`: khi `SEARCH_SEMANTIC_ENABLED=true`, provider khác noop, có calibration cho danh tính client primary và chưa có hàng generation nào → tạo g1 **`pending`** (`bootstrap=true`, HNSW ngay vì bảng rỗng), **không** active. Từ commit, mutation enqueue vào `R` và `Reconcile(All)` boot-time backfill trong lúc `semantic_available=false`; khi `verify` đạt, job periodic `embedding_bootstrap_flip` **tự flip** generation `bootstrap=true` → active (chỉ generation bootstrap; mọi lần đổi model sau đó là CLI thủ công) → `NOTIFY` xoá cache Pin và availability → semantic available. Thiếu điều kiện → semantic unavailable + metric.
+
+**Bảo mật cache và cursor:** query-embedding cache (`internal/semantic/cache.go`) là LRU in-process RAM, 5000 mục, TTL 24 h, key = `user_id ‖ generation_id ‖ HMAC-SHA256(k, qn)` với `k` là 32 byte ngẫu nhiên sinh lúc process khởi động (không chia sẻ, không ghi đĩa; thay `generation_id ‖ q` cũ); không dùng chung giữa user, không giữ `q` thô làm key (advisor-dec-243). Server không cache response `/suggest`/`/search`. Cache response phía client (TanStack, không persist) có key `['search', userId, 'suggest'|'search', scope, limit, requestMode, semanticSuggestSetting, generationId, qn]` (+ `cursor`), gồm user + scope + limit + mode/settings + generation + qn; thiếu `userId` → không gửi. Cursor `/search` là base64url JSON `{v, scope, kind, gen, qh, tier, score, last_used_at, count, id}` với `qh` = 16 byte đầu `HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn)`, `k_cursor = HKDF-SHA256(ikm = AUTH_JWT_SECRET, info = "engram/search-cursor/v1")` (advisor-dec-243); **không chứa `q`**; lệch `q/scope/kind/generation` → `400 invalid_request`; `kind ∈ item|tag` và `/search` phân trang theo scope (§6.4, BE-12).
+
+**Lag, retry, dead-letter:** lag = `embedded_at − river_job.created_at` (gauge `embedding_job_lag_seconds`). `NextRetry = min(1m·2^(attempt−1), 1h) × (1 + j)` với `j ∈ [0, 0,20]` — jitter **chỉ dương**, `MaxAttempts = 30` nên tổng chờ tối thiểu ≈ 24 h 03 m: dead-letter xảy ra **sau ≥ 24 h**. Snooze do breaker/429 không tốn attempt; breaker mở 60 s (API: một lỗi; worker: 3 lỗi liên tiếp), half-open đúng một probe/process.
+
+**Degraded:** provider quá `EMBEDDING_QUERY_TIMEOUT` / 5xx / 429 / refused / bad response → breaker 60 s → lexical-only, `semantic: false, semantic_reason: "degraded"`, không toast. Mã lý do (log `error_class`, label): `provider_timeout`, `provider_5xx`, `provider_429`, `provider_refused`, `provider_bad_response`, `dims_mismatch`, `hash_stale`, `generation_not_receiving`, `generation_unconfigured` — phía user đều là `degraded`.
+
+`SEARCH_SEMANTIC_ENABLED=false` (cấp **deployment**): không enqueue. Bật lại → `Reconcile(All)` cho item/tag sống có **vector thiếu hoặc `input_hash` khác hash hiện tại hoặc `model`/`model_version` khác generation**; `Reconcile` cũng chạy khi worker boot, mỗi 24 h và qua CLI, và `DryRun` không ghi gì (không INSERT/UPDATE/DELETE, không enqueue, không gọi provider). Với `tei`: tắt `user.settings.semantic_suggest` vẫn chạy embed job (§6.10), không cần backfill khi user bật lại. Với `openai_compat`: theo provider **của từng generation** (§6.10).
 
 ### 6.7 Model — self-host
 
@@ -1073,17 +1170,32 @@ Degraded: provider quá `EMBEDDING_QUERY_TIMEOUT` / 5xx / 429 / refused → circ
 | RAM CPU fp32 | ~2.3 GB + runtime | ~1.1 GB + runtime |
 | Latency 1 input ngắn, 2 vCPU | ~40–90 ms | ~20–40 ms |
 
-Chọn **bge-m3**, `normalize: true`, cosine. Host nhỏ: đổi e5-base qua shadow/cutover §6.6, hoặc `SEARCH_SEMANTIC_ENABLED=false`. `model` = `"tei/BAAI/bge-m3"`, `model_version` = `model_sha` từ `GET /info`.
+Chọn **bge-m3**, `normalize: true`, cosine. Host nhỏ: đổi e5-base qua shadow/cutover §6.6, hoặc `SEARCH_SEMANTIC_ENABLED=false`. `model` = `"tei/BAAI/bge-m3"`, `model_version` = `"<model_sha>;qp=<sha8>;dp=<sha8>"` (`model_sha` từ `GET /info`, `qp`/`dp` = hash prefix query/document).
+
+**Calibration `semantic_min_cos` (D11, OQ-10).** Ngưỡng cos của vùng Gần nghĩa không đoán mà **đo** trên dữ liệu đánh giá của từng `(provider, model, model_version)`:
+
+- **Data contract:** `docs/benchmarks/semantic-eval/pairs.v1.jsonl`, mỗi dòng `{"id","query","target","target_kind":"item|tag","hint","label":"related|unrelated","lang":"vi|en|mixed","category":"abbrev|diacritics|no_diacritics|short_name|cross_lang|tag|noise"}`; tối thiểu **≥ 80 dòng, ≥ 40 related, ≥ 30 unrelated, mỗi category ≥ 8, ≥ 15 tag**; dữ liệu tổng hợp (không dữ liệu người dùng). Validator CI `internal/embedding/evalset_test.go` kiểm schema, id duy nhất, số tối thiểu và mọi mục `calibration.go` có report khớp ngưỡng + sha256 file pairs.
+- **Quy tắc chọn `t` (ghi trước khi chạy):** `t` = giá trị **nhỏ nhất** trên lưới `0.30…0.90` bước `0.01` sao cho FPR ≤ 5 % (cặp `unrelated` có cos ≥ `t`). Recall tại `t` **< 0.60 → `decision_required`**, không bật semantic cho user.
+- **Evaluator** `worker semeval --pairs … --out docs/benchmarks/semantic-eval/report-<model_slug>-<dims>-<yyyymmdd>.json` chạy một lần trên host deploy (cần key + router); commit report + `internal/embedding/calibration.go` (`(provider, model, model_version) → min_cos, report path`). `calibration.go` được biên dịch vào binary: phải merge rồi build/deploy image mới trước khi bootstrap g1.
+- **Code từ chối** tạo/kích hoạt generation thiếu calibration; đổi ngưỡng cùng model = sửa `calibration.go` + report mới, worker boot cập nhật cột `semantic_min_cos` của generation. Entry cho model giả của CI (`fakeembed`) **chỉ được chấp nhận khi `APP_ENV ≠ production`** (kiểm trong `calibration.go`), để E2E profile `semantic-fake` bootstrap được g1.
+
+**Latency miss `openai_compat` (OQ-21, advisor-dec-244):** target hybrid cache miss 350 ms áp cho profile stub 90 ms. Với `openai_compat` trên host production (~2,3 s/request) latency miss là **số vận hành báo cho P06**, không phải target P05; UI không bao giờ chờ semantic — lexical hiện trước, near append muộn không dời hàng lexical (§6.4, §6.8).
 
 ### 6.8 Client behaviour
 
-- Debounce 120 ms, AbortController, giữ kết quả cũ (không flicker).
-- TanStack cache theo user + `q` + `scope` + semantic setting/request mode, staleTime 30 s; prefix đã có → lọc local ngay. Hai response lexical/semantic cùng query merge theo §6.4, không thay cả list làm nhảy selection.
-- Keyboard: `↑↓` · `Enter` mở (item) hoặc lọc (tag) · `Tab` điền · `Ctrl+Enter` tạo item mới · `Esc`.
-- Highlight khớp; badge `≈` chỉ khi `semantic: true`.
-- Row item: name + tối đa 3 chip tag + `created_at` nếu trùng name trong payload · `entry_count`.
-- Row tag: `#display` · `item_count`.
-- Đọc `features.semantic_available` + `settings.semantic_suggest` để hiện toggle `≈`.
+Chuẩn hành vi client của omnibox (plan mục 2.2, 2.6, 2.8, 2.9 là văn bản ràng buộc; Task 9 `merge.ts` thuần cài đúng các điểm dưới đây):
+
+- Debounce 120 ms, `AbortController` + `queryGen` (tính đúng, không phải biện pháp bảo mật). Gửi theo ranh giới §3.5; số request mỗi nhịp theo §3.5 quy tắc 7.
+- **Không lọc local hàng suggest.** Query mới (`gen+1`) abort hai request cũ, **giữ nguyên hàng cũ** (`aria-busy="true"` trên listbox) cho tới khi response lexical **đầy đủ** (không có `lexical_partial`) đầu tiên của `gen` mới về thì mới thay snapshot; không có "prefix đã có → lọc local ngay". Chỉ hàng tag của chế độ `#` hiện tức thì từ cache tag (§3.4); response `scope=tag` của server thay nhóm tag, giữ `(kind,id)` và `activeKey` nếu còn.
+- **Snapshot.** `snapshot = {gen, qn, scope, limit, lexical, near, nearState}`. Response lexical **đầy đủ** về trước (bất kể cờ `semantic`) lập snapshot; response còn lại chỉ đóng góp `near` (loại `(kind,id)` đã có, cắt theo `min(quota.near, limit − lexical.length)` với `quota.near` là near hiệu dụng của response, §6.4, rồi append); `tags`/`items` của nó bị bỏ. **Response có `lexical_partial` không bao giờ lập hay thay snapshot** và không được cache; nếu `gen` không có response đầy đủ nào, giữ hàng trước. Response `gen` cũ bị bỏ. `activeKey = "kind:id"` giữ nếu `(kind,id)` còn, ngược lại `null`; không tự kích hoạt hàng đầu (trừ chế độ `#`). Khi gate đóng (§3.5 quy tắc 11): xoá snapshot, `activeKey=null`, bỏ `aria-busy`, đóng dropdown (chế độ `#`: giữ hàng tag từ cache cục bộ, chỉ xoá hàng/snapshot server và `activeKey`, §3.5 quy tắc 11).
+- **Highlight (chỉ là text node).** `match="prefix"`: `splitMarkedPrefix`; `match="prefix_folded"`: biến thể fold `features/omnibox/suggest/fold.ts` (NFD, bỏ `p{Mn}`, `đ/Đ→d`); `match="fuzzy"`: **không** `<mark>`, hàng mang nhãn "gần đúng" (hàng prefix không có nhãn). Badge `≈` **chỉ** trên hàng thuộc vùng Gần nghĩa (`match="semantic"`), không theo cờ `semantic` của response.
+- **429/mạng/5xx/`lexical_partial` giữa lúc gõ:** giữ hàng đang hiện, không toast, không chữ đỏ; tối đa **một** retry sau `Retry-After` nếu `queryGen` còn hiện tại. Enter khi bị chặn → dòng muted "Đang gửi hơi nhanh, thử lại sau N giây" (`search.state.rateLimited`), không toast.
+- TanStack cache theo `['search', userId, …]` (§6.6, §7.7), staleTime 30 s, gcTime 60 s, không persist; thiếu `userId` → không gửi. Response có `lexical_partial`/lỗi không cache. Cache key có `requestMode` = `'lex'` (đúng một request `semantic=0`) hoặc `'hybrid'` (cặp `semantic=0`+`1`, §3.5 quy tắc 7).
+- Keyboard: `↑↓` · `Enter` mở item (`/app/items/{id}`) hoặc lọc tag (`/app?tag={id}`), không hàng active → `GET /search` (§3.4–§3.5) · `Tab` điền · `Ctrl+Enter` tạo item mới · `Esc`. Hover không đổi `activeKey`.
+- Row item: name + tối đa 3 chip tag (≤ 2 dưới 768 px) + `created_at` nếu trùng name trong payload · `entry_count`. Row tag: `#display` · `item_count`.
+- Đọc `features.semantic_available` + `settings.semantic_suggest` để hiện toggle `≈`; `features.semantic_external` (tuỳ chọn ở W0, **vắng ⇒ coi như `true`**, fail-safe) chọn copy riêng tư help text và `#timkiem` (§3.4, §7.6).
+- **Toggle `≈` và mọi lần gửi lại đều qua gate (advisor-dec-259 / FE-C15, bảo mật).** Mọi `GET /suggest`/`GET /search` — nhịp gõ, Enter, gửi lại khi bật ≈, "Xem thêm", retry sau `Retry-After` — chỉ mang `semantic=1` khi draft sinh ra query gate-sạch **tại thời điểm gửi** và quy tắc 7 §3.5 thoả (gồm `mode ≠ recent` và `scope ≠ tag`); ngược lại `semantic=0` (§3.5 quy tắc 10). Bật ≈ khi draft không sạch (vd. dán → Enter → bấm ≈) **chỉ `PATCH /me/settings`**, không gửi request nào cho query hiện tại; snapshot không bị lập lại. Khi draft sạch, bật ≈ gửi `semantic=1` cho `gen` hiện tại như trước. "Xem thêm" (trang cursor) luôn `semantic=0` (`near` chỉ ở trang đầu). Chế độ `#` luôn `semantic=0` (không bao giờ gửi token tag tới provider).
+- **Trang cursor "Xem thêm" (advisor-dec-259 / FE-C21).** Trang cursor của `GET /search` chỉ **append** `items` (hoặc `tags` khi `scope=tag`) vào nhóm đang hiện, theo thứ tự server, loại trùng theo `(kind,id)`; **không** thay listbox. Hàng `near`, `nearState` và trạng thái semantic của trang 1 được giữ nguyên; `semantic:false` / `near:[]` / `semantic_reason:"request_lexical"` của trang cursor (luôn `semantic=0`, §3.5 quy tắc 10) **không** được đọc là degraded hay ≈ tắt (không hiện dòng degraded). Trang cursor dùng `requestMode='lex'` trong cache key (cùng `cursor`) và **không** thuộc snapshot. Test Task 17 `omnibox.test.tsx`: "Enter-search (semantic=1) → Xem thêm → page-1 near rows still shown, no degraded line".
 
 ### 6.9 Performance targets
 
@@ -1091,8 +1203,8 @@ Chọn **bge-m3**, `normalize: true`, cosine. Host nhỏ: đổi e5-base qua sha
 |--------|----------|
 | Suggest lexical-only, 100k item + 20k tag / user | **p95 < 40 ms** server |
 | Hybrid, query-embed cache hit | **p95 < 100 ms** server |
-| Hybrid, cache miss (TEI CPU) | p95 < 350 ms; UI hiện lexical trước (`semantic=0`), append semantic sau, giữ nguyên vị trí/focus lexical |
-| Exact / ANN theo tenant | Benchmark cả hai corpus với nhiều user, tenant nhỏ/lớn và skew; đo recall@20 với exact làm chuẩn, p95/p99, thiếu K và scan budget. Ngưỡng §6.3 được tune bằng số đo, không suy từ dung lượng vector |
+| Hybrid, cache miss, **stub provider 90 ms** (OQ-21) | p95 < 350 ms; UI hiện lexical trước (`semantic=0`), append semantic sau, giữ nguyên vị trí/focus lexical. Với `openai_compat` (~2,3 s) latency miss là số vận hành báo P06, không phải target (§6.4, §6.7) |
+| Exact / ANN theo tenant (`docs/benchmarks/P05-search/targets.md`) | Benchmark cả hai corpus với nhiều user, tenant nhỏ/lớn và skew; đo recall@20 với exact làm chuẩn, p95/p99, thiếu K và scan budget. Ngưỡng §6.3 được tune bằng số đo, không suy từ dung lượng vector |
 | Embedding job lag (item/tag mới) | p95 < 10 s |
 | Entry create | p95 < 150 ms server |
 
@@ -1100,11 +1212,23 @@ Chọn **bge-m3**, `normalize: true`, cosine. Host nhỏ: đổi e5-base qua sha
 
 | Tầng | Cơ chế | Khi tắt |
 |------|--------|---------|
-| **Deployment** | `SEARCH_SEMANTIC_ENABLED` default `true` | Không cần TEI (compose profile `semantic`); không enqueue; suggest/search lexical; `features.semantic_available: false`; `PATCH semantic_suggest` → `409 SEMANTIC_UNAVAILABLE`; bật lại → `ReembedAll` |
-| **User** | `settings.semantic_suggest` default `true`; Settings + toggle **`≈`** trên omnibox | Không gọi provider cho query user đó. Với `tei` **vẫn** chạy embed job (bật lại là có vector); với `openai_compat` không gửi gì, xoá vector, bật lại → `ReembedUser` (ADR 0004). `semantic_reason: "disabled_user"` |
-| **Degraded** | Circuit TEI | Như tắt user, 60 s; `semantic_reason: "degraded"` |
+| **Deployment** | `SEARCH_SEMANTIC_ENABLED` default `true`, và provider khác `noop`. **Availability** (`features.semantic_available`) cần thêm: active generation khớp một client đã cấu hình, có calibration | Hai điều kiện tách riêng (BE-C3). **Không enqueue** chỉ khi deployment tắt/`noop` hoặc tập nhận R rỗng. g1 bootstrap `pending` đã calibrate (chưa có active, §6.6): **vẫn enqueue** vào R + Reconcile backfill, nhưng không đọc query/vector và `semantic_available=false` tới khi verify flip (plan 2.18 hàng 3a, ADR 0007 §8); R có generation pending/retired khác cũng enqueue theo R. Mọi ca `semantic_available=false`: suggest/search lexical; `PATCH semantic_suggest=true` → `409 semantic_unavailable`; bật lại deployment → `Reconcile(All)` |
+| **User** | `settings.semantic_suggest` default `true`; Settings + toggle **`≈`** trên omnibox | Không gọi provider cho query user đó (`semantic_reason: "disabled_user"`). **Theo provider của từng generation** (BE-3, bên dưới) |
+| **Degraded** | Circuit breaker provider | Như tắt user, 60 s; `semantic_reason: "degraded"`; `PATCH semantic_suggest=true` lúc breaker mở → `409` |
 
-Thứ tự: server → user → breaker → `len(q) ≥ 3`. Tắt user **không** xoá vector.
+Thứ tự: deployment → generation → user → request → breaker → `len_runes(qn) ≥ 3` (§6.4).
+
+**Tắt user theo provider của từng generation (BE-3).** Chính sách quyết theo `provider` **của generation đích**, không theo provider active của deployment:
+
+- Generation `tei` (self-host): tắt user **không xoá vector** — chỉ mục vẫn được cập nhật (enqueue, job, Reconcile) nên bật lại dùng được ngay.
+- Generation `openai_compat`: tắt user → **ngừng gửi** (enqueue, job `skipped_user_off`, Reconcile bỏ user đó) và **xoá vector** của user trong **mọi** generation `openai_compat` còn bảng (`state ≠ dropped`, kể cả retired đã hết cửa sổ rollback — không dựa vào `R`); bật lại → `reembed_user` (Reconcile(User)) cho **mọi** generation `openai_compat` thuộc `R`.
+- Khi `R` trộn provider (vd. `tei` active + `openai_compat` pending/retired), user off vẫn được enqueue vào generation `tei` và bị bỏ ở generation `openai_compat`. Request provider đã bay trước commit không thu hồi được (threat model L-7).
+
+**Hai cờ tĩnh trong `GET /auth/me` (và `/readyz`):** `features.semantic_available` = `SEARCH_SEMANTIC_ENABLED && provider ≠ noop && active generation khớp client đã cấu hình && có calibration`, tính trong RAM (cache 30 s, xoá ngay khi `NOTIFY embedding_generation_changed`), **không gọi mạng** trong `/auth/me`, `PATCH`, `/readyz`; breaker **không** lật cờ này (tránh nhấp nháy toggle) — degrade báo theo response bằng `semantic_reason`. `features.semantic_external` = (provider của generation active là `openai_compat`) — quyết định copy "gửi tới dịch vụ bên ngoài". Trường này **tuỳ chọn ở W0** (`Me.features.semantic_external` không bắt buộc trong schema để fixture/e2e hiện có không vỡ); **vắng ⇒ client coi là `true`** (provider ngoài, fail-safe) cho help text tìm kiếm (§3.4) và copy `#timkiem` (§7.6) — tránh hiện copy `tei` "nhúng trên máy chủ engram" khi deployment thật là `openai_compat` (lệch phiên bản lúc deploy). Task 13 luôn phát trường này. `/readyz` không bao giờ 503 vì semantic.
+
+**`semantic_reason`** (enum `SemanticReason`, 5 giá trị; `null` khi semantic đã chạy): `disabled_server` (deployment/generation/calibration chưa sẵn sàng), `disabled_user` (`semantic_suggest=false`), `degraded` (breaker mở hoặc lỗi provider/SQL nhánh vector), `request_lexical` (`semantic=0`), `short_query` (`len_runes(qn) < 3`).
+
+**`PATCH /me/settings`:** `semantic_suggest=true` khi `semantic_available=false` **hoặc breaker mở** → `409 semantic_unavailable` (mã sẵn có). `semantic_suggest=false` luôn `200`: trong tx hiện có gọi `store.DeleteUserExternal` (mọi generation `openai_compat` còn bảng) rồi lưu; `true` từ `false`: kiểm availability + breaker, lưu, `InsertTx reembed_user` trong cùng tx. Deployment chỉ có `tei`: tắt không xoá, không đổi enqueue.
 
 ---
 
@@ -1141,6 +1265,22 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 - `index.html`: `#omni` (ô nhập một dòng tự nở `<textarea rows="1">` theo advisor-dec-152, giữ role `textbox` ngầm định theo advisor-dec-156 với `aria-controls="omni-listbox"` khi mở listbox, `aria-activedescendant`, `aria-describedby="omni-hint"`, không đặt `role="combobox"` hay `aria-expanded`; `#omni-pop` chứa `#omni-listbox`, `#omni-state-seg` chuyển 16 trạng thái tìm/quick-add/lưu nhiều bước/khoá gồm `4a`/`4b` và `12a`/`12`; các phần tử `#omni-hint`, `#omni-live`, `#omni-guard-alert`, `#omni-lock-cleared-notice`, `#omni-add-preview` kèm `#omni-add-error`, `#omni-json-banner`, `#omni-save-plan`, `#omni-unlock-to-save-btn`, `#omni-add-privacy` do `SAK.initOmnibox` tạo), `#rail-tags` (`#rail-tag-list`, `#rail-clear-filter`, menu tag `⋯` Đổi tên / Xoá có Undo), `#tagRenameDlg` (`#tagRenameInput`, `#tagRenameConflict` `409 tag_conflict`), `#dupDialog` (picker trùng tên U9 do `SAK.openDupDialog` tạo động: `#dupListbox`, `#dup-opt-new`, phân trang `Xem thêm`), `#recent-items-header`, `#recent-grid` (danh sách gần đây duy nhất, không preview body).
 - `item.html`: `default` (`#item-default`: `#item-name-input`, `#item-hint-input`, `#item-privacy-note`, `#tag-add-chip`, `#tag-add-popover`, `#tag-suggest-input`, `#entry-composer`, `#card-menu-pop`, thẻ JSON `#card-json-1` `#cfgTable`/`#cfgRaw` với `#cfg-format-btn`, `#cfg-raw-save-btn`, `#cfg-raw-textarea`, `#cfg-eol-warning`, `#cfg-format-msg`, `#cfg-raw-error` kèm `[data-json-raw-goto]`, thẻ `#card-json-2` `#guestTable`/`#guestRaw`, thẻ `#card-json-edge` `#edgeTable` kèm `#edgeTable-ro-note` / `#edgeRaw` kèm `#json-edge-switcher`), `editing` (`#item-editing`: `#card-text-editing`, `#entry-edit-textarea`, `#entry-byte-counter`, `#entry-discard-confirm`), `saving` (`#item-saving`: `#card-saving`, `#card-saved`, `#card-save-error`), `conflict` (`#item-conflict`: `#card-conflict-412`, `#conflict-reload-confirm`, `#item-header-conflict-412`), `crypto-err` (`#item-crypto-err`: `#card-key-mismatch`, `#card-decrypt-fail`), `limits` (`#item-limits`: `#item-tag-limit-20`, `#item-entry-limit-200`), `#importDlg` (`#importDestination`, `#importPasteExactHint`, `#importStateBar`, `#importLimitBanner`, `#importUtf8Error`, `#importParseError`, `#importSaveAsTextBtn`, `#importSrc`, `#importChooseFileBtn`, `#importClearFileBtn`, `#importFormatBeforeSave`, `#importPreview`, `#importSubmitBtn`).
 - `states.html` (`empty`, `err`, `off`): `#empty-search-no-match` (không có mục bắt đầu bằng từ khoá), `#err-version-mismatch` (`412 version_mismatch` ba nút + `#err-conflict-confirm`), `#err-entry-too-large` (`413 entry_too_large` 256 KiB), `#err-json-invalid` (kèm nút `Đi tới lỗi` và `Lưu dạng văn bản`), `#err-import-utf8` (từ chối byte UTF-8 lỗi không thay bằng `U+FFFD`), `#err-json-format-refused` (từ chối định dạng vượt 256 KiB / 1.000 cấp), `#err-dup-name-picker` (mở U9 `#dupDialog`), `#err-decrypt-fail` (kèm nút Thử lại), `#err-entry-key-mismatch` (`entry_key_mismatch`), `#off-save-deferred` (giữ trong ô soạn thảo cho tới khi vault khoá).
+**Neo trạng thái (P05 search — U15, U16, U18; tên neo do Task 8 tạo, port UI chỉ bắt đầu khi neo tương ứng xong và FE reviewer duyệt):**
+
+| Trạng thái | Kích hoạt | Hiển thị | Neo mockup |
+|---|---|---|---|
+| Recent | focus, ô rỗng | "Gần đây" + "Tag hay dùng" | `index.html` kịch bản `suggest-recent` |
+| Đang chờ | lexical của lần gõ hiện tại chưa về | giữ hàng cũ `aria-busy`; lần đầu skeleton 3 hàng sau 150 ms | `states.html#suggest-pending` |
+| Gần nghĩa đang tải | `semantic=1` đang bay | dòng muted "Đang tìm gần nghĩa…" | `states.html#suggest-near-pending` |
+| Không khớp | lexical + near rỗng, hoặc Enter với `q` chuẩn hoá rỗng (không gọi `/search`) | "Không khớp “xyz”" + "Tạo mục “xyz”" | sửa `#empty-search-no-match` |
+| Server tắt | `features.semantic_available=false` | không nút ≈, không vùng near; settings switch disabled + "Máy chủ này chưa bật tìm gần nghĩa" | `states.html#semantic-server-off`, `settings.html#timkiem` |
+| User tắt | `semantic_suggest=false` | nút ≈ `aria-pressed=false`, không vùng near | `states.html#semantic-user-off` |
+| Degraded | `semantic_reason="degraded"` | dòng muted hiển thị "Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy" (ngoài listbox, không `role="status"`) + live region sr-only đọc một lần/phiên, không toast | `states.html` view `degr` + `#semantic-degraded-inline` |
+| Bật lúc provider down | `PATCH /me/settings` → `409 semantic_unavailable` (từ settings hoặc nút ≈) | settings: switch quay lại + "Không bật được tìm theo nghĩa"; omnibox: nút ≈ quay lại + cùng câu dạng dòng muted inline trong dropdown (ngoài listbox) | `settings.html#semantic-enable-409`, `states.html#semantic-enable-409-omnibox` |
+| Bị giới hạn | `429 rate_limited` | không gì giữa lúc gõ; Enter → dòng muted "Đang gửi hơi nhanh, thử lại sau N giây" | `states.html#suggest-rate-limited` |
+| Input tainted / gate khoá | dán, chạm gợi ý, autocorrect, dictation, set bằng code, **hoặc** khoá `:`/`：` ngoài add mode (`http://x`, `wifi： mật khẩu`), nhiều dòng, > 200 rune (§3.4, §3.5) | help text đổi tạm `search.help.enterToSearch` "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá" (không dòng mới, không banner); dropdown đóng, không gợi ý theo phím (§3.5 quy tắc 11) (chế độ `#`: giữ hàng tag từ cache cục bộ, chỉ xoá hàng/snapshot server và `activeKey`, §3.5 quy tắc 11) | `index.html` kịch bản `suggest-paste-guard` |
+
+- `settings.html#timkiem` (U16): bỏ card "Chỉ mục nhúng" và nút "Nhúng lại tất cả" (vận hành qua CLI `worker reembed …`, không UI); copy theo `features.semantic_external` (§7.6); không toggle opt-out indexing.
 - `mock.js`: `SAK.initOmnibox` (P04 omnibox: không gửi trước Enter, `searchHint`/`tagHint`, listbox sau Enter, quick-add preview cục bộ + dòng privacy, lưu nhiều bước `item → tags → assign → entry` có Thử lại, banner phát hiện JSON, khoá xoá nháp; giữ `opts.demo` cho `landing.html`), `SAK.parseJsonStrict` / `SAK.formatJsonStrict` / `SAK.initJsonEntryCard` (bảng/sửa JSON không mất mát: sửa splice trên chuỗi nguồn giữ nguyên khoá trùng `⁽²⁾`/số lớn/escape, gán `.value` qua DOM API giữ xuống dòng đầu chuỗi, đổi kiểu qua menu `Kiểu` gồm `object`/`array`, phân trang 50 hàng, chevron lazy, cảnh báo EOL hỗn hợp nêu kiểu đa số `LF`/`CRLF` và chuyển tab áp lại EOL, định dạng bản nháp kiểm trước 256 KiB & 1.000 cấp, khoá/mở vault tách riêng khỏi `hidden` của tab qua `[data-secret][data-locked]` + màn che không xoá listener, đồng thời xoá DOM bảng và bỏ nháp ô (chuột)/raw khi khoá), `#toastStack` / `#toastLiveRegion` (do `SAK.initChrome` / `SAK.toast` tạo: một `role="status"` chung, xếp chồng tối đa 3 + nút `+N` `[data-toast-expand]`, dừng đếm khi hover/focus, ≥ 10 s sau focus, `Ctrl+Z` / `⌘Z`), `SAK.openDupDialog` (tạo `#dupDialog`).
 
 **Phân vai khi mockup và spec lệch nhau:**
@@ -1158,7 +1298,7 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 
 **Mockup có chủ đích thể hiện các quyết định trong spec**, không phải minh hoạ suông — đây là những chỗ implementation dễ làm sai:
 
-- **Omnibox không gửi gì trước Enter (Q17, advisor-dec-098, advisor-dec-152, advisor-dec-156)**: ở P04, ô omnibox (`index.html`, `item.html`) là ô nhập một dòng tự nở `<textarea rows="1">` (giữ role `textbox` ngầm định, nối `aria-controls` tới `#omni-listbox` khi mở, `aria-activedescendant` khi chọn dòng, `aria-describedby` tới dòng gợi ý, không đặt `role="combobox"` hay `aria-expanded`; số kết quả / câu rỗng phát qua `#omni-live`), hiển thị dòng gợi ý cố định (`searchHint` khi tìm, `tagHint` khi lọc `#…`, ẩn khi rỗng hoặc khi hiện cảnh báo chặn) và chỉ mở listbox kết quả sau khi nhấn `Enter` (chặn tìm kiếm với chuỗi nhiều dòng hoặc > 200 ký tự). Ở chế độ thêm nhanh (`tên #tag: nội dung`), xem trước đích và tag dựng cục bộ kèm dòng privacy, số mục trùng tên chỉ kiểm tra sau `Enter` (§3.4, §7.2; nhóm "Gần nghĩa" theo từng phím thuộc P05, chỉ giữ trong demo marketing `landing.html` qua `opts.demo`).
+- **Omnibox không gửi gì trước Enter (Q17, advisor-dec-098, advisor-dec-152, advisor-dec-156)**: ở P04, ô omnibox (`index.html`, `item.html`) là ô nhập một dòng tự nở `<textarea rows="1">` (giữ role `textbox` ngầm định, nối `aria-controls` tới `#omni-listbox` khi mở, `aria-activedescendant` khi chọn dòng, `aria-describedby` tới dòng gợi ý, không đặt `role="combobox"` hay `aria-expanded`; số kết quả / câu rỗng phát qua `#omni-live`), hiển thị dòng gợi ý cố định (`searchHint` khi tìm, `tagHint` khi lọc `#…`, ẩn khi rỗng hoặc khi hiện cảnh báo chặn) và chỉ mở listbox kết quả sau khi nhấn `Enter` (chặn tìm kiếm với chuỗi nhiều dòng hoặc > 200 ký tự). Ở chế độ thêm nhanh (`tên #tag: nội dung`), xem trước đích và tag dựng cục bộ kèm dòng privacy, số mục trùng tên chỉ kiểm tra sau `Enter` (§3.4, §7.2; nhóm "Gần nghĩa" theo từng phím thuộc P05, chỉ giữ trong demo marketing `landing.html` qua `opts.demo`). **P05 thay riêng ranh giới "không gửi trước Enter" của chế độ tìm** bằng gợi ý theo phím chỉ cho input gõ tay (§3.4, §7.2, advisor-dec-244); add mode (`:`/`：` ở bất kỳ đâu), paste và input tainted vẫn Enter-only, và lookup trùng tên của add mode vẫn chỉ sau Enter (advisor-dec-098).
 - **Trùng tên mục là hợp lệ** — quick-add mở picker U9 (`#dupDialog`: mỗi dòng hiện tên, tối đa 3 chip tag, `created_at`, `entry_count`, nút "Xem thêm" khi còn trang, và dòng cuối "Tạo mục mới cùng tên") trả về đúng item ID (§3.4).
 - **Bảng JSON không mất mát (U13, U14)**: cột theo thứ tự khoá trong nguồn (tối đa 20 cột, phân trang 50 hàng, chevron lazy chỉ dựng DOM khi mở); hàng có khoá trùng rơi về bảng field/value kèm nhãn thứ tự `⁽²⁾` để sửa đúng từng occurrence; ô chứa `\r` hoặc lone surrogate là ô chỉ đọc trong Bảng (sửa ở tab **"JSON gốc"**); sửa ô giữ nguyên kiểu hiện tại (đổi kiểu qua menu `Kiểu`, commit không đổi = không chạm chuỗi nguồn để giữ escape); số lớn (`9007199254740993`, `-0`) hiện và lưu nguyên văn chữ số nguồn; nút **Định dạng** chỉ đổi khoảng trắng ngoài chuỗi và từ chối khi > 256 KiB hoặc > 1.000 cấp lồng; modal nhập JSON (`#importDlg`) chỉ nhận **dán hoặc chọn file `.json`** (kiểm UTF-8 nghiêm ngặt không dùng `U+FFFD`, kèm dòng `#importPasteExactHint`, chặn khi mục đạt 200 entry, và luôn nhập thành **1 entry JSON**) (§3.6, §7.4, §7.5).
 - **Khoá vault chỉ che nội dung entry; tên mục, tag và gợi ý không được mã hoá** — tên mục, tag, số entry vẫn đọc được; lưới mục gần đây trên trang chủ là danh sách gần đây duy nhất và không tải hay preview nội dung entry (§5.1, §7.3).
@@ -1182,7 +1322,11 @@ Mockup dùng dữ liệu giả và **không có mã hoá thật** — mọi th�
 
 ### 7.2 Omnibox
 
-> **P04:** dropdown theo từng phím dưới đây (nhóm Tags/Items/Gần nghĩa, `Tab`, công tắc `[≈]`, hàng "Gần đây") và dòng "3 mục tên … — chọn bên dưới trước khi Enter" là thiết kế **P05**. P04 dùng §3.4: dòng gợi ý cố định theo chế độ, listbox kết quả chỉ hiện **sau Enter**, lọc `#…` phía client trên cache tag, preview add mode chỉ từ phần parse cục bộ (số mục trùng biết sau Enter). P05 phải giữ ranh giới gửi §3.4.
+> **P04:** dropdown theo từng phím dưới đây (nhóm Tags/Items/Gần nghĩa, `Tab`, công tắc `[≈]`, hàng "Gần đây") là thiết kế **P05**. P04 dùng §3.4: dòng gợi ý cố định theo chế độ, listbox kết quả chỉ hiện **sau Enter**, lọc `#…` phía client trên cache tag, preview add mode chỉ từ phần parse cục bộ (số mục trùng biết sau Enter). P05 giữ ranh giới gửi §3.4 (gợi ý theo phím chỉ cho input gõ tay ở chế độ tìm).
+>
+> **P05 (dropdown theo từng phím):** ba nhóm theo thứ tự cố định **Tags → Items → Gần nghĩa** (quota §6.4); khi ô rỗng và đang focus, dropdown hiện "Gần đây" (item) rồi "Tag hay dùng". Dòng "3 mục tên … — chọn bên dưới trước khi Enter" **bỏ** khỏi preview add mode: số mục trùng tên chỉ biết sau Enter (advisor-dec-098), picker U9 mở sau Enter như P04.
+>
+> **Markup listbox (a11y):** một `role="listbox"` duy nhất; mỗi vùng (Tags, Items, Gần nghĩa) là `role="group"` với `aria-labelledby` trỏ heading của vùng; `role="option"` chỉ nằm trong group; CTA "Tạo mục" và "Xem thêm" nằm trong một `role="group"` **riêng, cuối cùng**, đặt tên bằng i18n `search.group.actions` (`aria-labelledby` hoặc `aria-label`), luôn render sau nhóm Gần nghĩa (hoặc sau Items khi không có near), không bao giờ nằm trong nhóm Gần nghĩa; option chỉ nằm trong group (assert trong `content-search-a11y`: axe + DOM, group actions là con cuối của listbox). Dòng trạng thái hiển thị (skeleton, "Đang tìm gần nghĩa…", degraded, 429, 409, "N kết quả") là phần tử riêng **ngoài** listbox và ngoài live region, không mang `role="status"`/`aria-live`; live region sr-only của omnibox (`#omni-live`, một live region duy nhất mỗi instance) chỉ đọc thông báo nói tương ứng. React key `kind:id`, group là container cố định, `↑↓` tính theo hàng đang active tại lúc bấm; hover không đổi hàng active; giữ role `textbox` ngầm định, `aria-controls` chỉ khi mở (advisor-dec-156/170).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -1193,22 +1337,22 @@ Mockup dùng dữ liệu giả và **không có mã hoá thật** — mọi th�
 │   └──────────────────────────────────────────────────────────────┘   │
 │   ┌──────────────────────────────────────────────────────────────┐   │
 │   │ Tags                                                         │   │
-│   │   #**wif**i-khách                         4 mục · prefix      │   │
+│   │   #**wif**i-khách                         4 mục              │   │
 │   │ Items                                                        │   │
 │   │ ▸ **wif**i    [nhà] [office]    12 entries · 12/03/2026      │   │
 │   │   **wif**i    [công-ty]          3 entries · 01/06/2026      │   │
 │   │   **wif**i-office                3 entries · 5d              │   │
+│   │   wi-fi        [nhà]             2 entries · gần đúng        │   │
 │   │ Gần nghĩa                                                    │   │
 │   │   mạng nhà     [home]        ≈ gần nghĩa                      │   │
-│   │ ─────────────────────────────────────────────────────────────│   │
+│   │ Thao tác  (search.group.actions)                             │   │
 │   │   ＋ Tạo mục "wif"                                 Ctrl+Enter │   │
-│   │   Gõ  name: nội dung  ·  #tag để lọc                         │   │
 │   └──────────────────────────────────────────────────────────────┘   │
 │   Gần đây:  [docker] [meeting-mkt]   Tags: [#ops] [#okrs]            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Hai hàng cùng chữ `wifi` **cố ý** — phân biệt bằng tag + ngày.
+Hai hàng cùng chữ `wifi` **cố ý** — phân biệt bằng tag + ngày. Hàng `prefix`/`prefix_folded` không có nhãn khớp; chỉ hàng `fuzzy` mang nhãn "gần đúng" (không `<mark>`, §6.8). Không có dòng cố định trong dropdown hay dưới ô nhập: chữ hướng dẫn chỉ nằm trong help text của ô (§3.4, bảng state → key), nên sơ đồ không vẽ dòng "Gõ name: …" hay "Enter = …".
 
 Toggle `[≈ on]/[≈ off]` = `semantic_suggest`; **ẩn** khi `semantic_available = false`.
 
@@ -1218,7 +1362,6 @@ Toggle `[≈ on]/[≈ off]` = `semantic_suggest`; **ẩn** khi `semantic_availab
    │ 🔍  #nh▏                                                      │
    │   #**nh**à                                8 mục               │
    │   #**nh**à-bố-mẹ                          2 mục               │
-   │   Enter = lọc mục có tag này                                  │
 ```
 
 Add mode khi có `:`:
@@ -1226,11 +1369,22 @@ Add mode khi có `:`:
 ```
    │ ＋  wifi #nhà: Abc123@home▏                                    │
    │  Sẽ lưu vào   [wifi ✓ một mục]  tags [nhà]                     │
-   │  hoặc: 3 mục tên "wifi" — chọn bên dưới trước khi Enter        │
    │  Nội dung     "Abc123@home"                     🔒 E2E · text  │
 ```
 
-Khi nhiều khớp tên: Enter không lưu ngay — list chọn + "Tạo mục mới".
+Khi nhiều khớp tên (biết **sau** Enter, không hiện trước Enter): Enter không lưu ngay — list chọn + "Tạo mục mới".
+
+Recent (ô rỗng, đang focus):
+
+```
+   │ 🔍  ▏                                                         │
+   │ Gần đây                                                       │
+   │   docker      [ops]                 12 entries · 2d           │
+   │ Tag hay dùng                                                  │
+   │   #ops                              14 mục                    │
+```
+
+`Tab` chỉ chặn khi có hàng active: trên item → ô thành `${name}: ` (add mode, không request, ghim item ID — §7.8); trên tag → thay token `#…` bằng `#${display} `.
 
 ### 7.3 Item detail
 
@@ -1257,7 +1411,7 @@ Khi nhiều khớp tên: Enter không lưu ngay — list chọn + "Tạo mục m
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- Chip tag: click → filter toàn app theo tag; `×` gỡ; `+` ô gắn tag (P04: prefix `GET /tags?q=`; fuzzy/semantic `scope=tag` thuộc P05). Cạnh name/hint và trong ô gắn tag có một dòng cố định: tên mục, tag và hint **không** được mã hoá; chỉ nội dung entry được mã hoá đầu-cuối.
+- Chip tag: click → filter toàn app theo tag; `×` gỡ; `+` ô gắn tag (P04: prefix `GET /tags?q=`; fuzzy `scope=tag` thuộc P05; mọi request `scope=tag` của client là lexical `semantic=0`, không có near tag, §3.5 quy tắc 7). Cạnh name/hint và trong ô gắn tag có một dòng cố định: tên mục, tag và hint **không** được mã hoá; chỉ nội dung entry được mã hoá đầu-cuối.
 - Kéo ☰ hoặc nút lên/xuống (bàn phím) đổi `position` (§3.8).
 - Entry **không có tiêu đề**: card nhận diện bằng badge `type` và dòng đầu của body sau khi giải mã (mockup bỏ tiêu đề entry). Trong khung trên, dòng `guests` của card JSON không phải tiêu đề và dòng `hôm nay 09:12` không có ở P04: card không hiện ngày sửa (reorder cũng đổi `updated_at`).
 - Text card: chữ thuần, giữ xuống dòng; **không** autolink hay markdown-lite trong P04 (autolink đưa body vào thuộc tính `href`).
@@ -1357,7 +1511,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 |---------------|-----|
 | Tài khoản | Email, locale en/vi, theme, link Google/GitHub (yêu cầu email hiện tại đã xác minh — `403 email_not_verified` nếu chưa xác minh, [ADR 0006](adr/0006-account-password-reset.md) D3), đổi password đăng nhập. OAuth-only đặt password lần đầu qua enrollment (email đã verified) hoặc Google re-auth nếu freshness bật — không gọi đó là phục hồi dữ liệu. Notification in-app + audit trên U7. |
 | Bảo mật | Đổi passphrase (VK + re-auth tài khoản; không cần passphrase cũ; RK/passkey vẫn mở) · **Recovery keys: còn N/10** (không hiện bí mật) · Regenerate slot thiếu · Xoay cả 10 · **Passkeys** (thêm / đổi tên / thu hồi) · Auto-lock 5/**15**/60/Never · Thiết bị này đã nhớ? · Quên thiết bị · Phiên · Audit · Reset vault |
-| Tìm kiếm | Gợi ý gần nghĩa on/off. Ẩn nếu server tắt |
+| Tìm kiếm | Gợi ý gần nghĩa on/off (`role="switch"` gắn `semantic_suggest`; `semantic_available=false` → disabled + "Máy chủ này chưa bật tìm gần nghĩa"; đổi → `PATCH /me/settings`, chờ `200` rồi cập nhật cache `Me`, `409` → switch quay lại + "Không bật được tìm theo nghĩa"). Copy theo `features.semantic_external` (vắng ⇒ coi là `true`, fail-safe, §6.10): **false** (`tei`) "Tên mục, gợi ý và tag được nhúng trên máy chủ engram. Tắt chỉ ẩn kết quả gần nghĩa; chỉ mục vẫn được cập nhật nên bật lại dùng được ngay."; **true** (`openai_compat`) "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại."; cả hai: "Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn." Không có card "Chỉ mục nhúng" hay nút "Nhúng lại tất cả" (vận hành qua CLI), không toggle opt-out indexing; card riêng tư thêm "chữ gõ trong ô tìm được gửi tới máy chủ". Nút `≈` trên omnibox dùng chung trạng thái này |
 | Dữ liệu | Export encrypted · Export decrypted (cảnh báo + re-auth) · Xoá tài khoản |
 
 ### 7.7 Empty / error states
@@ -1387,13 +1541,16 @@ Ghi chú P04 (UI content):
 
 - Một danh sách "gần đây" duy nhất: lưới mục gần đây ở trang chủ (`GET /items?sort=recent`); bỏ list "Gần đây" và công tắc "Gần nghĩa" demo trong rail (semantic là P05).
 - Lưới gần đây **không** preview body (không tải, không giải mã entry); card chỉ có name, tag, số entry.
+- **Cache tìm kiếm (P05, giữ hành vi P04 — L4):** khoá cache client `['search', userId, …]` (không persist; thiếu `userId` → không gửi). Callback reset duy nhất của omnibox (`registerSecretFormReset`: **lock**, **logout**, **đổi user**) và `subscribeUserChanged` đều xoá prefix `['search']`, huỷ mọi request suggest/search đang bay và đặt lại gate gõ (§3.4); response muộn bị bỏ. Lock **vẫn xoá** cache `['search']` (tên/tag tải lại ở phím kế); chống lộ chéo user dựa vào `userId` trong key, không dựa vào việc xoá.
+- Trạng thái semantic/429/degraded của dropdown (§7.0 bảng neo P05) không toast đỏ; dòng muted hiển thị nằm ngoài listbox (§7.2).
 - Plaintext body chỉ sống ở Worker lúc seal/open, cache body `vaultBodyQueryKey`, state của card/editor đang mở, DOM text node đang hiển thị và ô đang sửa có `data-vault-secret`; không ở thuộc tính DOM, URL, storage, cache khác hay `MutationCache` ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)).
 
 ### 7.8 Theme, responsive, a11y, shortcuts
 
 - Dark/light: `prefers-color-scheme` + override per-user; token shadcn.
 - ≥ 1024 px: cột trái recent items/tags, phải nội dung. < 768 px: một cột, omnibox sticky, dropdown full-width.
-- a11y: omnibox là `<textarea>` một dòng tự nở (advisor-dec-152) giữ role `textbox` ngầm định với `aria-controls` → `listbox` khi mở, `aria-activedescendant` cho option đang sáng, `aria-describedby` → `searchHint`, số kết quả trong một live region duy nhất, không đặt `role="combobox"` hay `aria-expanded` (advisor-dec-156, advisor-dec-157); contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`. Accent thương hiệu đã đo đạt ngưỡng ở cả hai theme (§7.0) — đổi accent phải đo lại, không ước lượng.
+- a11y: omnibox là `<textarea>` một dòng tự nở (advisor-dec-152) giữ role `textbox` ngầm định với `aria-controls` → `listbox` khi mở, `aria-activedescendant` cho option đang sáng, `aria-describedby` → phần tử help text của omnibox (`#omni-hint`; nội dung theo bảng state → key ở §3.4: `search.help.*`, `content.omnibox.tagHint` hoặc `content.privacy.*`, thay `content.omnibox.searchHint` của P04), số kết quả trong một live region duy nhất, không đặt `role="combobox"` hay `aria-expanded` (advisor-dec-156, advisor-dec-157); contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`. Accent thương hiệu đã đo đạt ngưỡng ở cả hai theme (§7.0) — đổi accent phải đo lại, không ước lượng.
+- **Tab / Enter trong omnibox (P05):** `↑↓` di chuyển; `Enter` trên item → `/app/items/{id}`, trên tag → `/app?tag={id}`; không hàng active → `GET /search` trang 1 vào listbox ("N kết quả" + "Xem thêm", thay `GET /items?q=` của P04); `q` chuẩn hoá ra rỗng (`!!!`) → "Không khớp" cục bộ, **không** gọi `/search`. Ở `#` hàng tag đầu tự active nên Enter mở tag đó. `Tab` chỉ chặn khi có hàng active: item → ô = `${name}: ` (add mode, không request; preview "Sẽ lưu vào [name ✓]" và kế hoạch lưu **ghim item ID** — sửa phần name thì bỏ ghim); tag → thay token `#…` bằng `#${display} `. Tên chứa `:` hoặc bắt đầu `#`, hay `display` có khoảng trắng/`#`/`:` → Tab không điền, hint "Không điền được bằng Tab"; không hàng active → Tab mặc định. Tab-điền không có tương đương chạm trên mobile (chấp nhận; mobile gõ `tên:`). `Ctrl+Enter`, `Esc`, `Shift+Enter`, IME guard giữ P04. `< 768 px`: dropdown full-width, `limit=5`, hàng ≥ 44 px (pointer coarse), chip ≤ 2; `prefers-reduced-motion` tắt hiệu ứng append.
 - Shortcuts: `/` hoặc `Ctrl/⌘+K` · `Esc` · `↑↓ Enter Tab` · `Ctrl+Enter` tạo item · `Ctrl+S` lưu · `L` lock · `?` · `Ctrl+Z` (`⌘Z` trên Apple) = Undo toast mới nhất khi focus không nằm trong ô nhập, hoặc nằm trong ô omnibox vừa được chính lần lưu đó xoá trống mà chưa gõ thêm; trong ô nhập có nội dung phím giữ undo gốc của trình duyệt; có `Shift` (redo) → không Undo. Không thêm phím `N`.
 - i18n: `next-intl`; marketing `/(marketing)/[locale]/…`, `en` mặc định (`/` = en, `/vi/...`); app `/app/*` không gắn locale trên URL — `user.locale` ← cookie `sabk_locale` đã validate ← `Accept-Language` ← `en`. Cookie `sabk_locale` / `sabk_theme` path `/`, HttpOnly=false, không secret; chỉ cache render, không là nguồn quyền. Messages `en.json` / `vi.json`; CI fail thiếu key.
 
@@ -1407,6 +1564,7 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS btree_gin; -- P05 (0008_search_lexical): trigram theo user
 
 CREATE FUNCTION immutable_unaccent(text) RETURNS text
   LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
@@ -1616,7 +1774,12 @@ CREATE TABLE item (
 );
 CREATE INDEX item_user_name_prefix ON item (user_id, name_normalized text_pattern_ops)
   WHERE deleted_at IS NULL;
-CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops);
+CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops); -- toàn cục; giữ tới khi benchmark P05 (Task 23) cho phép bỏ
+-- P05 (0008_search_lexical, không cột generated mới):
+CREATE INDEX item_user_unaccent_prefix ON item (user_id, name_unaccent text_pattern_ops)
+  WHERE deleted_at IS NULL;
+CREATE INDEX item_user_name_trgm ON item USING gin (user_id, name_unaccent gin_trgm_ops)
+  WHERE deleted_at IS NULL;
 CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX item_user_created ON item (user_id, created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX item_user_name_exact ON item (user_id, name_normalized, created_at, id)
@@ -1639,7 +1802,12 @@ CREATE TABLE tag (
 CREATE UNIQUE INDEX tag_user_norm_uq ON tag (user_id, normalized) WHERE deleted_at IS NULL;
 CREATE INDEX tag_user_norm_prefix ON tag (user_id, normalized text_pattern_ops)
   WHERE deleted_at IS NULL;
-CREATE INDEX tag_norm_trgm ON tag USING gin (tag_unaccent gin_trgm_ops);
+CREATE INDEX tag_norm_trgm ON tag USING gin (tag_unaccent gin_trgm_ops); -- toàn cục; giữ tới khi benchmark P05 (Task 23) cho phép bỏ
+-- P05 (0008_search_lexical):
+CREATE INDEX tag_user_unaccent_prefix ON tag (user_id, tag_unaccent text_pattern_ops)
+  WHERE deleted_at IS NULL;
+CREATE INDEX tag_user_tag_trgm ON tag USING gin (user_id, tag_unaccent gin_trgm_ops)
+  WHERE deleted_at IS NULL;
 CREATE INDEX tag_user_recent ON tag (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX tag_purge_idx ON tag (deleted_at) WHERE deleted_at IS NOT NULL; -- P04
 
@@ -1675,63 +1843,80 @@ CREATE INDEX entry_user_updated_idx ON entry (user_id, updated_at DESC) WHERE de
 CREATE INDEX entry_user_changes_idx ON entry (user_id, updated_at, id); -- P04: feed, gồm tombstone
 CREATE INDEX entry_purge_idx ON entry (deleted_at) WHERE deleted_at IS NOT NULL;
 
-CREATE TABLE item_embedding (
-  user_id       uuid NOT NULL,
-  item_id       uuid NOT NULL,
-  embedding     vector(1024) NOT NULL,
-  model         text NOT NULL,
-  model_version text NOT NULL,
-  input_hash    bytea NOT NULL,
-  embedded_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, item_id),
-  FOREIGN KEY (user_id, item_id) REFERENCES item(user_id, id) ON DELETE CASCADE
-) PARTITION BY HASH (user_id);
-DO $$
-BEGIN
-  FOR p IN 0..15 LOOP
-    EXECUTE format('CREATE TABLE item_embedding_p%s PARTITION OF item_embedding FOR VALUES WITH (MODULUS 16, REMAINDER %s)', p, p);
-  END LOOP;
-END $$;
-CREATE INDEX item_emb_hnsw ON item_embedding
-  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-CREATE INDEX item_emb_model_idx ON item_embedding (model);
-
-CREATE TABLE tag_embedding (
-  user_id       uuid NOT NULL,
-  tag_id        uuid NOT NULL,
-  embedding     vector(1024) NOT NULL,
-  model         text NOT NULL,
-  model_version text NOT NULL,
-  input_hash    bytea NOT NULL,
-  embedded_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, tag_id),
-  FOREIGN KEY (user_id, tag_id) REFERENCES tag(user_id, id) ON DELETE CASCADE
-) PARTITION BY HASH (user_id);
-DO $$
-BEGIN
-  FOR p IN 0..15 LOOP
-    EXECUTE format('CREATE TABLE tag_embedding_p%s PARTITION OF tag_embedding FOR VALUES WITH (MODULUS 16, REMAINDER %s)', p, p);
-  END LOOP;
-END $$;
-CREATE INDEX tag_emb_hnsw ON tag_embedding
-  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
-CREATE INDEX tag_emb_model_idx ON tag_embedding (model);
-
--- Sketch nếu không dùng bảng River; production ưu tiên river_job
-CREATE TABLE embedding_job (
-  id          bigserial PRIMARY KEY,
-  user_id     uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
-  target_kind text NOT NULL CHECK (target_kind IN ('item','tag')),
-  target_id   uuid NOT NULL,
-  generation_id text NOT NULL,
-  input_hash  bytea NOT NULL,
-  attempts    int NOT NULL DEFAULT 0,
-  run_after   timestamptz NOT NULL DEFAULT now(),
-  last_error  text,
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (target_kind, target_id, generation_id)
+-- P05 (0009_embedding): mỗi generation (model/revision/prefix/dims/preprocessing) một cặp bảng riêng,
+-- kể cả g1 (OQ-18). Bảng `item_embedding`/`tag_embedding` của bản thiết kế trước được đổi tên thành
+-- `item_embedding_g<N>`/`tag_embedding_g<N>`. Giao thức: ADR 0007.
+CREATE TABLE embedding_generation (
+  id                   int PRIMARY KEY CHECK (id BETWEEN 1 AND 9999),
+  provider             text NOT NULL CHECK (provider IN ('tei','openai_compat')),
+  model                text NOT NULL,
+  model_version        text NOT NULL,
+  preprocessing        text NOT NULL,                  -- 'v1'
+  query_prefix         text NOT NULL,                  -- template query
+  doc_prefix           text NOT NULL,
+  dims                 int  NOT NULL CHECK (dims BETWEEN 1 AND 2000),
+  partitions           int  NOT NULL DEFAULT 16,
+  hnsw_m               int  NOT NULL DEFAULT 16,
+  hnsw_ef_construction int  NOT NULL DEFAULT 128,
+  semantic_min_cos     real NOT NULL CHECK (semantic_min_cos > 0 AND semantic_min_cos < 1), -- từ calibration.go
+  calibration_ref      text NOT NULL,                  -- đường dẫn report calibration
+  canary               jsonb,
+  item_table           text NOT NULL UNIQUE CHECK (item_table = 'item_embedding_g' || id),
+  tag_table            text NOT NULL UNIQUE CHECK (tag_table  = 'tag_embedding_g'  || id),
+  state                text NOT NULL CHECK (state IN ('pending','active','retired','dropped')),
+  bootstrap            boolean NOT NULL DEFAULT false, -- chỉ g1 do generation.Bootstrap tạo
+  rollback_until       timestamptz,
+  index_ready          boolean NOT NULL DEFAULT false,
+  verified_at          timestamptz,
+  verify_report        jsonb,                          -- chỉ số đếm/recall, không tên/q
+  created_at           timestamptz NOT NULL DEFAULT now(),
+  activated_at         timestamptz,
+  retired_at           timestamptz,
+  dropped_at           timestamptz
 );
-CREATE INDEX embedding_job_due_idx ON embedding_job (run_after);
+CREATE UNIQUE INDEX embedding_generation_one_pending ON embedding_generation ((true)) WHERE state = 'pending';
+
+CREATE TABLE embedding_active (
+  singleton      boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  generation_id  int NOT NULL REFERENCES embedding_generation(id),
+  flipped_at     timestamptz NOT NULL DEFAULT now(),
+  flipped_reason text
+);
+
+-- Mỗi generation <N>: hai bảng cùng hình, tạo bằng hàm embedding_generation_create_tables (bên dưới).
+CREATE TABLE item_embedding_g1 (
+  user_id       uuid NOT NULL,
+  target_id     uuid NOT NULL,
+  embedding     vector(1024) NOT NULL,                 -- <dims> của generation
+  model         text NOT NULL,
+  model_version text NOT NULL,
+  input_hash    bytea NOT NULL,                        -- SHA-256 32 B (§6.6)
+  embedded_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, target_id),
+  FOREIGN KEY (user_id, target_id) REFERENCES item(user_id, id) ON DELETE CASCADE
+) PARTITION BY HASH (user_id);                         -- 16 partition item_embedding_g1_p0..p15
+CREATE TABLE tag_embedding_g1 (
+  user_id       uuid NOT NULL,
+  target_id     uuid NOT NULL,
+  embedding     vector(1024) NOT NULL,
+  model         text NOT NULL,
+  model_version text NOT NULL,
+  input_hash    bytea NOT NULL,
+  embedded_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, target_id),
+  FOREIGN KEY (user_id, target_id) REFERENCES tag(user_id, id) ON DELETE CASCADE
+) PARTITION BY HASH (user_id);                         -- 16 partition tag_embedding_g1_p0..p15
+-- Không `item_emb_model_idx`: mỗi bảng chỉ một model. Migration không tạo HNSW; HNSW tạo theo partition
+-- bằng `worker reembed generation index` (CREATE INDEX CONCURRENTLY từng partition, rồi ON ONLY parent +
+-- ATTACH PARTITION) hoặc ngay lúc bootstrap g1 khi bảng còn rỗng, ví dụ:
+--   CREATE INDEX item_embedding_g1_hnsw ON item_embedding_g1
+--     USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128);
+
+-- Hàm DDL (OQ-22): tên bảng chỉ suy từ id (format('%I')); Go chỉ chấp nhận ^(item|tag)_embedding_g[1-9][0-9]{0,3}$
+--   embedding_generation_create_tables(p_id, p_dims, p_partitions, p_with_hnsw, p_m, p_efc)
+--     (kiểm khoảng; p_with_hnsw chỉ cho bảng rỗng)
+--   embedding_generation_drop_tables(p_id)      -- chỉ state = 'retired', không active
+-- Job embed dùng bảng River `river_job` (args chỉ ID + hash, §6.6); không có bảng embedding_job riêng.
 
 CREATE TABLE audit_log (
   id         bigserial PRIMARY KEY,
@@ -1786,8 +1971,9 @@ Ghi chú:
 - `entry.user_id` phải khớp `item.user_id`: kiểm trong handler (query luôn kèm `user_id`) **và** bằng FK composite `(user_id, item_id) → item(user_id, id)` (dựa trên `UNIQUE (user_id, id)`), thay FK đơn `item_id`. `item_tag` không có `user_id`; handler join qua `item.user_id` và `tag.user_id`, assign kiểm cả hai cùng user dưới khoá.
 - Provenance xoá: `entry.deleted_via` (`entry` = xoá riêng, `item` = xoá theo item) và `delete_batch` (bằng `item.delete_batch` của lần xoá item); CHECK `(deleted_at IS NULL) = (deleted_via IS NULL)`. Restore item chỉ khôi phục entry `deleted_via='item' AND delete_batch = item.delete_batch` ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)).
 - Entry ID do client sinh trước encrypt, UUID canonical trong AAD; API không bỏ qua hay thay ID. Duplicate ID (của user này hoặc user khác, sống hay đã xoá) khác request trả `409 entry_id_conflict` (không lộ chủ sở hữu); retry idempotent trả response gốc. Envelope validate strict trước khi lưu `jsonb`, JCS theo §5.5.
-- Hai bảng embedding là **một generation/model/revision duy nhất**; 16 hash partitions là cấu hình khởi đầu, điều chỉnh bằng migration/benchmark. PK `(user_id, target_id)` phục vụ tenant lookup/exact scan; composite FK chặn gắn vector sai tenant. Shadow tables giữ cùng cấu trúc với index riêng; không dùng PK `(target_id, model)` để chứa nhiều không gian vector trong một HNSW.
-- River job args/unique key chứa `generation_id` và tenant; hai job cho generation active/pending không được deduplicate thành một. Cấu hình generation, active pointer và tập generation nhận mutation được quản lý nhất quán theo §6.6; worker không suy generation từ env đã đổi giữa lúc claim và commit.
+- Mỗi cặp `item_embedding_g<N>`/`tag_embedding_g<N>` là **một generation/model/revision duy nhất** (đổi partitions/m/ef_construction/dims/model/revision/instruction/preprocessing = generation mới, không `ALTER`); 16 hash partitions là cấu hình khởi đầu, điều chỉnh bằng benchmark. PK `(user_id, target_id)` phục vụ tenant lookup/exact scan; composite FK chặn gắn vector sai tenant. Bảng generation mới/shadow giữ cùng cấu trúc với index riêng; không dùng PK `(target_id, model)` để chứa nhiều không gian vector trong một HNSW, và không `PARTITION BY LIST (generation)` (dims khác nhau; lý do ở [ADR 0007](adr/0007-embedding-generation-cutover.md)). Tập generation nhận mutation `R = {active} ∪ {pending} ∪ {retired có rollback_until > now()}`; xoá vector (soft-delete, user-off) dùng mọi generation còn bảng (`state ≠ dropped`).
+- River job args/unique key chứa `generation_id` và tenant; hai job cho generation active/pending không được deduplicate thành một. Args chỉ gồm ID và hash: `embed_item`/`embed_tag` = `{generation_id, user_id, target_id, input_hash(hex)}`, `reembed_user` = `{user_id}`, `reembed_all` = `{generation_id?}`, `embedding_canary` và `embedding_bootstrap_flip` = `{}` (không input, không `q`, không body). Cấu hình generation, active pointer và tập generation nhận mutation được quản lý nhất quán theo §6.6 và [ADR 0007](adr/0007-embedding-generation-cutover.md); worker không suy generation từ env đã đổi giữa lúc claim và commit.
+- Migration `0008_search_lexical` (P05): `CREATE EXTENSION btree_gin`; index theo user `item_user_unaccent_prefix`, `tag_user_unaccent_prefix`, `item_user_name_trgm`, `tag_user_tag_trgm` (partial `deleted_at IS NULL`); giữ `item_name_trgm`/`tag_norm_trgm` toàn cục tới benchmark Task 23 (tuỳ chọn migration `0010` bỏ chúng). `CREATE INDEX` thường khi bảng nhỏ; > 1 triệu hàng lúc deploy → runbook đổi `CONCURRENTLY` ngoài migration. `0009_embedding` tạo bảng generation, hàm DDL và bảng `_g<N>`; thứ tự merge `0008` trước `0009`.
 +- **Quy ước tăng `vault.version`, `vault_key_id` và tham số `vault.kdf` khi rewrap/recover:** `vault.version` là revision concurrency của live vault: các thao tác **rewrap** (`PUT /vault/kek`), **recover** (`POST /vault/recover/complete`), **regenerate RK** (`POST /vault/recovery-keys/regenerate`) và **rotate RK** (`POST /vault/recovery-keys/rotate`) làm tăng `vault.version`; ngược lại, các thao tác **passkey register** (`POST /vault/passkeys`), **passkey rename** (`PATCH /vault/passkeys/{id}`) và **passkey revoke** (`DELETE /vault/passkeys/{id}`) **không** làm tăng `vault.version` (vì không ảnh hưởng các bản wrap khác). `PUT /vault/kek` không làm thay đổi passkeys, recovery keys (RK) hay `vault_key_id`. Không dùng `vault.version` một mình làm điều kiện xoá `DevKey`: rewrap/recover/regenerate/rotate không đổi `VK`, chỉ đối chiếu `(user_id, vault_key_id)` mới quyết định wrap thiết bị trong IndexedDB `sabk.device` còn phù hợp ([ADR 0003](adr/0003-webauthn-prf-va-devkey.md)). Về `vault.kdf` (làm rõ `advisor-dec-004` đã được chủ repo xác nhận cùng lô ký duyệt 2026-10-29 (decisions batch-1, plan mục 5), không phải điểm lệch thứ 5): tạo vault mới (`POST /vault`) luôn dùng mức cơ sở `{ops: 3, mem: 67108864 (64 MiB), parallelism: 1}`; khi rewrap/recover, client P03 tái sử dụng nguyên vẹn `(ops, mem, parallelism)` hợp lệ hiện tại của `vault.kdf` với `salt` 16 B mới (không bao giờ hạ, P03 không nâng và không có UI nâng), còn server từ chối mọi rewrap/recover có `ops` hoặc `mem` thấp hơn `vault.kdf` hiện tại và chấp nhận bằng hoặc cao hơn trong ngưỡng `3…10` / `64…256 MiB` (thoả mãn đồng thời hai câu trong plan mục 2.1: *"không hạ ops/mem so với kdf hiện tại"* và *"P03 luôn tạo và rewrap ở mức tối thiểu"*).
 - MVP API chỉ chấp `type` ∈ {`text`,`json`}; `link`/`file`/`image` giữ CHECK cho migration sau.
 - Không RLS ở MVP; P07 cân nhắc `SET LOCAL app.user_id`.
@@ -1814,7 +2000,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 +- **Re-auth tài khoản và ngữ nghĩa grant:** `POST /auth/reauth` bằng password đăng nhập hoặc OAuth flow kiểm tra lại danh tính; server phát grant HMAC stateless (`auth.Grants`), TTL 5 phút, gắn `user_id + session_id + action`, gửi trong `X-Reauth-Token`. Không dùng encryption passphrase hoặc chỉ trạng thái "vault unlocked" làm re-auth. Grant **không** có trạng thái đã dùng trên server: trong cửa sổ TTL 5 phút, một grant cho phép nhiều mutation cùng `action` (các mutation có `If-Match` không lặp lại ngầm được vì `version` đổi sau lần đầu; riêng đăng ký và thu hồi passkey không có `If-Match` nên một grant có thể thực hiện nhiều thao tác passkey cùng action trong TTL — điểm lệch gate 1, **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**, xem [ADR 0002](adr/0002-vault-crypto-layout.md), [ADR 0003](adr/0003-webauthn-prf-va-devkey.md), [docs/threat-model.md](threat-model.md)). Trong mọi luồng giữ secret (đổi passphrase, recovery, regenerate, rotate, reset, đăng ký/thu hồi passkey), client lấy grant **khi bắt đầu luồng** (trước khi thu thập secret mới vào Worker hoặc gọi `navigator.credentials`; nếu OAuth re-auth chuyển trang toàn bộ làm huỷ Worker cũ thì khi quay lại kèm grant, luồng nào cần `VK` bắt buộc khởi tạo lại Worker mới và mở khoá lại vault trước khi thu thập secret mới hay gọi WebAuthn — tuyệt đối không lưu `VK` qua điều hướng). Trước khi gửi request cuối **lần đầu tiên**, client kiểm tra grant còn hạn ít nhất 60 giây (nếu dưới 60 giây trước lần gửi đầu: user có password re-auth tại chỗ, user OAuth-only báo hết thời gian và bắt đầu lại; nếu request đã được gửi đi nhưng mất phản hồi mạng thì client ưu tiên replay lại đúng request với cùng `Idempotency-Key` và cùng byte body trước mà không áp quy tắc bắt đầu lại của kiểm tra 60 giây). Server kiểm tra grant + session chưa revoke + CSRF cho rewrap (`vault.rewrap`), recover (`vault.recover`), regenerate RK (`vault.recovery_keys_regenerate`), rotate RK (`vault.recovery_keys_rotate`), register passkey (`vault.passkey_register`), revoke passkey (`vault.passkey_revoke`), export decrypted, reset (`vault.reset`) và xoá tài khoản. Audit mutation; rewrap/recover/rotate/reset/passkey register tạo thông báo trong app và email nếu có địa chỉ verified (passkey revoke tạo audit + thông báo trong app), không đưa bí mật vào thông báo. `AUTH_REQUIRE_EMAIL_VERIFICATION=false` không bị biến thành điều kiện phải verify để recovery; không có email verified thì vẫn có in-app notice/audit.
 - OAuth-only đặt password lần đầu: `POST /auth/password/enroll/send` + `POST /me/password` với `enrollment_token`, **hoặc** grant `account.password_change`. Hai proof loại trừ. Password đã có luôn cần grant. Enrollment không phải reset và không mở vault.
 - Đặt lại mật khẩu tài khoản khi quên ([ADR 0006](adr/0006-account-password-reset.md), `advisor-dec-140`, `advisor-dec-146`): `POST /auth/password/forgot` (`{email, captcha_token?, locale?}` → `202` qua một ranh giới bất đồng bộ duy nhất chống dò tài khoản, hoặc `503 mail_delivery_unavailable` đồng nhất trước khi tra DB khi `mail_delivery_available == false`) và `POST /auth/password/reset` (`{token, new_password}` với DTO nhận biết sự hiện diện của trường và `token` 43 ký tự base64url → `204`, xoá cookie bằng `ClearAuthCookies`, không tự đăng nhập, thu hồi mọi session/refresh token ngay dưới khoá user, ghi `auth.password.reset` + gửi notice mail chuyên biệt `password_reset_notice` theo `user.locale`; nếu gặp SQLSTATE `40P01`/`55P03` thì rollback và retry 1 lần, nếu vẫn lỗi trả `503 dependency_unavailable` kèm `Retry-After: 1`). Token 32 B CSPRNG trong fragment `#token=` (chỉ tồn tại trong RAM của worker lúc gửi và trong component state của trình duyệt), DB chỉ lưu `SHA-256(token)` + `SHA-256(password_hash)` + bản chụp bắt buộc `was_email_unverified` (TTL 30 phút, dùng một lần, tuần tự hoá phát hành/tiêu thụ/password `Login`/`oauth.Service.Complete`/đổi mật khẩu/đổi email/gỡ identity dưới khoá gốc `app_user FOR UPDATE`). Liên kết OAuth mới bị từ chối với `403 email_not_verified` khi email tài khoản chưa xác minh; đặt lại mật khẩu của tài khoản có `was_email_unverified || email_verified_at IS NULL` đồng thời xác minh email, huỷ mọi giao dịch OAuth `login` `ready` của các danh tính bị gỡ cùng các giao dịch `link`/`reauth`, và gỡ mọi OAuth identity trong cùng transaction (D3, E1 A). Tài khoản OAuth-only không sinh token reset (chỉ gửi mail nhắc dùng US1b). Không đụng trạng thái vault, passkeys hay `DevKey` (`user-dec-016`).
-- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key và `mail_delivery_available` (boolean). `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available`, `vault.status`: `absent` \| `present`).
+- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key và `mail_delivery_available` (boolean). `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available` (**tĩnh**, tính trong RAM, không gọi mạng), `features.semantic_external` (= provider của generation active là `openai_compat`; **tuỳ chọn** trong schema ở W0, vắng ⇒ client coi là `true`, §6.10; Task 13 luôn phát), `vault.status`: `absent` \| `present`).
 - **Concurrency (`If-Match`) và `GET /vault` không ETag:** `GET /vault` trả `vault_key_id` và `version` trong body kèm `Cache-Control: no-store, no-transform`, **không** có header `ETag` (vì danh sách `passkeys` trong body thay đổi mà không tăng `vault.version`). Mọi mutation trên vault (trừ `POST /vault`, `POST /vault/unlock/*` và các route passkey) bắt buộc gửi **`If-Match: "<vault_key_id>:<version>"`** (strong tag đặt trong ngoặc kép, thay cho `If-Match: version`). Parser chung (`httpx/ifmatch.go`) chỉ nhận đúng một strong tag `"…"` (thiếu header, `*`, weak tag `W/"…"` hoặc danh sách → `428 precondition_required`; P04 dùng lại phần chung `RequireIfMatch`/`ParseStrongETag` với parser version riêng, xem bullet kế). Handler vault tách chuỗi ở dấu `:` **cuối cùng**: phần trước khớp `^vk:[A-Za-z0-9_-]{22}$`, phần sau là số thập phân không có số `0` đứng đầu (sai dạng → `428 precondition_required`). Server khoá hàng `vault` (`SELECT … FOR UPDATE`) rồi mới so: chưa có hàng vault → `404 vault_absent` (ưu tiên hơn `412`); lệch `vault_key_id` hoặc `version` → `412 version_mismatch` kèm `current_version` trong problem extension.
 - **Concurrency content (P04, [ADR 0005](adr/0005-content-lossless-va-concurrency.md)):** `PUT /entries/{id}` và `PATCH /items/{id}` bắt buộc **`If-Match: "<version>"`** (strong tag, số thập phân không có số `0` đứng đầu) với `version` trả trong mọi response entry/item — thay cho `If-Match: updated_at` (timestamp không phải validator đáng tin: độ chính xác serialize, hai thay đổi cùng micro-giây, reorder đổi `updated_at`). Parser riêng `httpx.ParseVersionIfMatch`, không dùng pattern vault; thiếu, `*`, weak, danh sách hoặc sai dạng → `428 precondition_required`. Handler khoá hàng (`SELECT … FOR UPDATE`) rồi mới so: không tồn tại/không thuộc user/đã xoá → `404 not_found` (ưu tiên hơn `412`); lệch → `412 version_mismatch` kèm `current_version`; thành công → `version + 1`. Không có last-write-wins cho body.
 - **Idempotency và thứ tự middleware 8 bước:** Header `Idempotency-Key` (chuỗi 16–128 ký tự `[A-Za-z0-9_-]`, giữ 24 giờ) bắt buộc cho `POST /vault`, **`PUT /vault/kek`**, **`DELETE /vault`**, `POST /vault/passkeys`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate` và **mọi** mutation content của P04: `POST /items`, `PATCH /items/{id}`, `DELETE /items/{id}`, `POST /items/{id}/restore`, `POST /items/{id}/tags`, `DELETE /items/{id}/tags/{tag_id}`, `PATCH /items/{id}/entries/reorder`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`, `PUT /entries/{id}`, `DELETE /entries/{id}`, `POST /entries/{id}/restore`, `POST /tags`, `PATCH /tags/{id}`, `DELETE /tags/{id}`, `POST /tags/{id}/restore` (retry `PUT` mất response không tự gây `412`; delete/restore/reorder/assign retry trả đúng response gốc; client chỉ có một helper).
@@ -1839,7 +2025,8 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
     - `vault_sensitive` (`PUT /vault/kek`, `DELETE /vault`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`, `POST /vault/passkeys`, `PATCH /vault/passkeys/{id}`, `DELETE /vault/passkeys/{id}`): **10 yêu cầu / phút / user**.
     - Mở khoá bằng passphrase diễn ra hoàn toàn offline trong Web Worker sau khi tải `GET /vault` nên **không có rate limit server thực sự** (`GET /vault` chỉ chịu read limit chung, không áp mức 5/15 phút để tránh khoá người dùng khi reload trang; phạm vi P03-B8 chỉ gồm recovery và passkey options kèm yêu cầu threat model nêu rõ rủi ro dò offline kể cả lộ độ dài ciphertext và passphrase ≥ 12 ký tự, `zxcvbn ≥ 3` — điểm lệch gate 2, **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**, xem [ADR 0002](adr/0002-vault-crypto-layout.md)).
   - P04 `content_write` (mọi mutation `/items*`, `/tags*`, `/entries*`): **10 request / 1 giây / user**, cùng cơ chế cửa sổ trượt `rate_event` của P03 (đây là "write chung 10 rps"); replay idempotent và request bị từ chối trước bước 4 không bị đếm; vượt → `429 rate_limited` + `Retry-After`, retry cùng key sau đó chạy đúng một lần.
-  - Phase khác: suggest 20 rps burst 40; export 3/giờ.
+  - P05 `search_read` (`GET /suggest`, `GET /search`, chung một bucket theo `user_id`): **token bucket in-memory theo từng process**, dung lượng (burst) **40**, nạp **20 token/giây**; mỗi request tốn 1 token, nên một nhịp gõ tốn **≤ 2 token**: cặp `semantic=0` + `semantic=1` bắn cùng lúc (debounce 120 ms) chỉ khi `semantic_available && semantic_suggest && len_runes(qn) ≥ 3 && mode ≠ recent && scope ≠ tag` và draft gate-sạch, còn lại đúng 1 request `semantic=0` (1 token; §3.5 quy tắc 7) — tối đa ~17 token/s, dưới mức nạp. Không dùng `rate_event` (1 INSERT + advisory lock mỗi phím đắt hơn câu tìm). Cap 100 000 key + evict như cửa sổ cố định P02; chạy nhiều instance thì giới hạn thực = ×N (runbook). Vượt → `429 rate_limited` + `Retry-After` (≥ 1 s) + `retry_after`; request bị chặn ở bước auth không tốn token. Client giữa lúc gõ không toast, giữ hàng đang hiện (§6.4, §7.2).
+  - Phase khác: export 3/giờ.
 - **Khoá nội dung theo user và thứ tự khoá (P04):** mọi transaction ghi content, reset hook và job purge lấy `pg_advisory_xact_lock(hashtext('engram.content'), hashtext(user_id::text))` nên chỉ một transaction ghi content của user chạy tại một thời điểm (trần 20/200, counter, upsert tag, restore, reorder không đua). Thứ tự khoá toàn cục, không ngoại lệ: (1) `vault` — `FOR SHARE` cho route ghi ciphertext mới (tạo, import, `PUT` entry: so `envelope.key_id` với `vault_key_id`, lệch → `409 entry_key_mismatch`, chưa có vault → `404 vault_absent`), `FOR UPDATE` cho reset; (2) khoá nội dung theo user; (3) hàng `item` theo `id` tăng dần; (4) hàng `tag` theo `id` tăng dần; (5) hàng `entry`. Không transaction nào lấy khoá vault sau bước (2). Deadlock (`40P01`) và lock timeout (`55P03`) map `503 dependency_unavailable` + `Retry-After: 1`; claim được release nên retry cùng key chạy lại.
 - **Lỗi (RFC 9457 `application/problem+json`):** Code `snake_case`; catalog Go + TS + OpenAPI cập nhật trong cùng thay đổi. `429` có header `Retry-After` và body `retry_after`. CAPTCHA: extension `captcha_required`. Các mã lỗi bổ sung ở P03:
   - Vault & Concurrency/Idempotency: `vault_exists` (`409`, `POST /vault` khi đã có vault), `vault_absent` (`404`, route vault khi chưa có vault, kể cả mutation có `If-Match`), `vault_kdf_invalid` (`400`, KDF params sai quy cách, hạ `ops`/`mem` hoặc dùng lại `salt` khi rewrap/recover), `vault_wrap_invalid` (`400`, wrap sai độ dài, sai byte `version` hoặc base64url hỏng), `vault_mutations_disabled` (`503`, khi công tắc `VAULT_KEY_MUTATIONS_DISABLED` bật), `precondition_required` (`428`, thiếu `If-Match` hợp lệ), `version_mismatch` (`412`, `If-Match` lệch `vault_key_id` hoặc `version`, kèm `current_version`), `idempotency_conflict` (`409`, cùng key nhưng fingerprint khác), `idempotency_in_progress` (`409`, cùng key đang chạy, kèm `Retry-After: 1`), `email_not_verified` (`403`, dùng lại từ P02 khi `POST /vault` lúc `AUTH_REQUIRE_EMAIL_VERIFICATION` bật).
@@ -1869,7 +2056,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 | | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` · `POST /auth/sessions/revoke-others` | revoke-others cần grant |
 | | `DELETE /auth/identities/{provider}` | kể cả password; không gỡ phương thức cuối |
 | | `GET /auth/audit` | `{items,next_cursor}` |
-| Me | `PATCH /me/settings` | `{semantic_suggest?, auto_lock_minutes?, locale?, theme?}` — `409 semantic_unavailable` khi bật lúc provider down, không lưu patch |
+| Me | `PATCH /me/settings` | `{semantic_suggest?, auto_lock_minutes?, locale?, theme?}` — `409 semantic_unavailable` khi bật lúc `semantic_available=false` (tĩnh) hoặc breaker mở, không lưu patch; `semantic_suggest=false` luôn `200` và xoá vector của user trong mọi generation `openai_compat` còn bảng (§6.10) |
 | | `GET /me/notifications` · `PATCH /me/notifications/{id}` | `{read:true}` |
 | | `POST /me/email` | grant `account.email_change`; 202, chưa đổi email |
 | | `POST /me/password` | grant hoặc `enrollment_token` loại trừ |
@@ -1903,8 +2090,8 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 | | `PATCH /tags/{id}` (`tagRename`) | **S+C+I+R**; `{display}`; `200 Tag`; `409 tag_conflict` nếu `normalized` trùng tag sống khác |
 | | `DELETE /tags/{id}` (`tagDelete`) | **S+C+I+R**; `204`; soft-delete, `item_tag` giữ nguyên |
 | | `POST /tags/{id}/restore` (`tagRestore`) | **S+C+I+R**; `200 Tag`; `409 tag_conflict` / `item_tag_limit` (không restore một phần) |
-| Suggest (P05) | `GET /suggest?q=&limit=8&scope=all\|item\|tag&semantic=0\|1` | **P05, chưa có ở P04**; client chỉ gọi khi giữ ranh giới gửi §3.4; hai corpus; `semantic=0` ép lexical, `1` chỉ chạy khi env/user/breaker cho phép (default 1); `#` → `scope=tag`. Thứ tự ổn định §6.4 |
-| | `GET /search?q=&cursor&limit&scope=&semantic=` | **P05**; cùng thứ tự theo tier, nhiều kết quả hơn; cursor gắn query/generation |
+| Suggest (P05) | `GET /suggest` (`suggest`) | **S+R(`search_read`)**; `?q` (≤ 200 rune, có thể vắng/rỗng → recent) `&scope=all\|item\|tag` (mặc định `all`; `#` đầu `q` ép `tag`) `&limit=5\|8\|12` (mặc định 8; khác → `400 invalid_request`) `&semantic=0\|1` (mặc định 1; `0` ép lexical, `1` chỉ chạy khi deployment/generation/user/breaker/độ dài cho phép; client chỉ gửi `semantic=1` cho draft gõ tay sạch, không phải chế độ `#` (`scope=tag`) — mọi request của draft tainted/khoá `:`/nhiều dòng/> 200 rune, và mọi request `#`, luôn gửi `0`, §3.5 quy tắc 7 và 10); `200 SuggestResponse {scope, limit, mode: recent\|prefix\|full, quota, tags, items, has_more, lexical_partial, semantic, semantic_reason, near, generation}` + `Cache-Control: no-store`, không echo `q`/`hint`/body; `quota` = `{tag, lexical, near}` với `near` là near **hiệu dụng** của response (`min(near_max_cap, near_base + max(0, lex_max − tags_used − items_used))`, recent → 0; §6.4), `tags`/`items` **không** phụ thuộc semantic; `q` chuẩn hoá ra rỗng (`!!!`, `#`) → `200` rỗng (`textnorm.ErrEmptyQuery`, mode `prefix`); `400 name_invalid` (q > 200 rune, tag > 50, UTF-8 hỏng, ký tự cấm), `401`, `429 rate_limited`; client chỉ gọi khi giữ ranh giới gửi §3.4. Thứ tự ổn định §6.4 |
+| | `GET /search` (`search`) | **S+R(`search_read`)**; `?q` (bắt buộc, không rỗng sau chuẩn hoá) `&scope=all\|item\|tag` `&limit=20\|50` (mặc định 20) `&cursor` `&semantic=0\|1` (client gửi `semantic=0` khi draft không qua được gate §3.5, và luôn `0` cho trang cursor "Xem thêm", quy tắc 10); `200 SearchResponse {scope, limit, mode, items, tags, next_cursor, semantic, semantic_reason, near, generation}`; phân trang theo scope: `item` → item (keyset), `tag` → tag (`limit` tag/trang, keyset cùng ranking), `all` → item theo keyset + `tags` ≤ 5 chỉ trang đầu; `near` chỉ trang đầu (≤ 5, sau lexical). Cursor opaque base64url `{v, scope, kind, gen, qh, tier, score, last_used_at, count, id}` (`kind` = `item`/`tag`) — **gắn generation và `kind`**, chỉ hợp lệ cho đúng scope/kind/generation, **không chứa `q`** (`qh` = HMAC/HKDF, §6.6); cursor hỏng/lệch `q`/scope/kind/generation → `400 invalid_request`; `q` rỗng sau chuẩn hoá (`ErrEmptyQuery`) → `400 name_invalid` (client không gửi ca này); `429 rate_limited` |
 | Entries | `GET /items/{id}/entries` (`itemEntriesList`) | **S**; `?cursor&limit` (1…200, mặc định 200); `200 {items:[EntryMeta], next_cursor}` theo `(position, id)`; `EntryMeta = {id, item_id, type, position, version, plaintext_len_bucket, created_at, updated_at}` — **không** envelope/ciphertext |
 | | `POST /items/{id}/entries` (`entryCreate`) | **S+C+I+R**; `{id, type, envelope, ciphertext, plaintext_len_bucket}` — client UUID v4 đã dùng trong AAD; `text`\|`json`; server giữ nguyên ID; `201 EntryMeta`; `404 vault_absent`/`not_found`; `409 entry_key_mismatch`/`entry_id_conflict`/`item_entry_limit`; `400 entry_invalid`; `413 entry_too_large` |
 | | `POST /items/{id}/entries/import-json` (`entryImportJson`) | như `entryCreate`, `type` buộc `json` (khác → `400 entry_invalid`), thêm `source: paste\|file`; **không** `filename` (field lạ → `400 invalid_request`); audit `entry.import` với meta `import_source`; không nhận raw JSON |
@@ -1924,51 +2111,101 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 
 ### 9.3 Ví dụ
 
-**`GET /api/v1/suggest?q=wi&limit=6`**
+**`GET /api/v1/suggest?q=wif&scope=all&limit=8&semantic=1`** — response `200` (`Cache-Control: no-store`; không echo `q`/`qn`, không `hint`, không body; `tags` và `items` tách riêng; `match` là chuỗi; `quota.near` là near hiệu dụng: `tags_used=1`, `items_used=4` → `min(3, 2 + (6 − 1 − 4)) = 3`, §6.4)
 
 ```json
 {
-  "query": "wi",
-  "mode": "lexical",
-  "semantic": false,
-  "items": [
+  "scope": "all",
+  "limit": 8,
+  "mode": "full",
+  "quota": { "tag": 3, "lexical": 6, "near": 3 },
+  "tags": [
     {
       "kind": "tag",
-      "id": "t01…",
+      "id": "6f1c2a34-8b5d-4e7a-9c10-2d3e4f5a6b01",
       "display": "wifi-khách",
-      "tier": "prefix",
-      "rank": 1,
       "item_count": 4,
       "last_used_at": "2026-09-10T00:00:00Z",
-      "match": {"field": "display", "ranges": [[0, 2]]}
-    },
+      "match": "prefix"
+    }
+  ],
+  "items": [
     {
       "kind": "item",
-      "id": "i6d…",
+      "id": "a3b7c9d1-2e4f-4a6b-8c0d-1e2f3a4b5c02",
       "name": "wifi",
-      "tags": [{"id": "t11…", "display": "nhà"}, {"id": "t12…", "display": "office"}],
-      "tier": "prefix",
-      "rank": 2,
       "entry_count": 12,
       "created_at": "2026-03-12T00:00:00Z",
       "last_used_at": "2026-09-14T02:12:00Z",
-      "match": {"field": "name", "ranges": [[0, 2]]}
+      "tags": [
+        { "id": "5d0e1f2a-3b4c-4d5e-8f60-7a8b9c0d1e03", "display": "nhà" },
+        { "id": "5d0e1f2a-3b4c-4d5e-8f60-7a8b9c0d1e04", "display": "office" }
+      ],
+      "tag_total": 2,
+      "match": "prefix"
     },
     {
       "kind": "item",
-      "id": "i7e…",
+      "id": "b4c8d0e2-3f50-4b7c-9d1e-2f3a4b5c6d05",
       "name": "wifi",
-      "tags": [{"id": "t20…", "display": "công-ty"}],
-      "tier": "prefix",
-      "rank": 3,
       "entry_count": 3,
       "created_at": "2026-06-01T00:00:00Z",
       "last_used_at": "2026-09-01T00:00:00Z",
-      "match": {"field": "name", "ranges": [[0, 2]]}
+      "tags": [
+        { "id": "5d0e1f2a-3b4c-4d5e-8f60-7a8b9c0d1e06", "display": "công-ty" }
+      ],
+      "tag_total": 1,
+      "match": "prefix"
+    },
+    {
+      "kind": "item",
+      "id": "c5d9e1f3-4061-4c8d-8e2f-3a4b5c6d7e07",
+      "name": "wifi-office",
+      "entry_count": 3,
+      "created_at": "2026-08-20T00:00:00Z",
+      "last_used_at": "2026-08-25T00:00:00Z",
+      "tags": [],
+      "tag_total": 0,
+      "match": "prefix"
+    },
+    {
+      "kind": "item",
+      "id": "d6e0f2a4-5172-4d9e-9f30-4b5c6d7e8f08",
+      "name": "wi-fi",
+      "entry_count": 2,
+      "created_at": "2026-05-02T00:00:00Z",
+      "last_used_at": "2026-07-30T00:00:00Z",
+      "tags": [
+        { "id": "5d0e1f2a-3b4c-4d5e-8f60-7a8b9c0d1e03", "display": "nhà" }
+      ],
+      "tag_total": 1,
+      "match": "fuzzy"
     }
-  ]
+  ],
+  "has_more": false,
+  "lexical_partial": [],
+  "semantic": true,
+  "semantic_reason": null,
+  "near": [
+    {
+      "kind": "item",
+      "id": "e7f1a3b5-6283-4eaf-8a41-5c6d7e8f9a09",
+      "name": "mạng nhà",
+      "entry_count": 5,
+      "created_at": "2026-04-10T00:00:00Z",
+      "last_used_at": "2026-09-02T00:00:00Z",
+      "tags": [
+        { "id": "5d0e1f2a-3b4c-4d5e-8f60-7a8b9c0d1e10", "display": "home" }
+      ],
+      "tag_total": 1,
+      "match": "semantic"
+    }
+  ],
+  "generation": 1
 }
 ```
+
+Cùng request với `semantic=0` (hoặc khi semantic không chạy): `tags`/`items`/`quota`/`has_more` **giống hệt**, `"semantic": false`, `"semantic_reason": "request_lexical"` (hoặc `disabled_server`/`disabled_user`/`degraded`/`short_query`), `"near": []`, `"generation": null`. Chế độ recent (`GET /suggest` không `q`, `semantic=0`): `"mode": "recent"`, `"quota": { "tag": 3, "lexical": 8, "near": 0 }` (limit 8, scope=all; `lexical` = `recent_tag + recent_item` = 3 + 5, §6.4), `near` rỗng.
 
 **`POST /api/v1/items/{id}/entries`** (`Idempotency-Key`)
 
@@ -2099,13 +2336,14 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 
 ### 10.3 Observability
 
-- OpenTelemetry (API → DB → TEI), Prometheus: `suggest_latency_seconds{mode,scope}`, `embedding_job_lag_seconds`, `embedding_provider_errors_total`, `vault_unlock_failures_total{method}` (passphrase\|passkey\|recovery; không user id), `vault_recover_total`, `entries_created_total{type}`.
+- OpenTelemetry (API → DB → provider embedding), Prometheus: `vault_unlock_failures_total{method}` (passphrase\|passkey\|recovery; không user id), `vault_recover_total`, `entries_created_total{type}`.
+- **Metric P05** (định nghĩa và đăng ký một lần trong `obs.NewRegistry()` bởi Task 5; **không** label user/`q`/tên; gauge DB tính trong API `/metrics` với cache 15 s, worker expose qua `WORKER_METRICS_ADDR`): lexical — `suggest_latency_seconds{mode,scope,semantic}` (bucket thêm 0.04, 0.35), `search_lexical_partial_total{corpus}`; semantic — `semantic_decisions_total{reason}`, `semantic_query_cache_total{result}`, `search_vector_path_total{corpus,path=exact|ann|ann_fallback_exact|ann_short}`, `search_vector_underfill_total{corpus}`; embedding — `embedding_provider_requests_total{provider,op,outcome=ok|timeout|http_5xx|http_429|refused|bad_response}`, `embedding_provider_latency_seconds{provider,op}`, `embedding_breaker_open{provider,process}`, `embedding_job_lag_seconds{corpus,role=active|pending|retired}`, `embedding_jobs_total{kind,outcome=upserted|skipped_stale|skipped_fresh|skipped_deleted|skipped_user_off|discarded_generation|snoozed|retry|dead}`, `embedding_dead_letter_jobs`, `embedding_generation_mismatch_total{reason=dims|model|hash|unconfigured}`, `embedding_canary_min_cos{generation}`, `embedding_canary_drift_total{generation}`, `embedding_generation_coverage_ratio{generation,corpus}`. Ba gauge DB (`embedding_job_lag_seconds`, `embedding_dead_letter_jobs`, `embedding_generation_coverage_ratio`) đăng ký qua `obs.RegisterGauges` (đúng một lần; Task 20a cài nguồn DB). Mỗi outcome `embedding_jobs_total` tăng ở đúng một nơi (worker: `upserted`…`snoozed`; `retry`/`dead` qua `client.Subscribe`). Mã lý do (log `error_class` + label, không problem HTTP mới): `provider_timeout`, `provider_5xx`, `provider_429`, `provider_refused`, `provider_bad_response`, `dims_mismatch`, `hash_stale`, `generation_not_receiving`, `generation_unconfigured`; phía user đều là `semantic_reason: "degraded"`.
 - `slog` JSON + request id; Sentry FE (scrub mọi field có thể là plaintext: chỉ error type + stack).
-- Alert: p95 suggest > 200 ms trong 5 phút; TEI circuit open > 10 phút; dead-letter > 0; 5xx > 1 %.
+- Alert: p95 suggest > 200 ms trong 5 phút; breaker embedding mở > 10 phút; dead-letter > 0; lag p95 > 10 s trong 15 phút ngoài backfill; `embedding_generation_mismatch_total` tăng; canary < 0.99; coverage generation active < 99 % sau backfill; 5xx > 1 %. Ngưỡng được áp trong runbook `docs/runbooks/search-semantic.md` (Task 24).
 
 ### 10.4 Privacy statement (docs / marketing)
 
-> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước của từng entry (độ dài nội dung đã mã hoá cho biết độ dài nội dung gốc; chúng tôi không che kích thước). Khi bạn bật gợi ý "gần nghĩa", tên mục, tag, hint và từ khoá tìm kiếm được gửi tới **dịch vụ embedding bên thứ ba** (qua OpenRouter) để tạo vector; nội dung entry không bao giờ được gửi. Tắt gợi ý "gần nghĩa" trong Settings hoặc bằng nút `≈` sẽ ngừng gửi mọi dữ liệu của bạn tới dịch vụ đó và xoá vector đã tạo. Bạn mở vault bằng encryption passphrase, **passkey** (WebAuthn PRF), **một recovery key** còn dùng được, hoặc thiết bị đã nhớ. Nếu quên passphrase nhưng vẫn mở được vault, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản. Chỉ khi không còn đường lấy lại khoá, kể cả qua backup mở được, mới không đọc lại được nội dung; reset vault xoá entry trên server, giữ lại mục và tag.
+> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước của từng entry (độ dài nội dung đã mã hoá cho biết độ dài nội dung gốc; chúng tôi không che kích thước). Chữ bạn gõ trong ô tìm được gửi tới máy chủ của chúng tôi (không mã hoá, như tên mục) để gợi ý và tìm kiếm; chữ sau `tên:` khi lưu nội dung không bao giờ được gửi để tìm. Với cấu hình mặc định (`openai_compat`), khi bạn bật gợi ý "gần nghĩa" (mặc định bật nếu máy chủ hỗ trợ), tên mục, tag, hint và chữ bạn gõ khi tìm được gửi tới **dịch vụ embedding bên thứ ba** (qua bộ định tuyến của chúng tôi → OpenRouter → nhà cung cấp mô hình) để tạo vector; nội dung entry không bao giờ được gửi. Nếu máy chủ tự vận hành embedding (`tei`, tuỳ chọn), các dữ liệu đó không rời hạ tầng của chúng tôi. Tắt gợi ý "gần nghĩa" trong Settings hoặc bằng nút `≈` sẽ ngừng gửi dữ liệu của bạn tới dịch vụ bên thứ ba từ lúc đó và xoá các vector của bạn **đang lưu trong cơ sở dữ liệu của engram**; yêu cầu đã gửi đi trước lúc tắt không thể thu hồi, và chúng tôi không cam kết xoá hay giới hạn thời gian lưu giữ dữ liệu đó ở OpenRouter hay nhà cung cấp mô hình (theo chính sách của họ). Bạn mở vault bằng encryption passphrase, **passkey** (WebAuthn PRF), **một recovery key** còn dùng được, hoặc thiết bị đã nhớ. Nếu quên passphrase nhưng vẫn mở được vault, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản. Chỉ khi không còn đường lấy lại khoá, kể cả qua backup mở được, mới không đọc lại được nội dung; reset vault xoá entry trên server, giữ lại mục và tag.
 
 ### 10.5 Backup & DR
 
@@ -2211,6 +2449,9 @@ CI thật là một workflow `.github/workflows/ci.yml`, chạy trên PR vào `d
 | `Browser smoke and accessibility`, `Auth e2e (email verification required)`, `Vault journey e2e (email verification required)` | Compose → Playwright theo project (`playwright.config.ts`), axe, artifact đã sanitize |
 | `Content e2e` (P04, Task 11) | Compose → Playwright project `content`: quick-add, item/tag, text + JSON import/sửa, Undo, nhiều thiết bị, lock/reset; artifact qua allowlist `scripts/sanitize-e2e-artifacts.mjs` |
 | `Content perf` (P04, Task 21b) | đo tạo entry p95 phía server (build tag `perf`) |
+| `Search bench` (P05, job `search-bench`, Task 10) | benchmark lexical/hybrid/exact-ANN (build tag `searchbench`) theo `docs/benchmarks/P05-search/`; `smoke` mỗi PR, `full` chỉ trên head branch `phase05/search-bench*` (draft PR CI-only, runner `ubuntu-24.04-arm`); **không** là required check nếu chạy > 20 phút; target cố định trong `targets.md` trước run `full` đầu tiên |
+| `Search semantic e2e` (P05, job `e2e-search-semantic`, Task 20b) | Compose profile `semantic-fake` (service `fakeembed`, chỉ CI) + Playwright các test gắn `@semantic` (near append, degrade, bật lúc provider down); `Content e2e` chạy `--grep-invert @semantic`; có bước readiness `/readyz` và `waitForEmbedded` trước khi bật `slow`/`down` |
+| `Embedding lag` (P05, job `embedding-lag`, Task 20b/21; **không** required) | `TestEmbeddingLagP95` (build tag `lagperf`) với profile provider 2,3 s; guard "test đã chạy"; merge sau job `e2e-search-semantic` |
 | release | Tag `v*` trên `main` → images, SBOM, bundle hashes |
 
 Acceptance/regression bắt buộc cho các contract v0.5:
@@ -2218,7 +2459,7 @@ Acceptance/regression bắt buộc cho các contract v0.5:
 - Crypto: vector JCS/AAD §5.5 đi qua Postgres `jsonb`, đảo field order; UUID/nonce/`ct_enc` sai hoặc field trùng bị reject/fail decrypt; entry create/retry giữ đúng ID đã seal.
 - JSON: import/raw-edit byte-identical; table-edit một ô trong fixture có key trùng, key `"10"` trước `"2"`, số `9007199254740993`, `1e400`, `-0`, escape và whitespace hỗn hợp. Byte ngoài edit spans không đổi; thêm/xoá node vẫn strict JSON, sửa đúng occurrence; span stale không được dùng lại.
 - Vault: passkey/DevKey unlock → re-auth → đặt passphrase mới không cần passphrase cũ; regenerate/rotate/recover dùng cùng re-auth policy; grant sai action/session/expiry bị reject. Recover concurrent chỉ một commit, retry idempotent, không vượt 10 RK; wrap cũ trong backup vẫn có giới hạn §5.9. Passkey registration có cả ca `create` trả output và ca cần `get`; salt từng credential không bị dùng nhầm.
-- Search: bật/tắt ≈ và response semantic đến muộn không thay lexical order/selection; recency chỉ phá hoà relevance. Deployment off → rename → on sửa vector stale; user off vẫn enqueue. Job generation cũ không ghi vào shadow/active mới; shadow cutover/rollback giữ query model và index cùng generation. Benchmark exact/ANN theo §6.9.
+- Search: bật/tắt ≈ và response semantic đến muộn không thay lexical order/selection; recency chỉ phá hoà relevance. Deployment off → rename → on sửa vector stale; user off vẫn enqueue **cho generation `tei`**, còn generation `openai_compat` ngừng enqueue/gửi và xoá vector của user đó (chính sách theo `provider` của từng generation đích, §6.10, [ADR 0004](adr/0004-embedding-provider-openai-compat.md)). Job generation cũ không ghi vào shadow/active mới; shadow cutover/rollback giữ query model và index cùng generation ([ADR 0007](adr/0007-embedding-generation-cutover.md)). Benchmark exact/ANN theo §6.9. Ranh giới gửi theo phím (§3.4): ca âm bắt buộc `#home:secretbody`, `#home secret:x`, `name: body`, văn bản dán không tạo request `/suggest`/`/search` mang chữ sau `:` hay chữ đã dán.
 
 ### 11.4 Conventions
 
@@ -2246,14 +2487,14 @@ Chi tiết tại [bộ spec theo phase](phases/README.md). Từ v0.7 dùng ID P0
 | [P02 — Tài khoản](phases/P02-auth.md) | Password/Google/GitHub, sessions/CSRF, re-auth, account settings, audit/notification base; mockup auth mới | Auth/session thật, ownership và re-auth grant tests đạt |
 | [P03 — Vault và recovery](phases/P03-vault.md) | P03-A core/passphrase/10 RK; P03-B PRF passkey/DevKey/auto-lock/recovery, JCS/UUID; mockup onboarding/unlock mới | Crypto vectors/review, recovery concurrency, new-device và PRF checks đạt; P04 tích hợp entry thật |
 | [P04 — Nội dung](phases/P04-content.md) | Item/Tag/text/JSON CRUD, exact quick-add/picker, lossless source spans, import entry, reorder/Undo/conflict/delta cơ bản/reset | Lưu/sửa/mở lại/xoá/restore dữ liệu thật, không mất JSON; tenant/limit/reset tests đạt |
-| [P05 — Tìm kiếm](phases/P05-search.md) | Prefix/fuzzy, TEI semantic hai corpus, stable merge, exact/partitioned HNSW, stale backfill/shadow generation | Relevance/performance report, lexical không nhảy, degraded/cutover/rollback đạt |
+| [P05 — Tìm kiếm](phases/P05-search.md) | Prefix/fuzzy, semantic hai corpus (`openai_compat` mặc định, `tei` tuỳ chọn, [ADR 0004](adr/0004-embedding-provider-openai-compat.md)), stable merge, exact/partitioned HNSW, stale backfill/shadow generation | Relevance/performance report, lexical không nhảy, degraded/cutover/rollback đạt |
 | [P06 — Beta MVP](phases/P06-beta.md) | Encrypted/decrypted export, account delete, docs/privacy, UI/NFR QA, security review, monitoring/DR/deploy | Toàn bộ gate P01–P06, full E2E và restore/release evidence; không blocker MVP |
 | [P07 — Mở rộng cá nhân](phases/P07-personal-expansion.md) | Durable sync, rotate VK, import backup, body search client, link/file/image, passkey login; phần conditional ghi trong phase | ADR/mockup/OpenAPI trước từng mốc; migration/crash/compatibility tests đạt |
 | [P08 — Sharing và client khác](phases/P08-sharing-clients.md) | Item read-only sharing, extension, scoped API token; verifier/mobile chỉ khi scope được chọn | Cross-user key/permission/revocation lifecycle, extension origin và token tests đạt |
 
 Thứ tự bàn giao: P01 → P02 → P03 → P04 → P05 → P06 → P07 → P08. Thiết kế/khảo sát module độc lập có thể chuẩn bị sớm, nhưng không bỏ gate phụ thuộc. Thời gian 8–10 tuần MVP và ~8 tuần mở rộng của bản cũ là ước lượng chưa tính đủ các gate mới; lập lịch sau khi biết nhân lực, hardware và tốc độ thực tế P01/P02, không dùng làm cam kết.
 
-MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag, **10 recovery key**, **passkey unlock PRF**, nhớ thiết bị, export encrypted/decrypted. **Không** gồm: BIP39, login-with-passkey (P07), pricing, third-party embedding provider, private name, link/file/image, largeBlob, import backup UI hay sharing.
+MVP **bao gồm**: text entry, JSON-as-table, search/filter name **và** tag, **10 recovery key**, **passkey unlock PRF**, nhớ thiết bị, export encrypted/decrypted. Semantic search dùng provider embedding theo [ADR 0004](adr/0004-embedding-provider-openai-compat.md) (`openai_compat` bên thứ ba là mặc định, `tei` self-host tuỳ chọn); copy riêng tư công khai nêu rõ dữ liệu gửi đi (§10.4). **Không** gồm: BIP39, login-with-passkey (P07), pricing, private name, link/file/image, largeBlob, import backup UI hay sharing.
 
 ### 12.2 Task UI theo mockup và phase
 
@@ -2292,13 +2533,13 @@ Mỗi file phase có phạm vi trong/ngoài, dependencies, API/schema cần đó
 
 ## 13. Câu hỏi mở còn lại
 
-Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = P07** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `engram.zone17.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
+Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = P07** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; embedding theo [ADR 0004](adr/0004-embedding-provider-openai-compat.md): provider `openai_compat` (mặc định, bên thứ ba qua router → OpenRouter, `Qwen3-Embedding-8B` 1024 dims) \| `tei` (tuỳ chọn, `bge-m3` 1024) \| `noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `engram.zone17.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
 
 **Chốt v0.6:** tên sản phẩm là `engram`, viết thường, repo là `zone17th/engram`; domain và nhãn hiệu **chưa tra**. `mockups/` là tiêu chuẩn thiết kế ràng buộc cho §7 — mockup thắng về thị giác, spec thắng về hành vi và dữ liệu (§7.0). Tầng token chức năng giữ nguyên ClickUp, chỉ tầng thương hiệu là của engram.
 
 **Chốt v0.7:** roadmap triển khai dùng P01–P08, MVP là P01–P06; [spec từng phase](phases/README.md) phân công dependency, UI/missing mockup, contract cần bổ sung và acceptance. P07/P08 kế thừa phạm vi hậu MVP, các quyết định chưa có API/ADR/mockup được ghi rõ trước khi triển khai; không coi thời gian ước lượng cũ là cam kết lịch giao.
 
-**Chốt v0.5:** giữ VK đủ quyền rewrap KEK, kèm re-auth tài khoản + audit/notice (không đòi passphrase cũ); RK single-use/passkey revoke chỉ trên live server, backup không bị thu hồi; rotate VK P07. Body JSON dùng raw text + source-span splice; envelope dùng JCS/UUID client/`ct_enc` bắt buộc. Lexical order cố định, semantic append, recency chỉ tie-break; không RRF trong MVP. Exact dưới ngưỡng benchmark, hash-partition + HNSW cho corpus lớn; mọi model generation dùng shadow tables + cutover; deployment re-enable sửa vector thiếu hoặc stale. User toggle không tắt indexing, không thêm setting riêng để opt-out indexing ở MVP.
+**Chốt v0.5:** giữ VK đủ quyền rewrap KEK, kèm re-auth tài khoản + audit/notice (không đòi passphrase cũ); RK single-use/passkey revoke chỉ trên live server, backup không bị thu hồi; rotate VK P07. Body JSON dùng raw text + source-span splice; envelope dùng JCS/UUID client/`ct_enc` bắt buộc. Lexical order cố định, semantic append, recency chỉ tie-break; không RRF trong MVP. Exact dưới ngưỡng benchmark, hash-partition + HNSW cho corpus lớn; mọi model generation dùng shadow tables + cutover; deployment re-enable sửa vector thiếu hoặc stale. Toggle `≈` của user theo provider của từng generation (§6.10): generation `tei` vẫn index (tắt chỉ ẩn kết quả), generation `openai_compat` ngừng gửi và xoá vector của user; không thêm setting riêng để opt-out indexing ở MVP.
 
 | # | Câu hỏi | Khuyến nghị trong spec này |
 |---|---------|----------------------------|
