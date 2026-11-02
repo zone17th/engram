@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/store"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
@@ -88,6 +90,7 @@ type Service struct {
 	notify          Notifier
 	sem             SemanticRuntime
 	jobs            JobInserter
+	reembedLimit    *httpx.TokenBucket
 	mail            Mailer
 	vault           VaultStatus
 	ipPepper        []byte
@@ -122,7 +125,8 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 		tokens: tokens, grants: grants, lockout: lockout, clk: clk,
 		audit: audit, notify: notify, sem: sem, mail: mail, vault: vault,
 		ipPepper: cfg.AuthIPPepper, emPepper: cfg.AuthEmailPepper,
-		forgotQueue: make(chan ForgotJob, ForgotQueueSize),
+		forgotQueue:  make(chan ForgotJob, ForgotQueueSize),
+		reembedLimit: httpx.NewTokenBucket(reembedBucketCapacity, reembedBucketRefillPerSec, clk),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -508,22 +512,28 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 const (
 	reembedUserQueue    = "embedding"
 	reembedUserPriority = 3
+
+	// reembedBucketCapacity / reembedBucketRefillPerSec bound how often one
+	// user can enqueue reembed_user through off->on toggles: 5 per 600 s, per
+	// user, in memory (plan P05 mục 2.18; advisor-dec-301 addendum). The insert
+	// has no uniqueness (see reembedUserInsertOpts), and PATCH /me/settings has
+	// no rate limit of its own, so without this a user could amplify paid
+	// external-provider embedding calls by toggling.
+	reembedBucketCapacity     = 5
+	reembedBucketRefillPerSec = 5.0 / 600.0
 )
 
+// reembedUserInsertOpts deliberately carries no UniqueOpts (RV-T13-BE-1). Only
+// an off->on transition inserts, so the volume is bounded by the user's own
+// toggles (and by the per-user reembedLimit bucket). A uniqueness window that includes running would let a later off->on
+// dedupe against a pass that is already past the user's external targets (or
+// skipped the user while off), silently dropping the backfill until the 24 h
+// periodic Reconcile. Reconcile(User) is idempotent, so a redundant pass is
+// harmless.
 func reembedUserInsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{
 		Queue:    reembedUserQueue,
 		Priority: reembedUserPriority,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
-			ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable,
-				rivertype.JobStatePending,
-				rivertype.JobStateRetryable,
-				rivertype.JobStateRunning,
-				rivertype.JobStateScheduled,
-			},
-		},
 	}
 }
 
@@ -595,6 +605,14 @@ func (s *Service) enqueueReembedUserTx(ctx context.Context, tx pgx.Tx, userID uu
 		}
 	}
 	if !external {
+		return nil
+	}
+	// Over the limit: the setting change still succeeds (OpenAPI declares no 429
+	// for PATCH /me/settings), only the immediate backfill is skipped; the
+	// periodic 24 h Reconcile catches the user up. A token is spent only when an
+	// insert would otherwise happen (not on true->true, off, or a 409).
+	if ok, _ := s.reembedLimit.AllowUser(userID); !ok {
+		slog.Warn("reembed_user enqueue skipped", slog.String("reason", "reembed_rate_limited"))
 		return nil
 	}
 	_, err = s.jobs.InsertTx(ctx, tx, jobargs.ReembedUserArgs{UserID: userID.String()}, reembedUserInsertOpts())
