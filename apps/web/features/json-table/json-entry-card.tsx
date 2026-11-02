@@ -30,6 +30,10 @@ import {
   type SealedEntryUpdatePayload,
 } from '@/features/entries';
 import {
+  setEntryCardKeepMounted,
+  useEntryRemotelyDeleted,
+} from '@/features/entries/changes-sync';
+import {
   LockMask,
   useEntryBody,
   useEntryInViewport,
@@ -231,10 +235,13 @@ export function JsonEntryCard({
     readonly reloadConfirmOpen: boolean;
   } | null>(null);
   const [deletedRemotely, setDeletedRemotely] = useState<boolean>(false);
+  const [cellEditActive, setCellEditActive] = useState<boolean>(false);
+  const remotelyDeletedFromFeed = useEntryRemotelyDeleted(entry.id);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState<boolean>(false);
   const [menuOpen, setMenuOpen] = useState<boolean>(false);
   const [resetEpoch, setResetEpoch] = useState<number>(0);
+  const cardKeepMountedTokenRef = useRef<symbol>(Symbol('JsonEntryCard'));
 
   const cardArticleRef = useRef<HTMLElement | null>(null);
   const pendingPostSaveFocusRef = useRef<boolean>(false);
@@ -286,6 +293,7 @@ export function JsonEntryCard({
     if (!unlocked || body === undefined) return;
     const hasUnsavedWork =
       (originalSource !== '' && tableSource !== originalSource) ||
+      cellEditActive ||
       rawEditedSinceSwitch ||
       unconfirmedSave !== null ||
       conflictState !== null ||
@@ -304,6 +312,7 @@ export function JsonEntryCard({
     }
   }, [
     body,
+    cellEditActive,
     conflictState,
     originalSource,
     plaintextHolderRef,
@@ -357,17 +366,44 @@ export function JsonEntryCard({
 
   // IP16-FE1-19: Only count an actual unsaved draft or active error/conflict state (not merely viewing the Raw tab)
   const hasActiveDraftOrStateRef = useRef<boolean>(false);
+  const shouldKeepCardMounted =
+    unlocked &&
+    (isDirty ||
+      cellEditActive ||
+      savingInFlight ||
+      unconfirmedSave !== null ||
+      conflictState !== null ||
+      deletedRemotely);
   hasActiveDraftOrStateRef.current =
     isDirty ||
+    cellEditActive ||
     unconfirmedSave !== null ||
     conflictState !== null ||
     deletedRemotely;
+  useEffect(() => {
+    setEntryCardKeepMounted(
+      itemId,
+      entry.id,
+      cardKeepMountedTokenRef.current,
+      shouldKeepCardMounted,
+    );
+  }, [entry.id, itemId, shouldKeepCardMounted]);
 
+  useEffect(() => {
+    if (
+      remotelyDeletedFromFeed &&
+      (hasActiveDraftOrStateRef.current || cellEditActive || savingInFlight) &&
+      !deletedRemotely
+    ) {
+      setDeletedRemotely(true);
+    }
+  }, [cellEditActive, deletedRemotely, remotelyDeletedFromFeed, savingInFlight]);
   // Register secret form reset on vault lock / auto-lock / user switch / logout (plan §2.10, P4FE1-8)
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       const hadActiveDraft = hasActiveDraftOrStateRef.current;
+      setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
@@ -384,6 +420,7 @@ export function JsonEntryCard({
       setUnconfirmedSave(null);
       setConflictState(null);
       setDeletedRemotely(false);
+      setCellEditActive(false);
       setSaveError(null);
       pendingPostSaveFocusRef.current = false;
       setMenuOpen(false);
@@ -392,11 +429,12 @@ export function JsonEntryCard({
         onDraftClearedOnLock?.();
       }
     });
-  }, [clearEditorPlaintextHolderSync, onDraftClearedOnLock, vault]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId, onDraftClearedOnLock, vault]);
 
   // Also clear immediately if `unlocked` flips to false
   useEffect(() => {
     if (!unlocked) {
+      setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
@@ -413,18 +451,22 @@ export function JsonEntryCard({
       setUnconfirmedSave(null);
       setConflictState(null);
       setDeletedRemotely(false);
+      setCellEditActive(false);
       setSaveError(null);
       pendingPostSaveFocusRef.current = false;
       setMenuOpen(false);
       setResetEpoch((prev) => prev + 1);
     }
-  }, [clearEditorPlaintextHolderSync, unlocked]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId, unlocked]);
 
   // Unmount cleanup (IP16-FE1-3 / IP15-BE3-2): synchronously wipe every plaintext holder field and
   // invalidate card op/save ownership on unmount, independent of the reset-registration effect.
   useEffect(() => {
     const holderToWipe = plaintextHolderRef;
+    const token = cardKeepMountedTokenRef.current;
     return () => {
+      setEntryCardKeepMounted(itemId, entry.id, token, false);
+      hasActiveDraftOrStateRef.current = false;
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       saveOwnerIdRef.current = 0;
@@ -435,7 +477,24 @@ export function JsonEntryCard({
       holderToWipe.current.submittedCandidateSource = '';
       holderToWipe.current.tableSource = '';
     };
-  }, [plaintextHolderRef]);
+  }, [entry.id, itemId, plaintextHolderRef]);
+
+  // When a card is kept mounted with an unsaved draft or remote-tombstone / conflict / retry state,
+  // fall back to `originalSource` if the query cache body was evicted by a remote tombstone (advisor-dec-211).
+  const hasRetainedEditorState =
+    cellEditActive ||
+    isDirty ||
+    savingInFlight ||
+    unconfirmedSave !== null ||
+    conflictState !== null ||
+    deletedRemotely;
+  const effectiveBody =
+    body !== undefined
+      ? body
+      : unlocked && hasRetainedEditorState && originalSource !== ''
+        ? originalSource
+        : undefined;
+  const effectiveFailed = failed && effectiveBody === undefined;
 
   // Close menu on outside click
   useEffect(() => {
@@ -641,6 +700,7 @@ export function JsonEntryCard({
   );
 
   const resetDraftToOriginal = useCallback(() => {
+    setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
     const base = body ?? originalSource;
     const normalized = normalizeEolToLf(base);
     plaintextHolderRef.current.originalSource = base;
@@ -662,9 +722,10 @@ export function JsonEntryCard({
     setUnconfirmedSave(null);
     setConflictState(null);
     setDeletedRemotely(false);
+    setCellEditActive(false);
     setSaveError(null);
     setResetEpoch((prev) => prev + 1);
-  }, [body, originalSource, plaintextHolderRef]);
+  }, [body, entry.id, itemId, originalSource, plaintextHolderRef]);
 
   const requestCancelEdit = useCallback(() => {
     if (savingInFlight) return;
@@ -1002,6 +1063,13 @@ export function JsonEntryCard({
   // 412 action 1: Keep mine
   const handleConflictKeepMine = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
+    // SYNC-BER3-1: flush a pending table cell edit before taking the save lock or reading the holder,
+    // exactly as ordinary Save / Save as new do. A failed flush (invalid number, over-cap cell) keeps
+    // the grid's inline error, input and card, and neither PUTs nor copies the stale pre-edit source.
+    if (modeRef.current === 'table' && gridCommitControlRef.current &&
+        !gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+      return;
+    }
     const guard = captureEntrySaveOpGuard(vault, lockEpochRef);
 
     const submittedRevision = editorRevisionRef.current;
@@ -1106,6 +1174,7 @@ export function JsonEntryCard({
     setUnconfirmedSave(null);
     setConflictState(null);
     setDeletedRemotely(false);
+    setCellEditActive(false);
     setSaveError(null);
     setResetEpoch((prev) => prev + 1);
 
@@ -1141,6 +1210,13 @@ export function JsonEntryCard({
 
   // 412 action 3: Copy mine
   const handleConflictCopyMine = useCallback(async () => {
+    // SYNC-BER3-1: flush a pending table cell edit before taking the save lock or reading the holder,
+    // exactly as ordinary Save / Save as new do. A failed flush (invalid number, over-cap cell) keeps
+    // the grid's inline error, input and card, and neither PUTs nor copies the stale pre-edit source.
+    if (modeRef.current === 'table' && gridCommitControlRef.current &&
+        !gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+      return;
+    }
     const candidate = readCurrentCandidateFromHolder();
     await copyEntryPlaintextToClipboard(candidate);
     onAnnounce?.(tEntry('copiedMine'));
@@ -1149,7 +1225,17 @@ export function JsonEntryCard({
   // 404 action: Save as new entry (type: 'json')
   const handleSaveAsNewEntry = useCallback(async () => {
     if (!vault || saveLockRef.current || savingInFlight || isEmpty || isOverCap) return;
+    // SYNC-BER2-1: a retained card may still hold a pending table cell edit (blur/commit not yet
+    // applied to the holder). Flush it first, exactly as ordinary Save does; when the flush fails
+    // (invalid number, over-cap cell) keep the draft and card, post nothing, and take no save lock.
+    if (modeRef.current === 'table' && gridCommitControlRef.current) {
+      if (!gridCommitControlRef.current.commitOrFlushPendingEdit()) {
+        return;
+      }
+    }
     const syncCandidate = readCurrentCandidateFromHolder();
+    const syncBytes = measureUtf8Bytes(syncCandidate);
+    if (syncBytes === 0 || syncBytes > ENTRY_MAX_PLAINTEXT_BYTES) return;
     if (!parseJsonStrict(syncCandidate).ok) return;
 
     const capturedEpoch = lockEpochRef.current;
@@ -1297,7 +1383,7 @@ export function JsonEntryCard({
     conflictState ||
       unconfirmedSave ||
       saveError ||
-      failed ||
+      effectiveFailed ||
       switchBlockedError ||
       (mode === 'raw' && rawSettledIssue !== null),
   );
@@ -1339,7 +1425,7 @@ export function JsonEntryCard({
         </span>
 
         {/* Table / Raw JSON segmented switcher (Task 16 item 5, hidden when locked or error) */}
-        {hasLoadedJsonSource && !oldKey && !failed ? (
+        {hasLoadedJsonSource && !oldKey && !effectiveFailed ? (
           <div
             role="group"
             aria-label={tJson('viewModeAria')}
@@ -1402,7 +1488,7 @@ export function JsonEntryCard({
             </span>
           ) : null}
 
-          {hasLoadedJsonSource && !oldKey && !failed ? (
+          {hasLoadedJsonSource && !oldKey && !effectiveFailed ? (
             <button
               type="button"
               className="btn btn-tertiary btn-sm"
@@ -1450,7 +1536,7 @@ export function JsonEntryCard({
                 data-testid={`entry-menu-copy-${entry.id}`}
                 data-card-act="copy"
                 className="menu-item"
-                disabled={!hasLoadedJsonSource || oldKey || failed}
+                disabled={!hasLoadedJsonSource || oldKey || effectiveFailed}
                 onClick={() => {
                   setMenuOpen(false);
                   void handleCopyBody();
@@ -1465,7 +1551,7 @@ export function JsonEntryCard({
                 data-testid={`entry-menu-edit-${entry.id}`}
                 data-card-act="edit"
                 className="menu-item"
-                disabled={!hasLoadedJsonSource || oldKey || failed}
+                disabled={!hasLoadedJsonSource || oldKey || effectiveFailed}
                 onClick={() => {
                   setMenuOpen(false);
                   handleSwitchMode('raw');
@@ -1528,7 +1614,7 @@ export function JsonEntryCard({
       </div>
 
       {/* Card Body */}
-      <div className={mode === 'table' && hasLoadedJsonSource && !oldKey && !failed ? '' : 'p-4'}>
+      <div className={mode === 'table' && hasLoadedJsonSource && !oldKey && !effectiveFailed ? '' : 'p-4'}>
         {!unlocked ? (
           <LockMask />
         ) : oldKey ? (
@@ -1541,7 +1627,7 @@ export function JsonEntryCard({
             <p className="m-0 text-[14px] font-semibold text-body">{tEntry('oldKeyTitle')}</p>
             <p className="m-0 text-[13px] text-muted">{tEntry('oldKeyBody')}</p>
           </div>
-        ) : failed ? (
+        ) : effectiveFailed ? (
           <div
             role="alert"
             data-testid="entry-body-error"
@@ -1595,6 +1681,7 @@ export function JsonEntryCard({
                 onToggleExpand={handleToggleExpand}
                 onPageChange={handlePageChange}
                 onApplyEdit={handleApplyTableEdit}
+                onCellEditActiveChange={setCellEditActive}
                 resetEpoch={resetEpoch}
               />
             ) : (
