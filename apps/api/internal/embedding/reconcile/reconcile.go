@@ -552,6 +552,11 @@ func countUserVectorsInGeneration(
 	return total, nil
 }
 
+// deleteUserOffBatchInTx deletes g's vectors of the users in the batch who are
+// still user-off. Lock order matches PATCH /me/settings: the app_user rows
+// first (FOR SHARE, re-checking the policy after any concurrent writer), then
+// the generation-set shared lock (OQ-16), so no lock-order cycle with
+// lifecycle's exclusive lock can form.
 func deleteUserOffBatchInTx(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -563,6 +568,15 @@ func deleteUserOffBatchInTx(
 		return 0, false, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.userID.String())
+	}
+	locked, err := lockStillUserOff(ctx, tx, ids)
+	if err != nil {
+		return 0, false, err
+	}
 
 	if err := generation.LockGenerationSetShared(ctx, tx); err != nil {
 		return 0, false, err
@@ -579,12 +593,12 @@ func deleteUserOffBatchInTx(
 		return 0, false, nil
 	}
 
-	for _, u := range users {
-		before, err := countUserVectorsInGeneration(ctx, tx, g, u.userID)
+	for _, uid := range locked {
+		before, err := countUserVectorsInGeneration(ctx, tx, g, uid)
 		if err != nil {
 			return 0, true, err
 		}
-		if err := store.DeleteUserInGeneration(ctx, tx, g, u.userID); err != nil {
+		if err := store.DeleteUserInGeneration(ctx, tx, g, uid); err != nil {
 			return 0, true, err
 		}
 		deleted += before
@@ -594,6 +608,30 @@ func deleteUserOffBatchInTx(
 		return 0, true, err
 	}
 	return deleted, true, nil
+}
+
+// lockStillUserOff row-locks (FOR SHARE, id order) the live users among ids
+// whose semantic_suggest is still false and returns their ids.
+func lockStillUserOff(ctx context.Context, tx pgx.Tx, ids []string) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM app_user
+		WHERE id = ANY($1::text[]::uuid[])
+		  AND deleted_at IS NULL
+		  AND COALESCE((settings->>'semantic_suggest')::boolean, true) = false
+		ORDER BY id ASC
+		FOR SHARE`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func containsGeneration(gens []generation.Generation, id int) bool {
