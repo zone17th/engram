@@ -513,17 +513,21 @@ func checkSuggestMatch(m map[string]any, path, key string, isNear bool) error {
 	if err != nil {
 		return err
 	}
+	// Frozen SuggestMatch enum in apps/api/api/openapi.yaml:4471-4474:
+	// [prefix, prefix_folded, fuzzy, semantic].
 	switch match {
-	case suggest.MatchPrefix, suggest.MatchPrefixFolded, suggest.MatchFuzzy, suggest.MatchSemantic:
+	case "prefix", "prefix_folded", "fuzzy", "semantic":
 	default:
 		return fmt.Errorf("%s = %q, want SuggestMatch enum [prefix, prefix_folded, fuzzy, semantic]", path, match)
 	}
+	// Frozen SuggestNearRow rule in apps/api/api/openapi.yaml:4572-4581:
+	// near rows must have match="semantic"; lexical rows must use lexical tiers only.
 	if isNear {
-		if match != suggest.MatchSemantic {
-			return fmt.Errorf("%s = %q on near row, want %q", path, match, suggest.MatchSemantic)
+		if match != "semantic" {
+			return fmt.Errorf("%s = %q on near row, want %q", path, match, "semantic")
 		}
 	} else {
-		if match == suggest.MatchSemantic {
+		if match == "semantic" {
 			return fmt.Errorf("%s = %q on lexical row, want one of [prefix, prefix_folded, fuzzy]", path, match)
 		}
 	}
@@ -678,6 +682,61 @@ func TestSuggestOpenAPISchemaValidatorSelfTest(t *testing.T) {
 		t.Fatalf("expected baseline valid JSON to pass schema check, got: %v", err)
 	}
 
+	validNearJSON := `{
+		"scope": "all",
+		"limit": 8,
+		"mode": "full",
+		"quota": {"tag": 2, "lexical": 6, "near": 3},
+		"tags": [{
+			"kind": "tag",
+			"id": "00000000-0011-4000-8000-000000000001",
+			"display": "nhà-riêng",
+			"item_count": 2,
+			"last_used_at": "2026-10-20T12:00:00Z",
+			"match": "prefix"
+		}],
+		"items": [{
+			"kind": "item",
+			"id": "00000000-0001-4000-8000-000000000001",
+			"name": "wifi nhà",
+			"entry_count": 3,
+			"created_at": "2026-10-20T12:00:00Z",
+			"last_used_at": "2026-10-20T12:00:00Z",
+			"tags": [{"id": "00000000-0011-4000-8000-000000000001", "display": "nhà-riêng"}],
+			"tag_total": 1,
+			"match": "prefix"
+		}],
+		"has_more": false,
+		"lexical_partial": [],
+		"semantic": true,
+		"semantic_reason": null,
+		"near": [
+			{
+				"kind": "tag",
+				"id": "00000000-0011-4000-8000-000000000009",
+				"display": "mạng-gia-đình",
+				"item_count": 1,
+				"last_used_at": "2026-10-20T12:00:00Z",
+				"match": "semantic"
+			},
+			{
+				"kind": "item",
+				"id": "00000000-0001-4000-8000-000000000009",
+				"name": "bộ định tuyến phòng khách",
+				"entry_count": 1,
+				"created_at": "2026-10-20T12:00:00Z",
+				"last_used_at": "2026-10-20T12:00:00Z",
+				"tags": [],
+				"tag_total": 0,
+				"match": "semantic"
+			}
+		],
+		"generation": 1
+	}`
+	if err := checkSuggestResponseOpenAPISchema([]byte(validNearJSON)); err != nil {
+		t.Fatalf("expected valid semantic near baseline JSON to pass schema check, got: %v", err)
+	}
+
 	negativeCases := []struct {
 		name    string
 		mutate  func(m map[string]any)
@@ -799,6 +858,52 @@ func TestSuggestOpenAPISchemaValidatorSelfTest(t *testing.T) {
 			mutatedBytes, err := json.Marshal(obj)
 			if err != nil {
 				t.Fatalf("marshal mutated: %v", err)
+			}
+			err = checkSuggestResponseOpenAPISchema(mutatedBytes)
+			if err == nil {
+				t.Fatalf("expected schema error containing %q, got nil", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("schema error = %q, want substring %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+
+	nearNegativeCases := []struct {
+		name    string
+		mutate  func(m map[string]any)
+		wantSub string
+	}{
+		{
+			name: "near tag row with non-enum match 'near' rejected",
+			mutate: func(m map[string]any) {
+				near := m["near"].([]any)
+				near[0].(map[string]any)["match"] = "near"
+			},
+			wantSub: "SuggestResponse.near[0].match",
+		},
+		{
+			name: "near item row with lexical match 'prefix' rejected",
+			mutate: func(m map[string]any) {
+				near := m["near"].([]any)
+				near[1].(map[string]any)["match"] = "prefix"
+			},
+			wantSub: "SuggestResponse.near[1].match",
+		},
+	}
+
+	for _, tc := range nearNegativeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := json.NewDecoder(strings.NewReader(validNearJSON))
+			dec.UseNumber()
+			var obj map[string]any
+			if err := dec.Decode(&obj); err != nil {
+				t.Fatalf("decode near baseline: %v", err)
+			}
+			tc.mutate(obj)
+			mutatedBytes, err := json.Marshal(obj)
+			if err != nil {
+				t.Fatalf("marshal mutated near baseline: %v", err)
 			}
 			err = checkSuggestResponseOpenAPISchema(mutatedBytes)
 			if err == nil {
@@ -1499,15 +1604,29 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 			if len(respOn.Near) == 0 {
 				t.Fatalf("(%s,%s) semantic=1 expected non-empty near hits", scope, limitStr)
 			}
+			var rawOn struct {
+				Near []struct {
+					Match string `json:"match"`
+				} `json:"near"`
+			}
+			if err := json.Unmarshal(recOn.Body.Bytes(), &rawOn); err != nil {
+				t.Fatalf("(%s,%s) unmarshal semantic=1 near rows: %v", scope, limitStr, err)
+			}
+			for i, nr := range rawOn.Near {
+				if nr.Match != "semantic" {
+					t.Fatalf("(%s,%s) near[%d].match = %q, want literal \"semantic\"", scope, limitStr, i, nr.Match)
+				}
+			}
 		}
 	}
 
-	// Verify tag-before-item ordering and lexical deduplication on (scope=all, limit=8).
+	// Verify tag-before-item ordering, lexical deduplication, and literal match=="semantic" on (scope=all, limit=8).
 	recAll8 := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}, "semantic": {"1"}})
 	var rawAll8 struct {
 		Near []struct {
-			Kind string    `json:"kind"`
-			ID   uuid.UUID `json:"id"`
+			Kind  string    `json:"kind"`
+			ID    uuid.UUID `json:"id"`
+			Match string    `json:"match"`
 		} `json:"near"`
 	}
 	if err := json.Unmarshal(recAll8.Body.Bytes(), &rawAll8); err != nil {
@@ -1516,11 +1635,11 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 	if len(rawAll8.Near) != 2 {
 		t.Fatalf("near len = %d, want 2 (1 deduped tag + 1 deduped item)", len(rawAll8.Near))
 	}
-	if rawAll8.Near[0].Kind != "tag" || rawAll8.Near[0].ID != nearTagID {
-		t.Fatalf("near[0] = %+v, want tag %s", rawAll8.Near[0], nearTagID)
+	if rawAll8.Near[0].Kind != "tag" || rawAll8.Near[0].ID != nearTagID || rawAll8.Near[0].Match != "semantic" {
+		t.Fatalf("near[0] = %+v, want tag %s with match=\"semantic\"", rawAll8.Near[0], nearTagID)
 	}
-	if rawAll8.Near[1].Kind != "item" || rawAll8.Near[1].ID != nearItemID {
-		t.Fatalf("near[1] = %+v, want item %s", rawAll8.Near[1], nearItemID)
+	if rawAll8.Near[1].Kind != "item" || rawAll8.Near[1].ID != nearItemID || rawAll8.Near[1].Match != "semantic" {
+		t.Fatalf("near[1] = %+v, want item %s with match=\"semantic\"", rawAll8.Near[1], nearItemID)
 	}
 
 	// Verify RV-T3-BE-2: Recent mode delegates semantic_reason decision to NearSource
