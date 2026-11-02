@@ -3,6 +3,7 @@ package jobs_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -294,52 +295,154 @@ func TestReembedUserTwoExternalGenerations(t *testing.T) {
 		putStale(g, b, bStale)
 	}
 
-	deps := jobs.Dependencies{Pool: pool, Inserter: jobs.RiverClientInserter{Client: newInsertClient(t, pool)}}
+	// One ClientSet whose primary/shadow identities match BOTH external generations,
+	// so the real T11a workers can serve either generation id.
+	cs := embedding.NewClientSet(c1, &c2)
+	deps := jobs.Dependencies{Pool: pool, ClientSet: cs, Inserter: jobs.RiverClientInserter{Client: newInsertClient(t, pool)}}
 	if err := jobs.NewReembedUserWorker(deps).Work(ctx, &river.Job[jobargs.ReembedUserArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1}, Args: jobargs.ReembedUserArgs{UserID: a.String()},
 	}); err != nil {
 		t.Fatalf("Work(user a): %v", err)
 	}
 
+	type queuedJob struct {
+		kind, user, target, hash string
+		genID                    int
+	}
 	rows, err := pool.Query(ctx,
-		`SELECT kind, (args->>'generation_id')::int, args->>'user_id', args->>'target_id'
+		`SELECT kind, (args->>'generation_id')::int, args->>'user_id', args->>'target_id', args->>'input_hash'
 		 FROM river_job WHERE kind IN ($1, $2)`, jobargs.KindEmbedItem, jobargs.KindEmbedTag)
 	if err != nil {
 		t.Fatalf("query jobs: %v", err)
 	}
-	defer rows.Close()
-	got := map[string]int{}
-	total := 0
+	var queued []queuedJob
 	for rows.Next() {
-		var kind, user, target string
-		var genID int
-		if err := rows.Scan(&kind, &genID, &user, &target); err != nil {
+		var j queuedJob
+		if err := rows.Scan(&j.kind, &j.genID, &j.user, &j.target, &j.hash); err != nil {
+			rows.Close()
 			t.Fatalf("scan: %v", err)
 		}
-		if user == b.String() {
-			t.Fatalf("a job was enqueued for user b (kind %s, generation %d)", kind, genID)
-		}
-		got[fmt.Sprintf("%s|%d|%s", kind, genID, target)]++
-		total++
+		queued = append(queued, j)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	want := map[string]int{}
-	for _, gid := range []int{g1.ID, g2.ID} {
-		want[fmt.Sprintf("%s|%d|%s", jobargs.KindEmbedItem, gid, aMissing)] = 1
-		want[fmt.Sprintf("%s|%d|%s", jobargs.KindEmbedItem, gid, aStale)] = 1
-		want[fmt.Sprintf("%s|%d|%s", jobargs.KindEmbedTag, gid, aTag)] = 1
+
+	// Exact six jobs: user a's missing item, stale item and tag in each generation,
+	// each carrying the input_hash of that generation's identity over the live input.
+	inputOf := map[uuid.UUID]string{
+		aMissing: embedding.ItemInput("A missing item", ""),
+		aStale:   embedding.ItemInput("A stale item", ""),
+		aTag:     embedding.TagInput("a-tag"),
 	}
-	if total != 6 || len(got) != len(want) {
-		t.Fatalf("jobs = %v (total %d), want exactly user a's missing+stale items and tag in generations 1 and 2: %v", got, total, want)
+	kindOf := map[uuid.UUID]string{aMissing: jobargs.KindEmbedItem, aStale: jobargs.KindEmbedItem, aTag: jobargs.KindEmbedTag}
+	hashHex := func(g generation.Generation, input string) string {
+		h := embedding.InputHashFor(g.Identity(), input)
+		return hex.EncodeToString(h[:])
 	}
-	for k, n := range want {
-		if got[k] != n {
-			t.Fatalf("jobs[%s] = %d, want %d (all jobs %v)", k, got[k], n, got)
+	byID := map[int]generation.Generation{g1.ID: g1, g2.ID: g2}
+	want := map[string]string{} // "kind|generation|target" -> expected input_hash
+	for _, g := range []generation.Generation{g1, g2} {
+		for target, input := range inputOf {
+			want[fmt.Sprintf("%s|%d|%s", kindOf[target], g.ID, target)] = hashHex(g, input)
 		}
 	}
-	_, _, _ = bMissing, bStale, bTag // user b's targets exist precisely so any job for b would show up above
+	got := map[string]int{}
+	for _, j := range queued {
+		if j.user != a.String() {
+			t.Fatalf("a job for user %s was enqueued (kind %s, generation %d); only user a (%s) may have jobs", j.user, j.kind, j.genID, a)
+		}
+		key := fmt.Sprintf("%s|%d|%s", j.kind, j.genID, j.target)
+		got[key]++
+		wantHash, ok := want[key]
+		if !ok {
+			t.Fatalf("unexpected job %s (all jobs %v)", key, got)
+		}
+		if j.hash != wantHash {
+			t.Fatalf("job %s input_hash = %s, want %s", key, j.hash, wantHash)
+		}
+	}
+	if len(queued) != 6 || len(got) != len(want) {
+		t.Fatalf("jobs = %v (total %d), want exactly user a's missing+stale items and tag in generations 1 and 2: %v", got, len(queued), want)
+	}
+	for k := range want {
+		if got[k] != 1 {
+			t.Fatalf("jobs[%s] = %d, want 1 (all jobs %v)", k, got[k], got)
+		}
+	}
+
+	// Execute those exact queued args through the real T11a workers.
+	for _, j := range queued {
+		var err error
+		switch j.kind {
+		case jobargs.KindEmbedItem:
+			err = jobs.NewEmbedItemWorker(deps).Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+				JobRow: &rivertype.JobRow{Attempt: 1},
+				Args:   jobargs.EmbedItemArgs{GenerationID: j.genID, UserID: j.user, TargetID: j.target, InputHash: j.hash},
+			})
+		default:
+			err = jobs.NewEmbedTagWorker(deps).Work(ctx, &river.Job[jobargs.EmbedTagArgs]{
+				JobRow: &rivertype.JobRow{Attempt: 1},
+				Args:   jobargs.EmbedTagArgs{GenerationID: j.genID, UserID: j.user, TargetID: j.target, InputHash: j.hash},
+			})
+		}
+		if err != nil {
+			t.Fatalf("worker for %s generation %d target %s: %v", j.kind, j.genID, j.target, err)
+		}
+	}
+	var after int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM river_job WHERE kind IN ($1, $2)`, jobargs.KindEmbedItem, jobargs.KindEmbedTag).Scan(&after); err != nil {
+		t.Fatalf("count jobs after workers: %v", err)
+	}
+	if after != 6 {
+		t.Fatalf("embed jobs after workers = %d, want 6 (a worker enqueued a stale replacement)", after)
+	}
+
+	meta := func(g generation.Generation, kind generation.Corpus, user, target uuid.UUID) (store.StoredVector, bool) {
+		m, ok, err := store.GetTargetMeta(ctx, pool, g, kind, user, target)
+		if err != nil {
+			t.Fatalf("GetTargetMeta(generation %d, %s): %v", g.ID, kind, err)
+		}
+		return m, ok
+	}
+	for _, g := range []generation.Generation{g1, g2} {
+		for _, tc := range []struct {
+			kind   generation.Corpus
+			target uuid.UUID
+		}{
+			{generation.CorpusItem, aMissing}, {generation.CorpusItem, aStale}, {generation.CorpusTag, aTag},
+		} {
+			m, ok := meta(g, tc.kind, a, tc.target)
+			if !ok {
+				t.Fatalf("generation %d: user a's %s %s has no vector after the worker ran", g.ID, tc.kind, tc.target)
+			}
+			wantHash := embedding.InputHashFor(g.Identity(), inputOf[tc.target])
+			if !bytes.Equal(m.InputHash, wantHash[:]) {
+				t.Fatalf("generation %d: user a's %s %s input_hash = %x, want %x", g.ID, tc.kind, tc.target, m.InputHash, wantHash[:])
+			}
+			if m.Model != g.Model || m.ModelVersion != g.ModelVersion {
+				t.Fatalf("generation %d: user a's %s %s model/version = %q/%q, want %q/%q", g.ID, tc.kind, tc.target, m.Model, m.ModelVersion, g.Model, g.ModelVersion)
+			}
+		}
+
+		// User b was never reconciled: its missing item/tag stay absent and its
+		// stale vector is byte-for-byte the pre-seeded one.
+		if _, ok := meta(g, generation.CorpusItem, b, bMissing); ok {
+			t.Fatalf("generation %d: user b's missing item gained a vector", g.ID)
+		}
+		if _, ok := meta(g, generation.CorpusTag, b, bTag); ok {
+			t.Fatalf("generation %d: user b's tag gained a vector", g.ID)
+		}
+		bm, ok := meta(g, generation.CorpusItem, b, bStale)
+		if !ok {
+			t.Fatalf("generation %d: user b's stale vector disappeared", g.ID)
+		}
+		bWant := embedding.InputHashFor(byID[g.ID].Identity(), "outdated input before edit")
+		if !bytes.Equal(bm.InputHash, bWant[:]) {
+			t.Fatalf("generation %d: user b's stale vector input_hash changed to %x, want %x", g.ID, bm.InputHash, bWant[:])
+		}
+	}
 }
 
 func TestReembedWorkersLogNoPlaintext(t *testing.T) {
