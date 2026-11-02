@@ -18,8 +18,7 @@
 
 import { useTranslations } from 'next-intl';
 import { Kbd } from '@/components/ui/kbd';
-import { splitMarkedPrefix } from '@/features/omnibox/search-helpers';
-import type { SuggestItem, SuggestNearRow, SuggestTag } from '@/lib/api/search';
+import type { SuggestItem, SuggestMatch, SuggestNearRow, SuggestTag } from '@/lib/api/search';
 import {
   getRowKey,
   type NearZoneState,
@@ -27,6 +26,7 @@ import {
   type SuggestRow,
   type SuggestSnapshot,
 } from './merge';
+import { splitHighlightByMatch } from './fold';
 
 export const SUGGEST_LIST_MAX_CHIPS = 3;
 export const SUGGEST_LIST_MAX_CHIPS_MOBILE = 2;
@@ -201,11 +201,15 @@ export function collectCollidingNames(zones: readonly SuggestListZone[]): Readon
   return colliding;
 }
 
-function MarkedText({ text, query, enabled }: { readonly text: string; readonly query: string; readonly enabled: boolean }) {
-  if (!enabled || query === '') {
+/**
+ * RV-T17-2-FE1-4 (SPEC §6.8): the highlight variant follows the row's `match` channel (`prefix` exact, `prefix_folded`
+ * diacritic-folded, `fuzzy`/`semantic` no mark) through Task 9 `splitHighlightByMatch`. Near rows pass `semantic`.
+ */
+function MarkedText({ text, query, match }: { readonly text: string; readonly query: string; readonly match: SuggestMatch }) {
+  if (query === '') {
     return <>{text}</>;
   }
-  const parts = splitMarkedPrefix(text, query);
+  const parts = splitHighlightByMatch(text, query, match);
   return (
     <>
       {parts.before}
@@ -290,7 +294,7 @@ export function SuggestList({
           <MarkedText
             text={row.display}
             query={markQuery}
-            enabled={!isNear && (row.match === 'prefix' || row.match === 'prefix_folded')}
+            match={isNear ? 'semantic' : row.match}
           />
         </span>
         <span className="sugg-meta mono">
@@ -344,7 +348,7 @@ export function SuggestList({
             <MarkedText
               text={row.name}
               query={markQuery}
-              enabled={!isNear && (row.match === 'prefix' || row.match === 'prefix_folded')}
+              match={isNear ? 'semantic' : row.match}
             />
           </span>
           {shownTags.map((tag) => (
@@ -484,7 +488,7 @@ export function SuggestList({
                   <span>
                     <strong>{t('actions.loadMore')}</strong>
                   </span>
-                  <span className="sugg-meta">
+                  <span className="sugg-meta" aria-hidden="true">
                     <Kbd>{t('actions.loadMoreKbd')}</Kbd>
                   </span>
                 </div>
@@ -509,7 +513,7 @@ export function SuggestList({
                   <span className="!overflow-visible !whitespace-normal">
                     <strong>{t('actions.createItem', { query: model.displayQuery })}</strong>
                   </span>
-                  <span className="sugg-meta">
+                  <span className="sugg-meta" aria-hidden="true">
                     <Kbd>{t('actions.createItemKbd')}</Kbd>
                   </span>
                 </div>

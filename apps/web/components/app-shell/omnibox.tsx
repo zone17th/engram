@@ -1152,11 +1152,15 @@ export function Omnibox({
     return () => {
       abortAllSuggestRequests();
       searchAbortRef.current?.abort();
+      // RV-T17-2-FE1-8: a late "load more" page must not dispatch / set state after unmount, and the delayed live
+      // announcement must not fire on a dead instance.
+      loadMoreAbortRef.current?.abort();
+      clearLiveAnnounceTimer();
       createAbortRef.current?.abort();
       savePlanStartAbortRef.current?.abort();
       planAbortRef.current?.abort();
     };
-  }, [abortAllSuggestRequests]);
+  }, [abortAllSuggestRequests, clearLiveAnnounceTimer]);
 
   // Native `beforeinput`, `input`, `compositionstart`, and `compositionend` listeners on the textarea ref
   // (plan section 2.1 rules 1–2, L3, FE-5a: never React's synthetic `onBeforeInput`).
@@ -2503,6 +2507,9 @@ export function Omnibox({
             aria-pressed={semanticSuggest}
             aria-label={tSearchToggle('semanticAriaLabel')}
             disabled={semanticTogglePending}
+            // RV-T17-2-FE1-5: WebKit does not focus a clicked <button>; without this the textarea blurs with a null
+            // relatedTarget, `handleRootBlur` closes the listbox and the re-issue finds no snapshot.
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
               void handleToggleSemantic();
             }}
@@ -2916,15 +2923,20 @@ export function Omnibox({
       ) : null}
 
 
-      <DupPickerDialog
-        open={dupPickerState !== null}
-        name={dupPickerState?.name ?? ''}
-        initialItems={dupPickerState?.initialItems ?? []}
-        total={dupPickerState?.total ?? 0}
-        initialNextCursor={dupPickerState?.nextCursor ?? null}
-        onPick={handleDupPickerPick}
-        onCancel={handleDupPickerCancel}
-      />
+      {/* RV-T17-2-FE1-3: mount the picker only while it has state. It seeds its item list from `initialItems` at
+          mount, so an always-mounted dialog painted one frame with items=[] (create option only) before its passive
+          effect filled them. */}
+      {dupPickerState !== null ? (
+        <DupPickerDialog
+          open
+          name={dupPickerState.name}
+          initialItems={dupPickerState.initialItems}
+          total={dupPickerState.total}
+          initialNextCursor={dupPickerState.nextCursor ?? null}
+          onPick={handleDupPickerPick}
+          onCancel={handleDupPickerCancel}
+        />
+      ) : null}
       <ImportJsonDialog listenToHandoff />
     </div>
   );
