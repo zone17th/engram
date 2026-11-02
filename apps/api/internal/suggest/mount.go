@@ -39,6 +39,9 @@ func Mount(deps ...any) func(v1 chi.Router, d httpx.Deps) {
 	}
 
 	return func(v1 chi.Router, d httpx.Deps) {
+		if d.Logger != nil && h.logger.Load() == nil {
+			h.SetLogger(d.Logger)
+		}
 		requireSess := httpx.RequireSession(d.Authenticator)
 		rateLimit := h.bucket.Middleware()
 

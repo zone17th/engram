@@ -1,10 +1,14 @@
 package suggest
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
@@ -19,9 +23,57 @@ import (
 //   - Never logs `q` or `qn`.
 //   - Never echoes `q` or `qn` in RFC 9457 problem details or response bodies.
 //   - Always sets `Cache-Control: no-store`.
+//   - A genuine server error logs ONE WARN with only error_class, route, corpus, mode, scope,
+//     pgcode (SQLSTATE). No err.Error() text (a pgx error may embed query parameters). A client
+//     disconnect (request context canceled) is never logged as a server error (FU-SB-1).
 type Handler struct {
 	svc    *Service
 	bucket *httpx.TokenBucket
+	logger atomic.Pointer[slog.Logger]
+}
+
+// SetLogger attaches the logger used for server-error lines. nil disables logging.
+// `Mount` calls it with `httpx.Deps.Logger` when none was set, so NewHandler and the
+// compose call sites stay unchanged.
+func (h *Handler) SetLogger(l *slog.Logger) { h.logger.Store(l) }
+
+const (
+	routeSuggest = "/api/v1/suggest"
+	routeSearch  = "/api/v1/search"
+)
+
+// logServerError emits the single WARN line for a genuine internal error. Domain errors
+// (4xx) and client disconnects are not server errors and log nothing.
+func (h *Handler) logServerError(r *http.Request, route string, err error) {
+	l := h.logger.Load()
+	if l == nil || err == nil {
+		return
+	}
+	if _, ok := AsError(err); ok {
+		return
+	}
+	if _, ok := textnorm.AsError(err); ok {
+		return
+	}
+	if errors.Is(r.Context().Err(), context.Canceled) {
+		return
+	}
+	class := ClassUnclassified
+	attrs := []slog.Attr{slog.String("route", route)}
+	var ie *InternalError
+	switch {
+	case errors.As(err, &ie):
+		class = ie.Class
+		for _, kv := range [][2]string{{"corpus", ie.Corpus}, {"mode", ie.Mode}, {"scope", ie.Scope}, {"pgcode", ie.PGCode}} {
+			if kv[1] != "" {
+				attrs = append(attrs, slog.String(kv[0], kv[1]))
+			}
+		}
+	case errors.Is(err, ErrSearchInternal):
+		class = ClassSearchInternal
+	}
+	attrs = append([]slog.Attr{slog.String("error_class", class)}, attrs...)
+	l.LogAttrs(r.Context(), slog.LevelWarn, "suggest server error", attrs...)
 }
 
 // NewHandler constructs a Handler for `/suggest` (and `/search` in Task 4).
@@ -121,6 +173,7 @@ func (h *Handler) Suggest(w http.ResponseWriter, r *http.Request) {
 		Semantic: semantic,
 	})
 	if err != nil {
+		h.logServerError(r, routeSuggest, err)
 		WriteDomainError(w, r, err)
 		return
 	}
@@ -218,6 +271,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		Semantic: semantic,
 	})
 	if err != nil {
+		h.logServerError(r, routeSearch, err)
 		WriteDomainError(w, r, err)
 		return
 	}

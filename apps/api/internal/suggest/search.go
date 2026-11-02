@@ -329,37 +329,35 @@ func (s *Service) runSearchItemPageBranch(
 	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
 	defer cancel()
 
+	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
+	// genuine error -> err (FU-SB-1, classifyBranchErr).
+	fail := func(err error, class string) searchItemPageOutcome {
+		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusItem, mode, class)
+		if partial {
+			return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
+		}
+		return searchItemPageOutcome{err: out}
+	}
+
 	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
 		if err := h.BeforeBranch(branchCtx, CorpusItem); err != nil {
-			if isBranchTimeout(err) {
-				return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return searchItemPageOutcome{err: err}
+			return fail(err, ClassLexicalItemDB)
 		}
 	}
 
 	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		if isBranchTimeout(err) {
-			return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return searchItemPageOutcome{err: err}
+		return fail(err, ClassLexicalItemDB)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	if err := configureLexicalTx(branchCtx, tx, true); err != nil {
-		if isBranchTimeout(err) {
-			return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return searchItemPageOutcome{err: err}
+		return fail(err, ClassLexicalItemDB)
 	}
 
 	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
 		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusItem); err != nil {
-			if isBranchTimeout(err) {
-				return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return searchItemPageOutcome{err: err}
+			return fail(err, ClassLexicalItemDB)
 		}
 	}
 
@@ -388,10 +386,7 @@ func (s *Service) runSearchItemPageBranch(
 	q := gen.New(tx)
 	rows, err := q.SearchItemsLexicalPage(branchCtx, params)
 	if err != nil {
-		if isBranchTimeout(err) {
-			return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return searchItemPageOutcome{err: err}
+		return fail(err, ClassLexicalItemDB)
 	}
 
 	hasMore := len(rows) > pageLimit
@@ -416,10 +411,7 @@ func (s *Service) runSearchItemPageBranch(
 
 	if len(out) > 0 {
 		if err := attachTagRefs(branchCtx, q, userID, out); err != nil {
-			if isBranchTimeout(err) {
-				return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return searchItemPageOutcome{err: err}
+			return fail(err, ClassLexicalItemTagRefs)
 		}
 	}
 
@@ -453,37 +445,35 @@ func (s *Service) runSearchTagPageBranch(
 	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
 	defer cancel()
 
+	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
+	// genuine error -> err (FU-SB-1, classifyBranchErr).
+	fail := func(err error, class string) searchTagPageOutcome {
+		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusTag, mode, class)
+		if partial {
+			return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
+		}
+		return searchTagPageOutcome{err: out}
+	}
+
 	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
 		if err := h.BeforeBranch(branchCtx, CorpusTag); err != nil {
-			if isBranchTimeout(err) {
-				return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
-			}
-			return searchTagPageOutcome{err: err}
+			return fail(err, ClassLexicalTagDB)
 		}
 	}
 
 	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		if isBranchTimeout(err) {
-			return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return searchTagPageOutcome{err: err}
+		return fail(err, ClassLexicalTagDB)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	if err := configureLexicalTx(branchCtx, tx, true); err != nil {
-		if isBranchTimeout(err) {
-			return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return searchTagPageOutcome{err: err}
+		return fail(err, ClassLexicalTagDB)
 	}
 
 	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
 		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusTag); err != nil {
-			if isBranchTimeout(err) {
-				return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
-			}
-			return searchTagPageOutcome{err: err}
+			return fail(err, ClassLexicalTagDB)
 		}
 	}
 
@@ -512,10 +502,7 @@ func (s *Service) runSearchTagPageBranch(
 	q := gen.New(tx)
 	rows, err := q.SearchTagsLexicalPage(branchCtx, params)
 	if err != nil {
-		if isBranchTimeout(err) {
-			return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return searchTagPageOutcome{err: err}
+		return fail(err, ClassLexicalTagDB)
 	}
 
 	hasMore := len(rows) > pageLimit

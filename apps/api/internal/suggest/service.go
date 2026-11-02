@@ -317,7 +317,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 		alloc := ComputeQuota(parsed.Scope, limit, ModePrefix, 0, 0, 0)
 		reason, err := s.recentSemanticReason(ctx, in, parsed, limit)
 		if err != nil {
-			return SuggestResponse{}, err
+			return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 		}
 		resp = SuggestResponse{
 			Scope:          parsed.Scope,
@@ -347,7 +347,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 		parsed.QN,
 	)
 	if err != nil {
-		return SuggestResponse{}, err
+		return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 	}
 
 	alloc := ComputeQuota(parsed.Scope, limit, parsed.Mode, len(rawTags), len(rawItems), 0)
@@ -368,7 +368,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	if parsed.Mode == ModeRecent {
 		reason, err := s.recentSemanticReason(ctx, in, parsed, limit)
 		if err != nil {
-			return SuggestResponse{}, err
+			return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 		}
 		resp = SuggestResponse{
 			Scope:          parsed.Scope,
@@ -405,7 +405,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	nearCap := min(alloc.WireQuota.Near, max(0, limit-len(tags)-len(items)))
 	nearRes, err := s.resolveNear(ctx, in, parsed, limit, exclude, nearCap)
 	if err != nil {
-		return SuggestResponse{}, err
+		return SuggestResponse{}, withScope(err, parsed.Scope, parsed.Mode)
 	}
 
 	nearRows := filterAndClipNear(nearRes.Near, lexSet, alloc.WireQuota, limit, len(tags), len(items))
@@ -473,7 +473,10 @@ func (s *Service) resolveNear(
 		res, err = s.near.Near(ctx, req)
 	}
 	if err != nil {
-		return NearResult{}, err
+		if _, domain := AsError(err); domain {
+			return NearResult{}, err
+		}
+		return NearResult{}, newInternalError(ClassNearSource, "", parsed.Mode, err)
 	}
 	if !res.Semantic {
 		res.Near = []SuggestNearRow{}
