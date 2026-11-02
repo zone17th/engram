@@ -12,7 +12,7 @@ import {
   type A11yLang,
   type A11yTheme,
 } from './content-a11y-support';
-import { SEARCH_LISTBOX_ID, SEARCH_OMNIBOX_SELECTOR } from './content-search-support';
+import { SEARCH_LISTBOX_ID, SEARCH_OMNIBOX_SELECTOR, searchApiCreate } from './content-search-support';
 import { newContext, uniqueEmail } from './helpers';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs
@@ -44,64 +44,22 @@ const TAG_NAMES = ['network', 'ops', NIMBUS_TAG] as const;
 const RATE_LIMIT_RETRY_AFTER_S = 7;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Seeding (real API; paced under the 10 writes / 1 s content_write limit)
+// Seeding (real API; `searchApiCreate` is paced + replays 429 with the same Idempotency-Key)
 // ---------------------------------------------------------------------------------------------------------------------
 
 async function seedCorpus(page: Page): Promise<void> {
-  const spec = { nimbusCount: NIMBUS_COUNT, nimbusTag: NIMBUS_TAG, tagNames: [...TAG_NAMES] };
-  await page.evaluate(async (s) => {
-    const csrf = (() => {
-      for (const part of document.cookie.split(';')) {
-        const trimmed = part.trim();
-        if (trimmed.startsWith('sabk_csrf=')) {
-          return decodeURIComponent(trimmed.slice('sabk_csrf='.length));
-        }
-      }
-      return '';
-    })();
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-    const post = async (path: string, body: unknown): Promise<{ id: string }> => {
-      const key = `seed-${crypto.randomUUID().replace(/-/g, '')}`;
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const res = await fetch(`/api/v1${path}`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            accept: 'application/json',
-            'content-type': 'application/json',
-            'Idempotency-Key': key,
-            ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          },
-          body: JSON.stringify(body),
-        });
-        if (res.status === 429) {
-          const retry = Number(res.headers.get('retry-after') ?? '1');
-          await sleep((Number.isFinite(retry) && retry > 0 ? retry : 1) * 1000 + 50);
-          continue;
-        }
-        if (!res.ok) {
-          throw new Error(`seed POST ${path.replace(/[0-9a-f-]{36}/g, ':id')} -> ${res.status}`);
-        }
-        const parsed = (await res.json()) as { id: string };
-        await sleep(110);
-        return parsed;
-      }
-      throw new Error(`seed POST ${path.replace(/[0-9a-f-]{36}/g, ':id')} kept hitting 429`);
-    };
-
-    const tagIds: Record<string, string> = {};
-    for (const display of s.tagNames) {
-      tagIds[display] = (await post('/tags', { display })).id;
+  const tagIds: Record<string, string> = {};
+  for (const display of TAG_NAMES) {
+    tagIds[display] = (await searchApiCreate<{ id: string }>(page, '/tags', { display })).id;
+  }
+  for (let n = 1; n <= NIMBUS_COUNT; n += 1) {
+    const item = await searchApiCreate<{ id: string }>(page, '/items', { name: `nimbus ${String(n).padStart(2, '0')}` });
+    if (n <= 2) {
+      await searchApiCreate(page, `/items/${item.id}/tags`, { tag_ids: [tagIds[NIMBUS_TAG]!] });
     }
-    for (let n = 1; n <= s.nimbusCount; n += 1) {
-      const item = await post('/items', { name: `nimbus ${String(n).padStart(2, '0')}` });
-      if (n <= 2) {
-        await post(`/items/${item.id}/tags`, { tag_ids: [tagIds[s.nimbusTag]!] });
-      }
-    }
-    const viet = await post('/items', { name: 'mã wifi nhà' });
-    await post(`/items/${viet.id}/tags`, { tag_ids: [tagIds.network!] });
-  }, spec);
+  }
+  const viet = await searchApiCreate<{ id: string }>(page, '/items', { name: 'mã wifi nhà' });
+  await searchApiCreate(page, `/items/${viet.id}/tags`, { tag_ids: [tagIds.network!] });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -244,6 +202,25 @@ async function sweepAxe(
 // Keyboard-only journey (en-light): `/`, ↓, Tab, Enter
 // ---------------------------------------------------------------------------------------------------------------------
 
+/**
+ * Asserts exactly one active option of `kind` (`aria-selected` + `data-opt-kind`) and that the textbox points at it through
+ * `aria-activedescendant`. With `press`, sends one ArrowDown first. Returns the active option id.
+ */
+async function expectActiveOption(
+  page: Page,
+  kind: 'tag' | 'item',
+  opts: { readonly press?: boolean } = {},
+): Promise<string> {
+  if (opts.press) await page.keyboard.press('ArrowDown');
+  const active = listboxOf(page).locator('[role="option"][aria-selected="true"]');
+  await expect(active).toHaveCount(1);
+  await expect(active).toHaveAttribute('data-opt-kind', kind);
+  const id = await active.getAttribute('id');
+  expect(id, `active ${kind} option has an id`).toBeTruthy();
+  await expect(omniboxOf(page)).toHaveAttribute('aria-activedescendant', id!);
+  return id!;
+}
+
 async function runKeyboardJourney(page: Page): Promise<void> {
   const omnibox = omniboxOf(page);
   const listbox = listboxOf(page);
@@ -279,14 +256,11 @@ async function runKeyboardJourney(page: Page): Promise<void> {
   await expectInputEmpty(omnibox);
   await page.keyboard.type('nim');
   await expectRowsSettled(page, 'item');
-  await page.keyboard.press('ArrowDown');
+  // Group order is tags, then items: the first ↓ lands on the tag `nimbus-prod`, the second on the first item.
   const active = listbox.locator('[role="option"][aria-selected="true"]');
-  await expect(active).toHaveCount(1);
-  const activeId = await active.getAttribute('id');
-  expect(activeId).toBeTruthy();
-  await expect(omnibox).toHaveAttribute('aria-activedescendant', activeId!);
-  const activeKind = await active.getAttribute('data-opt-kind');
-  expect(activeKind).toBe('item');
+  await expectActiveOption(page, 'tag');
+  await page.keyboard.press('ArrowDown');
+  await expectActiveOption(page, 'item');
   const activeName = (await active.locator('.omni-opt-title').first().textContent()) ?? '';
   expect(activeName).not.toBe('');
   await page.keyboard.press('Tab');
@@ -300,8 +274,9 @@ async function runKeyboardJourney(page: Page): Promise<void> {
   await expectInputEmpty(omnibox);
   await page.keyboard.type('nim');
   await expectRowsSettled(page, 'item');
+  await expectActiveOption(page, 'tag', { press: true });
   await page.keyboard.press('ArrowDown');
-  await expect(listbox.locator('[role="option"][aria-selected="true"]')).toHaveCount(1);
+  await expectActiveOption(page, 'item');
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/app\/items\/[0-9a-f-]{36}$/, { timeout: CONTENT_A11Y_UI_WAIT_MS });
 }

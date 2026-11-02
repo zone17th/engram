@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Browser, type Locator, type Page, type Request, type TestInfo } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { triggerFocusWake } from './content-acceptance-support';
@@ -10,6 +10,7 @@ import {
   attachPlaintextLeakGuard,
   bootstrapUnlockedUser,
   expectInputEmpty,
+  expectInputEquals,
   measureCoarseTouchTargets,
   newCoarseTouchContext,
   setQuietValue,
@@ -17,7 +18,16 @@ import {
   type A11yLang,
   type A11yTheme,
 } from './content-a11y-support';
-import { SEARCH_LISTBOX_ID, SEARCH_OMNIBOX_SELECTOR } from './content-search-support';
+import enMessages from '../messages/en.json';
+import viMessages from '../messages/vi.json';
+import {
+  SEARCH_LISTBOX_ID,
+  SEARCH_OMNIBOX_SELECTOR,
+  SEARCH_QUIET_WINDOW_MS,
+  grantClipboard,
+  pasteIntoOmnibox,
+  searchApiCreate,
+} from './content-search-support';
 import { fetchMeViaPage, newContext, patchSettingsViaPage, uniqueEmail } from './helpers';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs
@@ -64,6 +74,8 @@ const SEED_TAG_NAMES = [...MULTI_TAG_NAMES, NIMBUS_TAG] as const;
 const PUBLIC_DRAFTS: readonly string[] = ['nim', 'nimbus', 'zeph', 'zzqx', '#n', '#zzqx'];
 const RATE_LIMIT_RETRY_AFTER_S = 7;
 const TOAST_ITEM_NAME = 'undo fixture';
+/** Public fixture string pasted for the `tainted` state (also in PUBLIC_DRAFTS, so the capture does not mask it). */
+const TAINTED_PASTE = 'nimbus';
 
 function isEdge(lang: A11yLang, theme: A11yTheme): boolean {
   return EDGE_COMBOS.has(`${lang}-${theme}`);
@@ -86,78 +98,30 @@ interface CaptureContext {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Seeding (real API, paced under the 10 writes / 1 s content_write limit)
+// Seeding (real API, paced + 429 replay in content-search-support)
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
- * Creates the fixture corpus through the same-origin API from inside the page (session cookie + CSRF header). Every write
- * carries its own Idempotency-Key; a 429 waits `Retry-After` and replays the same key. Never logs a body.
+ * Creates the fixture corpus through the real API. `searchApiCreate` (content-search-support) paces every write under the
+ * 10 writes / 1 s `content_write` limit and replays a 429 with the same Idempotency-Key. Never logs a body.
  */
 async function seedCorpus(page: Page): Promise<void> {
-  const spec = {
-    nimbusCount: NIMBUS_COUNT,
-    nimbusTag: NIMBUS_TAG,
-    multiTagItem: MULTI_TAG_ITEM,
-    multiTagNames: [...MULTI_TAG_NAMES],
-    tagNames: [...SEED_TAG_NAMES],
-  };
-  await page.evaluate(async (s) => {
-    const csrf = (() => {
-      for (const part of document.cookie.split(';')) {
-        const trimmed = part.trim();
-        if (trimmed.startsWith('sabk_csrf=')) {
-          return decodeURIComponent(trimmed.slice('sabk_csrf='.length));
-        }
-      }
-      return '';
-    })();
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-    const post = async (path: string, body: unknown): Promise<{ id: string }> => {
-      const key = `seed-${crypto.randomUUID().replace(/-/g, '')}`;
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const res = await fetch(`/api/v1${path}`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            accept: 'application/json',
-            'content-type': 'application/json',
-            'Idempotency-Key': key,
-            ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          },
-          body: JSON.stringify(body),
-        });
-        if (res.status === 429) {
-          const retry = Number(res.headers.get('retry-after') ?? '1');
-          await sleep((Number.isFinite(retry) && retry > 0 ? retry : 1) * 1000 + 50);
-          continue;
-        }
-        if (!res.ok) {
-          throw new Error(`seed POST ${path.replace(/[0-9a-f-]{36}/g, ':id')} -> ${res.status}`);
-        }
-        const parsed = (await res.json()) as { id: string };
-        await sleep(110);
-        return parsed;
-      }
-      throw new Error(`seed POST ${path.replace(/[0-9a-f-]{36}/g, ':id')} kept hitting 429`);
-    };
-
-    const tagIds: Record<string, string> = {};
-    for (const display of s.tagNames) {
-      tagIds[display] = (await post('/tags', { display })).id;
+  const tagIds: Record<string, string> = {};
+  for (const display of SEED_TAG_NAMES) {
+    tagIds[display] = (await searchApiCreate<{ id: string }>(page, '/tags', { display })).id;
+  }
+  const multi = await searchApiCreate<{ id: string }>(page, '/items', { name: MULTI_TAG_ITEM });
+  await searchApiCreate(page, `/items/${multi.id}/tags`, { tag_ids: MULTI_TAG_NAMES.map((n) => tagIds[n]!) });
+  for (let n = 1; n <= NIMBUS_COUNT; n += 1) {
+    const item = await searchApiCreate<{ id: string }>(page, '/items', { name: `nimbus ${String(n).padStart(2, '0')}` });
+    if (n === 1 || n === 2) {
+      const ids = n === 1 ? [tagIds[NIMBUS_TAG]!] : [tagIds[NIMBUS_TAG]!, tagIds.ops!];
+      await searchApiCreate(page, `/items/${item.id}/tags`, { tag_ids: ids });
     }
-    const multi = await post('/items', { name: s.multiTagItem });
-    await post(`/items/${multi.id}/tags`, { tag_ids: s.multiTagNames.map((n) => tagIds[n]!) });
-    for (let n = 1; n <= s.nimbusCount; n += 1) {
-      const item = await post('/items', { name: `nimbus ${String(n).padStart(2, '0')}` });
-      if (n === 1 || n === 2) {
-        const ids = n === 1 ? [tagIds[s.nimbusTag]!] : [tagIds[s.nimbusTag]!, tagIds.ops!];
-        await post(`/items/${item.id}/tags`, { tag_ids: ids });
-      }
-    }
-    const viet = await post('/items', { name: 'mã wifi nhà' });
-    await post(`/items/${viet.id}/tags`, { tag_ids: [tagIds.network!] });
-    await post('/items', { name: 'wifi guest' });
-  }, spec);
+  }
+  const viet = await searchApiCreate<{ id: string }>(page, '/items', { name: 'mã wifi nhà' });
+  await searchApiCreate(page, `/items/${viet.id}/tags`, { tag_ids: [tagIds.network!] });
+  await searchApiCreate(page, '/items', { name: 'wifi guest' });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -247,7 +211,12 @@ async function expectNoHorizontalScroll(ctx: CaptureContext, state: string, widt
 }
 
 /** Every visible dropdown row is >= 44 px tall (`.omni-listbox .sugg-row { min-height: 44px }`, plan 2.9). */
-async function expectRowsAtLeast44(ctx: CaptureContext, state: string, width: number): Promise<void> {
+async function expectRowsAtLeast44(
+  ctx: CaptureContext,
+  state: string,
+  width: number,
+  opts: { readonly requireRows?: boolean } = {},
+): Promise<void> {
   const m = await ctx.page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll<HTMLElement>('#omni-listbox .sugg-row')).filter((el) => {
       const rect = el.getBoundingClientRect();
@@ -255,6 +224,10 @@ async function expectRowsAtLeast44(ctx: CaptureContext, state: string, width: nu
     });
     return { count: rows.length, min: Math.min(...rows.map((el) => el.getBoundingClientRect().height)) };
   });
+  if (opts.requireRows) {
+    // A renamed `.sugg-row` class would otherwise turn every >= 44 px assert vacuous (RV-T22-1-FE1-10).
+    expect.soft(m.count, `dropdown rows ${state} ${ctx.lang}-${ctx.theme} ${width}: no .sugg-row found`).toBeGreaterThan(0);
+  }
   if (m.count === 0) return;
   expect
     .soft(m.min, `dropdown row height ${state} ${ctx.lang}-${ctx.theme} ${width}: min ${m.min}px`)
@@ -262,8 +235,8 @@ async function expectRowsAtLeast44(ctx: CaptureContext, state: string, width: nu
 }
 
 /**
- * Dark-theme token through computed style (FS-20): `<html data-theme>` matches, `--canvas` resolves to the theme's literal
- * token, and the active dropdown row paints `--surface-alt` (dark) / `--pale-accent` (light). Needs an active option.
+ * Dark-theme token through computed style (FS-20): `<html data-theme>` matches, `--canvas` resolves (as a computed colour) to the
+ * theme's literal token, and the active dropdown row paints `--surface-alt` (dark) / `--pale-accent` (light). Needs an active option.
  */
 async function expectThemeTokens(page: Page, theme: A11yTheme): Promise<void> {
   const m = await page.evaluate(() => {
@@ -278,14 +251,15 @@ async function expectThemeTokens(page: Page, theme: A11yTheme): Promise<void> {
     const active = document.querySelector<HTMLElement>('#omni-listbox .sugg-row[aria-selected="true"]');
     return {
       dataTheme: document.documentElement.getAttribute('data-theme'),
-      canvasToken: getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim().toUpperCase(),
+      canvas: resolveBg('--canvas'),
       activeBg: active ? getComputedStyle(active).backgroundColor : null,
       surfaceAlt: resolveBg('--surface-alt'),
       paleAccent: resolveBg('--pale-accent'),
     };
   });
   expect(m.dataTheme).toBe(theme);
-  expect(m.canvasToken).toBe(theme === 'dark' ? '#161616' : '#FFFFFF');
+  // Computed colour, not the raw custom-property text: the production CSS minifies `#FFFFFF` to `#FFF` (RV-T22-1-FE1-4).
+  expect(m.canvas).toBe(theme === 'dark' ? 'rgb(22, 22, 22)' : 'rgb(255, 255, 255)');
   expect(m.activeBg, 'an active dropdown row is required for the token check').not.toBeNull();
   expect(m.activeBg).toBe(theme === 'dark' ? m.surfaceAlt : m.paleAccent);
 }
@@ -378,6 +352,8 @@ async function sweepWidths(
     readonly after?: (width: Width) => Promise<void>;
     readonly target?: Locator;
     readonly cleanup?: (width: Width) => Promise<void>;
+    /** Row-bearing states: fail (not pass vacuously) when the dropdown holds no `.sugg-row`. */
+    readonly requireRows?: boolean;
   } = {},
 ): Promise<void> {
   const widths = opts.widths ?? WIDTHS.map((w) => w.width);
@@ -387,7 +363,7 @@ async function sweepWidths(
     await interact(width);
     await settle(ctx.page);
     await expectNoHorizontalScroll(ctx, state, width);
-    await expectRowsAtLeast44(ctx, state, width);
+    await expectRowsAtLeast44(ctx, state, width, { requireRows: opts.requireRows });
     await opts.after?.(width);
     await saveCapture(ctx, state, width, opts.target);
     await opts.cleanup?.(width);
@@ -416,11 +392,16 @@ async function captureCoreStates(ctx: CaptureContext): Promise<void> {
   });
 
   await a11yStep(`[search-visual ${ctx.lang}-${theme}] recent (focus, empty draft)`, async () => {
-    await sweepWidths(ctx, 'recent', async () => {
-      await omnibox.focus();
-      await expectRowsSettled(page, 'item');
-      await expect(listbox.locator('[role="group"]')).not.toHaveCount(0);
-    });
+    await sweepWidths(
+      ctx,
+      'recent',
+      async () => {
+        await omnibox.focus();
+        await expectRowsSettled(page, 'item');
+        await expect(listbox.locator('[role="group"]')).not.toHaveCount(0);
+      },
+      { requireRows: true },
+    );
   });
 
   await a11yStep(`[search-visual ${ctx.lang}-${theme}] suggest (tags + items + create CTA, active row, theme token)`, async () => {
@@ -436,7 +417,7 @@ async function captureCoreStates(ctx: CaptureContext): Promise<void> {
         await page.keyboard.press('ArrowDown');
         await expect(listbox.locator('[role="option"][aria-selected="true"]')).toHaveCount(1);
       },
-      { after: async () => expectThemeTokens(page, theme) },
+      { after: async () => expectThemeTokens(page, theme), requireRows: true },
     );
   });
 
@@ -448,30 +429,35 @@ async function captureCoreStates(ctx: CaptureContext): Promise<void> {
         await typeQuery(page, MULTI_TAG_QUERY);
         await expectRowsSettled(page, 'item');
       },
-      { after: async (width) => expectChipCounts(page, width) },
+      { after: async (width) => expectChipCounts(page, width), requireRows: true },
     );
   });
 
   await a11yStep(`[search-visual ${ctx.lang}-${theme}] tags (# mode: cached tags, then server rows)`, async () => {
-    await sweepWidths(ctx, 'tags', async () => {
-      const serverRows = page.waitForResponse(
-        (res) => {
-          if (res.request().method() !== 'GET') return false;
-          const url = new URL(res.url());
-          return (
-            url.pathname === '/api/v1/suggest' &&
-            url.searchParams.get('scope') === 'tag' &&
-            url.searchParams.get('q') === 'n'
-          );
-        },
-        { timeout: CONTENT_A11Y_UI_WAIT_MS },
-      );
-      await typeQuery(page, '#n');
-      expect((await serverRows).status()).toBe(200);
-      await expectRowsSettled(page, 'tag');
-      await expect(listbox.locator('[role="option"][data-opt-kind="item"]')).toHaveCount(0);
-      await expect(listbox.locator('[role="option"][aria-selected="true"]')).toHaveCount(1);
-    });
+    await sweepWidths(
+      ctx,
+      'tags',
+      async () => {
+        const serverRows = page.waitForResponse(
+          (res) => {
+            if (res.request().method() !== 'GET') return false;
+            const url = new URL(res.url());
+            return (
+              url.pathname === '/api/v1/suggest' &&
+              url.searchParams.get('scope') === 'tag' &&
+              url.searchParams.get('q') === 'n'
+            );
+          },
+          { timeout: CONTENT_A11Y_UI_WAIT_MS },
+        );
+        await typeQuery(page, '#n');
+        expect((await serverRows).status()).toBe(200);
+        await expectRowsSettled(page, 'tag');
+        await expect(listbox.locator('[role="option"][data-opt-kind="item"]')).toHaveCount(0);
+        await expect(listbox.locator('[role="option"][aria-selected="true"]')).toHaveCount(1);
+      },
+      { requireRows: true },
+    );
   });
 
   await a11yStep(`[search-visual ${ctx.lang}-${theme}] empty (no match) and tag-empty`, async () => {
@@ -484,6 +470,32 @@ async function captureCoreStates(ctx: CaptureContext): Promise<void> {
       await typeQuery(page, '#zzqx');
       await expect(page.getByTestId('omnibox-tag-empty')).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
     });
+  });
+
+  // U18 "input tainted" (plan 2.10): a real clipboard paste (Control+V -> insertFromPaste) of a PUBLIC fixture string taints the
+  // draft; the help line switches to "Press Enter to search" and nothing is sent while typing (plan 2.1 rule 1).
+  await a11yStep(`[search-visual ${ctx.lang}-${theme}] tainted (paste: Enter-to-search help, no /suggest with q)`, async () => {
+    const helpText = (ctx.lang === 'vi' ? viMessages : enMessages).search.help.enterToSearch;
+    const sentSuggestQueries: string[] = [];
+    const onRequest = (req: Request): void => {
+      if (req.method() !== 'GET') return;
+      const url = new URL(req.url());
+      if (url.pathname === '/api/v1/suggest' && url.searchParams.has('q')) sentSuggestQueries.push('q');
+    };
+    page.on('request', onRequest);
+    try {
+      await sweepWidths(ctx, 'tainted', async () => {
+        const before = sentSuggestQueries.length;
+        await pasteIntoOmnibox(page, omnibox, TAINTED_PASTE);
+        await expectInputEquals(omnibox, TAINTED_PASTE);
+        await expect(page.getByTestId('omnibox-hint')).toContainText(helpText, { timeout: CONTENT_A11Y_UI_WAIT_MS });
+        // The one allowed fixed wait (plan Task 22, ">= 1 s with no request"): the 120 ms debounce had time to fire.
+        await page.waitForTimeout(SEARCH_QUIET_WINDOW_MS);
+        expect(sentSuggestQueries.length - before, 'tainted paste must not send /suggest with q').toBe(0);
+      });
+    } finally {
+      page.off('request', onRequest);
+    }
   });
 }
 
@@ -513,9 +525,11 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
           await expect(page.getByTestId('omnibox-skeleton')).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
         },
         {
-          cleanup: async () => {
+          cleanup: async (width) => {
             held.release();
             await expectRowsSettled(page, 'item');
+            // Once released the real rows must exist and be >= 44 px (RV-T22-1-FE1-10).
+            await expectRowsAtLeast44(ctx, 'skeleton-released', width, { requireRows: true });
           },
         },
       );
@@ -545,6 +559,7 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
         expect(rowsBefore).toBeGreaterThan(0);
         expect(rowsBefore).toBeLessThan(NIMBUS_COUNT);
       },
+      { requireRows: true },
     );
     await sweepWidths(
       ctx,
@@ -560,6 +575,7 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
         await itemRows.nth(rowsBefore).scrollIntoViewIfNeeded();
         await expect(listbox).not.toHaveAttribute('aria-busy', 'true');
       },
+      { requireRows: true },
     );
   });
 
@@ -579,18 +595,23 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
       });
     });
     try {
-      await sweepWidths(ctx, 'rate-limited', async () => {
-        await typeQuery(page, 'nim');
-        await expectRowsSettled(page, 'item');
-        await page.keyboard.press('Enter');
-        const line = page.getByTestId('omnibox-status-rate-limited');
-        await expect(line).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-        await expect(line).toContainText(String(RATE_LIMIT_RETRY_AFTER_S));
-        // Plan 2.6: muted line, rows kept, never a toast and never a role=status/alert on the line.
-        await expect(listbox.locator('[role="option"][data-opt-kind="item"]').first()).toBeVisible();
-        await expect(page.getByTestId('undo-toast-item')).toHaveCount(0);
-        await expect(line).not.toHaveAttribute('role', /.+/);
-      });
+      await sweepWidths(
+        ctx,
+        'rate-limited',
+        async () => {
+          await typeQuery(page, 'nim');
+          await expectRowsSettled(page, 'item');
+          await page.keyboard.press('Enter');
+          const line = page.getByTestId('omnibox-status-rate-limited');
+          await expect(line).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expect(line).toContainText(String(RATE_LIMIT_RETRY_AFTER_S));
+          // Plan 2.6: muted line, rows kept, never a toast and never a role=status/alert on the line.
+          await expect(listbox.locator('[role="option"][data-opt-kind="item"]').first()).toBeVisible();
+          await expect(page.getByTestId('undo-toast-item')).toHaveCount(0);
+          await expect(line).not.toHaveAttribute('role', /.+/);
+        },
+        { requireRows: true },
+      );
     } finally {
       await page.unroute('**/api/v1/search*');
     }
@@ -625,27 +646,40 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
       return { intersects, stackTop: Math.round(a.top), listboxBottom: Math.round(b.bottom) };
     });
     expect(overlap, 'toast stack and listbox must both be present').not.toBeNull();
-    expect
-      .soft(
-        overlap!.intersects,
-        `undo toast stack overlaps the open dropdown at 390 (stackTop=${overlap!.stackTop}, listboxBottom=${overlap!.listboxBottom})`,
-      )
-      .toBe(false);
     await expectNoHorizontalScroll(ctx, 'undo-toast', 390);
     await saveCapture(ctx, 'undo-toast', 390);
     leakGuard.assertNoLeaks();
     leakGuard.assertSawEntriesPost();
+    // FU10 (advisor-dec-326): the product fix for RV-T22-1-FE1-6 lands in this PR, so this is a HARD assert. It runs after the
+    // capture so a red run still leaves the evidence screenshot.
+    expect(
+      overlap!.intersects,
+      `undo toast stack overlaps the open dropdown at 390 (stackTop=${overlap!.stackTop}, listboxBottom=${overlap!.listboxBottom})`,
+    ).toBe(false);
   });
 }
 
-/** Real PATCH true on the noop stack: 409 semantic_unavailable, setting stays false. The UI cannot show it here (see header). */
+/**
+ * Real settings contract on the noop stack (RV-T22-1-FE1-5): `semantic_suggest` defaults to `true` (SPEC section 2), so first
+ * read `/auth/me`, turn it OFF (always 200), then `PATCH true` must be 409 `semantic_unavailable` and must NOT flip the stored
+ * value back on. The UI cannot show this here (see header).
+ */
 async function assertEnable409Contract(page: Page): Promise<void> {
-  const patched = await patchSettingsViaPage(page, { semantic_suggest: true });
-  expect(patched.status).toBe(409);
-  expect((patched.body as { code?: string } | null)?.code).toBe('semantic_unavailable');
-  const me = await fetchMeViaPage(page);
-  const settings = (me.body as { settings?: { semantic_suggest?: boolean } } | null)?.settings;
-  expect(settings?.semantic_suggest).toBe(false);
+  const readStored = async (): Promise<boolean | undefined> => {
+    const me = await fetchMeViaPage(page);
+    expect(me.status).toBe(200);
+    return (me.body as { settings?: { semantic_suggest?: boolean } } | null)?.settings?.semantic_suggest;
+  };
+  expect(typeof (await readStored()), 'auth/me must expose settings.semantic_suggest').toBe('boolean');
+
+  const off = await patchSettingsViaPage(page, { semantic_suggest: false });
+  expect(off.status, 'PATCH semantic_suggest=false always succeeds').toBe(200);
+  expect(await readStored()).toBe(false);
+
+  const on = await patchSettingsViaPage(page, { semantic_suggest: true });
+  expect(on.status).toBe(409);
+  expect((on.body as { code?: string } | null)?.code).toBe('semantic_unavailable');
+  expect(await readStored(), 'a refused enable must leave the stored value false').toBe(false);
   // 22-2: the omnibox `omnibox-status-enable409` line and the settings `semanticEnable409` status need a server where
   // `semantic_available=true` but the breaker/provider is down (`fakeembed /__control {"mode":"down"}`); capture them there.
 }
@@ -715,6 +749,7 @@ async function runVisualGroup(
   const label = `${lang}-${theme}`;
   const edge = isEdge(lang, theme);
   const context = await newContext(browser);
+  await grantClipboard(context);
   try {
     const page = await context.newPage();
     const ctx: CaptureContext = { page, testInfo, lang, theme };

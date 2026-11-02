@@ -97,9 +97,17 @@ export interface SeededCorpus {
   tagKey(display: string): string;
 }
 
+/** `content_write` is 10 req / 1 s per user (apps/api/internal/httpx/userlimit.go): pause after each successful write. */
+const SEARCH_WRITE_PACE_MS = 110;
+const SEARCH_WRITE_MAX_ATTEMPTS = 8;
+
 /**
  * Same-origin write from the page jar (cookies + CSRF + `Idempotency-Key`), the pattern of `content-home.spec`.
- * Bodies carry fixture names only.
+ * Bodies carry fixture names only and are never logged.
+ *
+ * Paced and replay-safe (RV-T22-1-FE1-1): one `Idempotency-Key` per logical write; a 429 waits `Retry-After` x 1000 + 50 ms and
+ * resends the SAME key (up to 8 attempts); a successful write sleeps ~110 ms so a seeding loop stays under the per-user
+ * `content_write` window. The visual and a11y specs import this too; do not copy the loop.
  */
 export async function searchApiMutate<TResponse>(
   page: Page,
@@ -108,7 +116,7 @@ export async function searchApiMutate<TResponse>(
   body?: Record<string, unknown>,
 ): Promise<{ status: number; data: TResponse }> {
   return page.evaluate(
-    async ({ methodArg, pathArg, bodyArg, prefix }) => {
+    async ({ methodArg, pathArg, bodyArg, prefix, paceMs, maxAttempts }) => {
       let csrf: string | null = null;
       for (const part of document.cookie.split(';')) {
         const trimmed = part.trim();
@@ -117,22 +125,55 @@ export async function searchApiMutate<TResponse>(
           break;
         }
       }
-      const res = await fetch(`${prefix}${pathArg}`, {
-        method: methodArg,
-        credentials: 'same-origin',
-        headers: {
-          accept: 'application/json',
-          ...(bodyArg !== undefined ? { 'content-type': 'application/json' } : {}),
-          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          'Idempotency-Key': crypto.randomUUID(),
-        },
-        body: bodyArg !== undefined ? JSON.stringify(bodyArg) : undefined,
-      });
-      const parsed = res.headers.get('content-type')?.includes('json') ? await res.json() : null;
-      return { status: res.status, data: parsed as unknown };
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const key = crypto.randomUUID();
+      let last: { status: number; data: unknown } = { status: 0, data: null };
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const res = await fetch(`${prefix}${pathArg}`, {
+          method: methodArg,
+          credentials: 'same-origin',
+          headers: {
+            accept: 'application/json',
+            ...(bodyArg !== undefined ? { 'content-type': 'application/json' } : {}),
+            ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+            'Idempotency-Key': key,
+          },
+          body: bodyArg !== undefined ? JSON.stringify(bodyArg) : undefined,
+        });
+        const parsed = res.headers.get('content-type')?.includes('json') ? await res.json() : null;
+        last = { status: res.status, data: parsed };
+        if (res.status === 429) {
+          const retry = Number(res.headers.get('retry-after') ?? '1');
+          await sleep((Number.isFinite(retry) && retry > 0 ? retry : 1) * 1000 + 50);
+          continue;
+        }
+        if (res.ok) await sleep(paceMs);
+        return last;
+      }
+      return last;
     },
-    { methodArg: method, pathArg: path, bodyArg: body, prefix: API_PREFIX },
+    {
+      methodArg: method,
+      pathArg: path,
+      bodyArg: body,
+      prefix: API_PREFIX,
+      paceMs: SEARCH_WRITE_PACE_MS,
+      maxAttempts: SEARCH_WRITE_MAX_ATTEMPTS,
+    },
   ) as Promise<{ status: number; data: TResponse }>;
+}
+
+/** Paced `searchApiMutate('POST', ...)` that returns the created body and throws (path with ids masked, no body) on a non-2xx. */
+export async function searchApiCreate<TResponse>(
+  page: Page,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<TResponse> {
+  const res = await searchApiMutate<TResponse>(page, 'POST', path, body);
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`seed POST ${path.replace(/[0-9a-f-]{36}/g, ':id')} -> ${res.status}`);
+  }
+  return res.data;
 }
 
 /**

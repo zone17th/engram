@@ -241,6 +241,11 @@ test.describe('P05-T22 search privacy (lexical, real stack)', () => {
       // The only text after the colon is " body"; a q carrying it would also fail the prefix check above. The plus form
       // (`name:+body`) is covered by `searchNeedleForms` for the full draft.
       await recorder.assertNeverContains([{ label: 'name-colon-body', value: 'name: body' }], mark);
+      // Plan (h): no request may carry `body`. Scan the bare text after the colon too (API requests only: a chunk URL could
+      // hold a short word by chance; there are no API POSTs inside this mark, so a JSON key cannot collide).
+      await recorder.assertNeverContains([{ label: 'after-colon-body', value: ' body' }], mark, {
+        filter: isApiRequest,
+      });
     });
 
     // ---- (i) full-width colon and `http://x`: nothing after the colon (FE-8) ----
