@@ -758,10 +758,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
   return (
     <div data-testid="item-header">
       <nav aria-label={tItem('breadcrumbLabel')} className="mb-5 text-[13px] text-muted">
-        <Link
-          href="/app"
-          className="inline-flex items-center font-medium text-body no-underline hover:underline [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
-        >
+        <Link href="/app" className="font-medium text-body no-underline hover:underline">
           {tItem('allItems')}
         </Link>
         <span className="mx-1.5">/</span>
@@ -834,7 +831,7 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
               placeholder={tItem('hintPlaceholder')}
               aria-invalid={Boolean(hintError)}
               aria-describedby="item-privacy-note"
-              className="field-input max-[639px]:placeholder:text-[11.5px] max-[639px]:placeholder:tracking-[-0.03em]"
+              className="field-input"
               onChange={(e) => {
                 setHintInput(e.target.value);
                 setHintDirty(true);
@@ -926,18 +923,18 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
           {activeTags.map((tag) => (
             <span
               key={tag.id}
-              className="chip max-w-full min-w-0 [@media(pointer:coarse)]:gap-0 [@media(pointer:coarse)]:py-0 [@media(pointer:coarse)]:pr-0"
+              className="chip"
               data-testid={`item-tag-chip-${tag.display}`}
             >
               <Link
                 href={`/app?tag=${encodeURIComponent(tag.id)}`}
-                className="min-w-0 truncate text-body no-underline [@media(pointer:coarse)]:inline-flex [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px] [@media(pointer:coarse)]:items-center [@media(pointer:coarse)]:pr-1.5"
+                className="text-body no-underline"
               >
                 #{tag.display}
               </Link>
               <button
                 type="button"
-                className="chip-x shrink-0 cursor-pointer border-0 bg-transparent p-0"
+                className="chip-x cursor-pointer border-0 bg-transparent p-0"
                 aria-label={tItem('removeTagAria', { tag: tag.display })}
                 data-testid={`item-tag-remove-${tag.display}`}
                 onClick={() => {

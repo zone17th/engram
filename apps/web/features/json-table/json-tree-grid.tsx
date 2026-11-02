@@ -620,7 +620,7 @@ export function JsonTreeGrid({
           data-testid={`json-readonly-cell-${cellKey}`}
           data-json-focus-key={cellKey}
           data-json-grid-nav=""
-          className="json-cell-readonly inline-block max-w-full whitespace-pre-wrap break-words rounded px-1.5 py-0.5 opacity-75 [overflow-wrap:anywhere]"
+          className="json-cell-readonly inline-block rounded px-1.5 py-0.5 opacity-75"
         >
           {safeText}
         </span>
@@ -722,14 +722,14 @@ export function JsonTreeGrid({
             )}
 
             {!isKeyCell ? (
-              <label className="inline-flex items-center gap-1 text-[12px] text-muted [@media(pointer:coarse)]:min-h-[44px]">
+              <label className="inline-flex items-center gap-1 text-[12px] text-muted">
                 <span>{tJson('typeLabel')}</span>
                 <select
                   value={currentSelectType}
                   aria-label={tJson('typeSelectAria')}
                   data-testid={`json-type-select-${cellKey}`}
                   data-json-type-select={cellKey}
-                  className="json-type-btn rounded border border-line bg-surface px-1.5 py-0.5 text-[12px] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                  className="json-type-btn rounded border border-line bg-surface px-1.5 py-0.5 text-[12px]"
                   onMouseDown={() => {
                     skipBlurCommitRef.current = true;
                     window.setTimeout(() => {
@@ -755,7 +755,7 @@ export function JsonTreeGrid({
             <button
               type="button"
               data-testid={`json-commit-cell-${cellKey}`}
-              className="btn btn-primary btn-sm [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+              className="btn btn-primary btn-sm"
               onMouseDown={() => {
                 skipBlurCommitRef.current = true;
                 window.setTimeout(() => {
@@ -771,7 +771,7 @@ export function JsonTreeGrid({
             <button
               type="button"
               data-testid={`json-cancel-cell-${cellKey}`}
-              className="btn btn-tertiary btn-sm [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+              className="btn btn-tertiary btn-sm"
               onMouseDown={() => {
                 skipBlurCommitRef.current = true;
                 window.setTimeout(() => {
@@ -807,7 +807,7 @@ export function JsonTreeGrid({
       ) : cell.valueType === 'null' ? (
         <span className="v-null">null</span>
       ) : (
-        <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{cell.displayText}</span>
+        <span className="whitespace-pre-wrap break-words">{cell.displayText}</span>
       );
 
     if (readOnly) {
@@ -823,7 +823,7 @@ export function JsonTreeGrid({
         data-testid={`json-cell-btn-${cellKey}`}
         data-json-focus-key={cellKey}
         data-json-grid-nav=""
-        className="json-cell-btn max-w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 text-left [overflow-wrap:anywhere] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+        className="json-cell-btn rounded border border-transparent bg-transparent px-1.5 py-0.5 text-left"
         onClick={() => handleOpenCellEdit(cellKey, cell, isKeyCell)}
       >
         {valueNode}
@@ -870,7 +870,7 @@ export function JsonTreeGrid({
           <span>{labelText}</span>
         </button>
         {isExpanded && childView ? (
-          <div className="json-nest overflow-x-auto" data-testid={`json-nest-${containerPath}`}>
+          <div className="json-nest" data-testid={`json-nest-${containerPath}`}>
             {renderTableView(childView, containerPath, level + 1)}
           </div>
         ) : null}
@@ -909,7 +909,7 @@ export function JsonTreeGrid({
           <span>{tJson('extraFieldsToggle', { count: extraFields.count })}</span>
         </button>
         {isExpanded && extraView ? (
-          <div className="json-nest overflow-x-auto" data-testid={`json-extra-nest-${extraPath}`}>
+          <div className="json-nest" data-testid={`json-extra-nest-${extraPath}`}>
             {renderObjectTable(extraView, extraPath, level + 1, { hideToolbar: true })}
           </div>
         ) : null}
@@ -1025,7 +1025,7 @@ export function JsonTreeGrid({
             value={activeAddField.newType}
             aria-label={tJson('addFieldTypeAria')}
             data-testid={`json-new-type-select-${containerPath}`}
-            className="json-type-btn rounded border border-line bg-surface px-1.5 py-1 text-[12px] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+            className="json-type-btn rounded border border-line bg-surface px-1.5 py-1 text-[12px]"
             onChange={(e) =>
               setActiveAddField((prev) =>
                 prev && prev.containerPath === containerPath
@@ -1043,7 +1043,7 @@ export function JsonTreeGrid({
           <button
             type="button"
             data-testid={`json-confirm-add-field-${containerPath}`}
-            className="btn btn-primary btn-sm [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+            className="btn btn-primary btn-sm"
             onClick={() => handleConfirmAddField(activeAddField)}
           >
             {tJson('addFieldConfirmBtn')}
@@ -1051,7 +1051,7 @@ export function JsonTreeGrid({
           <button
             type="button"
             data-testid={`json-cancel-add-field-${containerPath}`}
-            className="btn btn-tertiary btn-sm [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+            className="btn btn-tertiary btn-sm"
             onClick={() => {
               if (addFieldInputRef.current) {
                 addFieldInputRef.current.value = '';
@@ -1163,7 +1163,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled && !opts?.hideToolbar ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-idx"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1226,7 +1226,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled && !opts?.hideToolbar ? (
                     <td
                       role="gridcell"
-                      className="json-col-act json-col-idx text-right max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:bg-canvas max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1234,7 +1234,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-field-${containerPath}-${row.propertyIndex}`}
                         data-json-focus-key={`${containerPath}:remove-field:${row.propertyIndex}`}
-                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveField(containerPath, row, view.totalRows)
                         }
@@ -1305,7 +1305,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-idx"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1339,7 +1339,7 @@ export function JsonTreeGrid({
                         </span>
                         <span>{tJson('duplicateRowNote', { row: rowNum })}</span>
                       </div>
-                      <div className="json-nest overflow-x-auto">
+                      <div className="json-nest">
                         {renderObjectTable(
                           row.fallbackTable,
                           rowPath,
@@ -1350,7 +1350,7 @@ export function JsonTreeGrid({
                     {!readOnly && !disabled ? (
                       <td
                         role="gridcell"
-                        className="json-col-act json-col-idx text-right max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:bg-canvas max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                        className="json-col-act json-col-idx text-right"
                       >
                         <button
                           type="button"
@@ -1358,7 +1358,7 @@ export function JsonTreeGrid({
                           title={tJson('removeRowTitle')}
                           data-testid={`json-remove-row-${containerPath}-${row.rowIndex}`}
                           data-json-focus-key={`${containerPath}:remove-row:${row.rowIndex}`}
-                          className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                          className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                           onClick={() =>
                             handleRemoveRow(
                               containerPath,
@@ -1427,7 +1427,7 @@ export function JsonTreeGrid({
                               data-testid={`json-missing-cell-${cellKey}`}
                               data-json-focus-key={cellKey}
                               data-json-grid-nav=""
-                              className="json-cell-btn v-null max-w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                              className="json-cell-btn v-null rounded border border-transparent bg-transparent px-1.5 py-0.5"
                               onClick={() => handleInitMissingCell(cell, cellKey)}
                             >
                               —
@@ -1471,7 +1471,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled ? (
                     <td
                       role="gridcell"
-                      className="json-col-act json-col-idx text-right max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:bg-canvas max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1479,7 +1479,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-row-${containerPath}-${row.rowIndex}`}
                         data-json-focus-key={`${containerPath}:remove-row:${row.rowIndex}`}
-                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveRow(
                             containerPath,
@@ -1564,7 +1564,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-idx"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1601,7 +1601,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled ? (
                     <td
                       role="gridcell"
-                      className="json-col-act json-col-idx text-right max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:bg-canvas max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1609,7 +1609,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-row-${containerPath}-${row.index}`}
                         data-json-focus-key={`${containerPath}:remove-row:${row.index}`}
-                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveRow(
                             containerPath,
@@ -1661,7 +1661,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-idx"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1695,7 +1695,7 @@ export function JsonTreeGrid({
                   {!readOnly && !disabled ? (
                     <td
                       role="gridcell"
-                      className="json-col-act json-col-idx text-right max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:bg-canvas max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                      className="json-col-act json-col-idx text-right"
                     >
                       <button
                         type="button"
@@ -1703,7 +1703,7 @@ export function JsonTreeGrid({
                         title={tJson('removeRowTitle')}
                         data-testid={`json-remove-row-${containerPath}-${row.index}`}
                         data-json-focus-key={`${containerPath}:remove-row:${row.index}`}
-                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+                        className="btn btn-tertiary btn-sm px-2 py-0.5 text-muted"
                         onClick={() =>
                           handleRemoveRow(
                             containerPath,
