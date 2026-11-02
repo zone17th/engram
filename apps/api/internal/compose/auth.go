@@ -32,7 +32,28 @@ type Auth struct {
 	Mount         func(v1 interface{ Route(string, func()) }, d httpx.Deps)
 }
 
-func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx], clk clock.Clock, mail auth.Mailer, providers []oauth.Provider) (*auth.Service, *oauth.Service, *authhttp.API, error) {
+// AuthOption customizes NewAuth without changing its positional signature.
+type AuthOption func(*authOptions)
+
+type authOptions struct {
+	semantic auth.SemanticRuntime
+}
+
+// WithSemantic wires the process-wide semantic runtime (static availability,
+// semantic_external, breaker state) into /auth/me and PATCH /me/settings
+// (plan P05 mục 2.18, Task 13). Without it semantic is unavailable and
+// semantic_external is false (no active provider).
+func WithSemantic(rt auth.SemanticRuntime) AuthOption {
+	return func(o *authOptions) { o.semantic = rt }
+}
+
+func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx], clk clock.Clock, mail auth.Mailer, providers []oauth.Provider, opts ...AuthOption) (*auth.Service, *oauth.Service, *authhttp.API, error) {
+	var ao authOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&ao)
+		}
+	}
 	if cfg == nil || pool == nil {
 		return nil, nil, nil, fmt.Errorf("compose auth thiếu config/pool")
 	}
@@ -64,7 +85,11 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 	if notes == nil {
 		return nil, nil, nil, fmt.Errorf("notification store nil")
 	}
-	svc, err := auth.NewService(cfg, pool, sessions, csrf, tokens, grants, lockout, clk, aud, notes, auth.ConfigProbe(cfg), mail, vault.NewVaultStatus(pool))
+	var svcOpts []auth.ServiceOption
+	if riverc != nil {
+		svcOpts = append(svcOpts, auth.WithJobInserter(riverc))
+	}
+	svc, err := auth.NewService(cfg, pool, sessions, csrf, tokens, grants, lockout, clk, aud, notes, ao.semantic, mail, vault.NewVaultStatus(pool), svcOpts...)
 	if err != nil {
 		return nil, nil, nil, err
 	}

@@ -82,39 +82,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestSemanticAvailable(t *testing.T) {
-	cases := []struct {
-		name     string
-		provider string
-		teiURL   string
-		want     bool
-	}{
-		{"noop mặc định", "noop", "", false},
-		{"noop dù có TEI_URL", "noop", "http://tei:80", false},
-		{"tei đủ URL", "tei", "http://tei:80", true},
-	}
-	// Khi TEI_URL trống, Load() từ chối EMBEDDING_PROVIDER=tei ngay lúc boot;
-	// SemanticAvailable() trên struct thiếu URL vẫn trả false.
-	if (&config.Config{EmbeddingProvider: "tei"}).SemanticAvailable() {
-		t.Fatal("SemanticAvailable() trên tei thiếu URL phải false")
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setEnv(t, map[string]string{
-				"EMBEDDING_PROVIDER": tc.provider,
-				"TEI_URL":            tc.teiURL,
-			})
-			cfg, err := config.Load()
-			if err != nil {
-				t.Fatalf("Load() error = %v", err)
-			}
-			if got := cfg.SemanticAvailable(); got != tc.want {
-				t.Errorf("SemanticAvailable() = %v, muốn %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestLoadRejectsUnknownProvider(t *testing.T) {
 	setEnv(t, map[string]string{"EMBEDDING_PROVIDER": "openai"})
 	if _, err := config.Load(); err == nil {
