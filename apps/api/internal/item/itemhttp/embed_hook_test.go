@@ -968,3 +968,44 @@ func TestIdempotentReplayNoSecondJob(t *testing.T) {
 	}
 	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
 }
+
+// TestClientlessDeleteSkipsGenerationSetLock verifies EJB-2 (plan P05 mục 2.17,
+// Task 11b):
+// When `compose.NewContent` is constructed without `WithEmbedRiver` or
+// `WithEmbedHook` (as in P04 callers like `contenttest.NewHarness` and `perf`),
+// `ContentEmbedHook()` defaults to `item.NoopEmbedHook{}`. Consequently,
+// `DELETE /api/v1/items/{id}` performs zero generation-set lock or registry I/O
+// and completes immediately even while another transaction holds
+// `generation.LockGenerationSetExclusive`.
+func TestClientlessDeleteSkipsGenerationSetLock(t *testing.T) {
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	ctx := context.Background()
+	jarA, userA, _, _ := h.SignupTwoUsers()
+
+	if _, ok := h.Content.ContentEmbedHook().(item.NoopEmbedHook); !ok {
+		t.Fatalf("default ContentEmbedHook() = %T, want item.NoopEmbedHook", h.Content.ContentEmbedHook())
+	}
+
+	respCreate, bodyCreate := doReq(h, jarA, http.MethodPost, "/api/v1/items", `{"name":"Clientless Delete Item"}`, contenttest.ReqOptions{})
+	if respCreate.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /items status = %d, body = %s", respCreate.StatusCode, bodyCreate)
+	}
+	created := decodeSummary(t, bodyCreate)
+
+	// Hold the exclusive generation-set lock in another transaction. If DELETE
+	// attempted LockGenerationSetShared, it would block on txLock.
+	txLock, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin txLock: %v", err)
+	}
+	defer func() { _ = txLock.Rollback(ctx) }()
+	if err := generation.LockGenerationSetExclusive(ctx, txLock); err != nil {
+		t.Fatalf("LockGenerationSetExclusive: %v", err)
+	}
+
+	respDel, bodyDel := doReq(h, jarA, http.MethodDelete, "/api/v1/items/"+created.ID.String(), "", contenttest.ReqOptions{})
+	if respDel.StatusCode != http.StatusNoContent {
+		t.Fatalf("clientless DELETE /items while exclusive gen-set lock held: status = %d, body = %s", respDel.StatusCode, bodyDel)
+	}
+	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
+}

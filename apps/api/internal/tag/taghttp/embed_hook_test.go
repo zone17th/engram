@@ -806,3 +806,40 @@ func TestIdempotentReplayNoSecondJob(t *testing.T) {
 	}
 	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
 }
+
+// TestClientlessDeleteSkipsGenerationSetLock verifies EJB-2 (plan P05 mục 2.17,
+// Task 11b) for tag routes:
+// When `compose.NewContent` is constructed without `WithEmbedRiver` or
+// `WithEmbedHook`, `ContentEmbedHook()` defaults to `item.NoopEmbedHook{}` so
+// `DELETE /api/v1/tags/{id}` completes without acquiring the generation-set lock
+// even while another transaction holds `generation.LockGenerationSetExclusive`.
+func TestClientlessDeleteSkipsGenerationSetLock(t *testing.T) {
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
+	ctx := context.Background()
+	jarA, userA, _, _ := h.SignupTwoUsers()
+
+	if _, ok := h.Content.ContentEmbedHook().(item.NoopEmbedHook); !ok {
+		t.Fatalf("default ContentEmbedHook() = %T, want item.NoopEmbedHook", h.Content.ContentEmbedHook())
+	}
+
+	respCreate, bodyCreate := doWrite(h, jarA, http.MethodPost, "/api/v1/tags", `{"display":"clientless-delete-tag"}`)
+	if respCreate.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /tags status = %d, body = %s", respCreate.StatusCode, bodyCreate)
+	}
+	created := decodeTag(t, bodyCreate)
+
+	txLock, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin txLock: %v", err)
+	}
+	defer func() { _ = txLock.Rollback(ctx) }()
+	if err := generation.LockGenerationSetExclusive(ctx, txLock); err != nil {
+		t.Fatalf("LockGenerationSetExclusive: %v", err)
+	}
+
+	respDel, bodyDel := doWrite(h, jarA, http.MethodDelete, "/api/v1/tags/"+created.ID.String(), "")
+	if respDel.StatusCode != http.StatusNoContent {
+		t.Fatalf("clientless DELETE /tags while exclusive gen-set lock held: status = %d, body = %s", respDel.StatusCode, bodyDel)
+	}
+	contenttest.AssertInvariants(t, h.Pool, userA.User.ID)
+}

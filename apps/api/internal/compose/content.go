@@ -119,12 +119,16 @@ func NewContent(
 
 	embedHook := copts.embedHook
 	if embedHook == nil {
-		embedHook = jobs.NewEnqueuer(
-			copts.embedRiver,
-			cfg.SearchSemanticEnabled,
-			cfg.EmbeddingProvider,
-			logger,
-		)
+		if copts.embedRiver != nil {
+			embedHook = jobs.NewEnqueuer(
+				copts.embedRiver,
+				cfg.SearchSemanticEnabled,
+				cfg.EmbeddingProvider,
+				logger,
+			)
+		} else {
+			embedHook = item.NoopEmbedHook{}
+		}
 	}
 
 	c := &Content{
