@@ -135,13 +135,16 @@ func runExactSearchWithTimeout(
 	hits, scanErr := scanExactHits(rows, corpus)
 	rows.Close()
 	if scanErr != nil {
-		return nil, scanErr
+		ResortHitsByDistAndID(hits)
+		return hits, scanErr
 	}
 	if err := closeBatch(); err != nil {
-		return nil, fmt.Errorf("store: close exact batch: %w", sanitizeQueryErr(err))
+		ResortHitsByDistAndID(hits)
+		return hits, fmt.Errorf("store: close exact batch: %w", sanitizeQueryErr(err))
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("store: commit exact read-only tx: %w", sanitizeQueryErr(err))
+		ResortHitsByDistAndID(hits)
+		return hits, fmt.Errorf("store: commit exact read-only tx: %w", sanitizeQueryErr(err))
 	}
 	return hits, nil
 }
@@ -161,7 +164,7 @@ func scanExactHits(rows pgx.Rows, corpus generation.Corpus) ([]Hit, error) {
 				&h.Dist,
 				&h.Cos,
 			); err != nil {
-				return nil, fmt.Errorf("store: scan exact item hit: %w", sanitizeQueryErr(err))
+				return out, fmt.Errorf("store: scan exact item hit: %w", sanitizeQueryErr(err))
 			}
 		case generation.CorpusTag:
 			if err := rows.Scan(
@@ -173,7 +176,7 @@ func scanExactHits(rows pgx.Rows, corpus generation.Corpus) ([]Hit, error) {
 				&h.Dist,
 				&h.Cos,
 			); err != nil {
-				return nil, fmt.Errorf("store: scan exact tag hit: %w", sanitizeQueryErr(err))
+				return out, fmt.Errorf("store: scan exact tag hit: %w", sanitizeQueryErr(err))
 			}
 		default:
 			return nil, generation.ErrInvalidCorpus
@@ -181,7 +184,7 @@ func scanExactHits(rows pgx.Rows, corpus generation.Corpus) ([]Hit, error) {
 		out = append(out, h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate exact hits: %w", sanitizeQueryErr(err))
+		return out, fmt.Errorf("store: iterate exact hits: %w", sanitizeQueryErr(err))
 	}
 	return out, nil
 }

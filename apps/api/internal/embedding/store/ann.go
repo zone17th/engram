@@ -234,13 +234,16 @@ func runANNSearchTx(
 	hits, annCandidates, scanErr := scanANNHits(rows, corpus)
 	rows.Close()
 	if scanErr != nil {
-		return nil, 0, scanErr
+		ResortHitsByDistAndID(hits)
+		return hits, annCandidates, scanErr
 	}
 	if err := closeBatch(); err != nil {
-		return nil, 0, fmt.Errorf("store: close ann batch: %w", sanitizeQueryErr(err))
+		ResortHitsByDistAndID(hits)
+		return hits, annCandidates, fmt.Errorf("store: close ann batch: %w", sanitizeQueryErr(err))
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, 0, fmt.Errorf("store: commit ann read-only tx: %w", sanitizeQueryErr(err))
+		ResortHitsByDistAndID(hits)
+		return hits, annCandidates, fmt.Errorf("store: commit ann read-only tx: %w", sanitizeQueryErr(err))
 	}
 
 	ResortHitsByDistAndID(hits)
@@ -272,7 +275,7 @@ func scanANNHits(rows pgx.Rows, corpus generation.Corpus) ([]Hit, int, error) {
 			&distVal,
 			&cosVal,
 		); err != nil {
-			return nil, 0, fmt.Errorf("store: scan ann hit: %w", sanitizeQueryErr(err))
+			return out, annCandidates, fmt.Errorf("store: scan ann hit: %w", sanitizeQueryErr(err))
 		}
 		annCandidates = candCnt
 		if idPtr == nil {
@@ -307,7 +310,7 @@ func scanANNHits(rows pgx.Rows, corpus generation.Corpus) ([]Hit, int, error) {
 		out = append(out, h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("store: iterate ann hits: %w", sanitizeQueryErr(err))
+		return out, annCandidates, fmt.Errorf("store: iterate ann hits: %w", sanitizeQueryErr(err))
 	}
 	return out, annCandidates, nil
 }

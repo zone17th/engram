@@ -296,16 +296,23 @@ func VectorSearch(
 		stats.TimedOut = true
 		return []Hit{}, stats, nil
 	}
-
-	now := cfg.Now()
-	effectiveDeadline := resolveEffectiveDeadline(ctx, now, deadline, cfg.BranchTimeout)
-	remaining := effectiveDeadline.Sub(now)
-	if remaining <= 0 {
+	// Always derive the real context deadline from the wall clock sampled at call
+	// time so context.WithDeadline never receives a fixed/fake timestamp (VQ-1).
+	// Elapsed budget accounting uses cfg.Now() relative to the initial sample so
+	// tests can deterministically advance elapsed time without wall-clock dependence.
+	realStart := time.Now()
+	clockStart := cfg.Now()
+	realDeadline := resolveEffectiveDeadline(ctx, realStart, deadline, cfg.BranchTimeout)
+	initialBudget := realDeadline.Sub(realStart)
+	if initialBudget <= 0 {
 		stats.TimedOut = true
 		return []Hit{}, stats, nil
 	}
+	remainingBudget := func() time.Duration {
+		return initialBudget - cfg.Now().Sub(clockStart)
+	}
 
-	branchCtx, cancel := context.WithDeadline(ctx, effectiveDeadline)
+	branchCtx, cancel := context.WithDeadline(ctx, realDeadline)
 	defer cancel()
 
 	// Step 1: One capped count query per call (plan mục 2.16, BE-2).
@@ -334,7 +341,7 @@ func VectorSearch(
 	useExact := cfg.ExactMaxVectors > 0 && count <= cfg.ExactMaxVectors
 	if useExact {
 		stats.Path = VectorPathExact
-		rem := effectiveDeadline.Sub(cfg.Now())
+		rem := remainingBudget()
 		if rem <= 0 {
 			stats.TimedOut = true
 			recordVectorMetrics(cfg.Metrics, corpus, stats.Path, false)
@@ -346,9 +353,14 @@ func VectorSearch(
 				return nil, stats, context.Canceled
 			}
 			if isTimeoutOrDeadline(branchCtx, err) {
+				if hits == nil {
+					hits = []Hit{}
+				}
+				ResortHitsByDistAndID(hits)
+				stats.Returned = len(hits)
 				stats.TimedOut = true
 				recordVectorMetrics(cfg.Metrics, corpus, stats.Path, false)
-				return []Hit{}, stats, nil
+				return hits, stats, nil
 			}
 			return nil, stats, err
 		}
@@ -358,7 +370,7 @@ func VectorSearch(
 	}
 
 	// Step 3: ANN path (count > ExactMaxVectors, or ExactMaxVectors == 0).
-	rem := effectiveDeadline.Sub(cfg.Now())
+	rem := remainingBudget()
 	if rem <= 0 {
 		stats.Path = VectorPathANNShort
 		stats.Underfill = true
@@ -373,11 +385,22 @@ func VectorSearch(
 			return nil, stats, context.Canceled
 		}
 		if isTimeoutOrDeadline(branchCtx, err) {
-			stats.Path = VectorPathANNShort
-			stats.Underfill = true
+			if annHits == nil {
+				annHits = []Hit{}
+			}
+			ResortHitsByDistAndID(annHits)
+			stats.ANNCandidates = annCandidates
+			stats.Returned = len(annHits)
 			stats.TimedOut = true
-			recordVectorMetrics(cfg.Metrics, corpus, stats.Path, true)
-			return []Hit{}, stats, nil
+			if annCandidates >= k {
+				stats.Path = VectorPathANN
+				recordVectorMetrics(cfg.Metrics, corpus, stats.Path, false)
+			} else {
+				stats.Path = VectorPathANNShort
+				stats.Underfill = true
+				recordVectorMetrics(cfg.Metrics, corpus, stats.Path, true)
+			}
+			return annHits, stats, nil
 		}
 		return nil, stats, err
 	}
@@ -399,7 +422,7 @@ func VectorSearch(
 
 	// Underfill detected (annCandidates < k).
 	stats.Underfill = true
-	remAfterANN := effectiveDeadline.Sub(cfg.Now())
+	remAfterANN := remainingBudget()
 
 	// Exact fallback condition:
 	//   1) annCandidates < k (already true)
@@ -412,12 +435,19 @@ func VectorSearch(
 				return nil, stats, context.Canceled
 			}
 			if isTimeoutOrDeadline(branchCtx, fErr) {
-				// Fallback timed out: return partial ANN hits already gathered,
-				// record underfill + ann_short.
+				// Fallback timed out: if exact fallback already yielded more
+				// validated hits than the partial ANN pass, prefer them;
+				// otherwise keep the partial ANN hits already gathered.
+				bestHits := annHits
+				if len(exactHits) > len(annHits) {
+					ResortHitsByDistAndID(exactHits)
+					bestHits = exactHits
+				}
 				stats.Path = VectorPathANNShort
+				stats.Returned = len(bestHits)
 				stats.TimedOut = true
 				recordVectorMetrics(cfg.Metrics, corpus, stats.Path, true)
-				return annHits, stats, nil
+				return bestHits, stats, nil
 			}
 			return nil, stats, fErr
 		}
