@@ -53,6 +53,29 @@ import {
   splitMarkedPrefix,
 } from '@/features/omnibox/search-helpers';
 import {
+  createInitialMergeState,
+  suggestMergeReducer,
+  type SuggestMergeAction,
+  type SuggestMergeState,
+} from '@/features/omnibox/suggest/merge';
+import {
+  buildSuggestQueryKey,
+  isCacheableSearchResponse,
+  isSearchQueryKeyPrefix,
+  SEARCH_QUERY_CACHE_OPTIONS,
+} from '@/features/omnibox/suggest/query-keys';
+import {
+  SUGGEST_DEFAULT_LIMIT,
+  SUGGEST_MOBILE_LIMIT,
+} from '@/features/omnibox/suggest/quota';
+import {
+  createSendGate,
+  SUGGEST_DEBOUNCE_MS,
+  type KeystrokeSendDecision,
+  type SendGateController,
+} from '@/features/omnibox/suggest/send-gate';
+import { useSemanticSuggestSetting } from '@/features/omnibox/suggest/use-semantic-suggest-setting';
+import {
   captureUnconfirmedSaveClearGeneration,
   dismissUnconfirmedSave,
   reconcileUnconfirmedSavesUser,
@@ -84,6 +107,12 @@ import {
   type TagList,
 } from '@/lib/api/content';
 import { type Me } from '@/lib/api/auth';
+import {
+  suggest as fetchSuggest,
+  type SemanticParam,
+  type SuggestLimit,
+  type SuggestResponse,
+} from '@/lib/api/search';
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 import { subscribeUserChanged } from '@/lib/auth/user-changed';
 import { cn } from '@/lib/cn';
@@ -159,6 +188,9 @@ function isImeComposing(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean
  * - `['content', 'lookup', name]`
  */
 function isOmniboxSearchQueryKey(queryKey: readonly unknown[]): boolean {
+  if (isSearchQueryKeyPrefix(queryKey)) {
+    return true;
+  }
   if (queryKey.length < 2 || queryKey[0] !== 'content') {
     return false;
   }
@@ -187,6 +219,8 @@ export function Omnibox({
   const tOmni = useTranslations('content.omnibox');
   const tPrivacy = useTranslations('content.privacy');
   const tErrors = useTranslations('content.errors');
+  const tSearchHelp = useTranslations('search.help');
+  const tSearchTab = useTranslations('search.tab');
   const router = useRouter();
   const pathname = usePathname() ?? '/app';
   const queryClient = useContext(QueryClientContext);
@@ -217,6 +251,16 @@ export function Omnibox({
   const unlockToSaveBtnRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchAbortRef = useRef<AbortController | null>(null);
+  const suggestAbortControllersRef = useRef<Set<AbortController>>(new Set());
+  const suggestDebounceTimerRef = useRef<number | null>(null);
+  const gateRef = useRef<SendGateController | null>(null);
+  if (!gateRef.current) {
+    gateRef.current = createSendGate('');
+  }
+  const mergeStateRef = useRef<SuggestMergeState>(createInitialMergeState());
+  const [, setMergeStateTick] = useState(0);
+  const [, setGateRenderTick] = useState(0);
+  const [tabCannotFill, setTabCannotFill] = useState(false);
   const planAbortRef = useRef<AbortController | null>(null);
   const createPendingRef = useRef(false);
   const createAbortRef = useRef<AbortController | null>(null);
@@ -232,6 +276,37 @@ export function Omnibox({
   const [inputValue, setInputValue] = useState('');
   inputValueRef.current = inputValue;
 
+  const dispatchMerge = useCallback((action: SuggestMergeAction): SuggestMergeState => {
+    const next = suggestMergeReducer(mergeStateRef.current, action);
+    mergeStateRef.current = next;
+    setMergeStateTick((prev) => prev + 1);
+    return next;
+  }, []);
+
+  const clearSuggestDebounceTimer = useCallback(() => {
+    if (suggestDebounceTimerRef.current !== null) {
+      window.clearTimeout(suggestDebounceTimerRef.current);
+      suggestDebounceTimerRef.current = null;
+    }
+  }, []);
+
+  const abortAllSuggestRequests = useCallback(() => {
+    clearSuggestDebounceTimer();
+    for (const controller of suggestAbortControllersRef.current) {
+      controller.abort();
+    }
+    suggestAbortControllersRef.current.clear();
+  }, [clearSuggestDebounceTimer]);
+
+  const {
+    semanticSuggest,
+    semanticAvailable,
+    semanticExternal,
+  } = useSemanticSuggestSetting();
+  const semanticSuggestRef = useRef(semanticSuggest);
+  semanticSuggestRef.current = semanticSuggest;
+  const semanticAvailableRef = useRef(semanticAvailable);
+  semanticAvailableRef.current = semanticAvailable;
   const [listOpen, setListOpen] = useState(false);
   const [listKind, setListKind] = useState<'search' | 'tag-filter' | null>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -329,6 +404,24 @@ export function Omnibox({
     reconcileLockClearedNoticeUser(activeUserId);
   }, [activeUserId]);
 
+  // RV-T9-FE3-2: synchronize `semanticEnabled` in merge state from `Me.settings.semantic_suggest` on user switch / Me cache updates.
+  useEffect(() => {
+    dispatchMerge({
+      type: 'sync_semantic_enabled',
+      enabled: semanticSuggest,
+    });
+  }, [activeUserId, dispatchMerge, semanticSuggest]);
+
+  useEffect(() => {
+    return subscribeUserChanged(() => {
+      abortAllSuggestRequests();
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+      gateRef.current?.reset();
+      dispatchMerge({ type: 'reset' });
+      removeOmniboxSearchQueries();
+    });
+  }, [abortAllSuggestRequests, dispatchMerge, removeOmniboxSearchQueries]);
   const visibleUnconfirmedRecord =
     isVaultUnlocked && unconfirmedSaves.length > 0
       ? unconfirmedSaves[unconfirmedSaves.length - 1]!
@@ -410,6 +503,187 @@ export function Omnibox({
     }
   }, []);
 
+  /**
+   * Single helper for all omnibox-owned programmatic writes (`setDraft(value)` — plan section 2.1 rule 1 & 3, M4/FE-21):
+   * writes `setInputValue` + `inputValueRef` + `textareaRef.current.value`, then calls `gate.syncOwnWrite(value)`.
+   */
+  const setDraft = useCallback(
+    (value: string) => {
+      setInputValue(value);
+      inputValueRef.current = value;
+      if (textareaRef.current) {
+        textareaRef.current.value = value;
+        syncTextareaHeight(textareaRef.current);
+      }
+      gateRef.current?.syncOwnWrite(value);
+      setTabCannotFill(false);
+      setGateRenderTick((prev) => prev + 1);
+    },
+    [syncTextareaHeight],
+  );
+
+  const resolveSuggestLimit = useCallback((): SuggestLimit => {
+    if (typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768) {
+      return SUGGEST_MOBILE_LIMIT;
+    }
+    return SUGGEST_DEFAULT_LIMIT;
+  }, []);
+
+  const executeSuggestTick = useCallback(
+    (decisionOverride?: KeystrokeSendDecision) => {
+      const gate = gateRef.current;
+      if (!gate) return;
+      const currentDomVal = textareaRef.current?.value ?? inputValueRef.current;
+      const decision =
+        decisionOverride ??
+        gate.decideKeystroke(
+          {
+            semanticAvailable: semanticAvailableRef.current,
+            semanticSuggest: semanticSuggestRef.current,
+          },
+          currentDomVal,
+        );
+
+      if (!decision.canSend) {
+        if (decision.gateClosed) {
+          abortAllSuggestRequests();
+          dispatchMerge({
+            type: 'close_gate',
+            keepLocalTagCache: decision.keepLocalTagCacheRows,
+          });
+        }
+        return;
+      }
+
+      const userId = activeUserIdRef.current;
+      if (!userId) {
+        return;
+      }
+
+      abortAllSuggestRequests();
+      const limit = resolveSuggestLimit();
+      const expectSemantic = decision.allowSemantic && decision.semanticFlags.includes(1);
+      const startedState = dispatchMerge({
+        type: 'start_query',
+        qn: decision.qn,
+        scope: decision.scope,
+        limit,
+        expectSemantic,
+      });
+      const gen = startedState.queryGen;
+      const capturedResetEpoch = resetEpochRef.current;
+
+      for (const semanticFlag of decision.semanticFlags) {
+        const controller = new AbortController();
+        suggestAbortControllersRef.current.add(controller);
+        const semParam: SemanticParam = semanticFlag === 1 ? 1 : 0;
+
+        void (async () => {
+          try {
+            const res: SuggestResponse = await fetchSuggest(
+              {
+                ...(decision.q !== undefined ? { q: decision.q } : {}),
+                scope: decision.scope,
+                limit,
+                semantic: semParam,
+              },
+              { signal: controller.signal },
+            );
+
+            if (
+              controller.signal.aborted ||
+              resetEpochRef.current !== capturedResetEpoch ||
+              activeUserIdRef.current !== userId ||
+              mergeStateRef.current.queryGen !== gen
+            ) {
+              return;
+            }
+
+            if (queryClient && isCacheableSearchResponse(res)) {
+              const cacheKey = buildSuggestQueryKey({
+                userId,
+                scope: decision.scope,
+                limit,
+                requestMode: decision.requestMode,
+                semanticSuggest: semanticSuggestRef.current,
+                generationId: res.generation,
+                qn: decision.qn,
+              });
+              if (cacheKey) {
+                queryClient.setQueryData(cacheKey, res, {
+                  updatedAt: Date.now(),
+                });
+                queryClient.setQueryDefaults(cacheKey, SEARCH_QUERY_CACHE_OPTIONS);
+              }
+            }
+
+            dispatchMerge({
+              type: 'receive_suggest',
+              gen,
+              qn: decision.qn,
+              response: res,
+              expectSemantic,
+            });
+          } catch {
+            if (
+              resetEpochRef.current !== capturedResetEpoch ||
+              activeUserIdRef.current !== userId ||
+              mergeStateRef.current.queryGen !== gen
+            ) {
+              return;
+            }
+            if (semParam === 1) {
+              dispatchMerge({
+                type: 'semantic_leg_failed',
+                gen,
+                aborted: controller.signal.aborted,
+              });
+            }
+          } finally {
+            suggestAbortControllersRef.current.delete(controller);
+          }
+        })();
+      }
+    },
+    [abortAllSuggestRequests, dispatchMerge, queryClient, resolveSuggestLimit],
+  );
+
+  const scheduleKeystrokeSuggest = useCallback(() => {
+    const gate = gateRef.current;
+    if (!gate) return;
+    const currentDomVal = textareaRef.current?.value ?? inputValueRef.current;
+    const decision = gate.decideKeystroke(
+      {
+        semanticAvailable: semanticAvailableRef.current,
+        semanticSuggest: semanticSuggestRef.current,
+      },
+      currentDomVal,
+    );
+
+    if (!decision.canSend) {
+      clearSuggestDebounceTimer();
+      if (decision.gateClosed) {
+        abortAllSuggestRequests();
+        dispatchMerge({
+          type: 'close_gate',
+          keepLocalTagCache: decision.keepLocalTagCacheRows,
+        });
+      }
+      return;
+    }
+
+    // Rule 6: empty draft on focus or clear -> handled by focus or debounce; keystroke typing uses 120ms debounce.
+    if (decision.mode === 'recent') {
+      clearSuggestDebounceTimer();
+      return;
+    }
+
+    clearSuggestDebounceTimer();
+    suggestDebounceTimerRef.current = window.setTimeout(() => {
+      suggestDebounceTimerRef.current = null;
+      executeSuggestTick();
+    }, SUGGEST_DEBOUNCE_MS);
+  }, [abortAllSuggestRequests, clearSuggestDebounceTimer, dispatchMerge, executeSuggestTick]);
   const closeListbox = useCallback((clearLive: boolean) => {
     searchAbortRef.current?.abort();
     searchAbortRef.current = null;
@@ -452,6 +726,7 @@ export function Omnibox({
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       resetEpochRef.current += 1;
+      abortAllSuggestRequests();
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
       createAbortRef.current?.abort();
@@ -480,13 +755,9 @@ export function Omnibox({
           kind: hadCommittedMeta ? 'plan' : 'draft',
         });
       }
-      if (textareaRef.current) {
-        textareaRef.current.value = '';
-        textareaRef.current.style.height = '';
-        textareaRef.current.style.overflowY = 'hidden';
-      }
-      inputValueRef.current = '';
-      setInputValue('');
+      setDraft('');
+      gateRef.current?.reset();
+      dispatchMerge({ type: 'reset' });
       setListOpen(false);
       setListKind(null);
       setActiveIndex(-1);
@@ -503,16 +774,80 @@ export function Omnibox({
       undoToast?.clearOmniboxJustCleared();
       removeOmniboxSearchQueries();
     });
-  }, [removeOmniboxSearchQueries, undoToast, vault]);
+  }, [abortAllSuggestRequests, dispatchMerge, removeOmniboxSearchQueries, setDraft, undoToast, vault]);
 
   useEffect(() => {
     return () => {
+      abortAllSuggestRequests();
       searchAbortRef.current?.abort();
       createAbortRef.current?.abort();
       savePlanStartAbortRef.current?.abort();
       planAbortRef.current?.abort();
     };
-  }, []);
+  }, [abortAllSuggestRequests]);
+
+  // Native `beforeinput`, `input`, `compositionstart`, and `compositionend` listeners on the textarea ref
+  // (plan section 2.1 rules 1–2, L3, FE-5a: never React's synthetic `onBeforeInput`).
+  useEffect(() => {
+    const el = textareaRef.current;
+    const gate = gateRef.current;
+    if (!el || !gate) return;
+
+    const onNativeBeforeInput = (event: Event) => {
+      if (activePlanRef.current?.running) return;
+      const inputEvt = event as InputEvent;
+      gate.handleBeforeInput({
+        inputType: typeof inputEvt.inputType === 'string' ? inputEvt.inputType : undefined,
+        data: 'data' in inputEvt ? inputEvt.data : undefined,
+        isComposing: 'isComposing' in inputEvt ? Boolean(inputEvt.isComposing) : undefined,
+        currentDomValue: el.value,
+      });
+    };
+
+    const onNativeInput = (event: Event) => {
+      if (activePlanRef.current?.running) return;
+      const inputEvt = event as InputEvent;
+      gate.handleInput({
+        inputType: typeof inputEvt.inputType === 'string' ? inputEvt.inputType : undefined,
+        data: 'data' in inputEvt ? inputEvt.data : undefined,
+        isComposing: 'isComposing' in inputEvt ? Boolean(inputEvt.isComposing) : undefined,
+        value: el.value,
+      });
+      setTabCannotFill(false);
+      setGateRenderTick((prev) => prev + 1);
+      scheduleKeystrokeSuggest();
+    };
+
+    const onNativeCompositionStart = () => {
+      if (activePlanRef.current?.running) return;
+      clearSuggestDebounceTimer();
+      gate.handleCompositionStart(el.value);
+      setGateRenderTick((prev) => prev + 1);
+    };
+
+    const onNativeCompositionEnd = (event: Event) => {
+      if (activePlanRef.current?.running) return;
+      const compEvt = event as CompositionEvent;
+      gate.handleCompositionEnd({
+        value: el.value,
+        data: typeof compEvt.data === 'string' ? compEvt.data : undefined,
+      });
+      setGateRenderTick((prev) => prev + 1);
+      scheduleKeystrokeSuggest();
+    };
+
+    el.addEventListener('beforeinput', onNativeBeforeInput);
+    el.addEventListener('input', onNativeInput);
+    el.addEventListener('compositionstart', onNativeCompositionStart);
+    el.addEventListener('compositionend', onNativeCompositionEnd);
+
+    return () => {
+      el.removeEventListener('beforeinput', onNativeBeforeInput);
+      el.removeEventListener('input', onNativeInput);
+      el.removeEventListener('compositionstart', onNativeCompositionStart);
+      el.removeEventListener('compositionend', onNativeCompositionEnd);
+    };
+  }, [clearSuggestDebounceTimer, scheduleKeystrokeSuggest]);
 
   // Global keyboard shortcuts (`Ctrl+K` / `⌘K` and `/` when focus is not in an input/textarea) + outside click.
   useEffect(() => {
@@ -632,13 +967,8 @@ export function Omnibox({
           return;
         }
         closeListbox(false);
-        setInputValue('');
-        inputValueRef.current = '';
-        if (textareaRef.current) {
-          textareaRef.current.value = '';
-          syncTextareaHeight(textareaRef.current);
-          textareaRef.current.focus();
-        }
+        setDraft('');
+        textareaRef.current?.focus();
         undoToast?.markOmniboxJustCleared(textareaRef.current);
         void invalidateAllContentMetadataCaches();
 
@@ -675,7 +1005,7 @@ export function Omnibox({
         }
       }
     },
-    [closeListbox, invalidateAllContentMetadataCaches, syncTextareaHeight, tOmni, undoToast],
+    [closeListbox, invalidateAllContentMetadataCaches, setDraft, tOmni, undoToast],
   );
 
   const getStepLocalizedLabel = useCallback(
@@ -746,22 +1076,12 @@ export function Omnibox({
         submittedDraftRef.current = null;
 
         if (submittedVal === null || currentVal === submittedVal) {
-          setInputValue('');
-          inputValueRef.current = '';
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-            syncTextareaHeight(textareaRef.current);
-            textareaRef.current.focus();
-          }
+          setDraft('');
+          textareaRef.current?.focus();
           // Mark omnibox as just cleared by save so immediate Ctrl+Z / ⌘Z triggers Undo (plan §2.11 step 4, SPEC §7.8).
           undoToast?.markOmniboxJustCleared(textareaRef.current);
         } else {
-          setInputValue(currentVal);
-          inputValueRef.current = currentVal;
-          if (textareaRef.current) {
-            textareaRef.current.value = currentVal;
-            syncTextareaHeight(textareaRef.current);
-          }
+          setDraft(currentVal);
         }
         // Push Undo toast ONLY after entry 201 commit; Undo deletes ONLY the entry (Q18, dec-116, P4BE1-2, P4FE2-13).
         undoToast?.pushUndoToast({
@@ -814,12 +1134,7 @@ export function Omnibox({
           setActivePlan(null);
           setTargetTagLimitCount(null);
           submittedDraftRef.current = null;
-          setInputValue('');
-          inputValueRef.current = '';
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-            syncTextareaHeight(textareaRef.current);
-          }
+          setDraft('');
           const code = classifiedError.i18nKey.replace(
             /^content\.errors\./,
             '',
@@ -839,12 +1154,7 @@ export function Omnibox({
           setActivePlan(null);
           setTargetTagLimitCount(null);
           submittedDraftRef.current = null;
-          setInputValue('');
-          inputValueRef.current = '';
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-            syncTextareaHeight(textareaRef.current);
-          }
+          setDraft('');
           const code = classifiedError.i18nKey.replace(
             /^content\.errors\./,
             '',
@@ -896,7 +1206,7 @@ export function Omnibox({
       getStepLocalizedLabel,
       invalidateAllContentMetadataCaches,
       queryClient,
-      syncTextareaHeight,
+      setDraft,
       tOmni,
       undoToast,
       vault,
@@ -1178,16 +1488,11 @@ export function Omnibox({
       }
       if (option.kind === 'tag') {
         closeListbox(false);
-        setInputValue('');
-        inputValueRef.current = '';
-        if (textareaRef.current) {
-          textareaRef.current.value = '';
-          syncTextareaHeight(textareaRef.current);
-        }
+        setDraft('');
         router?.push(`/app?tag=${encodeURIComponent(option.tag.id)}`);
       }
     },
-    [closeListbox, createEmptyItemWithName, router, syncTextareaHeight],
+    [closeListbox, createEmptyItemWithName, router, setDraft],
   );
 
   const runPrefixSearch = useCallback(
@@ -1296,17 +1601,35 @@ export function Omnibox({
     [queryClient, tOmni],
   );
 
+  const handleTextareaFocus = () => {
+    if (activePlanRef.current?.running) return;
+    const gate = gateRef.current;
+    if (!gate) return;
+    const currentDomVal = textareaRef.current?.value ?? inputValueRef.current;
+    if (trimUnicodeWhiteSpace(currentDomVal) === '') {
+      const decision = gate.decideKeystroke(
+        {
+          semanticAvailable: semanticAvailableRef.current,
+          semanticSuggest: semanticSuggestRef.current,
+        },
+        currentDomVal,
+      );
+      if (decision.canSend && decision.mode === 'recent') {
+        executeSuggestTick(decision);
+      }
+    }
+  };
+
   const handleInputChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     // Prevent silent data loss or draft/plan divergence while a save plan is actively running (HM18B-R1-3).
     if (activePlanRef.current?.running) {
-      if (textareaRef.current) {
-        textareaRef.current.value = inputValueRef.current;
-      }
+      setDraft(inputValueRef.current);
       return;
     }
     const nextValue = event.target.value;
     setInputValue(nextValue);
     inputValueRef.current = nextValue;
+    setTabCannotFill(false);
     setGuardKind(null);
     setActionErrorCode(null);
     clearLockClearedNotice();
@@ -1439,24 +1762,102 @@ export function Omnibox({
   };
 
   const handleDiscardDraft = () => {
+    abortAllSuggestRequests();
     searchAbortRef.current?.abort();
     searchAbortRef.current = null;
     abortAndClearSavePlan();
-    setInputValue('');
-    inputValueRef.current = '';
+    setDraft('');
+    dispatchMerge({ type: 'close_gate', keepLocalTagCache: false });
     setGuardKind(null);
     setActionErrorCode(null);
     setLiveMessage('');
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-      syncTextareaHeight(textareaRef.current);
-      textareaRef.current.focus();
+    textareaRef.current?.focus();
+  };
+
+  const handleTabFillKey = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    const activeOpt =
+      listOpen && activeIndex >= 0 && options[activeIndex] ? options[activeIndex] : null;
+
+    if (activeOpt) {
+      if (activeOpt.kind === 'item') {
+        event.preventDefault();
+        const itemName = activeOpt.item.name;
+        if (
+          !itemName ||
+          itemName.includes(':') ||
+          itemName.includes('：') ||
+          itemName.startsWith('#')
+        ) {
+          setTabCannotFill(true);
+          setLiveMessage(tSearchTab('cannotFill'));
+          return true;
+        }
+        closeListbox(false);
+        setDraft(`${itemName}: `);
+        return true;
+      }
+      if (activeOpt.kind === 'tag') {
+        event.preventDefault();
+        const disp = activeOpt.tag.display;
+        if (
+          !disp ||
+          /\s/.test(disp) ||
+          disp.includes('#') ||
+          disp.includes(':') ||
+          disp.includes('：')
+        ) {
+          setTabCannotFill(true);
+          setLiveMessage(tSearchTab('cannotFill'));
+          return true;
+        }
+        const cur = textareaRef.current?.value ?? inputValueRef.current;
+        const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, `$1#${disp} `);
+        const nextDraft = replaced !== cur ? replaced : `#${disp} `;
+        setDraft(nextDraft);
+        scheduleKeystrokeSuggest();
+        return true;
+      }
     }
+
+    // Also support Tab on cached tag when `#` mode is active even if listbox was not yet navigated (M4/FE-21).
+    if (parsed.mode === 'tag-filter') {
+      const { token } = parseTagFilterInput(inputValue);
+      const cached = filterCachedTagsByPrefix(getCachedTags(), token);
+      const targetTag = cached[0];
+      if (targetTag) {
+        event.preventDefault();
+        const disp = targetTag.display;
+        if (
+          !disp ||
+          /\s/.test(disp) ||
+          disp.includes('#') ||
+          disp.includes(':') ||
+          disp.includes('：')
+        ) {
+          setTabCannotFill(true);
+          setLiveMessage(tSearchTab('cannotFill'));
+          return true;
+        }
+        const cur = textareaRef.current?.value ?? inputValueRef.current;
+        const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, `$1#${disp} `);
+        const nextDraft = replaced !== cur ? replaced : `#${disp} `;
+        setDraft(nextDraft);
+        scheduleKeystrokeSuggest();
+        return true;
+      }
+    }
+
+    return false;
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeComposing(event)) {
       return;
+    }
+    if (event.key === 'Tab' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      if (handleTabFillKey(event)) {
+        return;
+      }
     }
 
     if (event.key === 'ArrowDown') {
@@ -1508,9 +1909,18 @@ export function Omnibox({
   };
 
   const isAddLike = parsed.mode === 'add' || parsed.mode === 'add-invalid';
-  const showSearchHint = parsed.mode === 'search' && hasNonEmptyInput && guardKind === null;
-  const showTagHint = parsed.mode === 'tag-filter' && hasNonEmptyInput && guardKind === null;
-  const showHint = showSearchHint || showTagHint;
+  const currentDomOrStateValue = textareaRef.current?.value ?? inputValue;
+  const helpTextKey = gateRef.current
+    ? gateRef.current.getHelpTextKey({
+        semanticExternal,
+        currentValue: currentDomOrStateValue,
+      })
+    : 'search.help.sentToServerExternal';
+  const showSearchHint =
+    parsed.mode === 'search' && (hasNonEmptyInput || tabCannotFill) && guardKind === null;
+  const showTagHint =
+    parsed.mode === 'tag-filter' && (hasNonEmptyInput || tabCannotFill) && guardKind === null;
+  const showHint = !isAddLike && (showSearchHint || showTagHint);
   const isSearchInvalid = parsed.mode === 'search' && hasNonEmptyInput && !parsed.searchable;
 
   const hasGrammarErr = parsed.mode === 'add-invalid';
@@ -1590,6 +2000,7 @@ export function Omnibox({
           value={inputValue}
           readOnly={isPlanRunning}
           aria-busy={isPlanRunning || undefined}
+          onFocus={handleTextareaFocus}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
           placeholder={tOmni('placeholder')}
@@ -1683,13 +2094,19 @@ export function Omnibox({
             !showHint && 'hidden',
           )}
         >
-          {showSearchHint
-            ? tOmni.rich('searchHint', {
-                mono: (chunks) => <span className="mono">{chunks}</span>,
-              })
-            : showTagHint
+          {tabCannotFill
+            ? tSearchTab('cannotFill')
+            : helpTextKey === 'content.omnibox.tagHint'
               ? tOmni('tagHint')
-              : ''}
+              : helpTextKey === 'search.help.enterToSearch'
+                ? tSearchHelp('enterToSearch')
+                : helpTextKey === 'search.help.sentToServer'
+                  ? tSearchHelp.rich('sentToServer', {
+                      mono: (chunks) => <span className="mono">{chunks}</span>,
+                    })
+                  : tSearchHelp.rich('sentToServerExternal', {
+                      mono: (chunks) => <span className="mono">{chunks}</span>,
+                    })}
         </div>
 
         <div
@@ -1848,13 +2265,8 @@ export function Omnibox({
                       body: parsed.body,
                       userId: activeUserId,
                       onSavedEntry: () => {
-                        setInputValue('');
-                        inputValueRef.current = '';
-                        if (textareaRef.current) {
-                          textareaRef.current.value = '';
-                          syncTextareaHeight(textareaRef.current);
-                          textareaRef.current.focus();
-                        }
+                        setDraft('');
+                        textareaRef.current?.focus();
                         undoToast?.markOmniboxJustCleared(textareaRef.current);
                       },
                       onRestoreFocus: () => {

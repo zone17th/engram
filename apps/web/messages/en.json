@@ -1434,7 +1434,7 @@
     "omnibox": {
       "ariaLabel": "Search or save",
       "placeholder": "Search or name: content",
-      "searchHint": "Enter: search by name prefix · Ctrl+Enter: create item with this name — typed text is sent to the server, not encrypted. To save content, type <mono>name: content</mono>",
+      "searchHint": "Text you type to search is sent to the server, not encrypted. To save content, type <mono>name:</mono> first.",
       "tagHint": "Enter: filter by tag — typed text is sent to the server, not encrypted",
       "guardTitle": "Add a name and : to save",
       "guardBody": "Multi-line or > 200-character input is never sent as a search query. Prefix with name: on the first line to encrypt and save.",
@@ -1639,6 +1639,62 @@
       "importSubmittingBtn": "Encrypting and saving…",
       "importSavedToast": "Imported 1 JSON entry into “{name}”",
       "importSavedTextToast": "Saved verbatim as 1 text entry in “{name}”"
+    }
+  },
+  "search": {
+    "help": {
+      "sentToServer": "Text you type to search is sent to the server, not encrypted. To save content, type <mono>name:</mono> first.",
+      "sentToServerExternal": "Text you type to search is sent to the server, and to an external embedding service when ≈ is on, not encrypted. To save content, type <mono>name:</mono> first.",
+      "enterToSearch": "Press Enter to search; the text is sent to the server, not encrypted."
+    },
+    "toggle": {
+      "semanticAriaLabel": "Meaning-based search"
+    },
+    "listbox": {
+      "suggestAriaLabel": "Search suggestions",
+      "searchAriaLabel": "Search results",
+      "tagAriaLabel": "Tag filter results"
+    },
+    "group": {
+      "tags": "Tags",
+      "items": "Items",
+      "near": "Similar meaning",
+      "recentItems": "Recent",
+      "recentTags": "Frequent tags",
+      "actions": "Actions"
+    },
+    "match": {
+      "fuzzy": "fuzzy",
+      "semantic": "≈ similar meaning"
+    },
+    "row": {
+      "entryCount": "{count, plural, one {# entry} other {# entries}}",
+      "tagItemCount": "{count, plural, one {# item} other {# items}}",
+      "moreTagsAria": "{count, plural, one {# more tag} other {# more tags}}"
+    },
+    "state": {
+      "nearPending": "Searching by meaning…",
+      "degraded": "Meaning-based search is taking a break — name search still works",
+      "enable409": "Couldn't turn on meaning-based search",
+      "rateLimited": "Sending a bit fast, try again in {seconds}s",
+      "noMatch": "No match for “{query}”",
+      "noMatchHint": "Type {query}: content to save right away, or create an empty item below.",
+      "resultCount": "{count, plural, one {# result} other {# results}}"
+    },
+    "live": {
+      "suggestionsCount": "{count, plural, one {# suggestion} other {# suggestions}}",
+      "nearAppended": "{count, plural, one {Added # similar-meaning suggestion} other {Added # similar-meaning suggestions}}",
+      "nearHidden": "Hid similar-meaning suggestions",
+      "noMatch": "No match for “{query}”"
+    },
+    "actions": {
+      "createItem": "Create item “{query}”",
+      "createItemKbd": "Ctrl+Enter",
+      "loadMore": "Load more",
+      "loadMoreKbd": "Enter"
+    },
+    "tab": {
+      "cannotFill": "Cannot fill with Tab"
     }
   }
 }

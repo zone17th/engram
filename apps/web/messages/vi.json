@@ -1434,7 +1434,7 @@
     "omnibox": {
       "ariaLabel": "Tìm hoặc lưu",
       "placeholder": "Tìm hoặc tên: nội dung",
-      "searchHint": "Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ <mono>tên: nội dung</mono>",
+      "searchHint": "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
       "tagHint": "Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá",
       "guardTitle": "Thêm tên và dấu : để lưu",
       "guardBody": "Chuỗi nhiều dòng hoặc dài quá 200 ký tự không được gửi tìm kiếm để tránh lộ nội dung. Gõ tên: nội dung ở dòng đầu để mã hoá và lưu.",
@@ -1639,6 +1639,62 @@
       "importSubmittingBtn": "Đang mã hoá và lưu…",
       "importSavedToast": "Đã nhập 1 entry JSON vào “{name}”",
       "importSavedTextToast": "Đã lưu nguyên văn thành 1 entry văn bản trong “{name}”"
+    }
+  },
+  "search": {
+    "help": {
+      "sentToServer": "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
+      "sentToServerExternal": "Chữ gõ để tìm được gửi tới máy chủ và tới dịch vụ nhúng bên ngoài khi bật ≈, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
+      "enterToSearch": "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá."
+    },
+    "toggle": {
+      "semanticAriaLabel": "Tìm gần nghĩa"
+    },
+    "listbox": {
+      "suggestAriaLabel": "Gợi ý tìm kiếm",
+      "searchAriaLabel": "Kết quả tìm kiếm",
+      "tagAriaLabel": "Kết quả lọc tag"
+    },
+    "group": {
+      "tags": "Tag",
+      "items": "Mục",
+      "near": "Gần nghĩa",
+      "recentItems": "Gần đây",
+      "recentTags": "Tag hay dùng",
+      "actions": "Thao tác"
+    },
+    "match": {
+      "fuzzy": "gần đúng",
+      "semantic": "≈ gần nghĩa"
+    },
+    "row": {
+      "entryCount": "{count, plural, other {# mục}}",
+      "tagItemCount": "{count, plural, other {# mục}}",
+      "moreTagsAria": "{count, plural, other {Còn # tag nữa}}"
+    },
+    "state": {
+      "nearPending": "Đang tìm gần nghĩa…",
+      "degraded": "Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy",
+      "enable409": "Không bật được tìm theo nghĩa",
+      "rateLimited": "Đang gửi hơi nhanh, thử lại sau {seconds} giây",
+      "noMatch": "Không khớp “{query}”",
+      "noMatchHint": "Gõ {query}: nội dung để lưu ngay hoặc tạo mục rỗng bên dưới.",
+      "resultCount": "{count, plural, other {# kết quả}}"
+    },
+    "live": {
+      "suggestionsCount": "{count, plural, other {# gợi ý}}",
+      "nearAppended": "{count, plural, other {Thêm # gợi ý gần nghĩa}}",
+      "nearHidden": "Đã ẩn gợi ý gần nghĩa",
+      "noMatch": "Không khớp “{query}”"
+    },
+    "actions": {
+      "createItem": "Tạo mục “{query}”",
+      "createItemKbd": "Ctrl+Enter",
+      "loadMore": "Xem thêm",
+      "loadMoreKbd": "Enter"
+    },
+    "tab": {
+      "cannotFill": "Không điền được bằng Tab"
     }
   }
 }
