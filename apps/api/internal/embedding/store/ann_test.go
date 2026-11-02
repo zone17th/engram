@@ -64,6 +64,19 @@ func annCTEScansPartitionIndex(v any, partition, index string) bool {
 	return false
 }
 
+// annPlanScansPartitionIndex applies annCTEScansPartitionIndex to every root of
+// an EXPLAIN (FORMAT JSON) payload. The payload decodes as []map[string]any, a
+// type the any-switch inside annCTEScansPartitionIndex does not match, so the
+// roots must be unwrapped here.
+func annPlanScansPartitionIndex(plan []map[string]any, partition, index string) bool {
+	for _, root := range plan {
+		if annCTEScansPartitionIndex(root, partition, index) {
+			return true
+		}
+	}
+	return false
+}
+
 func planScansIndex(v any, partition, index string) bool {
 	switch node := v.(type) {
 	case map[string]any:
@@ -85,6 +98,66 @@ func planScansIndex(v any, partition, index string) bool {
 		}
 	}
 	return false
+}
+
+func TestAnnCTEScansPartitionIndex(t *testing.T) {
+	const (
+		partition = "item_embedding_g1_p5"
+		index     = "item_embedding_g1_p5_hnsw"
+	)
+	cases := []struct {
+		name string
+		plan string
+		want bool
+	}{
+		{
+			name: "ann CTE index scan via the partition hnsw index",
+			plan: `[{"Plan": {"Node Type": "Sort", "Plans": [
+				{"Node Type": "Limit", "Parent Relationship": "InitPlan", "Subplan Name": "CTE ann", "Plans": [
+					{"Node Type": "Index Scan", "Parent Relationship": "Outer",
+					 "Index Name": "item_embedding_g1_p5_hnsw", "Relation Name": "item_embedding_g1_p5", "Alias": "e"}
+				]},
+				{"Node Type": "CTE Scan", "Parent Relationship": "Outer", "CTE Name": "ann", "Alias": "a"}
+			]}}]`,
+			want: true,
+		},
+		{
+			name: "ann CTE bitmap scan via the partition pkey (CI failure shape)",
+			plan: `[{"Plan": {"Node Type": "Sort", "Plans": [
+				{"Node Type": "Limit", "Parent Relationship": "InitPlan", "Subplan Name": "CTE ann", "Plans": [
+					{"Node Type": "Sort", "Parent Relationship": "Outer", "Plans": [
+						{"Node Type": "Bitmap Heap Scan", "Parent Relationship": "Outer",
+						 "Relation Name": "item_embedding_g1_p5", "Alias": "e", "Plans": [
+							{"Node Type": "Bitmap Index Scan", "Parent Relationship": "Outer",
+							 "Index Name": "item_embedding_g1_p5_pkey"}
+						]}
+					]}
+				]},
+				{"Node Type": "Index Scan", "Parent Relationship": "Inner",
+				 "Index Name": "item_user_unaccent_prefix", "Relation Name": "item", "Alias": "i"}
+			]}}]`,
+			want: false,
+		},
+		{
+			name: "ann CTE uses the hnsw index of another partition",
+			plan: `[{"Plan": {"Node Type": "Limit", "Subplan Name": "CTE ann", "Plans": [
+				{"Node Type": "Index Scan", "Parent Relationship": "Outer",
+				 "Index Name": "item_embedding_g1_p6_hnsw", "Relation Name": "item_embedding_g1_p6", "Alias": "e"}
+			]}}]`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var plan []map[string]any
+			if err := json.Unmarshal([]byte(tc.plan), &plan); err != nil {
+				t.Fatalf("unmarshal fixture: %v", err)
+			}
+			if got := annPlanScansPartitionIndex(plan, partition, index); got != tc.want {
+				t.Fatalf("annPlanScansPartitionIndex = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestANNAboveThresholdPrunesPartition(t *testing.T) {
@@ -180,7 +253,7 @@ func TestANNAboveThresholdPrunesPartition(t *testing.T) {
 		prunedPartition = rel
 	}
 	wantIndex := prunedPartition + "_hnsw"
-	if !annCTEScansPartitionIndex(planPayload, prunedPartition, wantIndex) {
+	if !annPlanScansPartitionIndex(planPayload, prunedPartition, wantIndex) {
 		t.Fatalf("expected ANNSearchSQL ann CTE to scan %s via HNSW index %s, plan:\n%s",
 			prunedPartition, wantIndex, string(rawPlan))
 	}
