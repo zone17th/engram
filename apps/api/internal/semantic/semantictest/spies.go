@@ -97,6 +97,7 @@ type SpyPinner struct {
 	pin         generation.Pin
 	hasPin      bool
 	err         error
+	afterRead   func(call int64)
 	subscribers []func()
 	calls       atomic.Int64
 }
@@ -111,16 +112,23 @@ func NewSpyPinner(pin generation.Pin, hasPin bool) *SpyPinner {
 }
 
 func (p *SpyPinner) ActivePin(_ context.Context) (generation.Pin, error) {
-	p.calls.Add(1)
+	call := p.calls.Add(1)
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.err != nil {
-		return generation.Pin{}, p.err
+	pin := p.pin
+	hasPin := p.hasPin
+	err := p.err
+	hook := p.afterRead
+	p.mu.Unlock()
+	if hook != nil {
+		hook(call)
 	}
-	if !p.hasPin {
+	if err != nil {
+		return generation.Pin{}, err
+	}
+	if !hasPin {
 		return generation.Pin{}, generation.ErrNoActiveGeneration
 	}
-	return p.pin, nil
+	return pin, nil
 }
 
 func (p *SpyPinner) Subscribe(fn func()) {
@@ -145,6 +153,15 @@ func (p *SpyPinner) SetPin(pin generation.Pin, hasPin bool) {
 func (p *SpyPinner) SetError(err error) {
 	p.mu.Lock()
 	p.err = err
+	p.mu.Unlock()
+}
+
+// SetAfterRead registers an optional callback invoked after each ActivePin read
+// (outside p.mu so the callback may call SetPin / Notify to simulate a flip
+// immediately after the first read).
+func (p *SpyPinner) SetAfterRead(fn func(call int64)) {
+	p.mu.Lock()
+	p.afterRead = fn
 	p.mu.Unlock()
 }
 

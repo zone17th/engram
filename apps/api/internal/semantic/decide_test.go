@@ -1066,7 +1066,7 @@ func TestActiveGenerationAndNearShareSinglePinAcrossFlip(t *testing.T) {
 
 	// Request 1: page-1 /search calls ActiveGeneration first, then a flip to g2
 	// happens mid-request before Near is called.
-	reqCtx1, cancel1 := context.WithCancel(baseCtx)
+	reqCtx1, cancel1 := context.WithCancel(semantic.WithRequestScope(baseCtx))
 	defer cancel1()
 
 	activeGen1, err := nearSrc.ActiveGeneration(reqCtx1, userID)
@@ -1114,7 +1114,7 @@ func TestActiveGenerationAndNearShareSinglePinAcrossFlip(t *testing.T) {
 	// Request 2: fresh request context after the flip observes g2 (2) consistently
 	// across both ActiveGeneration and Near, again with 1 ActivePin read.
 	pinner.ResetCalls()
-	reqCtx2, cancel2 := context.WithCancel(baseCtx)
+	reqCtx2, cancel2 := context.WithCancel(semantic.WithRequestScope(baseCtx))
 	defer cancel2()
 
 	activeGen2, err := nearSrc.ActiveGeneration(reqCtx2, userID)
@@ -1134,5 +1134,381 @@ func TestActiveGenerationAndNearShareSinglePinAcrossFlip(t *testing.T) {
 	}
 	if pinner.Calls() != 1 {
 		t.Fatalf("req2 total ActivePin calls across ActiveGeneration + Near = %d, want 1", pinner.Calls())
+	}
+}
+
+// TestRequestScopeSharedParentNoCollision verifies RV-T12-BE-10:
+//   - Two same-user requests derived from a single cancellable parent context,
+//     each wrapped with its own semantic.WithRequestScope, never collide when
+//     interleaved across a generation flip (g1 -> g2):
+//     1. reqA calls ActiveGeneration -> resolves g1 (1).
+//     2. Active generation flips to g2 (2) + NOTIFY.
+//     3. reqB calls ActiveGeneration -> resolves g2 (2).
+//     4. reqA calls Near -> reuses reqA's g1 (1) without a second ActivePin read.
+//     5. reqB calls Near -> reuses reqB's g2 (2) without a second ActivePin read.
+func TestRequestScopeSharedParentNoCollision(t *testing.T) {
+	sharedParent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+
+	pin1 := testPinForIdentity(1, teiID)
+	pin2 := testPinForIdentity(2, teiID)
+	pinner := semantictest.NewSpyPinner(pin1, true)
+
+	searcher := &semantictest.SpyVectorSearcher{
+		ItemHits: []semantic.VectorHit{
+			{
+				ID:         uuid.MustParse("00000000-0001-4000-8000-000000000055"),
+				Cos:        0.90,
+				Name:       "wifi tầng 1",
+				Count:      3,
+				LastUsedAt: ts,
+				CreatedAt:  ts,
+			},
+		},
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	// Both requests derive from the SAME cancellable parent andthus share ctx.Done(),
+	// but each installs its own request scope.
+	reqCtxA := semantic.WithRequestScope(sharedParent)
+	reqCtxB := semantic.WithRequestScope(sharedParent)
+	if reqCtxA.Done() != reqCtxB.Done() || reqCtxA.Done() == nil {
+		t.Fatalf("expected reqCtxA and reqCtxB to share non-nil Done channel")
+	}
+
+	// 1. reqA resolves ActiveGeneration while g1 is active.
+	genA, err := nearSrc.ActiveGeneration(reqCtxA, userID)
+	if err != nil || genA == nil || *genA != 1 {
+		t.Fatalf("reqA ActiveGeneration = (%v, %v), want 1", genA, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActivePin calls after reqA ActiveGeneration = %d, want 1", pinner.Calls())
+	}
+
+	// 2. Flip g1 -> g2 + NOTIFY.
+	pinner.SetPin(pin2, true)
+	pinner.Notify()
+
+	// 3. reqB (same user, same parent Done channel, own WithRequestScope) resolves ActiveGeneration -> g2.
+	genB, err := nearSrc.ActiveGeneration(reqCtxB, userID)
+	if err != nil || genB == nil || *genB != 2 {
+		t.Fatalf("reqB ActiveGeneration = (%v, %v), want 2", genB, err)
+	}
+	if pinner.Calls() != 2 {
+		t.Fatalf("ActivePin calls after reqB ActiveGeneration = %d, want 2", pinner.Calls())
+	}
+
+	// 4. reqA runs Near -> must still see its own Pin (g1 == 1), NOT reqB's g2.
+	nearA, err := nearSrc.Near(reqCtxA, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearA.Semantic || nearA.Generation == nil || *nearA.Generation != 1 {
+		t.Fatalf("reqA Near = %+v (err=%v), want Generation=1", nearA, err)
+	}
+
+	// 5. reqB runs Near -> sees its own Pin (g2 == 2).
+	nearB, err := nearSrc.Near(reqCtxB, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearB.Semantic || nearB.Generation == nil || *nearB.Generation != 2 {
+		t.Fatalf("reqB Near = %+v (err=%v), want Generation=2", nearB, err)
+	}
+	if pinner.Calls() != 2 {
+		t.Fatalf("total ActivePin calls across interleaved reqA + reqB = %d, want 2", pinner.Calls())
+	}
+}
+
+// TestRequestScopeInheritedByChildContexts verifies RV-T12-BE-10:
+//   - Child contexts derived via context.WithValue, context.WithCancel, and
+//     context.WithTimeout inherit the parent's request-scoped Pin carrier.
+//   - Also verifies negative Pin caching (no-active -> active flip within a
+//     scoped request keeps Near consistent with ActiveGeneration == nil).
+func TestRequestScopeInheritedByChildContexts(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+
+	pin1 := testPinForIdentity(1, teiID)
+	pin2 := testPinForIdentity(2, teiID)
+	pinner := semantictest.NewSpyPinner(pin1, true)
+
+	searcher := &semantictest.SpyVectorSearcher{
+		ItemHits: []semantic.VectorHit{
+			{
+				ID:         uuid.MustParse("00000000-0001-4000-8000-000000000055"),
+				Cos:        0.90,
+				Name:       "wifi tầng 1",
+				Count:      3,
+				LastUsedAt: ts,
+				CreatedAt:  ts,
+			},
+		},
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	type ctxKey string
+	scopedRoot := semantic.WithRequestScope(context.Background())
+	valChild := context.WithValue(scopedRoot, ctxKey("k"), "v")
+	cancelChild, cancel := context.WithCancel(valChild)
+	defer cancel()
+	timeoutChild, cancelTimeout := context.WithTimeout(cancelChild, time.Minute)
+	defer cancelTimeout()
+
+	// Call ActiveGeneration on valChild (sees g1), flip to g2, then call Near on timeoutChild.
+	gen, err := nearSrc.ActiveGeneration(valChild, userID)
+	if err != nil || gen == nil || *gen != 1 {
+		t.Fatalf("ActiveGeneration on valChild = (%v, %v), want 1", gen, err)
+	}
+	pinner.SetPin(pin2, true)
+	pinner.Notify()
+
+	nearRes, err := nearSrc.Near(timeoutChild, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearRes.Semantic || nearRes.Generation == nil || *nearRes.Generation != 1 {
+		t.Fatalf("Near on timeoutChild = %+v (err=%v), want Generation=1", nearRes, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActivePin calls across valChild + timeoutChild = %d, want 1", pinner.Calls())
+	}
+
+	// Also verify no-active -> active flip within a scoped request reuses the negative resolution.
+	pinner.SetPin(generation.Pin{}, false)
+	pinner.ResetCalls()
+	noActiveScope := semantic.WithRequestScope(context.Background())
+	genNil, err := nearSrc.ActiveGeneration(noActiveScope, userID)
+	if err != nil || genNil != nil {
+		t.Fatalf("ActiveGeneration (no active) = (%v, %v), want (nil, nil)", genNil, err)
+	}
+	// Flip to active g2 mid-request; Near must still observe no-active (disabled_server, Generation=nil) with 0 extra reads.
+	pinner.SetPin(pin2, true)
+	pinner.Notify()
+	nearNil, err := nearSrc.Near(noActiveScope, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || nearNil.Semantic || nearNil.Generation != nil || nearNil.SemanticReason == nil || *nearNil.SemanticReason != suggest.ReasonDisabledServer {
+		t.Fatalf("Near after no-active->active flip = %+v (err=%v), want disabled_server and Generation=nil", nearNil, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActivePin calls for no-active->active flip = %d, want 1", pinner.Calls())
+	}
+}
+
+// TestRequestScopeUserMismatchNoReuse verifies RV-T12-BE-10:
+//   - When a carrier in ctx was resolved for userA, a call with userB on the
+//     same carrier does NOT reuse userA's cached Pin and does NOT overwrite
+//     userA's cached Pin; userB reads fresh from Pinner.ActivePin while a
+//     subsequent call for userA still reuses userA's original Pin.
+func TestRequestScopeUserMismatchNoReuse(t *testing.T) {
+	userA := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	userB := uuid.MustParse("22222222-2222-4000-8000-000000000002")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+
+	pin1 := testPinForIdentity(1, teiID)
+	pin2 := testPinForIdentity(2, teiID)
+	pinner := semantictest.NewSpyPinner(pin1, true)
+
+	searcher := &semantictest.SpyVectorSearcher{
+		ItemHits: []semantic.VectorHit{
+			{
+				ID:         uuid.MustParse("00000000-0001-4000-8000-000000000055"),
+				Cos:        0.90,
+				Name:       "wifi tầng 1",
+				Count:      3,
+				LastUsedAt: ts,
+				CreatedAt:  ts,
+			},
+		},
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	scopedCtx := semantic.WithRequestScope(context.Background())
+
+	// userA resolves g1 (1).
+	genA, err := nearSrc.ActiveGeneration(scopedCtx, userA)
+	if err != nil || genA == nil || *genA != 1 {
+		t.Fatalf("userA ActiveGeneration = (%v, %v), want 1", genA, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActivePin calls after userA = %d, want 1", pinner.Calls())
+	}
+
+	// Flip to g2 (2).
+	pinner.SetPin(pin2, true)
+	pinner.Notify()
+
+	// userB on the same scopedCtx must NOT reuse userA's g1; it reads fresh -> g2 (2).
+	nearB, err := nearSrc.Near(scopedCtx, suggest.NearRequest{
+		UserID:        userB,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearB.Semantic || nearB.Generation == nil || *nearB.Generation != 2 {
+		t.Fatalf("userB Near = %+v (err=%v), want Generation=2 (fresh read)", nearB, err)
+	}
+	if pinner.Calls() != 2 {
+		t.Fatalf("ActivePin calls after userB mismatch Near = %d, want 2", pinner.Calls())
+	}
+
+	// userA's slot was NOT overwritten by userB; userA Near still reuses g1 (1) with 0 extra reads.
+	nearA, err := nearSrc.Near(scopedCtx, suggest.NearRequest{
+		UserID:        userA,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearA.Semantic || nearA.Generation == nil || *nearA.Generation != 1 {
+		t.Fatalf("userA Near = %+v (err=%v), want Generation=1 (preserved)", nearA, err)
+	}
+	if pinner.Calls() != 2 {
+		t.Fatalf("ActivePin calls after userA Near = %d, want 2", pinner.Calls())
+	}
+}
+
+// TestNoRequestScopeFallsBackToFreshReads verifies RV-T12-BE-10:
+//   - Without a request-scoped carrier in ctx, ActiveGeneration and Near each
+//     read ActivePin fresh, do not panic, and retain no cross-call state.
+func TestNoRequestScopeFallsBackToFreshReads(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+
+	pin1 := testPinForIdentity(1, teiID)
+	pin2 := testPinForIdentity(2, teiID)
+	pinner := semantictest.NewSpyPinner(pin1, true)
+
+	searcher := &semantictest.SpyVectorSearcher{
+		ItemHits: []semantic.VectorHit{
+			{
+				ID:         uuid.MustParse("00000000-0001-4000-8000-000000000055"),
+				Cos:        0.90,
+				Name:       "wifi tầng 1",
+				Count:      3,
+				LastUsedAt: ts,
+				CreatedAt:  ts,
+			},
+		},
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	bareCtx := context.Background()
+	gen1, err := nearSrc.ActiveGeneration(bareCtx, userID)
+	if err != nil || gen1 == nil || *gen1 != 1 {
+		t.Fatalf("ActiveGeneration on bareCtx = (%v, %v), want 1", gen1, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActivePin calls after first read = %d, want 1", pinner.Calls())
+	}
+
+	pinner.SetPin(pin2, true)
+	pinner.Notify()
+
+	nearRes, err := nearSrc.Near(bareCtx, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearRes.Semantic || nearRes.Generation == nil || *nearRes.Generation != 2 {
+		t.Fatalf("Near on bareCtx = %+v (err=%v), want Generation=2 (fresh read)", nearRes, err)
+	}
+	if pinner.Calls() != 2 {
+		t.Fatalf("ActivePin calls without carrier = %d, want 2", pinner.Calls())
 	}
 }

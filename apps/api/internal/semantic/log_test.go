@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/compose"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedtest"
@@ -639,5 +641,152 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	}
 	if got := counterValue(t, zeroMetrics.Search.VectorPathTotal.WithLabelValues(suggest.CorpusTag, string(semantic.VectorPathANNShort))); got != 1 {
 		t.Fatalf("zero-threshold search_vector_path_total{corpus=tag,path=ann_short} = %v, want 1", got)
+	}
+}
+
+// TestRequestScopeBareContextFlip verifies RV-T12-BE-10:
+//   - Serving GET /api/v1/search with a bare context.Background() request
+//     (`httptest.NewRequest` + `router.ServeHTTP`, where req.Context().Done() == nil)
+//     through `semantic.RequestScopeMiddleware` and the real `semantic.Runtime.NearSource()`
+//     reads `ActivePin` at most ONCE across `ActiveGeneration` and `Near`.
+//   - Even when the active generation flips from g1 (1) to g2 (2) immediately
+//     after the first `ActivePin` read (via SpyPinner's AfterRead hook), `Near`
+//     reuses the request-scoped carrier's Pin so `response.generation == 1` and
+//     decoded `next_cursor.gen == 1` (`cursor.gen == response.generation`).
+func TestRequestScopeBareContextFlip(t *testing.T) {
+	pool := newTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ts := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, locale) VALUES ($1, 'sem-search-flip@example.com', 'vi')`, userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	// Insert 21 lexical items matching "wifi" so GET /api/v1/search?q=wifi&scope=item&limit=20
+	// produces a non-nil next_cursor on page 1.
+	for i := 1; i <= 21; i++ {
+		itemID := uuid.MustParse(fmt.Sprintf("00000000-0002-4000-8000-%012d", i))
+		name := fmt.Sprintf("wifi phòng %02d", i)
+		norm := fmt.Sprintf("wifi phong %02d", i)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO item (id, user_id, name, name_normalized, hint, entry_count, last_used_at, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, '', 1, $5, $5, $5)
+		`, itemID, userID, name, norm, ts); err != nil {
+			t.Fatalf("insert lexical item %d: %v", i, err)
+		}
+	}
+
+	nearItemID := uuid.MustParse("00000000-0002-4000-8000-000000000099")
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO item (id, user_id, name, name_normalized, hint, entry_count, last_used_at, created_at, updated_at)
+		VALUES ($1, $2, 'bộ định tuyến quang', 'bo dinh tuyen quang', '', 2, $3, $3, $3)
+	`, nearItemID, userID, ts); err != nil {
+		t.Fatalf("insert near item: %v", err)
+	}
+
+	teiID := testTEIIdentity()
+	pin1 := testPinForIdentity(1, teiID)
+	pin2 := testPinForIdentity(2, teiID)
+	spyPinner := semantictest.NewSpyPinner(pin1, true)
+	// Deterministically flip g1 -> g2 immediately after the very first ActivePin read
+	// (which occurs inside ActiveGeneration on page 1 before lexical SQL and Near run).
+	spyPinner.SetAfterRead(func(call int64) {
+		if call == 1 {
+			spyPinner.SetPin(pin2, true)
+			spyPinner.Notify()
+		}
+	})
+
+	spyProv := semantictest.NewSpyProvider(teiID)
+	searcher := &semantictest.SpyVectorSearcher{
+		ItemHits: []semantic.VectorHit{
+			{
+				ID:         nearItemID,
+				Cos:        0.92,
+				Name:       "bộ định tuyến quang",
+				Count:      2,
+				LastUsedAt: ts,
+				CreatedAt:  ts,
+			},
+		},
+	}
+
+	_, metrics := obs.NewRegistry()
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		Knobs:          semantic.DefaultVectorSearchKnobs(),
+		ClientSet:      embedding.NewClientSet(embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix), nil),
+		Pinner:         spyPinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: semantic.NewDBUserSettingsReader(pool),
+		ItemTagLoader:  semantic.NewDBItemTagRefLoader(pool),
+		Metrics:        metrics,
+		Clock:          clk,
+	})
+
+	jwtSecret := []byte("0123456789abcdef0123456789abcdef")
+	cursorKey, err := suggest.DeriveCursorKey(jwtSecret)
+	if err != nil {
+		t.Fatalf("DeriveCursorKey: %v", err)
+	}
+	searchComp, err := compose.NewSearch(&config.Config{
+		AuthJWTSecret: jwtSecret,
+	}, pool, clk, metrics, slog.New(slog.NewTextHandler(io.Discard, nil)), rt.NearSource())
+	if err != nil {
+		t.Fatalf("compose.NewSearch: %v", err)
+	}
+	auth := &fakeAuth{cookies: map[string]authctx.Principal{
+		"tok-u1": {UserID: userID, SessionID: uuid.New()},
+	}}
+	router := httpx.NewRouter(httpx.Deps{
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MetricsCollector: metrics,
+		Authenticator:    auth,
+		MountAPI:         searchComp.Mount,
+	})
+
+	// Build a bare context.Background() request (req.Context().Done() == nil) and
+	// invoke router.ServeHTTP directly.
+	params := url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "semantic": {"1"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?"+params.Encode(), nil).WithContext(context.Background())
+	if req.Context().Done() != nil {
+		t.Fatalf("expected bare request context with nil Done channel")
+	}
+	req.AddCookie(&http.Cookie{Name: "sabk_session", Value: "tok-u1"})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp suggest.SearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode SearchResponse: %v", err)
+	}
+	if !resp.Semantic || resp.Generation == nil {
+		t.Fatalf("SearchResponse semantic metadata = %+v, want Semantic=true Generation!=nil", resp)
+	}
+	if resp.NextCursor == nil || *resp.NextCursor == "" {
+		t.Fatalf("SearchResponse NextCursor = %v, want non-empty cursor", resp.NextCursor)
+	}
+
+	decodedCur, err := suggest.DecodeCursor(cursorKey, *resp.NextCursor, suggest.ScopeItem, "wifi")
+	if err != nil {
+		t.Fatalf("DecodeCursor: %v", err)
+	}
+	if decodedCur.Gen == nil {
+		t.Fatalf("decoded cursor.gen = nil, want 1")
+	}
+	if *decodedCur.Gen != *resp.Generation || *resp.Generation != 1 {
+		t.Fatalf("cursor.gen = %d, response.generation = %d; want both == 1", *decodedCur.Gen, *resp.Generation)
+	}
+	if spyPinner.Calls() != 1 {
+		t.Fatalf("SpyPinner.Calls() across /search request = %d, want 1", spyPinner.Calls())
 	}
 }
