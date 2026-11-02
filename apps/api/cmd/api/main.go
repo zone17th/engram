@@ -122,7 +122,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose vault: %w", err)
 	}
-	contentComp, err := compose.NewContent(cfg, pool, nil, metrics, logger)
+	contentComp, err := compose.NewContent(cfg, pool, nil, metrics, logger, compose.WithEmbedRiver(riverInsert))
 	if err != nil {
 		return fmt.Errorf("compose content: %w", err)
 	}

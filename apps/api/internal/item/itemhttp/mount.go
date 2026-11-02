@@ -27,6 +27,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/clock"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/item"
 	"github.com/zone17th/engram/apps/api/internal/textnorm"
@@ -40,6 +41,7 @@ type ContentProvider interface {
 	ContentClock() clock.Clock
 	ContentAudit() *audit.Store
 	ContentLogger() *slog.Logger
+	ContentEmbedHook() item.EmbedHook
 	ChainItemTagWrite(d httpx.Deps, requireIfMatch bool, fn http.HandlerFunc) http.Handler
 }
 
@@ -54,14 +56,51 @@ func NewAPI(provider ContentProvider) *API {
 	if provider == nil {
 		panic("itemhttp.NewAPI: missing ContentProvider")
 	}
+	svc := item.NewService(provider.ContentPool(), provider.ContentClock())
+	svc.SetEmbedHook(provider.ContentEmbedHook())
 	return &API{
 		provider: provider,
-		svc:      item.NewService(provider.ContentPool(), provider.ContentClock()),
+		svc:      svc,
 	}
 }
 
 // Service trả về `*item.Service` gắn với API.
 func (a *API) Service() *item.Service { return a.svc }
+
+func (a *API) embedHook() item.EmbedHook {
+	if a != nil && a.provider != nil {
+		if h := a.provider.ContentEmbedHook(); h != nil {
+			return h
+		}
+	}
+	if a != nil && a.svc != nil {
+		return a.svc.EmbedHook()
+	}
+	return item.NoopEmbedHook{}
+}
+
+// WriteEmbedHookError rolls back tx, releases any uncommitted idempotency claim,
+// and writes RFC 9457 503 dependency_unavailable without leaking plaintext input.
+func WriteEmbedHookError(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, tx httpx.IdempotencyTx, err error) {
+	ctx := r.Context()
+	if httpx.WriteContentTxError(ctx, w, r, pool, tx, err) {
+		return
+	}
+	if tx != nil {
+		_ = tx.Rollback(ctx)
+	}
+	if pool != nil {
+		_ = httpx.ReleaseIdempotencyClaim(ctx, pool)
+	}
+	httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "dependency_unavailable", httpx.ProblemTitle("dependency_unavailable")+".")
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 // Mount đăng ký các route `/api/v1/items*` của P04 Task 4:
 //   - GET /items (`itemsList`): S
@@ -598,6 +637,17 @@ func (a *API) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
 		return
 	}
+	if err := a.embedHook().OnUpsert(
+		ctx,
+		tx,
+		p.UserID,
+		item.EmbedKindItem,
+		row.ID,
+		embedding.ItemInput(row.Name, derefString(row.Hint)),
+	); err != nil {
+		WriteEmbedHookError(w, r, pool, tx, err)
+		return
+	}
 
 	summary := item.BuildSummaryFromRow(row, []item.TagRef{})
 	respBytes, err := json.Marshal(summary)
@@ -614,7 +664,6 @@ func (a *API) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.svc.EnqueueEmbed(ctx, p.UserID, row.ID)
 	writeJSONBytes(w, http.StatusCreated, respBytes)
 }
 
@@ -727,6 +776,17 @@ func (a *API) Update(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
 			return
 		}
+		if err := a.embedHook().OnUpsert(
+			ctx,
+			tx,
+			p.UserID,
+			item.EmbedKindItem,
+			updatedRow.ID,
+			embedding.ItemInput(updatedRow.Name, derefString(updatedRow.Hint)),
+		); err != nil {
+			WriteEmbedHookError(w, r, pool, tx, err)
+			return
+		}
 	}
 
 	summary, err := item.BuildSummary(ctx, q, updatedRow)
@@ -752,9 +812,6 @@ func (a *API) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if changed {
-		a.svc.EnqueueEmbed(ctx, p.UserID, updatedRow.ID)
-	}
 	writeJSONBytes(w, http.StatusOK, respBytes)
 }
 
@@ -865,6 +922,10 @@ func (a *API) Delete(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
+			return
+		}
+		if err := a.embedHook().OnDelete(ctx, tx, p.UserID, item.EmbedKindItem, itemID); err != nil {
+			WriteEmbedHookError(w, r, pool, tx, err)
 			return
 		}
 	}
@@ -1020,6 +1081,17 @@ func (a *API) Restore(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
+			return
+		}
+		if err := a.embedHook().OnUpsert(
+			ctx,
+			tx,
+			p.UserID,
+			item.EmbedKindItem,
+			restoredRow.ID,
+			embedding.ItemInput(restoredRow.Name, derefString(restoredRow.Hint)),
+		); err != nil {
+			WriteEmbedHookError(w, r, pool, tx, err)
 			return
 		}
 	}

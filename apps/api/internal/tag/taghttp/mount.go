@@ -27,6 +27,7 @@ import (
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/item"
 	"github.com/zone17th/engram/apps/api/internal/item/itemhttp"
@@ -83,6 +84,15 @@ func NewAPI(provider ContentProvider) *API {
 
 // Service trả về `*tag.Service` gắn với API.
 func (a *API) Service() *tag.Service { return a.svc }
+
+func (a *API) embedHook() item.EmbedHook {
+	if a != nil && a.provider != nil {
+		if h := a.provider.ContentEmbedHook(); h != nil {
+			return h
+		}
+	}
+	return item.NoopEmbedHook{}
+}
 
 // SetTestHooks gắn `*TestHooks` trực tiếp lên thực thể `*API`.
 func (a *API) SetTestHooks(hooks *TestHooks) {
@@ -389,6 +399,17 @@ func (a *API) Upsert(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
 			return
 		}
+		if err := a.embedHook().OnUpsert(
+			ctx,
+			tx,
+			p.UserID,
+			item.EmbedKindTag,
+			created.ID,
+			embedding.TagInput(created.Display),
+		); err != nil {
+			itemhttp.WriteEmbedHookError(w, r, pool, tx, err)
+			return
+		}
 		status = http.StatusCreated
 		outTag = tag.BuildTag(created)
 	default:
@@ -511,6 +532,17 @@ func (a *API) Rename(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
 		return
 	}
+	if err := a.embedHook().OnUpsert(
+		ctx,
+		tx,
+		p.UserID,
+		item.EmbedKindTag,
+		updated.ID,
+		embedding.TagInput(updated.Display),
+	); err != nil {
+		itemhttp.WriteEmbedHookError(w, r, pool, tx, err)
+		return
+	}
 
 	respBytes, err := json.Marshal(tag.BuildTag(updated))
 	if err != nil {
@@ -588,6 +620,10 @@ func (a *API) Delete(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
+			return
+		}
+		if err := a.embedHook().OnDelete(ctx, tx, p.UserID, item.EmbedKindTag, tagID); err != nil {
+			itemhttp.WriteEmbedHookError(w, r, pool, tx, err)
 			return
 		}
 	}
@@ -700,6 +736,17 @@ func (a *API) Restore(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "Máy chủ gặp lỗi.")
+			return
+		}
+		if err := a.embedHook().OnUpsert(
+			ctx,
+			tx,
+			p.UserID,
+			item.EmbedKindTag,
+			restoredRow.ID,
+			embedding.TagInput(restoredRow.Display),
+		); err != nil {
+			itemhttp.WriteEmbedHookError(w, r, pool, tx, err)
 			return
 		}
 	}

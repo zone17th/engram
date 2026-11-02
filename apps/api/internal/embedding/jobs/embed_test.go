@@ -38,6 +38,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/store"
+	"github.com/zone17th/engram/apps/api/internal/item"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
@@ -1726,5 +1727,536 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	}
 	if !bytes.Equal(g1AfterW2.Canary, g1AfterVerify.Canary) {
 		t.Fatalf("canary baseline mutated after verify:\nbefore: %s\nafter: %s", g1AfterW2.Canary, g1AfterVerify.Canary)
+	}
+}
+
+// TestRenameLateJobNeverWritesOldVector verifies plan P05 mục 2.17 / Task 11b
+// (evidence P05-B2):
+//  1. Item (and tag) is created and enqueued via Enqueuer.OnUpsert inside a tx.
+//  2. Job A starts working, embeds the old input A in step 4, and pauses at
+//     BeforeStep5Tx before entering the step 5 short transaction.
+//  3. While Job A is paused, a rename mutation transaction updates the row to
+//     input B, calls Enqueuer.OnUpsert (enqueuing Job B), and commits.
+//  4. Job B runs and upserts the vector for B (or runs after Job A).
+//  5. Job A is released into step 5: under FOR SHARE on the target row, it
+//     recomputes the current hash (hash_B != hash_A), finishes skipped_stale
+//     (without overwriting B), and the final stored vector hash equals hash_B.
+func TestRenameLateJobNeverWritesOldVector(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	defer srv.Close()
+	client := newTEIClient(t, srv, 8, "", "passage: ")
+	cs := embedding.NewClientSet(client, nil)
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, client.Identity, generation.StateActive, nil)
+
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "rename-late-job@example.com", Locale: "vi"})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+
+	riverClient := newInsertClient(t, pool)
+	enqueuer := jobs.NewEnqueuer(riverClient, true, embedding.ProviderTEI, nil)
+
+	const (
+		nameA = "Old Router Name"
+		hintA = "old floor 1"
+		nameB = "New Router Name"
+		hintB = "new floor 2"
+	)
+	inputA := embedding.ItemInput(nameA, hintA)
+	inputB := embedding.ItemInput(nameB, hintB)
+	hashA := embedding.InputHashFor(g1.Identity(), inputA)
+	hashB := embedding.InputHashFor(g1.Identity(), inputB)
+
+	// 1. Create item in a transaction and enqueue Job A via Enqueuer.OnUpsert.
+	txCreate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin create tx: %v", err)
+	}
+	defer func() { _ = txCreate.Rollback(ctx) }()
+
+	qCreate := gen.New(txCreate)
+	hA := hintA
+	itemRow, err := qCreate.InsertItem(ctx, gen.InsertItemParams{
+		UserID:         user.ID,
+		Name:           nameA,
+		NameNormalized: strings.ToLower(nameA),
+		Hint:           &hA,
+	})
+	if err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+	if err := enqueuer.OnUpsert(ctx, txCreate, user.ID, item.EmbedKindItem, itemRow.ID, inputA); err != nil {
+		t.Fatalf("Enqueuer.OnUpsert create: %v", err)
+	}
+	if err := txCreate.Commit(ctx); err != nil {
+		t.Fatalf("Commit create tx: %v", err)
+	}
+
+	var jobAID int64
+	var jobAHashHex string
+	if err := pool.QueryRow(ctx,
+		`SELECT id, args->>'input_hash' FROM river_job WHERE kind = 'embed_item' ORDER BY id DESC LIMIT 1`,
+	).Scan(&jobAID, &jobAHashHex); err != nil {
+		t.Fatalf("read enqueued Job A: %v", err)
+	}
+	if jobAHashHex != hex.EncodeToString(hashA[:]) {
+		t.Fatalf("enqueued Job A hash = %q, want %x", jobAHashHex, hashA[:])
+	}
+
+	// 2. Start Job A; pause at BeforeStep5Tx right after EmbedDocuments finishes.
+	jobAAtStep5 := make(chan struct{})
+	releaseJobA := make(chan struct{})
+
+	reg, m := obs.NewRegistry()
+	workerA := jobs.NewEmbedItemWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+		BeforeStep5Tx: func(_ context.Context, _ string, _ int, _ uuid.UUID) {
+			close(jobAAtStep5)
+			<-releaseJobA
+		},
+	})
+
+	argsA := jobargs.EmbedItemArgs{
+		GenerationID: g1.ID,
+		UserID:       user.ID.String(),
+		TargetID:     itemRow.ID.String(),
+		InputHash:    jobAHashHex,
+	}
+	errChA := make(chan error, 1)
+	go func() {
+		errChA <- workerA.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+			JobRow: &rivertype.JobRow{ID: jobAID, Attempt: 1, State: rivertype.JobStateRunning},
+			Args:   argsA,
+		})
+	}()
+	<-jobAAtStep5
+
+	// 3. While Job A is paused after embedding A, rename the item to B and commit.
+	txRename, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin rename tx: %v", err)
+	}
+	defer func() { _ = txRename.Rollback(ctx) }()
+
+	qRename := gen.New(txRename)
+	hB := hintB
+	if _, err := qRename.UpdateItemNameAndHint(ctx, gen.UpdateItemNameAndHintParams{
+		Name:            nameB,
+		NameNormalized:  strings.ToLower(nameB),
+		Hint:            &hB,
+		UserID:          user.ID,
+		ID:              itemRow.ID,
+		ExpectedVersion: itemRow.Version,
+	}); err != nil {
+		t.Fatalf("UpdateItemNameAndHint: %v", err)
+	}
+	if err := enqueuer.OnUpsert(ctx, txRename, user.ID, item.EmbedKindItem, itemRow.ID, inputB); err != nil {
+		t.Fatalf("Enqueuer.OnUpsert rename: %v", err)
+	}
+	if err := txRename.Commit(ctx); err != nil {
+		t.Fatalf("Commit rename tx: %v", err)
+	}
+
+	var jobBID int64
+	var jobBHashHex string
+	if err := pool.QueryRow(ctx,
+		`SELECT id, args->>'input_hash' FROM river_job WHERE kind = 'embed_item' ORDER BY id DESC LIMIT 1`,
+	).Scan(&jobBID, &jobBHashHex); err != nil {
+		t.Fatalf("read enqueued Job B: %v", err)
+	}
+	if jobBHashHex != hex.EncodeToString(hashB[:]) {
+		t.Fatalf("enqueued Job B hash = %q, want %x", jobBHashHex, hashB[:])
+	}
+
+	// Work Job B so vector B is already in the table before Job A's step 5 runs.
+	workerB := jobs.NewEmbedItemWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+	})
+	if err := workerB.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+		JobRow: &rivertype.JobRow{ID: jobBID, Attempt: 1, State: rivertype.JobStateRunning},
+		Args: jobargs.EmbedItemArgs{
+			GenerationID: g1.ID,
+			UserID:       user.ID.String(),
+			TargetID:     itemRow.ID.String(),
+			InputHash:    jobBHashHex,
+		},
+	}); err != nil {
+		t.Fatalf("Worker B Work: %v", err)
+	}
+
+	// 4. Release Job A into step 5. It must detect hash_A != hash_B under FOR SHARE
+	// and finish skipped_stale without overwriting B's vector.
+	close(releaseJobA)
+	if err := <-errChA; err != nil {
+		t.Fatalf("Worker A Work: %v", err)
+	}
+
+	if got := counterValue(t, reg, "embedding_jobs_total", map[string]string{"kind": jobargs.KindEmbedItem, "outcome": jobs.OutcomeSkippedStale}); got != 1 {
+		t.Fatalf("embedding_jobs_total{embed_item,skipped_stale} = %v, want 1", got)
+	}
+	if got := counterValue(t, reg, "embedding_jobs_total", map[string]string{"kind": jobargs.KindEmbedItem, "outcome": jobs.OutcomeUpserted}); got != 1 {
+		t.Fatalf("embedding_jobs_total{embed_item,upserted} = %v, want 1", got)
+	}
+
+	stored, hasVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusItem, user.ID, itemRow.ID)
+	if err != nil || !hasVec {
+		t.Fatalf("GetTargetMeta after late Job A: hasVec=%v err=%v", hasVec, err)
+	}
+	if !bytes.Equal(stored.InputHash, hashB[:]) {
+		t.Fatalf("final stored input_hash = %x, want hash_B %x (never overwritten by late Job A)", stored.InputHash, hashB[:])
+	}
+}
+
+// TestRestoreAfterDeleteReembeds verifies plan P05 mục 2.17 / Task 11b
+// (evidence P05-B2):
+//  1. Create item and tag -> enqueue via Enqueuer.OnUpsert -> worker embeds ->
+//     vectors exist in g1.
+//  2. Soft-delete item and tag -> call Enqueuer.OnDelete in tx -> vectors are
+//     removed immediately across existing generations.
+//  3. Restore item and tag -> call Enqueuer.OnUpsert with current input in tx ->
+//     new jobs are enqueued for R -> worker runs -> vectors exist again with
+//     matching input_hash.
+func TestRestoreAfterDeleteReembeds(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	defer srv.Close()
+	client := newTEIClient(t, srv, 8, "", "")
+	cs := embedding.NewClientSet(client, nil)
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, client.Identity, generation.StateActive, nil)
+
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "restore-reembeds@example.com", Locale: "vi"})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+
+	riverClient := newInsertClient(t, pool)
+	enqueuer := jobs.NewEnqueuer(riverClient, true, embedding.ProviderTEI, nil)
+
+	_, m := obs.NewRegistry()
+	deps := jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+	}
+	itemWorker := jobs.NewEmbedItemWorker(deps)
+	tagWorker := jobs.NewEmbedTagWorker(deps)
+
+	// 1. Create item + tag and enqueue.
+	txCreate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin create: %v", err)
+	}
+	defer func() { _ = txCreate.Rollback(ctx) }()
+	qCreate := gen.New(txCreate)
+	hint := "restore hint"
+	itemRow, err := qCreate.InsertItem(ctx, gen.InsertItemParams{
+		UserID:         user.ID,
+		Name:           "Restorable Item",
+		NameNormalized: "restorable item",
+		Hint:           &hint,
+	})
+	if err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+	tagRow, err := qCreate.InsertTag(ctx, gen.InsertTagParams{
+		UserID:     user.ID,
+		Display:    "restorable-tag",
+		Normalized: "restorable-tag",
+	})
+	if err != nil {
+		t.Fatalf("InsertTag: %v", err)
+	}
+
+	itemInput := embedding.ItemInput(itemRow.Name, hint)
+	tagInput := embedding.TagInput(tagRow.Display)
+	itemHash := embedding.InputHashFor(g1.Identity(), itemInput)
+	tagHash := embedding.InputHashFor(g1.Identity(), tagInput)
+
+	if err := enqueuer.OnUpsert(ctx, txCreate, user.ID, item.EmbedKindItem, itemRow.ID, itemInput); err != nil {
+		t.Fatalf("OnUpsert item create: %v", err)
+	}
+	if err := enqueuer.OnUpsert(ctx, txCreate, user.ID, item.EmbedKindTag, tagRow.ID, tagInput); err != nil {
+		t.Fatalf("OnUpsert tag create: %v", err)
+	}
+	if err := txCreate.Commit(ctx); err != nil {
+		t.Fatalf("Commit create: %v", err)
+	}
+
+	if err := itemWorker.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1},
+		Args: jobargs.EmbedItemArgs{
+			GenerationID: g1.ID,
+			UserID:       user.ID.String(),
+			TargetID:     itemRow.ID.String(),
+			InputHash:    hex.EncodeToString(itemHash[:]),
+		},
+	}); err != nil {
+		t.Fatalf("itemWorker initial: %v", err)
+	}
+	if err := tagWorker.Work(ctx, &river.Job[jobargs.EmbedTagArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1},
+		Args: jobargs.EmbedTagArgs{
+			GenerationID: g1.ID,
+			UserID:       user.ID.String(),
+			TargetID:     tagRow.ID.String(),
+			InputHash:    hex.EncodeToString(tagHash[:]),
+		},
+	}); err != nil {
+		t.Fatalf("tagWorker initial: %v", err)
+	}
+
+	// Mark initial river_job rows completed so restore re-insert is not deduplicated.
+	if _, err := pool.Exec(ctx, `UPDATE river_job SET state = 'completed', finalized_at = now()`); err != nil {
+		t.Fatalf("mark initial jobs completed: %v", err)
+	}
+
+	// 2. Soft-delete item + tag and call OnDelete.
+	txDel, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin delete: %v", err)
+	}
+	defer func() { _ = txDel.Rollback(ctx) }()
+	qDel := gen.New(txDel)
+	batchID := uuid.New()
+	if _, err := qDel.SoftDeleteItem(ctx, gen.SoftDeleteItemParams{
+		DeleteBatch: &batchID,
+		UserID:      user.ID,
+		ID:          itemRow.ID,
+	}); err != nil {
+		t.Fatalf("SoftDeleteItem: %v", err)
+	}
+	if err := enqueuer.OnDelete(ctx, txDel, user.ID, item.EmbedKindItem, itemRow.ID); err != nil {
+		t.Fatalf("OnDelete item: %v", err)
+	}
+	if _, err := qDel.SoftDeleteTag(ctx, gen.SoftDeleteTagParams{
+		UserID: user.ID,
+		ID:     tagRow.ID,
+	}); err != nil {
+		t.Fatalf("SoftDeleteTag: %v", err)
+	}
+	if err := enqueuer.OnDelete(ctx, txDel, user.ID, item.EmbedKindTag, tagRow.ID); err != nil {
+		t.Fatalf("OnDelete tag: %v", err)
+	}
+	if err := txDel.Commit(ctx); err != nil {
+		t.Fatalf("Commit delete: %v", err)
+	}
+
+	if _, hasItemVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusItem, user.ID, itemRow.ID); err != nil || hasItemVec {
+		t.Fatalf("expected item vector deleted after OnDelete, got hasVec=%v err=%v", hasItemVec, err)
+	}
+	if _, hasTagVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusTag, user.ID, tagRow.ID); err != nil || hasTagVec {
+		t.Fatalf("expected tag vector deleted after OnDelete, got hasVec=%v err=%v", hasTagVec, err)
+	}
+
+	// 3. Restore item + tag and call OnUpsert with current input.
+	txRestore, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin restore: %v", err)
+	}
+	defer func() { _ = txRestore.Rollback(ctx) }()
+	qRestore := gen.New(txRestore)
+	restoredItem, err := qRestore.RestoreItem(ctx, gen.RestoreItemParams{
+		EntryCount: 0,
+		UserID:     user.ID,
+		ID:         itemRow.ID,
+	})
+	if err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	if err := enqueuer.OnUpsert(ctx, txRestore, user.ID, item.EmbedKindItem, restoredItem.ID, embedding.ItemInput(restoredItem.Name, *restoredItem.Hint)); err != nil {
+		t.Fatalf("OnUpsert item restore: %v", err)
+	}
+	restoredTag, err := qRestore.RestoreTag(ctx, gen.RestoreTagParams{
+		UserID: user.ID,
+		ID:     tagRow.ID,
+	})
+	if err != nil {
+		t.Fatalf("RestoreTag: %v", err)
+	}
+	if err := enqueuer.OnUpsert(ctx, txRestore, user.ID, item.EmbedKindTag, restoredTag.ID, embedding.TagInput(restoredTag.Display)); err != nil {
+		t.Fatalf("OnUpsert tag restore: %v", err)
+	}
+	if err := txRestore.Commit(ctx); err != nil {
+		t.Fatalf("Commit restore: %v", err)
+	}
+
+	var availableJobs int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE state = 'available'`).Scan(&availableJobs); err != nil {
+		t.Fatalf("count available restore jobs: %v", err)
+	}
+	if availableJobs != 2 {
+		t.Fatalf("available jobs after restore = %d, want 2 (1 item + 1 tag)", availableJobs)
+	}
+
+	// Work the restored jobs and verify vectors are re-embedded with exact hash.
+	if err := itemWorker.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1},
+		Args: jobargs.EmbedItemArgs{
+			GenerationID: g1.ID,
+			UserID:       user.ID.String(),
+			TargetID:     restoredItem.ID.String(),
+			InputHash:    hex.EncodeToString(itemHash[:]),
+		},
+	}); err != nil {
+		t.Fatalf("itemWorker after restore: %v", err)
+	}
+	if err := tagWorker.Work(ctx, &river.Job[jobargs.EmbedTagArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1},
+		Args: jobargs.EmbedTagArgs{
+			GenerationID: g1.ID,
+			UserID:       user.ID.String(),
+			TargetID:     restoredTag.ID.String(),
+			InputHash:    hex.EncodeToString(tagHash[:]),
+		},
+	}); err != nil {
+		t.Fatalf("tagWorker after restore: %v", err)
+	}
+
+	metaItem, hasItemVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusItem, user.ID, restoredItem.ID)
+	if err != nil || !hasItemVec || !bytes.Equal(metaItem.InputHash, itemHash[:]) {
+		t.Fatalf("restored item vector meta = %+v hasVec=%v err=%v", metaItem, hasItemVec, err)
+	}
+	metaTag, hasTagVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusTag, user.ID, restoredTag.ID)
+	if err != nil || !hasTagVec || !bytes.Equal(metaTag.InputHash, tagHash[:]) {
+		t.Fatalf("restored tag vector meta = %+v hasVec=%v err=%v", metaTag, hasTagVec, err)
+	}
+}
+
+// TestDeleteDuringJobNoResurrect verifies plan P05 mục 2.17 / Task 11b
+// (evidence P05-B2):
+//  1. Item is created and enqueued via Enqueuer.OnUpsert.
+//  2. EmbedItemWorker starts, reads the live item in step 2, calls
+//     EmbedDocuments in step 4, and pauses at BeforeStep5Tx before step 5.
+//  3. While the worker is paused, a delete mutation transaction soft-deletes
+//     the item, calls Enqueuer.OnDelete (removing any existing vectors), and
+//     commits.
+//  4. The worker is released into step 5: under FOR SHARE on the item row, it
+//     observes deleted_at IS NOT NULL, finishes skipped_deleted, and does NOT
+//     resurrect the vector in the embedding table.
+func TestDeleteDuringJobNoResurrect(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	defer srv.Close()
+	client := newTEIClient(t, srv, 8, "", "")
+	cs := embedding.NewClientSet(client, nil)
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, client.Identity, generation.StateActive, nil)
+
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "delete-no-resurrect@example.com", Locale: "vi"})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+
+	riverClient := newInsertClient(t, pool)
+	enqueuer := jobs.NewEnqueuer(riverClient, true, embedding.ProviderTEI, nil)
+
+	txCreate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin create: %v", err)
+	}
+	defer func() { _ = txCreate.Rollback(ctx) }()
+	qCreate := gen.New(txCreate)
+	itemRow, err := qCreate.InsertItem(ctx, gen.InsertItemParams{
+		UserID:         user.ID,
+		Name:           "Ephemeral Secret Item",
+		NameNormalized: "ephemeral secret item",
+	})
+	if err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+	input := embedding.ItemInput(itemRow.Name, "")
+	hash := embedding.InputHashFor(g1.Identity(), input)
+	if err := enqueuer.OnUpsert(ctx, txCreate, user.ID, item.EmbedKindItem, itemRow.ID, input); err != nil {
+		t.Fatalf("OnUpsert create: %v", err)
+	}
+	if err := txCreate.Commit(ctx); err != nil {
+		t.Fatalf("Commit create: %v", err)
+	}
+
+	atStep5 := make(chan struct{})
+	releaseStep5 := make(chan struct{})
+
+	reg, m := obs.NewRegistry()
+	worker := jobs.NewEmbedItemWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+		BeforeStep5Tx: func(_ context.Context, _ string, _ int, _ uuid.UUID) {
+			close(atStep5)
+			<-releaseStep5
+		},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- worker.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+			JobRow: &rivertype.JobRow{Attempt: 1, State: rivertype.JobStateRunning},
+			Args: jobargs.EmbedItemArgs{
+				GenerationID: g1.ID,
+				UserID:       user.ID.String(),
+				TargetID:     itemRow.ID.String(),
+				InputHash:    hex.EncodeToString(hash[:]),
+			},
+		})
+	}()
+	<-atStep5
+
+	// Soft-delete the item and run Enqueuer.OnDelete while the worker is paused before step 5.
+	txDel, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin delete: %v", err)
+	}
+	defer func() { _ = txDel.Rollback(ctx) }()
+	qDel := gen.New(txDel)
+	batchID := uuid.New()
+	if _, err := qDel.SoftDeleteItem(ctx, gen.SoftDeleteItemParams{
+		DeleteBatch: &batchID,
+		UserID:      user.ID,
+		ID:          itemRow.ID,
+	}); err != nil {
+		t.Fatalf("SoftDeleteItem: %v", err)
+	}
+	if err := enqueuer.OnDelete(ctx, txDel, user.ID, item.EmbedKindItem, itemRow.ID); err != nil {
+		t.Fatalf("OnDelete: %v", err)
+	}
+	if err := txDel.Commit(ctx); err != nil {
+		t.Fatalf("Commit delete: %v", err)
+	}
+
+	// Release step 5 -> must observe deleted_at IS NOT NULL under FOR SHARE and skip.
+	close(releaseStep5)
+	if err := <-errCh; err != nil {
+		t.Fatalf("worker Work after concurrent delete: %v", err)
+	}
+
+	if got := counterValue(t, reg, "embedding_jobs_total", map[string]string{"kind": jobargs.KindEmbedItem, "outcome": jobs.OutcomeSkippedDeleted}); got != 1 {
+		t.Fatalf("embedding_jobs_total{embed_item,skipped_deleted} = %v, want 1", got)
+	}
+	if got := counterValue(t, reg, "embedding_jobs_total", map[string]string{"kind": jobargs.KindEmbedItem, "outcome": jobs.OutcomeUpserted}); got != 0 {
+		t.Fatalf("embedding_jobs_total{embed_item,upserted} = %v, want 0", got)
+	}
+	if _, hasVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusItem, user.ID, itemRow.ID); err != nil || hasVec {
+		t.Fatalf("deleted item vector resurrected: hasVec=%v err=%v", hasVec, err)
 	}
 }
