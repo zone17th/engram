@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -39,6 +40,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedtest"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
+	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
@@ -986,13 +988,47 @@ func TestPatchLocaleDoesNotTouchSemantic(t *testing.T) {
 	}
 }
 
+// semWaitBlockedOn polls (dedicated connection, no sleeps, bounded by ctx)
+// until some backend is waiting on a lock held by backend pid, proving a
+// transaction is genuinely blocked on that holder. It fails the test early if
+// done yields (the blocked operation finished instead of blocking).
+func semWaitBlockedOn(ctx context.Context, t *testing.T, pool *pgxpool.Pool, pid int32, done <-chan error) {
+	t.Helper()
+	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("connect poller: %v", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	for {
+		var n int
+		if err := conn.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND $1::int = ANY(pg_blocking_pids(pid))`, pid,
+		).Scan(&n); err != nil {
+			t.Fatalf("poll pg_blocking_pids: %v", err)
+		}
+		if n > 0 {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("operation finished (err=%v) before blocking on backend %d", err, pid)
+		case <-ctx.Done():
+			t.Fatalf("no backend ever blocked on backend %d: %v", pid, ctx.Err())
+		default:
+		}
+	}
+}
+
 // TestPatchOffRacesUpsertNoVectorLeft: an embed worker is mid step-5 (holds
-// app_user FOR SHARE, policy read as "on") when the user turns semantic off.
-// The worker upserts into a pending openai_compat generation and commits; the
-// PATCH (blocked on app_user FOR UPDATE until then) deletes afterwards, so no
-// vector is left. Barrier-driven, no sleeps; a hang or deadlock fails the test.
+// target FOR SHARE and app_user FOR SHARE, policy read as "on") when the user
+// turns semantic off. The test first observes, via pg_blocking_pids, that the
+// PATCH transaction is blocked on the worker's user row, and only then lets the
+// worker upsert into a pending openai_compat generation and commit; the PATCH
+// then deletes afterwards, so no vector is left. No sleeps; every wait is
+// bounded by a context deadline, so a hang or deadlock fails the test.
 func TestPatchOffRacesUpsertNoVectorLeft(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	pool := semNewPool(t)
 	svc := semNewService(t, pool, semRuntimeNamed(t, "row4_tei_available"))
 
@@ -1006,33 +1042,42 @@ func TestPatchOffRacesUpsertNoVectorLeft(t *testing.T) {
 		t.Fatalf("InsertItem: %v", err)
 	}
 
-	locked := make(chan struct{})
+	ready := make(chan int32, 1) // worker backend pid once its locks are held; 0 on setup failure
 	proceed := make(chan struct{})
 	workerDone := make(chan error, 1)
 	patchDone := make(chan error, 1)
 
 	go func() {
-		workerDone <- func() (err error) {
+		workerDone <- func() error {
 			tx, err := pool.Begin(ctx)
 			if err != nil {
-				close(locked)
+				ready <- 0
 				return err
 			}
-			defer func() { _ = tx.Rollback(ctx) }()
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			var pid int32
+			if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+				ready <- 0
+				return err
+			}
 			// Plan P05 mục 2.15 lock order: target FOR SHARE -> app_user FOR SHARE.
 			if _, err := tx.Exec(ctx, `SELECT 1 FROM item WHERE id = $1 AND user_id = $2 FOR SHARE`, it.ID, u.id); err != nil {
-				close(locked)
+				ready <- 0
 				return err
 			}
 			var on bool
 			if err := tx.QueryRow(ctx,
 				`SELECT COALESCE((settings->>'semantic_suggest')::boolean, true) FROM app_user WHERE id = $1 FOR SHARE`, u.id,
 			).Scan(&on); err != nil {
-				close(locked)
+				ready <- 0
 				return err
 			}
-			close(locked)
-			<-proceed
+			ready <- pid
+			select {
+			case <-proceed:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			if !on {
 				return errors.New("worker read policy off before the PATCH; test setup broken")
 			}
@@ -1047,12 +1092,24 @@ func TestPatchOffRacesUpsertNoVectorLeft(t *testing.T) {
 		}()
 	}()
 
-	<-locked
+	var workerPID int32
+	select {
+	case workerPID = <-ready:
+	case <-ctx.Done():
+		t.Fatalf("worker never took its locks: %v", ctx.Err())
+	}
+	if workerPID == 0 {
+		t.Fatalf("worker setup failed: %v", <-workerDone)
+	}
+
 	go func() {
 		off := false
 		_, err := svc.PatchSettings(ctx, u.principal, auth.SettingsPatch{SemanticSuggest: &off})
 		patchDone <- err
 	}()
+	// The PATCH must be blocked on the worker's held app_user row before the
+	// worker is released; otherwise this would only be a sequential run.
+	semWaitBlockedOn(ctx, t, pool, workerPID, patchDone)
 	close(proceed)
 
 	for _, ch := range []struct {
@@ -1064,13 +1121,105 @@ func TestPatchOffRacesUpsertNoVectorLeft(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", ch.name, err)
 			}
-		case <-time.After(30 * time.Second):
+		case <-ctx.Done():
 			t.Fatalf("%s did not finish: deadlock or hang", ch.name)
 		}
 	}
 
 	if got := semVectorCount(t, pool, g2, u.id); got != 0 {
 		t.Errorf("openai_compat pending g2 vectors left after PATCH false = %d, want 0", got)
+	}
+	if got := semVectorCount(t, pool, g1, u.id); got != 1 {
+		t.Errorf("tei g1 vectors = %d, want 1 (kept)", got)
+	}
+	if semStoredSemanticSuggest(t, pool, u.id) {
+		t.Error("semantic_suggest still true after PATCH false")
+	}
+}
+
+// TestPatchOffAfterProviderBeforeUpsertSkipsExternal: reverse ordering with the
+// real jobs.EmbedItemWorker. The provider result for a pending openai_compat
+// generation is in flight (fake provider, no network) when BeforeStep5Tx runs;
+// inside that hook the user's PATCH off commits completely. The worker then
+// resumes, re-reads the policy under app_user FOR SHARE, sees off and skips the
+// external upsert. No external vector remains, tei is untouched, and both
+// operations terminate (the worker holds no lock while the hook runs).
+func TestPatchOffAfterProviderBeforeUpsertSkipsExternal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool := semNewPool(t)
+	svc := semNewService(t, pool, semRuntimeNamed(t, "row6_openai_available_external"))
+
+	g1 := semSeedGeneration(t, pool, 1, generation.ProviderTEI, generation.StateActive, nil)
+	g2 := semSeedGeneration(t, pool, 2, generation.ProviderOpenAICompat, generation.StatePending, nil)
+
+	u := semNewUser(t, pool, svc, "race-worker@example.com", true)
+	q := gen.New(pool)
+	const itemName = "Reverse race item"
+	it, err := q.InsertItem(ctx, gen.InsertItemParams{UserID: u.id, Name: itemName, NameNormalized: "reverse race item"})
+	if err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+	// tei already holds the item's vector; PATCH off must keep it.
+	if err := store.Upsert(ctx, pool, g1, generation.CorpusItem, u.id, it.ID, []float32{1, 0, 0}, make([]byte, 32)); err != nil {
+		t.Fatalf("seed tei vector: %v", err)
+	}
+
+	var providerCalls atomic.Int32
+	spy := semantictest.NewSpyProvider(g2.Identity())
+	spy.EmbedDocsFn = func(_ context.Context, inputs []string) ([][]float32, error) {
+		providerCalls.Add(1)
+		out := make([][]float32, len(inputs))
+		for i := range inputs {
+			out[i] = []float32{0, 1, 0}
+		}
+		return out, nil
+	}
+	cs := embedding.NewClientSet(embedding.Client{Provider: spy, Identity: g2.Identity(), Role: embedding.RolePrimary}, nil)
+
+	// The hook runs on the worker goroutine (this one) between step 4 and step 5.
+	hookCalls := 0
+	var patchErr error
+	deps := jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		BeforeStep5Tx: func(hctx context.Context, kind string, generationID int, targetID uuid.UUID) {
+			hookCalls++
+			if kind != jobargs.KindEmbedItem || generationID != g2.ID || targetID != it.ID {
+				t.Errorf("hook for kind=%q gen=%d target=%s, want embed_item g%d %s", kind, generationID, targetID, g2.ID, it.ID)
+			}
+			if got := semVectorCount(t, pool, g2, u.id); got != 0 {
+				t.Errorf("g2 vectors before PATCH off = %d, want 0 (upsert not started)", got)
+			}
+			off := false
+			_, patchErr = svc.PatchSettings(hctx, u.principal, auth.SettingsPatch{SemanticSuggest: &off})
+		},
+	}
+
+	hash := embedding.InputHashFor(g2.Identity(), embedding.ItemInput(itemName, ""))
+	err = jobs.NewEmbedItemWorker(deps).Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1},
+		Args: jobargs.EmbedItemArgs{
+			GenerationID: g2.ID,
+			UserID:       u.id.String(),
+			TargetID:     it.ID.String(),
+			InputHash:    hex.EncodeToString(hash[:]),
+		},
+	})
+	if err != nil {
+		t.Fatalf("EmbedItemWorker.Work: %v", err)
+	}
+	if patchErr != nil {
+		t.Fatalf("PATCH off inside the hook: %v", patchErr)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("BeforeStep5Tx calls = %d, want 1 (worker must reach step 4 with the provider result in flight)", hookCalls)
+	}
+	if got := providerCalls.Load(); got != 1 {
+		t.Errorf("provider EmbedDocuments calls = %d, want 1", got)
+	}
+	if got := semVectorCount(t, pool, g2, u.id); got != 0 {
+		t.Errorf("openai_compat pending g2 vectors after skipped upsert = %d, want 0", got)
 	}
 	if got := semVectorCount(t, pool, g1, u.id); got != 1 {
 		t.Errorf("tei g1 vectors = %d, want 1 (kept)", got)
