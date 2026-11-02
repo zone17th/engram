@@ -80,6 +80,13 @@ type Dependencies struct {
 	// first-run CheckCanary call succeeds (outside any DB transaction) and before
 	// the short FOR UPDATE transaction persists or compares the canary baseline.
 	BeforeCanaryPersistTx func(ctx context.Context, generationID int)
+
+	// AfterCanaryLockForUpdate is an optional test-only hook invoked inside
+	// persistOrCompareFirstCanary immediately after the transaction acquires the
+	// generation row FOR UPDATE lock (GetEmbeddingGenerationByIDForUpdate) and
+	// before writing or comparing the canary baseline. Used to deterministically
+	// overlap two concurrent first-run persistence transactions (EJ2-6).
+	AfterCanaryLockForUpdate func(ctx context.Context, generationID int)
 }
 
 func (d Dependencies) withDefaults() Dependencies {

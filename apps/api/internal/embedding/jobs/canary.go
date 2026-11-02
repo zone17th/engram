@@ -154,6 +154,9 @@ func persistOrCompareFirstCanary(
 	if err != nil {
 		return err
 	}
+	if deps.AfterCanaryLockForUpdate != nil {
+		deps.AfterCanaryLockForUpdate(ctx, generationID)
+	}
 
 	existing, err := decodeStoredCanary(lockedRow.Canary)
 	if err != nil {

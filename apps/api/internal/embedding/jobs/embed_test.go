@@ -1502,15 +1502,26 @@ func TestTwoWorkerRenameCycleGuaranteesSuccessor(t *testing.T) {
 	}
 }
 
-// TestCanaryWorkerConcurrentFirstRunWriteOnce verifies the EJ2-4 fix:
+// TestCanaryWorkerConcurrentFirstRunWriteOnce verifies the EJ2-4 / EJ2-6 fix:
 // When two first-run CanaryWorker executions concurrently observe an empty
 // canary baseline (holding no DB lock during the network call) and embed
-// responses that straddle provider drift:
+// responses that straddle provider drift, their persistence transactions truly
+// overlap:
 //   - Both workers finish embedding and synchronize at BeforeCanaryPersistTx.
-//   - Worker 1 enters the short FOR UPDATE tx first and persists its baseline.
-//   - Worker 2 enters the short FOR UPDATE tx second, re-reads the now-populated
-//     canary column, retains Worker 1's baseline (write-once), and evaluates
-//     drift against Worker 1's baseline (incrementing embedding_canary_drift_total
+//   - Worker 1 enters the persistence tx first, locks the generation row FOR
+//     UPDATE (GetEmbeddingGenerationByIDForUpdate), and pauses at
+//     AfterCanaryLockForUpdate BEFORE writing canary or committing.
+//   - While Worker 1 holds the row lock with canary still NULL in DB, Worker 2
+//     is released to enter its persistence tx and attempts
+//     GetEmbeddingGenerationByIDForUpdate.
+//   - A bounded poll on pg_locks / pg_stat_activity proves Worker 2's backend
+//     is blocked waiting on the embedding_generation lock held by Worker 1 (if
+//     FOR UPDATE were removed, Worker 2 would not block and would proceed while
+//     Worker 1 is still paused, failing the test).
+//   - Worker 1 is then released, writes its baseline, and commits.
+//   - Worker 2 unblocks from FOR UPDATE, re-reads the now-populated canary
+//     column, retains Worker 1's baseline (write-once), and evaluates drift
+//     against Worker 1's baseline (incrementing embedding_canary_drift_total
 //     and setting embedding_canary_min_cos < 0.99).
 func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	ctx := context.Background()
@@ -1528,9 +1539,12 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	w1Embedded := make(chan struct{})
-	releaseW1 := make(chan struct{})
+	releaseW1BeforeTx := make(chan struct{})
+	w1LockedRow := make(chan struct{})
+	releaseW1AfterLock := make(chan struct{})
 	w2Embedded := make(chan struct{})
-	releaseW2 := make(chan struct{})
+	releaseW2BeforeTx := make(chan struct{})
+	w2AcquiredLock := make(chan struct{})
 
 	worker1 := jobs.NewCanaryWorker(jobs.Dependencies{
 		Pool:      pool,
@@ -1540,7 +1554,11 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 		Logger:    logger,
 		BeforeCanaryPersistTx: func(_ context.Context, _ int) {
 			close(w1Embedded)
-			<-releaseW1
+			<-releaseW1BeforeTx
+		},
+		AfterCanaryLockForUpdate: func(_ context.Context, _ int) {
+			close(w1LockedRow)
+			<-releaseW1AfterLock
 		},
 	})
 	worker2 := jobs.NewCanaryWorker(jobs.Dependencies{
@@ -1551,7 +1569,10 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 		Logger:    logger,
 		BeforeCanaryPersistTx: func(_ context.Context, _ int) {
 			close(w2Embedded)
-			<-releaseW2
+			<-releaseW2BeforeTx
+		},
+		AfterCanaryLockForUpdate: func(_ context.Context, _ int) {
+			close(w2AcquiredLock)
 		},
 	})
 
@@ -1561,6 +1582,12 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	}()
 	// Wait until Worker 1 has embedded the normal baseline (with no DB lock held).
 	<-w1Embedded
+	// Capture the exact vectors that Worker 1 just embedded (before introducing
+	// drift for Worker 2) so we can assert element-for-element retention.
+	w1CheckRes, err := embedding.CheckCanary(ctx, client, g1.ID, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CheckCanary for expected Worker 1 baseline: %v", err)
+	}
 
 	// Simulate provider drift before Worker 2 embeds, while g1.canary in DB is
 	// still NULL so Worker 2 also takes the FirstRun path.
@@ -1568,7 +1595,6 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	srv.SetAliases(map[string]string{
 		canaryStrings[0]: "drifted-canary-vector-orthogonality-target-9999",
 	})
-
 	errCh2 := make(chan error, 1)
 	go func() {
 		errCh2 <- worker2.Work(ctx, &river.Job[jobargs.CanaryArgs]{})
@@ -1576,28 +1602,73 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	// Wait until Worker 2 has also finished its network call and observed FirstRun=true.
 	<-w2Embedded
 
-	// Release Worker 1 first so it wins the FOR UPDATE write-once persistence.
-	close(releaseW1)
+	// Release Worker 1 into its persistence transaction and wait until it has
+	// acquired the FOR UPDATE row lock on embedding_generation (before writing
+	// canary or committing).
+	close(releaseW1BeforeTx)
+	<-w1LockedRow
+
+	// While Worker 1 still holds the FOR UPDATE lock (with canary still NULL),
+	// release Worker 2 so its persistence transaction overlaps with Worker 1's
+	// and attempts GetEmbeddingGenerationByIDForUpdate on the same row.
+	close(releaseW2BeforeTx)
+
+	// Bounded poll on pg_locks / pg_stat_activity to prove Worker 2's backend
+	// blocks waiting on the lock held by Worker 1 (no fixed sleep). If FOR UPDATE
+	// were removed, Worker 2 would not block and would close w2AcquiredLock
+	// immediately while Worker 1 is still paused.
+	waitLockCtx, cancelWaitLock := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelWaitLock()
+	for {
+		select {
+		case <-w2AcquiredLock:
+			t.Fatal("Worker 2 completed its read before Worker 1 released the FOR UPDATE row lock")
+		default:
+		}
+
+		var blocked bool
+		err := pool.QueryRow(waitLockCtx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity a
+				WHERE a.datname = current_database()
+				  AND a.pid <> pg_backend_pid()
+				  AND (
+				      a.wait_event_type = 'Lock'
+				      OR cardinality(pg_blocking_pids(a.pid)) > 0
+				      OR EXISTS (
+				          SELECT 1
+				          FROM pg_locks l
+				          WHERE l.pid = a.pid AND NOT l.granted
+				      )
+				  )
+			)
+		`).Scan(&blocked)
+		if err != nil {
+			t.Fatalf("poll pg_locks / pg_stat_activity for blocked Worker 2: %v", err)
+		}
+		if blocked {
+			break
+		}
+
+		select {
+		case <-w2AcquiredLock:
+			t.Fatal("Worker 2 completed its read before Worker 1 released the FOR UPDATE row lock")
+		case <-waitLockCtx.Done():
+			t.Fatal("timed out waiting for Worker 2 to block on the embedding_generation FOR UPDATE lock")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Release Worker 1 so it writes the baseline and commits, releasing the row lock.
+	close(releaseW1AfterLock)
 	if err := <-errCh1; err != nil {
 		t.Fatalf("CanaryWorker 1: %v", err)
 	}
 
-	// Capture Worker 1's persisted baseline before releasing Worker 2.
-	g1AfterW1, err := generation.GetByID(ctx, pool, g1.ID)
-	if err != nil {
-		t.Fatalf("GetByID after Worker 1: %v", err)
-	}
-	var w1Baseline [][]float32
-	if err := json.Unmarshal(g1AfterW1.Canary, &w1Baseline); err != nil {
-		t.Fatalf("Unmarshal Worker 1 baseline: %v", err)
-	}
-	if len(w1Baseline) != embedding.CanaryCount {
-		t.Fatalf("Worker 1 baseline count = %d, want %d", len(w1Baseline), embedding.CanaryCount)
-	}
-
-	// Now release Worker 2. It locks g1 FOR UPDATE, sees Worker 1's baseline is
-	// already set, does NOT overwrite it, and checks drift against it.
-	close(releaseW2)
+	// Wait for Worker 2 to unblock from FOR UPDATE, observe Worker 1's committed
+	// baseline, skip overwriting it, and evaluate drift against it.
+	<-w2AcquiredLock
 	if err := <-errCh2; err != nil {
 		t.Fatalf("CanaryWorker 2: %v", err)
 	}
@@ -1606,14 +1677,54 @@ func TestCanaryWorkerConcurrentFirstRunWriteOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetByID after Worker 2: %v", err)
 	}
-	if !bytes.Equal(g1AfterW1.Canary, g1AfterW2.Canary) {
-		t.Fatalf("Worker 2 overwrote Worker 1's canary baseline:\nafter W1: %s\nafter W2: %s", g1AfterW1.Canary, g1AfterW2.Canary)
+	var retainedBaseline [][]float32
+	if err := json.Unmarshal(g1AfterW2.Canary, &retainedBaseline); err != nil {
+		t.Fatalf("Unmarshal retained baseline: %v", err)
+	}
+	if len(retainedBaseline) != embedding.CanaryCount {
+		t.Fatalf("retained baseline count = %d, want %d", len(retainedBaseline), embedding.CanaryCount)
+	}
+	for i := range embedding.CanaryCount {
+		if len(retainedBaseline[i]) != len(w1CheckRes.Vectors[i]) {
+			t.Fatalf("retained baseline[%d] len = %d, want %d", i, len(retainedBaseline[i]), len(w1CheckRes.Vectors[i]))
+		}
+		for j := range retainedBaseline[i] {
+			if retainedBaseline[i][j] != w1CheckRes.Vectors[i][j] {
+				t.Fatalf("Worker 2 overwrote Worker 1's canary baseline at [%d][%d]: got %v, want %v", i, j, retainedBaseline[i][j], w1CheckRes.Vectors[i][j])
+			}
+		}
 	}
 
+	// Verify the retained baseline equals Worker 1's pre-drift vector (not
+	// Worker 2's drifted vector): clear the alias so the server returns the
+	// original pre-drift vectors again, run a subsequent canary check, and
+	// assert min_cos ~ 1.0 with no additional drift count.
 	if got := counterValue(t, reg, "embedding_canary_drift_total", map[string]string{"generation": "1"}); got != 1 {
 		t.Fatalf("embedding_canary_drift_total{generation=1} = %v, want 1 (drift detected by losing first-run initializer)", got)
 	}
 	if !strings.Contains(logBuf.String(), "embedding canary drift detected") {
 		t.Fatalf("expected drift warning log from losing initializer, got: %s", logBuf.String())
+	}
+
+	srv.SetAliases(nil)
+	workerVerify := jobs.NewCanaryWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Logger:    logger,
+	})
+	if err := workerVerify.Work(ctx, &river.Job[jobargs.CanaryArgs]{}); err != nil {
+		t.Fatalf("CanaryWorker verify against Worker 1 baseline: %v", err)
+	}
+	if got := counterValue(t, reg, "embedding_canary_drift_total", map[string]string{"generation": "1"}); got != 1 {
+		t.Fatalf("embedding_canary_drift_total{generation=1} after pre-drift verify = %v, want still 1 (proving retained baseline is Worker 1's)", got)
+	}
+	g1AfterVerify, err := generation.GetByID(ctx, pool, g1.ID)
+	if err != nil {
+		t.Fatalf("GetByID after verify: %v", err)
+	}
+	if !bytes.Equal(g1AfterW2.Canary, g1AfterVerify.Canary) {
+		t.Fatalf("canary baseline mutated after verify:\nbefore: %s\nafter: %s", g1AfterW2.Canary, g1AfterVerify.Canary)
 	}
 }
