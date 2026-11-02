@@ -498,6 +498,10 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 
 	// 6. 400 `invalid_request`: bad scope, bad limit, bad semantic, unknown param, duplicate param, malformed query encoding.
 	invalidReqQueries := []string{
+		"scope=",
+		"scope",
+		"q=!!!&scope=",
+		"q=!!!&scope",
 		"scope=bad",
 		"scope=ALL",
 		"limit=0",

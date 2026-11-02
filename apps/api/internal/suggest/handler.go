@@ -74,13 +74,14 @@ func (h *Handler) Suggest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	scope := qParams.Get("scope")
-	if scope == "" {
-		scope = ScopeAll
-	}
-	if !ValidSuggestScope(scope) {
-		WriteDomainError(w, r, ErrInvalidRequest)
-		return
+	scope := ScopeAll
+	if _, hasScope := qParams["scope"]; hasScope {
+		rawScope := qParams.Get("scope")
+		if !ValidSuggestScope(rawScope) {
+			WriteDomainError(w, r, ErrInvalidRequest)
+			return
+		}
+		scope = rawScope
 	}
 
 	limit := DefaultSuggestLimit
