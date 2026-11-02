@@ -315,7 +315,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	// mode = "prefix", no DB query, no provider call (plan mục 2.2, BE-10).
 	if parsed.EmptyAfter {
 		alloc := ComputeQuota(parsed.Scope, limit, ModePrefix, 0, 0, 0)
-		nearRes, err := s.resolveNear(ctx, in, parsed, nil, alloc.WireQuota.Near)
+		reason, err := s.recentSemanticReason(ctx, in, parsed, limit)
 		if err != nil {
 			return SuggestResponse{}, err
 		}
@@ -328,10 +328,10 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 			Items:          []SuggestItem{},
 			HasMore:        false,
 			LexicalPartial: []string{},
-			Semantic:       nearRes.Semantic,
-			SemanticReason: nearRes.SemanticReason,
+			Semantic:       false,
+			SemanticReason: reason,
 			Near:           []SuggestNearRow{},
-			Generation:     nearRes.Generation,
+			Generation:     nil,
 		}
 		resp.NormalizeSlices()
 		return resp, nil
@@ -362,9 +362,14 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 
 	hasMore := tagMoreFetched || itemMoreFetched || len(rawTags) > alloc.TagsUsed || len(rawItems) > alloc.ItemsUsed
 
-	// Recent mode: never call NearSource/provider, near is always empty (plan mục 2.4, 2.24 item 5).
+	// Recent mode: ask NearSource for its semantic decision with QN="" and Cap=0
+	// (so no embedding/provider/vector work is requested), while keeping near: [],
+	// semantic: false, generation: null, and recent quota.near = 0 (plan mục 2.4, 2.18, 2.24 item 5).
 	if parsed.Mode == ModeRecent {
-		reason := s.recentSemanticReason(ctx, in, parsed)
+		reason, err := s.recentSemanticReason(ctx, in, parsed, limit)
+		if err != nil {
+			return SuggestResponse{}, err
+		}
 		resp = SuggestResponse{
 			Scope:          parsed.Scope,
 			Limit:          limit,
@@ -398,7 +403,7 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	}
 
 	nearCap := min(alloc.WireQuota.Near, max(0, limit-len(tags)-len(items)))
-	nearRes, err := s.resolveNear(ctx, in, parsed, exclude, nearCap)
+	nearRes, err := s.resolveNear(ctx, in, parsed, limit, exclude, nearCap)
 	if err != nil {
 		return SuggestResponse{}, err
 	}
@@ -423,48 +428,50 @@ func (s *Service) Suggest(ctx context.Context, in SuggestInput) (SuggestResponse
 	return resp, nil
 }
 
-func (s *Service) recentSemanticReason(_ context.Context, in SuggestInput, _ ParsedSuggestQuery) *string {
-	// In recent mode (`q` absent/empty/whitespace), no provider is called.
-	// Precedence (SPEC §6.4, §6.10, plan 2.18, 2.19):
-	// deployment -> generation -> user -> request -> breaker -> length.
-	// On NoopNearSource (ServerEnabled == false), `disabled_server` wins; if a custom
-	// NearSource is plugged in and ServerEnabled, `!Semantic` -> `request_lexical`, else `short_query`.
-	if noop, ok := s.near.(NoopNearSource); ok && !noop.ServerEnabled {
-		return new(ReasonDisabledServer)
+func (s *Service) recentSemanticReason(ctx context.Context, in SuggestInput, parsed ParsedSuggestQuery, limit int) (*string, error) {
+	// Route recent mode (`QN == ""`, `Cap == 0`) through NearSource so decision
+	// ownership (deployment -> generation -> user -> request -> breaker -> length)
+	// stays in the source without concrete type assertions, while Cap == 0 and QN == ""
+	// guarantee no provider or vector work is requested.
+	nearRes, err := s.resolveNear(ctx, in, parsed, limit, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	if nearRes.SemanticReason != nil {
+		return nearRes.SemanticReason, nil
 	}
 	if !in.Semantic {
-		return new(ReasonRequestLexical)
+		return new(ReasonRequestLexical), nil
 	}
-	return new(ReasonShortQuery)
+	return new(ReasonShortQuery), nil
 }
 
 func (s *Service) resolveNear(
 	ctx context.Context,
 	in SuggestInput,
 	parsed ParsedSuggestQuery,
+	limit int,
 	exclude []KindID,
 	nearCap int,
 ) (NearResult, error) {
-	if s.near == nil {
-		return NoopNearSource{}.Near(ctx, NearRequest{
-			UserID:        in.UserID,
-			QN:            parsed.QN,
-			Scope:         parsed.Scope,
-			Limit:         in.Limit,
-			Exclude:       exclude,
-			Cap:           nearCap,
-			SemanticParam: in.Semantic,
-		})
-	}
-	res, err := s.near.Near(ctx, NearRequest{
+	req := NearRequest{
 		UserID:        in.UserID,
 		QN:            parsed.QN,
 		Scope:         parsed.Scope,
-		Limit:         in.Limit,
+		Limit:         limit,
 		Exclude:       exclude,
 		Cap:           nearCap,
 		SemanticParam: in.Semantic,
-	})
+	}
+	var (
+		res NearResult
+		err error
+	)
+	if s.near == nil {
+		res, err = (NoopNearSource{}).Near(ctx, req)
+	} else {
+		res, err = s.near.Near(ctx, req)
+	}
 	if err != nil {
 		return NearResult{}, err
 	}

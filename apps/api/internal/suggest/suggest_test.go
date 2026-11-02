@@ -1070,6 +1070,70 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 	if rawAll8.Near[1].Kind != "item" || rawAll8.Near[1].ID != nearItemID {
 		t.Fatalf("near[1] = %+v, want item %s", rawAll8.Near[1], nearItemID)
 	}
+
+	// Verify RV-T3-BE-2: Recent mode delegates semantic_reason decision to NearSource
+	// (both value NoopNearSource{}, pointer &NoopNearSource{}, and custom NearSource)
+	// without requesting any near hits (Cap == 0, QN == "").
+	t.Run("recent-mode-near-source-decision", func(t *testing.T) {
+		defer env.svc.SetNearSource(suggest.NewNoopNearSource())
+
+		// (a) Value NoopNearSource and pointer &NoopNearSource on recent (semantic=1 and semantic=0) -> disabled_server.
+		for _, src := range []suggest.NearSource{
+			suggest.NoopNearSource{},
+			&suggest.NoopNearSource{},
+		} {
+			env.svc.SetNearSource(src)
+			for _, semParam := range []string{"1", "0"} {
+				rec := env.doSuggest("tok-u1", url.Values{"semantic": {semParam}})
+				resp := validateSuggestResponseOpenAPIShape(t, rec)
+				if resp.Mode != suggest.ModeRecent {
+					t.Fatalf("mode = %q, want recent", resp.Mode)
+				}
+				if resp.Semantic || resp.Generation != nil || len(resp.Near) != 0 || resp.Quota.Near != 0 {
+					t.Fatalf("unexpected recent near envelope: semantic=%v gen=%v near=%d quota=%+v",
+						resp.Semantic, resp.Generation, len(resp.Near), resp.Quota)
+				}
+				if resp.SemanticReason == nil || *resp.SemanticReason != suggest.ReasonDisabledServer {
+					t.Fatalf("src=%T semantic=%s: got semantic_reason=%v, want %q",
+						src, semParam, resp.SemanticReason, suggest.ReasonDisabledServer)
+				}
+			}
+		}
+
+		// (b) Custom NearSource reporting an earlier-precedence reason (disabled_user) wins over
+		// request_lexical (semantic=0) and short_query (semantic=1) on recent, and receives Cap=0, QN="".
+		var recordedReqs []suggest.NearRequest
+		env.svc.SetNearSource(stubNearSource{
+			fn: func(_ context.Context, req suggest.NearRequest) (suggest.NearResult, error) {
+				recordedReqs = append(recordedReqs, req)
+				reason := suggest.ReasonDisabledUser
+				return suggest.NearResult{
+					Semantic:       false,
+					SemanticReason: &reason,
+					Near:           []suggest.SuggestNearRow{},
+					Generation:     nil,
+				}, nil
+			},
+		})
+		for _, semParam := range []string{"1", "0"} {
+			rec := env.doSuggest("tok-u1", url.Values{"semantic": {semParam}})
+			resp := validateSuggestResponseOpenAPIShape(t, rec)
+			if resp.Mode != suggest.ModeRecent || resp.Semantic || resp.Generation != nil || len(resp.Near) != 0 || resp.Quota.Near != 0 {
+				t.Fatalf("unexpected recent state for stub disabled_user (semantic=%s): %+v", semParam, resp)
+			}
+			if resp.SemanticReason == nil || *resp.SemanticReason != suggest.ReasonDisabledUser {
+				t.Fatalf("semantic=%s: got semantic_reason=%v, want %q", semParam, resp.SemanticReason, suggest.ReasonDisabledUser)
+			}
+		}
+		if len(recordedReqs) != 2 {
+			t.Fatalf("recordedReqs len = %d, want 2", len(recordedReqs))
+		}
+		for i, r := range recordedReqs {
+			if r.Cap != 0 || r.QN != "" {
+				t.Fatalf("recordedReqs[%d] = {Cap:%d, QN:%q}, want Cap=0 and QN=\"\" (no near work requested)", i, r.Cap, r.QN)
+			}
+		}
+	})
 }
 
 // TestSuggestRecencyOnlyTieBreak verifies SPEC §6.2, §6.4 & plan P05 mục 2.3:
