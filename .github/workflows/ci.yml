@@ -1023,13 +1023,21 @@ jobs:
           set -euo pipefail
           deadline=$((SECONDS + 180))
           body=''
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            body="$(curl --silent "$BASE_URL/api/v1/readyz" || true)"
+          # Every request and every pause is capped by the remaining budget, so a stuck proxy or API cannot hold
+          # this step past 180 s (RV-T20b1-BE-3): curl gets --connect-timeout/--max-time <= min(5, remaining).
+          while :; do
+            remaining=$((deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            request_max_time=$(( remaining < 5 ? remaining : 5 ))
+            body="$(curl --silent --connect-timeout "$request_max_time" --max-time "$request_max_time" "$BASE_URL/api/v1/readyz" || true)"
             if printf '%s' "$body" | jq -e '.semantic_available == true' >/dev/null 2>&1; then
               echo "semantic_available=true after $((180 - (deadline - SECONDS))) s"
               exit 0
             fi
-            sleep 2
+            remaining=$((deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            pause=$(( remaining < 2 ? remaining : 2 ))
+            sleep "$pause"
           done
           echo "semantic chưa available sau 180 s: g1 bootstrap chưa flip"
           echo "Last /readyz body: $body"
