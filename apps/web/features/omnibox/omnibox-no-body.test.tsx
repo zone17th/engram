@@ -890,10 +890,30 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
       const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
         renderStandaloneOmnibox();
       const secretBody = 'secretbody-tag-colon-9001';
+      const signals: AbortSignal[] = [];
+      suggestSpy.mockImplementation((_params, opts) => {
+        if (opts?.signal) {
+          signals.push(opts.signal);
+        }
+        return Promise.resolve(makeEmptySuggestResponse());
+      });
 
-      typeNativeString(textarea, `#home:${secretBody}`);
+      // Realistic timing: type `#home`, wait for the request, then type `:secretbody` -> aborts signal and sends nothing after colon
+      typeNativeString(textarea, '#home');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      typeNativeString(textarea, `:${secretBody}`);
+      expect(signals[0]?.aborted).toBe(true);
       await delayMs(160);
 
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
       const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
       expect(allSuggestArgs).not.toContain(secretBody);
       expect(allSuggestArgs).not.toContain(':');
@@ -907,13 +927,34 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
       const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
         renderStandaloneOmnibox();
       const secretSuffix = 'secret-after-colon-9002';
+      const signals: AbortSignal[] = [];
+      suggestSpy.mockImplementation((_params, opts) => {
+        if (opts?.signal) {
+          signals.push(opts.signal);
+        }
+        return Promise.resolve(makeEmptySuggestResponse());
+      });
 
-      typeNativeString(textarea, `#home secret:${secretSuffix}`);
+      // Type `#home secret` -> after debounce, sends only `q: 'home'` (never `secret`)
+      typeNativeString(textarea, '#home secret');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      // Now type `:${secretSuffix}` -> aborts the in-flight/previous request and sends no further request
+      typeNativeString(textarea, `:${secretSuffix}`);
+      expect(signals[0]?.aborted).toBe(true);
       await delayMs(160);
 
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
       const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
       expect(allSuggestArgs).not.toContain(secretSuffix);
-      expect(allSuggestArgs).not.toContain('secret:');
+      expect(allSuggestArgs).not.toContain('secret');
       expect(searchSpy).not.toHaveBeenCalled();
       expect(itemsSpy).not.toHaveBeenCalled();
       expect(lookupSpy).not.toHaveBeenCalled();
@@ -972,6 +1013,29 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
         data: ':',
         nextValue: `name: ${pastedSecret}`,
       });
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('full-width colon ("wifi： mật khẩu") and "http://x" lock the gate and send nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const fullWidthSecret = 'mật-khẩu-ff1a-9006';
+
+      typeNativeString(textarea, `wifi： ${fullWidthSecret}`);
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      typeNativeString(textarea, 'http://x');
       await delayMs(160);
 
       expect(suggestSpy).not.toHaveBeenCalled();

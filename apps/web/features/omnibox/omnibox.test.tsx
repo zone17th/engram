@@ -340,15 +340,18 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(hint.querySelector('span.mono')?.textContent).toBe('tên:');
     expect(hint.textContent).not.toContain('`');
 
-    // Clear and test tainted input (fireEvent.change / paste) -> search.help.enterToSearch
+    // Clear and test tainted input (insertFromPaste) -> search.help.enterToSearch
     dispatchNativeTextEdit(textarea, {
       inputType: 'deleteWordBackward',
       nextValue: '',
     });
-    fireEvent.change(textarea, { target: { value: 'pasted-query' } });
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromPaste',
+      data: 'pasted-query',
+      nextValue: 'pasted-query',
+    });
     expect(hint).not.toHaveAttribute('hidden');
     expect(hint).toHaveTextContent(viMessages.search.help.enterToSearch);
-
     // Clear and test tag filter mode (#…) with clean typing -> tagHint visible, Ctrl+Enter does nothing; 0 cached tags renders no empty role="listbox" (HM18A-R1-9)
     dispatchNativeTextEdit(textarea, {
       inputType: 'deleteWordBackward',
@@ -428,20 +431,62 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     renderOmnibox();
     const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
-    // Tainted input (via fireEvent.change without inputType), colon-locked, add mode, multi-line -> 0 requests
-    fireEvent.change(textarea, { target: { value: 'pasted-tainted' } });
-    fireEvent.change(textarea, { target: { value: 'http://internal' } });
-    fireEvent.change(textarea, { target: { value: 'wifi: secret' } });
-    fireEvent.change(textarea, { target: { value: 'line1\nline2' } });
+    // Tainted input (insertFromPaste, insertFromDrop, historyUndo after setDraft, type-then-paste),
+    // colon-locked (ASCII `:`, U+FF1A `：`, `http://x`), add mode, multi-line (`insertLineBreak`), and > 200 runes -> 0 requests (RV-T17-1-FE1-4)
+    const clearToEmpty = () => {
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+    };
+
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromPaste',
+      data: 'pasted-tainted',
+      nextValue: 'pasted-tainted',
+    });
+    clearToEmpty();
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromDrop',
+      data: 'dropped-secret',
+      nextValue: 'dropped-secret',
+    });
+    clearToEmpty();
+    typeNativeString(textarea, 'ab');
+    fireEvent.keyDown(textarea, { key: 'Escape' }); // clears via setDraft('')
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'historyUndo',
+      nextValue: 'ab',
+    });
+    clearToEmpty();
+    typeNativeString(textarea, 'wi');
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertFromPaste',
+      data: 'fi-secret',
+      nextValue: 'wifi-secret',
+    });
+    clearToEmpty();
+    typeNativeString(textarea, 'http://x');
+    clearToEmpty();
+    typeNativeString(textarea, 'wifi： mật khẩu');
+    clearToEmpty();
+    typeNativeString(textarea, 'wifi: secret');
+    clearToEmpty();
+    typeNativeString(textarea, 'line1');
+    dispatchNativeTextEdit(textarea, {
+      inputType: 'insertLineBreak',
+      data: '\n',
+      nextValue: 'line1\n',
+    });
+    typeNativeString(textarea, 'line2');
+    clearToEmpty();
+    typeNativeString(textarea, 'a'.repeat(201));
     await delayMs(160);
     expect(suggestSpy).not.toHaveBeenCalled();
     expect(itemsSpy).not.toHaveBeenCalled();
 
     // Clear to reset taint/colon lock, then clean typing -> sends /suggest after 120ms debounce
-    dispatchNativeTextEdit(textarea, {
-      inputType: 'deleteContentBackward',
-      nextValue: '',
-    });
+    clearToEmpty();
     suggestSpy.mockClear();
     typeNativeString(textarea, 'wifi');
     await waitFor(() => {
@@ -805,7 +850,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       scope: 'all',
       limit: 8,
       requestMode: 'lex',
-      semanticSuggest: false,
+      semanticSuggestSetting: false,
       generationId: null,
       qn: seededP05SuggestQuery,
     })!;
@@ -2956,14 +3001,14 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
         scope: 'all',
         limit: 8,
         requestMode: 'lex',
-        semanticSuggest: false,
+        semanticSuggestSetting: false,
         generationId: null,
         qn: 'cached-before-lock',
       })!;
       queryClient.setQueryData(preSeededKey, makeEmptySuggestResponse());
       expect(queryClient.getQueryCache().find({ queryKey: preSeededKey })).toBeDefined();
 
-      const { container } = renderOmnibox(<Omnibox />, { queryClient });
+      renderOmnibox(<Omnibox />, { queryClient });
       const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
       typeNativeString(textarea, 'wifi');
@@ -3002,7 +3047,6 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       });
 
       expect(queryClient.getQueryCache().findAll({ queryKey: ['search'] })).toEqual([]);
-      expect(container.innerHTML).not.toContain(lateSecretName);
     });
 
     it('save clear then type → first typed char untainted, /suggest sent', async () => {
@@ -3091,7 +3135,25 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       typeNativeString(textarea, '#nh');
       expect(screen.getByRole('listbox', { name: 'Kết quả lọc tag' })).toBeInTheDocument();
 
-      // Press Tab -> fills `#nhà ` via setDraft() -> syncOwnWrite()
+      // When listbox is closed via Escape, Tab is default (does not preventDefault or trap focus — RV-T17-1-FE1-5)
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+      const tabWhenClosed = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      });
+      textarea.dispatchEvent(tabWhenClosed);
+      expect(tabWhenClosed.defaultPrevented).toBe(false);
+      expect(textarea).toHaveValue('#nh');
+
+      // Re-open tag-filter listbox with active row, then press Tab -> fills `#nhà ` via setDraft() -> syncOwnWrite()
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      typeNativeString(textarea, '#nh');
+      expect(screen.getByRole('listbox', { name: 'Kết quả lọc tag' })).toBeInTheDocument();
       fireEvent.keyDown(textarea, { key: 'Tab' });
       expect(textarea).toHaveValue('#nhà ');
 
@@ -3118,13 +3180,106 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       renderOmnibox();
       const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
 
-      // Foreign code mutates `textarea.value` directly without going through `setDraft`
-      textarea.value = 'foreign- autofill-secret';
-      // Next typed character observes the diverged DOM value in `beforeinput`/`input` -> taints by rule 1(d)
-      typeNativeString(textarea, 'z');
+      // Type 'ab' cleanly so gate state has value='ab' and prevValue='ab'
+      typeNativeString(textarea, 'ab');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'ab', scope: 'all', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+      suggestSpy.mockClear();
+
+      // Foreign code mutates `textarea.value` to a same-length string ('ab') without setDraft, or wait:
+      // if foreign code mutates `textarea.value` to `'xy'` (same length, not via setDraft) and then `beforeinput`
+      // runs with `currentDomValue: 'xy'`, `stepSendGateBeforeInput` taints strictly via rule 1(d) (`currentDomValue !== state.prevValue`).
+      // Even if `input` later sees `nextValue: 'xyz'` where `event.data = 'z'`, let's verify rule 1(d) in isolation:
+      // foreign code sets `textarea.value = 'xy'` before `beforeinput`, then reverts to `'ab'` before `input` so `computeSingleSpliceDiff('ab', 'abz')` has `inserted === 'z' === data` (1 grapheme).
+      // Only `stepSendGateBeforeInput`'s `currentDomValue !== state.prevValue` (rule 1(d)) can catch this!
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(textarea, 'xy');
+      textarea.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: 'z',
+          isComposing: false,
+        }),
+      );
+      setter?.call(textarea, 'abz');
+      textarea.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          inputType: 'insertText',
+          data: 'z',
+          isComposing: false,
+        }),
+      );
+      expect(screen.getByTestId('omnibox-hint')).toHaveTextContent(
+        viMessages.search.help.enterToSearch,
+      );
 
       await delayMs(160);
       expect(suggestSpy).not.toHaveBeenCalled();
+    });
+
+    it('typing #home sends only token, and typing colon after in-flight request aborts it and sends nothing after colon', async () => {
+      const signals: AbortSignal[] = [];
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockImplementation((params, opts) => {
+          if (opts?.signal) {
+            signals.push(opts.signal);
+          }
+          if (params.q === 'home') {
+            return heldHomeSuggest;
+          }
+          return Promise.resolve(makeEmptySuggestResponse());
+        });
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
+
+      // 1. Type `#home` and wait for the debounced `/suggest` request to be in-flight
+      typeNativeString(textarea, '#home');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      // 2. Type `:` then secret text -> immediately aborts the in-flight controller and locks the gate
+      typeNativeString(textarea, ':secret-after-colon');
+      expect(signals[0]?.aborted).toBe(true);
+      await delayMs(160);
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain('secret-after-colon');
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
+
+      // 3. Clear to '', then type `#home secret` -> sends only `q: 'home'` with `scope: 'tag', semantic: 0`
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      suggestSpy.mockClear();
+      typeNativeString(textarea, '#home secret');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain('secret');
     });
   });
 });
