@@ -10,6 +10,13 @@
 // ciphertexts, never calls any embedding provider directly, and returns only
 // aggregate counts in Result (never item names, hints, tag displays, or user
 // emails).
+//
+// Deployment gate (SPEC 6.6/6.10): Reconcile itself never reads configuration.
+// A caller that applies changes (ModeEnqueue) must first confirm the deployment
+// enqueues embeddings at all (semantic search enabled and a non-noop provider);
+// the worker boot/periodic wiring only registers the reembed workers when that
+// holds, and the `worker reembed` CLI refuses to apply otherwise. ModeDryRun
+// writes nothing and is always safe.
 package reconcile
 
 import (
@@ -17,6 +24,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -107,6 +115,11 @@ type Result struct {
 	UserOffDeleted int `json:"user_off_deleted"`
 	Enqueued       int `json:"enqueued"`
 	SkippedUserOff int `json:"skipped_user_off"`
+
+	// OrphanSkippedRestored counts orphan candidates whose target was restored
+	// (deleted_at back to NULL) between the unlocked orphan scan and the locked
+	// delete; their vectors are kept.
+	OrphanSkippedRestored int `json:"orphan_skipped_restored"`
 
 	WouldEnqueue       int `json:"would_enqueue"`
 	WouldDeleteOrphan  int `json:"would_delete_orphan"`
@@ -346,6 +359,12 @@ func enqueueBatchInTx(
 	return len(batch), true, nil
 }
 
+// afterOrphanScanHook is a test-only barrier: when set it runs right after an
+// unlocked ScanOrphans page (non-empty, ModeEnqueue) and before the locked
+// delete transaction, so a test can restore a target deterministically in that
+// window. It is nil in production.
+var afterOrphanScanHook atomic.Pointer[func(ctx context.Context, kind generation.Corpus)]
+
 func reconcileCorpusOrphans(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -369,7 +388,10 @@ func reconcileCorpusOrphans(
 		if mode == ModeDryRun {
 			res.WouldDeleteOrphan += len(orphans)
 		} else {
-			deleted, stillExists, err := deleteOrphansInTx(ctx, pool, g, kind, orphans)
+			if hook := afterOrphanScanHook.Load(); hook != nil {
+				(*hook)(ctx, kind)
+			}
+			deleted, skipped, stillExists, err := deleteOrphansInTx(ctx, pool, g, kind, orphans)
 			if err != nil {
 				return false, err
 			}
@@ -378,6 +400,7 @@ func reconcileCorpusOrphans(
 				return true, nil
 			}
 			res.OrphanDeleted += deleted
+			res.OrphanSkippedRestored += skipped
 		}
 
 		last := orphans[len(orphans)-1]
@@ -391,44 +414,107 @@ func reconcileCorpusOrphans(
 	}
 }
 
+// deleteOrphansInTx deletes g's vectors for the scanned orphan candidates that
+// are still orphans. The scan was unlocked, so before touching any vector the
+// transaction row-locks every candidate target (FOR SHARE, (user_id, id) order)
+// and re-reads deleted_at: a target restored since the scan is skipped and
+// counted. Lock order follows T11a step 5 (target row first) and then the
+// generation-set shared lock, so a concurrent restore either commits before the
+// lock (and is skipped) or waits until this transaction ends, after which its
+// embed job re-creates the vector. A missing target row is still an orphan.
 func deleteOrphansInTx(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	g generation.Generation,
 	kind generation.Corpus,
 	orphans []store.OrphanVectorRow,
-) (deleted int, stillExists bool, err error) {
+) (deleted, skippedRestored int, stillExists bool, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	restored, err := lockRestoredTargets(ctx, tx, kind, orphans)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
 	if err := generation.LockGenerationSetShared(ctx, tx); err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
 
 	existing, err := generation.ExistingGenerations(ctx, tx)
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
 	if !containsGeneration(existing, g.ID) {
 		if err := tx.Commit(ctx); err != nil {
-			return 0, false, err
+			return 0, 0, false, err
 		}
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
 
 	for _, o := range orphans {
-		if err := store.DeleteTargetInGeneration(ctx, tx, g, kind, o.UserID, o.TargetID); err != nil {
-			return 0, true, err
+		if _, live := restored[o]; live {
+			skippedRestored++
+			continue
 		}
+		if err := store.DeleteTargetInGeneration(ctx, tx, g, kind, o.UserID, o.TargetID); err != nil {
+			return 0, 0, true, err
+		}
+		deleted++
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return 0, true, err
+		return 0, 0, true, err
 	}
-	return len(orphans), true, nil
+	return deleted, skippedRestored, true, nil
+}
+
+// lockRestoredTargets row-locks (FOR SHARE, (user_id, id) order) every existing
+// target row among the orphan candidates, matching both user_id and id, and
+// returns the candidates that are live again (deleted_at IS NULL). Soft-deleted
+// rows are locked too, so a restore cannot commit between this check and the
+// vector delete.
+func lockRestoredTargets(
+	ctx context.Context,
+	tx pgx.Tx,
+	kind generation.Corpus,
+	orphans []store.OrphanVectorRow,
+) (map[store.OrphanVectorRow]struct{}, error) {
+	table := "item"
+	if kind == generation.CorpusTag {
+		table = "tag"
+	}
+	userIDs := make([]string, 0, len(orphans))
+	targetIDs := make([]string, 0, len(orphans))
+	for _, o := range orphans {
+		userIDs = append(userIDs, o.UserID.String())
+		targetIDs = append(targetIDs, o.TargetID.String())
+	}
+	rows, err := tx.Query(ctx, `SELECT t.user_id, t.id, t.deleted_at IS NULL
+		FROM `+table+` t
+		JOIN unnest($1::text[]::uuid[], $2::text[]::uuid[]) AS o(user_id, id)
+		  ON t.user_id = o.user_id AND t.id = o.id
+		ORDER BY t.user_id ASC, t.id ASC
+		FOR SHARE OF t`, userIDs, targetIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	live := map[store.OrphanVectorRow]struct{}{}
+	for rows.Next() {
+		var r store.OrphanVectorRow
+		var isLive bool
+		if err := rows.Scan(&r.UserID, &r.TargetID, &isLive); err != nil {
+			return nil, err
+		}
+		if isLive {
+			live[r] = struct{}{}
+		}
+	}
+	return live, rows.Err()
 }
 
 type userOffRow struct {

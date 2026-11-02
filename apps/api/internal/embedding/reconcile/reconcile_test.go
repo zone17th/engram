@@ -729,6 +729,96 @@ func TestReconcileDeletesOrphanVectors(t *testing.T) {
 	}
 }
 
+// TestReconcileOrphanCleanupSkipsRestoredTarget (EJT15-2): a target restored
+// (and re-embedded) between the unlocked orphan scan and the locked delete keeps
+// its fresh vector; a still-deleted orphan in the same page is deleted. The
+// barrier hook runs synchronously after the scan, so there are no sleeps.
+func TestReconcileOrphanCleanupSkipsRestoredTarget(t *testing.T) {
+	for _, kind := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
+		t.Run(string(kind), func(t *testing.T) {
+			f := newFixture(t)
+			srv := embedtest.NewServer(embedtest.Options{Dims: 8, ModelID: "BAAI/bge-m3", ModelSHA: "rev-r1"})
+			defer srv.Close()
+			g := seedGeneration(t, f.ctx, f.pool, 1, teiIdentity(t, srv), generation.StateActive)
+			u := f.user(t, "restore-race-"+string(kind)+"@example.com", true)
+
+			var restoredID, goneID uuid.UUID
+			var oldInput, freshInput string
+			switch kind {
+			case generation.CorpusItem:
+				restoredID = f.item(t, u, "Restore me", "")
+				goneID = f.item(t, u, "Stay deleted", "")
+				oldInput, freshInput = embedding.ItemInput("Restore me", ""), embedding.ItemInput("Restored fresh", "")
+			default:
+				restoredID = f.tag(t, u, "restore-me")
+				goneID = f.tag(t, u, "stay-deleted")
+				oldInput, freshInput = embedding.TagInput("restore-me"), embedding.TagInput("restored-fresh")
+			}
+			f.put(t, g, kind, u, restoredID, oldInput)
+			f.put(t, g, kind, u, goneID, "stay deleted input")
+			for _, id := range []uuid.UUID{restoredID, goneID} {
+				var err error
+				if kind == generation.CorpusItem {
+					_, err = f.q.SoftDeleteItem(f.ctx, gen.SoftDeleteItemParams{UserID: u, ID: id})
+				} else {
+					_, err = f.q.SoftDeleteTag(f.ctx, gen.SoftDeleteTagParams{UserID: u, ID: id})
+				}
+				if err != nil {
+					t.Fatalf("soft delete: %v", err)
+				}
+			}
+
+			hookCalls := 0
+			reconcile.SetAfterOrphanScanHookForTest(t, func(ctx context.Context, k generation.Corpus) {
+				if k != kind {
+					return
+				}
+				hookCalls++
+				// Restore + rename + fresh vector, all after the scan saw both as orphans.
+				var err error
+				if kind == generation.CorpusItem {
+					if _, err = f.q.RestoreItem(ctx, gen.RestoreItemParams{UserID: u, ID: restoredID}); err == nil {
+						_, err = f.pool.Exec(ctx, `UPDATE item SET name = 'Restored fresh', name_normalized = 'restored fresh' WHERE id = $1`, restoredID)
+					}
+				} else {
+					if _, err = f.q.RestoreTag(ctx, gen.RestoreTagParams{UserID: u, ID: restoredID}); err == nil {
+						_, err = f.pool.Exec(ctx, `UPDATE tag SET display = 'restored-fresh', normalized = 'restored-fresh' WHERE id = $1`, restoredID)
+					}
+				}
+				if err != nil {
+					t.Errorf("restore in barrier: %v", err)
+					return
+				}
+				f.put(t, g, kind, u, restoredID, freshInput)
+			})
+
+			res := f.reconcile(t, g, reconcile.All(), reconcile.ModeEnqueue)
+			wantInt(t, "barrier calls", hookCalls, 1)
+			wantInt(t, "OrphanDeleted", res.OrphanDeleted, 1)
+			wantInt(t, "OrphanSkippedRestored", res.OrphanSkippedRestored, 1)
+
+			sv, ok, err := store.GetTargetMeta(f.ctx, f.pool, g, kind, u, restoredID)
+			if err != nil || !ok {
+				t.Fatalf("restored target lost its vector: ok=%v err=%v", ok, err)
+			}
+			want := embedding.InputHashFor(g.Identity(), freshInput)
+			if string(sv.InputHash) != string(want[:]) {
+				t.Fatal("restored target's vector is not the fresh one written after the scan")
+			}
+			if f.hasVector(t, g, kind, u, goneID) {
+				t.Fatal("still-deleted orphan vector survived cleanup")
+			}
+
+			// Nothing is left to do: live, fresh, no orphans (the barrier is not reached again).
+			again := f.reconcile(t, g, reconcile.All(), reconcile.ModeEnqueue)
+			wantInt(t, "second Missing+Stale", again.Missing+again.Stale, 0)
+			wantInt(t, "second OrphanDeleted", again.OrphanDeleted, 0)
+			wantInt(t, "second OrphanSkippedRestored", again.OrphanSkippedRestored, 0)
+			wantInt(t, "barrier calls after second run", hookCalls, 1)
+		})
+	}
+}
+
 // TestReconcileStopsWhenGenerationLeavesR: a generation outside R stops the run
 // with a counted reason, no error and no job.
 func TestReconcileStopsWhenGenerationLeavesR(t *testing.T) {

@@ -141,6 +141,7 @@ func (d Dependencies) reconcileGenerations(ctx context.Context, kind string, gen
 			slog.Int("missing", res.Missing),
 			slog.Int("stale", res.Stale),
 			slog.Int("orphan_deleted", res.OrphanDeleted),
+			slog.Int("orphan_skipped_restored", res.OrphanSkippedRestored),
 			slog.Int("user_off_deleted", res.UserOffDeleted),
 			slog.Int("enqueued", res.Enqueued),
 			slog.Int("skipped_user_off", res.SkippedUserOff),
