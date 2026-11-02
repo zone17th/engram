@@ -730,17 +730,27 @@ func TestReconcileDeletesOrphanVectors(t *testing.T) {
 }
 
 // TestReconcileOrphanCleanupSkipsRestoredTarget (EJT15-2): a target restored
-// (and re-embedded) between the unlocked orphan scan and the locked delete keeps
-// its fresh vector; a still-deleted orphan in the same page is deleted. The
-// barrier hook runs synchronously after the scan, so there are no sleeps.
+// and re-embedded by the REAL T11a embed worker between the unlocked orphan scan
+// and the locked delete keeps its fresh vector; a still-deleted orphan in the
+// same page is deleted. The barrier hook runs synchronously after the scan and
+// finishes the worker before cleanup resumes, so there are no sleeps.
 func TestReconcileOrphanCleanupSkipsRestoredTarget(t *testing.T) {
 	for _, kind := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
 		t.Run(string(kind), func(t *testing.T) {
 			f := newFixture(t)
 			srv := embedtest.NewServer(embedtest.Options{Dims: 8, ModelID: "BAAI/bge-m3", ModelSHA: "rev-r1"})
 			defer srv.Close()
-			g := seedGeneration(t, f.ctx, f.pool, 1, teiIdentity(t, srv), generation.StateActive)
+			client := teiClient(t, srv)
+			g := seedGeneration(t, f.ctx, f.pool, 1, client.Identity, generation.StateActive)
 			u := f.user(t, "restore-race-"+string(kind)+"@example.com", true)
+			_, m := obs.NewRegistry()
+			deps := jobs.Dependencies{
+				Pool:      f.pool,
+				ClientSet: embedding.NewClientSet(client, nil),
+				Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+				Metrics:   m.Embedding,
+				Inserter:  jobs.RiverClientInserter{Client: f.client},
+			}
 
 			var restoredID, goneID uuid.UUID
 			var oldInput, freshInput string
@@ -774,28 +784,47 @@ func TestReconcileOrphanCleanupSkipsRestoredTarget(t *testing.T) {
 					return
 				}
 				hookCalls++
-				// Restore + rename + fresh vector, all after the scan saw both as orphans.
+				// Restore + rename after the scan saw both as orphans, then the real
+				// embed worker (current hash) rewrites the vector before cleanup resumes.
+				freshHash := embedding.InputHashFor(g.Identity(), freshInput)
+				freshHex := hex.EncodeToString(freshHash[:])
 				var err error
 				if kind == generation.CorpusItem {
 					if _, err = f.q.RestoreItem(ctx, gen.RestoreItemParams{UserID: u, ID: restoredID}); err == nil {
 						_, err = f.pool.Exec(ctx, `UPDATE item SET name = 'Restored fresh', name_normalized = 'restored fresh' WHERE id = $1`, restoredID)
 					}
+					if err == nil {
+						err = jobs.NewEmbedItemWorker(deps).Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+							JobRow: &rivertype.JobRow{Attempt: 1},
+							Args: jobargs.EmbedItemArgs{
+								GenerationID: g.ID, UserID: u.String(), TargetID: restoredID.String(), InputHash: freshHex,
+							},
+						})
+					}
 				} else {
 					if _, err = f.q.RestoreTag(ctx, gen.RestoreTagParams{UserID: u, ID: restoredID}); err == nil {
 						_, err = f.pool.Exec(ctx, `UPDATE tag SET display = 'restored-fresh', normalized = 'restored-fresh' WHERE id = $1`, restoredID)
 					}
+					if err == nil {
+						err = jobs.NewEmbedTagWorker(deps).Work(ctx, &river.Job[jobargs.EmbedTagArgs]{
+							JobRow: &rivertype.JobRow{Attempt: 1},
+							Args: jobargs.EmbedTagArgs{
+								GenerationID: g.ID, UserID: u.String(), TargetID: restoredID.String(), InputHash: freshHex,
+							},
+						})
+					}
 				}
 				if err != nil {
-					t.Errorf("restore in barrier: %v", err)
-					return
+					t.Errorf("restore + embed worker in barrier: %v", err)
 				}
-				f.put(t, g, kind, u, restoredID, freshInput)
 			})
+			srv.ResetCalls()
 
 			res := f.reconcile(t, g, reconcile.All(), reconcile.ModeEnqueue)
 			wantInt(t, "barrier calls", hookCalls, 1)
 			wantInt(t, "OrphanDeleted", res.OrphanDeleted, 1)
 			wantInt(t, "OrphanSkippedRestored", res.OrphanSkippedRestored, 1)
+			wantInt(t, "worker document requests", int(srv.Stats().DocumentRequests), 1)
 
 			sv, ok, err := store.GetTargetMeta(f.ctx, f.pool, g, kind, u, restoredID)
 			if err != nil || !ok {
@@ -803,7 +832,10 @@ func TestReconcileOrphanCleanupSkipsRestoredTarget(t *testing.T) {
 			}
 			want := embedding.InputHashFor(g.Identity(), freshInput)
 			if string(sv.InputHash) != string(want[:]) {
-				t.Fatal("restored target's vector is not the fresh one written after the scan")
+				t.Fatal("restored target's vector is not the fresh one written by the embed worker after the scan")
+			}
+			if sv.Model != g.Model || sv.ModelVersion != g.ModelVersion {
+				t.Fatalf("restored vector model/version = %q/%q, want %q/%q", sv.Model, sv.ModelVersion, g.Model, g.ModelVersion)
 			}
 			if f.hasVector(t, g, kind, u, goneID) {
 				t.Fatal("still-deleted orphan vector survived cleanup")
