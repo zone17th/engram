@@ -972,10 +972,21 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	if _, err := tx.Exec(ctx, `ANALYZE item, tag`); err != nil {
 		t.Fatalf("ANALYZE item, tag in tx: %v", err)
 	}
-	// Drop the user-only recent/list btree indexes inside this rolled-back transaction so PostgreSQL
+	// Drop competing user-leading non-lexical btree indexes inside this rolled-back transaction so PostgreSQL
 	// cannot satisfy all OR arms via a single full-user btree scan + Filter when enable_seqscan=off,
 	// proving that the prefix and trigram indexes themselves are indexable for the production SQL.
-	if _, err := tx.Exec(ctx, `DROP INDEX IF EXISTS item_user_recent, item_user_created, tag_user_recent, tag_user_norm`); err != nil {
+	if _, err := tx.Exec(ctx, `
+		ALTER TABLE item DROP CONSTRAINT IF EXISTS item_user_id_id_key;
+		ALTER TABLE tag DROP CONSTRAINT IF EXISTS tag_user_id_id_key;
+		DROP INDEX IF EXISTS
+			item_user_recent,
+			item_user_created,
+			item_user_name_exact,
+			item_user_name_alpha,
+			tag_user_recent,
+			tag_user_norm_uq,
+			tag_user_norm;
+	`); err != nil {
 		t.Fatalf("DROP user-only btree indexes in tx: %v", err)
 	}
 
@@ -998,7 +1009,8 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("SearchItemsLexical(fuzzy=false): %v", err)
 	}
 	itemPrefixPlan := explainCapturedQuery(t, ctx, tx, capDB)
-	assertPlanRequiresIndex(t, itemPrefixPlan, "item", "item_user_unaccent_prefix", "~~")
+	assertPlanRequiresIndex(t, itemPrefixPlan, "item", "item_user_unaccent_prefix", "name_unaccent ~>=~", "name_unaccent ~<~")
+	assertPlanContainsResidualCond(t, itemPrefixPlan, "item", "name_unaccent ~~")
 
 	if _, err := q.SearchTagsLexical(ctx, gen.SearchTagsLexicalParams{
 		UserID:    u1,
@@ -1010,7 +1022,34 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("SearchTagsLexical(fuzzy=false): %v", err)
 	}
 	tagPrefixPlan := explainCapturedQuery(t, ctx, tx, capDB)
-	assertPlanRequiresIndex(t, tagPrefixPlan, "tag", "tag_user_unaccent_prefix", "~~")
+	assertPlanRequiresIndex(t, tagPrefixPlan, "tag", "tag_user_unaccent_prefix", "tag_unaccent ~>=~", "tag_unaccent ~<~")
+	assertPlanContainsResidualCond(t, tagPrefixPlan, "tag", "tag_unaccent ~~")
+
+	if _, err := q.SearchItemsLexicalPage(ctx, gen.SearchItemsLexicalPageParams{
+		UserID:    u1,
+		Qn:        qnPrefix,
+		QPrefix:   qPrefix,
+		Fuzzy:     false,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchItemsLexicalPage(fuzzy=false): %v", err)
+	}
+	itemPagePrefixPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, itemPagePrefixPlan, "item", "item_user_unaccent_prefix", "name_unaccent ~>=~", "name_unaccent ~<~")
+	assertPlanContainsResidualCond(t, itemPagePrefixPlan, "item", "name_unaccent ~~")
+
+	if _, err := q.SearchTagsLexicalPage(ctx, gen.SearchTagsLexicalPageParams{
+		UserID:    u1,
+		Qn:        qnPrefix,
+		QPrefix:   qPrefix,
+		Fuzzy:     false,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchTagsLexicalPage(fuzzy=false): %v", err)
+	}
+	tagPagePrefixPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, tagPagePrefixPlan, "tag", "tag_user_unaccent_prefix", "tag_unaccent ~>=~", "tag_unaccent ~<~")
+	assertPlanContainsResidualCond(t, tagPagePrefixPlan, "tag", "tag_unaccent ~~")
 
 	// 2. Selective fuzzy path (fuzzy = true) via real gen.Queries calls (`pasword` -> `password`):
 	//    Must specifically use the per-user GIN trigram indexes `item_user_name_trgm` on item
@@ -1068,7 +1107,7 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	assertPlanRequiresIndex(t, tagPageFuzzyPlan, "tag", "tag_user_tag_trgm", "%")
 }
 
-func assertPlanRequiresIndex(t *testing.T, planJSON string, tableName string, requiredIndex string, requiredCondSubstr string) {
+func assertPlanRequiresIndex(t *testing.T, planJSON string, tableName string, requiredIndex string, requiredCondSubstrs ...string) {
 	t.Helper()
 	var plans []map[string]any
 	if err := json.Unmarshal([]byte(planJSON), &plans); err != nil {
@@ -1088,8 +1127,17 @@ func assertPlanRequiresIndex(t *testing.T, planJSON string, tableName string, re
 			if idxName != "" {
 				indexNames = append(indexNames, idxName)
 			}
-			if idxName == requiredIndex && (requiredCondSubstr == "" || strings.Contains(idxCond, requiredCondSubstr)) {
-				matchedIndexAndCond = true
+			if idxName == requiredIndex {
+				allPresent := len(requiredCondSubstrs) > 0
+				for _, sub := range requiredCondSubstrs {
+					if sub == "" || !strings.Contains(idxCond, sub) {
+						allPresent = false
+						break
+					}
+				}
+				if allPresent {
+					matchedIndexAndCond = true
+				}
 			}
 			if nodeType == "Seq Scan" && relName == tableName {
 				seqScansOnTable = append(seqScansOnTable, relName)
@@ -1110,8 +1158,42 @@ func assertPlanRequiresIndex(t *testing.T, planJSON string, tableName string, re
 		t.Fatalf("unexpected Seq Scan on %s in plan:\n%s", tableName, planJSON)
 	}
 	if !matchedIndexAndCond {
-		t.Fatalf("plan on %s did not use required index %q with condition containing %q (used indexes=%v):\n%s",
-			tableName, requiredIndex, requiredCondSubstr, indexNames, planJSON)
+		t.Fatalf("plan on %s did not use required index %q with Index Cond containing all of %q (used indexes=%v):\n%s",
+			tableName, requiredIndex, requiredCondSubstrs, indexNames, planJSON)
+	}
+}
+
+func assertPlanContainsResidualCond(t *testing.T, planJSON string, tableName string, requiredResidualSubstr string) {
+	t.Helper()
+	var plans []map[string]any
+	if err := json.Unmarshal([]byte(planJSON), &plans); err != nil {
+		t.Fatalf("unmarshal EXPLAIN JSON: %v", err)
+	}
+	matched := false
+	var walk func(node any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			for _, field := range []string{"Filter", "Recheck Cond", "Index Cond"} {
+				if cond, ok := v[field].(string); ok && strings.Contains(cond, requiredResidualSubstr) {
+					matched = true
+				}
+			}
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, elem := range v {
+				walk(elem)
+			}
+		}
+	}
+	for _, p := range plans {
+		walk(p)
+	}
+	if !matched {
+		t.Fatalf("plan on %s did not contain residual condition %q in Filter/Recheck Cond/Index Cond:\n%s",
+			tableName, requiredResidualSubstr, planJSON)
 	}
 }
 
