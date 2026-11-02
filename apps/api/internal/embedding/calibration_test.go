@@ -156,6 +156,46 @@ func TestSelectThreshold(t *testing.T) {
 			wantFPR:       0,
 			wantDecision:  CalDecisionRequired,
 		},
+		{
+			name:          "unrelated NaN fails closed with decision_required",
+			results:       calBuildResults([]float64{0.80}, []float64{math.NaN()}),
+			wantThreshold: 0,
+			wantPrecision: 0,
+			wantRecall:    0,
+			wantFPR:       0,
+			wantDecision:  CalDecisionRequired,
+		},
+		{
+			name:          "related +Inf with unrelated -Inf fails closed with decision_required",
+			results:       calBuildResults([]float64{math.Inf(1)}, []float64{math.Inf(-1)}),
+			wantThreshold: 0,
+			wantPrecision: 0,
+			wantRecall:    0,
+			wantFPR:       0,
+			wantDecision:  CalDecisionRequired,
+		},
+		{
+			name:          "cos outside [-1, 1] fails closed with decision_required",
+			results:       calBuildResults([]float64{1.5}, []float64{0.10}),
+			wantThreshold: 0,
+			wantPrecision: 0,
+			wantRecall:    0,
+			wantFPR:       0,
+			wantDecision:  CalDecisionRequired,
+		},
+		{
+			name: "unknown label fails closed with decision_required",
+			results: []EvalResult{
+				{ID: "r1", Label: "related", Cos: 0.85},
+				{ID: "u1", Label: "unrelated", Cos: 0.15},
+				{ID: "x1", Label: "unknown", Cos: 0.20},
+			},
+			wantThreshold: 0,
+			wantPrecision: 0,
+			wantRecall:    0,
+			wantFPR:       0,
+			wantDecision:  CalDecisionRequired,
+		},
 	}
 
 	for _, tc := range tests {
