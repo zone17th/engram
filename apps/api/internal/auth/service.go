@@ -22,6 +22,9 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/clock"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
+	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
+	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
@@ -442,7 +445,10 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
-	if _, err := q.GetUserByIDForUpdate(ctx, p.UserID); err != nil {
+	// Lock order (OQ-16, plan P05 mục 2.15): app_user row first, then the
+	// generation-set advisory lock (shared) inside applySemanticSuggestTx.
+	userRow, err := q.GetUserByIDForUpdate(ctx, p.UserID)
+	if err != nil {
 		return Me{}, err
 	}
 	if err := s.sessions.EnsureLiveTx(ctx, q, p); err != nil {
@@ -466,9 +472,7 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 		return Me{}, err
 	}
 	if patch.SemanticSuggest != nil {
-		if _, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{
-			ID: p.UserID, SemanticSuggest: *patch.SemanticSuggest,
-		}); err != nil {
+		if err := s.applySemanticSuggestTx(ctx, tx, q, p.UserID, userRow.Settings, *patch.SemanticSuggest); err != nil {
 			return Me{}, err
 		}
 	}
@@ -496,6 +500,105 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 		return Me{}, err
 	}
 	return s.BuildMe(ctx, p.UserID)
+}
+
+// reembedUserPriority and reembedUserQueue mirror plan P05 mục 2.17 (queue
+// "embedding", priority 3); the job's Reconcile(User) covers every generation
+// in R, so a single insert per toggle is enough.
+const (
+	reembedUserQueue    = "embedding"
+	reembedUserPriority = 3
+)
+
+func reembedUserInsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{
+		Queue:    reembedUserQueue,
+		Priority: reembedUserPriority,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRetryable,
+				rivertype.JobStateRunning,
+				rivertype.JobStateScheduled,
+			},
+		},
+	}
+}
+
+// semanticSuggestSetting reads settings.semantic_suggest with the same default
+// the embedding jobs use (absent or unreadable => on, matching the column
+// default {"semantic_suggest": true}).
+func semanticSuggestSetting(raw []byte) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var parsed struct {
+		SemanticSuggest *bool `json:"semantic_suggest"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.SemanticSuggest == nil {
+		return true
+	}
+	return *parsed.SemanticSuggest
+}
+
+// applySemanticSuggestTx stores the new semantic_suggest value together with
+// its side effects inside the PatchSettings transaction (plan P05 mục 2.18,
+// rows 7 and 11; BE-3). The caller already holds the app_user row lock.
+//
+//   - off (always 200): delete the user's vectors in every openai_compat
+//     generation that still has tables (state <> dropped, retired past the
+//     rollback window included); tei generations keep them.
+//   - on, from off: enqueue one reembed_user so Reconcile(User) re-embeds the
+//     user into every openai_compat generation in R (tei is already current).
+//     Only when R contains such a generation.
+//   - on, already on: nothing (idempotent).
+//
+// Nothing here logs or returns provider URLs, keys, query text or names.
+func (s *Service) applySemanticSuggestTx(ctx context.Context, tx pgx.Tx, q *gen.Queries, userID uuid.UUID, prevSettings []byte, on bool) error {
+	switch {
+	case !on:
+		if err := generation.LockGenerationSetShared(ctx, tx); err != nil {
+			return err
+		}
+		if err := store.DeleteUserExternal(ctx, tx, userID); err != nil {
+			return err
+		}
+	case !semanticSuggestSetting(prevSettings):
+		if err := generation.LockGenerationSetShared(ctx, tx); err != nil {
+			return err
+		}
+		if err := s.enqueueReembedUserTx(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
+	_, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{
+		ID: userID, SemanticSuggest: on,
+	})
+	return err
+}
+
+func (s *Service) enqueueReembedUserTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	if s.jobs == nil {
+		return nil
+	}
+	gens, err := generation.ReceivingGenerations(ctx, tx)
+	if err != nil {
+		return err
+	}
+	external := false
+	for _, g := range gens {
+		if g.Provider == generation.ProviderOpenAICompat {
+			external = true
+			break
+		}
+	}
+	if !external {
+		return nil
+	}
+	_, err = s.jobs.InsertTx(ctx, tx, jobargs.ReembedUserArgs{UserID: userID.String()}, reembedUserInsertOpts())
+	return err
 }
 
 func (s *Service) ListSessions(ctx context.Context, p authctx.Principal, limit int, cursor string) (CursorPage[SessionItem], error) {
