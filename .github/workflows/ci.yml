@@ -941,3 +941,153 @@ jobs:
             ${{ runner.temp }}/search-bench-results/*.json
             ${{ runner.temp }}/search-bench-results/*.md
           if-no-files-found: warn
+
+  # P05 Task 20b (PR 20b-1, plan L6): the `@semantic` Playwright specs run against a REAL semantic server over the
+  # compose profile `semantic-fake` (fakeembed instead of a paid provider). `Content e2e` excludes them
+  # (--grep-invert @semantic). Not a required check unless the Advisor says so.
+  e2e-search-semantic:
+    name: Search semantic e2e (fake provider)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # WebAuthn RP ID = host of APP_ORIGIN; Chrome rejects an IP address, so this job uses a hostname (advisor-dec-050).
+      BASE_URL: http://localhost:3000
+      APP_ORIGIN: http://localhost:3000
+      AUTH_FAKE_OAUTH: 'false'
+      AUTH_REQUIRE_EMAIL_VERIFICATION: 'true'
+      NEXT_PUBLIC_CONTENT_ENABLED: 'true'
+      # Compose profile semantic-fake (T16 handoff, advisor-dec-279): tei provider pointed at the fakeembed service.
+      # COMPOSE_PROFILES applies to every `docker compose` call below (up, logs, down).
+      COMPOSE_PROFILES: semantic-fake
+      SEARCH_SEMANTIC_ENABLED: 'true'
+      EMBEDDING_PROVIDER: tei
+      TEI_URL: http://fakeembed:8080
+      TEI_INPUT_PREFIX_QUERY: 'query: '
+      TEI_INPUT_PREFIX_DOCUMENT: 'passage: '
+      # Test-only (rejected in production): g1 bootstrap flips to active within seconds on the empty database.
+      EMBEDDING_BOOTSTRAP_FLIP_INTERVAL: 5s
+      # fakeembed is published on 127.0.0.1 only; the Playwright container runs --network host and reaches it there.
+      FAKEEMBED_PORT: '8090'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Compose and E2E harness configuration
+        run: |
+          node --test scripts/e2e-infra.test.mjs
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml config --quiet
+
+      - name: Prepare mail sink directory
+        run: mkdir -p .data/mail-sink
+
+      # fakeembed first and healthy: the API and worker read the provider identity (GET /info) when they boot, and
+      # they do not depend_on a profile-only service, so starting everything at once could leave them without it.
+      - name: Build and start the stack
+        run: |
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach --wait fakeembed
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach
+
+      - name: Wait for the web proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL/api/v1/healthz" >/dev/null; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml ps
+          exit 1
+
+      # Readiness (M3, FS-25): the semantic specs need semantic_available=true, i.e. the g1 bootstrap generation has
+      # been flipped active. /readyz needs no session and carries status only (no secrets).
+      - name: Wait for semantic availability (g1 bootstrap flip)
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 180))
+          body=''
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            body="$(curl --silent "$BASE_URL/api/v1/readyz" || true)"
+            if printf '%s' "$body" | jq -e '.semantic_available == true' >/dev/null 2>&1; then
+              echo "semantic_available=true after $((180 - (deadline - SECONDS))) s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "semantic chưa available sau 180 s: g1 bootstrap chưa flip"
+          echo "Last /readyz body: $body"
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml ps
+          exit 1
+
+      - name: Run semantic content Playwright (@semantic only)
+        env:
+          BASE_URL: http://localhost:3000
+          E2E_STACK: '1'
+          E2E_VERIFY: 'true'
+          NEXT_PUBLIC_CONTENT_ENABLED: 'true'
+          MAIL_SINK_DIR: /work/.data/mail-sink
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+          # fakeembed /__control + /__control/stats; the container shares the host network, so 127.0.0.1 is the runner.
+          FAKEEMBED_CONTROL_URL: http://127.0.0.1:8090
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . infra/image-pins.env
+          set +a
+          set +e
+          docker run --rm --network host \
+            --env BASE_URL \
+            --env APP_ORIGIN \
+            --env E2E_STACK \
+            --env E2E_VERIFY \
+            --env NEXT_PUBLIC_CONTENT_ENABLED \
+            --env MAIL_SINK_DIR \
+            --env PLAYWRIGHT_NO_COPY_PROMPT \
+            --env FAKEEMBED_CONTROL_URL \
+            --env CI \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$PLAYWRIGHT_IMAGE" \
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project content --grep @semantic
+          status=$?
+          set -e
+          echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Stage sanitized content artifacts
+        if: always()
+        run: node scripts/sanitize-e2e-artifacts.mjs
+
+      - name: Upload allowlisted content screenshots and metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-content-semantic
+          path: .data/e2e-artifacts
+          if-no-files-found: ignore
+
+      - name: Show Compose logs on failure
+        if: failure()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml logs --no-color
+
+      - name: Tear down Compose resources
+        if: always()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
