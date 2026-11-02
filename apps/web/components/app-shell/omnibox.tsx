@@ -252,6 +252,7 @@ export function Omnibox({
   const tSearchState = useTranslations('search.state');
   const tSearchLive = useTranslations('search.live');
   const tSearchToggle = useTranslations('search.toggle');
+  const tSearchListbox = useTranslations('search.listbox');
   const router = useRouter();
   const pathname = usePathname() ?? '/app';
   const queryClient = useContext(QueryClientContext);
@@ -277,6 +278,9 @@ export function Omnibox({
 
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // `#omni-pop` (advisor-dec-327): layout/a11y only. `popScrollable` mirrors "the popover overflows".
+  const popRef = useRef<HTMLDivElement>(null);
+  const [popScrollable, setPopScrollable] = useState(false);
   const retryPlanBtnRef = useRef<HTMLButtonElement>(null);
   const unlockToSaveBtnRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -1353,6 +1357,86 @@ export function Omnibox({
     (showSkeleton && waitingForFirstRows && localNoMatch === null) ||
     semanticEnable409Visible ||
     rateLimitedSeconds !== null;
+
+  // advisor-dec-327 (RV-T22-1-FE1-3 / FE1-6), `#omni-pop` only; no send-gate, draft, request or cache logic.
+  // (O1b) axe `scrollable-region-focusable` needs a tab-order node on an overflowing region, so the popover gets
+  //   tabIndex=0 + role=region + a label ONLY while scrollHeight > clientHeight (a real region that can be scrolled
+  //   with the keyboard once it has focus). The textarea keeps focus while typing / arrowing and keeps its
+  //   implicit textbox role (dec-152); `aria-activedescendant` is untouched.
+  // (P1) at <=639px the popover is bounded to the visual viewport above the undo-toast stack, so the action row
+  //   stays reachable (FU10). `--undo-stack-h` is published on <html> by UndoToastProvider while a toast shows.
+  useEffect(() => {
+    const pop = popRef.current;
+    if (!popoverVisible || pop === null || typeof window === 'undefined') {
+      setPopScrollable(false);
+      return;
+    }
+
+    const NARROW_MAX_WIDTH_PX = 639;
+    const POP_MAX_HEIGHT_PX = 440;
+    const POP_MIN_HEIGHT_PX = 160;
+    const POP_BOTTOM_GAP_PX = 24;
+    const htmlEl = document.documentElement;
+
+    const measure = () => {
+      const el = popRef.current;
+      if (el === null) {
+        return;
+      }
+      const narrow = window.innerWidth <= NARROW_MAX_WIDTH_PX;
+      if (narrow) {
+        const vv = window.visualViewport;
+        const viewportH = vv?.height ?? window.innerHeight;
+        const viewportTop = vv?.offsetTop ?? 0;
+        const popTop = el.getBoundingClientRect().top - viewportTop;
+        const stackH = Number.parseFloat(htmlEl.style.getPropertyValue('--undo-stack-h')) || 0;
+        const bound = Math.min(
+          POP_MAX_HEIGHT_PX,
+          viewportH - popTop - stackH - POP_BOTTOM_GAP_PX,
+        );
+        el.style.maxHeight = `${Math.max(POP_MIN_HEIGHT_PX, Math.floor(bound))}px`;
+      } else {
+        el.style.removeProperty('max-height');
+      }
+
+      const overflowing = el.scrollHeight > el.clientHeight;
+      if (!overflowing && document.activeElement === el) {
+        // The region is about to lose its tab stop: hand focus back to the textarea first.
+        textareaRef.current?.focus();
+      }
+      setPopScrollable(overflowing);
+    };
+
+    measure();
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => measure());
+    resizeObserver?.observe(pop);
+    for (const child of Array.from(pop.children)) {
+      resizeObserver?.observe(child);
+    }
+    const mutationObserver =
+      typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => measure());
+    // Rows arrive / disappear inside the popover, and the toast stack publishes its height on <html>.
+    mutationObserver?.observe(pop, { childList: true, subtree: true });
+    mutationObserver?.observe(htmlEl, {
+      attributes: true,
+      attributeFilter: ['style', 'data-undo-stack-active'],
+    });
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, { passive: true });
+    window.visualViewport?.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('scroll', measure);
+
+    return () => {
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
+      window.visualViewport?.removeEventListener('resize', measure);
+      window.visualViewport?.removeEventListener('scroll', measure);
+      pop.style.removeProperty('max-height');
+    };
+  }, [popoverVisible]);
 
   useEffect(() => {
     if (activeKey !== null) {
@@ -2896,8 +2980,24 @@ export function Omnibox({
 
       {popoverVisible ? (
         <div
+          ref={popRef}
           id={popId}
           data-pop=""
+          // advisor-dec-327 (O1b): a tab-order region ONLY while it overflows, so axe `scrollable-region-focusable`
+          // passes without a permanent extra Tab stop. The label is static copy (never the draft).
+          tabIndex={popScrollable ? 0 : undefined}
+          role={popScrollable ? 'region' : undefined}
+          aria-label={popScrollable ? tSearchListbox('regionAriaLabel') : undefined}
+          onKeyDown={(event) => {
+            // Only reachable while the region itself has focus (the textarea handles its own keys).
+            if (event.target === event.currentTarget && event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              // Focus first: `handleRootBlur` sees a relatedTarget inside the root and does not close early.
+              textareaRef.current?.focus();
+              closeListbox(false);
+            }
+          }}
           onMouseDown={(event) => {
             // Keep focus on the textarea when clicking inside the popover so `handleRootBlur`
             // does not close the listbox before `onClick` fires (HM18A-R1-2).

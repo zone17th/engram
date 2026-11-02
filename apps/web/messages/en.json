@@ -1651,6 +1651,7 @@
       "semanticAriaLabel": "Meaning-based search"
     },
     "listbox": {
+      "regionAriaLabel": "Search dropdown, scrollable",
       "suggestAriaLabel": "Search suggestions",
       "searchAriaLabel": "Search results",
       "tagAriaLabel": "Tag filter results"

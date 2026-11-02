@@ -1651,6 +1651,7 @@
       "semanticAriaLabel": "Tìm gần nghĩa"
     },
     "listbox": {
+      "regionAriaLabel": "Danh sách tìm kiếm, có thể cuộn",
       "suggestAriaLabel": "Gợi ý tìm kiếm",
       "searchAriaLabel": "Kết quả tìm kiếm",
       "tagAriaLabel": "Kết quả lọc tag"
