@@ -13,8 +13,9 @@ type SearchProvider interface {
 	SearchHandler() *Handler
 }
 
-// Mount registers `/api/v1/suggest` (Task 3; Task 4 adds `/api/v1/search` here):
+// Mount registers `/api/v1/suggest` (Task 3) and `/api/v1/search` (Task 4):
 //   - GET /suggest (`suggest`): S (`RequireSession`) + R(`search_read`, token bucket 20/s burst 40)
+//   - GET /search (`search`):   S (`RequireSession`) + R(`search_read`, shared token bucket 20/s burst 40)
 //
 // `RequireSession` is applied BEFORE `LimitSearchRead` so requests blocked at session
 // authentication never consume tokens from any user's bucket (SPEC §9.1, plan P05 mục 2.6).
@@ -42,5 +43,6 @@ func Mount(deps ...any) func(v1 chi.Router, d httpx.Deps) {
 		rateLimit := h.bucket.Middleware()
 
 		v1.With(requireSess, rateLimit).Get("/suggest", h.Suggest)
+		v1.With(requireSess, rateLimit).Get("/search", h.Search)
 	}
 }

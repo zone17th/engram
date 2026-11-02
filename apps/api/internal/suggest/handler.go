@@ -128,6 +128,103 @@ func (h *Handler) Suggest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// Search handles `GET /api/v1/search` (`operationId: search`, SPEC §6.2–§6.4, §6.8, §9.2, plan P05 mục 2.2–2.7, 3, Task 4).
+func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
+	p, ok := authctx.PrincipalFrom(r.Context())
+	if !ok || p.UserID == uuid.Nil {
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, "unauthenticated", "Cần đăng nhập.")
+		return
+	}
+
+	qParams, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		WriteDomainError(w, r, ErrInvalidRequest)
+		return
+	}
+
+	for k, vals := range qParams {
+		switch k {
+		case "q", "scope", "limit", "cursor", "semantic":
+			if len(vals) > 1 {
+				WriteDomainError(w, r, ErrInvalidRequest)
+				return
+			}
+		default:
+			WriteDomainError(w, r, ErrInvalidRequest)
+			return
+		}
+	}
+
+	scope := ScopeAll
+	if _, hasScope := qParams["scope"]; hasScope {
+		rawScope := qParams.Get("scope")
+		if !ValidSuggestScope(rawScope) {
+			WriteDomainError(w, r, ErrInvalidRequest)
+			return
+		}
+		scope = rawScope
+	}
+
+	limit := DefaultSearchLimit
+	if _, hasLimit := qParams["limit"]; hasLimit {
+		rawLimit := qParams.Get("limit")
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || !ValidSearchLimit(parsedLimit) {
+			WriteDomainError(w, r, ErrInvalidRequest)
+			return
+		}
+		limit = parsedLimit
+	}
+
+	cursor := ""
+	if _, hasCursor := qParams["cursor"]; hasCursor {
+		rawCursor := qParams.Get("cursor")
+		if rawCursor == "" {
+			WriteDomainError(w, r, ErrInvalidRequest)
+			return
+		}
+		cursor = rawCursor
+	}
+
+	semantic := true
+	if _, hasSem := qParams["semantic"]; hasSem {
+		switch qParams.Get("semantic") {
+		case "1":
+			semantic = true
+		case "0":
+			semantic = false
+		default:
+			WriteDomainError(w, r, ErrInvalidRequest)
+			return
+		}
+	}
+
+	rawQ, hasQ := "", false
+	if _, ok := qParams["q"]; ok {
+		hasQ = true
+		rawQ = qParams.Get("q")
+	}
+	if !hasQ {
+		WriteDomainError(w, r, ErrNameInvalid)
+		return
+	}
+
+	resp, err := h.svc.Search(r.Context(), SearchInput{
+		UserID:   p.UserID,
+		RawQ:     rawQ,
+		Scope:    scope,
+		Limit:    limit,
+		Cursor:   cursor,
+		Semantic: semantic,
+	})
+	if err != nil {
+		WriteDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // WriteDomainError maps domain errors from `suggest` or `textnorm` to RFC 9457 Problem responses.
 // Never embeds user input (`q`, `qn`, `name`, `display`) into `detail` (user-dec-016).
 func WriteDomainError(w http.ResponseWriter, r *http.Request, err error) {
