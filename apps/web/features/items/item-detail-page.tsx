@@ -26,6 +26,10 @@ import {
   reconcileUnconfirmedSavesUser,
   useUnconfirmedSavesForUser,
 } from '@/features/entries';
+import {
+  isEntryCardKeptMounted,
+  subscribeActiveEntryCards,
+} from '@/features/entries/changes-sync';
 import { type EntryBodyLoader } from '@/features/items/entry-body';
 import { ItemHeader } from '@/features/items/item-header';
 import { LockedBanner } from '@/features/items/locked-banner';
@@ -191,12 +195,37 @@ export function ItemDetailPage({
   const reorderInFlightRef = useRef<boolean>(false);
   const [reorderMismatchBanner, setReorderMismatchBanner] = useState<string | null>(null);
 
-  // Sync serverEntries into orderedEntries when no local reorder is pending
+  // Sync serverEntries into orderedEntries when no local reorder is pending, retaining any dirty/in-flight card (advisor-dec-211)
+  const mergeServerAndKeptEntries = useCallback(
+    (nextServer: readonly EntryMeta[], prevOrdered: readonly EntryMeta[]): EntryMeta[] => {
+      if (!unlocked || prevOrdered.length === 0) {
+        return [...nextServer];
+      }
+      const serverIds = new Set(nextServer.map((e) => e.id));
+      const retained = prevOrdered.filter(
+        (e) => !serverIds.has(e.id) && isEntryCardKeptMounted(itemId, e.id),
+      );
+      if (retained.length === 0) {
+        return [...nextServer];
+      }
+      return sortEntriesByPosition([...nextServer, ...retained]);
+    },
+    [itemId, unlocked],
+  );
+
   useEffect(() => {
     if (!pendingReorderDirtiedRef.current && !reorderInFlightRef.current) {
-      setOrderedEntries(serverEntries);
+      setOrderedEntries((prev) => mergeServerAndKeptEntries(serverEntries, prev));
     }
-  }, [serverEntries]);
+  }, [mergeServerAndKeptEntries, serverEntries]);
+
+  useEffect(() => {
+    return subscribeActiveEntryCards(() => {
+      if (!pendingReorderDirtiedRef.current && !reorderInFlightRef.current) {
+        setOrderedEntries((prev) => mergeServerAndKeptEntries(serverEntries, prev));
+      }
+    });
+  }, [mergeServerAndKeptEntries, serverEntries]);
 
   // Batch rendering while scrolling: 20 cards per batch
   const [visibleBatchCount, setVisibleBatchCount] = useState<number>(ENTRIES_RENDER_BATCH_SIZE);

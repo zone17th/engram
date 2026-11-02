@@ -31,6 +31,10 @@ import {
   type SealedNewEntryPayload,
 } from '@/features/entries';
 import {
+  setEntryCardKeepMounted,
+  useEntryRemotelyDeleted,
+} from '@/features/entries/changes-sync';
+import {
   LockMask,
   useEntryBody,
   useEntryInViewport,
@@ -200,9 +204,10 @@ export function TextEntryCard({
     readonly reloadConfirmOpen: boolean;
   } | null>(null);
   const [deletedRemotely, setDeletedRemotely] = useState(false);
+  const remotelyDeletedFromFeed = useEntryRemotelyDeleted(entry.id);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
-
+  const cardKeepMountedTokenRef = useRef<symbol>(Symbol('TextEntryCard'));
   // Menu state
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -224,18 +229,39 @@ export function TextEntryCard({
   const lockEpochRef = useRef<number>(0);
   const editorRevisionRef = useRef<number>(0);
   const editingActiveRef = useRef<boolean>(false);
+  const shouldKeepCardMounted =
+    unlocked &&
+    (editing ||
+      savingInFlight ||
+      unconfirmedSave !== null ||
+      conflictState !== null ||
+      deletedRemotely);
   editingActiveRef.current =
     editing ||
     draftValue.length > 0 ||
     originalSource.length > 0 ||
     unconfirmedSave !== null ||
     conflictState !== null;
+  useEffect(() => {
+    setEntryCardKeepMounted(
+      itemId,
+      entry.id,
+      cardKeepMountedTokenRef.current,
+      shouldKeepCardMounted,
+    );
+  }, [entry.id, itemId, shouldKeepCardMounted]);
 
+  useEffect(() => {
+    if (remotelyDeletedFromFeed && editingActiveRef.current && !deletedRemotely) {
+      setDeletedRemotely(true);
+    }
+  }, [deletedRemotely, remotelyDeletedFromFeed]);
   // Register secret form reset on vault lock/logout/user switch/reset (plan §2.10, Q15)
   useEffect(() => {
     if (!vault?.registerSecretFormReset) return;
     return vault.registerSecretFormReset(() => {
       const hadActiveEditorOrDraft = editingActiveRef.current;
+      setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
@@ -256,11 +282,12 @@ export function TextEntryCard({
         onDraftClearedOnLock?.();
       }
     });
-  }, [clearEditorPlaintextHolderSync, onDraftClearedOnLock, vault]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId, onDraftClearedOnLock, vault]);
 
   // Also clear immediately if `unlocked` flips to false
   useEffect(() => {
     if (!unlocked && editingActiveRef.current) {
+      setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       setCommittedVersion(null);
@@ -278,7 +305,7 @@ export function TextEntryCard({
       setSaveError(null);
       setMenuOpen(false);
     }
-  }, [clearEditorPlaintextHolderSync, unlocked]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId, unlocked]);
 
   // Unmount cleanup (IP15-BE3-2): synchronously wipe every plaintext holder field and invalidate
   // card op/save ownership on unmount, independent of the reset-registration effect, so navigating
@@ -286,7 +313,9 @@ export function TextEntryCard({
   useEffect(() => {
     const holderToWipe = plaintextHolderRef;
     const textareaRefToWipe = textareaRef;
+    const token = cardKeepMountedTokenRef.current;
     return () => {
+      setEntryCardKeepMounted(itemId, entry.id, token, false);
       lockEpochRef.current += 1;
       editorRevisionRef.current = 0;
       saveOwnerIdRef.current = 0;
@@ -299,7 +328,7 @@ export function TextEntryCard({
         textareaRefToWipe.current.value = '';
       }
     };
-  }, [plaintextHolderRef]);
+  }, [entry.id, itemId, plaintextHolderRef]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -418,6 +447,7 @@ export function TextEntryCard({
   }, [body, committedVersion, currentVersion, editing, originalSource, plaintextHolderRef, unlocked]);
 
   const closeEditorCleanly = useCallback(() => {
+    setEntryCardKeepMounted(itemId, entry.id, cardKeepMountedTokenRef.current, false);
     clearEditorPlaintextHolderSync();
     saveOwnerIdRef.current = 0;
     saveLockRef.current = false;
@@ -430,7 +460,7 @@ export function TextEntryCard({
     setConflictState(null);
     setDeletedRemotely(false);
     setSaveError(null);
-  }, [clearEditorPlaintextHolderSync]);
+  }, [clearEditorPlaintextHolderSync, entry.id, itemId]);
 
   const requestCancelEdit = useCallback(() => {
     if (savingInFlight) return;

@@ -7,6 +7,7 @@ import { QueryProvider } from '@/components/query-provider';
 import { ThemeProvider } from '@/components/theme-provider';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { LocaleThemeSync } from '@/features/auth/locale-sync';
+import { ContentChangesSync } from '@/features/entries/changes-sync';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
 import { ReauthMessagesProvider } from '@/features/auth/use-reauth';
@@ -43,6 +44,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
                   <SessionProvider>
                     <VaultProvider silentUnlockOnLoad>
                       <LocaleThemeSync />
+                      <ContentChangesSync />
                       <RouteGuard>{children}</RouteGuard>
                     </VaultProvider>
                   </SessionProvider>
