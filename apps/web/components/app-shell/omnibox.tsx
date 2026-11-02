@@ -1221,6 +1221,14 @@ export function Omnibox({
         nativeInputFlagTimerRef.current = null;
         if (!nativeInputPendingRef.current) return;
         nativeInputPendingRef.current = false;
+        // `onChange` never ran for this edit. Adopt the DOM value into the controlled state BEFORE re-rendering, otherwise the
+        // render would re-apply the stale controlled value and wipe the typed text (same hazard as CI-41431143632-E2E-QA402).
+        // This runs in a macrotask, after the whole event dispatch, so it cannot race React's own onChange.
+        const domValue = el.value;
+        if (domValue !== inputValueRef.current) {
+          inputValueRef.current = domValue;
+          setInputValue(domValue);
+        }
         setGateRenderTick((prev) => prev + 1);
         scheduleKeystrokeSuggest();
       }, 0);
@@ -1367,6 +1375,8 @@ export function Omnibox({
 
   // Spoken text only (plan 2.8 rule 6, FE-23): "N suggestions" 500 ms after the rows settle, "added N similar-meaning" when near
   // arrives, degraded once per session. The visible status lines live in `SuggestList`, outside this live region.
+  const latestSnapshotRef = useRef(snapshot);
+  latestSnapshotRef.current = snapshot;
   useEffect(() => {
     if (snapshot === null) {
       return;
@@ -1385,12 +1395,16 @@ export function Omnibox({
       return;
     }
 
-    const announceBase = () =>
-      total > 0
+    // Reads the LATEST snapshot when the 500 ms timer fires, so a near zone that landed in between is counted too.
+    const announceBase = () => {
+      const latest = latestSnapshotRef.current ?? snapshot;
+      const totalNow = latest.lexical.length + latest.near.length;
+      return totalNow > 0
         ? snapshot.source === 'search'
-          ? tSearchState('resultCount', { count: total })
-          : tSearchLive('suggestionsCount', { count: total })
+          ? tSearchState('resultCount', { count: totalNow })
+          : tSearchLive('suggestionsCount', { count: totalNow })
         : tSearchLive('noMatch', { query: trimUnicodeWhiteSpace(inputValueRef.current) });
+    };
 
     if (last.gen !== snapshot.gen) {
       liveAnnouncedRef.current = { ...last, gen: snapshot.gen, nearCount: snapshot.near.length };
@@ -1404,7 +1418,10 @@ export function Omnibox({
         }, SUGGEST_LIVE_ANNOUNCE_MS);
       }
     } else if (snapshot.near.length > last.nearCount) {
-      setLiveMessage(tSearchLive('nearAppended', { count: snapshot.near.length - last.nearCount }));
+      // While the 500 ms 'N suggestions' timer is still pending it announces the combined total; speak 'added N' only afterwards.
+      if (liveAnnounceTimerRef.current === null) {
+        setLiveMessage(tSearchLive('nearAppended', { count: snapshot.near.length - last.nearCount }));
+      }
       liveAnnouncedRef.current = { ...last, nearCount: snapshot.near.length };
     } else if (snapshot.near.length < last.nearCount) {
       liveAnnouncedRef.current = { ...last, nearCount: snapshot.near.length };

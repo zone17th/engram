@@ -490,12 +490,13 @@ export function SuggestList({
                 </div>
               ) : null}
               {model.showCreate ? (
+                // No `aria-label` here: the accessible name comes from the visible text, so the typed draft is never copied
+                // into an attribute (assertNoPlaintextAttrs, P4FE2-10).
                 <div
                   key={createKey}
                   ref={setRef(createKey)}
                   id={getSuggestOptionDomId(baseId, createKey)}
                   role="option"
-                  aria-label={t('actions.createItem', { query: model.displayQuery })}
                   aria-selected={activeKey === createKey}
                   data-opt-key={createKey}
                   data-opt-kind="create"
