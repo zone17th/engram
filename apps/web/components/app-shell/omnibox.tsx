@@ -1411,13 +1411,29 @@ export function Omnibox({
     const resizeObserver =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => measure());
     resizeObserver?.observe(pop);
+    // `#omni-pop` hangs off the root (`top-[calc(100%+8px)]`): when the root grows (textarea autogrow, hint / guard / add
+    // preview wrapping) the popover only MOVES, so the root's size is the trigger for re-measuring its top.
+    if (rootRef.current !== null) {
+      resizeObserver?.observe(rootRef.current);
+    }
     for (const child of Array.from(pop.children)) {
       resizeObserver?.observe(child);
     }
     const mutationObserver =
-      typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => measure());
-    // Rows arrive / disappear inside the popover, and the toast stack publishes its height on <html>.
-    mutationObserver?.observe(pop, { childList: true, subtree: true });
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver((records) => {
+            for (const record of records) {
+              for (const node of Array.from(record.addedNodes)) {
+                if (node.parentNode === pop && node instanceof Element) {
+                  resizeObserver?.observe(node);
+                }
+              }
+            }
+            measure();
+          });
+    // Rows arrive / disappear / change text inside the popover, and the toast stack publishes its height on <html>.
+    mutationObserver?.observe(pop, { childList: true, subtree: true, characterData: true });
     mutationObserver?.observe(htmlEl, {
       attributes: true,
       attributeFilter: ['style', 'data-undo-stack-active'],

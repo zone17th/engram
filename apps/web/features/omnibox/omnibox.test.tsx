@@ -4721,23 +4721,40 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
   describe('#omni-pop keyboard region and narrow-viewport bounding (advisor-dec-327)', () => {
     const REGION_LABEL = viMessages.search.listbox.regionAriaLabel;
     let observers: Array<() => void> = [];
+    // What each captured callback observes, so a test can fire ONLY the observer of one element.
+    let observedBy = new Map<() => void, Set<Element>>();
 
     class FakeResizeObserver {
       private readonly cb: () => void;
       constructor(cb: () => void) {
         this.cb = cb;
         observers.push(cb);
+        observedBy.set(cb, new Set());
       }
-      observe() {}
-      unobserve() {}
+      observe(target: Element) {
+        observedBy.get(this.cb)?.add(target);
+      }
+      unobserve(target: Element) {
+        observedBy.get(this.cb)?.delete(target);
+      }
       disconnect() {
         observers = observers.filter((o) => o !== this.cb);
+        observedBy.delete(this.cb);
       }
     }
 
     function fireResize() {
       act(() => {
         for (const cb of [...observers]) cb();
+      });
+    }
+
+    /** Fire only the observer callbacks that currently observe `target` (a real RO would fire just for that element). */
+    function fireResizeOn(target: Element) {
+      act(() => {
+        for (const cb of [...observers]) {
+          if (observedBy.get(cb)?.has(target)) cb();
+        }
       });
     }
 
@@ -4775,6 +4792,7 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
 
     beforeEach(() => {
       observers = [];
+      observedBy = new Map();
       vi.stubGlobal('ResizeObserver', FakeResizeObserver);
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
         configurable: true,
@@ -4900,10 +4918,11 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
 
     it('at <= 639px bounds the popover above the undo-toast stack (min(440, viewport - top - stack - 24), floor 160) and leaves wide viewports to the CSS class', async () => {
       setViewport(390, 844);
-      document.documentElement.style.setProperty('--undo-stack-h', '75px');
       const { pop } = await openPopover();
 
+      // `UndoToastProvider` clears `--undo-stack-h` on mount while no toast shows, so publish it AFTER the render.
       setLayout(pop, { scrollHeight: 900, clientHeight: 440, top: 351 });
+      document.documentElement.style.setProperty('--undo-stack-h', '75px');
       fireResize();
       // 844 - 351 - 75 - 24 = 394 (< 440)
       await waitFor(() => expect(pop.style.maxHeight).toBe('394px'));
@@ -4928,6 +4947,26 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
       fireResize();
       await waitFor(() => expect(pop.style.maxHeight).toBe(''));
       expect(pop.className).toContain('max-h-[440px]');
+    });
+
+    it('re-measures the max-height when only the root grows and the popover top moves (RV-T22-1-FE2-4)', async () => {
+      setViewport(390, 844);
+      const { pop } = await openPopover();
+      const root = pop.closest('[data-omnibox]') as HTMLElement;
+      expect(root).not.toBeNull();
+
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440, top: 351 });
+      document.documentElement.style.setProperty('--undo-stack-h', '75px');
+      fireResize();
+      // 844 - 351 - 75 - 24 = 394
+      await waitFor(() => expect(pop.style.maxHeight).toBe('394px'));
+
+      // The textarea wraps to a second line: the root grows, the popover only moves down 40px (its own size is unchanged).
+      setLayout(pop, { scrollHeight: 900, clientHeight: 394, top: 391 });
+      expect(observedBy.size).toBeGreaterThan(0);
+      fireResizeOn(root);
+      // 844 - 391 - 75 - 24 = 354
+      await waitFor(() => expect(pop.style.maxHeight).toBe('354px'));
     });
 
     it('cleans up on close: the observers are disconnected and the popover (with its inline max-height) is gone', async () => {
