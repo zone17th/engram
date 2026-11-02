@@ -374,14 +374,6 @@ func TestAvailabilityInvalidatedByNotify(t *testing.T) {
 		t.Fatalf("pinner.StartListener: %v", err)
 	}
 
-	notifyDelivered := make(chan struct{}, 1)
-	pinner.Subscribe(func() {
-		select {
-		case notifyDelivered <- struct{}{}:
-		default:
-		}
-	})
-
 	rt := semantic.NewRuntime(semantic.RuntimeConfig{
 		Enabled:     true,
 		Provider:    embedding.ProviderTEI,
@@ -389,6 +381,17 @@ func TestAvailabilityInvalidatedByNotify(t *testing.T) {
 		Pinner:      pinner,
 		Calibration: cal,
 		Clock:       clk,
+	})
+
+	// Register the test observer AFTER NewRuntime so Pinner.Invalidate invokes
+	// rt.InvalidateAvailability first and signals notifyDelivered only after
+	// the runtime cache has been cleared (RV-T12-BE-3).
+	notifyDelivered := make(chan struct{}, 1)
+	pinner.Subscribe(func() {
+		select {
+		case notifyDelivered <- struct{}{}:
+		default:
+		}
 	})
 
 	// 2. While g1 is still pending, Availability() is false and populates the 30 s cache.
