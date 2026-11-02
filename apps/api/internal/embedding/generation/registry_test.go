@@ -859,30 +859,172 @@ func TestPinListenerRetryAfterFailedStartReceivesNotify(t *testing.T) {
 	}
 }
 
-func TestPinListenerCloseCancelsBlockedStart(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+func TestPinListenerConcurrentWaiterReturnsFailedAttemptError(t *testing.T) {
 	pool := newTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 
-	inStartup := make(chan struct{})
-	releaseBarrier := make(chan struct{})
+	attemptAEntered := make(chan struct{})
+	var attemptAEnteredOnce sync.Once
+	releaseAttemptA := make(chan struct{})
+	var releaseAttemptAOnce sync.Once
+	doReleaseAttemptA := func() { releaseAttemptAOnce.Do(func() { close(releaseAttemptA) }) }
+
+	attemptCEntered := make(chan struct{})
+	var attemptCEnteredOnce sync.Once
+	releaseAttemptC := make(chan struct{})
+	var releaseAttemptCOnce sync.Once
+	doReleaseAttemptC := func() { releaseAttemptCOnce.Do(func() { close(releaseAttemptC) }) }
+
+	errAttemptA := errors.New("simulated startup failure on attempt A")
+	var hookCall atomic.Int32
 
 	pinner := generation.NewPinner(
 		pool,
 		generation.WithBeforeListenHook(func(hookCtx context.Context) error {
-			close(inStartup)
+			switch hookCall.Add(1) {
+			case 1:
+				attemptAEnteredOnce.Do(func() { close(attemptAEntered) })
+				select {
+				case <-releaseAttemptA:
+				case <-hookCtx.Done():
+				}
+				return errAttemptA
+			case 2:
+				attemptCEnteredOnce.Do(func() { close(attemptCEntered) })
+				select {
+				case <-releaseAttemptC:
+					return hookCtx.Err()
+				case <-hookCtx.Done():
+					return hookCtx.Err()
+				}
+			default:
+				return nil
+			}
+		}),
+	)
+
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		doReleaseAttemptA()
+		doReleaseAttemptC()
+		cancel()
+		pinner.Close()
+		wg.Wait()
+	})
+
+	// 1. Launch attempt A and wait until it holds startup in the hook.
+	errACh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		errACh <- pinner.StartListener(ctx)
+	}()
+
+	select {
+	case <-attemptAEntered:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for attempt A to enter hook")
+	}
+
+	// 2. Launch waiter B while attempt A is in progress and wait for its goroutine to start.
+	waiterBStarting := make(chan struct{})
+	errBCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(waiterBStarting)
+		errBCh <- pinner.StartListener(ctx)
+	}()
+	<-waiterBStarting
+
+	// Release attempt A so it fails with errAttemptA.
+	doReleaseAttemptA()
+	select {
+	case errA := <-errACh:
+		if !errors.Is(errA, errAttemptA) {
+			t.Fatalf("attempt A error = %v, want %v", errA, errAttemptA)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for attempt A to fail")
+	}
+
+	// 3. Launch retry C, which blocks inside the hook without completing LISTEN.
+	errCCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		errCCh <- pinner.StartListener(ctx)
+	}()
+
+	select {
+	case <-attemptCEntered:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for retry C to enter hook")
+	}
+
+	// 4. Waiter B (which waited on attempt A) must return attempt A's error (errAttemptA)
+	// and must never return nil while retry C is still blocked before LISTEN.
+	select {
+	case errB := <-errBCh:
+		if !errors.Is(errB, errAttemptA) {
+			t.Fatalf("waiter B error = %v, want attempt A error %v", errB, errAttemptA)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for waiter B to return")
+	}
+
+	// 5. Release retry C and verify it succeeds and finishes cleanly.
+	doReleaseAttemptC()
+	select {
+	case errC := <-errCCh:
+		if errC != nil {
+			t.Fatalf("retry C error = %v, want nil", errC)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for retry C to complete")
+	}
+}
+
+func TestPinListenerCloseCancelsBlockedStart(t *testing.T) {
+	pool := newTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
+	inStartup := make(chan struct{})
+	var inStartupOnce sync.Once
+	cancelObserved := make(chan struct{})
+	var cancelObservedOnce sync.Once
+	releaseBarrier := make(chan struct{})
+	var releaseOnce sync.Once
+	doRelease := func() { releaseOnce.Do(func() { close(releaseBarrier) }) }
+
+	pinner := generation.NewPinner(
+		pool,
+		generation.WithBeforeListenHook(func(hookCtx context.Context) error {
+			inStartupOnce.Do(func() { close(inStartup) })
 			select {
 			case <-releaseBarrier:
 				return hookCtx.Err()
 			case <-hookCtx.Done():
+				cancelObservedOnce.Do(func() { close(cancelObserved) })
 				<-releaseBarrier
 				return hookCtx.Err()
 			}
 		}),
 	)
 
+	var wg sync.WaitGroup
+	// Register idempotent cleanup ordered to run before newTestPool's cleanup (LIFO).
+	t.Cleanup(func() {
+		doRelease()
+		cancel()
+		pinner.Close()
+		wg.Wait()
+	})
+
 	startErrCh := make(chan error, 1)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		startErrCh <- pinner.StartListener(ctx)
 	}()
 
@@ -897,13 +1039,29 @@ func TestPinListenerCloseCancelsBlockedStart(t *testing.T) {
 	}
 
 	closeDone := make(chan struct{})
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		pinner.Close()
 		close(closeDone)
 	}()
 
+	// Wait until the hook deterministically observes cancellation from Close.
+	select {
+	case <-cancelObserved:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for startup hook to observe cancellation from Close")
+	}
+
+	// Before releasing the barrier, Close must still be waiting on the in-progress startup.
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before blocked StartListener was released from barrier")
+	default:
+	}
+
 	// Release the barrier so StartListener and Close can finish deterministically.
-	close(releaseBarrier)
+	doRelease()
 
 	var startErr error
 	select {
@@ -932,5 +1090,206 @@ func TestPinListenerCloseCancelsBlockedStart(t *testing.T) {
 	}
 	if got := pool.Stat().AcquiredConns(); got != 0 {
 		t.Fatalf("AcquiredConns after post-Close StartListener = %d, want 0", got)
+	}
+}
+
+func TestPinListenerCloseAfterListenUnlistensBeforePoolRelease(t *testing.T) {
+	pool := newTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
+	afterListenEntered := make(chan struct{})
+	var enteredOnce sync.Once
+	cancelObserved := make(chan struct{})
+	var cancelObservedOnce sync.Once
+	releaseBarrier := make(chan struct{})
+	var releaseOnce sync.Once
+	doRelease := func() { releaseOnce.Do(func() { close(releaseBarrier) }) }
+
+	pinner := generation.NewPinner(
+		pool,
+		generation.WithAfterListenHook(func(hookCtx context.Context) {
+			enteredOnce.Do(func() { close(afterListenEntered) })
+			select {
+			case <-releaseBarrier:
+			case <-hookCtx.Done():
+				cancelObservedOnce.Do(func() { close(cancelObserved) })
+				<-releaseBarrier
+			}
+		}),
+	)
+
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		doRelease()
+		cancel()
+		pinner.Close()
+		wg.Wait()
+	})
+
+	startErrCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startErrCh <- pinner.StartListener(ctx)
+	}()
+
+	// Wait until LISTEN has succeeded and StartListener is paused before publishing.
+	select {
+	case <-afterListenEntered:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for StartListener to reach afterListen hook")
+	}
+	if got := pool.Stat().AcquiredConns(); got != 1 {
+		t.Fatalf("AcquiredConns during afterListen hook = %d, want 1", got)
+	}
+
+	closeDone := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pinner.Close()
+		close(closeDone)
+	}()
+
+	// Wait until Close has set closed=true and canceled the startup context.
+	select {
+	case <-cancelObserved:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for afterListen hook to observe cancellation from Close")
+	}
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before afterListen barrier was released")
+	default:
+	}
+
+	doRelease()
+
+	select {
+	case startErr := <-startErrCh:
+		if !errors.Is(startErr, generation.ErrPinnerClosed) {
+			t.Fatalf("StartListener error after post-LISTEN Close = %v, want ErrPinnerClosed", startErr)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for StartListener to return")
+	}
+
+	select {
+	case <-closeDone:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Close to return")
+	}
+
+	if got := pool.Stat().AcquiredConns(); got != 0 {
+		t.Fatalf("AcquiredConns after Close = %d, want 0", got)
+	}
+
+	// Inspect every idle connection in the pool (or newly acquired connection)
+	// and verify none remain subscribed to NotifyChannel.
+	idleCount := int(pool.Stat().IdleConns())
+	checkCount := max(idleCount, 1)
+	acquired := make([]*pgxpool.Conn, 0, checkCount)
+	defer func() {
+		for _, c := range acquired {
+			c.Release()
+		}
+	}()
+	for i := range checkCount {
+		c, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("Acquire connection %d to verify pg_listening_channels: %v", i, err)
+		}
+		acquired = append(acquired, c)
+		rows, err := c.Query(ctx, `SELECT pg_listening_channels()`)
+		if err != nil {
+			t.Fatalf("query pg_listening_channels on conn %d: %v", i, err)
+		}
+		channels, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("collect pg_listening_channels on conn %d: %v", i, err)
+		}
+		for _, ch := range channels {
+			if ch == generation.NotifyChannel {
+				t.Fatalf("pooled connection %d still listening on %q after aborted StartListener", i, ch)
+			}
+		}
+	}
+}
+
+func TestBootstrapConcurrentCallersWithDeadline(t *testing.T) {
+	pool := newTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ident := sampleBootstrapIdentity()
+
+	calib := func(got embedid.Identity) (float64, string, bool) {
+		if got.Key() != ident.Key() {
+			return 0, "", false
+		}
+		return 0.58, "docs/benchmarks/semantic-eval/report-qwen3-3-20261102.json", true
+	}
+
+	type callerResult struct {
+		res generation.BootstrapResult
+		err error
+	}
+	startBarrier := make(chan struct{})
+	var releaseOnce sync.Once
+	doRelease := func() { releaseOnce.Do(func() { close(startBarrier) }) }
+
+	var readyWG sync.WaitGroup
+	readyWG.Add(2)
+	results := make([]callerResult, 2)
+	var doneWG sync.WaitGroup
+	doneWG.Add(2)
+
+	t.Cleanup(func() {
+		doRelease()
+		cancel()
+		doneWG.Wait()
+	})
+
+	for i := range 2 {
+		go func(idx int) {
+			defer doneWG.Done()
+			readyWG.Done()
+			select {
+			case <-startBarrier:
+			case <-ctx.Done():
+				results[idx] = callerResult{err: ctx.Err()}
+				return
+			}
+			res, err := generation.Bootstrap(ctx, pool, ident, calib)
+			results[idx] = callerResult{res: res, err: err}
+		}(i)
+	}
+
+	readyWG.Wait()
+	doRelease()
+	doneWG.Wait()
+
+	createdCount := 0
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("concurrent caller %d returned error: %v", i, r.err)
+		}
+		if r.res.Created {
+			createdCount++
+			if r.res.Generation.ID != 1 ||
+				r.res.Generation.State != generation.StatePending ||
+				!r.res.Generation.Bootstrap ||
+				r.res.Generation.Identity().Key() != ident.Key() {
+				t.Fatalf("creator caller %d generation mismatch: %+v", i, r.res.Generation)
+			}
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("concurrent Bootstrap Created count = %d, want 1 (results=%+v)", createdCount, results)
+	}
+
+	q := gen.New(pool)
+	totalCount, err := q.CountEmbeddingGenerations(ctx)
+	if err != nil || totalCount != 1 {
+		t.Fatalf("CountEmbeddingGenerations = %d err=%v, want 1", totalCount, err)
 	}
 }
