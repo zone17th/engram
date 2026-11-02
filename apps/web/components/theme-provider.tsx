@@ -62,7 +62,7 @@ export function ThemeProvider({
   const [resolved, setResolved] = useState<ResolvedTheme>(() =>
     startingTheme === 'system' ? 'light' : (startingTheme as ResolvedTheme),
   );
-  const [locale] = useState(initialLocale);
+  const locale = initialLocale === 'vi' ? 'vi' : 'en';
 
   useEffect(() => {
     const cookieTheme = readThemeCookie();
