@@ -251,6 +251,13 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         timeout: UI_WAIT_MS,
       });
 
+      // advisor-dec-330: settle two rendering frames first. The toast stack publishes `--undo-stack-h` from its
+      // ResizeObserver (next rendering step), and the P1 effect then re-measures `#omni-pop` via its MutationObserver on
+      // the <html> style. An evaluate right after the toast's DOM commit would see an unbounded, never-painted popover.
+      await page.evaluate(
+        () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+      );
+
       const metrics = await page.evaluate(() => {
         const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
         const card = document.querySelector<HTMLElement>('[data-testid="undo-toast-item"]');
