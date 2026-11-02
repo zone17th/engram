@@ -545,7 +545,7 @@ func (r fakeCountRow) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err
 	}
-	*(dest[0].(*int)) = r.count
+	*dest[0].(*int) = r.count
 	return nil
 }
 
@@ -593,9 +593,9 @@ func (r *fakeVectorRows) Scan(dest ...any) error {
 	}
 	if r.isANN {
 		row := r.annRows[r.idx-1]
-		*(dest[0].(*int)) = row.candidates
+		*dest[0].(*int) = row.candidates
 		if row.hit == nil {
-			*(dest[1].(**uuid.UUID)) = nil
+			*dest[1].(**uuid.UUID) = nil
 			return nil
 		}
 		h := row.hit
@@ -610,28 +610,28 @@ func (r *fakeVectorRows) Scan(dest ...any) error {
 		distCopy := h.Dist
 		cosCopy := h.Cos
 
-		*(dest[1].(**uuid.UUID)) = &idCopy
-		*(dest[2].(**string)) = &textCopy
-		*(dest[3].(**int)) = &cntCopy
-		*(dest[4].(**time.Time)) = &luCopy
-		*(dest[5].(**time.Time)) = &crCopy
-		*(dest[6].(**float64)) = &distCopy
-		*(dest[7].(**float64)) = &cosCopy
+		*dest[1].(**uuid.UUID) = &idCopy
+		*dest[2].(**string) = &textCopy
+		*dest[3].(**int) = &cntCopy
+		*dest[4].(**time.Time) = &luCopy
+		*dest[5].(**time.Time) = &crCopy
+		*dest[6].(**float64) = &distCopy
+		*dest[7].(**float64) = &cosCopy
 		return nil
 	}
 
 	h := r.exRows[r.idx-1]
-	*(dest[0].(*uuid.UUID)) = h.ID
+	*dest[0].(*uuid.UUID) = h.ID
 	if r.corpus == generation.CorpusTag {
-		*(dest[1].(*string)) = h.Display
+		*dest[1].(*string) = h.Display
 	} else {
-		*(dest[1].(*string)) = h.Name
+		*dest[1].(*string) = h.Name
 	}
-	*(dest[2].(*int)) = h.Count
-	*(dest[3].(*time.Time)) = h.LastUsedAt
-	*(dest[4].(*time.Time)) = h.CreatedAt
-	*(dest[5].(*float64)) = h.Dist
-	*(dest[6].(*float64)) = h.Cos
+	*dest[2].(*int) = h.Count
+	*dest[3].(*time.Time) = h.LastUsedAt
+	*dest[4].(*time.Time) = h.CreatedAt
+	*dest[5].(*float64) = h.Dist
+	*dest[6].(*float64) = h.Cos
 	return nil
 }
 
@@ -669,6 +669,7 @@ func (t *fakeTx) CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFro
 }
 func (t *fakeTx) SendBatch(context.Context, *pgx.Batch) pgx.BatchResults { return t.br }
 func (t *fakeTx) LargeObjects() pgx.LargeObjects                         { return pgx.LargeObjects{} }
+
 func (t *fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	return nil, nil
 }
