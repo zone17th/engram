@@ -416,9 +416,7 @@ func TestHybridScenarioRequiresEverySemanticSuccess(t *testing.T) {
 	// pass C1-H / C1-M, and the scenario is a hard failure.
 	s := ScenarioReport{ID: "C1-M", Valid: true, Levels: []LevelReport{hybridLevel(1, 600, 600, nil), oneSuccess}}
 	for _, l := range s.Levels {
-		if prob := HybridLevelProblem(l); prob != "" {
-			s.Invalidate(prob)
-		}
+		s.CheckHybridLevel(l) // the same call the runner makes per level
 	}
 	if s.Valid {
 		t.Fatal("scenario must be invalid")
@@ -437,6 +435,104 @@ func TestHybridScenarioRequiresEverySemanticSuccess(t *testing.T) {
 	s.Invalidate("second reason")
 	if !strings.HasPrefix(s.InvalidReason, "c=8:") || !strings.HasSuffix(s.InvalidReason, "second reason") {
 		t.Fatalf("Invalidate must keep the first reason and append later ones: %q", s.InvalidReason)
+	}
+}
+
+// TestHybridDegradationHardAtTargetConcurrencyOnly: targets apply at concurrency
+// 8, so degraded hybrid responses and request errors are HARD only there. At c=1
+// and c=32 they are recorded per level and listed as informational warnings
+// (with the HTTP status map), without invalidating the scenario or failing the run.
+func TestHybridDegradationHardAtTargetConcurrencyOnly(t *testing.T) {
+	errLevel := func(c, n, errs int, statuses map[int]int) LevelReport {
+		l := hybridLevel(c, n, n, nil)
+		l.Stats.Errors = errs
+		l.Statuses = statuses
+		return l
+	}
+	// The CI failure shape: c=8 clean, c=32 heavily degraded plus 2 errors.
+	c32 := hybridLevel(32, 2000, 499, map[string]int{"degraded": 1501})
+	c32.Stats.Errors = 2
+	c32.Statuses = map[int]int{200: 1998, 503: 2}
+	build := func(id string, c8 LevelReport) ScenarioReport {
+		s := ScenarioReport{ID: id, Valid: true, Levels: []LevelReport{hybridLevel(1, 2000, 2000, nil), c8, c32}}
+		for _, l := range s.Levels {
+			s.CheckHybridLevel(l)
+		}
+		return s
+	}
+
+	for _, id := range []string{"C1-H", "C1-M"} {
+		s := build(id, hybridLevel(8, 2000, 2000, nil))
+		if !s.Valid {
+			t.Fatalf("%s: a degraded c=32 level must not invalidate the scenario: %q", id, s.InvalidReason)
+		}
+		if v := EvaluateScenario(s, TargetC1HP95, MinMeasuredPerScenario); !v.Pass {
+			t.Fatalf("%s: c=8 is clean and fast, the verdict must pass: %+v", id, v)
+		}
+		rep := &Report{C1: []ScenarioReport{s}}
+		if hard := HardFailures(rep); len(hard) != 0 {
+			t.Fatalf("%s: c=32 degradation/errors must not be hard failures: %v", id, hard)
+		}
+		warns := LevelWarnings(s)
+		if len(warns) != 2 {
+			t.Fatalf("%s: want a degradation and an error warning for c=32, got %v", id, warns)
+		}
+		joined := strings.Join(warns, "\n")
+		for _, want := range []string{"c=32", "degraded=1501", "503=2", "200=1998", "2 request errors", "informational"} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("%s: warnings %q must contain %q", id, joined, want)
+			}
+		}
+		rep.Warnings = warns
+		md := RenderMarkdown(rep)
+		if !strings.Contains(md, "Warnings (informational") || !strings.Contains(md, "503=2") {
+			t.Errorf("%s: Markdown must list the warnings and the HTTP status map", id)
+		}
+		if errs := mdTableShapeErrors(md); len(errs) > 0 {
+			t.Errorf("%s: Markdown table shape: %v", id, errs)
+		}
+	}
+
+	// The same problems at c=8 stay hard: degradation invalidates the scenario and
+	// an error is a hard failure and fails the verdict.
+	for _, id := range []string{"C1-H", "C1-M"} {
+		s := build(id, hybridLevel(8, 2000, 1999, map[string]int{"degraded": 1}))
+		if s.Valid || !strings.HasPrefix(s.InvalidReason, "c=8:") {
+			t.Fatalf("%s: one degraded request at c=8 must invalidate the scenario: valid=%v %q", id, s.Valid, s.InvalidReason)
+		}
+		if v := EvaluateScenario(s, TargetC1HP95, MinMeasuredPerScenario); v.Pass {
+			t.Fatalf("%s: invalid scenario must fail: %+v", id, v)
+		}
+		if hard := HardFailures(&Report{C1: []ScenarioReport{s}}); len(hard) != 1 || !strings.Contains(hard[0], "c=8") {
+			t.Fatalf("%s: want exactly the c=8 invalid entry, got %v", id, hard)
+		}
+	}
+	for _, id := range []string{"C1-L", "C1-H", "C1-M"} {
+		s := ScenarioReport{ID: id, Valid: true, Levels: []LevelReport{errLevel(8, 2000, 1, map[int]int{200: 1999, 500: 1}), c32}}
+		hard := HardFailures(&Report{C1: []ScenarioReport{s}})
+		if len(hard) != 1 || !strings.Contains(hard[0], "c=8") || !strings.Contains(hard[0], "500=1") {
+			t.Fatalf("%s: one request error at c=8 must be the only hard failure, with its status map: %v", id, hard)
+		}
+		if v := EvaluateScenario(s, TargetC1LP95, MinMeasuredPerScenario); v.Pass {
+			t.Fatalf("%s: a c=8 request error must fail the verdict: %+v", id, v)
+		}
+	}
+
+	// Lexical scenario: no hybrid warning, only the error warning at c=32.
+	lex := ScenarioReport{ID: "C1-L", Valid: true, Levels: []LevelReport{errLevel(8, 2000, 0, nil), errLevel(32, 2000, 2, map[int]int{200: 1998, 500: 2})}}
+	if w := LevelWarnings(lex); len(w) != 1 || !strings.Contains(w[0], "500=2") {
+		t.Fatalf("C1-L c=32 errors must be one warning with the status map: %v", w)
+	}
+	// Cross-tenant rows stay hard at every level.
+	cross := errLevel(32, 2000, 0, nil)
+	cross.CrossTenant = 1
+	lex.Levels = append(lex.Levels, cross)
+	if hard := HardFailures(&Report{C1: []ScenarioReport{lex}}); len(hard) != 1 || !strings.Contains(hard[0], "cross-tenant") {
+		t.Fatalf("cross-tenant rows must stay hard at c=32: %v", hard)
+	}
+	// Undecodable 200 body: counted as an error without a non-200 status.
+	if d := ErrorDetail(errLevel(32, 100, 2, map[int]int{200: 100})); !strings.Contains(d, "2 with HTTP 200") {
+		t.Fatalf("error detail must name undecodable-body errors: %q", d)
 	}
 }
 

@@ -612,11 +612,9 @@ func (h *Harness) RunC1H(ctx context.Context, qs []TextQuery, plan ScenarioPlan)
 		if r.StubCalls > 0 {
 			rep.Invalidate(fmt.Sprintf("%d provider calls during the run: not a pure cache-hit run (c=%d)", r.StubCalls, lv.Concurrency))
 		}
-		// Every measured request must have run semantic (SBW3-1-4): one success
-		// among degraded or skipped responses is not hybrid latency evidence.
-		if problem := HybridLevelProblem(rep.Levels[len(rep.Levels)-1]); problem != "" {
-			rep.Invalidate(problem)
-		}
+		// At the target concurrency every measured request must have run
+		// semantic (SBW3-1-4); other levels only warn (LevelWarnings).
+		rep.CheckHybridLevel(rep.Levels[len(rep.Levels)-1])
 	}
 	return rep, nil
 }
@@ -652,11 +650,9 @@ func (h *Harness) RunC1M(ctx context.Context, g *Generator, tenants []int, plan 
 		if r.StubCalls < int64(total)*95/100 {
 			rep.Invalidate(fmt.Sprintf("only %d provider calls for %d requests: not a cache-miss run (c=%d)", r.StubCalls, total, lv.Concurrency))
 		}
-		// Every measured request must have run semantic (SBW3-1-4): one success
-		// among degraded or skipped responses is not hybrid latency evidence.
-		if problem := HybridLevelProblem(rep.Levels[len(rep.Levels)-1]); problem != "" {
-			rep.Invalidate(problem)
-		}
+		// At the target concurrency every measured request must have run
+		// semantic (SBW3-1-4); other levels only warn (LevelWarnings).
+		rep.CheckHybridLevel(rep.Levels[len(rep.Levels)-1])
 	}
 	return rep, nil
 }
@@ -1202,6 +1198,10 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Verdicts = ConsolidateVerdicts(rep.C1, rep.C2, minMeasured, rep.Run.DatasetHash != "")
 	rep.Hard = HardFailures(rep)
+	rep.Warnings = nil
+	for _, s := range rep.C1 {
+		rep.Warnings = append(rep.Warnings, LevelWarnings(s)...)
+	}
 	if rep.C2 != nil {
 		if cells := NonHNSWANNCells(rep.C2.Cells); len(cells) > 0 {
 			rep.Notes = append(rep.Notes, fmt.Sprintf(

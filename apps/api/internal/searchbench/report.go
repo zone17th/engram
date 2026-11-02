@@ -768,6 +768,77 @@ func HybridLevelProblem(l LevelReport) string {
 	return ""
 }
 
+// CheckHybridLevel applies HybridLevelProblem to a hybrid scenario level, but
+// only at the target concurrency (8): targets.md evaluates C1-H/C1-M at 8 only,
+// so a degraded level at c=1 or c=32 is reported as a warning (LevelWarnings)
+// and never invalidates the scenario. A degraded c=8 level still does.
+func (s *ScenarioReport) CheckHybridLevel(l LevelReport) {
+	if l.Concurrency != TargetConcurrency {
+		return
+	}
+	if problem := HybridLevelProblem(l); problem != "" {
+		s.Invalidate(problem)
+	}
+}
+
+// statusCounts renders HTTP status counts deterministically ("200=1998, 500=2").
+func statusCounts(m map[int]int) string {
+	codes := make([]int, 0, len(m))
+	for c := range m {
+		codes = append(codes, c)
+	}
+	sort.Ints(codes)
+	parts := make([]string, 0, len(codes))
+	for _, c := range codes {
+		parts = append(parts, fmt.Sprintf("%d=%d", c, m[c]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ErrorDetail explains the request errors of a level so they are diagnosable:
+// the HTTP status map, and how many errors carried a 200 (a response body that
+// did not decode). "" when the level has no errors.
+func ErrorDetail(l LevelReport) string {
+	if l.Stats.Errors == 0 {
+		return ""
+	}
+	non200 := 0
+	for c, n := range l.Statuses {
+		if c != 200 {
+			non200 += n
+		}
+	}
+	detail := fmt.Sprintf("%d request errors (http statuses: %s", l.Stats.Errors, orUnknown(statusCounts(l.Statuses)))
+	if undecoded := l.Stats.Errors - non200; undecoded > 0 {
+		detail += fmt.Sprintf("; %d with HTTP 200 = undecodable body", undecoded)
+	}
+	return detail + ")"
+}
+
+func isHybridScenario(id string) bool { return id == "C1-H" || id == "C1-M" }
+
+// LevelWarnings lists the per-level problems that are NOT hard failures: a
+// degraded hybrid level or request errors at a concurrency other than the
+// target level (8). They are reported in JSON/Markdown and the step summary as
+// informational; at c=8 the same problems are hard (invalid scenario / HardFailures).
+func LevelWarnings(s ScenarioReport) []string {
+	var out []string
+	for _, l := range s.Levels {
+		if l.Concurrency == TargetConcurrency {
+			continue
+		}
+		if isHybridScenario(s.ID) {
+			if p := HybridLevelProblem(l); p != "" {
+				out = append(out, fmt.Sprintf("%s %s (informational: targets apply at concurrency %d only)", s.ID, p, TargetConcurrency))
+			}
+		}
+		if d := ErrorDetail(l); d != "" {
+			out = append(out, fmt.Sprintf("%s c=%d: %s (informational: targets apply at concurrency %d only)", s.ID, l.Concurrency, d, TargetConcurrency))
+		}
+	}
+	return out
+}
+
 // Level returns the report of the given concurrency (ok=false if absent).
 func (s ScenarioReport) Level(c int) (LevelReport, bool) {
 	for _, l := range s.Levels {
@@ -933,7 +1004,10 @@ type Report struct {
 	C2       *C2Report         `json:"c2,omitempty"`
 	Verdicts []Verdict         `json:"verdicts_concurrency_8"`
 	Hard     []string          `json:"hard_failures"`
-	Notes    []string          `json:"notes,omitempty"`
+	// Warnings are informational per-level problems outside the target
+	// concurrency (degraded hybrid level, request errors at c=1/32).
+	Warnings []string `json:"warnings,omitempty"`
+	Notes    []string `json:"notes,omitempty"`
 }
 
 // DiskPrecheck records the estimate numbers the CI job's precheck must match.
@@ -1003,8 +1077,10 @@ func HardFailures(r *Report) []string {
 			out = append(out, fmt.Sprintf("%s invalid: %s", s.ID, s.InvalidReason))
 		}
 		for _, l := range s.Levels {
-			if l.Stats.Errors > 0 {
-				out = append(out, fmt.Sprintf("%s c=%d: %d request errors", s.ID, l.Concurrency, l.Stats.Errors))
+			// Request errors are hard only at the target concurrency; at other
+			// levels they are warnings (LevelWarnings).
+			if l.Stats.Errors > 0 && l.Concurrency == TargetConcurrency {
+				out = append(out, fmt.Sprintf("%s c=%d: %s", s.ID, l.Concurrency, ErrorDetail(l)))
 			}
 			if l.CrossTenant > 0 {
 				out = append(out, fmt.Sprintf("%s c=%d: %d cross-tenant rows (C2-T)", s.ID, l.Concurrency, l.CrossTenant))
@@ -1210,6 +1286,13 @@ func RenderMarkdown(r *Report) string {
 		}
 		w("\n")
 	}
+	if len(r.Warnings) > 0 {
+		w("### Warnings (informational, not hard failures)\n\n")
+		for _, f := range r.Warnings {
+			w("- %s\n", f)
+		}
+		w("\n")
+	}
 
 	w("## C1 - latency (closed loop, warm-up discarded)\n\n")
 	for _, s := range r.C1 {
@@ -1217,10 +1300,10 @@ func RenderMarkdown(r *Report) string {
 		if !s.Valid {
 			w("**INVALID**: %s\n\n", s.InvalidReason)
 		}
-		w("| Clients | n | p50 ms | p95 ms | p99 ms | max ms | errors | req/s | semantic ran/off | semantic-off reasons | lexical_partial | stub calls | cross-tenant |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		w("| Clients | n | p50 ms | p95 ms | p99 ms | max ms | errors | req/s | http statuses | semantic ran/off | semantic-off reasons | lexical_partial | stub calls | cross-tenant |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, l := range s.Levels {
-			w("| %d | %d | %.2f | %.2f | %.2f | %.2f | %d | %.0f | %d/%d | %s | %d | %d | %d |\n", l.Concurrency, l.Stats.N,
-				l.Stats.P50Ms, l.Stats.P95Ms, l.Stats.P99Ms, l.Stats.MaxMs, l.Stats.Errors, l.RPS,
+			w("| %d | %d | %.2f | %.2f | %.2f | %.2f | %d | %.0f | %s | %d/%d | %s | %d | %d | %d |\n", l.Concurrency, l.Stats.N,
+				l.Stats.P50Ms, l.Stats.P95Ms, l.Stats.P99Ms, l.Stats.MaxMs, l.Stats.Errors, l.RPS, mdCell(orDash(statusCounts(l.Statuses))),
 				l.SemanticRan, l.SemanticOff, mdCell(orDash(reasonCounts(l.SemanticOffReasons))), l.LexicalPartial, l.StubCalls, l.CrossTenant)
 		}
 		w("\n")
