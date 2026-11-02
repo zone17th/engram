@@ -1100,3 +1100,32 @@ jobs:
       - name: Tear down Compose resources
         if: always()
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  # P05 Task 20b (PR 20b-2, plan L7/FS-1, FS-30a): the embedding-lag p95 acceptance (TestEmbeddingLagP95, build tag
+  # `lagperf`, file from Task 21) against a testcontainers Postgres. Not a required check (repo setting). `Content perf`
+  # (-tags perf) never compiles it. `go test -run` that matches nothing prints "no tests to run" and exits 0, so the
+  # step ends with a guard on the PASS line: this job can never go green without having run the test.
+  embedding-lag:
+    name: Embedding lag perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Run TestEmbeddingLagP95
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -tags lagperf ./internal/perf/... -run '^TestEmbeddingLagP95$' -count=1 -timeout 35m -v | tee lag.log
+          grep -q -- '--- PASS: TestEmbeddingLagP95' lag.log
