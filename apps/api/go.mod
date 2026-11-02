@@ -12,6 +12,7 @@ require (
 	github.com/gowebpki/jcs v1.0.2
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/kelseyhightower/envconfig v1.4.0
+	github.com/pgvector/pgvector-go v0.4.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/riverqueue/river v0.31.0
