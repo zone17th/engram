@@ -188,6 +188,7 @@ async function probeCoarseControls(
       'line-height',
       'box-sizing',
       'padding',
+      'border-radius',
     ] as const;
 
     const diagRect = (node: Element | null): string => {
@@ -229,12 +230,37 @@ async function probeCoarseControls(
       return `none (window scrollX:${window.scrollX} scrollY:${window.scrollY})`;
     };
 
+    const diagVerticalScan = (el: HTMLElement): string => {
+      const r = el.getBoundingClientRect();
+      const cx = (r.left + r.right) / 2;
+      const startY = Math.ceil(r.top);
+      const endY = Math.floor(r.bottom);
+      let lastHitY: number | null = null;
+      let firstMissY: number | null = null;
+      let firstMissDesc = 'none';
+      for (let y = startY; y <= endY; y += 1) {
+        const res = hitsIntendedControl(el, cx, y);
+        if (res.ok) {
+          lastHitY = y;
+        } else if (firstMissY === null) {
+          firstMissY = y;
+          firstMissDesc = res.hitDesc;
+        }
+      }
+      return `vscan(cx=${cx.toFixed(2)},y=${startY}..${endY},lastHitY=${lastHitY ?? 'none'},firstMissY=${firstMissY ?? 'none'}->${firstMissDesc})`;
+    };
+
     const diagControl = (el: HTMLElement): string => {
       const td = el.closest('td');
       const tr = el.closest('tr');
       const table = el.closest('table');
+      const elCs = window.getComputedStyle(el);
+      const tdH = td ? td.getBoundingClientRect().height.toFixed(2) : 'null';
+      const trH = tr ? tr.getBoundingClientRect().height.toFixed(2) : 'null';
       return [
-        `button=${diagNode(el)} style=${diagStyle(el)}`,
+        `button=${diagNode(el)} borderRadius=${elCs.borderRadius} style=${diagStyle(el)}`,
+        diagVerticalScan(el),
+        `tdH=${tdH} trH=${trH}`,
         `buttonTd=${diagNode(td)} style=${diagStyle(td)} rowIndex=${tr ? tr.rowIndex : -1}`,
         `buttonTr=${diagNode(tr)} style=${diagStyle(tr)}`,
         `buttonTable=${diagNode(table)} tableIndex=${diagTableIndex(table)}/${document.querySelectorAll('table').length} testidAncestor=${diagTestIdAncestor(table)}`,

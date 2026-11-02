@@ -1185,7 +1185,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled && !opts?.hideToolbar ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-act json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1327,7 +1327,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-act json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1586,7 +1586,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-act json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
                   aria-label={tJson('colActions')}
                 />
               ) : null}
@@ -1683,7 +1683,7 @@ export function JsonTreeGrid({
               {!readOnly && !disabled ? (
                 <th
                   role="columnheader"
-                  className="json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
+                  className="json-col-act json-col-idx max-[768px]:sticky max-[768px]:right-0 max-[768px]:z-10 max-[768px]:shadow-[-1px_0_0_var(--border)]"
                   aria-label={tJson('colActions')}
                 />
               ) : null}

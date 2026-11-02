@@ -2650,7 +2650,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
   );
 
   it(
-    'FU11 (advisor-dec-216/217/221/223/224/228): applies 44x44 coarse-pointer classes, sticky action column, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
+    'FU11 (advisor-dec-216/217/221/223/224/228/254): applies 44x44 coarse-pointer classes, fine-pointer sticky action column with coarse static full-cell override, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
     async () => {
       const longTag50 = `${'tag-chip-50-rune-'.repeat(2)}tail50`.padEnd(50, 'q').slice(0, 50);
       expect(Array.from(longTag50).length).toBe(50);
@@ -2701,7 +2701,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
         expect(removeBtn.className).toContain('shrink-0');
       }
 
-      // 3. JSON cell buttons, wrapping, nested scroll, and sticky action column (dec-216, dec-217)
+      // 3. JSON cell buttons, wrapping, nested scroll, and action column (sticky only for fine pointer <=768 px; coarse overrides it in tokens.css) (dec-216, dec-217, dec-254)
       const cellBtn = within(card).getByTestId('json-cell-btn-root.p1');
       expect(cellBtn.className).toContain('max-w-full');
       expect(cellBtn.className).toContain('[overflow-wrap:anywhere]');
@@ -2712,8 +2712,12 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(removeFieldBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
       expect(removeFieldBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
       const actionTd = removeFieldBtn.closest('td');
+      expect(actionTd?.className).toContain('json-col-act');
       expect(actionTd?.className).toContain('max-[768px]:sticky');
       expect(actionTd?.className).toContain('max-[768px]:right-0');
+      const actionTh = card.querySelector('th.json-col-act');
+      expect(actionTh).not.toBeNull();
+      expect(actionTh?.className).toContain('max-[768px]:sticky');
 
       // Expand nested object and array-of-objects to verify .json-nest overflow-x-auto and row delete button
       fireEvent.click(within(card).getByTestId('json-toggle-root.p2'));
@@ -2747,11 +2751,17 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(tokensCss).toMatch(/\.chip-x::after\s*\{\s*content:\s*none;\s*\}/);
       expect(tokensCss).toMatch(/\.chip-x\s*\{\s*min-width:\s*44px;\s*min-height:\s*44px;\s*\}/);
       expect(tokensCss).toMatch(/\.json-cell-input\s*\{\s*min-height:\s*44px;\s*\}/);
-      expect(tokensCss).toMatch(/\.json-col-idx,\s*\.json-table\s+td\.json-col-act\s*\{\s*width:\s*68px;\s*min-width:\s*68px;\s*\}/);
+      expect(tokensCss).not.toMatch(/\.json-col-idx\s*,\s*\.json-table\s+td\.json-col-act\s*\{\s*width:\s*68px/);
       expect(tokensCss).toMatch(
-        /\.json-table\s+th\.json-col-idx:last-child,\s*\.json-table\s+td\.json-col-act\s*\{\s*position:\s*static;\s*right:\s*auto;\s*z-index:\s*auto;\s*box-shadow:\s*none;\s*\}/,
+        /\.json-table\s+\.json-col-act\s*\{\s*width:\s*68px;\s*min-width:\s*68px;\s*position:\s*static;\s*right:\s*auto;\s*z-index:\s*auto;\s*box-shadow:\s*none;\s*\}/,
       );
-      expect(tokensCss).toMatch(/\.json-table\s+td\.json-col-act\s+\.btn-sm\s*\{\s*display:\s*flex;\s*margin-left:\s*auto;\s*min-width:\s*44px;\s*min-height:\s*44px;\s*\}/);
+      expect(tokensCss).toMatch(
+        /\.json-table\s+td\.json-col-act\s*\{\s*height:\s*1px;\s*padding:\s*0;\s*vertical-align:\s*middle;\s*\}/,
+      );
+      expect(tokensCss).toMatch(
+        /\.json-table\s+td\.json-col-act\s+\.btn-sm\s*\{\s*display:\s*flex;\s*width:\s*100%;\s*height:\s*100%;\s*min-width:\s*44px;\s*min-height:\s*44px;\s*margin:\s*0;\s*border-radius:\s*0;\s*\}/,
+      );
+      expect(tokensCss).not.toMatch(/json-col-act\s+\.btn-sm\s*\{[^}]*position:\s*relative/);
       expect(tokensCss).toMatch(
         /\.json-table\s+\.json-nest\s+\.json-table\s+thead\s*~\s*tbody\s*>\s*tr\s*>\s*td:not\(\.k\):not\(\.json-col-act\):not\(\[colspan\]\)\s*\{\s*min-width:\s*0;\s*\}/,
       );
