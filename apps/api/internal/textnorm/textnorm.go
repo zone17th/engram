@@ -51,21 +51,39 @@ const (
 // Error() returns the exact RFC 9457 ProblemCode string ("name_invalid",
 // "tag_display_invalid", or "hint_invalid") and never embeds user input.
 type Error struct {
-	Code string
+	Code  string
+	cause error
 }
 
 func (e *Error) Error() string { return e.Code }
 
+// Unwrap returns the wrapped error so ErrEmptyQuery satisfies
+// errors.Is(err, ErrNameInvalid) while ErrNameInvalid does not match ErrEmptyQuery.
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 // Is supports shallow, nil-safe errors.Is comparisons against sentinel errors
-// in this package.
+// in this package. An error with a non-nil cause (such as ErrEmptyQuery) only
+// matches a target with the same Code AND cause, so errors.Is(ErrNameInvalid, ErrEmptyQuery)
+// is false while errors.Is(ErrEmptyQuery, ErrNameInvalid) is true via Unwrap.
 func (e *Error) Is(target error) bool {
 	t, ok := target.(*Error)
-	return ok && e != nil && t != nil && e.Code == t.Code
+	return ok && e != nil && t != nil && e.Code == t.Code && e.cause == t.cause
 }
 
 var (
 	// ErrNameInvalid maps to HTTP 400 "name_invalid".
 	ErrNameInvalid = &Error{Code: "name_invalid"}
+	// ErrEmptyQuery wraps ErrNameInvalid and is returned ONLY when a non-whitespace
+	// input normalizes to an empty string (e.g. "!!!" or "#" alone, BE-10).
+	// Callers that check errors.Is(err, ErrNameInvalid) or err.Error() == "name_invalid"
+	// continue to match unchanged; /suggest checks errors.Is(err, ErrEmptyQuery) first
+	// to return 200 with empty arrays.
+	ErrEmptyQuery = &Error{Code: "name_invalid", cause: ErrNameInvalid}
 	// ErrTagDisplayInvalid maps to HTTP 400 "tag_display_invalid".
 	ErrTagDisplayInvalid = &Error{Code: "tag_display_invalid"}
 	// ErrHintInvalid maps to HTTP 400 "hint_invalid".
@@ -205,7 +223,13 @@ func normalizeOptionalQuery(q string, maxRunes int, invalidErr error) (string, e
 		return "", invalidErr
 	}
 	normalized := normalizeStep2(trimmed)
-	if normalized == "" || utf8.RuneCountInString(normalized) > maxRunes {
+	if normalized == "" {
+		if invalidErr == ErrNameInvalid {
+			return "", ErrEmptyQuery
+		}
+		return "", invalidErr
+	}
+	if utf8.RuneCountInString(normalized) > maxRunes {
 		return "", invalidErr
 	}
 	return normalized, nil
@@ -221,6 +245,9 @@ func normalizeAndTrim(s string, invalidErr error) (trimmed string, normalized st
 	}
 	normalized = normalizeStep2(trimmed)
 	if normalized == "" {
+		if invalidErr == ErrNameInvalid {
+			return "", "", ErrEmptyQuery
+		}
 		return "", "", invalidErr
 	}
 	return trimmed, normalized, nil
