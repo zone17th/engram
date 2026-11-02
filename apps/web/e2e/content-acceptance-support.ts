@@ -83,52 +83,87 @@ export async function setQuietJsonFileInput(
 }
 
 /**
- * Boolean check that the decrypted plaintext in the page's React Query cache (`['vault','entry-body',entryId,version]`)
- * is byte-identical (`===`) to `expectedPlaintext` without printing either string on failure (P04-A6, ACC-FE1-9).
- * Also verifies via `GET /api/v1/entries/<entryId>` that the server stored only ciphertext (`ciphertext !== expectedPlaintext`).
+ * Pure decision behind `expectServerHoldsOpaqueCiphertext` (ACC-FE3-3), kept in Node so it can be fed crafted input
+ * by `verifyOpaqueCiphertextCheckNegativeControl`. Returns true only when the record is a structurally sound entry and
+ * neither the literal ciphertext string nor its base64url-DECODED bytes contain any needle (UTF-8 byte search).
  */
-export async function expectEntryDecryptedPlaintextExactBool(
+export function isOpaqueCiphertextRecord(
+  record: {
+    readonly id?: string;
+    readonly type?: string;
+    readonly ciphertext?: string;
+    readonly envelope?: { readonly key_id?: string };
+  } | null,
+  entryId: string,
+  expectedType: string,
+  needles: readonly string[],
+): boolean {
+  if (
+    !record ||
+    record.id !== entryId ||
+    record.type !== expectedType ||
+    typeof record.ciphertext !== 'string' ||
+    record.ciphertext.length === 0 ||
+    typeof record.envelope?.key_id !== 'string'
+  ) {
+    return false;
+  }
+  const ct = record.ciphertext;
+  if (!/^[A-Za-z0-9_-]+$/.test(ct)) return false;
+  const bytes = Buffer.from(ct, 'base64url');
+  if (bytes.length === 0) return false;
+  for (const needle of needles) {
+    if (needle.length === 0) continue;
+    if (ct.includes(needle)) return false;
+    if (bytes.includes(Buffer.from(needle, 'utf8'))) return false;
+  }
+  return true;
+}
+
+/**
+ * Negative control for `isOpaqueCiphertextRecord` (Advisor on ACC-FE3-3: the check must be able to fail). A crafted
+ * base64url ciphertext whose decoded bytes embed a needle at a non-aligned offset must be rejected, and the same
+ * record without the needle must pass. Values are synthetic and never printed.
+ */
+export function verifyOpaqueCiphertextCheckNegativeControl(): void {
+  const needle = `opaque-negative-control-${Date.now().toString(36)}`;
+  const leaking = Buffer.concat([Buffer.from([1, 2]), Buffer.from(needle, 'utf8'), Buffer.from([3])]).toString('base64url');
+  const clean = Buffer.alloc(48, 7).toString('base64url');
+  const base = { id: 'nc', type: 'json', envelope: { key_id: 'vk:negative-control' } } as const;
+  expect(isOpaqueCiphertextRecord({ ...base, ciphertext: leaking }, 'nc', 'json', [needle])).toBe(false);
+  expect(isOpaqueCiphertextRecord({ ...base, ciphertext: clean }, 'nc', 'json', [needle])).toBe(true);
+}
+
+/**
+ * Boolean check that the SERVER holds only opaque ciphertext for the entry (P04-A6, ACC-FE1-9, ACC-FE3-3).
+ * It fetches `GET /api/v1/entries/<entryId>` in the page and decides with `isOpaqueCiphertextRecord` (type `json`,
+ * non-empty base64url ciphertext, a `key_id`, and no needle in the ciphertext string or its decoded bytes).
+ * It does NOT prove what the browser decrypts: byte-exact plaintext proofs live in the callers
+ * (`json-raw-bytes` count, Raw textarea compare, zero-PUT no-op save). Nothing is printed on failure.
+ */
+export async function expectServerHoldsOpaqueCiphertext(
   page: Page,
   entryId: string,
   expectedPlaintext: string,
+  extraNeedles: readonly string[] = [],
   timeout = ACCEPTANCE_UI_WAIT_MS,
 ): Promise<void> {
+  verifyOpaqueCiphertextCheckNegativeControl();
   await expect
     .poll(
-      () =>
-        page.evaluate(
-          async ({ id, target }) => {
-            const res = await fetch(`/api/v1/entries/${encodeURIComponent(id)}`, {
-              credentials: 'include',
-            });
-            if (res.status !== 200) return false;
-            const record = (await res.json().catch(() => null)) as {
-              readonly id?: string;
-              readonly type?: string;
-              readonly ciphertext?: string;
-              readonly envelope?: {
-                readonly v?: number;
-                readonly key_id?: string;
-                readonly nonce?: string;
-                readonly ct_enc?: string;
-              };
-            } | null;
-            if (
-              !record ||
-              record.id !== id ||
-              record.type !== 'json' ||
-              typeof record.ciphertext !== 'string' ||
-              record.ciphertext.length === 0 ||
-              record.ciphertext === target ||
-              record.ciphertext.includes(target) ||
-              typeof record.envelope?.key_id !== 'string'
-            ) {
-              return false;
-            }
-            return true;
-          },
-          { id: entryId, target: expectedPlaintext },
-        ),
+      async () => {
+        const fetched = await page.evaluate(async (id) => {
+          const res = await fetch(`/api/v1/entries/${encodeURIComponent(id)}`, { credentials: 'include' });
+          if (res.status !== 200) return null;
+          return (await res.json().catch(() => null)) as {
+            readonly id?: string;
+            readonly type?: string;
+            readonly ciphertext?: string;
+            readonly envelope?: { readonly key_id?: string };
+          } | null;
+        }, entryId);
+        return isOpaqueCiphertextRecord(fetched, entryId, 'json', [expectedPlaintext, ...extraNeedles]);
+      },
       { timeout },
     )
     .toBe(true);
@@ -190,6 +225,98 @@ export async function expectTextEqualsBool(
     .toBe(true);
 }
 
+export interface NeedleForm {
+  /** Label suffix only (never a value): '' for the literal, otherwise `#b64-0`, `#hex`, `#uri`, ... */
+  readonly suffix: string;
+  readonly value: string;
+}
+
+const MIN_ENCODED_NEEDLE_LENGTH = 8;
+
+/**
+ * Literal, base64 / base64url (all three 3-byte alignments, so a needle embedded at any offset of a larger
+ * encoded payload still matches), lowercase hex and `encodeURIComponent` forms of a secret (ACC-FE3-4).
+ * Encoded forms shorter than 8 characters are dropped (false-positive guard). Labels carry a form suffix only.
+ */
+export function needleForms(value: string): NeedleForm[] {
+  const forms: NeedleForm[] = [{ suffix: '', value }];
+  const bytes = Buffer.from(value, 'utf8');
+  const push = (suffix: string, form: string) => {
+    if (form.length >= MIN_ENCODED_NEEDLE_LENGTH && form !== value) {
+      forms.push({ suffix, value: form });
+    }
+  };
+  const leadingSkip = [0, 2, 3];
+  for (let offset = 0; offset < 3; offset += 1) {
+    const padded = Buffer.concat([Buffer.alloc(offset), bytes]);
+    let encoded = padded.toString('base64').replace(/=+$/, '');
+    if (padded.length % 3 !== 0) {
+      encoded = encoded.slice(0, -1);
+    }
+    encoded = encoded.slice(leadingSkip[offset] ?? 0);
+    push(`#b64-${offset}`, encoded);
+    push(`#b64url-${offset}`, encoded.replace(/\+/g, '-').replace(/\//g, '_'));
+  }
+  push('#hex', bytes.toString('hex'));
+  push('#uri', encodeURIComponent(value));
+  return forms;
+}
+
+/** Labels (form suffixes only, never values) of every `needleForms(value)` form found in `haystack`. */
+export function encodedNeedleHits(value: string, haystack: string): string[] {
+  return needleForms(value)
+    .filter((form) => haystack.includes(form.value))
+    .map((form) => (form.suffix === '' ? 'literal' : form.suffix));
+}
+
+/**
+ * Negative control for the encoded-needle matcher (ACC-FE3-4, Advisor: each check must be able to fail): a synthetic
+ * needle embedded as base64 at a non-aligned offset, as base64url, as hex and URI-encoded inside a JSON body must be
+ * found, and a body without it must not. Values are synthetic and never printed.
+ */
+export function verifyEncodedNeedleMatcherNegativeControl(): void {
+  const needle = `enc-negative-control/${Date.now().toString(36)}?+é`;
+  const raw = Buffer.from(needle, 'utf8');
+  const b64Odd = Buffer.concat([Buffer.from([9]), raw, Buffer.from([8, 7])]).toString('base64');
+  const b64urlOdd = Buffer.concat([Buffer.from([1, 2]), raw]).toString('base64url');
+  for (const body of [
+    JSON.stringify({ ciphertext: b64Odd }),
+    JSON.stringify({ ciphertext: b64urlOdd }),
+    JSON.stringify({ q: raw.toString('hex') }),
+    `q=${encodeURIComponent(needle)}`,
+  ]) {
+    expect(encodedNeedleHits(needle, body).length > 0).toBe(true);
+  }
+  expect(encodedNeedleHits(needle, JSON.stringify({ ciphertext: Buffer.alloc(64, 5).toString('base64') }))).toEqual([]);
+}
+
+export interface ReplayedRequestRecord {
+  readonly idemKey: string;
+  readonly postData: string;
+}
+
+/** True when the retry carries the same non-empty Idempotency-Key and byte-identical non-empty body (ACC-FE3-2). */
+export function retryReplaysSameRequest(first: ReplayedRequestRecord, retry: ReplayedRequestRecord): boolean {
+  return (
+    first.idemKey.length > 0 &&
+    first.postData.length > 0 &&
+    first.idemKey === retry.idemKey &&
+    first.postData === retry.postData
+  );
+}
+
+/**
+ * Negative control for `retryReplaysSameRequest` (ACC-FE3-2): a fresh key, a re-sealed body or an empty key must each
+ * be rejected; only an exact replay passes. Synthetic values only.
+ */
+export function verifyRetryReplayCheckNegativeControl(): void {
+  const first = { idemKey: 'nc-key-1', postData: '{"ciphertext":"AAAA"}' };
+  expect(retryReplaysSameRequest(first, { ...first })).toBe(true);
+  expect(retryReplaysSameRequest(first, { ...first, idemKey: 'nc-key-2' })).toBe(false);
+  expect(retryReplaysSameRequest(first, { ...first, postData: '{"ciphertext":"BBBB"}' })).toBe(false);
+  expect(retryReplaysSameRequest({ idemKey: '', postData: first.postData }, { idemKey: '', postData: first.postData })).toBe(false);
+}
+
 export interface RequestPlaintextLeak {
   readonly method: string;
   readonly pathname: string;
@@ -216,10 +343,16 @@ export interface RequestPlaintextMonitor {
 export function createRequestPlaintextMonitor(
   initialSecrets: ReadonlyArray<{ readonly label: string; readonly value: string }> = [],
 ): RequestPlaintextMonitor {
+  verifyEncodedNeedleMatcherNegativeControl();
   const secrets = new Map<string, string>();
+  const addSecretForms = (label: string, value: string) => {
+    for (const form of needleForms(value)) {
+      secrets.set(`${label}${form.suffix}`, form.value);
+    }
+  };
   for (const item of initialSecrets) {
     if (item.value.length > 0) {
-      secrets.set(item.label, item.value);
+      addSecretForms(item.label, item.value);
     }
   }
 
@@ -315,9 +448,12 @@ export function createRequestPlaintextMonitor(
     attachContext,
     registerSecret(label: string, value: string) {
       if (value.length > 0) {
-        secrets.set(label, value);
-        for (const snap of capturedRequests) {
-          scanSnapshotForSecret(snap, label, value);
+        for (const form of needleForms(value)) {
+          const formLabel = `${label}${form.suffix}`;
+          secrets.set(formLabel, form.value);
+          for (const snap of capturedRequests) {
+            scanSnapshotForSecret(snap, formLabel, form.value);
+          }
         }
       }
     },

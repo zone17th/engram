@@ -431,6 +431,44 @@ async function tagSecretInputsForMask(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Body-bearing selectors whose TEXT must never be readable in an uploaded screenshot (ACC-FE3-1). Playwright's
+ * `mask` overlays are drawn in the page's normal stacking context, so they sit UNDER a modal `<dialog>` (top layer);
+ * the capture also passes a `style` option that makes the text of these elements (and descendants) transparent,
+ * which holds regardless of stacking. Keep in sync with the `mask` list in `saveContentScreenshot`.
+ */
+const SCREENSHOT_TEXT_HIDE_SELECTORS: readonly string[] = [
+  '[data-visual-mask]',
+  '[data-testid="recovery-keys-grid"]',
+  '[data-testid^="recovery-key-slot-"]',
+  'p[data-testid="entry-body"]',
+  'pre[data-testid="entry-body"]',
+  'textarea[data-vault-secret]:not([data-omnibox-input])',
+  'input[data-vault-secret]',
+  '[data-testid^="json-cell-btn-"]',
+  '[data-testid^="json-cell-input-"]',
+  '[data-testid^="json-readonly-cell-"]',
+  '[data-testid^="json-raw-textarea-"]',
+  '[data-testid^="json-active-editor-"]',
+  '#omni textarea[data-vault-secret][data-visual-mask]',
+  '[data-testid="import-json-preview-raw"]',
+  '[data-testid="import-json-source-textarea"]',
+  '[data-testid="json-table-host-import-preview"] [role="gridcell"]',
+  '[data-testid="json-table-host-import-preview"] td',
+];
+
+function screenshotTextHideStyle(extraSelectors: readonly string[]): string {
+  const selectors = [...SCREENSHOT_TEXT_HIDE_SELECTORS, ...extraSelectors];
+  const withDescendants = selectors.flatMap((sel) => [sel, `${sel} *`]).join(',\n');
+  return `${withDescendants} {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+  caret-color: transparent !important;
+}
+`;
+}
+
 async function saveContentScreenshot(
   ctx: ContentA11yContext,
   spec: ContentStateSpec,
@@ -462,6 +500,7 @@ async function saveContentScreenshot(
     fullPage,
     animations: 'disabled',
     caret: 'hide',
+    style: screenshotTextHideStyle(spec.maskSelectors ?? []),
     mask: [
       page.locator('[data-visual-mask]'),
       page.getByTestId('recovery-keys-grid'),
@@ -475,6 +514,7 @@ async function saveContentScreenshot(
       page.locator('[data-testid^="json-raw-textarea-"]'),
       page.locator('#omni textarea[data-vault-secret][data-visual-mask]'),
       page.locator('[data-testid="import-json-preview-raw"]'),
+      page.locator('[data-testid="import-json-source-textarea"]'),
       ...(spec.maskSelectors ?? []).map((sel) => page.locator(sel)),
     ],
   });
@@ -517,10 +557,15 @@ async function expectNoHorizontalOverflowAtWidth(
   spec: ContentStateSpec,
   width: number,
   extraSelectors: readonly string[] = [],
+  requiredSelectors: readonly string[] = [],
 ): Promise<void> {
   const allowedScrollSelectors = spec.allowedHorizontalScrollSelectors ?? [];
   const metrics = await ctx.page.evaluate(
-    ({ selectors, allowedScrollSels }) => {
+    ({ selectors, allowedScrollSels, required }) => {
+      // ACC-FE3-6: a dialog-specific selector that matches nothing (renamed class/testid) would otherwise pass silently.
+      const unmatchedRequiredSelectors = required.filter(
+        (sel) => document.querySelectorAll(sel).length === 0,
+      );
       const scrollWidth = document.documentElement.scrollWidth;
       const clientWidth = document.documentElement.clientWidth;
       const innerWidth = window.innerWidth;
@@ -589,9 +634,9 @@ async function expectNoHorizontalOverflowAtWidth(
           }
         }
       }
-      return { scrollWidth, clientWidth, innerWidth, overflowingContainers };
+      return { scrollWidth, clientWidth, innerWidth, overflowingContainers, unmatchedRequiredSelectors };
     },
-    { selectors: extraSelectors, allowedScrollSels: allowedScrollSelectors },
+    { selectors: extraSelectors, allowedScrollSels: allowedScrollSelectors, required: requiredSelectors },
   );
 
   console.log(
@@ -603,6 +648,12 @@ async function expectNoHorizontalOverflowAtWidth(
       `horizontal overflow ${spec.state} ${ctx.lang} ${ctx.theme} ${width}: scrollWidth ${metrics.scrollWidth} > clientWidth ${metrics.clientWidth}`,
     )
     .toBeLessThanOrEqual(metrics.clientWidth);
+  expect
+    .soft(
+      metrics.unmatchedRequiredSelectors,
+      `overflow selectors matching 0 elements ${spec.state} ${ctx.lang} ${ctx.theme} ${width}`,
+    )
+    .toEqual([]);
   expect
     .soft(
       metrics.overflowingContainers,
@@ -666,7 +717,8 @@ export async function expectHorizontallyScrollable(
 /**
  * Sweeps a screen state across 390 / 768 / 1440 on the current page:
  * - resizes viewport and waits for fonts + 2 animation frames
- * - asserts no horizontal overflow (`document.documentElement.scrollWidth <= clientWidth` + container checks)
+ * - asserts no horizontal overflow (`document.documentElement.scrollWidth <= clientWidth` + container checks);
+ *   every `requiredOverflowSelectors` entry must match at least one element (soft-fails on 0, ACC-FE3-6)
  * - runs axe (`wcag2a`, `wcag2aa`, 0 violations)
  * - saves allowlisted screenshot `content-a11y-<state>-<lang>-<theme>-<width>.png`
  * - in the keyboard pass (`en`, `light`) at 1440, asserts `expectReducedMotion`
@@ -675,11 +727,12 @@ export async function checkContentState(
   ctx: ContentA11yContext,
   spec: ContentStateSpec,
   overflowSelectors: readonly string[] = [],
+  requiredOverflowSelectors: readonly string[] = [],
 ): Promise<void> {
   for (const { width, height } of A11Y_WIDTHS) {
     await ctx.page.setViewportSize({ width, height });
     await settleViewport(ctx.page, ctx.lang, ctx.theme);
-    await expectNoHorizontalOverflowAtWidth(ctx, spec, width, overflowSelectors);
+    await expectNoHorizontalOverflowAtWidth(ctx, spec, width, overflowSelectors, requiredOverflowSelectors);
     await runContentAxe(ctx, spec, width);
     await saveContentScreenshot(ctx, spec, width);
     if (ctx.keyboard && width === 1440) {

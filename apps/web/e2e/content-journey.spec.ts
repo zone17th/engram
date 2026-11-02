@@ -4,19 +4,21 @@ import {
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
   executeVaultResetAndClickCreateNewVault,
-  expectEntryDecryptedPlaintextExactBool,
   expectInputEmptyBool,
   expectInputValueEqualsBool,
   expectNoDomOrStorageBodyLeaks,
   expectOnUnlockPageAllowingReturnTo,
   expectServerItemAndLiveEntryIds,
+  expectServerHoldsOpaqueCiphertext,
   expectServerItemsHaveZeroEntries,
   expectTextEqualsBool,
   fetchServerItemsAndTagsSnapshot,
+  retryReplaysSameRequest,
   setQuietInputValue,
   setQuietJsonFileInput,
   timedJourneyStep,
   triggerFocusWake,
+  verifyRetryReplayCheckNegativeControl,
   verifyStorageAndCacheScannerPositiveControl,
 } from './content-acceptance-support';
 import { newContextWithRateLimit, uniqueEmail } from './helpers';
@@ -340,35 +342,58 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
 
         // (d) Exercise the product's unconfirmed-save Retry path (`import-json-retry-banner` / `import-json-retry-btn`, P04-A11):
         // go offline -> click Encrypt and save -> retry banner appears with draft locked -> go online -> click Retry ->
-        // replays the exact same Idempotency-Key and sealed payload, creating 1 entry without duplication.
-        await contextA.setOffline(true);
-        try {
-          await submitImportBtn.click();
-          await expect(importDialog.getByTestId('import-json-retry-banner')).toBeVisible({
-            timeout: ACCEPTANCE_UI_WAIT_MS,
-          });
-          await expect(importDialog.getByTestId('import-json-source-textarea')).toBeDisabled();
-          monitor.assertNoLeaks();
-        } finally {
-          await contextA.setOffline(false);
+        // the Retry replays the SAME Idempotency-Key and the SAME sealed payload as the failed offline attempt (ACC-FE3-2).
+        // The listener is attached BEFORE `setOffline(true)`: Playwright still emits `request` (then `requestfailed`) for the
+        // offline attempt, so its key and body are recorded and compared with the Retry's. Key/body values are never logged.
+        interface ImportPostRecord {
+          readonly phase: 'offline' | 'retry';
+          readonly idemKey: string;
+          readonly postData: string;
         }
-
-        const importPostHeaders: string[] = [];
-        const onImportReq = (req: { method: () => string; url: () => string; headers: () => Record<string, string> }) => {
+        const importPosts: ImportPostRecord[] = [];
+        let importPostPhase: 'offline' | 'retry' = 'offline';
+        const onImportReq = (req: {
+          method: () => string;
+          url: () => string;
+          headers: () => Record<string, string>;
+          postData: () => string | null;
+        }) => {
           if (req.method() === 'POST' && req.url().includes(`/api/v1/items/${item1Id}/entries/import-json`)) {
-            importPostHeaders.push(req.headers()['idempotency-key'] ?? '');
+            importPosts.push({
+              phase: importPostPhase,
+              idemKey: req.headers()['idempotency-key'] ?? '',
+              postData: req.postData() ?? '',
+            });
           }
         };
         contextA.on('request', onImportReq);
         try {
+          await contextA.setOffline(true);
+          try {
+            await submitImportBtn.click();
+            await expect(importDialog.getByTestId('import-json-retry-banner')).toBeVisible({
+              timeout: ACCEPTANCE_UI_WAIT_MS,
+            });
+            await expect(importDialog.getByTestId('import-json-source-textarea')).toBeDisabled();
+            monitor.assertNoLeaks();
+          } finally {
+            await contextA.setOffline(false);
+          }
+
+          importPostPhase = 'retry';
           await importDialog.getByTestId('import-json-retry-btn').click();
           await expect(importDialog).toBeHidden({ timeout: ACCEPTANCE_UI_WAIT_MS });
         } finally {
           contextA.off('request', onImportReq);
         }
-        expect(importPostHeaders.length).toBeGreaterThanOrEqual(1);
-        const usedIdemKey = importPostHeaders[0]!;
-        expect(usedIdemKey.length).toBeGreaterThan(0);
+        const offlineAttempts = importPosts.filter((r) => r.phase === 'offline');
+        const retryAttempts = importPosts.filter((r) => r.phase === 'retry');
+        expect(offlineAttempts.length).toBeGreaterThanOrEqual(1);
+        expect(retryAttempts.length).toBeGreaterThanOrEqual(1);
+        // Booleans only: key and body values never reach an assertion message. The negative control proves the
+        // comparator rejects a fresh key, a re-sealed body and an empty key before it judges the real pair.
+        verifyRetryReplayCheckNegativeControl();
+        expect(retryReplaysSameRequest(offlineAttempts[0]!, retryAttempts[0]!)).toBe(true);
 
         // (a) Prove the server has exactly one new entry in the exact ID set via page fetch of `/api/v1/items/<id>/entries`
         const entriesAfterImport = await pageA.evaluate(async (id) => {
@@ -390,8 +415,15 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
           importedJsonEntryId,
         ]);
 
-        // Also verify server-side idempotent replay with the same Idempotency-Key does not duplicate the entry (P04-A11)
-        await expectEntryDecryptedPlaintextExactBool(pageA, importedJsonEntryId, importJsonCrlfFixture);
+        // The server holds only opaque ciphertext for the imported entry: neither the fixture nor any registered body
+        // needle appears in the base64url-decoded bytes (user-dec-016). This does not prove the decrypted plaintext;
+        // that is carried by (b) below (cell texts, `json-raw-bytes` count, Raw textarea, zero-PUT no-op save).
+        await expectServerHoldsOpaqueCiphertext(pageA, importedJsonEntryId, importJsonCrlfFixture, [
+          importJsonToken,
+          importJsonNestedSecret,
+          importJsonNoteLine1,
+          importJsonNoteLine2,
+        ]);
 
         // (b) Prove the rendered JSON card decrypts to byte-identical content (boolean compare, CRLF preserved per A6):
         // Table view renders `"cluster"` (`root.p0`) and `"multiline_note"` (`root.p2`, containing `\n`);
@@ -440,9 +472,11 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         const expectedCrlfByteCount = new TextEncoder().encode(importJsonCrlfFixture).byteLength;
         const lfOnlyByteCount = new TextEncoder().encode(importJsonDisplayNormalized).byteLength;
         expect(expectedCrlfByteCount).toBeGreaterThan(lfOnlyByteCount);
-        await expect(
-          importedCard.getByTestId(`json-raw-bytes-${importedJsonEntryId}`),
-        ).toContainText(`${expectedCrlfByteCount}`);
+        // Exact match (ACC-FE3-8): `byteCounter` is "{bytes} / 262,144 B" (en; the fixture is < 1,000 bytes so no
+        // thousands separator). A substring match would also accept e.g. "1400 ...".
+        await expect(importedCard.getByTestId(`json-raw-bytes-${importedJsonEntryId}`)).toHaveText(
+          new RegExp(`^${expectedCrlfByteCount} / 262,144 B$`),
+        );
 
         let putCountOnNoOp = 0;
         const onPutReq = (req: { method: () => string; url: () => string }) => {

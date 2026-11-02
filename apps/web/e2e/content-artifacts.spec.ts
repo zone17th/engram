@@ -237,7 +237,7 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and earlier test output disk s
         });
       });
 
-      await timedJourneyStep('4. (b) In-run check: no storageState file name and no constant passphrase in earlier test output (real post-run scan runs after Playwright exits)', async () => {
+      await timedJourneyStep('4. (b) In-run check: no storageState file name and no constant passphrase in earlier test output (no automated post-run scan exists: the post-run artifact check is a manual lead procedure documented in docs/phases/evidence/P04.md)', async () => {
         const allSecretsToScan = [
           { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
           { label: 'userATextBody', value: userATextBody },

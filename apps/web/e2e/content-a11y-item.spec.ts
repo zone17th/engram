@@ -76,8 +76,10 @@ async function runItemGroup(
   const extraEntryBodyToDelete = `acceptance-item-delete-target-${groupLabel}-secret-body-03`;
   const jsonSecretTokenValue = `acceptance-item-json-secret-${groupLabel}-token-04`;
 
-  const importJsonValidSecret = `acceptance-item-import-valid-${groupLabel}-secret-05`;
-  const importJsonInvalidSecret = `acceptance-item-import-invalid-${groupLabel}-secret-06`;
+  // U14 import sweeps use FIXED PUBLIC fixtures (no nonce, no secret-looking needle): the typed source text and the
+  // preview cells are visible in the modal `<dialog>` (top layer) where screenshot masks do not paint (ACC-FE3-1).
+  const importJsonValidPublic = '{"ssid":"Demo","vlan":10}';
+  const importJsonInvalidPublic = '{\n  "ssid": "Demo",\n}';
   const initialJsonObject = {
     service: 'billing-worker',
     port: 8080,
@@ -99,8 +101,6 @@ async function runItemGroup(
     { label: 'textEntryBodyEdited', value: textEntryBodyEdited },
     { label: 'extraEntryBodyToDelete', value: extraEntryBodyToDelete },
     { label: 'jsonSecretTokenValue', value: jsonSecretTokenValue },
-    { label: 'importJsonValidSecret', value: importJsonValidSecret },
-    { label: 'importJsonInvalidSecret', value: importJsonInvalidSecret },
   ] as const;
 
   const leakGuard = attachPlaintextLeakGuard(context, forbiddenSecrets);
@@ -923,7 +923,7 @@ async function runItemGroup(
             const coarseImportTa = coarseImportDlg.getByTestId('import-json-source-textarea');
             await setQuietValue(
               coarseImportTa,
-              `{"cluster":"${importJsonValidSecret}","port":5432}`,
+              importJsonValidPublic,
             );
             await expect(
               coarseImportDlg.getByTestId('json-table-host-import-preview'),
@@ -937,7 +937,7 @@ async function runItemGroup(
 
             await setQuietValue(
               coarseImportTa,
-              `{\n  "cluster": "${importJsonInvalidSecret}",\n}`,
+              importJsonInvalidPublic,
             );
             await expect(coarseImportDlg.getByTestId('import-json-parse-error')).toBeVisible({
               timeout: CONTENT_A11Y_UI_WAIT_MS,
@@ -1032,13 +1032,14 @@ async function runItemGroup(
             fullPage: false,
           },
           importOverflowSelectors,
+          importOverflowSelectors,
         );
 
         // 2. State `import-valid` (preview table with nested object, masked textarea & preview cells)
         const validImportJson = JSON.stringify(
           {
             service: 'edge-gateway',
-            secret: importJsonValidSecret,
+            ssid: 'Demo',
             tls: { enabled: true, port: 8443 },
           },
           null,
@@ -1078,11 +1079,12 @@ async function runItemGroup(
             ],
           },
           [...importOverflowSelectors, '[data-testid="json-table-host-import-preview"]'],
+          [...importOverflowSelectors, '[data-testid="json-table-host-import-preview"]'],
         );
 
         // 3. State `import-invalid` (parse error callout with jump button + Save as text button)
         // Trailing comma on line 2, column 52 -> parseError.line === 2, caret offset > 0
-        const invalidImportJson = `{\n  "secret": "${importJsonInvalidSecret}",\n}`;
+        const invalidImportJson = importJsonInvalidPublic;
         await setQuietValue(importTextarea, invalidImportJson);
         const parseErrorAlert = importDialog.getByTestId('import-json-parse-error');
         await expect(parseErrorAlert).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
@@ -1122,6 +1124,11 @@ async function runItemGroup(
             '[data-testid="import-json-parse-error"]',
             '[data-testid="import-json-save-as-text-btn"]',
           ],
+          [
+            ...importOverflowSelectors,
+            '[data-testid="import-json-parse-error"]',
+            '[data-testid="import-json-save-as-text-btn"]',
+          ],
         );
 
         // 4. State `import-over-cap` (> 256 KiB via instant 5 MiB `file.size` pre-read check, 0 B buffer allocation)
@@ -1151,6 +1158,7 @@ async function runItemGroup(
             axeInclude: '#importDlg',
             fullPage: false,
           },
+          [...importOverflowSelectors, '[data-testid="import-json-over-cap-error"]'],
           [...importOverflowSelectors, '[data-testid="import-json-over-cap-error"]'],
         );
 
