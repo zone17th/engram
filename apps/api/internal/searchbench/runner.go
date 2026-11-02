@@ -357,6 +357,7 @@ type LoadResult struct {
 	CrossTenant    int
 	SemanticRan    int
 	SemanticOff    int
+	SemanticReason map[string]int // reason counts of the requests where semantic did not run
 	LexicalPartial int
 	Wall           time.Duration
 	StubCalls      int64
@@ -376,6 +377,7 @@ type suggestIDs struct {
 		ID uuid.UUID `json:"id"`
 	} `json:"near"`
 	Semantic       bool     `json:"semantic"`
+	SemanticReason *string  `json:"semantic_reason"`
 	LexicalPartial []string `json:"lexical_partial"`
 }
 
@@ -385,6 +387,7 @@ type workerAcc struct {
 	statuses       map[int]int
 	cross          int
 	semRan, semOff int
+	semReasons     map[string]int // why semantic did not run (response semantic_reason)
 	partial        int
 }
 
@@ -410,7 +413,7 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 	owner := h.Seed.Owner
 	start := time.Now()
 	for w := range conc {
-		acc := &workerAcc{statuses: map[int]int{}}
+		acc := &workerAcc{statuses: map[int]int{}, semReasons: map[string]int{}}
 		accs[w] = acc
 		wg.Add(1)
 		go func() {
@@ -445,6 +448,11 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 					acc.semRan++
 				} else {
 					acc.semOff++
+					reason := "none"
+					if body.SemanticReason != nil {
+						reason = *body.SemanticReason
+					}
+					acc.semReasons[reason]++
 				}
 				if len(body.LexicalPartial) > 0 {
 					acc.partial++
@@ -471,7 +479,7 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 		}()
 	}
 	wg.Wait()
-	res := LoadResult{Concurrency: conc, Warmup: spec.Warmup, Statuses: map[int]int{}, Wall: time.Since(start)}
+	res := LoadResult{Concurrency: conc, Warmup: spec.Warmup, Statuses: map[int]int{}, SemanticReason: map[string]int{}, Wall: time.Since(start)}
 	for _, a := range accs {
 		res.Latencies = append(res.Latencies, a.lat...)
 		res.Errors += a.errors
@@ -481,6 +489,9 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 		res.LexicalPartial += a.partial
 		for c, n := range a.statuses {
 			res.Statuses[c] += n
+		}
+		for r, n := range a.semReasons {
+			res.SemanticReason[r] += n
 		}
 	}
 	if h.Stub != nil {
@@ -500,7 +511,7 @@ func levelReport(r LoadResult) LevelReport {
 	return LevelReport{
 		Concurrency: r.Concurrency, Stats: Summarize(r.Latencies, r.Errors), Warmup: r.Warmup,
 		Wall: r.Wall.Seconds(), RPS: rps, SemanticRan: r.SemanticRan, SemanticOff: r.SemanticOff,
-		LexicalPartial: r.LexicalPartial, CrossTenant: r.CrossTenant, StubCalls: r.StubCalls,
+		SemanticOffReasons: r.SemanticReason, LexicalPartial: r.LexicalPartial, CrossTenant: r.CrossTenant, StubCalls: r.StubCalls,
 	}
 }
 
@@ -538,7 +549,7 @@ func (h *Harness) RunC1L(ctx context.Context, qs []TextQuery, plan ScenarioPlan)
 		}
 		rep.Levels = append(rep.Levels, levelReport(r))
 		if r.SemanticRan > 0 {
-			rep.Valid, rep.InvalidReason = false, "semantic ran in a semantic=0 scenario"
+			rep.Invalidate("semantic ran in a semantic=0 scenario")
 		}
 	}
 	return rep, nil
@@ -570,10 +581,12 @@ func (h *Harness) RunC1H(ctx context.Context, qs []TextQuery, plan ScenarioPlan)
 		}
 		rep.Levels = append(rep.Levels, levelReport(r))
 		if r.StubCalls > 0 {
-			rep.Valid, rep.InvalidReason = false, fmt.Sprintf("%d provider calls during the run: not a pure cache-hit run (c=%d)", r.StubCalls, lv.Concurrency)
+			rep.Invalidate(fmt.Sprintf("%d provider calls during the run: not a pure cache-hit run (c=%d)", r.StubCalls, lv.Concurrency))
 		}
-		if r.SemanticRan == 0 {
-			rep.Valid, rep.InvalidReason = false, "semantic never ran"
+		// Every measured request must have run semantic (SBW3-1-4): one success
+		// among degraded or skipped responses is not hybrid latency evidence.
+		if problem := HybridLevelProblem(rep.Levels[len(rep.Levels)-1]); problem != "" {
+			rep.Invalidate(problem)
 		}
 	}
 	return rep, nil
@@ -608,10 +621,12 @@ func (h *Harness) RunC1M(ctx context.Context, g *Generator, tenants []int, plan 
 		}
 		rep.Levels = append(rep.Levels, levelReport(r))
 		if r.StubCalls < int64(total)*95/100 {
-			rep.Valid, rep.InvalidReason = false, fmt.Sprintf("only %d provider calls for %d requests: not a cache-miss run (c=%d)", r.StubCalls, total, lv.Concurrency)
+			rep.Invalidate(fmt.Sprintf("only %d provider calls for %d requests: not a cache-miss run (c=%d)", r.StubCalls, total, lv.Concurrency))
 		}
-		if r.SemanticRan == 0 {
-			rep.Valid, rep.InvalidReason = false, "semantic never ran"
+		// Every measured request must have run semantic (SBW3-1-4): one success
+		// among degraded or skipped responses is not hybrid latency evidence.
+		if problem := HybridLevelProblem(rep.Levels[len(rep.Levels)-1]); problem != "" {
+			rep.Invalidate(problem)
 		}
 	}
 	return rep, nil

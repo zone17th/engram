@@ -380,6 +380,64 @@ func TestC2BranchLatencyCoversEveryRequest(t *testing.T) {
 	})
 }
 
+func hybridLevel(c, n, ran int, reasons map[string]int) LevelReport {
+	return LevelReport{
+		Concurrency: c, Stats: LatencyStats{N: n, P95Ms: 2}, SemanticRan: ran, SemanticOff: n - ran, SemanticOffReasons: reasons,
+	}
+}
+
+// TestHybridScenarioRequiresEverySemanticSuccess pins SBW3-1-4: a hybrid level is
+// valid target evidence only when every measured request ran semantic. One
+// success among otherwise degraded (fast, lexical-only) responses is invalid and
+// the verdict fails; the degradation reasons are reported.
+func TestHybridScenarioRequiresEverySemanticSuccess(t *testing.T) {
+	if p := HybridLevelProblem(hybridLevel(8, 2000, 2000, nil)); p != "" {
+		t.Fatalf("all-semantic level must be valid, got %q", p)
+	}
+	oneSuccess := hybridLevel(8, 2000, 1, map[string]int{"degraded": 1999})
+	p := HybridLevelProblem(oneSuccess)
+	if p == "" {
+		t.Fatal("one semantic success among 1999 degraded responses must be INVALID")
+	}
+	if !strings.Contains(p, "degraded=1999") || !strings.Contains(p, "c=8") {
+		t.Fatalf("problem %q must name the level and the reason counts", p)
+	}
+	oneDegraded := hybridLevel(8, 2000, 1999, map[string]int{"degraded": 1})
+	if p := HybridLevelProblem(oneDegraded); p == "" {
+		t.Fatal("a single degraded request in the measured sample must invalidate the level")
+	}
+	if p := HybridLevelProblem(hybridLevel(8, 2000, 0, nil)); p == "" {
+		t.Fatal("a level where semantic never ran must be invalid")
+	}
+
+	// Through the same verdict code as the run: fast degraded responses must not
+	// pass C1-H / C1-M, and the scenario is a hard failure.
+	s := ScenarioReport{ID: "C1-M", Valid: true, Levels: []LevelReport{hybridLevel(1, 600, 600, nil), oneSuccess}}
+	for _, l := range s.Levels {
+		if prob := HybridLevelProblem(l); prob != "" {
+			s.Invalidate(prob)
+		}
+	}
+	if s.Valid {
+		t.Fatal("scenario must be invalid")
+	}
+	v := EvaluateScenario(s, TargetC1MP95, MinMeasuredPerScenario)
+	if !v.Applicable || v.Pass {
+		t.Fatalf("an invalid hybrid scenario must FAIL even at p95 2 ms: %+v", v)
+	}
+	if !strings.Contains(v.Note, "scenario invalid") {
+		t.Fatalf("verdict note %q must say the scenario is invalid", v.Note)
+	}
+	hard := HardFailures(&Report{C1: []ScenarioReport{s}})
+	if len(hard) != 1 || !strings.Contains(hard[0], "degraded=1999") {
+		t.Fatalf("hard failures = %v, want one entry with the reason counts", hard)
+	}
+	s.Invalidate("second reason")
+	if !strings.HasPrefix(s.InvalidReason, "c=8:") || !strings.HasSuffix(s.InvalidReason, "second reason") {
+		t.Fatalf("Invalidate must keep the first reason and append later ones: %q", s.InvalidReason)
+	}
+}
+
 // mdColumns counts the cells of a Markdown table row, honouring `\|` escapes.
 func mdColumns(line string) int {
 	n, esc := 0, false

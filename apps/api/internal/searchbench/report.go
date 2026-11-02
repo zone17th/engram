@@ -594,16 +594,19 @@ func BuildSizingTable(sr *SeedResult) *SizingTable {
 
 // LevelReport is one closed-loop concurrency level of a C1 scenario.
 type LevelReport struct {
-	Concurrency    int          `json:"concurrency"`
-	Stats          LatencyStats `json:"stats"`
-	Warmup         int          `json:"warmup_discarded"`
-	Wall           float64      `json:"wall_seconds"`
-	RPS            float64      `json:"requests_per_second"`
-	SemanticRan    int          `json:"semantic_ran"`
-	SemanticOff    int          `json:"semantic_not_ran"`
-	LexicalPartial int          `json:"lexical_partial"`
-	CrossTenant    int          `json:"cross_tenant_rows"`
-	StubCalls      int64        `json:"stub_provider_calls"`
+	Concurrency int          `json:"concurrency"`
+	Stats       LatencyStats `json:"stats"`
+	Warmup      int          `json:"warmup_discarded"`
+	Wall        float64      `json:"wall_seconds"`
+	RPS         float64      `json:"requests_per_second"`
+	SemanticRan int          `json:"semantic_ran"`
+	SemanticOff int          `json:"semantic_not_ran"`
+	// SemanticOffReasons counts the response semantic_reason of the measured
+	// requests where semantic did not run (degraded, disabled_*, ...).
+	SemanticOffReasons map[string]int `json:"semantic_not_ran_reasons,omitempty"`
+	LexicalPartial     int            `json:"lexical_partial"`
+	CrossTenant        int            `json:"cross_tenant_rows"`
+	StubCalls          int64          `json:"stub_provider_calls"`
 }
 
 // ScenarioReport is one C1 scenario across 1/8/32 clients.
@@ -613,6 +616,49 @@ type ScenarioReport struct {
 	Valid         bool          `json:"valid"`
 	InvalidReason string        `json:"invalid_reason,omitempty"`
 	Levels        []LevelReport `json:"levels"`
+}
+
+// Invalidate marks the scenario as not valid target evidence. The first reason
+// stays first; later reasons are appended.
+func (s *ScenarioReport) Invalidate(reason string) {
+	if s.Valid || s.InvalidReason == "" {
+		s.InvalidReason = reason
+	} else {
+		s.InvalidReason += "; " + reason
+	}
+	s.Valid = false
+}
+
+// reasonCounts renders reason counts deterministically ("degraded=3, none=1").
+func reasonCounts(m map[string]int) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// HybridLevelProblem validates one level of a hybrid scenario (C1-H / C1-M):
+// EVERY measured request must have run semantic successfully. A request that
+// fell back to lexical-only (degraded vector branch, skipped semantic, ...)
+// answers faster than the hybrid path being measured, so one success among
+// degraded responses is not hybrid latency evidence. It returns "" when the
+// level is valid and the reason otherwise (with the reason counts).
+func HybridLevelProblem(l LevelReport) string {
+	switch {
+	case l.SemanticRan == 0:
+		return fmt.Sprintf("c=%d: semantic never ran (%d of %d measured requests not semantic: %s)",
+			l.Concurrency, l.SemanticOff, l.Stats.N, orUnknown(reasonCounts(l.SemanticOffReasons)))
+	case l.SemanticOff > 0:
+		return fmt.Sprintf("c=%d: %d of %d measured requests did not run semantic (%s); degraded responses are not hybrid latency evidence",
+			l.Concurrency, l.SemanticOff, l.Stats.N, orUnknown(reasonCounts(l.SemanticOffReasons)))
+	}
+	return ""
 }
 
 // Level returns the report of the given concurrency (ok=false if absent).
@@ -921,6 +967,13 @@ func CollectHardware(env Env, pg PGInfo) HardwareInfo {
 	return h
 }
 
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 func orUnknown(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "unknown"
@@ -1053,11 +1106,11 @@ func RenderMarkdown(r *Report) string {
 		if !s.Valid {
 			w("**INVALID**: %s\n\n", s.InvalidReason)
 		}
-		w("| Clients | n | p50 ms | p95 ms | p99 ms | max ms | errors | req/s | semantic ran/off | lexical_partial | stub calls | cross-tenant |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		w("| Clients | n | p50 ms | p95 ms | p99 ms | max ms | errors | req/s | semantic ran/off | semantic-off reasons | lexical_partial | stub calls | cross-tenant |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, l := range s.Levels {
-			w("| %d | %d | %.2f | %.2f | %.2f | %.2f | %d | %.0f | %d/%d | %d | %d | %d |\n", l.Concurrency, l.Stats.N,
+			w("| %d | %d | %.2f | %.2f | %.2f | %.2f | %d | %.0f | %d/%d | %s | %d | %d | %d |\n", l.Concurrency, l.Stats.N,
 				l.Stats.P50Ms, l.Stats.P95Ms, l.Stats.P99Ms, l.Stats.MaxMs, l.Stats.Errors, l.RPS,
-				l.SemanticRan, l.SemanticOff, l.LexicalPartial, l.StubCalls, l.CrossTenant)
+				l.SemanticRan, l.SemanticOff, mdCell(orDash(reasonCounts(l.SemanticOffReasons))), l.LexicalPartial, l.StubCalls, l.CrossTenant)
 		}
 		w("\n")
 	}
