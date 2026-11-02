@@ -3,6 +3,7 @@ package suggest_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -153,6 +154,41 @@ func TestCursorStrictDecodeRejectsMalformed(t *testing.T) {
 		return base64.RawURLEncoding.EncodeToString(out)
 	}
 
+	// Build a valid cursor padded with trailing JSON spaces to reach the exact 768-byte raw JSON
+	// boundary that base64url-encodes to `suggest.MaxEncodedCursorBytes` (1024 bytes).
+	maxDecodedBytes := (suggest.MaxEncodedCursorBytes * 3) / 4
+	if len(rawJSONBytes) >= maxDecodedBytes {
+		t.Fatalf("unexpected rawJSONBytes len %d >= %d", len(rawJSONBytes), maxDecodedBytes)
+	}
+	exactMaxToken := b64(string(rawJSONBytes) + strings.Repeat(" ", maxDecodedBytes-len(rawJSONBytes)))
+	if len(exactMaxToken) != suggest.MaxEncodedCursorBytes {
+		t.Fatalf("got exactMaxToken len %d, want %d", len(exactMaxToken), suggest.MaxEncodedCursorBytes)
+	}
+	if _, err := suggest.DecodeCursor(key, exactMaxToken, suggest.ScopeAll, "wifi"); err != nil {
+		t.Fatalf("expected cursor of exact MaxEncodedCursorBytes (%d) to succeed, got: %v", suggest.MaxEncodedCursorBytes, err)
+	}
+
+	maxPlusOneToken := b64(string(rawJSONBytes) + strings.Repeat(" ", maxDecodedBytes-len(rawJSONBytes)+1))
+	if len(maxPlusOneToken) <= suggest.MaxEncodedCursorBytes {
+		t.Fatalf("expected maxPlusOneToken len > %d, got %d", suggest.MaxEncodedCursorBytes, len(maxPlusOneToken))
+	}
+
+	hugeWhitespaceToken := b64(string(rawJSONBytes) + strings.Repeat(" \t", 4096))
+
+	manyUnknownMembersToken := mutateJSON(func(m map[string]any) {
+		for i := range 64 {
+			m[fmt.Sprintf("u%02d", i)] = i
+		}
+	})
+	inLimitManyUnknownMembersToken := mutateJSON(func(m map[string]any) {
+		for i := range 12 {
+			m[fmt.Sprintf("u%d", i)] = 1
+		}
+	})
+	if len(inLimitManyUnknownMembersToken) > suggest.MaxEncodedCursorBytes {
+		t.Fatalf("expected inLimitManyUnknownMembersToken len <= %d, got %d", suggest.MaxEncodedCursorBytes, len(inLimitManyUnknownMembersToken))
+	}
+
 	badTokens := []struct {
 		name  string
 		token string
@@ -178,6 +214,12 @@ func TestCursorStrictDecodeRejectsMalformed(t *testing.T) {
 		{"kind-mismatch-tag-on-all", mutateJSON(func(m map[string]any) { m["kind"] = "tag" }), suggest.ScopeAll, "wifi"},
 		{"tampered-qh", mutateJSON(func(m map[string]any) { m["qh"] = "BBBBBBBBBBBBBBBBBBBBBB" }), suggest.ScopeAll, "wifi"},
 		{"short-qh", mutateJSON(func(m map[string]any) { m["qh"] = "AAAA" }), suggest.ScopeAll, "wifi"},
+		{"long-qh", mutateJSON(func(m map[string]any) { m["qh"] = strings.Repeat("A", suggest.CursorQueryHashEncodedLen+4) }), suggest.ScopeAll, "wifi"},
+		{"over-max-encoded-cursor-len-by-one", exactMaxToken + "A", suggest.ScopeAll, "wifi"},
+		{"over-max-encoded-cursor-valid-json", maxPlusOneToken, suggest.ScopeAll, "wifi"},
+		{"huge-json-whitespace", hugeWhitespaceToken, suggest.ScopeAll, "wifi"},
+		{"many-unknown-members-over-max", manyUnknownMembersToken, suggest.ScopeAll, "wifi"},
+		{"many-unknown-members-in-limit", inLimitManyUnknownMembersToken, suggest.ScopeAll, "wifi"},
 		{"gen-zero", mutateJSON(func(m map[string]any) { m["gen"] = 0 }), suggest.ScopeAll, "wifi"},
 		{"gen-10000", mutateJSON(func(m map[string]any) { m["gen"] = 10000 }), suggest.ScopeAll, "wifi"},
 		{"gen-string", mutateJSON(func(m map[string]any) { m["gen"] = "1" }), suggest.ScopeAll, "wifi"},

@@ -24,6 +24,20 @@ const CursorVersion = 1
 // `HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn)` stored in `qh` (SPEC §6.6, §9.2, plan P05 mục 2.5).
 const CursorQueryHashBytes = 16
 
+// CursorQueryHashEncodedLen is the canonical unpadded base64url character length of a
+// 16-byte `qh` (`ceil(16 * 8 / 6) = 22` characters).
+const CursorQueryHashEncodedLen = 22
+
+// MaxEncodedCursorBytes is the upper bound on the byte length of an incoming base64url-encoded
+// `/search` cursor accepted by `DecodeCursor` before allocating/decoding (RV-T4-BE-2).
+//
+// Largest legitimate canonical encoding produced by `EncodeCursor`:
+//   - Compact JSON `{"v":1,"scope":"item","kind":"item","gen":9999,"qh":"<22 chars>","tier":3,"score":<up to 24 chars>,"last_used_at":"9999-12-31T23:59:59.999999Z","count":2147483647,"id":"<36 chars>"}`
+//     is at most ~205–218 raw JSON bytes (~274–291 unpadded base64url bytes).
+//   - Setting `MaxEncodedCursorBytes = 1024` (768 decoded JSON bytes) stays comfortably above
+//     any valid cursor while bounding base64/JSON allocation before decoding.
+const MaxEncodedCursorBytes = 1024
+
 // SearchCursor holds the keyset pagination state for `GET /api/v1/search`
 // (SPEC §6.6, §9.2, plan P05 mục 2.4, 2.5, BE-12, FU-SL-2, Task 4).
 //
@@ -171,7 +185,7 @@ func EncodeCursor(cursorKey []byte, qn string, cur SearchCursor) (string, error)
 // HMAC mismatch) returns `ErrInvalidRequest` with a static detail that never echoes the
 // cursor or query (SPEC §9.2, plan P05 mục 2.5, 2.7, Task 4).
 func DecodeCursor(cursorKey []byte, raw string, expectedScope string, qn string) (SearchCursor, error) {
-	if raw == "" || len(cursorKey) == 0 {
+	if raw == "" || len(raw) > MaxEncodedCursorBytes || len(cursorKey) == 0 {
 		return SearchCursor{}, ErrInvalidRequest
 	}
 	wantKind, ok := ExpectedCursorKindForScope(expectedScope)
@@ -220,7 +234,7 @@ func DecodeCursor(cursorKey []byte, raw string, expectedScope string, qn string)
 
 	// 5. qh: base64url (no padding) of 16-byte truncated HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn).
 	qhStr, ok := obj["qh"].(string)
-	if !ok || qhStr == "" {
+	if !ok || len(qhStr) != CursorQueryHashEncodedLen {
 		return SearchCursor{}, ErrInvalidRequest
 	}
 	gotQH, err := base64.RawURLEncoding.Strict().DecodeString(qhStr)
@@ -320,6 +334,9 @@ func decodeStrictCursorObject(jsonBytes []byte) (map[string]any, error) {
 			return nil, ErrInvalidRequest
 		}
 		if _, dup := obj[key]; dup {
+			return nil, ErrInvalidRequest
+		}
+		if len(obj) >= len(cursorRequiredKeys) {
 			return nil, ErrInvalidRequest
 		}
 

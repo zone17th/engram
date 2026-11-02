@@ -1292,6 +1292,14 @@ func TestSearchCursorBoundToQueryScope(t *testing.T) {
 				})},
 			},
 		},
+		{
+			name: "oversized-cursor-over-max-encoded-bytes",
+			params: url.Values{
+				"q":      {"wifi"},
+				"scope":  {"item"},
+				"cursor": {itemCur + strings.Repeat("A", suggest.MaxEncodedCursorBytes)},
+			},
+		},
 	}
 
 	for _, tc := range cases {
