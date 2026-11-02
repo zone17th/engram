@@ -287,7 +287,7 @@ func TestDBGaugeLagIgnoresLaterRewrite(t *testing.T) {
 	             'embedding'
 	        FROM (VALUES (interval '0 seconds', interval '1 second'),
 	                     (interval '100 seconds', interval '101 seconds')) AS c(created_off, finalized_off)`,
-		userID, itemID, hashHex)
+		userID, itemID, hashHex, base)
 
 	lags, err := obs.NewDBGaugeSource(pool).JobLag(ctx)
 	if err != nil {
@@ -432,14 +432,42 @@ func TestDBGaugeWaiterHonoursOwnContext(t *testing.T) {
 	src := obs.NewDBGaugeSource(q)
 	guard := func() <-chan time.Time { return time.After(30 * time.Second) }
 
+	// RV-T20a-BE-8: dọn dẹp đăng ký TRƯỚC khi chạy bất kỳ goroutine nào, nên dù
+	// t.Fatal ở đâu thì gate vẫn được thả (idempotent), leader bị huỷ và mọi
+	// goroutine đã khởi chạy đều được chờ với chốt chặn có giới hạn.
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	releaseGate := sync.OnceFunc(func() { close(q.release) })
+	var started sync.WaitGroup
+	t.Cleanup(func() {
+		releaseGate() // thả truy vấn đang chặn trước, rồi huỷ leader
+		cancelLeader()
+		joined := make(chan struct{})
+		go func() {
+			started.Wait()
+			close(joined)
+		}()
+		select {
+		case <-joined:
+		case <-guard():
+			t.Error("goroutines of the blocked-load test did not exit after cleanup")
+		}
+	})
+
 	type result struct {
 		err error
 	}
-	first := make(chan result, 1)
-	go func() {
-		_, err := src.DeadLetterJobs(context.Background())
-		first <- result{err}
-	}()
+	launch := func(ctx context.Context) <-chan result {
+		ch := make(chan result, 1)
+		started.Add(1)
+		go func() {
+			defer started.Done()
+			_, err := src.DeadLetterJobs(ctx)
+			ch <- result{err}
+		}()
+		return ch
+	}
+
+	first := launch(leaderCtx)
 	select {
 	case <-q.entered: // lần nạp đang chạy và bị chặn trong Query
 	case <-guard():
@@ -449,11 +477,7 @@ func TestDBGaugeWaiterHonoursOwnContext(t *testing.T) {
 	// Người gọi với context đã huỷ: phải trả về trước khi lần nạp được thả.
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	second := make(chan result, 1)
-	go func() {
-		_, err := src.DeadLetterJobs(cancelled)
-		second <- result{err}
-	}()
+	second := launch(cancelled)
 	select {
 	case r := <-second:
 		if !errors.Is(r.err, context.Canceled) {
@@ -469,14 +493,10 @@ func TestDBGaugeWaiterHonoursOwnContext(t *testing.T) {
 	}
 
 	// Người gọi còn sống chờ chung lần nạp (đến sau khi nạp xong thì dùng cache).
-	third := make(chan result, 1)
-	go func() {
-		_, err := src.DeadLetterJobs(context.Background())
-		third <- result{err}
-	}()
+	third := launch(context.Background())
 
-	close(q.release)
-	for name, ch := range map[string]chan result{"first": first, "third": third} {
+	releaseGate()
+	for name, ch := range map[string]<-chan result{"first": first, "third": third} {
 		select {
 		case r := <-ch:
 			if !errors.Is(r.err, errGate) {
