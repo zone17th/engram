@@ -495,10 +495,6 @@ func semevalCosine(a, b []float32, pairID string) (float64, error) {
 }
 
 func semevalWriteReportAtomic(outPath string, report semevalReport) error {
-	if err := semevalCheckOutputNotExists(outPath); err != nil {
-		return err
-	}
-
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return errors.New("encode report JSON failed")
@@ -511,11 +507,8 @@ func semevalWriteReportAtomic(outPath string, report semevalReport) error {
 		return errors.New("cannot create temporary report file")
 	}
 	tmpName := tmpFile.Name()
-	cleanupTmp := true
 	defer func() {
-		if cleanupTmp {
-			_ = os.Remove(tmpName)
-		}
+		_ = os.Remove(tmpName)
 	}()
 
 	if _, err := tmpFile.Write(encoded); err != nil {
@@ -530,13 +523,11 @@ func semevalWriteReportAtomic(outPath string, report semevalReport) error {
 		return errors.New("cannot close temporary report file")
 	}
 
-	if err := semevalCheckOutputNotExists(outPath); err != nil {
-		return err
+	if err := os.Link(tmpName, outPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errors.New("output file already exists (refusing to overwrite)")
+		}
+		return errors.New("cannot publish report file into place")
 	}
-	if err := os.Rename(tmpName, outPath); err != nil {
-		return errors.New("cannot rename report file into place")
-	}
-	cleanupTmp = false
-	_ = os.Chmod(outPath, 0o644)
 	return nil
 }
