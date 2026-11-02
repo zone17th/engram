@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wifi — engram</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="search.css">
 <link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
@@ -123,16 +124,17 @@
     </a>
 
     <div class="relative flex-1 min-w-0 max-w-[420px] hidden md:block" data-omnibox id="omni">
-      <label class="omnibox-shell !py-2.5 !px-3.5">
+      <div class="omnibox-shell !py-2.5 !px-3.5">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
         <textarea rows="1" class="omnibox-input !text-[15px]" placeholder="Tìm hoặc tên: nội dung"
                   data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
-                  aria-label="Tìm hoặc lưu · Search or save"></textarea>
+                  aria-label="Tìm hoặc lưu"></textarea>
+        <button type="button" class="omni-sem-btn mono" data-omni-sem-toggle aria-pressed="true" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
         <span class="kbd">/</span>
-      </label>
+      </div>
       <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[420px] overflow-auto"></div>
     </div>
 
