@@ -1,0 +1,646 @@
+{
+  "schema": "engram.semeval.report.v1",
+  "provider": "tei",
+  "model": "tei/engram-fakeembed",
+  "model_version": "fakeembed-v1;qp=e3b0c442;dp=e3b0c442",
+  "dims": 1024,
+  "pairs_file": "docs/benchmarks/semantic-eval/pairs.v1.jsonl",
+  "pairs_sha256": "3be08d083841040fa9e0b5c13e56642309f4f50b33fa43a8d04ac55e953eb961",
+  "grid": {
+    "min": 0.3,
+    "max": 0.9,
+    "step": 0.01
+  },
+  "max_fpr": 0.05,
+  "min_recall": 0.6,
+  "threshold": 0.62,
+  "precision": 0.9722222222222222,
+  "recall": 0.9459459459459459,
+  "fpr": 0.04,
+  "decision": "ok",
+  "generated_at": "2026-11-02T00:00:00Z",
+  "synthetic": true,
+  "note": "CI fake model (cmd/fakeembed) synthetic report; NonProductionOnly=true, not a calibration of a real model.",
+  "results": [
+    {
+      "id": "p001",
+      "label": "related",
+      "cos": 0.72
+    },
+    {
+      "id": "p002",
+      "label": "related",
+      "cos": 0.79
+    },
+    {
+      "id": "p003",
+      "label": "related",
+      "cos": 0.86
+    },
+    {
+      "id": "p004",
+      "label": "related",
+      "cos": 0.93
+    },
+    {
+      "id": "p005",
+      "label": "related",
+      "cos": 0.77
+    },
+    {
+      "id": "p006",
+      "label": "related",
+      "cos": 0.84
+    },
+    {
+      "id": "p007",
+      "label": "related",
+      "cos": 0.91
+    },
+    {
+      "id": "p008",
+      "label": "related",
+      "cos": 0.75
+    },
+    {
+      "id": "p009",
+      "label": "related",
+      "cos": 0.82
+    },
+    {
+      "id": "p010",
+      "label": "related",
+      "cos": 0.89
+    },
+    {
+      "id": "p011",
+      "label": "related",
+      "cos": 0.73
+    },
+    {
+      "id": "p012",
+      "label": "related",
+      "cos": 0.8
+    },
+    {
+      "id": "p013",
+      "label": "unrelated",
+      "cos": 0.14
+    },
+    {
+      "id": "p014",
+      "label": "unrelated",
+      "cos": 0.21
+    },
+    {
+      "id": "p015",
+      "label": "unrelated",
+      "cos": 0.28
+    },
+    {
+      "id": "p016",
+      "label": "unrelated",
+      "cos": 0.35
+    },
+    {
+      "id": "p017",
+      "label": "unrelated",
+      "cos": 0.42
+    },
+    {
+      "id": "p018",
+      "label": "unrelated",
+      "cos": 0.49
+    },
+    {
+      "id": "p019",
+      "label": "related",
+      "cos": 0.87
+    },
+    {
+      "id": "p020",
+      "label": "related",
+      "cos": 0.94
+    },
+    {
+      "id": "p021",
+      "label": "related",
+      "cos": 0.78
+    },
+    {
+      "id": "p022",
+      "label": "related",
+      "cos": 0.85
+    },
+    {
+      "id": "p023",
+      "label": "related",
+      "cos": 0.92
+    },
+    {
+      "id": "p024",
+      "label": "related",
+      "cos": 0.76
+    },
+    {
+      "id": "p025",
+      "label": "related",
+      "cos": 0.83
+    },
+    {
+      "id": "p026",
+      "label": "related",
+      "cos": 0.9
+    },
+    {
+      "id": "p027",
+      "label": "related",
+      "cos": 0.74
+    },
+    {
+      "id": "p028",
+      "label": "related",
+      "cos": 0.81
+    },
+    {
+      "id": "p029",
+      "label": "related",
+      "cos": 0.88
+    },
+    {
+      "id": "p030",
+      "label": "related",
+      "cos": 0.72
+    },
+    {
+      "id": "p031",
+      "label": "unrelated",
+      "cos": 0.17
+    },
+    {
+      "id": "p032",
+      "label": "unrelated",
+      "cos": 0.24
+    },
+    {
+      "id": "p033",
+      "label": "unrelated",
+      "cos": 0.31
+    },
+    {
+      "id": "p034",
+      "label": "unrelated",
+      "cos": 0.38
+    },
+    {
+      "id": "p035",
+      "label": "unrelated",
+      "cos": 0.45
+    },
+    {
+      "id": "p036",
+      "label": "unrelated",
+      "cos": 0.52
+    },
+    {
+      "id": "p037",
+      "label": "related",
+      "cos": 0.79
+    },
+    {
+      "id": "p038",
+      "label": "related",
+      "cos": 0.86
+    },
+    {
+      "id": "p039",
+      "label": "related",
+      "cos": 0.93
+    },
+    {
+      "id": "p040",
+      "label": "related",
+      "cos": 0.77
+    },
+    {
+      "id": "p041",
+      "label": "related",
+      "cos": 0.84
+    },
+    {
+      "id": "p042",
+      "label": "related",
+      "cos": 0.91
+    },
+    {
+      "id": "p043",
+      "label": "related",
+      "cos": 0.75
+    },
+    {
+      "id": "p044",
+      "label": "related",
+      "cos": 0.82
+    },
+    {
+      "id": "p045",
+      "label": "related",
+      "cos": 0.89
+    },
+    {
+      "id": "p046",
+      "label": "related",
+      "cos": 0.73
+    },
+    {
+      "id": "p047",
+      "label": "related",
+      "cos": 0.8
+    },
+    {
+      "id": "p048",
+      "label": "related",
+      "cos": 0.87
+    },
+    {
+      "id": "p049",
+      "label": "unrelated",
+      "cos": 0.2
+    },
+    {
+      "id": "p050",
+      "label": "unrelated",
+      "cos": 0.27
+    },
+    {
+      "id": "p051",
+      "label": "unrelated",
+      "cos": 0.34
+    },
+    {
+      "id": "p052",
+      "label": "unrelated",
+      "cos": 0.41
+    },
+    {
+      "id": "p053",
+      "label": "unrelated",
+      "cos": 0.48
+    },
+    {
+      "id": "p054",
+      "label": "unrelated",
+      "cos": 0.16
+    },
+    {
+      "id": "p055",
+      "label": "related",
+      "cos": 0.94
+    },
+    {
+      "id": "p056",
+      "label": "related",
+      "cos": 0.78
+    },
+    {
+      "id": "p057",
+      "label": "related",
+      "cos": 0.85
+    },
+    {
+      "id": "p058",
+      "label": "related",
+      "cos": 0.92
+    },
+    {
+      "id": "p059",
+      "label": "related",
+      "cos": 0.76
+    },
+    {
+      "id": "p060",
+      "label": "related",
+      "cos": 0.83
+    },
+    {
+      "id": "p061",
+      "label": "related",
+      "cos": 0.9
+    },
+    {
+      "id": "p062",
+      "label": "related",
+      "cos": 0.74
+    },
+    {
+      "id": "p063",
+      "label": "related",
+      "cos": 0.81
+    },
+    {
+      "id": "p064",
+      "label": "related",
+      "cos": 0.88
+    },
+    {
+      "id": "p065",
+      "label": "unrelated",
+      "cos": 0.23
+    },
+    {
+      "id": "p066",
+      "label": "unrelated",
+      "cos": 0.3
+    },
+    {
+      "id": "p067",
+      "label": "unrelated",
+      "cos": 0.37
+    },
+    {
+      "id": "p068",
+      "label": "unrelated",
+      "cos": 0.44
+    },
+    {
+      "id": "p069",
+      "label": "unrelated",
+      "cos": 0.51
+    },
+    {
+      "id": "p070",
+      "label": "unrelated",
+      "cos": 0.19
+    },
+    {
+      "id": "p071",
+      "label": "related",
+      "cos": 0.72
+    },
+    {
+      "id": "p072",
+      "label": "related",
+      "cos": 0.79
+    },
+    {
+      "id": "p073",
+      "label": "related",
+      "cos": 0.86
+    },
+    {
+      "id": "p074",
+      "label": "related",
+      "cos": 0.93
+    },
+    {
+      "id": "p075",
+      "label": "related",
+      "cos": 0.77
+    },
+    {
+      "id": "p076",
+      "label": "related",
+      "cos": 0.84
+    },
+    {
+      "id": "p077",
+      "label": "related",
+      "cos": 0.91
+    },
+    {
+      "id": "p078",
+      "label": "related",
+      "cos": 0.75
+    },
+    {
+      "id": "p079",
+      "label": "related",
+      "cos": 0.82
+    },
+    {
+      "id": "p080",
+      "label": "related",
+      "cos": 0.89
+    },
+    {
+      "id": "p081",
+      "label": "related",
+      "cos": 0.73
+    },
+    {
+      "id": "p082",
+      "label": "related",
+      "cos": 0.8
+    },
+    {
+      "id": "p083",
+      "label": "unrelated",
+      "cos": 0.26
+    },
+    {
+      "id": "p084",
+      "label": "unrelated",
+      "cos": 0.33
+    },
+    {
+      "id": "p085",
+      "label": "unrelated",
+      "cos": 0.4
+    },
+    {
+      "id": "p086",
+      "label": "unrelated",
+      "cos": 0.47
+    },
+    {
+      "id": "p087",
+      "label": "unrelated",
+      "cos": 0.15
+    },
+    {
+      "id": "p088",
+      "label": "unrelated",
+      "cos": 0.22
+    },
+    {
+      "id": "p089",
+      "label": "related",
+      "cos": 0.87
+    },
+    {
+      "id": "p090",
+      "label": "related",
+      "cos": 0.94
+    },
+    {
+      "id": "p091",
+      "label": "related",
+      "cos": 0.78
+    },
+    {
+      "id": "p092",
+      "label": "related",
+      "cos": 0.85
+    },
+    {
+      "id": "p093",
+      "label": "related",
+      "cos": 0.92
+    },
+    {
+      "id": "p094",
+      "label": "related",
+      "cos": 0.76
+    },
+    {
+      "id": "p095",
+      "label": "related",
+      "cos": 0.83
+    },
+    {
+      "id": "p096",
+      "label": "related",
+      "cos": 0.9
+    },
+    {
+      "id": "p097",
+      "label": "related",
+      "cos": 0.74
+    },
+    {
+      "id": "p098",
+      "label": "related",
+      "cos": 0.81
+    },
+    {
+      "id": "p099",
+      "label": "related",
+      "cos": 0.88
+    },
+    {
+      "id": "p100",
+      "label": "related",
+      "cos": 0.72
+    },
+    {
+      "id": "p101",
+      "label": "unrelated",
+      "cos": 0.29
+    },
+    {
+      "id": "p102",
+      "label": "unrelated",
+      "cos": 0.36
+    },
+    {
+      "id": "p103",
+      "label": "unrelated",
+      "cos": 0.43
+    },
+    {
+      "id": "p104",
+      "label": "unrelated",
+      "cos": 0.5
+    },
+    {
+      "id": "p105",
+      "label": "unrelated",
+      "cos": 0.18
+    },
+    {
+      "id": "p106",
+      "label": "unrelated",
+      "cos": 0.25
+    },
+    {
+      "id": "p107",
+      "label": "unrelated",
+      "cos": 0.67
+    },
+    {
+      "id": "p108",
+      "label": "unrelated",
+      "cos": 0.64
+    },
+    {
+      "id": "p109",
+      "label": "unrelated",
+      "cos": 0.61
+    },
+    {
+      "id": "p110",
+      "label": "unrelated",
+      "cos": 0.51
+    },
+    {
+      "id": "p111",
+      "label": "unrelated",
+      "cos": 0.54
+    },
+    {
+      "id": "p112",
+      "label": "unrelated",
+      "cos": 0.57
+    },
+    {
+      "id": "p113",
+      "label": "unrelated",
+      "cos": 0.43
+    },
+    {
+      "id": "p114",
+      "label": "unrelated",
+      "cos": 0.46
+    },
+    {
+      "id": "p115",
+      "label": "unrelated",
+      "cos": 0.49
+    },
+    {
+      "id": "p116",
+      "label": "unrelated",
+      "cos": 0.52
+    },
+    {
+      "id": "p117",
+      "label": "unrelated",
+      "cos": 0.55
+    },
+    {
+      "id": "p118",
+      "label": "unrelated",
+      "cos": 0.58
+    },
+    {
+      "id": "p119",
+      "label": "unrelated",
+      "cos": 0.44
+    },
+    {
+      "id": "p120",
+      "label": "unrelated",
+      "cos": 0.47
+    },
+    {
+      "id": "p121",
+      "label": "related",
+      "cos": 0.55
+    },
+    {
+      "id": "p122",
+      "label": "related",
+      "cos": 0.57
+    },
+    {
+      "id": "p123",
+      "label": "related",
+      "cos": 0.58
+    },
+    {
+      "id": "p124",
+      "label": "related",
+      "cos": 0.6
+    }
+  ]
+}
