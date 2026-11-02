@@ -35,10 +35,14 @@ import (
 // bounded `error_class`, and a client disconnect must be neither partial nor a server error.
 //
 // RV-SB1-BE-2: these regressions run on a TxStarter / pgx.Tx FAKE with canned rows, never on
-// the database, so no real query latency can expire the healthy sibling branch and every
-// genuine error is injected while the branch context is alive. The only wall-clock wait is the
-// intended branch's own 50 ms budget (a hook blocks on its ctx.Done()). The real-DB 57014 path
-// stays covered by TestSuggestBranchTimeoutPartial.
+// the database, so no real query latency can expire the healthy sibling branch. The only
+// wall-clock wait is the intended branch's own 50 ms budget in the partial tests (a hook blocks
+// on its ctx.Done()). The real-DB 57014 path stays covered by TestSuggestBranchTimeoutPartial.
+//
+// RV-SB1-BE-4: every GENUINE-error assertion (exact class, one WARN, fields, privacy, static
+// 500) installs liveBranchContext through TestHooks.BranchContext, so the branch context has no
+// timer and the real 50 ms budget cannot fire between the injected error and classification.
+// A request cancel still reaches the branch because the live context is a child of the request.
 
 const (
 	failSentinelQuery = "failsentinelqueryxyz"
@@ -87,6 +91,9 @@ func (r *fakeRows) Err() error { return nil }
 type fakeTx struct {
 	pgx.Tx
 	cfg *fakeDB
+	// onRollback runs in THIS transaction's deferred Rollback only (RV-SB1-BE-5); a test sets
+	// it from a branch hook through the pgx.Tx it receives.
+	onRollback func()
 }
 
 // fakeDB is the shared configuration of every fake transaction.
@@ -95,8 +102,6 @@ type fakeDB struct {
 	queryErr map[string]error
 	// beginErr, when set, is called by BeginTx and its error is returned.
 	beginErr func(ctx context.Context) error
-	// onRollback runs after a branch returned (Rollback is deferred in the branch).
-	onRollback func()
 }
 
 func (d *fakeDB) BeginTx(ctx context.Context, _ pgx.TxOptions) (pgx.Tx, error) {
@@ -113,10 +118,16 @@ func (t *fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error
 }
 
 func (t *fakeTx) Rollback(context.Context) error {
-	if t.cfg.onRollback != nil {
-		t.cfg.onRollback()
+	if t.onRollback != nil {
+		t.onRollback()
 	}
 	return nil
+}
+
+// liveBranchContext is the TestHooks.BranchContext of the genuine-error regressions: a branch
+// context without a timer, canceled only by its own deferred cancel or by the request.
+func liveBranchContext(parent context.Context, _ string) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
 }
 
 func (t *fakeTx) Query(_ context.Context, sql string, _ ...any) (pgx.Rows, error) {
@@ -375,7 +386,13 @@ func TestSuggestGenuineErrorLogsErrorClass(t *testing.T) {
 			env.logBuf.Reset()
 			env.db.queryErr = nil
 			beforeItem, beforeTag := env.partialCounters()
-			env.svc.SetTestHooks(c.hook)
+			// Genuine errors are asserted on a branch context that cannot expire (RV-SB1-BE-4).
+			hooks := c.hook
+			if hooks == nil {
+				hooks = &suggest.TestHooks{}
+			}
+			hooks.BranchContext = liveBranchContext
+			env.svc.SetTestHooks(hooks)
 			env.svc.SetNearSource(nil)
 			if c.install != nil {
 				c.install()
@@ -488,28 +505,52 @@ func TestSuggestClientDisconnectNotServerError(t *testing.T) {
 	}
 }
 
+// cancelFromOwnRollback makes the transaction a branch hook received cancel the request from
+// its OWN deferred Rollback (RV-SB1-BE-5). That Rollback runs in the failing branch goroutine
+// right after its fail closure returned the classification (partial) and before wg.Done, so
+// the cancel can only land after the target branch was classified partial, and a healthy
+// sibling's rollback (a different fakeTx) never cancels. The returned recorder is true once
+// the cancel fired with the request still alive and the branch budget expired, i.e. with the
+// branch classified partial before the cancel.
+func cancelFromOwnRollback(t *testing.T, tx pgx.Tx, parent, branch context.Context, cancel context.CancelFunc) *atomic.Bool {
+	t.Helper()
+	ft, ok := tx.(*fakeTx)
+	if !ok {
+		t.Fatalf("branch tx is %T, want *fakeTx", tx)
+	}
+	var partialBeforeCancel atomic.Bool
+	ft.onRollback = func() {
+		partialBeforeCancel.Store(parent.Err() == nil && errors.Is(branch.Err(), context.DeadlineExceeded))
+		cancel()
+	}
+	return &partialBeforeCancel
+}
+
 // TestSuggestParentCancelAfterPartialClassifiedIsNotPartial (RV-SB1-BE-1, service level): the tag
 // branch is classified partial while the request is alive; the request is canceled right after
-// (in the deferred Rollback, which runs after the classification in the same goroutine). The
-// aggregation must let the parent win: a cancel error, no counter bump, no partial 200.
+// from that branch's own deferred Rollback. The aggregation must let the parent win: a cancel
+// error, no counter bump, no partial 200.
+//
+// Why this fails without the post-Wait parent check in runLexicalBranches (RV-SB1-BE-5): the
+// item sibling is healthy and its rollback cannot cancel. The tag branch returns
+// partial=true (the parent is alive when classifyBranchErr reads it, asserted below through
+// partialBeforeCancel), then its rollback cancels the request, then wg.Done. Without the check,
+// runLexicalBranches sees tagOut.partial, bumps the tag counter and returns a nil error with
+// lexical_partial=[tag], so both the err and the counter assertions below fail on every run;
+// with the check the parent error wins.
 func TestSuggestParentCancelAfterPartialClassifiedIsNotPartial(t *testing.T) {
 	env := newBranchFailEnv(t)
 	beforeItem, beforeTag := env.partialCounters()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var armed atomic.Bool
-	env.db.onRollback = func() {
-		if armed.Load() {
-			cancel()
-		}
-	}
+	var partialBeforeCancel *atomic.Bool
 	env.svc.SetTestHooks(&suggest.TestHooks{
-		AfterBranchSetLocal: func(bctx context.Context, _ pgx.Tx, c string) error {
+		AfterBranchSetLocal: func(bctx context.Context, tx pgx.Tx, c string) error {
 			if c != suggest.CorpusTag {
 				return nil
 			}
-			armed.Store(true)
+			partialBeforeCancel = cancelFromOwnRollback(t, tx, ctx, bctx, cancel)
 			return opaqueAfterBudget(bctx)
 		},
 	})
@@ -519,6 +560,9 @@ func TestSuggestParentCancelAfterPartialClassifiedIsNotPartial(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Suggest err = %v (resp %+v), want a context.Canceled error", err, resp)
+	}
+	if partialBeforeCancel == nil || !partialBeforeCancel.Load() {
+		t.Fatalf("the tag branch must be classified partial (alive parent, expired budget) before the cancel")
 	}
 	afterItem, afterTag := env.partialCounters()
 	if afterItem != beforeItem || afterTag != beforeTag {
@@ -592,6 +636,7 @@ func TestSearchBranchBudgetExpiredOpaqueErrorKeepsPolicy(t *testing.T) {
 	t.Run("genuine-error-logged", func(t *testing.T) {
 		env.logBuf.Reset()
 		env.svc.SetTestHooks(&suggest.TestHooks{
+			BranchContext: liveBranchContext, // RV-SB1-BE-4: no timer can expire the branch
 			AfterBranchSetLocal: func(_ context.Context, _ pgx.Tx, c string) error {
 				if c == suggest.CorpusItem {
 					return errors.New(failSentinelErr)
@@ -640,8 +685,10 @@ func TestSearchBranchBudgetExpiredOpaqueErrorKeepsPolicy(t *testing.T) {
 }
 
 // TestSearchParentCancelAfterPrimaryPartialIsNotCounted (RV-SB1-BE-1): the primary branch is
-// classified partial while the request is alive, then the request is canceled. /search must
-// return the cancel error and count nothing; the handler logs nothing.
+// classified partial while the request is alive, then the request is canceled from that branch's
+// own rollback (RV-SB1-BE-5, see cancelFromOwnRollback). /search must return the cancel error and
+// count nothing; the handler logs nothing. Without the parentDoneErr checks after the aggregation
+// the primary partial would become search_primary_timeout (500, counter+1) instead of the cancel.
 func TestSearchParentCancelAfterPrimaryPartialIsNotCounted(t *testing.T) {
 	for _, scope := range []string{suggest.ScopeItem, suggest.ScopeAll} {
 		t.Run(scope, func(t *testing.T) {
@@ -649,24 +696,22 @@ func TestSearchParentCancelAfterPrimaryPartialIsNotCounted(t *testing.T) {
 			beforeItem, beforeTag := env.partialCounters()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			var armed atomic.Bool
-			env.db.onRollback = func() {
-				if armed.Load() {
-					cancel()
-				}
-			}
+			var partialBeforeCancel *atomic.Bool
 			env.svc.SetTestHooks(&suggest.TestHooks{
-				AfterBranchSetLocal: func(bctx context.Context, _ pgx.Tx, c string) error {
+				AfterBranchSetLocal: func(bctx context.Context, tx pgx.Tx, c string) error {
 					if c != suggest.CorpusItem {
 						return nil
 					}
-					armed.Store(true)
+					partialBeforeCancel = cancelFromOwnRollback(t, tx, ctx, bctx, cancel)
 					return opaqueAfterBudget(bctx)
 				},
 			})
 			_, err := env.svc.Search(ctx, suggest.SearchInput{UserID: fakeUserID, RawQ: "wifi", Scope: scope, Limit: 20, Semantic: true})
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("Search err = %v, want a context.Canceled error", err)
+			}
+			if partialBeforeCancel == nil || !partialBeforeCancel.Load() {
+				t.Fatalf("the item branch must be classified partial (alive parent, expired budget) before the cancel")
 			}
 			afterItem, afterTag := env.partialCounters()
 			if afterItem != beforeItem || afterTag != beforeTag {

@@ -142,7 +142,7 @@ func (s *Service) runLexicalBranches(
 }
 
 func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode string, qn string, fetchLimit int32) itemBranchOutcome {
-	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
+	branchCtx, cancel := s.branchContext(ctx, CorpusItem)
 	defer cancel()
 
 	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
@@ -243,7 +243,7 @@ func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode stri
 }
 
 func (s *Service) runTagBranch(ctx context.Context, userID uuid.UUID, mode string, qn string, fetchLimit int32) tagBranchOutcome {
-	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
+	branchCtx, cancel := s.branchContext(ctx, CorpusTag)
 	defer cancel()
 
 	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or

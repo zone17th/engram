@@ -349,7 +349,7 @@ func (s *Service) runSearchItemPageBranch(
 	cur *SearchCursor,
 	pageLimit int,
 ) searchItemPageOutcome {
-	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
+	branchCtx, cancel := s.branchContext(ctx, CorpusItem)
 	defer cancel()
 
 	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
@@ -465,7 +465,7 @@ func (s *Service) runSearchTagPageBranch(
 	cur *SearchCursor,
 	pageLimit int,
 ) searchTagPageOutcome {
-	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
+	branchCtx, cancel := s.branchContext(ctx, CorpusTag)
 	defer cancel()
 
 	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or

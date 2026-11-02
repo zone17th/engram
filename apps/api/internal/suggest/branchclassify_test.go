@@ -1,10 +1,16 @@
 package suggest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -40,7 +46,7 @@ func expiredCtx(t *testing.T, parent context.Context) context.Context {
 	return ctx
 }
 
-var opaqueErr = fmt.Errorf("conn busy: %v", errors.New("opaque driver state"))
+var errOpaque = fmt.Errorf("conn busy: %v", errors.New("opaque driver state"))
 
 func pgTimeout() error {
 	return fmt.Errorf("query: %w", &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"})
@@ -64,7 +70,7 @@ func TestClassifyBranchErrParentCancelBetweenReadsWins(t *testing.T) {
 	// The branch ran out of its own budget; the parent is canceled right after the branch
 	// state is read. The old order (parent first, then branch) saw an alive parent and an
 	// expired branch -> partial. The parent must win.
-	for _, err := range []error{opaqueErr, pgTimeout(), context.DeadlineExceeded} {
+	for _, err := range []error{errOpaque, pgTimeout(), context.DeadlineExceeded} {
 		parent, cancel := context.WithCancel(context.Background())
 		branch := flipCtx{Context: expiredCtx(t, parent), onErr: cancel}
 		partial, out := classifyBranchErr(parent, branch, err, CorpusItem, ModeFull, ClassLexicalItemDB)
@@ -92,7 +98,7 @@ func TestClassifyBranchErrParentDeadlineIsRequestContext(t *testing.T) {
 	// The branch inherits the parent deadline (so branch.Err() is DeadlineExceeded too).
 	branch, cancel := context.WithTimeout(parent, BranchTimeout)
 	defer cancel()
-	for _, err := range []error{opaqueErr, pgTimeout(), context.DeadlineExceeded} {
+	for _, err := range []error{errOpaque, pgTimeout(), context.DeadlineExceeded} {
 		partial, out := classifyBranchErr(parent, branch, err, CorpusItem, ModeFull, ClassLexicalItemDB)
 		if partial {
 			t.Fatalf("err %v: partial = true, want false (the request deadline fired)", err)
@@ -110,7 +116,7 @@ func TestClassifyBranchErrParentDeadlineIsRequestContext(t *testing.T) {
 func TestClassifyBranchErrOwnBudgetWithLiveParentIsPartial(t *testing.T) {
 	parent := context.Background()
 	branch := expiredCtx(t, parent)
-	for _, err := range []error{opaqueErr, os.ErrDeadlineExceeded, nil} {
+	for _, err := range []error{errOpaque, os.ErrDeadlineExceeded, nil} {
 		partial, out := classifyBranchErr(parent, branch, err, CorpusItem, ModeFull, ClassLexicalItemDB)
 		if !partial || out != nil {
 			t.Fatalf("err %v: (partial, out) = (%v, %v), want (true, nil)", err, partial, out)
@@ -171,5 +177,78 @@ func TestClassifyBranchErrGenuineErrorKeepsClassAndSQLState(t *testing.T) {
 	}
 	if !errors.Is(out, cause) {
 		t.Fatalf("the cause must stay reachable through Unwrap")
+	}
+}
+
+// TestGenuineBranchErrorThroughHandlerLogging (RV-SB1-BE-4): a genuine branch error classified
+// on a non-expiring context, then pushed through the handler's logging and response path, logs
+// exactly one WARN with the bounded fields, answers the static 500 and leaks no cause text. No
+// timer and no service run is involved, so nothing can turn the error into a partial.
+func TestGenuineBranchErrorThroughHandlerLogging(t *testing.T) {
+	const sentinel = "SecretClassifierSentinel"
+	cases := []struct {
+		name       string
+		corpus     string
+		mode       string
+		class      string
+		cause      error
+		wantPGCode string
+	}{
+		{"item-plain", CorpusItem, ModeFull, ClassLexicalItemDB, errors.New(sentinel), ""},
+		{"tag-plain", CorpusTag, ModePrefix, ClassLexicalTagDB, errors.New(sentinel), ""},
+		{"item-tagrefs", CorpusItem, ModeRecent, ClassLexicalItemTagRefs, fmt.Errorf("refs: %w", errors.New(sentinel)), ""},
+		{"item-pgcode", CorpusItem, ModeFull, ClassLexicalItemDB, fmt.Errorf("exec: %w", &pgconn.PgError{Code: "22012", Message: "division by zero " + sentinel}), "22012"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			parent := context.Background()
+			branch, cancel := context.WithCancel(parent)
+			defer cancel()
+			partial, out := classifyBranchErr(parent, branch, c.cause, c.corpus, c.mode, c.class)
+			if partial {
+				t.Fatalf("a genuine error on a live branch must not be partial")
+			}
+			out = withScope(out, ScopeAll, c.mode)
+
+			var logBuf bytes.Buffer
+			h := &Handler{}
+			h.SetLogger(slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/suggest?q="+sentinel, nil)
+			h.logServerError(req, routeSuggest, out)
+			rec := httptest.NewRecorder()
+			WriteDomainError(rec, req, out)
+
+			if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "internal_error") {
+				t.Fatalf("status = %d body = %s, want 500 internal_error", rec.Code, rec.Body.String())
+			}
+			lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+			if len(lines) != 1 {
+				t.Fatalf("log lines = %d, want exactly 1: %q", len(lines), logBuf.String())
+			}
+			var line map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &line); err != nil {
+				t.Fatalf("log line is not JSON: %v", err)
+			}
+			if line["level"] != "WARN" {
+				t.Fatalf("level = %v, want WARN", line["level"])
+			}
+			want := map[string]string{
+				"error_class": c.class, "route": routeSuggest, "corpus": c.corpus, "mode": c.mode, "scope": ScopeAll,
+			}
+			if c.wantPGCode != "" {
+				want["pgcode"] = c.wantPGCode
+			}
+			for k, v := range want {
+				if got, _ := line[k].(string); got != v {
+					t.Fatalf("log field %s = %q, want %q (line %v)", k, got, v, line)
+				}
+			}
+			if _, has := line["pgcode"]; has != (c.wantPGCode != "") {
+				t.Fatalf("pgcode presence = %v, want %v (line %v)", has, c.wantPGCode != "", line)
+			}
+			if strings.Contains(logBuf.String(), sentinel) || strings.Contains(rec.Body.String(), sentinel) || strings.Contains(logBuf.String(), "division by zero") {
+				t.Fatalf("cause text leaked: log=%s body=%s", logBuf.String(), rec.Body.String())
+			}
+		})
 	}
 }
