@@ -267,8 +267,11 @@ func TestRedactedOmitsSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	dump := fmtMap(cfg.Redacted())
-	if strings.Contains(dump, b64(32)) || strings.Contains(dump, "postgres://engram") {
-		t.Fatalf("Redacted lộ secret: %s", dump)
+	if strings.Contains(dump, b64(32)) {
+		t.Fatal("Redacted lộ AUTH_JWT_SECRET")
+	}
+	if strings.Contains(dump, "postgres://engram") {
+		t.Fatal("Redacted lộ DATABASE_URL")
 	}
 }
 
@@ -1197,6 +1200,14 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("APIKey.MarshalText() error = %v", err)
 		}
+		primaryText, err := primaryClient.MarshalText()
+		if err != nil {
+			t.Fatalf("primaryClient.MarshalText() error = %v", err)
+		}
+		shadowText, err := shadowClient.MarshalText()
+		if err != nil {
+			t.Fatalf("shadowClient.MarshalText() error = %v", err)
+		}
 
 		var logBuf bytes.Buffer
 		logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
@@ -1221,26 +1232,38 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 			fmt.Sprintf("%v|%+v|%#v", unexportedSecretPrimary, unexportedSecretPrimary, unexportedSecretPrimary),
 			fmt.Sprintf("%v|%+v|%#v", unexportedSecretShadow, unexportedSecretShadow, unexportedSecretShadow),
 			fmt.Sprintf("%v|%+v|%#v", unexportedCfgHolder, unexportedCfgHolder, unexportedCfgHolder),
-			fmt.Sprintf("%v|%s|%+v|%#v", primaryClient, primaryClient, primaryClient, primaryClient),
-			fmt.Sprintf("%v|%s|%+v|%#v", &primaryClient, &primaryClient, &primaryClient, &primaryClient),
-			fmt.Sprintf("%v|%s|%+v|%#v", shadowClient, shadowClient, shadowClient, shadowClient),
-			fmt.Sprintf("%v|%s|%+v|%#v", &shadowClient, &shadowClient, &shadowClient, &shadowClient),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q", primaryClient, primaryClient, primaryClient, primaryClient, primaryClient),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q", &primaryClient, &primaryClient, &primaryClient, &primaryClient, &primaryClient),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q", shadowClient, shadowClient, shadowClient, shadowClient, shadowClient),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q", &shadowClient, &shadowClient, &shadowClient, &shadowClient, &shadowClient),
 			fmt.Sprintf("%v|%s|%+v|%#v|%q|%x", primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey),
 			fmt.Sprintf("%v|%s|%+v|%#v|%q|%x", shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey),
 			string(primaryJSON),
 			string(shadowJSON),
+			string(primaryText),
+			string(shadowText),
 			string(keyText),
 			logBuf.String(),
 		}
-		sprinted := strings.Join(formattedParts, "|")
-		for _, secret := range []string{distinctivePrimaryKey, distinctiveShadowKey, primaryURL, shadowURL} {
-			if strings.Contains(sprinted, secret) {
-				t.Fatalf("Formatting / JSON / slog Config / ClientConfig làm lộ %q trong %s", secret, sprinted)
+		sentinels := []struct {
+			name  string
+			value string
+		}{
+			{name: "primary API key", value: distinctivePrimaryKey},
+			{name: "shadow API key", value: distinctiveShadowKey},
+			{name: "primary URL", value: primaryURL},
+			{name: "shadow URL", value: shadowURL},
+		}
+		for partIdx, part := range formattedParts {
+			for _, sentinel := range sentinels {
+				if strings.Contains(part, sentinel.value) {
+					t.Fatalf("Formatting / JSON / slog Config / ClientConfig làm lộ sentinel %s ở formattedParts[%d]", sentinel.name, partIdx)
+				}
 			}
 		}
-		for _, keySecret := range []string{distinctivePrimaryKey, distinctiveShadowKey} {
-			if strings.Contains(string(cfgJSON), keySecret) {
-				t.Fatalf("json.Marshal(cfg) làm lộ API key %q trong %s", keySecret, string(cfgJSON))
+		for _, sentinel := range sentinels[:2] {
+			if strings.Contains(string(cfgJSON), sentinel.value) {
+				t.Fatalf("json.Marshal(cfg) làm lộ sentinel %s", sentinel.name)
 			}
 		}
 		// Trigger validation errors with the distinctive key set and verify no error contains the key.
@@ -1272,8 +1295,10 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 				t.Fatalf("errCase[%d]: Load() = nil, muốn lỗi", i)
 			}
 			errStr := loadErr.Error()
-			if strings.Contains(errStr, distinctivePrimaryKey) || strings.Contains(errStr, distinctiveShadowKey) {
-				t.Fatalf("errCase[%d]: lỗi Load() làm lộ API key: %s", i, errStr)
+			for _, sentinel := range sentinels[:2] {
+				if strings.Contains(errStr, sentinel.value) {
+					t.Fatalf("errCase[%d]: lỗi Load() làm lộ sentinel %s", i, sentinel.name)
+				}
 			}
 		}
 	})

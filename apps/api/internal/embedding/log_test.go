@@ -100,27 +100,30 @@ func TestProviderLogsAndErrorsContainNoSensitiveData(t *testing.T) {
 		t.Fatalf("NewTEI: %v", err)
 	}
 
-	forbiddenSubstrings := []string{
-		secretQuery,
-		secretDocA,
-		secretDocB,
-		secretAPIKey,
-		secretRespBody,
-		secretPathSlug,
-		fullBaseURL,
-		"header-secret-value-4433",
-		"Bearer",
+	forbiddenSentinels := []struct {
+		name  string
+		value string
+	}{
+		{name: "query text", value: secretQuery},
+		{name: "doc A text", value: secretDocA},
+		{name: "doc B text", value: secretDocB},
+		{name: "API key", value: secretAPIKey},
+		{name: "upstream response body", value: secretRespBody},
+		{name: "URL path slug", value: secretPathSlug},
+		{name: "full base URL", value: fullBaseURL},
+		{name: "upstream secret header", value: "header-secret-value-4433"},
+		{name: "Bearer token prefix", value: "Bearer"},
 	}
 
 	assertNothingLeaked := func(t *testing.T, phase string, callErr error) {
 		t.Helper()
 		logs := logBuf.String()
-		for _, forbidden := range forbiddenSubstrings {
-			if strings.Contains(logs, forbidden) {
-				t.Fatalf("[%s] slog output leaked %q:\n%s", phase, forbidden, logs)
+		for _, sentinel := range forbiddenSentinels {
+			if strings.Contains(logs, sentinel.value) {
+				t.Fatalf("[%s] slog output leaked sentinel %s", phase, sentinel.name)
 			}
-			if callErr != nil && strings.Contains(callErr.Error(), forbidden) {
-				t.Fatalf("[%s] returned error leaked %q: %v", phase, forbidden, callErr)
+			if callErr != nil && strings.Contains(callErr.Error(), sentinel.value) {
+				t.Fatalf("[%s] returned error leaked sentinel %s", phase, sentinel.name)
 			}
 		}
 	}
@@ -216,7 +219,7 @@ func TestProviderLogsAndErrorsContainNoSensitiveData(t *testing.T) {
 		`"http_status":429`,
 	} {
 		if !strings.Contains(allLogs, wantField) {
-			t.Fatalf("slog output missing expected structured field %s:\n%s", wantField, allLogs)
+			t.Fatalf("slog output missing expected structured field %s", wantField)
 		}
 	}
 }
@@ -306,6 +309,10 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal(openAICfg): %v", err)
 	}
+	textCfgBytes, err := openAICfg.MarshalText()
+	if err != nil {
+		t.Fatalf("openAICfg.MarshalText(): %v", err)
+	}
 
 	unexportedSecretHolder := struct{ key embedding.Secret }{key: openAICfg.APIKey}
 	unexportedProviderHolder := struct{ prov embedding.OpenAICompat }{prov: openAIVal}
@@ -340,6 +347,8 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		"cfg_%v":                   fmt.Sprintf("%v", openAICfg),
 		"cfg_%+v":                  fmt.Sprintf("%+v", openAICfg),
 		"cfg_%#v":                  fmt.Sprintf("%#v", openAICfg),
+		"cfg_%s":                   fmt.Sprintf("%s", openAICfg),
+		"cfg_%q":                   fmt.Sprintf("%q", openAICfg),
 		"secret_%v":                fmt.Sprintf("%v", openAICfg.APIKey),
 		"secret_%+v":               fmt.Sprintf("%+v", openAICfg.APIKey),
 		"secret_%#v":               fmt.Sprintf("%#v", openAICfg.APIKey),
@@ -347,21 +356,25 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		"json_openai_ptr":          string(jsonPtrBytes),
 		"json_openai_val":          string(jsonValBytes),
 		"json_cfg":                 string(jsonCfgBytes),
+		"text_cfg":                 string(textCfgBytes),
 		"slog_text":                textLogBuf.String(),
 		"slog_json":                jsonLogBuf.String(),
 	}
 
-	forbidden := []string{
-		secretAPIKey,
-		secretPathSlug,
-		fullBaseURL,
-		muxSrv.URL,
+	forbidden := []struct {
+		name  string
+		value string
+	}{
+		{name: "API key", value: secretAPIKey},
+		{name: "URL path slug", value: secretPathSlug},
+		{name: "full base URL", value: fullBaseURL},
+		{name: "server base URL", value: muxSrv.URL},
 	}
 
 	for label, repr := range representations {
-		for _, needle := range forbidden {
-			if strings.Contains(repr, needle) {
-				t.Fatalf("%s leaked %q: %s", label, needle, repr)
+		for _, sentinel := range forbidden {
+			if strings.Contains(repr, sentinel.value) {
+				t.Fatalf("%s leaked sentinel %s", label, sentinel.name)
 			}
 		}
 	}
