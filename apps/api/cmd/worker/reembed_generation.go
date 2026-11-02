@@ -475,7 +475,8 @@ func safeReason(r string) string {
 	switch r {
 	case lifecycle.ReasonOK, lifecycle.ReasonIndexNotReady, lifecycle.ReasonJobsPending,
 		lifecycle.ReasonCoverageIncomplete, lifecycle.ReasonIntegrity,
-		lifecycle.ReasonRecallBelowTarget, lifecycle.ReasonNotReceiving:
+		lifecycle.ReasonRecallBelowTarget, lifecycle.ReasonNotReceiving,
+		lifecycle.ReasonRecallSampleShort, lifecycle.ReasonRecallBaseline, lifecycle.ReasonRecallPath:
 		return r
 	default:
 		return "unknown"
@@ -490,8 +491,8 @@ func printVerifyReport(w io.Writer, genID int, r lifecycle.VerifyReport) {
 		c.Scanned, c.Missing, c.Stale, c.WouldDeleteOrphan, c.WouldDeleteUserOff, c.SkippedUserOff, c.Complete,
 		r.DimsOK, r.PartitionsOK, r.IndexReady, r.JobsPendingBeforeWatermark, r.RecallSkippedBelow200)
 	if rc := r.Recall; rc != nil {
-		_, _ = fmt.Fprintf(w, "generation=%d recall_sampled=%d recall_eligible=%d recall_mean=%.4f recall_query_share_ok=%.4f recall_false_positives=%d recall_k=%d recall_passed=%t\n",
-			genID, rc.Sampled, rc.Eligible, rc.MeanRecall, rc.QueryShareOK, rc.FalsePositives, rc.K, rc.Passed)
+		_, _ = fmt.Fprintf(w, "generation=%d recall_requested=%d recall_sampled=%d recall_eligible=%d recall_mean=%.4f recall_query_share_ok=%.4f recall_false_positives=%d recall_k=%d recall_passed=%t\n",
+			genID, rc.Requested, rc.Sampled, rc.Eligible, rc.MeanRecall, rc.QueryShareOK, rc.FalsePositives, rc.K, rc.Passed)
 	}
 }
 

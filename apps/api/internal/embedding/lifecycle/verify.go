@@ -11,7 +11,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
@@ -28,6 +30,13 @@ const (
 	ReasonIntegrity          = "integrity_failed"
 	ReasonRecallBelowTarget  = "recall_below_target"
 	ReasonNotReceiving       = "generation_not_receiving"
+	// ReasonRecallSampleShort: fewer sample vectors could be read than requested
+	// although enough exist (GL-2). The generation is never passed on a short sample.
+	ReasonRecallSampleShort = "recall_sample_short"
+	// ReasonRecallBaseline: no exact recall baseline could be obtained (GL-4).
+	ReasonRecallBaseline = "recall_baseline_unavailable"
+	// ReasonRecallPath: the measured query did not take the ANN path (GL-4).
+	ReasonRecallPath = "recall_path_invalid"
 )
 
 const (
@@ -45,16 +54,23 @@ const (
 
 // VerifyOpts tunes Verify. The zero value is production behaviour.
 type VerifyOpts struct {
-	// Now is an injectable clock (default time.Now), used for rollback checks.
+	// Now is a legacy injectable clock; verification itself reads the database
+	// clock (watermark) and does not use it.
 	Now func() time.Time
 	// RecallSampleSize overrides RecallSampleSize (0 = default). Recall is
 	// skipped when the generation holds fewer vectors than this.
 	RecallSampleSize int
-	// BranchTimeout bounds each vector query of the recall sample (0 = 5 s).
+	// BranchTimeout bounds each vector query of the recall sample (0 = 5 s). The
+	// exact baseline reads every vector of the sampled tenant: when it cannot
+	// finish in time (a very large tenant) verification fails with
+	// ReasonRecallBaseline rather than passing without an exact oracle.
 	BranchTimeout time.Duration
 	// AfterWatermark is a test-only hook called right after the watermark is
 	// taken and the exclusive lock released.
 	AfterWatermark func()
+	// AfterSampleCount is a test-only hook called once the recall sample has been
+	// sized (row counts read) and before the sample is read (GL-2).
+	AfterSampleCount func()
 }
 
 // CoverageReport is the aggregate result of reconcile.Reconcile(All, DryRun)
@@ -72,6 +88,8 @@ type CoverageReport struct {
 // RecallReport summarises the ANN-vs-exact recall sample (counts and ratios
 // only).
 type RecallReport struct {
+	// Requested is the sample size asked for; Sampled the vectors actually used.
+	Requested      int     `json:"requested"`
 	Sampled        int     `json:"sampled"`
 	Eligible       int     `json:"eligible"`
 	MeanRecall     float64 `json:"mean_recall"`
@@ -204,13 +222,21 @@ func verifyGeneration(
 			// coverage and integrity checks above still gate the flip.
 			rep.RecallSkippedBelow200 = true
 		} else {
-			rr, err := recallOf(ctx, pool, g, sample, opts.BranchTimeout)
-			if err != nil {
+			rr, err := recallOf(ctx, pool, g, sample, opts.BranchTimeout, opts.AfterSampleCount)
+			switch {
+			case errors.Is(err, errRecallSampleShort):
+				rep.Recall, rep.Reason = &rr, ReasonRecallSampleShort
+			case errors.Is(err, errRecallBaseline):
+				rep.Recall, rep.Reason = &rr, ReasonRecallBaseline
+			case errors.Is(err, errRecallPath):
+				rep.Recall, rep.Reason = &rr, ReasonRecallPath
+			case err != nil:
 				return VerifyReport{}, err
-			}
-			rep.Recall = &rr
-			if !rr.Passed {
-				rep.Reason = ReasonRecallBelowTarget
+			default:
+				rep.Recall = &rr
+				if !rr.Passed {
+					rep.Reason = ReasonRecallBelowTarget
+				}
 			}
 		}
 	}
@@ -322,14 +348,26 @@ WHERE a.attrelid = to_regclass($1) AND a.attname = 'embedding' AND NOT a.attisdr
 	return nil
 }
 
-// recallOf measures ANN recall@RecallK against the exact oracle for a sample of
+// recallOf measures ANN recall@RecallK against an exact oracle for a sample of
 // vectors read from g's own tables (no provider call). Per
 // docs/benchmarks/P05-search/targets.md: E = exact top-min(20, eligible) after
 // the min_cos threshold; queries with |E| = 0 are excluded and must return no
 // ANN rows (false positives). Each corpus must reach mean recall >= RecallMean
 // and >= RecallPerQueryShare of queries with recall >= RecallPerQueryMin; the
 // report carries the worst corpus.
-func recallOf(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, sample int, branchTimeout time.Duration) (RecallReport, error) {
+//
+// The sample (GL-2) is up to `sample` distinct stored vectors spread over the
+// populated corpora by key position (sampleVectors); a sample shorter than
+// requested while enough vectors exist fails with errRecallSampleShort.
+//
+// The oracle (GL-4) is store.ExactSearchSQL run directly, never the search
+// router: its MATERIALIZED primary-key CTE cannot be planned onto the HNSW
+// index whatever the tenant size, so an exact baseline either is exact or is not
+// obtained (errRecallBaseline). The measured side must take the ANN path
+// (errRecallPath otherwise), so a passing report can never be ANN-vs-ANN or
+// exact-vs-exact. The report is returned alongside those errors so the caller
+// can persist a failing report with an explicit reason.
+func recallOf(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, sample int, branchTimeout time.Duration, afterSampleCount func()) (RecallReport, error) {
 	if branchTimeout <= 0 {
 		branchTimeout = 5 * time.Second
 	}
@@ -342,43 +380,62 @@ func recallOf(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, 
 		FallbackMaxVectors: 0, // no exact fallback: measure the index itself
 		BranchTimeout:      branchTimeout,
 	}
-	exactKnobs := store.VectorSearchKnobs{
-		ExactMaxVectors:    store.MaxExactCapVectors,
-		FallbackMaxVectors: store.MaxExactCapVectors,
-		BranchTimeout:      branchTimeout,
-	}
 
-	out := RecallReport{K: RecallK, Passed: true, MeanRecall: 1, QueryShareOK: 1}
-	perCorpus := (sample + 1) / 2
-	for _, corpus := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
-		qs, err := sampleVectors(ctx, pool, g, corpus, perCorpus)
+	out := RecallReport{K: RecallK, Requested: sample, Passed: true, MeanRecall: 1, QueryShareOK: 1}
+	corpora := []generation.Corpus{generation.CorpusItem, generation.CorpusTag}
+	var counts [2]int64
+	for i, corpus := range corpora {
+		tbl, err := store.SanitizedTable(g, corpus)
 		if err != nil {
 			return RecallReport{}, err
+		}
+		if counts[i], err = exactRowCount(ctx, pool, tbl); err != nil {
+			return RecallReport{}, err
+		}
+	}
+	quotas := splitRecallQuota(counts[0], counts[1], sample)
+	if afterSampleCount != nil {
+		afterSampleCount()
+	}
+	if quotas[0]+quotas[1] < sample {
+		out.Passed = false
+		return out, errRecallSampleShort
+	}
+
+	for i, corpus := range corpora {
+		qs, err := sampleVectors(ctx, pool, g, corpus, counts[i], quotas[i])
+		if err != nil {
+			return RecallReport{}, err
+		}
+		out.Sampled += len(qs)
+		if len(qs) < quotas[i] {
+			out.Passed = false
+			return out, errRecallSampleShort
 		}
 		var eligible, good int
 		var sum float64
 		for _, q := range qs {
-			out.Sampled++
-			exact, es, err := store.VectorSearch(ctx, pool, pin, q.userID, corpus, q.vec, RecallK, time.Now().Add(branchTimeout), exactKnobs)
+			want, err := exactTopK(ctx, pool, g, corpus, q.userID, q.vec, pin.MinCos, RecallK, branchTimeout)
 			if err != nil {
-				return RecallReport{}, fmt.Errorf("lifecycle: recall exact query failed: %w", sanitizeDBErr(err))
+				out.Passed = false
+				return out, err
 			}
 			ann, as, err := store.VectorSearch(ctx, pool, pin, q.userID, corpus, q.vec, RecallK, time.Now().Add(branchTimeout), annKnobs)
 			if err != nil {
 				return RecallReport{}, fmt.Errorf("lifecycle: recall ann query failed: %w", sanitizeDBErr(err))
 			}
-			if es.TimedOut || as.TimedOut {
+			if as.TimedOut {
 				return RecallReport{}, errors.New("lifecycle: recall sample query timed out")
 			}
-			if len(exact) == 0 {
+			if as.Path != store.VectorPathANN && as.Path != store.VectorPathANNShort {
+				out.Passed = false
+				return out, errRecallPath
+			}
+			if len(want) == 0 {
 				if len(ann) > 0 {
 					out.FalsePositives++
 				}
 				continue
-			}
-			want := make(map[uuid.UUID]struct{}, len(exact))
-			for _, h := range exact {
-				want[h.ID] = struct{}{}
 			}
 			hit := 0
 			for _, h := range ann {
@@ -386,7 +443,7 @@ func recallOf(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, 
 					hit++
 				}
 			}
-			r := float64(hit) / float64(len(exact))
+			r := float64(hit) / float64(len(want))
 			eligible++
 			sum += r
 			if r >= RecallPerQueryMin {
@@ -415,62 +472,179 @@ func recallOf(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, 
 	return out, nil
 }
 
-type sampledVector struct {
-	userID uuid.UUID
-	vec    []float32
+// Recall failures that are reported (counts and a reason code), not returned as
+// errors by Verify.
+var (
+	errRecallSampleShort = errors.New("lifecycle: recall sample shorter than requested")
+	errRecallBaseline    = errors.New("lifecycle: exact recall baseline unavailable")
+	errRecallPath        = errors.New("lifecycle: recall query did not take the ANN path")
+)
+
+// splitRecallQuota splits a sample of size want between the item and tag
+// corpora holding items and tags vectors: half each when both are populated,
+// the rest filled from whichever corpus still has vectors. The quotas sum to
+// want whenever items+tags >= want, and never exceed a corpus' size.
+func splitRecallQuota(items, tags int64, want int) [2]int {
+	if want <= 0 {
+		return [2]int{}
+	}
+	minInt64 := func(a, b int64) int64 {
+		if a < b {
+			return a
+		}
+		return b
+	}
+	w := int64(want)
+	qTag := minInt64(tags, (w+1)/2)
+	qItem := minInt64(items, w-qTag)
+	qTag = minInt64(tags, w-qItem)
+	return [2]int{int(qItem), int(qTag)}
 }
 
-// sampleVectors reads up to quota stored vectors of corpus without a full scan:
-// several short PK-ordered runs that start at random user ids. Duplicates are
-// dropped. The vectors are the generation's own, so no provider is called.
-func sampleVectors(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, corpus generation.Corpus, quota int) ([]sampledVector, error) {
+// exactTopK is the exact oracle: store.ExactSearchSQL (tenant-scoped, live
+// targets, min_cos threshold, dist/id order, LIMIT k) run directly in a
+// read-only transaction with a statement timeout. A statement timeout means no
+// exact baseline could be obtained (errRecallBaseline).
+func exactTopK(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	g generation.Generation,
+	corpus generation.Corpus,
+	userID uuid.UUID,
+	qvec []float32,
+	minCos float64,
+	k int,
+	timeout time.Duration,
+) (map[uuid.UUID]struct{}, error) {
+	query, err := exactOracleSQL(g, corpus)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle: recall exact begin failed: %w", sanitizeDBErr(err))
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, "SELECT set_config('statement_timeout', $1, true)", strconv.FormatInt(timeout.Milliseconds(), 10)+"ms"); err != nil {
+		return nil, fmt.Errorf("lifecycle: recall exact timeout failed: %w", sanitizeDBErr(err))
+	}
+	rows, err := tx.Query(ctx, query, userID, pgvector.NewVector(qvec), minCos, k)
+	if err != nil {
+		return nil, exactErr(err)
+	}
+	defer rows.Close()
+	want := make(map[uuid.UUID]struct{}, k)
+	for rows.Next() {
+		// Column 0 is the target id; the remaining six (name/display, count,
+		// timestamps, dist, cos) are discarded and never retained or logged.
+		var id uuid.UUID
+		var skip [6]any
+		dest := make([]any, 0, 7)
+		dest = append(dest, &id)
+		for i := range skip {
+			dest = append(dest, &skip[i])
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return nil, fmt.Errorf("lifecycle: recall exact scan failed: %w", sanitizeDBErr(err))
+		}
+		want[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, exactErr(err)
+	}
+	return want, nil
+}
+
+// exactErr classifies a failed exact query: a statement timeout (SQLSTATE
+// 57014) is "no exact baseline" (reported), anything else an error.
+func exactErr(err error) error {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "57014" {
+		return errRecallBaseline
+	}
+	return fmt.Errorf("lifecycle: recall exact query failed: %w", sanitizeDBErr(err))
+}
+
+// exactOracleSQL returns the SQL of the exact oracle for corpus of g. It is
+// store.ExactSearchSQL (never the VectorSearch router) and is asserted to be the
+// materialized primary-key form that the planner cannot move onto HNSW.
+func exactOracleSQL(g generation.Generation, corpus generation.Corpus) (string, error) {
+	tbl, err := store.SanitizedTable(g, corpus)
+	if err != nil {
+		return "", err
+	}
+	query, err := store.ExactSearchSQL(tbl, corpus)
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(query, "AS MATERIALIZED") || !strings.Contains(query, "ORDER BY user_id, target_id") {
+		return "", errRecallBaseline
+	}
+	return query, nil
+}
+
+type sampledVector struct {
+	userID   uuid.UUID
+	targetID uuid.UUID
+	vec      []float32
+}
+
+// exactRowCount counts the rows of tbl without a cap (primary-key scan).
+func exactRowCount(ctx context.Context, db gen.DBTX, tbl string) (int64, error) {
+	var n int64
+	// #nosec G202 -- tbl is validated against allowlist ^(item|tag)_embedding_g[1-9][0-9]{0,3}$ and quoted via pgx.Identifier.Sanitize().
+	if err := db.QueryRow(ctx, `SELECT count(*)::bigint FROM `+tbl).Scan(&n); err != nil {
+		return 0, fmt.Errorf("lifecycle: row count failed: %w", sanitizeDBErr(err))
+	}
+	return n, nil
+}
+
+// sampleVectors reads quota distinct stored vectors of corpus (which holds n
+// rows) at evenly spaced positions of the (user_id, target_id) key order:
+// position i is 1 + floor(i*n/quota). That is deterministic, spreads the sample
+// over every tenant and the whole key range (a single tenant included), and
+// needs one pass over the keys only. quota > n yields fewer rows (the caller
+// fails the verification). The vectors are the generation's own, so no provider
+// is called.
+func sampleVectors(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, corpus generation.Corpus, n int64, quota int) ([]sampledVector, error) {
+	if quota <= 0 || n <= 0 {
+		return nil, nil
+	}
 	tbl, err := store.SanitizedTable(g, corpus)
 	if err != nil {
 		return nil, err
 	}
-	const perRun = 10
-	runs := (quota + perRun - 1) / perRun
-	starts := make([]uuid.UUID, 0, runs+1)
-	starts = append(starts, uuid.Nil)
-	for len(starts) < runs+1 {
-		starts = append(starts, uuid.New())
+	// #nosec G202 -- tbl is validated against allowlist ^(item|tag)_embedding_g[1-9][0-9]{0,3}$ and quoted via pgx.Identifier.Sanitize().
+	rows, err := pool.Query(ctx, `
+WITH pos AS (
+  SELECT 1 + (i * $1::bigint) / $2::bigint AS rn FROM generate_series(0::bigint, $2::bigint - 1) AS i
+), keyed AS (
+  SELECT user_id, target_id, row_number() OVER (ORDER BY user_id, target_id) AS rn FROM `+tbl+`
+)
+SELECT e.user_id, e.target_id, e.embedding::text
+FROM keyed k
+JOIN pos p ON p.rn = k.rn
+JOIN `+tbl+` e ON e.user_id = k.user_id AND e.target_id = k.target_id
+ORDER BY e.user_id, e.target_id`, n, int64(quota))
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle: recall sample failed: %w", sanitizeDBErr(err))
 	}
-	seen := make(map[[32]byte]struct{}, quota)
-	var out []sampledVector
-	for _, start := range starts {
-		if len(out) >= quota {
-			break
+	defer rows.Close()
+	out := make([]sampledVector, 0, quota)
+	for rows.Next() {
+		var uid, tid uuid.UUID
+		var txt string
+		if err := rows.Scan(&uid, &tid, &txt); err != nil {
+			return nil, fmt.Errorf("lifecycle: recall sample scan failed: %w", sanitizeDBErr(err))
 		}
-		// #nosec G202 -- tbl is validated against allowlist ^(item|tag)_embedding_g[1-9][0-9]{0,3}$ and quoted via pgx.Identifier.Sanitize().
-		rows, err := pool.Query(ctx, `SELECT user_id, target_id, embedding::text FROM `+tbl+
-			` WHERE user_id >= $1 ORDER BY user_id, target_id LIMIT $2`, start, perRun)
+		vec, err := parseVectorText(txt)
 		if err != nil {
-			return nil, fmt.Errorf("lifecycle: recall sample failed: %w", sanitizeDBErr(err))
+			return nil, err
 		}
-		for rows.Next() {
-			var uid, tid uuid.UUID
-			var txt string
-			if err := rows.Scan(&uid, &tid, &txt); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("lifecycle: recall sample scan failed: %w", sanitizeDBErr(err))
-			}
-			var key [32]byte
-			copy(key[:16], uid[:])
-			copy(key[16:], tid[:])
-			if _, dup := seen[key]; dup || len(out) >= quota {
-				continue
-			}
-			vec, err := parseVectorText(txt)
-			if err != nil {
-				rows.Close()
-				return nil, err
-			}
-			seen[key] = struct{}{}
-			out = append(out, sampledVector{userID: uid, vec: vec})
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("lifecycle: recall sample failed: %w", sanitizeDBErr(err))
-		}
+		out = append(out, sampledVector{userID: uid, targetID: tid, vec: vec})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lifecycle: recall sample failed: %w", sanitizeDBErr(err))
 	}
 	return out, nil
 }
