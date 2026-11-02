@@ -52,7 +52,7 @@ TEI vẫn là provider hợp lệ cho host x86 muốn tự host hoàn toàn; đ�
 
 ### Ngưỡng semantic theo generation
 
-`cos ≥ 0.55` trở thành `semantic_min_cos` lưu trong `active_generation`. P05 phải hiệu chỉnh trên một bộ đánh giá commit trong repo (≥ 80 cặp vi/en, tên ngắn, viết tắt, tag có dấu và không dấu, cặp nhiễu) trước khi bật semantic cho user. Giá trị tạm cho qwen3@1024 từ probe: `0.58`.
+`cos ≥ 0.55` trở thành `semantic_min_cos`, lưu ở cột `embedding_generation.semantic_min_cos` của generation mà `embedding_active` đang trỏ tới (xem [ADR 0007](0007-embedding-generation-cutover.md)). P05 phải hiệu chỉnh trên một bộ đánh giá commit trong repo (≥ 80 cặp vi/en, tên ngắn, viết tắt, tag có dấu và không dấu, cặp nhiễu) trước khi bật semantic cho user. Giá trị tạm cho qwen3@1024 từ probe: `0.58`.
 
 ### Latency
 
@@ -68,6 +68,6 @@ Nhánh semantic đã là request riêng (`semantic=0` trả lexical trước), n
 
 ## Hệ quả
 
-- P05: thêm `internal/embedding/openai_compat.go`, config validate mở rộng (`oneof=noop tei openai_compat` + rule URL/key), migration thêm `semantic_min_cos` vào generation, `ReembedUser`, bộ đánh giá ngưỡng, test fake server cho dims/normalize/429/timeout.
+- P05: thêm `internal/embedding/openai_compat.go`, config validate mở rộng (`oneof=noop tei openai_compat` + rule URL/key), migration `0009_embedding` thêm `semantic_min_cos` vào generation, `ReembedUser`, bộ đánh giá ngưỡng, test fake server cho dims/normalize/429/timeout.
 - P06: privacy statement §10.4; deploy router cạnh engram trên cùng host, không cần TEI trên host ARM.
 - Chi phí: probe ~4e-7 USD cho 6 input ngắn; backfill 100k item + 20k tag là cỡ cent. Phụ thuộc mạng ngoài: semantic tắt êm (degraded) khi router/OpenRouter lỗi, lexical không ảnh hưởng.

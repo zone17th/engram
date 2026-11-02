@@ -1,0 +1,108 @@
+{
+  "$comment": "P05 plan mục 2.4 + mục 2.24 (advisor-dec-256/259) — bảng quota theo (scope, limit, mode) cho /suggest và giới hạn limit của /search. Các key duy nhất trong mỗi hàng suggest.table mà test phải đọc: scope, limit, tag_max, lex_max, near_base, near_max_cap, recent_tag, recent_item. Công thức (internal/suggest/quota.go): tags_used = min(tag_hits, max(tag_max, lex_max - item_hits)); items_used = min(item_hits, lex_max - tags_used); SuggestQuota.near (near tối đa hiệu lực trên wire, giống nhau cho semantic=0 và semantic=1) = min(near_max_cap, near_base + max(0, lex_max - tags_used - items_used)); near_used = min(near_hits_sau_dedup, quota.near, limit - tags_used - items_used); client cắt vùng near append theo min(quota.near, limit - lexical.length). Recent (mode=recent): không có near (quota.near = 0, near_used = 0), không gọi provider; quota.tag = recent_tag, quota.lexical = tổng số slot lexical recent = recent_tag + recent_item = limit (ví dụ scope=all limit=8 trả {tag: 3, lexical: 8, near: 0}; scope=item trả {tag: 0, lexical: limit, near: 0}; scope=tag trả {tag: limit, lexical: limit, near: 0}); tags_used = min(tag_hits, recent_tag), items_used = min(item_hits, limit - tags_used). Runtime code không import file này (FS-26); chỉ test Go (Task 2/3) và Vitest quota.test.ts (Task 9) đọc theo đường dẫn tương đối.",
+  "version": 1,
+  "schema": "engram-search-quota-v1",
+  "suggest": {
+    "limits": [5, 8, 12],
+    "default_limit": 8,
+    "mobile_limit": 5,
+    "table": [
+      {
+        "scope": "all",
+        "limit": 5,
+        "tag_max": 2,
+        "lex_max": 4,
+        "near_base": 1,
+        "near_max_cap": 2,
+        "recent_tag": 2,
+        "recent_item": 3
+      },
+      {
+        "scope": "all",
+        "limit": 8,
+        "tag_max": 3,
+        "lex_max": 6,
+        "near_base": 2,
+        "near_max_cap": 3,
+        "recent_tag": 3,
+        "recent_item": 5
+      },
+      {
+        "scope": "all",
+        "limit": 12,
+        "tag_max": 4,
+        "lex_max": 9,
+        "near_base": 3,
+        "near_max_cap": 4,
+        "recent_tag": 4,
+        "recent_item": 8
+      },
+      {
+        "scope": "item",
+        "limit": 5,
+        "tag_max": 0,
+        "lex_max": 4,
+        "near_base": 1,
+        "near_max_cap": 2,
+        "recent_tag": 0,
+        "recent_item": 5
+      },
+      {
+        "scope": "item",
+        "limit": 8,
+        "tag_max": 0,
+        "lex_max": 6,
+        "near_base": 2,
+        "near_max_cap": 3,
+        "recent_tag": 0,
+        "recent_item": 8
+      },
+      {
+        "scope": "item",
+        "limit": 12,
+        "tag_max": 0,
+        "lex_max": 9,
+        "near_base": 3,
+        "near_max_cap": 4,
+        "recent_tag": 0,
+        "recent_item": 12
+      },
+      {
+        "scope": "tag",
+        "limit": 5,
+        "tag_max": 4,
+        "lex_max": 4,
+        "near_base": 1,
+        "near_max_cap": 2,
+        "recent_tag": 5,
+        "recent_item": 0
+      },
+      {
+        "scope": "tag",
+        "limit": 8,
+        "tag_max": 6,
+        "lex_max": 6,
+        "near_base": 2,
+        "near_max_cap": 3,
+        "recent_tag": 8,
+        "recent_item": 0
+      },
+      {
+        "scope": "tag",
+        "limit": 12,
+        "tag_max": 9,
+        "lex_max": 9,
+        "near_base": 3,
+        "near_max_cap": 4,
+        "recent_tag": 12,
+        "recent_item": 0
+      }
+    ]
+  },
+  "search": {
+    "limits": [20, 50],
+    "default_limit": 20,
+    "all_scope_first_page_tags_max": 5,
+    "first_page_near_max": 5
+  }
+}
