@@ -250,6 +250,72 @@ async function probeCoarseControls(
       return `vscan(cx=${cx.toFixed(2)},y=${startY}..${endY},lastHitY=${lastHitY ?? 'none'},firstMissY=${firstMissY ?? 'none'}->${firstMissDesc})`;
     };
 
+    // FU11 r3 diag (advisor-dec-263): 2-D hit map over the control box, built only on a miss.
+    // A coarse 4x4 grid (inset 1.5 px like the corner probes, '#' hit, '.' miss) plus 1 px scans
+    // of the bottom and right 6 px bands (edge offsets 0.5..5.5 px) reported as miss ranges, and a
+    // tally of what `elementFromPoint` returned at the missed points (describeNode: tag/testid/class).
+    const diagHitGrid = (el: HTMLElement): string => {
+      const r = el.getBoundingClientRect();
+      const missTargets = new Map<string, number>();
+      const probe = (x: number, y: number): boolean => {
+        const res = hitsIntendedControl(el, x, y);
+        if (!res.ok) missTargets.set(res.hitDesc, (missTargets.get(res.hitDesc) ?? 0) + 1);
+        return res.ok;
+      };
+      const missRanges = (coords: readonly number[], hits: readonly boolean[]): string => {
+        const ranges: string[] = [];
+        let start: number | null = null;
+        let count = 0;
+        hits.forEach((hit, i) => {
+          if (!hit && start === null) start = i;
+          if (!hit) count += 1;
+          if ((hit || i === hits.length - 1) && start !== null) {
+            const end = hit ? i - 1 : i;
+            ranges.push(`${coords[start]!.toFixed(1)}..${coords[end]!.toFixed(1)}`);
+            start = null;
+          }
+        });
+        if (count === 0) return 'all-hit';
+        const shown = ranges.slice(0, 4).join(',');
+        return `miss${count}/${hits.length}[${shown}${ranges.length > 4 ? ',…' : ''}]`;
+      };
+      const gridInset = 1.5;
+      const gridRows: string[] = [];
+      for (let gy = 0; gy < 4; gy += 1) {
+        const y = r.top + gridInset + ((r.height - 2 * gridInset) * gy) / 3;
+        let row = '';
+        for (let gx = 0; gx < 4; gx += 1) {
+          const x = r.left + gridInset + ((r.width - 2 * gridInset) * gx) / 3;
+          row += probe(x, y) ? '#' : '.';
+        }
+        gridRows.push(`y${y.toFixed(1)}:${row}`);
+      }
+      const bottomBand: string[] = [];
+      const rightBand: string[] = [];
+      for (let d = 0.5; d < 6; d += 1) {
+        const y = r.bottom - d;
+        const xs: number[] = [];
+        const xHits: boolean[] = [];
+        for (let x = r.left + 0.5; x < r.right; x += 1) {
+          xs.push(x);
+          xHits.push(probe(x, y));
+        }
+        bottomBand.push(`y${y.toFixed(1)}:x${missRanges(xs, xHits)}`);
+        const x = r.right - d;
+        const ys: number[] = [];
+        const yHits: boolean[] = [];
+        for (let y2 = r.top + 0.5; y2 < r.bottom; y2 += 1) {
+          ys.push(y2);
+          yHits.push(probe(x, y2));
+        }
+        rightBand.push(`x${x.toFixed(1)}:y${missRanges(ys, yHits)}`);
+      }
+      const targets = Array.from(missTargets.entries())
+        .map(([desc, n]) => `${desc}=${n}`)
+        .join(',');
+      return `hitgrid4x4[${gridRows.join(' ')}] | bottomBand[${bottomBand.join(' ')}] | rightBand[${rightBand.join(' ')}] | missHits{${targets || 'none'}}`;
+    };
+
     const diagControl = (el: HTMLElement): string => {
       const td = el.closest('td');
       const tr = el.closest('tr');
@@ -260,6 +326,7 @@ async function probeCoarseControls(
       return [
         `button=${diagNode(el)} borderRadius=${elCs.borderRadius} style=${diagStyle(el)}`,
         diagVerticalScan(el),
+        diagHitGrid(el),
         `tdH=${tdH} trH=${trH}`,
         `buttonTd=${diagNode(td)} style=${diagStyle(td)} rowIndex=${tr ? tr.rowIndex : -1}`,
         `buttonTr=${diagNode(tr)} style=${diagStyle(tr)}`,
