@@ -8,12 +8,13 @@
  * - Bound to `useSemanticSuggestSetting()` (shared with Omnibox `≈`, Task 9).
  * - Switch is non-optimistic: reflects cache (`semanticSuggest`) only; waits for HTTP 200 before flipping.
  * - Server-off (`me === null` or `semanticAvailable === false`): switch is `disabled` + `aria-disabled="true"`,
- *   `aria-checked` reflects stored setting, shows `semanticServerOff`, clicking does nothing (no PATCH).
- * - While `isPending`: switch is disabled/guarded against double clicks.
+ *   `aria-checked` reflects stored setting, shows `semanticServerOff` (`aria-describedby`), clicking does nothing (no PATCH).
+ * - While `isPending`: switch uses `aria-disabled="true"` + `aria-busy` without `disabled` (preserves keyboard focus)
+ *   and is guarded against double clicks in the click handler.
  * - Copy block: `semanticExternal` true (or absent, defaulted to `true` by hook per 2.24 item 4) renders
  *   `semanticExternalCopy`; `false` renders `semanticSelfHostCopy`; both followed by `semanticEntryNeverSent`.
  * - 409 `semantic_unavailable`: switch stays/reverts to `false` (by hook), renders `semanticEnable409` in
- *   always-mounted `role="status"` node (`#semantic-enable-409`), NO toast.
+ *   always-mounted `role="status"` node (`aria-describedby` when non-empty), NO toast.
  * - Other PATCH failures (`errorCode === 'patch_failed'`): renders `semanticSaveFailed` in the `role="status"` node.
  * - Error clears on the next toggle (`clearError()` + `setSemanticSuggest(...)`).
  * - No re-embed button, no index stats, no model name.
@@ -25,7 +26,10 @@ import { useSemanticSuggestSetting } from '@/features/omnibox/suggest/use-semant
 
 export function SemanticCard() {
   const t = useTranslations('settings.search');
-  const titleId = useId();
+  const baseId = useId();
+  const titleId = `${baseId}-title`;
+  const serverOffNoteId = `${baseId}-server-off`;
+  const statusId = `${baseId}-status`;
   const {
     me,
     semanticSuggest,
@@ -40,6 +44,7 @@ export function SemanticCard() {
 
   const isServerOff = me === null || !semanticAvailable;
   const isSwitchDisabled = isServerOff || isPending;
+  const showServerOffNote = isServerOff && me !== null;
 
   const statusText = isSemanticUnavailableError
     ? t('semanticEnable409')
@@ -47,6 +52,11 @@ export function SemanticCard() {
       ? t('semanticSaveFailed')
       : '';
 
+  const describedById = showServerOffNote
+    ? serverOffNoteId
+    : statusText
+      ? statusId
+      : undefined;
   const handleToggle = () => {
     if (isServerOff || isPending) return;
     clearError();
@@ -79,13 +89,13 @@ export function SemanticCard() {
           role="switch"
           aria-checked={semanticSuggest}
           aria-labelledby={titleId}
-          aria-label={t('semanticTitle')}
+          aria-describedby={describedById}
           aria-disabled={isSwitchDisabled ? 'true' : undefined}
           aria-busy={isPending || undefined}
-          disabled={isSwitchDisabled}
+          disabled={isServerOff}
           onClick={handleToggle}
-          className={`switch [@media(pointer:coarse)]:before:content-[''] [@media(pointer:coarse)]:before:absolute [@media(pointer:coarse)]:before:left-1/2 [@media(pointer:coarse)]:before:top-1/2 [@media(pointer:coarse)]:before:h-[44px] [@media(pointer:coarse)]:before:w-[44px] [@media(pointer:coarse)]:before:-translate-x-1/2 [@media(pointer:coarse)]:before:-translate-y-1/2${
-            isSwitchDisabled ? ' cursor-not-allowed opacity-45' : ''
+          className={`switch touch-target${
+            isSwitchDisabled ? ' cursor-not-allowed opacity-40' : ''
           }`}
           data-testid="settings-semantic-switch"
         />
@@ -108,9 +118,9 @@ export function SemanticCard() {
         </p>
       </div>
 
-      {isServerOff && me !== null ? (
+      {showServerOffNote ? (
         <p
-          id="timkiem-server-off-note"
+          id={serverOffNoteId}
           className="m-0 mt-3 text-[13px] text-muted"
           data-testid="settings-semantic-server-off"
         >
@@ -119,9 +129,8 @@ export function SemanticCard() {
       ) : null}
 
       <p
-        id="semantic-enable-409"
+        id={statusId}
         role="status"
-        aria-live="polite"
         className={statusText ? 'm-0 mt-3 text-[13px] text-muted' : 'm-0 text-[13px] text-muted'}
         data-testid="settings-semantic-status"
       >
