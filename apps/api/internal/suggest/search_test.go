@@ -975,11 +975,14 @@ func TestSearchAllScopeTagsFirstPageOnly(t *testing.T) {
 	nearCalls := 0
 	var lastNearReq suggest.NearRequest
 	env.svc.SetNearSource(stubNearSource{
+		activeGen: func(_ context.Context, _ uuid.UUID) (*int, error) {
+			genID := 7
+			return &genID, nil
+		},
 		fn: func(_ context.Context, req suggest.NearRequest) (suggest.NearResult, error) {
 			nearCalls++
 			lastNearReq = req
 			genID := 7
-			// Return 1 duplicate of lexical item #1, 1 duplicate of lexical tag #1,
 			// plus 4 unique semantic items and 3 unique semantic tags (7 unique -> clipped to 5: 3 tags then 2 items).
 			var cands []suggest.SuggestNearRow
 			cands = append(cands,
@@ -1293,6 +1296,16 @@ func TestSearchCursorBoundToQueryScope(t *testing.T) {
 			},
 		},
 		{
+			name: "real-phase-a-cursor-edited-from-gen-null-to-1",
+			params: url.Values{
+				"q":     {"wifi"},
+				"scope": {"item"},
+				"cursor": {mutateCursorJSON(itemCur, func(m map[string]any) {
+					m["gen"] = 1
+				})},
+			},
+		},
+		{
 			name: "oversized-cursor-over-max-encoded-bytes",
 			params: url.Values{
 				"q":      {"wifi"},
@@ -1318,6 +1331,151 @@ func TestSearchCursorBoundToQueryScope(t *testing.T) {
 		prob := assertProblemCode(t, rec, http.StatusBadRequest, "invalid_request")
 		if strings.Contains(prob.Detail, "wifi") || strings.Contains(prob.Detail, itemCur[:12]) {
 			t.Fatalf("problem detail echoed q or cursor: %+v", prob)
+		}
+	})
+
+	t.Run("generation-binding-match-mismatch-nil-and-error", func(t *testing.T) {
+		defer env.svc.SetNearSource(suggest.NewNoopNearSource())
+
+		var (
+			currentGen *int
+			genErr     error
+			nearCalls  int
+			genCalls   int
+		)
+		env.svc.SetNearSource(stubNearSource{
+			activeGen: func(_ context.Context, gotUser uuid.UUID) (*int, error) {
+				genCalls++
+				if gotUser != uid {
+					t.Fatalf("ActiveGeneration userID = %s, want %s", gotUser, uid)
+				}
+				if genErr != nil {
+					return nil, genErr
+				}
+				if currentGen == nil {
+					return nil, nil
+				}
+				v := *currentGen
+				return &v, nil
+			},
+			fn: func(_ context.Context, req suggest.NearRequest) (suggest.NearResult, error) {
+				nearCalls++
+				if !req.SemanticParam || currentGen == nil {
+					reason := suggest.ReasonRequestLexical
+					if currentGen == nil {
+						reason = suggest.ReasonDisabledServer
+					}
+					return suggest.NearResult{
+						Semantic:       false,
+						SemanticReason: &reason,
+						Near:           []suggest.SuggestNearRow{},
+						Generation:     nil,
+					}, nil
+				}
+				v := *currentGen
+				return suggest.NearResult{
+					Semantic:       true,
+					SemanticReason: nil,
+					Near:           []suggest.SuggestNearRow{},
+					Generation:     &v,
+				}, nil
+			},
+		})
+
+		// 1. nil == nil passes (page 1 -> page 2), Near is not called on page 2.
+		currentGen = nil
+		genErr = nil
+		nearCalls = 0
+		genCalls = 0
+		recNilP1 := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}})
+		respNilP1 := validateSearchResponseOpenAPIShape(t, recNilP1)
+		if respNilP1.NextCursor == nil {
+			t.Fatal("expected next_cursor on page 1 (gen=nil)")
+		}
+		if nearCalls != 1 || genCalls != 1 {
+			t.Fatalf("page 1 calls: near=%d activeGen=%d, want 1 and 1", nearCalls, genCalls)
+		}
+		recNilP2 := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "cursor": {*respNilP1.NextCursor}})
+		_ = validateSearchResponseOpenAPIShape(t, recNilP2)
+		if nearCalls != 1 || genCalls != 2 {
+			t.Fatalf("page 2 (nil==nil) calls: near=%d activeGen=%d, want 1 (no Near call on cursor page) and 2", nearCalls, genCalls)
+		}
+
+		// 2. Active generation = 5: page 1 records gen=5 in cursor even when semantic=0 (while response.generation stays null).
+		g5 := 5
+		currentGen = &g5
+		nearCalls = 0
+		genCalls = 0
+		recSem0P1 := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "semantic": {"0"}})
+		respSem0P1 := validateSearchResponseOpenAPIShape(t, recSem0P1)
+		if respSem0P1.Generation != nil {
+			t.Fatalf("page 1 semantic=0 response.generation = %v, want nil", respSem0P1.Generation)
+		}
+		if respSem0P1.NextCursor == nil {
+			t.Fatal("expected next_cursor on page 1 (semantic=0, activeGen=5)")
+		}
+		rawSem0Cur, err := base64.RawURLEncoding.DecodeString(*respSem0P1.NextCursor)
+		if err != nil {
+			t.Fatalf("decode semantic=0 cursor: %v", err)
+		}
+		var sem0CurMap map[string]any
+		if err := json.Unmarshal(rawSem0Cur, &sem0CurMap); err != nil {
+			t.Fatalf("unmarshal semantic=0 cursor: %v", err)
+		}
+		if sem0CurMap["gen"] != float64(5) {
+			t.Fatalf("semantic=0 page 1 cursor.gen = %v, want 5", sem0CurMap["gen"])
+		}
+
+		// Matching generation (5 == 5) passes on page 2 without calling Near.
+		recMatchP2 := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "cursor": {*respSem0P1.NextCursor}})
+		respMatchP2 := validateSearchResponseOpenAPIShape(t, recMatchP2)
+		if respMatchP2.Generation != nil {
+			t.Fatalf("cursor page response.generation = %v, want nil", respMatchP2.Generation)
+		}
+		if nearCalls != 1 || genCalls != 2 {
+			t.Fatalf("page 2 (5==5) calls: near=%d activeGen=%d, want 1 and 2", nearCalls, genCalls)
+		}
+
+		// 3. Mismatch (active generation rotates from 5 to 6, or to nil) -> 400 invalid_request with static detail, Near not called.
+		g6 := 6
+		currentGen = &g6
+		recMismatch := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "cursor": {*respSem0P1.NextCursor}})
+		probMismatch := assertProblemCode(t, recMismatch, http.StatusBadRequest, "invalid_request")
+		if strings.Contains(probMismatch.Detail, "wifi") || strings.Contains(probMismatch.Detail, *respSem0P1.NextCursor) {
+			t.Fatalf("mismatch problem detail leaked q/qn or cursor: %+v", probMismatch)
+		}
+		if nearCalls != 1 {
+			t.Fatalf("mismatch cursor page must not call Near: nearCalls=%d, want 1", nearCalls)
+		}
+
+		currentGen = nil
+		recMismatchNil := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "cursor": {*respSem0P1.NextCursor}})
+		probMismatchNil := assertProblemCode(t, recMismatchNil, http.StatusBadRequest, "invalid_request")
+		if strings.Contains(probMismatchNil.Detail, "wifi") || strings.Contains(probMismatchNil.Detail, *respSem0P1.NextCursor) {
+			t.Fatalf("mismatch-to-nil problem detail leaked q/qn or cursor: %+v", probMismatchNil)
+		}
+		if nearCalls != 1 {
+			t.Fatalf("mismatch-to-nil cursor page must not call Near: nearCalls=%d, want 1", nearCalls)
+		}
+
+		// 4. ActiveGeneration error -> 500 internal_error with static detail (both page 1 and cursor page), Near not called.
+		genErr = errors.New("db generation lookup failed for wifi")
+		recErrCur := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}, "cursor": {*respSem0P1.NextCursor}})
+		probErrCur := assertProblemCode(t, recErrCur, http.StatusInternalServerError, "internal_error")
+		if strings.Contains(probErrCur.Detail, "wifi") || strings.Contains(probErrCur.Detail, "lookup") || strings.Contains(probErrCur.Detail, *respSem0P1.NextCursor) {
+			t.Fatalf("ActiveGeneration error problem detail leaked internals/q/cursor: %+v", probErrCur)
+		}
+		if nearCalls != 1 {
+			t.Fatalf("ActiveGeneration error on cursor page must not call Near: nearCalls=%d, want 1", nearCalls)
+		}
+
+		recErrP1 := env.doSearch(tok, url.Values{"q": {"wifi"}, "scope": {"item"}, "limit": {"20"}})
+		probErrP1 := assertProblemCode(t, recErrP1, http.StatusInternalServerError, "internal_error")
+		if strings.Contains(probErrP1.Detail, "wifi") || strings.Contains(probErrP1.Detail, "lookup") {
+			t.Fatalf("ActiveGeneration page 1 error problem detail leaked internals/q: %+v", probErrP1)
+		}
+		if nearCalls != 1 {
+			t.Fatalf("ActiveGeneration error on page 1 must not call Near: nearCalls=%d, want 1", nearCalls)
 		}
 	})
 }

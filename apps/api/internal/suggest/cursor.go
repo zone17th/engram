@@ -49,11 +49,10 @@ const MaxEncodedCursorBytes = 1024
 //   - Never contains raw `q` or normalized `qn`; query binding uses only the 16-byte
 //     truncated `HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn)` (`qh`, base64url no padding),
 //     compared in constant time.
-//   - `Gen` records the embedding generation pinned on page 1 (`nil` when `generation: null`
-//     on page 1, or `1..9999` when semantic ran on page 1); cursor pages never call
-//     `NearSource` (they run lexical only with `semantic: false, semantic_reason: "request_lexical"`),
-//     so `gen` is NOT validated against live server generation state on subsequent pages,
-//     only structurally validated (`null` or integer `1..9999`) and preserved across pages.
+//   - `Gen` records the active embedding generation pinned on page 1 via `NearSource.ActiveGeneration`
+//     (`nil` when no generation is active, or `1..9999`), regardless of `semantic`. Cursor pages
+//     validate `Gen` against `NearSource.ActiveGeneration` before running the page query (never calling
+//     `NearSource.Near`), returning `400 invalid_request` with static detail on mismatch (advisor-dec-290).
 //   - FU-SL-2 precision: `Score` round-trips as the exact `float64` returned by PostgreSQL
 //     `round(...::numeric, 2)::float8`, and `LastUsedAt` round-trips as `RFC3339Nano` in UTC
 //     preserving exact microsecond (`timestamptz`) precision so the keyset predicate neither

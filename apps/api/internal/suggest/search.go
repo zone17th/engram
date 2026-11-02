@@ -54,7 +54,7 @@ func ParseSearchQuery(rawQ string, requestedScope string) (ParsedSuggestQuery, e
 //   - `scope=all`: pages `items` via `SearchItemsLexicalPage` (`kind="item"`); on page 1 (no `cursor`),
 //     also returns `tags` (<= 5) and `near` (<= 5 after deduplicating against lexical `tags` and `items`).
 //     On cursor pages, `tags=[]`, `near=[]`, `semantic=false`, `semantic_reason="request_lexical"`,
-//     `generation=null`, and `NearSource` is never called.
+//     `generation=null`; `NearSource.ActiveGeneration` validates `cursor.gen` before the page query and `NearSource.Near` is never called (advisor-dec-290).
 //   - Branch timeout policy (advisor-dec-287): because `SearchResponse` has no `lexical_partial` field,
 //     a 50 ms branch timeout (SQLSTATE 57014 or `context.DeadlineExceeded`) on the PRIMARY paged corpus
 //     (`items` for `scope=item|all`, `tags` for `scope=tag`) increments `search_lexical_partial_total{corpus}`
@@ -79,19 +79,30 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	}
 
 	hasCursor := in.Cursor != ""
-	var decodedCur SearchCursor
+	var (
+		decodedCur SearchCursor
+		curPtr     *SearchCursor
+		activeGen  *int
+	)
 	if hasCursor {
 		decodedCur, err = DecodeCursor(s.cursorKey, in.Cursor, parsed.Scope, parsed.QN)
 		if err != nil {
 			return SearchResponse{}, ErrInvalidRequest
 		}
-	}
-
-	var curPtr *SearchCursor
-	if hasCursor {
+		activeGen, err = s.activeGeneration(ctx, in.UserID)
+		if err != nil {
+			return SearchResponse{}, ErrSearchInternal
+		}
+		if !equalCursorGen(decodedCur.Gen, activeGen) {
+			return SearchResponse{}, ErrInvalidRequest
+		}
 		curPtr = &decodedCur
+	} else {
+		activeGen, err = s.activeGeneration(ctx, in.UserID)
+		if err != nil {
+			return SearchResponse{}, ErrSearchInternal
+		}
 	}
-
 	var (
 		items      []SuggestItem
 		tags       []SuggestTag
@@ -182,13 +193,13 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 		return SearchResponse{}, ErrInvalidRequest
 	}
 
-	// Cursor pages never call NearSource; they always return semantic:false,
+	// Cursor pages never call NearSource.Near; they always return semantic:false,
 	// semantic_reason:"request_lexical", near:[], generation:null (SPEC §6.8, OpenAPI `search`).
 	if hasCursor {
 		var nextCursorStr *string
 		if nextCurVal != nil {
 			nextCurVal.Scope = parsed.Scope
-			nextCurVal.Gen = decodedCur.Gen
+			nextCurVal.Gen = activeGen
 			enc, err := EncodeCursor(s.cursorKey, parsed.QN, *nextCurVal)
 			if err != nil {
 				return SearchResponse{}, err
@@ -249,7 +260,7 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	var nextCursorStr *string
 	if nextCurVal != nil {
 		nextCurVal.Scope = parsed.Scope
-		nextCurVal.Gen = nearRes.Generation
+		nextCurVal.Gen = activeGen
 		enc, err := EncodeCursor(s.cursorKey, parsed.QN, *nextCurVal)
 		if err != nil {
 			return SearchResponse{}, err
@@ -271,6 +282,20 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	}
 	resp.NormalizeSlices()
 	return resp, nil
+}
+
+func (s *Service) activeGeneration(ctx context.Context, userID uuid.UUID) (*int, error) {
+	if s.near == nil {
+		return (NoopNearSource{}).ActiveGeneration(ctx, userID)
+	}
+	return s.near.ActiveGeneration(ctx, userID)
+}
+
+func equalCursorGen(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func (s *Service) incLexicalPartial(corpus string) {
