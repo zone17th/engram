@@ -1073,6 +1073,26 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	// 2. Selective fuzzy path (fuzzy = true) via real gen.Queries calls (`pasword` -> `password`):
 	//    Must specifically use the per-user GIN trigram indexes `item_user_name_trgm` on item
 	//    and `tag_user_tag_trgm` on tag (with trigram index condition `%` or `<%`), NOT just prefix indexes.
+	//    Insert a large synthetic batch for u1 whose names share no trigrams with `pasword` and refresh
+	//    planner statistics so a full-user btree bitmap scan + Filter is much more expensive than the
+	//    BitmapOr(prefix btree, trigram GIN) plan.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO item (user_id, name, name_normalized)
+		SELECT $1, 'zq' || to_hex(g), 'zq' || to_hex(g)
+		FROM generate_series(1, 20000) AS g
+	`, u1); err != nil {
+		t.Fatalf("bulk insert items for fuzzy plan selectivity: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tag (user_id, display, normalized)
+		SELECT $1, 'zq' || to_hex(g), 'zq' || to_hex(g)
+		FROM generate_series(1, 5000) AS g
+	`, u1); err != nil {
+		t.Fatalf("bulk insert tags for fuzzy plan selectivity: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `ANALYZE item; ANALYZE tag;`); err != nil {
+		t.Fatalf("ANALYZE item; ANALYZE tag; after bulk insert in tx: %v", err)
+	}
 	qnFuzzy := "pasword"
 	qFuzzyPrefix := item.EscapeLikePrefix(qnFuzzy)
 
