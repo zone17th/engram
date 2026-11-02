@@ -3237,7 +3237,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
           if (opts?.signal) {
             signals.push(opts.signal);
           }
-          if (params.q === 'home') {
+          if (params?.q === 'home') {
             return heldHomeSuggest;
           }
           return Promise.resolve(makeEmptySuggestResponse());
@@ -3280,6 +3280,116 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
         expect.anything(),
       );
       expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain('secret');
+    });
+
+    // CI-41431143632-E2E-QA402 / CI-41431143632-SMOKE-LOCKED: in a real browser the native `input` event reaches the
+    // textarea listener BEFORE React's root `onChange` listener, and React flushes a sync-lane update scheduled from
+    // that native listener in a microtask between the two listeners. The flush re-applies the stale controlled value
+    // and wipes the typed / `fill()`ed text before `onChange` can read it. jsdom's script `dispatchEvent` never
+    // flushes between listeners, so this test stops propagation at the target (React's root listener never runs) and
+    // asserts the native listeners alone schedule no render that could rewrite the DOM value.
+    it('native input listener never schedules a render that rewrites the controlled textarea before onChange (typed char survives)', async () => {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+      const stopRootListener = (event: Event) => {
+        event.stopPropagation();
+      };
+      textarea.addEventListener('input', stopRootListener);
+      try {
+        dispatchNativeTextEdit(textarea, { inputType: 'insertText', data: 'x', nextValue: 'x' });
+        // Let any render scheduled by the native listeners flush (act-environment microtasks + scheduler tick).
+        await act(async () => {
+          await Promise.resolve();
+        });
+        await delayMs(30);
+        expect(textarea.value).toBe('x');
+
+        // `fill()`-style single insertText of a whole multi-grapheme string must survive the same way.
+        dispatchNativeTextEdit(textarea, {
+          inputType: 'insertText',
+          data: 'Cà phê',
+          nextValue: 'Cà phê',
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        await delayMs(30);
+        expect(textarea.value).toBe('Cà phê');
+      } finally {
+        textarea.removeEventListener('input', stopRootListener);
+      }
+      expect(suggestSpy).not.toHaveBeenCalled();
+    });
+
+    it('typed char after quick-add save keeps its value, native undo reverts it to empty, the toast stays, and 0 DELETE requests are sent (HM18B-R1-7)', async () => {
+      vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
+        items: [ITEM_WIFI],
+        total: 1,
+        next_cursor: null,
+      });
+      vi.spyOn(contentApi, 'entryCreate').mockImplementation(async (itemId, body) =>
+        makeEntryMeta(itemId, body.id),
+      );
+      const entryDeleteSpy = vi.spyOn(contentApi, 'entryDelete').mockResolvedValue(undefined);
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: 'wifi: keep-this-entry' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await screen.findByTestId('undo-toast-item');
+      expect(textarea).toHaveValue('');
+
+      suggestSpy.mockClear();
+      typeNativeString(textarea, 'x');
+      // Real timers: wait past the 120 ms debounce so any late re-render has had its chance to overwrite the value.
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ q: 'x', scope: 'all', semantic: 0 }),
+          expect.anything(),
+        );
+      });
+      expect(textarea.value).toBe('x');
+
+      dispatchNativeTextEdit(textarea, { inputType: 'historyUndo', nextValue: '' });
+      await delayMs(30);
+      expect(textarea.value).toBe('');
+      expect(screen.getByTestId('undo-toast-item')).toBeInTheDocument();
+      expect(entryDeleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('locked-mode fill-style edit (one insertText with a whole name) then Enter opens the search listbox via GET /items (P03-T21 U5, FU10)', async () => {
+      const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
+        items: [ITEM_WIFI],
+        next_cursor: null,
+      });
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+
+      renderOmnibox();
+      const textarea = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' }) as HTMLTextAreaElement;
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertText',
+        data: 'Cà phê',
+        nextValue: 'Cà phê',
+      });
+      await delayMs(30);
+      expect(textarea.value).toBe('Cà phê');
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      expect(await screen.findByRole('listbox')).toBeInTheDocument();
+      expect(itemsSpy).toHaveBeenCalledWith(expect.objectContaining({ q: 'Cà phê' }));
+      // `fill()` is a multi-grapheme single insert: the draft is tainted, so no keystroke `/suggest` was sent.
+      expect(suggestSpy).not.toHaveBeenCalled();
     });
   });
 });
