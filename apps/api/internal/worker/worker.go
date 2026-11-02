@@ -54,10 +54,12 @@ type RunOptions struct {
 	// listener /metrics.
 	OnRegistry func(*prometheus.Registry)
 
-	// calibrationLookup và beforeClientStart là hai seam nội bộ phục vụ test
-	// thứ tự bootstrap trước client.Start (TestWorkerBootCallsBootstrap).
+	// calibrationLookup, beforeClientStart, và afterClientStart là các seam nội
+	// bộ phục vụ test thứ tự bootstrap trước client.Start và dừng worker gọn sau
+	// khi client.Start đã thành công (TestWorkerBootCallsBootstrap, EJ2-3).
 	calibrationLookup embedid.CalibrationLookup
 	beforeClientStart func(ctx context.Context, pool *pgxpool.Pool)
+	afterClientStart  func(ctx context.Context, pool *pgxpool.Pool)
 }
 
 // New dựng River client với queue mặc định. P01 Noop + P02 prune/notice.
@@ -218,6 +220,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	reg, metrics := obs.NewRegistry()
 	var calibOverride embedid.CalibrationLookup
 	var beforeStartHooks []func(ctx context.Context, pool *pgxpool.Pool)
+	var afterStartHooks []func(ctx context.Context, pool *pgxpool.Pool)
 	for _, opt := range opts {
 		if opt.OnRegistry != nil {
 			opt.OnRegistry(reg)
@@ -227,6 +230,9 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 		}
 		if opt.beforeClientStart != nil {
 			beforeStartHooks = append(beforeStartHooks, opt.beforeClientStart)
+		}
+		if opt.afterClientStart != nil {
+			afterStartHooks = append(afterStartHooks, opt.afterClientStart)
 		}
 	}
 
@@ -316,6 +322,9 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 		return fmt.Errorf("start worker: %w", err)
 	}
 	logger.Info("worker đang chạy", slog.Bool("semantic_available", cfg.SemanticAvailable()))
+	for _, fn := range afterStartHooks {
+		fn(ctx, pool)
+	}
 
 	<-ctx.Done()
 

@@ -159,6 +159,7 @@ func TestWorkerBootCallsBootstrap(t *testing.T) {
 	var preStartGen generation.Generation
 	var preStartErr error
 	var preStartCalled atomic.Bool
+	var afterStartCalled atomic.Bool
 
 	err := Run(runCtx, cfg, discardLogger(), RunOptions{
 		beforeClientStart: func(hookCtx context.Context, _ *pgxpool.Pool) {
@@ -166,6 +167,9 @@ func TestWorkerBootCallsBootstrap(t *testing.T) {
 			// Read using a separate connection from pool to prove the bootstrap
 			// transaction has already COMMITTED before client.Start is invoked.
 			preStartGen, preStartErr = generation.GetByID(hookCtx, pool, generation.BootstrapGenerationID)
+		},
+		afterClientStart: func(_ context.Context, _ *pgxpool.Pool) {
+			afterStartCalled.Store(true)
 			cancelRun()
 		},
 	})
@@ -174,6 +178,9 @@ func TestWorkerBootCallsBootstrap(t *testing.T) {
 	}
 	if !preStartCalled.Load() {
 		t.Fatal("beforeClientStart hook was not called")
+	}
+	if !afterStartCalled.Load() {
+		t.Fatal("afterClientStart hook was not called")
 	}
 	if preStartErr != nil {
 		t.Fatalf("GetByID(1) before client.Start failed (bootstrap tx not committed before Start): %v", preStartErr)
@@ -210,6 +217,7 @@ func TestRunOnRegistryCalledBeforeStart(t *testing.T) {
 	var step atomic.Int32
 	var onRegistryStep int32
 	var beforeStartStep int32
+	var afterStartStep int32
 	var capturedReg *prometheus.Registry
 
 	err := Run(runCtx, cfg, discardLogger(), RunOptions{
@@ -219,14 +227,17 @@ func TestRunOnRegistryCalledBeforeStart(t *testing.T) {
 		},
 		beforeClientStart: func(_ context.Context, _ *pgxpool.Pool) {
 			beforeStartStep = step.Add(1)
+		},
+		afterClientStart: func(_ context.Context, _ *pgxpool.Pool) {
+			afterStartStep = step.Add(1)
 			cancelRun()
 		},
 	})
 	if err != nil {
 		t.Fatalf("worker.Run: %v", err)
 	}
-	if onRegistryStep != 1 || beforeStartStep != 2 {
-		t.Fatalf("call order: onRegistryStep=%d beforeStartStep=%d, want 1 then 2", onRegistryStep, beforeStartStep)
+	if onRegistryStep != 1 || beforeStartStep != 2 || afterStartStep != 3 {
+		t.Fatalf("call order: onRegistryStep=%d beforeStartStep=%d afterStartStep=%d, want 1 -> 2 -> 3", onRegistryStep, beforeStartStep, afterStartStep)
 	}
 	if capturedReg == nil {
 		t.Fatal("OnRegistry received nil *prometheus.Registry")
@@ -289,7 +300,7 @@ func TestNoopProviderRegistersNoEmbeddingQueue(t *testing.T) {
 	defer cancelRun()
 
 	if err := Run(runCtx, cfg, discardLogger(), RunOptions{
-		beforeClientStart: func(_ context.Context, _ *pgxpool.Pool) {
+		afterClientStart: func(_ context.Context, _ *pgxpool.Pool) {
 			cancelRun()
 		},
 	}); err != nil {
@@ -347,7 +358,7 @@ func TestClientSetBootFailureKeepsP04Worker(t *testing.T) {
 	defer cancelRun()
 
 	if err := Run(runCtx, cfg, logger, RunOptions{
-		beforeClientStart: func(_ context.Context, _ *pgxpool.Pool) {
+		afterClientStart: func(_ context.Context, _ *pgxpool.Pool) {
 			cancelRun()
 		},
 	}); err != nil {
