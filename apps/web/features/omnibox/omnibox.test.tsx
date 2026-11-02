@@ -634,7 +634,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
         name: 'wifi #nhà #ops #home-lab Còn 1 tag nữa — 12 mục',
       }),
     ).toBe(firstOption);
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('2 kết quả');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('2 kết quả');
+    });
     // No option active after Enter -> pressing Enter a second time searches again
     expect(textarea).not.toHaveAttribute('aria-activedescendant');
     fireEvent.keyDown(textarea, { key: 'Enter' });
@@ -690,7 +692,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
     const listbox = await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('Không khớp “thuế 2026”');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('Không khớp “thuế 2026”');
+    });
     // The visible no-match box is a separate element OUTSIDE the listbox (FE-23): it is neither a row nor a live region.
     const emptyBox = screen.getByTestId('omnibox-search-empty');
     expect(emptyBox).toHaveTextContent('Không khớp “thuế 2026”');
@@ -796,7 +800,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(within(listbox).queryByRole('option', { name: /#ops/ })).not.toBeInTheDocument();
     expect(nhaOption).toHaveAttribute('aria-selected', 'true');
     expect(textarea).toHaveAttribute('aria-activedescendant', nhaOption.id);
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 tag khớp #nh');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 tag khớp #nh');
+    });
 
     // The keystroke /suggest?scope=tag goes out after the debounce; server rows replace the tag group and keep the active row.
     await waitFor(() => {
@@ -1203,7 +1209,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     );
 
     fireEvent.change(textarea, { target: { value: '#op' } });
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #op');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #op');
+    });
 
     dispatchNativeTextEdit(textarea, {
       inputType: 'deleteWordBackward',
@@ -1226,7 +1234,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
     expect(
       within(screen.getByTestId('omnibox-search-empty')).getByText('No match for “router”'),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('No match for “router”');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('No match for “router”');
+    });
     expect(screen.getByRole('option', { name: /Create item “router”/ })).toBeInTheDocument();
 
     // Second Enter -> rows: group headings, count line, badges, "Load more", aria-labels (search.group/row/match/actions/state)
@@ -1238,7 +1248,9 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       .map((group) => group.querySelector('.sugg-group')?.textContent);
     expect(headings).toEqual(['Tags', 'Items', 'Similar meaning', 'Actions']);
     expect(screen.getByTestId('omnibox-result-count')).toHaveTextContent('3 results');
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('3 results');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('3 results');
+    });
     expect(within(listbox).getByRole('option', { name: '#ops — 7 items' })).toBeInTheDocument();
     expect(
       within(listbox).getByRole('option', {
@@ -3833,7 +3845,9 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
     expect(after[0]).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByText(NEAR_BADGE)).not.toBeInTheDocument();
     expect(suggestSpy.mock.calls.length).toBe(requestsBefore);
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent(viMessages.search.live.nearHidden);
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent(viMessages.search.live.nearHidden);
+    });
   });
 
   it('≈ 409 shows inline muted line', async () => {
@@ -3999,7 +4013,9 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
     expect(textarea).toHaveValue('wif');
     expect(screen.queryByTestId('omnibox-add-dest-pinned')).not.toBeInTheDocument();
     expect(screen.getByTestId('omnibox-hint')).toHaveTextContent(viMessages.search.tab.cannotFill);
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent(viMessages.search.tab.cannotFill);
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent(viMessages.search.tab.cannotFill);
+    });
   });
 
   it('429 keeps rows, no toast', async () => {
@@ -4132,7 +4148,9 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
 
     const box = await screen.findByTestId('omnibox-search-empty');
     expect(box).toHaveTextContent('Không khớp “!!!”');
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('Không khớp “!!!”');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('Không khớp “!!!”');
+    });
     expect(searchSpy).not.toHaveBeenCalled();
     expect(mockRouterPush).not.toHaveBeenCalled();
     // Still creatable as an empty item, and the next edit drops the local no-match box.
@@ -4271,6 +4289,174 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
     expect(within(listbox).queryByRole('option', { name: 'Xem thêm' })).not.toBeInTheDocument();
     expect(within(listbox).getAllByRole('option').slice(0, 2)[0]).toBe(firstPageNodes[0]);
     expect(within(listbox).getAllByRole('option').slice(0, 2)[1]).toBe(firstPageNodes[1]);
+  });
+
+  it('Enter-search (semantic=1) -> Xem thêm -> page-1 near rows still shown, no degraded line (SPEC §6.8, RV-T17-2-FE1-6)', async () => {
+    const itemX: ItemSummary = {
+      ...ITEM_WIFI,
+      id: '7777ffff-7777-4777-8777-777777777777',
+      name: 'wifi nhà ga',
+      tags: [],
+    };
+    const searchSpy = vi.spyOn(searchApi, 'search').mockImplementation(async (params) =>
+      params.cursor === undefined
+        ? makeSearchResponse({
+            items: [makeSuggestItemRow(ITEM_WIFI), makeSuggestItemRow(ITEM_WIFI_GUEST)],
+            near: [makeSuggestItemRow(ITEM_ROUTER_NEAR, { match: 'semantic' })],
+            semantic: true,
+            semantic_reason: null,
+            generation: 9,
+            next_cursor: 'cursor-2',
+          })
+        : // A cursor page is always lexical-only (`semantic=0`): it never repeats the near row.
+          makeSearchResponse({
+            items: [makeSuggestItemRow(itemX)],
+            near: [],
+            semantic: false,
+            semantic_reason: 'request_lexical',
+            generation: null,
+            next_cursor: null,
+          }),
+    );
+
+    renderOmnibox(<Omnibox />, { queryClient: semanticClient(true) });
+    const textarea = getTextbox();
+    typeNativeString(textarea, 'wif');
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    const listbox = await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
+    await waitFor(() => {
+      expect(optionKeys(listbox)).toContain('action:more');
+    });
+    expect(screen.getByText(NEAR_BADGE)).toBeInTheDocument();
+    const nearNode = listbox.querySelector(`[data-opt-key="item:${ITEM_ROUTER_NEAR.id}"]`);
+    expect(nearNode).not.toBeNull();
+
+    fireEvent.click(within(listbox).getByRole('option', { name: 'Xem thêm' }));
+    await waitFor(() => {
+      expect(searchSpy).toHaveBeenCalledTimes(2);
+    });
+    expect(searchSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: 'wif', cursor: 'cursor-2', semantic: 0 }),
+      expect.anything(),
+    );
+    await waitFor(() => {
+      expect(optionKeys(listbox)).toContain(`item:${itemX.id}`);
+    });
+
+    // Page 2 appended its row; the page-1 near row is still in the near zone with its ≈ badge, and no degraded line shows.
+    expect(listbox.querySelector('[data-zone="near"]')).not.toBeNull();
+    expect(listbox.querySelector(`[data-opt-key="item:${ITEM_ROUTER_NEAR.id}"]`)).toBe(nearNode);
+    expect(screen.getByText(NEAR_BADGE)).toBeInTheDocument();
+    expect(screen.queryByTestId('omnibox-status-degraded')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('omnibox-status-near-pending')).not.toBeInTheDocument();
+    const keys = optionKeys(listbox);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('prefix_folded rows highlight with the folded variant: query duong marks "Đường" (SPEC §6.8, RV-T17-2-FE1-4)', async () => {
+    const itemFolded: ItemSummary = {
+      ...ITEM_WIFI,
+      id: '8888ffff-8888-4888-8888-888888888888',
+      name: 'Đường đi',
+      tags: [],
+    };
+    const itemFuzzy: ItemSummary = {
+      ...ITEM_WIFI,
+      id: '9999ffff-9999-4999-8999-999999999999',
+      name: 'duong cụt',
+      tags: [],
+    };
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(
+      makeEmptySuggestResponse({
+        items: [
+          makeSuggestItemRow(itemFolded, { match: 'prefix_folded' }),
+          makeSuggestItemRow(itemFuzzy, { match: 'fuzzy' }),
+        ],
+        semantic_reason: 'request_lexical',
+      }),
+    );
+
+    renderOmnibox(<Omnibox />);
+    const textarea = getTextbox();
+    typeNativeString(textarea, 'duong');
+    const listbox = await screen.findByRole('listbox');
+    await waitFor(() => {
+      expect(rowOptions(listbox)).toHaveLength(2);
+    });
+    const foldedRow = listbox.querySelector(`[data-opt-key="item:${itemFolded.id}"]`);
+    const fuzzyRow = listbox.querySelector(`[data-opt-key="item:${itemFuzzy.id}"]`);
+    expect(foldedRow?.querySelector('mark')?.textContent).toBe('Đường');
+    expect(foldedRow?.querySelector('.omni-opt-title')?.textContent).toBe('Đường đi');
+    // `fuzzy` rows get no mark at all.
+    expect(fuzzyRow?.querySelector('mark')).toBeNull();
+  });
+
+  it('≈ toggle keeps the textarea focused on pointer-down (WebKit would blur and close the dropdown) (RV-T17-2-FE1-5)', async () => {
+    const patchSpy = vi.spyOn(authApi, 'patchSettings').mockResolvedValue({
+      user: { id: USER_A_ID },
+      settings: { semantic_suggest: true },
+      features: { semantic_available: true, semantic_external: false },
+    } as unknown as Me);
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(
+      makeEmptySuggestResponse({
+        items: [makeSuggestItemRow(ITEM_WIFI)],
+        semantic_reason: 'request_lexical',
+      }),
+    );
+
+    renderOmnibox(<Omnibox />, { queryClient: semanticClient(false) });
+    const textarea = getTextbox();
+    textarea.focus();
+    typeNativeString(textarea, 'wif');
+    const listbox = await screen.findByRole('listbox');
+    await waitFor(() => {
+      expect(rowOptions(listbox)).toHaveLength(1);
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Tìm gần nghĩa' });
+    // A prevented mousedown is what stops the browser moving focus off the textarea (blur with relatedTarget === null).
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    act(() => {
+      toggle.dispatchEvent(down);
+    });
+    expect(down.defaultPrevented).toBe(true);
+    expect(textarea).toHaveFocus();
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith({ semantic_suggest: true });
+    });
+    expect(screen.getByRole('listbox')).toBe(listbox);
+    expect(textarea).toHaveFocus();
+  });
+
+  it('unmount aborts an in-flight "Xem thêm" request (RV-T17-2-FE1-8)', async () => {
+    const signals: AbortSignal[] = [];
+    vi.spyOn(searchApi, 'search').mockImplementation(async (params, opts) => {
+      if (params.cursor === undefined) {
+        return makeSearchResponse({
+          items: [makeSuggestItemRow(ITEM_WIFI)],
+          next_cursor: 'cursor-2',
+        });
+      }
+      const signal = opts?.signal ?? params.signal;
+      if (signal) signals.push(signal);
+      return new Promise<SearchResponse>(() => {});
+    });
+
+    const { unmount } = renderOmnibox(<Omnibox />);
+    const textarea = getTextbox();
+    typeNativeString(textarea, 'wif');
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    const listbox = await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
+    fireEvent.click(await within(listbox).findByRole('option', { name: 'Xem thêm' }));
+    await waitFor(() => {
+      expect(signals).toHaveLength(1);
+    });
+    expect(signals[0]?.aborted).toBe(false);
+    unmount();
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   it('tag mode first cached row active, server rows replace keeping activeKey', async () => {

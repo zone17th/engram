@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProblemError } from '@engram/shared-types';
 import { AppHeader } from '../components/app-shell/app-header';
 import { EmptyState } from '../components/app-shell/empty-state';
@@ -14,9 +14,12 @@ import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
 import { UndoToastProvider } from '../components/ui/undo-toast';
 import { contentQueryKeys } from '../features/items/query-keys';
+import { setKnownDeviceSessionUserId } from '../features/vault/device-store';
 import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
 import * as searchApi from '../lib/api/search';
+import { getSessionEpoch } from '../lib/api/auth-fetch';
+import { commitAuthenticatedUser, __testing as userChangedTesting } from '../lib/auth/user-changed';
 import type { SearchResponse, SuggestItem, SuggestResponse } from '../lib/api/search';
 import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
@@ -376,6 +379,7 @@ describe('EmptyState', () => {
 });
 
 describe('Omnibox', () => {
+  const OMNIBOX_USER_ID = 'aaaa0000-0000-4000-8000-000000000001';
   const SAMPLE_ITEMS: contentApi.ItemSummary[] = [
     {
       id: 'd1111111-1111-4111-8111-111111111111',
@@ -471,13 +475,27 @@ describe('Omnibox', () => {
     vi.restoreAllMocks();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
+    // The Omnibox never sends /suggest or /search without a session user (plan 2.7): seed one like omnibox.test.tsx does.
+    userChangedTesting.resetCommittedUserForTests();
+    setKnownDeviceSessionUserId(OMNIBOX_USER_ID);
+    commitAuthenticatedUser(OMNIBOX_USER_ID);
     vi.spyOn(searchApi, 'suggest').mockResolvedValue(makeSuggestResponse());
     vi.spyOn(searchApi, 'search').mockResolvedValue(makeSearchResponse());
+  });
+
+  afterEach(() => {
+    setKnownDeviceSessionUserId(null);
+    userChangedTesting.resetCommittedUserForTests();
   });
 
   function renderOmnibox(ui: ReactNode = <Omnibox />) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
+      user: { id: OMNIBOX_USER_ID },
+      settings: { semantic_suggest: false },
+      features: { semantic_available: false, semantic_external: false },
     });
     return render(
       <NextIntlClientProvider locale="vi" messages={viMessages}>

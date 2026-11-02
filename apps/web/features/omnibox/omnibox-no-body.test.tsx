@@ -622,7 +622,9 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     fireEvent.change(input, { target: { value: '#công-thức' } });
     const tagListbox = await screen.findByRole('listbox', { name: 'Tag filter results' });
     expect(within(tagListbox).getByRole('option', { name: /#công-thức/ })).toBeInTheDocument();
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #công-thức');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #công-thức');
+    });
     expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS])).toEqual([]);
 
     // Body-only query ("phin" appears only in D1.preview) -> matches 0 items, offers only Create item option
