@@ -24,6 +24,10 @@ type Deps struct {
 	Authenticator    Authenticator
 	CSRF             CSRFVerifier
 	Reauth           ReauthVerifier
+	// SemanticAvailability là hàm availability tĩnh dùng chung với /auth/me
+	// (semantic.Runtime.Availability). nil => false; /readyz không bao giờ trả
+	// 503 vì semantic.
+	SemanticAvailability func(context.Context) bool
 	// MountAPI đăng ký route dưới /api/v1. Không được mount route bảo vệ khi verifier nil.
 	MountAPI func(v1 chi.Router, d Deps)
 }
