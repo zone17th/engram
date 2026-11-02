@@ -13,6 +13,8 @@ type Metrics struct {
 	VaultRecoverTotal        prometheus.Counter
 	VaultUnlockFailuresTotal *prometheus.CounterVec
 	EntriesCreatedTotal      *prometheus.CounterVec
+	Search                   *SearchMetrics
+	Embedding                *EmbeddingMetrics
 }
 
 // NewRegistry tạo registry riêng (không dùng DefaultRegisterer) để test cô lập được.
@@ -41,8 +43,12 @@ func NewRegistry() (*prometheus.Registry, *Metrics) {
 			Name: "entries_created_total",
 			Help: "Tổng số entry đã tạo thành công theo kiểu nội dung (text hoặc json; không chứa dữ liệu người dùng).",
 		}, []string{"type"}),
+		Search:    newSearchMetrics(),
+		Embedding: newEmbeddingMetrics(),
 	}
 	reg.MustRegister(m.RequestDuration, m.VaultRecoverTotal, m.VaultUnlockFailuresTotal, m.EntriesCreatedTotal)
+	reg.MustRegister(m.Search.collectors()...)
+	reg.MustRegister(m.Embedding.collectors()...)
 	// Khởi tạo trước nhãn method="recovery" để counter xuất hiện trên /metrics ngay từ lúc boot.
 	m.VaultUnlockFailuresTotal.WithLabelValues("recovery")
 	// Khởi tạo trước nhãn type="text" và type="json" (plan mục 4, Task 6a, advisor-dec-149).
