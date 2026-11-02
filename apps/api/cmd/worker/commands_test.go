@@ -131,27 +131,62 @@ func TestDispatchKnownCommand(t *testing.T) {
 
 func TestDispatchUnknownCommandExit2(t *testing.T) {
 	reg := &registry{}
+	cmdCalled := 0
+	reg.register(Command{
+		Name:    "reembed",
+		Summary: "reconcile embeddings",
+		Run: func(ctx context.Context, env Env, args []string) error {
+			cmdCalled++
+			return nil
+		},
+	})
 	reg.register(Command{
 		Name:    "semeval",
 		Summary: "evaluate threshold",
 		Run: func(ctx context.Context, env Env, args []string) error {
+			cmdCalled++
 			return nil
 		},
 	})
 
-	env, stdout, stderr := newTestEnv()
-	code := reg.dispatch(context.Background(), env, []string{"unknown"}, func(ctx context.Context, env Env) error {
-		t.Fatal("runWorker must not be called")
-		return nil
-	})
-	if code != 2 {
-		t.Fatalf("expected exit code 2, got %d", code)
+	sensitiveTokens := []string{
+		"unknown",
+		"name: body",
+		"sk-test-SENTINEL",
+		"Sổ tiết kiệm ngân hàng Vietcombank",
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("expected empty stdout, got %q", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), "unknown") || !strings.Contains(stderr.String(), "semeval") {
-		t.Fatalf("expected stderr to mention unknown command and usage, got %q", stderr.String())
+
+	for _, token := range sensitiveTokens {
+		env, stdout, stderr := newTestEnv()
+		workerCalled := 0
+		code := reg.dispatch(context.Background(), env, []string{token, "extra-secret-arg"}, func(ctx context.Context, env Env) error {
+			workerCalled++
+			return nil
+		})
+		if code != 2 {
+			t.Fatalf("token %q: expected exit code 2, got %d", token, code)
+		}
+		if workerCalled != 0 {
+			t.Fatalf("token %q: expected runWorker not called, got %d", token, workerCalled)
+		}
+		if cmdCalled != 0 {
+			t.Fatalf("token %q: expected registered commands not called, got %d", token, cmdCalled)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("token %q: expected empty stdout, got %q", token, stdout.String())
+		}
+		errOut := stderr.String()
+		if strings.Contains(errOut, token) || strings.Contains(errOut, "extra-secret-arg") {
+			t.Fatalf("token %q: expected stderr never to echo rejected token or args, got %q", token, errOut)
+		}
+		if !strings.Contains(errOut, "lệnh không biết") {
+			t.Fatalf("token %q: expected fixed diagnostic in stderr, got %q", token, errOut)
+		}
+		idxReembed := strings.Index(errOut, "reembed")
+		idxSemeval := strings.Index(errOut, "semeval")
+		if idxReembed < 0 || idxSemeval < 0 || !(idxReembed < idxSemeval) {
+			t.Fatalf("token %q: expected sorted registered command names in stderr usage, got %q", token, errOut)
+		}
 	}
 }
 

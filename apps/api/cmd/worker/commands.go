@@ -17,8 +17,10 @@ import (
 // Mỗi subcommand tự phân tích cờ bằng flag.NewFlagSet(name, flag.ContinueOnError);
 // khi Run trả về flag.ErrHelp thì dispatch trả mã thoát 0.
 //
-// Quy tắc riêng tư (mục 2.22): các lệnh KHÔNG ĐƯỢC in tên item, hint, tên tag,
-// nội dung câu truy vấn (query text) hoặc bí mật (secrets) ra Stdout/Stderr hay log.
+// Quy tắc riêng tư (mục 2.22): các lệnh KHÔNG ĐƯỢC in hoặc trả về trong error
+// tên item, hint, tên tag, nội dung câu truy vấn (query text) hoặc bí mật
+// (secrets) ra Stdout/Stderr hay log; các hàm xử lý (handlers) chỉ được trả về
+// lỗi an toàn về quyền riêng tư vì dispatch in trực tiếp "<tên-lệnh>: <err>".
 type Command struct {
 	Name    string
 	Summary string
@@ -83,7 +85,7 @@ func (r *registry) dispatch(
 
 	cmd, ok := r.m[name]
 	if !ok {
-		_, _ = fmt.Fprintf(env.Stderr, "lệnh không biết: %s\n", name)
+		_, _ = fmt.Fprintln(env.Stderr, "lệnh không biết")
 		r.writeHelp(env.Stderr)
 		return 2
 	}
@@ -92,7 +94,9 @@ func (r *registry) dispatch(
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		_, _ = fmt.Fprintf(env.Stderr, "%s: %v\n", name, err)
+		// cmd.Name là tên lệnh đã đăng ký (đáng tin cậy); handler chịu trách nhiệm
+		// chỉ trả về error không chứa nội dung nhạy cảm (mục 2.22).
+		_, _ = fmt.Fprintf(env.Stderr, "%s: %v\n", cmd.Name, err)
 		return 1
 	}
 	return 0
