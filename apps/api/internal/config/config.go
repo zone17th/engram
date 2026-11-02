@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -23,20 +24,21 @@ const minSecretLen = 32
 // Config là toàn bộ cấu hình runtime của API/worker/migrate.
 // Không lộ secret nào được log ra ngoài: Ghi log cấu hình phải dùng Redacted().
 type Config struct {
-	Env                       string        `envconfig:"APP_ENV" default:"development" validate:"oneof=development staging production"`
-	HTTPAddr                  string        `envconfig:"HTTP_ADDR" default:"127.0.0.1:8080" validate:"required,hostname_port"`
-	DatabaseURL               string        `envconfig:"DATABASE_URL" required:"true" validate:"required,startswith=postgres"`
-	AppOrigin                 string        `envconfig:"APP_ORIGIN" default:"http://localhost:3000" validate:"required,url"`
-	EmbeddingProvider         string        `envconfig:"EMBEDDING_PROVIDER" default:"noop" validate:"oneof=noop tei openai_compat"`
-	TEIURL                    string        `envconfig:"TEI_URL"`
-	TEIInputPrefixQuery       string        `envconfig:"TEI_INPUT_PREFIX_QUERY"`
-	TEIInputPrefixDocument    string        `envconfig:"TEI_INPUT_PREFIX_DOCUMENT"`
-	EmbeddingBaseURL          string        `envconfig:"EMBEDDING_BASE_URL"`
-	EmbeddingModel            string        `envconfig:"EMBEDDING_MODEL" default:"openrouter/qwen/qwen3-embedding-8b"`
-	EmbeddingDimensions       int           `envconfig:"EMBEDDING_DIMENSIONS" default:"1024" validate:"min=1,max=2000"`
-	EmbeddingQueryInstruction string        `envconfig:"EMBEDDING_QUERY_INSTRUCTION" default:"Given a short search query, retrieve matching item names or tags"`
-	EmbeddingQueryTimeout     time.Duration `envconfig:"EMBEDDING_QUERY_TIMEOUT"`
-	EmbeddingDocumentTimeout  time.Duration `envconfig:"EMBEDDING_DOCUMENT_TIMEOUT" default:"30s"`
+	Env                       string           `envconfig:"APP_ENV" default:"development" validate:"oneof=development staging production"`
+	HTTPAddr                  string           `envconfig:"HTTP_ADDR" default:"127.0.0.1:8080" validate:"required,hostname_port"`
+	DatabaseURL               string           `envconfig:"DATABASE_URL" required:"true" validate:"required,startswith=postgres"`
+	AppOrigin                 string           `envconfig:"APP_ORIGIN" default:"http://localhost:3000" validate:"required,url"`
+	EmbeddingProvider         string           `envconfig:"EMBEDDING_PROVIDER" default:"noop" validate:"oneof=noop tei openai_compat"`
+	TEIURL                    string           `envconfig:"TEI_URL"`
+	TEIInputPrefixQuery       string           `envconfig:"TEI_INPUT_PREFIX_QUERY"`
+	TEIInputPrefixDocument    string           `envconfig:"TEI_INPUT_PREFIX_DOCUMENT"`
+	EmbeddingBaseURL          string           `envconfig:"EMBEDDING_BASE_URL"`
+	EmbeddingAPIKey           embedding.Secret `ignored:"true"`
+	EmbeddingModel            string           `envconfig:"EMBEDDING_MODEL" default:"openrouter/qwen/qwen3-embedding-8b"`
+	EmbeddingDimensions       int              `envconfig:"EMBEDDING_DIMENSIONS" default:"1024" validate:"min=1,max=2000"`
+	EmbeddingQueryInstruction string           `envconfig:"EMBEDDING_QUERY_INSTRUCTION" default:"Given a short search query, retrieve matching item names or tags"`
+	EmbeddingQueryTimeout     time.Duration    `ignored:"true"`
+	EmbeddingDocumentTimeout  time.Duration    `envconfig:"EMBEDDING_DOCUMENT_TIMEOUT" default:"30s"`
 
 	// Bộ cấu hình client thứ hai cho cutover generation (SPEC §4.4, §6.6, plan P05 mục 2.13):
 	//   - EMBEDDING_SHADOW_PROVIDER (rỗng = tắt; hoặc noop|tei|openai_compat)
@@ -49,15 +51,16 @@ type Config struct {
 	//   - EMBEDDING_SHADOW_DOCUMENT_TIMEOUT (mặc định 30s)
 	//   - EMBEDDING_SHADOW_INPUT_PREFIX_QUERY
 	//   - EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT
-	EmbeddingShadowProvider         string        `envconfig:"EMBEDDING_SHADOW_PROVIDER" validate:"omitempty,oneof=noop tei openai_compat"`
-	EmbeddingShadowBaseURL          string        `envconfig:"EMBEDDING_SHADOW_BASE_URL"`
-	EmbeddingShadowModel            string        `envconfig:"EMBEDDING_SHADOW_MODEL" default:"openrouter/qwen/qwen3-embedding-8b"`
-	EmbeddingShadowDimensions       int           `envconfig:"EMBEDDING_SHADOW_DIMENSIONS" default:"1024" validate:"min=1,max=2000"`
-	EmbeddingShadowQueryInstruction string        `envconfig:"EMBEDDING_SHADOW_QUERY_INSTRUCTION" default:"Given a short search query, retrieve matching item names or tags"`
-	EmbeddingShadowQueryTimeout     time.Duration `envconfig:"EMBEDDING_SHADOW_QUERY_TIMEOUT"`
-	EmbeddingShadowDocumentTimeout  time.Duration `envconfig:"EMBEDDING_SHADOW_DOCUMENT_TIMEOUT" default:"30s"`
-	EmbeddingShadowInputPrefixQuery string        `envconfig:"EMBEDDING_SHADOW_INPUT_PREFIX_QUERY"`
-	EmbeddingShadowInputPrefixDoc   string        `envconfig:"EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT"`
+	EmbeddingShadowProvider         string           `envconfig:"EMBEDDING_SHADOW_PROVIDER" validate:"omitempty,oneof=noop tei openai_compat"`
+	EmbeddingShadowBaseURL          string           `envconfig:"EMBEDDING_SHADOW_BASE_URL"`
+	EmbeddingShadowAPIKey           embedding.Secret `ignored:"true"`
+	EmbeddingShadowModel            string           `envconfig:"EMBEDDING_SHADOW_MODEL" default:"openrouter/qwen/qwen3-embedding-8b"`
+	EmbeddingShadowDimensions       int              `envconfig:"EMBEDDING_SHADOW_DIMENSIONS" default:"1024" validate:"min=1,max=2000"`
+	EmbeddingShadowQueryInstruction string           `envconfig:"EMBEDDING_SHADOW_QUERY_INSTRUCTION" default:"Given a short search query, retrieve matching item names or tags"`
+	EmbeddingShadowQueryTimeout     time.Duration    `ignored:"true"`
+	EmbeddingShadowDocumentTimeout  time.Duration    `envconfig:"EMBEDDING_SHADOW_DOCUMENT_TIMEOUT" default:"30s"`
+	EmbeddingShadowInputPrefixQuery string           `envconfig:"EMBEDDING_SHADOW_INPUT_PREFIX_QUERY"`
+	EmbeddingShadowInputPrefixDoc   string           `envconfig:"EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT"`
 
 	// Các knob tìm kiếm P05 (SPEC §4.4, §6.3, §6.4, §6.6, plan P05 mục 2.13).
 	SearchSemanticEnabled         bool          `envconfig:"SEARCH_SEMANTIC_ENABLED" default:"true"`
@@ -106,15 +109,17 @@ type Config struct {
 	// EphemeralSecrets là true khi development/test tự sinh key vì env trống.
 	EphemeralSecrets bool `ignored:"true"`
 
-	rawJWT                   string `ignored:"true"`
-	rawCSRF                  string `ignored:"true"`
-	rawReauth                string `ignored:"true"`
-	rawIP                    string `ignored:"true"`
-	rawEmail                 string `ignored:"true"`
-	rawCIDRs                 string `ignored:"true"`
-	rawEmbeddingAPIKey       string `ignored:"true"`
-	rawEmbeddingShadowAPIKey string `ignored:"true"`
-	rawBootstrapFlipInterval string `ignored:"true"`
+	rawJWT                         string           `ignored:"true"`
+	rawCSRF                        string           `ignored:"true"`
+	rawReauth                      string           `ignored:"true"`
+	rawIP                          string           `ignored:"true"`
+	rawEmail                       string           `ignored:"true"`
+	rawCIDRs                       string           `ignored:"true"`
+	rawEmbeddingAPIKey             embedding.Secret `ignored:"true"`
+	rawEmbeddingShadowAPIKey       embedding.Secret `ignored:"true"`
+	rawBootstrapFlipInterval       string           `ignored:"true"`
+	rawEmbeddingQueryTimeout       string           `ignored:"true"`
+	rawEmbeddingShadowQueryTimeout string           `ignored:"true"`
 }
 
 type secretEnv struct {
@@ -130,8 +135,10 @@ type secretEnv struct {
 // proxyEnv đọc AUTH_TRUSTED_PROXY_CIDRS qua field exported: envconfig bỏ qua field
 // unexported, nên tag trên Config.rawCIDRs trước đây không bao giờ được nạp.
 type proxyEnv struct {
-	TrustedProxyCIDRs     string `envconfig:"AUTH_TRUSTED_PROXY_CIDRS"`
-	BootstrapFlipInterval string `envconfig:"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL"`
+	TrustedProxyCIDRs           string `envconfig:"AUTH_TRUSTED_PROXY_CIDRS"`
+	BootstrapFlipInterval       string `envconfig:"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL"`
+	EmbeddingQueryTimeout       string `envconfig:"EMBEDDING_QUERY_TIMEOUT"`
+	EmbeddingShadowQueryTimeout string `envconfig:"EMBEDDING_SHADOW_QUERY_TIMEOUT"`
 }
 
 // Load đọc env, áp default rồi validate. Lỗi cấu hình phải làm process chết ngay
@@ -154,8 +161,10 @@ func Load() (*Config, error) {
 	cfg.rawReauth = secrets.AuthReauthSecret
 	cfg.rawIP = secrets.AuthIPPepper
 	cfg.rawEmail = secrets.AuthEmailPepper
-	cfg.rawEmbeddingAPIKey = strings.TrimSpace(secrets.EmbeddingAPIKey)
-	cfg.rawEmbeddingShadowAPIKey = strings.TrimSpace(secrets.EmbeddingShadowAPIKey)
+	cfg.rawEmbeddingAPIKey = embedding.Secret(strings.TrimSpace(secrets.EmbeddingAPIKey))
+	cfg.rawEmbeddingShadowAPIKey = embedding.Secret(strings.TrimSpace(secrets.EmbeddingShadowAPIKey))
+	cfg.EmbeddingAPIKey = cfg.rawEmbeddingAPIKey
+	cfg.EmbeddingShadowAPIKey = cfg.rawEmbeddingShadowAPIKey
 
 	var proxies proxyEnv
 	if err := envconfig.Process("", &proxies); err != nil {
@@ -163,6 +172,8 @@ func Load() (*Config, error) {
 	}
 	cfg.rawCIDRs = proxies.TrustedProxyCIDRs
 	cfg.rawBootstrapFlipInterval = strings.TrimSpace(proxies.BootstrapFlipInterval)
+	cfg.rawEmbeddingQueryTimeout = strings.TrimSpace(proxies.EmbeddingQueryTimeout)
+	cfg.rawEmbeddingShadowQueryTimeout = strings.TrimSpace(proxies.EmbeddingShadowQueryTimeout)
 
 	if err := cfg.loadSecrets(); err != nil {
 		return nil, err
@@ -391,19 +402,24 @@ func (c *Config) validateP05Policy() error {
 		if c.EmbeddingBaseURL == "" {
 			return fmt.Errorf("EMBEDDING_BASE_URL là bắt buộc khi EMBEDDING_PROVIDER=openai_compat")
 		}
-		if c.rawEmbeddingAPIKey == "" {
+		if c.rawEmbeddingAPIKey.IsEmpty() {
 			return fmt.Errorf("EMBEDDING_API_KEY là bắt buộc khi EMBEDDING_PROVIDER=openai_compat")
 		}
 		if strings.TrimSpace(c.EmbeddingModel) == "" {
 			return fmt.Errorf("EMBEDDING_MODEL không được rỗng")
 		}
 	}
-	if c.EmbeddingQueryTimeout == 0 {
-		c.EmbeddingQueryTimeout = defaultQueryTimeoutForProvider(c.EmbeddingProvider)
+	queryTimeout, err := parseOrDefaultDuration(
+		"EMBEDDING_QUERY_TIMEOUT",
+		c.rawEmbeddingQueryTimeout,
+		defaultQueryTimeoutForProvider(c.EmbeddingProvider),
+		time.Millisecond,
+		5*time.Minute,
+	)
+	if err != nil {
+		return err
 	}
-	if c.EmbeddingQueryTimeout < time.Millisecond || c.EmbeddingQueryTimeout > 5*time.Minute {
-		return fmt.Errorf("EMBEDDING_QUERY_TIMEOUT phải trong khoảng 1ms..5m")
-	}
+	c.EmbeddingQueryTimeout = queryTimeout
 	if c.EmbeddingDocumentTimeout < time.Millisecond || c.EmbeddingDocumentTimeout > 10*time.Minute {
 		return fmt.Errorf("EMBEDDING_DOCUMENT_TIMEOUT phải trong khoảng 1ms..10m")
 	}
@@ -422,19 +438,24 @@ func (c *Config) validateP05Policy() error {
 		if c.EmbeddingShadowBaseURL == "" {
 			return fmt.Errorf("EMBEDDING_SHADOW_BASE_URL là bắt buộc khi EMBEDDING_SHADOW_PROVIDER=openai_compat")
 		}
-		if c.rawEmbeddingShadowAPIKey == "" {
+		if c.rawEmbeddingShadowAPIKey.IsEmpty() {
 			return fmt.Errorf("EMBEDDING_SHADOW_API_KEY là bắt buộc khi EMBEDDING_SHADOW_PROVIDER=openai_compat")
 		}
 		if strings.TrimSpace(c.EmbeddingShadowModel) == "" {
 			return fmt.Errorf("EMBEDDING_SHADOW_MODEL không được rỗng")
 		}
 	}
-	if c.EmbeddingShadowQueryTimeout == 0 {
-		c.EmbeddingShadowQueryTimeout = defaultQueryTimeoutForProvider(c.EmbeddingShadowProvider)
+	shadowQueryTimeout, err := parseOrDefaultDuration(
+		"EMBEDDING_SHADOW_QUERY_TIMEOUT",
+		c.rawEmbeddingShadowQueryTimeout,
+		defaultQueryTimeoutForProvider(c.EmbeddingShadowProvider),
+		time.Millisecond,
+		5*time.Minute,
+	)
+	if err != nil {
+		return err
 	}
-	if c.EmbeddingShadowQueryTimeout < time.Millisecond || c.EmbeddingShadowQueryTimeout > 5*time.Minute {
-		return fmt.Errorf("EMBEDDING_SHADOW_QUERY_TIMEOUT phải trong khoảng 1ms..5m")
-	}
+	c.EmbeddingShadowQueryTimeout = shadowQueryTimeout
 	if c.EmbeddingShadowDocumentTimeout < time.Millisecond || c.EmbeddingShadowDocumentTimeout > 10*time.Minute {
 		return fmt.Errorf("EMBEDDING_SHADOW_DOCUMENT_TIMEOUT phải trong khoảng 1ms..10m")
 	}
@@ -474,6 +495,18 @@ func defaultQueryTimeoutForProvider(provider string) time.Duration {
 		return 4 * time.Second
 	}
 	return 300 * time.Millisecond
+}
+
+func parseOrDefaultDuration(name, raw string, def, min, max time.Duration) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < min || d > max {
+		return 0, fmt.Errorf("%s phải trong khoảng %s..%s", name, min, max)
+	}
+	return d, nil
 }
 
 func parseStrictOrigin(raw string) (*url.URL, error) {
@@ -731,14 +764,57 @@ func (c *Config) TrustedProxyContains(ip net.IP) bool {
 	return false
 }
 
+// String trả về chuỗi tóm tắt đã che secret và URL đầy đủ để fmt (%v, %+v, %s)
+// trên cả giá trị Config lẫn con trỏ *Config không bao giờ làm lộ API key hay
+// secret khác.
+func (c Config) String() string {
+	return c.redactedSummary()
+}
+
+// GoString trả về chuỗi tóm tắt đã che secret và URL đầy đủ để fmt %#v trên cả
+// giá trị Config lẫn con trỏ *Config không bao giờ làm lộ API key hay secret.
+func (c Config) GoString() string {
+	return c.redactedSummary()
+}
+
+// LogValue implements slog.LogValuer so logging Config or *Config directly via
+// slog never exposes secrets or full URLs.
+func (c Config) LogValue() slog.Value {
+	return slog.StringValue(c.redactedSummary())
+}
+
+func (c Config) redactedSummary() string {
+	return fmt.Sprintf(
+		"Config{Env:%q, HTTPAddr:%q, AppOrigin:%q, EmbeddingProvider:%q, EmbeddingAPIKeySet:%t, EmbeddingBaseURLSet:%t, TEIURLSet:%t, EmbeddingModel:%q, EmbeddingDimensions:%d, EmbeddingQueryTimeout:%s, EmbeddingDocumentTimeout:%s, EmbeddingShadowProvider:%q, EmbeddingShadowAPIKeySet:%t, EmbeddingShadowBaseURLSet:%t, SearchSemanticEnabled:%t}",
+		c.Env,
+		c.HTTPAddr,
+		c.AppOrigin,
+		c.EmbeddingProvider,
+		!c.rawEmbeddingAPIKey.IsEmpty(),
+		c.EmbeddingBaseURL != "",
+		c.TEIURL != "",
+		c.EmbeddingModel,
+		c.EmbeddingDimensions,
+		c.EmbeddingQueryTimeout,
+		c.EmbeddingDocumentTimeout,
+		c.EmbeddingShadowProvider,
+		!c.rawEmbeddingShadowAPIKey.IsEmpty(),
+		c.EmbeddingShadowBaseURL != "",
+		c.SearchSemanticEnabled,
+	)
+}
+
 // Redacted trả bản sao an toàn để log: che chuỗi kết nối DB và mọi secret.
 func (c *Config) Redacted() map[string]any {
+	if c == nil {
+		return map[string]any{}
+	}
 	return map[string]any{
 		"env":                               c.Env,
 		"http_addr":                         c.HTTPAddr,
 		"app_origin":                        c.AppOrigin,
 		"embedding_provider":                c.EmbeddingProvider,
-		"embedding_api_key_set":             c.rawEmbeddingAPIKey != "",
+		"embedding_api_key_set":             !c.rawEmbeddingAPIKey.IsEmpty(),
 		"embedding_base_url_set":            c.EmbeddingBaseURL != "",
 		"tei_url_set":                       c.TEIURL != "",
 		"embedding_model":                   c.EmbeddingModel,
@@ -746,7 +822,7 @@ func (c *Config) Redacted() map[string]any {
 		"embedding_query_timeout":           c.EmbeddingQueryTimeout.String(),
 		"embedding_document_timeout":        c.EmbeddingDocumentTimeout.String(),
 		"embedding_shadow_provider":         c.EmbeddingShadowProvider,
-		"embedding_shadow_api_key_set":      c.rawEmbeddingShadowAPIKey != "",
+		"embedding_shadow_api_key_set":      !c.rawEmbeddingShadowAPIKey.IsEmpty(),
 		"embedding_shadow_base_url_set":     c.EmbeddingShadowBaseURL != "",
 		"embedding_shadow_model":            c.EmbeddingShadowModel,
 		"embedding_shadow_dimensions":       c.EmbeddingShadowDimensions,

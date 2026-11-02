@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -90,14 +92,14 @@ func TestCheckURL(t *testing.T) {
 
 func TestNewHTTPClientEnforcesDialIPOnEveryRequest(t *testing.T) {
 	var dialCalls atomic.Int32
-	var lookupCalls atomic.Int32
+	var rebindLookupCalls atomic.Int32
 
-	// Simulate DNS rebinding: first lookup returns private IP 10.0.0.5, second
-	// lookup returns public IP 198.51.100.7.
+	// Simulate DNS rebinding: first lookup for rebind.example.invalid returns
+	// private IP 10.0.0.5, second lookup returns public IP 198.51.100.7.
 	resolver := fakeResolver{
 		lookup: func(_ context.Context, _, host string) ([]netip.Addr, error) {
-			n := lookupCalls.Add(1)
 			if host == "rebind.example.invalid" {
+				n := rebindLookupCalls.Add(1)
 				if n == 1 {
 					return []netip.Addr{netip.MustParseAddr("10.0.0.5")}, nil
 				}
@@ -258,4 +260,194 @@ func TestReadBodyCapped(t *testing.T) {
 	if gotOutcome := embedding.OutcomeForError(err); gotOutcome != "bad_response" {
 		t.Fatalf("OutcomeForError = %q, want bad_response", gotOutcome)
 	}
+}
+
+type fakeNetError struct {
+	msg     string
+	timeout bool
+}
+
+func (e fakeNetError) Error() string   { return e.msg }
+func (e fakeNetError) Timeout() bool   { return e.timeout }
+func (e fakeNetError) Temporary() bool { return e.timeout }
+
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func TestTimeoutClassificationInResolverDialAndBodyReader(t *testing.T) {
+	t.Run("resolver_deadline_exceeded_classified_as_timeout", func(t *testing.T) {
+		client := embedding.NewHTTPClient(
+			embedding.WithResolver(fakeResolver{
+				lookup: func(context.Context, string, string) ([]netip.Addr, error) {
+					return nil, context.DeadlineExceeded
+				},
+			}),
+		)
+		resp, err := client.Get("http://slow-dns.example.invalid:8080/v1")
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("expected error from resolver deadline exceeded, got nil")
+		}
+		var pe *embedding.ProviderError
+		if !errors.As(err, &pe) || pe == nil {
+			t.Fatalf("expected *ProviderError, got %T (%v)", err, err)
+		}
+		if pe.Class != embedding.ClassTimeout {
+			t.Fatalf("ProviderError.Class = %q, want %q", pe.Class, embedding.ClassTimeout)
+		}
+		if got := embedding.OutcomeForError(err); got != "timeout" {
+			t.Fatalf("OutcomeForError(err) = %q, want timeout", got)
+		}
+		if errors.Is(err, embedding.ErrBadResponse) {
+			t.Fatalf("errors.Is(err, ErrBadResponse) = true for resolver timeout: %v", err)
+		}
+	})
+
+	t.Run("resolver_net_timeout_classified_as_timeout", func(t *testing.T) {
+		client := embedding.NewHTTPClient(
+			embedding.WithResolver(fakeResolver{
+				lookup: func(context.Context, string, string) ([]netip.Addr, error) {
+					return nil, fakeNetError{msg: "i/o timeout", timeout: true}
+				},
+			}),
+		)
+		resp, err := client.Get("http://net-timeout-dns.example.invalid:8080/v1")
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("expected error from resolver net.Error timeout, got nil")
+		}
+		var pe *embedding.ProviderError
+		if !errors.As(err, &pe) || pe == nil {
+			t.Fatalf("expected *ProviderError, got %T (%v)", err, err)
+		}
+		if pe.Class != embedding.ClassTimeout {
+			t.Fatalf("ProviderError.Class = %q, want %q", pe.Class, embedding.ClassTimeout)
+		}
+		if got := embedding.OutcomeForError(err); got != "timeout" {
+			t.Fatalf("OutcomeForError(err) = %q, want timeout", got)
+		}
+		if errors.Is(err, embedding.ErrBadResponse) {
+			t.Fatalf("errors.Is(err, ErrBadResponse) = true for resolver net timeout: %v", err)
+		}
+	})
+
+	t.Run("resolver_non_timeout_remains_refused", func(t *testing.T) {
+		client := embedding.NewHTTPClient(
+			embedding.WithResolver(fakeResolver{
+				lookup: func(context.Context, string, string) ([]netip.Addr, error) {
+					return nil, fakeNetError{msg: "no such host", timeout: false}
+				},
+			}),
+		)
+		resp, err := client.Get("http://nxdomain.example.invalid:8080/v1")
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("expected error from resolver nxdomain, got nil")
+		}
+		var pe *embedding.ProviderError
+		if !errors.As(err, &pe) || pe == nil {
+			t.Fatalf("expected *ProviderError, got %T (%v)", err, err)
+		}
+		if pe.Class != embedding.ClassRefused {
+			t.Fatalf("ProviderError.Class = %q, want %q", pe.Class, embedding.ClassRefused)
+		}
+		if got := embedding.OutcomeForError(err); got != "refused" {
+			t.Fatalf("OutcomeForError(err) = %q, want refused", got)
+		}
+		if errors.Is(err, embedding.ErrBadResponse) {
+			t.Fatalf("errors.Is(err, ErrBadResponse) = true for resolver nxdomain: %v", err)
+		}
+	})
+
+	t.Run("dial_timeout_classified_as_timeout", func(t *testing.T) {
+		client := embedding.NewHTTPClient(
+			embedding.WithDialFunc(func(context.Context, string, string) (net.Conn, error) {
+				return nil, fakeNetError{msg: "dial i/o timeout", timeout: true}
+			}),
+		)
+		resp, err := client.Get("http://10.0.0.5:8080/v1")
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("expected dial timeout error, got nil")
+		}
+		var pe *embedding.ProviderError
+		if !errors.As(err, &pe) || pe == nil {
+			t.Fatalf("expected *ProviderError, got %T (%v)", err, err)
+		}
+		if pe.Class != embedding.ClassTimeout {
+			t.Fatalf("ProviderError.Class = %q, want %q", pe.Class, embedding.ClassTimeout)
+		}
+		if got := embedding.OutcomeForError(err); got != "timeout" {
+			t.Fatalf("OutcomeForError(err) = %q, want timeout", got)
+		}
+		if errors.Is(err, embedding.ErrBadResponse) {
+			t.Fatalf("errors.Is(err, ErrBadResponse) = true for dial timeout: %v", err)
+		}
+	})
+
+	t.Run("read_body_capped_deadline_exceeded_and_net_timeout_classified_as_timeout", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			err  error
+		}{
+			{"deadline_exceeded", context.DeadlineExceeded},
+			{"wrapped_deadline_exceeded", fmt.Errorf("stream read: %w", context.DeadlineExceeded)},
+			{"net_error_timeout", fakeNetError{msg: "read timeout", timeout: true}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := embedding.ReadBodyCapped(errReader{err: tc.err})
+				if err == nil {
+					t.Fatal("ReadBodyCapped = nil, want error")
+				}
+				var pe *embedding.ProviderError
+				if !errors.As(err, &pe) || pe == nil {
+					t.Fatalf("expected *ProviderError, got %T (%v)", err, err)
+				}
+				if pe.Class != embedding.ClassTimeout {
+					t.Fatalf("ProviderError.Class = %q, want %q", pe.Class, embedding.ClassTimeout)
+				}
+				if got := embedding.OutcomeForError(err); got != "timeout" {
+					t.Fatalf("OutcomeForError(err) = %q, want timeout", got)
+				}
+				if errors.Is(err, embedding.ErrBadResponse) {
+					t.Fatalf("errors.Is(err, ErrBadResponse) = true for timeout error: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("read_body_capped_non_timeout_error_remains_bad_response", func(t *testing.T) {
+		_, err := embedding.ReadBodyCapped(errReader{err: io.ErrUnexpectedEOF})
+		if err == nil {
+			t.Fatal("ReadBodyCapped = nil, want error")
+		}
+		var pe *embedding.ProviderError
+		if !errors.As(err, &pe) || pe == nil {
+			t.Fatalf("expected *ProviderError, got %T (%v)", err, err)
+		}
+		if pe.Class != embedding.ClassBadResponse {
+			t.Fatalf("ProviderError.Class = %q, want %q", pe.Class, embedding.ClassBadResponse)
+		}
+		if got := embedding.OutcomeForError(err); got != "bad_response" {
+			t.Fatalf("OutcomeForError(err) = %q, want bad_response", got)
+		}
+		if !errors.Is(err, embedding.ErrBadResponse) {
+			t.Fatalf("errors.Is(err, ErrBadResponse) = false, want true")
+		}
+	})
+
+	t.Run("outcome_for_raw_net_timeout_is_timeout", func(t *testing.T) {
+		rawNetTimeout := fakeNetError{msg: "i/o timeout", timeout: true}
+		if got := embedding.OutcomeForError(rawNetTimeout); got != "timeout" {
+			t.Fatalf("OutcomeForError(rawNetTimeout) = %q, want timeout", got)
+		}
+		if errors.Is(rawNetTimeout, embedding.ErrBadResponse) {
+			t.Fatal("errors.Is(rawNetTimeout, ErrBadResponse) = true")
+		}
+	})
 }

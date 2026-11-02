@@ -104,6 +104,19 @@ func (c ErrorClass) MetricOutcome() string {
 	}
 }
 
+// IsTimeoutError reports whether err represents a deadline or network timeout
+// (context.DeadlineExceeded or net.Error with Timeout() == true).
+func IsTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne != nil && ne.Timeout()
+}
+
 // OutcomeForError returns the metric outcome label ("ok" when err == nil, or
 // the mapped ErrorClass outcome).
 func OutcomeForError(err error) string {
@@ -114,11 +127,11 @@ func OutcomeForError(err error) string {
 	if errors.As(err, &pe) && pe != nil {
 		return pe.Class.MetricOutcome()
 	}
+	if IsTimeoutError(err) {
+		return ClassTimeout.MetricOutcome()
+	}
 	if errors.Is(err, ErrBadResponse) {
 		return ClassBadResponse.MetricOutcome()
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return ClassTimeout.MetricOutcome()
 	}
 	return ClassRefused.MetricOutcome()
 }
@@ -173,13 +186,66 @@ func (e *ProviderError) Is(target error) bool {
 	return false
 }
 
+// Secret holds a sensitive credential (such as an embedding API key) whose
+// formatting, JSON/text marshaling, and structured logging representations are
+// unconditionally redacted to "[redacted]". Call Reveal() only at the exact
+// site that constructs an outbound Authorization header.
+type Secret string
+
+const redactedMask = "[redacted]"
+
+// Reveal returns the underlying raw secret string.
+func (s Secret) Reveal() string {
+	return string(s)
+}
+
+// IsEmpty reports whether the secret is empty.
+func (s Secret) IsEmpty() bool {
+	return s == ""
+}
+
+// String implements fmt.Stringer with a fixed redaction mask.
+func (s Secret) String() string {
+	return redactedMask
+}
+
+// GoString implements fmt.GoStringer so %#v never leaks the secret.
+func (s Secret) GoString() string {
+	return redactedMask
+}
+
+// Format implements fmt.Formatter so every verb (%v, %+v, %#v, %s, %q, %x, ...)
+// writes the redaction mask rather than the raw secret bytes.
+func (s Secret) Format(f fmt.State, verb rune) {
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(f, "%q", redactedMask)
+		return
+	}
+	_, _ = f.Write([]byte(redactedMask))
+}
+
+// MarshalJSON implements json.Marshaler with a fixed redaction mask.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	return []byte(`"[redacted]"`), nil
+}
+
+// MarshalText implements encoding.TextMarshaler with a fixed redaction mask.
+func (s Secret) MarshalText() ([]byte, error) {
+	return []byte(redactedMask), nil
+}
+
+// LogValue implements slog.LogValuer with a fixed redaction mask.
+func (s Secret) LogValue() slog.Value {
+	return slog.StringValue(redactedMask)
+}
+
 // ClientConfig holds the configuration for a single embedding provider client
 // (primary or shadow). Its String and GoString methods redact APIKey and
 // BaseURL so formatting with %v / %+v / %#v never leaks secrets or full URLs.
 type ClientConfig struct {
 	Provider         string
 	BaseURL          string
-	APIKey           string
+	APIKey           Secret
 	Model            string
 	Dims             int
 	QueryInstruction string
@@ -190,7 +256,7 @@ type ClientConfig struct {
 }
 
 func (c ClientConfig) redactedSummary() string {
-	keySet := c.APIKey != ""
+	keySet := !c.APIKey.IsEmpty()
 	urlSet := c.BaseURL != ""
 	return fmt.Sprintf(
 		"ClientConfig{Provider:%q, BaseURLSet:%t, APIKeySet:%t, Model:%q, Dims:%d, QueryTimeout:%s, DocumentTimeout:%s}",
@@ -206,6 +272,12 @@ func (c ClientConfig) String() string {
 // GoString returns a redacted representation so fmt %#v never leaks APIKey.
 func (c ClientConfig) GoString() string {
 	return c.redactedSummary()
+}
+
+// LogValue implements slog.LogValuer with a redacted representation so logging
+// a ClientConfig directly never exposes APIKey or BaseURL.
+func (c ClientConfig) LogValue() slog.Value {
+	return slog.StringValue(c.redactedSummary())
 }
 
 // EffectivePrefixes returns the (queryPrefix, docPrefix) pair that a client

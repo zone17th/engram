@@ -55,7 +55,7 @@ func WithOpenAIClock(now func() time.Time) OpenAICompatOption {
 // (ADR 0004, plan P05 mục 2.12, SPEC §4.4).
 type OpenAICompat struct {
 	endpoint        string
-	apiKey          string
+	apiKey          Secret
 	rawModel        string
 	fullModel       string
 	modelVersion    string
@@ -79,8 +79,8 @@ func NewOpenAICompat(cfg ClientConfig, opts ...OpenAICompatOption) (*OpenAICompa
 	if err := CheckURL(baseURL); err != nil {
 		return nil, err
 	}
-	apiKey := strings.TrimSpace(cfg.APIKey)
-	if apiKey == "" {
+	apiKey := Secret(strings.TrimSpace(cfg.APIKey.Reveal()))
+	if apiKey.IsEmpty() {
 		return nil, fmt.Errorf("embedding: openai_compat requires non-empty API key")
 	}
 	rawModel := strings.TrimSpace(cfg.Model)
@@ -254,7 +254,7 @@ func (p *OpenAICompat) doEmbed(ctx context.Context, op string, inputs []string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("Authorization", "Bearer "+p.apiKey.Reveal())
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
