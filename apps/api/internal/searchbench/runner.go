@@ -8,11 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -195,6 +196,10 @@ type Harness struct {
 	// SessionSQL echoes HarnessConfig.SessionSQL (test-only planner overrides).
 	SessionSQL []string
 
+	// LogSink receives every server log record (httpx router + semantic runtime)
+	// through the allowlist handler of advisor-dec-313; RunLoad drains it per level.
+	LogSink *LogSink
+
 	tokMu  sync.Mutex
 	tokens map[int]string
 }
@@ -233,7 +238,7 @@ func NewHarness(ctx context.Context, dsn string, sr *SeedResult, cfg HarnessConf
 	if err != nil {
 		return nil, fmt.Errorf("searchbench: open pool: %w", err)
 	}
-	h := &Harness{Pool: pool, Seed: sr, PoolMax: int(pool.Config().MaxConns), SessionSQL: cfg.SessionSQL, tokens: map[int]string{}}
+	h := &Harness{Pool: pool, Seed: sr, PoolMax: int(pool.Config().MaxConns), SessionSQL: cfg.SessionSQL, tokens: map[int]string{}, LogSink: NewLogSink()}
 
 	// Warm a few connections so the first requests do not pay the handshake.
 	var warm []*pgxpool.Conn
@@ -285,7 +290,6 @@ func NewHarness(ctx context.Context, dsn string, sr *SeedResult, cfg HarnessConf
 			return nil, errors.New("searchbench: stub client identity differs from g1 identity")
 		}
 		h.Searcher = &RecordingSearcher{inner: semantic.NewStoreVectorSearcher(pool), paths: map[string]int64{}}
-		silent := slog.New(slog.NewTextHandler(io.Discard, nil))
 		h.Runtime = semantic.NewRuntime(semantic.RuntimeConfig{
 			Enabled:   true,
 			Provider:  BenchProvider,
@@ -303,7 +307,7 @@ func NewHarness(ctx context.Context, dsn string, sr *SeedResult, cfg HarnessConf
 			SettingsReader: semantic.NewDBUserSettingsReader(pool),
 			ItemTagLoader:  semantic.NewDBItemTagRefLoader(pool),
 			Metrics:        metrics,
-			Logger:         silent,
+			Logger:         h.LogSink.Logger(), // advisor-dec-313: allowlist sink, not io.Discard
 			Clock:          clock.System{},
 		})
 		near = h.Runtime.NearSource()
@@ -314,7 +318,7 @@ func NewHarness(ctx context.Context, dsn string, sr *SeedResult, cfg HarnessConf
 	handler := suggest.NewHandler(h.Service, bucket)
 	inner := suggest.Mount(handler)
 	h.Router = httpx.NewRouter(httpx.Deps{
-		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:           h.LogSink.Logger(), // advisor-dec-313
 		MetricsCollector: metrics,
 		Authenticator:    h.Sessions,
 		MountAPI: func(v1 chi.Router, d httpx.Deps) {
@@ -359,6 +363,221 @@ func (h *Harness) token(t int) string {
 	return h.tokens[t]
 }
 
+// ---- sanitized server log sink (advisor-dec-313) ----------------------------
+
+// advisor-dec-313: the harness server loggers used io.Discard, so a single c=8
+// HTTP 500 (CI 41502888581: lexical statements cancelled, SQLSTATE 57014) was
+// undiagnosable. LogSink is an in-memory slog.Handler that keeps ONLY an
+// allowlist of attributes (see allowedLogKey) and drops everything else, so no
+// q text, names, ids, SQL or error strings can reach the report (privacy lens).
+// Log messages are fixed constants by project convention and are kept (capped).
+
+const (
+	maxLogSamples    = 5   // sanitized sample lines kept per drained run
+	maxLogClasses    = 24  // distinct (level, message, error_class) kept per drained run
+	maxLogValueLen   = 80  // longest allowlisted string attribute value kept
+	maxLogMessageLen = 120 // longest log message kept
+)
+
+// allowedLogKey is the attribute allowlist: error_class, problem code, status,
+// route pattern, corpus/branch and counts. Level and message are record fields,
+// always kept. Every other key (q, name, sql, request_id, err, ...) is dropped.
+func allowedLogKey(k string) bool {
+	switch k {
+	case "error_class", "code", "problem_code", "status", "route", "corpus", "branch", "count":
+		return true
+	}
+	return strings.HasSuffix(k, "_count")
+}
+
+func numericLogKey(k string) bool {
+	return k == "status" || k == "count" || strings.HasSuffix(k, "_count")
+}
+
+// safeLogToken accepts only short fixed-vocabulary tokens (codes, route
+// patterns, corpus/branch names): no spaces, quotes or free text.
+func safeLogToken(v string) bool {
+	if v == "" || len(v) > maxLogValueLen {
+		return false
+	}
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("_./{}:*-", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// appendSanitized appends the allowlisted, value-checked "key=value" pairs of a
+// to out (groups are flattened by leaf key). Anything else is dropped.
+func appendSanitized(out []string, a slog.Attr) []string {
+	v := a.Value.Resolve()
+	if v.Kind() == slog.KindGroup {
+		for _, g := range v.Group() {
+			out = appendSanitized(out, g)
+		}
+		return out
+	}
+	if !allowedLogKey(a.Key) {
+		return out
+	}
+	if numericLogKey(a.Key) {
+		switch v.Kind() {
+		case slog.KindInt64:
+			return append(out, a.Key+"="+strconv.FormatInt(v.Int64(), 10))
+		case slog.KindUint64:
+			return append(out, a.Key+"="+strconv.FormatUint(v.Uint64(), 10))
+		}
+		return out
+	}
+	if v.Kind() == slog.KindString && safeLogToken(v.String()) {
+		return append(out, a.Key+"="+v.String())
+	}
+	return out
+}
+
+type logClassKey struct{ level, message, errorClass string }
+
+// LogSink collects sanitized server log records; safe for concurrent use.
+type LogSink struct {
+	mu      sync.Mutex
+	counts  map[logClassKey]int
+	samples []string
+	seen    map[string]bool
+}
+
+// NewLogSink returns an empty sink.
+func NewLogSink() *LogSink {
+	return &LogSink{counts: map[logClassKey]int{}, seen: map[string]bool{}}
+}
+
+// Logger returns a slog.Logger that writes into the sink.
+func (s *LogSink) Logger() *slog.Logger { return slog.New(&sinkHandler{sink: s}) }
+
+// Drain returns the accumulated summary and resets the sink.
+func (s *LogSink) Drain() ServerLogSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out ServerLogSummary
+	for k, n := range s.counts {
+		out.Classes = append(out.Classes, LogClassCount{Level: k.level, Message: k.message, ErrorClass: k.errorClass, Count: n})
+	}
+	sort.Slice(out.Classes, func(i, j int) bool {
+		a, b := out.Classes[i], out.Classes[j]
+		if a.Count != b.Count {
+			return a.Count > b.Count
+		}
+		if a.Level != b.Level {
+			return a.Level < b.Level
+		}
+		if a.Message != b.Message {
+			return a.Message < b.Message
+		}
+		return a.ErrorClass < b.ErrorClass
+	})
+	if len(out.Classes) > maxLogClasses {
+		out.Classes = out.Classes[:maxLogClasses]
+	}
+	out.Samples = append(out.Samples, s.samples...)
+	s.counts = map[logClassKey]int{}
+	s.samples = nil
+	s.seen = map[string]bool{}
+	return out
+}
+
+func (s *LogSink) record(level slog.Level, msg string, kv []string) {
+	if len(msg) > maxLogMessageLen {
+		msg = msg[:maxLogMessageLen]
+	}
+	class := ""
+	for _, p := range kv {
+		if v, ok := strings.CutPrefix(p, "error_class="); ok {
+			class = v
+		}
+	}
+	line := "level=" + level.String() + " msg=" + strconv.Quote(msg)
+	if len(kv) > 0 {
+		line += " " + strings.Join(kv, " ")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts[logClassKey{level.String(), msg, class}]++
+	// Samples: first distinct WARN+ lines only (the INFO access log is counted, not sampled).
+	if level >= slog.LevelWarn && len(s.samples) < maxLogSamples && !s.seen[line] {
+		s.seen[line] = true
+		s.samples = append(s.samples, line)
+	}
+}
+
+type sinkHandler struct {
+	sink *LogSink
+	kv   []string // sanitized WithAttrs pairs
+}
+
+func (h *sinkHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+
+func (h *sinkHandler) Handle(_ context.Context, r slog.Record) error {
+	kv := append([]string(nil), h.kv...)
+	r.Attrs(func(a slog.Attr) bool {
+		kv = appendSanitized(kv, a)
+		return true
+	})
+	h.sink.record(r.Level, r.Message, kv)
+	return nil
+}
+
+func (h *sinkHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	kv := append([]string(nil), h.kv...)
+	for _, a := range attrs {
+		kv = appendSanitized(kv, a)
+	}
+	return &sinkHandler{sink: h.sink, kv: kv}
+}
+
+// WithGroup is a no-op: groups are flattened by leaf key.
+func (h *sinkHandler) WithGroup(string) slog.Handler { return h }
+
+type statusProblem struct {
+	status int
+	code   string
+}
+
+// problemCodeOf reads ONLY the `code` field of a JSON problem body (advisor-dec-313);
+// the body itself is never kept. Non-JSON -> "unparsed", missing -> "none",
+// not a safe token -> "invalid".
+func problemCodeOf(body []byte) string {
+	var p struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return "unparsed"
+	}
+	if p.Code == "" {
+		return "none"
+	}
+	if !safeLogToken(p.Code) {
+		return "invalid"
+	}
+	return p.Code
+}
+
+func sortedStatusCodes(m map[statusProblem]int) []StatusCodeCount {
+	out := make([]StatusCodeCount, 0, len(m))
+	for k, n := range m {
+		out = append(out, StatusCodeCount{Status: k.status, ProblemCode: k.code, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Status != out[j].Status {
+			return out[i].Status < out[j].Status
+		}
+		return out[i].ProblemCode < out[j].ProblemCode
+	})
+	return out
+}
+
 // ---- closed-loop load ------------------------------------------------------
 
 // LoadReq is one request of a closed-loop run.
@@ -383,6 +602,8 @@ type LoadResult struct {
 	Latencies      []time.Duration // measured requests only
 	Errors         int
 	Statuses       map[int]int
+	ErrorCodes     []StatusCodeCount // non-200 responses by (status, problem code); advisor-dec-313
+	ServerLogs     ServerLogSummary  // sanitized server log classes of the run (warm-up included)
 	CrossTenant    int
 	SemanticRan    int
 	SemanticOff    int
@@ -414,6 +635,7 @@ type workerAcc struct {
 	lat            []time.Duration
 	errors         int
 	statuses       map[int]int
+	errCodes       map[statusProblem]int
 	cross          int
 	semRan, semOff int
 	semReasons     map[string]int // why semantic did not run (response semantic_reason)
@@ -440,9 +662,10 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 		stubBefore = h.Stub.Calls()
 	}
 	owner := h.Seed.Owner
+	h.LogSink.Drain() // isolate this run's server log records
 	start := time.Now()
 	for w := range conc {
-		acc := &workerAcc{statuses: map[int]int{}, semReasons: map[string]int{}}
+		acc := &workerAcc{statuses: map[int]int{}, errCodes: map[statusProblem]int{}, semReasons: map[string]int{}}
 		accs[w] = acc
 		wg.Add(1)
 		go func() {
@@ -466,6 +689,8 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 				acc.statuses[rec.Code]++
 				if rec.Code != http.StatusOK {
 					acc.errors++
+					// advisor-dec-313: only the problem `code` field of the body is read.
+					acc.errCodes[statusProblem{rec.Code, problemCodeOf(rec.Body.Bytes())}]++
 					continue
 				}
 				var body suggestIDs
@@ -509,7 +734,12 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 	}
 	wg.Wait()
 	res := LoadResult{Concurrency: conc, Warmup: spec.Warmup, Statuses: map[int]int{}, SemanticReason: map[string]int{}, Wall: time.Since(start)}
+	res.ServerLogs = h.LogSink.Drain()
+	errCodes := map[statusProblem]int{}
 	for _, a := range accs {
+		for k, n := range a.errCodes {
+			errCodes[k] += n
+		}
 		res.Latencies = append(res.Latencies, a.lat...)
 		res.Errors += a.errors
 		res.CrossTenant += a.cross
@@ -523,6 +753,7 @@ func (h *Harness) RunLoad(ctx context.Context, spec LoadSpec) (LoadResult, error
 			res.SemanticReason[r] += n
 		}
 	}
+	res.ErrorCodes = sortedStatusCodes(errCodes)
 	if h.Stub != nil {
 		res.StubCalls = h.Stub.Calls() - stubBefore
 	}
@@ -540,7 +771,7 @@ func levelReport(r LoadResult) LevelReport {
 	return LevelReport{
 		Concurrency: r.Concurrency, Stats: Summarize(r.Latencies, r.Errors), Warmup: r.Warmup,
 		Wall: r.Wall.Seconds(), RPS: rps, SemanticRan: r.SemanticRan, SemanticOff: r.SemanticOff,
-		SemanticOffReasons: r.SemanticReason, Statuses: r.Statuses, LexicalPartial: r.LexicalPartial, CrossTenant: r.CrossTenant, StubCalls: r.StubCalls,
+		SemanticOffReasons: r.SemanticReason, Statuses: r.Statuses, ErrorCodes: r.ErrorCodes, ServerLogs: r.ServerLogs, LexicalPartial: r.LexicalPartial, CrossTenant: r.CrossTenant, StubCalls: r.StubCalls,
 	}
 }
 

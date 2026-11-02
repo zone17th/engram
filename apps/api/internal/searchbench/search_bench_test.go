@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1334,6 +1336,15 @@ func TestSearchBench(t *testing.T) {
 	for _, h := range rep.Hard {
 		t.Errorf("hard failure: %s", h)
 	}
+	// advisor-dec-313: sanitized server-side evidence for every level with
+	// non-200 responses or WARN/ERROR server logs (allowlisted attributes only).
+	for _, s := range rep.C1 {
+		for _, l := range s.Levels {
+			for _, d := range ErrorDiagnostics(l) {
+				t.Logf("%s %s", s.ID, d)
+			}
+		}
+	}
 	for _, w := range DegradationWarnings(rep) {
 		t.Logf("WARNING: %s", w)
 		fmt.Printf("::warning title=searchbench smoke::%s\n", w)
@@ -1344,5 +1355,168 @@ func TestSearchBench(t *testing.T) {
 		}
 	} else if fails := TargetFailures(rep.Verdicts); len(fails) > 0 {
 		t.Logf("smoke - not acceptance evidence; informational target misses: %v", fails)
+	}
+}
+
+// ---- sanitized server log sink (advisor-dec-313) ----------------------------
+
+// TestLogSinkDropsNonAllowlistedAttributes (advisor-dec-313): the harness server
+// log sink keeps only level, message, error_class, status, route, corpus/branch,
+// code and counts. q text, names, SQL, ids and error strings never reach a
+// sample line or the report, whether passed per record, via WithAttrs or in a group.
+func TestLogSinkDropsNonAllowlistedAttributes(t *testing.T) {
+	sink := NewLogSink()
+	lg := sink.Logger().With(slog.String("q", "secret-with-attrs"), slog.String("route", "/api/v1/suggest"))
+	lg.Warn("semantic degraded",
+		slog.String("error_class", "vector_search_failed"),
+		slog.String("q", "super secret query"),
+		slog.String("name", "Alice's private tag"),
+		slog.String("sql", "SELECT * FROM item WHERE user_id = 'x'"),
+		slog.String("err", "ERROR: canceling statement due to user request (SQLSTATE 57014)"),
+		slog.String("request_id", "req-123"),
+		slog.String("user_id", uuid.NewString()),
+		slog.Int("status", 500),
+		slog.Int("candidate_count", 7),
+		slog.String("corpus", "item"),
+		slog.String("branch", "vector"),
+		slog.Group("detail", slog.String("q", "secret-in-group"), slog.String("code", "internal_error")),
+	)
+	// Allowlisted keys with an unsafe or wrongly-typed value are dropped too.
+	lg.Error("lexical branch failed",
+		slog.String("error_class", "has spaces and 'quotes'"),
+		slog.String("status", "not-a-number"),
+		slog.Int("count", 3),
+	)
+	lg.Info("http_request", slog.String("route", "/api/v1/suggest"), slog.Int("status", 200), slog.String("q", "info-secret"))
+
+	got := sink.Drain()
+	joined := strings.Join(got.Samples, "\n")
+	for _, bad := range []string{"secret", "Alice", "SELECT", "item WHERE", "canceling", "57014", "req-123", "user_id", "q=", "name=", "sql=", "err=", "request_id", "spaces", "not-a-number"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("sample lines leak %q: %s", bad, joined)
+		}
+	}
+	for _, want := range []string{"error_class=vector_search_failed", "status=500", "route=/api/v1/suggest", "candidate_count=7", "corpus=item", "branch=vector", "code=internal_error", "count=3", `level=WARN msg="semantic degraded"`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("sample lines must keep %q: %s", want, joined)
+		}
+	}
+	if len(got.Samples) != 2 {
+		t.Fatalf("samples = %d, want the 2 WARN+ lines (INFO is counted, not sampled): %v", len(got.Samples), got.Samples)
+	}
+	classes := map[string]int{}
+	for _, c := range got.Classes {
+		classes[c.Level+"|"+c.Message+"|"+c.ErrorClass] = c.Count
+	}
+	for key, want := range map[string]int{
+		"WARN|semantic degraded|vector_search_failed": 1,
+		"ERROR|lexical branch failed|":                1,
+		"INFO|http_request|":                          1,
+	} {
+		if classes[key] != want {
+			t.Errorf("class %q = %d, want %d (all: %v)", key, classes[key], want, classes)
+		}
+	}
+	if again := sink.Drain(); len(again.Classes) != 0 || len(again.Samples) != 0 {
+		t.Errorf("Drain must reset the sink: %+v", again)
+	}
+}
+
+// TestLogSinkSamplesAreCappedAndDistinct: at most 5 distinct WARN+ sample lines
+// per drain, counts keep counting, and the sink is safe for concurrent use.
+func TestLogSinkSamplesAreCappedAndDistinct(t *testing.T) {
+	sink := NewLogSink()
+	lg := sink.Logger()
+	var wg sync.WaitGroup
+	for w := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 100 {
+				lg.Warn("same", slog.String("error_class", "dup"))
+				lg.Warn("other", slog.Int("count", w*100+i))
+			}
+		}()
+	}
+	wg.Wait()
+	got := sink.Drain()
+	if len(got.Samples) != maxLogSamples {
+		t.Fatalf("samples = %d, want %d: %v", len(got.Samples), maxLogSamples, got.Samples)
+	}
+	seen := map[string]bool{}
+	for _, s := range got.Samples {
+		if seen[s] {
+			t.Errorf("duplicate sample %q", s)
+		}
+		seen[s] = true
+	}
+	for _, c := range got.Classes {
+		if c.Message == "same" && c.Count != 800 {
+			t.Errorf("class count = %d, want 800", c.Count)
+		}
+	}
+}
+
+// TestProblemCodeOfReadsOnlyCode: only the `code` field of a problem body is
+// read; non-JSON, missing and unsafe codes collapse to fixed labels.
+func TestProblemCodeOfReadsOnlyCode(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"type":"x","title":"y","status":500,"detail":"secret q text","code":"internal_error"}`, "internal_error"},
+		{`{"title":"no code","detail":"x"}`, "none"},
+		{`plain text body with q=secret`, "unparsed"},
+		{`{"code":"has spaces and q=secret"}`, "invalid"},
+		{``, "unparsed"},
+	} {
+		if got := problemCodeOf([]byte(tc.body)); got != tc.want {
+			t.Errorf("problemCodeOf(%q) = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+}
+
+// TestErrorClassesReachReportAndHardFailure (advisor-dec-313): the (status,
+// problem code) and server log classes appear in the c=8 hard failure text, the
+// diagnostics, JSON and Markdown, and c=8 request errors stay hard in smoke.
+func TestErrorClassesReachReportAndHardFailure(t *testing.T) {
+	l := LevelReport{
+		Concurrency: TargetConcurrency, Stats: LatencyStats{N: 2000, Errors: 1}, Statuses: map[int]int{200: 1999, 500: 1},
+		ErrorCodes: []StatusCodeCount{{Status: 500, ProblemCode: "internal_error", Count: 1}},
+		ServerLogs: ServerLogSummary{
+			Classes: []LogClassCount{{Level: "ERROR", Message: "lexical branch failed", ErrorClass: "query_canceled", Count: 1}, {Level: "INFO", Message: "http_request", Count: 2000}},
+			Samples: []string{`level=ERROR msg="lexical branch failed" error_class=query_canceled status=500`},
+		},
+	}
+	s := ScenarioReport{ID: "C1-L", Valid: true, Levels: []LevelReport{l}}
+	rep := &Report{Run: RunInfo{Profile: string(ProfileSmoke)}, C1: []ScenarioReport{s}}
+	hard := HardFailures(rep)
+	if len(hard) != 1 || !strings.Contains(hard[0], "500=1") || !strings.Contains(hard[0], "500/internal_error=1") {
+		t.Fatalf("smoke c=8 error must stay hard and name the problem code: %v", hard)
+	}
+	diag := strings.Join(ErrorDiagnostics(l), "\n")
+	for _, want := range []string{"500/internal_error=1", "ERROR|lexical branch failed|query_canceled=1", "error_class=query_canceled"} {
+		if !strings.Contains(diag, want) {
+			t.Errorf("diagnostics must contain %q: %s", want, diag)
+		}
+	}
+	if d := ErrorDiagnostics(LevelReport{Concurrency: 1, ServerLogs: ServerLogSummary{Classes: []LogClassCount{{Level: "INFO", Message: "http_request", Count: 5}}}}); len(d) != 0 {
+		t.Errorf("a level with only INFO access logs and no errors has nothing to diagnose: %v", d)
+	}
+	rep.Verdicts = ConsolidateVerdicts(rep.C1, nil, 2000, true)
+	md := RenderMarkdown(rep)
+	for _, want := range []string{"500/internal_error=1", "query_canceled", "sample (allowlisted attributes only)"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown must contain %q", want)
+		}
+	}
+	if errs := mdTableShapeErrors(md); len(errs) > 0 {
+		t.Errorf("Markdown table shape: %v", errs)
+	}
+	b, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"http_error_codes"`, `"problem_code":"internal_error"`, `"server_logs"`, `"sample_lines"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("JSON must contain %s", want)
+		}
 	}
 }

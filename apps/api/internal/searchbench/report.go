@@ -718,10 +718,85 @@ type LevelReport struct {
 	SemanticOffReasons map[string]int `json:"semantic_not_ran_reasons,omitempty"`
 	// Statuses counts the HTTP status codes of the measured requests, so a
 	// non-200 (errors > 0) run is diagnosable from the report.
-	Statuses       map[int]int `json:"http_statuses,omitempty"`
-	LexicalPartial int         `json:"lexical_partial"`
-	CrossTenant    int         `json:"cross_tenant_rows"`
-	StubCalls      int64       `json:"stub_provider_calls"`
+	Statuses map[int]int `json:"http_statuses,omitempty"`
+	// ErrorCodes counts the non-200 responses by (status, problem code); only the
+	// `code` field of the JSON problem body is read (advisor-dec-313).
+	ErrorCodes []StatusCodeCount `json:"http_error_codes,omitempty"`
+	// ServerLogs holds the sanitized server log classes of the level (allowlisted
+	// attributes only, warm-up requests included; advisor-dec-313).
+	ServerLogs     ServerLogSummary `json:"server_logs"`
+	LexicalPartial int              `json:"lexical_partial"`
+	CrossTenant    int              `json:"cross_tenant_rows"`
+	StubCalls      int64            `json:"stub_provider_calls"`
+}
+
+// StatusCodeCount is one (HTTP status, problem code) class of non-200 responses.
+type StatusCodeCount struct {
+	Status      int    `json:"status"`
+	ProblemCode string `json:"problem_code"`
+	Count       int    `json:"count"`
+}
+
+// LogClassCount is one (level, message, error_class) class of server log records.
+type LogClassCount struct {
+	Level      string `json:"level"`
+	Message    string `json:"message"`
+	ErrorClass string `json:"error_class,omitempty"`
+	Count      int    `json:"count"`
+}
+
+// ServerLogSummary is what the allowlist LogSink (advisor-dec-313) reports for one
+// load level: class counts and up to 5 sanitized sample lines (WARN and above).
+// No attribute outside the allowlist (q text, names, ids, SQL) can appear here.
+type ServerLogSummary struct {
+	Classes []LogClassCount `json:"classes,omitempty"`
+	Samples []string        `json:"sample_lines,omitempty"`
+}
+
+// errorCodeCounts renders (status, problem code) counts deterministically
+// ("500/internal_error=1").
+func errorCodeCounts(cs []StatusCodeCount) string {
+	parts := make([]string, 0, len(cs))
+	for _, c := range cs {
+		parts = append(parts, fmt.Sprintf("%d/%s=%d", c.Status, c.ProblemCode, c.Count))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// logClassCounts renders log class counts ("WARN|msg|error_class=3"; "-" = no error_class).
+func logClassCounts(cs []LogClassCount) string {
+	parts := make([]string, 0, len(cs))
+	for _, c := range cs {
+		parts = append(parts, fmt.Sprintf("%s|%s|%s=%d", c.Level, c.Message, orDash(c.ErrorClass), c.Count))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// ErrorDiagnostics lists, for one level, the server-side evidence printed next to
+// hard failures: the non-200 (status, problem code) counts, the server log classes
+// (level, message, error_class) and up to 5 sanitized sample lines. Empty when
+// the level has neither errors nor WARN/ERROR log records. (advisor-dec-313)
+func ErrorDiagnostics(l LevelReport) []string {
+	var warn []LogClassCount
+	for _, c := range l.ServerLogs.Classes {
+		if c.Level != "INFO" {
+			warn = append(warn, c)
+		}
+	}
+	if len(l.ErrorCodes) == 0 && len(warn) == 0 {
+		return nil
+	}
+	var out []string
+	if len(l.ErrorCodes) > 0 {
+		out = append(out, fmt.Sprintf("c=%d non-200 (status/problem code): %s", l.Concurrency, errorCodeCounts(l.ErrorCodes)))
+	}
+	if len(l.ServerLogs.Classes) > 0 {
+		out = append(out, fmt.Sprintf("c=%d server log classes (level|message|error_class, warm-up included): %s", l.Concurrency, logClassCounts(l.ServerLogs.Classes)))
+	}
+	for _, s := range l.ServerLogs.Samples {
+		out = append(out, fmt.Sprintf("c=%d server log sample: %s", l.Concurrency, s))
+	}
+	return out
 }
 
 // ScenarioReport is one C1 scenario across 1/8/32 clients.
@@ -870,6 +945,9 @@ func ErrorDetail(l LevelReport) string {
 		}
 	}
 	detail := fmt.Sprintf("%d request errors (http statuses: %s", l.Stats.Errors, orUnknown(statusCounts(l.Statuses)))
+	if len(l.ErrorCodes) > 0 {
+		detail += "; problem codes: " + errorCodeCounts(l.ErrorCodes)
+	}
 	if undecoded := l.Stats.Errors - non200; undecoded > 0 {
 		detail += fmt.Sprintf("; %d with HTTP 200 = undecodable body", undecoded)
 	}
@@ -1381,6 +1459,19 @@ func RenderMarkdown(r *Report) string {
 			w("| %d | %d | %.2f | %.2f | %.2f | %.2f | %d | %.0f | %s | %d/%d | %s | %d | %d | %d |\n", l.Concurrency, l.Stats.N,
 				l.Stats.P50Ms, l.Stats.P95Ms, l.Stats.P99Ms, l.Stats.MaxMs, l.Stats.Errors, l.RPS, mdCell(orDash(statusCounts(l.Statuses))),
 				l.SemanticRan, l.SemanticOff, mdCell(orDash(reasonCounts(l.SemanticOffReasons))), l.LexicalPartial, l.StubCalls, l.CrossTenant)
+		}
+		w("\n")
+		// advisor-dec-313: server-side error classes per level (sanitized).
+		for _, l := range s.Levels {
+			if len(l.ErrorCodes) > 0 {
+				w("- c=%d non-200 responses (status/problem code): `%s`\n", l.Concurrency, mdCell(errorCodeCounts(l.ErrorCodes)))
+			}
+			if len(l.ServerLogs.Classes) > 0 {
+				w("- c=%d server log classes (level|message|error_class = count, warm-up included): %s\n", l.Concurrency, mdCell(logClassCounts(l.ServerLogs.Classes)))
+			}
+			for _, sample := range l.ServerLogs.Samples {
+				w("  - c=%d sample (allowlisted attributes only): `%s`\n", l.Concurrency, mdCell(sample))
+			}
 		}
 		w("\n")
 	}
