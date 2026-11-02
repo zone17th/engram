@@ -1311,6 +1311,15 @@ func TestSearchCursorBoundToQueryScope(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("percent-encoded-lf-in-cursor-query-param", func(t *testing.T) {
+		rawQuery := "q=wifi&scope=item&cursor=" + itemCur[:12] + "%0A" + itemCur[12:]
+		rec := env.doSearchRaw(tok, rawQuery)
+		prob := assertProblemCode(t, rec, http.StatusBadRequest, "invalid_request")
+		if strings.Contains(prob.Detail, "wifi") || strings.Contains(prob.Detail, itemCur[:12]) {
+			t.Fatalf("problem detail echoed q or cursor: %+v", prob)
+		}
+	})
 }
 
 // TestSearchCursorHasNoQueryText verifies Task 4 Evidence & plan P05 mục 2.5, 2.7:

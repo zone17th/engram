@@ -198,6 +198,9 @@ func TestCursorStrictDecodeRejectsMalformed(t *testing.T) {
 		{"empty-token", "", suggest.ScopeAll, "wifi"},
 		{"bad-base64-chars", "not!valid!base64!", suggest.ScopeAll, "wifi"},
 		{"padded-base64", validToken + "=", suggest.ScopeAll, "wifi"},
+		{"outer-token-cr", validToken[:12] + "\r" + validToken[12:], suggest.ScopeAll, "wifi"},
+		{"outer-token-lf", validToken[:12] + "\n" + validToken[12:], suggest.ScopeAll, "wifi"},
+		{"outer-token-trailing-lf", validToken + "\n", suggest.ScopeAll, "wifi"},
 		{"not-json", b64("hello"), suggest.ScopeAll, "wifi"},
 		{"json-array-root", b64("[]"), suggest.ScopeAll, "wifi"},
 		{"trailing-json", b64(string(rawJSONBytes) + "{}"), suggest.ScopeAll, "wifi"},
@@ -215,6 +218,11 @@ func TestCursorStrictDecodeRejectsMalformed(t *testing.T) {
 		{"tampered-qh", mutateJSON(func(m map[string]any) { m["qh"] = "BBBBBBBBBBBBBBBBBBBBBB" }), suggest.ScopeAll, "wifi"},
 		{"short-qh", mutateJSON(func(m map[string]any) { m["qh"] = "AAAA" }), suggest.ScopeAll, "wifi"},
 		{"long-qh", mutateJSON(func(m map[string]any) { m["qh"] = strings.Repeat("A", suggest.CursorQueryHashEncodedLen+4) }), suggest.ScopeAll, "wifi"},
+		{"qh-with-escaped-newline-inside-json", b64(strings.Replace(string(rawJSONBytes), `"qh":"`, `"qh":"\n`, 1)), suggest.ScopeAll, "wifi"},
+		{"qh-with-escaped-newline-same-len", mutateJSON(func(m map[string]any) {
+			qh := m["qh"].(string)
+			m["qh"] = qh[:10] + "\n" + qh[11:]
+		}), suggest.ScopeAll, "wifi"},
 		{"over-max-encoded-cursor-len-by-one", exactMaxToken + "A", suggest.ScopeAll, "wifi"},
 		{"over-max-encoded-cursor-valid-json", maxPlusOneToken, suggest.ScopeAll, "wifi"},
 		{"huge-json-whitespace", hugeWhitespaceToken, suggest.ScopeAll, "wifi"},

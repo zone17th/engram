@@ -185,7 +185,7 @@ func EncodeCursor(cursorKey []byte, qn string, cur SearchCursor) (string, error)
 // HMAC mismatch) returns `ErrInvalidRequest` with a static detail that never echoes the
 // cursor or query (SPEC §9.2, plan P05 mục 2.5, 2.7, Task 4).
 func DecodeCursor(cursorKey []byte, raw string, expectedScope string, qn string) (SearchCursor, error) {
-	if raw == "" || len(raw) > MaxEncodedCursorBytes || len(cursorKey) == 0 {
+	if raw == "" || len(raw) > MaxEncodedCursorBytes || len(cursorKey) == 0 || !isStrictBase64URLAlphabet(raw) {
 		return SearchCursor{}, ErrInvalidRequest
 	}
 	wantKind, ok := ExpectedCursorKindForScope(expectedScope)
@@ -234,7 +234,7 @@ func DecodeCursor(cursorKey []byte, raw string, expectedScope string, qn string)
 
 	// 5. qh: base64url (no padding) of 16-byte truncated HMAC-SHA256(k_cursor, scope ‖ 0x00 ‖ qn).
 	qhStr, ok := obj["qh"].(string)
-	if !ok || len(qhStr) != CursorQueryHashEncodedLen {
+	if !ok || len(qhStr) != CursorQueryHashEncodedLen || !isStrictBase64URLAlphabet(qhStr) {
 		return SearchCursor{}, ErrInvalidRequest
 	}
 	gotQH, err := base64.RawURLEncoding.Strict().DecodeString(qhStr)
@@ -401,4 +401,19 @@ func parseCursorFloat(v any, minVal, maxVal float64) (float64, error) {
 		return 0, ErrInvalidRequest
 	}
 	return parsed, nil
+}
+
+// isStrictBase64URLAlphabet reports whether every byte in s is within the unpadded
+// base64url alphabet `[A-Za-z0-9_-]`. Go's `base64.RawURLEncoding.Strict()` still
+// ignores `\r` and `\n`, so we reject any byte outside `[A-Za-z0-9_-]` before decoding
+// (RV-T4-BE-3).
+func isStrictBase64URLAlphabet(s string) bool {
+	for i := range len(s) {
+		b := s[i]
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '_' {
+			continue
+		}
+		return false
+	}
+	return len(s) > 0
 }
