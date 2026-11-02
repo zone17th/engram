@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
+import { LocaleSwitch } from '@/components/locale-switch';
 import { Logo } from '@/components/landing/logo';
 import { Segmented } from '@/components/ui/segmented';
 
@@ -28,7 +29,8 @@ export function AuthChrome({ children }: { children: React.ReactNode }) {
             <Logo />
           </Link>
         )}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <LocaleSwitch />
           <ThemeToggle />
         </div>
       </header>
