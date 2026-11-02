@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,7 +95,7 @@ func TestAppendZoneProperty(t *testing.T) {
 	if !reflect.DeepEqual(semTags, semTagsSnap) {
 		t.Fatalf("AppendZone mutated input semTags slice:\ngot  %+v\nwant %+v", semTags, semTagsSnap)
 	}
-	if !reflect.DeepEqual(merged[:len(lexicalSnap)], lexicalSnap) {
+	if !equalRowSeq(merged[:len(lexicalSnap)], lexicalSnap) {
 		t.Fatalf("merged lexical prefix != pre-call snapshot:\ngot  %+v\nwant %+v", merged[:len(lexicalSnap)], lexicalSnap)
 	}
 
@@ -135,6 +136,57 @@ func TestAppendZoneProperty(t *testing.T) {
 				t.Fatalf("near wire row leaked cosine/distance field: %s", string(rawJSON))
 			}
 		}
+	}
+
+	// 1b. Explicit nil-lexical and empty-lexical cases (RV-T12-BE-9):
+	// Nil and non-nil empty outer lexical slices both represent the empty prefix,
+	// while appended semantic rows (tags then items) are still ordered and capped.
+	for _, emptyCase := range []struct {
+		name  string
+		lexIn []semantic.Row
+	}{
+		{name: "nil_lexical", lexIn: nil},
+		{name: "empty_non_nil_lexical", lexIn: []semantic.Row{}},
+	} {
+		t.Run(emptyCase.name, func(t *testing.T) {
+			lexSnapEmpty := snapshotRows(emptyCase.lexIn)
+			sItemsSnapEmpty := snapshotCandidates(semItems)
+			sTagsSnapEmpty := snapshotCandidates(semTags)
+
+			outEmpty := semantic.AppendZone(emptyCase.lexIn, semItems, semTags, 3)
+			if !reflect.DeepEqual(emptyCase.lexIn, lexSnapEmpty) {
+				t.Fatalf("AppendZone mutated %s input: got %#v, want %#v", emptyCase.name, emptyCase.lexIn, lexSnapEmpty)
+			}
+			if !reflect.DeepEqual(semItems, sItemsSnapEmpty) {
+				t.Fatalf("AppendZone mutated semItems on %s", emptyCase.name)
+			}
+			if !reflect.DeepEqual(semTags, sTagsSnapEmpty) {
+				t.Fatalf("AppendZone mutated semTags on %s", emptyCase.name)
+			}
+			if !equalRowSeq(outEmpty[:len(lexSnapEmpty)], lexSnapEmpty) {
+				t.Fatalf("%s prefix mismatch: got %+v, want %+v", emptyCase.name, outEmpty[:len(lexSnapEmpty)], lexSnapEmpty)
+			}
+			if len(outEmpty) != 3 {
+				t.Fatalf("%s len(outEmpty) = %d, want 3 (zoneQuota=3)", emptyCase.name, len(outEmpty))
+			}
+			// With no lexical exclusions, lexTag1 (cos=0.99), semTagA (0.88), semTagB (0.75) fill the 3 tag slots.
+			wantEmptyIDs := []suggest.KindID{
+				{Kind: suggest.CorpusTag, ID: lexTag1},
+				{Kind: suggest.CorpusTag, ID: semTagA},
+				{Kind: suggest.CorpusTag, ID: semTagB},
+			}
+			for i, w := range wantEmptyIDs {
+				if outEmpty[i].KindID() != w || outEmpty[i].Match != suggest.MatchSemantic {
+					t.Fatalf("%s outEmpty[%d] = %+v, want KindID=%+v Match=semantic", emptyCase.name, i, outEmpty[i], w)
+				}
+			}
+
+			// Also check with 0 semantic candidates and zoneQuota=0 -> empty non-nil output, prefix still equal.
+			outZero := semantic.AppendZone(emptyCase.lexIn, nil, nil, 0)
+			if len(outZero) != 0 || !equalRowSeq(outZero[:len(lexSnapEmpty)], lexSnapEmpty) {
+				t.Fatalf("%s outZero = %+v, want empty sequence matching prefix", emptyCase.name, outZero)
+			}
+		})
 	}
 
 	// 2. Randomized property check across 250 generated inputs (seeded PCG for reproducibility).
@@ -244,7 +296,7 @@ func TestAppendZoneProperty(t *testing.T) {
 		if !reflect.DeepEqual(sTags, sTagsSnap) {
 			t.Fatalf("trial %d: AppendZone mutated sTags:\ngot  %+v\nwant %+v", trial, sTags, sTagsSnap)
 		}
-		if !reflect.DeepEqual(out[:len(lexSnap)], lexSnap) {
+		if !equalRowSeq(out[:len(lexSnap)], lexSnap) {
 			t.Fatalf("trial %d: lexical prefix in out != pre-call snapshot:\ngot  %+v\nwant %+v",
 				trial, out[:len(lexSnap)], lexSnap)
 		}
@@ -323,4 +375,15 @@ func snapshotCandidates(in []semantic.Candidate) []semantic.Candidate {
 		out[i] = cp
 	}
 	return out
+}
+
+// equalRowSeq compares two Row slices element-by-element using full per-row
+// deep equality (`reflect.DeepEqual` on each `semantic.Row`, including nested
+// `Tags` slice content and nil-vs-empty `Tags` distinction on individual rows)
+// while treating nil and non-nil empty outer `[]semantic.Row` slices as the
+// same empty sequence (RV-T12-BE-9).
+func equalRowSeq(a, b []semantic.Row) bool {
+	return slices.EqualFunc(a, b, func(x, y semantic.Row) bool {
+		return reflect.DeepEqual(x, y)
+	})
 }
