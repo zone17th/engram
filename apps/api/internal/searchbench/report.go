@@ -72,7 +72,8 @@ func NearestRank(sorted []time.Duration, q float64) time.Duration {
 	if n == 0 {
 		return 0
 	}
-	rank := int(math.Ceil(q*float64(n) - 1e-9))
+	// float64() forces the product to round before the subtraction (no FMA).
+	rank := int(math.Ceil(float64(q*float64(n)) - 1e-9))
 	if rank < 1 {
 		rank = 1
 	}
@@ -536,8 +537,8 @@ func BuildSizingTable(sr *SeedResult) *SizingTable {
 	st.FullItemHNSWBytes = int64(st.ItemHNSWBytesPerVector * fi)
 	st.FullTagHeapBytes = int64(st.TagHeapBytesPerVector * ft)
 	st.FullTagHNSWBytes = int64(st.TagHNSWBytesPerVector * ft)
-	st.FullPKBytes = int64(st.ItemPKBytesPerVector*fi + st.TagPKBytesPerVector*ft)
-	st.FullHNSWBuildSecs = st.ItemHNSWSecPerVector*fi + st.TagHNSWSecPerVector*ft
+	st.FullPKBytes = int64(float64(st.ItemPKBytesPerVector*fi) + float64(st.TagPKBytesPerVector*ft))
+	st.FullHNSWBuildSecs = float64(st.ItemHNSWSecPerVector*fi) + float64(st.TagHNSWSecPerVector*ft)
 
 	base := int64(float64(sr.Sizes.Item.TotalBytes+sr.Sizes.Tag.TotalBytes+sr.Sizes.ItemTag.TotalBytes) /
 		float64(max(1, sr.Items+sr.Tags)) * float64(full.TotalItems+full.TotalTags))
