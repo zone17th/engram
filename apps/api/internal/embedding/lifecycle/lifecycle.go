@@ -19,13 +19,21 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
+	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/reconcile"
 )
 
@@ -106,7 +114,150 @@ func Create(
 	calib embedid.CalibrationLookup,
 	opts CreateOpts,
 ) (generation.Generation, error) {
-	return generation.Generation{}, errors.New("not implemented")
+	if pool == nil {
+		return generation.Generation{}, generation.ErrNilTx
+	}
+	if ident.Provider != generation.ProviderTEI && ident.Provider != generation.ProviderOpenAICompat {
+		return generation.Generation{}, fmt.Errorf("%w: unsupported provider", generation.ErrInvalidBootstrapIdentity)
+	}
+	if strings.TrimSpace(ident.Model) == "" ||
+		strings.TrimSpace(ident.ModelVersion) == "" ||
+		strings.TrimSpace(ident.Preprocessing) == "" {
+		return generation.Generation{}, fmt.Errorf("%w: model, model_version and preprocessing are required", generation.ErrInvalidBootstrapIdentity)
+	}
+	if ident.Dims < 1 || ident.Dims > 2000 {
+		return generation.Generation{}, fmt.Errorf("%w: dims out of range 1..2000", generation.ErrInvalidBootstrapIdentity)
+	}
+	partitions, m, efc := opts.Partitions, opts.M, opts.EfConstruction
+	if partitions == 0 {
+		partitions = generation.DefaultPartitions
+	}
+	if m == 0 {
+		m = generation.DefaultHnswM
+	}
+	if efc == 0 {
+		efc = generation.DefaultHnswEfConstruction
+	}
+	if partitions < 1 || partitions > 256 || m < 2 || m > 100 || efc < 4 || efc > 1000 || efc < 2*m {
+		return generation.Generation{}, errors.New("lifecycle: create options out of range")
+	}
+
+	tx, err := beginExclusive(ctx, pool)
+	if err != nil {
+		return generation.Generation{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	q := gen.New(tx)
+	if _, err := q.GetPendingEmbeddingGeneration(ctx); err == nil {
+		return generation.Generation{}, ErrPendingExists
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return generation.Generation{}, err
+	}
+
+	if calib == nil {
+		return generation.Generation{}, ErrCalibrationMissing
+	}
+	minCos, reportPath, ok := calib(ident)
+	if !ok || strings.TrimSpace(reportPath) == "" || minCos <= 0 || minCos >= 1 {
+		return generation.Generation{}, ErrCalibrationMissing
+	}
+
+	nextID, err := q.NextEmbeddingGenerationID(ctx)
+	if err != nil {
+		return generation.Generation{}, err
+	}
+	if nextID > generation.MaxGenerationID {
+		return generation.Generation{}, errors.New("lifecycle: generation id space exhausted")
+	}
+
+	row, err := q.InsertPendingEmbeddingGeneration(ctx, gen.InsertPendingEmbeddingGenerationParams{
+		ID:                 nextID,
+		Provider:           ident.Provider,
+		Model:              ident.Model,
+		ModelVersion:       ident.ModelVersion,
+		Preprocessing:      ident.Preprocessing,
+		QueryPrefix:        ident.QueryPrefix,
+		DocPrefix:          ident.DocPrefix,
+		Dims:               int32(ident.Dims),
+		Partitions:         int32(partitions),
+		HnswM:              int32(m),
+		HnswEfConstruction: int32(efc),
+		SemanticMinCos:     float32(minCos),
+		CalibrationRef:     reportPath,
+		Bootstrap:          false,
+	})
+	if err != nil {
+		return generation.Generation{}, err
+	}
+	// Tables WITHOUT HNSW: the indexes are built by Index after the backfill.
+	if err := q.CreateEmbeddingGenerationTables(ctx, gen.CreateEmbeddingGenerationTablesParams{
+		ID:                 nextID,
+		Dims:               int32(ident.Dims),
+		Partitions:         int32(partitions),
+		WithHnsw:           false,
+		HnswM:              int32(m),
+		HnswEfConstruction: int32(efc),
+	}); err != nil {
+		return generation.Generation{}, err
+	}
+	g, err := generation.FromDBRow(row)
+	if err != nil {
+		return generation.Generation{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return generation.Generation{}, err
+	}
+	return g, nil
+}
+
+// lockTimeout bounds how long a lifecycle transaction waits for the generation
+// lock or for DDL locks on item/tag, so a stuck peer cannot stall mutations
+// queued behind us indefinitely.
+const lockTimeout = "30s"
+
+// beginExclusive starts a transaction that holds the exclusive generation-set
+// lock (OQ-16) for its whole life.
+func beginExclusive(ctx context.Context, pool *pgxpool.Pool) (pgx.Tx, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '"+lockTimeout+"'"); err != nil {
+		_ = tx.Rollback(context.Background())
+		return nil, err
+	}
+	if err := generation.LockGenerationSetExclusive(ctx, tx); err != nil {
+		_ = tx.Rollback(context.Background())
+		return nil, err
+	}
+	return tx, nil
+}
+
+func nowOr(fn func() time.Time) time.Time {
+	if fn != nil {
+		return fn()
+	}
+	return time.Now()
+}
+
+// getPending loads genID and requires state pending.
+func getPending(ctx context.Context, db gen.DBTX, genID int) (generation.Generation, error) {
+	g, err := generation.GetByID(ctx, db, genID)
+	if err != nil {
+		return generation.Generation{}, err
+	}
+	if g.State != generation.StatePending {
+		return generation.Generation{}, ErrNotPending
+	}
+	return g, nil
+}
+
+// notifyGenerationChanged sends the NOTIFY in the caller's transaction so it
+// is delivered only if the state change commits (M3/FS-25).
+func notifyGenerationChanged(ctx context.Context, tx pgx.Tx, genID int) error {
+	_, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, generation.NotifyChannel, strconv.Itoa(genID))
+	return err
 }
 
 // Backfill is plan 2.15 step 2: Reconcile(All, ModeEnqueue) on a pending
@@ -119,7 +270,14 @@ func Backfill(
 	genID int,
 	enq reconcile.EnqueueFunc,
 ) (reconcile.Result, error) {
-	return reconcile.Result{}, errors.New("not implemented")
+	if pool == nil {
+		return reconcile.Result{}, generation.ErrNilTx
+	}
+	g, err := getPending(ctx, pool, genID)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	return reconcile.Reconcile(ctx, pool, g, reconcile.All(), reconcile.ModeEnqueue, enq)
 }
 
 // IndexResult counts what Index did. Counts only.
@@ -146,7 +304,211 @@ type IndexResult struct {
 // rebuilds invalid indexes and re-attaches. Returns ErrNotPending for other
 // states and ErrIndexNotReady when indexes are still invalid afterwards.
 func Index(ctx context.Context, pool *pgxpool.Pool, genID int) (IndexResult, error) {
-	return IndexResult{}, errors.New("not implemented")
+	if pool == nil {
+		return IndexResult{}, generation.ErrNilTx
+	}
+	g, err := getPending(ctx, pool, genID)
+	if err != nil {
+		return IndexResult{}, err
+	}
+	parts, err := partitionTables(g)
+	if err != nil {
+		return IndexResult{}, err
+	}
+	res := IndexResult{GenerationID: g.ID, Expected: len(parts)}
+
+	for _, p := range parts {
+		valid, exists, err := indexValidity(ctx, pool, p.index, p.table)
+		if err != nil {
+			return res, err
+		}
+		switch {
+		case valid:
+			res.AlreadyValid++
+			continue
+		case exists:
+			// A crashed CREATE INDEX CONCURRENTLY leaves an invalid index that
+			// IF NOT EXISTS would silently keep: drop it and rebuild.
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+pgx.Identifier{p.index}.Sanitize()); err != nil { // #nosec G202 -- index name derived from the validated table allowlist and quoted via pgx.Identifier.Sanitize().
+				return res, fmt.Errorf("lifecycle: drop invalid index failed: %w", sanitizeDBErr(err))
+			}
+			res.Repaired++
+		default:
+			res.Built++
+		}
+		if _, err := pool.Exec(ctx, hnswIndexSQL(p.index, p.table, g.HnswM, g.HnswEfConstruction, true)); err != nil {
+			return res, fmt.Errorf("lifecycle: create partition index failed: %w", sanitizeDBErr(err))
+		}
+	}
+
+	// Parent (ON ONLY) index + ATTACH PARTITION per corpus; idempotent.
+	for _, corpus := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
+		if err := ensureParentIndex(ctx, pool, g, corpus, parts); err != nil {
+			return res, err
+		}
+	}
+
+	valid, err := countValidPartitionIndexes(ctx, pool, parts)
+	if err != nil {
+		return res, err
+	}
+	res.Valid = valid
+	res.Ready = valid == res.Expected
+	if _, err := gen.New(pool).SetEmbeddingGenerationIndexReady(ctx, gen.SetEmbeddingGenerationIndexReadyParams{
+		IndexReady: res.Ready,
+		ID:         int32(g.ID),
+	}); err != nil {
+		return res, err
+	}
+	if !res.Ready {
+		return res, ErrIndexNotReady
+	}
+	return res, nil
+}
+
+// partTable names one partition table and the HNSW index expected on it.
+type partTable struct {
+	corpus generation.Corpus
+	parent string
+	table  string
+	index  string
+}
+
+// partitionTables lists every per-partition table and index name of g, derived
+// from the validated parent table names (never from input).
+func partitionTables(g generation.Generation) ([]partTable, error) {
+	var out []partTable
+	for _, corpus := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
+		ident, err := g.TableIdent(corpus)
+		if err != nil {
+			return nil, err
+		}
+		parent := ident[0]
+		for i := 0; i < g.Partitions; i++ {
+			part := parent + "_p" + strconv.Itoa(i)
+			out = append(out, partTable{corpus: corpus, parent: parent, table: part, index: part + "_hnsw"})
+		}
+	}
+	return out, nil
+}
+
+func hnswIndexSQL(index, table string, m, efc int, concurrently bool) string {
+	conc := ""
+	if concurrently {
+		conc = "CONCURRENTLY "
+	}
+	// #nosec G202 -- index/table names derive from the validated allowlist and are quoted via pgx.Identifier.Sanitize(); m and efc are validated ints.
+	return "CREATE INDEX " + conc + "IF NOT EXISTS " + pgx.Identifier{index}.Sanitize() +
+		" ON " + pgx.Identifier{table}.Sanitize() +
+		" USING hnsw (embedding vector_cosine_ops) WITH (m = " + strconv.Itoa(m) +
+		", ef_construction = " + strconv.Itoa(efc) + ")"
+}
+
+// indexValidity reports whether an hnsw index named index exists on table and
+// whether it is valid.
+func indexValidity(ctx context.Context, db gen.DBTX, index, table string) (valid, exists bool, err error) {
+	err = db.QueryRow(ctx, `
+SELECT i.indisvalid AND i.indisready
+FROM pg_class c
+JOIN pg_index i ON i.indexrelid = c.oid
+JOIN pg_class t ON t.oid = i.indrelid
+JOIN pg_am am ON am.oid = c.relam
+WHERE c.relname = $1 AND t.relname = $2 AND am.amname = 'hnsw' AND pg_table_is_visible(c.oid)`,
+		index, table).Scan(&valid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return valid, true, nil
+}
+
+// countValidPartitionIndexes counts the per-partition hnsw indexes of parts
+// that are valid (pg_index.indisvalid and indisready).
+func countValidPartitionIndexes(ctx context.Context, db gen.DBTX, parts []partTable) (int, error) {
+	idx := make([]string, 0, len(parts))
+	tbl := make([]string, 0, len(parts))
+	for _, p := range parts {
+		idx = append(idx, p.index)
+		tbl = append(tbl, p.table)
+	}
+	var n int
+	err := db.QueryRow(ctx, `
+SELECT count(DISTINCT c.relname)::int
+FROM pg_class c
+JOIN pg_index i ON i.indexrelid = c.oid
+JOIN pg_class t ON t.oid = i.indrelid
+JOIN pg_am am ON am.oid = c.relam
+WHERE am.amname = 'hnsw'
+  AND i.indisvalid AND i.indisready
+  AND pg_table_is_visible(c.oid)
+  AND c.relname = ANY($1::text[])
+  AND t.relname = ANY($2::text[])
+  AND c.relname = t.relname || '_hnsw'`, idx, tbl).Scan(&n)
+	return n, err
+}
+
+// ensureParentIndex creates the ON ONLY parent index of corpus and attaches
+// every partition index that is not attached yet. Re-running is a no-op.
+func ensureParentIndex(ctx context.Context, pool *pgxpool.Pool, g generation.Generation, corpus generation.Corpus, parts []partTable) error {
+	var parent string
+	for _, p := range parts {
+		if p.corpus == corpus {
+			parent = p.parent
+			break
+		}
+	}
+	if parent == "" {
+		return nil
+	}
+	parentIdx := parent + "_hnsw"
+	// #nosec G202 -- names derive from the validated allowlist and are quoted via pgx.Identifier.Sanitize(); m and efc are validated ints.
+	create := "CREATE INDEX IF NOT EXISTS " + pgx.Identifier{parentIdx}.Sanitize() +
+		" ON ONLY " + pgx.Identifier{parent}.Sanitize() +
+		" USING hnsw (embedding vector_cosine_ops) WITH (m = " + strconv.Itoa(g.HnswM) +
+		", ef_construction = " + strconv.Itoa(g.HnswEfConstruction) + ")"
+	if _, err := pool.Exec(ctx, create); err != nil {
+		return fmt.Errorf("lifecycle: create parent index failed: %w", sanitizeDBErr(err))
+	}
+	for _, p := range parts {
+		if p.corpus != corpus {
+			continue
+		}
+		var attached bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM pg_inherits
+  WHERE inhrelid = to_regclass($1) AND inhparent = to_regclass($2))`,
+			pgx.Identifier{p.index}.Sanitize(), pgx.Identifier{parentIdx}.Sanitize()).Scan(&attached); err != nil {
+			return err
+		}
+		if attached {
+			continue
+		}
+		// #nosec G202 -- names derive from the validated allowlist and are quoted via pgx.Identifier.Sanitize().
+		attach := "ALTER INDEX " + pgx.Identifier{parentIdx}.Sanitize() + " ATTACH PARTITION " + pgx.Identifier{p.index}.Sanitize()
+		if _, err := pool.Exec(ctx, attach); err != nil {
+			return fmt.Errorf("lifecycle: attach partition index failed: %w", sanitizeDBErr(err))
+		}
+	}
+	return nil
+}
+
+// sanitizeDBErr reduces a database error to its SQLSTATE so logs and CLI output
+// never carry statement text or row data.
+func sanitizeDBErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var pe interface{ SQLState() string }
+	if errors.As(err, &pe) {
+		return fmt.Errorf("sqlstate %s", pe.SQLState())
+	}
+	return errors.New("database error")
 }
 
 // FlipOpts parameterises Flip and AutoFlipBootstrap.
@@ -171,7 +533,167 @@ type FlipOpts struct {
 // non-final embed job of the generation may exist. Non-bootstrap flips are
 // manual only; the CLI requires --yes.
 func Flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts) error {
-	return errors.New("not implemented")
+	return flip(ctx, pool, genID, opts, false)
+}
+
+// errActiveExists is internal: a bootstrap auto-flip found an active generation
+// (nothing to flip to; bootstrap only ever fills an empty deployment).
+var errActiveExists = errors.New("lifecycle: an active generation exists")
+
+// flip implements Flip and the bootstrap auto-flip. requireNoActive makes it
+// refuse (errActiveExists) when embedding_active already points somewhere.
+func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, requireNoActive bool) error {
+	if pool == nil {
+		return generation.ErrNilTx
+	}
+	now := nowOr(opts.Now)
+	window := opts.RollbackWindow
+	if window <= 0 {
+		window = DefaultRollbackWindow
+	}
+	reason := flipReason(opts.Reason, "manual")
+
+	g, err := generation.GetByID(ctx, pool, genID)
+	if err != nil {
+		return err
+	}
+	if err := checkFlippable(g, now); err != nil {
+		return err
+	}
+	// Coverage re-check outside the lock (a Reconcile dry run can take a while
+	// and takes no lock itself); the transaction below closes the remaining gap
+	// by refusing while any embed job of g is unfinished.
+	cov, err := coverageOf(ctx, pool, g)
+	if err != nil {
+		return err
+	}
+	if !cov.Complete {
+		return ErrCoverageIncomplete
+	}
+
+	tx, err := beginExclusive(ctx, pool)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	row, err := gen.New(tx).GetEmbeddingGenerationByIDForUpdate(ctx, int32(genID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return generation.ErrGenerationNotFound
+		}
+		return err
+	}
+	g, err = generation.FromDBRow(row)
+	if err != nil {
+		return err
+	}
+	if err := checkFlippable(g, now); err != nil {
+		return err
+	}
+	if requireNoActive {
+		if _, err := gen.New(tx).GetEmbeddingActiveRow(ctx); err == nil {
+			return errActiveExists
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
+	// With the exclusive lock held no mutation can fan out a new job; an
+	// unfinished embed job of g means a mutation after the verification
+	// watermark that is not covered yet.
+	n, err := countEmbedJobs(ctx, tx, g.ID, nil)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrCoverageIncomplete
+	}
+	if err := swapActive(ctx, tx, g, now, window, reason); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// checkFlippable applies the preconditions of a flip that need only the row:
+// pending, index ready, a passing verification no older than MaxVerifyAge.
+func checkFlippable(g generation.Generation, now time.Time) error {
+	if g.State != generation.StatePending {
+		return ErrNotPending
+	}
+	if !g.IndexReady {
+		return ErrIndexNotReady
+	}
+	var rep VerifyReport
+	if g.VerifiedAt == nil || len(g.VerifyReport) == 0 || json.Unmarshal(g.VerifyReport, &rep) != nil ||
+		!rep.Passed || rep.GenerationID != g.ID {
+		return ErrNotVerified
+	}
+	if now.Sub(*g.VerifiedAt) > MaxVerifyAge {
+		return ErrVerifyStale
+	}
+	return nil
+}
+
+func flipReason(reason, fallback string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fallback
+	}
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	return strings.ToValidUTF8(reason, "")
+}
+
+// swapActive makes to the active generation inside the caller's exclusive
+// transaction: the previous active generation (if different) is retired with a
+// rollback window, embedding_active is upserted and NOTIFY is sent, all in tx.
+func swapActive(ctx context.Context, tx pgx.Tx, to generation.Generation, now time.Time, window time.Duration, reason string) error {
+	q := gen.New(tx)
+	active, err := q.GetEmbeddingActiveRow(ctx)
+	switch {
+	case err == nil:
+		if int(active.GenerationID) != to.ID {
+			if _, err := q.RetireEmbeddingGeneration(ctx, gen.RetireEmbeddingGenerationParams{
+				RollbackUntil: pgtype.Timestamptz{Time: now.Add(window), Valid: true},
+				ID:            active.GenerationID,
+			}); err != nil {
+				return err
+			}
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+	default:
+		return err
+	}
+	if _, err := q.ActivateEmbeddingGeneration(ctx, int32(to.ID)); err != nil {
+		return err
+	}
+	if _, err := q.UpsertEmbeddingActive(ctx, gen.UpsertEmbeddingActiveParams{
+		GenerationID:  int32(to.ID),
+		FlippedReason: &reason,
+	}); err != nil {
+		return err
+	}
+	return notifyGenerationChanged(ctx, tx, to.ID)
+}
+
+// countEmbedJobs counts unfinished embed_item/embed_tag jobs of generation
+// genID, optionally only those created before before. Only the generation_id
+// argument is matched; no other argument is read.
+func countEmbedJobs(ctx context.Context, db gen.DBTX, genID int, before *time.Time) (int, error) {
+	var n int
+	err := db.QueryRow(ctx, `
+SELECT count(*)::int FROM river_job
+WHERE kind IN ($1, $2)
+  AND state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+  AND args @> $3::jsonb
+  AND ($4::timestamptz IS NULL OR created_at < $4::timestamptz)`,
+		jobargs.KindEmbedItem, jobargs.KindEmbedTag,
+		`{"generation_id":`+strconv.Itoa(genID)+`}`, before).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("lifecycle: count embed jobs failed: %w", sanitizeDBErr(err))
+	}
+	return n, nil
 }
 
 // RollbackOpts parameterises Rollback.
@@ -192,7 +714,75 @@ type RollbackOpts struct {
 // conditions. Errors: ErrNotRetired, ErrRollbackWindowClosed,
 // ErrGenerationNotCaughtUp.
 func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts RollbackOpts) error {
-	return errors.New("not implemented")
+	if pool == nil {
+		return generation.ErrNilTx
+	}
+	now := nowOr(opts.Now)
+	window := opts.RollbackWindow
+	if window <= 0 {
+		window = DefaultRollbackWindow
+	}
+	reason := flipReason(opts.Reason, "rollback")
+
+	g, err := generation.GetByID(ctx, pool, toGenID)
+	if err != nil {
+		return err
+	}
+	if err := checkRollbackTarget(g, now); err != nil {
+		return err
+	}
+	vopts := opts.Verify
+	if vopts.Now == nil {
+		vopts.Now = opts.Now
+	}
+	rep, err := verifyGeneration(ctx, pool, g, vopts, generation.StateRetired)
+	if err != nil {
+		return err
+	}
+	if !rep.Passed {
+		return ErrGenerationNotCaughtUp
+	}
+
+	tx, err := beginExclusive(ctx, pool)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	row, err := gen.New(tx).GetEmbeddingGenerationByIDForUpdate(ctx, int32(toGenID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return generation.ErrGenerationNotFound
+		}
+		return err
+	}
+	g, err = generation.FromDBRow(row)
+	if err != nil {
+		return err
+	}
+	if err := checkRollbackTarget(g, now); err != nil {
+		return err
+	}
+	n, err := countEmbedJobs(ctx, tx, g.ID, nil)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrGenerationNotCaughtUp
+	}
+	if err := swapActive(ctx, tx, g, now, window, reason); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func checkRollbackTarget(g generation.Generation, now time.Time) error {
+	if g.State != generation.StateRetired {
+		return ErrNotRetired
+	}
+	if g.RollbackUntil == nil || !g.RollbackUntil.After(now) {
+		return ErrRollbackWindowClosed
+	}
+	return nil
 }
 
 // RetireOpts parameterises Retire.
@@ -206,7 +796,45 @@ type RetireOpts struct {
 // rollback window is closed early. The active generation is refused with
 // ErrIsActive. Afterwards Drop may remove the tables.
 func Retire(ctx context.Context, pool *pgxpool.Pool, genID int, opts RetireOpts) error {
-	return errors.New("not implemented")
+	if pool == nil {
+		return generation.ErrNilTx
+	}
+	tx, err := beginExclusive(ctx, pool)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	q := gen.New(tx)
+	row, err := q.GetEmbeddingGenerationByIDForUpdate(ctx, int32(genID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return generation.ErrGenerationNotFound
+		}
+		return err
+	}
+	switch row.State {
+	case generation.StateActive:
+		return ErrIsActive
+	case generation.StatePending:
+		// Abandon: retired without a window leaves R immediately.
+		if _, err := q.RetireEmbeddingGeneration(ctx, gen.RetireEmbeddingGenerationParams{
+			RollbackUntil: pgtype.Timestamptz{},
+			ID:            int32(genID),
+		}); err != nil {
+			return err
+		}
+	case generation.StateRetired:
+		// Close the rollback window early.
+		if _, err := tx.Exec(ctx,
+			`UPDATE embedding_generation SET rollback_until = now() WHERE id = $1 AND state = 'retired' AND rollback_until > now()`,
+			int32(genID)); err != nil {
+			return err
+		}
+	default:
+		return ErrNotRetired
+	}
+	return tx.Commit(ctx)
 }
 
 // DropOpts parameterises Drop.
@@ -223,5 +851,46 @@ type DropOpts struct {
 // marks it dropped. Never active (ErrIsActive), never pending, never inside the
 // window (ErrDropGuard).
 func Drop(ctx context.Context, pool *pgxpool.Pool, genID int, opts DropOpts) error {
-	return errors.New("not implemented")
+	if pool == nil {
+		return generation.ErrNilTx
+	}
+	if strings.TrimSpace(opts.AcceptedEvidence) == "" {
+		return fmt.Errorf("%w: accepted evidence is required", ErrDropGuard)
+	}
+	now := nowOr(opts.Now)
+
+	tx, err := beginExclusive(ctx, pool)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	q := gen.New(tx)
+	row, err := q.GetEmbeddingGenerationByIDForUpdate(ctx, int32(genID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return generation.ErrGenerationNotFound
+		}
+		return err
+	}
+	activeRow, activeErr := q.GetEmbeddingActiveRow(ctx)
+	if activeErr != nil && !errors.Is(activeErr, pgx.ErrNoRows) {
+		return activeErr
+	}
+	if row.State == generation.StateActive || (activeErr == nil && int(activeRow.GenerationID) == genID) {
+		return fmt.Errorf("%w: %w", ErrDropGuard, ErrIsActive)
+	}
+	if row.State != generation.StateRetired {
+		return fmt.Errorf("%w: %w", ErrDropGuard, ErrNotRetired)
+	}
+	if row.RollbackUntil.Valid && row.RollbackUntil.Time.After(now) {
+		return fmt.Errorf("%w: inside the rollback window", ErrDropGuard)
+	}
+	if err := q.DropEmbeddingGenerationTables(ctx, int32(genID)); err != nil {
+		return fmt.Errorf("lifecycle: drop tables failed: %w", sanitizeDBErr(err))
+	}
+	if _, err := q.MarkEmbeddingGenerationDropped(ctx, int32(genID)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
