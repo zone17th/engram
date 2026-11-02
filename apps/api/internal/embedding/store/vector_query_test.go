@@ -415,17 +415,21 @@ func TestUnderfillFallbackWithinBudget(t *testing.T) {
 
 	// Case 1: Sufficient remaining budget (remaining = 60ms >= FallbackMinBudget = 30ms)
 	// -> executes exact fallback (`ann_fallback_exact`).
-	now1 := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	// Real context deadline comes from time.Now() sampled at call time via
+	// BranchTimeout (zero caller deadline), while simulated elapsed time is
+	// advanced deterministically via knobs.Now + knobs.AfterANN with zero
+	// dependence on the wall-clock calendar date/time (VQ-1).
+	clock1 := time.Now()
 	knobsOK := store.DefaultVectorSearchKnobs()
 	knobsOK.ExactMaxVectors = 2
 	knobsOK.FallbackMaxVectors = 10
 	knobsOK.BranchTimeout = 80 * time.Millisecond
 	knobsOK.FallbackMinBudget = 30 * time.Millisecond
 	knobsOK.Metrics = m.Search
-	knobsOK.Now = func() time.Time { return now1 }
+	knobsOK.Now = func() time.Time { return clock1 }
 	knobsOK.AfterANN = func() {
 		// Advance clock by 20ms during ANN -> 60ms remaining >= 30ms FallbackMinBudget.
-		now1 = now1.Add(20 * time.Millisecond)
+		clock1 = clock1.Add(20 * time.Millisecond)
 	}
 
 	beforeFallbackOK := counterValue(t, m.Search.VectorPathTotal.WithLabelValues("item", "ann_fallback_exact"))
@@ -433,7 +437,7 @@ func TestUnderfillFallbackWithinBudget(t *testing.T) {
 	beforeUnderfillOK := counterValue(t, m.Search.VectorUnderfillTotal.WithLabelValues("item"))
 
 	hitsOK, statsOK, err := store.VectorSearch(
-		ctx, pool, pin, u.ID, generation.CorpusItem, []float32{1, 0, 0}, 10, now1.Add(80*time.Millisecond), knobsOK,
+		ctx, pool, pin, u.ID, generation.CorpusItem, []float32{1, 0, 0}, 10, time.Time{}, knobsOK,
 	)
 	if err != nil {
 		t.Fatalf("VectorSearch with sufficient budget: %v", err)
@@ -454,17 +458,17 @@ func TestUnderfillFallbackWithinBudget(t *testing.T) {
 
 	// Case 2: Remaining budget after ANN is below FallbackMinBudget (remaining = 15ms < 30ms)
 	// -> skips exact fallback, returns partial ANN results (`ann_short`), and increments VectorUnderfillTotal.
-	now2 := time.Date(2026, 11, 2, 12, 5, 0, 0, time.UTC)
+	clock2 := time.Now()
 	knobsExhausted := store.DefaultVectorSearchKnobs()
 	knobsExhausted.ExactMaxVectors = 2
 	knobsExhausted.FallbackMaxVectors = 10
 	knobsExhausted.BranchTimeout = 80 * time.Millisecond
 	knobsExhausted.FallbackMinBudget = 30 * time.Millisecond
 	knobsExhausted.Metrics = m.Search
-	knobsExhausted.Now = func() time.Time { return now2 }
+	knobsExhausted.Now = func() time.Time { return clock2 }
 	knobsExhausted.AfterANN = func() {
 		// Advance clock by 65ms during ANN -> only 15ms remaining (< 30ms FallbackMinBudget).
-		now2 = now2.Add(65 * time.Millisecond)
+		clock2 = clock2.Add(65 * time.Millisecond)
 	}
 
 	beforeFallbackEx := counterValue(t, m.Search.VectorPathTotal.WithLabelValues("item", "ann_fallback_exact"))
@@ -472,7 +476,7 @@ func TestUnderfillFallbackWithinBudget(t *testing.T) {
 	beforeUnderfillEx := counterValue(t, m.Search.VectorUnderfillTotal.WithLabelValues("item"))
 
 	hitsEx, statsEx, err := store.VectorSearch(
-		ctx, pool, pin, u.ID, generation.CorpusItem, []float32{1, 0, 0}, 10, now2.Add(80*time.Millisecond), knobsExhausted,
+		ctx, pool, pin, u.ID, generation.CorpusItem, []float32{1, 0, 0}, 10, time.Time{}, knobsExhausted,
 	)
 	if err != nil {
 		t.Fatalf("VectorSearch with exhausted fallback budget: %v", err)
@@ -527,5 +531,445 @@ func TestErrorsCarryNoRowData(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "0.123456") || strings.Contains(err.Error(), "0.654321") {
 		t.Fatalf("error leaked vector float values: %v", err)
+	}
+}
+
+// --- Deterministic fake pgx.Rows / pgx.BatchResults / pgx.Tx / VectorQueryDB for VQ-2 ---
+
+type fakeCountRow struct {
+	count int
+	err   error
+}
+
+func (r fakeCountRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*(dest[0].(*int)) = r.count
+	return nil
+}
+
+type fakeVectorRows struct {
+	corpus  generation.Corpus
+	isANN   bool
+	annRows []fakeANNRowData
+	exRows  []store.Hit
+	idx     int
+	iterErr error
+	scanErr error
+}
+
+type fakeANNRowData struct {
+	candidates int
+	hit        *store.Hit
+}
+
+func (r *fakeVectorRows) Close()                                       {}
+func (r *fakeVectorRows) Err() error                                   { return r.iterErr }
+func (r *fakeVectorRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *fakeVectorRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *fakeVectorRows) Values() ([]any, error)                       { return nil, nil }
+func (r *fakeVectorRows) RawValues() [][]byte                          { return nil }
+func (r *fakeVectorRows) Conn() *pgx.Conn                              { return nil }
+
+func (r *fakeVectorRows) Next() bool {
+	if r.isANN {
+		if r.idx < len(r.annRows) {
+			r.idx++
+			return true
+		}
+		return false
+	}
+	if r.idx < len(r.exRows) {
+		r.idx++
+		return true
+	}
+	return false
+}
+
+func (r *fakeVectorRows) Scan(dest ...any) error {
+	if r.scanErr != nil {
+		return r.scanErr
+	}
+	if r.isANN {
+		row := r.annRows[r.idx-1]
+		*(dest[0].(*int)) = row.candidates
+		if row.hit == nil {
+			*(dest[1].(**uuid.UUID)) = nil
+			return nil
+		}
+		h := row.hit
+		idCopy := h.ID
+		textCopy := h.Name
+		if r.corpus == generation.CorpusTag {
+			textCopy = h.Display
+		}
+		cntCopy := h.Count
+		luCopy := h.LastUsedAt
+		crCopy := h.CreatedAt
+		distCopy := h.Dist
+		cosCopy := h.Cos
+
+		*(dest[1].(**uuid.UUID)) = &idCopy
+		*(dest[2].(**string)) = &textCopy
+		*(dest[3].(**int)) = &cntCopy
+		*(dest[4].(**time.Time)) = &luCopy
+		*(dest[5].(**time.Time)) = &crCopy
+		*(dest[6].(**float64)) = &distCopy
+		*(dest[7].(**float64)) = &cosCopy
+		return nil
+	}
+
+	h := r.exRows[r.idx-1]
+	*(dest[0].(*uuid.UUID)) = h.ID
+	if r.corpus == generation.CorpusTag {
+		*(dest[1].(*string)) = h.Display
+	} else {
+		*(dest[1].(*string)) = h.Name
+	}
+	*(dest[2].(*int)) = h.Count
+	*(dest[3].(*time.Time)) = h.LastUsedAt
+	*(dest[4].(*time.Time)) = h.CreatedAt
+	*(dest[5].(*float64)) = h.Dist
+	*(dest[6].(*float64)) = h.Cos
+	return nil
+}
+
+type fakeBatchResults struct {
+	rows     pgx.Rows
+	execErr  error
+	queryErr error
+	closeErr error
+}
+
+func (b *fakeBatchResults) Exec() (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, b.execErr
+}
+
+func (b *fakeBatchResults) Query() (pgx.Rows, error) {
+	if b.queryErr != nil {
+		return nil, b.queryErr
+	}
+	return b.rows, nil
+}
+
+func (b *fakeBatchResults) QueryRow() pgx.Row { return fakeCountRow{} }
+func (b *fakeBatchResults) Close() error      { return b.closeErr }
+
+type fakeTx struct {
+	br        pgx.BatchResults
+	commitErr error
+}
+
+func (t *fakeTx) Begin(context.Context) (pgx.Tx, error) { return t, nil }
+func (t *fakeTx) Commit(context.Context) error          { return t.commitErr }
+func (t *fakeTx) Rollback(context.Context) error        { return nil }
+func (t *fakeTx) CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFromSource) (int64, error) {
+	return 0, nil
+}
+func (t *fakeTx) SendBatch(context.Context, *pgx.Batch) pgx.BatchResults { return t.br }
+func (t *fakeTx) LargeObjects() pgx.LargeObjects                         { return pgx.LargeObjects{} }
+func (t *fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
+	return nil, nil
+}
+func (t *fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+func (t *fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) { return nil, nil }
+func (t *fakeTx) QueryRow(context.Context, string, ...any) pgx.Row        { return fakeCountRow{} }
+func (t *fakeTx) Conn() *pgx.Conn                                         { return nil }
+
+type fakeVectorDB struct {
+	count int
+	txs   []*fakeTx
+	txIdx int
+}
+
+func (db *fakeVectorDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+func (db *fakeVectorDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, nil
+}
+func (db *fakeVectorDB) QueryRow(context.Context, string, ...any) pgx.Row {
+	return fakeCountRow{count: db.count}
+}
+func (db *fakeVectorDB) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
+	tx := db.txs[db.txIdx]
+	db.txIdx++
+	return tx, nil
+}
+
+func TestVectorSearchTimeoutPreservesPartialHits(t *testing.T) {
+	ctx := context.Background()
+	pin := generation.Pin{
+		GenID: 1,
+		Identity: embedid.Identity{
+			Provider:      generation.ProviderTEI,
+			Model:         "tei/bge-m3",
+			ModelVersion:  "v1",
+			Dims:          3,
+			Preprocessing: "v1",
+		},
+		MinCos:    0.55,
+		ItemTable: "item_embedding_g1",
+		TagTable:  "tag_embedding_g1",
+	}
+	uid := uuid.New()
+	qvec := []float32{1, 0, 0}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	id1 := uuid.MustParse("00000000-0000-0000-0000-000000000010")
+	id2 := uuid.MustParse("00000000-0000-0000-0000-000000000020")
+	id3 := uuid.MustParse("00000000-0000-0000-0000-000000000030")
+
+	hitFar := store.Hit{ID: id3, Name: "far", Count: 1, LastUsedAt: now, CreatedAt: now, Dist: 0.25, Cos: 0.75}
+	hitTieHi := store.Hit{ID: id2, Name: "tie-hi", Count: 2, LastUsedAt: now, CreatedAt: now, Dist: 0.10, Cos: 0.90}
+	hitTieLo := store.Hit{ID: id1, Name: "tie-lo", Count: 3, LastUsedAt: now, CreatedAt: now, Dist: 0.10, Cos: 0.90}
+
+	sqlTimeout57014 := &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"}
+	otherSQLErr := &pgconn.PgError{Code: "42P01", Message: "undefined_table"}
+
+	// 1. Exact path: yields 3 unsorted rows then rows.Err() returns SQLSTATE 57014.
+	// Must return all 3 partial hits sorted by (Dist ASC, ID ASC), Returned=3, TimedOut=true, err=nil.
+	{
+		_, m := obs.NewRegistry()
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.ExactMaxVectors = 5
+		knobs.FallbackMaxVectors = 10
+		knobs.Metrics = m.Search
+
+		db := &fakeVectorDB{
+			count: 3,
+			txs: []*fakeTx{
+				{
+					br: &fakeBatchResults{
+						rows: &fakeVectorRows{
+							corpus:  generation.CorpusItem,
+							isANN:   false,
+							exRows:  []store.Hit{hitFar, hitTieHi, hitTieLo},
+							iterErr: sqlTimeout57014,
+						},
+					},
+				},
+			},
+		}
+
+		hits, stats, err := store.VectorSearch(ctx, db, pin, uid, generation.CorpusItem, qvec, 5, time.Now().Add(time.Second), knobs)
+		if err != nil {
+			t.Fatalf("exact 57014 after partial rows: err = %v, want nil", err)
+		}
+		if !stats.TimedOut || stats.Path != store.VectorPathExact || stats.Returned != 3 || stats.CappedCount != 3 {
+			t.Fatalf("exact 57014 stats = %+v, want Path=exact TimedOut=true Returned=3 CappedCount=3", stats)
+		}
+		wantIDs := []uuid.UUID{id1, id2, id3}
+		if len(hits) != 3 || hits[0].ID != wantIDs[0] || hits[1].ID != wantIDs[1] || hits[2].ID != wantIDs[2] {
+			t.Fatalf("exact 57014 hits = %+v, want sorted %v", hits, wantIDs)
+		}
+	}
+
+	// 2. Exact path: rows scan cleanly, then read-only tx.Commit returns context.DeadlineExceeded.
+	// Because the transaction is read-only, already-scanned hits remain valid and must be returned.
+	{
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.ExactMaxVectors = 5
+		knobs.FallbackMaxVectors = 10
+
+		db := &fakeVectorDB{
+			count: 2,
+			txs: []*fakeTx{
+				{
+					br: &fakeBatchResults{
+						rows: &fakeVectorRows{
+							corpus: generation.CorpusItem,
+							isANN:  false,
+							exRows: []store.Hit{hitTieHi, hitTieLo},
+						},
+					},
+					commitErr: context.DeadlineExceeded,
+				},
+			},
+		}
+
+		hits, stats, err := store.VectorSearch(ctx, db, pin, uid, generation.CorpusItem, qvec, 5, time.Now().Add(time.Second), knobs)
+		if err != nil {
+			t.Fatalf("exact commit DeadlineExceeded: err = %v, want nil", err)
+		}
+		if !stats.TimedOut || stats.Path != store.VectorPathExact || stats.Returned != 2 {
+			t.Fatalf("exact commit DeadlineExceeded stats = %+v, want Path=exact TimedOut=true Returned=2", stats)
+		}
+		if len(hits) != 2 || hits[0].ID != id1 || hits[1].ID != id2 {
+			t.Fatalf("exact commit DeadlineExceeded hits = %+v, want [%s, %s]", hits, id1, id2)
+		}
+	}
+
+	// 3. ANN path: yields 2 out-of-order rows (with ann_candidates = 2 < k = 5) then 57014 on rows.Err().
+	// Must return both hits sorted by (Dist ASC, ID ASC), ANNCandidates=2, Returned=2,
+	// Path=ann_short, Underfill=true, TimedOut=true, err=nil, and increment VectorUnderfillTotal.
+	{
+		_, m := obs.NewRegistry()
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.ExactMaxVectors = 2
+		knobs.FallbackMaxVectors = 10
+		knobs.Metrics = m.Search
+
+		beforeShort := counterValue(t, m.Search.VectorPathTotal.WithLabelValues("item", "ann_short"))
+		beforeUnderfill := counterValue(t, m.Search.VectorUnderfillTotal.WithLabelValues("item"))
+
+		hFar := hitFar
+		hLo := hitTieLo
+		db := &fakeVectorDB{
+			count: 6,
+			txs: []*fakeTx{
+				{
+					br: &fakeBatchResults{
+						rows: &fakeVectorRows{
+							corpus: generation.CorpusItem,
+							isANN:  true,
+							annRows: []fakeANNRowData{
+								{candidates: 2, hit: &hFar},
+								{candidates: 2, hit: &hLo},
+							},
+							iterErr: sqlTimeout57014,
+						},
+					},
+				},
+			},
+		}
+
+		hits, stats, err := store.VectorSearch(ctx, db, pin, uid, generation.CorpusItem, qvec, 5, time.Now().Add(time.Second), knobs)
+		if err != nil {
+			t.Fatalf("ann 57014 after partial rows: err = %v, want nil", err)
+		}
+		if !stats.TimedOut || !stats.Underfill || stats.Path != store.VectorPathANNShort || stats.ANNCandidates != 2 || stats.Returned != 2 {
+			t.Fatalf("ann 57014 stats = %+v, want Path=ann_short TimedOut=true Underfill=true ANNCandidates=2 Returned=2", stats)
+		}
+		if len(hits) != 2 || hits[0].ID != id1 || hits[1].ID != id3 {
+			t.Fatalf("ann 57014 hits = %+v, want sorted [%s, %s]", hits, id1, id3)
+		}
+		if got := counterValue(t, m.Search.VectorPathTotal.WithLabelValues("item", "ann_short")) - beforeShort; got != 1 {
+			t.Fatalf("VectorPathTotal{item,ann_short} delta = %v, want 1", got)
+		}
+		if got := counterValue(t, m.Search.VectorUnderfillTotal.WithLabelValues("item")) - beforeUnderfill; got != 1 {
+			t.Fatalf("VectorUnderfillTotal{item} delta = %v, want 1", got)
+		}
+	}
+
+	// 4. ANN path: rows scan cleanly (ann_candidates = 3 >= k = 3), then batch Close returns DeadlineExceeded.
+	// Must return all 3 hits sorted by (Dist ASC, ID ASC), ANNCandidates=3, Returned=3,
+	// Path=ann, Underfill=false, TimedOut=true, err=nil.
+	{
+		_, m := obs.NewRegistry()
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.ExactMaxVectors = 2
+		knobs.FallbackMaxVectors = 10
+		knobs.Metrics = m.Search
+
+		beforeANN := counterValue(t, m.Search.VectorPathTotal.WithLabelValues("item", "ann"))
+		beforeUnderfill := counterValue(t, m.Search.VectorUnderfillTotal.WithLabelValues("item"))
+
+		hFar := hitFar
+		hHi := hitTieHi
+		hLo := hitTieLo
+		db := &fakeVectorDB{
+			count: 6,
+			txs: []*fakeTx{
+				{
+					br: &fakeBatchResults{
+						rows: &fakeVectorRows{
+							corpus: generation.CorpusItem,
+							isANN:  true,
+							annRows: []fakeANNRowData{
+								{candidates: 3, hit: &hFar},
+								{candidates: 3, hit: &hHi},
+								{candidates: 3, hit: &hLo},
+							},
+						},
+						closeErr: context.DeadlineExceeded,
+					},
+				},
+			},
+		}
+
+		hits, stats, err := store.VectorSearch(ctx, db, pin, uid, generation.CorpusItem, qvec, 3, time.Now().Add(time.Second), knobs)
+		if err != nil {
+			t.Fatalf("ann batch close DeadlineExceeded: err = %v, want nil", err)
+		}
+		if !stats.TimedOut || stats.Underfill || stats.Path != store.VectorPathANN || stats.ANNCandidates != 3 || stats.Returned != 3 {
+			t.Fatalf("ann batch close DeadlineExceeded stats = %+v, want Path=ann TimedOut=true Underfill=false ANNCandidates=3 Returned=3", stats)
+		}
+		if len(hits) != 3 || hits[0].ID != id1 || hits[1].ID != id2 || hits[2].ID != id3 {
+			t.Fatalf("ann batch close DeadlineExceeded hits = %+v, want sorted [%s, %s, %s]", hits, id1, id2, id3)
+		}
+		if got := counterValue(t, m.Search.VectorPathTotal.WithLabelValues("item", "ann")) - beforeANN; got != 1 {
+			t.Fatalf("VectorPathTotal{item,ann} delta = %v, want 1", got)
+		}
+		if got := counterValue(t, m.Search.VectorUnderfillTotal.WithLabelValues("item")) - beforeUnderfill; got != 0 {
+			t.Fatalf("VectorUnderfillTotal{item} delta = %v, want 0", got)
+		}
+	}
+
+	// 5. Caller context.Canceled mid-stream stays context.Canceled (never treated as partial success).
+	{
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.ExactMaxVectors = 5
+		knobs.FallbackMaxVectors = 10
+
+		hLo := hitTieLo
+		db := &fakeVectorDB{
+			count: 2,
+			txs: []*fakeTx{
+				{
+					br: &fakeBatchResults{
+						rows: &fakeVectorRows{
+							corpus:  generation.CorpusItem,
+							isANN:   false,
+							exRows:  []store.Hit{hLo},
+							iterErr: context.Canceled,
+						},
+					},
+				},
+			},
+		}
+
+		_, _, err := store.VectorSearch(ctx, db, pin, uid, generation.CorpusItem, qvec, 5, time.Now().Add(time.Second), knobs)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("caller context.Canceled mid-stream: err = %v, want context.Canceled", err)
+		}
+	}
+
+	// 6. Unrelated SQL error (e.g. 42P01) after partial rows stays an error (never silently success).
+	{
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.ExactMaxVectors = 2
+		knobs.FallbackMaxVectors = 10
+
+		hLo := hitTieLo
+		db := &fakeVectorDB{
+			count: 6,
+			txs: []*fakeTx{
+				{
+					br: &fakeBatchResults{
+						rows: &fakeVectorRows{
+							corpus: generation.CorpusItem,
+							isANN:  true,
+							annRows: []fakeANNRowData{
+								{candidates: 1, hit: &hLo},
+							},
+							iterErr: otherSQLErr,
+						},
+					},
+				},
+			},
+		}
+
+		_, _, err := store.VectorSearch(ctx, db, pin, uid, generation.CorpusItem, qvec, 5, time.Now().Add(time.Second), knobs)
+		if err == nil {
+			t.Fatal("unrelated SQL error 42P01: got nil error, want non-nil")
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
+			t.Fatalf("unrelated SQL error = %v, want PgError 42P01", err)
+		}
 	}
 }
