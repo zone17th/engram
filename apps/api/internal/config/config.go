@@ -609,11 +609,6 @@ func bytesEqual(a, b []byte) bool {
 	return v == 0
 }
 
-// SemanticAvailable cho biết tìm kiếm ngữ nghĩa có thật sự dùng được không.
-func (c *Config) SemanticAvailable() bool {
-	return c.EmbeddingProvider == "tei" && !c.TEIURL.IsEmpty()
-}
-
 // EmbeddingPrimary trả cấu hình client embedding chính (plan P05 mục 2.12, 2.13).
 func (c *Config) EmbeddingPrimary() embedding.ClientConfig {
 	if c == nil {
@@ -843,7 +838,6 @@ func (c *Config) Redacted() map[string]any {
 		"search_rollback_window":            c.SearchRollbackWindow.String(),
 		"worker_metrics_addr":               c.WorkerMetricsAddr,
 		"embedding_bootstrap_flip_interval": c.EmbeddingBootstrapFlipInterval.String(),
-		"semantic_available":                c.SemanticAvailable(),
 		"log_level":                         c.LogLevel,
 		"database_url":                      "[redacted]",
 		"auth_require_email_verification":   c.RequireEmailVerification,
