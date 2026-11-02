@@ -9,8 +9,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
 const (
@@ -25,6 +32,20 @@ const (
 	ProviderNoop         = "noop"
 	ProviderTEI          = "tei"
 	ProviderOpenAICompat = "openai_compat"
+)
+
+// Provider operation labels used in metrics and structured logs (plan P05 mục 2.21).
+const (
+	OpQuery    = "query"
+	OpDocument = "document"
+	OpBootInfo = "info"
+)
+
+// Default per-call timeouts when ClientConfig leaves them zero (plan P05 mục 2.13).
+const (
+	DefaultOpenAIQueryTimeout = 4 * time.Second
+	DefaultTEIQueryTimeout    = 300 * time.Millisecond
+	DefaultDocumentTimeout    = 30 * time.Second
 )
 
 // Provider abstracts an embedding backend (SPEC §4.4, plan P05 mục 2.12).
@@ -47,6 +68,10 @@ var (
 	// returns malformed JSON, wrong count/indices, wrong dimensions, NaN/Inf,
 	// zero-norm vectors, an unexpected redirect, or an oversized body.
 	ErrBadResponse = errors.New("embedding: bad provider response")
+	// ErrBatchTooLarge is returned when EmbedDocuments receives more than MaxBatch (64) inputs.
+	ErrBatchTooLarge = errors.New("embedding: batch size exceeds MaxBatch")
+	// ErrEmptyBatch is returned when EmbedDocuments receives zero inputs.
+	ErrEmptyBatch = errors.New("embedding: empty document batch")
 )
 
 // ErrorClass enumerates the provider failure reason codes (plan P05 mục 2.21, SPEC §6.6).
@@ -263,4 +288,214 @@ func ValidateAndNormalizeL2(v []float32, dims int) ([]float32, error) {
 		out[i] = float32(float64(x) * inv)
 	}
 	return out, nil
+}
+
+// ParseRetryAfter parses an HTTP Retry-After header value as either a
+// non-negative integer number of seconds or an RFC 7231 HTTP-date relative to
+// now (plan P05 mục 2.12). If header is empty, unparseable, or in the past, it
+// returns (0, false).
+func ParseRetryAfter(header string, now time.Time) (time.Duration, bool) {
+	raw := strings.TrimSpace(header)
+	if raw == "" {
+		return 0, false
+	}
+	if secs, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if secs <= 0 {
+			return 0, false
+		}
+		const maxSecs = int64(365 * 24 * 3600)
+		if secs > maxSecs {
+			secs = maxSecs
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(raw); err == nil {
+		if now.IsZero() {
+			now = time.Now()
+		}
+		d := t.Sub(now)
+		if d <= 0 {
+			return 0, false
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+// classifyTransportError maps an error returned by http.Client.Do (before an
+// HTTP response is received) into a sanitized *ProviderError.
+//
+// Note: http.Client.Do wraps the underlying transport/context error in a
+// *url.Error whose Error() includes the full request URL. We NEVER retain or
+// format the raw *url.Error as Detail or Err when it could expose the URL.
+func classifyTransportError(err error) *ProviderError {
+	if err == nil {
+		return nil
+	}
+	var pe *ProviderError
+	if errors.As(err, &pe) && pe != nil {
+		return &ProviderError{
+			Class:      pe.Class,
+			HTTPStatus: pe.HTTPStatus,
+			RetryAfter: pe.RetryAfter,
+			Detail:     pe.Detail,
+			Err:        safeUnwrapErr(pe.Err),
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return &ProviderError{
+			Class:  ClassTimeout,
+			Detail: "request deadline exceeded",
+			Err:    context.DeadlineExceeded,
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return &ProviderError{
+			Class:  ClassTimeout,
+			Detail: "network timeout",
+			Err:    context.DeadlineExceeded,
+		}
+	}
+	if errors.Is(err, ErrDisallowedIP) {
+		return &ProviderError{
+			Class:  ClassRefused,
+			Detail: "http destination IP rejected by URL rule",
+			Err:    ErrDisallowedIP,
+		}
+	}
+	if errors.Is(err, ErrDisallowedURL) {
+		return &ProviderError{
+			Class:  ClassRefused,
+			Detail: "request URL rejected by URL rule",
+			Err:    ErrDisallowedURL,
+		}
+	}
+	return &ProviderError{
+		Class:  ClassRefused,
+		Detail: "network error",
+	}
+}
+
+func safeUnwrapErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrBadResponse):
+		return ErrBadResponse
+	case errors.Is(err, ErrDisallowedIP):
+		return ErrDisallowedIP
+	case errors.Is(err, ErrDisallowedURL):
+		return ErrDisallowedURL
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
+// classifyHTTPStatus maps a non-2xx HTTP status code into a *ProviderError
+// (plan P05 mục 2.12, 2.21):
+//   - 3xx (unfollowed redirect): ClassBadResponse (wraps ErrBadResponse)
+//   - 429: Class429 with RetryAfter parsed from Retry-After header
+//   - 5xx: Class5xx
+//   - other non-2xx (e.g. 400, 401, 403, 404): ClassRefused
+func classifyHTTPStatus(status int, header http.Header, now time.Time) *ProviderError {
+	if status >= 300 && status < 400 {
+		return &ProviderError{
+			Class:      ClassBadResponse,
+			HTTPStatus: status,
+			Detail:     "unexpected redirect response",
+			Err:        ErrBadResponse,
+		}
+	}
+	if status == http.StatusTooManyRequests {
+		var retryAfter time.Duration
+		if header != nil {
+			if d, ok := ParseRetryAfter(header.Get("Retry-After"), now); ok {
+				retryAfter = d
+			}
+		}
+		return &ProviderError{
+			Class:      Class429,
+			HTTPStatus: status,
+			RetryAfter: retryAfter,
+			Detail:     "rate limited by provider",
+		}
+	}
+	if status >= 500 && status < 600 {
+		return &ProviderError{
+			Class:      Class5xx,
+			HTTPStatus: status,
+			Detail:     "upstream server error",
+		}
+	}
+	return &ProviderError{
+		Class:      ClassRefused,
+		HTTPStatus: status,
+		Detail:     "unexpected HTTP status",
+	}
+}
+
+// recordProviderCall updates Prometheus metrics (when metrics != nil) and
+// writes a sanitized structured log entry (when logger != nil).
+//
+// Security invariant (plan P05 mục 1, 2.12, SPEC §10.2/§10.3):
+// Logs and metric labels NEVER include inputs, query text, API keys, response
+// bodies, full URLs, or HTTP headers. Only provider, op, input_count,
+// latency_ms, error_class, and http_status are emitted.
+func recordProviderCall(
+	ctx context.Context,
+	metrics *obs.EmbeddingMetrics,
+	logger *slog.Logger,
+	provider string,
+	op string,
+	inputCount int,
+	latency time.Duration,
+	httpStatus int,
+	err error,
+) {
+	if metrics != nil && (op == OpQuery || op == OpDocument) {
+		outcome := OutcomeForError(err)
+		if metrics.ProviderRequestsTotal != nil {
+			metrics.ProviderRequestsTotal.WithLabelValues(provider, op, outcome).Inc()
+		}
+		if metrics.ProviderLatency != nil {
+			metrics.ProviderLatency.WithLabelValues(provider, op).Observe(latency.Seconds())
+		}
+	}
+	if logger == nil {
+		return
+	}
+	var errClass string
+	if err != nil {
+		var pe *ProviderError
+		if errors.As(err, &pe) && pe != nil {
+			errClass = string(pe.Class)
+			if httpStatus == 0 {
+				httpStatus = pe.HTTPStatus
+			}
+		} else if errors.Is(err, ErrBadResponse) {
+			errClass = string(ClassBadResponse)
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			errClass = string(ClassTimeout)
+		} else {
+			errClass = string(ClassRefused)
+		}
+	}
+	attrs := []slog.Attr{
+		slog.String("provider", provider),
+		slog.String("op", op),
+		slog.Int("input_count", inputCount),
+		slog.Float64("latency_ms", float64(latency.Microseconds())/1000.0),
+		slog.String("error_class", errClass),
+		slog.Int("http_status", httpStatus),
+	}
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelWarn, "embedding provider request failed", attrs...)
+	} else {
+		logger.LogAttrs(ctx, slog.LevelDebug, "embedding provider request completed", attrs...)
+	}
 }

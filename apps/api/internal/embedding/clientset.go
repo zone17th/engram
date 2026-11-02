@@ -1,7 +1,15 @@
 package embedding
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
+	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
 // ClientRole identifies whether a Client is the primary or shadow provider
@@ -121,4 +129,87 @@ func isMatchableClient(c Client) bool {
 		c.Identity.Provider != "" &&
 		c.Identity.Provider != ProviderNoop &&
 		c.Identity.Dims > 0
+}
+
+// ClientDeps bundles optional runtime dependencies (HTTP client, Prometheus
+// collectors, structured logger, clock) injected into concrete providers when
+// constructing a Client or ClientSet from ClientConfig. All fields are
+// optional and nil-safe.
+type ClientDeps struct {
+	HTTPClient  *http.Client
+	HTTPOptions []HTTPClientOption
+	Metrics     *obs.EmbeddingMetrics
+	Logger      *slog.Logger
+	Now         func() time.Time
+}
+
+// NewClientFromConfig constructs a Provider (noop, tei, or openai_compat) from
+// cfg using NewHTTPClient (unless deps.HTTPClient is supplied) and wraps it in
+// a Client with the full seven-field embedid.Identity populated (plan P05 mục
+// 2.12, BE-1, M1).
+func NewClientFromConfig(ctx context.Context, cfg ClientConfig, role ClientRole, deps ClientDeps) (Client, error) {
+	if role == "" {
+		role = RolePrimary
+	}
+	provName := strings.TrimSpace(cfg.Provider)
+	if provName == "" || provName == ProviderNoop {
+		return NewClientWithRole(NewNoop(), "", "", role), nil
+	}
+
+	httpClient := deps.HTTPClient
+	if httpClient == nil {
+		httpClient = NewHTTPClient(deps.HTTPOptions...)
+	}
+	queryPrefix, docPrefix := cfg.EffectivePrefixes()
+
+	switch provName {
+	case ProviderOpenAICompat:
+		p, err := NewOpenAICompat(
+			cfg,
+			WithOpenAIHTTPClient(httpClient),
+			WithOpenAIMetrics(deps.Metrics),
+			WithOpenAILogger(deps.Logger),
+			WithOpenAIClock(deps.Now),
+		)
+		if err != nil {
+			return Client{}, err
+		}
+		return NewClientWithRole(p, queryPrefix, docPrefix, role), nil
+
+	case ProviderTEI:
+		p, err := NewTEI(
+			ctx,
+			cfg,
+			WithTEIHTTPClient(httpClient),
+			WithTEIMetrics(deps.Metrics),
+			WithTEILogger(deps.Logger),
+			WithTEIClock(deps.Now),
+		)
+		if err != nil {
+			return Client{}, err
+		}
+		return NewClientWithRole(p, queryPrefix, docPrefix, role), nil
+
+	default:
+		return Client{}, fmt.Errorf("embedding: unsupported provider %q", provName)
+	}
+}
+
+// NewClientSetFromConfigs constructs both the primary Client and the optional
+// shadow Client from their respective ClientConfig structs and returns a
+// *ClientSet ready for full-identity Match checks.
+func NewClientSetFromConfigs(ctx context.Context, primaryCfg ClientConfig, shadowCfg *ClientConfig, deps ClientDeps) (*ClientSet, error) {
+	primaryClient, err := NewClientFromConfig(ctx, primaryCfg, RolePrimary, deps)
+	if err != nil {
+		return nil, err
+	}
+	var shadowClient *Client
+	if shadowCfg != nil && strings.TrimSpace(shadowCfg.Provider) != "" && strings.TrimSpace(shadowCfg.Provider) != ProviderNoop {
+		sc, err := NewClientFromConfig(ctx, *shadowCfg, RoleShadow, deps)
+		if err != nil {
+			return nil, err
+		}
+		shadowClient = &sc
+	}
+	return NewClientSet(primaryClient, shadowClient), nil
 }
