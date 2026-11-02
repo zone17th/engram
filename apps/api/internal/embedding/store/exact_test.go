@@ -52,7 +52,7 @@ func seedGenerationForVectorSearch(
 	t.Helper()
 	q := gen.New(pool)
 
-	row, err := q.InsertPendingEmbeddingGeneration(ctx, gen.InsertPendingEmbeddingGenerationParams{
+	_, err := q.InsertPendingEmbeddingGeneration(ctx, gen.InsertPendingEmbeddingGenerationParams{
 		ID:                 int32(id),
 		Provider:           generation.ProviderTEI,
 		Model:              "tei/model-g" + string(rune('0'+id)),
@@ -81,7 +81,7 @@ func seedGenerationForVectorSearch(
 	}); err != nil {
 		t.Fatalf("CreateEmbeddingGenerationTables g%d: %v", id, err)
 	}
-	row, err = q.ActivateEmbeddingGeneration(ctx, int32(id))
+	row, err := q.ActivateEmbeddingGeneration(ctx, int32(id))
 	if err != nil {
 		t.Fatalf("ActivateEmbeddingGeneration g%d: %v", id, err)
 	}
