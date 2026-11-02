@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
@@ -88,7 +89,7 @@ func TestHealthzStillOKWhenDatabaseDown(t *testing.T) {
 // TEI là optional: deployment lexical-only vẫn phải ready (P01 §Contract).
 func TestReadyzIgnoresTEI(t *testing.T) {
 	var buf bytes.Buffer
-	cfg := &config.Config{Env: "test", EmbeddingProvider: "tei", TEIURL: "http://tei-khong-ton-tai:80"}
+	cfg := &config.Config{Env: "test", EmbeddingProvider: "tei", TEIURL: embedding.NewEndpoint("http://tei-khong-ton-tai:80")}
 	r := routerWithReady(&buf, cfg, func(context.Context) error { return nil })
 
 	rec := httptest.NewRecorder()

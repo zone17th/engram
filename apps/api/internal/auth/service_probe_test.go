@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 )
 
 func TestConfigProbeTracksTEIHealth(t *testing.T) {
@@ -27,7 +28,7 @@ func TestConfigProbeTracksTEIHealth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	probe := ConfigProbe(&config.Config{EmbeddingProvider: "tei", TEIURL: server.URL})
+	probe := ConfigProbe(&config.Config{EmbeddingProvider: "tei", TEIURL: embedding.NewEndpoint(server.URL)})
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("ConfigProbe performed %d requests during construction", got)
 	}
@@ -50,7 +51,7 @@ func TestConfigProbeTracksTEIHealth(t *testing.T) {
 }
 
 func TestConfigProbeDisablesMissingTEI(t *testing.T) {
-	probe := ConfigProbe(&config.Config{EmbeddingProvider: "noop", TEIURL: "http://127.0.0.1:1"})
+	probe := ConfigProbe(&config.Config{EmbeddingProvider: "noop", TEIURL: embedding.NewEndpoint("http://127.0.0.1:1")})
 	if probe.Available(context.Background()) {
 		t.Fatal("noop embedding provider reported as available")
 	}
