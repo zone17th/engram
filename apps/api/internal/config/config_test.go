@@ -88,8 +88,12 @@ func TestSemanticAvailable(t *testing.T) {
 	}{
 		{"noop mặc định", "noop", "", false},
 		{"noop dù có TEI_URL", "noop", "http://tei:80", false},
-		{"tei thiếu URL", "tei", "", false},
 		{"tei đủ URL", "tei", "http://tei:80", true},
+	}
+	// Khi TEI_URL trống, Load() từ chối EMBEDDING_PROVIDER=tei ngay lúc boot;
+	// SemanticAvailable() trên struct thiếu URL vẫn trả false.
+	if (&config.Config{EmbeddingProvider: "tei"}).SemanticAvailable() {
+		t.Fatal("SemanticAvailable() trên tei thiếu URL phải false")
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -728,4 +732,367 @@ func TestMailCaptureAsDeliveryFailClosedAndRejectedInProduction(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestP05EmbeddingAndSearchDefaults(t *testing.T) {
+	setEnv(t, nil)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.SearchSemanticEnabled {
+		t.Error("SEARCH_SEMANTIC_ENABLED mặc định phải true")
+	}
+	if cfg.EmbeddingModel != "openrouter/qwen/qwen3-embedding-8b" {
+		t.Errorf("EmbeddingModel = %q, muốn openrouter/qwen/qwen3-embedding-8b", cfg.EmbeddingModel)
+	}
+	if cfg.EmbeddingDimensions != 1024 {
+		t.Errorf("EmbeddingDimensions = %d, muốn 1024", cfg.EmbeddingDimensions)
+	}
+	wantInstr := "Given a short search query, retrieve matching item names or tags"
+	if cfg.EmbeddingQueryInstruction != wantInstr {
+		t.Errorf("EmbeddingQueryInstruction = %q, muốn %q", cfg.EmbeddingQueryInstruction, wantInstr)
+	}
+	if cfg.EmbeddingQueryTimeout != 300*time.Millisecond {
+		t.Errorf("EmbeddingQueryTimeout = %v, muốn 300ms", cfg.EmbeddingQueryTimeout)
+	}
+	if cfg.EmbeddingDocumentTimeout != 30*time.Second {
+		t.Errorf("EmbeddingDocumentTimeout = %v, muốn 30s", cfg.EmbeddingDocumentTimeout)
+	}
+	if cfg.SearchExactMaxVectors != 5000 {
+		t.Errorf("SearchExactMaxVectors = %d, muốn 5000", cfg.SearchExactMaxVectors)
+	}
+	if cfg.SearchExactFallbackMaxVectors != 20000 {
+		t.Errorf("SearchExactFallbackMaxVectors = %d, muốn 20000", cfg.SearchExactFallbackMaxVectors)
+	}
+	if cfg.SearchHNSWEfSearch != 64 {
+		t.Errorf("SearchHNSWEfSearch = %d, muốn 64", cfg.SearchHNSWEfSearch)
+	}
+	if cfg.SearchHNSWMaxScanTuples != 20000 {
+		t.Errorf("SearchHNSWMaxScanTuples = %d, muốn 20000", cfg.SearchHNSWMaxScanTuples)
+	}
+	if cfg.SearchHNSWIterativeScan != "relaxed_order" {
+		t.Errorf("SearchHNSWIterativeScan = %q, muốn relaxed_order", cfg.SearchHNSWIterativeScan)
+	}
+	if cfg.SearchVectorBranchTimeout != 80*time.Millisecond {
+		t.Errorf("SearchVectorBranchTimeout = %v, muốn 80ms", cfg.SearchVectorBranchTimeout)
+	}
+	if cfg.SearchVectorFallbackMinBudget != 30*time.Millisecond {
+		t.Errorf("SearchVectorFallbackMinBudget = %v, muốn 30ms", cfg.SearchVectorFallbackMinBudget)
+	}
+	if cfg.SearchRollbackWindow != 168*time.Hour {
+		t.Errorf("SearchRollbackWindow = %v, muốn 168h", cfg.SearchRollbackWindow)
+	}
+	if cfg.WorkerMetricsAddr != "" {
+		t.Errorf("WorkerMetricsAddr = %q, muốn rỗng", cfg.WorkerMetricsAddr)
+	}
+	if cfg.EmbeddingBootstrapFlipInterval != time.Minute {
+		t.Errorf("EmbeddingBootstrapFlipInterval = %v, muốn 1m", cfg.EmbeddingBootstrapFlipInterval)
+	}
+	if _, ok := cfg.EmbeddingShadow(); ok {
+		t.Error("EmbeddingShadow() mặc định phải false")
+	}
+}
+
+func TestP05ProviderValidationAndDefaultTimeouts(t *testing.T) {
+	// 1. tei thiếu TEI_URL bị từ chối.
+	t.Run("tei_missing_tei_url_rejected", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "tei",
+			"TEI_URL":            "",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối EMBEDDING_PROVIDER=tei khi thiếu TEI_URL")
+		}
+	})
+
+	// 2. tei đủ TEI_URL -> default query timeout 300ms.
+	t.Run("tei_default_query_timeout_300ms", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER":        "tei",
+			"TEI_URL":                   "http://10.0.0.5:8080",
+			"TEI_INPUT_PREFIX_QUERY":    "query: ",
+			"TEI_INPUT_PREFIX_DOCUMENT": "passage: ",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.EmbeddingQueryTimeout != 300*time.Millisecond {
+			t.Fatalf("EmbeddingQueryTimeout = %v, muốn 300ms", cfg.EmbeddingQueryTimeout)
+		}
+		prim := cfg.EmbeddingPrimary()
+		if prim.Provider != "tei" || prim.BaseURL != "http://10.0.0.5:8080" || prim.QueryPrefix != "query: " || prim.DocPrefix != "passage: " {
+			t.Fatalf("EmbeddingPrimary() = %+v", prim)
+		}
+	})
+
+	// 3. openai_compat thiếu EMBEDDING_BASE_URL hoặc EMBEDDING_API_KEY bị từ chối.
+	t.Run("openai_compat_missing_base_url_or_api_key_rejected", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "openai_compat",
+			"EMBEDDING_API_KEY":  "fake-key-for-test-only",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối openai_compat khi thiếu EMBEDDING_BASE_URL")
+		}
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "openai_compat",
+			"EMBEDDING_BASE_URL": "http://10.0.0.5:8080/v1",
+			"EMBEDDING_API_KEY":  "",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối openai_compat khi thiếu EMBEDDING_API_KEY")
+		}
+	})
+
+	// 4. openai_compat đủ -> default query timeout 4s, explicit timeout thắng.
+	t.Run("openai_compat_default_4s_and_explicit_override", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "openai_compat",
+			"EMBEDDING_BASE_URL": "https://router.example.invalid/v1",
+			"EMBEDDING_API_KEY":  "fake-key-for-test-only",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.EmbeddingQueryTimeout != 4*time.Second {
+			t.Fatalf("EmbeddingQueryTimeout = %v, muốn 4s", cfg.EmbeddingQueryTimeout)
+		}
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER":      "openai_compat",
+			"EMBEDDING_BASE_URL":      "http://10.0.0.5:8080/v1",
+			"EMBEDDING_API_KEY":       "fake-key-for-test-only",
+			"EMBEDDING_QUERY_TIMEOUT": "1500ms",
+		})
+		cfgOverride, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() override error = %v", err)
+		}
+		if cfgOverride.EmbeddingQueryTimeout != 1500*time.Millisecond {
+			t.Fatalf("EmbeddingQueryTimeout = %v, muốn 1.5s", cfgOverride.EmbeddingQueryTimeout)
+		}
+	})
+}
+
+func TestP05ShadowProviderRules(t *testing.T) {
+	t.Run("shadow_unknown_provider_rejected", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_SHADOW_PROVIDER": "unknown",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối EMBEDDING_SHADOW_PROVIDER lạ")
+		}
+	})
+
+	t.Run("shadow_tei_requires_shadow_base_url", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_SHADOW_PROVIDER": "tei",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối shadow tei thiếu EMBEDDING_SHADOW_BASE_URL")
+		}
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_SHADOW_PROVIDER":              "tei",
+			"EMBEDDING_SHADOW_BASE_URL":              "http://10.0.0.9:80",
+			"EMBEDDING_SHADOW_INPUT_PREFIX_QUERY":    "query: ",
+			"EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT": "passage: ",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		sh, ok := cfg.EmbeddingShadow()
+		if !ok {
+			t.Fatal("EmbeddingShadow() = false, muốn true")
+		}
+		if sh.Provider != "tei" || sh.QueryTimeout != 300*time.Millisecond || sh.QueryPrefix != "query: " || sh.DocPrefix != "passage: " {
+			t.Fatalf("EmbeddingShadow() = %+v", sh)
+		}
+	})
+
+	t.Run("shadow_openai_compat_requires_base_url_and_key", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
+			"EMBEDDING_SHADOW_BASE_URL": "https://shadow.example.invalid/v1",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối shadow openai_compat thiếu EMBEDDING_SHADOW_API_KEY")
+		}
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
+			"EMBEDDING_SHADOW_BASE_URL": "https://shadow.example.invalid/v1",
+			"EMBEDDING_SHADOW_API_KEY":  "fake-shadow-key",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		sh, ok := cfg.EmbeddingShadow()
+		if !ok {
+			t.Fatal("EmbeddingShadow() = false, muốn true")
+		}
+		if sh.Provider != "openai_compat" || sh.QueryTimeout != 4*time.Second || sh.Dims != 1024 {
+			t.Fatalf("EmbeddingShadow() = %+v", sh)
+		}
+	})
+}
+
+func TestP05SearchKnobsAndBootstrapFlipIntervalValidation(t *testing.T) {
+	t.Run("fallback_less_than_exact_rejected", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"SEARCH_EXACT_MAX_VECTORS":          "10000",
+			"SEARCH_EXACT_FALLBACK_MAX_VECTORS": "5000",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("Load() phải từ chối SEARCH_EXACT_FALLBACK_MAX_VECTORS < SEARCH_EXACT_MAX_VECTORS")
+		}
+	})
+
+	t.Run("iterative_scan_oneof", func(t *testing.T) {
+		for _, valid := range []string{"off", "relaxed_order", "strict_order"} {
+			setEnv(t, map[string]string{"SEARCH_HNSW_ITERATIVE_SCAN": valid})
+			if _, err := config.Load(); err != nil {
+				t.Fatalf("SEARCH_HNSW_ITERATIVE_SCAN=%s bị từ chối: %v", valid, err)
+			}
+		}
+		setEnv(t, map[string]string{"SEARCH_HNSW_ITERATIVE_SCAN": "invalid_mode"})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("SEARCH_HNSW_ITERATIVE_SCAN=invalid_mode phải bị từ chối")
+		}
+	})
+
+	t.Run("bootstrap_flip_interval_production_rejected_dev_accepted", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"APP_ENV":                           "development",
+			"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL": "5s",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("development phải chấp nhận EMBEDDING_BOOTSTRAP_FLIP_INTERVAL=5s: %v", err)
+		}
+		if cfg.EmbeddingBootstrapFlipInterval != 5*time.Second {
+			t.Fatalf("EmbeddingBootstrapFlipInterval = %v, muốn 5s", cfg.EmbeddingBootstrapFlipInterval)
+		}
+
+		setEnv(t, map[string]string{
+			"APP_ENV":                           "production",
+			"APP_ORIGIN":                        "https://engram.zone17.click",
+			"AUTH_JWT_SECRET":                   b64(32),
+			"AUTH_CSRF_SECRET":                  b64(33),
+			"AUTH_REAUTH_SECRET":                b64(34),
+			"AUTH_IP_PEPPER":                    b64(35),
+			"AUTH_EMAIL_PEPPER":                 b64(36),
+			"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL": "5s",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("production phải từ chối EMBEDDING_BOOTSTRAP_FLIP_INTERVAL khác rỗng")
+		}
+	})
+}
+
+func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
+	t.Run("url_rule_rejects_public_http_accepts_private_http_and_https", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "openai_compat",
+			"EMBEDDING_BASE_URL": "http://8.8.8.8/v1",
+			"EMBEDDING_API_KEY":  "fake-key-test",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("http://8.8.8.8 phải bị từ chối")
+		}
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "openai_compat",
+			"EMBEDDING_BASE_URL": "http://10.0.0.5:8080/v1",
+			"EMBEDDING_API_KEY":  "fake-key-test",
+		})
+		if _, err := config.Load(); err != nil {
+			t.Fatalf("http://10.0.0.5:8080/v1 phải được chấp nhận: %v", err)
+		}
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER": "openai_compat",
+			"EMBEDDING_BASE_URL": "https://api.example.invalid/v1",
+			"EMBEDDING_API_KEY":  "fake-key-test",
+		})
+		if _, err := config.Load(); err != nil {
+			t.Fatalf("https://api.example.invalid/v1 phải được chấp nhận: %v", err)
+		}
+	})
+
+	t.Run("redacted_and_errors_never_leak_api_key_or_full_urls", func(t *testing.T) {
+		const distinctivePrimaryKey = "sk-test-distinctive-primary-secret-998877"
+		const distinctiveShadowKey = "sk-test-distinctive-shadow-secret-112233"
+		const primaryURL = "https://primary-router.example.invalid/v1/secret-path"
+		const shadowURL = "https://shadow-router.example.invalid/v1/secret-path"
+
+		setEnv(t, map[string]string{
+			"EMBEDDING_PROVIDER":        "openai_compat",
+			"EMBEDDING_BASE_URL":        primaryURL,
+			"EMBEDDING_API_KEY":         distinctivePrimaryKey,
+			"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
+			"EMBEDDING_SHADOW_BASE_URL": shadowURL,
+			"EMBEDDING_SHADOW_API_KEY":  distinctiveShadowKey,
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+
+		redacted := cfg.Redacted()
+		if redacted["embedding_api_key_set"] != true {
+			t.Fatalf("embedding_api_key_set = %v, muốn true", redacted["embedding_api_key_set"])
+		}
+		if redacted["embedding_shadow_api_key_set"] != true {
+			t.Fatalf("embedding_shadow_api_key_set = %v, muốn true", redacted["embedding_shadow_api_key_set"])
+		}
+
+		sprinted := fmt.Sprint(redacted) + "|" + fmtMap(redacted) + "|" +
+			fmt.Sprintf("%v|%#v", cfg.EmbeddingPrimary(), cfg.EmbeddingPrimary())
+		for _, secret := range []string{distinctivePrimaryKey, distinctiveShadowKey, primaryURL, shadowURL} {
+			if strings.Contains(sprinted, secret) {
+				t.Fatalf("Redacted / ClientConfig String làm lộ %q trong %s", secret, sprinted)
+			}
+		}
+
+		// Trigger validation errors with the distinctive key set and verify no error contains the key.
+		errCases := []map[string]string{
+			{
+				"EMBEDDING_PROVIDER": "openai_compat",
+				"EMBEDDING_BASE_URL": "http://8.8.8.8/v1",
+				"EMBEDDING_API_KEY":  distinctivePrimaryKey,
+			},
+			{
+				"EMBEDDING_PROVIDER":   "openai_compat",
+				"EMBEDDING_BASE_URL":   primaryURL,
+				"EMBEDDING_API_KEY":    distinctivePrimaryKey,
+				"EMBEDDING_DIMENSIONS": "9999",
+			},
+			{
+				"EMBEDDING_PROVIDER":        "openai_compat",
+				"EMBEDDING_BASE_URL":        primaryURL,
+				"EMBEDDING_API_KEY":         distinctivePrimaryKey,
+				"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
+				"EMBEDDING_SHADOW_BASE_URL": "http://8.8.8.8/v1",
+				"EMBEDDING_SHADOW_API_KEY":  distinctiveShadowKey,
+			},
+		}
+		for i, env := range errCases {
+			setEnv(t, env)
+			_, loadErr := config.Load()
+			if loadErr == nil {
+				t.Fatalf("errCase[%d]: Load() = nil, muốn lỗi", i)
+			}
+			errStr := loadErr.Error()
+			if strings.Contains(errStr, distinctivePrimaryKey) || strings.Contains(errStr, distinctiveShadowKey) {
+				t.Fatalf("errCase[%d]: lỗi Load() làm lộ API key: %s", i, errStr)
+			}
+		}
+	})
 }

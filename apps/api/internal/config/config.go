@@ -14,6 +14,8 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/kelseyhightower/envconfig"
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 )
 
 const minSecretLen = 32
@@ -21,14 +23,58 @@ const minSecretLen = 32
 // Config là toàn bộ cấu hình runtime của API/worker/migrate.
 // Không lộ secret nào được log ra ngoài: Ghi log cấu hình phải dùng Redacted().
 type Config struct {
-	Env               string        `envconfig:"APP_ENV" default:"development" validate:"oneof=development staging production"`
-	HTTPAddr          string        `envconfig:"HTTP_ADDR" default:"127.0.0.1:8080" validate:"required,hostname_port"`
-	DatabaseURL       string        `envconfig:"DATABASE_URL" required:"true" validate:"required,startswith=postgres"`
-	AppOrigin         string        `envconfig:"APP_ORIGIN" default:"http://localhost:3000" validate:"required,url"`
-	EmbeddingProvider string        `envconfig:"EMBEDDING_PROVIDER" default:"noop" validate:"oneof=noop tei"`
-	TEIURL            string        `envconfig:"TEI_URL" validate:"omitempty,url"`
-	LogLevel          string        `envconfig:"LOG_LEVEL" default:"info" validate:"oneof=debug info warn error"`
-	ShutdownTimeout   time.Duration `envconfig:"SHUTDOWN_TIMEOUT" default:"15s" validate:"required"`
+	Env                       string        `envconfig:"APP_ENV" default:"development" validate:"oneof=development staging production"`
+	HTTPAddr                  string        `envconfig:"HTTP_ADDR" default:"127.0.0.1:8080" validate:"required,hostname_port"`
+	DatabaseURL               string        `envconfig:"DATABASE_URL" required:"true" validate:"required,startswith=postgres"`
+	AppOrigin                 string        `envconfig:"APP_ORIGIN" default:"http://localhost:3000" validate:"required,url"`
+	EmbeddingProvider         string        `envconfig:"EMBEDDING_PROVIDER" default:"noop" validate:"oneof=noop tei openai_compat"`
+	TEIURL                    string        `envconfig:"TEI_URL"`
+	TEIInputPrefixQuery       string        `envconfig:"TEI_INPUT_PREFIX_QUERY"`
+	TEIInputPrefixDocument    string        `envconfig:"TEI_INPUT_PREFIX_DOCUMENT"`
+	EmbeddingBaseURL          string        `envconfig:"EMBEDDING_BASE_URL"`
+	EmbeddingModel            string        `envconfig:"EMBEDDING_MODEL" default:"openrouter/qwen/qwen3-embedding-8b"`
+	EmbeddingDimensions       int           `envconfig:"EMBEDDING_DIMENSIONS" default:"1024" validate:"min=1,max=2000"`
+	EmbeddingQueryInstruction string        `envconfig:"EMBEDDING_QUERY_INSTRUCTION" default:"Given a short search query, retrieve matching item names or tags"`
+	EmbeddingQueryTimeout     time.Duration `envconfig:"EMBEDDING_QUERY_TIMEOUT"`
+	EmbeddingDocumentTimeout  time.Duration `envconfig:"EMBEDDING_DOCUMENT_TIMEOUT" default:"30s"`
+
+	// Bộ cấu hình client thứ hai cho cutover generation (SPEC §4.4, §6.6, plan P05 mục 2.13):
+	//   - EMBEDDING_SHADOW_PROVIDER (rỗng = tắt; hoặc noop|tei|openai_compat)
+	//   - EMBEDDING_SHADOW_BASE_URL (với shadow tei đây là TEI URL của shadow)
+	//   - EMBEDDING_SHADOW_API_KEY (secret, bắt buộc khi shadow là openai_compat)
+	//   - EMBEDDING_SHADOW_MODEL (mặc định openrouter/qwen/qwen3-embedding-8b)
+	//   - EMBEDDING_SHADOW_DIMENSIONS (mặc định 1024, 1..2000)
+	//   - EMBEDDING_SHADOW_QUERY_INSTRUCTION (mặc định Given a short search query, retrieve matching item names or tags)
+	//   - EMBEDDING_SHADOW_QUERY_TIMEOUT (rỗng -> 300ms cho tei, 4s cho openai_compat)
+	//   - EMBEDDING_SHADOW_DOCUMENT_TIMEOUT (mặc định 30s)
+	//   - EMBEDDING_SHADOW_INPUT_PREFIX_QUERY
+	//   - EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT
+	EmbeddingShadowProvider         string        `envconfig:"EMBEDDING_SHADOW_PROVIDER" validate:"omitempty,oneof=noop tei openai_compat"`
+	EmbeddingShadowBaseURL          string        `envconfig:"EMBEDDING_SHADOW_BASE_URL"`
+	EmbeddingShadowModel            string        `envconfig:"EMBEDDING_SHADOW_MODEL" default:"openrouter/qwen/qwen3-embedding-8b"`
+	EmbeddingShadowDimensions       int           `envconfig:"EMBEDDING_SHADOW_DIMENSIONS" default:"1024" validate:"min=1,max=2000"`
+	EmbeddingShadowQueryInstruction string        `envconfig:"EMBEDDING_SHADOW_QUERY_INSTRUCTION" default:"Given a short search query, retrieve matching item names or tags"`
+	EmbeddingShadowQueryTimeout     time.Duration `envconfig:"EMBEDDING_SHADOW_QUERY_TIMEOUT"`
+	EmbeddingShadowDocumentTimeout  time.Duration `envconfig:"EMBEDDING_SHADOW_DOCUMENT_TIMEOUT" default:"30s"`
+	EmbeddingShadowInputPrefixQuery string        `envconfig:"EMBEDDING_SHADOW_INPUT_PREFIX_QUERY"`
+	EmbeddingShadowInputPrefixDoc   string        `envconfig:"EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT"`
+
+	// Các knob tìm kiếm P05 (SPEC §4.4, §6.3, §6.4, §6.6, plan P05 mục 2.13).
+	SearchSemanticEnabled         bool          `envconfig:"SEARCH_SEMANTIC_ENABLED" default:"true"`
+	SearchExactMaxVectors         int           `envconfig:"SEARCH_EXACT_MAX_VECTORS" default:"5000" validate:"min=0,max=1000000"`
+	SearchExactFallbackMaxVectors int           `envconfig:"SEARCH_EXACT_FALLBACK_MAX_VECTORS" default:"20000" validate:"min=0,max=1000000"`
+	SearchHNSWEfSearch            int           `envconfig:"SEARCH_HNSW_EF_SEARCH" default:"64" validate:"min=1,max=2000"`
+	SearchHNSWMaxScanTuples       int           `envconfig:"SEARCH_HNSW_MAX_SCAN_TUPLES" default:"20000" validate:"min=1,max=1000000"`
+	SearchHNSWIterativeScan       string        `envconfig:"SEARCH_HNSW_ITERATIVE_SCAN" default:"relaxed_order" validate:"oneof=off relaxed_order strict_order"`
+	SearchVectorBranchTimeout     time.Duration `envconfig:"SEARCH_VECTOR_BRANCH_TIMEOUT" default:"80ms"`
+	SearchVectorFallbackMinBudget time.Duration `envconfig:"SEARCH_VECTOR_FALLBACK_MIN_BUDGET" default:"30ms"`
+	SearchRollbackWindow          time.Duration `envconfig:"SEARCH_ROLLBACK_WINDOW" default:"168h"`
+	WorkerMetricsAddr             string        `envconfig:"WORKER_METRICS_ADDR" validate:"omitempty,hostname_port"`
+	// EmbeddingBootstrapFlipInterval là chu kỳ job periodic embedding_bootstrap_flip
+	// (mặc định 1m khi env rỗng; chỉ cho phép đặt khác rỗng ngoài production — M3).
+	EmbeddingBootstrapFlipInterval time.Duration `ignored:"true"`
+	LogLevel                       string        `envconfig:"LOG_LEVEL" default:"info" validate:"oneof=debug info warn error"`
+	ShutdownTimeout                time.Duration `envconfig:"SHUTDOWN_TIMEOUT" default:"15s" validate:"required"`
 
 	AuthJWTSecret    []byte `ignored:"true"`
 	AuthCSRFSecret   []byte `ignored:"true"`
@@ -60,26 +106,32 @@ type Config struct {
 	// EphemeralSecrets là true khi development/test tự sinh key vì env trống.
 	EphemeralSecrets bool `ignored:"true"`
 
-	rawJWT    string `ignored:"true"`
-	rawCSRF   string `ignored:"true"`
-	rawReauth string `ignored:"true"`
-	rawIP     string `ignored:"true"`
-	rawEmail  string `ignored:"true"`
-	rawCIDRs  string `ignored:"true"`
+	rawJWT                   string `ignored:"true"`
+	rawCSRF                  string `ignored:"true"`
+	rawReauth                string `ignored:"true"`
+	rawIP                    string `ignored:"true"`
+	rawEmail                 string `ignored:"true"`
+	rawCIDRs                 string `ignored:"true"`
+	rawEmbeddingAPIKey       string `ignored:"true"`
+	rawEmbeddingShadowAPIKey string `ignored:"true"`
+	rawBootstrapFlipInterval string `ignored:"true"`
 }
 
 type secretEnv struct {
-	AuthJWTSecret    string `envconfig:"AUTH_JWT_SECRET"`
-	AuthCSRFSecret   string `envconfig:"AUTH_CSRF_SECRET"`
-	AuthReauthSecret string `envconfig:"AUTH_REAUTH_SECRET"`
-	AuthIPPepper     string `envconfig:"AUTH_IP_PEPPER"`
-	AuthEmailPepper  string `envconfig:"AUTH_EMAIL_PEPPER"`
+	AuthJWTSecret         string `envconfig:"AUTH_JWT_SECRET"`
+	AuthCSRFSecret        string `envconfig:"AUTH_CSRF_SECRET"`
+	AuthReauthSecret      string `envconfig:"AUTH_REAUTH_SECRET"`
+	AuthIPPepper          string `envconfig:"AUTH_IP_PEPPER"`
+	AuthEmailPepper       string `envconfig:"AUTH_EMAIL_PEPPER"`
+	EmbeddingAPIKey       string `envconfig:"EMBEDDING_API_KEY"`
+	EmbeddingShadowAPIKey string `envconfig:"EMBEDDING_SHADOW_API_KEY"`
 }
 
 // proxyEnv đọc AUTH_TRUSTED_PROXY_CIDRS qua field exported: envconfig bỏ qua field
 // unexported, nên tag trên Config.rawCIDRs trước đây không bao giờ được nạp.
 type proxyEnv struct {
-	TrustedProxyCIDRs string `envconfig:"AUTH_TRUSTED_PROXY_CIDRS"`
+	TrustedProxyCIDRs     string `envconfig:"AUTH_TRUSTED_PROXY_CIDRS"`
+	BootstrapFlipInterval string `envconfig:"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL"`
 }
 
 // Load đọc env, áp default rồi validate. Lỗi cấu hình phải làm process chết ngay
@@ -102,12 +154,15 @@ func Load() (*Config, error) {
 	cfg.rawReauth = secrets.AuthReauthSecret
 	cfg.rawIP = secrets.AuthIPPepper
 	cfg.rawEmail = secrets.AuthEmailPepper
+	cfg.rawEmbeddingAPIKey = strings.TrimSpace(secrets.EmbeddingAPIKey)
+	cfg.rawEmbeddingShadowAPIKey = strings.TrimSpace(secrets.EmbeddingShadowAPIKey)
 
 	var proxies proxyEnv
 	if err := envconfig.Process("", &proxies); err != nil {
 		return nil, fmt.Errorf("đọc proxy env: %w", err)
 	}
 	cfg.rawCIDRs = proxies.TrustedProxyCIDRs
+	cfg.rawBootstrapFlipInterval = strings.TrimSpace(proxies.BootstrapFlipInterval)
 
 	if err := cfg.loadSecrets(); err != nil {
 		return nil, err
@@ -119,6 +174,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.validateWebAuthnPolicy(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateP05Policy(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -287,6 +345,137 @@ func (c *Config) validateWebAuthnPolicy() error {
 	return nil
 }
 
+// validateP05Policy kiểm tra cấu hình provider embedding (primary + shadow), URL
+// rule và các biên của knob tìm kiếm P05 (plan P05 mục 2.13, SPEC §4.4).
+//
+// Các biên dương cho knob P05:
+//   - SEARCH_HNSW_EF_SEARCH: 1..2000 (mặc định 64)
+//   - SEARCH_HNSW_MAX_SCAN_TUPLES: 1..1000000 (mặc định 20000)
+//   - EMBEDDING_QUERY_TIMEOUT / SHADOW: 1ms..5m (mặc định 300ms cho tei, 4s cho openai_compat)
+//   - EMBEDDING_DOCUMENT_TIMEOUT / SHADOW: 1ms..10m (mặc định 30s)
+//   - SEARCH_VECTOR_BRANCH_TIMEOUT: 1ms..30s (mặc định 80ms)
+//   - SEARCH_VECTOR_FALLBACK_MIN_BUDGET: 1ms..30s và <= SEARCH_VECTOR_BRANCH_TIMEOUT (mặc định 30ms)
+//   - SEARCH_ROLLBACK_WINDOW: 1m..8760h (mặc định 168h)
+//   - EMBEDDING_BOOTSTRAP_FLIP_INTERVAL: rỗng -> 1m; khác rỗng ở production bị từ chối (M3), ngoài production phải >= 100ms
+func (c *Config) validateP05Policy() error {
+	c.TEIURL = strings.TrimSpace(c.TEIURL)
+	c.EmbeddingBaseURL = strings.TrimSpace(c.EmbeddingBaseURL)
+	c.EmbeddingShadowProvider = strings.TrimSpace(c.EmbeddingShadowProvider)
+	c.EmbeddingShadowBaseURL = strings.TrimSpace(c.EmbeddingShadowBaseURL)
+	c.WorkerMetricsAddr = strings.TrimSpace(c.WorkerMetricsAddr)
+
+	// Kiểm tra URL rule trên cả 3 biến URL nếu có đặt (kể cả khi provider hiện tại là noop).
+	if c.TEIURL != "" {
+		if err := embedding.CheckURL(c.TEIURL); err != nil {
+			return fmt.Errorf("TEI_URL không hợp lệ: %w", err)
+		}
+	}
+	if c.EmbeddingBaseURL != "" {
+		if err := embedding.CheckURL(c.EmbeddingBaseURL); err != nil {
+			return fmt.Errorf("EMBEDDING_BASE_URL không hợp lệ: %w", err)
+		}
+	}
+	if c.EmbeddingShadowBaseURL != "" {
+		if err := embedding.CheckURL(c.EmbeddingShadowBaseURL); err != nil {
+			return fmt.Errorf("EMBEDDING_SHADOW_BASE_URL không hợp lệ: %w", err)
+		}
+	}
+
+	// Primary provider requirements & default query timeout.
+	switch c.EmbeddingProvider {
+	case embedding.ProviderTEI:
+		if c.TEIURL == "" {
+			return fmt.Errorf("TEI_URL là bắt buộc khi EMBEDDING_PROVIDER=tei")
+		}
+	case embedding.ProviderOpenAICompat:
+		if c.EmbeddingBaseURL == "" {
+			return fmt.Errorf("EMBEDDING_BASE_URL là bắt buộc khi EMBEDDING_PROVIDER=openai_compat")
+		}
+		if c.rawEmbeddingAPIKey == "" {
+			return fmt.Errorf("EMBEDDING_API_KEY là bắt buộc khi EMBEDDING_PROVIDER=openai_compat")
+		}
+		if strings.TrimSpace(c.EmbeddingModel) == "" {
+			return fmt.Errorf("EMBEDDING_MODEL không được rỗng")
+		}
+	}
+	if c.EmbeddingQueryTimeout == 0 {
+		c.EmbeddingQueryTimeout = defaultQueryTimeoutForProvider(c.EmbeddingProvider)
+	}
+	if c.EmbeddingQueryTimeout < time.Millisecond || c.EmbeddingQueryTimeout > 5*time.Minute {
+		return fmt.Errorf("EMBEDDING_QUERY_TIMEOUT phải trong khoảng 1ms..5m")
+	}
+	if c.EmbeddingDocumentTimeout < time.Millisecond || c.EmbeddingDocumentTimeout > 10*time.Minute {
+		return fmt.Errorf("EMBEDDING_DOCUMENT_TIMEOUT phải trong khoảng 1ms..10m")
+	}
+
+	// Shadow provider requirements & default query timeout.
+	switch c.EmbeddingShadowProvider {
+	case "":
+		// Không cấu hình shadow.
+	case embedding.ProviderNoop:
+		// Hợp lệ (tắt shadow).
+	case embedding.ProviderTEI:
+		if c.EmbeddingShadowBaseURL == "" {
+			return fmt.Errorf("EMBEDDING_SHADOW_BASE_URL là bắt buộc khi EMBEDDING_SHADOW_PROVIDER=tei")
+		}
+	case embedding.ProviderOpenAICompat:
+		if c.EmbeddingShadowBaseURL == "" {
+			return fmt.Errorf("EMBEDDING_SHADOW_BASE_URL là bắt buộc khi EMBEDDING_SHADOW_PROVIDER=openai_compat")
+		}
+		if c.rawEmbeddingShadowAPIKey == "" {
+			return fmt.Errorf("EMBEDDING_SHADOW_API_KEY là bắt buộc khi EMBEDDING_SHADOW_PROVIDER=openai_compat")
+		}
+		if strings.TrimSpace(c.EmbeddingShadowModel) == "" {
+			return fmt.Errorf("EMBEDDING_SHADOW_MODEL không được rỗng")
+		}
+	}
+	if c.EmbeddingShadowQueryTimeout == 0 {
+		c.EmbeddingShadowQueryTimeout = defaultQueryTimeoutForProvider(c.EmbeddingShadowProvider)
+	}
+	if c.EmbeddingShadowQueryTimeout < time.Millisecond || c.EmbeddingShadowQueryTimeout > 5*time.Minute {
+		return fmt.Errorf("EMBEDDING_SHADOW_QUERY_TIMEOUT phải trong khoảng 1ms..5m")
+	}
+	if c.EmbeddingShadowDocumentTimeout < time.Millisecond || c.EmbeddingShadowDocumentTimeout > 10*time.Minute {
+		return fmt.Errorf("EMBEDDING_SHADOW_DOCUMENT_TIMEOUT phải trong khoảng 1ms..10m")
+	}
+
+	// Search knobs validation (BE-2, M3).
+	if c.SearchExactFallbackMaxVectors < c.SearchExactMaxVectors {
+		return fmt.Errorf("SEARCH_EXACT_FALLBACK_MAX_VECTORS (%d) phải >= SEARCH_EXACT_MAX_VECTORS (%d)",
+			c.SearchExactFallbackMaxVectors, c.SearchExactMaxVectors)
+	}
+	if c.SearchVectorBranchTimeout < time.Millisecond || c.SearchVectorBranchTimeout > 30*time.Second {
+		return fmt.Errorf("SEARCH_VECTOR_BRANCH_TIMEOUT phải trong khoảng 1ms..30s")
+	}
+	if c.SearchVectorFallbackMinBudget < time.Millisecond || c.SearchVectorFallbackMinBudget > c.SearchVectorBranchTimeout {
+		return fmt.Errorf("SEARCH_VECTOR_FALLBACK_MIN_BUDGET phải >= 1ms và <= SEARCH_VECTOR_BRANCH_TIMEOUT")
+	}
+	if c.SearchRollbackWindow < time.Minute || c.SearchRollbackWindow > 365*24*time.Hour {
+		return fmt.Errorf("SEARCH_ROLLBACK_WINDOW phải trong khoảng 1m..8760h")
+	}
+
+	if c.rawBootstrapFlipInterval == "" {
+		c.EmbeddingBootstrapFlipInterval = time.Minute
+	} else {
+		if c.Env == "production" {
+			return fmt.Errorf("EMBEDDING_BOOTSTRAP_FLIP_INTERVAL là biến chỉ dùng cho test, không được đặt ở production")
+		}
+		d, err := time.ParseDuration(c.rawBootstrapFlipInterval)
+		if err != nil || d < 100*time.Millisecond || d > time.Hour {
+			return fmt.Errorf("EMBEDDING_BOOTSTRAP_FLIP_INTERVAL không hợp lệ (phải là duration trong khoảng 100ms..1h)")
+		}
+		c.EmbeddingBootstrapFlipInterval = d
+	}
+	return nil
+}
+
+func defaultQueryTimeoutForProvider(provider string) time.Duration {
+	if provider == embedding.ProviderOpenAICompat {
+		return 4 * time.Second
+	}
+	return 300 * time.Millisecond
+}
+
 func parseStrictOrigin(raw string) (*url.URL, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("origin rỗng")
@@ -389,6 +578,48 @@ func (c *Config) SemanticAvailable() bool {
 	return c.EmbeddingProvider == "tei" && c.TEIURL != ""
 }
 
+// EmbeddingPrimary trả cấu hình client embedding chính (plan P05 mục 2.12, 2.13).
+func (c *Config) EmbeddingPrimary() embedding.ClientConfig {
+	if c == nil {
+		return embedding.ClientConfig{Provider: embedding.ProviderNoop}
+	}
+	baseURL := c.EmbeddingBaseURL
+	if c.EmbeddingProvider == embedding.ProviderTEI {
+		baseURL = c.TEIURL
+	}
+	return embedding.ClientConfig{
+		Provider:         c.EmbeddingProvider,
+		BaseURL:          baseURL,
+		APIKey:           c.rawEmbeddingAPIKey,
+		Model:            c.EmbeddingModel,
+		Dims:             c.EmbeddingDimensions,
+		QueryInstruction: c.EmbeddingQueryInstruction,
+		QueryTimeout:     c.EmbeddingQueryTimeout,
+		DocumentTimeout:  c.EmbeddingDocumentTimeout,
+		QueryPrefix:      c.TEIInputPrefixQuery,
+		DocPrefix:        c.TEIInputPrefixDocument,
+	}
+}
+
+// EmbeddingShadow trả cấu hình client embedding thứ hai (shadow) và true nếu
+// EMBEDDING_SHADOW_PROVIDER được cấu hình khác rỗng và khác noop.
+func (c *Config) EmbeddingShadow() (embedding.ClientConfig, bool) {
+	if c == nil || c.EmbeddingShadowProvider == "" || c.EmbeddingShadowProvider == embedding.ProviderNoop {
+		return embedding.ClientConfig{}, false
+	}
+	return embedding.ClientConfig{
+		Provider:         c.EmbeddingShadowProvider,
+		BaseURL:          c.EmbeddingShadowBaseURL,
+		APIKey:           c.rawEmbeddingShadowAPIKey,
+		Model:            c.EmbeddingShadowModel,
+		Dims:             c.EmbeddingShadowDimensions,
+		QueryInstruction: c.EmbeddingShadowQueryInstruction,
+		QueryTimeout:     c.EmbeddingShadowQueryTimeout,
+		DocumentTimeout:  c.EmbeddingShadowDocumentTimeout,
+		QueryPrefix:      c.EmbeddingShadowInputPrefixQuery,
+		DocPrefix:        c.EmbeddingShadowInputPrefixDoc,
+	}, true
+}
 func (c *Config) GoogleLoginEnabled() bool {
 	return strings.TrimSpace(c.OAuthGoogleClientID) != ""
 }
@@ -503,26 +734,51 @@ func (c *Config) TrustedProxyContains(ip net.IP) bool {
 // Redacted trả bản sao an toàn để log: che chuỗi kết nối DB và mọi secret.
 func (c *Config) Redacted() map[string]any {
 	return map[string]any{
-		"env":                             c.Env,
-		"http_addr":                       c.HTTPAddr,
-		"app_origin":                      c.AppOrigin,
-		"embedding_provider":              c.EmbeddingProvider,
-		"semantic_available":              c.SemanticAvailable(),
-		"log_level":                       c.LogLevel,
-		"database_url":                    "[redacted]",
-		"auth_require_email_verification": c.RequireEmailVerification,
-		"auth_google_reauth_enabled":      c.GoogleReauthEnabled,
-		"oauth_google":                    c.GoogleLoginEnabled(),
-		"oauth_github":                    c.GitHubLoginEnabled(),
-		"auth_fake_oauth":                 c.FakeOAuth,
-		"turnstile":                       c.TurnstileEnabled(),
-		"mail_sink_configured":            c.MailSinkDir != "",
-		"auth_mail_capture_as_delivery":   c.MailCaptureAsDelivery,
-		"ephemeral_secrets":               c.EphemeralSecrets,
-		"audit_retention_days":            c.AuditRetentionDays,
-		"trusted_proxy_cidrs":             len(c.TrustedProxyCIDRs),
-		"vault_key_mutations_disabled":    c.KeyMutationsDisabled,
-		"webauthn_rp_id":                  c.WebAuthnRPID,
-		"webauthn_rp_origin":              c.WebAuthnRPOrigin,
+		"env":                               c.Env,
+		"http_addr":                         c.HTTPAddr,
+		"app_origin":                        c.AppOrigin,
+		"embedding_provider":                c.EmbeddingProvider,
+		"embedding_api_key_set":             c.rawEmbeddingAPIKey != "",
+		"embedding_base_url_set":            c.EmbeddingBaseURL != "",
+		"tei_url_set":                       c.TEIURL != "",
+		"embedding_model":                   c.EmbeddingModel,
+		"embedding_dimensions":              c.EmbeddingDimensions,
+		"embedding_query_timeout":           c.EmbeddingQueryTimeout.String(),
+		"embedding_document_timeout":        c.EmbeddingDocumentTimeout.String(),
+		"embedding_shadow_provider":         c.EmbeddingShadowProvider,
+		"embedding_shadow_api_key_set":      c.rawEmbeddingShadowAPIKey != "",
+		"embedding_shadow_base_url_set":     c.EmbeddingShadowBaseURL != "",
+		"embedding_shadow_model":            c.EmbeddingShadowModel,
+		"embedding_shadow_dimensions":       c.EmbeddingShadowDimensions,
+		"embedding_shadow_query_timeout":    c.EmbeddingShadowQueryTimeout.String(),
+		"embedding_shadow_document_timeout": c.EmbeddingShadowDocumentTimeout.String(),
+		"search_semantic_enabled":           c.SearchSemanticEnabled,
+		"search_exact_max_vectors":          c.SearchExactMaxVectors,
+		"search_exact_fallback_max_vectors": c.SearchExactFallbackMaxVectors,
+		"search_hnsw_ef_search":             c.SearchHNSWEfSearch,
+		"search_hnsw_max_scan_tuples":       c.SearchHNSWMaxScanTuples,
+		"search_hnsw_iterative_scan":        c.SearchHNSWIterativeScan,
+		"search_vector_branch_timeout":      c.SearchVectorBranchTimeout.String(),
+		"search_vector_fallback_min_budget": c.SearchVectorFallbackMinBudget.String(),
+		"search_rollback_window":            c.SearchRollbackWindow.String(),
+		"worker_metrics_addr":               c.WorkerMetricsAddr,
+		"embedding_bootstrap_flip_interval": c.EmbeddingBootstrapFlipInterval.String(),
+		"semantic_available":                c.SemanticAvailable(),
+		"log_level":                         c.LogLevel,
+		"database_url":                      "[redacted]",
+		"auth_require_email_verification":   c.RequireEmailVerification,
+		"auth_google_reauth_enabled":        c.GoogleReauthEnabled,
+		"oauth_google":                      c.GoogleLoginEnabled(),
+		"oauth_github":                      c.GitHubLoginEnabled(),
+		"auth_fake_oauth":                   c.FakeOAuth,
+		"turnstile":                         c.TurnstileEnabled(),
+		"mail_sink_configured":              c.MailSinkDir != "",
+		"auth_mail_capture_as_delivery":     c.MailCaptureAsDelivery,
+		"ephemeral_secrets":                 c.EphemeralSecrets,
+		"audit_retention_days":              c.AuditRetentionDays,
+		"trusted_proxy_cidrs":               len(c.TrustedProxyCIDRs),
+		"vault_key_mutations_disabled":      c.KeyMutationsDisabled,
+		"webauthn_rp_id":                    c.WebAuthnRPID,
+		"webauthn_rp_origin":                c.WebAuthnRPOrigin,
 	}
 }
