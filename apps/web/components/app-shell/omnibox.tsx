@@ -70,6 +70,7 @@ import {
 } from '@/features/omnibox/suggest/quota';
 import {
   createSendGate,
+  resolveOmniboxHelpTextKey,
   SUGGEST_DEBOUNCE_MS,
   type KeystrokeSendDecision,
   type SendGateController,
@@ -412,16 +413,6 @@ export function Omnibox({
     });
   }, [activeUserId, dispatchMerge, semanticSuggest]);
 
-  useEffect(() => {
-    return subscribeUserChanged(() => {
-      abortAllSuggestRequests();
-      searchAbortRef.current?.abort();
-      searchAbortRef.current = null;
-      gateRef.current?.reset();
-      dispatchMerge({ type: 'reset' });
-      removeOmniboxSearchQueries();
-    });
-  }, [abortAllSuggestRequests, dispatchMerge, removeOmniboxSearchQueries]);
   const visibleUnconfirmedRecord =
     isVaultUnlocked && unconfirmedSaves.length > 0
       ? unconfirmedSaves[unconfirmedSaves.length - 1]!
@@ -605,15 +596,15 @@ export function Omnibox({
                 scope: decision.scope,
                 limit,
                 requestMode: decision.requestMode,
-                semanticSuggest: semanticSuggestRef.current,
+                semanticSuggestSetting: semanticSuggestRef.current,
                 generationId: res.generation,
                 qn: decision.qn,
               });
               if (cacheKey) {
+                queryClient.setQueryDefaults(cacheKey, SEARCH_QUERY_CACHE_OPTIONS);
                 queryClient.setQueryData(cacheKey, res, {
                   updatedAt: Date.now(),
                 });
-                queryClient.setQueryDefaults(cacheKey, SEARCH_QUERY_CACHE_OPTIONS);
               }
             }
 
@@ -722,9 +713,8 @@ export function Omnibox({
   }, []);
 
   // Register synchronous vault lock / logout / user-switch / reset cleanup (plan §2.10, §2.11 step 5, P4FE1-12, P4FE3-5, P4FE4-8).
-  useEffect(() => {
-    if (!vault?.registerSecretFormReset) return;
-    return vault.registerSecretFormReset(() => {
+  const resetOmniboxOnLockOrUserChange = useCallback(
+    (opts: { readonly recordLockNotice: boolean }) => {
       resetEpochRef.current += 1;
       abortAllSuggestRequests();
       searchAbortRef.current?.abort();
@@ -749,7 +739,7 @@ export function Omnibox({
         activePlanRef.current = null;
       }
 
-      if (hadDraftOrPlan) {
+      if (opts.recordLockNotice && hadDraftOrPlan) {
         recordLockClearedNotice({
           userId: activeUserIdRef.current,
           kind: hadCommittedMeta ? 'plan' : 'draft',
@@ -773,8 +763,22 @@ export function Omnibox({
       lookupPendingRef.current = false;
       undoToast?.clearOmniboxJustCleared();
       removeOmniboxSearchQueries();
+    },
+    [abortAllSuggestRequests, dispatchMerge, removeOmniboxSearchQueries, setDraft, undoToast],
+  );
+
+  useEffect(() => {
+    if (!vault?.registerSecretFormReset) return;
+    return vault.registerSecretFormReset(() => {
+      resetOmniboxOnLockOrUserChange({ recordLockNotice: true });
     });
-  }, [abortAllSuggestRequests, dispatchMerge, removeOmniboxSearchQueries, setDraft, undoToast, vault]);
+  }, [resetOmniboxOnLockOrUserChange, vault]);
+
+  useEffect(() => {
+    return subscribeUserChanged(() => {
+      resetOmniboxOnLockOrUserChange({ recordLockNotice: false });
+    });
+  }, [resetOmniboxOnLockOrUserChange]);
 
   useEffect(() => {
     return () => {
@@ -1629,6 +1633,15 @@ export function Omnibox({
     const nextValue = event.target.value;
     setInputValue(nextValue);
     inputValueRef.current = nextValue;
+    // Reconcile non-native/synthetic changes (e.g. fireEvent.change in tests or browser autofill without native input)
+    // inside the event handler so render stays pure (RV-T17-1-FE1-8).
+    gateRef.current?.decideKeystroke(
+      {
+        semanticAvailable: semanticAvailableRef.current,
+        semanticSuggest: semanticSuggestRef.current,
+      },
+      nextValue,
+    );
     setTabCannotFill(false);
     setGuardKind(null);
     setActionErrorCode(null);
@@ -1775,79 +1788,34 @@ export function Omnibox({
   };
 
   const handleTabFillKey = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    // Plan section 2.9 (RV-T17-1-FE1-5): Tab is intercepted only when the listbox is open and has an active row;
+    // when no row is active (or listbox is closed), Tab keeps default browser focus navigation.
+    // PR 17-1 keeps only the Tab-on-tag path needed for M4/FE-21; item Tab fill + pin belongs to PR 17-2.
     const activeOpt =
       listOpen && activeIndex >= 0 && options[activeIndex] ? options[activeIndex] : null;
-
-    if (activeOpt) {
-      if (activeOpt.kind === 'item') {
-        event.preventDefault();
-        const itemName = activeOpt.item.name;
-        if (
-          !itemName ||
-          itemName.includes(':') ||
-          itemName.includes('：') ||
-          itemName.startsWith('#')
-        ) {
-          setTabCannotFill(true);
-          setLiveMessage(tSearchTab('cannotFill'));
-          return true;
-        }
-        closeListbox(false);
-        setDraft(`${itemName}: `);
-        return true;
-      }
-      if (activeOpt.kind === 'tag') {
-        event.preventDefault();
-        const disp = activeOpt.tag.display;
-        if (
-          !disp ||
-          /\s/.test(disp) ||
-          disp.includes('#') ||
-          disp.includes(':') ||
-          disp.includes('：')
-        ) {
-          setTabCannotFill(true);
-          setLiveMessage(tSearchTab('cannotFill'));
-          return true;
-        }
-        const cur = textareaRef.current?.value ?? inputValueRef.current;
-        const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, `$1#${disp} `);
-        const nextDraft = replaced !== cur ? replaced : `#${disp} `;
-        setDraft(nextDraft);
-        scheduleKeystrokeSuggest();
-        return true;
-      }
+    if (!activeOpt || activeOpt.kind !== 'tag') {
+      return false;
     }
 
-    // Also support Tab on cached tag when `#` mode is active even if listbox was not yet navigated (M4/FE-21).
-    if (parsed.mode === 'tag-filter') {
-      const { token } = parseTagFilterInput(inputValue);
-      const cached = filterCachedTagsByPrefix(getCachedTags(), token);
-      const targetTag = cached[0];
-      if (targetTag) {
-        event.preventDefault();
-        const disp = targetTag.display;
-        if (
-          !disp ||
-          /\s/.test(disp) ||
-          disp.includes('#') ||
-          disp.includes(':') ||
-          disp.includes('：')
-        ) {
-          setTabCannotFill(true);
-          setLiveMessage(tSearchTab('cannotFill'));
-          return true;
-        }
-        const cur = textareaRef.current?.value ?? inputValueRef.current;
-        const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, `$1#${disp} `);
-        const nextDraft = replaced !== cur ? replaced : `#${disp} `;
-        setDraft(nextDraft);
-        scheduleKeystrokeSuggest();
-        return true;
-      }
+    event.preventDefault();
+    const disp = activeOpt.tag.display;
+    if (
+      !disp ||
+      /\s/.test(disp) ||
+      disp.includes('#') ||
+      disp.includes(':') ||
+      disp.includes('：')
+    ) {
+      setTabCannotFill(true);
+      setLiveMessage(tSearchTab('cannotFill'));
+      return true;
     }
-
-    return false;
+    const cur = textareaRef.current?.value ?? inputValueRef.current;
+    const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, `$1#${disp} `);
+    const nextDraft = replaced !== cur ? replaced : `#${disp} `;
+    setDraft(nextDraft);
+    scheduleKeystrokeSuggest();
+    return true;
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -1909,11 +1877,10 @@ export function Omnibox({
   };
 
   const isAddLike = parsed.mode === 'add' || parsed.mode === 'add-invalid';
-  const currentDomOrStateValue = textareaRef.current?.value ?? inputValue;
   const helpTextKey = gateRef.current
-    ? gateRef.current.getHelpTextKey({
+    ? resolveOmniboxHelpTextKey(gateRef.current.getState(), {
         semanticExternal,
-        currentValue: currentDomOrStateValue,
+        currentValue: inputValue,
       })
     : 'search.help.sentToServerExternal';
   const showSearchHint =
