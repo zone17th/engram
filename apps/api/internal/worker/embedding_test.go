@@ -383,3 +383,134 @@ func TestClientSetBootFailureKeepsP04Worker(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkerBootInsertsOneReembedAll verifies plan P05 Task 15 / L8 / BE-4:
+// after Bootstrap and client.Start, worker.Run inserts exactly one boot
+// reembed_all {} job (the embedding queue may already have worked it, so every
+// state is counted). The before-Start hook must see none, so moving the insert
+// ahead of Start fails the test.
+func TestWorkerBootInsertsOneReembedAll(t *testing.T) {
+	dsn := newEmbeddingWorkerTestDSN(t)
+	ctx := context.Background()
+
+	teiSrv := embedtest.NewServer(embedtest.Options{
+		Dims:     1024,
+		ModelID:  "engram-fakeembed",
+		ModelSHA: embedding.FakeEmbedModelSHA,
+	})
+	defer teiSrv.Close()
+
+	cfg := &config.Config{
+		Env:                      "development",
+		DatabaseURL:              dsn,
+		AppOrigin:                "http://localhost:3000",
+		EmbeddingProvider:        embedding.ProviderTEI,
+		TEIURL:                   embedding.NewEndpoint(teiSrv.URL()),
+		EmbeddingDimensions:      1024,
+		EmbeddingQueryTimeout:    300 * time.Millisecond,
+		EmbeddingDocumentTimeout: 5 * time.Second,
+		SearchSemanticEnabled:    true,
+		AuditRetentionDays:       90,
+		ShutdownTimeout:          5 * time.Second,
+	}
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	var beforeStartJobs int
+	var beforeStartErr error
+	var bootJobs int
+	var countErr error
+	err := Run(runCtx, cfg, discardLogger(), RunOptions{
+		beforeClientStart: func(hookCtx context.Context, pool *pgxpool.Pool) {
+			beforeStartErr = pool.QueryRow(hookCtx,
+				`SELECT count(*)::int FROM river_job WHERE kind = $1`,
+				jobargs.KindReembedAll).Scan(&beforeStartJobs)
+		},
+		afterClientStart: func(hookCtx context.Context, pool *pgxpool.Pool) {
+			countErr = pool.QueryRow(hookCtx,
+				`SELECT count(*)::int FROM river_job WHERE kind = $1 AND args = '{}'::jsonb`,
+				jobargs.KindReembedAll).Scan(&bootJobs)
+			cancelRun()
+		},
+	})
+	if err != nil {
+		t.Fatalf("worker.Run: %v", err)
+	}
+	if beforeStartErr != nil {
+		t.Fatalf("count reembed_all jobs before Start: %v", beforeStartErr)
+	}
+	if beforeStartJobs != 0 {
+		t.Fatalf("reembed_all jobs before client.Start = %d, want 0 (boot insert must follow Start)", beforeStartJobs)
+	}
+	if countErr != nil {
+		t.Fatalf("count reembed_all jobs: %v", countErr)
+	}
+	if bootJobs != 1 {
+		t.Fatalf("boot reembed_all jobs = %d, want exactly 1", bootJobs)
+	}
+}
+
+// TestWorkerRegistersReembedWorkersAndPeriodic verifies that an enabled
+// embedding worker registers reembed_user and reembed_all plus the 24h
+// periodic reembed_all, and that a deduplicated boot insert leaves one pending
+// job across a "restart" (a second insert while the first is still pending).
+func TestWorkerRegistersReembedWorkersAndPeriodic(t *testing.T) {
+	dsn := newEmbeddingWorkerTestDSN(t)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8, ModelID: "BAAI/bge-m3", ModelSHA: "rev-w1"})
+	defer srv.Close()
+	primary, err := embedding.NewClientFromConfig(ctx, embedding.ClientConfig{
+		Provider: embedding.ProviderTEI,
+		BaseURL:  embedding.NewEndpoint(srv.URL()),
+		Dims:     8,
+	}, embedding.RolePrimary, embedding.ClientDeps{})
+	if err != nil {
+		t.Fatalf("tei client: %v", err)
+	}
+
+	client, err := NewWithMail(pool, discardLogger(), 90, nil, Deps{
+		Embedding: &EmbeddingDeps{ClientSet: embedding.NewClientSet(primary, nil)},
+	})
+	if err != nil {
+		t.Fatalf("NewWithMail: %v", err)
+	}
+
+	if !client.PeriodicJobs().RemoveByID(jobs.ReembedAllPeriodicID) {
+		t.Fatalf("periodic job %q is not registered", jobs.ReembedAllPeriodicID)
+	}
+
+	ins := jobs.RiverClientInserter{Client: client}
+	if _, err := jobs.InsertReembedAll(ctx, ins, 0); err != nil {
+		t.Fatalf("first boot insert (reembed_all registered?): %v", err)
+	}
+	if res, err := jobs.InsertReembedAll(ctx, ins, 0); err != nil || !res.UniqueSkippedAsDuplicate {
+		t.Fatalf("second boot insert: err=%v, want a deduplicated insert", err)
+	}
+	if _, err := client.Insert(ctx, jobargs.ReembedUserArgs{UserID: "00000000-0000-0000-0000-000000000001"}, jobs.ReembedUserInsertOpts()); err != nil {
+		t.Fatalf("insert reembed_user (worker registered?): %v", err)
+	}
+	var pending int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM river_job WHERE kind = $1 AND state = 'available'`,
+		jobargs.KindReembedAll).Scan(&pending); err != nil {
+		t.Fatalf("count pending reembed_all: %v", err)
+	}
+	if pending != 1 {
+		t.Fatalf("pending reembed_all = %d, want 1 after a duplicate boot insert", pending)
+	}
+
+	// Without embedding deps neither worker nor periodic job exists.
+	plain, err := NewWithMail(pool, discardLogger(), 90, nil)
+	if err != nil {
+		t.Fatalf("NewWithMail(plain): %v", err)
+	}
+	if plain.PeriodicJobs().RemoveByID(jobs.ReembedAllPeriodicID) {
+		t.Fatal("periodic reembed_all registered without embedding deps")
+	}
+	if _, err := plain.Insert(ctx, jobargs.ReembedAllArgs{}, nil); err == nil {
+		t.Fatal("expected Insert(ReembedAllArgs) to fail without embedding deps")
+	}
+}

@@ -180,6 +180,13 @@ func NewWithMail(
 		if err := river.AddWorkerSafely(workers, jobs.NewCanaryWorker(jobDeps)); err != nil {
 			return nil, fmt.Errorf("đăng ký embedding_canary worker: %w", err)
 		}
+		if err := river.AddWorkerSafely(workers, jobs.NewReembedUserWorker(jobDeps)); err != nil {
+			return nil, fmt.Errorf("đăng ký reembed_user worker: %w", err)
+		}
+		if err := river.AddWorkerSafely(workers, jobs.NewReembedAllWorker(jobDeps)); err != nil {
+			return nil, fmt.Errorf("đăng ký reembed_all worker: %w", err)
+		}
+		periodic = append(periodic, jobs.ReembedAllPeriodicJob())
 		queues[jobs.QueueEmbedding] = river.QueueConfig{MaxWorkers: jobs.MaxEmbedWorkers}
 		periodic = append(periodic, river.NewPeriodicJob(
 			river.PeriodicInterval(jobs.CanaryInterval),
@@ -322,6 +329,13 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 		return fmt.Errorf("start worker: %w", err)
 	}
 	logger.Info("worker đang chạy", slog.Bool("semantic_enabled", cfg.SearchSemanticEnabled))
+	if workerDeps.Embedding != nil {
+		// L8/BE-4: một reembed_all boot (sau Bootstrap, sau Start) backfill g1
+		// pending; ByArgs dedupe nên restart không chất đống job.
+		if _, err := jobs.InsertReembedAll(ctx, jobs.RiverClientInserter{Client: client}, 0); err != nil {
+			logger.Warn("không chèn được reembed_all lúc boot; chu kỳ 24h sẽ bù")
+		}
+	}
 	for _, fn := range afterStartHooks {
 		fn(ctx, pool)
 	}
