@@ -238,7 +238,7 @@ func (s *DBGaugeSource) queryLag(ctx context.Context, gens []gaugeGeneration) ([
 		for _, c := range gaugeCorpora {
 			// #nosec G201 -- bảng đã quote bằng pgx.Identifier.Sanitize() từ id số nguyên 1..9999 và corpus hằng.
 			q := fmt.Sprintf(`SELECT percentile_cont($1::float8) WITHIN GROUP (
-			         ORDER BY EXTRACT(EPOCH FROM (e.embedded_at - j.created_at)))::float8
+			         ORDER BY EXTRACT(EPOCH FROM (e.embedded_at - j.created_at))::float8)
 			    FROM river_job j
 			    JOIN %s e
 			      ON e.user_id = (j.args->>'user_id')::uuid
