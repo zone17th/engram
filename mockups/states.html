@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trạng thái rỗng và lỗi — engram</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="search.css">
 <link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
@@ -436,25 +437,8 @@
   <!-- ============================================================= -->
   <!-- TÌM KIẾM / P05 (U18, mục 2.10 + 2.8 quy tắc 5 + 2.24 item 3)  -->
   <!-- ============================================================= -->
-  <!-- Intended i18n keys (Task 17/18):
-       search.group.tags: vi "Tags" / en "Tags"
-       search.group.items: vi "Items" / en "Items"
-       search.group.near: vi "Gần nghĩa" / en "Similar meaning"
-       search.group.recentItems: vi "Gần đây" / en "Recent"
-       search.group.recentTags: vi "Tag hay dùng" / en "Frequent tags"
-       search.group.actions: vi "Thao tác" / en "Actions"
-       search.match.fuzzy: vi "gần đúng" / en "fuzzy"
-       search.match.semantic: vi "≈ gần nghĩa" / en "≈ similar meaning"
-       search.help.sentToServer: vi "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ tên: trước." / en "Text you type to search is sent to the server, not encrypted. To save content, type name: first."
-       search.help.sentToServerExternal: vi "Chữ gõ để tìm được gửi tới máy chủ và tới dịch vụ nhúng bên ngoài khi bật ≈, không mã hoá; lưu nội dung thì gõ tên: trước." / en "Text you type to search is sent to the server, and to an external embedding service when ≈ is on, not encrypted. To save content, type name: first."
-       search.help.enterToSearch: vi "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá." / en "Press Enter to search; the text is sent to the server, not encrypted."
-       search.state.nearPending: vi "Đang tìm gần nghĩa…" / en "Searching by meaning…"
-       search.state.degraded: vi "Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy" / en "Meaning-based search is taking a break — name search still works"
-       search.state.enable409 / settings.search.semanticEnable409: vi "Không bật được tìm theo nghĩa" / en "Couldn't turn on meaning-based search"
-       search.state.rateLimited: vi "Đang gửi hơi nhanh, thử lại sau {seconds} giây" / en "Sending a bit fast, try again in {seconds}s"
-       search.state.noMatch: vi "Không khớp “{query}”" / en "No match for “{query}”"
-       search.actions.createItem: vi "Tạo mục “{query}”" / en "Create item “{query}”"
-       search.actions.loadMore: vi "Xem thêm" / en "Load more" -->
+  <!-- Intended i18n keys (`search.*`, `settings.search.*`):
+       see authoritative key table in `mockups/mock.js` (P05 i18n Key Table). -->
   <section data-view="search" hidden class="flex flex-col gap-4 scope-vault">
 
     <!-- 1. #suggest-pending: Đang chờ lexical của lần gõ hiện tại (giữ hàng cũ aria-busy; lần đầu skeleton 3 hàng sau 150 ms) -->
@@ -463,9 +447,9 @@
 
       <!-- 1a. Đã có snapshot trước đó: giữ nguyên các hàng đang hiển thị, đặt aria-busy="true" trên listbox -->
       <div class="popover p-2 mb-3">
-        <div id="u18-pending-busy-listbox" role="listbox" aria-busy="true" aria-label="Gợi ý tìm kiếm" class="omni-Listbox-busy">
+        <div id="u18-pending-busy-listbox" role="listbox" aria-busy="true" aria-label="Gợi ý tìm kiếm" class="omni-listbox omni-listbox-busy">
           <div role="group" aria-labelledby="u18-pending-busy-tags-hdr" class="sugg-zone">
-            <div id="u18-pending-busy-tags-hdr" class="sugg-group" role="presentation">Tags</div>
+            <div id="u18-pending-busy-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
             <div id="u18-pending-busy-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
               <span class="mono text-accent" aria-hidden="true">#</span>
               <span class="omni-opt-title"><mark>wi</mark>fi-khách</span>
@@ -473,28 +457,47 @@
             </div>
           </div>
           <div role="group" aria-labelledby="u18-pending-busy-items-hdr" class="sugg-zone">
-            <div id="u18-pending-busy-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-pending-busy-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-pending-busy-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wi</mark>fi</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
             </div>
             <div id="u18-pending-busy-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wi</mark>fi</span>
-                <span class="chip dup-chip">#công-ty</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
               </span>
-              <span class="sugg-meta mono">3 entries · 01/06/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-pending-busy-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wi</mark>fi-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
+            </div>
+            <div id="u18-pending-busy-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title">wi-fi</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-pending-busy-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-pending-busy-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-pending-busy-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-pending-busy-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
@@ -517,12 +520,12 @@
             <div class="sugg-skeleton-meta"></div>
           </div>
         </div>
-        <div id="u18-pending-first-listbox" role="listbox" aria-busy="true" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-pending-first-listbox" role="listbox" aria-busy="true" aria-label="Gợi ý tìm kiếm" class="omni-listbox omni-listbox-busy">
           <div role="group" aria-labelledby="u18-pending-first-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-pending-first-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-pending-first-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-pending-first-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
@@ -531,13 +534,12 @@
     </div>
 
     <!-- 2. #suggest-near-pending: Gần nghĩa đang tải (semantic=1 đang bay -> dòng muted "Đang tìm gần nghĩa…" ngoài listbox) -->
-    <!-- i18n: search.state.nearPending — vi: "Đang tìm gần nghĩa…" / en: "Searching by meaning…" -->
     <div class="card p-5" id="suggest-near-pending">
       <p class="t-label mb-2 text-muted">2 · Gần nghĩa đang tải (dòng muted ngoài listbox, không <span class="mono">role="status"</span>)</p>
       <div class="popover p-2">
-        <div id="u18-near-pending-listbox" role="listbox" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-near-pending-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
           <div role="group" aria-labelledby="u18-near-pending-tags-hdr" class="sugg-zone">
-            <div id="u18-near-pending-tags-hdr" class="sugg-group" role="presentation">Tags</div>
+            <div id="u18-near-pending-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
             <div id="u18-near-pending-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
               <span class="mono text-accent" aria-hidden="true">#</span>
               <span class="omni-opt-title"><mark>wif</mark>i-khách</span>
@@ -545,34 +547,53 @@
             </div>
           </div>
           <div role="group" aria-labelledby="u18-near-pending-items-hdr" class="sugg-zone">
-            <div id="u18-near-pending-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-near-pending-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-near-pending-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wif</mark>i</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
+            </div>
+            <div id="u18-near-pending-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-near-pending-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
             </div>
             <div id="u18-near-pending-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
               <span class="omni-opt-main">
                 <span class="omni-opt-title">wi-fi</span>
-                <span class="chip dup-chip">#nhà</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
               </span>
-              <span class="sugg-meta mono">2 entries · <span class="sugg-match-badge">gần đúng</span></span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-near-pending-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-near-pending-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-near-pending-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-near-pending-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
         </div>
         <!-- Dòng trạng thái hiển thị nằm NGOÀI listbox và NGOÀI live region, không mang role="status"/aria-live -->
-        <div class="sugg-status-line" data-omni-status="near-pending">
+        <div class="sugg-status-line" data-omni-status="near-pending" data-i18n-key="search.state.nearPending">
           <span>Đang tìm gần nghĩa…</span>
         </div>
       </div>
@@ -586,13 +607,13 @@
         <span class="omnibox-input">wif</span>
         <span class="kbd">Ctrl K</span>
       </div>
-      <p class="omni-hint-line mb-2">
+      <p class="omni-hint-line mb-2" data-i18n-key="search.help.sentToServer">
         <span class="omni-hint-vi">Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ <span class="mono">tên:</span> trước.</span>
       </p>
       <div class="popover p-2">
-        <div id="u18-server-off-listbox" role="listbox" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-server-off-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
           <div role="group" aria-labelledby="u18-server-off-tags-hdr" class="sugg-zone">
-            <div id="u18-server-off-tags-hdr" class="sugg-group" role="presentation">Tags</div>
+            <div id="u18-server-off-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
             <div id="u18-server-off-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
               <span class="mono text-accent" aria-hidden="true">#</span>
               <span class="omni-opt-title"><mark>wif</mark>i-khách</span>
@@ -600,21 +621,47 @@
             </div>
           </div>
           <div role="group" aria-labelledby="u18-server-off-items-hdr" class="sugg-zone">
-            <div id="u18-server-off-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-server-off-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-server-off-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wif</mark>i</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
+            </div>
+            <div id="u18-server-off-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-server-off-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
+            </div>
+            <div id="u18-server-off-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title">wi-fi</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-server-off-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-server-off-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-server-off-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-server-off-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
@@ -628,13 +675,13 @@
       <div class="omnibox-shell mb-2">
         <span class="mono text-muted" aria-hidden="true">⌕</span>
         <span class="omnibox-input">wif</span>
-        <button type="button" class="omni-sem-btn" aria-pressed="false" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
+        <button type="button" class="omni-sem-btn mono" aria-pressed="false" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
         <span class="kbd">Ctrl K</span>
       </div>
       <div class="popover p-2">
-        <div id="u18-user-off-listbox" role="listbox" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-user-off-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
           <div role="group" aria-labelledby="u18-user-off-tags-hdr" class="sugg-zone">
-            <div id="u18-user-off-tags-hdr" class="sugg-group" role="presentation">Tags</div>
+            <div id="u18-user-off-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
             <div id="u18-user-off-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
               <span class="mono text-accent" aria-hidden="true">#</span>
               <span class="omni-opt-title"><mark>wif</mark>i-khách</span>
@@ -642,21 +689,47 @@
             </div>
           </div>
           <div role="group" aria-labelledby="u18-user-off-items-hdr" class="sugg-zone">
-            <div id="u18-user-off-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-user-off-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-user-off-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wif</mark>i</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
+            </div>
+            <div id="u18-user-off-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-user-off-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
+            </div>
+            <div id="u18-user-off-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title">wi-fi</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-user-off-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-user-off-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-user-off-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-user-off-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
@@ -665,78 +738,144 @@
     </div>
 
     <!-- 5. #semantic-enable-409-omnibox: Bật ≈ từ omnibox gặp 409 (nút ≈ quay lại aria-pressed="false" + dòng muted inline trong dropdown nhưng NGOÀI listbox) -->
-    <!-- i18n: search.state.enable409 — vi: "Không bật được tìm theo nghĩa" / en: "Couldn't turn on meaning-based search" -->
     <div class="card p-5" id="semantic-enable-409-omnibox">
       <p class="t-label mb-2 text-muted">5 · Bật <span class="mono">≈</span> trên omnibox lúc dịch vụ chưa sẵn sàng (nút quay lại <span class="mono">aria-pressed="false"</span>, dòng muted inline ngoài listbox)</p>
       <div class="omnibox-shell mb-2">
         <span class="mono text-muted" aria-hidden="true">⌕</span>
         <span class="omnibox-input">wif</span>
-        <button type="button" class="omni-sem-btn" aria-pressed="false" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
+        <button type="button" class="omni-sem-btn mono" aria-pressed="false" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
         <span class="kbd">Ctrl K</span>
       </div>
       <div class="popover p-2">
-        <div id="u18-enable-409-listbox" role="listbox" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-enable-409-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
+          <div role="group" aria-labelledby="u18-enable-409-tags-hdr" class="sugg-zone">
+            <div id="u18-enable-409-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
+            <div id="u18-enable-409-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
+              <span class="mono text-accent" aria-hidden="true">#</span>
+              <span class="omni-opt-title"><mark>wif</mark>i-khách</span>
+              <span class="sugg-meta mono">4 mục</span>
+            </div>
+          </div>
           <div role="group" aria-labelledby="u18-enable-409-items-hdr" class="sugg-zone">
-            <div id="u18-enable-409-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-enable-409-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-enable-409-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wif</mark>i</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
+            </div>
+            <div id="u18-enable-409-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-enable-409-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
+            </div>
+            <div id="u18-enable-409-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title">wi-fi</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-enable-409-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-enable-409-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-enable-409-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-enable-409-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
         </div>
         <!-- Dòng muted inline bên trong dropdown nhưng NGOÀI listbox, không role="status"/role="alert" -->
-        <div class="sugg-status-line" data-omni-status="enable-409">
+        <div class="sugg-status-line" data-omni-status="enable-409" data-i18n-key="search.state.enable409">
           <span>Không bật được tìm theo nghĩa</span>
         </div>
       </div>
     </div>
 
     <!-- 6. #suggest-rate-limited: Bị giới hạn tốc độ (không hiện gì giữa lúc gõ; nhấn Enter khi đang bị chặn -> dòng muted ngoài listbox) -->
-    <!-- i18n: search.state.rateLimited — vi: "Đang gửi hơi nhanh, thử lại sau {seconds} giây" / en: "Sending a bit fast, try again in {seconds}s" -->
     <div class="card p-5" id="suggest-rate-limited">
       <p class="t-label mb-2 text-muted">6 · Giới hạn tốc độ tìm kiếm (không báo lỗi giữa lúc gõ; nhấn <span class="kbd">Enter</span> khi bị chặn hiện dòng muted ngoài listbox)</p>
       <div class="omnibox-shell mb-2">
         <span class="mono text-muted" aria-hidden="true">⌕</span>
         <span class="omnibox-input">wif</span>
-        <button type="button" class="omni-sem-btn" aria-pressed="true" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
+        <button type="button" class="omni-sem-btn mono" aria-pressed="true" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
         <span class="kbd">Ctrl K</span>
       </div>
       <div class="popover p-2">
-        <div id="u18-rate-limited-listbox" role="listbox" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-rate-limited-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
+          <div role="group" aria-labelledby="u18-rate-limited-tags-hdr" class="sugg-zone">
+            <div id="u18-rate-limited-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
+            <div id="u18-rate-limited-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
+              <span class="mono text-accent" aria-hidden="true">#</span>
+              <span class="omni-opt-title"><mark>wif</mark>i-khách</span>
+              <span class="sugg-meta mono">4 mục</span>
+            </div>
+          </div>
           <div role="group" aria-labelledby="u18-rate-limited-items-hdr" class="sugg-zone">
-            <div id="u18-rate-limited-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-rate-limited-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-rate-limited-opt-i1" class="sugg-row" role="option" aria-selected="false" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wif</mark>i</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
+            </div>
+            <div id="u18-rate-limited-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-rate-limited-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
+            </div>
+            <div id="u18-rate-limited-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title">wi-fi</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-rate-limited-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-rate-limited-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-rate-limited-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-rate-limited-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
         </div>
         <!-- Dòng muted hiển thị khi nhấn Enter lúc bị giới hạn tốc độ, nằm NGOÀI listbox, không role="status"/role="alert" -->
-        <div class="sugg-status-line" data-omni-status="rate-limited">
+        <div class="sugg-status-line" data-omni-status="rate-limited" data-i18n-key="search.state.rateLimited">
           <span>Đang gửi hơi nhanh, thử lại sau 2 giây</span>
         </div>
       </div>
@@ -784,33 +923,66 @@
   <section data-view="degr" hidden class="flex flex-col gap-3 scope-vault">
 
     <!-- Neo #semantic-degraded-inline (mục 2.10 + FE-23: dòng muted hiển thị ngoài listbox, không role="status", kèm live region sr-only đọc một lần/phiên) -->
-    <!-- i18n: search.state.degraded — vi: "Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy" / en: "Meaning-based search is taking a break — name search still works" -->
     <div class="card p-5" id="semantic-degraded-card">
       <p class="t-label mb-2 text-muted">Tìm gần nghĩa tạm nghỉ (dropdown omnibox)</p>
       <div class="popover p-2">
-        <div id="u18-degraded-listbox" role="listbox" aria-label="Gợi ý tìm kiếm">
+        <div id="u18-degraded-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
+          <div role="group" aria-labelledby="u18-degraded-tags-hdr" class="sugg-zone">
+            <div id="u18-degraded-tags-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
+            <div id="u18-degraded-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
+              <span class="mono text-accent" aria-hidden="true">#</span>
+              <span class="omni-opt-title"><mark>wif</mark>i-khách</span>
+              <span class="sugg-meta mono">4 mục</span>
+            </div>
+          </div>
           <div role="group" aria-labelledby="u18-degraded-items-hdr" class="sugg-zone">
-            <div id="u18-degraded-items-hdr" class="sugg-group" role="presentation">Items</div>
+            <div id="u18-degraded-items-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             <div id="u18-degraded-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
               <span class="omni-opt-main">
                 <span class="omni-opt-title"><mark>wif</mark>i</span>
-                <span class="chip dup-chip">#nhà</span>
-                <span class="chip dup-chip">#office</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+                <span class="chip dup-chip" title="#home-lab">#home-lab</span>
+                <span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+1</span>
+                <span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+2</span>
+                <span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn 1 tag nữa</span>
               </span>
-              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">12 mục · 12/03/2026</span>
+            </div>
+            <div id="u18-degraded-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i</span>
+                <span class="chip dup-chip" title="#công-ty">#công-ty</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục · 01/06/2026</span>
+            </div>
+            <div id="u18-degraded-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title"><mark>wif</mark>i-office</span>
+                <span class="chip dup-chip" title="#office">#office</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">3 mục</span>
+            </div>
+            <div id="u18-degraded-opt-i13" class="sugg-row" role="option" aria-selected="false" data-key="item:i13">
+              <span class="omni-opt-main">
+                <span class="omni-opt-title">wi-fi</span>
+                <span class="chip dup-chip" title="#nhà">#nhà</span>
+              </span>
+              <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">2 mục <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span></span>
             </div>
           </div>
           <div role="group" aria-labelledby="u18-degraded-actions-hdr" class="sugg-zone sugg-zone-actions">
-            <div id="u18-degraded-actions-hdr" class="sugg-group" role="presentation">Thao tác</div>
+            <div id="u18-degraded-actions-hdr" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
             <div id="u18-degraded-opt-create" class="sugg-row omni-create-option" role="option" aria-selected="false" data-key="action:create:wif">
               <span class="mono text-accent" aria-hidden="true">＋</span>
-              <span><strong>Tạo mục “wif”</strong></span>
+              <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “wif”</strong></span>
               <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
             </div>
           </div>
         </div>
         <!-- Dòng muted hiển thị nằm NGOÀI listbox và NGOÀI live region, KHÔNG mang role="status" hay aria-live (FE-23) -->
-        <div class="sugg-status-line" id="semantic-degraded-inline" data-omni-status="degraded">
+        <div class="sugg-status-line" id="semantic-degraded-inline" data-omni-status="degraded" data-i18n-key="search.state.degraded">
           <span>Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy</span>
         </div>
       </div>

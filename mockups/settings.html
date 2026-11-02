@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cài đặt — engram</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="search.css">
 <link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
@@ -273,37 +274,8 @@
     </section>
 
     <!-- ===== tìm kiếm (U16, P05 mục 2.11 + 2.24 item 7) ===== -->
-    <!-- Intended i18n keys (Task 17/18):
-         settings.page.searchHeading:
-           vi: "Tìm kiếm"
-           en: "Search"
-         settings.page.searchTitle:
-           vi: "Tìm kiếm thấy được gì"
-           en: "What search can see"
-         settings.page.searchBody:
-           vi: "Tên mục, gợi ý và tag không được mã hoá, và chữ gõ trong ô tìm được gửi tới máy chủ, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá."
-           en: "Item names, hints and tags are not encrypted, and text typed in the search box is sent to the server, so the server can search item names and tags. Entry content stays encrypted."
-         settings.search.semanticTitle:
-           vi: "Tìm gần nghĩa"
-           en: "Meaning-based search"
-         settings.search.semanticDesc:
-           vi: "Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ, nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc."
-           en: "Typing “home network” also suggests an item named “wifi”. Meaning-based hits stay in their own group below lexical matches, so toggling never reorders exact or prefix results."
-         settings.search.semanticExternalCopy (features.semantic_external = true, hoặc vắng):
-           vi: "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại."
-           en: "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Turning this off stops sending and deletes your vectors on the engram server (previously sent data cannot be recalled from the external service); turning it back on re-indexes your items and tags."
-         settings.search.semanticSelfHostCopy (features.semantic_external = false):
-           vi: "Tên mục, gợi ý và tag được nhúng trên máy chủ engram. Tắt chỉ ẩn kết quả gần nghĩa; chỉ mục vẫn được cập nhật nên bật lại dùng được ngay."
-           en: "Item names, hints, and tags are embedded on the engram server. Turning this off only hides meaning-based results; the index keeps updating so turning it back on works right away."
-         settings.search.semanticEntryNeverSent:
-           vi: "Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn."
-           en: "Entry content is never sent — it is encrypted before leaving your device."
-         settings.search.semanticServerOff:
-           vi: "Máy chủ này chưa bật tìm gần nghĩa"
-           en: "Meaning-based search is not enabled on this server"
-         settings.search.semanticEnable409 / settings.semanticConflict409 (khi PATCH /me/settings trả lỗi 409):
-           vi: "Không bật được tìm theo nghĩa"
-           en: "Couldn't turn on meaning-based search" -->
+    <!-- Intended i18n keys (`settings.page.search*`, `settings.search.*`):
+         see authoritative key table in `mockups/mock.js` (P05 i18n Key Table). -->
     <section id="timkiem">
       <h2 class="t-title-md mb-4">Tìm kiếm</h2>
 
@@ -315,7 +287,7 @@
         </p>
       </div>
 
-      <!-- Thanh chuyển trạng thái demo U16 (4 biến thể mục 2.11) -->
+      <!-- Thanh chuyển trạng thái demo U16 (4 biến thể mục 2.11 + trạng thái 409) -->
       <div class="mb-3 p-3.5 rounded-lg bg-surface rule-line" id="timkiem-demo-bar">
         <p class="t-caption text-muted m-0 mb-2">
           Trạng thái U16 <span class="mono">#timkiem</span> (P05 mục 2.11) ·
@@ -335,69 +307,43 @@
         <div class="flex items-start gap-4 flex-wrap mb-4">
           <div class="min-w-0 flex-1 basis-[240px]">
             <div class="flex items-center gap-2 flex-wrap mb-1">
-              <span class="text-[15px] font-semibold">Tìm gần nghĩa</span>
+              <span class="text-[15px] font-semibold" data-i18n-key="settings.search.semanticTitle">Tìm gần nghĩa</span>
             </div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">
+            <p class="text-[13px] m-0" style="color:var(--muted)" data-i18n-key="settings.search.semanticDesc">
               Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ,
               nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.
             </p>
           </div>
-          <button type="button" class="switch" id="timkiem-sem-switch" role="switch" aria-checked="true" aria-label="Tìm gần nghĩa" data-sem-toggle></button>
+          <button type="button" class="switch" id="timkiem-sem-switch" role="switch" aria-checked="true" aria-label="Tìm gần nghĩa"></button>
         </div>
 
         <!-- Copy khi features.semantic_external = true (hoặc vắng = mặc định an toàn, mục 2.11 + 2.24 item 7) -->
         <div class="rounded-md p-4" style="background:var(--surface)" id="timkiem-copy-external">
-          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)" data-i18n-key="settings.search.semanticExternalCopy">
             Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại.
           </p>
-          <p class="text-[13px] m-0" style="color:var(--muted)">
+          <p class="text-[13px] m-0" style="color:var(--muted)" data-i18n-key="settings.search.semanticEntryNeverSent">
             Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn.
           </p>
         </div>
 
         <!-- Copy khi features.semantic_external = false (nhúng trên máy chủ engram, mục 2.11) -->
         <div class="rounded-md p-4" style="background:var(--surface)" id="timkiem-copy-selfhost" hidden>
-          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)" data-i18n-key="settings.search.semanticSelfHostCopy">
             Tên mục, gợi ý và tag được nhúng trên máy chủ engram. Tắt chỉ ẩn kết quả gần nghĩa; chỉ mục vẫn được cập nhật nên bật lại dùng được ngay.
           </p>
-          <p class="text-[13px] m-0" style="color:var(--muted)">
+          <p class="text-[13px] m-0" style="color:var(--muted)" data-i18n-key="settings.search.semanticEntryNeverSent">
             Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn.
           </p>
         </div>
 
         <!-- Trạng thái server-off: features.semantic_available = false -->
-        <p class="text-[13px] m-0 mt-3" style="color:var(--muted)" id="timkiem-server-off-note" hidden>
+        <p class="text-[13px] m-0 mt-3" style="color:var(--muted)" id="timkiem-server-off-note" role="status" data-i18n-key="settings.search.semanticServerOff" hidden>
           Máy chủ này chưa bật tìm gần nghĩa
         </p>
 
-        <!-- Dòng muted inline khi bật gặp lỗi (không role="alert", không khung đỏ) -->
-        <p class="text-[13px] m-0 mt-3" style="color:var(--muted)" id="timkiem-409-inline" hidden>
-          Không bật được tìm theo nghĩa
-        </p>
-      </div>
-
-      <!-- Neo trực tiếp #semantic-enable-409 (mục 2.10: truy cập qua settings.html#semantic-enable-409 không cần bấm switcher) -->
-      <!-- i18n: settings.search.semanticEnable409 — vi: "Không bật được tìm theo nghĩa" / en: "Couldn't turn on meaning-based search" -->
-      <div class="card p-5" id="semantic-enable-409">
-        <div class="flex items-start gap-4 flex-wrap mb-4">
-          <div class="min-w-0 flex-1 basis-[240px]">
-            <div class="text-[15px] font-semibold mb-1">Tìm gần nghĩa</div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">
-              Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ,
-              nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.
-            </p>
-          </div>
-          <button type="button" class="switch" role="switch" aria-checked="false" aria-label="Tìm gần nghĩa"></button>
-        </div>
-        <div class="rounded-md p-4" style="background:var(--surface)">
-          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
-            Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại.
-          </p>
-          <p class="text-[13px] m-0" style="color:var(--muted)">
-            Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn.
-          </p>
-        </div>
-        <p class="text-[13px] m-0 mt-3" style="color:var(--muted)">
+        <!-- Neo #semantic-enable-409: dòng trạng thái hiển thị có role="status" trên màn Cài đặt (không phải dropdown omnibox) -->
+        <p class="text-[13px] m-0 mt-3" style="color:var(--muted)" id="semantic-enable-409" role="status" data-i18n-key="settings.search.semanticEnable409" hidden>
           Không bật được tìm theo nghĩa
         </p>
       </div>
@@ -1393,7 +1339,8 @@
     const copyExt = document.getElementById('timkiem-copy-external');
     const copySelf = document.getElementById('timkiem-copy-selfhost');
     const serverOffNote = document.getElementById('timkiem-server-off-note');
-    const inline409 = document.getElementById('timkiem-409-inline');
+    const inline409 = document.getElementById('semantic-enable-409');
+    const seg = document.getElementById('timkiem-state-seg');
     if (!card || !sw) return;
 
     let show409 = false;
@@ -1412,58 +1359,69 @@
         card.removeAttribute('aria-disabled');
       }
 
-      if (copyExt) copyExt.hidden = !ext;
-      if (copySelf) copySelf.hidden = ext;
+      if (copyExt) copyExt.hidden = !avail || !ext;
+      if (copySelf) copySelf.hidden = !avail || ext;
       if (serverOffNote) serverOffNote.hidden = avail;
       if (inline409) inline409.hidden = !show409;
     }
 
-    sw.addEventListener('click', (e) => {
-      e.stopImmediatePropagation();
+    sw.addEventListener('click', () => {
       if (SAK.state.semanticAvailable === false) return;
       show409 = false;
       SAK.state.semantic = !SAK.state.semantic;
       syncTimkiemUI();
+      SAK.toast(SAK.state.semantic
+        ? 'Đã bật tìm gần nghĩa · Semantic search enabled'
+        : 'Đã tắt tìm gần nghĩa · Semantic search disabled');
     });
+
+    function applyTimkiemMode(mode) {
+      show409 = false;
+      if (mode === 'external-on') {
+        SAK.state.semanticAvailable = true;
+        SAK.state.semanticExternal = true;
+        SAK.state.semantic = true;
+      } else if (mode === 'external-off') {
+        SAK.state.semanticAvailable = true;
+        SAK.state.semanticExternal = true;
+        SAK.state.semantic = false;
+      } else if (mode === 'selfhost-on') {
+        SAK.state.semanticAvailable = true;
+        SAK.state.semanticExternal = false;
+        SAK.state.semantic = true;
+      } else if (mode === 'server-off') {
+        SAK.state.semanticAvailable = false;
+        SAK.state.semanticExternal = true;
+        SAK.state.semantic = false;
+      } else if (mode === 'enable-409') {
+        SAK.state.semanticAvailable = true;
+        SAK.state.semantic = false;
+        show409 = true;
+      }
+      if (seg) {
+        seg.querySelectorAll('[data-timkiem-mode]').forEach((b) => {
+          b.setAttribute('aria-pressed', String(b.dataset.timkiemMode === mode));
+        });
+      }
+      syncTimkiemUI();
+    }
 
     document.querySelectorAll('[data-timkiem-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const mode = btn.dataset.timkiemMode;
-        show409 = false;
-        if (mode === 'external-on') {
-          SAK.state.semanticAvailable = true;
-          SAK.state.semanticExternal = true;
-          SAK.state.semantic = true;
-        } else if (mode === 'external-off') {
-          SAK.state.semanticAvailable = true;
-          SAK.state.semanticExternal = true;
-          SAK.state.semantic = false;
-        } else if (mode === 'selfhost-on') {
-          SAK.state.semanticAvailable = true;
-          SAK.state.semanticExternal = false;
-          SAK.state.semantic = true;
-        } else if (mode === 'server-off') {
-          SAK.state.semanticAvailable = false;
-          SAK.state.semanticExternal = true;
-          SAK.state.semantic = false;
-        } else if (mode === 'enable-409') {
-          SAK.state.semanticAvailable = true;
-          SAK.state.semanticExternal = true;
-          SAK.state.semantic = false;
-          show409 = true;
-        }
-        syncTimkiemUI();
+        applyTimkiemMode(btn.dataset.timkiemMode);
       });
     });
 
-    if (location.hash === '#semantic-enable-409') {
-      SAK.state.semanticAvailable = true;
-      SAK.state.semanticExternal = true;
-      SAK.state.semantic = false;
-      show409 = true;
+    function syncFromHash() {
+      if (location.hash === '#semantic-enable-409') {
+        applyTimkiemMode('enable-409');
+        card.scrollIntoView({ block: 'start' });
+      }
     }
 
     syncTimkiemUI();
+    syncFromHash();
+    window.addEventListener('hashchange', syncFromHash);
   })();
 </script>
 </body>

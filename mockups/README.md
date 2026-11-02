@@ -105,6 +105,7 @@ Screenshot revision (Task 24): chụp `auth.html` và `settings.html` ở 390/76
 | `tokens.css` | Nguồn sự thật về thị giác. Màu, type scale, bo góc, component class — lấy nguyên từ `clickup.design.md`. Có cả `[data-theme='dark']` và `prefers-reduced-motion`. |
 | `tw.js` | Map token sang utility của Tailwind. **Phải nạp sau** script CDN. |
 | `mock.js` | Toàn bộ hành vi: dữ liệu giả, tìm kiếm, omnibox, bảng JSON, khoá/mở vault, dialog, toast. Xuất ra `window.SAK`. |
+| `search.css` | Style component P05 search & suggest (`index.html`, `item.html`, `settings.html`, `states.html`). Task 17 ports `mockups/search.css` into `apps/web/styles/tokens.css` and folds it back into `mockups/tokens.css` so `tokens.parity` covers it again (`advisor-dec-270`). |
 
 ## Những chỗ mockup cố tình thể hiện đúng spec
 

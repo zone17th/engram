@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>engram — tìm &amp; lưu</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="search.css">
 <link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
@@ -140,12 +141,8 @@
     <p class="t-body-lg mb-1 text-muted" lang="en">Type to search. Type <span class="mono">name: content</span> to save.</p>
     <p class="t-body mb-6 text-muted">Một ô duy nhất cho cả hai việc — chỉ gửi chuỗi chắc chắn do bạn gõ tay ở chế độ tìm; mọi chuỗi có dấu <span class="mono">:</span> hoặc dán từ clipboard được giữ cục bộ cho tới khi nhấn Enter. · <span lang="en">One box for both — keystroke suggestions run only on clean typed search queries; any draft with <span class="mono">:</span> or pasted text stays local until Enter.</span></p>
     <!-- Thanh chuyển kịch bản Omnibox & Quick-add (P05 U15/U18 + P04 U8/U9/Q17) -->
-    <!-- Intended i18n keys (Task 17/18):
-         search.group.tags ("Tags" / "Tags"), search.group.items ("Items" / "Items"), search.group.near ("Gần nghĩa" / "Similar meaning"),
-         search.group.recentItems ("Gần đây" / "Recent"), search.group.recentTags ("Tag hay dùng" / "Frequent tags"),
-         search.group.actions ("Thao tác" / "Actions"), search.match.fuzzy ("gần đúng" / "fuzzy"),
-         search.match.semantic ("≈ gần nghĩa" / "≈ similar"), search.help.sentToServer, search.help.sentToServerExternal,
-         search.help.enterToSearch, search.state.nearPending, search.state.noMatch, search.actions.createItem, search.actions.loadMore -->
+    <!-- Intended i18n keys (`search.*`, `content.omnibox.*`):
+         see authoritative key table in `mockups/mock.js` (P05 i18n Key Table). -->
     <div class="mb-4 p-3.5 rounded-lg bg-surface rule-line" id="omni-demo-bar">
       <p class="t-caption text-muted m-0 mb-2">
         Kịch bản Omnibox P05 (U15, U18) &amp; Quick-add P04 (U8, U9, Q17) · <span lang="en">P05 Suggest &amp; P04 Quick-add scenarios</span>
@@ -158,7 +155,7 @@
         <button type="button" data-omni-scenario="suggest-paste-guard" aria-pressed="false">P05 · Chặn dán (tainted) · <span lang="en">Paste guard</span></button>
         <button type="button" data-omni-scenario="suggest-tab-item" aria-pressed="false">P05 · Tab điền mục · <span lang="en">Tab item</span></button>
         <button type="button" data-omni-scenario="suggest-tab-tag" aria-pressed="false">P05 · Tab điền #tag · <span lang="en">Tab tag</span></button>
-        <button type="button" data-omni-scenario="search-hint" aria-pressed="false">1. Gợi ý tìm · <span lang="en">Search hint</span></button>
+        <button type="button" data-omni-scenario="search-hint" aria-pressed="false">1. Gợi ý tìm (P04 cũ, thay bằng search.help.*) · <span lang="en">Search hint (legacy P04)</span></button>
         <button type="button" data-omni-scenario="search-results" aria-pressed="false">2. Kết quả Enter · <span lang="en">Results</span></button>
         <button type="button" data-omni-scenario="search-empty" aria-pressed="false">3. Tìm rỗng · <span lang="en">No match</span></button>
         <button type="button" data-omni-scenario="search-multiline-guard" aria-pressed="false">4a. Chặn nhiều dòng · <span lang="en">Multiline guard</span></button>
@@ -196,7 +193,7 @@
         <textarea rows="1" class="omnibox-input" placeholder="Tìm hoặc tên: nội dung"
                   data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
                   aria-label="Tìm hoặc lưu"></textarea>
-        <button type="button" class="omni-sem-btn" data-omni-sem-toggle aria-pressed="true" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
+        <button type="button" class="omni-sem-btn mono" data-omni-sem-toggle aria-pressed="true" aria-label="Tìm gần nghĩa"><span aria-hidden="true">≈</span></button>
         <span class="kbd">Ctrl K</span>
       </div>
       <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"></div>
@@ -328,7 +325,12 @@
   if (simServerOffBtn) {
     simServerOffBtn.addEventListener('click', () => {
       SAK.state.semanticAvailable = !SAK.state.semanticAvailable;
-      if (box && typeof box.paint === 'function') box.paint();
+      if (box) {
+        if (!SAK.state.semanticAvailable && typeof box.removeNearZoneInPlace === 'function') {
+          box.removeNearZoneInPlace();
+        }
+        if (typeof box.paint === 'function') box.paint();
+      }
     });
   }
   if (box && typeof box.setScenario === 'function') {

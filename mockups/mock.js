@@ -30,14 +30,6 @@
       entries: 3, created_at: '01/06/2026', updated: '01/06/2026', last_used_at: '2026-10-26T09:00:00Z', touched: 6
     },
     {
-      id: 'i11', name: 'wifi', hint: 'nhà bố mẹ · cáp quang', tags: ['nhà', 'wifi-khách'],
-      entries: 2, created_at: '14/01/2026', updated: '14/01/2026', last_used_at: '2026-10-25T09:00:00Z', touched: 5
-    },
-    {
-      id: 'i12', name: 'wifi', hint: 'quán cà phê hay ngồi', tags: ['wifi-khách'],
-      entries: 1, created_at: '08/11/2025', updated: '08/11/2025', last_used_at: '2026-10-23T09:00:00Z', touched: 3
-    },
-    {
       id: 'i3', name: 'wifi-office', hint: '', tags: ['office'],
       entries: 3, created_at: '28/05/2026', updated: '28/05/2026', last_used_at: '2026-10-24T09:00:00Z', touched: 4
     },
@@ -99,7 +91,7 @@
     }
   };
 
-  /* Bản đồ "gần nghĩa" giả lập vector search. Thật ra là bge-m3 + pgvector;
+  /* Bản đồ "gần nghĩa" giả lập vector search (provider cấu hình theo env: tei / openai_compat);
      ở mockup chỉ cần cho thấy nhóm này nằm RIÊNG, dưới nhóm lexical. */
   const SEMANTIC = [
     { triggers: ['mat khau', 'password', 'pass', 'mk'], hits: [['i1', .86], ['i2', .82], ['i8', .74]] },
@@ -369,7 +361,7 @@
         near: [],
         semantic: [],
         semantic_ran: false,
-        semantic_reason: 'short_query'
+        semantic_reason: 'request_lexical'
       };
     }
 
@@ -605,27 +597,157 @@
   }
 
   /* ---------- P04 & P05 omnibox (SPEC §3.4–§3.5, §6.8, §7.2, plan mục 2.1, 2.3–2.6, 2.8–2.10, 2.24) ---------- */
-  /* Intended i18n keys (Task 17/18):
-     - search.help.sentToServer
-     - search.help.sentToServerExternal
-     - search.help.enterToSearch
-     - search.group.tags ("Tags")
-     - search.group.items ("Items")
-     - search.group.near ("Gần nghĩa" / "Similar meaning")
-     - search.group.recentItems ("Gần đây" / "Recent")
-     - search.group.recentTags ("Tag hay dùng" / "Frequent tags")
-     - search.group.actions ("Thao tác" / "Actions")
-     - search.match.fuzzy ("gần đúng" / "fuzzy")
-     - search.match.semantic ("≈ gần nghĩa" / "≈ similar meaning")
-     - search.state.nearPending ("Đang tìm gần nghĩa…" / "Searching similar meaning…")
-     - search.state.degraded ("Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy" / "Similar-meaning search is temporarily paused — name search still works")
-     - search.state.enable409 ("Không bật được tìm theo nghĩa" / "Could not enable similar-meaning search")
-     - search.state.rateLimited ("Đang gửi hơi nhanh, thử lại sau {seconds} giây" / "Sending too fast, try again in {seconds}s")
-     - search.state.noMatch ("Không khớp “{query}”" / "No match for “{query}”")
-     - search.actions.createItem ("Tạo mục “{query}”" / "Create item “{query}”")
-     - search.actions.loadMore ("Xem thêm" / "Show more")
-     - search.tab.cannotFill ("Không điền được bằng Tab" / "Cannot fill with Tab")
-  */
+  /* ============================================================================
+     P05 Authoritative i18n Key Table (Task 17 `search.*` & Task 18 `settings.search.*`)
+     Single source of truth for mockup strings; `index.html`, `states.html` and
+     `settings.html` reference this table. `search.help.*` English text is copied
+     verbatim from `docs/SPEC.md` §3.4.
+     ----------------------------------------------------------------------------
+     1. Omnibox help text (`search.help.*`, SPEC §3.4 verbatim + `content.omnibox.tagHint`):
+        - search.help.sentToServer
+          vi: "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ tên: trước."
+          en: "Text you type to search is sent to the server, not encrypted. To save content, type name: first."
+        - search.help.sentToServerExternal
+          vi: "Chữ gõ để tìm được gửi tới máy chủ và tới dịch vụ nhúng bên ngoài khi bật ≈, không mã hoá; lưu nội dung thì gõ tên: trước."
+          en: "Text you type to search is sent to the server, and to an external embedding service when ≈ is on, not encrypted. To save content, type name: first."
+        - search.help.enterToSearch
+          vi: "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá."
+          en: "Press Enter to search; the text is sent to the server, not encrypted."
+        - content.omnibox.tagHint (kept from P04 for `#` mode when gate is open, SPEC §3.4):
+          vi: "Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá"
+          en: "Enter: filter by tag — typed text is sent to the server, not encrypted"
+
+     2. Omnibox suggest / search dropdown (`search.*`):
+        - search.toggle.semanticAriaLabel
+          vi: "Tìm gần nghĩa"
+          en: "Meaning-based search"
+        - search.listbox.suggestAriaLabel
+          vi: "Gợi ý tìm kiếm"
+          en: "Search suggestions"
+        - search.listbox.searchAriaLabel (`content.omnibox.searchListboxAriaLabel`)
+          vi: "Kết quả tìm kiếm"
+          en: "Search results"
+        - search.listbox.tagAriaLabel (`content.omnibox.tagListboxAriaLabel`)
+          vi: "Kết quả lọc tag"
+          en: "Tag filter results"
+        - search.group.tags
+          vi: "Tag"
+          en: "Tags"
+        - search.group.items
+          vi: "Mục"
+          en: "Items"
+        - search.group.near
+          vi: "Gần nghĩa"
+          en: "Similar meaning"
+        - search.group.recentItems
+          vi: "Gần đây"
+          en: "Recent"
+        - search.group.recentTags
+          vi: "Tag hay dùng"
+          en: "Frequent tags"
+        - search.group.actions (plan §2.24 item 3)
+          vi: "Thao tác"
+          en: "Actions"
+        - search.match.fuzzy
+          vi: "gần đúng"
+          en: "fuzzy"
+        - search.match.semantic
+          vi: "≈ gần nghĩa"
+          en: "≈ similar meaning"
+        - search.row.entryCount (`content.omnibox.searchEntryCount`)
+          vi: "{count, plural, other {# mục}}"
+          en: "{count, plural, one {# entry} other {# entries}}"
+        - search.row.tagItemCount (`content.omnibox.tagItemCount`)
+          vi: "{count, plural, other {# mục}}"
+          en: "{count, plural, one {# item} other {# items}}"
+        - search.row.moreTagsAria (`content.omnibox.searchMoreTagsAria`)
+          vi: "{count, plural, other {Còn # tag nữa}}"
+          en: "{count, plural, one {# more tag} other {# more tags}}"
+        - search.state.nearPending
+          vi: "Đang tìm gần nghĩa…"
+          en: "Searching by meaning…"
+        - search.state.degraded
+          vi: "Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy"
+          en: "Meaning-based search is taking a break — name search still works"
+        - search.state.enable409
+          vi: "Không bật được tìm theo nghĩa"
+          en: "Couldn't turn on meaning-based search"
+        - search.state.rateLimited (SPEC §6.8 / plan §2.6)
+          vi: "Đang gửi hơi nhanh, thử lại sau {seconds} giây"
+          en: "Sending a bit fast, try again in {seconds}s"
+        - search.state.noMatch
+          vi: "Không khớp “{query}”"
+          en: "No match for “{query}”"
+        - search.state.noMatchHint
+          vi: "Gõ {query}: nội dung để lưu ngay hoặc tạo mục rỗng bên dưới."
+          en: "Type {query}: content to save right away, or create an empty item below."
+        - search.state.resultCount (`content.omnibox.searchLiveCount`)
+          vi: "{count, plural, other {# kết quả}}"
+          en: "{count, plural, one {# result} other {# results}}"
+        - search.live.suggestionsCount
+          vi: "{count, plural, other {# gợi ý}}"
+          en: "{count, plural, one {# suggestion} other {# suggestions}}"
+        - search.live.nearAppended
+          vi: "{count, plural, other {Thêm # gợi ý gần nghĩa}}"
+          en: "{count, plural, one {Added # similar-meaning suggestion} other {Added # similar-meaning suggestions}}"
+        - search.live.nearHidden
+          vi: "Đã ẩn gợi ý gần nghĩa"
+          en: "Hid similar-meaning suggestions"
+        - search.live.noMatch
+          vi: "Không khớp “{query}”"
+          en: "No match for “{query}”"
+        - search.actions.createItem (`content.omnibox.createItemOption`)
+          vi: "Tạo mục “{query}”"
+          en: "Create item “{query}”"
+        - search.actions.createItemKbd
+          vi: "Ctrl+Enter"
+          en: "Ctrl+Enter"
+        - search.actions.loadMore
+          vi: "Xem thêm"
+          en: "Load more"
+        - search.actions.loadMoreKbd
+          vi: "Enter"
+          en: "Enter"
+        - search.tab.cannotFill
+          vi: "Không điền được bằng Tab"
+          en: "Cannot fill with Tab"
+
+     3. Settings `#timkiem` (`settings.page.search*` & `settings.search.*`, plan §2.11 + §2.24 item 7):
+        - settings.page.searchHeading
+          vi: "Tìm kiếm"
+          en: "Search"
+        - settings.page.searchTitle
+          vi: "Tìm kiếm thấy được gì"
+          en: "What search can see"
+        - settings.page.searchBody
+          vi: "Tên mục, gợi ý và tag không được mã hoá, và chữ gõ trong ô tìm được gửi tới máy chủ, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá."
+          en: "Item names, hints and tags are not encrypted, and text typed in the search box is sent to the server, so the server can search item names and tags. Entry content stays encrypted."
+        - settings.search.semanticTitle
+          vi: "Tìm gần nghĩa"
+          en: "Meaning-based search"
+        - settings.search.semanticDesc
+          vi: "Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ, nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc."
+          en: "Typing “home network” also suggests an item named “wifi”. Meaning-based hits stay in their own group below lexical matches, so toggling never reorders exact or prefix results."
+        - settings.search.semanticExternalCopy (features.semantic_external = true or absent)
+          vi: "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại."
+          en: "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Turning this off stops sending and deletes your vectors on the engram server (previously sent data cannot be recalled from the external service); turning it back on re-indexes your items and tags."
+        - settings.search.semanticSelfHostCopy (features.semantic_external = false)
+          vi: "Tên mục, gợi ý và tag được nhúng trên máy chủ engram. Tắt chỉ ẩn kết quả gần nghĩa; chỉ mục vẫn được cập nhật nên bật lại dùng được ngay."
+          en: "Item names, hints, and tags are embedded on the engram server. Turning this off only hides meaning-based results; the index keeps updating so turning it back on works right away."
+        - settings.search.semanticEntryNeverSent
+          vi: "Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn."
+          en: "Entry content is never sent — it is encrypted before leaving your device."
+        - settings.search.semanticServerOff
+          vi: "Máy chủ này chưa bật tìm gần nghĩa"
+          en: "Meaning-based search is not enabled on this server"
+        - settings.search.semanticEnable409
+          vi: "Không bật được tìm theo nghĩa"
+          en: "Couldn't turn on meaning-based search"
+
+     CSS Note (advisor-dec-270):
+     Task 17 ports `mockups/search.css` into `apps/web/styles/tokens.css` and folds
+     it back into `mockups/tokens.css` so `tokens.parity` covers it again.
+     ============================================================================ */
 
   const COPY_SEARCH_HINT_VI = 'Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ ';
   const COPY_SEARCH_HINT_EN = 'Enter: search by name prefix · Ctrl+Enter: create item with this name — typed text is sent to the server unencrypted. To save content, type ';
@@ -965,7 +1087,7 @@
     if (!semToggleBtn) {
       semToggleBtn = document.createElement('button');
       semToggleBtn.type = 'button';
-      semToggleBtn.className = 'omni-sem-btn';
+      semToggleBtn.className = 'omni-sem-btn mono';
       semToggleBtn.dataset.omniSemToggle = '1';
       const kbdEl = shell.querySelector('.kbd');
       if (kbdEl) {
@@ -989,6 +1111,12 @@
     }
     syncSemToggleBtn();
 
+    /* RV-T8-FE1-11: shell changed from <label> to <div> so nested ≈ button is valid HTML;
+       clicking non-button area of the shell still focuses the textarea. */
+    shell.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (document.activeElement !== input) input.focus();
+    });
     let auxHost = root.querySelector('[data-omni-aux]');
     if (!auxHost) {
       auxHost = document.createElement('div');
@@ -1070,7 +1198,7 @@
     let lastInputType = 'insertText';
     let lastInputData = '';
     let legacyHintMode = false;
-
+    let suppressEmptyBodyErr = false;
     let lastErrorAlertSig = '';
     let lastFailAlertSig = '';
     let planStepTimers = [];
@@ -1229,8 +1357,10 @@
     }
 
     function formatItemRowHtml(it, query, optId, optKey, dupNameSet) {
-      const shownTags = (it.tags || []).slice(0, 3);
-      const extra = (it.tags || []).length > 3 ? (it.tags.length - 3) : 0;
+      const allTags = it.tags || [];
+      const shownTags = allTags.slice(0, 3);
+      const extraDesktop = allTags.length > 3 ? (allTags.length - 3) : 0;
+      const extraMobile = allTags.length > 2 ? (allTags.length - 2) : 0;
       const count = it.entry_count != null ? it.entry_count : (it.entries != null ? it.entries : 0);
       const matchKind = it.match || 'prefix';
       let titleHtml = esc(it.name);
@@ -1243,17 +1373,27 @@
       const dateMeta = (isDup && it.created_at) ? ` · ${esc(it.created_at)}` : '';
       let badgeHtml = '';
       if (matchKind === 'fuzzy') {
-        badgeHtml = ' <span class="sugg-match-badge" data-i18n-key="search.match.fuzzy">gần đúng</span>';
+        badgeHtml = ' <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span>';
       } else if (matchKind === 'semantic') {
-        badgeHtml = ' <span class="sugg-near-badge" data-i18n-key="search.match.semantic">≈ gần nghĩa</span>';
+        badgeHtml = ' <span class="sugg-near-badge mono" data-i18n-key="search.match.semantic">≈ gần nghĩa</span>';
+      }
+      let extraHtml = '';
+      if (extraDesktop > 0) {
+        extraHtml += `<span class="mono text-[12px] text-muted chip-more-desktop" aria-hidden="true">+${extraDesktop}</span>`;
+      }
+      if (extraMobile > 0) {
+        extraHtml += `<span class="mono text-[12px] text-muted chip-more-mobile" aria-hidden="true">+${extraMobile}</span>`;
+      }
+      if (extraDesktop > 0) {
+        extraHtml += `<span class="sr-only" data-i18n-key="search.row.moreTagsAria">Còn ${extraDesktop} tag nữa</span>`;
       }
       return `<div role="option" id="${optId}" data-opt-key="${esc(optKey)}" data-opt-kind="item" data-item-id="${esc(it.id)}" data-item-name="${esc(it.name)}" aria-selected="false" class="sugg-row">
         <span class="omni-opt-main">
           <span class="omni-opt-title">${titleHtml}</span>
           ${shownTags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')}
-          ${extra > 0 ? `<span class="mono text-[12px] text-muted" aria-hidden="true">+${extra}</span><span class="sr-only">Còn ${extra} tag nữa</span>` : ''}
+          ${extraHtml}
         </span>
-        <span class="sugg-meta mono">${count} entries${dateMeta}${badgeHtml}</span>
+        <span class="sugg-meta mono" data-i18n-key="search.row.entryCount">${count} mục${dateMeta}${badgeHtml}</span>
       </div>`;
     }
 
@@ -1268,7 +1408,7 @@
         labelHtml = markPrefix(disp, query);
       }
       const fuzzyBadge = matchKind === 'fuzzy'
-        ? ' <span class="sugg-match-badge" data-i18n-key="search.match.fuzzy">gần đúng</span>'
+        ? ' <span class="sugg-match-badge mono" data-i18n-key="search.match.fuzzy">gần đúng</span>'
         : '';
       return `<div role="option" id="${optId}" data-opt-key="${esc(optKey)}" data-opt-kind="tag" data-tag-name="${esc(disp)}" aria-selected="false" class="sugg-row">
         <span class="mono text-accent">#</span>
@@ -1347,7 +1487,7 @@
             return formatTagRowHtml(t, q, optId, key);
           }).join('');
           groupsHtml += `<div role="group" aria-labelledby="${grpTagsHdrId}" class="sugg-zone" data-zone="tags">
-            <div id="${grpTagsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tags</div>
+            <div id="${grpTagsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
             ${rowsHtml}
           </div>`;
         }
@@ -1358,7 +1498,7 @@
             return formatItemRowHtml(it, q, optId, key, dupSet);
           }).join('');
           groupsHtml += `<div role="group" aria-labelledby="${grpItemsHdrId}" class="sugg-zone" data-zone="items">
-            <div id="${grpItemsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Items</div>
+            <div id="${grpItemsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
             ${rowsHtml}
           </div>`;
         }
@@ -1525,23 +1665,54 @@
       activeKey = null;
       activeIdx = -1;
 
+      const tags = searchOpts.tags || [];
+      const near = (searchOpts.near && state.semantic && state.semanticAvailable) ? searchOpts.near : [];
+      const totalCount = tags.length + items.length + near.length;
+
+      const grpTagsHdrId = `${baseId}-grp-search-tags-hdr`;
       const grpItemsHdrId = `${baseId}-grp-search-items-hdr`;
+      const grpNearHdrId = `${baseId}-grp-search-near-hdr`;
       const grpActHdrId = `${baseId}-grp-search-actions-hdr`;
-      const dupSet = computeDupNames(items, []);
+      const dupSet = computeDupNames(items, near);
 
       let topStatusHtml = '';
       let groupsHtml = '';
-      if (items.length > 0) {
-        topStatusHtml = `<div class="sugg-status-line sugg-status-line-top" data-omni-status="search-count">${items.length} kết quả</div>`;
-        const rowsHtml = items.map((it, idx) => {
-          const optId = `${baseId}-opt-item-${esc(it.id)}-${idx}`;
-          const optKey = `item:${it.id}`;
-          return formatItemRowHtml(it, query, optId, optKey, dupSet);
-        }).join('');
-        groupsHtml += `<div role="group" aria-labelledby="${grpItemsHdrId}" class="sugg-zone" data-zone="items">
-          <div id="${grpItemsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Items</div>
-          ${rowsHtml}
-        </div>`;
+      if (totalCount > 0) {
+        topStatusHtml = `<div class="sugg-status-line sugg-status-line-top" data-omni-status="search-count" data-i18n-key="search.state.resultCount">${totalCount} kết quả</div>`;
+        if (tags.length > 0) {
+          const tagRowsHtml = tags.map((t, idx) => {
+            const disp = t.display || t.name;
+            const optId = `${baseId}-opt-search-tag-${esc(t.id || disp)}-${idx}`;
+            const optKey = `tag:${t.id || disp}`;
+            return formatTagRowHtml(t, query, optId, optKey);
+          }).join('');
+          groupsHtml += `<div role="group" aria-labelledby="${grpTagsHdrId}" class="sugg-zone" data-zone="tags">
+            <div id="${grpTagsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">Tag</div>
+            ${tagRowsHtml}
+          </div>`;
+        }
+        if (items.length > 0) {
+          const rowsHtml = items.map((it, idx) => {
+            const optId = `${baseId}-opt-item-${esc(it.id)}-${idx}`;
+            const optKey = `item:${it.id}`;
+            return formatItemRowHtml(it, query, optId, optKey, dupSet);
+          }).join('');
+          groupsHtml += `<div role="group" aria-labelledby="${grpItemsHdrId}" class="sugg-zone" data-zone="items">
+            <div id="${grpItemsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.items">Mục</div>
+            ${rowsHtml}
+          </div>`;
+        }
+        if (near.length > 0) {
+          const nearRowsHtml = near.map((it, idx) => {
+            const optId = `${baseId}-opt-search-near-${esc(it.id)}-${idx}`;
+            const optKey = `item:${it.id}`;
+            return formatItemRowHtml({ ...it, match: 'semantic' }, '', optId, optKey, dupSet);
+          }).join('');
+          groupsHtml += `<div role="group" aria-labelledby="${grpNearHdrId}" class="sugg-zone" data-zone="near">
+            <div id="${grpNearHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.near">Gần nghĩa</div>
+            ${nearRowsHtml}
+          </div>`;
+        }
 
         const createOptId = `${baseId}-opt-create`;
         const createKey = `action:create:${query}`;
@@ -1563,7 +1734,7 @@
             <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
           </div>
         </div>`;
-        setLiveText(`${items.length} kết quả`);
+        setLiveText(`${totalCount} kết quả`);
       } else {
         const createOptId = `${baseId}-opt-create`;
         const createKey = `action:create:${query}`;
@@ -1576,7 +1747,7 @@
           <div role="option" id="${createOptId}" data-opt-key="${esc(createKey)}" data-opt-kind="create" data-opt-query="${esc(query)}" aria-selected="false" class="sugg-row omni-create-option">
             <span class="mono text-accent">＋</span>
             <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(query)}”</strong></span>
-            <span class="sugg-meta"><span class="kbd">Enter</span></span>
+            <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
           </div>
         </div>`;
         setLiveText(`Không khớp “${query}”`);
@@ -1596,7 +1767,7 @@
       listOptions = [];
 
       const grpTagsHdrId = `${baseId}-grp-tag-filter-hdr`;
-      const hdrLabel = 'Tags';
+      const hdrLabel = 'Tag';
       let emptyTopHtml = '';
       let groupsHtml = '';
       if (matchedTags.length) {
@@ -1607,16 +1778,13 @@
           return formatTagRowHtml(t, tagQuery, optId, optKey);
         }).join('');
         groupsHtml = `<div role="group" aria-labelledby="${grpTagsHdrId}" class="sugg-zone" data-zone="tags">
-          <div id="${grpTagsHdrId}" class="sugg-group" role="presentation">${hdrLabel}</div>
+          <div id="${grpTagsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.tags">${hdrLabel}</div>
           ${rowsHtml}
         </div>`;
         setLiveText(`${matchedTags.length} tag khớp #${tagQuery}`);
       } else {
         emptyTopHtml = `<div class="omni-empty-box">
           <p class="text-[14px] font-semibold text-body m-0">Không khớp “#${esc(tagQuery)}”</p>
-        </div>`;
-        groupsHtml = `<div role="group" aria-labelledby="${grpTagsHdrId}" class="sugg-zone" data-zone="tags">
-          <div id="${grpTagsHdrId}" class="sugg-group" role="presentation">${hdrLabel}</div>
         </div>`;
         setLiveText(`Không khớp “#${tagQuery}”`);
       }
@@ -1767,8 +1935,7 @@
           hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_ENTER_TO_SEARCH_VI}</span>`;
         } else {
           hintEl.dataset.i18nKey = 'content.omnibox.tagHint';
-          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_TAG_HINT_VI}</span>
-            <span class="omni-hint-en" lang="en">${COPY_TAG_HINT_EN}</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_TAG_HINT_VI}</span>`;
         }
         addPanelEl.hidden = true;
         lastErrorAlertSig = '';
@@ -1805,7 +1972,7 @@
       const errViEl = addPanelEl.querySelector('[data-part="err-vi"]');
       const errEnEl = addPanelEl.querySelector('[data-part="err-en"]');
 
-      if (hasGrammarErr) {
+      if (hasGrammarErr && !(parsed.error === 'empty-body' && suppressEmptyBodyErr)) {
         const isSoftHint = parsed.error === 'empty-body' || (parsed.error === 'name-invalid' && !parsed.name);
         const roleVal = isSoftHint ? 'status' : 'alert';
         if (roleVal === 'alert') {
@@ -1820,7 +1987,10 @@
             lastErrorAlertSig = sig;
             errBox.setAttribute('role', roleVal);
             if (errViEl) errViEl.textContent = parsed.errorVi;
-            if (errEnEl) errEnEl.textContent = parsed.errorEn;
+            if (errEnEl) {
+              errEnEl.textContent = '';
+              errEnEl.hidden = true;
+            }
           }
         }
       } else if (hasPlanTargetLimitErr) {
@@ -1832,7 +2002,10 @@
             lastErrorAlertSig = sig;
             errBox.setAttribute('role', 'alert');
             if (errViEl) errViEl.textContent = activePlan.errorVi;
-            if (errEnEl) errEnEl.textContent = activePlan.errorEn;
+            if (errEnEl) {
+              errEnEl.textContent = '';
+              errEnEl.hidden = true;
+            }
           }
         }
       } else {
@@ -2094,6 +2267,7 @@
 
     function submitQuickAdd(forceCreateNew, simOpts) {
       simOpts = simOpts || {};
+      suppressEmptyBodyErr = false;
       const parsed = parseQuickAdd(input.value);
       if (parsed.mode !== 'add') {
         renderHintAndPanels();
@@ -2174,11 +2348,12 @@
       }
     }
 
-    /* Tab điền (SPEC §3.5, §7.8, plan mục 2.9):
+    /* Tab điền (SPEC §3.5 quy tắc 1, §7.8, plan mục 2.1 quy tắc 1 + mục 2.9):
        - Chỉ chặn khi có hàng active (item hoặc tag).
        - Trên item: điền `${name}: ` (add mode), ghim item ID vào kế hoạch lưu (OQ-2).
          Nếu tên chứa `:` hoặc bắt đầu bằng `#` -> không điền, hiện hint "Không điền được bằng Tab".
-       - Trên tag: thay token `#…` bằng `#${display} ` (qua setDraft -> sạch).
+       - Trên tag: chỉ thay token `#…` ở đầu bằng `#${display} `; đi qua setDraft() -> syncOwnWrite
+         nên GIỮ nguyên cờ tainted hiện tại (chỉ xoá khi value === '', plan mục 2.1 quy tắc 1).
          Nếu display chứa khoảng trắng, `#` hoặc `:` -> không điền. */
     function handleTabKey(e) {
       if (!listOpen || activeIdx < 0 || !listOptions[activeIdx]) return false;
@@ -2189,15 +2364,16 @@
         if (!itemName || itemName.includes(':') || itemName.includes('：') || itemName.startsWith('#')) {
           tabCannotFillMsg = true;
           renderHintAndPanels();
-          setLiveText('Không điền được bằng Tab · Cannot fill with Tab');
+          setLiveText('Không điền được bằng Tab');
           return true;
         }
         tabCannotFillMsg = false;
+        suppressEmptyBodyErr = true;
         pinnedItem = opt.item;
         closeListbox(false);
         setDraft(itemName + ': ');
         renderHintAndPanels();
-        setLiveText(`Đã điền “${itemName}: ” và ghim mục ${opt.item.id} · Filled “${itemName}: ” and pinned item`);
+        setLiveText(`Đã điền “${itemName}: ” và ghim mục ${opt.item.id}`);
         return true;
       }
       if (opt.kind === 'tag' && opt.tag) {
@@ -2206,15 +2382,21 @@
         if (!disp || /\s/.test(disp) || disp.includes('#') || disp.includes(':') || disp.includes('：')) {
           tabCannotFillMsg = true;
           renderHintAndPanels();
-          setLiveText('Không điền được bằng Tab · Cannot fill with Tab');
+          setLiveText('Không điền được bằng Tab');
           return true;
         }
         tabCannotFillMsg = false;
-        setDraft('#' + disp + ' ', { tainted: false });
-        const res = search('#' + disp, { scope: 'tag', semantic: false });
-        renderSuggestDropdown(res);
+        /* Plan 2.1 rule 1 + 2.9: replace only the leading `#…` token and preserve existing `gateTainted` via syncOwnWrite */
+        const cur = String(input.value || '');
+        const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, '$1#' + disp + ' ');
+        const nextDraft = replaced !== cur ? replaced : ('#' + disp + ' ');
+        setDraft(nextDraft);
+        if (isGateClean(nextDraft)) {
+          const res = search(nextDraft, { scope: 'tag', semantic: false });
+          renderSuggestDropdown(res);
+        }
         renderHintAndPanels();
-        setLiveText(`Đã điền “#${disp} ” · Filled “#${disp} ”`);
+        setLiveText(`Đã điền “#${disp} ”`);
         return true;
       }
       return false;
@@ -2280,14 +2462,23 @@
           renderSearchListbox(parsed.name, []);
           return;
         }
-        /* Mục 2.24 item 1: Enter trên draft không sạch qua gate luôn gọi /search với semantic=0 */
+        /* Mục 2.24 item 1 & 2.4: Enter trên draft không sạch qua gate luôn gọi /search với semantic=0;
+           /search trả trang đầu (items, tags <= 5, near <= 5) + Xem thêm khi còn kết quả */
         const clean = isGateClean(input.value);
-        const res = search(parsed.name, { semantic: clean && state.semantic && state.semanticAvailable });
-        renderSearchListbox(parsed.name, res.items);
+        const res = search(parsed.name, {
+          limit: 12,
+          semantic: clean && state.semantic && state.semanticAvailable
+        });
+        renderSearchListbox(parsed.name, res.items, {
+          tags: (res.tags || []).slice(0, SUGGEST_QUOTA.search.all_scope_first_page_tags_max),
+          near: (res.near || []).slice(0, SUGGEST_QUOTA.search.first_page_near_max),
+          hasMore: res.items.length >= 4
+        });
         return;
       }
 
       if (parsed.mode === 'add-invalid') {
+        suppressEmptyBodyErr = false;
         closeListbox(true);
         renderHintAndPanels();
         return;
@@ -2343,6 +2534,7 @@
       showPostUnlockNotice = false;
       legacyHintMode = false;
       tabCannotFillMsg = false;
+      suppressEmptyBodyErr = false;
       guardEl.hidden = true;
       if (activePlan) {
         clearPlanTimers();
@@ -2387,9 +2579,15 @@
           renderSuggestDropdown(res);
         }
       } else if (parsed.mode === 'search') {
-        if (!isGateClean(curVal) || isComposing) {
+        if (!isGateClean(curVal)) {
           /* Mục 2.24 item 2 (FE-C2): khi gate đóng xoá snapshot, activeKey=null, đóng dropdown */
           closeListbox(true);
+        } else if (isComposing) {
+          /* SPEC §3.5 quy tắc 2 & 11 (RV-T8-FE1-10): khi đang IME composing, không gửi request mới
+             nhưng GIỮ các hàng đang hiện, chỉ xoá activeKey để Enter không mở hàng cũ */
+          activeKey = null;
+          activeIdx = -1;
+          syncActiveOption();
         } else if (curVal.trim() === '') {
           renderSuggestDropdown(search('', { scope: 'all' }));
         } else {
@@ -2605,6 +2803,13 @@
         renderHintAndPanels();
       },
       setScenario: (scenarioName) => {
+        /* RV-T8-FE1-3: reset send-gate flags & pinned item at the top of setScenario so scenarios never leak state */
+        gateTainted = false;
+        gateColonLocked = false;
+        pinnedItem = null;
+        prevValue = '';
+        isComposing = false;
+        suppressEmptyBodyErr = false;
         showPostUnlockNotice = false;
         hadDraftOnLock = false;
         hadCommittedMetaOnLock = false;
@@ -2615,7 +2820,6 @@
         activePlan = null;
         guardEl.hidden = true;
         closeListbox(true);
-
         const segEl = document.getElementById('omni-state-seg');
         if (segEl) {
           segEl.querySelectorAll('[data-omni-scenario]').forEach((b) => {
@@ -2674,7 +2878,8 @@
           setDraft('xyz');
           renderHintAndPanels();
           const res = search('xyz', { scope: 'all', semantic: true });
-          renderSuggestDropdown(res, { initialActiveKey: 'action:create:xyz' });
+          /* RV-T8-FE1-13: no auto-active row outside `#` mode */
+          renderSuggestDropdown(res);
           input.focus();
         } else if (scenarioName === 'suggest-paste-guard') {
           ensureUnlocked();
@@ -2687,6 +2892,7 @@
         } else if (scenarioName === 'suggest-tab-item') {
           ensureUnlocked();
           const pinned = ITEMS.find((i) => i.id === 'i1') || ITEMS[0];
+          suppressEmptyBodyErr = true;
           setDraft(pinned.name + ': ');
           pinnedItem = pinned;
           renderHintAndPanels();
@@ -2694,7 +2900,7 @@
           input.focus();
         } else if (scenarioName === 'suggest-tab-tag') {
           ensureUnlocked();
-          setDraft('#wifi-khách ', { tainted: false });
+          setDraft('#wifi-khách ');
           renderHintAndPanels();
           const res = search('#wifi-khách', { scope: 'tag', semantic: false });
           renderSuggestDropdown(res, { initialActiveKey: 'tag:t7' });
@@ -2712,7 +2918,12 @@
           ensureUnlocked();
           setDraft('wif');
           renderHintAndPanels();
-          renderSearchListbox('wif', searchItemsPrefix('wif'), { hasMore: true });
+          const res = search('wif', { limit: 12, semantic: state.semantic && state.semanticAvailable });
+          renderSearchListbox('wif', res.items, {
+            tags: (res.tags || []).slice(0, SUGGEST_QUOTA.search.all_scope_first_page_tags_max),
+            near: (res.near || []).slice(0, SUGGEST_QUOTA.search.first_page_near_max),
+            hasMore: true
+          });
           input.focus();
         } else if (scenarioName === 'search-empty') {
           ensureUnlocked();
