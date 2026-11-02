@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
@@ -26,8 +27,8 @@ import (
 // job's input_hash is stale compared to the live target row. When nil on
 // Dependencies, the worker falls back to river.ClientFromContextSafely[pgx.Tx].
 type JobInserter interface {
-	Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) error
-	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error
+	Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
+	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
 }
 
 // RiverClientInserter adapts a *river.Client[pgx.Tx] to JobInserter.
@@ -36,21 +37,19 @@ type RiverClientInserter struct {
 }
 
 // Insert delegates to c.Client.Insert.
-func (c RiverClientInserter) Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) error {
+func (c RiverClientInserter) Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error) {
 	if c.Client == nil {
-		return errors.New("jobs: nil river client")
+		return nil, errors.New("jobs: nil river client")
 	}
-	_, err := c.Client.Insert(ctx, args, opts)
-	return err
+	return c.Client.Insert(ctx, args, opts)
 }
 
 // InsertTx delegates to c.Client.InsertTx.
-func (c RiverClientInserter) InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error {
+func (c RiverClientInserter) InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error) {
 	if c.Client == nil {
-		return errors.New("jobs: nil river client")
+		return nil, errors.New("jobs: nil river client")
 	}
-	_, err := c.Client.InsertTx(ctx, tx, args, opts)
-	return err
+	return c.Client.InsertTx(ctx, tx, args, opts)
 }
 
 // Dependencies bundles the runtime collaborators shared by EmbedItemWorker,
@@ -71,6 +70,11 @@ type Dependencies struct {
 	// Used by concurrency barrier tests (e.g. Task 11b rename/delete races) to
 	// deterministically interleave mutations without sleeps.
 	BeforeStep5Tx func(ctx context.Context, kind string, generationID int, targetID uuid.UUID)
+
+	// BeforeStaleInsert is an optional test-only hook invoked right after a
+	// worker detects a stale input_hash (in step 2 when inStep5 is false, or in
+	// step 5 when inStep5 is true) and before inserting the replacement job.
+	BeforeStaleInsert func(ctx context.Context, kind string, generationID int, targetID uuid.UUID, inStep5 bool)
 }
 
 func (d Dependencies) withDefaults() Dependencies {
@@ -128,6 +132,34 @@ func makeEmbedJobArgs(kind string, genID int, userID, targetID uuid.UUID, hash [
 	}
 }
 
+// insertStaleReplacement enqueues a replacement job with newHash and reports
+// whether the insertion was swallowed by an already-running duplicate job
+// (swallowedByRunning == true).
+//
+// Why a running duplicate is NOT safe to treat as a guaranteed successor
+// (EJ2-1):
+// River's uniqueness key for EmbedInsertOpts is ByArgs = (generation_id,
+// user_id, target_id, input_hash) across ByState = {available, pending,
+// retryable, running, scheduled} (River v0.31 requires running in custom
+// ByState). Although a duplicate job has the exact same input_hash = newHash,
+// if that duplicate is currently in state `running` it may have already read a
+// momentarily different target snapshot in its unlocked step 2 (e.g. during an
+// A -> B -> A -> B rename cycle across two workers) and be on its way to
+// finishing `skipped_stale` itself, or its step 5 may observe another transient
+// state. If both running workers deduplicate their replacement inserts against
+// each other and both return nil (`skipped_stale`), both jobs transition to
+// `completed` and zero jobs remain queued for the final target state.
+//
+// By contrast, a duplicate in `available`, `pending`, `scheduled`, or
+// `retryable` has not yet begun its next execution attempt; when a worker later
+// picks it up, its step 2 and step 5 will observe the latest committed target
+// row at that future time. Therefore:
+//   - Fresh insert (`!UniqueSkippedAsDuplicate`) or duplicate in a non-running
+//     state -> successor is guaranteed; caller finishes `skipped_stale`.
+//   - Duplicate in state `running` (or missing job metadata when skipped) ->
+//     cannot rely on the running peer to embed newHash; caller returns
+//     `river.JobSnooze(StaleReplacementSnoozeDuration)` so this job stays alive
+//     and re-evaluates after the running peer finishes.
 func (d Dependencies) insertStaleReplacement(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -136,10 +168,28 @@ func (d Dependencies) insertStaleReplacement(
 	userID uuid.UUID,
 	targetID uuid.UUID,
 	newHash [32]byte,
-) error {
+) (swallowedByRunning bool, err error) {
 	args := makeEmbedJobArgs(kind, genID, userID, targetID, newHash)
 	opts := EmbedInsertOpts(kind)
 
+	res, err := d.rawInsertReplacement(ctx, tx, args, opts)
+	if err != nil {
+		return false, err
+	}
+	if res != nil && res.UniqueSkippedAsDuplicate {
+		if res.Job == nil || res.Job.State == rivertype.JobStateRunning {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (d Dependencies) rawInsertReplacement(
+	ctx context.Context,
+	tx pgx.Tx,
+	args river.JobArgs,
+	opts *river.InsertOpts,
+) (*rivertype.JobInsertResult, error) {
 	if d.Inserter != nil {
 		if tx != nil {
 			return d.Inserter.InsertTx(ctx, tx, args, opts)
@@ -149,28 +199,24 @@ func (d Dependencies) insertStaleReplacement(
 
 	if client, err := river.ClientFromContextSafely[pgx.Tx](ctx); err == nil && client != nil {
 		if tx != nil {
-			_, err := client.InsertTx(ctx, tx, args, opts)
-			return err
+			return client.InsertTx(ctx, tx, args, opts)
 		}
-		_, err := client.Insert(ctx, args, opts)
-		return err
+		return client.Insert(ctx, args, opts)
 	}
 
 	if d.Pool == nil {
-		return errors.New("jobs: no river client or pool available to insert replacement job")
+		return nil, errors.New("jobs: no river client or pool available to insert replacement job")
 	}
 	fallbackClient, err := river.NewClient(riverpgxv5Driver(d.Pool), &river.Config{
 		SkipUnknownJobCheck: true,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if tx != nil {
-		_, err = fallbackClient.InsertTx(ctx, tx, args, opts)
-		return err
+		return fallbackClient.InsertTx(ctx, tx, args, opts)
 	}
-	_, err = fallbackClient.Insert(ctx, args, opts)
-	return err
+	return fallbackClient.Insert(ctx, args, opts)
 }
 
 func executeEmbedJob(ctx context.Context, deps Dependencies, p embedPayload) error {
@@ -238,8 +284,15 @@ func executeEmbedJob(ctx context.Context, deps Dependencies, p embedPayload) err
 	currentHash := embedding.InputHashFor(genRow.Identity(), targetSnap.input)
 	if !bytes.Equal(currentHash[:], argsHash) {
 		recordGenerationMismatch(deps.Metrics, MismatchReasonHash)
-		if err := deps.insertStaleReplacement(ctx, nil, p.kind, genRow.ID, userID, targetID, currentHash); err != nil {
+		if deps.BeforeStaleInsert != nil {
+			deps.BeforeStaleInsert(ctx, p.kind, genRow.ID, targetID, false)
+		}
+		swallowedByRunning, err := deps.insertStaleReplacement(ctx, nil, p.kind, genRow.ID, userID, targetID, currentHash)
+		if err != nil {
 			return err
+		}
+		if swallowedByRunning {
+			return finishOutcome(OutcomeSnoozed, "hash_stale", river.JobSnooze(StaleReplacementSnoozeDuration))
 		}
 		return finishOutcome(OutcomeSkippedStale, "hash_stale", nil)
 	}
@@ -379,11 +432,18 @@ func executeEmbedJob(ctx context.Context, deps Dependencies, p embedPayload) err
 	recomputedHash := embedding.InputHashFor(genLocked.Identity(), lockedTarget.input)
 	if !bytes.Equal(recomputedHash[:], argsHash) {
 		recordGenerationMismatch(deps.Metrics, MismatchReasonHash)
-		if err := deps.insertStaleReplacement(ctx, tx, p.kind, genLocked.ID, userID, targetID, recomputedHash); err != nil {
+		if deps.BeforeStaleInsert != nil {
+			deps.BeforeStaleInsert(ctx, p.kind, genLocked.ID, targetID, true)
+		}
+		swallowedByRunning, err := deps.insertStaleReplacement(ctx, tx, p.kind, genLocked.ID, userID, targetID, recomputedHash)
+		if err != nil {
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return err
+		}
+		if swallowedByRunning {
+			return finishOutcome(OutcomeSnoozed, "hash_stale", river.JobSnooze(StaleReplacementSnoozeDuration))
 		}
 		return finishOutcome(OutcomeSkippedStale, "hash_stale", nil)
 	}

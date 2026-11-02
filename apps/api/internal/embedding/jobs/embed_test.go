@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1269,5 +1270,232 @@ func TestCanaryWorkerFirstRunPersistsAndSubsequentRunsCheckDrift(t *testing.T) {
 	}
 	if !foundMinCos {
 		t.Fatal("expected embedding_canary_min_cos{generation=1} to be recorded on second run")
+	}
+}
+
+// TestTwoWorkerRenameCycleGuaranteesSuccessor verifies the EJ2-1 fix:
+// During an A -> B -> A -> B rename cycle across two concurrently running
+// workers (Job A for hash_A, Job B for hash_B):
+//  1. Job A embeds input A and pauses at BeforeStep5Tx.
+//  2. Item is renamed to B; Job B starts in state 'running', but before its
+//     step 2 read, item is renamed back to A (insert of A deduplicates against
+//     running Job A). Job B reads input A in step 2, detects stale hash_B !=
+//     hash_A, and pauses at BeforeStaleInsert.
+//  3. Item is renamed to final state B (insert of B deduplicates against
+//     running Job B).
+//  4. Both Job A (in step 5) and Job B (in step 2) attempt to insert their
+//     stale-hash replacements:
+//     - Job A's replacement (hash_B) collides with running Job B -> Job A
+//     returns river.JobSnooze(StaleReplacementSnoozeDuration) instead of
+//     finishing skipped_stale.
+//     - Job B's replacement (hash_A) collides with running Job A -> Job B
+//     returns river.JobSnooze(StaleReplacementSnoozeDuration) instead of
+//     finishing skipped_stale.
+//  5. When the snoozed Job B re-runs after settling, its args (hash_B) match
+//     the final item state B and it upserts the vector for B.
+func TestTwoWorkerRenameCycleGuaranteesSuccessor(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	defer srv.Close()
+	client := newTEIClient(t, srv, 8, "", "")
+	cs := embedding.NewClientSet(client, nil)
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, client.Identity, generation.StateActive, nil)
+
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "rename-cycle-ej21@example.com", Locale: "vi"})
+	if err != nil {
+		t.Fatalf("InsertUser: %v", err)
+	}
+
+	const (
+		nameA = "Name Alpha"
+		nameB = "Name Beta"
+	)
+	itemRow, err := q.InsertItem(ctx, gen.InsertItemParams{
+		UserID:         user.ID,
+		Name:           nameA,
+		NameNormalized: strings.ToLower(nameA),
+	})
+	if err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	hashA := embedding.InputHashFor(g1.Identity(), embedding.ItemInput(nameA, ""))
+	hashB := embedding.InputHashFor(g1.Identity(), embedding.ItemInput(nameB, ""))
+	hashAHex := hex.EncodeToString(hashA[:])
+	hashBHex := hex.EncodeToString(hashB[:])
+
+	riverClient := newInsertClient(t, pool)
+	argsA := jobargs.EmbedItemArgs{
+		GenerationID: g1.ID,
+		UserID:       user.ID.String(),
+		TargetID:     itemRow.ID.String(),
+		InputHash:    hashAHex,
+	}
+	argsB := jobargs.EmbedItemArgs{
+		GenerationID: g1.ID,
+		UserID:       user.ID.String(),
+		TargetID:     itemRow.ID.String(),
+		InputHash:    hashBHex,
+	}
+
+	insA, err := riverClient.Insert(ctx, argsA, jobs.EmbedInsertOpts(jobargs.KindEmbedItem))
+	if err != nil {
+		t.Fatalf("Insert job A: %v", err)
+	}
+	insB, err := riverClient.Insert(ctx, argsB, jobs.EmbedInsertOpts(jobargs.KindEmbedItem))
+	if err != nil {
+		t.Fatalf("Insert job B: %v", err)
+	}
+	// Transition both jobs to 'running' in river_job to mirror River's two
+	// embedding workers executing Job A and Job B concurrently.
+	if _, err := pool.Exec(ctx,
+		`UPDATE river_job SET state = 'running', attempted_at = now(), attempt = 1 WHERE id IN ($1, $2)`,
+		insA.Job.ID, insB.Job.ID,
+	); err != nil {
+		t.Fatalf("mark jobs A and B running: %v", err)
+	}
+
+	aAtStep5 := make(chan struct{})
+	releaseA := make(chan struct{})
+	bAtStaleInsert := make(chan struct{})
+	releaseB := make(chan struct{})
+
+	reg, m := obs.NewRegistry()
+	workerA := jobs.NewEmbedItemWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+		BeforeStep5Tx: func(_ context.Context, _ string, _ int, _ uuid.UUID) {
+			close(aAtStep5)
+			<-releaseA
+		},
+	})
+	workerB := jobs.NewEmbedItemWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+		BeforeStaleInsert: func(_ context.Context, _ string, _ int, _ uuid.UUID, inStep5 bool) {
+			if !inStep5 {
+				close(bAtStaleInsert)
+				<-releaseB
+			}
+		},
+	})
+
+	errChA := make(chan error, 1)
+	go func() {
+		errChA <- workerA.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+			JobRow: &rivertype.JobRow{ID: insA.Job.ID, Attempt: 1, State: rivertype.JobStateRunning},
+			Args:   argsA,
+		})
+	}()
+
+	// Wait for Worker A to finish step 4 (embedding nameA) and pause before step 5.
+	<-aAtStep5
+
+	// Rename item A -> B -> A while Job A is still running.
+	// The mutation enqueue for A deduplicates against running Job A.
+	if _, err := pool.Exec(ctx,
+		`UPDATE item SET name = $1, name_normalized = $2 WHERE id = $3`,
+		nameA, strings.ToLower(nameA), itemRow.ID,
+	); err != nil {
+		t.Fatalf("rename item to A: %v", err)
+	}
+	dupA, err := riverClient.Insert(ctx, argsA, jobs.EmbedInsertOpts(jobargs.KindEmbedItem))
+	if err != nil {
+		t.Fatalf("Insert duplicate A: %v", err)
+	}
+	if !dupA.UniqueSkippedAsDuplicate || dupA.Job.State != rivertype.JobStateRunning {
+		t.Fatalf("dupA = %+v, want UniqueSkippedAsDuplicate=true State=running", dupA)
+	}
+
+	// Start Worker B (with argsB). Its unlocked step 2 sees nameA != hashB and
+	// pauses at BeforeStaleInsert before inserting replacement A.
+	errChB := make(chan error, 1)
+	go func() {
+		errChB <- workerB.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+			JobRow: &rivertype.JobRow{ID: insB.Job.ID, Attempt: 1, State: rivertype.JobStateRunning},
+			Args:   argsB,
+		})
+	}()
+	<-bAtStaleInsert
+
+	// Final rename to B while Job B is still running.
+	// The mutation enqueue for B deduplicates against running Job B.
+	if _, err := pool.Exec(ctx,
+		`UPDATE item SET name = $1, name_normalized = $2 WHERE id = $3`,
+		nameB, strings.ToLower(nameB), itemRow.ID,
+	); err != nil {
+		t.Fatalf("final rename item to B: %v", err)
+	}
+	dupB, err := riverClient.Insert(ctx, argsB, jobs.EmbedInsertOpts(jobargs.KindEmbedItem))
+	if err != nil {
+		t.Fatalf("Insert duplicate B: %v", err)
+	}
+	if !dupB.UniqueSkippedAsDuplicate || dupB.Job.State != rivertype.JobStateRunning {
+		t.Fatalf("dupB = %+v, want UniqueSkippedAsDuplicate=true State=running", dupB)
+	}
+
+	// Release both workers while both Job A and Job B are in state 'running'.
+	// Note: Worker A's step 5 transaction inserts replacement B (touching Job B's
+	// row) while Worker B's step 2 inserts replacement A (touching Job A's row).
+	close(releaseA)
+	close(releaseB)
+
+	errA := <-errChA
+	errB := <-errChB
+
+	var snoozeA *river.JobSnoozeError
+	if !errors.As(errA, &snoozeA) {
+		t.Fatalf("Worker A err = %v, want *river.JobSnoozeError when replacement B collided with running Job B", errA)
+	}
+	var snoozeB *river.JobSnoozeError
+	if !errors.As(errB, &snoozeB) {
+		t.Fatalf("Worker B err = %v, want *river.JobSnoozeError when replacement A collided with running Job A", errB)
+	}
+	if snoozeA.Duration != jobs.StaleReplacementSnoozeDuration || snoozeB.Duration != jobs.StaleReplacementSnoozeDuration {
+		t.Fatalf("snooze durations = (%s, %s), want %s", snoozeA.Duration, snoozeB.Duration, jobs.StaleReplacementSnoozeDuration)
+	}
+	if got := counterValue(t, reg, "embedding_jobs_total", map[string]string{"kind": jobargs.KindEmbedItem, "outcome": jobs.OutcomeSnoozed}); got != 2 {
+		t.Fatalf("embedding_jobs_total{embed_item,snoozed} = %v, want 2", got)
+	}
+
+	// Simulate River transitioning both snoozed jobs to 'scheduled' and then
+	// re-running them. Job B now sees final item nameB == argsB.InputHash and
+	// upserts the vector for B.
+	if _, err := pool.Exec(ctx,
+		`UPDATE river_job SET state = 'scheduled' WHERE id IN ($1, $2)`,
+		insA.Job.ID, insB.Job.ID,
+	); err != nil {
+		t.Fatalf("transition snoozed jobs to scheduled: %v", err)
+	}
+
+	workerRetry := jobs.NewEmbedItemWorker(jobs.Dependencies{
+		Pool:      pool,
+		ClientSet: cs,
+		Breakers:  jobs.NewWorkerBreakers(time.Now, m.Embedding),
+		Metrics:   m.Embedding,
+		Inserter:  jobs.RiverClientInserter{Client: riverClient},
+	})
+	if err := workerRetry.Work(ctx, &river.Job[jobargs.EmbedItemArgs]{
+		JobRow: &rivertype.JobRow{ID: insB.Job.ID, Attempt: 1, State: rivertype.JobStateRunning},
+		Args:   argsB,
+	}); err != nil {
+		t.Fatalf("re-run of snoozed Job B: %v", err)
+	}
+
+	stored, hasVec, err := store.GetTargetMeta(ctx, pool, g1, generation.CorpusItem, user.ID, itemRow.ID)
+	if err != nil || !hasVec {
+		t.Fatalf("expected vector for final input B after snoozed job re-ran, got hasVec=%v err=%v", hasVec, err)
+	}
+	if !bytes.Equal(stored.InputHash, hashB[:]) {
+		t.Fatalf("stored vector input_hash = %x, want final hashB %x", stored.InputHash, hashB[:])
 	}
 }

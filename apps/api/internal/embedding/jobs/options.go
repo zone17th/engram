@@ -57,6 +57,12 @@ const (
 	// 2.12, 2.17, SPEC §6.6: JobSnooze(5m)).
 	UnconfiguredSnoozeDuration = 5 * time.Minute
 
+	// StaleReplacementSnoozeDuration is the short snooze duration returned when a
+	// stale-hash replacement insertion deduplicates against an already-running
+	// job, ensuring the current worker retries after the running job settles
+	// instead of both workers completing with no successor left.
+	StaleReplacementSnoozeDuration = time.Second
+
 	// CanaryInterval is the periodic interval for embedding_canary (1 hour).
 	CanaryInterval = time.Hour
 )
