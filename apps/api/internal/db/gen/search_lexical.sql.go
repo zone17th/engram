@@ -191,7 +191,16 @@ const searchItemsLexical = `-- name: SearchItemsLexical :many
 WITH q AS (
   SELECT
     $5::text AS qn,
-    immutable_unaccent($5::text) AS qa
+    immutable_unaccent($5::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($5::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
 )
 SELECT
   i.id,
@@ -201,7 +210,7 @@ SELECT
   i.created_at,
   (CASE
     WHEN i.name_normalized LIKE $1::text ESCAPE '\' THEN 3
-    WHEN i.name_unaccent LIKE immutable_unaccent($1::text) ESCAPE '\' THEN 2
+    WHEN i.name_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
     ELSE 1
   END)::int AS tier,
   round(
@@ -216,7 +225,7 @@ WHERE i.user_id = $2
   AND i.deleted_at IS NULL
   AND (
     i.name_normalized LIKE $1::text ESCAPE '\'
-    OR i.name_unaccent LIKE immutable_unaccent($1::text) ESCAPE '\'
+    OR i.name_unaccent LIKE q.qa_prefix ESCAPE '\'
     OR (
       $3::bool
       AND (
@@ -259,9 +268,14 @@ type SearchItemsLexicalRow struct {
 //   - Every query filters `user_id = sqlc.arg('user_id')` and `deleted_at IS NULL`.
 //   - Nothing reads `entry` or `item.hint` (lexical item corpus is `name` only, OQ-4).
 //   - `q_prefix` MUST be escaped by the caller via `item.EscapeLikePrefix(qn)`
-//     (escapes `\`, `%`, `_` then appends `%`) before passing so `LIKE ... ESCAPE '\'`
-//     uses `item_user_name_prefix`, `item_user_unaccent_prefix`,
-//     `tag_user_norm_prefix`, and `tag_user_unaccent_prefix` (`text_pattern_ops`).
+//     (escapes `\`, `%`, `_` then appends `%`) and is used ONLY for the exact-accent
+//     arm (`name_normalized` / `normalized` with `LIKE ... ESCAPE '\'`, matching
+//     `item_user_name_prefix` / `tag_user_norm_prefix` (`text_pattern_ops`)).
+//   - The folded arm computes `qa_prefix` in the CTE by escaping `\`, `%`, `_`
+//     AFTER `immutable_unaccent(qn)` (because PostgreSQL `unaccent` transliterates
+//     full-width `％`/`＿`/`＼` to ASCII LIKE metacharacters — RV-T2-BE-3, lead call A)
+//     and uses `qa_prefix` with `LIKE ... ESCAPE '\'` on `name_unaccent` / `tag_unaccent`
+//     (`item_user_unaccent_prefix` / `tag_user_unaccent_prefix` (`text_pattern_ops`)).
 //   - Read transactions set `statement_timeout = '50ms'`,
 //     `pg_trgm.similarity_threshold = 0.35`, and
 //     `pg_trgm.word_similarity_threshold = 0.5` via `SET LOCAL`.
@@ -305,7 +319,16 @@ const searchItemsLexicalPage = `-- name: SearchItemsLexicalPage :many
 WITH q AS (
   SELECT
     $7::text AS qn,
-    immutable_unaccent($7::text) AS qa
+    immutable_unaccent($7::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($7::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
 ),
 ranked AS (
   SELECT
@@ -316,7 +339,7 @@ ranked AS (
     i.created_at,
     (CASE
       WHEN i.name_normalized LIKE $8::text ESCAPE '\' THEN 3
-      WHEN i.name_unaccent LIKE immutable_unaccent($8::text) ESCAPE '\' THEN 2
+      WHEN i.name_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
       ELSE 1
     END)::int AS tier,
     round(
@@ -331,7 +354,7 @@ ranked AS (
     AND i.deleted_at IS NULL
     AND (
       i.name_normalized LIKE $8::text ESCAPE '\'
-      OR i.name_unaccent LIKE immutable_unaccent($8::text) ESCAPE '\'
+      OR i.name_unaccent LIKE q.qa_prefix ESCAPE '\'
       OR (
         $10::bool
         AND (
@@ -450,7 +473,16 @@ const searchTagsLexical = `-- name: SearchTagsLexical :many
 WITH q AS (
   SELECT
     $5::text AS qn,
-    immutable_unaccent($5::text) AS qa
+    immutable_unaccent($5::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($5::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
 )
 SELECT
   t.id,
@@ -459,7 +491,7 @@ SELECT
   t.last_used_at,
   (CASE
     WHEN t.normalized LIKE $1::text ESCAPE '\' THEN 3
-    WHEN t.tag_unaccent LIKE immutable_unaccent($1::text) ESCAPE '\' THEN 2
+    WHEN t.tag_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
     ELSE 1
   END)::int AS tier,
   round(
@@ -474,7 +506,7 @@ WHERE t.user_id = $2
   AND t.deleted_at IS NULL
   AND (
     t.normalized LIKE $1::text ESCAPE '\'
-    OR t.tag_unaccent LIKE immutable_unaccent($1::text) ESCAPE '\'
+    OR t.tag_unaccent LIKE q.qa_prefix ESCAPE '\'
     OR (
       $3::bool
       AND (
@@ -546,7 +578,16 @@ const searchTagsLexicalPage = `-- name: SearchTagsLexicalPage :many
 WITH q AS (
   SELECT
     $7::text AS qn,
-    immutable_unaccent($7::text) AS qa
+    immutable_unaccent($7::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($7::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
 ),
 ranked AS (
   SELECT
@@ -556,7 +597,7 @@ ranked AS (
     t.last_used_at,
     (CASE
       WHEN t.normalized LIKE $8::text ESCAPE '\' THEN 3
-      WHEN t.tag_unaccent LIKE immutable_unaccent($8::text) ESCAPE '\' THEN 2
+      WHEN t.tag_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
       ELSE 1
     END)::int AS tier,
     round(
@@ -571,7 +612,7 @@ ranked AS (
     AND t.deleted_at IS NULL
     AND (
       t.normalized LIKE $8::text ESCAPE '\'
-      OR t.tag_unaccent LIKE immutable_unaccent($8::text) ESCAPE '\'
+      OR t.tag_unaccent LIKE q.qa_prefix ESCAPE '\'
       OR (
         $10::bool
         AND (
