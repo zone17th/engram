@@ -328,7 +328,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("start worker: %w", err)
 	}
-	logger.Info("worker đang chạy", slog.Bool("semantic_available", cfg.SemanticAvailable()))
+	logger.Info("worker đang chạy", slog.Bool("semantic_enabled", cfg.SearchSemanticEnabled))
 	if workerDeps.Embedding != nil {
 		// L8/BE-4: một reembed_all boot (sau Bootstrap, sau Start) backfill g1
 		// pending; ByArgs dedupe nên restart không chất đống job.
