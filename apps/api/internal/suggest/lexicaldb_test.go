@@ -18,6 +18,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
@@ -132,14 +133,14 @@ type queryNormalizeFixture struct {
 }
 
 type queryNormalizeCase struct {
-	Name               string `json:"name"`
-	Input              string `json:"input"`
-	Normalized         string `json:"normalized"`
-	Unaccent           string `json:"unaccent"`
-	Error              string `json:"error"`
-	EquivNFCInput      string `json:"equiv_nfc_input"`
-	DoesNotMatchASCII  string `json:"does_not_match_ascii"`
-	FuzzyMatchesTarget string `json:"fuzzy_matches_target"`
+	Name                     string `json:"name"`
+	Input                    string `json:"input"`
+	Normalized               string `json:"normalized"`
+	Unaccent                 string `json:"unaccent"`
+	Error                    string `json:"error"`
+	EquivNFCInput            string `json:"equiv_nfc_input"`
+	FoldedPrefixMatchesASCII string `json:"folded_prefix_matches_ascii"`
+	FuzzyMatchesTarget       string `json:"fuzzy_matches_target"`
 }
 
 func TestImmutableUnaccentVietnamese(t *testing.T) {
@@ -204,9 +205,30 @@ func TestImmutableUnaccentVietnamese(t *testing.T) {
 				}
 			}
 
-			if tc.DoesNotMatchASCII != "" {
-				if qa == tc.DoesNotMatchASCII {
-					t.Fatalf("full-width %q should not fold to ASCII %q without NFKC", qa, tc.DoesNotMatchASCII)
+			if tc.FoldedPrefixMatchesASCII != "" {
+				if qn == tc.FoldedPrefixMatchesASCII {
+					t.Fatalf("NormalizeQuery(%q) = %q, must stay NFC full-width and not fold to ASCII %q in Go", tc.Input, qn, tc.FoldedPrefixMatchesASCII)
+				}
+				var tier int32
+				if err := pool.QueryRow(ctx, `
+					WITH q AS (
+					  SELECT
+					    $1::text AS qn,
+					    immutable_unaccent($1::text) AS qa,
+					    replace(replace(replace(immutable_unaccent($1::text), '\', '\\'), '%', '\%'), '_', '\_') || '%' AS qa_prefix
+					)
+					SELECT (CASE
+					  WHEN $2::text LIKE $3::text ESCAPE '\' THEN 3
+					  WHEN immutable_unaccent($2::text) LIKE q.qa_prefix ESCAPE '\' THEN 2
+					  ELSE 1
+					END)::int
+					FROM q
+				`, qn, tc.FoldedPrefixMatchesASCII, item.EscapeLikePrefix(qn)).Scan(&tier); err != nil {
+					t.Fatalf("folded prefix tier check(%q, %q): %v", qn, tc.FoldedPrefixMatchesASCII, err)
+				}
+				if tier != 2 {
+					t.Fatalf("expected %q (qn=%q, qa=%q) to match ASCII %q at tier 2 (prefix_folded), got tier %d",
+						tc.Input, qn, qa, tc.FoldedPrefixMatchesASCII, tier)
 				}
 			}
 
@@ -290,11 +312,12 @@ type corpusQueryCase struct {
 }
 
 type corpusExpectHit struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Display string `json:"display"`
-	Tier    int32  `json:"tier"`
-	Match   string `json:"match"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Display string   `json:"display"`
+	Tier    int32    `json:"tier"`
+	Score   *float64 `json:"score,omitempty"`
+	Match   string   `json:"match"`
 }
 
 func tierToMatch(tier int32) string {
@@ -475,6 +498,9 @@ func TestLexicalCorpusOrder(t *testing.T) {
 						if got.Tier != exp.Tier {
 							t.Fatalf("hit[%d] Tier = %d, want %d", i, got.Tier, exp.Tier)
 						}
+						if exp.Score != nil && got.Score != *exp.Score {
+							t.Fatalf("hit[%d] Score = %v, want %v", i, got.Score, *exp.Score)
+						}
 						if gotMatch := tierToMatch(got.Tier); gotMatch != exp.Match {
 							t.Fatalf("hit[%d] Match = %q, want %q", i, gotMatch, exp.Match)
 						}
@@ -509,6 +535,9 @@ func TestLexicalCorpusOrder(t *testing.T) {
 						}
 						if got.Tier != exp.Tier {
 							t.Fatalf("tag hit[%d] Tier = %d, want %d", i, got.Tier, exp.Tier)
+						}
+						if exp.Score != nil && got.Score != *exp.Score {
+							t.Fatalf("tag hit[%d] Score = %v, want %v", i, got.Score, *exp.Score)
 						}
 						if gotMatch := tierToMatch(got.Tier); gotMatch != exp.Match {
 							t.Fatalf("tag hit[%d] Match = %q, want %q", i, gotMatch, exp.Match)
@@ -555,17 +584,27 @@ func TestLexicalCorpusOrder(t *testing.T) {
 			t.Fatalf("RecentTagsForSuggest len = %d, want 5", len(recTags))
 		}
 
-		// Attach 5 tags (4 live + 1 soft-deleted) to item #1 and verify ListTagRefsForItems returns <= 3 live tags ordered by display ASC + tag_total = 4.
+		// RV-T2-BE-6: Verify ListTagRefsForItems across:
+		//   - >= 2 owned u1 items each having > 3 live tags (assert per-item first 3 by display ASC + full live tag_total),
+		//   - 1 owned u1 item with no tags (produces 0 rows),
+		//   - 1 foreign u2 item ID (produces 0 rows),
+		//   - 1 cross-tenant item_tag row associating a u1 item with a u2 tag (excluded from both refs and tag_total),
+		//   - 1 soft-deleted u1 tag on a u1 item (excluded from both refs and tag_total).
 		item1ID := uuid.MustParse("00000000-0001-4000-8000-000000000001")
-		tagIDs := []uuid.UUID{
+		item2ID := uuid.MustParse("00000000-0001-4000-8000-000000000002")
+		itemNoTagsID := uuid.MustParse("00000000-0001-4000-8000-000000000003")
+		u2ItemID := uuid.MustParse("00000000-0002-4000-8000-000000000065")
+		u2TagID := uuid.MustParse("00000000-0022-4000-8000-000000000021")
+
+		item1LiveTags := []uuid.UUID{
 			uuid.MustParse("00000000-0011-4000-8000-000000000001"), // wifi-khách
 			uuid.MustParse("00000000-0011-4000-8000-000000000002"), // wifi-nhà
 			uuid.MustParse("00000000-0011-4000-8000-000000000010"), // gia-đình
 			uuid.MustParse("00000000-0011-4000-8000-000000000011"), // công-việc
 		}
-		for _, tid := range tagIDs {
+		for _, tid := range item1LiveTags {
 			if _, err := pool.Exec(ctx, `INSERT INTO item_tag (item_id, tag_id) VALUES ($1, $2)`, item1ID, tid); err != nil {
-				t.Fatalf("attach tag %s: %v", tid, err)
+				t.Fatalf("attach item1 tag %s: %v", tid, err)
 			}
 		}
 		deletedTagID := uuid.MustParse("00000000-0011-4000-8000-000000000012")
@@ -573,35 +612,334 @@ func TestLexicalCorpusOrder(t *testing.T) {
 			t.Fatalf("soft-delete tag: %v", err)
 		}
 		if _, err := pool.Exec(ctx, `INSERT INTO item_tag (item_id, tag_id) VALUES ($1, $2)`, item1ID, deletedTagID); err != nil {
-			t.Fatalf("attach deleted tag: %v", err)
+			t.Fatalf("attach deleted tag to item1: %v", err)
 		}
+		// Cross-tenant item_tag row: u1 item1 linked to u2 tag (allowed by FK schema, must be filtered by t.user_id = user_id).
+		if _, err := pool.Exec(ctx, `INSERT INTO item_tag (item_id, tag_id) VALUES ($1, $2)`, item1ID, u2TagID); err != nil {
+			t.Fatalf("attach cross-tenant u2 tag to item1: %v", err)
+		}
+
+		// Attach 5 live u1 tags to item2 + 1 cross-tenant u2 tag.
+		item2LiveTags := []uuid.UUID{
+			uuid.MustParse("00000000-0011-4000-8000-000000000003"), // đường-bộ
+			uuid.MustParse("00000000-0011-4000-8000-000000000004"), // duong-sat
+			uuid.MustParse("00000000-0011-4000-8000-000000000005"), // đà-nẵng
+			uuid.MustParse("00000000-0011-4000-8000-000000000006"), // da-nang-trip
+			uuid.MustParse("00000000-0011-4000-8000-000000000007"), // mã-pin
+		}
+		for _, tid := range item2LiveTags {
+			if _, err := pool.Exec(ctx, `INSERT INTO item_tag (item_id, tag_id) VALUES ($1, $2)`, item2ID, tid); err != nil {
+				t.Fatalf("attach item2 tag %s: %v", tid, err)
+			}
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO item_tag (item_id, tag_id) VALUES ($1, $2)`, item2ID, u2TagID); err != nil {
+			t.Fatalf("attach cross-tenant u2 tag to item2: %v", err)
+		}
+		// Also attach a tag to u2ItemID (owned by u2) to verify u1 query never returns rows for u2ItemID.
+		if _, err := pool.Exec(ctx, `INSERT INTO item_tag (item_id, tag_id) VALUES ($1, $2)`, u2ItemID, u2TagID); err != nil {
+			t.Fatalf("attach u2 tag to u2 item: %v", err)
+		}
+
+		// Compute expected display-ordered top 3 for item1 and item2 directly from Postgres `ORDER BY display ASC, id ASC`
+		// so collation order is verified against the database's exact ordering of the live u1 tags.
+		expectedRefsFor := func(liveTagIDs []uuid.UUID) []string {
+			rows, err := pool.Query(ctx, `
+				SELECT display FROM tag WHERE id = ANY($1::uuid[]) ORDER BY display ASC, id ASC LIMIT 3
+			`, liveTagIDs)
+			if err != nil {
+				t.Fatalf("query expected tag displays: %v", err)
+			}
+			defer rows.Close()
+			var out []string
+			for rows.Next() {
+				var d string
+				if err := rows.Scan(&d); err != nil {
+					t.Fatalf("scan expected tag display: %v", err)
+				}
+				out = append(out, d)
+			}
+			return out
+		}
+		wantItem1Displays := expectedRefsFor(item1LiveTags)
+		wantItem2Displays := expectedRefsFor(item2LiveTags)
 
 		refRows, err := q.ListTagRefsForItems(ctx, gen.ListTagRefsForItemsParams{
 			UserID:  u1,
-			ItemIds: []uuid.UUID{item1ID},
+			ItemIds: []uuid.UUID{item1ID, item2ID, itemNoTagsID, u2ItemID},
 		})
 		if err != nil {
 			t.Fatalf("ListTagRefsForItems: %v", err)
 		}
-		if len(refRows) != 3 {
-			t.Fatalf("ListTagRefsForItems len = %d, want 3 (capped at 3)", len(refRows))
+		if len(refRows) != 6 {
+			t.Fatalf("ListTagRefsForItems len = %d, want 6 (3 for item1 + 3 for item2, 0 for itemNoTags and u2Item)", len(refRows))
 		}
-		for i, r := range refRows {
-			if r.ItemID != item1ID {
-				t.Fatalf("refRows[%d].ItemID = %s, want %s", i, r.ItemID, item1ID)
+		byItem := make(map[uuid.UUID][]gen.ListTagRefsForItemsRow)
+		for _, r := range refRows {
+			if r.ItemID == itemNoTagsID {
+				t.Fatalf("unexpected row for owned item with no tags: %+v", r)
 			}
+			if r.ItemID == u2ItemID {
+				t.Fatalf("cross-tenant leak: returned row for u2 item: %+v", r)
+			}
+			if r.TagID == u2TagID {
+				t.Fatalf("cross-tenant leak: returned u2 tag %s on item %s", r.TagID, r.ItemID)
+			}
+			byItem[r.ItemID] = append(byItem[r.ItemID], r)
+		}
+
+		gotItem1 := byItem[item1ID]
+		if len(gotItem1) != 3 {
+			t.Fatalf("item1 ref count = %d, want 3", len(gotItem1))
+		}
+		for i, r := range gotItem1 {
 			if r.TagTotal != 4 {
-				t.Fatalf("refRows[%d].TagTotal = %d, want 4 (live tags only)", i, r.TagTotal)
+				t.Fatalf("item1[%d].TagTotal = %d, want 4 (live u1 tags only, excluding deleted and u2 tag)", i, r.TagTotal)
 			}
-			if i > 0 && refRows[i-1].Display > r.Display {
-				t.Fatalf("ListTagRefsForItems not ordered by display ASC: %q > %q", refRows[i-1].Display, r.Display)
+			if r.Display != wantItem1Displays[i] {
+				t.Fatalf("item1[%d].Display = %q, want %q", i, r.Display, wantItem1Displays[i])
+			}
+		}
+
+		gotItem2 := byItem[item2ID]
+		if len(gotItem2) != 3 {
+			t.Fatalf("item2 ref count = %d, want 3", len(gotItem2))
+		}
+		for i, r := range gotItem2 {
+			if r.TagTotal != 5 {
+				t.Fatalf("item2[%d].TagTotal = %d, want 5 (live u1 tags only, excluding u2 tag)", i, r.TagTotal)
+			}
+			if r.Display != wantItem2Displays[i] {
+				t.Fatalf("item2[%d].Display = %q, want %q", i, r.Display, wantItem2Displays[i])
 			}
 		}
 	})
 }
 
+// TestLexicalLikeMetacharacterEscaping verifies RV-T2-BE-3 (lead call A):
+// both ASCII LIKE metacharacters (`%`, `_`, `\`) and full-width variants (`％`, `＿`, `＼`)
+// that PostgreSQL 16 `unaccent` transliterates into ASCII metacharacters are treated as
+// literal characters in prefix-only mode (fuzzy=false) across SearchItemsLexical,
+// SearchTagsLexical, SearchItemsLexicalPage, and SearchTagsLexicalPage, never matching
+// unrelated `axxxb`-style rows.
+func TestLexicalLikeMetacharacterEscaping(t *testing.T) {
+	dsn := startTestDB(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	uid := uuid.MustParse("44444444-4444-4000-8000-000000000004")
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, locale) VALUES ($1, 'likeescape@example.com', 'vi')`, uid); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	ts := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
+	seeds := []struct {
+		itemID string
+		tagID  string
+		text   string
+	}{
+		// Unrelated decoy rows that would match if `%`, `_`, or `\` acted as wildcards/escapes:
+		{"00000000-0055-4000-8000-000000000001", "00000000-0066-4000-8000-000000000001", "axxxb decoy"},
+		{"00000000-0055-4000-8000-000000000002", "00000000-0066-4000-8000-000000000002", "axb decoy"},
+		{"00000000-0055-4000-8000-000000000003", "00000000-0066-4000-8000-000000000003", "ab decoy"},
+		// Literal ASCII metacharacter target rows:
+		{"00000000-0055-4000-8000-000000000011", "00000000-0066-4000-8000-000000000011", "a%b literal"},
+		{"00000000-0055-4000-8000-000000000012", "00000000-0066-4000-8000-000000000012", "a_b literal"},
+		{"00000000-0055-4000-8000-000000000013", "00000000-0066-4000-8000-000000000013", `a\b literal`},
+	}
+
+	for _, s := range seeds {
+		_, normItem, err := textnorm.NormalizeName(s.text)
+		if err != nil {
+			t.Fatalf("NormalizeName(%q): %v", s.text, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO item (id, user_id, name, name_normalized, entry_count, last_used_at, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, 1, $5, $5, $5)
+		`, uuid.MustParse(s.itemID), uid, s.text, normItem, ts); err != nil {
+			t.Fatalf("insert item %q: %v", s.text, err)
+		}
+		_, normTag, err := textnorm.NormalizeTag(s.text)
+		if err != nil {
+			t.Fatalf("NormalizeTag(%q): %v", s.text, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO tag (id, user_id, display, normalized, item_count, last_used_at, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, 1, $5, $5, $5)
+		`, uuid.MustParse(s.tagID), uid, s.text, normTag, ts); err != nil {
+			t.Fatalf("insert tag %q: %v", s.text, err)
+		}
+	}
+
+	cases := []struct {
+		name       string
+		rawQuery   string
+		wantItemID string
+		wantTagID  string
+		wantTier   int32
+	}{
+		{
+			name:       "ascii-percent-literal-prefix",
+			rawQuery:   "a%b",
+			wantItemID: "00000000-0055-4000-8000-000000000011",
+			wantTagID:  "00000000-0066-4000-8000-000000000011",
+			wantTier:   3,
+		},
+		{
+			name:       "ascii-underscore-literal-prefix",
+			rawQuery:   "a_b",
+			wantItemID: "00000000-0055-4000-8000-000000000012",
+			wantTagID:  "00000000-0066-4000-8000-000000000012",
+			wantTier:   3,
+		},
+		{
+			name:       "ascii-backslash-literal-prefix",
+			rawQuery:   `a\b`,
+			wantItemID: "00000000-0055-4000-8000-000000000013",
+			wantTagID:  "00000000-0066-4000-8000-000000000013",
+			wantTier:   3,
+		},
+		{
+			name:       "fullwidth-percent-folded-literal-prefix",
+			rawQuery:   "a\uff05b",
+			wantItemID: "00000000-0055-4000-8000-000000000011",
+			wantTagID:  "00000000-0066-4000-8000-000000000011",
+			wantTier:   2,
+		},
+		{
+			name:       "fullwidth-underscore-folded-literal-prefix",
+			rawQuery:   "a\uff3fb",
+			wantItemID: "00000000-0055-4000-8000-000000000012",
+			wantTagID:  "00000000-0066-4000-8000-000000000012",
+			wantTier:   2,
+		},
+		{
+			name:       "fullwidth-backslash-folded-literal-prefix",
+			rawQuery:   "a\uff3cb",
+			wantItemID: "00000000-0055-4000-8000-000000000013",
+			wantTagID:  "00000000-0066-4000-8000-000000000013",
+			wantTier:   2,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			qn, err := textnorm.NormalizeQuery(tc.rawQuery)
+			if err != nil {
+				t.Fatalf("NormalizeQuery(%q): %v", tc.rawQuery, err)
+			}
+			qPrefix := item.EscapeLikePrefix(qn)
+
+			withLexicalTx(t, ctx, pool, func(q *gen.Queries) {
+				// 1. SearchItemsLexical (unpaged, fuzzy=false)
+				items, err := q.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
+					UserID:    uid,
+					Qn:        qn,
+					QPrefix:   qPrefix,
+					Fuzzy:     false,
+					PageLimit: 20,
+				})
+				if err != nil {
+					t.Fatalf("SearchItemsLexical(%q): %v", qn, err)
+				}
+				if len(items) != 1 || items[0].ID.String() != tc.wantItemID || items[0].Tier != tc.wantTier {
+					t.Fatalf("SearchItemsLexical(%q) = %+v, want single item %s at tier %d (no decoy match)",
+						qn, items, tc.wantItemID, tc.wantTier)
+				}
+
+				// 2. SearchItemsLexicalPage (paged, fuzzy=false)
+				itemPage, err := q.SearchItemsLexicalPage(ctx, gen.SearchItemsLexicalPageParams{
+					UserID:    uid,
+					Qn:        qn,
+					QPrefix:   qPrefix,
+					Fuzzy:     false,
+					PageLimit: 20,
+				})
+				if err != nil {
+					t.Fatalf("SearchItemsLexicalPage(%q): %v", qn, err)
+				}
+				if len(itemPage) != 1 || itemPage[0].ID.String() != tc.wantItemID || itemPage[0].Tier != tc.wantTier {
+					t.Fatalf("SearchItemsLexicalPage(%q) = %+v, want single item %s at tier %d (no decoy match)",
+						qn, itemPage, tc.wantItemID, tc.wantTier)
+				}
+
+				// 3. SearchTagsLexical (unpaged, fuzzy=false)
+				tags, err := q.SearchTagsLexical(ctx, gen.SearchTagsLexicalParams{
+					UserID:    uid,
+					Qn:        qn,
+					QPrefix:   qPrefix,
+					Fuzzy:     false,
+					PageLimit: 20,
+				})
+				if err != nil {
+					t.Fatalf("SearchTagsLexical(%q): %v", qn, err)
+				}
+				if len(tags) != 1 || tags[0].ID.String() != tc.wantTagID || tags[0].Tier != tc.wantTier {
+					t.Fatalf("SearchTagsLexical(%q) = %+v, want single tag %s at tier %d (no decoy match)",
+						qn, tags, tc.wantTagID, tc.wantTier)
+				}
+
+				// 4. SearchTagsLexicalPage (paged, fuzzy=false)
+				tagPage, err := q.SearchTagsLexicalPage(ctx, gen.SearchTagsLexicalPageParams{
+					UserID:    uid,
+					Qn:        qn,
+					QPrefix:   qPrefix,
+					Fuzzy:     false,
+					PageLimit: 20,
+				})
+				if err != nil {
+					t.Fatalf("SearchTagsLexicalPage(%q): %v", qn, err)
+				}
+				if len(tagPage) != 1 || tagPage[0].ID.String() != tc.wantTagID || tagPage[0].Tier != tc.wantTier {
+					t.Fatalf("SearchTagsLexicalPage(%q) = %+v, want single tag %s at tier %d (no decoy match)",
+						qn, tagPage, tc.wantTagID, tc.wantTier)
+				}
+			})
+		})
+	}
+}
+
+// capturingDBTX wraps a gen.DBTX (inside a transaction) and records the exact SQL
+// statement and argument slice issued by gen.Queries methods (RV-T2-BE-5).
+type capturingDBTX struct {
+	inner    gen.DBTX
+	lastSQL  string
+	lastArgs []any
+}
+
+func (c *capturingDBTX) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	c.lastSQL = sql
+	c.lastArgs = append([]any(nil), args...)
+	return c.inner.Exec(ctx, sql, args...)
+}
+
+func (c *capturingDBTX) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	c.lastSQL = sql
+	c.lastArgs = append([]any(nil), args...)
+	return c.inner.Query(ctx, sql, args...)
+}
+
+func (c *capturingDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	c.lastSQL = sql
+	c.lastArgs = append([]any(nil), args...)
+	return c.inner.QueryRow(ctx, sql, args...)
+}
+
+func explainCapturedQuery(t *testing.T, ctx context.Context, tx pgx.Tx, capDB *capturingDBTX) string {
+	t.Helper()
+	if capDB.lastSQL == "" {
+		t.Fatal("capturingDBTX did not capture any SQL statement")
+	}
+	var planJSON string
+	if err := tx.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+capDB.lastSQL, capDB.lastArgs...).Scan(&planJSON); err != nil {
+		t.Fatalf("EXPLAIN captured query: %v\nSQL:\n%s", err, capDB.lastSQL)
+	}
+	return planJSON
+}
+
 func TestLexicalIndexesUsed(t *testing.T) {
-	// NOTE: No t.Parallel() — DROP INDEX inside the transaction takes ACCESS EXCLUSIVE locks (plan Task 2 / FS-29).
+	// NOTE: No t.Parallel() — DROP INDEX inside the transaction takes ACCESS EXCLUSIVE locks (plan Task 2 / FS-29 / RV-T2-BE-5).
 	dsn := startTestDB(t)
 	dbtest.MigrateUp(t, dsn)
 	pool := dbtest.Pool(t, dsn)
@@ -629,98 +967,108 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	if _, err := tx.Exec(ctx, `SET LOCAL pg_trgm.word_similarity_threshold = 0.5`); err != nil {
 		t.Fatalf("SET LOCAL word_similarity_threshold: %v", err)
 	}
-
-	qn := "duong"
-	qPrefix := item.EscapeLikePrefix(qn)
-
-	// 1. Item lexical query (fuzzy = true): must use item_user_unaccent_prefix / item_user_name_trgm (and/or item_user_name_prefix) with no Seq Scan on item.
-	var itemPlanJSON string
-	if err := tx.QueryRow(ctx, `
-		EXPLAIN (FORMAT JSON)
-		WITH q AS (
-		  SELECT $2::text AS qn, immutable_unaccent($2::text) AS qa
-		)
-		SELECT i.id, i.name, i.entry_count, i.last_used_at, i.created_at,
-		       (CASE WHEN i.name_normalized LIKE $3::text ESCAPE '\' THEN 3
-		             WHEN i.name_unaccent LIKE immutable_unaccent($3::text) ESCAPE '\' THEN 2
-		             ELSE 1 END)::int AS tier,
-		       round(GREATEST(similarity(i.name_unaccent, q.qa),
-		                      word_similarity(q.qa, i.name_unaccent))::numeric, 2)::float8 AS score
-		FROM item AS i, q
-		WHERE i.user_id = $1 AND i.deleted_at IS NULL
-		  AND (i.name_normalized LIKE $3::text ESCAPE '\'
-		       OR i.name_unaccent LIKE immutable_unaccent($3::text) ESCAPE '\'
-		       OR ($4::bool AND (i.name_unaccent % q.qa OR q.qa <% i.name_unaccent)))
-		ORDER BY tier DESC, score DESC, i.last_used_at DESC, i.entry_count DESC, i.id ASC
-		LIMIT $5
-	`, u1, qn, qPrefix, true, 10).Scan(&itemPlanJSON); err != nil {
-		t.Fatalf("EXPLAIN item lexical: %v", err)
+	// Force fresh statistics and disable plain indexscan/bitmapscan fallback on user_id-only btrees where needed
+	// by running ANALYZE so the planner sees all three OR arms (exact prefix, folded prefix, trigram).
+	if _, err := tx.Exec(ctx, `ANALYZE item, tag`); err != nil {
+		t.Fatalf("ANALYZE item, tag in tx: %v", err)
 	}
-	assertPlanUsesPerUserIndexes(t, itemPlanJSON, "item",
-		[]string{"item_user_unaccent_prefix", "item_user_name_trgm"},
-	)
-
-	// Also verify prefix-only item query (fuzzy = false) uses item_user_unaccent_prefix.
-	var itemPrefixPlanJSON string
-	if err := tx.QueryRow(ctx, `
-		EXPLAIN (FORMAT JSON)
-		SELECT i.id
-		FROM item AS i
-		WHERE i.user_id = $1 AND i.deleted_at IS NULL
-		  AND (i.name_normalized LIKE $2::text ESCAPE '\'
-		       OR i.name_unaccent LIKE immutable_unaccent($2::text) ESCAPE '\')
-	`, u1, qPrefix).Scan(&itemPrefixPlanJSON); err != nil {
-		t.Fatalf("EXPLAIN item prefix: %v", err)
+	// Drop the user-only recent/list btree indexes inside this rolled-back transaction so PostgreSQL
+	// cannot satisfy all OR arms via a single full-user btree scan + Filter when enable_seqscan=off,
+	// proving that the prefix and trigram indexes themselves are indexable for the production SQL.
+	if _, err := tx.Exec(ctx, `DROP INDEX IF EXISTS item_user_recent, item_user_created, tag_user_recent, tag_user_norm`); err != nil {
+		t.Fatalf("DROP user-only btree indexes in tx: %v", err)
 	}
-	assertPlanUsesPerUserIndexes(t, itemPrefixPlanJSON, "item",
-		[]string{"item_user_unaccent_prefix"},
-	)
 
-	// 2. Tag lexical query (fuzzy = true): must use tag_user_unaccent_prefix / tag_user_tag_trgm with no Seq Scan on tag.
-	var tagPlanJSON string
-	if err := tx.QueryRow(ctx, `
-		EXPLAIN (FORMAT JSON)
-		WITH q AS (
-		  SELECT $2::text AS qn, immutable_unaccent($2::text) AS qa
-		)
-		SELECT t.id, t.display, t.item_count, t.last_used_at,
-		       (CASE WHEN t.normalized LIKE $3::text ESCAPE '\' THEN 3
-		             WHEN t.tag_unaccent LIKE immutable_unaccent($3::text) ESCAPE '\' THEN 2
-		             ELSE 1 END)::int AS tier,
-		       round(GREATEST(similarity(t.tag_unaccent, q.qa),
-		                      word_similarity(q.qa, t.tag_unaccent))::numeric, 2)::float8 AS score
-		FROM tag AS t, q
-		WHERE t.user_id = $1 AND t.deleted_at IS NULL
-		  AND (t.normalized LIKE $3::text ESCAPE '\'
-		       OR t.tag_unaccent LIKE immutable_unaccent($3::text) ESCAPE '\'
-		       OR ($4::bool AND (t.tag_unaccent % q.qa OR q.qa <% t.tag_unaccent)))
-		ORDER BY tier DESC, score DESC, t.last_used_at DESC, t.item_count DESC, t.id ASC
-		LIMIT $5
-	`, u1, qn, qPrefix, true, 10).Scan(&tagPlanJSON); err != nil {
-		t.Fatalf("EXPLAIN tag lexical: %v", err)
-	}
-	assertPlanUsesPerUserIndexes(t, tagPlanJSON, "tag",
-		[]string{"tag_user_unaccent_prefix", "tag_user_tag_trgm"},
-	)
+	capDB := &capturingDBTX{inner: tx}
+	q := gen.New(capDB)
 
-	// Verify prefix-only tag query uses tag_user_unaccent_prefix.
-	var tagPrefixPlanJSON string
-	if err := tx.QueryRow(ctx, `
-		EXPLAIN (FORMAT JSON)
-		SELECT t.id
-		FROM tag AS t
-		WHERE t.user_id = $1 AND t.deleted_at IS NULL
-		  AND (t.normalized LIKE $2::text ESCAPE '\'
-		       OR t.tag_unaccent LIKE immutable_unaccent($2::text) ESCAPE '\')
-	`, u1, qPrefix).Scan(&tagPrefixPlanJSON); err != nil {
-		t.Fatalf("EXPLAIN tag prefix: %v", err)
+	// 1. Prefix-only path (fuzzy = false) via real gen.Queries calls:
+	//    Must use item_user_unaccent_prefix (and item_user_name_prefix) on item,
+	//    and tag_user_unaccent_prefix (and tag_user_norm_prefix) on tag.
+	qnPrefix := "duong"
+	qPrefix := item.EscapeLikePrefix(qnPrefix)
+
+	if _, err := q.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
+		UserID:    u1,
+		Qn:        qnPrefix,
+		QPrefix:   qPrefix,
+		Fuzzy:     false,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchItemsLexical(fuzzy=false): %v", err)
 	}
-	assertPlanUsesPerUserIndexes(t, tagPrefixPlanJSON, "tag",
-		[]string{"tag_user_unaccent_prefix"},
-	)
+	itemPrefixPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, itemPrefixPlan, "item", "item_user_unaccent_prefix", "~~")
+
+	if _, err := q.SearchTagsLexical(ctx, gen.SearchTagsLexicalParams{
+		UserID:    u1,
+		Qn:        qnPrefix,
+		QPrefix:   qPrefix,
+		Fuzzy:     false,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchTagsLexical(fuzzy=false): %v", err)
+	}
+	tagPrefixPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, tagPrefixPlan, "tag", "tag_user_unaccent_prefix", "~~")
+
+	// 2. Selective fuzzy path (fuzzy = true) via real gen.Queries calls (`pasword` -> `password`):
+	//    Must specifically use the per-user GIN trigram indexes `item_user_name_trgm` on item
+	//    and `tag_user_tag_trgm` on tag (with trigram index condition `%` or `<%`), NOT just prefix indexes.
+	qnFuzzy := "pasword"
+	qFuzzyPrefix := item.EscapeLikePrefix(qnFuzzy)
+
+	if _, err := q.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
+		UserID:    u1,
+		Qn:        qnFuzzy,
+		QPrefix:   qFuzzyPrefix,
+		Fuzzy:     true,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchItemsLexical(fuzzy=true): %v", err)
+	}
+	itemFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, itemFuzzyPlan, "item", "item_user_name_trgm", "%")
+
+	if _, err := q.SearchTagsLexical(ctx, gen.SearchTagsLexicalParams{
+		UserID:    u1,
+		Qn:        qnFuzzy,
+		QPrefix:   qFuzzyPrefix,
+		Fuzzy:     true,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchTagsLexical(fuzzy=true): %v", err)
+	}
+	tagFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, tagFuzzyPlan, "tag", "tag_user_tag_trgm", "%")
+
+	// 3. Also verify the paged queries (SearchItemsLexicalPage, SearchTagsLexicalPage) use the trigram indexes.
+	if _, err := q.SearchItemsLexicalPage(ctx, gen.SearchItemsLexicalPageParams{
+		UserID:    u1,
+		Qn:        qnFuzzy,
+		QPrefix:   qFuzzyPrefix,
+		Fuzzy:     true,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchItemsLexicalPage(fuzzy=true): %v", err)
+	}
+	itemPageFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, itemPageFuzzyPlan, "item", "item_user_name_trgm", "%")
+
+	if _, err := q.SearchTagsLexicalPage(ctx, gen.SearchTagsLexicalPageParams{
+		UserID:    u1,
+		Qn:        qnFuzzy,
+		QPrefix:   qFuzzyPrefix,
+		Fuzzy:     true,
+		PageLimit: 10,
+	}); err != nil {
+		t.Fatalf("SearchTagsLexicalPage(fuzzy=true): %v", err)
+	}
+	tagPageFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
+	assertPlanRequiresIndex(t, tagPageFuzzyPlan, "tag", "tag_user_tag_trgm", "%")
 }
 
-func assertPlanUsesPerUserIndexes(t *testing.T, planJSON string, tableName string, expectedAny []string) {
+func assertPlanRequiresIndex(t *testing.T, planJSON string, tableName string, requiredIndex string, requiredCondSubstr string) {
 	t.Helper()
 	var plans []map[string]any
 	if err := json.Unmarshal([]byte(planJSON), &plans); err != nil {
@@ -728,6 +1076,7 @@ func assertPlanUsesPerUserIndexes(t *testing.T, planJSON string, tableName strin
 	}
 	var indexNames []string
 	var seqScansOnTable []string
+	matchedIndexAndCond := false
 	var walk func(node any)
 	walk = func(node any) {
 		switch v := node.(type) {
@@ -735,8 +1084,12 @@ func assertPlanUsesPerUserIndexes(t *testing.T, planJSON string, tableName strin
 			nodeType, _ := v["Node Type"].(string)
 			relName, _ := v["Relation Name"].(string)
 			idxName, _ := v["Index Name"].(string)
+			idxCond, _ := v["Index Cond"].(string)
 			if idxName != "" {
 				indexNames = append(indexNames, idxName)
+			}
+			if idxName == requiredIndex && (requiredCondSubstr == "" || strings.Contains(idxCond, requiredCondSubstr)) {
+				matchedIndexAndCond = true
 			}
 			if nodeType == "Seq Scan" && relName == tableName {
 				seqScansOnTable = append(seqScansOnTable, relName)
@@ -756,18 +1109,9 @@ func assertPlanUsesPerUserIndexes(t *testing.T, planJSON string, tableName strin
 	if len(seqScansOnTable) > 0 {
 		t.Fatalf("unexpected Seq Scan on %s in plan:\n%s", tableName, planJSON)
 	}
-	idxSet := make(map[string]bool, len(indexNames))
-	for _, name := range indexNames {
-		idxSet[name] = true
-	}
-	matched := false
-	for _, want := range expectedAny {
-		if idxSet[want] {
-			matched = true
-		}
-	}
-	if !matched {
-		t.Fatalf("plan on %s did not use any of %v (used indexes=%v):\n%s", tableName, expectedAny, indexNames, planJSON)
+	if !matchedIndexAndCond {
+		t.Fatalf("plan on %s did not use required index %q with condition containing %q (used indexes=%v):\n%s",
+			tableName, requiredIndex, requiredCondSubstr, indexNames, planJSON)
 	}
 }
 
@@ -783,76 +1127,72 @@ func TestTagsLexicalPageKeyset(t *testing.T) {
 	}
 
 	t1 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	t1Plus500us := t1.Add(500 * time.Microsecond)
+	t1Plus100us := t1.Add(100 * time.Microsecond)
 	t2 := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 
-	// Seed tags covering mixed tiers (3, 2, 1), different scores, tie on score broken by last_used_at,
-	// tie on last_used_at broken by item_count, tie on item_count broken by id ASC.
-	tagSeeds := []struct {
-		id         string
-		display    string
-		normalized string
-		count      int32
-		lastUsed   time.Time
-	}{
-		// Tier 3 exact prefix "duong..."
-		{"00000000-0033-4000-8000-000000000001", "duong", "duong", 10, t1},
-		{"00000000-0033-4000-8000-000000000002", "duong-alpha", "duong-alpha", 8, t1},
-		{"00000000-0033-4000-8000-000000000003", "duong-beta", "duong-beta", 8, t1},   // tie on tier=3, score, last_used_at, item_count -> broken by id ASC
-		{"00000000-0033-4000-8000-000000000004", "duong-gamma", "duong-gamma", 2, t1}, // tie on tier=3, score, last_used_at -> broken by item_count DESC
-		{"00000000-0033-4000-8000-000000000005", "duong-delta", "duong-delta", 9, t2}, // tie on tier=3, score -> broken by last_used_at DESC
-		// Tier 2 folded prefix "đường..."
-		{"00000000-0033-4000-8000-000000000006", "đường-một", "đường-một", 6, t1},
-		{"00000000-0033-4000-8000-000000000007", "đường-hai", "đường-hai", 6, t1}, // tie on tier=2, score, last_used_at, item_count -> broken by id ASC
-		{"00000000-0033-4000-8000-000000000008", "đường-ba", "đường-ba", 1, t1},
-		{"00000000-0033-4000-8000-000000000009", "đường-bốn", "đường-bốn", 5, t2},
-		// Tier 1 fuzzy (contains word "duong" not at prefix)
-		{"00000000-0033-4000-8000-000000000010", "con-đường-nhỏ", "con-đường-nhỏ", 7, t1},
-		{"00000000-0033-4000-8000-000000000011", "tuyến-đường-lớn", "tuyến-đường-lớn", 4, t2},
+	// RV-T2-BE-4: Seed items and tags for query `duongsat` (9 unique trigrams) with:
+	//   - distinct non-integral rounded scores within the same tier across page boundaries:
+	//     * Tier 3: 1.00 (9/9) -> 0.89 (8/9 = 0.888889)
+	//     * Tier 2: 1.00 (9/9) -> 0.89 (8/9 = 0.888889)
+	//     * Tier 1: 0.78 (7/9 = 0.777778) -> 0.67 (6/9 = 0.666667) -> 0.58 (7/12 = 0.583333) -> 0.56
+	//   - two distinct raw scores that round to the SAME 2-decimal value 0.56:
+	//     * `duong` (raw 5/9 = 0.555556 -> 0.56) with newer microsecond timestamp `t1Plus500us`
+	//     * `duongxyzw-ngsat` (raw 9/16 = 0.562500 -> 0.56) with older microsecond timestamp `t1Plus100us`
+	//     Because scores are rounded to 2 decimals before ordering, `duong` (0.56, t1+500µs) MUST rank
+	//     BEFORE `duongxyzw-ngsat` (0.56, t1+100µs).
+	//   - microsecond timestamp tie-breaks (`t1Plus500us` vs `t1Plus100us` vs `t1`) on page boundaries,
+	//   - count tie-breaks (`count=9` vs `count=4`) and ascending UUID tie-breaks (`...0012` vs `...0013`).
+	type keysetSeed struct {
+		tagID     string
+		itemID    string
+		text      string
+		count     int32
+		lastUsed  time.Time
+		wantTier  int32
+		wantScore float64
 	}
 
-	for _, s := range tagSeeds {
+	seeds := []keysetSeed{
+		// Tier 3 (exact prefix `duongsat...`):
+		{"00000000-0033-4000-8000-000000000001", "00000000-0044-4000-8000-000000000001", "duongsat-alpha", 8, t1Plus500us, 3, 1.00},
+		{"00000000-0033-4000-8000-000000000002", "00000000-0044-4000-8000-000000000002", "duongsat-beta", 8, t1Plus100us, 3, 1.00},
+		{"00000000-0033-4000-8000-000000000003", "00000000-0044-4000-8000-000000000003", "duongsat", 10, t1, 3, 1.00},
+		{"00000000-0033-4000-8000-000000000004", "00000000-0044-4000-8000-000000000004", "duongsatx", 9, t1Plus500us, 3, 0.89},
+		// Tier 2 (folded prefix `đườngsắt...`):
+		{"00000000-0033-4000-8000-000000000005", "00000000-0044-4000-8000-000000000005", "đườngsắt", 7, t1, 2, 1.00},
+		{"00000000-0033-4000-8000-000000000006", "00000000-0044-4000-8000-000000000006", "đườngsắtx", 6, t1, 2, 0.89},
+		// Tier 1 (fuzzy non-prefix with distinct non-integral scores + rounded-score tie-break):
+		{"00000000-0033-4000-8000-000000000007", "00000000-0044-4000-8000-000000000007", "duongsa", 5, t2, 1, 0.78},
+		{"00000000-0033-4000-8000-000000000008", "00000000-0044-4000-8000-000000000008", "duongs", 5, t2, 1, 0.67},
+		{"00000000-0033-4000-8000-000000000009", "00000000-0044-4000-8000-000000000009", "duoxngsat", 5, t2, 1, 0.58},
+		{"00000000-0033-4000-8000-000000000010", "00000000-0044-4000-8000-000000000010", "duong", 3, t1Plus500us, 1, 0.56},
+		{"00000000-0033-4000-8000-000000000011", "00000000-0044-4000-8000-000000000011", "duongxyzw-ngsat", 9, t1Plus100us, 1, 0.56},
+		{"00000000-0033-4000-8000-000000000012", "00000000-0044-4000-8000-000000000012", "duongxyzv-ngsat", 4, t1Plus100us, 1, 0.56},
+		{"00000000-0033-4000-8000-000000000013", "00000000-0044-4000-8000-000000000013", "duongxyzu-ngsat", 4, t1Plus100us, 1, 0.56},
+	}
+
+	for _, s := range seeds {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO tag (id, user_id, display, normalized, item_count, last_used_at, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
-		`, uuid.MustParse(s.id), uid, s.display, s.normalized, s.count, s.lastUsed); err != nil {
-			t.Fatalf("insert tag seed %s: %v", s.id, err)
+		`, uuid.MustParse(s.tagID), uid, s.text, s.text, s.count, s.lastUsed); err != nil {
+			t.Fatalf("insert tag seed %s: %v", s.tagID, err)
 		}
-	}
-
-	// Also seed items covering mixed tiers (3, 2, 1) and exact ties on (tier, score, last_used_at, entry_count) broken by id ASC.
-	itemSeeds := []struct {
-		id       string
-		name     string
-		norm     string
-		count    int32
-		lastUsed time.Time
-	}{
-		{"00000000-0044-4000-8000-000000000001", "duong", "duong", 9, t1},
-		{"00000000-0044-4000-8000-000000000002", "duong hồ sơ", "duong hồ sơ", 5, t1},
-		{"00000000-0044-4000-8000-000000000003", "duong hồ sơ", "duong hồ sơ", 5, t1}, // exact duplicate name + count + last_used_at -> broken by id ASC
-		{"00000000-0044-4000-8000-000000000004", "duong hồ sơ", "duong hồ sơ", 2, t1}, // broken by entry_count DESC
-		{"00000000-0044-4000-8000-000000000005", "duong hồ sơ", "duong hồ sơ", 8, t2}, // broken by last_used_at DESC
-		{"00000000-0044-4000-8000-000000000006", "đường sắt", "đường sắt", 6, t1},
-		{"00000000-0044-4000-8000-000000000007", "đường sắt", "đường sắt", 6, t1}, // tie at tier 2 -> broken by id ASC
-		{"00000000-0044-4000-8000-000000000008", "đường bộ", "đường bộ", 3, t2},
-		{"00000000-0044-4000-8000-000000000009", "con đường nhỏ", "con đường nhỏ", 4, t1},
-		{"00000000-0044-4000-8000-000000000010", "tuyến đường lớn", "tuyến đường lớn", 1, t2},
-	}
-
-	for _, s := range itemSeeds {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO item (id, user_id, name, name_normalized, entry_count, last_used_at, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
-		`, uuid.MustParse(s.id), uid, s.name, s.norm, s.count, s.lastUsed); err != nil {
-			t.Fatalf("insert item seed %s: %v", s.id, err)
+		`, uuid.MustParse(s.itemID), uid, s.text, s.text, s.count, s.lastUsed); err != nil {
+			t.Fatalf("insert item seed %s: %v", s.itemID, err)
 		}
 	}
 
-	qn := "duong"
+	qn := "duongsat"
 	qPrefix := item.EscapeLikePrefix(qn)
 
 	withLexicalTx(t, ctx, pool, func(q *gen.Queries) {
-		// 1. Tags: unpaged list vs walking keyset pages with page size = 2
+		// 1. Tags: verify independent expected order, tiers, non-integral rounded scores, and microsecond timestamps
+		//    across page boundaries of size 2.
 		unpagedTags, err := q.SearchTagsLexical(ctx, gen.SearchTagsLexicalParams{
 			UserID:    uid,
 			Qn:        qn,
@@ -863,8 +1203,8 @@ func TestTagsLexicalPageKeyset(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SearchTagsLexical unpaged: %v", err)
 		}
-		if len(unpagedTags) != len(tagSeeds) {
-			t.Fatalf("unpaged tags len = %d, want %d", len(unpagedTags), len(tagSeeds))
+		if len(unpagedTags) != len(seeds) {
+			t.Fatalf("unpaged tags len = %d, want %d", len(unpagedTags), len(seeds))
 		}
 
 		var pagedTags []gen.SearchTagsLexicalPageRow
@@ -906,20 +1246,28 @@ func TestTagsLexicalPageKeyset(t *testing.T) {
 			curCount = &countCopy
 		}
 
-		if len(pagedTags) != len(unpagedTags) {
-			t.Fatalf("pagedTags len = %d, want %d", len(pagedTags), len(unpagedTags))
+		if len(pagedTags) != len(seeds) {
+			t.Fatalf("pagedTags len = %d, want %d", len(pagedTags), len(seeds))
 		}
-		for i := range unpagedTags {
-			if pagedTags[i].ID != unpagedTags[i].ID ||
-				pagedTags[i].Tier != unpagedTags[i].Tier ||
-				pagedTags[i].Score != unpagedTags[i].Score {
-				t.Fatalf("tag page mismatch at [%d]: got (id=%s tier=%d score=%v), want (id=%s tier=%d score=%v)",
-					i, pagedTags[i].ID, pagedTags[i].Tier, pagedTags[i].Score,
-					unpagedTags[i].ID, unpagedTags[i].Tier, unpagedTags[i].Score)
+		for i, want := range seeds {
+			wantID := uuid.MustParse(want.tagID)
+			if unpagedTags[i].ID != wantID || unpagedTags[i].Tier != want.wantTier || unpagedTags[i].Score != want.wantScore {
+				t.Fatalf("unpaged tag[%d] = (id=%s display=%q tier=%d score=%v), want (id=%s text=%q tier=%d score=%v)",
+					i, unpagedTags[i].ID, unpagedTags[i].Display, unpagedTags[i].Tier, unpagedTags[i].Score,
+					wantID, want.text, want.wantTier, want.wantScore)
+			}
+			if pagedTags[i].ID != wantID ||
+				pagedTags[i].Tier != want.wantTier ||
+				pagedTags[i].Score != want.wantScore ||
+				!pagedTags[i].LastUsedAt.Time.Equal(want.lastUsed) {
+				t.Fatalf("paged tag[%d] = (id=%s display=%q tier=%d score=%v lastUsed=%v), want (id=%s text=%q tier=%d score=%v lastUsed=%v)",
+					i, pagedTags[i].ID, pagedTags[i].Display, pagedTags[i].Tier, pagedTags[i].Score, pagedTags[i].LastUsedAt.Time,
+					wantID, want.text, want.wantTier, want.wantScore, want.lastUsed)
 			}
 		}
 
-		// 2. Items: unpaged list vs walking keyset pages with page size = 2
+		// 2. Items: verify independent expected order, tiers, non-integral rounded scores, and microsecond timestamps
+		//    across page boundaries of size 2.
 		unpagedItems, err := q.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
 			UserID:    uid,
 			Qn:        qn,
@@ -930,8 +1278,8 @@ func TestTagsLexicalPageKeyset(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SearchItemsLexical unpaged: %v", err)
 		}
-		if len(unpagedItems) != len(itemSeeds) {
-			t.Fatalf("unpaged items len = %d, want %d", len(unpagedItems), len(itemSeeds))
+		if len(unpagedItems) != len(seeds) {
+			t.Fatalf("unpaged items len = %d, want %d", len(unpagedItems), len(seeds))
 		}
 
 		var pagedItems []gen.SearchItemsLexicalPageRow
@@ -973,16 +1321,23 @@ func TestTagsLexicalPageKeyset(t *testing.T) {
 			curCount = &countCopy
 		}
 
-		if len(pagedItems) != len(unpagedItems) {
-			t.Fatalf("pagedItems len = %d, want %d", len(pagedItems), len(unpagedItems))
+		if len(pagedItems) != len(seeds) {
+			t.Fatalf("pagedItems len = %d, want %d", len(pagedItems), len(seeds))
 		}
-		for i := range unpagedItems {
-			if pagedItems[i].ID != unpagedItems[i].ID ||
-				pagedItems[i].Tier != unpagedItems[i].Tier ||
-				pagedItems[i].Score != unpagedItems[i].Score {
-				t.Fatalf("item page mismatch at [%d]: got (id=%s tier=%d score=%v), want (id=%s tier=%d score=%v)",
-					i, pagedItems[i].ID, pagedItems[i].Tier, pagedItems[i].Score,
-					unpagedItems[i].ID, unpagedItems[i].Tier, unpagedItems[i].Score)
+		for i, want := range seeds {
+			wantID := uuid.MustParse(want.itemID)
+			if unpagedItems[i].ID != wantID || unpagedItems[i].Tier != want.wantTier || unpagedItems[i].Score != want.wantScore {
+				t.Fatalf("unpaged item[%d] = (id=%s name=%q tier=%d score=%v), want (id=%s text=%q tier=%d score=%v)",
+					i, unpagedItems[i].ID, unpagedItems[i].Name, unpagedItems[i].Tier, unpagedItems[i].Score,
+					wantID, want.text, want.wantTier, want.wantScore)
+			}
+			if pagedItems[i].ID != wantID ||
+				pagedItems[i].Tier != want.wantTier ||
+				pagedItems[i].Score != want.wantScore ||
+				!pagedItems[i].LastUsedAt.Time.Equal(want.lastUsed) {
+				t.Fatalf("paged item[%d] = (id=%s name=%q tier=%d score=%v lastUsed=%v), want (id=%s text=%q tier=%d score=%v lastUsed=%v)",
+					i, pagedItems[i].ID, pagedItems[i].Name, pagedItems[i].Tier, pagedItems[i].Score, pagedItems[i].LastUsedAt.Time,
+					wantID, want.text, want.wantTier, want.wantScore, want.lastUsed)
 			}
 		}
 	})
@@ -1098,8 +1453,12 @@ func TestMigration0008UpDown(t *testing.T) {
 		t.Fatalf("P04 tag must survive 0008 down: %v", err)
 	}
 
-	// Re-apply 0008 up cleanly.
-	migrateToTargetVersion(t, dsn, 8)
+	// Re-apply MigrateUp to latest cleanly (advisor-dec-264: assert v < 8 so future migrations >= 0009 do not break this check).
+	dbtest.MigrateUp(t, dsn)
+	vLatest, dirtyLatest, err := db.Version(dsn)
+	if err != nil || dirtyLatest || vLatest < 8 {
+		t.Fatalf("after MigrateUp to latest: v=%d dirty=%v err=%v", vLatest, dirtyLatest, err)
+	}
 	for _, idx := range expectedIndexes {
 		var n int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE tablename = $1 AND indexname = $2`, idx.table, idx.name).Scan(&n); err != nil {
