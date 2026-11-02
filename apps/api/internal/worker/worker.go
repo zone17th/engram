@@ -24,6 +24,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
+	"github.com/zone17th/engram/apps/api/internal/embedding/lifecycle"
 	"github.com/zone17th/engram/apps/api/internal/entry"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 )
@@ -38,6 +39,10 @@ type EmbeddingDeps struct {
 	Now        func() time.Time
 	Jitter     func() float64
 	RandSource embedding.Int63nSource
+
+	// BootstrapFlipInterval là chu kỳ job periodic embedding_bootstrap_flip
+	// (Task 19; 0 = lifecycle.DefaultBootstrapFlipInterval = 1m).
+	BootstrapFlipInterval time.Duration
 }
 
 // Deps gom các phụ thuộc mở rộng của NewWithMail (metrics và embedding). Giá trị
@@ -187,6 +192,16 @@ func NewWithMail(
 			return nil, fmt.Errorf("đăng ký reembed_all worker: %w", err)
 		}
 		periodic = append(periodic, jobs.ReembedAllPeriodicJob())
+		// Task 19 (BE-4, N4/FS-33): verify -> tự flip g1 bootstrap pending; chạy
+		// ngay lúc start rồi mỗi chu kỳ. Chỉ generation bootstrap=true được tự flip.
+		if err := river.AddWorkerSafely(workers, lifecycle.NewBootstrapFlipWorker(lifecycle.BootstrapFlipDeps{
+			Pool:   pool,
+			Logger: logger,
+			Now:    nowFn,
+		})); err != nil {
+			return nil, fmt.Errorf("đăng ký embedding_bootstrap_flip worker: %w", err)
+		}
+		periodic = append(periodic, lifecycle.BootstrapFlipPeriodicJob(deps.Embedding.BootstrapFlipInterval))
 		queues[jobs.QueueEmbedding] = river.QueueConfig{MaxWorkers: jobs.MaxEmbedWorkers}
 		periodic = append(periodic, river.NewPeriodicJob(
 			river.PeriodicInterval(jobs.CanaryInterval),
@@ -311,9 +326,10 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 				}
 			}
 			workerDeps.Embedding = &EmbeddingDeps{
-				ClientSet: cs,
-				Breakers:  jobs.NewWorkerBreakers(time.Now, metrics.Embedding),
-				Now:       time.Now,
+				ClientSet:             cs,
+				Breakers:              jobs.NewWorkerBreakers(time.Now, metrics.Embedding),
+				Now:                   time.Now,
+				BootstrapFlipInterval: cfg.EmbeddingBootstrapFlipInterval,
 			}
 		}
 	}
