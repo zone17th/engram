@@ -321,7 +321,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("start worker: %w", err)
 	}
-	logger.Info("worker đang chạy", slog.Bool("semantic_available", cfg.SemanticAvailable()))
+	logger.Info("worker đang chạy", slog.Bool("semantic_enabled", cfg.SearchSemanticEnabled))
 	for _, fn := range afterStartHooks {
 		fn(ctx, pool)
 	}
