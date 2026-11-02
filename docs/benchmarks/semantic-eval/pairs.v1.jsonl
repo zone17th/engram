@@ -81,10 +81,10 @@
 {"id":"p081","query":"mã xác thực hai bước","target":"Two-Factor Backup Codes","target_kind":"item","hint":"Emergency recovery tokens","label":"related","lang":"mixed","category":"cross_lang"}
 {"id":"p082","query":"thẻ tín dụng hoàn tiền","target":"Cashback Visa Signature Card","target_kind":"item","hint":"International credit card account","label":"related","lang":"mixed","category":"cross_lang"}
 {"id":"p083","query":"company email","target":"Công ty chuyển phát nhanh EMS","target_kind":"item","hint":"Tra cứu vận đơn bưu điện","label":"unrelated","lang":"mixed","category":"cross_lang"}
-{"id":"p084","query":"bank account","target":"Bánh kem sinh nhật Artisan","target_kind":"item","hint":"Tài khoản đặt bánh trực tuyến","label":"unrelated","lang":"mixed","category":"cross_lang"}
-{"id":"p085","query":"cloud backup","target":"Câu lạc bộ chạy bộ cuối tuần","target_kind":"item","hint":"Đăng ký giải marathon","label":"unrelated","lang":"mixed","category":"cross_lang"}
-{"id":"p086","query":"tax portal","target":"Taxi Mai Linh Doanh Nghiệp","target_kind":"item","hint":"Thẻ đi taxi trả sau","label":"unrelated","lang":"mixed","category":"cross_lang"}
-{"id":"p087","query":"server database","target":"Sân vận động Quốc gia Mỹ Đình","target_kind":"item","hint":"Tài khoản mua vé bóng đá","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p084","query":"bank account","target":"Ngân hàng đề thi tiếng Anh","target_kind":"item","hint":"Tài khoản luyện thi chứng chỉ","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p085","query":"cloud backup","target":"Đệm mây cao su thiên nhiên","target_kind":"item","hint":"Bảo hành điện tử nội thất","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p086","query":"tax portal","target":"Cổng thông tin tuyển sinh đại học","target_kind":"item","hint":"Tra cứu hồ sơ xét tuyển","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p087","query":"server database","target":"Cơ sở thẩm mỹ viện Á Châu","target_kind":"item","hint":"Thẻ thành viên chăm sóc da","label":"unrelated","lang":"mixed","category":"cross_lang"}
 {"id":"p088","query":"thẻ tín dụng hoàn tiền","target":"Credit Course Online Learning","target_kind":"item","hint":"University lecture portal","label":"unrelated","lang":"mixed","category":"cross_lang"}
 {"id":"p089","query":"tài chính ngân hàng","target":"ngân hàng","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
 {"id":"p090","query":"chứng thực hai lớp","target":"bảo mật","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
@@ -98,12 +98,12 @@
 {"id":"p098","query":"streaming giải trí","target":"giải trí","target_kind":"tag","hint":"","label":"related","lang":"mixed","category":"tag"}
 {"id":"p099","query":"developer tools","target":"lập trình","target_kind":"tag","hint":"","label":"related","lang":"mixed","category":"tag"}
 {"id":"p100","query":"family shared","target":"gia đình","target_kind":"tag","hint":"","label":"related","lang":"mixed","category":"tag"}
-{"id":"p101","query":"tài chính ngân hàng","target":"ẩm thực","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
-{"id":"p102","query":"máy chủ hạ tầng","target":"thú cưng","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
-{"id":"p103","query":"khám chữa bệnh","target":"nhiếp ảnh","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
-{"id":"p104","query":"chuyến bay khách sạn","target":"kế toán thuế","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
-{"id":"p105","query":"developer tools","target":"nấu ăn","target_kind":"tag","hint":"","label":"unrelated","lang":"mixed","category":"tag"}
-{"id":"p106","query":"hóa đơn tiện ích","target":"thể thao","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p101","query":"thẻ ngân hàng","target":"thẻ thư viện","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p102","query":"mạng xã hội","target":"mạng nội bộ","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p103","query":"khóa bảo mật","target":"khóa học","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p104","query":"ví điện tử","target":"báo điện tử","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p105","query":"cloud server","target":"cloud gaming","target_kind":"tag","hint":"","label":"unrelated","lang":"mixed","category":"tag"}
+{"id":"p106","query":"hóa đơn điện nước","target":"hóa mỹ phẩm","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
 {"id":"p107","query":"ngân hàng","target":"Ngân sách chi tiêu gia đình","target_kind":"item","hint":"Bảng tính theo dõi thu chi tháng","label":"unrelated","lang":"vi","category":"noise"}
 {"id":"p108","query":"ngân hàng","target":"Ngân Hà Studio Nhiếp Ảnh","target_kind":"item","hint":"Tài khoản tải ảnh cưới","label":"unrelated","lang":"vi","category":"noise"}
 {"id":"p109","query":"mail công việc","target":"Mailchimp Chiến dịch Marketing","target_kind":"item","hint":"Công cụ gửi bản tin khách hàng","label":"unrelated","lang":"mixed","category":"noise"}
