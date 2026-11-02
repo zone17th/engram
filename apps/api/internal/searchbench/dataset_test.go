@@ -94,7 +94,7 @@ func TestDatasetDeterministic(t *testing.T) {
 	}
 
 	if hash1 != PinnedSmokeDatasetHash {
-		t.Fatalf("smoke dataset hash mismatch: computed %s, want pinned %s (pin PinnedSmokeDatasetHash = %q)", hash1, PinnedSmokeDatasetHash, hash1)
+		t.Fatalf("smoke dataset hash mismatch: computed %s, want pinned %s\nSMOKE_DATASET_HASH=%s", hash1, PinnedSmokeDatasetHash, hash1)
 	}
 }
 
@@ -154,8 +154,10 @@ func TestProfileCountsAndConstraints(t *testing.T) {
 					t.Fatalf("tenant %d duplicate normalized tag %q at index %d", tIdx, tr.Normalized, tagIdx)
 				}
 				seenNorm[tr.Normalized] = struct{}{}
+				if lazyTag := gen.TagAt(tIdx, tagIdx); lazyTag != tr {
+					t.Fatalf("tenant %d tag %d lazy TagAt %+v != TenantTags %+v", tIdx, tagIdx, lazyTag, tr)
+				}
 			}
-
 			sampleItems := min(ts.ItemCount, 200)
 			for itemIdx := range sampleItems {
 				ir := gen.ItemAt(tIdx, itemIdx)
@@ -252,7 +254,7 @@ func TestProfileCountsAndConstraints(t *testing.T) {
 			}
 		}
 
-		// Verify whale 0 tags (20k) are all unique per tenant.
+		// Verify whale 0 tags (20k) are all unique per tenant and match TagAt field for field.
 		whaleTags := gen.TenantTags(0)
 		if len(whaleTags) != 20_000 {
 			t.Fatalf("whale 0 tags len %d != 20000", len(whaleTags))
@@ -263,16 +265,59 @@ func TestProfileCountsAndConstraints(t *testing.T) {
 				t.Fatalf("whale 0 duplicate normalized tag %q at %d", tr.Normalized, i)
 			}
 			seenWhaleTags[tr.Normalized] = struct{}{}
+			if lazyTag := gen.TagAt(0, i); lazyTag != tr {
+				t.Fatalf("whale 0 tag %d lazy TagAt %+v != TenantTags %+v", i, lazyTag, tr)
+			}
+		}
+	})
+
+	t.Run("long_50_rune_repeated_lexicon_tag_uniqueness_and_lazy_parity", func(t *testing.T) {
+		// Regression for SB-1-2: a synthetic lexicon of repeated 50-rune accented
+		// words in Vi and repeated 50-rune ASCII words in En must pass
+		// Lexicon.Validate, and for a tenant with >= 2,000 tags every normalized
+		// tag must be unique and TagAt(t, i) == TenantTags(t)[i] for all i.
+		viWord50 := strings.Repeat("ă", textnorm.TagMaxRunes)
+		enWord50 := strings.Repeat("a", textnorm.TagMaxRunes)
+		if utf8.RuneCountInString(viWord50) != 50 || utf8.RuneCountInString(enWord50) != 50 {
+			t.Fatalf("expected 50-rune synthetic lexicon words")
+		}
+		syntheticLex := &Lexicon{
+			Version: LexiconVersion,
+			Schema:  LexiconSchema,
+			Vi:      make([]string, 100),
+			En:      make([]string, 100),
+		}
+		for i := range 100 {
+			syntheticLex.Vi[i] = viWord50
+			syntheticLex.En[i] = enWord50
+		}
+		if err := syntheticLex.Validate(); err != nil {
+			t.Fatalf("synthetic 50-rune lexicon failed Validate: %v", err)
 		}
 
-		// Explicitly exercise ResolveTagCollision on a forced collision.
-		colliding := whaleTags[0]
-		resolved := ResolveTagCollision(colliding, 42, seenWhaleTags)
-		if resolved.Normalized == colliding.Normalized {
-			t.Fatalf("ResolveTagCollision did not change colliding normalized tag %q", resolved.Normalized)
+		gen, err := NewGenerator(ProfileSmoke, DefaultSeed, DefaultPartitions, syntheticLex)
+		if err != nil {
+			t.Fatalf("NewGenerator(synthetic 50-rune lexicon): %v", err)
 		}
-		if _, exists := seenWhaleTags[resolved.Normalized]; exists {
-			t.Fatalf("ResolveTagCollision produced existing tag %q", resolved.Normalized)
+		if gen.Profile().Tenants[0].TagCount < 2_000 {
+			t.Fatalf("expected tenant 0 to have >= 2000 tags, got %d", gen.Profile().Tenants[0].TagCount)
+		}
+
+		bulkTags := gen.TenantTags(0)
+		seenNorm := make(map[string]struct{}, len(bulkTags))
+		for i, bulk := range bulkTags {
+			lazy := gen.TagAt(0, i)
+			if lazy != bulk {
+				t.Fatalf("tag %d lazy TagAt %+v != TenantTags %+v", i, lazy, bulk)
+			}
+			disp, norm, nerr := textnorm.NormalizeTag(lazy.Display)
+			if nerr != nil || disp != lazy.Display || norm != lazy.Normalized {
+				t.Fatalf("tag %d failed NormalizeTag(%q): disp=%q norm=%q err=%v", i, lazy.Display, disp, norm, nerr)
+			}
+			if _, exists := seenNorm[lazy.Normalized]; exists {
+				t.Fatalf("duplicate normalized tag %q at index %d with 50-rune lexicon", lazy.Normalized, i)
+			}
+			seenNorm[lazy.Normalized] = struct{}{}
 		}
 	})
 }
