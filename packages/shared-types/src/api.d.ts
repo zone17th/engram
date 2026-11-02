@@ -1353,8 +1353,8 @@ export interface components {
             }[];
             features: {
                 semantic_available: boolean;
-                /** @description True khi provider của generation active là dịch vụ nhúng bên ngoài (`openai_compat`); false với `tei` hoặc khi chưa có active generation. */
-                semantic_external: boolean;
+                /** @description True khi provider của generation active là dịch vụ nhúng bên ngoài (`openai_compat`); false với `tei` hoặc khi chưa có active generation. Luôn có từ Task 13; client coi vắng = `true` (giả định provider bên ngoài) cho copy quyền riêng tư ở help text và `#timkiem`. */
+                semantic_external?: boolean;
                 email_verification_required: boolean;
                 oauth_providers: components["schemas"]["OauthProvider"][];
                 oauth_reauth_providers: "google"[];
@@ -1977,13 +1977,13 @@ export interface components {
         SemanticReason: "disabled_server" | "disabled_user" | "degraded" | "request_lexical" | "short_query";
         /** @enum {string} */
         SuggestLexicalCorpus: "item" | "tag";
-        /** @description Trần cơ sở theo bảng quota mục 2.4 cho `(scope, limit, mode)` của request. */
+        /** @description Trần quota theo bảng mục 2.4 + mục 2.24 cho `(scope, limit, mode)` của response; giá trị giống nhau giữa `semantic=0` và `semantic=1` trên cùng snapshot. */
         SuggestQuota: {
-            /** @description `tag_max` (số slot dành cho tag trước khi nhận phần dư từ item). */
+            /** @description Với `mode=prefix|full`: `tag_max` (số slot dành cho tag trước khi nhận phần dư từ item; `0` khi `scope=item`, `= lex_max` khi `scope=tag`). Với `mode=recent`: `recent_tag` theo bảng mục 2.4 (`2 / 3 / 4` với `scope=all` ở `limit = 5 / 8 / 12`; `0` khi `scope=item`; `= limit` khi `scope=tag`). */
             tag: number;
-            /** @description `lex_max` (tổng slot tối đa của `tags` + `items`). */
+            /** @description Với `mode=prefix|full`: `lex_max` (tổng slot tối đa của `tags` + `items`, `4 / 6 / 9` ở `limit = 5 / 8 / 12`). Với `mode=recent`: tổng slot recent `recent_tag + recent_item` (`= limit`, tách `2/3`, `3/5`, `4/8` với `scope=all`, `0/limit` với `scope=item`, `limit/0` với `scope=tag`). */
             lexical: number;
-            /** @description `near_max` cơ sở dành cho vùng gần nghĩa (khi lexical thiếu có thể cộng thêm tối đa +1 theo bảng mục 2.4). */
+            /** @description Trần near **hiệu lực** của response đó: `min(near_max_cap, near_base + max(0, lex_max − tags_used − items_used))` với `mode=prefix|full`; `mode=recent` → `near = 0`; cùng giá trị cho `semantic=0` và `semantic=1`. Client cắt vùng near append theo `min(quota.near, limit − lexical.length)`. */
             near: number;
         };
         SuggestTag: {
@@ -4617,16 +4617,21 @@ export interface operations {
                 scope?: components["schemas"]["SearchScope"];
                 /**
                  * @description Tổng số gợi ý tối đa (`5 | 8 | 12`, mặc định `8`; viewport `< 768 px` gửi `5`; giá trị khác → `400 invalid_request`).
-                 *     Bảng quota theo `(scope, limit, mode)` (plan P05 mục 2.4, độc lập với semantic bật/tắt):
-                 *     - `all · prefix/full`: `limit=5` → `tag_max=2, lex_max=4, near_max=1` (+ phần lexical thiếu, tối đa `2`); `limit=8` → `tag_max=3, lex_max=6, near_max=2` (tối đa `3`); `limit=12` → `tag_max=4, lex_max=9, near_max=3` (tối đa `4`).
-                 *     - `all · recent`: `limit=5` → `2` tag / `3` item; `limit=8` → `3` tag / `5` item; `limit=12` → `4` tag / `8` item (`near=0`).
-                 *     - `item`: `tag_max=0`, `lex_max = 4 / 6 / 9` (ứng với `limit = 5 / 8 / 12`), `near_max` như `all` (chỉ item), recent `0 / limit`.
-                 *     - `tag`: `tag_max = lex_max = 4 / 6 / 9`, `near_max` như `all` (chỉ tag), recent `limit / 0`.
+                 *     Bảng quota theo `(scope, limit, mode)` (plan P05 mục 2.4 + mục 2.24, độc lập với semantic bật/tắt):
+                 *     - `all · prefix/full`: `limit=5` → `tag_max=2, lex_max=4, near_base=1, near_max_cap=2`; `limit=8` → `tag_max=3, lex_max=6, near_base=2, near_max_cap=3`; `limit=12` → `tag_max=4, lex_max=9, near_base=3, near_max_cap=4`.
+                 *     - `all · recent`: `limit=5` → `recent_tag=2, recent_item=3`; `limit=8` → `3 / 5`; `limit=12` → `4 / 8` (`near=0`).
+                 *     - `item`: `tag_max=0`, `lex_max = 4 / 6 / 9` (ứng với `limit = 5 / 8 / 12`), `near_base` và `near_max_cap` như `all` (chỉ item), recent `0 / limit`.
+                 *     - `tag`: `tag_max = lex_max = 4 / 6 / 9`, `near_base` và `near_max_cap` như `all` (chỉ tag), recent `limit / 0`.
                  *     Công thức: `tags_used = min(tag_hits, max(tag_max, lex_max − item_hits))`; `items_used = min(item_hits, lex_max − tags_used)`;
-                 *     `near_used = min(near_hits_sau_dedup, near_max, limit − tags_used − items_used)`.
+                 *     `quota.near` (near tối đa hiệu lực) = `min(near_max_cap, near_base + max(0, lex_max − tags_used − items_used))` (`0` ở `mode=recent`);
+                 *     `near_used = min(near_hits_sau_dedup, quota.near, limit − tags_used − items_used)`.
                  */
                 limit?: 5 | 8 | 12;
-                /** @description `0` ép chỉ lexical; `1` (mặc định) cho phép bổ sung vùng `near` khi đủ điều kiện. */
+                /**
+                 * @description `0` ép chỉ lexical; `1` (mặc định) cho phép bổ sung vùng `near` khi đủ điều kiện.
+                 *     Contract phía client (SPEC §3.5, server không kiểm chứng được): client chỉ gửi `semantic=1` từ draft sạch (gõ tay, qua cổng gửi);
+                 *     draft bị taint/dán, khoá dấu hai chấm (mọi chế độ), nhiều dòng hoặc > 200 rune không gửi `/suggest` theo phím (và khi Enter tìm kiếm phải gửi `semantic=0`).
+                 */
                 semantic?: 0 | 1;
             };
             header?: never;
@@ -4664,7 +4669,11 @@ export interface operations {
                 limit?: 20 | 50;
                 /** @description Cursor keyset opaque từ `next_cursor` trang trước (mang `kind` ∈ `item | tag`, `qh` HMAC và `gen`; không chứa `q`). */
                 cursor?: string;
-                /** @description `0` ép chỉ lexical; `1` (mặc định) cho phép trả `near` (≤ 5) ở trang đầu khi đủ điều kiện. */
+                /**
+                 * @description `0` ép chỉ lexical; `1` (mặc định) cho phép trả `near` (≤ 5) ở trang đầu khi đủ điều kiện.
+                 *     Contract phía client (SPEC §3.5, server không kiểm chứng được): client chỉ gửi `semantic=1` từ draft sạch (gõ tay, qua cổng gửi);
+                 *     Enter-search trên draft bị taint/dán, khoá dấu hai chấm (mọi chế độ), nhiều dòng hoặc > 200 rune **phải** gửi `semantic=0` (chỉ lexical).
+                 */
                 semantic?: 0 | 1;
             };
             header?: never;
