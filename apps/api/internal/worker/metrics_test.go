@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -408,11 +409,22 @@ func TestJobOutcomeRecorderCountsOnlyRetryAndDead(t *testing.T) {
 	}
 }
 
+// outcomeFailWorker luôn thất bại bằng lỗi provider 5xx. Lần thử 2 trở đi chờ
+// `gate` (test thả sau khi kiểm sự kiện của lần 1) hoặc ctx bị huỷ, để không có
+// cuộc đua giữa assertion của test và lần thất bại tiếp theo.
 type outcomeFailWorker struct {
 	river.WorkerDefaults[jobargs.EmbedItemArgs]
+	gate <-chan struct{}
 }
 
-func (outcomeFailWorker) Work(context.Context, *river.Job[jobargs.EmbedItemArgs]) error {
+func (w outcomeFailWorker) Work(ctx context.Context, job *river.Job[jobargs.EmbedItemArgs]) error {
+	if job.Attempt >= 2 {
+		select {
+		case <-w.gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return &embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 503, Detail: "upstream server error"}
 }
 
@@ -453,8 +465,10 @@ func TestJobsTotalOutcomeSingleSource(t *testing.T) {
 
 	_, metrics := obs.NewRegistry()
 
+	gate := make(chan struct{})
+	releaseGate := sync.OnceFunc(func() { close(gate) })
 	workers := river.NewWorkers()
-	river.AddWorker(workers, outcomeFailWorker{})
+	river.AddWorker(workers, outcomeFailWorker{gate: gate})
 	river.AddWorker(workers, outcomeUpsertWorker{metrics: metrics.Embedding})
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Logger:            discardLogger(),
@@ -468,20 +482,24 @@ func TestJobsTotalOutcomeSingleSource(t *testing.T) {
 	}
 
 	handled := make(chan *river.Event, 16)
+	// Subscription đăng ký cleanup TRƯỚC client.Start: nếu Start lỗi thì goroutine
+	// tiêu thụ vẫn được dừng. Cleanup chạy ngược thứ tự: Stop client trước, rồi mới
+	// xả/đóng subscription.
 	stopSub := startJobOutcomeSubscriber(client, metrics.Embedding, discardLogger(), func(ev *river.Event) { handled <- ev })
+	t.Cleanup(stopSub)
 	completed, cancelCompleted := client.Subscribe(river.EventKindJobCompleted)
-	defer cancelCompleted()
+	t.Cleanup(cancelCompleted)
 
 	if err := client.Start(ctx); err != nil {
 		t.Fatalf("client.Start: %v", err)
 	}
 	t.Cleanup(func() {
+		releaseGate() // thả worker đang chờ gate để Stop không treo khi test dừng sớm
 		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := client.Stop(stopCtx); err != nil {
 			t.Errorf("client.Stop: %v", err)
 		}
-		stopSub() // sau Stop: kênh đã đóng, xả hết sự kiện còn đệm
 	})
 
 	const (
@@ -506,7 +524,9 @@ func TestJobsTotalOutcomeSingleSource(t *testing.T) {
 		t.Fatalf("after first failure dead = %v, want 0", got)
 	}
 
-	// Lần thử 2 thất bại, hết lượt → discarded → dead.
+	// Lần thử 1 đã được kiểm xong: thả lần thử 2 (đang chờ gate), thất bại, hết
+	// lượt → discarded → dead.
+	releaseGate()
 	ev = recvEvent(t, handled, "second failure event")
 	if ev.Job.State != rivertype.JobStateDiscarded {
 		t.Fatalf("second event state=%s, want discarded", ev.Job.State)
