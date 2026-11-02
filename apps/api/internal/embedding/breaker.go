@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"context"
 	"errors"
 	"math/rand/v2"
 	"strings"
@@ -161,24 +162,20 @@ func NewWorkerBreaker(provider string, clock func() time.Time, metrics *obs.Embe
 	})
 }
 
-// Allow checks whether a request is permitted to proceed.
-//   - When the breaker is closed, Allow returns (true, 0).
-//   - When the breaker is open and the 60 s window has not elapsed, Allow
-//     returns (false, remainingWindow).
+// Acquire checks whether a request is permitted to proceed and returns a
+// one-shot completion callback finish(err):
+//   - When the breaker is closed, Acquire returns (true, 0, finish).
+//   - When the breaker is open and the 60 s window has not elapsed, Acquire
+//     returns (false, remainingWindow, noopFinish).
 //   - When the 60 s window has elapsed, the first caller transitions the
 //     breaker to half-open, acquires the single trial slot, and receives
-//     (true, 0); every other concurrent caller while the trial is in flight
-//     receives (false, OpenWindow).
+//     (true, 0, finish); every other concurrent caller while the trial is in
+//     flight receives (false, OpenWindow, noopFinish).
 //
-// Callers that receive ok == true MUST call Done(err) when the request finishes.
-func (b *Breaker) Allow() (ok bool, retryIn time.Duration) {
-	ok, retryIn, _ = b.Acquire()
-	return ok, retryIn
-}
-
-// Acquire is identical to Allow and additionally returns a one-shot completion
-// callback finish(err). Calling finish(err) is equivalent to calling Done(err)
-// and is idempotent if called more than once.
+// Callers that receive ok == true MUST call finish(err) when the request
+// finishes. Calling finish(err) is idempotent and bound to the admission
+// epoch, preventing stale pre-trip completions from resolving a live half-open
+// trial or reopening a recovered circuit.
 func (b *Breaker) Acquire() (ok bool, retryIn time.Duration, finish func(error)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -230,26 +227,47 @@ func (b *Breaker) Acquire() (ok bool, retryIn time.Duration, finish func(error))
 	}
 }
 
-// Done records the outcome of a request that was permitted by Allow().
-// Passing err == nil records a success; passing a non-nil error records a
-// provider failure.
-func (b *Breaker) Done(err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.recordOutcomeLocked(err, b.state == BreakerStateHalfOpen && b.trialInFlight, b.trialEpoch)
-}
-
 func (b *Breaker) doneAtEpoch(err error, wasTrial bool, epoch uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.recordOutcomeLocked(err, wasTrial, epoch)
 }
 
+// isIgnoredBreakerError reports whether err is a caller/local abort (such as
+// context.Canceled, ErrEmptyBatch, or ErrBatchTooLarge) that provides no
+// evidence of upstream provider health and must neither count as a provider
+// failure nor reset the consecutive failure counter.
+func isIgnoredBreakerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsTimeoutError(err) {
+		return false
+	}
+	var pe *ProviderError
+	if errors.As(err, &pe) && pe != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, ErrEmptyBatch) ||
+		errors.Is(err, ErrBatchTooLarge) {
+		return true
+	}
+	return false
+}
+
 func (b *Breaker) recordOutcomeLocked(err error, wasTrial bool, epoch uint64) {
 	now := b.now()
+	ignored := isIgnoredBreakerError(err)
 
-	if b.state == BreakerStateHalfOpen && b.trialInFlight && (wasTrial || epoch == b.trialEpoch) {
+	if wasTrial {
+		// Only the exact half-open probe admitted for the current epoch may
+		// resolve the half-open trial.
+		if b.state != BreakerStateHalfOpen || !b.trialInFlight || epoch != b.trialEpoch {
+			return
+		}
 		b.trialInFlight = false
+		b.trialEpoch++
 		if err == nil {
 			b.state = BreakerStateClosed
 			b.failures = 0
@@ -257,19 +275,27 @@ func (b *Breaker) recordOutcomeLocked(err error, wasTrial bool, epoch uint64) {
 			b.setGauge(0)
 			return
 		}
+		if ignored {
+			// Probe was canceled locally without testing upstream health:
+			// release the trial slot so the next caller can probe without
+			// claiming recovery or manufacturing a fresh 60 s outage window.
+			return
+		}
 		b.tripLocked(now)
 		return
 	}
 
-	if err == nil {
-		if b.state == BreakerStateClosed {
-			b.failures = 0
-		}
+	// Non-trial completion: require exact closed-state epoch ownership so
+	// stale admissions from an earlier closed generation (before a trip and
+	// recovery) are ignored.
+	if b.state != BreakerStateClosed || epoch != b.trialEpoch {
 		return
 	}
-
-	// Ignore stale completions from before the breaker already tripped open.
-	if b.state != BreakerStateClosed {
+	if err == nil {
+		b.failures = 0
+		return
+	}
+	if ignored {
 		return
 	}
 
@@ -282,6 +308,7 @@ func (b *Breaker) recordOutcomeLocked(err error, wasTrial bool, epoch uint64) {
 func (b *Breaker) tripLocked(now time.Time) {
 	b.state = BreakerStateOpen
 	b.trialInFlight = false
+	b.trialEpoch++
 	b.openedUntil = now.Add(b.openWindow)
 	b.setGauge(1)
 }

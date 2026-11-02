@@ -1,7 +1,9 @@
 package embedding_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,11 +105,11 @@ func TestBreakerAPIOneFailureOpensAndHalfOpenLifecycle(t *testing.T) {
 	}
 
 	for _, failErr := range failureErrors {
-		ok, retryIn := b.Allow()
+		ok, retryIn, finish := b.Acquire()
 		if !ok || retryIn != 0 {
-			t.Fatalf("Allow() when closed = (%v, %v), want (true, 0)", ok, retryIn)
+			t.Fatalf("Acquire() when closed = (%v, %v), want (true, 0)", ok, retryIn)
 		}
-		b.Done(failErr)
+		finish(failErr)
 
 		if !b.IsOpen() {
 			t.Fatalf("breaker should be open after 1 failure (%v)", failErr)
@@ -118,32 +120,32 @@ func TestBreakerAPIOneFailureOpensAndHalfOpenLifecycle(t *testing.T) {
 
 		// At t + 25s, still open with 35s remaining.
 		clk.Advance(25 * time.Second)
-		ok, retryIn = b.Allow()
+		ok, retryIn, _ = b.Acquire()
 		if ok || retryIn != 35*time.Second {
-			t.Fatalf("Allow() at +25s = (%v, %v), want (false, 35s)", ok, retryIn)
+			t.Fatalf("Acquire() at +25s = (%v, %v), want (false, 35s)", ok, retryIn)
 		}
 
 		// Advance to +60s -> half-open admits one trial.
 		clk.Advance(35 * time.Second)
-		ok, retryIn = b.Allow()
+		ok, retryIn, finishTrial1 := b.Acquire()
 		if !ok || retryIn != 0 {
-			t.Fatalf("Allow() at +60s (half-open trial) = (%v, %v), want (true, 0)", ok, retryIn)
+			t.Fatalf("Acquire() at +60s (half-open trial) = (%v, %v), want (true, 0)", ok, retryIn)
 		}
 
 		// Trial fails -> re-opens for another 60s.
-		b.Done(failErr)
-		ok, retryIn = b.Allow()
+		finishTrial1(failErr)
+		ok, retryIn, _ = b.Acquire()
 		if ok || retryIn != 60*time.Second {
-			t.Fatalf("Allow() right after failed trial = (%v, %v), want (false, 60s)", ok, retryIn)
+			t.Fatalf("Acquire() right after failed trial = (%v, %v), want (false, 60s)", ok, retryIn)
 		}
 
 		// Advance another 60s -> trial succeeds -> closes breaker and sets gauge to 0.
 		clk.Advance(60 * time.Second)
-		ok, retryIn = b.Allow()
+		ok, retryIn, finishTrial2 := b.Acquire()
 		if !ok || retryIn != 0 {
-			t.Fatalf("Allow() at second half-open = (%v, %v), want (true, 0)", ok, retryIn)
+			t.Fatalf("Acquire() at second half-open = (%v, %v), want (true, 0)", ok, retryIn)
 		}
-		b.Done(nil)
+		finishTrial2(nil)
 
 		if b.IsOpen() {
 			t.Fatal("breaker should be closed after successful trial")
@@ -159,11 +161,11 @@ func TestBreakerHalfOpenAdmitsExactlyOneTrialUnderConcurrency(t *testing.T) {
 	b := embedding.NewAPIBreaker(embedding.ProviderOpenAICompat, clk.Now, nil)
 
 	// Open the breaker.
-	ok, _ := b.Allow()
+	ok, _, finishInit := b.Acquire()
 	if !ok {
-		t.Fatal("initial Allow() failed")
+		t.Fatal("initial Acquire() failed")
 	}
-	b.Done(&embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 500})
+	finishInit(&embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 500})
 
 	// Advance clock by 60s so the breaker is ready to transition to half-open.
 	clk.Advance(embedding.BreakerOpenWindow)
@@ -172,6 +174,8 @@ func TestBreakerHalfOpenAdmitsExactlyOneTrialUnderConcurrency(t *testing.T) {
 	startGate := make(chan struct{})
 	var admitted atomic.Int32
 	var rejected atomic.Int32
+	var trialFinishMu sync.Mutex
+	var trialFinish func(error)
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
@@ -179,9 +183,12 @@ func TestBreakerHalfOpenAdmitsExactlyOneTrialUnderConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-startGate
-			allowed, retryIn := b.Allow()
+			allowed, retryIn, finish := b.Acquire()
 			if allowed {
 				admitted.Add(1)
+				trialFinishMu.Lock()
+				trialFinish = finish
+				trialFinishMu.Unlock()
 			} else {
 				if retryIn <= 0 {
 					t.Errorf("rejected caller received non-positive retryIn: %v", retryIn)
@@ -202,13 +209,13 @@ func TestBreakerHalfOpenAdmitsExactlyOneTrialUnderConcurrency(t *testing.T) {
 	}
 
 	// Complete the single trial with success; subsequent callers must all be allowed.
-	b.Done(nil)
+	trialFinish(nil)
 	for i := range 10 {
-		allowed, retryIn := b.Allow()
+		allowed, retryIn, finish := b.Acquire()
 		if !allowed || retryIn != 0 {
-			t.Fatalf("post-recovery Allow() #%d = (%v, %v), want (true, 0)", i, allowed, retryIn)
+			t.Fatalf("post-recovery Acquire() #%d = (%v, %v), want (true, 0)", i, allowed, retryIn)
 		}
-		b.Done(nil)
+		finish(nil)
 	}
 }
 
@@ -222,11 +229,11 @@ func TestBreakerWorkerThreeConsecutiveFailuresAndSuccessReset(t *testing.T) {
 
 	// 2 consecutive failures followed by 1 success must reset failure count to 0.
 	for i := 1; i <= 2; i++ {
-		ok, _ := b.Allow()
+		ok, _, finish := b.Acquire()
 		if !ok {
-			t.Fatalf("failure #%d: expected Allow()=true", i)
+			t.Fatalf("failure #%d: expected Acquire()=true", i)
 		}
-		b.Done(failErr)
+		finish(failErr)
 		if b.IsOpen() {
 			t.Fatalf("worker breaker opened prematurely after %d failures (want 3)", i)
 		}
@@ -236,22 +243,22 @@ func TestBreakerWorkerThreeConsecutiveFailuresAndSuccessReset(t *testing.T) {
 	}
 
 	// Success resets count.
-	ok, _ := b.Allow()
+	ok, _, finishReset := b.Acquire()
 	if !ok {
-		t.Fatal("Allow() before reset success failed")
+		t.Fatal("Acquire() before reset success failed")
 	}
-	b.Done(nil)
+	finishReset(nil)
 	if b.ConsecutiveFailures() != 0 {
 		t.Fatalf("ConsecutiveFailures after success = %d, want 0", b.ConsecutiveFailures())
 	}
 
 	// Now 3 consecutive failures must open the worker breaker for 60s.
 	for i := 1; i <= 3; i++ {
-		ok, _ := b.Allow()
+		ok, _, finish := b.Acquire()
 		if !ok {
-			t.Fatalf("run2 failure #%d: expected Allow()=true", i)
+			t.Fatalf("run2 failure #%d: expected Acquire()=true", i)
 		}
-		b.Done(failErr)
+		finish(failErr)
 	}
 	if !b.IsOpen() {
 		t.Fatal("worker breaker should be open after 3 consecutive failures")
@@ -260,18 +267,18 @@ func TestBreakerWorkerThreeConsecutiveFailuresAndSuccessReset(t *testing.T) {
 		t.Fatalf("worker BreakerOpen gauge = %v, want 1", got)
 	}
 
-	ok, retryIn := b.Allow()
+	ok, retryIn, _ := b.Acquire()
 	if ok || retryIn != 60*time.Second {
-		t.Fatalf("Allow() when worker breaker open = (%v, %v), want (false, 60s)", ok, retryIn)
+		t.Fatalf("Acquire() when worker breaker open = (%v, %v), want (false, 60s)", ok, retryIn)
 	}
 
 	// Advance 60s, half-open trial succeeds -> closes breaker.
 	clk.Advance(60 * time.Second)
-	ok, _ = b.Allow()
+	ok, _, finishTrial := b.Acquire()
 	if !ok {
 		t.Fatal("worker half-open trial should be allowed at +60s")
 	}
-	b.Done(nil)
+	finishTrial(nil)
 	if b.IsOpen() || b.ConsecutiveFailures() != 0 {
 		t.Fatalf("worker breaker after trial ok: IsOpen=%v failures=%d", b.IsOpen(), b.ConsecutiveFailures())
 	}
@@ -320,5 +327,142 @@ func TestSnoozeForRetryAfterCapAndJitterBounds(t *testing.T) {
 		if d < rem || d > rem+embedding.MaxBreakerJitter {
 			t.Fatalf("SnoozeFor jitter out of bounds [%v, %v]: got %v", rem, rem+embedding.MaxBreakerJitter, d)
 		}
+	}
+}
+
+func TestBreakerStaleAdmissionsCannotFinishLiveProbeOrReopenRecoveredCircuit(t *testing.T) {
+	clk := newFakeClock()
+	b := embedding.NewAPIBreaker(embedding.ProviderOpenAICompat, clk.Now, nil)
+	failErr := &embedding.ProviderError{Class: embedding.Class5xx, HTTPStatus: 502}
+
+	// 1. Admit A, B, and D while closed.
+	okA, _, finishA := b.Acquire()
+	okB, _, finishB := b.Acquire()
+	okD, _, finishD := b.Acquire()
+	if !okA || !okB || !okD {
+		t.Fatalf("closed Acquire = (%v, %v, %v), want all true", okA, okB, okD)
+	}
+
+	// A fails and opens the breaker while B and D are still in flight.
+	finishA(failErr)
+	if !b.IsOpen() {
+		t.Fatal("breaker should be open after A fails")
+	}
+
+	// Advance 60s and admit half-open trial C while B is still in flight.
+	clk.Advance(embedding.BreakerOpenWindow)
+	okC, _, finishC := b.Acquire()
+	if !okC {
+		t.Fatal("expected trial C to be admitted after 60s")
+	}
+
+	// Pre-trip request B finishes with success while trial C is in flight:
+	// B MUST NOT close the breaker or finish C's trial.
+	finishB(nil)
+	if !b.IsOpen() {
+		t.Fatal("stale pre-trip success B closed breaker while probe C was still in flight")
+	}
+	if allowed, _, _ := b.Acquire(); allowed {
+		t.Fatal("general traffic was admitted before probe C completed")
+	}
+
+	// Now trial C succeeds and legitimately closes the breaker.
+	finishC(nil)
+	if b.IsOpen() {
+		t.Fatal("breaker should close when probe C succeeds")
+	}
+
+	// 2. Stale pre-trip request D finishes with failure AFTER recovery:
+	// D MUST NOT increment failures or reopen the recovered circuit.
+	finishD(failErr)
+	if b.IsOpen() || b.ConsecutiveFailures() != 0 {
+		t.Fatalf("stale pre-trip failure D reopened or incremented recovered breaker: IsOpen=%v failures=%d",
+			b.IsOpen(), b.ConsecutiveFailures())
+	}
+}
+
+func TestBreakerIgnoresCallerCancellationAndLocalBatchErrors(t *testing.T) {
+	clk := newFakeClock()
+	apiBreaker := embedding.NewAPIBreaker(embedding.ProviderOpenAICompat, clk.Now, nil)
+
+	ignoredErrs := []error{
+		context.Canceled,
+		fmt.Errorf("caller aborted: %w", context.Canceled),
+		embedding.ErrEmptyBatch,
+		fmt.Errorf("%w: got 65, max 64", embedding.ErrBatchTooLarge),
+	}
+
+	// 1. API breaker: caller cancellation and local batch errors never open the breaker.
+	for _, ignErr := range ignoredErrs {
+		ok, _, finish := apiBreaker.Acquire()
+		if !ok {
+			t.Fatalf("Acquire() before %v failed", ignErr)
+		}
+		finish(ignErr)
+		if apiBreaker.IsOpen() || apiBreaker.ConsecutiveFailures() != 0 {
+			t.Fatalf("ignored error %v affected API breaker: IsOpen=%v failures=%d",
+				ignErr, apiBreaker.IsOpen(), apiBreaker.ConsecutiveFailures())
+		}
+	}
+
+	// 2. Worker breaker: ignored errors neither increment the failure streak nor reset an existing streak.
+	workerBreaker := embedding.NewWorkerBreaker(embedding.ProviderTEI, clk.Now, nil)
+	failErr := &embedding.ProviderError{Class: embedding.ClassTimeout, Err: context.DeadlineExceeded}
+
+	for range 2 {
+		ok, _, finish := workerBreaker.Acquire()
+		if !ok {
+			t.Fatal("worker Acquire() failed")
+		}
+		finish(failErr)
+	}
+	if workerBreaker.ConsecutiveFailures() != 2 {
+		t.Fatalf("worker ConsecutiveFailures = %d, want 2", workerBreaker.ConsecutiveFailures())
+	}
+
+	for _, ignErr := range ignoredErrs {
+		ok, _, finish := workerBreaker.Acquire()
+		if !ok {
+			t.Fatal("worker Acquire() failed")
+		}
+		finish(ignErr)
+		if workerBreaker.IsOpen() {
+			t.Fatalf("ignored error %v opened worker breaker at streak 2", ignErr)
+		}
+		if workerBreaker.ConsecutiveFailures() != 2 {
+			t.Fatalf("ignored error %v changed worker streak to %d, want 2", ignErr, workerBreaker.ConsecutiveFailures())
+		}
+	}
+
+	// A 3rd real provider failure after ignored errors must still trip the worker breaker.
+	ok, _, finishThird := workerBreaker.Acquire()
+	if !ok {
+		t.Fatal("worker Acquire() for 3rd real failure failed")
+	}
+	finishThird(failErr)
+	if !workerBreaker.IsOpen() {
+		t.Fatal("expected 3rd real provider failure to open worker breaker")
+	}
+
+	// 3. Half-open probe canceled by caller releases the probe slot without closing
+	// the circuit or starting a new 60s open window.
+	clk.Advance(embedding.BreakerOpenWindow)
+	okProbe1, _, finishProbe1 := workerBreaker.Acquire()
+	if !okProbe1 {
+		t.Fatal("expected first half-open probe to be admitted")
+	}
+	finishProbe1(context.Canceled)
+	if !workerBreaker.IsOpen() {
+		t.Fatal("canceled half-open probe must not mark circuit healthy/closed")
+	}
+
+	// Next caller can immediately acquire the released half-open probe slot without waiting another 60s.
+	okProbe2, retryIn2, finishProbe2 := workerBreaker.Acquire()
+	if !okProbe2 || retryIn2 != 0 {
+		t.Fatalf("Acquire() after canceled probe = (%v, %v), want (true, 0)", okProbe2, retryIn2)
+	}
+	finishProbe2(nil)
+	if workerBreaker.IsOpen() {
+		t.Fatal("breaker should close after replacement probe succeeds")
 	}
 }
