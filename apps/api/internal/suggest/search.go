@@ -13,9 +13,10 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/item"
 )
 
-// ErrSearchInternal maps a non-timeout database error or a primary paged-corpus
+// ErrSearchInternal maps a failed active-generation lookup or a primary paged-corpus
 // branch timeout on `/search` to HTTP 500 `internal_error` with a static problem
-// detail (advisor-dec-287).
+// detail (advisor-dec-287). Service.Search returns it wrapped in an *InternalError whose Class
+// tells the two causes apart; errors.Is(err, ErrSearchInternal) holds for both.
 var ErrSearchInternal = errors.New("suggest: search internal error")
 
 // SearchInput holds the validated query parameters for `GET /api/v1/search`.
@@ -91,7 +92,7 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 		}
 		activeGen, err = s.activeGeneration(ctx, in.UserID)
 		if err != nil {
-			return SearchResponse{}, ErrSearchInternal
+			return SearchResponse{}, generationLookupError(parsed)
 		}
 		if !equalCursorGen(decodedCur.Gen, activeGen) {
 			return SearchResponse{}, ErrInvalidRequest
@@ -100,7 +101,7 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	} else {
 		activeGen, err = s.activeGeneration(ctx, in.UserID)
 		if err != nil {
-			return SearchResponse{}, ErrSearchInternal
+			return SearchResponse{}, generationLookupError(parsed)
 		}
 	}
 	var (
@@ -113,8 +114,7 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	case ScopeItem:
 		out := s.runSearchItemPageBranch(ctx, in.UserID, parsed.Mode, parsed.QN, curPtr, limit)
 		if out.partial {
-			s.incLexicalPartial(CorpusItem)
-			return SearchResponse{}, ErrSearchInternal
+			return SearchResponse{}, s.searchPrimaryTimeout(ctx, CorpusItem, parsed)
 		}
 		if out.err != nil {
 			return SearchResponse{}, out.err
@@ -126,8 +126,7 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	case ScopeTag:
 		out := s.runSearchTagPageBranch(ctx, in.UserID, parsed.Mode, parsed.QN, curPtr, limit)
 		if out.partial {
-			s.incLexicalPartial(CorpusTag)
-			return SearchResponse{}, ErrSearchInternal
+			return SearchResponse{}, s.searchPrimaryTimeout(ctx, CorpusTag, parsed)
 		}
 		if out.err != nil {
 			return SearchResponse{}, out.err
@@ -140,8 +139,7 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 		if hasCursor {
 			out := s.runSearchItemPageBranch(ctx, in.UserID, parsed.Mode, parsed.QN, curPtr, limit)
 			if out.partial {
-				s.incLexicalPartial(CorpusItem)
-				return SearchResponse{}, ErrSearchInternal
+				return SearchResponse{}, s.searchPrimaryTimeout(ctx, CorpusItem, parsed)
 			}
 			if out.err != nil {
 				return SearchResponse{}, out.err
@@ -168,12 +166,18 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 			}()
 			wg.Wait()
 
+			// A request that ended since a branch was classified partial is not a partial:
+			// the parent wins and nothing is counted (RV-SB1-BE-1).
+			if tagOut.partial || itmOut.partial {
+				if perr := parentDoneErr(ctx, "", parsed.Mode); perr != nil {
+					return SearchResponse{}, withScope(perr, parsed.Scope, parsed.Mode)
+				}
+			}
 			if tagOut.partial {
 				s.incLexicalPartial(CorpusTag)
 			}
 			if itmOut.partial {
-				s.incLexicalPartial(CorpusItem)
-				return SearchResponse{}, ErrSearchInternal
+				return SearchResponse{}, s.searchPrimaryTimeout(ctx, CorpusItem, parsed)
 			}
 			if itmOut.err != nil {
 				return SearchResponse{}, itmOut.err
@@ -282,6 +286,25 @@ func (s *Service) Search(ctx context.Context, in SearchInput) (SearchResponse, e
 	}
 	resp.NormalizeSlices()
 	return resp, nil
+}
+
+// searchPrimaryTimeout is the dec-287 outcome of a primary paged-corpus timeout: count it and
+// return a static 500 whose cause stays distinguishable (ClassSearchPrimaryTimeout) so the
+// handler logs exactly one WARN for it. A request that already ended is not a timeout: the
+// parent wins, nothing is counted (RV-SB1-BE-1).
+func (s *Service) searchPrimaryTimeout(ctx context.Context, corpus string, parsed ParsedSuggestQuery) error {
+	if perr := parentDoneErr(ctx, corpus, parsed.Mode); perr != nil {
+		return withScope(perr, parsed.Scope, parsed.Mode)
+	}
+	s.incLexicalPartial(corpus)
+	return withScope(newInternalError(ClassSearchPrimaryTimeout, corpus, parsed.Mode, ErrSearchInternal), parsed.Scope, parsed.Mode)
+}
+
+// generationLookupError is the static 500 for a failed NearSource.ActiveGeneration. It carries
+// ClassGenerationLookup, which the handler does not log because the source already did
+// (RV-SB1-BE-3); errors.Is(err, ErrSearchInternal) still holds.
+func generationLookupError(parsed ParsedSuggestQuery) error {
+	return withScope(newInternalError(ClassGenerationLookup, "", parsed.Mode, ErrSearchInternal), parsed.Scope, parsed.Mode)
 }
 
 func (s *Service) activeGeneration(ctx context.Context, userID uuid.UUID) (*int, error) {

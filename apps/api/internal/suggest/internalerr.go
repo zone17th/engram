@@ -24,9 +24,14 @@ const (
 	// ClassRequestContext: the request context ended with a deadline (not a
 	// client cancel) before or while a branch ran.
 	ClassRequestContext = "request_context"
-	// ClassSearchInternal: /search returned its static ErrSearchInternal
-	// (primary-corpus timeout or active-generation lookup failure, dec-287).
-	ClassSearchInternal = "search_internal"
+	// ClassSearchPrimaryTimeout: the 50 ms budget fired on the PRIMARY paged corpus of
+	// /search (advisor-dec-287). The response is the static 500; the handler logs it once.
+	ClassSearchPrimaryTimeout = "search_primary_timeout"
+	// ClassGenerationLookup: NearSource.ActiveGeneration failed on /search. Marker only, never
+	// logged by the handler: the NearSource owns that log (the semantic source emits
+	// active_generation_lookup_failed before returning the error), so logging it here too would
+	// emit two WARN lines for one failure. The response is still the static 500.
+	ClassGenerationLookup = "generation_lookup"
 	// ClassUnclassified: any other non-domain error that reached the handler
 	// (for example cursor encoding).
 	ClassUnclassified = "unclassified"
@@ -78,26 +83,47 @@ func sqlState(err error) string {
 	return ""
 }
 
+// parentDoneErr reports the request context ending: a cancel (client disconnect) is returned
+// as the wrapped context error so the handler logs nothing, a deadline becomes
+// ClassRequestContext. It returns nil while the request context is alive.
+func parentDoneErr(parent context.Context, corpus, mode string) error {
+	perr := parent.Err()
+	if perr == nil {
+		return nil
+	}
+	if errors.Is(perr, context.Canceled) {
+		return fmt.Errorf("suggest: request canceled: %w", perr)
+	}
+	return newInternalError(ClassRequestContext, corpus, mode, perr)
+}
+
 // classifyBranchErr decides what a failed step of a lexical branch means. It looks at
 // the contexts first and the error shape last, because the error pgx produces when
 // the 50 ms branch budget fires is not stable: besides context.DeadlineExceeded and
 // SQLSTATE 57014 it can be a wrapped conn-busy/closed error, a deadline from the
 // socket (os.ErrDeadlineExceeded), or a Begin/Acquire failure (FU-SB-1).
 //
-//   - parent ctx ended (client disconnect or request deadline): not a branch
-//     timeout, never partial. A cancel is returned as the context error so the
-//     handler logs nothing; a deadline becomes ClassRequestContext.
-//   - branchCtx ended while the parent is alive, or err is a recognised timeout
-//     shape (57014, DeadlineExceeded): the branch budget fired -> partial.
+// Order matters (RV-SB1-BE-1). The branch state and the error shape are snapshotted
+// FIRST and the parent is read LAST, because a derived context is canceled by its parent:
+// if the parent were read first, a cancel arriving between the two reads would make the
+// branch look expired while the parent looked alive. Reading the parent last means a parent
+// that is done at any point up to that read wins.
+//
+//   - parent ctx ended (client disconnect or request deadline): never partial. A cancel is
+//     returned as the context error so the handler logs nothing; a deadline becomes
+//     ClassRequestContext.
+//   - the branch ran out of its OWN budget (branch.Err() == context.DeadlineExceeded) or err
+//     is a recognised timeout shape (57014, DeadlineExceeded) while the parent is alive:
+//     partial. A child context.Canceled is NOT a branch timeout: the branch ctx is only
+//     canceled by its parent or by its own deferred cancel, never by the budget.
 //   - anything else is a genuine error of `class`.
 func classifyBranchErr(parent, branch context.Context, err error, corpus, mode, class string) (partial bool, out error) {
-	if perr := parent.Err(); perr != nil {
-		if errors.Is(perr, context.Canceled) {
-			return false, fmt.Errorf("suggest: request canceled: %w", perr)
-		}
-		return false, newInternalError(ClassRequestContext, corpus, mode, perr)
+	ownBudget := branch.Err() == context.DeadlineExceeded
+	recognised := isBranchTimeout(err)
+	if perr := parentDoneErr(parent, corpus, mode); perr != nil {
+		return false, perr
 	}
-	if branch.Err() != nil || isBranchTimeout(err) {
+	if ownBudget || recognised {
 		return true, nil
 	}
 	return false, newInternalError(class, corpus, mode, err)

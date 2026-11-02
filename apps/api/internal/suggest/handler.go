@@ -61,16 +61,16 @@ func (h *Handler) logServerError(r *http.Request, route string, err error) {
 	class := ClassUnclassified
 	attrs := []slog.Attr{slog.String("route", route)}
 	var ie *InternalError
-	switch {
-	case errors.As(err, &ie):
+	if errors.As(err, &ie) {
+		if ie.Class == ClassGenerationLookup {
+			return // the NearSource already logged this failure (RV-SB1-BE-3)
+		}
 		class = ie.Class
 		for _, kv := range [][2]string{{"corpus", ie.Corpus}, {"mode", ie.Mode}, {"scope", ie.Scope}, {"pgcode", ie.PGCode}} {
 			if kv[1] != "" {
 				attrs = append(attrs, slog.String(kv[0], kv[1]))
 			}
 		}
-	case errors.Is(err, ErrSearchInternal):
-		class = ClassSearchInternal
 	}
 	attrs = append([]slog.Attr{slog.String("error_class", class)}, attrs...)
 	l.LogAttrs(r.Context(), slog.LevelWarn, "suggest server error", attrs...)

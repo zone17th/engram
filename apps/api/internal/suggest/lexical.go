@@ -116,6 +116,13 @@ func (s *Service) runLexicalBranches(
 	if tagOut.err != nil {
 		return nil, nil, false, false, nil, tagOut.err
 	}
+	// A branch was classified partial while the request was alive, but the request may have
+	// ended since: the parent wins, so a client disconnect never counts as a partial (RV-SB1-BE-1).
+	if itmOut.partial || tagOut.partial {
+		if perr := parentDoneErr(ctx, "", mode); perr != nil {
+			return nil, nil, false, false, nil, perr
+		}
+	}
 
 	partial = []string{}
 	if itmOut.partial {
