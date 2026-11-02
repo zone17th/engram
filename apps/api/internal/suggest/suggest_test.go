@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/zone17th/engram/apps/api/internal/authctx"
@@ -1695,12 +1697,15 @@ func counterValueByCorpus(t *testing.T, reg *prometheus.Registry, familyName, co
 	return 0
 }
 
-// TestSuggestBranchTimeoutPartial verifies plan P05 mục 2.3, 2.21, Task 3:
-//   - When one lexical branch exceeds the 50 ms statement_timeout (forced deterministically
-//     via `pg_sleep(0.2)` inside `AfterBranchSetLocal` on that branch's read tx, which has
-//     `SET LOCAL statement_timeout = '50ms'`), `/suggest` still returns HTTP 200 with the
-//     surviving branch's hits, `lexical_partial: ["item"]` (or `["tag"]`), and increments
-//     `search_lexical_partial_total{corpus}` without returning an error to the client.
+// TestSuggestBranchTimeoutPartial verifies plan P05 mục 2.3, 2.21, Task 3 and RV-T3-BE-4:
+//   - (a) Deterministic client-deadline partial coverage (`context.DeadlineExceeded` via
+//     `BeforeBranch` hook on item or tag branch).
+//   - (b) PostgreSQL server-side statement cancellation coverage: `AfterBranchSetLocal` runs
+//     `SELECT pg_sleep(0.2)` with an independent generously bounded test context (5 s) inside
+//     the branch read tx so PostgreSQL's `SET LOCAL statement_timeout = '50ms'` fires first,
+//     explicitly asserts `*pgconn.PgError` with `Code == "57014"` (`query_canceled`) before
+//     returning the error to the service, and verifies surviving branch rows,
+//     `lexical_partial` corpus, and exact `search_lexical_partial_total{corpus}` delta.
 func TestSuggestBranchTimeoutPartial(t *testing.T) {
 	dsn := startTestDB(t)
 	dbtest.MigrateUp(t, dsn)
@@ -1727,67 +1732,165 @@ func TestSuggestBranchTimeoutPartial(t *testing.T) {
 
 	env := newSuggestTestEnv(t, pool)
 	env.auth.addToken("tok-u1", u1)
-
-	// 1. Force the item branch past the 50ms Postgres statement_timeout.
-	env.svc.SetTestHooks(&suggest.TestHooks{
-		AfterBranchSetLocal: func(ctx context.Context, tx pgx.Tx, corpus string) error {
-			if corpus == suggest.CorpusItem {
-				_, err := tx.Exec(ctx, `SELECT pg_sleep(0.2)`)
-				return err
-			}
-			return nil
-		},
-	})
 	t.Cleanup(func() { env.svc.SetTestHooks(nil) })
 
-	beforeItemPartial := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusItem)
-	beforeTagPartial := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
+	// Warm both branches with a normal request first so pgxpool connections and prepared
+	// statements are ready before exercising partial-timeout paths.
+	warmPoolConns(t, pool, 2)
+	warmRec := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
+	warmResp := validateSuggestResponseOpenAPIShape(t, warmRec)
+	if len(warmResp.Items) != 1 || len(warmResp.Tags) != 1 || len(warmResp.LexicalPartial) != 0 {
+		t.Fatalf("warm request unexpected response: %+v", warmResp)
+	}
 
-	recItemTimeout := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
-	respItemTimeout := validateSuggestResponseOpenAPIShape(t, recItemTimeout)
+	// Part (a): Deterministic client-deadline partial coverage (`context.DeadlineExceeded`).
+	t.Run("client-deadline-partial", func(t *testing.T) {
+		// (a.1) Item branch hits client context.DeadlineExceeded; tag branch survives.
+		warmPoolConns(t, pool, 2)
+		beforeItem := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusItem)
+		beforeTag := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
 
-	if !slices.Equal(respItemTimeout.LexicalPartial, []string{"item"}) {
-		t.Fatalf("lexical_partial = %v, want [\"item\"]", respItemTimeout.LexicalPartial)
-	}
-	if len(respItemTimeout.Items) != 0 {
-		t.Fatalf("timed-out item branch must return 0 items, got %d", len(respItemTimeout.Items))
-	}
-	if len(respItemTimeout.Tags) != 1 || respItemTimeout.Tags[0].Display != "wifi-tag" {
-		t.Fatalf("surviving tag branch must return 'wifi-tag', got %+v", respItemTimeout.Tags)
-	}
-	afterItemPartial := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusItem)
-	afterTagPartial := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
-	if afterItemPartial != beforeItemPartial+1 {
-		t.Fatalf("LexicalPartialTotal{corpus=item} = %v, want %v", afterItemPartial, beforeItemPartial+1)
-	}
-	if afterTagPartial != beforeTagPartial {
-		t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want unchanged %v", afterTagPartial, beforeTagPartial)
-	}
-	// 2. Force the tag branch past the 50ms Postgres statement_timeout.
-	env.svc.SetTestHooks(&suggest.TestHooks{
-		AfterBranchSetLocal: func(ctx context.Context, tx pgx.Tx, corpus string) error {
-			if corpus == suggest.CorpusTag {
-				_, err := tx.Exec(ctx, `SELECT pg_sleep(0.2)`)
-				return err
-			}
-			return nil
-		},
+		env.svc.SetTestHooks(&suggest.TestHooks{
+			BeforeBranch: func(_ context.Context, corpus string) error {
+				if corpus == suggest.CorpusItem {
+					return context.DeadlineExceeded
+				}
+				return nil
+			},
+		})
+
+		recItem := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
+		respItem := validateSuggestResponseOpenAPIShape(t, recItem)
+		if !slices.Equal(respItem.LexicalPartial, []string{"item"}) {
+			t.Fatalf("lexical_partial = %v, want [\"item\"]", respItem.LexicalPartial)
+		}
+		if len(respItem.Items) != 0 {
+			t.Fatalf("timed-out item branch must return 0 items, got %d", len(respItem.Items))
+		}
+		if len(respItem.Tags) != 1 || respItem.Tags[0].Display != "wifi-tag" {
+			t.Fatalf("surviving tag branch must return 'wifi-tag', got %+v", respItem.Tags)
+		}
+		afterItem := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusItem)
+		afterTag := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
+		if afterItem != beforeItem+1 || afterTag != beforeTag {
+			t.Fatalf("counters after item client deadline = (item=%v, tag=%v), want (%v, %v)",
+				afterItem, afterTag, beforeItem+1, beforeTag)
+		}
+
+		// (a.2) Tag branch hits client context.DeadlineExceeded; item branch survives.
+		warmPoolConns(t, pool, 2)
+		env.svc.SetTestHooks(&suggest.TestHooks{
+			BeforeBranch: func(_ context.Context, corpus string) error {
+				if corpus == suggest.CorpusTag {
+					return context.DeadlineExceeded
+				}
+				return nil
+			},
+		})
+
+		recTag := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
+		respTag := validateSuggestResponseOpenAPIShape(t, recTag)
+		if !slices.Equal(respTag.LexicalPartial, []string{"tag"}) {
+			t.Fatalf("lexical_partial = %v, want [\"tag\"]", respTag.LexicalPartial)
+		}
+		if len(respTag.Tags) != 0 {
+			t.Fatalf("timed-out tag branch must return 0 tags, got %d", len(respTag.Tags))
+		}
+		if len(respTag.Items) != 1 || respTag.Items[0].Name != "wifi văn phòng" {
+			t.Fatalf("surviving item branch must return 'wifi văn phòng', got %+v", respTag.Items)
+		}
+		afterTag2 := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
+		if afterTag2 != beforeTag+1 {
+			t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want %v", afterTag2, beforeTag+1)
+		}
 	})
 
-	recTagTimeout := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
-	respTagTimeout := validateSuggestResponseOpenAPIShape(t, recTagTimeout)
+	// Part (b): PostgreSQL server-side statement_timeout (`SET LOCAL statement_timeout = '50ms'`)
+	// firing SQLSTATE 57014 (`query_canceled`) before any client context deadline.
+	t.Run("postgres-statement-timeout-57014", func(t *testing.T) {
+		// (b.1) Item branch canceled by PostgreSQL statement_timeout (SQLSTATE 57014); tag branch survives.
+		warmPoolConns(t, pool, 2)
+		beforeItem := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusItem)
+		beforeTag := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
 
-	if !slices.Equal(respTagTimeout.LexicalPartial, []string{"tag"}) {
-		t.Fatalf("lexical_partial = %v, want [\"tag\"]", respTagTimeout.LexicalPartial)
-	}
-	if len(respTagTimeout.Tags) != 0 {
-		t.Fatalf("timed-out tag branch must return 0 tags, got %d", len(respTagTimeout.Tags))
-	}
-	if len(respTagTimeout.Items) != 1 || respTagTimeout.Items[0].Name != "wifi văn phòng" {
-		t.Fatalf("surviving item branch must return 'wifi văn phòng', got %+v", respTagTimeout.Items)
-	}
-	afterTagPartial2 := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
-	if afterTagPartial2 != beforeTagPartial+1 {
-		t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want %v", afterTagPartial2, beforeTagPartial+1)
-	}
+		var observedItemErr error
+		env.svc.SetTestHooks(&suggest.TestHooks{
+			AfterBranchSetLocal: func(_ context.Context, tx pgx.Tx, corpus string) error {
+				if corpus != suggest.CorpusItem {
+					return nil
+				}
+				// Use an independent 5s context so client-side cancellation cannot preempt
+				// PostgreSQL's transaction-local `SET LOCAL statement_timeout = '50ms'`.
+				sleepCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := tx.Exec(sleepCtx, `SELECT pg_sleep(0.2)`)
+				observedItemErr = err
+				return err
+			},
+		})
+
+		recItem := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
+		var pgErrItem *pgconn.PgError
+		if !errors.As(observedItemErr, &pgErrItem) || pgErrItem.Code != "57014" {
+			t.Fatalf("item branch hook error = %v (type %T), want *pgconn.PgError with Code=\"57014\"",
+				observedItemErr, observedItemErr)
+		}
+
+		respItem := validateSuggestResponseOpenAPIShape(t, recItem)
+		if !slices.Equal(respItem.LexicalPartial, []string{"item"}) {
+			t.Fatalf("lexical_partial = %v, want [\"item\"]", respItem.LexicalPartial)
+		}
+		if len(respItem.Items) != 0 {
+			t.Fatalf("timed-out item branch must return 0 items, got %d", len(respItem.Items))
+		}
+		if len(respItem.Tags) != 1 || respItem.Tags[0].Display != "wifi-tag" {
+			t.Fatalf("surviving tag branch must return 'wifi-tag', got %+v", respItem.Tags)
+		}
+		afterItem := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusItem)
+		afterTag := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
+		if afterItem != beforeItem+1 {
+			t.Fatalf("LexicalPartialTotal{corpus=item} = %v, want %v", afterItem, beforeItem+1)
+		}
+		if afterTag != beforeTag {
+			t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want unchanged %v", afterTag, beforeTag)
+		}
+
+		// (b.2) Tag branch canceled by PostgreSQL statement_timeout (SQLSTATE 57014); item branch survives.
+		warmPoolConns(t, pool, 2)
+		var observedTagErr error
+		env.svc.SetTestHooks(&suggest.TestHooks{
+			AfterBranchSetLocal: func(_ context.Context, tx pgx.Tx, corpus string) error {
+				if corpus != suggest.CorpusTag {
+					return nil
+				}
+				sleepCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := tx.Exec(sleepCtx, `SELECT pg_sleep(0.2)`)
+				observedTagErr = err
+				return err
+			},
+		})
+
+		recTag := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
+		var pgErrTag *pgconn.PgError
+		if !errors.As(observedTagErr, &pgErrTag) || pgErrTag.Code != "57014" {
+			t.Fatalf("tag branch hook error = %v (type %T), want *pgconn.PgError with Code=\"57014\"",
+				observedTagErr, observedTagErr)
+		}
+
+		respTag := validateSuggestResponseOpenAPIShape(t, recTag)
+		if !slices.Equal(respTag.LexicalPartial, []string{"tag"}) {
+			t.Fatalf("lexical_partial = %v, want [\"tag\"]", respTag.LexicalPartial)
+		}
+		if len(respTag.Tags) != 0 {
+			t.Fatalf("timed-out tag branch must return 0 tags, got %d", len(respTag.Tags))
+		}
+		if len(respTag.Items) != 1 || respTag.Items[0].Name != "wifi văn phòng" {
+			t.Fatalf("surviving item branch must return 'wifi văn phòng', got %+v", respTag.Items)
+		}
+		afterTag2 := counterValueByCorpus(t, env.reg, "search_lexical_partial_total", suggest.CorpusTag)
+		if afterTag2 != beforeTag+1 {
+			t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want %v", afterTag2, beforeTag+1)
+		}
+	})
 }
