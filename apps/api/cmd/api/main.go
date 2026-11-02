@@ -122,6 +122,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose content: %w", err)
 	}
+	searchComp, err := compose.NewSearch(cfg, pool, nil, metrics, logger)
+	if err != nil {
+		return fmt.Errorf("compose search: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -134,7 +138,7 @@ func run() error {
 			Authenticator:    authn,
 			CSRF:             csrfv,
 			Reauth:           reauth,
-			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI), itemhttp.Mount(contentComp), taghttp.Mount(contentComp), entryhttp.Mount(contentComp)),
+			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI), itemhttp.Mount(contentComp), taghttp.Mount(contentComp), entryhttp.Mount(contentComp), searchComp.Mount),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
