@@ -48,6 +48,7 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 		t.Fatalf("insert item: %v", err)
 	}
 
+	warmPoolConns(t, pool, 2)
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	clk := clock.NewFixed(ts)

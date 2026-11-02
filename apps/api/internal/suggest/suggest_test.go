@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -69,6 +71,11 @@ func (a *suggestTestAuth) addToken(token string, userID uuid.UUID) {
 func newSuggestTestEnv(t *testing.T, pool *pgxpool.Pool) *suggestTestEnv {
 	t.Helper()
 	clk := clock.NewFixed(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	// Warm two concurrent pool connections so parallel item/tag lexical branches
+	// (50 ms per-branch budget) do not pay cold TCP/auth handshake overhead on CI.
+	if pool != nil {
+		warmPoolConns(t, pool, 2)
+	}
 	reg, metrics := obs.NewRegistry()
 	cursorKey, err := suggest.DeriveCursorKey([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
@@ -82,6 +89,7 @@ func newSuggestTestEnv(t *testing.T, pool *pgxpool.Pool) *suggestTestEnv {
 	auth := &suggestTestAuth{cookies: make(map[string]authctx.Principal)}
 
 	router := httpx.NewRouter(httpx.Deps{
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MetricsCollector: metrics,
 		Authenticator:    auth,
 		MountAPI:         suggest.Mount(handler),
@@ -98,6 +106,26 @@ func newSuggestTestEnv(t *testing.T, pool *pgxpool.Pool) *suggestTestEnv {
 		handler: handler,
 		router:  router,
 		auth:    auth,
+	}
+}
+
+func warmPoolConns(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conns := make([]*pgxpool.Conn, 0, n)
+	for range n {
+		c, err := pool.Acquire(ctx)
+		if err != nil {
+			for _, prev := range conns {
+				prev.Release()
+			}
+			t.Fatalf("warmPoolConns Acquire: %v", err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.Release()
 	}
 }
 
