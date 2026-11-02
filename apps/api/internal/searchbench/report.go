@@ -254,6 +254,11 @@ type CellAgg struct {
 	TimedOut           int     `json:"timed_out"`
 	CrossTenantRows    int     `json:"cross_tenant_rows"`
 
+	// Exact-path queries (count <= SEARCH_EXACT_MAX_VECTORS) are not C2-R inputs;
+	// their recall is reported as a sanity line (must be 1.0).
+	ExactQueries    int     `json:"exact_path_queries_e_gt0"`
+	ExactRecallMean float64 `json:"exact_path_recall_mean"`
+
 	BranchLatency    LatencyStats `json:"branch_latency_all"`
 	ANNBranchLatency LatencyStats `json:"branch_latency_ann"` // C2-B input
 }
@@ -263,6 +268,7 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 	c := CellAgg{Corpus: corpus, Class: class, Knob: knob, Queries: len(outs), PathCounts: map[string]int{}}
 	var (
 		recallSum, overlapSum, eSum float64
+		exactSum                    float64
 		ge80, underAfter, underBef  int
 		allLat, annLat              []time.Duration
 	)
@@ -277,6 +283,10 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 			c.FalsePositives++
 		}
 		if !IsANNFamily(o.Path) {
+			if o.ESize > 0 {
+				c.ExactQueries++
+				exactSum += float64(o.Hits) / float64(o.ESize)
+			}
 			continue
 		}
 		c.ANNQueries++
@@ -319,6 +329,9 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 		c.UnderfillAfter = float64(underAfter) / n
 		c.OverlapMean = overlapSum / n
 		c.MeanE = eSum / n
+	}
+	if c.ExactQueries > 0 {
+		c.ExactRecallMean = exactSum / float64(c.ExactQueries)
 	}
 	if c.ANNQueries > 0 {
 		c.UnderfillBeforeANN = float64(underBef) / float64(c.ANNQueries)
