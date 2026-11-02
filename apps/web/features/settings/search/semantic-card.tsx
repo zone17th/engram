@@ -7,9 +7,11 @@
  * Contract:
  * - Bound to `useSemanticSuggestSetting()` (shared with Omnibox `≈`, Task 9).
  * - Switch is non-optimistic: reflects cache (`semanticSuggest`) only; waits for HTTP 200 before flipping.
- * - Server-off (`me === null` or `semanticAvailable === false`): card has `control-disabled` + `aria-disabled="true"`,
- *   switch is `disabled` + `aria-disabled="true"` and renders OFF (`aria-checked="false"`), copy blocks are hidden,
- *   shows `semanticServerOff` (`aria-describedby`) when `me !== null`, clicking does nothing (no PATCH).
+ * - Server-off (`me === null` or `semanticAvailable === false`): card has `aria-disabled="true"`, header row
+ *   (title/description + switch) has `control-disabled` (advisor-dec-288 / VIS-T18-1-1), switch is `disabled` +
+ *   `aria-disabled="true"` and renders OFF (`aria-checked="false"`), copy blocks are hidden, shows `semanticServerOff`
+ *   (`aria-describedby`) outside the dimmed region at full opacity (`text-muted`: 5.92:1 light / 6.92:1 dark on
+ *   `--canvas`) when `me !== null`, clicking does nothing (no PATCH).
  * - While `isPending`: switch uses `aria-disabled="true"` + `aria-busy` without `disabled` (preserves keyboard focus)
  *   and is guarded against double clicks in the click handler.
  * - Copy block (when `semanticAvailable` is true): `semanticExternal` true (or absent, defaulted to `true` by hook
@@ -67,12 +69,17 @@ export function SemanticCard() {
 
   return (
     <div
-      className={`card mb-3 p-5${isServerOff ? ' control-disabled' : ''}`}
+      className="card mb-3 p-5"
       id="timkiem-semantic-card"
       aria-disabled={isServerOff ? 'true' : undefined}
       data-testid="settings-semantic-card"
     >
-      <div className="mb-4 flex flex-wrap items-start gap-4">
+      <div
+        className={`mb-4 flex flex-wrap items-start gap-4${
+          isServerOff ? ' control-disabled' : ''
+        }`}
+        data-testid="settings-semantic-header"
+      >
         <div className="min-w-0 flex-1 basis-[240px]">
           <div className="mb-1 flex flex-wrap items-center gap-2">
             <span

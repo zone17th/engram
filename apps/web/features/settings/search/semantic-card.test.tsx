@@ -202,17 +202,20 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
     });
 
     const card = screen.getByTestId('settings-semantic-card');
-    expect(card).toHaveClass('control-disabled');
+    expect(card).not.toHaveClass('control-disabled');
     expect(card).toHaveAttribute('aria-disabled', 'true');
+
+    const headerRow = screen.getByTestId('settings-semantic-header');
+    expect(headerRow).toHaveClass('control-disabled');
 
     const sw = screen.getByRole('switch', {
       name: messages.settings.search.semanticTitle,
     });
     expect(sw).toBeDisabled();
     expect(sw).toHaveAttribute('aria-disabled', 'true');
+    expect(sw.closest('.control-disabled')).toBe(headerRow);
     // Server-off always renders the switch OFF regardless of stored semantic_suggest
     expect(sw).toHaveAttribute('aria-checked', 'false');
-
     // Neither copy block renders when server-off
     expect(screen.queryByTestId('settings-semantic-copy-external')).toBeNull();
     expect(screen.queryByTestId('settings-semantic-copy-selfhost')).toBeNull();
@@ -228,6 +231,7 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
 
     const serverOffNote = screen.getByText(messages.settings.search.semanticServerOff);
     expect(serverOffNote).toBeInTheDocument();
+    expect(serverOffNote.closest('.control-disabled')).toBeNull();
     expect(sw).toHaveAttribute('aria-describedby', serverOffNote.id);
 
     fireEvent.click(sw);
@@ -449,8 +453,10 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
       locale: 'en',
     });
     const nullCard = screen.getByTestId('settings-semantic-card');
-    expect(nullCard).toHaveClass('control-disabled');
+    expect(nullCard).not.toHaveClass('control-disabled');
     expect(nullCard).toHaveAttribute('aria-disabled', 'true');
+    const nullHeader = screen.getByTestId('settings-semantic-header');
+    expect(nullHeader).toHaveClass('control-disabled');
     const nullSw = screen.getByRole('switch', {
       name: enMessages.settings.search.semanticTitle,
     });
