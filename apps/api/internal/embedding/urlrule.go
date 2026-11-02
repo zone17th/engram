@@ -264,9 +264,15 @@ func makeCheckedDialContext(resolver HostResolver, rawDial DialFunc, checkPrivat
 		} else {
 			resolved, lookupErr := resolver.LookupNetIP(ctx, "ip", host)
 			if lookupErr != nil {
+				class := ClassRefused
+				detail := "dns lookup failed"
+				if IsTimeoutError(lookupErr) || IsTimeoutError(ctx.Err()) {
+					class = ClassTimeout
+					detail = "dns lookup timed out"
+				}
 				return nil, &ProviderError{
-					Class:  ClassRefused,
-					Detail: "dns lookup failed",
+					Class:  class,
+					Detail: detail,
 					Err:    lookupErr,
 				}
 			}
@@ -318,7 +324,17 @@ func makeCheckedDialContext(resolver HostResolver, rawDial DialFunc, checkPrivat
 		if lastErr == nil {
 			lastErr = errors.New("no dialable addresses")
 		}
-		return nil, lastErr
+		class := ClassRefused
+		detail := "dial failed"
+		if IsTimeoutError(lastErr) || IsTimeoutError(ctx.Err()) {
+			class = ClassTimeout
+			detail = "dial timed out"
+		}
+		return nil, &ProviderError{
+			Class:  class,
+			Detail: detail,
+			Err:    lastErr,
+		}
 	}
 }
 
@@ -339,9 +355,15 @@ func ReadBodyWithLimit(r io.Reader, maxBytes int64) ([]byte, error) {
 	lr := &io.LimitedReader{R: r, N: maxBytes + 1}
 	data, err := io.ReadAll(lr)
 	if err != nil {
+		class := ClassBadResponse
+		detail := "failed reading response body"
+		if IsTimeoutError(err) {
+			class = ClassTimeout
+			detail = "reading response body timed out"
+		}
 		return nil, &ProviderError{
-			Class:  ClassBadResponse,
-			Detail: "failed reading response body",
+			Class:  class,
+			Detail: detail,
 			Err:    err,
 		}
 	}
