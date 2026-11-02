@@ -984,13 +984,8 @@
       semToggleBtn.hidden = false;
       const isOn = !!state.semantic;
       semToggleBtn.setAttribute('aria-pressed', String(isOn));
-      semToggleBtn.setAttribute(
-        'aria-label',
-        isOn
-          ? 'Gợi ý gần nghĩa (≈): đang bật · Similar-meaning suggestions (≈): on'
-          : 'Gợi ý gần nghĩa (≈): đang tắt · Similar-meaning suggestions (≈): off'
-      );
-      semToggleBtn.innerHTML = `<span aria-hidden="true">≈</span><span>${isOn ? 'on' : 'off'}</span>`;
+      semToggleBtn.setAttribute('aria-label', 'Tìm gần nghĩa');
+      semToggleBtn.innerHTML = '<span aria-hidden="true">≈</span>';
     }
     syncSemToggleBtn();
 
@@ -1248,15 +1243,15 @@
       const dateMeta = (isDup && it.created_at) ? ` · ${esc(it.created_at)}` : '';
       let badgeHtml = '';
       if (matchKind === 'fuzzy') {
-        badgeHtml = ` <span class="sugg-match-badge" data-i18n-key="search.match.fuzzy">gần đúng · <span lang="en">fuzzy</span></span>`;
+        badgeHtml = ' <span class="sugg-match-badge" data-i18n-key="search.match.fuzzy">gần đúng</span>';
       } else if (matchKind === 'semantic') {
-        badgeHtml = ` <span class="sugg-near-badge" data-i18n-key="search.match.semantic">≈ gần nghĩa · <span lang="en">≈ similar</span></span>`;
+        badgeHtml = ' <span class="sugg-near-badge" data-i18n-key="search.match.semantic">≈ gần nghĩa</span>';
       }
       return `<div role="option" id="${optId}" data-opt-key="${esc(optKey)}" data-opt-kind="item" data-item-id="${esc(it.id)}" data-item-name="${esc(it.name)}" aria-selected="false" class="sugg-row">
         <span class="omni-opt-main">
           <span class="omni-opt-title">${titleHtml}</span>
           ${shownTags.map((t) => `<span class="chip dup-chip" title="#${esc(t)}">#${esc(t)}</span>`).join('')}
-          ${extra > 0 ? `<span class="mono text-[12px] text-muted" aria-hidden="true">+${extra}</span><span class="sr-only">Còn ${extra} tag nữa · ${extra} more tags</span>` : ''}
+          ${extra > 0 ? `<span class="mono text-[12px] text-muted" aria-hidden="true">+${extra}</span><span class="sr-only">Còn ${extra} tag nữa</span>` : ''}
         </span>
         <span class="sugg-meta mono">${count} entries${dateMeta}${badgeHtml}</span>
       </div>`;
@@ -1273,12 +1268,12 @@
         labelHtml = markPrefix(disp, query);
       }
       const fuzzyBadge = matchKind === 'fuzzy'
-        ? ` <span class="sugg-match-badge" data-i18n-key="search.match.fuzzy">gần đúng · <span lang="en">fuzzy</span></span>`
+        ? ' <span class="sugg-match-badge" data-i18n-key="search.match.fuzzy">gần đúng</span>'
         : '';
       return `<div role="option" id="${optId}" data-opt-key="${esc(optKey)}" data-opt-kind="tag" data-tag-name="${esc(disp)}" aria-selected="false" class="sugg-row">
         <span class="mono text-accent">#</span>
         <span class="omni-opt-title">${labelHtml}</span>
-        <span class="sugg-meta mono">${count} mục · <span lang="en">${count} items</span>${fuzzyBadge}</span>
+        <span class="sugg-meta mono">${count} mục${fuzzyBadge}</span>
       </div>`;
     }
 
@@ -1327,7 +1322,7 @@
             return formatItemRowHtml(it, '', optId, key, dupSet);
           }).join('');
           groupsHtml += `<div role="group" aria-labelledby="${grpItemsHdrId}" class="sugg-zone" data-zone="items">
-            <div id="${grpItemsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.recentItems">Gần đây · <span lang="en">Recent</span></div>
+            <div id="${grpItemsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.recentItems">Gần đây</div>
             ${rowsHtml}
           </div>`;
         }
@@ -1339,7 +1334,7 @@
             return formatTagRowHtml(t, '', optId, key);
           }).join('');
           groupsHtml += `<div role="group" aria-labelledby="${grpTagsHdrId}" class="sugg-zone" data-zone="tags">
-            <div id="${grpTagsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.recentTags">Tag hay dùng · <span lang="en">Frequent tags</span></div>
+            <div id="${grpTagsHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.recentTags">Tag hay dùng</div>
             ${rowsHtml}
           </div>`;
         }
@@ -1374,7 +1369,7 @@
             return formatItemRowHtml({ ...it, match: 'semantic' }, '', optId, key, dupSet);
           }).join('');
           groupsHtml += `<div role="group" aria-labelledby="${grpNearHdrId}" class="sugg-zone" data-zone="near">
-            <div id="${grpNearHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.near">Gần nghĩa · <span lang="en">Similar meaning</span></div>
+            <div id="${grpNearHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.near">Gần nghĩa</div>
             ${rowsHtml}
           </div>`;
         }
@@ -1384,8 +1379,8 @@
       const totalHits = tags.length + items.length + near.length;
       if (!isRecent && totalHits === 0 && q) {
         emptyOutsideHtml = `<div class="omni-empty-box" id="${baseId}-suggest-empty-note" data-i18n-key="search.state.noMatch">
-          <p class="text-[14px] font-semibold text-body m-0 mb-0.5">Không khớp “${esc(q)}” · <span lang="en" class="font-normal text-muted">No match for “${esc(q)}”</span></p>
-          <p class="text-[12px] text-muted m-0">Gõ <span class="mono">${esc(q)}: nội dung</span> để lưu ngay hoặc tạo mục rỗng bên dưới. · <span lang="en">Type <span class="mono">${esc(q)}: content</span> to save or create an empty item below.</span></p>
+          <p class="text-[14px] font-semibold text-body m-0 mb-0.5">Không khớp “${esc(q)}”</p>
+          <p class="text-[12px] text-muted m-0">Gõ <span class="mono">${esc(q)}: nội dung</span> để lưu ngay hoặc tạo mục rỗng bên dưới.</p>
         </div>`;
       }
 
@@ -1394,10 +1389,10 @@
         const createId = `${baseId}-opt-create`;
         const createKey = `action:create:${q}`;
         groupsHtml += `<div role="group" aria-labelledby="${grpActHdrId}" class="sugg-zone sugg-zone-actions" data-zone="actions">
-          <div id="${grpActHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác · <span lang="en">Actions</span></div>
+          <div id="${grpActHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
           <div role="option" id="${createId}" data-opt-key="${esc(createKey)}" data-opt-kind="create" data-opt-query="${esc(q)}" aria-selected="false" class="sugg-row omni-create-option">
             <span class="mono text-accent">＋</span>
-            <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(q)}”</strong> · <span lang="en" class="text-muted">Create item “${esc(q)}”</span></span>
+            <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(q)}”</strong></span>
             <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
           </div>
         </div>`;
@@ -1406,27 +1401,26 @@
       let statusOutsideHtml = '';
       if (viewOpts.nearPending) {
         statusOutsideHtml += `<div class="sugg-status-line" data-omni-status="near-pending" data-i18n-key="search.state.nearPending">
-          <span>Đang tìm gần nghĩa… · <span lang="en">Searching similar meaning…</span></span>
-          <span class="mono text-[11px]">≈ semantic=1</span>
+          <span>Đang tìm gần nghĩa…</span>
         </div>`;
       }
       if (viewOpts.degraded) {
         statusOutsideHtml += `<div class="sugg-status-line" data-omni-status="degraded" data-i18n-key="search.state.degraded">
-          <span>Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy · <span lang="en">Similar-meaning search is temporarily paused — name search still works</span></span>
+          <span>Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy</span>
         </div>`;
       }
       if (viewOpts.enable409) {
-        statusOutsideHtml += `<div class="sugg-status-line sugg-status-warn" data-omni-status="enable-409" data-i18n-key="search.state.enable409">
-          <span>Không bật được tìm theo nghĩa · <span lang="en">Could not enable similar-meaning search</span></span>
+        statusOutsideHtml += `<div class="sugg-status-line" data-omni-status="enable-409" data-i18n-key="search.state.enable409">
+          <span>Không bật được tìm theo nghĩa</span>
         </div>`;
       }
       if (viewOpts.rateLimited) {
-        statusOutsideHtml += `<div class="sugg-status-line sugg-status-warn" data-omni-status="rate-limited" data-i18n-key="search.state.rateLimited">
-          <span>Đang gửi hơi nhanh, thử lại sau 2 giây · <span lang="en">Sending too fast, try again in 2s</span></span>
+        statusOutsideHtml += `<div class="sugg-status-line" data-omni-status="rate-limited" data-i18n-key="search.state.rateLimited">
+          <span>Đang gửi hơi nhanh, thử lại sau 2 giây</span>
         </div>`;
       }
 
-      pop.innerHTML = `${emptyOutsideHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Gợi ý tìm kiếm · Search suggestions">${groupsHtml}</div>${statusOutsideHtml}`;
+      pop.innerHTML = `${emptyOutsideHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Gợi ý tìm kiếm">${groupsHtml}</div>${statusOutsideHtml}`;
       pop.hidden = false;
       input.setAttribute('aria-controls', listboxId);
 
@@ -1444,9 +1438,9 @@
       if (viewOpts.liveAnnouncement != null) {
         setLiveText(viewOpts.liveAnnouncement);
       } else if (!isRecent && totalHits === 0 && q) {
-        setLiveText(`Không khớp “${q}” · No match for “${q}”`);
+        setLiveText(`Không khớp “${q}”`);
       } else {
-        setLiveText(`${totalHits} gợi ý · ${totalHits} suggestions`);
+        setLiveText(`${totalHits} gợi ý`);
       }
     }
 
@@ -1491,7 +1485,7 @@
         return formatItemRowHtml({ ...it, match: 'semantic' }, query || '', optId, key, dupSet);
       }).join('');
 
-      nearZone.innerHTML = `<div id="${grpNearHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.near">Gần nghĩa · <span lang="en">Similar meaning</span></div>${rowsHtml}`;
+      nearZone.innerHTML = `<div id="${grpNearHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.near">Gần nghĩa</div>${rowsHtml}`;
 
       /* Chèn trước nhóm cuối (search.group.actions) để actions luôn là con cuối của listbox */
       const actionsZone = lb.querySelector('[data-zone="actions"]');
@@ -1503,7 +1497,7 @@
 
       rebuildListOptionsFromDom();
       syncActiveOption();
-      setLiveText(`Thêm ${filteredNear.length} gợi ý gần nghĩa · Added ${filteredNear.length} similar-meaning suggestions`);
+      setLiveText(`Thêm ${filteredNear.length} gợi ý gần nghĩa`);
     }
 
     function removeNearZoneInPlace() {
@@ -1520,7 +1514,7 @@
       }
       rebuildListOptionsFromDom();
       syncActiveOption();
-      setLiveText('Đã ẩn gợi ý gần nghĩa · Hid similar-meaning suggestions');
+      setLiveText('Đã ẩn gợi ý gần nghĩa');
     }
 
     function renderSearchListbox(query, items, searchOpts) {
@@ -1538,7 +1532,7 @@
       let topStatusHtml = '';
       let groupsHtml = '';
       if (items.length > 0) {
-        topStatusHtml = `<div class="sugg-status-line sugg-status-line-top" data-omni-status="search-count">${items.length} kết quả cho “${esc(query)}” · <span lang="en">${items.length} ${items.length === 1 ? 'result' : 'results'} for “${esc(query)}”</span></div>`;
+        topStatusHtml = `<div class="sugg-status-line sugg-status-line-top" data-omni-status="search-count">${items.length} kết quả</div>`;
         const rowsHtml = items.map((it, idx) => {
           const optId = `${baseId}-opt-item-${esc(it.id)}-${idx}`;
           const optKey = `item:${it.id}`;
@@ -1556,40 +1550,39 @@
           const moreOptId = `${baseId}-opt-more`;
           moreOptHtml = `<div role="option" id="${moreOptId}" data-opt-key="action:more" data-opt-kind="more" data-opt-query="${esc(query)}" aria-selected="false" class="sugg-row">
             <span class="mono text-accent">↓</span>
-            <span data-i18n-key="search.actions.loadMore"><strong>Xem thêm</strong> · <span lang="en" class="text-muted">Show more</span></span>
+            <span data-i18n-key="search.actions.loadMore"><strong>Xem thêm</strong></span>
             <span class="sugg-meta"><span class="kbd">Enter</span></span>
           </div>`;
         }
         groupsHtml += `<div role="group" aria-labelledby="${grpActHdrId}" class="sugg-zone sugg-zone-actions" data-zone="actions">
-          <div id="${grpActHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác · <span lang="en">Actions</span></div>
+          <div id="${grpActHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
           ${moreOptHtml}
           <div role="option" id="${createOptId}" data-opt-key="${esc(createKey)}" data-opt-kind="create" data-opt-query="${esc(query)}" aria-selected="false" class="sugg-row omni-create-option">
             <span class="mono text-accent">＋</span>
-            <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(query)}”</strong> · <span lang="en" class="text-muted">Create item “${esc(query)}”</span></span>
+            <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(query)}”</strong></span>
             <span class="sugg-meta"><span class="kbd">Ctrl+Enter</span></span>
           </div>
         </div>`;
-        setLiveText(`${items.length} kết quả · ${items.length} results`);
+        setLiveText(`${items.length} kết quả`);
       } else {
         const createOptId = `${baseId}-opt-create`;
         const createKey = `action:create:${query}`;
         topStatusHtml = `<div class="omni-empty-box" id="${baseId}-search-empty" data-i18n-key="search.state.noMatch">
-          <p class="t-label mb-1 text-muted">Tìm không ra · <span lang="en">No match</span></p>
-          <p class="text-[14px] font-semibold text-body m-0 mb-1">Không khớp “${esc(query)}”</p>
-          <p class="text-[12px] text-muted m-0" lang="en">No match for “${esc(query)}”. Search inspects item names and tags only, never encrypted entry bodies.</p>
+          <p class="t-label mb-1 text-muted">Tìm không ra</p>
+          <p class="text-[14px] font-semibold text-body m-0">Không khớp “${esc(query)}”</p>
         </div>`;
         groupsHtml = `<div role="group" aria-labelledby="${grpActHdrId}" class="sugg-zone sugg-zone-actions" data-zone="actions">
-          <div id="${grpActHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác · <span lang="en">Actions</span></div>
+          <div id="${grpActHdrId}" class="sugg-group" role="presentation" data-i18n-key="search.group.actions">Thao tác</div>
           <div role="option" id="${createOptId}" data-opt-key="${esc(createKey)}" data-opt-kind="create" data-opt-query="${esc(query)}" aria-selected="false" class="sugg-row omni-create-option">
             <span class="mono text-accent">＋</span>
-            <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(query)}”</strong> · <span lang="en" class="text-muted">Create item “${esc(query)}”</span></span>
+            <span data-i18n-key="search.actions.createItem"><strong>Tạo mục “${esc(query)}”</strong></span>
             <span class="sugg-meta"><span class="kbd">Enter</span></span>
           </div>
         </div>`;
-        setLiveText(`Không khớp “${query}” · No match for “${query}”`);
+        setLiveText(`Không khớp “${query}”`);
       }
 
-      pop.innerHTML = `${topStatusHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả tìm kiếm · Search results">${groupsHtml}</div>`;
+      pop.innerHTML = `${topStatusHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả tìm kiếm">${groupsHtml}</div>`;
       pop.hidden = false;
       input.setAttribute('aria-controls', listboxId);
       rebuildListOptionsFromDom();
@@ -1603,9 +1596,7 @@
       listOptions = [];
 
       const grpTagsHdrId = `${baseId}-grp-tag-filter-hdr`;
-      const hdrLabel = fromServerLookup
-        ? 'Tags · <span lang="en">Tag suggestions</span>'
-        : 'Tags · <span lang="en">Tag filter</span>';
+      const hdrLabel = 'Tags';
       let emptyTopHtml = '';
       let groupsHtml = '';
       if (matchedTags.length) {
@@ -1619,19 +1610,18 @@
           <div id="${grpTagsHdrId}" class="sugg-group" role="presentation">${hdrLabel}</div>
           ${rowsHtml}
         </div>`;
-        setLiveText(`${matchedTags.length} tag khớp #${tagQuery} · ${matchedTags.length} matching tags`);
+        setLiveText(`${matchedTags.length} tag khớp #${tagQuery}`);
       } else {
         emptyTopHtml = `<div class="omni-empty-box">
-          <p class="text-[14px] font-semibold text-body m-0 mb-1">Không khớp “#${esc(tagQuery)}”</p>
-          <p class="text-[12px] text-muted m-0" lang="en">No tags matching “#${esc(tagQuery)}”.</p>
+          <p class="text-[14px] font-semibold text-body m-0">Không khớp “#${esc(tagQuery)}”</p>
         </div>`;
         groupsHtml = `<div role="group" aria-labelledby="${grpTagsHdrId}" class="sugg-zone" data-zone="tags">
           <div id="${grpTagsHdrId}" class="sugg-group" role="presentation">${hdrLabel}</div>
         </div>`;
-        setLiveText(`Không khớp “#${tagQuery}” · No tags matching “#${tagQuery}”`);
+        setLiveText(`Không khớp “#${tagQuery}”`);
       }
 
-      pop.innerHTML = `${emptyTopHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả lọc tag · Tag filter results">${groupsHtml}</div>`;
+      pop.innerHTML = `${emptyTopHtml}<div role="listbox" id="${listboxId}" class="omni-listbox" aria-label="Kết quả lọc tag">${groupsHtml}</div>`;
       pop.hidden = false;
       input.setAttribute('aria-controls', listboxId);
       activeKey = prevKey;
@@ -1741,8 +1731,7 @@
         const gateClosedForSearch = gateTainted || gateColonLocked || hasAnyColon(input.value) || parsed.tooLongOrMulti;
         if (tabCannotFillMsg) {
           hintEl.dataset.i18nKey = 'search.tab.cannotFill';
-          hintEl.innerHTML = `<span class="omni-hint-vi">Không điền được bằng Tab (tên chứa dấu : hoặc #)</span>
-            <span class="omni-hint-en" lang="en">Cannot fill with Tab (name contains : or #)</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">Không điền được bằng Tab</span>`;
         } else if (legacyHintMode) {
           hintEl.dataset.i18nKey = 'content.omnibox.searchHint';
           hintEl.innerHTML = `<span class="omni-hint-vi"${hasNonEmptyInput ? '' : ' hidden'}>${COPY_SEARCH_HINT_VI}<span class="mono">tên: nội dung</span></span>
@@ -1750,16 +1739,13 @@
         } else if (gateClosedForSearch) {
           /* SPEC §3.4 bảng state -> key: tainted / khoá : ngoài add mode / nhiều dòng / >200 rune -> search.help.enterToSearch */
           hintEl.dataset.i18nKey = 'search.help.enterToSearch';
-          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_ENTER_TO_SEARCH_VI}</span>
-            <span class="omni-hint-en" lang="en">${COPY_ENTER_TO_SEARCH_EN}</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_ENTER_TO_SEARCH_VI}</span>`;
         } else if (state.semanticExternal !== false) {
           hintEl.dataset.i18nKey = 'search.help.sentToServerExternal';
-          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SENT_TO_SERVER_EXT_VI}<span class="mono">tên:</span> trước.</span>
-            <span class="omni-hint-en" lang="en">${COPY_SENT_TO_SERVER_EXT_EN}<span class="mono">name:</span> first.</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SENT_TO_SERVER_EXT_VI}<span class="mono">tên:</span> trước.</span>`;
         } else {
           hintEl.dataset.i18nKey = 'search.help.sentToServer';
-          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SENT_TO_SERVER_VI}<span class="mono">tên:</span> trước.</span>
-            <span class="omni-hint-en" lang="en">${COPY_SENT_TO_SERVER_EN}<span class="mono">name:</span> first.</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_SENT_TO_SERVER_VI}<span class="mono">tên:</span> trước.</span>`;
         }
         addPanelEl.hidden = true;
         lastErrorAlertSig = '';
@@ -1775,12 +1761,10 @@
         const gateClosedForTag = gateTainted || gateColonLocked || hasAnyColon(input.value) || !parsed.searchable;
         if (tabCannotFillMsg) {
           hintEl.dataset.i18nKey = 'search.tab.cannotFill';
-          hintEl.innerHTML = `<span class="omni-hint-vi">Không điền được bằng Tab</span>
-            <span class="omni-hint-en" lang="en">Cannot fill with Tab</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">Không điền được bằng Tab</span>`;
         } else if (gateClosedForTag) {
           hintEl.dataset.i18nKey = 'search.help.enterToSearch';
-          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_ENTER_TO_SEARCH_VI}</span>
-            <span class="omni-hint-en" lang="en">${COPY_ENTER_TO_SEARCH_EN}</span>`;
+          hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_ENTER_TO_SEARCH_VI}</span>`;
         } else {
           hintEl.dataset.i18nKey = 'content.omnibox.tagHint';
           hintEl.innerHTML = `<span class="omni-hint-vi">${COPY_TAG_HINT_VI}</span>
@@ -1801,7 +1785,7 @@
       const destLabelEl = addPanelEl.querySelector('[data-part="dest-label"]');
       if (destLabelEl) {
         if (pinnedItem) {
-          destLabelEl.innerHTML = `Sẽ lưu vào <span class="chip chip-accent !py-0.5 !px-2">${esc(pinnedItem.name)} ✓</span> <span class="mono text-[11px] text-muted" data-pinned-item-id="${esc(pinnedItem.id)}">(đã ghim ID ${esc(pinnedItem.id)} · <span lang="en">pinned ID</span>)</span> · <span lang="en" class="text-muted">Will save to <strong>${esc(pinnedItem.name)} ✓</strong></span>`;
+          destLabelEl.innerHTML = `Sẽ lưu vào <span class="chip chip-accent !py-0.5 !px-2">${esc(pinnedItem.name)} ✓</span>`;
         } else {
           destLabelEl.innerHTML = `Sẽ lưu vào <strong>${esc(parsed.name || '…')}</strong> · <span lang="en" class="text-muted">Will save to <strong>${esc(parsed.name || '…')}</strong></span>`;
         }
@@ -2677,7 +2661,7 @@
             hideNear: true,
             nearPending: true,
             initialActiveKey: 'item:i1',
-            liveAnnouncement: `${res.tags.length + res.items.length} gợi ý · ${res.tags.length + res.items.length} suggestions`
+            liveAnnouncement: `${res.tags.length + res.items.length} gợi ý`
           });
           /* B2: sau 420ms append vùng Gần nghĩa mà giữ nguyên DOM node lexical & activeKey */
           const tid = setTimeout(() => {
@@ -2698,7 +2682,7 @@
           setDraft('secret-token-pasted-from-clipboard', { tainted: true });
           closeListbox(true);
           renderHintAndPanels();
-          setLiveText(COPY_ENTER_TO_SEARCH_VI + ' · ' + COPY_ENTER_TO_SEARCH_EN);
+          setLiveText(COPY_ENTER_TO_SEARCH_VI);
           input.focus();
         } else if (scenarioName === 'suggest-tab-item') {
           ensureUnlocked();
@@ -2706,7 +2690,7 @@
           setDraft(pinned.name + ': ');
           pinnedItem = pinned;
           renderHintAndPanels();
-          setLiveText(`Đã điền “${pinned.name}: ” bằng Tab và ghim mục ${pinned.id} · Tab-filled “${pinned.name}: ” and pinned item ID`);
+          setLiveText(`Đã điền “${pinned.name}: ”`);
           input.focus();
         } else if (scenarioName === 'suggest-tab-tag') {
           ensureUnlocked();
@@ -2714,7 +2698,7 @@
           renderHintAndPanels();
           const res = search('#wifi-khách', { scope: 'tag', semantic: false });
           renderSuggestDropdown(res, { initialActiveKey: 'tag:t7' });
-          setLiveText('Đã điền “#wifi-khách ” bằng Tab · Tab-filled “#wifi-khách ”');
+          setLiveText('Đã điền “#wifi-khách ”');
           input.focus();
         }
         /* === 16 P04 scenarios (giữ nguyên) === */
