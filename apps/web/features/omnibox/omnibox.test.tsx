@@ -829,6 +829,8 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
 
     // A tainted #… draft (gate closed, no active row) + Enter -> GET /search?q=clo&scope=tag&semantic=0, still no GET /tags?q=
     searchSpy.mockClear();
+    // Two changes: re-setting the value the field already has ('#clo') fires no React onChange, so the draft would stay untainted.
+    fireEvent.change(textarea, { target: { value: '#cl' } });
     fireEvent.change(textarea, { target: { value: '#clo' } });
     fireEvent.keyDown(textarea, { key: 'Enter' });
     await waitFor(() => {
