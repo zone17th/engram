@@ -2,8 +2,8 @@
 // mục 2.15 steps 1-7, Task 19; ADR 0007): create, backfill, index, verify,
 // flip, rollback, retire, drop, and the periodic bootstrap auto-flip.
 //
-// Import direction (M2/FS-24): lifecycle imports generation, store, reconcile,
-// jobargs, embedid and internal/db/gen; only internal/worker and cmd/worker
+// Import direction (M2/FS-24): lifecycle imports embedding (input helpers),
+// generation, store, reconcile, jobargs, embedid and internal/db/gen; only internal/worker and cmd/worker
 // import lifecycle (TestEmbeddingImportDirection). It never imports jobs: the
 // Backfill caller supplies the reconcile.EnqueueFunc.
 //
@@ -521,6 +521,11 @@ type FlipOpts struct {
 	RollbackWindow time.Duration
 	// Now is an injectable clock (default time.Now).
 	Now func() time.Time
+	// BeforeExclusive is a test-only hook called after the outside-lock checks
+	// (including the coverage dry run) and right before the exclusive
+	// transaction begins: the window in which a committed mutation is invisible
+	// to the dry run but must still be fenced (GL-1).
+	BeforeExclusive func()
 }
 
 // Flip is plan 2.15 step 5: pending -> active; the old active (if any) ->
@@ -529,9 +534,11 @@ type FlipOpts struct {
 // pending (ErrNotPending), (b) index_ready=false (ErrIndexNotReady), (c) no
 // passing verification (ErrNotVerified) or one older than MaxVerifyAge
 // (ErrVerifyStale), (d) incomplete coverage (ErrCoverageIncomplete): the dry
-// run is re-checked before the lock, and inside the exclusive transaction no
-// non-final embed job of the generation may exist. Non-bootstrap flips are
-// manual only; the CLI requires --yes.
+// run is re-checked before the lock as a cheap pre-check, and inside the
+// exclusive transaction no non-final embed job of the generation may exist and
+// coverageInTx re-proves coverage (target edits AND eligibility changes) while
+// the lock fences every mutation (GL-1). Non-bootstrap flips are manual only; the
+// CLI requires --yes.
 func Flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts) error {
 	return flip(ctx, pool, genID, opts, false)
 }
@@ -570,6 +577,9 @@ func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, req
 	if !cov.Complete {
 		return ErrCoverageIncomplete
 	}
+	if opts.BeforeExclusive != nil {
+		opts.BeforeExclusive()
+	}
 
 	tx, err := beginExclusive(ctx, pool)
 	if err != nil {
@@ -607,6 +617,11 @@ func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, req
 	}
 	if n > 0 {
 		return ErrCoverageIncomplete
+	}
+	// Jobs only see target edits. Re-prove coverage itself under the lock so an
+	// eligibility change that created no embed job cannot slip through (GL-1).
+	if err := coverageInTx(ctx, tx, g); err != nil {
+		return err
 	}
 	if err := swapActive(ctx, tx, g, now, window, reason); err != nil {
 		return err
@@ -707,12 +722,17 @@ type RollbackOpts struct {
 	Now func() time.Time
 	// Verify tunes the catch-up verification (zero value: defaults).
 	Verify VerifyOpts
+	// BeforeExclusive is a test-only hook called after the outside-lock
+	// verification and right before the exclusive transaction begins (GL-1).
+	BeforeExclusive func()
 }
 
 // Rollback is plan 2.15 step 6: reactivates the retired generation toGenID
 // inside its rollback window, only if it catches up under the verify
-// conditions. Errors: ErrNotRetired, ErrRollbackWindowClosed,
-// ErrGenerationNotCaughtUp.
+// conditions: verified before the lock as a pre-check, then re-proved inside the
+// exclusive transaction by coverageInTx (GL-1). Errors: ErrNotRetired,
+// ErrRollbackWindowClosed, ErrGenerationNotCaughtUp (an in-lock coverage gap
+// also matches ErrCoverageIncomplete).
 func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts RollbackOpts) error {
 	if pool == nil {
 		return generation.ErrNilTx
@@ -742,6 +762,9 @@ func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts Rollbac
 	if !rep.Passed {
 		return ErrGenerationNotCaughtUp
 	}
+	if opts.BeforeExclusive != nil {
+		opts.BeforeExclusive()
+	}
 
 	tx, err := beginExclusive(ctx, pool)
 	if err != nil {
@@ -768,6 +791,12 @@ func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts Rollbac
 	}
 	if n > 0 {
 		return ErrGenerationNotCaughtUp
+	}
+	if err := coverageInTx(ctx, tx, g); err != nil {
+		if errors.Is(err, ErrCoverageIncomplete) {
+			return fmt.Errorf("%w: %w", ErrGenerationNotCaughtUp, ErrCoverageIncomplete)
+		}
+		return err
 	}
 	if err := swapActive(ctx, tx, g, now, window, reason); err != nil {
 		return err
