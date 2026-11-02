@@ -207,7 +207,7 @@
                   Từ khoá / nội dung bạn gõ tìm kiếm · <span lang="en" class="font-normal" style="color:var(--muted)">Search query text</span>
                 </td>
                 <td class="p-3"><span class="badge-type badge-json">Plaintext</span></td>
-                <td class="p-3" style="color:var(--muted)">Máy chủ xử lý tìm kiếm; khi bật gợi ý gần nghĩa (<span class="mono">≈</span>, sẽ có ở bản tìm kiếm sắp tới) có thể gửi tới nhà cung cấp embedding do hệ thống cấu hình (có thể là dịch vụ bên thứ ba) · <span lang="en">Seen by server for search; when semantic suggest (<span class="mono">≈</span>, arrives with the upcoming search release) is on, may be sent to an embedding provider, which can be a third-party service</span></td>
+                <td class="p-3" style="color:var(--muted)">Máy chủ xử lý tìm kiếm; khi bật gợi ý gần nghĩa (<span class="mono">≈</span>), chữ gõ tìm được gửi tiếp tới dịch vụ embedding của bên thứ ba để tính vector · <span lang="en">Seen by server for search; when semantic suggest (<span class="mono">≈</span>) is on, the text is sent on to a third-party embedding service to compute vectors</span></td>
               </tr>
               <tr style="border-top:1px solid var(--border)">
                 <td class="p-3 font-semibold">
@@ -222,10 +222,10 @@
 
         <div class="card p-5 mb-6">
           <p class="text-[15px] font-semibold m-0 mb-1.5">
-            2.1 · Gợi ý gần nghĩa (sẽ có ở bản tìm kiếm sắp tới) và nhật ký truy cập · <span lang="en" class="font-normal" style="color:var(--muted)">Semantic suggest (arrives with the upcoming search release) &amp; access logs</span>
+            2.1 · Gợi ý gần nghĩa và nhật ký truy cập · <span lang="en" class="font-normal" style="color:var(--muted)">Semantic suggest &amp; access logs</span>
           </p>
           <p class="t-body m-0" style="color:var(--body)">
-            Khi bạn bật tính năng gợi ý "gần nghĩa" (<span class="mono">≈</span>, tuỳ chọn, <strong>sẽ có ở bản tìm kiếm sắp tới</strong>), <strong>tên mục, tag, gợi nhớ và cả văn bản bạn gõ tìm kiếm</strong> có thể được gửi tới <strong>nhà cung cấp tạo vector (embedding) do hệ thống cấu hình, có thể là dịch vụ bên thứ ba</strong>, để đối chiếu ngữ nghĩa; <strong>nội dung entry không bao giờ được gửi</strong>. Tắt tính năng này trong Cài đặt sẽ dừng gửi và xoá các vector đã tạo. Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key.
+            Khi gợi ý "gần nghĩa" (<span class="mono">≈</span>) đang bật (<strong>mặc định bật nếu máy chủ hỗ trợ</strong>; tắt trong Cài đặt hoặc bằng nút <span class="mono">≈</span>), <strong>tên mục, tag, gợi nhớ và cả chữ bạn gõ khi tìm</strong> được gửi tới <strong>dịch vụ embedding của bên thứ ba</strong> (qua bộ định tuyến của chúng tôi, tới OpenRouter, rồi nhà cung cấp mô hình) để tạo vector đối chiếu ngữ nghĩa; <strong>nội dung entry không bao giờ được gửi</strong>. Chữ sau "tên:" khi lưu nội dung không bao giờ được gửi để tìm. Nếu máy chủ tự vận hành embedding (tuỳ chọn), các dữ liệu đó không rời hạ tầng của chúng tôi và tắt chỉ ẩn kết quả gần nghĩa. Tắt gợi ý "gần nghĩa" sẽ ngừng gửi dữ liệu của bạn tới bên thứ ba từ lúc đó và xoá các vector của bạn đang lưu trong cơ sở dữ liệu của engram; <strong>yêu cầu đã gửi trước lúc tắt không thu hồi được, và chúng tôi không cam kết xoá hay giới hạn thời gian lưu giữ dữ liệu đó ở OpenRouter hay nhà cung cấp mô hình</strong> (theo chính sách của họ). Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key.
           </p>
         </div>
 
@@ -245,7 +245,7 @@
             <strong>Account &amp; security records:</strong> Your email address, account settings, active sessions, and security audit events are stored on the server as plaintext or hashes; your account login password is never stored in plaintext and is hashed with <span class="mono">Argon2id</span>.
           </p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            <strong>2.1 · Semantic suggest (arrives with the upcoming search release) &amp; access logs:</strong> When optional semantic suggest (<span class="mono">≈</span>, <strong>arrives with the upcoming search release</strong>) is enabled, item names, tags, hints, and <strong>the text you search</strong> <strong>may be sent to an embedding provider, which can be a third-party service</strong>, to compute similarity vectors; <strong>entry bodies are never sent</strong>. Turning semantic suggest off in Settings stops sending data and deletes stored vectors. Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys.
+            <strong>2.1 · Semantic suggest &amp; access logs:</strong> While semantic suggest (<span class="mono">≈</span>) is on (<strong>it is on by default where the server supports it</strong>; turn it off in Settings or with the <span class="mono">≈</span> button), item names, tags, hints, and <strong>the text you type to search</strong> are sent to a <strong>third-party embedding service</strong> (through our router to OpenRouter, then the model provider) to compute similarity vectors; <strong>entry bodies are never sent</strong>. Text after "name:" when saving content is never sent for search. If the server runs its own embedding (optional), that data does not leave our infrastructure, and turning it off only hides similar-meaning results. Turning semantic suggest off stops sending your data to the third party from that moment and deletes your vectors stored in engram's database; <strong>a request already sent before you turn it off cannot be recalled, and we do not promise deletion or a retention limit for that data at OpenRouter or the model provider</strong> (it follows their policies). Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys.
           </p>
         </div>
       </section>
