@@ -33,6 +33,9 @@ const (
 	// ReembedAllInterval is the periodic reembed_all interval (OQ-15).
 	ReembedAllInterval = 24 * time.Hour
 
+	// ReembedAllPeriodicID identifies the periodic reembed_all in the River client.
+	ReembedAllPeriodicID = "reembed_all_24h"
+
 	reembedUserTimeout = 15 * time.Minute
 	reembedAllTimeout  = 2 * time.Hour
 )
@@ -73,7 +76,7 @@ func ReembedAllPeriodicJob() *river.PeriodicJob {
 	return river.NewPeriodicJob(
 		river.PeriodicInterval(ReembedAllInterval),
 		ReembedAllPeriodicConstructor,
-		nil,
+		&river.PeriodicJobOpts{ID: ReembedAllPeriodicID},
 	)
 }
 
